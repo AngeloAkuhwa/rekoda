@@ -1023,6 +1023,19 @@ export function voiceUnreadable(): Reply {
 /* ── answering a question ────────────────────────────────────────────────── */
 
 /**
+ * A question about a window of trading that named no window (Build 6).
+ *
+ * Asked rather than assumed: "how much did I sell?" has no single honest
+ * answer, and answering this month while the merchant meant last month is a
+ * wrong figure delivered with confidence. The listed answers are the exact
+ * ones the reply is understood by, and the period is asked by NAME, never as
+ * a numbered list, so a bare "2" is never read as a window.
+ */
+export function whichPeriod(): Reply {
+  return reply('Which period? Reply *today*, *this week*, *this month* or *last month*.');
+}
+
+/**
  * What the books say about a window of trading.
  *
  * Every figure here came from SQL. The model decided WHICH question was

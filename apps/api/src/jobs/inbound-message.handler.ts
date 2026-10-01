@@ -24,9 +24,18 @@ import {
   costOfCall,
   costOfTranscription,
   transcriptDurationsDisagree,
+  CUSTOMER_TOKEN,
+  continuationAnswer,
+  isOneShot,
+  periodAnswer,
+  resumedRead,
   type AiModelRole,
+  type AnsweredPeriod,
+  type ContinuationState,
   type DeterministicIntent,
+  type PeriodTopic,
   type Reply,
+  type Route,
   type UsageUnit,
 } from '@rekoda/core';
 import { normalisePhone, InvalidPhoneError } from '@rekoda/core/identity';
@@ -35,6 +44,7 @@ import type { StructuredBusinessCommand } from '@rekoda/contracts';
 import {
   billingRepo,
   catalogueRepo,
+  continuationsRepo,
   conversationsRepo,
   withBusiness,
   customersRepo,
@@ -353,8 +363,31 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * here so the SAME table serves the outbound rehydration below. */
     const liveTokens = tokenised ? new Map(tokenised.tokens) : null;
 
-    const answer =
-      route.route === 'deterministic'
+    /**
+     * Build 6: does this message continue what Rekoda just asked THIS person,
+     * or the read it just answered them? Keyed to the member who sent it,
+     * never just the business: a delegate's "last month" must not answer the
+     * owner's "Which period?". A sender with no membership has no state.
+     *
+     * Only ever a READ comes out of here, answered from SQL with no model and
+     * no draft; anything that does not fit what was open retires it and is
+     * understood exactly as it would have been without it. The financial
+     * confirmation path (a "yes" to a preview, G-23) is not consulted, not
+     * touched and not reachable from this branch.
+     */
+    const actorId = await actorOf(tx, businessId, inbound.from);
+    const continued = actorId
+      ? await continueConversation(tx, businessId, actorId, {
+          text,
+          route,
+          messageId: message.id,
+          receivedAt: event.receivedAt,
+        })
+      : null;
+
+    const answer = continued
+      ? continued
+      : route.route === 'deterministic'
         ? await deterministicReply(deps, tx, businessId, route.intent, {
             eventId,
             messageId: message.id,
@@ -374,6 +407,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             tokenised!.link,
             inbound.from,
             liveTokens!,
+            actorId,
             // Extracted-document text qualifies for dual extraction (item 9).
             read !== null,
           );
@@ -2126,33 +2160,67 @@ async function confirmPurchase(
  * No customer is ever named in what comes back. These answers cross WhatsApp
  * in the clear, so a balance is reported by invoice number exactly as the
  * debtors list is.
+ *
+ * Build 6: a question over a window that named none is ASKED ("Which
+ * period?") rather than answered for this month, and the question is
+ * returned as a continuation so the merchant's "last month" resumes it. Every
+ * answer returns the read's subject the same way, for a follow-up.
  */
 async function answerQuery(
   tx: TenantDb,
   businessId: string,
   command: Extract<StructuredBusinessCommand, { intent: 'Query' }>,
-): Promise<Reply> {
-  /* `custom` periods carry only the merchant's words, which nothing here can
-   * turn into boundaries yet. This month is the honest default and the reply
-   * names the window, so a merchant who meant something else can see that. */
-  const period = resolvePeriod(
-    command.period === 'today' || command.period === 'week' ? command.period : 'month',
-    new Date(),
-  );
+  now: Date,
+): Promise<{ reply: Reply; continuation: ContinuationState }> {
+  const subject = (
+    period: AnsweredPeriod | null,
+    customerToken: string | null = null,
+  ): ContinuationState => ({
+    kind: 'query',
+    topic: command.topic,
+    period,
+    customerToken,
+    documentRef: null,
+  });
 
   switch (command.topic) {
+    case 'sales_summary':
+    case 'expenses_summary': {
+      /* The window the merchant named: one of the model's three, or their
+       * own words (`custom`) when they are exactly a period core can draw.
+       * Anything else is a question, never a guess. */
+      const period =
+        command.period === 'today' || command.period === 'week' || command.period === 'month'
+          ? command.period
+          : command.period === 'custom'
+            ? periodAnswer(command.periodText ?? '')
+            : null;
+      if (!period) {
+        return {
+          reply: replies.whichPeriod(),
+          continuation: { kind: 'clarification', expects: 'period', topic: command.topic },
+        };
+      }
+      return {
+        reply: await answerPeriodQuery(tx, businessId, command.topic, period, now),
+        continuation: subject(period),
+      };
+    }
+
     case 'debtors': {
       const debtors = await reportsRepo.debtorsFor(tx, businessId, 8);
-      const now = new Date();
-      return replies.debtorList(
-        debtors.rows.map((r) => ({
-          invoiceNumber: r.invoiceNumber,
-          balanceDueK: r.balanceDueK,
-          daysOverdue: daysOverdue(r.dueDate, r.balanceDueK, now),
-        })),
-        debtors.totalK,
-        debtors.count,
-      );
+      return {
+        reply: replies.debtorList(
+          debtors.rows.map((r) => ({
+            invoiceNumber: r.invoiceNumber,
+            balanceDueK: r.balanceDueK,
+            daysOverdue: daysOverdue(r.dueDate, r.balanceDueK, now),
+          })),
+          debtors.totalK,
+          debtors.count,
+        ),
+        continuation: subject(null),
+      };
     }
 
     case 'customer_balance': {
@@ -2160,37 +2228,120 @@ async function answerQuery(
       /* No token means the model heard a name it could not resolve to
        * anybody we know. Asking is better than answering about the wrong
        * person, or about everybody. */
-      if (!token) return replies.paymentNoOpenInvoice();
+      if (!token) return { reply: replies.paymentNoOpenInvoice(), continuation: subject(null) };
       const owed = await issueRepo.openInvoicesForCustomer(tx, businessId, token);
-      return replies.customerBalanceAnswer(
-        owed.map((r) => ({ invoiceNumber: r.invoiceNumber, balanceDueK: r.balanceDueK })),
-        owed.reduce((n, r) => n + r.balanceDueK, 0),
-      );
-    }
-
-    case 'sales_summary': {
-      const summary = await reportsRepo.summaryFor(tx, businessId, period.from, period.to);
-      return replies.salesAnswer({ label: period.label, ...summary });
-    }
-
-    case 'expenses_summary': {
-      const summary = await reportsRepo.summaryFor(tx, businessId, period.from, period.to);
-      return replies.expensesAnswer({ label: period.label, ...summary });
+      return {
+        reply: replies.customerBalanceAnswer(
+          owed.map((r) => ({ invoiceNumber: r.invoiceNumber, balanceDueK: r.balanceDueK })),
+          owed.reduce((n, r) => n + r.balanceDueK, 0),
+        ),
+        /* The subject as its vault token, never the name: what a later
+         * build needs to continue ("send it as PDF") about the same person,
+         * with nothing a leak could read. No such follow-up is answered yet. */
+        continuation: subject(null, CUSTOMER_TOKEN.test(token) ? token : null),
+      };
     }
 
     case 'supplier_balances': {
       const overview = await reportsRepo.overviewFor(tx, businessId);
-      return replies.suppliersAnswer(overview.youOweK);
+      return { reply: replies.suppliersAnswer(overview.youOweK), continuation: subject(null) };
     }
 
     case 'unreconciled': {
       const overview = await reportsRepo.overviewFor(tx, businessId);
-      return replies.unreconciledAnswer(overview.exceptionsOpen);
+      return {
+        reply: replies.unreconciledAnswer(overview.exceptionsOpen),
+        continuation: subject(null),
+      };
     }
 
     case 'report_request':
-      return replies.reportRequestAnswer();
+      return { reply: replies.reportRequestAnswer(), continuation: subject(null) };
   }
+}
+
+/** Sales or spending over a window core draws, every figure from SQL. */
+async function answerPeriodQuery(
+  tx: TenantDb,
+  businessId: string,
+  topic: PeriodTopic,
+  name: AnsweredPeriod,
+  now: Date,
+): Promise<Reply> {
+  const period = resolvePeriod(name, now);
+  const summary = await reportsRepo.summaryFor(tx, businessId, period.from, period.to);
+  return topic === 'sales_summary'
+    ? replies.salesAnswer({ label: period.label, ...summary })
+    : replies.expensesAnswer({ label: period.label, ...summary });
+}
+
+/**
+ * The member behind a sender (Build 6): continuation state belongs to the
+ * PERSON who was asked, never just the business. Null for a number that
+ * cannot be read or holds no membership; such a sender has no state.
+ */
+async function actorOf(tx: TenantDb, businessId: string, from: string): Promise<string | null> {
+  try {
+    return (await identity.memberByPhone(tx, businessId, normalisePhone(from)))?.userId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A short reply that continues what was open for this member (Build 6), or
+ * null to be understood as an ordinary message.
+ *
+ *  - Nothing open, or the reply does not fit what was expected ("I bought 10
+ *    cartons for 100k" after "Which period?", a "2" while a period is
+ *    expected, a "yes"): whatever was open is retired, because the newest
+ *    thing said wins, and null sends the message down its ordinary path.
+ *  - A clarification that fits is CLAIMED, once, with every predicate in the
+ *    UPDATE: two replies racing for one question cannot both answer it, and
+ *    a claim that loses (or lands after the window) is treated as absent.
+ *  - What resumes is a READ answered from SQL: no model, no draft, no
+ *    preview, nothing a "yes" could confirm. The read just answered then
+ *    stays open as the subject of the next follow-up.
+ */
+async function continueConversation(
+  tx: TenantDb,
+  businessId: string,
+  actorId: string,
+  message: { text: string; route: Route; messageId: string; receivedAt: Date },
+): Promise<Reply | null> {
+  const now = { now: message.receivedAt };
+  const open = await continuationsRepo.currentContinuation(tx, businessId, actorId, now);
+  const answer = open ? continuationAnswer(open.state, message) : null;
+  const read = open && answer ? resumedRead(open.state, answer) : null;
+  const claimed =
+    open && read && isOneShot(open.state)
+      ? await continuationsRepo.consumeContinuation(tx, businessId, actorId, open.id, now)
+      : read !== null;
+  if (!read || !claimed) {
+    await continuationsRepo.retireContinuations(tx, businessId, actorId, now);
+    return null;
+  }
+
+  const reply = await answerPeriodQuery(
+    tx,
+    businessId,
+    read.topic,
+    read.period,
+    message.receivedAt,
+  );
+  await continuationsRepo.openContinuation(tx, {
+    businessId,
+    userId: actorId,
+    sourceMessageId: message.messageId,
+    state: {
+      kind: 'query',
+      topic: read.topic,
+      period: read.period,
+      customerToken: null,
+      documentRef: null,
+    },
+  });
+  return reply;
 }
 
 /**
@@ -2424,6 +2575,8 @@ async function interpretedReply(
    * holds the token.
    */
   tokens: Map<string, string>,
+  /** The member who sent this (Build 6), or null for a sender with none. */
+  actorId: string | null,
   /** True when this text was extracted from a photographed document. */
   fromDocument = false,
 ): Promise<Reply> {
@@ -2581,7 +2734,7 @@ async function interpretedReply(
    * question, and storing the proposal anyway would mean a later `yes` joining
    * two customer records nobody was ever asked about.
    */
-  const answered = await acknowledge(tx, businessId, command, correcting, link);
+  const answered = await acknowledge(tx, businessId, command, correcting, link, receivedAt);
 
   /* Supplier names are never persisted (ADR 0005): the preview above
    * already said "From: ...". What the stored draft keeps instead is the
@@ -2607,6 +2760,19 @@ async function interpretedReply(
     previewed: answered.previewed === true,
     confirmationContext: answered.confirmationContext ?? null,
   });
+
+  /* Build 6: a read Rekoda just answered, or the one question it asked
+   * about it ("Which period?"), stays open for this member's next short
+   * reply. Only ever a read: `acknowledge` returns a continuation for a
+   * Query and for nothing else. */
+  if (answered.continuation && actorId) {
+    await continuationsRepo.openContinuation(tx, {
+      businessId,
+      userId: actorId,
+      sourceMessageId: conversationMessageId,
+      state: answered.continuation,
+    });
+  }
 
   /* G-61: the merchant answers a funding-source question by sending the
    * purchase again. The draft that asked stays on the record, abandoned,
@@ -2659,10 +2825,14 @@ async function acknowledge(
   businessId: string,
   command: StructuredBusinessCommand,
   correcting: boolean,
-  link: IdentityLinkProposal | null = null,
+  link: IdentityLinkProposal | null,
+  /** When the message reached Rekoda: the instant a period is drawn from. */
+  receivedAt: Date,
 ): Promise<{
   reply: Reply;
   linkAsked: boolean;
+  /** A read's subject, or the question asked about it (Build 6). Reads only. */
+  continuation?: ContinuationState;
   /** What an overpayment preview showed, stored on the draft (OWN-16). */
   confirmationContext?: ConfirmationContext;
   /** The answer was the G-61 funding-source question: the draft is kept for
@@ -2705,7 +2875,10 @@ async function acknowledge(
    * of entry is not built yet" — the wrong sentence for a question, about a
    * thing they were not recording.
    */
-  if (command.intent === 'Query') return plain(await answerQuery(tx, businessId, command));
+  if (command.intent === 'Query') {
+    const answered = await answerQuery(tx, businessId, command, receivedAt);
+    return { ...plain(answered.reply), continuation: answered.continuation };
+  }
 
   /**
    * A reported payment is gated against a REAL balance, read here.

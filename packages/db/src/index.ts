@@ -34,6 +34,7 @@ export * as jobsRepo from './repos/jobs.js';
 export * as marginRepo from './repos/margin.js';
 export * as merchantApiRepo from './repos/merchant-api.js';
 export * as conversationsRepo from './repos/conversations.js';
+export * as continuationsRepo from './repos/continuations.js';
 export * as quotaRepo from './repos/quota.js';
 export * as issueRepo from './repos/issue.js';
 export * as bankRepo from './repos/bank.js';

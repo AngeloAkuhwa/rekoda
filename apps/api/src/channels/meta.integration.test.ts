@@ -27,7 +27,7 @@ import {
   suppliersRepo,
 } from '@rekoda/db';
 import { placeCatalogueOrderWork, validateCatalogueOrderWork } from '../commands/order-commands.js';
-import { PLAN_ALLOWANCES, allowanceFor, replies, usagePeriod } from '@rekoda/core';
+import { PLAN_ALLOWANCES, allowanceFor, replies, resolvePeriod, usagePeriod } from '@rekoda/core';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -8710,5 +8710,430 @@ describe('a preview has a time limit (G-23)', () => {
     await plain('wamid.G23-del3', 'delete my data');
     expect(stubSender.lastText).toContain('deleted (1 record)');
     expect(await facets()).toEqual([]);
+  });
+});
+
+/**
+ * Conversational continuation (Build 6): a short reply attaches to the
+ * question Rekoda just asked THAT person, or continues the read it just
+ * answered them, and nothing else.
+ *
+ *     "How much did I sell?" -> "Which period?" -> "Last month."
+ *
+ * What resumes is always a read, answered from SQL with no model. A reply
+ * that does not fit is understood exactly as it would have been without the
+ * question, and the question is gone. Nothing here reaches a draft: the
+ * financial confirmation path (G-23) and the retired purchase question
+ * (G-61) behave exactly as before.
+ */
+describe('a short reply continues what Rekoda just asked (Build 6)', () => {
+  const OWNER = '2348031234567';
+  const DELEGATE = '2348039990002';
+  const WHICH_PERIOD = replies.whichPeriod().text;
+  const STRAY = replies.strayNumber().text;
+  const HOW_MUCH_DID_I_SELL = {
+    intent: 'Query',
+    topic: 'sales_summary',
+    customer: null,
+    period: null,
+    periodText: null,
+    format: 'chat',
+  };
+  const HOW_MUCH_DID_I_SPEND = { ...HOW_MUCH_DID_I_SELL, topic: 'expenses_summary' };
+  /* What the model says when it is (wrongly) handed a bare answer. */
+  const UNCLEAR = { intent: 'Unclear', clarification: 'What would you like me to do?' };
+  const POS_PURCHASE = {
+    intent: 'RecordPurchase',
+    supplierMention: 'Emeka',
+    description: '10 cartons',
+    amount: 100_000,
+    reportedPayment: 100_000,
+    paymentMethod: 'pos',
+    productMention: 'cartons',
+    quantity: 10,
+  };
+  const A_SALE = {
+    intent: 'RecordSale',
+    customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+    items: [{ name: 'wig', quantity: 3, unitPrice: 100_000 }],
+    statedTotal: 300_000,
+    reportedPayment: 0,
+    paymentMethod: 'transfer',
+    discount: null,
+    deliveryFee: null,
+    dueDescription: null,
+  };
+
+  async function seedMerchant(phone = `+${OWNER}`) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function drain() {
+    /* A fresh runner every time: the state must survive the worker being
+     * rebuilt between the question and the answer (durable, not memory). */
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  async function say(wamid: string, command: Record<string, unknown>, text: string, from = OWNER) {
+    stubTransport.replyWith(command);
+    await post(messagePayload(from, wamid, text));
+    await drain();
+  }
+
+  /** A message the model would read as unclear, if it ever reached it. */
+  async function reply(wamid: string, text: string, from = OWNER) {
+    stubTransport.replyWith(UNCLEAR);
+    await post(messagePayload(from, wamid, text));
+    await drain();
+  }
+
+  const modelCalls = () => stubTransport.requests.length;
+
+  /** One sale of ₦150,000 last month (₦60,000 paid), one of ₦40,000 this month. */
+  async function seedTwoMonths(businessId: string) {
+    const lastMonth = resolvePeriod('last_month', new Date());
+    const inLastMonth = new Date(lastMonth.from.getTime() + 2 * 86_400_000).toISOString();
+    await withBusiness(db, businessId, async (tx) => {
+      const old = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: null,
+        items: [{ name: 'wig', quantity: 3, unitPriceK: 5_000_000 }],
+        subtotalK: 15_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 15_000_000,
+        paidK: 0,
+        balanceDueK: 15_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'b6-old',
+        actor: 'system',
+      });
+      await settleRepo.recordMerchantPayment(tx, {
+        businessId,
+        invoiceId: old.invoiceId,
+        amountK: 6_000_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'b6-old-pay',
+        actor: 'system',
+      });
+      await tx.execute(sql`
+        UPDATE invoices SET created_at = ${inLastMonth}::timestamptz
+         WHERE business_id = ${businessId}::uuid AND id = ${old.invoiceId}::uuid`);
+      await tx.execute(sql`
+        UPDATE payments SET created_at = ${inLastMonth}::timestamptz
+         WHERE business_id = ${businessId}::uuid`);
+      await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: null,
+        items: [{ name: 'bag', quantity: 1, unitPriceK: 4_000_000 }],
+        subtotalK: 4_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 4_000_000,
+        paidK: 0,
+        balanceDueK: 4_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'b6-new',
+        actor: 'system',
+      });
+    });
+    return {
+      lastMonthLabel: lastMonth.label,
+      thisMonthLabel: resolvePeriod('month', new Date()).label,
+    };
+  }
+
+  async function continuations(businessId: string) {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{
+        user_id: string;
+        kind: string;
+        expects: string | null;
+        topic: string | null;
+        period: string | null;
+        state: string;
+      }>(sql`
+        SELECT user_id, kind, expects, topic, period, state FROM conversation_continuations
+         WHERE business_id = ${businessId}::uuid ORDER BY insertion_seq`),
+    );
+    return [...rows];
+  }
+
+  /** Every row a write could leave, counted. */
+  async function footprint(businessId: string) {
+    const [row] = [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<Record<string, number>>(sql`
+          SELECT
+            (SELECT count(*)::int FROM invoices WHERE business_id = ${businessId}::uuid) AS invoices,
+            (SELECT count(*)::int FROM payments WHERE business_id = ${businessId}::uuid) AS payments,
+            (SELECT count(*)::int FROM expenses WHERE business_id = ${businessId}::uuid) AS expenses,
+            (SELECT count(*)::int FROM ledger_transactions WHERE business_id = ${businessId}::uuid) AS postings,
+            (SELECT count(*)::int FROM command_drafts WHERE business_id = ${businessId}::uuid) AS drafts
+        `),
+      )),
+    ];
+    return row!;
+  }
+
+  async function draftStates(businessId: string): Promise<string[]> {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ state: string; intent: string }>(sql`
+        SELECT state, intent FROM command_drafts WHERE business_id = ${businessId}::uuid
+         ORDER BY insertion_seq`),
+    );
+    return [...rows].map((r) => `${r.intent}:${r.state}`);
+  }
+
+  it('"How much did I sell?", "Which period?", "Last month." answers for last month, with no model', async () => {
+    const business = await seedMerchant();
+    const { lastMonthLabel } = await seedTwoMonths(business.id);
+
+    await say('wamid.B6-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+    expect(stubSender.lastText).toBe(WHICH_PERIOD);
+
+    await reply('wamid.B6-answer', 'Last month.');
+    /* The original question resumed over the window the merchant named. */
+    expect(stubSender.lastText).toContain(`${lastMonthLabel}: ₦150,000 invoiced across one sale`);
+    expect(stubSender.lastText).toContain('₦60,000 of that has actually come in');
+    /* Not this month's ₦40,000, and not a guess by the model. */
+    expect(stubSender.lastText).not.toContain('₦40,000');
+    expect(modelCalls()).toBe(0);
+
+    /* One-shot: the question is consumed, and the read it resumed is now
+     * what a follow-up continues. */
+    expect((await continuations(business.id)).map((c) => `${c.kind}:${c.state}`)).toEqual([
+      'clarification:consumed',
+      'query:open',
+    ]);
+  });
+
+  it('a follow-up continues the read just answered: "what about this month"', async () => {
+    const business = await seedMerchant();
+    const { thisMonthLabel } = await seedTwoMonths(business.id);
+
+    await say('wamid.B6-f-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+    await reply('wamid.B6-f-answer', 'last month');
+    await reply('wamid.B6-f-follow', 'what about this month');
+
+    expect(stubSender.lastText).toContain(`${thisMonthLabel}: ₦40,000 invoiced across one sale`);
+    expect(modelCalls()).toBe(0);
+  });
+
+  it("one member's answer never lands on another member's question", async () => {
+    const business = await seedMerchant();
+    const { lastMonthLabel } = await seedTwoMonths(business.id);
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+
+    await say('wamid.B6-a-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?', OWNER);
+    expect(stubSender.lastText).toBe(WHICH_PERIOD);
+
+    /* The delegate's "last month" is not an answer to the owner's question:
+     * it goes to the model like any message with nothing open for them. */
+    await reply('wamid.B6-a-other', 'last month', DELEGATE);
+    expect(modelCalls()).toBeGreaterThan(0);
+    expect(stubSender.lastText).toBe(UNCLEAR.clarification);
+
+    /* The owner's question is still open, and still theirs. */
+    await reply('wamid.B6-a-own', 'last month', OWNER);
+    expect(stubSender.lastText).toContain(`${lastMonthLabel}: ₦150,000`);
+    expect(modelCalls()).toBe(0);
+  });
+
+  it("one business's answer never lands on another business's question", async () => {
+    const first = await seedMerchant(`+${OWNER}`);
+    await seedMerchant('+2348035550000');
+
+    await say('wamid.B6-b-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?', OWNER);
+    await reply('wamid.B6-b-other', 'last month', '2348035550000');
+    expect(modelCalls()).toBeGreaterThan(0);
+    expect(stubSender.lastText).toBe(UNCLEAR.clarification);
+
+    await reply('wamid.B6-b-own', 'last month', OWNER);
+    expect(stubSender.lastText).toContain('sales');
+    expect(modelCalls()).toBe(0);
+    expect((await continuations(first.id)).map((c) => c.state)).toEqual(['consumed', 'open']);
+  });
+
+  it('a new purchase after "Which period?" is a purchase, and the question is gone', async () => {
+    const business = await seedMerchant();
+    await say('wamid.B6-n-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+
+    await say(
+      'wamid.B6-n-buy',
+      { ...POS_PURCHASE, paymentMethod: 'cash' },
+      'I bought 10 cartons for 100k cash',
+    );
+    expect(modelCalls()).toBeGreaterThan(0);
+    expect(stubSender.lastText).toContain('Paid in full by cash');
+    expect((await continuations(business.id)).map((c) => c.state)).toEqual(['superseded']);
+
+    /* A later "last month" answers nothing: the question was replaced. */
+    await reply('wamid.B6-n-late', 'last month');
+    expect(modelCalls()).toBeGreaterThan(0);
+    expect(stubSender.lastText).toBe(UNCLEAR.clarification);
+  });
+
+  it('an expired question behaves as if it was never asked', async () => {
+    const business = await seedMerchant();
+    await say('wamid.B6-e-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        UPDATE conversation_continuations SET expires_at = clock_timestamp() - interval '1 second'
+         WHERE business_id = ${business.id}::uuid`),
+    );
+
+    await reply('wamid.B6-e-late', 'last month');
+    expect(modelCalls()).toBeGreaterThan(0);
+    expect(stubSender.lastText).toBe(UNCLEAR.clarification);
+    expect((await continuations(business.id)).map((c) => c.state)).toEqual(['expired']);
+  });
+
+  it('the newest question wins: an answer goes to the question asked last', async () => {
+    const business = await seedMerchant();
+    await withBusiness(db, business.id, (tx) =>
+      spendRepo.recordExpense(tx, {
+        businessId: business.id,
+        description: 'fuel for generator',
+        category: 'utilities',
+        amountK: 1_200_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'b6-fuel',
+      }),
+    );
+
+    await say('wamid.B6-r-sell', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+    await say('wamid.B6-r-spend', HOW_MUCH_DID_I_SPEND, 'How much did I spend?');
+    expect(stubSender.lastText).toBe(WHICH_PERIOD);
+
+    await reply('wamid.B6-r-answer', 'this month');
+    expect(stubSender.lastText).toContain('₦12,000 spent across one entry');
+    expect(
+      (await continuations(business.id)).map((c) => `${c.topic}:${c.kind}:${c.state}`),
+    ).toEqual([
+      'sales_summary:clarification:superseded',
+      'expenses_summary:clarification:consumed',
+      'expenses_summary:query:open',
+    ]);
+  });
+
+  it('a bare number while a period is expected is not guessed at', async () => {
+    const business = await seedMerchant();
+    await say('wamid.B6-2-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+
+    await reply('wamid.B6-2', '2');
+    expect(stubSender.lastText).toBe(STRAY);
+    expect(modelCalls()).toBe(0);
+    /* And the question did not survive being answered with the wrong thing. */
+    expect((await continuations(business.id)).map((c) => c.state)).toEqual(['superseded']);
+  });
+
+  it('a bare number with nothing open stays a stray number', async () => {
+    await seedMerchant();
+    await reply('wamid.B6-2-alone', '2');
+    expect(stubSender.lastText).toBe(STRAY);
+  });
+
+  it('a continuation never writes: no draft, no record, and a yes after it confirms nothing new', async () => {
+    const business = await seedMerchant();
+    await say('wamid.B6-w-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+    const before = await footprint(business.id);
+
+    await reply('wamid.B6-w-answer', 'last month');
+    expect(await footprint(business.id)).toEqual(before);
+
+    await reply('wamid.B6-w-yes', 'yes');
+    expect(await footprint(business.id)).toMatchObject({
+      invoices: before.invoices,
+      payments: before.payments,
+      expenses: before.expenses,
+      postings: before.postings,
+    });
+    expect(stubSender.lastText).not.toContain('Saved');
+  });
+
+  it('a G-23 expired preview stays expired through a question and its answer', async () => {
+    const business = await seedMerchant();
+    await say('wamid.B6-g23-sale', A_SALE, 'sold Ada 3 wigs for 300k');
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        UPDATE command_drafts SET expires_at = clock_timestamp() - interval '3 days'
+         WHERE business_id = ${business.id}::uuid`),
+    );
+
+    await say('wamid.B6-g23-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+    await reply('wamid.B6-g23-answer', 'last month');
+
+    expect((await draftStates(business.id))[0]).toBe('RecordSale:expired');
+    expect(await footprint(business.id)).toMatchObject({ invoices: 0, postings: 0 });
+  });
+
+  it('a G-61 retired purchase question stays retired, and "bank" never records the purchase', async () => {
+    const business = await seedMerchant();
+    await say('wamid.B6-g61-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+    await say('wamid.B6-g61-pos', POS_PURCHASE, 'I bought 10 cartons for 100k, paid by POS');
+    expect(stubSender.lastText).toContain(
+      'did it come from your bank account or from physical cash?',
+    );
+    expect(await draftStates(business.id)).toEqual([
+      'Query:superseded',
+      'RecordPurchase:abandoned',
+    ]);
+    /* The period question did not survive the purchase. */
+    expect((await continuations(business.id)).map((c) => c.state)).toEqual(['superseded']);
+
+    /* A yes still asks the retired question again (G-61), unchanged. */
+    await reply('wamid.B6-g61-yes', 'yes');
+    expect(stubSender.lastText).toContain(
+      'did it come from your bank account or from physical cash?',
+    );
+    expect((await draftStates(business.id))[1]).toBe('RecordPurchase:abandoned');
+
+    /* "bank" is not a period, and nothing open expects it: it goes to the
+     * model as before, and never executes the old purchase. */
+    await reply('wamid.B6-g61-bank', 'bank');
+    expect(modelCalls()).toBeGreaterThan(0);
+    expect(await footprint(business.id)).toMatchObject({ expenses: 0, postings: 0 });
+    expect((await draftStates(business.id))[1]).toBe('RecordPurchase:abandoned');
+  });
+
+  it('keeps a customer as a vault token, never a name', async () => {
+    const business = await seedMerchant();
+    await say(
+      'wamid.B6-pii',
+      {
+        ...HOW_MUCH_DID_I_SELL,
+        topic: 'customer_balance',
+        customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+      },
+      'how much does Ada owe me',
+    );
+
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ row: string }>(sql`
+        SELECT row_to_json(c)::text AS row FROM conversation_continuations c
+         WHERE business_id = ${business.id}::uuid`),
+    );
+    const stored = [...rows].map((r) => r.row);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toContain('CUSTOMER_7K2');
+    expect(stored[0]).not.toContain('Ada');
+    expect(stored[0]).not.toContain('owe');
   });
 });

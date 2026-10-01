@@ -54,6 +54,21 @@ normally; a fresh sale answered "yes" after more than five minutes gets the
 expiry sentence and zero financial rows. G-68 and later builds are not
 started.
 
+**In review (1 Oct 2026, Build 6, conversational continuation state; CODE
+COMPLETE, staging acceptance pending):** branch
+`feat/conversation-continuation-state` off `main` at `f5fb1ce` (G-23, #258).
+"How much did I sell?" with no period is answered "Which period?", and a
+short "last month" resumes it from SQL with no model call; "what about this
+week" continues the read just answered. State is `conversation_continuations`
+(migration 0154): typed, scoped to the business AND the member who was asked,
+newest wins, one-shot clarifications claimed atomically, expiring after
+`CONTINUATION_TTL_SECONDS` (600, an implementation value for the owner to
+confirm, OD-14). It only ever resumes a read and never touches a command
+draft (G-23, G-61 unchanged). Numbered-option state is representable; number
+routing, Pidgin answers and "send it as PDF" belong to later builds. After
+merge, on staging: ask "how much did I sell?", answer "last month", check the
+figure; a delegate's "last month" must not answer the owner's question.
+
 **G-77 (#254), for the record:** every public API sale is its own financial
 event (its `sourceId` is an opaque per-request id, never the application
 id), and the retry fingerprint is unchanged across releases.

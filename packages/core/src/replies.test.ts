@@ -174,6 +174,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   voiceUnavailable: [replies.voiceUnavailable()],
   voiceTooLong: [replies.voiceTooLong(120), replies.voiceTooLong(90), replies.voiceTooLong(60)],
   voiceUnreadable: [replies.voiceUnreadable()],
+  whichPeriod: [replies.whichPeriod()],
   salesAnswer: [
     replies.salesAnswer({
       label: 'this month',
@@ -295,6 +296,7 @@ describe('every reply', () => {
     replies.draftExpired(),
     replies.previewAwaitingYes(),
     replies.expiredNothingToCancel(),
+    replies.whichPeriod(),
     replies.nothingToResend(),
     replies.dashboardUnavailable(),
     replies.paymentLinkUnavailable(),
