@@ -12,6 +12,7 @@ import {
   fundingSourceAnswer,
   periodAnswer,
   uncountablePeriod,
+  soundsDoubtful,
   customerConsentIntent,
   routeMessage,
   staysLocal,
@@ -956,6 +957,18 @@ describe('a questioned affirmation confirms nothing', () => {
     'e correct 🧐',
     'oya 😕',
     'na so 🤨',
+    'yes 🙄',
+    /* A question mark ANYWHERE, not only at the end (G-68 review). */
+    'yes?!',
+    'na so?!',
+    'na so ?!',
+    'e correct?.',
+    'yes ?)',
+    'yes? 👍',
+    'yes?? ok',
+    'na so?o',
+    'yes?\u200B',
+    'yes¿',
   ])('%j is unsure, never affirm', (message) => {
     expect(intentOf(message)).toEqual({ kind: 'unsure' });
     expect(staysLocal(routeMessage(message))).toBe(true);
@@ -992,6 +1005,10 @@ describe('a repeated STOP is still a STOP; START never repeats (G-24 review)', (
     'Unsubscribe unsubscribe',
     'QUIT QUIT QUIT',
     'stop all stop all',
+    'stop stop stop stop',
+    'STOP STOP STOP STOP STOP',
+    'stopstop',
+    'QUITQUIT',
   ])('%j opts out, on every path', (message) => {
     expect(intentOf(message)).toEqual({ kind: 'stop' });
     expect(customerConsentIntent(message)).toBe('stop');
@@ -999,7 +1016,9 @@ describe('a repeated STOP is still a STOP; START never repeats (G-24 review)', (
   });
 
   it.each([
-    'stop stop stop stop',
+    'stop stop stop stop stop stop',
+    'stopstopstopstopstopstop',
+    'startstart',
     'start start',
     'START START!',
     'stop start',
@@ -1031,14 +1050,33 @@ describe('the length gate counts what is left after trimming (G-24 review)', () 
 });
 
 describe('Pidgin cash answers to the funding question (G-68 review)', () => {
-  it.each(['money for hand', 'na money for hand', 'from my pocket'])('%j is cash', (text) => {
+  it.each(['money for hand', 'na money for hand', 'na cash in hand'])('%j is cash', (text) => {
     expect(fundingSourceAnswer(text)).toBe('cash');
   });
 
-  it.each(['money for bank', 'my pocket money', 'money for hand na 20k'])(
+  it.each(['money for bank', 'my pocket money', 'money for hand na 20k', 'from my pocket'])(
     '%j is not an answer',
     (text) => {
       expect(fundingSourceAnswer(text)).toBeNull();
     },
   );
+});
+
+describe('parity forms added on review (G-68)', () => {
+  it('"this week so far" is the week', () => {
+    expect(periodAnswer('this week so far')).toBe('week');
+  });
+  it.each([
+    ['na bank account', 'transfer'],
+    ['na from my bank', 'transfer'],
+    ['na cash in hand', 'cash'],
+  ])('%j is %s', (text, source) => {
+    expect(fundingSourceAnswer(text)).toBe(source);
+  });
+  it('a questioned answer reads as doubt', () => {
+    expect(soundsDoubtful('cash?')).toBe(true);
+    expect(soundsDoubtful('bank 🤔')).toBe(true);
+    expect(soundsDoubtful('cash')).toBe(false);
+    expect(soundsDoubtful('na bank o')).toBe(false);
+  });
 });

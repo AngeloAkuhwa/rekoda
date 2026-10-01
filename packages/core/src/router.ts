@@ -410,6 +410,8 @@ const START_WORDS: ReadonlySet<string> = new Set(['start', 'unstop', 'subscribe'
  * decorating a word, it is a wall of characters with a word in it.
  */
 const DECORATION = 16;
+/** How many times one STOP-class word may be repeated and still be a STOP. */
+const REPEATED_STOP_MAX = 5;
 /** START is strict: at most this many `.`, `!` or emoji after the word. */
 const START_MARKS = 5;
 /**
@@ -704,9 +706,13 @@ function consentKeyword(raw: string): 'stop' | 'start' | null {
   const units: string[] = [];
   for (let i = 0; i < runs.length; i++) {
     const spaced = (separators[i] ?? []).every((g) => g.kind === 'space');
+    const together = /^(stop|quit){2,5}$/.exec(runs[i]!);
     if (runs[i] === 'stop' && runs[i + 1] === 'all' && spaced) {
       units.push('stop all');
       i++;
+    } else if (together) {
+      /* Run together: "stopstop", "quitquitquit". */
+      for (let k = 0; k < runs[i]!.length / together[1]!.length; k++) units.push(together[1]!);
     } else {
       units.push(runs[i]!);
     }
@@ -716,14 +722,15 @@ function consentKeyword(raw: string): 'stop' | 'start' | null {
   const inside = separators.flat();
 
   /*
-   * A STOP may be said up to three times ("STOP STOP", "stop!!! stop!!!"),
+   * A STOP may be said up to five times ("STOP STOP", "stop!!! stop!!!",
+   * "stopstop"),
    * the same word each time, separated only by decoration: someone who
    * repeats it means it more, not less. Mixed words ("stop start",
    * "STOP quit") stay refused, and START is never repeated (G-24).
    */
   const repeatedStop =
     units.length >= 2 &&
-    units.length <= 3 &&
+    units.length <= REPEATED_STOP_MAX &&
     units.every((u) => u === units[0]) &&
     STOP_WORDS.has(units[0]!) &&
     inside.length <= DECORATION;
@@ -970,7 +977,7 @@ const PERIOD_ANSWERS: ReadonlyArray<readonly [readonly string[], AnsweredPeriod]
    * reasons above. A trailing "o" ("last month o") is presentation noise,
    * stripped before this table is read.
    */
-  [['dis week', 'dis week so far'], 'week'],
+  [['dis week', 'dis week so far', 'this week so far'], 'week'],
   [['dis month', 'dis month so far', 'this month so far'], 'month'],
   [['the month wey pass', 'month wey pass'], 'last_month'],
 ];
@@ -1013,20 +1020,33 @@ export function periodAnswer(raw: string): AnsweredPeriod | null {
 }
 
 /**
- * Marks that turn a whole-message affirmation into a QUESTION when it ends
- * the message: "?" in its plain and full-width forms, and the pictographs
- * "❓", "❔", "⁉", "‼" (the same set the consent matcher treats as a
- * question). "na so?" is "Really?", not "go ahead".
+ * A question mark ANYWHERE in a short affirmation makes it a question (G-68
+ * review): "yes?!", "na so ?!", "e correct?.", "yes ?)", "yes? 👍", "yes?? ok",
+ * "na so?o", "yes¿". Plain and full-width "?", the inverted "¿", and the
+ * pictographs "❓", "❔", "⁉", "‼". Affirmation phrases are a few words long,
+ * so a question mark anywhere in one is never decoration.
  */
-const QUESTION_ENDINGS = /[?\uFF1F\u2753\u2754\u2049\u203C][\s\uFE0E\uFE0F]*$/u;
+const QUESTION_MARK = /[?\uFF1F\u00BF\u2753\u2754\u2049\u203C]/u;
 
 /**
  * Faces that mean doubt, wherever they sit in the message: thinking face,
- * flushed face, face with monocle, confused face, face with raised eyebrow.
- * Kept small on purpose: each is read as "I am not sure", and none is ever
- * sent to mean yes. A smile or a thumbs up still affirms.
+ * flushed face, face with monocle, confused face, face with raised eyebrow,
+ * face with rolling eyes. Kept small on purpose: each is read as "I am not
+ * sure", and none is ever sent to mean yes. A smile or a thumbs up still
+ * affirms.
  */
-const DOUBT_FACES = /[\u{1F914}\u{1F633}\u{1F9D0}\u{1F615}\u{1F928}]/u;
+const DOUBT_FACES = /[\u{1F914}\u{1F633}\u{1F9D0}\u{1F615}\u{1F928}\u{1F644}]/u;
+
+/**
+ * Does this short message read as a question or as doubt? Invisible format
+ * characters are removed first, so a zero-width space cannot hide the mark.
+ * Used for affirmations and for a short funding answer ("cash?"): both are
+ * asked, not answered.
+ */
+export function soundsDoubtful(raw: string): boolean {
+  const visible = raw.replace(/\p{Cf}/gu, '');
+  return QUESTION_MARK.test(visible) || DOUBT_FACES.test(visible);
+}
 
 /**
  * Normalisation removes punctuation and emoji, so "yes?" and "yes" match the
@@ -1037,7 +1057,7 @@ const DOUBT_FACES = /[\u{1F914}\u{1F633}\u{1F9D0}\u{1F615}\u{1F928}]/u;
  */
 function doubted(raw: string, intent: DeterministicIntent): DeterministicIntent {
   if (intent.kind !== 'affirm') return intent;
-  return QUESTION_ENDINGS.test(raw.trim()) || DOUBT_FACES.test(raw) ? { kind: 'unsure' } : intent;
+  return soundsDoubtful(raw) ? { kind: 'unsure' } : intent;
 }
 
 /**
@@ -1138,6 +1158,8 @@ const FUNDING_ANSWERS: ReadonlyArray<readonly [readonly string[], FundingSource]
       'na from bank',
       'na my bank',
       'na my bank account',
+      'na bank account',
+      'na from my bank',
       'na from my bank account',
     ],
     'transfer',
@@ -1149,11 +1171,12 @@ const FUNDING_ANSWERS: ReadonlyArray<readonly [readonly string[], FundingSource]
       'my cash',
       'from cash',
       'from my cash',
-      /* "Money for hand" is cash held in the hand; "from my pocket" is
-       * physical money. Neither has a bank reading. */
+      'na cash in hand',
+      /* "Money for hand" is cash held in the hand; it has no bank reading.
+       * ("From my pocket" was removed on review: it often means "my own
+       * money", which says nothing about the account.) */
       'money for hand',
       'na money for hand',
-      'from my pocket',
       'cash in hand',
       'na cash',
       'na physical cash',
