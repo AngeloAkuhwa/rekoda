@@ -8522,6 +8522,18 @@ describe('a preview has a time limit (G-23)', () => {
     await plain('wamid.G23-wo1-yes', 'yes');
     await say('wamid.G23-wo2', adjust(-15), '15 bags got water damage');
     expect(stubSender.lastText).toContain('Removing 15 bags of rice');
+    /* The HIGH_RISK confirmation opens from the draft's own database
+     * timestamp, never this host's clock: the two windows close together. */
+    const [windows] = [
+      ...(await withBusiness(db, business.id, (tx) =>
+        tx.execute<{ same: boolean }>(sql`
+          SELECT (SELECT expires_at FROM command_drafts
+                   WHERE business_id = ${business.id}::uuid AND state = 'pending')
+               = (SELECT expires_at FROM pending_confirmations
+                   WHERE business_id = ${business.id}::uuid AND claimed_at IS NULL) AS same`),
+      )),
+    ];
+    expect(windows?.same).toBe(true);
 
     /* The yes arrives inside both windows; by the time it runs, both have
      * closed on the wall clock. */
@@ -8589,6 +8601,56 @@ describe('a preview has a time limit (G-23)', () => {
     await plain('wamid.G23-sup2-yes', 'yes');
     expect((await footprint(business.id)).invoices).toBe(1);
     expect((await used(business.id)).documents).toBe(1);
+  });
+
+  it('a yes queued behind a correction, retried, refunds nothing it never reserved', async () => {
+    const business = await seedMerchant();
+    /* One real sale, so the counter holds a unit a wrong refund would take. */
+    await say('wamid.G23-q0', A_SALE, 'sold Ada 3 wigs for 300k');
+    await plain('wamid.G23-q0-yes', 'yes');
+    expect((await used(business.id)).documents).toBe(1);
+    await say('wamid.G23-q1', A_SALE, 'sold Ada 3 more wigs for 300k');
+
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      /* The yes's answer fails to be recorded once, so its job is retried. */
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g23_ptr_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g23_fail_ptr_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF nextval('g23_ptr_once') = 1 THEN RAISE EXCEPTION 'g23: answer fails once'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g23_fail_ptr_once BEFORE INSERT ON conversation_messages
+          FOR EACH ROW WHEN (NEW.direction = 'outbound' AND NEW.body LIKE 'I sent you a preview%')
+          EXECUTE FUNCTION g23_fail_ptr_once()`);
+
+      /* The correction reaches Rekoda first, the yes after; both queue, and
+       * the correction is handled (superseding the draft) after the yes had
+       * already arrived. The yes meters nothing: there is nothing for it. */
+      stubTransport.replyWith({
+        ...A_SALE,
+        items: [{ name: 'wig', quantity: 4, unitPrice: 100_000 }],
+        statedTotal: 400_000,
+      });
+      await post(messagePayload('2348031234567', 'wamid.G23-q2', 'sorry, 4 wigs not 3'));
+      await post(messagePayload('2348031234567', 'wamid.G23-q2-yes', 'yes'));
+      await drain();
+      await runRetriesNow(ownerDb, business.id);
+      await drain();
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g23_fail_ptr_once ON conversation_messages`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g23_fail_ptr_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g23_ptr_once`);
+      await close();
+    }
+
+    expect(stubSender.lastText).toBe(replies.previewAwaitingYes().text);
+    /* Still the one unit the real sale cost: nothing reserved, nothing back. */
+    expect((await used(business.id)).documents).toBe(1);
+    expect((await footprint(business.id)).invoices).toBe(1);
   });
 
   it('a lapsed clarification was never a preview: a later yes or no is not told it expired', async () => {

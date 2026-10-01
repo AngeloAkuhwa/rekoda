@@ -27,6 +27,7 @@ import {
   type AiModelRole,
   type DeterministicIntent,
   type Reply,
+  type UsageUnit,
 } from '@rekoda/core';
 import { normalisePhone, InvalidPhoneError } from '@rekoda/core/identity';
 import { extractInboundEvents, metaWebhookBody } from '@rekoda/contracts';
@@ -940,7 +941,7 @@ async function deterministicReply(
    * even a draft the owner parked. */
   if (intent.kind === 'affirm') {
     if (!(await mayTransact(tx, businessId, ctx.from))) return replies.viewOnlyRole();
-    return confirmPendingDraft(deps, tx, businessId, ctx.retrying, ctx.receivedAt);
+    return confirmPendingDraft(deps, tx, businessId, ctx.retrying, ctx.receivedAt, ctx.eventId);
   }
   if (intent.kind === 'deny' || intent.kind === 'cancel') {
     // A refusal after a preview discards the draft rather than leaving it to
@@ -1412,59 +1413,30 @@ function expiredAnswer(command: unknown, previewed: boolean, answer: 'yes' | 'no
 }
 
 /**
- * Give back what a crashed first attempt of this "yes" reserved, when the
- * retry ends without executing (G-23). Attempt 1 meters in its own committed
- * transaction and a retry never meters again; if the retry then finds the
- * window closed, the unit would be spent on nothing.
+ * Give back what a crashed earlier attempt of this "yes" reserved, when the
+ * retry executes nothing (G-23).
  *
- * Exactly once, and only when owed:
- *   - Inside the JOB's transaction, not a standalone one: it commits only
- *     with the attempt that sends the answer, so a retry that dies after it
- *     gives nothing back and the next one decides again. Never twice.
- *   - Only when the window was still open when the "yes" arrived. Otherwise
- *     attempt 1 found it expired before metering anything, and nothing is
- *     owed. Whether an attempt that could meter actually got that far is not
- *     recorded, so that one case errs towards the merchant, as the retry
- *     rule does: at worst one unit uncounted.
- *   - Into the month the attempt metered in: metering is dated by the
- *     message's arrival too (`usagePeriod(receivedAt)` below).
+ * A confirmation meters in its own committed transaction, recording each
+ * unit on the message in that same transaction (`noteReservedUnit`), and a
+ * retry never meters again. If the retry then executes nothing (the window
+ * closed, a correction superseded the draft, another "yes" confirmed it),
+ * exactly the recorded units go back, read and cleared in the JOB's
+ * transaction: the refund commits only with the attempt that answers, so a
+ * retry that dies gives nothing back and leaves the record for the next.
+ * Facts, not inference: nothing is refunded that was not reserved, nothing
+ * twice. The month is the message's arrival month, which is the month it
+ * metered in.
  */
-async function refundFirstAttempt(
+async function refundRecordedReservations(
   tx: TenantDb,
   businessId: string,
-  command: unknown,
+  eventId: string,
   period: string,
 ): Promise<void> {
-  const intent = (command as { intent?: string } | null)?.intent;
-  if (intent === 'RecordSale' || intent === 'RecordPayment' || intent === 'RecordOrder') {
-    await usageRepo.refundUnit(tx, businessId, period, 'DOCUMENT_GENERATION');
+  const units = await events.takeReservedUnits(tx, businessId, eventId);
+  for (const unit of units) {
+    await usageRepo.refundUnit(tx, businessId, period, unit as UsageUnit);
   }
-  if (intent === 'RecordOrder') {
-    await usageRepo.refundUnit(tx, businessId, period, 'CATALOGUE_ORDERS');
-  }
-}
-
-/**
- * Whether a RETRY of this "yes" owes back what its first attempt metered
- * (G-23): the draft the yes was sent for was still open when it arrived, and
- * something else moved it after (a later message expired it, a correction or
- * a retired question superseded it, another "yes" confirmed it), so this yes
- * will execute nothing. Attempt 1 metered in its own committed transaction
- * and a retry never meters again, so without this the unit is spent on
- * nothing. Moved after arrival: superseded or cancelled BEFORE the yes came,
- * the draft was never this yes's to meter for.
- */
-function retryOwesRefund(
-  retrying: boolean,
-  latest: { state: string; expiresAt: Date; updatedAt: Date } | null,
-  receivedAt: Date,
-): boolean {
-  if (!retrying || !latest) return false;
-  if (!['expired', 'superseded', 'confirmed'].includes(latest.state)) return false;
-  return (
-    latest.expiresAt.getTime() > receivedAt.getTime() &&
-    latest.updatedAt.getTime() > receivedAt.getTime()
-  );
 }
 
 async function confirmPendingDraft(
@@ -1474,6 +1446,8 @@ async function confirmPendingDraft(
   retrying: boolean,
   /** When the "yes" reached Rekoda: the instant its window is judged at. */
   receivedAt: Date,
+  /** The stored event this "yes" came in on, where its reservations are recorded. */
+  eventId: string,
 ): Promise<Reply | null> {
   /*
    * G-61: the last thing the merchant was shown may be a purchase question
@@ -1509,8 +1483,8 @@ async function confirmPendingDraft(
      * message that closed it: nothing executes, and whatever unit the first
      * attempt took for this request goes back. Erring towards the merchant,
      * as the retry rule above does. */
-    if (retryOwesRefund(retrying, latest, receivedAt)) {
-      await refundFirstAttempt(tx, businessId, latest.command, usagePeriod(receivedAt));
+    if (retrying) {
+      await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
     }
     return expiredAnswer(latest.command, latest.previewed, 'yes') ?? replies.nothingToConfirm();
   }
@@ -1524,8 +1498,8 @@ async function confirmPendingDraft(
      * it from this one, which cannot be agreement to what it had not seen. */
     /* A retry whose draft was superseded or confirmed while it waited
      * executes nothing either: what its first attempt metered goes back. */
-    if (latest && retryOwesRefund(retrying, latest, receivedAt)) {
-      await refundFirstAttempt(tx, businessId, latest.command, usagePeriod(receivedAt));
+    if (retrying) {
+      await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
     }
     const since = await conversationsRepo.pendingDraft(tx, businessId);
     return since?.previewed ? replies.previewAwaitingYes() : replies.nothingToConfirm();
@@ -1572,9 +1546,27 @@ async function confirmPendingDraft(
    * nothing about the branch would look wrong. Reading the counters at call
    * time rather than choosing per branch makes that class of bug unwritable.
    */
+  const giveBack = (unit: UsageUnit) =>
+    withBusiness(deps.db, businessId, async (own) => {
+      await usageRepo.refundUnit(own, businessId, period, unit);
+      await events.releaseReservedUnit(own, businessId, eventId, unit);
+    });
   const refundReserved = async (): Promise<void> => {
-    if (documentTaken) await refundDocument(deps, businessId, period);
-    if (orderTaken) await refundOrder(deps, businessId, period);
+    /* A retry took nothing itself; what an earlier attempt took is on the
+     * message (G-23). */
+    if (retrying) {
+      await refundRecordedReservations(tx, businessId, eventId, period);
+      return;
+    }
+    /* Each unit at most once, however many exits call this. */
+    if (documentTaken) {
+      documentTaken = false;
+      await giveBack('DOCUMENT_GENERATION');
+    }
+    if (orderTaken) {
+      orderTaken = false;
+      await giveBack('CATALOGUE_ORDERS');
+    }
   };
   if (issuesDocument && !retrying) {
     const plan = await usageRepo.planFor(tx, businessId);
@@ -1590,9 +1582,18 @@ async function confirmPendingDraft(
       plan,
       'DOCUMENT_GENERATION',
     );
-    const granted = await withBusiness(deps.db, businessId, (own) =>
-      usageRepo.consumeUnit(own, businessId, period, 'DOCUMENT_GENERATION', allowance),
-    );
+    /* The reservation is recorded with the consume, in its transaction. */
+    const granted = await withBusiness(deps.db, businessId, async (own) => {
+      const ok = await usageRepo.consumeUnit(
+        own,
+        businessId,
+        period,
+        'DOCUMENT_GENERATION',
+        allowance,
+      );
+      if (ok) await events.noteReservedUnit(own, businessId, eventId, 'DOCUMENT_GENERATION');
+      return ok;
+    });
     if (!granted) return replies.allowanceExhausted(allowance, 'DOCUMENT_GENERATION');
     documentTaken = true;
 
@@ -1620,9 +1621,17 @@ async function confirmPendingDraft(
         plan,
         'CATALOGUE_ORDERS',
       );
-      const orderGranted = await withBusiness(deps.db, businessId, (own) =>
-        usageRepo.consumeUnit(own, businessId, period, 'CATALOGUE_ORDERS', orderAllowance),
-      );
+      const orderGranted = await withBusiness(deps.db, businessId, async (own) => {
+        const ok = await usageRepo.consumeUnit(
+          own,
+          businessId,
+          period,
+          'CATALOGUE_ORDERS',
+          orderAllowance,
+        );
+        if (ok) await events.noteReservedUnit(own, businessId, eventId, 'CATALOGUE_ORDERS');
+        return ok;
+      });
       if (!orderGranted) {
         await refundReserved();
         return replies.allowanceExhausted(orderAllowance, 'CATALOGUE_ORDERS');
@@ -2617,7 +2626,7 @@ async function interpretedReply(
     const product = await stockRepo.productByName(tx, businessId, command.productMention);
     const gate = gateStockChange(command, product?.onHand ?? 0);
     if (gate.gate === 'CG2' && gate.quantityDelta < 0) {
-      await deps.commandBus.riskPolicy.ask(tx, {
+      const asked = await deps.commandBus.riskPolicy.ask(tx, {
         businessId,
         command: 'AdjustInventory',
         subject: `draft:${draft.id}`,
@@ -2627,6 +2636,9 @@ async function interpretedReply(
         reason: 'stock written off by merchant count',
         context: { destructive: true },
       });
+      /* The draft's window, exactly, on the database clock, never this
+       * host's (G-23): a yes inside one is inside the other. */
+      await riskRepo.alignConfirmationWithDraft(tx, businessId, asked.id, draft.id);
     }
   }
 

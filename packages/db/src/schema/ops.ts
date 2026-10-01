@@ -145,6 +145,15 @@ export const externalEvents = pgTable(
     resolvedBy: text('resolved_by'),
     /** What they decided. Never overwrites `error`, which is why it was flagged. */
     resolution: text('resolution'),
+    /**
+     * Metered units a "yes" carried in this message reserved, recorded with
+     * the consume (migration 0153, G-23), so a retry that executes nothing
+     * refunds exactly these. Unit names only.
+     */
+    reservedUnits: text('reserved_units')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     createdAt: createdAt(),
   },
   (t) => [

@@ -64,3 +64,13 @@ ALTER TABLE command_drafts
   ALTER COLUMN expires_at SET DEFAULT (clock_timestamp() + interval '300 seconds');
 
 ALTER TABLE command_drafts ADD COLUMN previewed boolean NOT NULL DEFAULT false;
+
+-- The metered units a "yes" reserved, recorded on the message that spent
+-- them, in the SAME committed transaction as the consume. A confirmation
+-- meters in its own transaction (a rollback must not hand units back that
+-- were genuinely spent), so a job that then fails leaves them spent; its
+-- retry never meters again, and when it executes nothing it refunds exactly
+-- what is recorded here and clears it, inside the job's own transaction.
+-- Facts, not inference: no unit is refunded that was not reserved, none
+-- twice. Unit names only; nothing about the message or the merchant.
+ALTER TABLE external_events ADD COLUMN reserved_units text[] NOT NULL DEFAULT '{}';

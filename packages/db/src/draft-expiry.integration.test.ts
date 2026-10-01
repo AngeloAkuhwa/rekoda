@@ -286,7 +286,7 @@ describe('a redelivered message never reopens a window', () => {
         now: new Date(OPENED.getTime() + 2 * 86_400_000),
       }),
     );
-    expect(replayed).toEqual({ id: first.id, isNew: false });
+    expect(replayed).toMatchObject({ id: first.id, isNew: false });
     expect((await rowOf(first.id)).expires_at.toISOString()).toBe(CLOSES.toISOString());
     /* And so a claim two days later is still refused. */
     expect(await claim(businessId, first.id, at(2 * 86_400_000))).toEqual({ outcome: 'expired' });
@@ -387,7 +387,8 @@ describe('the migration, run as it ships, against drafts written before it', () 
           ALTER TABLE command_drafts ADD CONSTRAINT command_drafts_state_check
             CHECK (state IN ('pending', 'superseded', 'confirmed', 'abandoned'));
           ALTER TABLE command_drafts DROP COLUMN expires_at;
-          ALTER TABLE command_drafts DROP COLUMN previewed;`);
+          ALTER TABLE command_drafts DROP COLUMN previewed;
+          ALTER TABLE external_events DROP COLUMN reserved_units;`);
         for (const [i, [state, createdAt]] of seeded.entries()) {
           await tx`
             INSERT INTO command_drafts
