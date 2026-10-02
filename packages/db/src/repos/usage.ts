@@ -167,3 +167,29 @@ export async function planFor(tx: TenantDb, businessId: string, now = new Date()
   if (!row.plan_expires_at) return 'trial';
   return new Date(row.plan_expires_at) <= now ? 'expired' : 'trial';
 }
+
+/**
+ * WHY `planFor` answers `expired`, for the sentence that says so (G-65).
+ *
+ * Two different facts read the same to the gate: a trial past its date
+ * (stored as `trial`, the clock above makes it `expired`), and a paid plan
+ * that lapsed, which the renewal path stores as `expired` itself. Telling a
+ * merchant who paid for months that their "free trial has ended" is untrue,
+ * so the reply asks. Null when the plan has not lapsed.
+ */
+export async function lapseOf(
+  tx: TenantDb,
+  businessId: string,
+  now = new Date(),
+): Promise<'trial' | 'plan' | null> {
+  const rows = await tx.execute<{ plan: string; plan_expires_at: string | null }>(sql`
+    SELECT plan, plan_expires_at FROM businesses WHERE id = ${businessId}::uuid
+  `);
+  const row = [...rows][0];
+  if (!row) return null;
+  if (row.plan === 'expired') return 'plan';
+  if (row.plan === 'trial' && row.plan_expires_at && new Date(row.plan_expires_at) <= now) {
+    return 'trial';
+  }
+  return null;
+}

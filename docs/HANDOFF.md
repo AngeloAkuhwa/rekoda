@@ -101,8 +101,10 @@ representable in Build 6; Build 7 (#259) makes it so with migration 0155.
 Build 6's note was: Build 7 must widen the `expects` CHECK in a new migration
 and answer it through a separate write path that shows a FRESH purchase
 preview, never by executing the retired draft. Resumed reads are free (no
-`AI_ACTIONS` unit) and not plan- or entitlement-gated, like the other free
-reads; each re-opens the 600-second window. Retired rows persist (opaque
+`AI_ACTIONS` unit); as built in Build 6 they were not plan- or
+entitlement-gated, which Build 8 (G-65) changed: they now follow `records`,
+refused to a live plan without Chat and kept on a lapsed one. Each re-opens
+the 600-second window. Retired rows persist (opaque
 tokens and enums only) until the business is deleted. A Query's draft is no
 longer what a "yes", "no" or correction is about (erasure, expiry and
 supersession still count it), but a "yes" never reaches past a read: after a
@@ -125,6 +127,37 @@ retires the question and goes to the model today; consider keeping the
 question open with `periodNotCountable` instead. After
 merge, on staging: ask "how much did I sell?", answer "last month", check the
 figure; a delegate's "last month" must not answer the owner's question.
+
+**In review (1 Oct 2026, Build 8, G-65; CODE COMPLETE, staging acceptance
+pending; draft PR):** branch `fix/g65-deterministic-chat-entitlement` off
+`main` at `3612fcf` (Build 6, #260). Router-served commands no longer skip
+the plan: `packages/core/src/chat-access.ts` classifies every deterministic
+intent, and the handler checks it after routing and before the command
+runs, in the model path's order (lapsed plan, then `REKODA_CHAT`). STOP,
+START, erasure, the dashboard link, help and upgrade work on every plan;
+`who owes me`, `records`, `stock`, `payment details` and `remind` need Chat
+on a live plan and stay open on a lapsed one; `resend` is refused on both;
+a "yes" to a Chat draft is refused without Chat (the draft stays pending),
+"no" and "cancel" never are, and a yes between two erasure asks still keeps
+the data. This supersedes Build 6's "resumed reads are not plan- or
+entitlement-gated": a resumed read now follows `records`. The matrix is in
+`REKODA_CURRENT_STATE.md` §5.7. A refused "yes" opens "I did not save
+that."; a lapsed paid plan is told its plan ended, never a free trial, on every
+Chat surface (`usageRepo.lapseOf`); on a plan without Chat, help,
+greetings, START, a stray number, an empty yes and a failed dashboard link
+name only what works. OD-17 (open): whether a live Integrate
+plan may use the three free reads by message; implemented as refused.
+OD-18 (open): the lapse exception, where a lapsed plan keeps five fixed reads
+its free-form equivalent is refused and `capabilities.ts` disagrees;
+implemented as kept. G-82 to G-84 record the voice, timing and model-path
+copy edges found in review (G-81 is the duplicate-purchase lane's). Rebased
+onto Build 7 (#259, `f5ef123`) on 2 Oct 2026: its questioned yes (`unsure`) is
+conversation control, and its funding answer, re-asked question and
+closed-question replies meet the same draft boundary as a yes. After merge,
+on staging: on an Integrate
+plan `who owes me` and `resend` get the Chat-plan reply and nothing is sent;
+on a lapsed trial `resend` gets the trial-ended reply while `who owes me`
+still answers; STOP and erasure work on both.
 
 **G-77 (#254), for the record:** every public API sale is its own financial
 event (its `sourceId` is an opaque per-request id, never the application

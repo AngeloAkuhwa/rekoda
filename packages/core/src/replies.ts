@@ -214,6 +214,179 @@ export function chatNotInPlan(): Reply {
   );
 }
 
+/**
+ * A merchant on the Integrate plan sent a fixed Chat command: *who owes me*,
+ * *stock*, *records*, *payment details*, a reminder or *resend* (G-65).
+ *
+ * Not `chatNotInPlan`, whose first sentence is about recording: "who owes
+ * me" records nothing, and a refusal that names the wrong thing reads as a
+ * bug. Same promise as that reply and as the dashboard's own refusal: the
+ * figures they asked for are on their dashboard, which every plan keeps.
+ */
+export function chatCommandNotInPlan(): Reply {
+  return reply(
+    'That is part of the Chat plan, the way you talk to Rekoda about your business. ' +
+      'Your Integrate shop is still working, and your dashboard still shows every record. ' +
+      'Nothing here was lost.\n\n' +
+      'Reply *upgrade* to add Chat and keep one set of books for both.',
+  );
+}
+
+/**
+ * A "yes" to a Chat preview, on a plan without Chat (G-65). The first words
+ * say nothing was saved: "nothing here was lost" after a yes reads as "it
+ * went through", and the merchant would walk away believing a sale was
+ * booked. Upgrading is done by a person and a preview lapses in minutes, so
+ * the honest next step is to send the entry again once Chat is added.
+ */
+export function notSavedNotInPlan(): Reply {
+  return reply(
+    'I did not save that. Recording by message is part of the Chat plan, and your plan ' +
+      'does not include it. Your Integrate shop and your dashboard are still working.\n\n' +
+      'Reply *upgrade* to add Chat, then send the entry again.',
+  );
+}
+
+/**
+ * What still works after a lapse, for THIS member (G-65): *payment details*
+ * sends in the business's name, so a view-only member is not offered it.
+ * The default is the sentence every owner and delegate has always read.
+ */
+function lapsedStillWorks(transacts: boolean): string {
+  return transacts
+    ? '*who owes me*, *records*, *payment details* and your dashboard all still work.'
+    : '*who owes me*, *records* and your dashboard all still work.';
+}
+
+/** Which kind of lapse a sentence is about: a free trial, or a paid plan. */
+export type Lapse = 'trial' | 'plan';
+
+function lapsedOpening(lapse: Lapse): string {
+  return lapse === 'trial' ? 'Your 30-day free trial has ended' : 'Your Rekoda plan has ended';
+}
+
+/** A "yes" to a Chat preview after the plan lapsed (G-65): nothing was saved. */
+export function notSavedPlanEnded(lapse: Lapse): Reply {
+  return reply(
+    `I did not save that. ${lapsedOpening(lapse)}, so new records are paused. ` +
+      'Everything you recorded before is still yours, and your dashboard still works.\n\n' +
+      'Reply *upgrade* and we will set you up, then send the entry again.',
+  );
+}
+
+/**
+ * `trialEnded` for a merchant whose PAID plan lapsed (G-65). A business that
+ * paid for months is not on a "free trial", and the renewal path stores
+ * their lapse as the same `expired` plan a trial reaches.
+ */
+export function planEnded(transacts = true): Reply {
+  return reply(
+    'Your Rekoda plan has ended. Everything you recorded is still yours: ' +
+      `${lapsedStillWorks(transacts)}\n\n` +
+      'Reply *upgrade* to keep recording and we will set you up.',
+  );
+}
+
+/**
+ * `help` and `greeting` for a plan without Chat (G-65). The ordinary ones
+ * list Chat commands, every one of which such a plan is refused, and a list
+ * of doors that are all locked is a loop. These name only what works.
+ * A `lapse` adds the reads a lapsed plan keeps.
+ *
+ * Only what THIS member can run is named, by role as well as by plan: the
+ * reads, the dashboard link and *upgrade* work for every member; *payment
+ * details* sends in the business's name, so only a member who may transact
+ * (owner or delegate) is offered it; *delete my data* works for the owner
+ * alone.
+ */
+export interface HelpMember {
+  /** The business's owner, the only member erasure works for. */
+  readonly owner: boolean;
+  /** An owner or a delegate: may send in the business's name. */
+  readonly transacts: boolean;
+}
+
+export function helpWithoutChat(lapse: Lapse | null, member: HelpMember): Reply {
+  return reply(
+    (lapse
+      ? `${lapsedOpening(lapse)}, so new records are paused. Here is what still works:\n\n` +
+        (member.transacts
+          ? '• *who owes me*, *records*, *stock* and *payment details*\n'
+          : '• *who owes me*, *records* and *stock*\n')
+      : 'Your plan does not include Rekoda Chat, so I cannot record or answer questions ' +
+        'by message. Here is what still works:\n\n') +
+      '• *dashboard* sends a link to your books on the web\n' +
+      (lapse
+        ? '• *upgrade* and we will set you up to keep recording\n'
+        : '• *upgrade* asks us to add Chat to your plan\n') +
+      (member.owner ? "• *delete my data* permanently deletes your customers' details\n" : '') +
+      '\n' +
+      'Reply *STOP* at any time to stop messages.',
+  );
+}
+
+export function greetingWithoutChat(lapse: Lapse | null): Reply {
+  return reply(
+    `Hello 👋 ${
+      lapse
+        ? `${lapsedOpening(lapse)}, so new records are paused.`
+        : 'Your plan does not include Rekoda Chat, so I cannot record by message.'
+    } Your books are still yours on your dashboard.\n\n` + 'Type *help* to see what still works.',
+  );
+}
+
+/**
+ * `dashboardUnavailable` for a plan without Chat (G-65): the ordinary one
+ * offers *records* instead, which such a plan is refused.
+ */
+export function dashboardUnavailableWithoutChat(): Reply {
+  return reply(
+    'I cannot open your books on the web just now. Please send *dashboard* again in a ' +
+      'few minutes.',
+  );
+}
+
+/**
+ * `optedIn`, `strayNumber` and `nothingToConfirm` for a plan without Chat
+ * (G-65). The ordinary ones invite the merchant to tell Rekoda a sale,
+ * which such a plan is then refused. These point at *help*, which names
+ * only what works.
+ */
+export function optedInWithoutChat(): Reply {
+  return reply(
+    'Welcome back 👋 You will hear from me again. Type *help* to see what works on your plan.',
+  );
+}
+
+export function strayNumberWithoutChat(): Reply {
+  return reply(
+    'I am not sure what that number is for. Type *help* to see what works on your plan.',
+  );
+}
+
+/** `nothingToDecline` for a plan without Chat (G-65): no invitation to a sale. */
+export function nothingToDeclineWithoutChat(): Reply {
+  return reply(
+    'Nothing is waiting for a yes or no. Anything already saved is still saved. ' +
+      'Type *help* to see what works on your plan.',
+  );
+}
+
+/**
+ * `optionChosen` for a live plan without Chat (G-65): it suggests *remind*,
+ * which such a plan is refused.
+ */
+export function optionChosenWithoutChat(invoiceNumber: string): Reply {
+  return reply(
+    `You picked ${invoiceNumber}. It is on your dashboard, and *help* shows what works ` +
+      'on your plan.',
+  );
+}
+
+export function nothingToConfirmWithoutChat(): Reply {
+  return reply('There is nothing waiting for a yes. Type *help* to see what works on your plan.');
+}
+
 export function allowanceExhausted(allowance: number, unit: UsageUnit = 'AI_ACTIONS'): Reply {
   return reply(
     `You have used all ${allowance} ${UNIT_WORDS[unit]} in your plan this month. ` +
@@ -351,10 +524,10 @@ const UNIT_WORDS: Record<UsageUnit, string> = {
  * what ended is the free recording. Reading is never gated, so the free
  * commands are named rather than implied.
  */
-export function trialEnded(): Reply {
+export function trialEnded(transacts = true): Reply {
   return reply(
     'Your 30-day free trial has ended. Everything you recorded is still yours: ' +
-      '*who owes me*, *records*, *payment details* and your dashboard all still work.\n\n' +
+      `${lapsedStillWorks(transacts)}\n\n` +
       'Reply *upgrade* to keep recording and we will set you up.',
   );
 }

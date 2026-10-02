@@ -36,6 +36,12 @@ import {
   type FundingSource,
   periodAnswer,
   resumedRead,
+  chatDraftAccess,
+  deterministicAccess,
+  needsChatStanding,
+  resumedReadAccess,
+  type ChatAccess,
+  type ChatStanding,
   type AiModelRole,
   type AnsweredPeriod,
   type ContinuationState,
@@ -655,7 +661,11 @@ async function readReceiptPhoto(
 
   const plan = await usageRepo.planFor(tx, businessId);
   if (plan === 'expired') {
-    await deps.replySender.send(tx, { businessId, to: inbound.from, reply: replies.trialEnded() });
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: await lapsedReply(tx, businessId, inbound.from),
+    });
     return null;
   }
 
@@ -853,7 +863,11 @@ async function transcribeVoiceNote(
 
   const plan = await usageRepo.planFor(tx, businessId);
   if (plan === 'expired') {
-    await deps.replySender.send(tx, { businessId, to: inbound.from, reply: replies.trialEnded() });
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: await lapsedReply(tx, businessId, inbound.from),
+    });
     return null;
   }
 
@@ -1104,16 +1118,39 @@ async function deterministicReply(
   intent: DeterministicIntent,
   ctx: CommandContext,
 ): Promise<Reply | null> {
+  /* G-65: routed, then entitled, then run. A fixed phrase skips the model,
+   * never the product: "who owes me" is the same Chat capability whether the
+   * router or the model understood it, so it meets the same boundary before
+   * its handler reads, sends, mints or enqueues anything. Consent, erasure,
+   * the dashboard and upgrade are not Chat and are not asked (core
+   * `DETERMINISTIC_ACCESS` holds the matrix); a "yes" is judged by the draft
+   * it would confirm, in `confirmPendingDraft`. */
+  if (needsChatStanding(intent.kind)) {
+    const access = deterministicAccess(intent.kind, await chatStandingOf(tx, businessId));
+    if (access !== 'allow') return chatRefusal(tx, businessId, access, { command: ctx.from });
+  }
+
   /* The yes is the moment a draft becomes a document, so it carries the same
    * role rule as making the draft: view-only members confirm nothing, not
    * even a draft the owner parked. */
   if (intent.kind === 'affirm') {
     if (!(await mayTransact(tx, businessId, ctx.from))) return replies.viewOnlyRole();
-    return confirmPendingDraft(deps, tx, businessId, ctx.retrying, ctx.receivedAt, ctx.eventId, {
-      messageId: ctx.messageId,
-      from: ctx.from,
-      receivedAt: ctx.receivedAt,
-    });
+    const answer = await confirmPendingDraft(
+      deps,
+      tx,
+      businessId,
+      ctx.retrying,
+      ctx.receivedAt,
+      ctx.eventId,
+      { messageId: ctx.messageId, from: ctx.from, receivedAt: ctx.receivedAt },
+    );
+    /* G-65: "nothing waiting for a yes" goes on to invite a sale, which a
+     * plan without Chat is refused. It is answered from several places in
+     * `confirmPendingDraft`, all of them read-only, so it is swapped here. */
+    if (answer?.text === replies.nothingToConfirm().text && (await withoutChat(tx, businessId))) {
+      return replies.nothingToConfirmWithoutChat();
+    }
+    return answer;
   }
   if (intent.kind === 'deny' || intent.kind === 'cancel') {
     // A refusal after a preview discards the draft rather than leaving it to
@@ -1157,7 +1194,12 @@ async function deterministicReply(
      * waiting (G-68). A "no" to the funding question closed its retired
      * draft above, so it answers "Cancelled." as before. */
     if (ctx.retiredQuestion) return replies.questionLeft();
-    return intent.kind === 'cancel' ? replies.nothingToCancel() : replies.nothingToDecline();
+    /* `nothingToCancel` invites nothing; `nothingToDecline` invites a sale,
+     * so a plan without Chat gets its own (G-65). */
+    if (intent.kind === 'cancel') return replies.nothingToCancel();
+    return (await withoutChat(tx, businessId))
+      ? replies.nothingToDeclineWithoutChat()
+      : replies.nothingToDecline();
   }
 
   switch (intent.kind) {
@@ -1167,17 +1209,30 @@ async function deterministicReply(
         from: ctx.from,
         receivedAt: ctx.receivedAt,
       });
-    case 'greeting':
-      return replies.greeting();
-    case 'help':
-      return replies.help();
+    /* G-65: the ordinary greeting and help list Chat commands. A plan
+     * without Chat is refused every one of them, so it is told what works. */
+    case 'greeting': {
+      const without = await withoutChat(tx, businessId);
+      return without ? replies.greetingWithoutChat(without.lapse) : replies.greeting();
+    }
+    case 'help': {
+      const without = await withoutChat(tx, businessId);
+      return without
+        ? replies.helpWithoutChat(without.lapse, {
+            owner: await isOwner(tx, businessId, ctx.from),
+            transacts: await mayTransact(tx, businessId, ctx.from),
+          })
+        : replies.help();
+    }
     case 'stop':
       // The fact first, the sentence second: every proactive send checks this.
       await recordConsent(deps.db, ctx.from, new Date());
       return replies.optedOut();
     case 'start':
       await recordConsent(deps.db, ctx.from, null);
-      return replies.optedIn();
+      /* G-65: the ordinary welcome invites a sale; a plan without Chat is
+       * pointed at what works instead. */
+      return (await withoutChat(tx, businessId)) ? replies.optedInWithoutChat() : replies.optedIn();
     case 'delete_my_data': {
       /* Owner only. This deletes every customer's contact details for the
        * whole business in one irreversible statement, which is not a thing an
@@ -1309,7 +1364,9 @@ async function deterministicReply(
       return replies.confirmErasure(discarded);
     }
     case 'number':
-      return replies.strayNumber();
+      return (await withoutChat(tx, businessId))
+        ? replies.strayNumberWithoutChat()
+        : replies.strayNumber();
     case 'debtors': {
       // Answered from the same SQL the dashboard uses. Invoice numbers, not
       // customer names: this text crosses WhatsApp in the clear.
@@ -1343,7 +1400,7 @@ async function deterministicReply(
        * stranger path elsewhere; a delegate gets a delegate's session. A link
        * can never carry more access than the sender already had. */
       const member = await identity.memberByPhone(tx, businessId, normalisePhone(ctx.from));
-      if (!member) return replies.dashboardUnavailable();
+      if (!member) return dashboardUnavailable(tx, businessId);
 
       const url = await mintDashboardLink({
         db: deps.db,
@@ -1351,7 +1408,7 @@ async function deterministicReply(
         userId: member.userId,
         businessId,
       });
-      return url ? replies.dashboardLink(url, LINK_MINUTES) : replies.dashboardUnavailable();
+      return url ? replies.dashboardLink(url, LINK_MINUTES) : dashboardUnavailable(tx, businessId);
     }
     case 'records': {
       // The same SQL the dashboard overview runs — totals only, no customer.
@@ -1403,6 +1460,86 @@ async function isOwner(tx: TenantDb, businessId: string, from: string): Promise<
   } catch {
     return false;
   }
+}
+
+/**
+ * The plan and whether it holds `REKODA_CHAT`, resolved the way the model
+ * path resolves them (G-65): the effective entitlements (plan, explicit
+ * grants and add-ons together) and the effective plan, `expired` for a
+ * lapsed trial or a lapsed paid plan. Read only; asks nothing of a provider.
+ */
+async function chatStandingOf(tx: TenantDb, businessId: string): Promise<ChatStanding> {
+  const refusal = await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_CHAT');
+  if (refusal) return { plan: refusal.plan, holdsChat: false };
+  return { plan: await usageRepo.planFor(tx, businessId), holdsChat: true };
+}
+
+/**
+ * The sentence a refused Chat request gets, and nothing else happens.
+ *
+ * A refused "yes" says first that nothing was saved: anything softer after
+ * a yes reads as "it went through". A lapsed plan is told which lapse it is,
+ * because a merchant whose PAID plan lapsed is not on a "free trial"
+ * (`lapseOf`). A refused command gets `chatCommandNotInPlan` on Integrate,
+ * since most commands record nothing and `chatNotInPlan` opens with
+ * recording.
+ */
+async function chatRefusal(
+  tx: TenantDb,
+  businessId: string,
+  access: Exclude<ChatAccess, 'allow'>,
+  /* A command names its sender: the lapse sentence lists what still works
+   * for them. A refused yes names no command and needs none. */
+  asked: { command: string } | 'draft',
+): Promise<Reply> {
+  if (access === 'chat_not_in_plan') {
+    return asked === 'draft' ? replies.notSavedNotInPlan() : replies.chatCommandNotInPlan();
+  }
+  if (asked !== 'draft') return lapsedReply(tx, businessId, asked.command);
+  return replies.notSavedPlanEnded((await usageRepo.lapseOf(tx, businessId)) ?? 'trial');
+}
+
+/**
+ * What a lapsed plan is told (G-65): `trialEnded` for a trial past its date,
+ * `planEnded` for a paid plan that lapsed. The same refusal either way; only
+ * the sentence is chosen, so a merchant who paid for months is never told
+ * their free trial ended.
+ */
+async function lapsedReply(tx: TenantDb, businessId: string, from: string): Promise<Reply> {
+  /* The sentence names what still works, so it names it for this member:
+   * a view-only member is not offered *payment details*, which refuses them. */
+  const transacts = await mayTransact(tx, businessId, from);
+  return (await usageRepo.lapseOf(tx, businessId)) === 'plan'
+    ? replies.planEnded(transacts)
+    : replies.trialEnded(transacts);
+}
+
+/**
+ * Null when this business can use Chat; otherwise which lapse, if any, is
+ * the reason (G-65). For copy only: the help and greeting a plan without
+ * Chat gets must not point at commands it is refused.
+ */
+async function withoutChat(
+  tx: TenantDb,
+  businessId: string,
+): Promise<{ lapse: replies.Lapse | null } | null> {
+  const access = chatDraftAccess(await chatStandingOf(tx, businessId));
+  if (access === 'allow') return null;
+  return {
+    lapse: access === 'plan_lapsed' ? ((await usageRepo.lapseOf(tx, businessId)) ?? 'trial') : null,
+  };
+}
+
+/**
+ * The dashboard link could not be made. The ordinary sentence offers
+ * *records* instead, which a live plan without Chat is refused (G-65); a
+ * lapsed plan keeps *records*, so it keeps the ordinary sentence.
+ */
+async function dashboardUnavailable(tx: TenantDb, businessId: string): Promise<Reply> {
+  const without = await withoutChat(tx, businessId);
+  return without && without.lapse === null
+    ? replies.dashboardUnavailableWithoutChat()
+    : replies.dashboardUnavailable();
 }
 
 /**
@@ -1741,6 +1878,28 @@ async function confirmPendingDraft(
   if (await conversationsRepo.isBehindRetiredQuestion(tx, businessId, draft.id)) {
     return replies.nothingToConfirm();
   }
+  /* G-65: the yes is the moment a Chat draft becomes a record, so it meets
+   * the boundary the message that made it met: before a unit is metered,
+   * before the draft is claimed and before any read below is retired. A
+   * plan that lapsed, or switched to Integrate, between the preview and the
+   * yes records nothing and changes nothing. The draft is left pending only
+   * because a refusal must change nothing (a "no" can still cancel it); it
+   * lapses with its window, and since an upgrade is done by a person, the
+   * reply tells the merchant nothing was saved and to send it again. A
+   * parked erasure ask is not Chat: a yes to it must still keep the data and
+   * break the two-ask pair below, on every plan. */
+  if (draft.intent !== 'EraseData') {
+    const access = chatDraftAccess(await chatStandingOf(tx, businessId));
+    if (access !== 'allow') {
+      /* Nothing executes, so what an earlier attempt of this message
+       * reserved goes back, as on every other exit that records nothing. */
+      if (retrying) {
+        await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
+      }
+      return chatRefusal(tx, businessId, access, 'draft');
+    }
+  }
+
   /* Build 6: a question to the books asked SINCE this draft means the
    * merchant was last looking at an answer, and "correct" may be about the
    * figure. Never claimed from this yes.
@@ -1829,12 +1988,10 @@ async function confirmPendingDraft(
     }
   };
   if (issuesDocument && !retrying) {
+    /* A plan that lapsed between the preview and the yes never reaches
+     * here: the G-65 gate above refuses it with its own sentence, before
+     * any unit is metered. */
     const plan = await usageRepo.planFor(tx, businessId);
-    /* A trial that lapsed between the preview and the yes is its own
-     * sentence. The allowance path would refuse correctly and say "you have
-     * used all 0 invoices this month", which is true of the number and
-     * useless about the reason. */
-    if (plan === 'expired') return replies.trialEnded();
     const allowance = await meterAllowance(
       deps.config,
       tx,
@@ -2667,6 +2824,23 @@ async function unsureReply(
     return replies.erasureKept();
   }
 
+  /* G-65: every answer below invites a plain yes (or re-asks a question a
+   * "bank" answers), which a plan without Chat is then refused. Such a plan
+   * is told nothing was saved when something was waiting, and pointed at
+   * what works when nothing was. */
+  if (await withoutChat(tx, businessId)) {
+    const waiting = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
+      asOf: receivedAt,
+    });
+    const live =
+      waiting?.state === 'abandoned' ||
+      waiting?.state === 'expired' ||
+      (await conversationsRepo.pendingDraftToAnswer(tx, businessId, { asOf: receivedAt })) !== null;
+    return live
+      ? ((await draftRefusalWithoutChat(tx, businessId)) ?? replies.nothingToConfirmWithoutChat())
+      : replies.nothingToConfirmWithoutChat();
+  }
+
   const latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, { asOf: receivedAt });
   if (latest?.state === 'abandoned') {
     return (
@@ -2708,6 +2882,11 @@ async function reaskRetiredQuestion(
   if (retired.state !== 'abandoned') return null;
   const asked = retired.command as { intent?: string } & Record<string, unknown>;
   if (asked.intent !== 'RecordPurchase') return null;
+  /* G-65: asked again, the question says "Reply *bank* or *cash*" and
+   * re-opens that answer, which a plan without Chat is refused. Such a plan
+   * is told nothing was saved instead, and nothing is re-opened. */
+  const refused = await draftRefusalWithoutChat(tx, businessId);
+  if (refused) return refused;
   /* The short answer is offered, and re-opened, only inside the answer
    * window (F3, OD-19); after it the question offers only "send it again",
    * so it never promises an answer Rekoda will not take. */
@@ -2753,12 +2932,26 @@ async function fundingGateRefusal(
   from: string,
 ): Promise<Reply | null> {
   if (!(await mayTransact(tx, businessId, from))) return replies.viewOnlyRole();
-  const plan = await usageRepo.planFor(tx, businessId);
-  if (plan === 'expired') return replies.trialEnded();
-  if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_CHAT')) {
-    return replies.chatNotInPlan();
-  }
+  /* G-65: the lapse, then the Chat entitlement, as before, decided by the
+   * same draft boundary a yes meets. The sentences are Build 7's, except
+   * that a lapse is told which kind it is (`lapsedReply`): a merchant whose
+   * PAID plan lapsed is never told their free trial ended. */
+  const access = chatDraftAccess(await chatStandingOf(tx, businessId));
+  if (access === 'plan_lapsed') return lapsedReply(tx, businessId, from);
+  if (access === 'chat_not_in_plan') return replies.chatNotInPlan();
   return null;
+}
+
+/**
+ * Null when this business may make or confirm a Chat draft; otherwise the
+ * refusal a refused yes gets (G-65), which says nothing was saved. Read
+ * only, so it runs before anything is claimed, re-opened or rebuilt: a
+ * question re-asked, or a preview pointed at, would invite a "yes" or a
+ * "bank" this plan is then refused.
+ */
+async function draftRefusalWithoutChat(tx: TenantDb, businessId: string): Promise<Reply | null> {
+  const access = chatDraftAccess(await chatStandingOf(tx, businessId));
+  return access === 'allow' ? null : chatRefusal(tx, businessId, access, 'draft');
 }
 
 /**
@@ -2783,6 +2976,10 @@ async function closedQuestionReply(
   /** The account the member just named, when the message named one. */
   named?: FundingSource | null,
 ): Promise<Reply> {
+  /* G-65: every answer below points at a "yes" or a resend, which a plan
+   * without Chat is refused; it is told nothing was saved instead. */
+  const refused = await draftRefusalWithoutChat(tx, businessId);
+  if (refused) return refused;
   /* "Waiting" only for the purchase rebuilt from THIS question (0157,
    * `rebuilt_from`), and only when it is what the next yes would actually
    * reach: the newest pending preview, live (its window not closed at this
@@ -2964,7 +3161,11 @@ async function continueConversation(
       await continuationsRepo.retireContinuations(tx, businessId, actorId, now);
       return null;
     }
-    return replies.optionChosen(answer.option.ref.invoiceNumber);
+    /* G-65: the choice suggests *remind*, which a live plan without Chat is
+     * refused; such a plan is pointed at what works instead. */
+    return (await withoutChat(tx, businessId))?.lapse === null
+      ? replies.optionChosenWithoutChat(answer.option.ref.invoiceNumber)
+      : replies.optionChosen(answer.option.ref.invoiceNumber);
   }
 
   /* "Which period?" answered with a window Rekoda cannot count here
@@ -2981,7 +3182,14 @@ async function continueConversation(
     return replies.periodNotCountable(open.state.topic === 'sales_summary' ? 'sales' : 'spending');
   }
 
-  const read = open && answer ? resumedRead(open.state, answer) : null;
+  const fitted = open && answer ? resumedRead(open.state, answer) : null;
+  /* G-65: a resumed read answers a question about the books, the same Chat
+   * capability as `records`, so a plan without Chat does not resume it (a
+   * lapsed plan keeps it, as it keeps `records`). The continuation is
+   * retired and the message goes the ordinary way, which is itself gated:
+   * "last month" reaches the model path and its refusal, unmetered. */
+  const read =
+    fitted && resumedReadAccess(await chatStandingOf(tx, businessId)) === 'allow' ? fitted : null;
   const claimed =
     open && read && isOneShot(open.state)
       ? await continuationsRepo.consumeContinuation(tx, businessId, actorId, open.id, now)
@@ -3287,8 +3495,9 @@ async function interpretedReply(
   const plan = await usageRepo.planFor(tx, businessId);
   /* A lapsed trial is its own sentence, not "you used all 0 messages". The
    * plan carries the fact (allowances are all zero), so the gate below still
-   * refuses; what changes is what the merchant is told. */
-  if (plan === 'expired') return replies.trialEnded();
+   * refuses; what changes is what the merchant is told, and a lapsed PAID
+   * plan is not told its free trial ended (G-65, `lapsedReply`). */
+  if (plan === 'expired') return lapsedReply(tx, businessId, from);
 
   /* ENTITLEMENT BEFORE METER, and before the model is paid for (spec §4.3,
    * rules 1 to 3). An Integrate-only merchant holds the customer-facing half

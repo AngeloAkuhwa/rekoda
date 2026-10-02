@@ -11859,3 +11859,1002 @@ describe('G-68 Codex review: erasure events, emoji, failed rebuild send, gates, 
     expect(await count(business.id, 'expenses')).toBe(0);
   });
 });
+
+describe('Chat entitlement on fixed commands (G-65)', () => {
+  const OWNER = '2348031234567';
+  const REFUSED = replies.chatCommandNotInPlan().text;
+  /* The model path's refusal, unchanged by G-65. */
+  const FREE_FORM_REFUSED = replies.chatNotInPlan().text;
+  /* A refused yes says first that nothing was saved. */
+  const YES_REFUSED = replies.notSavedNotInPlan().text;
+  const LAPSED = replies.trialEnded().text;
+  const YES_LAPSED = replies.notSavedPlanEnded('trial').text;
+  const A_SALE = {
+    intent: 'RecordSale',
+    customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+    items: [{ name: 'wig', quantity: 3, unitPrice: 100_000 }],
+    statedTotal: 300_000,
+    reportedPayment: 0,
+    paymentMethod: 'transfer',
+    discount: null,
+    deliveryFee: null,
+    dueDescription: null,
+  };
+  const AN_EXPENSE = {
+    intent: 'RecordExpense',
+    description: 'fuel for generator',
+    amount: 20_000,
+    category: 'utilities',
+    paymentMethod: 'cash',
+  };
+  const DEBTORS_QUESTION = {
+    intent: 'Query',
+    topic: 'debtors',
+    customer: null,
+    period: null,
+    periodText: null,
+    format: 'chat',
+  };
+  const HOW_MUCH_DID_I_SELL = { ...DEBTORS_QUESTION, topic: 'sales_summary' };
+
+  async function seedMerchant() {
+    const user = await identity.upsertUserByPhone(db, `+${OWNER}`);
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function moveToPlan(businessId: string, plan: 'chat' | 'integrate' | 'complete') {
+    await billingRepo.setPlan(db, { businessId, plan, expiresAt: null, actor: 'operator:g65' });
+  }
+
+  async function lapse(businessId: string) {
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'trial',
+      expiresAt: new Date(Date.now() - 1_000),
+      actor: 'operator:g65',
+    });
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  /**
+   * No inbound message may be left failing. A job that answers and then
+   * rolls back leaves every counted table as it was, so without this a
+   * refusal that crashed after replying would pass as "nothing happened".
+   * (A `document.deliver` of a fixture document with no stored bytes fails
+   * by design and is not this check's business.)
+   */
+  async function expectNoFailedJob() {
+    const [row] = [
+      ...(await workerDb.execute<{ failed: string }>(sql`
+        SELECT count(*) AS failed FROM jobs
+         WHERE kind = 'inbound.message' AND state <> 'done' AND last_error IS NOT NULL`)),
+    ];
+    expect(row?.failed).toBe('0');
+  }
+
+  let seq = 0;
+  async function send(text: string, command?: Record<string, unknown>) {
+    if (command) stubTransport.replyWith(command);
+    await post(messagePayload(OWNER, `wamid.G65-${++seq}`, text));
+    await drain();
+    await expectNoFailedJob();
+    return stubSender.lastText ?? '';
+  }
+
+  /**
+   * Everything a Chat command could have to show for itself: an open
+   * ₦80,000 invoice whose customer has an email (so payment details can
+   * mint), an active payment connection, and a stored document to resend.
+   */
+  async function seedBooks(businessId: string): Promise<string> {
+    const config = deps.config;
+    const customer = await customersRepo.createCustomerWithIdentities(db, businessId, 'X81', [
+      {
+        facet: 'phone',
+        ciphertext: encryptFacet('+2348039998888', config.vaultKey, `${businessId}:phone`),
+        matchKey: matchKeyFor(businessId, 'phone', '+2348039998888', config.matchKey),
+      },
+      {
+        facet: 'email',
+        ciphertext: encryptFacet('adaeze@example.com', config.vaultKey, `${businessId}:email`),
+        matchKey: null,
+      },
+    ]);
+    return withBusiness(db, businessId, async (tx) => {
+      const connection = await paymentsHub.upsertConnection(tx, {
+        businessId,
+        providerType: 'paystack',
+        settlementAccountLast4: '4821',
+      });
+      await paymentsHub.setConnectionState(tx, connection.id, {
+        status: 'active',
+        externalSubaccountId: 'ACCT_g65',
+      });
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: customer.id,
+        customerToken: 'CUSTOMER_X81',
+        items: [{ name: 'gown', quantity: 1, unitPriceK: 8_000_000 }],
+        subtotalK: 8_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 8_000_000,
+        paidK: 0,
+        balanceDueK: 8_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'g65-seed',
+        actor: 'system',
+      });
+      await issueRepo.recordDocument(tx, {
+        businessId,
+        kind: 'invoice_pdf',
+        storageKey: 'test/g65-unguessable',
+        refNumber: sale.invoiceNumber,
+        bytes: 1234,
+      });
+      return sale.invoiceNumber;
+    });
+  }
+
+  /** Every row a Chat command or a yes could write, counted. */
+  async function footprint(businessId: string) {
+    const [row] = [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<Record<string, string>>(sql`
+          SELECT
+            (SELECT count(*) FROM invoices WHERE business_id = ${businessId}::uuid) AS invoices,
+            (SELECT count(*) FROM receipts WHERE business_id = ${businessId}::uuid) AS receipts,
+            (SELECT count(*) FROM payments WHERE business_id = ${businessId}::uuid) AS payments,
+            (SELECT count(*) FROM expenses WHERE business_id = ${businessId}::uuid) AS expenses,
+            (SELECT count(*) FROM inventory_movements
+              WHERE business_id = ${businessId}::uuid) AS stock_moves,
+            (SELECT count(*) FROM ledger_transactions
+              WHERE business_id = ${businessId}::uuid) AS postings,
+            (SELECT count(*) FROM payment_intents
+              WHERE business_id = ${businessId}::uuid) AS intents,
+            (SELECT count(*) FROM jobs WHERE business_id = ${businessId}::uuid
+              AND kind = 'document.deliver') AS deliveries,
+            (SELECT count(*) FROM command_drafts WHERE business_id = ${businessId}::uuid
+              AND state = 'confirmed') AS confirmed,
+            (SELECT COALESCE(sum(used), 0) FROM usage_counters
+              WHERE business_id = ${businessId}::uuid AND unit = 'AI_ACTIONS') AS ai_actions,
+            (SELECT COALESCE(sum(used), 0) FROM usage_counters
+              WHERE business_id = ${businessId}::uuid
+                AND unit = 'DOCUMENT_GENERATION') AS document_credits,
+            /* Every meter, so one added later is covered without editing this. */
+            (SELECT COALESCE(string_agg(unit || '=' || used, ',' ORDER BY unit), '')
+               FROM usage_counters WHERE business_id = ${businessId}::uuid) AS meters,
+            /* Every usage event but the replies' own: each message Rekoda
+             * sends records one SERVICE_MESSAGE, the refusal included. */
+            (SELECT count(*) FROM usage_events WHERE business_id = ${businessId}::uuid
+              AND usage_type <> 'SERVICE_MESSAGE') AS usage_events,
+            (SELECT count(*) FROM usage_events WHERE business_id = ${businessId}::uuid
+              AND usage_type = 'SERVICE_MESSAGE') AS service_messages`),
+      )),
+    ];
+    return { ...row };
+  }
+
+  /**
+   * Nothing moved but the replies: `sent` messages to the merchant, each
+   * recording its own SERVICE_MESSAGE, and every other row and meter as it was.
+   */
+  async function expectOnlyReplies(
+    businessId: string,
+    before: Awaited<ReturnType<typeof footprint>>,
+    sent: number,
+  ) {
+    expect(await footprint(businessId)).toEqual({
+      ...before,
+      service_messages: String(Number(before['service_messages']) + sent),
+    });
+  }
+
+  async function draftStates(businessId: string): Promise<string[]> {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ state: string }>(sql`
+        SELECT state FROM command_drafts WHERE business_id = ${businessId}::uuid
+         ORDER BY insertion_seq`),
+    );
+    return [...rows].map((r) => r.state);
+  }
+
+  /**
+   * Where the stubs stand now. Snapshotted rather than reset: resetting the
+   * sender mid-test restarts its provider message ids, and the next reply
+   * then collides with an earlier one on `messages_provider_ux`.
+   */
+  function sendMark() {
+    return {
+      sent: stubSender.sent.length,
+      documents: stubSender.documents.length,
+      customerTexts: stubSender.connectionTexts.length,
+      templates: stubSender.templates.length,
+      mints: intentsProvider.initialized.length,
+    };
+  }
+  const NO_MARK = { sent: 0, documents: 0, customerTexts: 0, templates: 0, mints: 0 };
+
+  /** What went anywhere but back to the merchant's own chat since `mark`. */
+  function beyondTheMerchant(mark = NO_MARK) {
+    return {
+      elsewhere: stubSender.sent.slice(mark.sent).filter((m) => m.to !== OWNER).length,
+      documents: stubSender.documents.length - mark.documents,
+      customerTexts: stubSender.connectionTexts.length - mark.customerTexts,
+      templates: stubSender.templates.length - mark.templates,
+      mints: intentsProvider.initialized.length - mark.mints,
+    };
+  }
+  const NOTHING_BEYOND = { elsewhere: 0, documents: 0, customerTexts: 0, templates: 0, mints: 0 };
+
+  /* English and Pidgin side by side: the router maps both to one intent. */
+  const CHAT_COMMANDS = [
+    'who owes me',
+    'who dey owe me',
+    'records',
+    'stock',
+    'wetin remain',
+    'payment details',
+    'remind {INV}',
+    'resend',
+  ] as const;
+
+  it.each(CHAT_COMMANDS)(
+    'refuses "%s" to an Integrate-only plan, with no side effect at all',
+    async (phrase) => {
+      const business = await seedMerchant();
+      const invoiceNumber = await seedBooks(business.id);
+      await moveToPlan(business.id, 'integrate');
+      const before = await footprint(business.id);
+      const mark = sendMark();
+
+      const said = await send(phrase.replace('{INV}', invoiceNumber));
+
+      expect(said).toBe(REFUSED);
+      // One message, the refusal, to the merchant who asked. Nothing else.
+      expect(stubSender.sent.length - mark.sent).toBe(1);
+      expect(beyondTheMerchant(mark)).toEqual(NOTHING_BEYOND);
+      expect(stubTransport.requests).toHaveLength(0);
+      await expectOnlyReplies(business.id, before, 1);
+    },
+  );
+
+  it.each(['chat', 'complete'] as const)('runs every Chat command on the %s plan', async (plan) => {
+    const business = await seedMerchant();
+    const invoiceNumber = await seedBooks(business.id);
+    await moveToPlan(business.id, plan);
+
+    expect(await send('who owes me')).toContain('₦80,000');
+    expect(await send('who dey owe me')).toContain('₦80,000');
+    expect(await send('records')).toContain('Your books this month');
+    expect(await send('wetin remain')).toContain('not counting any stock');
+    expect(await send('payment details')).toMatch(/https:\/\/checkout\.stub\/RKD-PAY-/);
+    expect(await send(`remind ${invoiceNumber}`)).toContain(`reminder for ${invoiceNumber}`);
+    expect(await send('resend')).toContain(`Sending ${invoiceNumber} again`);
+    // Free, as before: none of them reached the model.
+    expect(stubTransport.requests).toHaveLength(0);
+    expect((await footprint(business.id)).ai_actions).toBe('0');
+  });
+
+  it('meets the free-form question and its fixed phrase at the same boundary', async () => {
+    const business = await seedMerchant();
+    await seedBooks(business.id);
+    await moveToPlan(business.id, 'integrate');
+    const before = await footprint(business.id);
+
+    // The model path refuses before the model, as it always did...
+    expect(await send('which of my customers still owe me money?', DEBTORS_QUESTION)).toBe(
+      FREE_FORM_REFUSED,
+    );
+    // ...and the fixed phrase no longer walks round it.
+    expect(await send('who owes me')).toBe(REFUSED);
+    expect(stubTransport.requests).toHaveLength(0);
+    await expectOnlyReplies(business.id, before, 2);
+
+    // With Chat, both are answered, with the same debtor.
+    await moveToPlan(business.id, 'chat');
+    const freeForm = await send('which of my customers still owe me money?', DEBTORS_QUESTION);
+    expect(freeForm).toContain('₦80,000');
+    expect(freeForm).toMatch(/INV-\d{4}-000001/);
+    const fixed = await send('who owes me');
+    expect(fixed).toContain('₦80,000');
+    expect(fixed).toMatch(/INV-\d{4}-000001/);
+  });
+
+  it('keeps consent, erasure, the dashboard, help and upgrade open without Chat', async () => {
+    const business = await seedMerchant();
+    await moveToPlan(business.id, 'integrate');
+
+    expect(await send('STOP')).toBe(replies.optedOut().text);
+    expect(await identity.optedOutAt(db, `+${OWNER}`)).not.toBeNull();
+    expect(await send('START')).toBe(replies.optedInWithoutChat().text);
+    expect(await identity.optedOutAt(db, `+${OWNER}`)).toBeNull();
+
+    expect(await send('dashboard')).toContain('Here are your books');
+    expect(await send('help')).toBe(
+      replies.helpWithoutChat(null, { owner: true, transacts: true }).text,
+    );
+
+    expect(await send('upgrade')).toBe(replies.upgradeRequested().text);
+    const requests = await withBusiness(db, business.id, (tx) =>
+      billingRepo.upgradeRequestsFor(tx, business.id),
+    );
+    expect(requests).toHaveLength(1);
+
+    // The two-ask erasure ceremony runs to the end on a plan without Chat.
+    expect(await send('delete my data')).toBe(replies.confirmErasure().text);
+    expect(await send('delete my data')).toContain('Done. Your customers');
+    expect(stubTransport.requests).toHaveLength(0);
+  });
+
+  it('keeps consent and erasure open on a lapsed plan too', async () => {
+    const business = await seedMerchant();
+    await lapse(business.id);
+
+    expect(await send('STOP')).toBe(replies.optedOut().text);
+    expect(await send('START')).toBe(replies.optedInWithoutChat().text);
+    expect(await send('dashboard')).toContain('Here are your books');
+    expect(await send('delete my data')).toBe(replies.confirmErasure().text);
+    expect(await send('delete my data')).toContain('Done. Your customers');
+  });
+
+  it('a yes between the two erasure asks still keeps the data without Chat', async () => {
+    const business = await seedMerchant();
+    await moveToPlan(business.id, 'integrate');
+
+    expect(await send('delete my data')).toBe(replies.confirmErasure().text);
+    // Not refused for want of Chat: a yes is "anything else", and it keeps.
+    expect(await send('yes')).toBe(replies.erasureKept().text);
+    // The pair is broken, so this is a fresh first ask, not the confirmation.
+    expect(await send('delete my data')).toBe(replies.confirmErasure().text);
+  });
+
+  it('a yes cannot confirm a Chat draft once the plan has no Chat', async () => {
+    const business = await seedMerchant();
+    expect(await send('Ada bought 3 wigs for 300k', A_SALE)).toContain('Reply *yes*');
+    await moveToPlan(business.id, 'integrate');
+    const before = await footprint(business.id);
+    const requests = stubTransport.requests.length;
+    const mark = sendMark();
+
+    expect(await send('yes')).toBe(YES_REFUSED);
+
+    await expectOnlyReplies(business.id, before, 1);
+    expect(beyondTheMerchant(mark)).toEqual(NOTHING_BEYOND);
+    expect(stubTransport.requests).toHaveLength(requests);
+    // Left pending, not claimed: the same yes works after an upgrade.
+    expect(await draftStates(business.id)).toEqual(['pending']);
+    await moveToPlan(business.id, 'chat');
+    expect(await send('yes')).toContain('INV-');
+    expect(await invoiceCount(business.id)).toBe(1);
+  });
+
+  it('a refused yes past a read changes nothing, not even the read', async () => {
+    const business = await seedMerchant();
+    await send('Ada bought 3 wigs for 300k', A_SALE);
+    await send('how much did I sell this month?', { ...HOW_MUCH_DID_I_SELL, period: 'month' });
+    await moveToPlan(business.id, 'integrate');
+    const states = await draftStates(business.id);
+    const before = await footprint(business.id);
+
+    expect(await send('yes')).toBe(YES_REFUSED);
+
+    // Build 6 would retire the read's draft to point back at the preview;
+    // refused first, nothing moves.
+    expect(await draftStates(business.id)).toEqual(states);
+    await expectOnlyReplies(business.id, before, 1);
+  });
+
+  it('a no still cancels a Chat draft on a plan without Chat', async () => {
+    const business = await seedMerchant();
+    await send('Ada bought 3 wigs for 300k', A_SALE);
+    await moveToPlan(business.id, 'integrate');
+    expect(await send('yes')).toBe(YES_REFUSED);
+
+    expect(await send('no')).toBe(replies.cancelled().text);
+    expect(await draftStates(business.id)).toEqual(['superseded']);
+    expect(await invoiceCount(business.id)).toBe(0);
+  });
+
+  it('a yes after the plan lapsed records no expense either', async () => {
+    const business = await seedMerchant();
+    expect(await send('fuel for generator 20k', AN_EXPENSE)).toContain('Reply *yes*');
+    await lapse(business.id);
+    const before = await footprint(business.id);
+
+    expect(await send('yes')).toBe(YES_LAPSED);
+
+    await expectOnlyReplies(business.id, before, 1);
+    expect(await draftStates(business.id)).toEqual(['pending']);
+  });
+
+  it('a lapsed plan keeps the reads it is promised, and sends no new document', async () => {
+    const business = await seedMerchant();
+    const invoiceNumber = await seedBooks(business.id);
+    await lapse(business.id);
+
+    // What `trialEnded` promises still works.
+    expect(LAPSED).toContain('*who owes me*, *records*, *payment details*');
+    expect(await send('who owes me')).toContain('₦80,000');
+    expect(await send('records')).toContain('Your books this month');
+    expect(await send('payment details')).toMatch(/https:\/\/checkout\.stub\/RKD-PAY-/);
+    expect(await send(`remind ${invoiceNumber}`)).toContain(`reminder for ${invoiceNumber}`);
+    expect(await send('stock')).toContain('not counting any stock');
+
+    // A resend delivers a document, which a lapsed plan does not.
+    const before = await footprint(business.id);
+    const mark = sendMark();
+    expect(await send('resend')).toBe(LAPSED);
+    await expectOnlyReplies(business.id, before, 1);
+    expect(beyondTheMerchant(mark)).toEqual(NOTHING_BEYOND);
+  });
+
+  it('a short reply does not resume a read for a plan without Chat', async () => {
+    const business = await seedMerchant();
+    expect(await send('how much did I sell?', HOW_MUCH_DID_I_SELL)).toBe(
+      replies.whichPeriod('sales').text,
+    );
+    await moveToPlan(business.id, 'integrate');
+    const requests = stubTransport.requests.length;
+    const before = await footprint(business.id);
+
+    // Not answered from the open question: the ordinary path, refused there.
+    expect(await send('last month')).toBe(FREE_FORM_REFUSED);
+    expect(stubTransport.requests).toHaveLength(requests);
+    await expectOnlyReplies(business.id, before, 1);
+  });
+
+  /** A paid plan that lapsed: the renewal path stores it as `expired` itself. */
+  async function lapsePaid(businessId: string) {
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'expired',
+      expiresAt: null,
+      actor: 'operator:g65',
+    });
+  }
+
+  async function sendFrom(from: string, text: string) {
+    await post(messagePayload(from, `wamid.G65-${++seq}`, text));
+    await drain();
+    await expectNoFailedJob();
+    return stubSender.lastText ?? '';
+  }
+
+  it('a lapsed paid plan is told its plan ended, never that a free trial did', async () => {
+    const business = await seedMerchant();
+    await seedBooks(business.id);
+    expect(await send('Ada bought 3 wigs for 300k', A_SALE)).toContain('Reply *yes*');
+    await lapsePaid(business.id);
+    const before = await footprint(business.id);
+
+    expect(await send('yes')).toBe(replies.notSavedPlanEnded('plan').text);
+    expect(await send('resend')).toBe(replies.planEnded().text);
+    expect(stubSender.lastText).not.toContain('trial');
+    await expectOnlyReplies(business.id, before, 2);
+    // The reads the lapse keeps are kept here too.
+    expect(await send('who owes me')).toContain('₦80,000');
+  });
+
+  it('a refused yes says first that nothing was saved, on each kind of refusal', async () => {
+    for (const refused of [
+      replies.notSavedNotInPlan(),
+      replies.notSavedPlanEnded('trial'),
+      replies.notSavedPlanEnded('plan'),
+    ]) {
+      expect(refused.text.startsWith('I did not save that.')).toBe(true);
+    }
+  });
+
+  it('help, greeting and a failed dashboard link point only at what works on Integrate', async () => {
+    const business = await seedMerchant();
+    await moveToPlan(business.id, 'integrate');
+
+    const help = await send('help');
+    expect(help).toBe(replies.helpWithoutChat(null, { owner: true, transacts: true }).text);
+    expect(await send('hi')).toBe(replies.greetingWithoutChat(null).text);
+    for (const refused of ['*records*', '*stock*', '*who owes me*', '*resend*', 'remind']) {
+      expect(help).not.toContain(refused);
+    }
+    for (const works of ['*dashboard*', '*upgrade*', '*delete my data*', '*STOP*']) {
+      expect(help).toContain(works);
+    }
+
+    // No web address configured: the link cannot be made.
+    await post(messagePayload(OWNER, `wamid.G65-${++seq}`, 'dashboard'));
+    const runner = buildRunner(workerDb, db, { ...deps, config: { ...deps.config, webUrl: null } });
+    while (await runner.runOnce());
+    expect(stubSender.lastText).toBe(replies.dashboardUnavailableWithoutChat().text);
+    expect(stubSender.lastText).not.toContain('*records*');
+  });
+
+  it('a Chat plan keeps the ordinary help, greeting and dashboard sentence, byte for byte', async () => {
+    const business = await seedMerchant();
+    await moveToPlan(business.id, 'chat');
+    expect(await send('help')).toBe(replies.help().text);
+    expect(await send('hi')).toBe(replies.greeting().text);
+
+    await post(messagePayload(OWNER, `wamid.G65-${++seq}`, 'dashboard'));
+    const runner = buildRunner(workerDb, db, { ...deps, config: { ...deps.config, webUrl: null } });
+    while (await runner.runOnce());
+    expect(stubSender.lastText).toBe(replies.dashboardUnavailable().text);
+  });
+
+  it('a lapsed plan is told what still works, naming its kind of lapse', async () => {
+    const business = await seedMerchant();
+    await lapse(business.id);
+    expect(await send('help')).toBe(
+      replies.helpWithoutChat('trial', { owner: true, transacts: true }).text,
+    );
+    expect(await send('help')).toContain('*upgrade* and we will set you up to keep recording');
+    expect(await send('hi')).toBe(replies.greetingWithoutChat('trial').text);
+    await lapsePaid(business.id);
+    expect(await send('help')).toBe(
+      replies.helpWithoutChat('plan', { owner: true, transacts: true }).text,
+    );
+  });
+
+  it('a retried yes that is refused gives back what its first attempt reserved', async () => {
+    const business = await seedMerchant();
+    await send('Ada bought 3 wigs for 300k', A_SALE);
+
+    /* Attempt 1 meters the document unit (its own committed transaction),
+     * then fails issuing: the job rolls back and the unit stays spent. */
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g65_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g65_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF nextval('g65_once') = 1 THEN RAISE EXCEPTION 'g65: first attempt fails'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g65_fail_once BEFORE INSERT ON invoices
+          FOR EACH ROW EXECUTE FUNCTION g65_fail_once()`);
+
+      await post(messagePayload(OWNER, `wamid.G65-${++seq}`, 'yes'));
+      await buildRunner(workerDb, db, deps).runOnce();
+      expect((await footprint(business.id)).document_credits).toBe('1');
+      expect(await invoiceCount(business.id)).toBe(0);
+
+      /* The plan loses Chat before the retry runs. */
+      await moveToPlan(business.id, 'integrate');
+      await ownerDb.execute(sql`
+        UPDATE jobs SET run_at = now() WHERE business_id = ${business.id}::uuid
+           AND state <> 'done'`);
+      await drain();
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g65_fail_once ON invoices`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g65_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g65_once`);
+      await close();
+    }
+
+    expect(stubSender.lastText).toBe(YES_REFUSED);
+    expect((await footprint(business.id)).document_credits).toBe('0');
+    expect(await invoiceCount(business.id)).toBe(0);
+    expect(await draftStates(business.id)).toEqual(['pending']);
+  });
+
+  it.each(['integrate', 'lapsed'] as const)(
+    'cancel and no still drop a Chat draft on a %s plan',
+    async (standing) => {
+      for (const word of ['cancel', 'no']) {
+        await truncateAll(urls);
+        const business = await seedMerchant();
+        await send('Ada bought 3 wigs for 300k', A_SALE);
+        if (standing === 'integrate') await moveToPlan(business.id, 'integrate');
+        else await lapse(business.id);
+
+        expect(await send(word)).toBe(replies.cancelled().text);
+        expect(await draftStates(business.id)).toEqual(['superseded']);
+        expect(await invoiceCount(business.id)).toBe(0);
+      }
+    },
+  );
+
+  it('a yes on the Complete plan confirms as on Chat', async () => {
+    const business = await seedMerchant();
+    await moveToPlan(business.id, 'complete');
+    expect(await send('Ada bought 3 wigs for 300k', A_SALE)).toContain('Reply *yes*');
+    expect(await send('yes')).toContain('INV-');
+    expect(await invoiceCount(business.id)).toBe(1);
+  });
+
+  it('a lapsed plan keeps a resumed read, as it keeps records', async () => {
+    const business = await seedMerchant();
+    expect(await send('how much did I sell?', HOW_MUCH_DID_I_SELL)).toBe(
+      replies.whichPeriod('sales').text,
+    );
+    await lapse(business.id);
+    const requests = stubTransport.requests.length;
+    const before = await footprint(business.id);
+
+    const said = await send('last month');
+    expect(said).not.toBe(LAPSED);
+    expect(said).not.toBe(FREE_FORM_REFUSED);
+    expect(said).toMatch(/sales/i);
+    expect(stubTransport.requests).toHaveLength(requests);
+    expect((await footprint(business.id)).ai_actions).toBe(before.ai_actions);
+  });
+
+  it('a view-only member on Integrate meets the plan before the role', async () => {
+    const business = await seedMerchant();
+    const invoiceNumber = await seedBooks(business.id);
+    const accountant = await identity.upsertUserByPhone(db, '+2348039990001');
+    await identity.addMembership(db, business.id, accountant.id, 'accountant');
+    await moveToPlan(business.id, 'integrate');
+    const before = await footprint(business.id);
+    const mark = sendMark();
+
+    expect(await sendFrom('2348039990001', `remind ${invoiceNumber}`)).toBe(REFUSED);
+    expect(await sendFrom('2348039990001', 'payment details')).toBe(REFUSED);
+    expect(beyondTheMerchant(mark)).toMatchObject({ documents: 0, customerTexts: 0, mints: 0 });
+    await expectOnlyReplies(business.id, before, 2);
+
+    // On a Chat plan the same member is refused by role, as before.
+    await moveToPlan(business.id, 'chat');
+    expect(await sendFrom('2348039990001', 'payment details')).toBe(replies.viewOnlyRole().text);
+  });
+
+  /**
+   * Pinned: a yes after the plan lapsed, with a resumed read since the
+   * preview, is refused before Build 6's read pointer runs. Nothing moves:
+   * not the read, not the preview, not a meter.
+   */
+  it('a lapsed yes after a resumed read is refused and changes nothing', async () => {
+    const business = await seedMerchant();
+    await send('Ada bought 3 wigs for 300k', A_SALE);
+    await send('how much did I sell?', HOW_MUCH_DID_I_SELL);
+    await send('last month');
+    await lapse(business.id);
+    const states = await draftStates(business.id);
+    const before = await footprint(business.id);
+
+    expect(await send('yes')).toBe(YES_LAPSED);
+
+    expect(await draftStates(business.id)).toEqual(states);
+    await expectOnlyReplies(business.id, before, 1);
+  });
+
+  /** A voice note or a photograph, as Meta delivers it. */
+  function mediaPayload(kind: 'audio' | 'image', wamid: string) {
+    const media =
+      kind === 'audio'
+        ? { type: 'audio', audio: { id: 'media-1', mime_type: 'audio/ogg', voice: true } }
+        : { type: 'image', image: { id: 'photo-1', mime_type: 'image/jpeg' } };
+    return {
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'WABA',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { phone_number_id: 'PNID' },
+                messages: [{ id: wamid, from: OWNER, timestamp: '1700000000', ...media }],
+              },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  it.each([
+    ['trial', replies.trialEnded().text],
+    ['paid', replies.planEnded().text],
+  ] as const)(
+    'a %s lapse hears the true sentence on the model path, voice and photo',
+    async (kind, expected) => {
+      const business = await seedMerchant();
+      if (kind === 'trial') await lapse(business.id);
+      else await lapsePaid(business.id);
+
+      // The model path: refused before the model, as always; only the copy.
+      expect(await send('Ada bought 3 wigs for 300k', A_SALE)).toBe(expected);
+      for (const media of ['audio', 'image'] as const) {
+        await post(mediaPayload(media, `wamid.G65-${++seq}`));
+        await drain();
+        await expectNoFailedJob();
+        expect(stubSender.lastText, media).toBe(expected);
+      }
+      expect(stubTransport.requests).toHaveLength(0);
+      expect(stubStt.calls).toHaveLength(0);
+      if (kind === 'paid') expect(stubSender.lastText).not.toContain('trial');
+    },
+  );
+
+  it('START, a stray number and a yes with nothing waiting point at what works without Chat', async () => {
+    const business = await seedMerchant();
+    await moveToPlan(business.id, 'integrate');
+    expect(await send('START')).toBe(replies.optedInWithoutChat().text);
+    expect(await send('7')).toBe(replies.strayNumberWithoutChat().text);
+    expect(await send('yes')).toBe(replies.nothingToConfirmWithoutChat().text);
+    for (const said of [
+      replies.optedInWithoutChat().text,
+      replies.strayNumberWithoutChat().text,
+      replies.nothingToConfirmWithoutChat().text,
+    ]) {
+      expect(said).not.toMatch(/sale|record/i);
+    }
+
+    await lapse(business.id);
+    expect(await send('7')).toBe(replies.strayNumberWithoutChat().text);
+    expect(await send('yes')).toBe(replies.nothingToConfirmWithoutChat().text);
+  });
+
+  it('a Chat plan keeps the ordinary START, stray-number and nothing-to-confirm copy', async () => {
+    const business = await seedMerchant();
+    await moveToPlan(business.id, 'chat');
+    expect(await send('START')).toBe(replies.optedIn().text);
+    expect(await send('7')).toBe(replies.strayNumber().text);
+    expect(await send('yes')).toBe(replies.nothingToConfirm().text);
+  });
+
+  it('help names delete my data only to the owner, the one member it works for', async () => {
+    const business = await seedMerchant();
+    const accountant = await identity.upsertUserByPhone(db, '+2348039990001');
+    await identity.addMembership(db, business.id, accountant.id, 'accountant');
+    await moveToPlan(business.id, 'integrate');
+
+    const forMember = await sendFrom('2348039990001', 'help');
+    expect(forMember).toBe(replies.helpWithoutChat(null, { owner: false, transacts: false }).text);
+    expect(forMember).not.toContain('delete my data');
+    expect(await send('help')).toContain('*delete my data*');
+  });
+
+  /**
+   * Codex, PR #261: help named *payment details* to an accountant on a lapsed
+   * plan, which then refused them by role. The rule, asserted generically:
+   * every command `help` names is one THIS member can run, on THIS plan.
+   */
+  it.each([
+    ['the owner', 'lapsed'],
+    ['an accountant', 'lapsed'],
+    ['the owner', 'integrate'],
+    ['an accountant', 'integrate'],
+  ] as const)('help names only what %s can run on a %s plan', async (who, standing) => {
+    const business = await seedMerchant();
+    await seedBooks(business.id);
+    const accountant = await identity.upsertUserByPhone(db, '+2348039990001');
+    await identity.addMembership(db, business.id, accountant.id, 'accountant');
+    if (standing === 'lapsed') await lapse(business.id);
+    else await moveToPlan(business.id, 'integrate');
+    const from = who === 'the owner' ? OWNER : '2348039990001';
+
+    const help = await sendFrom(from, 'help');
+    const named = [...help.matchAll(/\*([^*]+)\*/g)]
+      .map((m) => m[1]!)
+      // STOP works for everyone by law; sending it here would opt them out.
+      .filter((command) => command !== 'STOP');
+    expect(named.length).toBeGreaterThan(0);
+    if (who === 'an accountant') {
+      expect(named).not.toContain('payment details');
+      expect(named).not.toContain('delete my data');
+    }
+
+    const REFUSALS = [
+      replies.viewOnlyRole().text,
+      replies.erasureNotYours().text,
+      replies.chatCommandNotInPlan().text,
+      replies.chatNotInPlan().text,
+      replies.trialEnded().text,
+      replies.planEnded().text,
+    ];
+    for (const command of named) {
+      const said = await sendFrom(from, command);
+      expect(REFUSALS, `${who} sent *${command}*`).not.toContain(said);
+    }
+    expect(stubTransport.requests).toHaveLength(0);
+  });
+
+  /**
+   * Codex, PR #261 (second pass): the lapse sentence told an accountant that
+   * *payment details* still works, which refuses them by role. Asserted on
+   * both kinds of lapse, from a refused command and from the model path, by
+   * sending every command the sentence names as that member.
+   */
+  it.each([
+    ['trial', replies.trialEnded(false).text],
+    ['paid', replies.planEnded(false).text],
+  ] as const)(
+    'a %s lapse names to a view-only member only what they can run',
+    async (kind, expected) => {
+      const business = await seedMerchant();
+      await seedBooks(business.id);
+      const accountant = await identity.upsertUserByPhone(db, '+2348039990001');
+      await identity.addMembership(db, business.id, accountant.id, 'accountant');
+      if (kind === 'trial') await lapse(business.id);
+      else await lapsePaid(business.id);
+      const ACCOUNTANT = '2348039990001';
+
+      expect(await sendFrom(ACCOUNTANT, 'resend')).toBe(expected);
+      stubTransport.replyWith(A_SALE);
+      expect(await sendFrom(ACCOUNTANT, 'Ada bought 3 wigs for 300k')).toBe(expected);
+      expect(expected).not.toContain('payment details');
+
+      const named = [...expected.matchAll(/\*([^*]+)\*/g)].map((m) => m[1]!);
+      expect(named.length).toBeGreaterThan(0);
+      for (const command of named) {
+        const said = await sendFrom(ACCOUNTANT, command);
+        expect(
+          [
+            replies.viewOnlyRole().text,
+            replies.trialEnded(false).text,
+            replies.planEnded(false).text,
+          ],
+          `the accountant sent *${command}*`,
+        ).not.toContain(said);
+      }
+      // The owner still reads the sentence every owner always has.
+      expect(await send('resend')).toBe(
+        kind === 'trial' ? replies.trialEnded().text : replies.planEnded().text,
+      );
+      expect(stubTransport.requests).toHaveLength(0);
+    },
+  );
+
+  /* ── Build 7 (G-68, G-24) surfaces, after the rebase ───────────────────── */
+
+  const A_POS_PURCHASE = {
+    intent: 'RecordPurchase',
+    supplierMention: 'Emeka',
+    description: '10 cartons',
+    amount: 180_000,
+    reportedPayment: 180_000,
+    paymentMethod: 'pos',
+    productMention: 'cartons',
+    quantity: 10,
+  };
+  const POS_QUESTION = 'did it come from your bank account or from physical cash?';
+
+  async function continuationRows(businessId: string) {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ expects: string | null; state: string }>(sql`
+        SELECT expects, state FROM conversation_continuations
+         WHERE business_id = ${businessId}::uuid ORDER BY insertion_seq`),
+    );
+    return [...rows].map((r) => `${r.expects}:${r.state}`);
+  }
+
+  async function askFunding() {
+    expect(
+      await send('I bought 10 cartons for 180k from Emeka with POS', A_POS_PURCHASE),
+    ).toContain(POS_QUESTION);
+  }
+
+  it('a questioned yes points a plan without Chat at no yes it would refuse', async () => {
+    const business = await seedMerchant();
+    // Nothing waiting: what works, not "tell me a sale".
+    await moveToPlan(business.id, 'integrate');
+    expect(await send('yes?')).toBe(replies.nothingToConfirmWithoutChat().text);
+
+    // A preview waiting from before the switch: nothing was saved, never "reply yes".
+    await moveToPlan(business.id, 'chat');
+    await send('Ada bought 3 wigs for 300k', A_SALE);
+    await moveToPlan(business.id, 'integrate');
+    const before = await footprint(business.id);
+    const states = await draftStates(business.id);
+    expect(await send('yes?')).toBe(YES_REFUSED);
+    expect(await send('na so?')).toBe(YES_REFUSED);
+    await expectOnlyReplies(business.id, before, 2);
+    expect(await draftStates(business.id)).toEqual(states);
+
+    // On a lapsed plan, the lapse is named.
+    await lapse(business.id);
+    expect(await send('yes?')).toBe(YES_LAPSED);
+  });
+
+  it('a questioned yes still keeps the data between two erasure asks without Chat', async () => {
+    const business = await seedMerchant();
+    await moveToPlan(business.id, 'integrate');
+    expect(await send('delete my data')).toBe(replies.confirmErasure().text);
+    expect(await send('yes?')).toBe(replies.erasureKept().text);
+    expect(await send('delete my data')).toBe(replies.confirmErasure().text);
+  });
+
+  it('a "bank" answer on a plan without Chat is refused before the question is claimed', async () => {
+    const business = await seedMerchant();
+    await askFunding();
+    await moveToPlan(business.id, 'integrate');
+    const before = await footprint(business.id);
+
+    // Build 7's sentence, unchanged; the question stays open, nothing is rebuilt.
+    expect(await send('bank')).toBe(replies.chatNotInPlan().text);
+    expect(await continuationRows(business.id)).toEqual(['funding_source:open']);
+    await expectOnlyReplies(business.id, before, 1);
+
+    // The same "bank" works the moment Chat is back.
+    await moveToPlan(business.id, 'chat');
+    expect(await send('bank')).toContain('Reply *yes*');
+  });
+
+  it('a "cash" answer after a PAID lapse is told the plan ended, never a free trial', async () => {
+    const business = await seedMerchant();
+    await askFunding();
+    await lapsePaid(business.id);
+    expect(await send('cash')).toBe(replies.planEnded().text);
+    expect(await continuationRows(business.id)).toEqual(['funding_source:open']);
+  });
+
+  it('a yes to the funding question re-opens nothing on a plan without Chat', async () => {
+    const business = await seedMerchant();
+    await askFunding();
+    await moveToPlan(business.id, 'integrate');
+    const rows = await continuationRows(business.id);
+
+    // Not "Reply bank or cash": a "bank" would be refused.
+    const said = await send('yes');
+    expect(said).toBe(YES_REFUSED);
+    expect(said).not.toContain('*bank*');
+    expect(await continuationRows(business.id)).toEqual(rows);
+  });
+
+  it('a "no" with nothing waiting invites no sale on a plan without Chat', async () => {
+    const business = await seedMerchant();
+    await moveToPlan(business.id, 'integrate');
+    expect(await send('no')).toBe(replies.nothingToDeclineWithoutChat().text);
+    expect(await send('cancel')).toBe(replies.nothingToCancel().text);
+    await moveToPlan(business.id, 'chat');
+    expect(await send('no')).toBe(replies.nothingToDecline().text);
+  });
+
+  it('a chosen option does not suggest *remind* to a plan without Chat', async () => {
+    const business = await seedMerchant();
+    const openList = async () => {
+      const user = await identity.upsertUserByPhone(db, `+${OWNER}`);
+      await withBusiness(db, business.id, async (tx) => {
+        const thread = await conversationsRepo.recordInbound(
+          tx,
+          {
+            businessId: business.id,
+            channel: 'meta',
+            kind: 'text',
+            body: '[list]',
+            providerMessageId: `wamid.G65-list-${++seq}`,
+          },
+          { kind: 'MERCHANT', businessId: business.id, channel: 'meta' },
+        );
+        await continuationsRepo.openContinuation(tx, {
+          businessId: business.id,
+          userId: user.id,
+          sourceMessageId: thread.id,
+          state: {
+            kind: 'clarification',
+            expects: 'choice',
+            topic: 'debtors',
+            options: [
+              { ordinal: 1, ref: { kind: 'invoice', invoiceNumber: 'INV-2026-000001' } },
+              { ordinal: 2, ref: { kind: 'invoice', invoiceNumber: 'INV-2026-000002' } },
+            ],
+          },
+        });
+      });
+    };
+    await moveToPlan(business.id, 'integrate');
+    await openList();
+    const said = await send('2');
+    expect(said).toBe(replies.optionChosenWithoutChat('INV-2026-000002').text);
+    expect(said).not.toContain('*remind');
+
+    await moveToPlan(business.id, 'chat');
+    await openList();
+    expect(await send('2')).toBe(replies.optionChosen('INV-2026-000002').text);
+  });
+});
