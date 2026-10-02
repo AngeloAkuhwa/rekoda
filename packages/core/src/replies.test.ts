@@ -79,6 +79,31 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   draftExpired: [replies.draftExpired()],
   previewAwaitingYes: [replies.previewAwaitingYes()],
   expiredNothingToCancel: [replies.expiredNothingToCancel()],
+  nothingToDecline: [replies.nothingToDecline()],
+  nothingToCancel: [replies.nothingToCancel()],
+  optionChosen: [replies.optionChosen('INV-2026-000041')],
+  plainYesNeeded: [replies.plainYesNeeded()],
+  questionLeft: [replies.questionLeft()],
+  fundingQuestionClosed: [replies.fundingQuestionClosed()],
+  previewAlreadyWaiting: [
+    replies.previewAlreadyWaiting(),
+    replies.previewAlreadyWaiting('transfer'),
+    replies.previewAlreadyWaiting('cash'),
+  ],
+  previewWaitingForAnotherMember: [replies.previewWaitingForAnotherMember()],
+  previewWaitingUnattributed: [replies.previewWaitingUnattributed()],
+  earlierPreviewReplaced: [
+    replies.earlierPreviewReplaced(
+      replies.preview('Please check this before I save it.'),
+      18_000_000,
+    ),
+  ],
+  earlierPreviewStillWaiting: [
+    replies.earlierPreviewStillWaiting(
+      replies.preview('Please check this before I save it.'),
+      18_000_000,
+    ),
+  ],
   correctionTaken: [replies.correctionTaken()],
   issued: [
     replies.issued('INV-2026-000041', NAIRA_MILLIONS, NAIRA_MILLIONS),
@@ -301,6 +326,16 @@ describe('every reply', () => {
     replies.whichPeriod('sales'),
     replies.previewBehindQuestion(),
     replies.periodNotCountable('spending'),
+    replies.nothingToDecline(),
+    replies.nothingToCancel(),
+    replies.optionChosen('INV-2026-000041'),
+    replies.plainYesNeeded(),
+    replies.questionLeft(),
+    replies.fundingQuestionClosed(),
+    replies.previewAlreadyWaiting(),
+    replies.previewAlreadyWaiting('transfer'),
+    replies.previewWaitingForAnotherMember(),
+    replies.previewWaitingUnattributed(),
     replies.nothingToResend(),
     replies.dashboardUnavailable(),
     replies.paymentLinkUnavailable(),
@@ -786,5 +821,30 @@ describe('asking for, and naming, a window of trading (Build 6)', () => {
     expect(replies.expensesAnswer({ label, moneyOutK: 0, expenses: 0 }).text).toContain(
       phrase.replace('sales', 'spending'),
     );
+  });
+});
+
+describe('a bare "no" or "cancel" with nothing waiting (G-68)', () => {
+  it('answers a "no" truthfully instead of claiming a cancellation', () => {
+    const text = replies.nothingToDecline().text;
+    expect(text).toContain('Nothing is waiting for a yes or no');
+    /* Nothing was cancelled, because nothing was waiting. */
+    expect(text).not.toMatch(/cancel/i);
+    /* Distinct from the "yes" reply, so neither can be mistaken for the other. */
+    expect(text).not.toBe(replies.nothingToConfirm().text);
+    expect(text).not.toContain(replies.nothingToConfirm().text.slice(0, 30));
+    /* It names the way forward, and never implies a saved record can be edited. */
+    expect(text).toContain('Tell me a sale');
+    expect(text).toContain('Anything already saved is still saved');
+    expect(text).not.toMatch(/change|edit|correct/i);
+  });
+
+  it('answers a "cancel" without pretending anything was cancelled', () => {
+    const text = replies.nothingToCancel().text;
+    expect(text).not.toMatch(/^Cancelled/);
+    expect(text).not.toBe(replies.cancelled().text);
+    expect(text).toContain('nothing has changed');
+    /* "forget am" right after a confirmed invoice: it is still there. */
+    expect(text).toContain('already saved is still saved');
   });
 });

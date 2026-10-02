@@ -412,6 +412,28 @@ export function preview(text: string): Reply {
   return reply(text.trim());
 }
 
+/**
+ * A purchase preview that REPLACED the same member's earlier rebuilt preview
+ * of the same total (G-68, final-head review). Always said, with the total,
+ * so the one person who can tell sends a different purchase again.
+ */
+export function earlierPreviewReplaced(shown: Reply, earlierK: number): Reply {
+  return reply(
+    `${shown.text}\n\nYour earlier preview of ${formatKobo(earlierK)} was replaced by ` +
+      'this one. If that was a different purchase, send it again.',
+  );
+}
+
+/**
+ * A purchase preview recorded while the same member's earlier rebuilt
+ * preview of a DIFFERENT total stays pending (G-68, final-head review).
+ */
+export function earlierPreviewStillWaiting(shown: Reply, earlierK: number): Reply {
+  return reply(
+    `${shown.text}\n\nYour earlier preview of ${formatKobo(earlierK)} is still waiting.`,
+  );
+}
+
 /** CG1 — the one arithmetic question, verbatim from the gate. */
 export function arithmeticQuestion(text: string): Reply {
   return reply(text.trim());
@@ -478,6 +500,126 @@ export function nothingToConfirm(): Reply {
   return reply(
     'There is nothing waiting for a yes. Tell me a sale and I will show it to ' +
       'you before saving.',
+  );
+}
+
+/**
+ * A bare "no" (or "nope", "nah", "no be so") with nothing outstanding to
+ * refuse (G-68). It used to get silence, which on WhatsApp reads as a dead
+ * number. Nothing was cancelled, because nothing was waiting, so it does not
+ * say "Cancelled".
+ */
+export function nothingToDecline(): Reply {
+  return reply(
+    'Nothing is waiting for a yes or no. Tell me a sale and I will show it to ' +
+      'you before saving. Anything already saved is still saved.',
+  );
+}
+
+/**
+ * "na so?", "yes?", "e correct 🤔" while a preview is waiting (G-68): a
+ * question, not agreement, so nothing is saved and only a plain yes will.
+ */
+export function plainYesNeeded(): Reply {
+  return reply(
+    'I have not saved anything. Check the preview, then reply *yes* to save it ' +
+      'or *no* to drop it.',
+  );
+}
+
+/**
+ * A "no" or "cancel" that closed a question Rekoda had asked ("Which
+ * period?", a numbered list) and nothing else (G-68). Something WAS waiting,
+ * so it is not "nothing is waiting"; and nothing was saved or cancelled. A
+ * "no" to the G-61 funding question is not this: it closes that question's
+ * retired draft and answers "Cancelled." as before.
+ */
+export function questionLeft(): Reply {
+  return reply('OK, I will leave that question. Nothing was saved.');
+}
+
+/**
+ * A short "bank" or "cash" to a funding question that was closed since it
+ * was asked (a "no", from this member or another) (G-68 Phase 2).
+ */
+export function fundingQuestionClosed(): Reply {
+  return reply(
+    'That question can no longer be answered, so nothing was saved from this ' +
+      'message. Check your records before you send the purchase again.',
+  );
+}
+
+/**
+ * A short funding answer, or any message that would rebuild a purchase,
+ * while the member's OWN preview is ALREADY waiting (G-68 review): the
+ * merchant is pointed at that preview and never invited to send the
+ * purchase again, which would leave two previews for two yeses to book.
+ * When the preview records a different account from the one just named,
+ * it names the preview's account, so a yes is never a surprise.
+ */
+export function previewAlreadyWaiting(paidBy?: 'transfer' | 'cash'): Reply {
+  if (paidBy) {
+    /* The ACCOUNT, never a channel: a POS purchase is paid from the bank. */
+    const account = paidBy === 'transfer' ? 'from your bank account' : 'in cash';
+    return reply(
+      `Nothing was saved from this message. Your preview, paid ${account}, is ` +
+        'already waiting: check it, then reply *yes* to save it or *no* to drop it.',
+    );
+  }
+  return reply(
+    'Nothing was saved from this message. Your preview is already waiting: check it, ' +
+      'then reply *yes* to save it or *no* to drop it.',
+  );
+}
+
+/**
+ * A short funding answer while ANOTHER member's preview is waiting, or
+ * one Rekoda cannot attribute (G-68, final-head review). It
+ * invites neither a yes (the member never saw that preview, and it names an
+ * account they did not choose) nor a resend (which would leave two previews
+ * of one purchase). The preview is for the member who asked for it.
+ */
+export function previewWaitingForAnotherMember(): Reply {
+  return reply(
+    'A preview another member asked for is already waiting, so nothing was saved ' +
+      'from this message. Ask them to reply *yes* or *no* to it.',
+  );
+}
+
+/**
+ * The same, when Rekoda cannot say whose the waiting preview is (it records
+ * no requester, or the sender is not a member): neutral, never "another
+ * member", and still inviting neither this member's yes nor a resend.
+ */
+export function previewWaitingUnattributed(): Reply {
+  return reply(
+    'A preview is already waiting, so nothing was saved from this message. ' +
+      'Whoever asked for it can reply *yes* or *no* to it.',
+  );
+}
+
+/**
+ * A "cancel" ("forget am", "leave am", "no do am") with nothing outstanding
+ * to cancel (G-68). Never "Cancelled": a merchant who has just confirmed an
+ * invoice and sends "forget am" may mean "void it", and being told it was
+ * cancelled while it stays live is the one lie this file must not tell.
+ */
+export function nothingToCancel(): Reply {
+  return reply(
+    'There is nothing waiting to cancel, so nothing has changed. Anything ' +
+      'already saved is still saved.',
+  );
+}
+
+/**
+ * A number picked from an explicit numbered list Rekoda showed (G-68 Phase
+ * 2). The choice is a reference, not an action: it names the invoice chosen
+ * and a command that takes it, and does nothing on its own.
+ */
+export function optionChosen(invoiceNumber: string): Reply {
+  return reply(
+    `You picked ${invoiceNumber}. Tell me what to do with it, for example ` +
+      `*remind ${invoiceNumber}*.`,
   );
 }
 

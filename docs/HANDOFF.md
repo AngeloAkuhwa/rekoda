@@ -8,14 +8,14 @@
 
 ## Current state at a glance
 
-| Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Current date**            | 1 October 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| **Current `main` SHA**      | `2abb8a1` (28 Sep 2026, "fix: preserve dashboard overpayment confirmation values (#256)", G-49); before it `6df1b91` (#255, G-61), `ce4755a` (#254, G-77), `ea7c7db` (#253, G-49), `b9c9562` (#252, G-48), `e02925d` (#251), `a61e08d` (#250), `0a99293` (#249), `33ddb33` (#245, G-75), `3cab9dd` (#244, G-74), `1bbe1f1` (#243, G-72), `48ba9d5` (#242, G-71), `c508709` (#241, G-01), `b81ef90` (#240, G-08), `7b9fd8f` (#236), `2dce181` (#239), `e993885` (#235) and the G-06 merge `8f07a6d` (#238)                                                                                                                                                                                 |
-| **Open branches**           | the G-23 PR (`fix/g23-draft-expiry`, draft expiry). #256 (G-49 dashboard fix) MERGED as `2abb8a1`; #255 (G-61) MERGED as `6df1b91` on 28 Sep 2026; #254 (G-77) MERGED as `ce4755a` on 27 Sep 2026; #253 (G-49) MERGED as `ea7c7db` on 26 Sep 2026; #252 (G-48) MERGED as `b9c9562` on 26 Sep 2026; #245 (G-75) MERGED as `33ddb33`; #244 (G-74) MERGED as `3cab9dd` on 13 Sep 2026; #243 (G-72) MERGED as `1bbe1f1` on 13 Sep 2026; #242 (G-71) MERGED as `48ba9d5` on 13 Sep 2026; #241 (G-01) MERGED as `c508709` on 12 Sep 2026; #240 (G-08 template half) as `b81ef90`; dependency housekeeping is closed; #225, #226 and #227 (NestJS 12) closed as deferred post-launch work (G-70) |
-| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 154 migrations; deployed to staging (automatic after CI on main since #249); never to production (the production stack boots on a clean CI runner since G-01); the Meta WhatsApp transport has been live-exercised on staging (real webhook ingress, outbound text and media); production Meta App Review and templates remain open; payment-provider live verification remains pending                                                                                                                                                                                                                |
-| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Current date**            | 2 October 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| **Current `main` SHA**      | `3612fcf` (1 Oct 2026, "feat: conversational continuation state (#260)", Build 6); before it `f5fb1ce` (#258, G-23), `2abb8a1` (#256, G-49), `6df1b91` (#255, G-61), `ce4755a` (#254, G-77), `ea7c7db` (#253, G-49), `b9c9562` (#252, G-48) and earlier                                                                                                                                                                                                                                                                         |
+| **Open branches**           | #259 (Build 7, `fix/g68-g24-nigerian-chat-routing`, G-68 and G-24, rebased onto `3612fcf`) and #261 (Build 8, `fix/g65-deterministic-chat-entitlement`, G-65). #260 (Build 6) MERGED as `3612fcf`; #258 (G-23) MERGED as `f5fb1ce`; #256 (G-49 dashboard fix) MERGED as `2abb8a1`; #255 (G-61) MERGED as `6df1b91`                                                                                                                                                                                                              |
+| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 158 migrations on this branch (0000 to 0157; main has 0000 to 0154); deployed to staging (automatic after CI on main since #249); never to production (the production stack boots on a clean CI runner since G-01); the Meta WhatsApp transport has been live-exercised on staging (real webhook ingress, outbound text and media); production Meta App Review and templates remain open; payment-provider live verification remains pending |
+| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                                                           |
 
 **Build 1 (G-48) accepted (26 Sep 2026):**
 
@@ -51,11 +51,41 @@ itself, and a new `expired` state (separate from G-61's `abandoned`). A
 "yes" to an expired preview records and meters nothing and says it expired.
 After merge, on staging: a sale confirmed inside five minutes records
 normally; a fresh sale answered "yes" after more than five minutes gets the
-expiry sentence and zero financial rows. G-68 and later builds are not
-started.
+expiry sentence and zero financial rows. (G-23 has since MERGED as
+`f5fb1ce`, #258.)
 
-**In review (1 Oct 2026, Build 6, conversational continuation state; CODE
-COMPLETE, staging acceptance pending):** branch
+**In review (1 Oct 2026, Build 7, G-68 Phases 1 and 2 and G-24; CODE
+COMPLETE, staging acceptance pending):** PR #259, branch
+`fix/g68-g24-nigerian-chat-routing`, rebased onto `main` at `3612fcf`. Owner decision OWN-18: standard English, Nigerian
+English, Nigerian Pidgin and code-switching are first-class merchant
+registers. `na so` confirms like `yes` (a leading `na` is no longer stripped
+as a filler), high-confidence Pidgin whole-message commands are free and
+deterministic, a bare "no" with nothing waiting gets an honest reply instead
+of silence, and STOP/START are read by one exact matcher on the raw message
+for the merchant router, the customer thread and tapped replies, so a
+padded keyword changes nobody's consent. REBASED onto Build 6 (`3612fcf`)
+and Phase 2 added through its typed continuation state: Pidgin period
+answers resume "Which period?", an uncountable window keeps it open, a
+numbered list is consumed by a correct "2" (no production question shows a
+numbered list yet, so this path is reachable only from tests), and the G-61 funding question
+takes a short "bank" or "cash" (migration 0155, `expects = funding_source`;
+0156 marks an undone rebuild and allows one continuation per message per
+member; 0157 records which member drafted a preview and what a rebuild was built from)
+with a FRESH preview, never executing the retired draft. After merge, on
+staging: `na so` to a fresh preview records it; `no` with nothing waiting is
+answered; J17 including the padded `start`; a POS purchase answered "bank"
+shows a new preview and records only after yes.
+
+Review rounds since added: a questioned yes ("na so?") confirms nothing;
+the funding rebuild is one-shot (a resend closes the question too) and is
+taken only within 1800 seconds of the first ask (OD-19); the two-ask
+erasure breaks on ANY message between the asks (stricter than base for free
+English commands); the STOP decoration cap is OD-20; more positive emoji do not confirm
+(OD-21, owner ruling OWN-19); a question-shaped STOP opts out (OD-22, owner
+ruling OWN-20).
+
+**MERGED (1 Oct 2026, Build 6, conversational continuation state; #260 as
+`3612fcf`; staging acceptance pending):** was branch
 `feat/conversation-continuation-state` off `main` at `f5fb1ce` (G-23, #258).
 "How much did I sell?" with no period is answered "Which period?", and a
 short "last month" resumes it from SQL with no model call; "what about this
@@ -66,8 +96,9 @@ newest wins, one-shot clarifications claimed atomically, expiring after
 confirm, OD-14). It only ever resumes a read and never claims or revives a
 command draft (G-23, G-61 unchanged). Numbered-option state is representable; number
 routing, Pidgin answers and "send it as PDF" belong to later builds.
-Answering the G-61 funding-source question ("bank", "cash") is NOT
-representable yet: Build 7 must widen the `expects` CHECK in a new migration
+Answering the G-61 funding-source question ("bank", "cash") was NOT
+representable in Build 6; Build 7 (#259) makes it so with migration 0155.
+Build 6's note was: Build 7 must widen the `expects` CHECK in a new migration
 and answer it through a separate write path that shows a FRESH purchase
 preview, never by executing the retired draft. Resumed reads are free (no
 `AI_ACTIONS` unit) and not plan- or entitlement-gated, like the other free
@@ -364,15 +395,15 @@ for M2/M3 (PDF templates, Meta/Twilio channel code, conversation gates).
 
 ## 2. Where everything lives
 
-| Thing                 | Location                                                                                                                                                                                            |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Decisions and why     | [adr/](adr/) — 33 ADRs at the reset (0001–0034, 0030 unused); see `REKODA_REFERENCE_MANIFEST.md` §4 for status. This row is historical                                                              |
-| Product & system spec | [archive/architecture.md](archive/architecture.md) (superseded by `REKODA_CANONICAL_SPEC.md` on 25 Aug 2026)                                                                                        |
-| Commercial model      | [pricing-model.md](pricing-model.md) — incl. standing review triggers                                                                                                                               |
-| Milestones M0–M5      | [archive/engineering-plan.md](archive/engineering-plan.md) §11 (superseded by the build plan)                                                                                                       |
-| SEO/content plan      | [content-plan.md](content-plan.md)                                                                                                                                                                  |
-| Ops procedures        | [runbooks/](runbooks/)                                                                                                                                                                              |
-| Code                  | `packages/core` (money/ledger/costing/statements — most-tested), `packages/contracts` (AI border schemas), `packages/db` (schema + RLS, migrations through 0149), `packages/shared` (branded types) |
+| Thing                 | Location                                                                                                                                                                                                                  |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Decisions and why     | [adr/](adr/) — 33 ADRs at the reset (0001–0034, 0030 unused); see `REKODA_REFERENCE_MANIFEST.md` §4 for status. This row is historical                                                                                    |
+| Product & system spec | [archive/architecture.md](archive/architecture.md) (superseded by `REKODA_CANONICAL_SPEC.md` on 25 Aug 2026)                                                                                                              |
+| Commercial model      | [pricing-model.md](pricing-model.md) — incl. standing review triggers                                                                                                                                                     |
+| Milestones M0–M5      | [archive/engineering-plan.md](archive/engineering-plan.md) §11 (superseded by the build plan)                                                                                                                             |
+| SEO/content plan      | [content-plan.md](content-plan.md)                                                                                                                                                                                        |
+| Ops procedures        | [runbooks/](runbooks/)                                                                                                                                                                                                    |
+| Code                  | `packages/core` (money/ledger/costing/statements — most-tested), `packages/contracts` (AI border schemas), `packages/db` (schema + RLS, migrations through 0154 on main, 0157 on #259), `packages/shared` (branded types) |
 
 ## 3. Status at handoff
 

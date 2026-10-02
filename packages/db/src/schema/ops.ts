@@ -469,6 +469,34 @@ export const commandDrafts = pgTable(
      * unread, G-20).
      */
     previewed: boolean('previewed').notNull().default(false),
+    /**
+     * Set only on a funding-answer rebuild that was UNDONE because its
+     * preview never reached the merchant (migration 0156, G-68): the retired
+     * question it was rebuilt from. The one newer draft that does not close
+     * that question. Null on every other draft.
+     */
+    undoneRebuildOf: uuid('undone_rebuild_of'),
+    /**
+     * The member whose message drafted this row (migration 0157, G-68), when
+     * the sender is a member. "A preview is already waiting" is said only of
+     * a member's OWN preview. Null on older drafts.
+     */
+    requestedBy: uuid('requested_by').references(() => users.id),
+    /**
+     * The retired question a funding-answer rebuild was built from
+     * (migration 0157, G-68). "Already waiting" is said only of the rebuild
+     * of the question answered; the SAME member's newer purchase preview of
+     * the same total supersedes their pending rebuild, and says so. Never
+     * across members. Null on every draft that is not a rebuild.
+     */
+    rebuiltFrom: uuid('rebuilt_from'),
+    /**
+     * A preview withdrawn because its send failed after it had closed older
+     * retired purchase questions (migration 0157, G-68); those questions are
+     * restored, and this marker keeps it from blocking them. Only ever on a
+     * superseded draft.
+     */
+    withdrawn: boolean('withdrawn').notNull().default(false),
   },
   (t) => [
     // One draft per message — a job that runs twice must not give the merchant
@@ -507,6 +535,8 @@ export const conversationContinuations = pgTable(
     documentRef: text('document_ref'),
     /** The exact lines of a numbered list shown; invoice numbers only. */
     options: jsonb('options'),
+    /** The retired purchase draft a funding-source question asked about (0155). */
+    draftId: uuid('draft_id'),
     /** open | consumed | superseded | expired; one-way out of open. */
     state: text('state').notNull().default('open'),
     insertionSeq: bigint('insertion_seq', { mode: 'number' }).notNull().generatedAlwaysAsIdentity(),
@@ -518,7 +548,7 @@ export const conversationContinuations = pgTable(
       .default(sql`clock_timestamp() + interval '600 seconds'`),
   },
   (t) => [
-    uniqueIndex('conversation_continuations_message_ux').on(t.sourceMessageId),
+    uniqueIndex('conversation_continuations_message_ux').on(t.sourceMessageId, t.userId),
     uniqueIndex('conversation_continuations_open_ux')
       .on(t.businessId, t.userId)
       .where(sql`state = 'open'`),

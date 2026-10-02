@@ -39,6 +39,12 @@ export interface OpenContinuationInput {
   state: ContinuationState;
   /** Tests only: when the window opens. Production uses the database clock. */
   now?: Date;
+  /**
+   * When it closes, if not CONTINUATION_TTL_SECONDS after it opens: a G-61
+   * funding question stays answerable exactly as long as its answer window
+   * (G-68 review), so the "Reply *bank* or *cash*" it offered stays true.
+   */
+  expiresAt?: Date;
 }
 
 export interface OpenContinuation {
@@ -108,13 +114,18 @@ export async function openContinuation(
   const inserted = await tx.execute<{ id: string }>(sql`
     INSERT INTO conversation_continuations
       (business_id, user_id, source_message_id, kind, expects, topic, period,
-       customer_token, document_ref, options, expires_at)
+       customer_token, document_ref, options, draft_id, expires_at)
     VALUES (
       ${input.businessId}::uuid, ${input.userId}::uuid, ${input.sourceMessageId}::uuid,
       ${columns.kind}, ${columns.expects}, ${columns.topic}, ${columns.period},
       ${columns.customerToken}, ${columns.documentRef},
       ${columns.options === null ? null : JSON.stringify(columns.options)}::jsonb,
-      ${clock(input.now)} + make_interval(secs => ${CONTINUATION_TTL_SECONDS}))
+      ${columns.draftId}::uuid,
+      ${
+        input.expiresAt
+          ? sql`${input.expiresAt.toISOString()}::timestamptz`
+          : sql`${clock(input.now)} + make_interval(secs => ${CONTINUATION_TTL_SECONDS})`
+      })
     ON CONFLICT DO NOTHING
     RETURNING id`);
   const created = [...inserted][0];
@@ -146,6 +157,7 @@ type Row = {
   customer_token: string | null;
   document_ref: string | null;
   options: unknown;
+  draft_id: string | null;
 };
 
 /**
@@ -162,7 +174,7 @@ export async function currentContinuation(
 ): Promise<OpenContinuation | null> {
   const now = clock(options.now);
   const rows = await tx.execute<Row>(sql`
-    SELECT id, kind, expects, topic, period, customer_token, document_ref, options
+    SELECT id, kind, expects, topic, period, customer_token, document_ref, options, draft_id
       FROM conversation_continuations
      WHERE business_id = ${businessId}::uuid
        AND user_id = ${userId}::uuid
@@ -181,6 +193,7 @@ export async function currentContinuation(
     customerToken: row.customer_token,
     documentRef: row.document_ref,
     options: row.options,
+    draftId: row.draft_id,
   });
   return state ? { id: row.id, state } : null;
 }
@@ -234,4 +247,63 @@ export async function retireContinuationOpenedBy(
        AND state = 'open'
     RETURNING id`);
   return [...rows].length;
+}
+
+/**
+ * Retire every open continuation, for ANY member of this business, that
+ * names this draft (G-68 review): a G-61 funding question is answered ONCE.
+ * After the purchase is rebuilt from it, no other member's short answer may
+ * rebuild it again. Returns WHO held one, and until when, so a rebuild that
+ * is undone (its preview never reached anybody) can re-open exactly those
+ * members' answers inside their own windows (Codex review), and nobody
+ * else's.
+ */
+export async function retireContinuationsForDraft(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<{ userId: string; expiresAt: Date }[]> {
+  const rows = await tx.execute<{ user_id: string; expires_at: Date | string }>(sql`
+    UPDATE conversation_continuations
+       SET state = 'superseded', updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND draft_id = ${draftId}::uuid
+       AND state = 'open'
+    RETURNING user_id, expires_at`);
+  return [...rows].map((r) => ({ userId: r.user_id, expiresAt: new Date(r.expires_at) }));
+}
+
+/**
+ * This member's NEWEST continuation, in any state, or null (G-68 review).
+ * Read only to tell a member, truthfully and without a model, that the
+ * funding question their short answer is about was already answered or
+ * closed.
+ */
+export async function newestContinuation(
+  tx: TenantDb,
+  businessId: string,
+  userId: string,
+  /** The instant the message reached Rekoda: rows written after it are not
+   * "newest" for it (a delayed or retried event never sees the future). */
+  options: { now?: Date } = {},
+): Promise<ContinuationState | null> {
+  const rows = await tx.execute<Row>(sql`
+    SELECT id, kind, expects, topic, period, customer_token, document_ref, options, draft_id
+      FROM conversation_continuations
+     WHERE business_id = ${businessId}::uuid AND user_id = ${userId}::uuid
+       AND created_at <= ${clock(options.now)}
+     ORDER BY insertion_seq DESC
+     LIMIT 1`);
+  const row = [...rows][0];
+  if (!row) return null;
+  return parseContinuation({
+    kind: row.kind,
+    expects: row.expects,
+    topic: row.topic,
+    period: row.period,
+    customerToken: row.customer_token,
+    documentRef: row.document_ref,
+    options: row.options,
+    draftId: row.draft_id,
+  });
 }

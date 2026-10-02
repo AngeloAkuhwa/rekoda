@@ -155,9 +155,14 @@ pattern. Legends and tooltips always.
 The highest-traffic interface in the product renders no HTML. It gets the same
 rigour as a screen and the same review process.
 
-- **Voice:** warm, direct, Nigerian English. Pidgin _understood_, never
-  performed — writing pidgin back at a merchant who wrote standard English is
-  condescending and will be read that way.
+- **Voice:** warm, direct, Nigerian English. Standard English, Nigerian
+  English, Nigerian Pidgin and English/Pidgin code-switching are first-class
+  merchant registers (OWN-18, 1 Oct 2026, which replaces the older "Pidgin
+  understood, never performed"): every register reaches the same accounting,
+  confirmation and safety rules, and input normalisation never strips Pidgin
+  meaning. Rekoda may mirror a merchant's clear Pidgin register; it never
+  forces Pidgin on someone who wrote standard English, never caricatures
+  Nigerian speech, and is not a translation engine.
 - **Every flow is specced like a screen**: happy path, each failure, each
   recovery, with exact copy. Copy is reviewed the way pixels are.
 - **Native controls over free text** where a choice is bounded: buttons (≤3),

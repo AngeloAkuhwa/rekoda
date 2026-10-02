@@ -27,6 +27,13 @@ import {
   CUSTOMER_TOKEN,
   continuationAnswer,
   isOneShot,
+  FUNDING_ANSWER_WINDOW_SECONDS,
+  withinFundingWindow,
+  rebuiltPurchaseFate,
+  uncountablePeriod,
+  answerIsUncertain,
+  fundingSourceAnswer,
+  type FundingSource,
   periodAnswer,
   resumedRead,
   type AiModelRole,
@@ -382,12 +389,17 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * claimed and not reachable from this branch.
      */
     const actorId = await actorOf(tx, businessId, inbound.from);
+    /* Whether this message retired a question Rekoda had asked this member
+     * (G-68): a "no" that drops nothing else must not say nothing waited. */
+    const outcome: RebuildOutcome = { retiredQuestion: false };
     const continued = actorId
       ? await continueConversation(tx, businessId, actorId, {
           text,
           route,
           messageId: message.id,
           receivedAt: event.receivedAt,
+          from: inbound.from,
+          outcome,
         })
       : null;
 
@@ -400,6 +412,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             from: inbound.from,
             retrying,
             receivedAt: event.receivedAt,
+            retiredQuestion: outcome.retiredQuestion,
           })
         : await interpretedReply(
             deps,
@@ -416,6 +429,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             actorId,
             // Extracted-document text qualifies for dual extraction (item 9).
             read !== null,
+            outcome,
           );
 
     if (answer) {
@@ -436,6 +450,97 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
          * on to. A member who never saw "Which period?" is not answering it
          * with a later "last month". */
         await continuationsRepo.retireContinuationOpenedBy(tx, businessId, message.id);
+        /* A funding-answer rebuild nobody saw is undone as if it never
+         * happened (Codex review): its new draft is superseded (never
+         * confirmable), the retired question is restored, and the sender's
+         * short answer re-opened inside its window, so "cash" again works. */
+        /* A same-member replacement nobody saw is undone too (Codex review):
+         * the new preview is superseded (never confirmable) and the rebuilt
+         * preview the merchant DID see is pending again, so it is still the
+         * one a yes confirms. */
+        /* A new preview that closed older questions, nobody saw (Codex
+         * review): it is withdrawn and the questions are restored, with the
+         * short answer of every member who held one and of the sender, each
+         * inside its window, so "cash" answers the question again. */
+        if (outcome.closedQuestions?.length) {
+          await conversationsRepo.withdrawPreviewAndRestore(
+            tx,
+            businessId,
+            message.id,
+            outcome.closedQuestions.map((q) => q.id),
+          );
+          const reopen = new Map<string, { draftId: string; expiresAt: Date }>();
+          for (const q of outcome.closedQuestions) {
+            const asked = await conversationsRepo.draftStateOf(tx, businessId, q.id);
+            if (asked?.state !== 'abandoned') continue;
+            for (const held of q.holders) {
+              if (!reopen.has(held.userId)) {
+                reopen.set(held.userId, { draftId: q.id, expiresAt: held.expiresAt });
+              }
+            }
+          }
+          if (actorId && !reopen.has(actorId)) {
+            const newest = await continuationsRepo.newestContinuation(tx, businessId, actorId);
+            if (
+              newest?.kind === 'clarification' &&
+              newest.expects === 'funding_source' &&
+              outcome.closedQuestions.some((q) => q.id === newest.draftId)
+            ) {
+              const asked = await conversationsRepo.draftStateOf(tx, businessId, newest.draftId);
+              if (asked?.state === 'abandoned') {
+                reopen.set(actorId, {
+                  draftId: newest.draftId,
+                  expiresAt: fundingWindowEnd(asked.createdAt),
+                });
+              }
+            }
+          }
+          for (const [userId, open] of reopen) {
+            if (open.expiresAt.getTime() <= Date.now()) continue;
+            await continuationsRepo.openContinuation(tx, {
+              businessId,
+              userId,
+              sourceMessageId: message.id,
+              state: { kind: 'clarification', expects: 'funding_source', draftId: open.draftId },
+              expiresAt: open.expiresAt,
+            });
+          }
+        }
+        if (outcome.replacedRebuilds?.length) {
+          await conversationsRepo.undoReplacement(
+            tx,
+            businessId,
+            message.id,
+            outcome.replacedRebuilds,
+          );
+        }
+        if (outcome.rebuiltFrom) {
+          await conversationsRepo.undoRebuild(tx, businessId, outcome.rebuiltFrom, message.id);
+          const asked = await conversationsRepo.draftStateOf(tx, businessId, outcome.rebuiltFrom);
+          if (asked?.state === 'abandoned') {
+            /* The sender, and EVERY other member whose answer the rebuild
+             * retired (Codex review), each inside their own window; no
+             * member who never held one is given one. */
+            const reopen = new Map<string, Date>();
+            if (actorId) reopen.set(actorId, fundingWindowEnd(asked.createdAt));
+            for (const held of outcome.retiredHolders ?? []) {
+              if (!reopen.has(held.userId)) reopen.set(held.userId, held.expiresAt);
+            }
+            for (const [userId, expiresAt] of reopen) {
+              await continuationsRepo.openContinuation(tx, {
+                businessId,
+                userId,
+                sourceMessageId: message.id,
+                state: {
+                  kind: 'clarification',
+                  expects: 'funding_source',
+                  draftId: outcome.rebuiltFrom,
+                },
+                expiresAt,
+              });
+            }
+          }
+        }
       }
     }
 
@@ -443,6 +548,21 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     log.debug(`answered an inbound message routed as ${route.route}`);
   };
 }
+
+/**
+ * What a reply did that a failed send must undo (G-68): whether it retired
+ * a question, and, for a funding-answer rebuild, the question it rebuilt and
+ * the members whose short answers that rebuild retired.
+ */
+type RebuildOutcome = {
+  retiredQuestion: boolean;
+  rebuiltFrom?: string;
+  retiredHolders?: { userId: string; expiresAt: Date }[];
+  /** Pending rebuilds this message's preview replaced (same member, total). */
+  replacedRebuilds?: string[];
+  /** Retired questions this message's new preview closed, and who held them. */
+  closedQuestions?: { id: string; holders: { userId: string; expiresAt: Date }[] }[];
+};
 
 /** A recording somebody made with the microphone button, not an attached file. */
 function isVoiceNote(inbound: { messageType: string; audioId: string | null }): boolean {
@@ -969,6 +1089,8 @@ interface CommandContext {
    * decides exactly as the first attempt did.
    */
   receivedAt: Date;
+  /** This message retired a question Rekoda had asked the sender (G-68). */
+  retiredQuestion?: boolean;
 }
 
 /**
@@ -987,7 +1109,11 @@ async function deterministicReply(
    * even a draft the owner parked. */
   if (intent.kind === 'affirm') {
     if (!(await mayTransact(tx, businessId, ctx.from))) return replies.viewOnlyRole();
-    return confirmPendingDraft(deps, tx, businessId, ctx.retrying, ctx.receivedAt, ctx.eventId);
+    return confirmPendingDraft(deps, tx, businessId, ctx.retrying, ctx.receivedAt, ctx.eventId, {
+      messageId: ctx.messageId,
+      from: ctx.from,
+      receivedAt: ctx.receivedAt,
+    });
   }
   if (intent.kind === 'deny' || intent.kind === 'cancel') {
     // A refusal after a preview discards the draft rather than leaving it to
@@ -1023,14 +1149,24 @@ async function deterministicReply(
     });
     await conversationsRepo.supersedePendingDrafts(tx, businessId, { asOf: ctx.receivedAt });
     const dropped = (cancellable ? 1 : 0) + (closedQuestion ? 1 : 0);
-    return dropped > 0
-      ? replies.cancelled()
-      : intent.kind === 'cancel'
-        ? replies.cancelled()
-        : null;
+    /* A bare "no" or "cancel" with nothing to refuse is answered, never met
+     * with silence, and never told something was cancelled (G-68). */
+    if (dropped > 0) return replies.cancelled();
+    /* The "no" closed a question Rekoda asked ("Which period?", a numbered
+     * list) and nothing else: true to say so, untrue to say nothing was
+     * waiting (G-68). A "no" to the funding question closed its retired
+     * draft above, so it answers "Cancelled." as before. */
+    if (ctx.retiredQuestion) return replies.questionLeft();
+    return intent.kind === 'cancel' ? replies.nothingToCancel() : replies.nothingToDecline();
   }
 
   switch (intent.kind) {
+    case 'unsure':
+      return unsureReply(tx, businessId, ctx.receivedAt, {
+        messageId: ctx.messageId,
+        from: ctx.from,
+        receivedAt: ctx.receivedAt,
+      });
     case 'greeting':
       return replies.greeting();
     case 'help':
@@ -1050,8 +1186,12 @@ async function deterministicReply(
 
       /* Two-message erasure (CG-style): the first ask parks an EraseData
        * draft, the second ask claims it and deletes. Anything else in
-       * between claims the draft through the ordinary yes/no paths and
-       * keeps the data. */
+       * between keeps the data: ANY inbound message on the thread after
+       * the first ask breaks the pair (G-68 review), whatever path it took
+       * and whether or not it recorded a draft. That is stricter than
+       * before for free deterministic commands ("who owes me" between the
+       * asks used to leave the pair intact), which is the safe direction
+       * for an irreversible action, and it is what the copy promises. */
       /* G-23: a first ask whose window closed is not waiting any more. */
       await conversationsRepo.expireStaleDrafts(tx, businessId, { now: ctx.receivedAt });
       /* EVERY pending draft counts here, a question to the books included
@@ -1059,16 +1199,42 @@ async function deterministicReply(
        * question between the two asks records a draft, breaks the pair, and
        * the data is kept. A resumed read ("last month", answered from
        * continuation state) records one too, as that message did before
-       * Build 6. A deterministic command records none and does not break
-       * it, exactly as before. */
+       * Build 6. A message that records no draft (a free deterministic
+       * command, media, a Pidgin phrase) breaks the pair too, through the
+       * inbound-message check just below (G-68 review). */
       const pending = await conversationsRepo.pendingDraft(tx, businessId, {
         asOf: ctx.receivedAt,
       });
       const pendingCommand = pending?.command as { intent?: string } | undefined;
-      const claim =
-        pending && pendingCommand?.intent === 'EraseData'
-          ? await conversationsRepo.claimDraft(tx, pending.id, { now: ctx.receivedAt })
-          : null;
+      /* A PAIR only when nothing at all was said in between (G-68 review):
+       * any inbound message on this business's thread after the first ask,
+       * from any member and by any path (a free command, a Pidgin phrase,
+       * another member's answer to their own question), breaks it. The copy
+       * says "anything else keeps it", and an irreversible erasure must not
+       * depend on which messages happen to record a draft. */
+      /* Counted twice, both ways failing closed: the conversation rows
+       * written, AND the durable webhook events stored at ingest (Codex
+       * review), so a message whose processing failed before its row was
+       * written still breaks the pair. */
+      const paired =
+        pending &&
+        pendingCommand?.intent === 'EraseData' &&
+        (await conversationsRepo.inboundSinceDraft(
+          tx,
+          businessId,
+          pending.id,
+          ctx.messageId,
+          ctx.eventId,
+        )) === 0 &&
+        (await conversationsRepo.inboundEventsSinceDraft(
+          tx,
+          businessId,
+          pending.id,
+          ctx.eventId,
+        )) === 0;
+      const claim = paired
+        ? await conversationsRepo.claimDraft(tx, pending.id, { now: ctx.receivedAt })
+        : null;
       if (claim?.outcome === 'not_pending') return replies.alreadyConfirmed();
       /* Only a claim inside the window erases. A first ask that expired (even
        * between the line above and the claim) is no confirmation: this ask
@@ -1512,6 +1678,8 @@ async function confirmPendingDraft(
   receivedAt: Date,
   /** The stored event this "yes" came in on, where its reservations are recorded. */
   eventId: string,
+  /** The message and its sender, for re-opening a re-asked funding question. */
+  sender: { messageId: string; from: string; receivedAt: Date },
 ): Promise<Reply | null> {
   /*
    * G-61: the last thing the merchant was shown may be a purchase question
@@ -1532,11 +1700,8 @@ async function confirmPendingDraft(
   /* `abandoned` is only ever a retired purchase question; a draft the
    * merchant cancelled is `superseded` and is never asked again. */
   if (latest?.state === 'abandoned') {
-    const asked = latest.command as { intent?: string } & Record<string, unknown>;
-    if (asked.intent === 'RecordPurchase') {
-      const gate = gatePurchase(asked as never);
-      if (gate.gate === 'CG1') return replies.arithmeticQuestion(gate.question);
-    }
+    const reasked = await reaskRetiredQuestion(tx, businessId, latest, sender);
+    if (reasked) return reasked;
     /* Never fall through to an older preview behind the question, even if
      * the stored question no longer gates (rules changed since). */
     return replies.nothingToConfirm();
@@ -2399,6 +2564,268 @@ async function retireSenderContinuation(
 }
 
 /**
+ * The G-61 funding-source question answered with a short "bank" or "cash"
+ * (G-68 Phase 2): the purchase it asked about, rebuilt with the account
+ * filled in, shown as a FRESH preview.
+ *
+ * Never an execution. The retired draft is never claimed, confirmed or
+ * revived: it is CLOSED (`superseded`) by the one answer that rebuilds it, so
+ * it can be answered only once. The rebuilt command walks the same gates a
+ * typed purchase does at this point: the role rule (only a member who may
+ * transact gets a draft to say yes to), a lapsed trial, the Chat entitlement,
+ * and `gatePurchase` (CG1 before CG2). It records a NEW draft, previewed,
+ * which only a normal "yes" confirms (CG3, inside its own G-23 window). No
+ * model is called, so no `AI_ACTIONS` unit is taken, as for every
+ * router-served turn; the stock and ledger rules run at the yes, unchanged.
+ *
+ * The supplier's name is not on the rebuilt preview: it is never stored
+ * (ADR 0005), only the vault row it resolved to, which the confirmation
+ * stamps on the purchase exactly as before.
+ */
+async function answerFundingSource(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  source: FundingSource,
+  message: {
+    messageId: string;
+    from: string;
+    receivedAt: Date;
+    outcome?: RebuildOutcome;
+  },
+): Promise<Reply> {
+  const retired = await conversationsRepo.retiredPurchaseDraft(tx, businessId, draftId);
+  /* Closed since it was asked (a "no", from this member or another one), or
+   * blocked by something newer: nothing to rebuild, and that is said. */
+  if (!retired) {
+    return closedQuestionReply(tx, businessId, draftId, message.receivedAt, message.from, source);
+  }
+  const refused = await fundingGateRefusal(tx, businessId, message.from);
+  if (refused) return refused;
+
+  const stored = retired.command as Record<string, unknown>;
+  const rebuilt = { ...stored, paymentMethod: source };
+  const gate = gatePurchase(rebuilt as never);
+  if (gate.gate !== 'CG2') return replies.arithmeticQuestion(gate.question);
+  /* ONE-SHOT (G-68 review): the question is answered once, by whoever
+   * answers first. Closing the retired draft (abandoned -> superseded) is a
+   * conditional UPDATE in this transaction, so of two answers, from two
+   * members or racing, exactly one rebuilds; the other is told the question
+   * was closed. Two previews of one purchase would let two yeses book it
+   * twice, which G-61 exists to prevent. */
+  if (!(await conversationsRepo.closeRetiredDraft(tx, businessId, retired.id))) {
+    return closedQuestionReply(tx, businessId, draftId, message.receivedAt, message.from, source);
+  }
+  /* Nobody else's short answer can reach it now. */
+  const holders = await continuationsRepo.retireContinuationsForDraft(tx, businessId, retired.id);
+  /* Remembered, so a preview that never reaches the merchant is undone,
+   * every member's answer this retired included. */
+  if (message.outcome) {
+    message.outcome.rebuiltFrom = retired.id;
+    message.outcome.retiredHolders = holders;
+  }
+  await conversationsRepo.recordDraft(tx, {
+    businessId,
+    conversationMessageId: message.messageId,
+    intent: 'RecordPurchase',
+    command: rebuilt,
+    model: null,
+    previewed: true,
+    requestedBy: await actorOf(tx, businessId, message.from),
+    rebuiltFrom: retired.id,
+  });
+  return replies.preview(gate.preview);
+}
+
+/**
+ * "na so?", "yes?", "e correct 🤔": an affirmation asked as a question
+ * (G-68). It confirms NOTHING, ever, and calls no model. What it is told
+ * depends on what is waiting, read without claiming anything:
+ *  - a retired G-61 question: the question again, as a "yes" gets it;
+ *  - an expired preview: that it expired, as a "yes" is told;
+ *  - a live preview: that only a plain yes saves it;
+ *  - nothing: that nothing is waiting for a yes.
+ */
+async function unsureReply(
+  tx: TenantDb,
+  businessId: string,
+  receivedAt: Date,
+  sender: { messageId: string; from: string; receivedAt: Date },
+): Promise<Reply> {
+  /* The yes it is not would carry the role rule; so does this answer. A
+   * view-only member is never told "reply yes to save it". */
+  if (!(await mayTransact(tx, businessId, sender.from))) return replies.viewOnlyRole();
+  await conversationsRepo.expireStaleDrafts(tx, businessId, { now: receivedAt });
+
+  /* The two-ask erasure (G-68 review): before G-68 "yes?" was a yes, which
+   * claimed a parked erasure ask and kept the data, so a later "delete my
+   * data" was a NEW first ask. A questioned yes must do exactly the same,
+   * never leave the ask parked for the second phrase to complete. */
+  const parked = await conversationsRepo.pendingDraft(tx, businessId, { asOf: receivedAt });
+  if ((parked?.command as { intent?: string } | undefined)?.intent === 'EraseData') {
+    await conversationsRepo.claimDraft(tx, parked!.id, { now: receivedAt });
+    return replies.erasureKept();
+  }
+
+  const latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, { asOf: receivedAt });
+  if (latest?.state === 'abandoned') {
+    return (
+      (await reaskRetiredQuestion(tx, businessId, latest, sender)) ?? replies.nothingToConfirm()
+    );
+  }
+  if (latest?.state === 'expired') {
+    return expiredAnswer(latest.command, latest.previewed, 'yes') ?? replies.nothingToConfirm();
+  }
+  const pending = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
+    asOf: receivedAt,
+  });
+  if (!pending?.previewed) return replies.nothingToConfirm();
+  /* A question to the books asked since the preview: point back at the
+   * preview, as a yes would, without retiring anything. */
+  if (await conversationsRepo.hasReadsAfter(tx, businessId, pending.id, { asOf: receivedAt })) {
+    return replies.previewBehindQuestion();
+  }
+  return replies.plainYesNeeded();
+}
+
+/**
+ * Ask a retired G-61 purchase question again (to a "yes", "na so?" or a
+ * questioned funding answer), and, for the funding-source question, RE-OPEN
+ * the short answer for the member who sent this message (G-68 review). The
+ * question says "Reply *bank* or *cash*", and that must be true however old
+ * the question is: its first continuation may have expired, been superseded
+ * by an unrelated reply, or belong to another member. Re-opened through the
+ * ordinary `openContinuation` (newest wins), naming the same retired draft,
+ * only while it is still `abandoned` and only for a sender with a
+ * membership. Null when the retired draft asks nothing.
+ */
+async function reaskRetiredQuestion(
+  tx: TenantDb,
+  businessId: string,
+  retired: { id: string; state: string; command: unknown },
+  sender: { messageId: string; from: string; receivedAt: Date },
+): Promise<Reply | null> {
+  if (retired.state !== 'abandoned') return null;
+  const asked = retired.command as { intent?: string } & Record<string, unknown>;
+  if (asked.intent !== 'RecordPurchase') return null;
+  /* The short answer is offered, and re-opened, only inside the answer
+   * window (F3, OD-19); after it the question offers only "send it again",
+   * so it never promises an answer Rekoda will not take. */
+  const row = await conversationsRepo.retiredPurchaseDraft(tx, businessId, retired.id);
+  const inWindow = row !== null && insideFundingWindow(row.createdAt, sender.receivedAt);
+  const gate = gatePurchase(asked as never, { shortAnswer: inWindow });
+  if (gate.gate !== 'CG1') return null;
+  if (inWindow && 'reason' in gate && gate.reason === 'funding_source') {
+    const now = { now: sender.receivedAt };
+    const actorId = await actorOf(tx, businessId, sender.from);
+    /* Already open for this member, about this draft: nothing to re-open. */
+    const live = actorId
+      ? await continuationsRepo.currentContinuation(tx, businessId, actorId, now)
+      : null;
+    const alreadyOpen =
+      live?.state.kind === 'clarification' &&
+      live.state.expects === 'funding_source' &&
+      live.state.draftId === retired.id;
+    if (actorId && !alreadyOpen) {
+      await continuationsRepo.openContinuation(tx, {
+        businessId,
+        userId: actorId,
+        sourceMessageId: sender.messageId,
+        state: { kind: 'clarification', expects: 'funding_source', draftId: retired.id },
+        now: sender.receivedAt,
+        expiresAt: fundingWindowEnd(row!.createdAt),
+      });
+    }
+  }
+  return replies.arithmeticQuestion(gate.question);
+}
+
+/**
+ * The read-only gates a rebuilt purchase walks, in order, or null when all
+ * pass: the role rule (only a member who may transact gets a draft to say
+ * yes to), a lapsed trial, and the Chat entitlement. One function so the
+ * refusals can be routed through a shared refusal later (Build 8) in one
+ * place; it reads only, so it can run before the answer is claimed.
+ */
+async function fundingGateRefusal(
+  tx: TenantDb,
+  businessId: string,
+  from: string,
+): Promise<Reply | null> {
+  if (!(await mayTransact(tx, businessId, from))) return replies.viewOnlyRole();
+  const plan = await usageRepo.planFor(tx, businessId);
+  if (plan === 'expired') return replies.trialEnded();
+  if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_CHAT')) {
+    return replies.chatNotInPlan();
+  }
+  return null;
+}
+
+/**
+ * What a funding answer that cannot rebuild anything is told (G-68 review),
+ * true in every state, and never inviting a resend while a live preview
+ * waits (two previews of one purchase could be booked twice):
+ *  - the member's OWN live preview is waiting: point at it, naming its
+ *    account when it differs from the one just named;
+ *  - another member's, or one Rekoda cannot attribute (requested_by null):
+ *    say so, inviting neither a yes nor a resend;
+ *  - nothing live is waiting: the question can no longer be answered.
+ * "Waiting" is only ever the purchase rebuilt from THIS question
+ * (`rebuilt_from`), never some other preview that happens to be pending.
+ */
+async function closedQuestionReply(
+  tx: TenantDb,
+  businessId: string,
+  /** The retired question the funding answer was about. */
+  questionId: string,
+  receivedAt: Date,
+  from: string,
+  /** The account the member just named, when the message named one. */
+  named?: FundingSource | null,
+): Promise<Reply> {
+  /* "Waiting" only for the purchase rebuilt from THIS question (0157,
+   * `rebuilt_from`), and only when it is what the next yes would actually
+   * reach: the newest pending preview, live (its window not closed at this
+   * message), with no read after it (a yes would get the pointer reply
+   * instead), not behind a retired question, and with no retired question
+   * as the latest thing to answer (a yes would re-ask that instead). Then
+   * WHOSE it is (final-head review): another member's preview names an
+   * account this member did not choose, so it is never offered as theirs to
+   * confirm, and a resend is not invited either. Read-only. */
+  const latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, { asOf: receivedAt });
+  if (latest?.state === 'abandoned') return replies.fundingQuestionClosed();
+  const waiting = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
+    asOf: receivedAt,
+  });
+  const reachable =
+    waiting !== null &&
+    waiting.intent === 'RecordPurchase' &&
+    waiting.rebuiltFrom === questionId &&
+    waiting.previewed === true &&
+    !(await conversationsRepo.hasReadsAfter(tx, businessId, waiting.id, { asOf: receivedAt })) &&
+    waiting.expiresAt !== undefined &&
+    waiting.expiresAt.getTime() > receivedAt.getTime() &&
+    !(await conversationsRepo.isBehindRetiredQuestion(tx, businessId, waiting.id));
+  if (!reachable) return replies.fundingQuestionClosed();
+  const member = await actorOf(tx, businessId, from);
+  if (member === null || !waiting.requestedBy) return replies.previewWaitingUnattributed();
+  if (waiting.requestedBy !== member) return replies.previewWaitingForAnotherMember();
+  const paid = (waiting.command as { paymentMethod?: unknown }).paymentMethod;
+  const differs = named && (paid === 'transfer' || paid === 'cash') && paid !== named;
+  return replies.previewAlreadyWaiting(differs ? paid : undefined);
+}
+
+/** When a funding question's answer window closes (OD-19). */
+function fundingWindowEnd(askedAt: Date): Date {
+  return new Date(askedAt.getTime() + FUNDING_ANSWER_WINDOW_SECONDS * 1000);
+}
+
+/** Was the retired funding question asked within FUNDING_ANSWER_WINDOW_SECONDS? */
+function insideFundingWindow(askedAt: Date, receivedAt: Date): boolean {
+  return withinFundingWindow(askedAt, receivedAt);
+}
+
+/**
  * A short reply that continues what was open for this member (Build 6), or
  * null to be understood as an ordinary message.
  *
@@ -2418,18 +2845,152 @@ async function continueConversation(
   tx: TenantDb,
   businessId: string,
   actorId: string,
-  message: { text: string; route: Route; messageId: string; receivedAt: Date },
+  message: {
+    text: string;
+    route: Route;
+    messageId: string;
+    receivedAt: Date;
+    from: string;
+    outcome?: RebuildOutcome;
+  },
 ): Promise<Reply | null> {
   const now = { now: message.receivedAt };
   const open = await continuationsRepo.currentContinuation(tx, businessId, actorId, now);
+
+  /* A short "cash" or "bank" with nothing open, when this member's newest
+   * continuation was a funding question whose purchase has since been
+   * answered or closed (by them, by another member, by a "no", or by the
+   * purchase being sent again), inside its window: told so, truthfully,
+   * with no model call (G-68 review). Never a rebuild. */
+  if (!open && message.route.route === 'model' && fundingSourceAnswer(message.text)) {
+    const newest = await continuationsRepo.newestContinuation(tx, businessId, actorId, now);
+    if (newest?.kind === 'clarification' && newest.expects === 'funding_source') {
+      const asked = await conversationsRepo.draftStateOf(tx, businessId, newest.draftId);
+      if (
+        asked &&
+        asked.state !== 'abandoned' &&
+        insideFundingWindow(asked.createdAt, message.receivedAt)
+      ) {
+        return closedQuestionReply(
+          tx,
+          businessId,
+          newest.draftId,
+          message.receivedAt,
+          message.from,
+          fundingSourceAnswer(message.text),
+        );
+      }
+    }
+  }
+
+  /* G-61: a "yes" (or "na so", "oya") to the funding-source question is
+   * about the question itself, and is answered by asking it again, exactly
+   * as before (G-68 Phase 2). The question stays open for the short answer
+   * it asks for; the "yes" goes down its ordinary path. */
+  if (
+    open?.state.kind === 'clarification' &&
+    open.state.expects === 'funding_source' &&
+    message.route.route === 'deterministic' &&
+    (message.route.intent.kind === 'affirm' || message.route.intent.kind === 'unsure')
+  ) {
+    return null;
+  }
+
   const answer = open ? continuationAnswer(open.state, message) : null;
+
+  /* A short answer naming a funding account (G-68 Phase 2). Claimed once,
+   * then answered by a FRESH preview of the rebuilt purchase. */
+  if (
+    open &&
+    answer?.kind === 'funding_source' &&
+    open.state.kind === 'clarification' &&
+    open.state.expects === 'funding_source'
+  ) {
+    const draftId = open.state.draftId;
+    const retired = await conversationsRepo.retiredPurchaseDraft(tx, businessId, draftId);
+    /* Past the answer window (F3, OD-19) a short "bank" rebuilds nothing:
+     * the question is retired and the message routes as it otherwise would. */
+    if (retired && !insideFundingWindow(retired.createdAt, message.receivedAt)) {
+      await continuationsRepo.retireContinuations(tx, businessId, actorId, now);
+      return null;
+    }
+    /* "cash?", "bank 🤔", "cash ❌", "bank 👎": asked or contradicted, not
+     * answered (G-68 review; Codex review: the same emoji rule as a yes).
+     * The question stays open and is asked again; nothing is rebuilt. */
+    if (answerIsUncertain(message.text)) {
+      return retired
+        ? ((await reaskRetiredQuestion(
+            tx,
+            businessId,
+            { ...retired, state: 'abandoned' },
+            message,
+          )) ??
+            (await closedQuestionReply(tx, businessId, draftId, message.receivedAt, message.from)))
+        : closedQuestionReply(tx, businessId, draftId, message.receivedAt, message.from);
+    }
+    /* The read-only gates run BEFORE the answer is claimed (Codex review):
+     * a refusal leaves the question open, so the same "cash" works the
+     * moment access is restored. */
+    const refused = await fundingGateRefusal(tx, businessId, message.from);
+    if (refused) return refused;
+    const claimed = await continuationsRepo.consumeContinuation(
+      tx,
+      businessId,
+      actorId,
+      open.id,
+      now,
+    );
+    if (!claimed) {
+      await continuationsRepo.retireContinuations(tx, businessId, actorId, now);
+      return null;
+    }
+    return answerFundingSource(tx, businessId, draftId, answer.source, message);
+  }
+
+  /* "2" from an explicit numbered list this member was shown and that is
+   * still open (G-68 Phase 2): the list is CONSUMED by its answer, never
+   * merely superseded. No question in Rekoda presents a numbered list yet,
+   * so nothing opens one in production; the answer names the line chosen
+   * and the commands that take it, and acts on nothing. */
+  if (open && answer?.kind === 'choice') {
+    const claimed = await continuationsRepo.consumeContinuation(
+      tx,
+      businessId,
+      actorId,
+      open.id,
+      now,
+    );
+    if (!claimed) {
+      await continuationsRepo.retireContinuations(tx, businessId, actorId, now);
+      return null;
+    }
+    return replies.optionChosen(answer.option.ref.invoiceNumber);
+  }
+
+  /* "Which period?" answered with a window Rekoda cannot count here
+   * ("yesterday", "last week", "in March"): the question stays OPEN and says
+   * which windows it can count, so the next reply can still answer it
+   * (Build 6's note, G-68 Phase 2). Nothing is retired or consumed. */
+  if (
+    open?.state.kind === 'clarification' &&
+    open.state.expects === 'period' &&
+    !answer &&
+    message.route.route === 'model' &&
+    uncountablePeriod(message.text)
+  ) {
+    return replies.periodNotCountable(open.state.topic === 'sales_summary' ? 'sales' : 'spending');
+  }
+
   const read = open && answer ? resumedRead(open.state, answer) : null;
   const claimed =
     open && read && isOneShot(open.state)
       ? await continuationsRepo.consumeContinuation(tx, businessId, actorId, open.id, now)
       : read !== null;
   if (!read || !claimed) {
-    await continuationsRepo.retireContinuations(tx, businessId, actorId, now);
+    const retired = await continuationsRepo.retireContinuations(tx, businessId, actorId, now);
+    if (retired > 0 && open?.state.kind === 'clarification' && message.outcome) {
+      message.outcome.retiredQuestion = true;
+    }
     return null;
   }
 
@@ -2712,6 +3273,8 @@ async function interpretedReply(
   actorId: string | null,
   /** True when this text was extracted from a photographed document. */
   fromDocument = false,
+  /** What this reply did that a failed send must undo (G-68). */
+  outcome?: RebuildOutcome,
 ): Promise<Reply> {
   /**
    * The MONTHLY meter (docs/metering-v1.md), checked before the model is
@@ -2896,6 +3459,7 @@ async function interpretedReply(
     identityLink: answered.linkAsked ? link : null,
     previewed: answered.previewed === true,
     confirmationContext: answered.confirmationContext ?? null,
+    requestedBy: actorId ?? null,
   });
 
   /* Build 6: a read Rekoda just answered, or the one question it asked
@@ -2911,16 +3475,93 @@ async function interpretedReply(
     });
   }
 
-  /* G-61: the merchant answers a funding-source question by sending the
-   * purchase again. The draft that asked stays on the record, abandoned,
-   * so only the replacement can ever be confirmed: a second "yes" finds
-   * nothing to resurrect, and nothing can record the purchase twice. */
+  /* G-68 review: a NEW financial preview means the merchant has moved on
+   * from any retired purchase question asked before it (typically they sent
+   * the purchase again, the base way to answer it). Each such question is
+   * closed in this transaction, and every member's short answer to it is
+   * retired, so nobody can rebuild it into a second preview of the same
+   * purchase. */
+  let shown = answered.reply;
+  if (answered.previewed === true && draft.isNew) {
+    /* The SAME member's purchase sent again (final-head review): their own
+     * pending rebuilt preview of the same TOTAL (integer kobo) is superseded,
+     * so their two yeses cannot book one purchase twice, and the reply ALWAYS
+     * says so with the total, so a different purchase is sent again by the
+     * one person who can tell. A different total leaves it waiting, and the
+     * reply says that too. Never across members, and never for a rebuild
+     * with no recorded requester: both previews then stay pending, exactly
+     * as base (whose preview a member may confirm is OD-15). Product names
+     * are free text and are never compared. */
+    if (command.intent === 'RecordPurchase' && actorId) {
+      for (const older of await conversationsRepo.pendingRebuildsBefore(tx, businessId, draft.id)) {
+        if (older.requestedBy !== actorId) continue;
+        const fate = rebuiltPurchaseFate(older.command, command);
+        if (!fate) continue;
+        if (fate.replace) {
+          if (await conversationsRepo.supersedeRebuild(tx, businessId, older.id)) {
+            shown = replies.earlierPreviewReplaced(shown, fate.totalK);
+            /* Remembered, so a replacement that never reaches the merchant
+             * gives them back the preview they saw. */
+            if (outcome) (outcome.replacedRebuilds ??= []).push(older.id);
+          }
+        } else {
+          shown = replies.earlierPreviewStillWaiting(shown, fate.totalK);
+        }
+      }
+    }
+    for (const closed of await conversationsRepo.closeRetiredQuestionsBefore(
+      tx,
+      businessId,
+      draft.id,
+    )) {
+      const holders = await continuationsRepo.retireContinuationsForDraft(tx, businessId, closed);
+      /* Remembered, so a preview that never reaches the merchant gives the
+       * questions it closed back, with every member's short answer. */
+      if (outcome) (outcome.closedQuestions ??= []).push({ id: closed, holders });
+    }
+  }
+
+  /* G-61: the draft that asked a purchase question is kept on the record,
+   * retired (`abandoned`), so it can never be confirmed. It is closed
+   * (`superseded`) when the question is answered: by a short "bank" or
+   * "cash" (a one-shot rebuild), or by any new financial preview such as
+   * the purchase sent again (above). A second "yes" finds nothing to
+   * resurrect, and nothing can record the purchase twice. */
   if (answered.retireDraft) {
     /* Only on the first delivery: a replayed message changes nothing. The
      * question becomes the conversation, so a preview left waiting from
      * before it is closed, not left pending and never confirmable. */
     if (draft.isNew) await conversationsRepo.supersedeDraftsBefore(tx, businessId, draft.id);
+    /* The newest question wins, business-wide (Codex review): a NEW
+     * purchase question closes every older one, and every member's short
+     * answer naming one is retired, in this transaction. Nobody can then
+     * rebuild an old purchase however the newer question ends. */
+    if (draft.isNew && command.intent === 'RecordPurchase') {
+      for (const closed of await conversationsRepo.closeRetiredQuestionsBefore(
+        tx,
+        businessId,
+        draft.id,
+      )) {
+        await continuationsRepo.retireContinuationsForDraft(tx, businessId, closed);
+      }
+    }
     await conversationsRepo.retireDraft(tx, businessId, draft.id);
+    /* G-68 Phase 2: the question also takes a short answer ("bank",
+     * "cash", "na cash") from the member who was asked, through a typed
+     * continuation naming this retired draft. The answer rebuilds the
+     * purchase and shows a FRESH preview; it never executes this draft. */
+    if (answered.fundingQuestion && actorId && draft.isNew) {
+      const asked = await conversationsRepo.draftStateOf(tx, businessId, draft.id);
+      await continuationsRepo.openContinuation(tx, {
+        businessId,
+        userId: actorId,
+        sourceMessageId: conversationMessageId,
+        state: { kind: 'clarification', expects: 'funding_source', draftId: draft.id },
+        /* The short answer works for the whole answer window it offers
+         * (OD-19), not just the 600-second continuation default. */
+        ...(asked ? { expiresAt: fundingWindowEnd(asked.createdAt) } : {}),
+      });
+    }
   }
 
   /* Appendix D: a preview that shows stock DISAPPEARING opens the
@@ -2947,7 +3588,7 @@ async function interpretedReply(
     }
   }
 
-  return answered.reply;
+  return shown;
 }
 
 /**
@@ -2975,6 +3616,9 @@ async function acknowledge(
   /** The answer was the G-61 funding-source question: the draft is kept for
    * the record but must not stay confirmable. */
   retireDraft?: boolean;
+  /** That question was WHERE THE MONEY CAME FROM, which a short "bank" or
+   * "cash" may answer through a continuation (G-68 Phase 2). */
+  fundingQuestion?: boolean;
   /** The answer was a PREVIEW a "yes" confirms, not a question (G-23). */
   previewed?: boolean;
 }> {
@@ -3146,7 +3790,13 @@ async function acknowledge(
     const asked = plain(replies.arithmeticQuestion(gate.question));
     /* Answered by sending the purchase again (funding source, ₦0): the
      * asking draft is retired so only the replacement is confirmable. */
-    return 'reason' in gate && gate.reason !== undefined ? { ...asked, retireDraft: true } : asked;
+    if (!('reason' in gate) || gate.reason === undefined) return asked;
+    /* The funding-source question (G-61) may also be answered with a short
+     * "bank" or "cash" (G-68 Phase 2): the caller opens a typed continuation
+     * for it. A ₦0 amount is answered only by sending the purchase again. */
+    return gate.reason === 'funding_source'
+      ? { ...asked, retireDraft: true, fundingQuestion: true }
+      : { ...asked, retireDraft: true };
   }
 
   /* A sale names a customer; an expense and a purchase do not. Only the first

@@ -261,6 +261,11 @@ understandable           no accounting jargon where plain words exist,
 exact                    amounts and currency, always in full
 irreversible actions     say what will happen, in the merchant's own terms
 no em dashes in UI copy  a standing product rule
+registers                standard English, Nigerian English, Nigerian Pidgin
+                         and code-switching are all first-class INPUT
+                         (OWN-18); replies are English today; later work
+                         MAY mirror a clear Pidgin register, never forced
+                         on an English speaker, never caricatured
 ```
 
 ---

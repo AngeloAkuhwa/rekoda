@@ -727,3 +727,282 @@ describe('a question to the books, among the drafts', () => {
     expect(superseded).toBe(2);
   });
 });
+
+/**
+ * Migration 0155 (G-68 Phase 2): the G-61 funding-source question as a
+ * continuation. It names ONE retired purchase draft of its own business,
+ * and nothing else; no other row names a draft.
+ */
+describe('the funding-source question (migration 0155)', () => {
+  async function retiredPurchase(businessId: string): Promise<string> {
+    const asked = await message(businessId);
+    return withBusiness(app, businessId, async (tx) => {
+      const draft = await conversationsRepo.recordDraft(tx, {
+        businessId,
+        conversationMessageId: asked,
+        intent: 'RecordPurchase',
+        command: { intent: 'RecordPurchase', amount: 180_000, paymentMethod: 'pos' },
+        model: null,
+      });
+      await conversationsRepo.retireDraft(tx, businessId, draft.id);
+      return draft.id;
+    });
+  }
+
+  const raw = (
+    businessId: string,
+    userId: string,
+    sourceMessageId: string,
+    expects: string,
+    draftId: string | null,
+    topic: string | null = null,
+  ) =>
+    owner
+      .execute(
+        sql`
+        INSERT INTO conversation_continuations
+          (business_id, user_id, source_message_id, kind, expects, topic, draft_id)
+        VALUES (${businessId}::uuid, ${userId}::uuid, ${sourceMessageId}::uuid,
+                'clarification', ${expects}, ${topic}, ${draftId}::uuid)`,
+      )
+      .then(
+        () => 'accepted',
+        (error: Error & { cause?: unknown }) => String(error.cause ?? error.message),
+      );
+
+  it('opens, reads back and is claimed once, naming its retired draft', async () => {
+    const { businessId, ownerId } = await seedBusiness();
+    const draftId = await retiredPurchase(businessId);
+    const opened = await open(businessId, ownerId, {
+      kind: 'clarification',
+      expects: 'funding_source',
+      draftId,
+    });
+    const live = await current(businessId, ownerId, at(1000));
+    expect(live?.state).toEqual({ kind: 'clarification', expects: 'funding_source', draftId });
+    expect(await consume(businessId, ownerId, opened!.id, at(1000))).toBe(true);
+    expect(await consume(businessId, ownerId, opened!.id, at(1000))).toBe(false);
+    expect(await states(businessId)).toEqual(['consumed']);
+  });
+
+  it('reads the retired purchase back without claiming or reviving it', async () => {
+    const { businessId } = await seedBusiness();
+    const draftId = await retiredPurchase(businessId);
+    const read = await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.retiredPurchaseDraft(tx, businessId, draftId),
+    );
+    expect(read?.id).toBe(draftId);
+    const after = await withBusiness(app, businessId, (tx) =>
+      tx.execute<{ state: string }>(sql`
+        SELECT state FROM command_drafts WHERE id = ${draftId}::uuid`),
+    );
+    expect([...after][0]?.state).toBe('abandoned');
+    /* Closed by "no", it rebuilds nothing. */
+    await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.closeRetiredDraft(tx, businessId, draftId),
+    );
+    expect(
+      await withBusiness(app, businessId, (tx) =>
+        conversationsRepo.retiredPurchaseDraft(tx, businessId, draftId),
+      ),
+    ).toBeNull();
+  });
+
+  it('the database refuses a funding question without a draft, and a draft on anything else', async () => {
+    const { businessId, ownerId } = await seedBusiness();
+    const draftId = await retiredPurchase(businessId);
+    expect(
+      await raw(businessId, ownerId, await message(businessId), 'funding_source', null),
+    ).toContain('conversation_continuations_funding_shape_check');
+    expect(
+      await raw(businessId, ownerId, await message(businessId), 'period', draftId, 'sales_summary'),
+    ).toContain('conversation_continuations_funding_shape_check');
+    expect(
+      await raw(
+        businessId,
+        ownerId,
+        await message(businessId),
+        'funding_source',
+        draftId,
+        'debtors',
+      ),
+    ).toContain('conversation_continuations_funding_shape_check');
+    expect(
+      await raw(businessId, ownerId, await message(businessId), 'transfer_money', null),
+    ).toContain('conversation_continuations_expects_check');
+    expect(
+      await raw(businessId, ownerId, await message(businessId), 'funding_source', draftId),
+    ).toBe('accepted');
+  });
+
+  it('cannot name another tenant’s draft, even as the owner outside RLS', async () => {
+    const a = await seedBusiness();
+    const b = await seedBusiness();
+    const theirs = await retiredPurchase(b.businessId);
+    expect(
+      await raw(a.businessId, a.ownerId, await message(a.businessId), 'funding_source', theirs),
+    ).toContain('conversation_continuations_draft_business_fk');
+  });
+});
+
+/**
+ * Migration 0156 (G-68, Codex review): the newest question wins, and the one
+ * newer draft that does not close an older question is the EXPLICITLY marked
+ * undone rebuild of that very question. One message may re-open the answer
+ * of several members.
+ */
+describe('an undone funding rebuild (migration 0156)', () => {
+  async function purchaseDraft(businessId: string, retire: boolean): Promise<string> {
+    const asked = await message(businessId);
+    return withBusiness(app, businessId, async (tx) => {
+      const draft = await conversationsRepo.recordDraft(tx, {
+        businessId,
+        conversationMessageId: asked,
+        intent: 'RecordPurchase',
+        command: { intent: 'RecordPurchase', amount: 180_000, paymentMethod: 'pos' },
+        model: null,
+      });
+      if (retire) await conversationsRepo.retireDraft(tx, businessId, draft.id);
+      return draft.id;
+    });
+  }
+  const answerable = (businessId: string, draftId: string) =>
+    withBusiness(app, businessId, (tx) =>
+      conversationsRepo.retiredPurchaseDraft(tx, businessId, draftId),
+    );
+  const setState = (draftId: string, state: string) =>
+    owner.execute(sql`UPDATE command_drafts SET state = ${state} WHERE id = ${draftId}::uuid`);
+
+  it('a newer purchase draft in ANY state closes an older question; only its own undone rebuild does not', async () => {
+    const { businessId } = await seedBusiness();
+    const q1 = await purchaseDraft(businessId, true);
+    expect((await answerable(businessId, q1))?.id).toBe(q1);
+    const newer = await purchaseDraft(businessId, false);
+    await setState(newer, 'superseded');
+    expect(await answerable(businessId, q1)).toBeNull();
+    /* Marked as the undone rebuild of q1: q1 answers again. */
+    await owner.execute(
+      sql`UPDATE command_drafts SET undone_rebuild_of = ${q1}::uuid WHERE id = ${newer}::uuid`,
+    );
+    expect((await answerable(businessId, q1))?.id).toBe(q1);
+  });
+
+  it('the database keeps the marker on a superseded draft, never on itself', async () => {
+    const { businessId } = await seedBusiness();
+    const q = await purchaseDraft(businessId, true);
+    const pending = await purchaseDraft(businessId, false);
+    const mark = (draftId: string, of: string) =>
+      owner
+        .execute(
+          sql`UPDATE command_drafts SET undone_rebuild_of = ${of}::uuid WHERE id = ${draftId}::uuid`,
+        )
+        .then(
+          () => 'accepted',
+          (error: Error & { cause?: unknown }) => String(error.cause ?? error.message),
+        );
+    expect(await mark(pending, q)).toContain('command_drafts_undone_rebuild_superseded_check');
+    await setState(pending, 'superseded');
+    expect(await mark(pending, pending)).toContain(
+      'command_drafts_undone_rebuild_superseded_check',
+    );
+    expect(await mark(pending, q)).toBe('accepted');
+  });
+
+  it('one message may open a continuation for each of two members, once each', async () => {
+    const { businessId, ownerId } = await seedBusiness();
+    const delegateId = await addMember(businessId);
+    const q = await purchaseDraft(businessId, true);
+    const source = await message(businessId);
+    const state: ContinuationState = {
+      kind: 'clarification',
+      expects: 'funding_source',
+      draftId: q,
+    };
+    const openFor = (userId: string) =>
+      withBusiness(app, businessId, (tx) =>
+        continuationsRepo.openContinuation(tx, {
+          businessId,
+          userId,
+          sourceMessageId: source,
+          state,
+        }),
+      );
+    expect((await openFor(ownerId))?.isNew).toBe(true);
+    expect((await openFor(delegateId))?.isNew).toBe(true);
+    expect((await openFor(delegateId))?.isNew).toBe(false);
+  });
+});
+
+describe('who drafted a preview (migration 0157)', () => {
+  it('records the requesting member, and reads it back on the waiting preview', async () => {
+    const { businessId, ownerId } = await seedBusiness();
+    const delegateId = await addMember(businessId);
+    const draftFor = async (requestedBy: string | null) => {
+      const asked = await message(businessId);
+      return withBusiness(app, businessId, (tx) =>
+        conversationsRepo.recordDraft(tx, {
+          businessId,
+          conversationMessageId: asked,
+          intent: 'RecordPurchase',
+          command: { intent: 'RecordPurchase', amount: 180_000, paymentMethod: 'cash' },
+          model: null,
+          previewed: true,
+          requestedBy,
+        }),
+      );
+    };
+    await draftFor(ownerId);
+    const waitingOf = () =>
+      withBusiness(app, businessId, (tx) => conversationsRepo.pendingDraftToAnswer(tx, businessId));
+    expect((await waitingOf())?.requestedBy).toBe(ownerId);
+    await draftFor(delegateId);
+    expect((await waitingOf())?.requestedBy).toBe(delegateId);
+    await draftFor(null);
+    expect((await waitingOf())?.requestedBy).toBeNull();
+  });
+});
+
+describe('the two-ask erasure pair fails closed (G-68 review)', () => {
+  it('a parked ask whose message cannot be found counts as broken, never intact', async () => {
+    const { businessId } = await seedBusiness();
+    const asking = await message(businessId);
+    const n = await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.inboundSinceDraft(
+        tx,
+        businessId,
+        '3f1d6a9e-2b4c-4d8e-9a1b-7c5e6f708192',
+        asking,
+      ),
+    );
+    expect(n).toBeGreaterThan(0);
+  });
+});
+
+describe('the newest continuation as of a message (Codex review)', () => {
+  it('a message never sees a continuation written after it arrived', async () => {
+    const { businessId, ownerId } = await seedBusiness();
+    await open(businessId, ownerId, PERIOD_QUESTION);
+    const rows = await withBusiness(app, businessId, (tx) =>
+      tx.execute<{ created_at: string }>(sql`
+        SELECT created_at FROM conversation_continuations WHERE business_id = ${businessId}::uuid`),
+    );
+    /* Millisecond precision in JS; the next row is opened well after. */
+    const firstAt = new Date(new Date([...rows][0]!.created_at).getTime() + 1);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await open(businessId, ownerId, {
+      kind: 'clarification',
+      expects: 'period',
+      topic: 'expenses_summary',
+    });
+    const asOfFirst = await withBusiness(app, businessId, (tx) =>
+      continuationsRepo.newestContinuation(tx, businessId, ownerId, { now: firstAt }),
+    );
+    expect(asOfFirst).toMatchObject({ topic: 'sales_summary' });
+    const before = await withBusiness(app, businessId, (tx) =>
+      continuationsRepo.newestContinuation(tx, businessId, ownerId, {
+        now: new Date(firstAt.getTime() - 60_000),
+      }),
+    );
+    expect(before).toBeNull();
+  });
+});

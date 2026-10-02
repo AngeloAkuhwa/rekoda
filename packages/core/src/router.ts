@@ -30,6 +30,12 @@ export type DeterministicIntent =
   /** A bare number. What it MEANS depends on what was asked — see the note below. */
   | { kind: 'number'; value: number }
   | { kind: 'affirm' }
+  /**
+   * An affirmation asked as a QUESTION or with a doubting face: "na so?",
+   * "yes?", "e correct 🤔". In Pidgin "Na so?" is "Really?". It confirms
+   * nothing; the merchant is asked for a plain yes (G-68).
+   */
+  | { kind: 'unsure' }
   | { kind: 'deny' }
   | { kind: 'cancel' }
   /** Regulatory opt-out. Must be honoured whatever the conversation was doing. */
@@ -59,6 +65,23 @@ export type Route =
  *
  * Only ever stripped from the EDGES. A filler in the middle of a sentence is
  * part of a sentence, and a sentence is not a command.
+ *
+ * NORMALISATION MAY REMOVE PRESENTATION NOISE. IT MUST NOT REMOVE LANGUAGE
+ * MEANING (G-68). Nigerian Pidgin and Nigerian English are first-class
+ * registers (OWN-18), so every word here was reviewed for what it means at
+ * the edge of a short command, not assumed empty because it is Nigerian:
+ *
+ *  - `abeg`, `biko`, `jare`, `sha` are politeness or emphasis. "abeg who owes
+ *    me", "no jare", "yes sha" keep their meaning without them.
+ *  - `oya` urges ("come on, go ahead"). At the edge of a command it adds
+ *    urgency, not content: "oya send payment link" is "send payment link".
+ *    ALONE it is an answer in its own right, which is why it is also a phrase
+ *    below; the strip never empties a message, so a bare "oya" survives.
+ *  - `na` is NOT here. At the START of a message it is the Pidgin copula and
+ *    carries the meaning: "na so" (that is right), "na cash", "na 20k
+ *    remain", "na Ada buy am". Stripping it turned "na so" into "so" and made
+ *    the affirmation unreachable. Only a TRAILING `na` (an urging particle,
+ *    "send am na") is noise; see `TRAILING_FILLERS`.
  */
 const FILLERS = new Set([
   'please',
@@ -79,10 +102,16 @@ const FILLERS = new Set([
   'thank you',
   'tanx',
   'oya',
-  'na',
   'now',
   'sha',
 ]);
+
+/**
+ * Noise only at the END of a message: an urging `na` ("who dey owe me na")
+ * and the emphatic `o` / `oo` ("na so o", "no oo"). A message that is only
+ * "o" survives, because the strip never empties a message.
+ */
+const TRAILING_FILLERS = new Set(['na', 'o', 'oo', 'ooo']);
 
 /**
  * Normalise for matching: case, punctuation, spacing, and the variation
@@ -113,7 +142,8 @@ function stripFillers(text: string): string {
       words = words.slice(1);
       changed = true;
     }
-    if (words.length > 1 && FILLERS.has(words[words.length - 1]!)) {
+    const last = words[words.length - 1]!;
+    if (words.length > 1 && (FILLERS.has(last) || TRAILING_FILLERS.has(last))) {
       words = words.slice(0, -1);
       changed = true;
     }
@@ -167,7 +197,17 @@ const PHRASES: ReadonlyArray<readonly [readonly string[], DeterministicIntent]> 
     { kind: 'greeting' },
   ],
   [
-    ['help', 'menu', 'options', 'what can you do', 'how does this work', 'how e dey work'],
+    [
+      'help',
+      'menu',
+      'options',
+      'what can you do',
+      'what can i do here',
+      'how does this work',
+      'how e dey work',
+      'wetin you fit do',
+      'wetin i fit do here',
+    ],
     { kind: 'help' },
   ],
   [
@@ -188,6 +228,15 @@ const PHRASES: ReadonlyArray<readonly [readonly string[], DeterministicIntent]> 
       'sure',
       'e correct',
       'na so',
+      'na correct',
+      /* Bare "oya" after a preview is "go on, do it". With nothing waiting it
+       * meets the same honest "nothing waiting for a yes" as a bare "yes". */
+      'oya',
+      /* "oya" is an edge filler, so this whole phrase would strip to a bare
+       * "o"; it is matched before stripping (see `routeMessage`). */
+      'oya o',
+      'oya oo',
+      'oya ooo',
       'that is right',
       'right',
       'approved',
@@ -195,10 +244,37 @@ const PHRASES: ReadonlyArray<readonly [readonly string[], DeterministicIntent]> 
     { kind: 'affirm' },
   ],
   [
-    ['no', 'nope', 'nah', 'not correct', 'wrong', 'e no correct', 'incorrect', 'no o'],
+    [
+      'no',
+      'nope',
+      'nah',
+      'not correct',
+      'wrong',
+      'e no correct',
+      'incorrect',
+      'no o',
+      'no be so',
+      'that one no correct',
+    ],
     { kind: 'deny' },
   ],
-  [['cancel', 'forget it', 'never mind', 'nevermind', 'abort', 'leave it'], { kind: 'cancel' }],
+  [
+    [
+      'cancel',
+      'forget it',
+      'never mind',
+      'nevermind',
+      'abort',
+      'leave it',
+      'forget am',
+      'leave am',
+      'no do am',
+      'make we leave am',
+      'cancel am',
+      'cancel it',
+    ],
+    { kind: 'cancel' },
+  ],
   [
     [
       'records',
@@ -221,6 +297,7 @@ const PHRASES: ReadonlyArray<readonly [readonly string[], DeterministicIntent]> 
       'open my books',
       'see my books',
       'show me my books',
+      'make i see my books',
       'web',
       'website',
       'log in',
@@ -242,6 +319,8 @@ const PHRASES: ReadonlyArray<readonly [readonly string[], DeterministicIntent]> 
       'what is left',
       'what dey left',
       'wetin remain',
+      'wetin dey left',
+      'how many remain',
       'inventory',
       'my inventory',
     ],
@@ -259,6 +338,9 @@ const PHRASES: ReadonlyArray<readonly [readonly string[], DeterministicIntent]> 
       'owing',
       'who is owing me',
       'who dey owe',
+      'who still dey owe',
+      'who still dey owe me',
+      'show me people wey owe me',
     ],
     { kind: 'debtors' },
   ],
@@ -277,13 +359,15 @@ const PHRASES: ReadonlyArray<readonly [readonly string[], DeterministicIntent]> 
     ],
     { kind: 'payment_details' },
   ],
-  [['resend', 'send again', 'send it again', 'resend it'], { kind: 'resend' }],
+  [['resend', 'send again', 'send it again', 'resend it', 'send am again'], { kind: 'resend' }],
   [
     [
       'upgrade',
       'upgrade me',
       'upgrade my plan',
       'i want to upgrade',
+      'i want upgrade',
+      'i wan upgrade',
       'i want to pay',
       'top up',
       'topup',
@@ -294,29 +378,442 @@ const PHRASES: ReadonlyArray<readonly [readonly string[], DeterministicIntent]> 
 ];
 
 /**
- * Regulatory keywords, matched on the bare message only.
+ * Regulatory keywords: the ONE consent vocabulary, for merchants and customers.
  *
- * No filler stripping and no phrase list: the message must be exactly this
- * word. Carriers and Meta treat these the same way, and for good reason —
- * "stop by my shop tomorrow" must not unsubscribe anybody, and a merchant
- * typing STOP must always be heard.
+ * No filler stripping and no phrase list: the message must be this word.
+ * Carriers and Meta treat these the same way, and for good reason: "stop by
+ * my shop tomorrow" must not unsubscribe anybody, and a merchant typing STOP
+ * must always be heard.
+ *
+ * A `Set`, not an object literal: an object answers "constructor" from its
+ * prototype, and these must match exactly these words or nothing.
  */
-const KEYWORDS: Readonly<Record<string, DeterministicIntent>> = {
-  stop: { kind: 'stop' },
-  'stop all': { kind: 'stop' },
-  stopall: { kind: 'stop' },
-  unsubscribe: { kind: 'stop' },
-  quit: { kind: 'stop' },
-  start: { kind: 'start' },
-  unstop: { kind: 'start' },
-  subscribe: { kind: 'start' },
-};
+const STOP_WORDS: ReadonlySet<string> = new Set([
+  'stop',
+  'stop all',
+  'stopall',
+  'unsubscribe',
+  'quit',
+]);
+const START_WORDS: ReadonlySet<string> = new Set(['start', 'unstop', 'subscribe']);
+
+/**
+ * How much may decorate a STOP, per side, counted in GRAPHEMES (what a person
+ * sees as one character: a skin-toned emoji, a flag, a keycap or a whole
+ * family is one).
+ *
+ * The longest genuine form we have seen is ten exclamation marks
+ * ("STOP!!!!!!!!!!"); three skin-toned emoji with a space take four; quotes,
+ * a closing bracket and a couple of emoji fit easily. Sixteen keeps every one
+ * of those with room to spare, while a paste ("stop" then 400 dashes, or
+ * 2,000 exclamation marks) is refused: past that point it is not somebody
+ * decorating a word, it is a wall of characters with a word in it.
+ */
+const DECORATION = 16;
+/** How many times one STOP-class word may be repeated and still be a STOP. */
+const REPEATED_STOP_MAX = 5;
+/** START is strict: at most this many `.`, `!` or emoji after the word. */
+const START_MARKS = 5;
+/**
+ * A cheap length bound, checked before segmenting. A STOP with sixteen
+ * decorations each side is under 50 graphemes; even sixteen ZWJ family emoji
+ * on each side (up to 11 code units each) stay under this.
+ */
+const MAX_CONSENT_CODE_UNITS = 512;
+
+/**
+ * Bidirectional overrides and isolates (U+202A to U+202E, U+2066 to U+2069).
+ * Unlike the other format characters these are NOT invisible: they reorder
+ * what is shown, so "\u202Estop" displays as "pots". A message carrying one
+ * is not credibly the word it spells, so it changes nobody's consent.
+ */
+const BIDI_CONTROLS = /[\u202A-\u202E\u2066-\u2069]/u;
+
+/**
+ * Every line-breaking control: LF, CR, vertical tab, form feed, NEL, and the
+ * line and paragraph separators. A consent keyword is one line; a STOP or a
+ * START followed by more lines is a message with the word in it.
+ */
+const LINE_BREAKS = /[\n\r\v\f\u0085\u2028\u2029]/u;
+
+/** Whitespace that is NOT a line break, at either end of a message. */
+const HORIZONTAL_SPACE_AT_START = /^[^\S\n\r\v\f\u0085\u2028\u2029]+/u;
+const HORIZONTAL_SPACE_AT_END = /[^\S\n\r\v\f\u0085\u2028\u2029]+$/u;
+
+/** Any one line break, CRLF counted as one: what splits a message into lines. */
+const ANY_LINE_BREAK = /\r\n|[\n\r\v\f\u0085\u2028\u2029]/u;
+
+/** At most one line break may end a consent message: CRLF counts as one. */
+const ONE_TRAILING_LINE_BREAK = /(?:\r\n|[\n\r\v\f\u0085\u2028\u2029])$/u;
+
+/**
+ * The format characters that ARE invisible (zero-width spaces, the
+ * left-to-right and right-to-left marks, the word joiner, the soft hyphen),
+ * removed wherever they sit: "ST\u00ADOP" is what the person saw and meant
+ * as STOP. The zero-width JOINER is kept, because it is what makes a family
+ * of emoji one emoji; inside a letter it is dropped when the letter is read.
+ */
+const INVISIBLE = /(?![\u200D])\p{Cf}/gu;
+
+/**
+ * Marks that read as a QUESTION, however they are drawn: "?" and its
+ * full-width form, and the pictographs "❓", "❔", "⁉", plus "‼", "〰" and
+ * "〽", which an earlier review ruled are not a plain exclamation. A STOP may
+ * carry them; a START never does, so "start ❓" is no more a START than
+ * "start?" is.
+ */
+const QUESTION_MARKS: ReadonlySet<string> = new Set([
+  '?',
+  '\uFF1F',
+  '\u2753',
+  '\u2754',
+  '\u2049',
+  '\u203C',
+  '\u3030',
+  '\u303D',
+]);
+/**
+ * Marks a START may carry, mirroring plain "." and "!": their full-width
+ * forms, and the single-exclamation pictographs "❗" and "❕".
+ */
+const START_PUNCTUATION: ReadonlySet<string> = new Set([
+  '.',
+  '!',
+  '\uFF0E',
+  '\uFF01',
+  '\u2757',
+  '\u2755',
+  /* "…" is three full stops in one character, and "start ..." is a START. */
+  '\u2026',
+]);
+
+/**
+ * The ONLY emoji a START may carry: ones that mean yes. A false START
+ * re-subscribes somebody who opted out, so "start 🛑", "start ❌",
+ * "start 👎", "start 🤔" or "start 😡" must not, and the only safe list is a
+ * closed one. Compared without variation selectors or skin tones.
+ *
+ *  - 👍 thumbs up, 👌 OK hand, 💯 hundred points: yes, agreed.
+ *  - ✅ ✔ ☑: the check marks people tick to say yes or done.
+ *  - 🙏 folded hands: in Nigeria "please" or "thank you", a polite ask.
+ *  - 🙂 😊 ☺ 😀 😃 😄: smiles, glad to be back.
+ *  - 🎉 party popper, ❤ red heart: welcome back, warmth.
+ */
+const AFFIRMING_EMOJI: ReadonlySet<string> = new Set([
+  '\u{1F44D}',
+  '\u{1F44C}',
+  '\u{1F4AF}',
+  '\u2705',
+  '\u2714',
+  '\u2611',
+  '\u{1F64F}',
+  '\u{1F642}',
+  '\u{1F60A}',
+  '\u263A',
+  '\u{1F600}',
+  '\u{1F603}',
+  '\u{1F604}',
+  '\u{1F389}',
+  '\u2764',
+]);
+
+/**
+ * Country flags stay allowed after a START ("START 🇳🇬" is a Nigerian
+ * merchant's ordinary message), EXCEPT the ones whose two letters spell a
+ * refusal: 🇳🇴 reads as "NO".
+ */
+const NEGATING_FLAGS: ReadonlySet<string> = new Set(['\u{1F1F3}\u{1F1F4}']);
+
+/**
+ * Symbols that look like letters or numbers but are decoration all the same,
+ * carved out of the letter-like rule in `classify`: "№", "℃", "™", "®", "©".
+ * Keycaps ("1️⃣") are the other carve-out, kept because a STOP followed by a
+ * keycap is still a STOP; so "stop 5️⃣0️⃣0️⃣0️⃣" opts out too, which is the
+ * cheap direction.
+ */
+const LETTERLIKE_DECORATION: ReadonlySet<string> = new Set([
+  '\u2116',
+  '\u2103',
+  '\u2122',
+  '\u00AE',
+  '\u00A9',
+]);
+
+/**
+ * Enclosed letters and numbers ("ⓑ", "🅑", "⒝", "①"): they spell words, so
+ * they are never decoration. Regional indicators sit in the same block and
+ * are judged separately: a pair is a flag, a lone one is a letter.
+ */
+const ENCLOSED_ALPHANUMERIC = /[\u2460-\u24FF\u{1F100}-\u{1F1E5}]/u;
+
+type Grapheme =
+  /** Part of a word: a letter, read through NFKC (full-width, maths letters). */
+  | { kind: 'letter'; value: string }
+  | { kind: 'space' }
+  /** One displayed emoji: a pictograph sequence, a flag, or a keycap. */
+  | { kind: 'emoji'; affirming: boolean }
+  /** One punctuation or symbol code point, judged on its RAW form. */
+  | { kind: 'mark'; question: boolean; startable: boolean; dash: boolean }
+  /** A digit, a non-Latin letter, anything else: never decoration. */
+  | { kind: 'other' };
+
+let segmenter: Intl.Segmenter | null = null;
+
+/** Without variation selectors, which only choose text or emoji style. */
+function bare(grapheme: string): string {
+  return grapheme.replace(/[\uFE0E\uFE0F]/gu, '');
+}
+
+/**
+ * What one grapheme IS, decided on what the person saw, never on its NFKC
+ * expansion: "№" and "℃" are symbols, even though NFKC turns them into
+ * "No" and "°C"; "1️⃣" is one emoji, not a digit.
+ */
+function classify(grapheme: string): Grapheme {
+  const plain = bare(grapheme);
+  if (/^\s+$/u.test(plain)) return { kind: 'space' };
+  if (QUESTION_MARKS.has(plain)) {
+    return { kind: 'mark', question: true, startable: false, dash: false };
+  }
+  if (START_PUNCTUATION.has(plain)) {
+    return { kind: 'mark', question: false, startable: true, dash: false };
+  }
+  /* A keycap is one emoji, never a digit (carve-out, see above). */
+  if (/^[0-9#*]\uFE0F?\u20E3$/u.test(grapheme)) return { kind: 'emoji', affirming: false };
+  if (LETTERLIKE_DECORATION.has(plain)) {
+    return { kind: 'mark', question: false, startable: false, dash: false };
+  }
+  /* A flag: a PAIR of regional indicators. */
+  if (/^\p{Regional_Indicator}{2}$/u.test(plain)) {
+    return { kind: 'emoji', affirming: !NEGATING_FLAGS.has(plain) };
+  }
+  /* Anything that reads as a letter or a number is not decoration: an
+   * enclosed letter, a lone regional indicator, a symbol whose NFKC form
+   * holds a letter or digit ("⒝" is "(b)"). Letters themselves are read
+   * below, as part of the word. */
+  const folded = plain
+    .replace(/\u200D/gu, '')
+    .normalize('NFKC')
+    .toLowerCase();
+  const letterlike =
+    ENCLOSED_ALPHANUMERIC.test(plain) ||
+    /\p{Regional_Indicator}/u.test(plain) ||
+    /* Not itself a letter, yet reads as one: "⒝" is "(b)", "½" is "1/2". */
+    (!/^[\p{L}\p{M}\u200D]+$/u.test(plain) && /[\p{L}\p{N}]/u.test(folded)) ||
+    /* A letter drawn as an emoji ("ℹ" is a letter in Unicode). */
+    (/\p{L}/u.test(plain) && /\p{Extended_Pictographic}/u.test(plain));
+  if (letterlike) return { kind: 'other' };
+  if (/\p{Extended_Pictographic}/u.test(grapheme)) {
+    const core = plain.replace(/[\u{1F3FB}-\u{1F3FF}]/gu, '');
+    return { kind: 'emoji', affirming: AFFIRMING_EMOJI.has(core) };
+  }
+  if ([...plain].length === 1 && /^[\p{P}\p{S}]$/u.test(plain)) {
+    return { kind: 'mark', question: false, startable: false, dash: /^\p{Pd}$/u.test(plain) };
+  }
+  if (/^[a-z]+$/u.test(folded)) return { kind: 'letter', value: folded };
+  return { kind: 'other' };
+}
+
+/** May this grapheme decorate a STOP (on either side)? */
+function decoratesStop(g: Grapheme): boolean {
+  return g.kind === 'space' || g.kind === 'emoji' || g.kind === 'mark';
+}
+
+/**
+ * May this grapheme follow a START? Only "." or "!" in some form, an
+ * affirming emoji, or a flag that does not spell a refusal.
+ */
+function followsStart(g: Grapheme): boolean {
+  return (g.kind === 'emoji' && g.affirming) || (g.kind === 'mark' && g.startable);
+}
+
+/**
+ * Did this message ask to stop, or to start again? Null for everything else.
+ *
+ * Shared by `routeMessage` (a merchant talking to Rekoda),
+ * `customerConsentIntent` (a customer talking to a shop) and
+ * `consentIntentOf` (a typed text, a tapped button's id or its title), so
+ * the vocabulary and the exactness rule live in ONE place and cannot drift
+ * apart between the paths.
+ *
+ * Deliberately NOT `normalise`. That function exists to be forgiving, turning
+ * any punctuation into a space, and forgiveness is the wrong property here:
+ * "-----start-----", "s.t.o.p", or a paste of four hundred dashes with
+ * "start" inside all collapse to the bare word under it, and the one that
+ * re-subscribed an opted-out merchant was exactly that (G-24). A consent
+ * change is a legal fact about a person, so the raw message has to credibly
+ * BE the command, not reduce to it.
+ *
+ * So the message is read as GRAPHEMES, what a person sees as one character,
+ * and each one is judged on its raw form: never character by character after
+ * a normalisation that could turn a symbol into letters or split one emoji
+ * into several. The word is the run of letter graphemes (spaces allowed
+ * inside, for "stop all"); everything before and after it is decoration or
+ * the message is not consent. Nothing alphanumeric may sit beside the word.
+ *
+ * ASYMMETRIC on purpose, because the two mistakes do not cost the same:
+ *
+ *  - A STOP that is missed keeps messaging a person who asked us not to.
+ *    That is a regulatory failure, so a STOP is heard however it is
+ *    DECORATED with punctuation, symbols, emoji and spaces, up to
+ *    `DECORATION` graphemes on each side: "STOP!!!!!!", "stop?", "*STOP*",
+ *    "🛑STOP🛑", "(stop)", "STOP :)", "STOP 1️⃣", "STOP №". Before the word,
+ *    dashes are the one exception: a single bullet ("-" or "•" then a space)
+ *    is a list item, a run of them is a separator line or a paste, so
+ *    "-----stop-----" is refused.
+ *  - A false START re-subscribes somebody who opted out. So a START keeps
+ *    the strict shape: nothing before the word, then at most `START_MARKS`
+ *    of ".", "!" or an AFFIRMING emoji (`AFFIRMING_EMOJI`, or a country flag
+ *    that does not spell a refusal), never a question mark in any form.
+ */
+function consentKeyword(raw: string): 'stop' | 'start' | null {
+  /* The longest genuine consent message is a word with sixteen decorations
+   * on each side, well under this; anything longer is not consent, and is
+   * refused before it is segmented. */
+  if (BIDI_CONTROLS.test(raw)) return null;
+  const visible = raw.replace(INVISIBLE, '');
+  /* The STRICT reading, the only one a START may pass: the invisible format
+   * characters, surrounding SPACES and ONE trailing line break (what a
+   * keyboard's send key can add) are not part of the message, and all go
+   * BEFORE the length gate. Any other line break is a second line, a
+   * LEADING one included (Codex review): "\nSTART" is a message whose
+   * first line is empty, and a false START re-subscribes somebody. */
+  const strict = visible
+    .replace(HORIZONTAL_SPACE_AT_END, '')
+    .replace(ONE_TRAILING_LINE_BREAK, '')
+    .replace(HORIZONTAL_SPACE_AT_END, '')
+    .replace(HORIZONTAL_SPACE_AT_START, '');
+  if (strict && !LINE_BREAKS.test(strict)) {
+    const heard = consentOnOneLine(strict);
+    if (heard) return heard;
+  }
+  /* The GENEROUS reading, for a STOP only: empty lines around it are not
+   * content ("\nSTOP", "\r\nstop", "STOP\n\n"), and a missed STOP keeps
+   * messaging a person who asked us not to, which the model cannot repair
+   * (it cannot opt anyone out, G-80). Exactly ONE line may carry anything;
+   * a STOP with real content on another line ("stop\nI will pay") is a
+   * message with the word in it, and is refused as before. */
+  const lines = visible
+    .split(ANY_LINE_BREAK)
+    .map((line) => line.replace(HORIZONTAL_SPACE_AT_START, '').replace(HORIZONTAL_SPACE_AT_END, ''))
+    .filter((line) => line !== '');
+  if (lines.length === 1 && consentOnOneLine(lines[0]!) === 'stop') return 'stop';
+  return null;
+}
+
+/**
+ * The consent keyword of ONE line (no line break left in it), or null:
+ * the grapheme reading described on `consentKeyword`.
+ */
+function consentOnOneLine(text: string): 'stop' | 'start' | null {
+  if (text.length > MAX_CONSENT_CODE_UNITS) return null;
+  if (!text || LINE_BREAKS.test(text)) return null;
+
+  segmenter ??= new Intl.Segmenter('en', { granularity: 'grapheme' });
+  const graphemes = [...segmenter.segment(text)].map((s) => classify(s.segment));
+
+  const first = graphemes.findIndex((g) => g.kind === 'letter');
+  if (first < 0) return null;
+  let last = first;
+  for (let i = graphemes.length - 1; i > first; i--) {
+    if (graphemes[i]!.kind === 'letter') {
+      last = i;
+      break;
+    }
+  }
+
+  /* The words: runs of letters, and what separates them. Anything inside
+   * the span that is neither a letter nor decoration refuses. */
+  const runs: string[] = [];
+  const separators: Grapheme[][] = [];
+  let run = '';
+  let separator: Grapheme[] = [];
+  for (const g of graphemes.slice(first, last + 1)) {
+    if (g.kind === 'letter') {
+      if (run === '' && runs.length > 0) separators.push(separator);
+      run += g.value;
+      separator = [];
+    } else if (decoratesStop(g)) {
+      if (run !== '') runs.push(run);
+      run = '';
+      separator.push(g);
+    } else {
+      return null;
+    }
+  }
+  runs.push(run);
+  /* The one keyword with a space inside: "stop all", spaces only between. */
+  const units: string[] = [];
+  for (let i = 0; i < runs.length; i++) {
+    const spaced = (separators[i] ?? []).every((g) => g.kind === 'space');
+    const together = /^(stop|quit)\1{1,4}$/.exec(runs[i]!);
+    if (runs[i] === 'stop' && runs[i + 1] === 'all' && spaced) {
+      units.push('stop all');
+      i++;
+    } else if (together) {
+      /* Run together: "stopstop", "quitquitquit". */
+      for (let k = 0; k < runs[i]!.length / together[1]!.length; k++) units.push(together[1]!);
+    } else {
+      units.push(runs[i]!);
+    }
+  }
+  const before = graphemes.slice(0, first);
+  const after = graphemes.slice(last + 1);
+  const inside = separators.flat();
+
+  /*
+   * A STOP may be said up to five times ("STOP STOP", "stop!!! stop!!!",
+   * "stopstop"),
+   * the same word each time, separated only by decoration: someone who
+   * repeats it means it more, not less. Mixed words ("stop start",
+   * "STOP quit") stay refused, and START is never repeated (G-24).
+   */
+  const repeatedStop =
+    units.length >= 2 &&
+    units.length <= REPEATED_STOP_MAX &&
+    units.every((u) => u === units[0]) &&
+    STOP_WORDS.has(units[0]!) &&
+    inside.length <= DECORATION;
+  if (units.length > 1 && !repeatedStop) return null;
+  const word = units[0]!;
+
+  if (STOP_WORDS.has(word) && (units.length === 1 || repeatedStop)) {
+    /* One list bullet ("-" or "•", then a space) is a list item. */
+    const lead =
+      before.length >= 2 &&
+      before[0]!.kind === 'mark' &&
+      (before[0]!.dash || isBullet(text)) &&
+      before[1]!.kind === 'space'
+        ? before.slice(2)
+        : before;
+    if (lead.length > DECORATION || after.length > DECORATION) return null;
+    if (!lead.every((g) => decoratesStop(g) && !(g.kind === 'mark' && g.dash))) return null;
+    if (!after.every(decoratesStop)) return null;
+    return 'stop';
+  }
+
+  if (START_WORDS.has(word) && units.length === 1) {
+    if (before.length > 0) return null;
+    /* Spaces may separate the word from its marks, never the marks. */
+    let spaces = 0;
+    while (spaces < after.length && after[spaces]!.kind === 'space') spaces++;
+    const marks = after.slice(spaces);
+    if (marks.length > START_MARKS || !marks.every(followsStart)) return null;
+    return 'start';
+  }
+  return null;
+}
+
+/** Does the message open with a bullet character ("•" and its relatives)? */
+function isBullet(text: string): boolean {
+  return /^[\u2022\u2023\u2043]/u.test(text);
+}
 
 /**
  * Did a CUSTOMER ask a shop to stop, or to start again (PR-135)?
  *
- * The same words, and deliberately the same matching, as the merchant's
- * STOP above: one vocabulary, so a customer who has used STOP anywhere
+ * The same words, and deliberately the same matcher, as the merchant's
+ * STOP: one vocabulary, so a customer who has used STOP anywhere
  * else on WhatsApp finds it works here. What differs is entirely what the
  * caller then DOES with it - a merchant's STOP is a global fact about
  * Rekoda's messages to them, a customer's is a fact about one shop's
@@ -328,10 +825,7 @@ const KEYWORDS: Readonly<Record<string, DeterministicIntent>> = {
  * away assistant's business, not this function's.
  */
 export function customerConsentIntent(raw: string): 'stop' | 'start' | null {
-  const keyword = KEYWORDS[normalise(raw)];
-  if (keyword?.kind === 'stop') return 'stop';
-  if (keyword?.kind === 'start') return 'start';
-  return null;
+  return consentKeyword(raw);
 }
 
 /**
@@ -426,10 +920,11 @@ export function routeMessage(raw: string): Route {
   const normalised = normalise(raw);
   if (!normalised) return { route: 'model', reason: 'empty' };
 
-  // Matched on the bare normalised message, spaces and all — no filler
-  // stripping, no fuzziness. "stop" is the message or it is not.
-  const keyword = KEYWORDS[normalised];
-  if (keyword) return { route: 'deterministic', intent: keyword };
+  // Matched on the RAW message by the shared consent matcher, before any
+  // filler stripping and never after normalisation: "stop" is the message
+  // or it is not (G-24).
+  const consent = consentKeyword(raw);
+  if (consent) return { route: 'deterministic', intent: { kind: consent } };
 
   const text = stripFillers(normalised);
   if (!text || text.length > MAX_COMMAND_CHARS) return { route: 'model', reason: 'unrecognised' };
@@ -466,7 +961,15 @@ export function routeMessage(raw: string): Route {
   }
 
   for (const [phrases, intent] of PHRASES) {
-    if (phrases.includes(text)) return { route: 'deterministic', intent };
+    if (phrases.includes(text)) return { route: 'deterministic', intent: doubted(raw, intent) };
+  }
+  /* A whole phrase built only of edge words ("oya o") is stripped down to
+   * nothing meaningful above, so it is also tried exactly as sent. Still a
+   * whole-message match: nothing is added, nothing is guessed. */
+  for (const [phrases, intent] of PHRASES) {
+    if (phrases.includes(normalised)) {
+      return { route: 'deterministic', intent: doubted(raw, intent) };
+    }
   }
 
   return { route: 'model', reason: 'unrecognised' };
@@ -501,16 +1004,33 @@ const PERIOD_ANSWERS: ReadonlyArray<readonly [readonly string[], AnsweredPeriod]
   ],
   [['this month', 'month', 'the month', 'so far this month'], 'month'],
   [['last month', 'previous month', 'the previous month'], 'last_month'],
+  /*
+   * Nigerian English and Pidgin forms of the same four windows (G-68 Phase 2,
+   * OWN-18), each reviewed for a second reading:
+   *  - "dis" is how "this" is written in Pidgin and texting; it never means
+   *    anything else at the head of a window.
+   *  - "this month so far" is "so far this month" said the other way round.
+   *  - "the month wey pass" is Pidgin for the month that has passed: last
+   *    month, and nothing else.
+   * Rejected: "today today" (Pidgin emphasis for "right now", an urgency
+   * idiom, not a window); "last week" and "past month" stay out for the
+   * reasons above. A trailing "o" ("last month o") is presentation noise,
+   * stripped before this table is read.
+   */
+  [['dis week', 'dis week so far', 'this week so far'], 'week'],
+  [['dis month', 'dis month so far', 'this month so far'], 'month'],
+  [['the month wey pass', 'month wey pass'], 'last_month'],
 ];
 
 /** A window a short answer may name; the `PeriodName`s `resolvePeriod` draws. */
 export type AnsweredPeriod = 'today' | 'week' | 'month' | 'last_month';
 
 /**
- * Leading words that turn a period into an answer or a follow-up without
+ * Leading words that turn a period into an answer (including the Pidgin
+ * copula: "na last month" is "it is last month") or a follow-up without
  * changing which period it is: "for last month", "what about this week".
  */
-const PERIOD_LEADS = ['what about', 'how about', 'and for', 'and', 'for', 'in'];
+const PERIOD_LEADS = ['what about', 'how about', 'and for', 'and', 'for', 'in', 'na'];
 
 /**
  * Which period a message names, when the whole message is a period and
@@ -540,6 +1060,117 @@ export function periodAnswer(raw: string): AnsweredPeriod | null {
 }
 
 /**
+ * A question mark ANYWHERE in a short affirmation makes it a question (G-68
+ * review): "yes?!", "na so ?!", "e correct?.", "yes ?)", "yes? 👍", "yes?? ok",
+ * "na so?o", "yes¿". Plain, full-width and small "?", the inverted "¿", the
+ * Arabic "؟", the interrobang "‽", the reversed "⸮", and the pictographs
+ * "❓", "❔", "⁉", and ANY character whose compatibility form holds a "?"
+ * (Codex review: "⁇", "︖", "⁈"), so no presentation variant of a question
+ * mark can slip through normalisation. Not "‼": a double
+ * exclamation is emphasis, so "yes‼️" still agrees. Affirmation phrases are
+ * a few words long, so a question mark anywhere in one is never decoration.
+ */
+const QUESTION_MARK = /[?\uFF1F\uFE56\u00BF\u061F\u203D\u2E2E\u2753\u2754\u2049]/u;
+
+/**
+ * Faces that mean doubt, wherever they sit in the message: thinking face,
+ * flushed face, face with monocle, confused face, face with raised eyebrow,
+ * face with rolling eyes, grimacing face, face with diagonal mouth, and the
+ * typed ":/", ":-/", ":(", ":-(", ":'(", ";(", "=(", "):", ":|" and "-_-".
+ * Kept small on purpose: each is read as "I am not
+ * sure", and none is ever sent to mean yes. A smile or a thumbs up still
+ * affirms.
+ */
+const DOUBT_FACES =
+  /[\u{1F914}\u{1F633}\u{1F9D0}\u{1F615}\u{1F928}\u{1F644}\u{1F62C}\u{1FAE4}]|:-?[\/(|]|:'\(|;\(|=\(|\):|-_-/u;
+
+/**
+ * Does this short message read as a question or as doubt? Invisible format
+ * characters are removed first, so a zero-width space cannot hide the mark.
+ * Used for affirmations and for a short funding answer ("cash?"): both are
+ * asked, not answered.
+ */
+export function soundsDoubtful(raw: string): boolean {
+  const visible = raw.replace(/\p{Cf}/gu, '');
+  return (
+    QUESTION_MARK.test(visible) ||
+    QUESTION_MARK.test(visible.normalize('NFKC')) ||
+    DOUBT_FACES.test(visible)
+  );
+}
+
+/**
+ * Normalisation removes punctuation and emoji, so "yes?" and "yes" match the
+ * same phrase. That is right for presentation noise and wrong for a question
+ * mark or a doubting face, which change the MEANING of an affirmation: the
+ * merchant is asking, not agreeing (G-68). Only an affirmation is affected;
+ * "who owes me?" is still the debtors list.
+ */
+function doubted(raw: string, intent: DeterministicIntent): DeterministicIntent {
+  if (intent.kind !== 'affirm') return intent;
+  return answerIsUncertain(raw) ? { kind: 'unsure' } : intent;
+}
+
+/**
+ * Does a short ANSWER carry a conflicting meaning (G-68, Codex review)? One
+ * rule for every short answer that would act: a yes to a preview and a
+ * funding answer ("cash", "bank") alike. It does when it reads as a
+ * question or as doubt ("cash?", "yes 🤔"), or when it carries any emoji
+ * that is not on the positive list ("cash ❌", "bank 👎", "na so 🚫"). Such
+ * an answer is asked, not given: the merchant is asked again and nothing
+ * acts.
+ */
+export function answerIsUncertain(raw: string): boolean {
+  return soundsDoubtful(raw) || carriesNonAffirmingEmoji(raw);
+}
+
+/**
+ * Combining marks that draw a refusal over what they sit on (Codex review):
+ * every ENCLOSING mark but the keycap (U+20E3, read as an emoji above), such
+ * as the circle-backslash "yes\u20E0", and the overlay and strike marks
+ * that cross a word out ("y\u0336e\u0336s\u0336"). Normalisation strips
+ * them, so they are looked for on the raw message.
+ */
+const NEGATING_MARK = /(?!\u20E3)\p{Me}|[\u0334-\u0338\u20D2\u20D3\u20E5\u20E6\u20EA\u20EB]/u;
+
+/**
+ * Does an affirmation carry any emoji that is not on the positive list
+ * (G-68, Codex review)? "na so ❌", "e correct 👎", "oya 🚫", "yes ⛔" are
+ * not agreement, and a growing list of negative emoji would always miss
+ * one, so the rule is the other way round: an affirmation may carry ONLY
+ * emoji that mean yes (`AFFIRMING_EMOJI`: 👍 👌 💯 ✅ ✔ ☑ 🙏 🙂 😊 ☺ 😀
+ * 😃 😄 🎉 ❤, any skin tone or style) and the emphatic "‼". Narrower than
+ * what a START may carry: a START also accepts a country flag, an
+ * affirmation does not.
+ * Anything else, a laughing face, a flag or a symbol keycap ("#️⃣", "*️⃣")
+ * included, makes it `unsure`. So does any SYMBOL that is not an emoji
+ * (Codex review): "yes ✗", "na so ✘", "yes ☒", "cash ×" are refusals the
+ * normaliser would otherwise strip, and the same closed-list rule covers
+ * them; only a plain check mark "✓" is added to the list for answers. A
+ * DIGIT keycap never gets this far: "yes 1️⃣" keeps its digit through
+ * normalisation, is no affirmation phrase, and goes to the model as an
+ * ordinary message. Either way it confirms nothing: the merchant is simply
+ * asked for a plain yes, which costs one message and never books a preview
+ * they were mocking or refusing.
+ */
+function carriesNonAffirmingEmoji(raw: string): boolean {
+  if (NEGATING_MARK.test(raw)) return true;
+  segmenter ??= new Intl.Segmenter('en', { granularity: 'grapheme' });
+  for (const { segment } of segmenter.segment(raw)) {
+    const emoji =
+      /\p{Extended_Pictographic}/u.test(segment) ||
+      /\p{Regional_Indicator}/u.test(segment) ||
+      /\u20E3/u.test(segment) ||
+      /\p{S}/u.test(segment);
+    if (!emoji) continue;
+    const core = segment.replace(/[\uFE0E\uFE0F\u{1F3FB}-\u{1F3FF}]/gu, '');
+    if (core === '\u203C' || core === '\u2713') continue;
+    if (!AFFIRMING_EMOJI.has(core)) return true;
+  }
+  return false;
+}
+
+/**
  * Whether a route means "nothing left this system".
  *
  * Useful to assert on in tests and at the call site, so the privacy claim in
@@ -547,4 +1178,148 @@ export function periodAnswer(raw: string): AnsweredPeriod | null {
  */
 export function staysLocal(route: Route): boolean {
   return route.route === 'deterministic';
+}
+
+/**
+ * Windows a merchant can NAME that Rekoda cannot count here (Build 6's
+ * `periodNotCountable`): "yesterday", "last week", "in March", "this year".
+ * Only consulted while "Which period?" is open, so the question can stay
+ * open and say which windows it can count, instead of being dropped and the
+ * reply sent to the model as if nothing was asked. A whole-message match,
+ * after the same normalisation as a period answer: "I bought rice yesterday"
+ * is a purchase, never this.
+ */
+const UNCOUNTABLE_WINDOWS = new Set([
+  'yesterday',
+  'last week',
+  'the last week',
+  'previous week',
+  'the previous week',
+  'past week',
+  'this year',
+  'dis year',
+  'last year',
+  'the year',
+  'past month',
+  'the past month',
+  'last 30 days',
+  'the last 30 days',
+  'past 30 days',
+  'last thirty days',
+  'last two weeks',
+  'last 2 weeks',
+  'last three months',
+  'last 3 months',
+]);
+const MONTH_NAMES =
+  'january|february|march|april|may|june|july|august|september|october|november|december';
+const NAMED_MONTH = new RegExp(String.raw`^(?:last )?(?:${MONTH_NAMES})(?: \d{4})?$`);
+
+export function uncountablePeriod(raw: string): boolean {
+  const normalised = normalise(raw);
+  if (!normalised) return false;
+  let text = stripFillers(normalised);
+  if (!text || text.length > MAX_COMMAND_CHARS) return false;
+  if (!survivedNormalisation(raw, text)) return false;
+  for (const lead of PERIOD_LEADS) {
+    if (text.startsWith(`${lead} `)) {
+      text = text.slice(lead.length + 1);
+      break;
+    }
+  }
+  return UNCOUNTABLE_WINDOWS.has(text) || NAMED_MONTH.test(text);
+}
+
+/**
+ * Where a purchase's money came from, as the answer to the G-61 question
+ * "did it come from your bank account or from physical cash?" (G-68 Phase 2).
+ * The two funding ACCOUNTS (OWN-17): money out of the bank is a transfer,
+ * physical cash is cash. POS and card are channels, never an answer here.
+ */
+export type FundingSource = 'transfer' | 'cash';
+
+/**
+ * A whole-message answer naming one funding account, and nothing else.
+ * Only consulted while that question is open for this member.
+ *
+ * Each phrase reviewed for a second reading. "bank" and "cash" are the
+ * question's own words. The Pidgin copula is meaning, not noise: "na bank",
+ * "na cash" ("it was the bank", "it was cash"). Rejected: "pos", "card",
+ * "atm", "both", "part cash part transfer" (a channel, or two accounts, which
+ * a single answer cannot record), and anything longer, which goes to the
+ * model as an ordinary message.
+ */
+const FUNDING_ANSWERS: ReadonlyArray<readonly [readonly string[], FundingSource]> = [
+  [
+    [
+      'bank',
+      'transfer',
+      'bank transfer',
+      'my bank',
+      'bank account',
+      'my bank account',
+      'from bank',
+      'from my bank',
+      'from the bank',
+      'from bank account',
+      'from my bank account',
+      'na bank',
+      'na transfer',
+      'na from bank',
+      'na my bank',
+      'na my bank account',
+      'na bank account',
+      'na bank transfer',
+      'na from my bank',
+      'na from my bank account',
+      /* Reviewed (final-head): a stated payment from the bank has no cash
+       * reading. */
+      'paid by transfer',
+      'paid by bank transfer',
+      'with transfer',
+      'paid from bank',
+      'paid from my bank',
+    ],
+    'transfer',
+  ],
+  [
+    [
+      'cash',
+      'physical cash',
+      'my cash',
+      'from cash',
+      'from my cash',
+      'na cash in hand',
+      /* "Money for hand" is cash held in the hand; it has no bank reading.
+       * ("From my pocket" was removed on review: it often means "my own
+       * money", which says nothing about the account.) */
+      'money for hand',
+      'na money for hand',
+      'cash in hand',
+      'na cash',
+      'na physical cash',
+      'na my cash',
+      /* Reviewed (final-head): a stated payment in cash has no bank reading. */
+      'paid cash',
+      'paid in cash',
+      'i paid cash',
+      'i paid in cash',
+      'with cash',
+      'paid with cash',
+      'i paid with cash',
+    ],
+    'cash',
+  ],
+];
+
+export function fundingSourceAnswer(raw: string): FundingSource | null {
+  const normalised = normalise(raw);
+  if (!normalised) return null;
+  const text = stripFillers(normalised);
+  if (!text || text.length > MAX_COMMAND_CHARS) return null;
+  if (!survivedNormalisation(raw, text)) return null;
+  for (const [phrases, source] of FUNDING_ANSWERS) {
+    if (phrases.includes(text)) return source;
+  }
+  return null;
 }

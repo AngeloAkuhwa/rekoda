@@ -11,6 +11,8 @@ import {
   continuationAnswer,
   continuationColumns,
   isOneShot,
+  withinFundingWindow,
+  rebuiltPurchaseFate,
   parseContinuation,
   resumedRead,
   type ContinuationState,
@@ -220,5 +222,109 @@ describe('stored as typed columns, read back defensively', () => {
     expect(
       parseContinuation({ ...continuationColumns(PERIOD_QUESTION), topic: 'debtors' }),
     ).toBeNull();
+  });
+});
+
+/**
+ * G-68 Phase 2: the G-61 funding-source question as a typed continuation.
+ * It answers only a whole-message account, only while that question is
+ * open, and resumes nothing: the handler rebuilds a FRESH preview from it.
+ */
+describe('the funding-source question (G-68 Phase 2)', () => {
+  const DRAFT = '3f1d6a9e-2b4c-4d8e-9a1b-7c5e6f708192';
+  const FUNDING: ContinuationState = {
+    kind: 'clarification',
+    expects: 'funding_source',
+    draftId: DRAFT,
+  };
+
+  it.each([
+    ['bank', 'transfer'],
+    ['transfer', 'transfer'],
+    ['na bank o', 'transfer'],
+    ['from my bank account', 'transfer'],
+    ['cash', 'cash'],
+    ['na cash', 'cash'],
+    ['Physical cash.', 'cash'],
+  ])('%j is %s', (text, source) => {
+    expect(continuationAnswer(FUNDING, said(text))).toEqual({ kind: 'funding_source', source });
+  });
+
+  it.each(['pos', 'card', 'bank and cash', 'cash 20k', 'yes', 'na so', '2', 'last month'])(
+    '%j is not an answer to it',
+    (text) => {
+      expect(continuationAnswer(FUNDING, said(text))).toBeNull();
+    },
+  );
+
+  it('only the funding question takes an account', () => {
+    expect(continuationAnswer(PERIOD_QUESTION, said('bank'))).toBeNull();
+    expect(continuationAnswer(INVOICE_LIST, said('cash'))).toBeNull();
+    expect(continuationAnswer(SALES_READ, said('bank'))).toBeNull();
+  });
+
+  it('is one-shot, and never resumes a read', () => {
+    expect(isOneShot(FUNDING)).toBe(true);
+    expect(resumedRead(FUNDING, { kind: 'funding_source', source: 'cash' })).toBeNull();
+  });
+
+  it('round-trips through its columns, naming only the draft', () => {
+    const columns = continuationColumns(FUNDING);
+    expect(columns).toMatchObject({ expects: 'funding_source', draftId: DRAFT, topic: null });
+    expect(parseContinuation(columns)).toEqual(FUNDING);
+  });
+
+  it('reads back defensively: no draft, a malformed id, or a topic is no continuation', () => {
+    const columns = continuationColumns(FUNDING);
+    expect(parseContinuation({ ...columns, draftId: null })).toBeNull();
+    expect(parseContinuation({ ...columns, draftId: 'not-a-uuid' })).toBeNull();
+    expect(parseContinuation({ ...columns, topic: 'sales_summary' })).toBeNull();
+    expect(() => continuationColumns({ ...FUNDING, draftId: 'Ada' })).toThrow();
+  });
+
+  it('a numbered list still takes only an ordinal it showed', () => {
+    expect(continuationAnswer(INVOICE_LIST, said('2'))).toMatchObject({ kind: 'choice' });
+    expect(continuationAnswer(INVOICE_LIST, said('7'))).toBeNull();
+    expect(continuationAnswer(INVOICE_LIST, said('bank'))).toBeNull();
+  });
+});
+
+describe('the funding answer window (Codex review)', () => {
+  const asked = new Date('2026-10-01T10:00:00Z');
+  it('is open from the ask up to, not including, 1800 seconds after it', () => {
+    expect(withinFundingWindow(asked, asked)).toBe(true);
+    expect(withinFundingWindow(asked, new Date(asked.getTime() + 1_799_999))).toBe(true);
+    expect(withinFundingWindow(asked, new Date(asked.getTime() + 1_800_000))).toBe(false);
+  });
+  it('a message OLDER than the question is outside it, never inside', () => {
+    expect(withinFundingWindow(asked, new Date(asked.getTime() - 1))).toBe(false);
+  });
+});
+
+describe('rebuiltPurchaseFate (G-68, final-head review)', () => {
+  const pos = {
+    intent: 'RecordPurchase',
+    amount: 180_000,
+    productMention: 'cartons',
+    quantity: 10,
+  };
+  it('the same total in kobo replaces, whatever the product is called', () => {
+    expect(rebuiltPurchaseFate(pos, { ...pos, productMention: 'carton indomie' })).toEqual({
+      totalK: 18_000_000,
+      replace: true,
+    });
+    expect(
+      rebuiltPurchaseFate({ ...pos, amount: 0.1 + 0.2 }, { ...pos, amount: 0.3 })?.replace,
+    ).toBe(true);
+  });
+  it('a different total stays waiting', () => {
+    expect(rebuiltPurchaseFate(pos, { ...pos, amount: 50_000 })).toEqual({
+      totalK: 18_000_000,
+      replace: false,
+    });
+  });
+  it('anything unreadable decides nothing', () => {
+    expect(rebuiltPurchaseFate(pos, { ...pos, intent: 'RecordExpense' })).toBeNull();
+    expect(rebuiltPurchaseFate(null, pos)).toBeNull();
   });
 });
