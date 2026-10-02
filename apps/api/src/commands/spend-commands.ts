@@ -147,6 +147,7 @@ async function refuseBookedDuplicate(tx: TenantDb, input: RecordPurchaseCmdInput
   const [match] = purchaseMatches(self, records, now, {
     from: windowStart(self.at),
     to: null,
+    by: 'booking',
   });
   if (match) throw new PurchaseIdentityCollision(match);
 }

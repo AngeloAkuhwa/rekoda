@@ -120,7 +120,7 @@ const REFERENCE_WORDS: ReadonlySet<string> = new Set([
  * An explicit supplier document reference, as its SIGNIFICANT DIGITS, or
  * null when what was given is not certainly one (fresh review of #262). One
  * number written two ways is one reference: "2231", "INV-2231" and "#2231"
- * are "2231"; "EMK-0041" is "41". If in doubt the side has NO reference,
+ * are "2231"; "EMK-0041" and "EMK-00-41" are "41". If in doubt the side has NO reference,
  * which never proves anything. Never a reference: an amount ("100k",
  * "N100000"), a date ("12/09/2026"), a name with digits ("Ada 07"), a
  * phone or account number (ten digits or more), or fewer than two
@@ -153,8 +153,13 @@ export function normalisePurchaseReference(raw: unknown): string | null {
       if (!known && (letters !== letters.toUpperCase() || letters.length > 4)) return null;
     }
   }
-  const significant = digitRuns.map((run) => run.replace(/^0+(?=\d)/u, '')).join('');
-  return significant.replace(/^0+/u, '').length >= 2 ? significant : null;
+  /* Its digits WITHOUT ZEROS (Codex review): padding and separators carry
+   * no identity, and "EMK-0041", "EMK 41" and "EMK-00-41" must be one
+   * reference. Dropping every zero can only make two different numbers
+   * look alike (a question asked), never one number look like two (a
+   * duplicate booked), which is the direction OD-23 D3 asks for. */
+  const significant = digitRuns.join('').replace(/0/gu, '');
+  return significant.length >= 2 ? significant : null;
 }
 
 /** A stored RecordPurchase command's total in kobo, or null. */
@@ -203,17 +208,27 @@ export function purchaseMatches(
    * the purchase work at the yes counts every booking from 24 hours before
    * the purchase's own message onward, so a retried yes never ages one out.
    */
-  bookings: { readonly from: Date; readonly to: Date | null } = {
+  bookings: {
+    readonly from: Date;
+    readonly to: Date | null;
+    /**
+     * What a booking's age is measured by: the earlier purchase's MESSAGE
+     * (D2, the default, at a preview; Codex review), or when it was BOOKED
+     * (the purchase work's wider net at the yes).
+     */
+    readonly by?: 'message' | 'booking';
+  } = {
     from: new Date(now.getTime() - PURCHASE_IDENTITY_WINDOW_SECONDS * 1000),
     to: now,
   },
 ): PurchaseRecord[] {
   const when = (r: PurchaseRecord) => (r.bookedAt ?? r.at).getTime();
+  const age = (r: PurchaseRecord) => (bookings.by === 'booking' ? when(r) : r.at.getTime());
   return records
     .filter((r) => r.amountK === next.amountK)
     .filter((r) => {
       if (r.state === 'pending') return true;
-      const t = when(r);
+      const t = age(r);
       return t > bookings.from.getTime() && (bookings.to === null || t <= bookings.to.getTime());
     })
     .filter((r) => !declaredSeparate(next, r))

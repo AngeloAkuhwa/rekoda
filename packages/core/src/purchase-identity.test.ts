@@ -84,7 +84,7 @@ describe('a stated supplier reference', () => {
   it.each([
     ['EMK-0041', '41'],
     ['#2231', '2231'],
-    ['INV/2026/114', '2026114'],
+    ['INV/2026/114', '226114'],
     ['inv 2231', '2231'],
   ])('%j normalises to %j', (raw, expected) => {
     expect(normalisePurchaseReference(raw)).toBe(expected);
@@ -115,9 +115,11 @@ describe('which records a new purchase may be', () => {
 
   it('a booking 24 hours old or more is outside the rolling window (D2)', () => {
     const edge = new Date(NOW.getTime() - PURCHASE_IDENTITY_WINDOW_SECONDS * 1000);
-    expect(purchaseMatches(facts(), [record({ bookedAt: edge })], NOW)).toHaveLength(0);
+    expect(purchaseMatches(facts(), [record({ bookedAt: edge, at: edge })], NOW)).toHaveLength(0);
     const inside = new Date(edge.getTime() + 1000);
-    expect(purchaseMatches(facts(), [record({ bookedAt: inside })], NOW)).toHaveLength(1);
+    expect(purchaseMatches(facts(), [record({ bookedAt: inside, at: inside })], NOW)).toHaveLength(
+      1,
+    );
   });
 
   it('a waiting preview always counts (D1)', () => {
@@ -136,7 +138,7 @@ describe('which records a new purchase may be', () => {
     const bookedSeparate = record({ separateFrom: [{ draftId: 'd9', expenseId: null }] });
     expect(purchaseMatches(namedOne, [bookedSeparate], NOW)).toHaveLength(0);
     /* A record the question did not name is not excused, however old. */
-    const unnamed = record({ self: { draftId: 'd2', expenseId: 'e2' }, at: LONG_AGO });
+    const unnamed = record({ self: { draftId: 'd2', expenseId: 'e2' }, at: minutesAgo(120) });
     expect(purchaseMatches(declared, [unnamed], NOW)).toHaveLength(1);
   });
 
@@ -232,7 +234,10 @@ describe('a stored command total', () => {
 
 describe('Codex review of #262: a booking after the message is not compared by default', () => {
   it('a negative age (booked after the instant compared at) is outside the default window', () => {
-    const future = record({ bookedAt: new Date(NOW.getTime() + 60_000) });
+    const future = record({
+      bookedAt: new Date(NOW.getTime() + 60_000),
+      at: new Date(NOW.getTime() + 60_000),
+    });
     expect(purchaseMatches(facts(), [future], NOW)).toHaveLength(0);
   });
 });
@@ -319,13 +324,31 @@ describe('fresh review of #262: one document number in two formats is one refere
 describe('the window is a rolling 24 hours, never a Lagos day (D2)', () => {
   it('a booking at 23:50 Lagos still counts for a message at 01:10 the next Lagos day', () => {
     const now = new Date('2026-10-02T00:10:00Z'); // 01:10 Lagos, 2 Oct
-    const booking = record({ bookedAt: new Date('2026-10-01T22:50:00Z') }); // 23:50 Lagos, 1 Oct
+    const t = new Date('2026-10-01T22:50:00Z'); // 23:50 Lagos, 1 Oct
+    const booking = record({ bookedAt: t, at: t });
     expect(purchaseMatches(facts({ at: now }), [booking], now)).toHaveLength(1);
   });
 
   it('a booking from earlier the SAME Lagos day but over 24 hours ago does not', () => {
     const now = new Date('2026-10-02T22:30:00Z'); // 23:30 Lagos, 2 Oct
-    const booking = record({ bookedAt: new Date('2026-10-01T22:20:00Z') }); // 23:20 Lagos, 1 Oct
+    const t = new Date('2026-10-01T22:20:00Z'); // 23:20 Lagos, 1 Oct
+    const booking = record({ bookedAt: t, at: t });
     expect(purchaseMatches(facts({ at: now }), [booking], now)).toHaveLength(0);
+  });
+});
+
+describe('Codex review of ff9443e', () => {
+  it('P1: zero padding split by a separator is still one reference', () => {
+    expect(
+      provenSeparate(
+        facts({ reference: normalisePurchaseReference('EMK-0041') }),
+        record({ reference: normalisePurchaseReference('EMK-00-41') }),
+      ),
+    ).toBe(false);
+  });
+
+  it('P2: the preview window is measured from the earlier purchase MESSAGE, not its booking', () => {
+    const lateBooking = record({ at: minutesAgo(25 * 60), bookedAt: minutesAgo(60) });
+    expect(purchaseMatches(facts(), [lateBooking], NOW)).toHaveLength(0);
   });
 });

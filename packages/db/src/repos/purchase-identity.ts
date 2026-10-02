@@ -229,7 +229,10 @@ export async function purchaseRecords(
         businessId,
         /* A preview whose window has closed can never be confirmed (G-23),
          * so it is nobody's duplicate. */
-        sql`d.state = 'pending' AND d.expires_at > ${asOf}
+        /* Only a preview that reached somebody is "waiting for a yes" (Codex
+         * review); one whose send failed is never described as one. The
+         * purchase work at the yes still refuses a duplicate booked from it. */
+        sql`d.state = 'pending' AND d.previewed AND d.expires_at > ${asOf}
             AND d.id IS DISTINCT FROM ${excludeUuid}::uuid
             AND ${cutoff ? sql`${arrivalOf(sql`m`)} <= ${cutoff}` : sql`d.created_at <= ${asOf}`}`,
       ),

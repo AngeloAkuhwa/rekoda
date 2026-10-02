@@ -13462,11 +13462,15 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       const business = await seedMerchant();
       await addDelegate(business.id);
       await bookMilo(business.id, 'W10b');
-      await withBusiness(db, business.id, (tx) =>
-        tx.execute(sql`
-          UPDATE expenses SET created_at = clock_timestamp() - interval '25 hours'
-           WHERE business_id = ${business.id}::uuid`),
-      );
+      /* D2 measures from the earlier purchase's MESSAGE: it and its booking
+       * both happened 25 hours ago. */
+      await withBusiness(db, business.id, async (tx) => {
+        for (const table of ['expenses', 'conversation_messages', 'external_events']) {
+          await tx.execute(sql`
+            UPDATE ${sql.raw(table)} SET created_at = clock_timestamp() - interval '25 hours'
+             WHERE business_id = ${business.id}::uuid`);
+        }
+      });
       await say('wamid.W10b-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
       expect(stubSender.lastText).not.toContain(QUESTION);
       expect(stubSender.lastText).toContain('Paid in full by cash');

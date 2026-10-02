@@ -427,3 +427,35 @@ describe('Codex review of #262, round 2: the comparison instant bounds waiting p
     expect(records).toEqual([]);
   });
 });
+
+describe('Codex review of ff9443e', () => {
+  it('P2: a preview that never reached anybody is not a waiting preview', async () => {
+    const { businessId } = await seedBusiness();
+    const unseen = await draft(businessId);
+    await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.markDraftUnseen(tx, businessId, unseen.messageId),
+    );
+    const { records } = await withBusiness(app, businessId, (tx) =>
+      purchaseIdentityRepo.purchaseRecords(tx, businessId, 10_000_000),
+    );
+    expect(records).toEqual([]);
+  });
+
+  it('P2: a question asked after a reply was sent is not what that reply answers', async () => {
+    const { businessId, ownerId } = await seedBusiness();
+    const before = new Date(Date.now() - 60_000);
+    const held = await draft(businessId, MILO, { held: true, requestedBy: ownerId });
+    await withBusiness(app, businessId, (tx) =>
+      continuationsRepo.openContinuation(tx, {
+        businessId,
+        userId: ownerId,
+        sourceMessageId: held.messageId,
+        state: { kind: 'clarification', expects: 'purchase_identity', draftId: held.id },
+      }),
+    );
+    const asked = await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.askedHeldNewerThan(tx, businessId, ownerId, null, { now: before }),
+    );
+    expect(asked).toBeNull();
+  });
+});

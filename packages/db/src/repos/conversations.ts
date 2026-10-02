@@ -1530,6 +1530,9 @@ export async function askedHeldNewerThan(
      WHERE h.business_id = ${businessId}::uuid
        AND h.state = 'held'
        AND h.expires_at > ${draftClock(options.now)}
+       /* Asked BEFORE this reply was sent (Codex review): a retried earlier
+        * reply never answers a question it could not have seen. */
+       AND h.created_at <= ${draftClock(options.now)}
        AND (${afterDraftId}::uuid IS NULL OR h.insertion_seq > (
              SELECT d.insertion_seq FROM command_drafts d
               WHERE d.id = ${afterDraftId}::uuid AND d.business_id = ${businessId}::uuid))
@@ -1538,7 +1541,8 @@ export async function askedHeldNewerThan(
               WHERE c.business_id = h.business_id
                 AND c.user_id = ${userId}::uuid
                 AND c.expects = 'purchase_identity'
-                AND c.draft_id = h.id)
+                AND c.draft_id = h.id
+                AND c.created_at <= ${draftClock(options.now)})
      ORDER BY h.insertion_seq DESC
      LIMIT 1`);
   return [...rows][0]?.id ?? null;
