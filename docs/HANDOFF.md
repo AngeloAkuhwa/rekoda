@@ -80,9 +80,9 @@ Review rounds since added: a questioned yes ("na so?") confirms nothing;
 the funding rebuild is one-shot (a resend closes the question too) and is
 taken only within 1800 seconds of the first ask (OD-19); the two-ask
 erasure breaks on ANY message between the asks (stricter than base for free
-English commands); the STOP decoration cap is OD-20; whether more positive emoji should
-confirm is OD-21; the question-shaped STOP is OD-22 (both open, in
-`docs/REKODA_LAUNCH_READINESS.md`).
+English commands); the STOP decoration cap is OD-20; more positive emoji do not confirm
+(OD-21, owner ruling OWN-19); a question-shaped STOP opts out (OD-22, owner
+ruling OWN-20).
 
 **MERGED (1 Oct 2026, Build 6, conversational continuation state; #260 as
 `3612fcf`; staging acceptance pending):** was branch
