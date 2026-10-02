@@ -12976,4 +12976,41 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
     await lapse(business.id);
     expect(await send('yes?')).toBe(replies.nothingToConfirmWithoutChat().text);
   });
+
+  /**
+   * "yes" and "yes?" agree on a draft the merchant was never shown as a
+   * preview (final-head review): a live question Rekoda asked, and a preview
+   * whose send failed (marked unseen). Both are "nothing waiting" on a plan
+   * without Chat; neither is told a save was refused.
+   */
+  it.each([
+    ['integrate', 'a live question'],
+    ['lapsed', 'a live question'],
+    ['integrate', 'an unseen preview'],
+    ['lapsed', 'an unseen preview'],
+  ] as const)('on a %s plan, yes and yes? agree on %s', async (standing, kind) => {
+    const answers: string[] = [];
+    for (const word of ['yes', 'yes?']) {
+      await truncateAll(urls);
+      const business = await seedMerchant();
+      if (kind === 'a live question') {
+        await send('sold some things', { intent: 'Unclear', clarification: 'How many wigs?' });
+      } else {
+        await send('Ada bought 3 wigs for 300k', A_SALE);
+        // The preview's send failed: the draft is marked as never seen.
+        await withBusiness(db, business.id, (tx) =>
+          tx.execute(sql`
+            UPDATE command_drafts SET previewed = false
+             WHERE business_id = ${business.id}::uuid AND state = 'pending'`),
+        );
+      }
+      if (standing === 'integrate') await moveToPlan(business.id, 'integrate');
+      else await lapse(business.id);
+      const states = await draftStates(business.id);
+      answers.push(await send(word));
+      expect(await draftStates(business.id), word).toEqual(states);
+    }
+    expect(answers[0]).toBe(answers[1]);
+    expect(answers[0]).toBe(replies.nothingToConfirmWithoutChat().text);
+  });
 });

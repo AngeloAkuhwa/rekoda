@@ -1151,7 +1151,10 @@ async function deterministicReply(
       return replies.nothingToConfirmWithoutChat();
     }
     /* "A preview is waiting, reply yes" would invite a yes such a plan is
-     * refused: it is told nothing was saved instead. */
+     * refused: it is told nothing was saved instead. Never an erasure ask:
+     * it is recorded unpreviewed and nothing marks it previewed, so it can
+     * never produce this reply (`confirmPendingDraft` answers it only for a
+     * draft recorded as previewed). */
     if (answer?.text === replies.previewAwaitingYes().text) {
       return (await draftRefusalWithoutChat(tx, businessId)) ?? answer;
     }
@@ -1923,6 +1926,12 @@ async function confirmPendingDraft(
       if (retrying) {
         await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
       }
+      /* A draft the merchant was never shown as a preview (a question
+       * Rekoda asked, or a preview whose send failed and was marked unseen)
+       * is nothing a yes could have saved: "nothing waiting", exactly what a
+       * "yes?" is told in the same state (`unsureReply`). A preview the
+       * merchant saw is refused as a save. */
+      if (draft.previewed !== true) return replies.nothingToConfirmWithoutChat();
       return chatRefusal(tx, businessId, access, 'draft');
     }
   }
