@@ -1219,8 +1219,13 @@ async function deterministicReply(
       const paired =
         pending &&
         pendingCommand?.intent === 'EraseData' &&
-        (await conversationsRepo.inboundSinceDraft(tx, businessId, pending.id, ctx.messageId)) ===
-          0 &&
+        (await conversationsRepo.inboundSinceDraft(
+          tx,
+          businessId,
+          pending.id,
+          ctx.messageId,
+          ctx.eventId,
+        )) === 0 &&
         (await conversationsRepo.inboundEventsSinceDraft(
           tx,
           businessId,

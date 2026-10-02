@@ -11667,6 +11667,27 @@ describe('G-68 Codex review: erasure events, emoji, failed rebuild send, gates, 
     expect(facets).toHaveLength(1);
   });
 
+  it('P2: a message that arrived AFTER the second erasure ask does not break the pair (Codex review)', async () => {
+    const business = await seedMerchant();
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      business.id,
+      'CUSTOMER_T8',
+      [{ facet: 'phone', ciphertext: 'sealed-phone', matchKey: 'mk-g68-after' }],
+    );
+    await reply('wamid.CX-a-del1', 'delete my data');
+    /* The second ask and a later message are both ingested before either
+     * job runs: the later one was not said between the two asks. */
+    stubTransport.replyWith(UNCLEAR);
+    await post(messagePayload(OWNER, 'wamid.CX-a-del2', 'delete my data'));
+    await post(messagePayload(OWNER, 'wamid.CX-a-after', 'Ada bought 3 wigs for 150k'));
+    await drain();
+    const facets = await withBusiness(db, business.id, (tx) =>
+      customersRepo.identityFacetsFor(tx, business.id, customer.id),
+    );
+    expect(facets).toHaveLength(0);
+  });
+
   it.each([
     'na so ❌',
     'e correct 👎',

@@ -1125,6 +1125,15 @@ export function answerIsUncertain(raw: string): boolean {
 }
 
 /**
+ * Combining marks that draw a refusal over what they sit on (Codex review):
+ * every ENCLOSING mark but the keycap (U+20E3, read as an emoji above), such
+ * as the circle-backslash "yes\u20E0", and the overlay and strike marks
+ * that cross a word out ("y\u0336e\u0336s\u0336"). Normalisation strips
+ * them, so they are looked for on the raw message.
+ */
+const NEGATING_MARK = /(?!\u20E3)\p{Me}|[\u0334-\u0338\u20D2\u20D3\u20E5\u20E6\u20EA\u20EB]/u;
+
+/**
  * Does an affirmation carry any emoji that is not on the positive list
  * (G-68, Codex review)? "na so ❌", "e correct 👎", "oya 🚫", "yes ⛔" are
  * not agreement, and a growing list of negative emoji would always miss
@@ -1145,6 +1154,7 @@ export function answerIsUncertain(raw: string): boolean {
  * they were mocking or refusing.
  */
 function carriesNonAffirmingEmoji(raw: string): boolean {
+  if (NEGATING_MARK.test(raw)) return true;
   segmenter ??= new Intl.Segmenter('en', { granularity: 'grapheme' });
   for (const { segment } of segmenter.segment(raw)) {
     const emoji =

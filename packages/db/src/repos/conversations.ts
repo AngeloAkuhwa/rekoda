@@ -1035,6 +1035,9 @@ export async function inboundSinceDraft(
   businessId: string,
   draftId: string,
   excludeMessageId: string,
+  /** The current ask's event: messages ingested AFTER it are not "between"
+   * the two asks (Codex review), even when their job ran first. */
+  currentEventId?: string,
 ): Promise<number> {
   /* Fail CLOSED: if the parked ask's message cannot be found, the pair is
    * treated as broken (the data is kept), never as intact. */
@@ -1055,7 +1058,18 @@ export async function inboundSinceDraft(
        AND later.direction = 'inbound'
        AND later.created_at >= parked.created_at
        AND later.id <> parked.id
-       AND later.id <> ${excludeMessageId}::uuid`);
+       AND later.id <> ${excludeMessageId}::uuid
+       AND (
+         ${currentEventId ?? null}::uuid IS NULL
+         OR COALESCE(
+              (SELECT e.created_at FROM external_events e
+                WHERE e.provider = 'meta' AND e.external_id = later.provider_message_id
+                  AND e.business_id = later.business_id),
+              later.created_at)
+            <= COALESCE(
+                 (SELECT cur.created_at FROM external_events cur
+                   WHERE cur.id = ${currentEventId ?? null}::uuid),
+                 'infinity'::timestamptz))`);
   return [...rows][0]?.n ?? 0;
 }
 
@@ -1096,6 +1110,14 @@ export async function inboundEventsSinceDraft(
                AND later.created_at >= parked.created_at
                AND later.id <> parked.id
                AND later.id <> ${currentEventId}::uuid
+               /* Only events ingested up to the current ask (Codex review):
+                * a message that arrived AFTER the second ask, even if its
+                * job ran first, was not said between them. An unknown
+                * current event bounds nothing (fails closed). */
+               AND later.created_at <= COALESCE(
+                 (SELECT cur.created_at FROM external_events cur
+                   WHERE cur.id = ${currentEventId}::uuid),
+                 'infinity'::timestamptz)
                AND NOT EXISTS (
                  SELECT 1 FROM jobs j
                   WHERE j.business_id = later.business_id

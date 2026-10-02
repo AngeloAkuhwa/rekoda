@@ -1011,6 +1011,9 @@ describe('a questioned affirmation confirms nothing', () => {
     'yes \u2047',
     'yes \uFE16',
     'na so \u2048',
+    /* Combining negation marks (Codex review). */
+    'yes\u20E0',
+    'yes\u0338',
     'yes #️⃣',
   ])('%j is unsure, never affirm', (message) => {
     expect(intentOf(message)).toEqual({ kind: 'unsure' });
@@ -1092,6 +1095,13 @@ describe('the length gate counts what is left after trimming (G-24 review)', () 
   });
 });
 
+describe('a struck-through yes never affirms (Codex review)', () => {
+  it('goes to the model, never to the affirmation path', () => {
+    expect(intentOf('y\u0336e\u0336s\u0336')).not.toEqual({ kind: 'affirm' });
+    expect(goesToModel('y\u0336e\u0336s\u0336')).toBe(true);
+  });
+});
+
 describe('a funding answer carrying a negation symbol is uncertain (Codex review)', () => {
   it.each([
     'cash \u2717',
@@ -1101,6 +1111,8 @@ describe('a funding answer carrying a negation symbol is uncertain (Codex review
     'cash ❌',
     'cash \u2047',
     'bank \uFE16',
+    'cash\u20E0',
+    'b\u0336a\u0336n\u0336k\u0336',
   ])('%j is uncertain', (text) => {
     expect(answerIsUncertain(text)).toBe(true);
   });
