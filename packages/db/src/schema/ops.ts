@@ -484,9 +484,10 @@ export const commandDrafts = pgTable(
     requestedBy: uuid('requested_by').references(() => users.id),
     /**
      * The retired question a funding-answer rebuild was built from
-     * (migration 0157, G-68). A newer purchase preview supersedes an older
-     * pending rebuild, so one purchase is never two confirmable previews.
-     * Null on every draft that is not a rebuild.
+     * (migration 0157, G-68). "Already waiting" is said only of the rebuild
+     * of the question answered; the SAME member's newer purchase preview of
+     * the same total supersedes their pending rebuild, and says so. Never
+     * across members. Null on every draft that is not a rebuild.
      */
     rebuiltFrom: uuid('rebuilt_from'),
   },

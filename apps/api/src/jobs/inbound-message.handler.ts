@@ -29,7 +29,7 @@ import {
   isOneShot,
   FUNDING_ANSWER_WINDOW_SECONDS,
   withinFundingWindow,
-  isSamePurchase,
+  rebuiltPurchaseFate,
   uncountablePeriod,
   answerIsUncertain,
   fundingSourceAnswer,
@@ -2528,7 +2528,7 @@ async function answerFundingSource(
   /* Closed since it was asked (a "no", from this member or another one), or
    * blocked by something newer: nothing to rebuild, and that is said. */
   if (!retired) {
-    return closedQuestionReply(tx, businessId, message.receivedAt, message.from, source);
+    return closedQuestionReply(tx, businessId, draftId, message.receivedAt, message.from, source);
   }
   const refused = await fundingGateRefusal(tx, businessId, message.from);
   if (refused) return refused;
@@ -2544,7 +2544,7 @@ async function answerFundingSource(
    * was closed. Two previews of one purchase would let two yeses book it
    * twice, which G-61 exists to prevent. */
   if (!(await conversationsRepo.closeRetiredDraft(tx, businessId, retired.id))) {
-    return closedQuestionReply(tx, businessId, message.receivedAt, message.from, source);
+    return closedQuestionReply(tx, businessId, draftId, message.receivedAt, message.from, source);
   }
   /* Nobody else's short answer can reach it now. */
   const holders = await continuationsRepo.retireContinuationsForDraft(tx, businessId, retired.id);
@@ -2700,22 +2700,28 @@ async function fundingGateRefusal(
  *  - another member's, or one Rekoda cannot attribute (requested_by null):
  *    say so, inviting neither a yes nor a resend;
  *  - nothing live is waiting: the question can no longer be answered.
+ * "Waiting" is only ever the purchase rebuilt from THIS question
+ * (`rebuilt_from`), never some other preview that happens to be pending.
  */
 async function closedQuestionReply(
   tx: TenantDb,
   businessId: string,
+  /** The retired question the funding answer was about. */
+  questionId: string,
   receivedAt: Date,
   from: string,
   /** The account the member just named, when the message named one. */
   named?: FundingSource | null,
 ): Promise<Reply> {
-  /* "Waiting" only for a preview the next yes would actually reach: live
-   * (its window not closed at this message), not behind a retired
-   * question, and with no retired question as the latest thing to answer
-   * (a yes would re-ask that instead). Then WHOSE it is (0157, final-head
-   * review): another member's preview names an account this member did not
-   * choose, so it is never offered as theirs to confirm, and a resend is
-   * not invited either. Read-only. */
+  /* "Waiting" only for the purchase rebuilt from THIS question (0157,
+   * `rebuilt_from`), and only when it is what the next yes would actually
+   * reach: the newest pending preview, live (its window not closed at this
+   * message), with no read after it (a yes would get the pointer reply
+   * instead), not behind a retired question, and with no retired question
+   * as the latest thing to answer (a yes would re-ask that instead). Then
+   * WHOSE it is (final-head review): another member's preview names an
+   * account this member did not choose, so it is never offered as theirs to
+   * confirm, and a resend is not invited either. Read-only. */
   const latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, { asOf: receivedAt });
   if (latest?.state === 'abandoned') return replies.fundingQuestionClosed();
   const waiting = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
@@ -2723,8 +2729,10 @@ async function closedQuestionReply(
   });
   const reachable =
     waiting !== null &&
+    waiting.intent === 'RecordPurchase' &&
+    waiting.rebuiltFrom === questionId &&
     waiting.previewed === true &&
-    !NOT_A_FINANCIAL_PREVIEW.has(waiting.intent) &&
+    !(await conversationsRepo.hasReadsAfter(tx, businessId, waiting.id, { asOf: receivedAt })) &&
     waiting.expiresAt !== undefined &&
     waiting.expiresAt.getTime() > receivedAt.getTime() &&
     !(await conversationsRepo.isBehindRetiredQuestion(tx, businessId, waiting.id));
@@ -2796,6 +2804,7 @@ async function continueConversation(
         return closedQuestionReply(
           tx,
           businessId,
+          newest.draftId,
           message.receivedAt,
           message.from,
           fundingSourceAnswer(message.text),
@@ -2845,8 +2854,9 @@ async function continueConversation(
             businessId,
             { ...retired, state: 'abandoned' },
             message,
-          )) ?? (await closedQuestionReply(tx, businessId, message.receivedAt, message.from)))
-        : closedQuestionReply(tx, businessId, message.receivedAt, message.from);
+          )) ??
+            (await closedQuestionReply(tx, businessId, draftId, message.receivedAt, message.from)))
+        : closedQuestionReply(tx, businessId, draftId, message.receivedAt, message.from);
     }
     /* The read-only gates run BEFORE the answer is claimed (Codex review):
      * a refusal leaves the question open, so the same "cash" works the
@@ -3399,20 +3409,28 @@ async function interpretedReply(
    * closed in this transaction, and every member's short answer to it is
    * retired, so nobody can rebuild it into a second preview of the same
    * purchase. */
-  let replacedEarlier = false;
+  let shown = answered.reply;
   if (answered.previewed === true && draft.isNew) {
-    /* The purchase sent again is the purchase now (final-head review): an
-     * older rebuilt preview of the SAME purchase, still pending, is
-     * superseded with it, so no pair of yeses can book a purchase twice, and
-     * the merchant is told. A DIFFERENT purchase leaves it waiting, as an
-     * ordinary preview would. */
-    if (command.intent === 'RecordPurchase') {
+    /* The SAME member's purchase sent again (final-head review): their own
+     * pending rebuilt preview of the same TOTAL (integer kobo) is superseded,
+     * so their two yeses cannot book one purchase twice, and the reply ALWAYS
+     * says so with the total, so a different purchase is sent again by the
+     * one person who can tell. A different total leaves it waiting, and the
+     * reply says that too. Never across members, and never for a rebuild
+     * with no recorded requester: both previews then stay pending, exactly
+     * as base (whose preview a member may confirm is OD-15). Product names
+     * are free text and are never compared. */
+    if (command.intent === 'RecordPurchase' && actorId) {
       for (const older of await conversationsRepo.pendingRebuildsBefore(tx, businessId, draft.id)) {
-        if (
-          isSamePurchase(older.command, command) &&
-          (await conversationsRepo.supersedeRebuild(tx, businessId, older.id))
-        ) {
-          replacedEarlier = true;
+        if (older.requestedBy !== actorId) continue;
+        const fate = rebuiltPurchaseFate(older.command, command);
+        if (!fate) continue;
+        if (fate.replace) {
+          if (await conversationsRepo.supersedeRebuild(tx, businessId, older.id)) {
+            shown = replies.earlierPreviewReplaced(shown, fate.totalK);
+          }
+        } else {
+          shown = replies.earlierPreviewStillWaiting(shown, fate.totalK);
         }
       }
     }
@@ -3492,7 +3510,7 @@ async function interpretedReply(
     }
   }
 
-  return replacedEarlier ? replies.earlierPreviewReplaced(answered.reply) : answered.reply;
+  return shown;
 }
 
 /**

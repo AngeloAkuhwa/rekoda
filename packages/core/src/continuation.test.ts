@@ -12,7 +12,7 @@ import {
   continuationColumns,
   isOneShot,
   withinFundingWindow,
-  isSamePurchase,
+  rebuiltPurchaseFate,
   parseContinuation,
   resumedRead,
   type ContinuationState,
@@ -301,26 +301,30 @@ describe('the funding answer window (Codex review)', () => {
   });
 });
 
-describe('isSamePurchase (G-68, final-head review)', () => {
+describe('rebuiltPurchaseFate (G-68, final-head review)', () => {
   const pos = {
     intent: 'RecordPurchase',
     amount: 180_000,
-    paymentMethod: 'pos',
     productMention: 'cartons',
     quantity: 10,
   };
-  it('the same total, product and quantity is the same purchase, whatever the account', () => {
-    expect(isSamePurchase(pos, { ...pos, paymentMethod: 'cash' })).toBe(true);
-    expect(isSamePurchase(pos, { ...pos, productMention: ' Cartons ' })).toBe(true);
+  it('the same total in kobo replaces, whatever the product is called', () => {
+    expect(rebuiltPurchaseFate(pos, { ...pos, productMention: 'carton indomie' })).toEqual({
+      totalK: 18_000_000,
+      replace: true,
+    });
+    expect(
+      rebuiltPurchaseFate({ ...pos, amount: 0.1 + 0.2 }, { ...pos, amount: 0.3 })?.replace,
+    ).toBe(true);
   });
-  it('the same total is enough when either names no product', () => {
-    expect(isSamePurchase(pos, { ...pos, productMention: null, quantity: null })).toBe(true);
+  it('a different total stays waiting', () => {
+    expect(rebuiltPurchaseFate(pos, { ...pos, amount: 50_000 })).toEqual({
+      totalK: 18_000_000,
+      replace: false,
+    });
   });
-  it('a different total, product or quantity is a different purchase', () => {
-    expect(isSamePurchase(pos, { ...pos, amount: 50_000 })).toBe(false);
-    expect(isSamePurchase(pos, { ...pos, productMention: 'bags of rice' })).toBe(false);
-    expect(isSamePurchase(pos, { ...pos, quantity: 5 })).toBe(false);
-    expect(isSamePurchase(pos, { ...pos, intent: 'RecordExpense' })).toBe(false);
-    expect(isSamePurchase(null, pos)).toBe(false);
+  it('anything unreadable decides nothing', () => {
+    expect(rebuiltPurchaseFate(pos, { ...pos, intent: 'RecordExpense' })).toBeNull();
+    expect(rebuiltPurchaseFate(null, pos)).toBeNull();
   });
 });

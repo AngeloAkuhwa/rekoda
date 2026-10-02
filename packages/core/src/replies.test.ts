@@ -93,7 +93,16 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   previewWaitingForAnotherMember: [replies.previewWaitingForAnotherMember()],
   previewWaitingUnattributed: [replies.previewWaitingUnattributed()],
   earlierPreviewReplaced: [
-    replies.earlierPreviewReplaced(replies.preview('Please check this before I save it.')),
+    replies.earlierPreviewReplaced(
+      replies.preview('Please check this before I save it.'),
+      18_000_000,
+    ),
+  ],
+  earlierPreviewStillWaiting: [
+    replies.earlierPreviewStillWaiting(
+      replies.preview('Please check this before I save it.'),
+      18_000_000,
+    ),
   ],
   correctionTaken: [replies.correctionTaken()],
   issued: [

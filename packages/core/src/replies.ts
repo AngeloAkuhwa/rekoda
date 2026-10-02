@@ -413,12 +413,25 @@ export function preview(text: string): Reply {
 }
 
 /**
- * A purchase preview that REPLACED an earlier rebuilt preview of the same
- * purchase (G-68, final-head review): said, so the merchant knows only this
- * one is waiting and the earlier one cannot also be confirmed.
+ * A purchase preview that REPLACED the same member's earlier rebuilt preview
+ * of the same total (G-68, final-head review). Always said, with the total,
+ * so the one person who can tell sends a different purchase again.
  */
-export function earlierPreviewReplaced(shown: Reply): Reply {
-  return reply(`${shown.text}\n\nYour earlier preview of this purchase was replaced by this one.`);
+export function earlierPreviewReplaced(shown: Reply, earlierK: number): Reply {
+  return reply(
+    `${shown.text}\n\nYour earlier preview of ${formatKobo(earlierK)} was replaced by ` +
+      'this one. If that was a different purchase, send it again.',
+  );
+}
+
+/**
+ * A purchase preview recorded while the same member's earlier rebuilt
+ * preview of a DIFFERENT total stays pending (G-68, final-head review).
+ */
+export function earlierPreviewStillWaiting(shown: Reply, earlierK: number): Reply {
+  return reply(
+    `${shown.text}\n\nYour earlier preview of ${formatKobo(earlierK)} is still waiting.`,
+  );
 }
 
 /** CG1 — the one arithmetic question, verbatim from the gate. */

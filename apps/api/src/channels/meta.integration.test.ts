@@ -11138,7 +11138,17 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
   });
 
   describe('F2c. another member’s waiting preview (final-head review)', () => {
-    it('owner "bank", delegate "cash", delegate sends the purchase again, two yeses: booked ONCE', async () => {
+    const RICE = {
+      ...POS_PURCHASE,
+      description: '5 bags of rice',
+      amount: 50_000,
+      reportedPayment: 50_000,
+      paymentMethod: 'cash',
+      productMention: 'bags of rice',
+      quantity: 5,
+    };
+
+    it('another member sending the purchase again NEVER replaces the owner’s preview, and is told nothing false', async () => {
       const business = await seedMerchant();
       await addDelegate(business.id);
       await say('wamid.F2c-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
@@ -11148,8 +11158,10 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
       await reply('wamid.F2c-d-cash', 'cash', DELEGATE);
       expect(stubSender.lastText).toBe(replies.previewWaitingForAnotherMember().text);
 
-      /* Sent again anyway, paid in cash: the purchase now. The owner's older
-       * rebuilt preview is superseded with it, so it can never also book. */
+      /* Sent again anyway by the delegate: never across members. Both
+       * previews stay pending, exactly as base (whose preview a member may
+       * confirm is OD-15), and the delegate is told nothing about "your"
+       * earlier preview, which was never theirs. */
       await say(
         'wamid.F2c-d-resend',
         { ...POS_PURCHASE, paymentMethod: 'cash' },
@@ -11157,51 +11169,81 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
         DELEGATE,
       );
       expect(stubSender.lastText).toContain('Paid in full by cash');
-      await reply('wamid.F2c-d-ok', 'yes', DELEGATE);
-      await reply('wamid.F2c-o-ok', 'yes');
-      expect(await written(business.id)).toMatchObject({ purchases: 1 });
+      expect(stubSender.lastText).not.toContain('Your earlier preview');
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending', 'pending']);
     });
 
-    it('a DIFFERENT purchase sent meanwhile leaves the rebuilt preview waiting; two yeses book both', async () => {
+    it('the same member, a DIFFERENT total: both wait, and the reply says the earlier one still waits', async () => {
       const business = await seedMerchant();
       await say('wamid.F2c-x-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
       await reply('wamid.F2c-x-bank', 'bank');
       expect(stubSender.lastText).toContain('Paid in full by transfer');
-      await say(
-        'wamid.F2c-x-rice',
-        {
-          ...POS_PURCHASE,
-          description: '5 bags of rice',
-          amount: 50_000,
-          reportedPayment: 50_000,
-          paymentMethod: 'cash',
-          productMention: 'bags of rice',
-          quantity: 5,
-        },
-        'bought 5 bags rice 50k cash',
-      );
-      expect(stubSender.lastText).not.toContain('was replaced');
+      await say('wamid.F2c-x-rice', RICE, 'bought 5 bags rice 50k cash');
+      expect(stubSender.lastText).toContain('Your earlier preview of ₦180,000 is still waiting.');
       expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending', 'pending']);
       await reply('wamid.F2c-x-yes-1', 'yes');
       await reply('wamid.F2c-x-yes-2', 'yes');
       expect(await written(business.id)).toMatchObject({ purchases: 2 });
     });
 
-    it('the SAME purchase sent again replaces the rebuilt preview, and says so', async () => {
+    it('the same member, the same total under another product name: replaced, announced, booked ONCE', async () => {
       const business = await seedMerchant();
       await say('wamid.F2c-r-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
       await reply('wamid.F2c-r-bank', 'bank');
       await say(
         'wamid.F2c-r-resend',
-        { ...POS_PURCHASE, paymentMethod: 'cash' },
-        'I bought 10 cartons for 180k, paid cash',
+        { ...POS_PURCHASE, paymentMethod: 'cash', productMention: 'carton indomie' },
+        'I bought carton indomie for 180k, paid cash',
       );
       expect(stubSender.lastText).toContain(
-        'Your earlier preview of this purchase was replaced by this one.',
+        'Your earlier preview of ₦180,000 was replaced by this one. If that was a different purchase, send it again.',
       );
       await reply('wamid.F2c-r-yes-1', 'yes');
       await reply('wamid.F2c-r-yes-2', 'yes');
       expect(await written(business.id)).toMatchObject({ purchases: 1 });
+    });
+
+    it('a rebuild with no recorded requester is never replaced', async () => {
+      const business = await seedMerchant();
+      await say('wamid.F2c-n-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await reply('wamid.F2c-n-bank', 'bank');
+      /* As a rebuild written before 0157 recorded who asked. */
+      await withBusiness(db, business.id, (tx) =>
+        tx.execute(sql`
+          UPDATE command_drafts SET requested_by = NULL
+           WHERE business_id = ${business.id}::uuid AND rebuilt_from IS NOT NULL`),
+      );
+      await say(
+        'wamid.F2c-n-resend',
+        { ...POS_PURCHASE, paymentMethod: 'cash' },
+        'I bought 10 cartons for 180k, paid cash',
+      );
+      expect(stubSender.lastText).not.toContain('Your earlier preview');
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending', 'pending']);
+    });
+
+    it('a sale preview after the question is never called the waiting purchase', async () => {
+      await seedMerchant();
+      await say('wamid.F2c-q-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await say(
+        'wamid.F2c-q-sale',
+        {
+          intent: 'RecordSale',
+          customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+          items: [{ name: 'wig', quantity: 3, unitPrice: 15_000 }],
+          statedTotal: 45_000,
+          reportedPayment: 0,
+          paymentMethod: 'transfer',
+          discount: null,
+          deliveryFee: null,
+          dueDescription: null,
+        },
+        'sold Ada 3 wigs for 45k',
+      );
+      await reply('wamid.F2c-q-cash', 'cash');
+      expect(stubSender.lastText).not.toBe(replies.previewAlreadyWaiting().text);
+      expect(stubSender.lastText).not.toContain('already waiting');
+      expect(stubSender.lastText).toBe(replies.fundingQuestionClosed().text);
     });
 
     it('the same member naming the same account again is pointed at their preview, unnamed', async () => {

@@ -35,6 +35,7 @@
  * actual person who was asked (`user_id`), never just the business.
  */
 import type { AnsweredPeriod, FundingSource, Route } from './router.js';
+import { nairaToKobo } from './money.js';
 import { fundingSourceAnswer, periodAnswer } from './router.js';
 
 /**
@@ -71,34 +72,35 @@ export const FUNDING_ANSWER_WINDOW_SECONDS = 1800;
  * (G-68)? A NEGATIVE age (a delayed or retried message older than the
  * question it would answer) is outside it, never inside.
  */
-/**
- * Is a new purchase EVIDENTLY the same purchase as a pending rebuilt preview
- * (G-68, final-head review)? Only then may it replace that preview: a
- * different purchase sent meanwhile ("5 bags of rice for 50k") must leave it
- * waiting, as an ordinary preview would. The same total, and, when BOTH
- * name a product and a quantity, the same product and quantity. Anything
- * unreadable is not the same.
- */
-export function isSamePurchase(a: unknown, b: unknown): boolean {
-  const x = a as Record<string, unknown> | null;
-  const y = b as Record<string, unknown> | null;
-  if (!x || !y || x['intent'] !== 'RecordPurchase' || y['intent'] !== 'RecordPurchase') {
-    return false;
-  }
-  if (typeof x['amount'] !== 'number' || x['amount'] !== y['amount']) return false;
-  const product = (c: Record<string, unknown>) =>
-    typeof c['productMention'] === 'string' && typeof c['quantity'] === 'number'
-      ? { name: c['productMention'].trim().toLowerCase(), quantity: c['quantity'] }
-      : null;
-  const px = product(x);
-  const py = product(y);
-  if (px && py) return px.name === py.name && px.quantity === py.quantity;
-  return true;
-}
-
 export function withinFundingWindow(askedAt: Date, receivedAt: Date): boolean {
   const age = receivedAt.getTime() - askedAt.getTime();
   return age >= 0 && age < FUNDING_ANSWER_WINDOW_SECONDS * 1000;
+}
+
+/**
+ * What happens to a PENDING funding-answer rebuild when the SAME member
+ * records a new purchase preview (G-68, final-head review), or null when
+ * either is unreadable. Only the TOTAL is compared, in integer kobo: the
+ * model's product names are free text ("cartons", "carton indomie") and
+ * cannot say whether two purchases are one. The same total replaces the
+ * rebuild (and the reply always says so, so a different purchase is sent
+ * again by the one person who can tell); a different total leaves it
+ * waiting (and the reply says that too). Members are never compared here:
+ * the caller only asks about the sender's own rebuilds.
+ */
+export function rebuiltPurchaseFate(
+  rebuilt: unknown,
+  next: unknown,
+): { readonly totalK: number; readonly replace: boolean } | null {
+  const total = (c: unknown): number | null => {
+    const x = c as Record<string, unknown> | null;
+    if (!x || x['intent'] !== 'RecordPurchase' || typeof x['amount'] !== 'number') return null;
+    return nairaToKobo(x['amount']);
+  };
+  const rebuiltK = total(rebuilt);
+  const nextK = total(next);
+  if (rebuiltK === null || nextK === null) return null;
+  return { totalK: rebuiltK, replace: rebuiltK === nextK };
 }
 
 /** The Query topics a continuation may carry (the command contract's list). */

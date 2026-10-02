@@ -353,6 +353,8 @@ export interface DraftRow {
   expiresAt?: Date;
   /** The member whose message drafted it (0157), where the read selects it. */
   requestedBy?: string | null;
+  /** The retired question a rebuild was built from (0157), where selected. */
+  rebuiltFrom?: string | null;
   /**
    * How the DRAFTING message arrived — text | voice | media | interactive.
    * Spec E.7's evidenceBasis is derived from this at confirmation time: a
@@ -571,6 +573,7 @@ async function newestPendingDraft(
       previewed: commandDrafts.previewed,
       expiresAt: commandDrafts.expiresAt,
       requestedBy: commandDrafts.requestedBy,
+      rebuiltFrom: commandDrafts.rebuiltFrom,
       messageKind: conversationMessages.kind,
     })
     .from(commandDrafts)
@@ -1103,15 +1106,15 @@ export async function inboundEventsSinceDraft(
 /**
  * Every PENDING funding-answer rebuild recorded before this draft, with its
  * command (G-68, final-head review), read so the caller can supersede the
- * ones a new purchase preview evidently replaces (`isSamePurchase`).
+ * ones the SAME member's new purchase preview replaces (`rebuiltPurchaseFate`).
  */
 export async function pendingRebuildsBefore(
   tx: TenantDb,
   businessId: string,
   draftId: string,
-): Promise<{ id: string; command: unknown }[]> {
-  const rows = await tx.execute<{ id: string; command: unknown }>(sql`
-    SELECT r.id, r.command
+): Promise<{ id: string; command: unknown; requestedBy: string | null }[]> {
+  const rows = await tx.execute<{ id: string; command: unknown; requested_by: string | null }>(sql`
+    SELECT r.id, r.command, r.requested_by
       FROM command_drafts r
       JOIN command_drafts current
         ON current.id = ${draftId}::uuid AND current.business_id = r.business_id
@@ -1120,13 +1123,13 @@ export async function pendingRebuildsBefore(
        AND r.rebuilt_from IS NOT NULL
        AND r.insertion_seq < current.insertion_seq
      ORDER BY r.insertion_seq`);
-  return [...rows];
+  return [...rows].map((r) => ({ id: r.id, command: r.command, requestedBy: r.requested_by }));
 }
 
 /**
- * Supersede ONE pending funding-answer rebuild that a newer preview of the
- * same purchase replaces (G-68): one purchase is never two confirmable
- * previews, so two yeses cannot book it twice. Conditional on `pending`.
+ * Supersede ONE pending funding-answer rebuild that the same member's newer
+ * purchase preview of the same total replaces (G-68): their one purchase is
+ * never two confirmable previews. Conditional on `pending`.
  */
 export async function supersedeRebuild(
   tx: TenantDb,

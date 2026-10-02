@@ -998,6 +998,9 @@ describe('a questioned affirmation confirms nothing', () => {
     'yes -_-',
     'yes =(',
     'yes ):',
+    "yes :'(",
+    'yes ;(',
+    'yes :|',
     'yes #️⃣',
   ])('%j is unsure, never affirm', (message) => {
     expect(intentOf(message)).toEqual({ kind: 'unsure' });
@@ -1079,6 +1082,18 @@ describe('the length gate counts what is left after trimming (G-24 review)', () 
   });
 });
 
+describe('stated payments from the bank answer the funding question (G-68 final-head)', () => {
+  it.each([
+    'paid by transfer',
+    'paid by bank transfer',
+    'with transfer',
+    'paid from bank',
+    'paid from my bank',
+  ])('%j is transfer', (text) => {
+    expect(fundingSourceAnswer(text)).toBe('transfer');
+  });
+});
+
 describe('Pidgin cash answers to the funding question (G-68 review)', () => {
   it.each([
     'money for hand',
@@ -1088,6 +1103,8 @@ describe('Pidgin cash answers to the funding question (G-68 review)', () => {
     'I paid cash',
     'paid in cash',
     'with cash',
+    'paid with cash',
+    'I paid with cash',
   ])('%j is cash', (text) => {
     expect(fundingSourceAnswer(text)).toBe('cash');
   });

@@ -306,6 +306,17 @@ export function splitPayment(
   };
 }
 
+/**
+ * A naira amount as the contract carries it (two decimal places at most),
+ * converted to integer kobo once, at the border, so every comparison after
+ * it is exact.
+ */
+export function nairaToKobo(naira: number): Kobo {
+  const kobo = Math.round(naira * 100);
+  assertKobo(kobo);
+  return kobo;
+}
+
 /** Format kobo for humans: ₦1,234,567.89 (presentation edge only). */
 export function formatKobo(kobo: Kobo, currency = 'NGN'): string {
   const sign = kobo < 0 ? '-' : '';
