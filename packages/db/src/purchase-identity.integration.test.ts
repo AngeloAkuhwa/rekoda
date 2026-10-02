@@ -348,6 +348,26 @@ describe('the purchases one total may be (purchaseRecords)', () => {
     );
     expect(records.map((r) => r.id)).toEqual([first.id]);
   });
+
+  it('a delayed or retried message never sees a record from a message stored after it', async () => {
+    const { businessId } = await seedBusiness();
+    const delayed = await draft(businessId);
+    const later = await draft(businessId);
+    /* The later message was stored after the delayed one, whose job runs now. */
+    await withBusiness(app, businessId, (tx) =>
+      tx.execute(sql`
+        UPDATE conversation_messages SET created_at = clock_timestamp() + interval '1 minute'
+         WHERE id = ${later.messageId}::uuid`),
+    );
+    await book(businessId, later.id);
+    const { records } = await withBusiness(app, businessId, (tx) =>
+      purchaseIdentityRepo.purchaseRecords(tx, businessId, 10_000_000, {
+        messageId: delayed.messageId,
+        excludeDraftId: delayed.id,
+      }),
+    );
+    expect(records).toEqual([]);
+  });
 });
 
 describe('the identity lock', () => {

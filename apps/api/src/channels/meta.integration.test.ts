@@ -13112,7 +13112,11 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
             (SELECT coalesce(sum(last_seq), 0)::int FROM doc_counters WHERE business_id = ${businessId}::uuid) AS numbers,
             (SELECT count(*)::int FROM outbox_events WHERE business_id = ${businessId}::uuid AND type = 'purchase.recorded') AS events,
             (SELECT count(*)::int FROM idempotency_records WHERE business_id = ${businessId}::uuid) AS keys,
-            (SELECT coalesce(sum(used), 0)::int FROM usage_counters WHERE business_id = ${businessId}::uuid) AS units
+            (SELECT coalesce(sum(used), 0)::int FROM usage_counters WHERE business_id = ${businessId}::uuid) AS units,
+            (SELECT count(*)::int FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+              WHERE e.business_id = ${businessId}::uuid AND a.code IN ('1000', '1010', '1020', '2000')) AS cash_bank_ap,
+            (SELECT count(*)::int FROM documents WHERE business_id = ${businessId}::uuid) AS documents,
+            (SELECT count(*)::int FROM audit_events WHERE business_id = ${businessId}::uuid) AS audit
         `),
       )),
     ];

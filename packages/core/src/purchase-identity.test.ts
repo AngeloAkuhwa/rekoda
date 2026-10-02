@@ -315,3 +315,17 @@ describe('fresh review of #262: one document number in two formats is one refere
     ).toBe(true);
   });
 });
+
+describe('the window is a rolling 24 hours, never a Lagos day (D2)', () => {
+  it('a booking at 23:50 Lagos still counts for a message at 01:10 the next Lagos day', () => {
+    const now = new Date('2026-10-02T00:10:00Z'); // 01:10 Lagos, 2 Oct
+    const booking = record({ bookedAt: new Date('2026-10-01T22:50:00Z') }); // 23:50 Lagos, 1 Oct
+    expect(purchaseMatches(facts({ at: now }), [booking], now)).toHaveLength(1);
+  });
+
+  it('a booking from earlier the SAME Lagos day but over 24 hours ago does not', () => {
+    const now = new Date('2026-10-02T22:30:00Z'); // 23:30 Lagos, 2 Oct
+    const booking = record({ bookedAt: new Date('2026-10-01T22:20:00Z') }); // 23:20 Lagos, 1 Oct
+    expect(purchaseMatches(facts({ at: now }), [booking], now)).toHaveLength(0);
+  });
+});
