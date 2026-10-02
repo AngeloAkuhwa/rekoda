@@ -12,6 +12,7 @@
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import {
   CONFIRMATION_TTL_SECONDS,
+  PURCHASE_QUESTION_SECONDS,
   sanitizeCommandForPersistence,
   type ConfirmationContext,
 } from '@rekoda/core';
@@ -315,6 +316,14 @@ export interface DraftInput {
   requestedBy?: string | null;
   /** The retired question a funding-answer rebuild was built from (0157). */
   rebuiltFrom?: string | null;
+  /** The held purchase a "separate" answer declared this one apart from (0158). */
+  separateFrom?: string | null;
+  /**
+   * Recorded HELD (G-81): a purchase that may be one already waiting or
+   * booked, asked "same or separate" instead of previewed. Never
+   * confirmable; its window is the question's (PURCHASE_QUESTION_SECONDS).
+   */
+  held?: boolean;
   /**
    * The merchant was shown a preview a "yes" confirms, not a question
    * (G-23). Only an expired preview is answered "that request has expired".
@@ -390,14 +399,18 @@ export async function recordDraft(
       model: draft.model,
       identityLink: (draft.identityLink ?? null) as never,
       confirmationContext: (draft.confirmationContext ?? null) as never,
-      previewed: draft.previewed ?? false,
+      previewed: draft.held ? false : (draft.previewed ?? false),
       requestedBy: draft.requestedBy ?? null,
       rebuiltFrom: draft.rebuiltFrom ?? null,
+      separateFrom: draft.separateFrom ?? null,
+      ...(draft.held ? { state: 'held' } : {}),
       /* G-23: a preview is confirmable for CONFIRMATION_TTL_SECONDS, the same
        * window as a HIGH_RISK confirmation. Set once, at the only INSERT: a
        * redelivered message hits the conflict below and keeps the window its
        * first delivery opened, so a replay never extends it. */
-      expiresAt: sql`${draftClock(draft.now)} + make_interval(secs => ${CONFIRMATION_TTL_SECONDS})`,
+      expiresAt: sql`${draftClock(draft.now)} + make_interval(secs => ${
+        draft.held ? PURCHASE_QUESTION_SECONDS : CONFIRMATION_TTL_SECONDS
+      })`,
     })
     .onConflictDoNothing({ target: [commandDrafts.conversationMessageId] })
     .returning({ id: commandDrafts.id });
@@ -849,7 +862,10 @@ export function latestDraft(
 export function latestDraftToAnswer(
   tx: TenantDb,
   businessId: string,
-  options: { asOf?: Date } = {},
+  /* `skipHeld` (G-81): a purchase held for ANOTHER member's identity
+   * question is not what this member's yes or no is about; the caller
+   * decides whose it is, and asks again without it. */
+  options: { asOf?: Date; skipHeld?: boolean } = {},
 ): Promise<LatestDraft | null> {
   return newestDraft(tx, businessId, { ...options, reads: 'skip' });
 }
@@ -860,12 +876,14 @@ export interface LatestDraft {
   command: unknown;
   expiresAt: Date;
   previewed: boolean;
+  /** The member whose message drafted it (0157), or null. */
+  requestedBy: string | null;
 }
 
 async function newestDraft(
   tx: TenantDb,
   businessId: string,
-  options: { asOf?: Date | undefined; reads: ReadDrafts },
+  options: { asOf?: Date | undefined; reads: ReadDrafts; skipHeld?: boolean | undefined },
 ): Promise<LatestDraft | null> {
   const rows = await tx
     .select({
@@ -874,6 +892,7 @@ async function newestDraft(
       command: commandDrafts.command,
       expiresAt: commandDrafts.expiresAt,
       previewed: commandDrafts.previewed,
+      requestedBy: commandDrafts.requestedBy,
     })
     .from(commandDrafts)
     .where(
@@ -887,6 +906,7 @@ async function newestDraft(
         isNull(commandDrafts.undoneRebuildOf),
         /* Nor is a withdrawn preview (0157): it never reached anybody. */
         eq(commandDrafts.withdrawn, false),
+        options.skipHeld ? sql`${commandDrafts.state} <> 'held'` : undefined,
       ),
     )
     .orderBy(desc(commandDrafts.insertionSeq))
@@ -1204,8 +1224,10 @@ export async function withdrawPreviewAndRestore(
 /**
  * Undo a same-member replacement whose preview never reached the merchant
  * (G-68, Codex review): the new draft is superseded, so no yes confirms a
- * preview nobody saw, and every rebuild it replaced is pending again, so
- * the preview the merchant DID see is the one a yes confirms. Conditional
+ * preview nobody saw, and every preview it replaced (a rebuild, or since
+ * G-81 any of that member's own waiting purchase previews of the same
+ * total) is pending again, so the preview the merchant DID see is the one
+ * a yes confirms. Conditional
  * on each draft's state, so it undoes only what this message did.
  */
 export async function undoReplacement(
@@ -1225,8 +1247,349 @@ export async function undoReplacement(
        WHERE business_id = ${businessId}::uuid
          AND id = ${id}::uuid
          AND state = 'superseded'
-         AND rebuilt_from IS NOT NULL`);
+         AND intent = 'RecordPurchase'`);
   }
+}
+
+/**
+ * Supersede ONE of the same member's own waiting purchase previews that a
+ * newer purchase of the same total replaces (G-81, OD-23 D4: their one
+ * purchase is never two confirmable previews). Conditional on `pending`.
+ */
+export async function supersedeOwnPreview(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE command_drafts SET state = 'superseded', updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND id = ${draftId}::uuid
+       AND state = 'pending'
+       AND intent = 'RecordPurchase'
+    RETURNING id`);
+  return [...rows].length === 1;
+}
+
+/** A purchase held for its identity question (G-81), as the answer reads it. */
+export interface HeldPurchase {
+  id: string;
+  command: unknown;
+  requestedBy: string | null;
+  /** The funding question it was rebuilt from, when it was a rebuild. */
+  rebuiltFrom: string | null;
+  /** When the question closes: an answer at or after it attaches to nothing. */
+  expiresAt: Date;
+  /** The records the question named (0158). */
+  askedAbout: { draftIds: string[]; expenseIds: string[] };
+}
+
+type HeldRow = {
+  id: string;
+  command: unknown;
+  requested_by: string | null;
+  rebuilt_from: string | null;
+  expires_at: Date | string;
+  asked_about_drafts: string[] | null;
+  asked_about_expenses: string[] | null;
+};
+
+const heldOf = (row: HeldRow): HeldPurchase => ({
+  id: row.id,
+  command: row.command,
+  requestedBy: row.requested_by,
+  rebuiltFrom: row.rebuilt_from,
+  expiresAt: new Date(row.expires_at),
+  askedAbout: {
+    draftIds: row.asked_about_drafts ?? [],
+    expenseIds: row.asked_about_expenses ?? [],
+  },
+});
+
+/** The named records as the two id arrays a held row stores. */
+function namedArrays(named: readonly { draftId: string | null; expenseId: string | null }[]) {
+  const drafts = named.flatMap((r) => (r.draftId ? [r.draftId] : []));
+  const expenses = named.flatMap((r) => (r.expenseId ? [r.expenseId] : []));
+  return {
+    drafts: sql`${`{${drafts.join(',')}}`}::uuid[]`,
+    expenses: sql`${`{${expenses.join(',')}}`}::uuid[]`,
+  };
+}
+
+/**
+ * The HELD purchase an identity question is about, or null unless it is
+ * this business's, a purchase, and still held. Read-only: nothing here
+ * claims, confirms or revives it.
+ */
+export async function heldPurchaseDraft(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<HeldPurchase | null> {
+  const rows = await tx.execute<HeldRow>(sql`
+    SELECT id, command, requested_by, rebuilt_from, expires_at,
+           asked_about_drafts::text[] AS asked_about_drafts,
+           asked_about_expenses::text[] AS asked_about_expenses
+      FROM command_drafts
+     WHERE business_id = ${businessId}::uuid
+       AND id = ${draftId}::uuid
+       AND state = 'held'
+       AND intent = 'RecordPurchase'`);
+  const row = [...rows][0];
+  return row ? heldOf(row) : null;
+}
+
+/**
+ * Name the records a held purchase's question is about, as it is first
+ * asked (G-81, fresh review of #262). Conditional on `held`.
+ */
+export async function nameHeldRecords(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  named: readonly { draftId: string | null; expenseId: string | null }[],
+): Promise<void> {
+  const arrays = namedArrays(named);
+  await tx.execute(sql`
+    UPDATE command_drafts
+       SET asked_about_drafts = ${arrays.drafts},
+           asked_about_expenses = ${arrays.expenses},
+           updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND id = ${draftId}::uuid
+       AND state = 'held'`);
+}
+
+/**
+ * Close a held purchase (`held` to `superseded`), once: by the answer
+ * "same" (nothing more is saved), by "separate" (a fresh preview replaces
+ * it), or by a "cancel". Conditional, so of two answers racing exactly one
+ * acts.
+ */
+export async function releaseHeld(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE command_drafts SET state = 'superseded', updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND id = ${draftId}::uuid
+       AND state = 'held'
+    RETURNING id`);
+  return [...rows].length === 1;
+}
+
+/**
+ * A purchase the purchase work refused at the yes (G-81): another purchase
+ * of the same total was booked since its preview was shown. The claim the
+ * yes made (`confirmed`) is turned into a HELD question naming the booking,
+ * in the same transaction, so the claim never stands for a purchase that
+ * was not booked. The question window opens now, on the database clock.
+ * Returns the confirmation window it had, so a question that is never
+ * delivered can put the preview back exactly as it was; null when the draft
+ * was not a confirmed purchase.
+ */
+export async function holdRefusedPurchase(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  named: readonly { draftId: string | null; expenseId: string | null }[],
+): Promise<{ previousExpiresAt: Date } | null> {
+  const arrays = namedArrays(named);
+  const rows = await tx.execute<{ previous_expires_at: Date | string }>(sql`
+    UPDATE command_drafts d
+       SET state = 'held',
+           asked_about_drafts = ${arrays.drafts},
+           asked_about_expenses = ${arrays.expenses},
+           expires_at = clock_timestamp() + make_interval(secs => ${PURCHASE_QUESTION_SECONDS}),
+           updated_at = clock_timestamp()
+      FROM (SELECT id, expires_at FROM command_drafts
+             WHERE id = ${draftId}::uuid AND business_id = ${businessId}::uuid
+             FOR UPDATE) old
+     WHERE d.id = old.id
+       AND d.state = 'confirmed'
+       AND d.intent = 'RecordPurchase'
+    RETURNING old.expires_at AS previous_expires_at`);
+  const row = [...rows][0];
+  return row ? { previousExpiresAt: new Date(row.previous_expires_at) } : null;
+}
+
+/**
+ * The question asked at a refused yes never reached the merchant (fresh
+ * review of #262): the purchase goes back to exactly what it was before the
+ * yes, a pending preview with its own window, so the next yes is refused
+ * and asked again, never answered by an older preview behind it.
+ * Conditional on `held`.
+ */
+export async function unholdRefusedPurchase(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  previousExpiresAt: Date,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE command_drafts
+       SET state = 'pending',
+           asked_about_drafts = NULL,
+           asked_about_expenses = NULL,
+           expires_at = ${previousExpiresAt.toISOString()}::timestamptz,
+           updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND id = ${draftId}::uuid
+       AND state = 'held'`);
+}
+
+/**
+ * Ask a held purchase's identity question AGAIN, about records that appeared
+ * since it was asked: they are ADDED to what it names, and the question gets
+ * a fresh window, so a "separate" to it excuses exactly what it has named.
+ * Returns what it named and its window before (for a send that fails) and
+ * the new window, or null when the draft is no longer held.
+ */
+export async function reaskHeld(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  added: readonly { draftId: string | null; expenseId: string | null }[],
+): Promise<{
+  previous: { draftIds: string[]; expenseIds: string[]; expiresAt: Date };
+  expiresAt: Date;
+} | null> {
+  const arrays = namedArrays(added);
+  const rows = await tx.execute<{
+    previous_drafts: string[] | null;
+    previous_expenses: string[] | null;
+    previous_expires_at: Date | string;
+    expires_at: Date | string;
+  }>(sql`
+    UPDATE command_drafts d
+       SET asked_about_drafts = coalesce(old.asked_about_drafts, '{}'::uuid[]) || ${arrays.drafts},
+           asked_about_expenses =
+             coalesce(old.asked_about_expenses, '{}'::uuid[]) || ${arrays.expenses},
+           expires_at = clock_timestamp() + make_interval(secs => ${PURCHASE_QUESTION_SECONDS}),
+           updated_at = clock_timestamp()
+      FROM (SELECT id, asked_about_drafts, asked_about_expenses, expires_at FROM command_drafts
+             WHERE id = ${draftId}::uuid AND business_id = ${businessId}::uuid
+             FOR UPDATE) old
+     WHERE d.id = old.id AND d.state = 'held'
+    RETURNING old.asked_about_drafts::text[] AS previous_drafts,
+              old.asked_about_expenses::text[] AS previous_expenses,
+              old.expires_at AS previous_expires_at, d.expires_at`);
+  const row = [...rows][0];
+  return row
+    ? {
+        previous: {
+          draftIds: row.previous_drafts ?? [],
+          expenseIds: row.previous_expenses ?? [],
+          expiresAt: new Date(row.previous_expires_at),
+        },
+        expiresAt: new Date(row.expires_at),
+      }
+    : null;
+}
+
+/**
+ * A re-asked identity question that never reached the merchant: what it
+ * names and its window go back to what the merchant last saw, so nothing it
+ * newly named is treated as declared separate. Conditional on `held`.
+ */
+export async function restoreHeldAsk(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  previous: { draftIds: string[]; expenseIds: string[]; expiresAt: Date },
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE command_drafts
+       SET asked_about_drafts = ${`{${previous.draftIds.join(',')}}`}::uuid[],
+           asked_about_expenses = ${`{${previous.expenseIds.join(',')}}`}::uuid[],
+           expires_at = ${previous.expiresAt.toISOString()}::timestamptz,
+           updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND id = ${draftId}::uuid
+       AND state = 'held'`);
+}
+
+/**
+ * The newest purchase still HELD and inside its window that THIS member was
+ * asked about and that is newer than `afterDraftId` (fresh review of #262).
+ * A yes, a no or a doubtful answer from someone still being asked is about
+ * that question, even after they said something else, and never confirms
+ * an older preview behind it.
+ */
+export async function askedHeldNewerThan(
+  tx: TenantDb,
+  businessId: string,
+  userId: string,
+  afterDraftId: string | null,
+  options: { now?: Date } = {},
+): Promise<string | null> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    SELECT h.id FROM command_drafts h
+     WHERE h.business_id = ${businessId}::uuid
+       AND h.state = 'held'
+       AND h.expires_at > ${draftClock(options.now)}
+       AND (${afterDraftId}::uuid IS NULL OR h.insertion_seq > (
+             SELECT d.insertion_seq FROM command_drafts d
+              WHERE d.id = ${afterDraftId}::uuid AND d.business_id = ${businessId}::uuid))
+       AND EXISTS (
+             SELECT 1 FROM conversation_continuations c
+              WHERE c.business_id = h.business_id
+                AND c.user_id = ${userId}::uuid
+                AND c.expects = 'purchase_identity'
+                AND c.draft_id = h.id)
+     ORDER BY h.insertion_seq DESC
+     LIMIT 1`);
+  return [...rows][0]?.id ?? null;
+}
+
+/**
+ * An identity question that never reached the merchant (the send failed):
+ * nobody was asked, so the held purchase it named is withdrawn (superseded
+ * and marked, never the latest thing to answer), as an unseen preview is.
+ * By the HELD DRAFT, not the message: a question asked at a refused yes
+ * names a purchase drafted by an earlier message (Codex review).
+ */
+export async function withdrawHeld(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE command_drafts
+       SET state = 'superseded', withdrawn = true, updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND id = ${draftId}::uuid
+       AND state = 'held'`);
+}
+
+/**
+ * The fresh preview a "separate" answer built never reached the merchant:
+ * it is withdrawn (never confirmable, never the latest thing to answer) and
+ * the held purchase it closed is held again, so the question can still be
+ * answered inside its window. Conditional on each draft's state, so it
+ * undoes only what this message did.
+ */
+export async function undoSeparate(
+  tx: TenantDb,
+  businessId: string,
+  messageId: string,
+  heldId: string,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE command_drafts
+       SET state = 'superseded', withdrawn = true, updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND conversation_message_id = ${messageId}::uuid
+       AND state = 'pending'`);
+  await tx.execute(sql`
+    UPDATE command_drafts SET state = 'held', updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND id = ${heldId}::uuid
+       AND state = 'superseded'
+       AND NOT withdrawn
+       AND intent = 'RecordPurchase'`);
 }
 
 /**
@@ -1338,4 +1701,50 @@ export async function setInboundBody(
     )
     .returning({ id: conversationMessages.id });
   return rows.length === 1;
+}
+
+/** The held purchase a draft was declared separate from (0158), or null. */
+export async function separateFromOf(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<string | null> {
+  const rows = await tx.execute<{ separate_from: string | null }>(sql`
+    SELECT separate_from FROM command_drafts
+     WHERE business_id = ${businessId}::uuid AND id = ${draftId}::uuid`);
+  return [...rows][0]?.separate_from ?? null;
+}
+
+/**
+ * Where an identity question stands, for a "same" or "separate" that arrives
+ * with nothing open (fresh review of #262): the held draft's state and
+ * window, and whether the fresh preview a "separate" answer made is still
+ * waiting for a yes. Null when the draft is not a purchase of this business.
+ */
+export async function identityQuestionState(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  options: { now?: Date } = {},
+): Promise<{ state: string; expiresAt: Date; freshPreviewWaiting: boolean } | null> {
+  const rows = await tx.execute<{
+    state: string;
+    expires_at: Date | string;
+    fresh: boolean;
+  }>(sql`
+    SELECT d.state, d.expires_at,
+           EXISTS (SELECT 1 FROM command_drafts f
+                    WHERE f.business_id = d.business_id
+                      AND f.separate_from = d.id
+                      AND f.state = 'pending'
+                      AND f.previewed
+                      AND f.expires_at > ${draftClock(options.now)}) AS fresh
+      FROM command_drafts d
+     WHERE d.business_id = ${businessId}::uuid
+       AND d.id = ${draftId}::uuid
+       AND d.intent = 'RecordPurchase'`);
+  const row = [...rows][0];
+  return row
+    ? { state: row.state, expiresAt: new Date(row.expires_at), freshPreviewWaiting: row.fresh }
+    : null;
 }

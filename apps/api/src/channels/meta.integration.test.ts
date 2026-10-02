@@ -11158,19 +11158,25 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
       await reply('wamid.F2c-d-cash', 'cash', DELEGATE);
       expect(stubSender.lastText).toBe(replies.previewWaitingForAnotherMember().text);
 
-      /* Sent again anyway by the delegate: never across members. Both
-       * previews stay pending, exactly as base (whose preview a member may
-       * confirm is OD-15), and the delegate is told nothing about "your"
-       * earlier preview, which was never theirs. */
+      /* Sent again anyway by the delegate: never a replacement across
+       * members, and the delegate is told nothing about "your" earlier
+       * preview, which was never theirs. Since G-81 (OD-23) it is no longer
+       * a second confirmable preview either (this test pinned that accepted
+       * hazard as base): it is HELD and the delegate is asked whether it is
+       * the same purchase, so the two yeses below book it once. */
       await say(
         'wamid.F2c-d-resend',
         { ...POS_PURCHASE, paymentMethod: 'cash' },
         'I bought 10 cartons for 180k, paid cash',
         DELEGATE,
       );
-      expect(stubSender.lastText).toContain('Paid in full by cash');
+      expect(stubSender.lastText).toContain('Is this the same purchase?');
+      expect(stubSender.lastText).toContain('from another member');
       expect(stubSender.lastText).not.toContain('Your earlier preview');
-      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending', 'pending']);
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending', 'held']);
+      await reply('wamid.F2c-d-yes-1', 'yes');
+      await reply('wamid.F2c-d-yes-2', 'yes', DELEGATE);
+      expect(await written(business.id)).toMatchObject({ purchases: 1 });
     });
 
     it('the same member, a DIFFERENT total: both wait, and the reply says the earlier one still waits', async () => {
@@ -11196,7 +11202,7 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
         'I bought carton indomie for 180k, paid cash',
       );
       expect(stubSender.lastText).toContain(
-        'Your earlier preview of ₦180,000 was replaced by this one. If that was a different purchase, send it again.',
+        'Your earlier preview of ₦180,000 was replaced by this one. If that was a different purchase, send the purchase again.',
       );
       await reply('wamid.F2c-r-yes-1', 'yes');
       await reply('wamid.F2c-r-yes-2', 'yes');
@@ -11257,7 +11263,12 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
         'I bought 10 cartons for 180k, paid cash',
       );
       expect(stubSender.lastText).not.toContain('Your earlier preview');
-      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending', 'pending']);
+      /* G-81: a draft with no recorded requester is never "yours", so it
+       * is never replaced; nor is it left beside a second confirmable
+       * preview of the same total any more (base, which this test pinned):
+       * the new one is HELD and asked about. */
+      expect(stubSender.lastText).toContain('Is this the same purchase?');
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending', 'held']);
     });
 
     it('a sale preview after the question is never called the waiting purchase', async () => {
@@ -13012,5 +13023,1090 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
     }
     expect(answers[0]).toBe(answers[1]);
     expect(answers[0]).toBe(replies.nothingToConfirmWithoutChat().text);
+  });
+});
+
+/**
+ * G-81, OD-23: one real-world purchase must never become two financial
+ * truths, and two real purchases must never be collapsed because they share
+ * an amount, a product, a supplier or a day. A purchase that may be one
+ * already waiting or booked is ASKED about ("same" or "separate"), never
+ * silently dropped and never silently booked; the final net sits in the
+ * purchase work, under a lock, before any posting.
+ */
+describe('one real purchase, one financial truth (G-81, OD-23)', () => {
+  const OWNER = '2348031234567';
+  const DELEGATE = '2348039990002';
+  const UNCLEAR = { intent: 'Unclear', clarification: 'What would you like me to do?' };
+  const MILO = {
+    intent: 'RecordPurchase',
+    supplierMention: 'Emeka',
+    description: '10 cartons of Milo',
+    amount: 100_000,
+    reportedPayment: 100_000,
+    paymentMethod: 'cash',
+    productMention: 'Milo',
+    quantity: 10,
+  };
+  const QUESTION = 'Is this the same purchase?';
+  const SAME_DONE = 'OK, nothing more was saved.';
+  const SEPARATE_LEAD = 'OK, this is a separate purchase.\n\nPlease check this before I save it:';
+  const REASK = 'Please reply *same* or *separate*';
+  const CLOSED = 'That question has closed, so nothing was saved.';
+  const RACE = 'Nothing was saved from your yes.';
+
+  async function seedMerchant(phone = `+${OWNER}`) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Provisions',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function addDelegate(businessId: string) {
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, businessId, delegate.id, 'delegate');
+    return delegate.id;
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  async function say(wamid: string, command: Record<string, unknown>, text: string, from = OWNER) {
+    stubTransport.replyWith(command);
+    await post(messagePayload(from, wamid, text));
+    await drain();
+  }
+
+  async function reply(wamid: string, text: string, from = OWNER) {
+    stubTransport.replyWith(UNCLEAR);
+    await post(messagePayload(from, wamid, text));
+    await drain();
+  }
+
+  async function purchaseStates(businessId: string): Promise<string[]> {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ state: string }>(sql`
+        SELECT state FROM command_drafts
+         WHERE business_id = ${businessId}::uuid AND intent = 'RecordPurchase'
+         ORDER BY insertion_seq`),
+    );
+    return [...rows].map((r) => r.state);
+  }
+
+  /** Every row a purchase confirmation can write, counted (test 6). */
+  async function footprint(businessId: string) {
+    const [row] = [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<Record<string, number>>(sql`
+          SELECT
+            (SELECT count(*)::int FROM expenses WHERE business_id = ${businessId}::uuid) AS purchases,
+            (SELECT count(*)::int FROM inventory_movements WHERE business_id = ${businessId}::uuid) AS arrivals,
+            (SELECT count(*)::int FROM ledger_transactions WHERE business_id = ${businessId}::uuid) AS postings,
+            (SELECT count(*)::int FROM ledger_entries WHERE business_id = ${businessId}::uuid) AS entries,
+            (SELECT count(*)::int FROM bills WHERE business_id = ${businessId}::uuid) AS bills,
+            (SELECT coalesce(sum(last_seq), 0)::int FROM doc_counters WHERE business_id = ${businessId}::uuid) AS numbers,
+            (SELECT count(*)::int FROM outbox_events WHERE business_id = ${businessId}::uuid AND type = 'purchase.recorded') AS events,
+            (SELECT count(*)::int FROM idempotency_records WHERE business_id = ${businessId}::uuid) AS keys,
+            (SELECT coalesce(sum(used), 0)::int FROM usage_counters WHERE business_id = ${businessId}::uuid) AS units
+        `),
+      )),
+    ];
+    return row!;
+  }
+
+  async function purchases(businessId: string): Promise<number> {
+    return (await footprint(businessId)).purchases!;
+  }
+
+  /** Known identities, as a business that has traded before has them. */
+  async function knownSupplier(businessId: string, name: string) {
+    const known = await deps.gateway.resolveSupplierMention(businessId, name);
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(sql`
+        UPDATE suppliers SET created_at = clock_timestamp() - interval '30 days'
+         WHERE business_id = ${businessId}::uuid AND id = ${known!.supplierId}::uuid`),
+    );
+  }
+
+  /** A TRUSTED product (owner ruling D3): linked to a catalogue item. */
+  async function knownProduct(businessId: string, name: string) {
+    await withBusiness(db, businessId, async (tx) => {
+      const product = await stockRepo.findOrCreateProduct(tx, businessId, name);
+      await tx.execute(sql`
+        UPDATE products SET external_catalogue_id = ${`cat-${product.id}`}
+         WHERE business_id = ${businessId}::uuid AND id = ${product.id}::uuid`);
+    });
+  }
+
+  async function bookMilo(businessId: string, tag: string, from = OWNER) {
+    await say(
+      `wamid.${tag}-buy`,
+      MILO,
+      'I bought 10 cartons of Milo from Emeka for 100k cash',
+      from,
+    );
+    expect(stubSender.lastText).toContain('Paid in full by cash');
+    await reply(`wamid.${tag}-yes`, 'yes', from);
+    expect(stubSender.lastText).toContain('Saved ✅ ₦100,000 stock purchase.');
+  }
+
+  describe('1. a provider replay is a no-op', () => {
+    it('the same message delivered twice gives one draft, one reply and one booking', async () => {
+      const business = await seedMerchant();
+      stubTransport.replyWith(MILO);
+      const payload = messagePayload(
+        OWNER,
+        'wamid.R1-buy',
+        'I bought 10 cartons of Milo for 100k cash',
+      );
+      await post(payload);
+      await post(payload);
+      await drain();
+      await post(payload);
+      await drain();
+      expect(await purchaseStates(business.id)).toEqual(['pending']);
+      const yes = messagePayload(OWNER, 'wamid.R1-yes', 'yes');
+      await post(yes);
+      await drain();
+      await post(yes);
+      await drain();
+      expect(await purchases(business.id)).toBe(1);
+      expect(stubSender.sent.length).toBe(2);
+    });
+  });
+
+  describe('2. the same member sending it again never books it twice', () => {
+    it('a resend while the first preview waits replaces it, and two yeses book it once', async () => {
+      const business = await seedMerchant();
+      await say('wamid.S2-a', MILO, 'I bought 10 cartons of Milo from Emeka for 100k cash');
+      await say('wamid.S2-b', MILO, 'I bought 10 cartons of Milo from Emeka for 100k cash');
+      expect(stubSender.lastText).toContain('Your earlier preview of ₦100,000 was replaced');
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending']);
+      await reply('wamid.S2-yes-1', 'yes');
+      await reply('wamid.S2-yes-2', 'yes');
+      expect(await purchases(business.id)).toBe(1);
+    });
+
+    it('a resend after the purchase was booked is asked about, and "same" saves nothing more', async () => {
+      const business = await seedMerchant();
+      await bookMilo(business.id, 'S2b');
+      await say('wamid.S2b-again', MILO, 'I bought 10 cartons of Milo from Emeka for 100k cash');
+      expect(stubSender.lastText).toContain(QUESTION);
+      expect(stubSender.lastText).toContain('sent by you');
+      await reply('wamid.S2b-ask-yes', 'yes');
+      expect(stubSender.lastText).toContain(REASK);
+      await reply('wamid.S2b-same', 'same');
+      expect(stubSender.lastText).toContain(SAME_DONE);
+      await reply('wamid.S2b-yes-2', 'yes');
+      expect(await purchases(business.id)).toBe(1);
+    });
+  });
+
+  describe('3. two members, one purchase', () => {
+    it('the delegate is asked, and every yes books it ONCE', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await say('wamid.X3-o', MILO, 'I bought 10 cartons of Milo from Emeka for 100k cash');
+      await say(
+        'wamid.X3-d',
+        MILO,
+        'I bought 10 cartons of Milo from Emeka for 100k cash',
+        DELEGATE,
+      );
+      expect(stubSender.lastText).toContain(QUESTION);
+      expect(stubSender.lastText).toContain('another member');
+      expect(await purchaseStates(business.id)).toEqual(['pending', 'held']);
+      await reply('wamid.X3-d-yes', 'yes', DELEGATE);
+      expect(stubSender.lastText).toContain(REASK);
+      await reply('wamid.X3-o-yes', 'yes');
+      await reply('wamid.X3-d-same', 'same', DELEGATE);
+      await reply('wamid.X3-d-yes-2', 'yes', DELEGATE);
+      expect(await purchases(business.id)).toBe(1);
+    });
+
+    it('after the owner booked it, the delegate sending it again is asked, never booked', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'X3b');
+      await say('wamid.X3b-d', MILO, 'I bought 10 cartons of Milo from Emeka for 100k', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      expect(stubSender.lastText).toContain('A stock purchase of ₦100,000 was already saved');
+      await reply('wamid.X3b-d-yes', 'yes', DELEGATE);
+      await reply('wamid.X3b-d-yes-2', 'na so', DELEGATE);
+      expect(await purchases(business.id)).toBe(1);
+    });
+  });
+
+  describe('4. a draft with no recorded requester is never the same member', () => {
+    it('a member and an unattributed preview of one purchase cannot both book', async () => {
+      const business = await seedMerchant();
+      await say('wamid.N4-a', MILO, 'I bought 10 cartons of Milo from Emeka for 100k cash');
+      await withBusiness(db, business.id, (tx) =>
+        tx.execute(sql`
+          UPDATE command_drafts SET requested_by = NULL WHERE business_id = ${business.id}::uuid`),
+      );
+      await say('wamid.N4-b', MILO, 'I bought 10 cartons of Milo from Emeka for 100k cash');
+      expect(stubSender.lastText).toContain(QUESTION);
+      expect(stubSender.lastText).not.toContain('replaced');
+      expect(await purchaseStates(business.id)).toEqual(['pending', 'held']);
+      await reply('wamid.N4-yes-1', 'yes');
+      await reply('wamid.N4-yes-2', 'yes');
+      expect(await purchases(business.id)).toBe(0);
+      await reply('wamid.N4-same', 'same');
+      await reply('wamid.N4-yes-3', 'yes');
+      await reply('wamid.N4-yes-4', 'yes');
+      expect(await purchases(business.id)).toBe(1);
+    });
+  });
+
+  describe('5 and 6. a duplicate that reaches a yes is stopped in the purchase work', () => {
+    /* Two pending previews of one purchase that nothing proves separate:
+     * built here by hand, as drafts from before this fix would leave them,
+     * because the chat flow no longer produces them. */
+    async function twoPendingPreviews(businessId: string) {
+      await addDelegate(businessId);
+      await say(
+        'wamid.F6-o',
+        { ...MILO, supplierReference: 'EMK-0101' },
+        'Milo 100k, receipt EMK-0101',
+      );
+      await say(
+        'wamid.F6-d',
+        { ...MILO, supplierReference: 'EMK-0202' },
+        'Milo 100k, receipt EMK-0202',
+        DELEGATE,
+      );
+      await withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`
+          UPDATE command_drafts SET command = command - 'supplierReference'
+           WHERE business_id = ${businessId}::uuid`),
+      );
+      expect(await purchaseStates(businessId)).toEqual(['pending', 'pending']);
+    }
+
+    it('the second yes is refused truthfully, and leaves no footprint', async () => {
+      const business = await seedMerchant();
+      await twoPendingPreviews(business.id);
+      /* OD-15: a yes confirms the newest preview, the delegate's. */
+      await reply('wamid.F6-yes-1', 'yes');
+      expect(await purchases(business.id)).toBe(1);
+      const before = await footprint(business.id);
+      await reply('wamid.F6-yes-2', 'yes');
+      expect(stubSender.lastText).toContain(RACE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      expect(await footprint(business.id)).toEqual(before);
+      expect(await purchaseStates(business.id)).toEqual(['held', 'confirmed']);
+      await reply('wamid.F6-same', 'same');
+      expect(stubSender.lastText).toContain(SAME_DONE);
+      expect(await footprint(business.id)).toEqual(before);
+    });
+
+    it('through the command bus too: no idempotency record survives the refusal', async () => {
+      const config = deps.config as { commandRecordPurchase: boolean };
+      const was = config.commandRecordPurchase;
+      config.commandRecordPurchase = true;
+      try {
+        const business = await seedMerchant();
+        await twoPendingPreviews(business.id);
+        await reply('wamid.F6b-yes-1', 'yes');
+        const before = await footprint(business.id);
+        expect(before.keys).toBe(1);
+        await reply('wamid.F6b-yes-2', 'yes');
+        expect(stubSender.lastText).toContain(RACE);
+        expect(await footprint(business.id)).toEqual(before);
+      } finally {
+        config.commandRecordPurchase = was;
+      }
+    });
+  });
+
+  describe('7. two real purchases of the same amount are both bookable', () => {
+    it('"another 10 cartons" is asked about, and "separate" books the second', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'N7');
+      await say(
+        'wamid.N7-d',
+        MILO,
+        'I bought another 10 cartons of Milo from Emeka for ₦100,000 today',
+        DELEGATE,
+      );
+      expect(stubSender.lastText).toContain(QUESTION);
+      await reply('wamid.N7-d-sep', 'separate', DELEGATE);
+      expect(stubSender.lastText).toContain(SEPARATE_LEAD);
+      expect(stubSender.lastText).toContain('Paid in full by cash');
+      await reply('wamid.N7-d-yes', 'yes', DELEGATE);
+      const books = await footprint(business.id);
+      expect(books.purchases).toBe(2);
+      expect(books.arrivals).toBe(2);
+    });
+  });
+
+  describe('8. a different KNOWN product is a different purchase', () => {
+    it('same supplier and amount, another known product: no question, both book', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await knownSupplier(business.id, 'Emeka');
+      await knownProduct(business.id, 'Milo');
+      await knownProduct(business.id, 'Peak milk');
+      await bookMilo(business.id, 'P8');
+      await say(
+        'wamid.P8-peak',
+        { ...MILO, description: '10 cartons of Peak milk', productMention: 'Peak milk' },
+        'I bought 10 cartons of Peak milk from Emeka for 100k cash',
+        DELEGATE,
+      );
+      expect(stubSender.lastText).not.toContain(QUESTION);
+      await reply('wamid.P8-d-yes', 'yes', DELEGATE);
+      expect(await purchases(business.id)).toBe(2);
+    });
+
+    it('a product named for the first time proves nothing: asked', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await knownSupplier(business.id, 'Emeka');
+      await bookMilo(business.id, 'P8b');
+      await say(
+        'wamid.P8b-new',
+        { ...MILO, description: '10 cartons of Milo 400g', productMention: 'Milo 400g' },
+        'I bought 10 cartons of Milo 400g from Emeka for 100k cash',
+        DELEGATE,
+      );
+      expect(stubSender.lastText).toContain(QUESTION);
+    });
+
+    it('quantity alone never proves a different purchase', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'P8c');
+      await say(
+        'wamid.P8c-q',
+        { ...MILO, quantity: 12, description: '12 cartons of Milo' },
+        'I bought 12 cartons of Milo from Emeka for 100k cash',
+        DELEGATE,
+      );
+      expect(stubSender.lastText).toContain(QUESTION);
+    });
+  });
+
+  describe('9. a different explicit reference is a different purchase', () => {
+    it('same product and amount, another supplier receipt number: no question, both book', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await say(
+        'wamid.F9-a',
+        { ...MILO, supplierReference: 'EMK-0041' },
+        'Milo 100k receipt EMK-0041',
+      );
+      await reply('wamid.F9-a-yes', 'yes');
+      await say(
+        'wamid.F9-b',
+        { ...MILO, supplierReference: 'EMK-0042' },
+        'Milo 100k receipt EMK-0042',
+        DELEGATE,
+      );
+      expect(stubSender.lastText).not.toContain(QUESTION);
+      await reply('wamid.F9-b-yes', 'yes', DELEGATE);
+      expect(await purchases(business.id)).toBe(2);
+    });
+
+    it('the SAME reference is asked about', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await say(
+        'wamid.F9c-a',
+        { ...MILO, supplierReference: 'EMK-0041' },
+        'Milo 100k receipt EMK-0041',
+      );
+      await reply('wamid.F9c-a-yes', 'yes');
+      await say(
+        'wamid.F9c-b',
+        { ...MILO, supplierReference: 'emk 0041' },
+        'Milo 100k receipt emk 0041',
+        DELEGATE,
+      );
+      expect(stubSender.lastText).toContain(QUESTION);
+    });
+  });
+
+  describe('10. the same purchase in other words is still found', () => {
+    it('different wording and a different supplier and product spelling: asked', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'W10');
+      await say(
+        'wamid.W10-d',
+        {
+          ...MILO,
+          supplierMention: 'Emeka Stores',
+          description: 'milo ten cartons',
+          productMention: 'cartons of milo',
+          paymentMethod: 'transfer',
+        },
+        'Milo, ten cartons, Emeka Stores, 100k transfer',
+        DELEGATE,
+      );
+      expect(stubSender.lastText).toContain(QUESTION);
+    });
+
+    it('a booked purchase older than 24 hours is not compared', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'W10b');
+      await withBusiness(db, business.id, (tx) =>
+        tx.execute(sql`
+          UPDATE expenses SET created_at = clock_timestamp() - interval '25 hours'
+           WHERE business_id = ${business.id}::uuid`),
+      );
+      await say('wamid.W10b-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      expect(stubSender.lastText).not.toContain(QUESTION);
+      expect(stubSender.lastText).toContain('Paid in full by cash');
+    });
+  });
+
+  describe('11. an expired question cannot execute', () => {
+    it('"separate" after the question closed rebuilds nothing, and a yes saves nothing', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'E11');
+      await say('wamid.E11-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      await withBusiness(db, business.id, async (tx) => {
+        await tx.execute(sql`
+          UPDATE command_drafts SET expires_at = clock_timestamp() - interval '1 hour'
+           WHERE business_id = ${business.id}::uuid AND state = 'held'`);
+        await tx.execute(sql`
+          UPDATE conversation_continuations SET expires_at = clock_timestamp() - interval '1 hour'
+           WHERE business_id = ${business.id}::uuid`);
+      });
+      const before = await footprint(business.id);
+      await reply('wamid.E11-d-sep', 'separate', DELEGATE);
+      expect(stubSender.lastText).toContain(CLOSED);
+      /* No model call, so no unit, and nothing written. */
+      expect(stubTransport.requests).toHaveLength(0);
+      expect(await footprint(business.id)).toEqual(before);
+      await reply('wamid.E11-d-yes', 'yes', DELEGATE);
+      expect(stubSender.lastText).toContain(CLOSED);
+      expect(await purchases(business.id)).toBe(1);
+      expect(await purchaseStates(business.id)).toEqual(['confirmed', 'held']);
+    });
+  });
+
+  describe('12. G-23 still governs every preview', () => {
+    it('the fresh preview "separate" shows has its own window, and the held draft never expires into a yes', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'G12');
+      await say('wamid.G12-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      await withBusiness(db, business.id, (tx) =>
+        conversationsRepo.expireStaleDrafts(tx, business.id, {
+          now: new Date(Date.now() + 86_400_000),
+        }),
+      );
+      expect(await purchaseStates(business.id)).toEqual(['confirmed', 'held']);
+      await reply('wamid.G12-d-sep', 'separate', DELEGATE);
+      expect(stubSender.lastText).toContain(SEPARATE_LEAD);
+      await withBusiness(db, business.id, (tx) =>
+        tx.execute(sql`
+          UPDATE command_drafts SET expires_at = clock_timestamp() - interval '1 day'
+           WHERE business_id = ${business.id}::uuid AND state = 'pending'`),
+      );
+      await reply('wamid.G12-d-yes', 'yes', DELEGATE);
+      expect(stubSender.lastText).toBe(replies.draftExpired().text);
+      expect(await purchases(business.id)).toBe(1);
+    });
+  });
+
+  describe('13. G-61 still asks where the money came from first', () => {
+    const POS = { ...MILO, paymentMethod: 'pos' };
+    const POS_QUESTION = 'did it come from your bank account or from physical cash?';
+
+    it('a POS duplicate is asked the funding question, then the identity question on "cash"', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'G13');
+      await say('wamid.G13-pos', POS, 'I bought 10 cartons of Milo for 100k by POS', DELEGATE);
+      expect(stubSender.lastText).toContain(POS_QUESTION);
+      await reply('wamid.G13-cash', 'cash', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      await reply('wamid.G13-same', 'same', DELEGATE);
+      expect(stubSender.lastText).toContain(SAME_DONE);
+      await reply('wamid.G13-d-yes', 'yes', DELEGATE);
+      expect(await purchases(business.id)).toBe(1);
+    });
+  });
+
+  describe('14. Pidgin answers and continuation rules', () => {
+    it('"na the same" is same', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'P14a');
+      await say('wamid.P14a-d', MILO, 'I buy 10 carton Milo 100k cash', DELEGATE);
+      await reply('wamid.P14a-same', 'na the same', DELEGATE);
+      expect(stubSender.lastText).toContain(SAME_DONE);
+      expect(await purchases(business.id)).toBe(1);
+    });
+
+    it('"same?" is unsure and re-asks; "abeg na another one o" is separate', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'P14b');
+      await say('wamid.P14b-d', MILO, 'I buy another 10 carton Milo 100k cash', DELEGATE);
+      await reply('wamid.P14b-unsure', 'same?', DELEGATE);
+      expect(stubSender.lastText).toContain(REASK);
+      await reply('wamid.P14b-sep', 'abeg na another one o', DELEGATE);
+      expect(stubSender.lastText).toContain(SEPARATE_LEAD);
+      await reply('wamid.P14b-d-yes', 'yes', DELEGATE);
+      expect(await purchases(business.id)).toBe(2);
+    });
+
+    it('another member\'s "same" answers nothing', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'P14c');
+      await say('wamid.P14c-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      await reply('wamid.P14c-o-same', 'same');
+      expect(stubSender.lastText).not.toContain(SAME_DONE);
+      expect(await purchaseStates(business.id)).toEqual(['confirmed', 'held']);
+    });
+
+    it('a question that was never delivered is withdrawn, and "same" answers nothing', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'P14d');
+      stubSender.failWith();
+      await say('wamid.P14d-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      expect(await purchaseStates(business.id)).toEqual(['confirmed', 'superseded']);
+      await reply('wamid.P14d-same', 'same', DELEGATE);
+      expect(stubSender.lastText).not.toContain(SAME_DONE);
+    });
+  });
+
+  describe('15. the answers meet the plan gates (G-65 compatible)', () => {
+    it('"same" sends no document, and "separate" on a lapsed plan drafts nothing', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'G15');
+      await say('wamid.G15-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      const documents = stubSender.documents.length;
+      await billingRepo.setPlan(db, {
+        businessId: business.id,
+        plan: 'trial',
+        expiresAt: new Date(Date.now() - 1_000),
+        actor: 'operator:test-clock',
+      });
+      await reply('wamid.G15-sep', 'separate', DELEGATE);
+      expect(stubSender.lastText).toBe(replies.trialEnded().text);
+      expect(await purchaseStates(business.id)).toEqual(['confirmed', 'held']);
+      await reply('wamid.G15-same', 'same', DELEGATE);
+      expect(stubSender.lastText).toContain(SAME_DONE);
+      expect(stubSender.documents.length).toBe(documents);
+      expect(await purchases(business.id)).toBe(1);
+    });
+  });
+
+  describe('Codex review of #262', () => {
+    const RICE = {
+      ...MILO,
+      description: '5 bags of rice',
+      amount: 50_000,
+      reportedPayment: 50_000,
+      productMention: 'bags of rice',
+      quantity: 5,
+    };
+
+    /* Two pending previews of one purchase nothing proves separate, as in
+     * tests 5 and 6: built by hand, because the chat flow no longer makes
+     * them. The owner's is older; a yes confirms the delegate's first. */
+    async function twoPending(businessId: string, tag: string) {
+      await addDelegate(businessId);
+      await say(`wamid.${tag}-o`, { ...MILO, supplierReference: 'EMK-0101' }, 'Milo 100k EMK-0101');
+      await say(
+        `wamid.${tag}-d`,
+        { ...MILO, supplierReference: 'EMK-0202' },
+        'Milo 100k EMK-0202',
+        DELEGATE,
+      );
+      await withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`
+          UPDATE command_drafts SET command = command - 'supplierReference'
+           WHERE business_id = ${businessId}::uuid`),
+      );
+    }
+
+    it('P1: "separate" after a refusal at the yes excuses the booking it was asked about', async () => {
+      const business = await seedMerchant();
+      await twoPending(business.id, 'C1');
+      await reply('wamid.C1-yes-1', 'yes');
+      await reply('wamid.C1-yes-2', 'yes');
+      expect(stubSender.lastText).toContain(RACE);
+      await reply('wamid.C1-sep', 'separate');
+      expect(stubSender.lastText).toContain(SEPARATE_LEAD);
+      await reply('wamid.C1-yes-3', 'yes');
+      expect(await purchases(business.id)).toBe(2);
+    });
+
+    it('P2: a refusal whose question never reached the merchant puts the preview back', async () => {
+      const business = await seedMerchant();
+      await twoPending(business.id, 'C3');
+      await reply('wamid.C3-yes-1', 'yes');
+      stubSender.failWith();
+      await reply('wamid.C3-yes-2', 'yes');
+      /* Fresh review of #262: put back as it was before the yes (pending),
+       * so the next yes is refused and asked again (see I5 below). */
+      expect(await purchaseStates(business.id)).toEqual(['pending', 'confirmed']);
+      expect(await purchases(business.id)).toBe(1);
+    });
+
+    it('P1: a yes from a member being asked never books an older preview behind another member’s question', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'C4');
+      /* An older, unrelated preview of the owner's, still waiting. */
+      await say('wamid.C4-rice', RICE, 'bought 5 bags rice 50k cash');
+      /* The owner is asked about Milo; then the delegate is asked too. */
+      await say('wamid.C4-o-again', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      expect(stubSender.lastText).toContain(QUESTION);
+      await say('wamid.C4-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      await reply('wamid.C4-o-yes', 'yes');
+      expect(stubSender.lastText).toContain(REASK);
+      expect(await purchases(business.id)).toBe(1);
+    });
+
+    it('P2: a funding answer whose identity question never reached the merchant gives the funding question back', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'C5');
+      await say(
+        'wamid.C5-pos',
+        { ...MILO, paymentMethod: 'pos' },
+        'I bought 10 cartons of Milo for 100k by POS',
+        DELEGATE,
+      );
+      stubSender.failWith();
+      await reply('wamid.C5-cash-1', 'cash', DELEGATE);
+      await reply('wamid.C5-cash-2', 'cash', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      expect(await purchases(business.id)).toBe(1);
+    });
+
+    it('P2: "same" about another member’s waiting preview never says only they can confirm it', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await say('wamid.C6-o', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      await say('wamid.C6-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      await reply('wamid.C6-same', 'same', DELEGATE);
+      expect(stubSender.lastText).toContain(SAME_DONE);
+      expect(stubSender.lastText).not.toContain('member who sent it');
+    });
+  });
+
+  describe('Codex review of #262, round 2', () => {
+    const REF = (supplierReference: string) => ({ ...MILO, supplierReference });
+
+    it('P2: a question asked by a job that ran late opens its window when it is asked', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'D1');
+      stubTransport.replyWith(MILO);
+      await post(
+        messagePayload(DELEGATE, 'wamid.D1-d', 'I bought 10 cartons of Milo for 100k cash'),
+      );
+      /* The webhook was stored fifteen minutes before its job ran, and the
+       * owner's purchase had been booked before that. */
+      await withBusiness(db, business.id, async (tx) => {
+        /* The owner's messages reached Rekoda before this one did. */
+        await tx.execute(sql`
+          UPDATE external_events SET created_at = clock_timestamp() - interval '30 minutes'
+           WHERE business_id = ${business.id}::uuid AND external_id <> 'wamid.D1-d'`);
+        await tx.execute(sql`
+          UPDATE external_events SET created_at = clock_timestamp() - interval '15 minutes'
+           WHERE business_id = ${business.id}::uuid AND external_id = 'wamid.D1-d'`);
+        await tx.execute(sql`
+          UPDATE expenses SET created_at = clock_timestamp() - interval '20 minutes'
+           WHERE business_id = ${business.id}::uuid`);
+      });
+      await drain();
+      expect(stubSender.lastText).toContain(QUESTION);
+      await reply('wamid.D1-same', 'same', DELEGATE);
+      expect(stubSender.lastText).toContain(SAME_DONE);
+    });
+
+    it('P1: "separate" after a re-asked question excuses the match it was re-asked about', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'D2');
+      /* The delegate is asked about the owner's booking. */
+      await say('wamid.D2-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      /* Meanwhile the owner books another, declared separate. */
+      await say('wamid.D2-o', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      await reply('wamid.D2-o-sep', 'separate');
+      await reply('wamid.D2-o-yes', 'yes');
+      expect(await purchases(business.id)).toBe(2);
+      /* The delegate's "separate" is asked about the new booking ... */
+      await reply('wamid.D2-d-sep-1', 'separate', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      /* ... and a second "separate" is about THAT one, so it proceeds. */
+      await reply('wamid.D2-d-sep-2', 'separate', DELEGATE);
+      expect(stubSender.lastText).toContain(SEPARATE_LEAD);
+      await reply('wamid.D2-d-yes', 'yes', DELEGATE);
+      expect(await purchases(business.id)).toBe(3);
+    });
+
+    it('P2: a re-asked question that never reached the merchant can still be answered', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'D3');
+      await say('wamid.D3-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      await say('wamid.D3-o', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      await reply('wamid.D3-o-sep', 'separate');
+      await reply('wamid.D3-o-yes', 'yes');
+      stubSender.failWith();
+      await reply('wamid.D3-d-sep-1', 'separate', DELEGATE);
+      /* Nobody saw the re-asked question: the question stays answerable, and
+       * the new booking is NOT treated as one the delegate declared separate. */
+      await reply('wamid.D3-d-sep-2', 'separate', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      expect(await purchases(business.id)).toBe(2);
+    });
+
+    it('P1: a yes retried more than 24 hours after a matching booking is still refused', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await say('wamid.D4-o', REF('EMK-0101'), 'Milo 100k EMK-0101');
+      await say('wamid.D4-d', REF('EMK-0202'), 'Milo 100k EMK-0202', DELEGATE);
+      await withBusiness(db, business.id, (tx) =>
+        tx.execute(sql`
+          UPDATE command_drafts SET command = command - 'supplierReference'
+           WHERE business_id = ${business.id}::uuid`),
+      );
+      await reply('wamid.D4-yes-1', 'yes');
+      expect(await purchases(business.id)).toBe(1);
+      /* Both previews and the booking happened 25 hours before this yes ran. */
+      await withBusiness(db, business.id, async (tx) => {
+        await tx.execute(sql`
+          UPDATE expenses SET created_at = clock_timestamp() - interval '25 hours'
+           WHERE business_id = ${business.id}::uuid`);
+        await tx.execute(sql`
+          UPDATE conversation_messages SET created_at = clock_timestamp() - interval '25 hours'
+           WHERE business_id = ${business.id}::uuid`);
+        await tx.execute(sql`
+          UPDATE command_drafts SET created_at = clock_timestamp() - interval '25 hours'
+           WHERE business_id = ${business.id}::uuid`);
+      });
+      await reply('wamid.D4-yes-2', 'yes');
+      expect(stubSender.lastText).toContain(RACE);
+      expect(await purchases(business.id)).toBe(1);
+    });
+
+    it('P1: a purchase recorded after a "separate" answer is never excused by its message time', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await say('wamid.D5-o', REF('EMK-0707'), 'Milo 100k EMK-0707');
+      await reply('wamid.D5-o-yes', 'yes');
+      await say('wamid.D5-d', REF('EMK-0707'), 'Milo 100k EMK-0707', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      await reply('wamid.D5-d-sep', 'separate', DELEGATE);
+      await reply('wamid.D5-d-yes', 'yes', DELEGATE);
+      expect(await purchases(business.id)).toBe(2);
+      /* The first booking leaves the window, so only the "separate" one is left. */
+      await withBusiness(db, business.id, (tx) =>
+        tx.execute(sql`
+          UPDATE expenses SET created_at = clock_timestamp() - interval '25 hours'
+           WHERE business_id = ${business.id}::uuid
+             AND source_id = (SELECT d.id::text FROM command_drafts d
+                               JOIN conversation_messages m ON m.id = d.conversation_message_id
+                              WHERE m.provider_message_id = 'wamid.D5-o')`),
+      );
+      /* A purchase whose message reached Rekoda BEFORE the question, but
+       * whose draft is recorded only now. */
+      await say('wamid.D5-late', REF('EMK-0808'), 'Milo 100k EMK-0808');
+      expect(stubSender.lastText).toContain('Paid in full by cash');
+      await withBusiness(db, business.id, (tx) =>
+        tx.execute(sql`
+          UPDATE command_drafts SET command = command - 'supplierReference'
+           WHERE business_id = ${business.id}::uuid AND state = 'pending'`),
+      );
+      await withBusiness(db, business.id, (tx) =>
+        tx.execute(sql`
+          UPDATE conversation_messages SET created_at = (
+            SELECT created_at - interval '1 second' FROM conversation_messages
+             WHERE provider_message_id = 'wamid.D5-d')
+           WHERE provider_message_id = 'wamid.D5-late'`),
+      );
+      await reply('wamid.D5-late-yes', 'yes');
+      expect(stubSender.lastText).toContain(RACE);
+      expect(await purchases(business.id)).toBe(2);
+    });
+  });
+
+  describe('fresh review of #262', () => {
+    const RICE = {
+      ...MILO,
+      description: '5 bags of rice',
+      amount: 50_000,
+      reportedPayment: 50_000,
+      productMention: 'bags of rice',
+      quantity: 5,
+    };
+    const POS_QUESTION = 'did it come from your bank account or from physical cash?';
+
+    async function backdate(businessId: string, table: string, column: string, interval: string) {
+      await withBusiness(db, businessId, (tx) =>
+        tx.execute(
+          sql`UPDATE ${sql.raw(table)} SET ${sql.raw(column)} = clock_timestamp() - ${interval}::interval
+               WHERE business_id = ${businessId}::uuid`,
+        ),
+      );
+    }
+
+    it('D3: suppliers that existed long before never prove a purchase separate', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await deps.gateway.resolveSupplierMention(business.id, 'Emeka');
+      await deps.gateway.resolveSupplierMention(business.id, 'Chidi');
+      await backdate(business.id, 'suppliers', 'created_at', '30 days');
+      await bookMilo(business.id, 'R1');
+      await say(
+        'wamid.R1-chidi',
+        { ...MILO, supplierMention: 'Chidi' },
+        'I bought 10 cartons of Milo from Chidi for 100k cash',
+        DELEGATE,
+      );
+      expect(stubSender.lastText).toContain(QUESTION);
+    });
+
+    it('D3: products made from chat long ago never prove it either', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await withBusiness(db, business.id, async (tx) => {
+        await stockRepo.findOrCreateProduct(tx, business.id, 'Milo');
+        await stockRepo.findOrCreateProduct(tx, business.id, 'Peak milk');
+      });
+      await backdate(business.id, 'products', 'created_at', '30 days');
+      await bookMilo(business.id, 'R2');
+      await say(
+        'wamid.R2-peak',
+        { ...MILO, description: '10 cartons of Peak milk', productMention: 'Peak milk' },
+        'I bought 10 cartons of Peak milk for 100k cash',
+        DELEGATE,
+      );
+      expect(stubSender.lastText).toContain(QUESTION);
+    });
+
+    it('B1: a question names every match it may be about', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'B1');
+      await say('wamid.B1-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      await reply('wamid.B1-d-sep', 'separate', DELEGATE);
+      expect(stubSender.lastText).toContain(SEPARATE_LEAD);
+      /* The owner sends the same real purchase while the delegate's fresh
+       * preview waits: the question must name both. */
+      await say('wamid.B1-o', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      expect(stubSender.lastText).toContain(QUESTION);
+      expect(stubSender.lastText).toContain('2 stock purchases of ₦100,000');
+    });
+
+    it('I1: one member double-sending before the first is processed still gets ONE preview', async () => {
+      const business = await seedMerchant();
+      stubTransport.replyWith(MILO);
+      await post(messagePayload(OWNER, 'wamid.I1-a', 'I bought 10 cartons of Milo for 100k cash'));
+      await post(messagePayload(OWNER, 'wamid.I1-b', 'I bought 10 cartons of Milo for 100k cash'));
+      await drain();
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending']);
+      expect(stubSender.lastText).toContain('Your earlier preview of ₦100,000 was replaced');
+    });
+
+    it('I1: two members sending together before either is processed: the second is asked', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      stubTransport.replyWith(MILO);
+      await post(messagePayload(OWNER, 'wamid.I1c-o', 'I bought 10 cartons of Milo for 100k cash'));
+      await post(
+        messagePayload(DELEGATE, 'wamid.I1c-d', 'I bought 10 cartons of Milo for 100k cash'),
+      );
+      await drain();
+      expect(await purchaseStates(business.id)).toEqual(['pending', 'held']);
+    });
+
+    it('I4: a yes from a member still being asked never books an older preview, after another message', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'I4');
+      await say('wamid.I4-rice', RICE, 'bought 5 bags rice 50k cash');
+      await say('wamid.I4-o-milo', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      expect(stubSender.lastText).toContain(QUESTION);
+      await reply('wamid.I4-o-stock', 'stock');
+      await say('wamid.I4-d-milo', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      await reply('wamid.I4-o-yes', 'yes');
+      expect(stubSender.lastText).toContain(REASK);
+      expect(await purchases(business.id)).toBe(1);
+    });
+
+    it('I5: a refused yes whose question never reached the merchant puts the preview back, and the next yes is asked', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await say('wamid.I5-o', { ...MILO, supplierReference: 'EMK-0011' }, 'Milo 100k EMK-0011');
+      await say(
+        'wamid.I5-d',
+        { ...MILO, supplierReference: 'EMK-0022' },
+        'Milo 100k EMK-0022',
+        DELEGATE,
+      );
+      await withBusiness(db, business.id, (tx) =>
+        tx.execute(sql`
+          UPDATE command_drafts SET command = command - 'supplierReference'
+           WHERE business_id = ${business.id}::uuid`),
+      );
+      await reply('wamid.I5-yes-1', 'yes');
+      stubSender.failWith();
+      await reply('wamid.I5-yes-2', 'yes');
+      expect(await purchaseStates(business.id)).toEqual(['pending', 'confirmed']);
+      await reply('wamid.I5-yes-3', 'yes');
+      expect(stubSender.lastText).toContain(RACE);
+      expect(await purchases(business.id)).toBe(1);
+    });
+
+    it('I6: an unrecognised reply keeps the question open, and "seperate" answers it', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'I6');
+      await say('wamid.I6-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      await reply('wamid.I6-hmm', 'hmm let me check', DELEGATE);
+      await reply('wamid.I6-sep', 'seperate', DELEGATE);
+      expect(stubSender.lastText).toContain(SEPARATE_LEAD);
+    });
+
+    it('I6: a bare "same" days after a question is an ordinary message, never "closed"', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'I6b');
+      await say('wamid.I6b-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      await withBusiness(db, business.id, async (tx) => {
+        await tx.execute(sql`
+          UPDATE command_drafts SET expires_at = clock_timestamp() - interval '3 days'
+           WHERE business_id = ${business.id}::uuid AND state = 'held'`);
+        await tx.execute(sql`
+          UPDATE conversation_continuations SET expires_at = clock_timestamp() - interval '3 days'
+           WHERE business_id = ${business.id}::uuid`);
+      });
+      await reply('wamid.I6b-same', 'same', DELEGATE);
+      expect(stubSender.lastText).not.toContain(CLOSED);
+    });
+
+    it('I7: an own waiting preview is not replaced by a purchase that is held and asked', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await say('wamid.I7-o', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      await say('wamid.I7-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      await reply('wamid.I7-d-sep', 'separate', DELEGATE);
+      await reply('wamid.I7-d-yes', 'yes', DELEGATE);
+      expect(await purchases(business.id)).toBe(1);
+      /* The owner's own preview waits; a matching booking exists. */
+      await say('wamid.I7-o-again', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      expect(stubSender.lastText).toContain(QUESTION);
+      expect(stubSender.lastText).not.toContain('replaced by this one');
+      expect((await purchaseStates(business.id))[0]).toBe('pending');
+    });
+
+    it('minor: "same" closes the stale G-61 question the held purchase was blocking', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'M1');
+      await say('wamid.M1-pos', { ...MILO, paymentMethod: 'pos' }, 'Milo 100k POS');
+      expect(stubSender.lastText).toContain(POS_QUESTION);
+      await say('wamid.M1-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      await reply('wamid.M1-d-same', 'same', DELEGATE);
+      expect(await purchaseStates(business.id)).not.toContain('abandoned');
+    });
+
+    it('minor: a resend after "separate" replaces the fresh preview without asking again', async () => {
+      const business = await seedMerchant();
+      await bookMilo(business.id, 'M2');
+      await say('wamid.M2-a', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      await reply('wamid.M2-sep', 'separate');
+      expect(stubSender.lastText).toContain(SEPARATE_LEAD);
+      await say('wamid.M2-b', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      expect(stubSender.lastText).not.toContain(QUESTION);
+      expect(stubSender.lastText).toContain('was replaced');
+      await reply('wamid.M2-yes-1', 'yes');
+      await reply('wamid.M2-yes-2', 'yes');
+      expect(await purchases(business.id)).toBe(2);
+    });
+
+    it('minor: a "no" to the question says that cancel closes it', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'M3');
+      await say('wamid.M3-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      await reply('wamid.M3-no', 'no', DELEGATE);
+      expect(stubSender.lastText).toContain('*cancel*');
+    });
+
+    it('minor: a closed question mentions the fresh preview still waiting', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'M4');
+      await say('wamid.M4-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      await reply('wamid.M4-sep', 'separate', DELEGATE);
+      await reply('wamid.M4-same', 'same', DELEGATE);
+      expect(stubSender.lastText).toContain('still waiting for a yes');
+    });
+  });
+
+  describe('on a plan without Chat while the question is open (G-65 integration)', () => {
+    async function askedWithoutChat(tag: string) {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, tag);
+      await say(`wamid.${tag}-d`, MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      await billingRepo.setPlan(db, {
+        businessId: business.id,
+        plan: 'integrate',
+        expiresAt: null,
+        actor: 'operator:g81',
+      });
+      return business;
+    }
+
+    it('a yes is told nothing was saved, and invites no "separate"', async () => {
+      const business = await askedWithoutChat('NC1');
+      await reply('wamid.NC1-d-yes', 'yes', DELEGATE);
+      expect(stubSender.lastText).toBe(replies.notSavedNotInPlan().text);
+      expect(await purchases(business.id)).toBe(1);
+    });
+
+    it('a no is told nothing was saved, and invites no "separate"', async () => {
+      const business = await askedWithoutChat('NC2');
+      await reply('wamid.NC2-no', 'no', DELEGATE);
+      expect(stubSender.lastText).toBe(replies.notSavedNotInPlan().text);
+      expect(await purchases(business.id)).toBe(1);
+    });
+
+    it('"same" still closes it, writing nothing, with copy that invites no refused yes', async () => {
+      const business = await askedWithoutChat('NC3');
+      await reply('wamid.NC3-same', 'same', DELEGATE);
+      expect(stubSender.lastText).toContain(SAME_DONE);
+      expect(stubSender.lastText).not.toMatch(/reply \*yes\*|send the purchase again/i);
+      expect(await purchaseStates(business.id)).toEqual(['confirmed', 'superseded']);
+      expect(await purchases(business.id)).toBe(1);
+    });
+
+    it('"separate" is refused before anything is drafted', async () => {
+      const business = await askedWithoutChat('NC4');
+      await reply('wamid.NC4-sep', 'separate', DELEGATE);
+      expect(stubSender.lastText).toBe(replies.chatNotInPlan().text);
+      expect(await purchaseStates(business.id)).toEqual(['confirmed', 'held']);
+      expect(await purchases(business.id)).toBe(1);
+    });
   });
 });

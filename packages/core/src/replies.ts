@@ -609,7 +609,7 @@ export function preview(text: string): Reply {
 export function earlierPreviewReplaced(shown: Reply, earlierK: number): Reply {
   return reply(
     `${shown.text}\n\nYour earlier preview of ${formatKobo(earlierK)} was replaced by ` +
-      'this one. If that was a different purchase, send it again.',
+      'this one. If that was a different purchase, send the purchase again.',
   );
 }
 
@@ -1906,4 +1906,172 @@ export function customerOptedOut(): Reply {
 /** And the way back. */
 export function customerOptedIn(): Reply {
   return reply('Thank you. You will get messages from this shop again.');
+}
+
+/* ── one real purchase, one financial truth (G-81, OD-23) ─────────────── */
+
+/** The purchase a new one may be, as the merchant is told about it. */
+export interface PurchaseIdentitySubject {
+  /** Already booked, or a preview still waiting for a yes. */
+  readonly state: 'pending' | 'booked';
+  readonly amountK: number;
+  /** Whose it is, from the side of the member being asked. */
+  readonly owner: 'you' | 'another_member' | 'unknown';
+  /** When it was booked; null while it waits. */
+  readonly bookedAt: Date | null;
+  /** The bill a purchase on credit raised, if any: a number both sides share. */
+  readonly billNumber: string | null;
+}
+
+/** "today at 10:42" or "yesterday at 22:15", Lagos time (UTC+1, no DST). */
+function lagosWhen(at: Date, now: Date): string {
+  const lagos = (d: Date) => new Date(d.getTime() + 3_600_000);
+  const a = lagos(at);
+  const day = (d: Date) => d.toISOString().slice(0, 10);
+  const clock = a.toISOString().slice(11, 16);
+  const today = lagos(now);
+  const yesterday = new Date(today.getTime() - 86_400_000);
+  if (day(a) === day(today)) return `today at ${clock}`;
+  if (day(a) === day(yesterday)) return `yesterday at ${clock}`;
+  return `on ${day(a)} at ${clock}`;
+}
+
+function identityLead(subject: PurchaseIdentitySubject, now: Date): string {
+  const amount = formatKobo(subject.amountK);
+  if (subject.state === 'booked') {
+    const by =
+      subject.owner === 'you'
+        ? ', sent by you'
+        : subject.owner === 'another_member'
+          ? ', sent by another member'
+          : '';
+    const bill = subject.billNumber ? ` (bill ${subject.billNumber})` : '';
+    const when = subject.bookedAt ? ` ${lagosWhen(subject.bookedAt, now)}` : '';
+    return `A stock purchase of ${amount} was already saved${when}${by}${bill}.`;
+  }
+  const from = subject.owner === 'another_member' ? ', from another member' : '';
+  return `A preview of a ${amount} stock purchase is already waiting for a yes${from}.`;
+}
+
+const IDENTITY_CHOICES =
+  'Reply *same* if it is the same one, and nothing more will be saved.\n' +
+  'Reply *separate* if it is a different purchase, and I will show it to you to check first.';
+
+const IDENTITY_CHOICES_MANY =
+  'Reply *same* if it is one of them, and nothing more will be saved.\n' +
+  'Reply *separate* if it is different from all of them, and I will show it to you to check first.';
+
+/** How the question opens: every record it names, never only one. */
+function identityQuestionText(
+  subject: PurchaseIdentitySubject,
+  now: Date,
+  options: { readonly named?: number; readonly newSince?: boolean },
+): string {
+  const named = options.named ?? 1;
+  const lead = options.newSince ? 'Something new came in since I asked. ' : '';
+  if (named > 1) {
+    return (
+      `${lead}I found ${named} stock purchases of ${formatKobo(subject.amountK)} already saved or ` +
+      `waiting in the last 24 hours. Is this the same purchase?\n\n${IDENTITY_CHOICES_MANY}`
+    );
+  }
+  return `${lead}${identityLead(subject, now)} Is this the same purchase?\n\n${IDENTITY_CHOICES}`;
+}
+
+/**
+ * A stock purchase that may be one already saved or already waiting (G-81).
+ * Asked, never silently dropped and never silently booked: nothing is saved
+ * until the merchant says which, and "separate" still shows a preview. It
+ * names EVERY record it is about (the answer is about exactly those): one
+ * in full, or how many. It names the total, the time and a bill number,
+ * never a supplier or a product, so nothing in it needs a name.
+ */
+export function purchaseIdentityQuestion(
+  subject: PurchaseIdentitySubject,
+  now: Date,
+  options: { readonly named?: number; readonly newSince?: boolean } = {},
+): Reply {
+  return reply(identityQuestionText(subject, now, options));
+}
+
+/**
+ * A "yes" that reached a purchase matching one booked since its preview was
+ * shown (G-81): the purchase work refused it before writing anything, and
+ * the merchant is asked instead.
+ */
+export function purchaseIdentityAtYes(subject: PurchaseIdentitySubject, now: Date): Reply {
+  return reply(`Nothing was saved from your yes. ${identityQuestionText(subject, now, {})}`);
+}
+
+/**
+ * A "yes", "na so", "no" or a doubtful answer to the identity question
+ * (G-81): never an answer, and never a confirmation of an older preview.
+ */
+export function purchaseIdentityReask(options: { readonly afterNo?: boolean } = {}): Reply {
+  return reply(
+    'Please reply *same* or *separate*, so I know whether this is a second purchase. ' +
+      'Nothing was saved.' +
+      (options.afterNo ? ' Reply *cancel* to drop the question instead.' : ''),
+  );
+}
+
+/** "same": nothing more is saved, and the merchant is pointed at the record. */
+export function samePurchase(
+  subject: PurchaseIdentitySubject | null,
+  now: Date,
+  /** A plan without Chat (G-65): nothing that invites a refused yes or resend. */
+  options: { readonly withoutChat?: boolean } = {},
+): Reply {
+  if (options.withoutChat && subject?.state !== 'booked') {
+    return reply(
+      subject
+        ? 'OK, nothing more was saved. The earlier preview of that purchase cannot be saved on ' +
+            'your current plan.'
+        : 'OK, nothing more was saved. The earlier record of that purchase is no longer waiting.',
+    );
+  }
+  if (!subject) {
+    return reply(
+      'OK, nothing more was saved. The earlier record of that purchase is no longer ' +
+        'waiting, so check your records before you send the purchase again.',
+    );
+  }
+  if (subject.state === 'booked') {
+    const when = subject.bookedAt ? ` ${lagosWhen(subject.bookedAt, now)}` : '';
+    const bill = subject.billNumber ? ` (bill ${subject.billNumber})` : '';
+    return reply(
+      `OK, nothing more was saved. The ${formatKobo(subject.amountK)} purchase saved` +
+        `${when}${bill} stays as it is.`,
+    );
+  }
+  /* Never "only the member who sent it": any member may confirm a waiting
+   * preview (OD-15), so saying otherwise would be a restriction the next yes
+   * does not enforce. */
+  return reply(
+    subject.owner === 'another_member'
+      ? 'OK, nothing more was saved. The preview another member sent of that purchase is ' +
+          'still waiting for a yes.'
+      : 'OK, nothing more was saved. The preview of that purchase is still waiting for a yes.',
+  );
+}
+
+/** "separate": a FRESH preview, which only a normal yes saves. */
+export function separatePurchase(preview: Reply): Reply {
+  return reply(`OK, this is a separate purchase.\n\n${preview.text}`);
+}
+
+/** "same" or "separate" after the identity question closed (G-81). */
+export function purchaseIdentityClosed(
+  options: { readonly freshPreviewWaiting?: boolean } = {},
+): Reply {
+  if (options.freshPreviewWaiting) {
+    return reply(
+      'That question was already answered, and the preview it made is still waiting for a ' +
+        'yes. Nothing more was saved.',
+    );
+  }
+  return reply(
+    'That question has closed, so nothing was saved. If it is a separate purchase, ' +
+      'send the purchase again as a new message.',
+  );
 }

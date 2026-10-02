@@ -647,3 +647,22 @@ describe('the funding question offers the short answer only while it can be take
     );
   });
 });
+
+describe('a stated supplier reference on a purchase preview (G-81)', () => {
+  const base = {
+    description: '10 cartons of Milo',
+    amount: 100_000,
+    reportedPayment: 100_000,
+    paymentMethod: 'cash',
+  };
+
+  it('is shown when it is a document number, so the merchant sees what is compared', () => {
+    const gate = gatePurchase({ ...base, supplierReference: 'EMK-0041' });
+    expect(gate.gate === 'CG2' && gate.preview).toContain('Reference: EMK-0041');
+  });
+
+  it('is not shown when it is not one', () => {
+    const gate = gatePurchase({ ...base, supplierReference: 'Emeka' });
+    expect(gate.gate === 'CG2' && gate.preview).not.toContain('Reference');
+  });
+});

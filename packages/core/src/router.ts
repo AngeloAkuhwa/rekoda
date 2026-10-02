@@ -1323,3 +1323,134 @@ export function fundingSourceAnswer(raw: string): FundingSource | null {
   }
   return null;
 }
+
+/**
+ * The answer to "Is this the same purchase?" (G-81, OD-23): the merchant was
+ * told a stock purchase of the same total was already saved or is already
+ * waiting, and asked whether this one is that purchase.
+ */
+export type PurchaseIdentityAnswer = 'same' | 'separate';
+
+/**
+ * A whole-message answer to the purchase identity question, and nothing
+ * else. Only consulted while that question is open for this member, and
+ * only for a message the deterministic router did not classify: "yes",
+ * "no", "na so" and "no be so" stay router commands, and a yes or a no to
+ * this question is asked again, never read as an answer (a "no" could mean
+ * "no, not the same" or "no, do not save it").
+ *
+ * Each phrase reviewed for a second reading and for a clash with a router
+ * phrase (none of these is one). The Pidgin copula is meaning: "na the
+ * same" is "it is the same", "na another one" is "it is another one", "no
+ * be the same" is "it is not the same". Rejected: "yes", "no", "correct",
+ * "wrong", "true", "ok" (an answer to a different question), "both", "two"
+ * and "again" (a count or a resend, not an identity), "duplicate" (asks to
+ * delete as often as it says "same"), and anything longer, which goes to
+ * the model as an ordinary message.
+ */
+const PURCHASE_IDENTITY_ANSWERS: ReadonlyArray<
+  readonly [readonly string[], PurchaseIdentityAnswer]
+> = [
+  [
+    [
+      'same',
+      'the same',
+      'same one',
+      'the same one',
+      'same purchase',
+      'the same purchase',
+      'same thing',
+      'the same thing',
+      'it is the same',
+      'it s the same',
+      'is the same',
+      'na same',
+      'na the same',
+      'na di same',
+      'na same one',
+      'na the same one',
+      'na same thing',
+      'na the same thing',
+      'e be the same',
+      'e be same',
+      'di same',
+      'same same',
+      /* Fresh review of #262: natural and misspelt answers, each reviewed for
+       * a second reading ("yes same" and "its the same" have none). */
+      'its the same',
+      'na d same',
+      'na d same one',
+      'd same',
+      'yes same',
+      'yes the same',
+      'yes na the same',
+      'yes it is the same',
+    ],
+    'same',
+  ],
+  [
+    [
+      'separate',
+      'separate one',
+      'a separate one',
+      'separate purchase',
+      'a separate purchase',
+      'another',
+      'another one',
+      'another purchase',
+      'na another',
+      'na another one',
+      'different',
+      'different one',
+      'a different one',
+      'different purchase',
+      'a different purchase',
+      'it is different',
+      'e different',
+      'e dey different',
+      'new',
+      'new one',
+      'a new one',
+      'new purchase',
+      'na new one',
+      'not the same',
+      'it is not the same',
+      'no be the same',
+      'no be same',
+      'e no be the same',
+      'e no be same',
+      /* Fresh review of #262: natural and misspelt answers. A leading "no"
+       * here is part of the answer ("no, separate"), never a refusal on its
+       * own, which stays a router command. */
+      'seperate',
+      'seprate',
+      'separete',
+      'na separate',
+      'not same',
+      'its different',
+      'it s different',
+      'no be d same',
+      'e no be d same',
+      'no separate',
+      'no different',
+      'no another one',
+      'no it is different',
+      'no it s different',
+      'no its different',
+      'no it is not the same',
+    ],
+    'separate',
+  ],
+];
+
+export function purchaseIdentityAnswer(raw: string): PurchaseIdentityAnswer | null {
+  const normalised = normalise(raw);
+  if (!normalised) return null;
+  const text = stripFillers(normalised);
+  if (!text || text.length > MAX_COMMAND_CHARS) return null;
+  if (!survivedNormalisation(raw, text)) return null;
+  for (const [phrases, answer] of PURCHASE_IDENTITY_ANSWERS) {
+    if (phrases.includes(text)) return answer;
+  }
+  return null;
+}

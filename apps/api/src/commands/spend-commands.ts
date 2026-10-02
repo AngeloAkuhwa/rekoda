@@ -13,7 +13,15 @@
  * transaction as the money, so a shop can never hold the payment without
  * the stock.
  */
-import { outboxRepo, spendRepo, stockRepo, type TenantDb } from '@rekoda/db';
+import {
+  PURCHASE_IDENTITY_WINDOW_SECONDS,
+  purchaseMatches,
+  type PurchaseFacts,
+  type PurchaseRecord,
+} from '@rekoda/core';
+
+const windowStart = (at: Date) => new Date(at.getTime() - PURCHASE_IDENTITY_WINDOW_SECONDS * 1000);
+import { outboxRepo, purchaseIdentityRepo, spendRepo, stockRepo, type TenantDb } from '@rekoda/db';
 
 export type RecordExpenseCmdInput = Parameters<typeof spendRepo.recordExpense>[1];
 
@@ -82,10 +90,72 @@ export interface RecordedPurchase {
   arrived: { name: string; onHand: number }[];
 }
 
+/**
+ * A chat purchase refused BEFORE anything was written (G-81, OD-23): a
+ * purchase of the same total that nothing proves separate was booked in
+ * the last 24 hours. Carries the record it matched, as opaque ids, a total
+ * and a time, so the caller can ask the merchant "same or separate"; it
+ * never carries, and nothing logs, a fingerprint.
+ */
+export class PurchaseIdentityCollision extends Error {
+  override readonly name = 'PurchaseIdentityCollision';
+  constructor(readonly match: PurchaseRecord) {
+    super('a purchase of the same total was booked since this one was previewed');
+  }
+}
+
+/**
+ * The final net against one purchase becoming two financial truths (G-81),
+ * in the WORK, so it holds whichever caller and whichever connection: a
+ * chat purchase takes the business's lock for its total, then re-reads what
+ * is booked, and refuses before the first posting if one may be this one.
+ * Two confirmations of one purchase on two connections therefore book it
+ * once; the second sees the first's booking because it reads after the
+ * first commits. A received purchase order is its own document and is not
+ * compared here.
+ */
+async function refuseBookedDuplicate(tx: TenantDb, input: RecordPurchaseCmdInput): Promise<void> {
+  if (input.sourceType !== 'chat') return;
+  await purchaseIdentityRepo.lockPurchaseTotal(tx, input.businessId, input.amountK);
+  const drafted = await purchaseIdentityRepo.draftFacts(tx, input.businessId, input.sourceId);
+  /* Every booking from 24 hours before this purchase's own message ONWARD,
+   * with no upper bound: a yes retried a day later still sees a competing
+   * booking made since its preview (Codex review). */
+  const { now, records } = await purchaseIdentityRepo.purchaseRecords(
+    tx,
+    input.businessId,
+    input.amountK,
+    {
+      excludeDraftId: input.sourceId,
+      bookedOnly: true,
+      ...(drafted ? { bookedSince: windowStart(drafted.at) } : {}),
+    },
+  );
+  if (records.length === 0) return;
+  /* No readable draft behind it: nothing can prove it separate, so it is
+   * compared on its total alone, the conservative reading. */
+  const self: PurchaseFacts = drafted
+    ? { ...drafted, amountK: input.amountK }
+    : {
+        amountK: input.amountK,
+        at: now,
+        product: null,
+        reference: null,
+        separateFrom: [],
+        self: { draftId: null, expenseId: null },
+      };
+  const [match] = purchaseMatches(self, records, now, {
+    from: windowStart(self.at),
+    to: null,
+  });
+  if (match) throw new PurchaseIdentityCollision(match);
+}
+
 export async function recordPurchaseWork(
   tx: TenantDb,
   input: RecordPurchaseCmdInput,
 ): Promise<RecordedPurchase> {
+  await refuseBookedDuplicate(tx, input);
   const recorded = await spendRepo.recordPurchase(tx, {
     businessId: input.businessId,
     description: input.description,

@@ -22,6 +22,8 @@
  * never stored" stays true in both halves.
  */
 
+import { normalisePurchaseReference } from './purchase-identity.js';
+
 type CommandRecord = Record<string, unknown>;
 
 /**
@@ -52,13 +54,29 @@ export function sanitizeCommandForPersistence(command: unknown): unknown {
   if (command === null || typeof command !== 'object' || Array.isArray(command)) {
     return command;
   }
-  const record = command as CommandRecord;
+  return stripTransientFields(normaliseReference(command as CommandRecord));
+}
+
+/**
+ * A purchase's supplier document reference (G-81) is stored ONLY in its
+ * normalised document-number shape, which must carry a digit, so a name the
+ * model put there by mistake ("Emeka's receipt") is never stored: it is
+ * dropped (null), and the purchase is then simply one with no reference.
+ */
+function normaliseReference(record: CommandRecord): CommandRecord {
+  if (record['intent'] !== 'RecordPurchase' || !('supplierReference' in record)) return record;
+  const normalised = normalisePurchaseReference(record['supplierReference']);
+  if (normalised === record['supplierReference']) return record;
+  return { ...record, supplierReference: normalised };
+}
+
+function stripTransientFields(record: CommandRecord): unknown {
   const intent = record['intent'];
   const transient = typeof intent === 'string' ? TRANSIENT_FIELDS[intent] : undefined;
-  if (!transient || transient.length === 0) return command;
+  if (!transient || transient.length === 0) return record;
 
   const dirty = transient.some((field) => field in record && record[field] !== null);
-  if (!dirty) return command;
+  if (!dirty) return record;
 
   const sanitised: CommandRecord = { ...record };
   for (const field of transient) {

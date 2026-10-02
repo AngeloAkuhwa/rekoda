@@ -11,6 +11,7 @@
  * schema. Domain rules should not need to know what shape a webhook uses.
  */
 import { computeMoney, formatKobo, type MoneyBlock, type MoneyDraft } from './money.js';
+import { normalisePurchaseReference } from './purchase-identity.js';
 
 export interface SaleItemLike {
   readonly name: string;
@@ -191,6 +192,8 @@ export interface PurchaseLike {
    * including nothing, is not known, and a paid amount then needs asking.
    */
   readonly paymentMethod?: string | null | undefined;
+  /** The supplier's own document number, when one was stated (G-81). */
+  readonly supplierReference?: string | null | undefined;
 }
 
 /**
@@ -332,6 +335,11 @@ export function gatePurchase(
   const lines: string[] = ['Please check this before I save it:', ''];
   lines.push(`Stock: ${purchase.description}`);
   if (purchase.supplierMention) lines.push(`From: ${purchase.supplierMention}`);
+  /* Shown when it will be compared (G-81): a reference is what tells two
+   * purchases of one total apart, so the merchant sees the one Rekoda read. */
+  if (normalisePurchaseReference(purchase.supplierReference)) {
+    lines.push(`Reference: ${purchase.supplierReference!.trim()}`);
+  }
   /* The delivery, named on its own line when the merchant counted it. A
    * purchase that moves stock and does not say so in the preview is a stock
    * change nobody confirmed. */
