@@ -458,6 +458,54 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
          * the new preview is superseded (never confirmable) and the rebuilt
          * preview the merchant DID see is pending again, so it is still the
          * one a yes confirms. */
+        /* A new preview that closed older questions, nobody saw (Codex
+         * review): it is withdrawn and the questions are restored, with the
+         * short answer of every member who held one and of the sender, each
+         * inside its window, so "cash" answers the question again. */
+        if (outcome.closedQuestions?.length) {
+          await conversationsRepo.withdrawPreviewAndRestore(
+            tx,
+            businessId,
+            message.id,
+            outcome.closedQuestions.map((q) => q.id),
+          );
+          const reopen = new Map<string, { draftId: string; expiresAt: Date }>();
+          for (const q of outcome.closedQuestions) {
+            const asked = await conversationsRepo.draftStateOf(tx, businessId, q.id);
+            if (asked?.state !== 'abandoned') continue;
+            for (const held of q.holders) {
+              if (!reopen.has(held.userId)) {
+                reopen.set(held.userId, { draftId: q.id, expiresAt: held.expiresAt });
+              }
+            }
+          }
+          if (actorId && !reopen.has(actorId)) {
+            const newest = await continuationsRepo.newestContinuation(tx, businessId, actorId);
+            if (
+              newest?.kind === 'clarification' &&
+              newest.expects === 'funding_source' &&
+              outcome.closedQuestions.some((q) => q.id === newest.draftId)
+            ) {
+              const asked = await conversationsRepo.draftStateOf(tx, businessId, newest.draftId);
+              if (asked?.state === 'abandoned') {
+                reopen.set(actorId, {
+                  draftId: newest.draftId,
+                  expiresAt: fundingWindowEnd(asked.createdAt),
+                });
+              }
+            }
+          }
+          for (const [userId, open] of reopen) {
+            if (open.expiresAt.getTime() <= Date.now()) continue;
+            await continuationsRepo.openContinuation(tx, {
+              businessId,
+              userId,
+              sourceMessageId: message.id,
+              state: { kind: 'clarification', expects: 'funding_source', draftId: open.draftId },
+              expiresAt: open.expiresAt,
+            });
+          }
+        }
         if (outcome.replacedRebuilds?.length) {
           await conversationsRepo.undoReplacement(
             tx,
@@ -512,6 +560,8 @@ type RebuildOutcome = {
   retiredHolders?: { userId: string; expiresAt: Date }[];
   /** Pending rebuilds this message's preview replaced (same member, total). */
   replacedRebuilds?: string[];
+  /** Retired questions this message's new preview closed, and who held them. */
+  closedQuestions?: { id: string; holders: { userId: string; expiresAt: Date }[] }[];
 };
 
 /** A recording somebody made with the microphone button, not an attached file. */
@@ -3459,7 +3509,10 @@ async function interpretedReply(
       businessId,
       draft.id,
     )) {
-      await continuationsRepo.retireContinuationsForDraft(tx, businessId, closed);
+      const holders = await continuationsRepo.retireContinuationsForDraft(tx, businessId, closed);
+      /* Remembered, so a preview that never reaches the merchant gives the
+       * questions it closed back, with every member's short answer. */
+      if (outcome) (outcome.closedQuestions ??= []).push({ id: closed, holders });
     }
   }
 

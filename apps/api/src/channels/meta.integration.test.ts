@@ -11223,6 +11223,24 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
       expect(await purchaseStates(business.id)).toEqual(['superseded', 'confirmed', 'superseded']);
     });
 
+    it('a resend whose preview fails to send gives the question back; "cash" then rebuilds once (Codex review)', async () => {
+      const business = await seedMerchant();
+      await say('wamid.F2c-w-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      stubSender.failWith();
+      await say(
+        'wamid.F2c-w-resend',
+        { ...POS_PURCHASE, paymentMethod: 'cash' },
+        'I bought 10 cartons for 180k, paid cash',
+      );
+      /* Nobody saw the resend's preview: withdrawn, the question restored. */
+      expect(await purchaseStates(business.id)).toEqual(['abandoned', 'superseded']);
+      await reply('wamid.F2c-w-cash', 'cash');
+      expect(stubSender.lastText).toContain('Paid in full by cash');
+      await reply('wamid.F2c-w-yes-1', 'yes');
+      await reply('wamid.F2c-w-yes-2', 'yes');
+      expect(await written(business.id)).toMatchObject({ purchases: 1 });
+    });
+
     it('a rebuild with no recorded requester is never replaced', async () => {
       const business = await seedMerchant();
       await say('wamid.F2c-n-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');

@@ -1064,7 +1064,9 @@ export function periodAnswer(raw: string): AnsweredPeriod | null {
  * review): "yes?!", "na so ?!", "e correct?.", "yes ?)", "yes? 👍", "yes?? ok",
  * "na so?o", "yes¿". Plain, full-width and small "?", the inverted "¿", the
  * Arabic "؟", the interrobang "‽", the reversed "⸮", and the pictographs
- * "❓", "❔", "⁉". Not "‼": a double
+ * "❓", "❔", "⁉", and ANY character whose compatibility form holds a "?"
+ * (Codex review: "⁇", "︖", "⁈"), so no presentation variant of a question
+ * mark can slip through normalisation. Not "‼": a double
  * exclamation is emphasis, so "yes‼️" still agrees. Affirmation phrases are
  * a few words long, so a question mark anywhere in one is never decoration.
  */
@@ -1090,7 +1092,11 @@ const DOUBT_FACES =
  */
 export function soundsDoubtful(raw: string): boolean {
   const visible = raw.replace(/\p{Cf}/gu, '');
-  return QUESTION_MARK.test(visible) || DOUBT_FACES.test(visible);
+  return (
+    QUESTION_MARK.test(visible) ||
+    QUESTION_MARK.test(visible.normalize('NFKC')) ||
+    DOUBT_FACES.test(visible)
+  );
 }
 
 /**

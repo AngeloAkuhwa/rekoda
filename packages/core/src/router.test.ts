@@ -1007,6 +1007,10 @@ describe('a questioned affirmation confirms nothing', () => {
     'na so \u2718',
     'yes \u2612',
     'yes \u00D7',
+    /* Compatibility question forms (Codex review). */
+    'yes \u2047',
+    'yes \uFE16',
+    'na so \u2048',
     'yes #️⃣',
   ])('%j is unsure, never affirm', (message) => {
     expect(intentOf(message)).toEqual({ kind: 'unsure' });
@@ -1089,12 +1093,17 @@ describe('the length gate counts what is left after trimming (G-24 review)', () 
 });
 
 describe('a funding answer carrying a negation symbol is uncertain (Codex review)', () => {
-  it.each(['cash \u2717', 'bank \u2718', 'cash \u2612', 'bank \u00D7', 'cash ❌'])(
-    '%j is uncertain',
-    (text) => {
-      expect(answerIsUncertain(text)).toBe(true);
-    },
-  );
+  it.each([
+    'cash \u2717',
+    'bank \u2718',
+    'cash \u2612',
+    'bank \u00D7',
+    'cash ❌',
+    'cash \u2047',
+    'bank \uFE16',
+  ])('%j is uncertain', (text) => {
+    expect(answerIsUncertain(text)).toBe(true);
+  });
   it.each(['cash', 'bank', 'na cash', 'cash \u2713', 'bank 👍'])('%j is not', (text) => {
     expect(answerIsUncertain(text)).toBe(false);
   });

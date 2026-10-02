@@ -885,6 +885,8 @@ async function newestDraft(
          * latest thing to answer, so a "yes" or a "no" after it finds the
          * question it was rebuilt from again. */
         isNull(commandDrafts.undoneRebuildOf),
+        /* Nor is a withdrawn preview (0157): it never reached anybody. */
+        eq(commandDrafts.withdrawn, false),
       ),
     )
     .orderBy(desc(commandDrafts.insertionSeq))
@@ -967,7 +969,8 @@ export async function retiredPurchaseDraft(
            WHERE newer.business_id = ${businessId}::uuid
              AND newer.insertion_seq > ${commandDrafts.insertionSeq}
              AND newer.intent NOT IN ('Query', 'Unclear')
-             AND newer.undone_rebuild_of IS DISTINCT FROM ${commandDrafts.id})`,
+             AND newer.undone_rebuild_of IS DISTINCT FROM ${commandDrafts.id}
+             AND NOT newer.withdrawn)`,
       ),
     )
     .limit(1);
@@ -1144,6 +1147,36 @@ export async function supersedeRebuild(
        AND rebuilt_from IS NOT NULL
     RETURNING id`);
   return [...rows].length === 1;
+}
+
+/**
+ * Withdraw a preview that never reached the merchant and restore the retired
+ * purchase questions it closed (G-68, Codex review). The preview is
+ * superseded and marked `withdrawn` (so it never blocks those questions as a
+ * newer draft), and each question goes back from `superseded` to
+ * `abandoned`, answerable again. Conditional on each draft's state, so it
+ * undoes only what this message did.
+ */
+export async function withdrawPreviewAndRestore(
+  tx: TenantDb,
+  businessId: string,
+  messageId: string,
+  questionIds: readonly string[],
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE command_drafts
+       SET state = 'superseded', withdrawn = true, updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND conversation_message_id = ${messageId}::uuid
+       AND state = 'pending'`);
+  for (const id of questionIds) {
+    await tx.execute(sql`
+      UPDATE command_drafts SET state = 'abandoned', updated_at = clock_timestamp()
+       WHERE business_id = ${businessId}::uuid
+         AND id = ${id}::uuid
+         AND state = 'superseded'
+         AND intent = 'RecordPurchase'`);
+  }
 }
 
 /**

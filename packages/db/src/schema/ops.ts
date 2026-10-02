@@ -490,6 +490,13 @@ export const commandDrafts = pgTable(
      * across members. Null on every draft that is not a rebuild.
      */
     rebuiltFrom: uuid('rebuilt_from'),
+    /**
+     * A preview withdrawn because its send failed after it had closed older
+     * retired purchase questions (migration 0157, G-68); those questions are
+     * restored, and this marker keeps it from blocking them. Only ever on a
+     * superseded draft.
+     */
+    withdrawn: boolean('withdrawn').notNull().default(false),
   },
   (t) => [
     // One draft per message — a job that runs twice must not give the merchant

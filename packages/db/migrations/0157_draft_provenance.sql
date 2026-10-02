@@ -33,3 +33,16 @@ ALTER TABLE command_drafts
 ALTER TABLE command_drafts
   ADD CONSTRAINT command_drafts_rebuilt_from_not_self_check
   CHECK (rebuilt_from IS NULL OR rebuilt_from <> id);
+
+-- A preview WITHDRAWN because it never reached the merchant (Codex review).
+-- A new purchase preview closes every older retired purchase question; if its
+-- send then fails, nobody saw it, so it is withdrawn (superseded, and marked
+-- here) and the questions it closed are restored. The marker is what keeps a
+-- withdrawn preview from counting as a newer draft that blocks the restored
+-- question, explicitly, never inferred from states. Only ever on a superseded
+-- draft.
+ALTER TABLE command_drafts ADD COLUMN withdrawn boolean NOT NULL DEFAULT false;
+
+ALTER TABLE command_drafts
+  ADD CONSTRAINT command_drafts_withdrawn_superseded_check
+  CHECK (NOT withdrawn OR state = 'superseded');
