@@ -12933,4 +12933,29 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
     // Not "I can count these windows": the ordinary path, refused there.
     expect(await send('yesterday')).toBe(FREE_FORM_REFUSED);
   });
+
+  /**
+   * A yes that reached Rekoda before the preview it would confirm (CG2) is
+   * told "a preview is waiting, reply yes". On a plan that has lost Chat
+   * since, that invites a yes it would refuse: it is told nothing was saved.
+   */
+  it('a yes that arrived before its preview invites no refused yes without Chat', async () => {
+    const business = await seedMerchant();
+    stubTransport.replyWith(AN_EXPENSE);
+    // Both arrive before either is handled.
+    await post(messagePayload(OWNER, `wamid.G65-${++seq}`, 'bought fuel 20k cash'));
+    await post(messagePayload(OWNER, `wamid.G65-${++seq}`, 'yes'));
+    // The preview is written while the plan still holds Chat...
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    expect(stubSender.lastText).toContain('Reply *yes*');
+    // ...and the yes is handled after the switch.
+    await moveToPlan(business.id, 'integrate');
+    const before = await footprint(business.id);
+    await drain();
+    await expectNoFailedJob();
+
+    expect(stubSender.lastText).toBe(YES_REFUSED);
+    await expectOnlyReplies(business.id, before, 1);
+    expect(await draftStates(business.id)).toEqual(['pending']);
+  });
 });
