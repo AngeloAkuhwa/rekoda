@@ -2868,9 +2868,14 @@ async function unsureReply(
         replies.nothingToConfirmWithoutChat()
       );
     }
-    const live =
-      waiting?.state === 'abandoned' ||
-      (await conversationsRepo.pendingDraftToAnswer(tx, businessId, { asOf: receivedAt })) !== null;
+    /* Waiting means something a yes could have saved: a preview, or a
+     * retired funding question a "bank" answers. A live question Rekoda
+     * asked (never a preview) is not, exactly as the path below says
+     * (Codex review). */
+    const pending = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
+      asOf: receivedAt,
+    });
+    const live = waiting?.state === 'abandoned' || pending?.previewed === true;
     return live
       ? ((await draftRefusalWithoutChat(tx, businessId)) ?? replies.nothingToConfirmWithoutChat())
       : replies.nothingToConfirmWithoutChat();

@@ -12958,4 +12958,22 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
     await expectOnlyReplies(business.id, before, 1);
     expect(await draftStates(business.id)).toEqual(['pending']);
   });
+
+  /**
+   * Codex, PR #261 (final head): a live question Rekoda asked, never a
+   * preview, is not something a "yes?" could have saved. Without Chat it is
+   * "nothing waiting", as the Chat-plan path says, never "I did not save that".
+   */
+  it('a yes? to a live question that was never a preview is "nothing waiting" without Chat', async () => {
+    const business = await seedMerchant();
+    expect(
+      await send('sold some things', { intent: 'Unclear', clarification: 'How many wigs?' }),
+    ).toContain('How many wigs?');
+    await moveToPlan(business.id, 'integrate');
+    const states = await draftStates(business.id);
+    expect(await send('yes?')).toBe(replies.nothingToConfirmWithoutChat().text);
+    expect(await draftStates(business.id)).toEqual(states);
+    await lapse(business.id);
+    expect(await send('yes?')).toBe(replies.nothingToConfirmWithoutChat().text);
+  });
 });
