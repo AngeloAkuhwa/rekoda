@@ -1150,6 +1150,11 @@ async function deterministicReply(
     if (answer?.text === replies.nothingToConfirm().text && (await withoutChat(tx, businessId))) {
       return replies.nothingToConfirmWithoutChat();
     }
+    /* "A preview is waiting, reply yes" would invite a yes such a plan is
+     * refused: it is told nothing was saved instead. */
+    if (answer?.text === replies.previewAwaitingYes().text) {
+      return (await draftRefusalWithoutChat(tx, businessId)) ?? answer;
+    }
     return answer;
   }
   if (intent.kind === 'deny' || intent.kind === 'cancel') {
@@ -1780,6 +1785,25 @@ function expiredAnswer(command: unknown, previewed: boolean, answer: 'yes' | 'no
 }
 
 /**
+ * `expiredAnswer` for a "yes" (or "yes?"), told the truth on every plan
+ * (G-65): an erasure ask is still "Kept. Nothing was deleted."; an expired
+ * preview on a plan without Chat is told nothing was saved and why, never
+ * invited to send it again (a resend it would then be refused). Null when
+ * the draft was never a preview, as for `expiredAnswer`.
+ */
+async function expiredYesReply(
+  tx: TenantDb,
+  businessId: string,
+  command: unknown,
+  previewed: boolean,
+): Promise<Reply | null> {
+  const ordinary = expiredAnswer(command, previewed, 'yes');
+  if (!ordinary || ordinary.text !== replies.draftExpired().text) return ordinary;
+  const without = await withoutChat(tx, businessId);
+  return without ? replies.draftExpiredWithoutChat(without.lapse) : ordinary;
+}
+
+/**
  * Give back what a crashed earlier attempt of this "yes" reserved, when the
  * retry executes nothing (G-23).
  *
@@ -1853,7 +1877,10 @@ async function confirmPendingDraft(
     if (retrying) {
       await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
     }
-    return expiredAnswer(latest.command, latest.previewed, 'yes') ?? replies.nothingToConfirm();
+    return (
+      (await expiredYesReply(tx, businessId, latest.command, latest.previewed)) ??
+      replies.nothingToConfirm()
+    );
   }
 
   let draft = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
@@ -2832,9 +2859,17 @@ async function unsureReply(
     const waiting = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
       asOf: receivedAt,
     });
+    /* An expired draft gets what a plain yes gets (an erasure ask is still
+     * kept; a lapsed preview is told nothing was saved, inviting no resend;
+     * a clarification that never became a preview, nothing waiting). */
+    if (waiting?.state === 'expired') {
+      return (
+        (await expiredYesReply(tx, businessId, waiting.command, waiting.previewed)) ??
+        replies.nothingToConfirmWithoutChat()
+      );
+    }
     const live =
       waiting?.state === 'abandoned' ||
-      waiting?.state === 'expired' ||
       (await conversationsRepo.pendingDraftToAnswer(tx, businessId, { asOf: receivedAt })) !== null;
     return live
       ? ((await draftRefusalWithoutChat(tx, businessId)) ?? replies.nothingToConfirmWithoutChat())
@@ -3177,7 +3212,9 @@ async function continueConversation(
     open.state.expects === 'period' &&
     !answer &&
     message.route.route === 'model' &&
-    uncountablePeriod(message.text)
+    uncountablePeriod(message.text) &&
+    /* G-65: it keeps the question open for a read this plan is refused. */
+    resumedReadAccess(await chatStandingOf(tx, businessId)) === 'allow'
   ) {
     return replies.periodNotCountable(open.state.topic === 'sales_summary' ? 'sales' : 'spending');
   }

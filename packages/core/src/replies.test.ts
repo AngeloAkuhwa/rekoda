@@ -88,6 +88,11 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   strayNumberWithoutChat: [replies.strayNumberWithoutChat()],
   nothingToConfirmWithoutChat: [replies.nothingToConfirmWithoutChat()],
   nothingToDeclineWithoutChat: [replies.nothingToDeclineWithoutChat()],
+  draftExpiredWithoutChat: [
+    replies.draftExpiredWithoutChat(null),
+    replies.draftExpiredWithoutChat('trial'),
+    replies.draftExpiredWithoutChat('plan'),
+  ],
   optionChosenWithoutChat: [replies.optionChosenWithoutChat('INV-2026-000041')],
   trialEnded: [replies.trialEnded(), replies.trialEnded(false)],
   upgradeRequested: [replies.upgradeRequested()],

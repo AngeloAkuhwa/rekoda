@@ -12857,4 +12857,80 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
     await openList();
     expect(await send('2')).toBe(replies.optionChosen('INV-2026-000002').text);
   });
+
+  /* ── expired drafts on a plan without Chat (post-rebase review) ────────── */
+
+  /** Days pass: every pending draft's window closes. */
+  const expireDrafts = (businessId: string) =>
+    withBusiness(db, businessId, (tx) =>
+      tx.execute(sql`
+        UPDATE command_drafts SET expires_at = clock_timestamp() - interval '3 days'
+         WHERE business_id = ${businessId}::uuid AND state = 'pending'`),
+    );
+
+  it.each(['integrate', 'lapsed'] as const)(
+    'an expired erasure ask is "Kept" to a yes and a yes? alike on a %s plan',
+    async (standing) => {
+      for (const word of ['yes', 'yes?']) {
+        await truncateAll(urls);
+        const business = await seedMerchant();
+        if (standing === 'integrate') await moveToPlan(business.id, 'integrate');
+        else await lapse(business.id);
+        expect(await send('delete my data')).toBe(replies.confirmErasure().text);
+        await expireDrafts(business.id);
+        expect(await send(word), word).toBe(replies.erasureKept().text);
+      }
+    },
+  );
+
+  it.each([
+    ['integrate', replies.draftExpiredWithoutChat(null).text],
+    ['lapsed', replies.draftExpiredWithoutChat('trial').text],
+  ] as const)(
+    'an expired preview invites no resend to a yes or a yes? on a %s plan',
+    async (standing, expected) => {
+      for (const word of ['yes', 'yes?']) {
+        await truncateAll(urls);
+        const business = await seedMerchant();
+        await send('Ada bought 3 wigs for 300k', A_SALE);
+        if (standing === 'integrate') await moveToPlan(business.id, 'integrate');
+        else await lapse(business.id);
+        await expireDrafts(business.id);
+        const before = await footprint(business.id);
+        const said = await send(word);
+        expect(said, word).toBe(expected);
+        expect(said).not.toMatch(/send it again/i);
+        await expectOnlyReplies(business.id, before, 1);
+      }
+    },
+  );
+
+  it('an expired preview on a Chat plan keeps the ordinary sentence', async () => {
+    const business = await seedMerchant();
+    await send('Ada bought 3 wigs for 300k', A_SALE);
+    await expireDrafts(business.id);
+    expect(await send('yes')).toBe(replies.draftExpired().text);
+  });
+
+  it('an expired question that was never a preview is "nothing waiting" without Chat', async () => {
+    const business = await seedMerchant();
+    // The model asks a question: a draft, never a preview.
+    expect(
+      await send('sold some things', { intent: 'Unclear', clarification: 'How many wigs?' }),
+    ).toContain('How many wigs?');
+    await moveToPlan(business.id, 'integrate');
+    await expireDrafts(business.id);
+    expect(await send('yes?')).toBe(replies.nothingToConfirmWithoutChat().text);
+    expect(await send('yes')).toBe(replies.nothingToConfirmWithoutChat().text);
+  });
+
+  it('a period Rekoda cannot count keeps no question open for a plan without Chat', async () => {
+    const business = await seedMerchant();
+    expect(await send('how much did I sell?', HOW_MUCH_DID_I_SELL)).toBe(
+      replies.whichPeriod('sales').text,
+    );
+    await moveToPlan(business.id, 'integrate');
+    // Not "I can count these windows": the ordinary path, refused there.
+    expect(await send('yesterday')).toBe(FREE_FORM_REFUSED);
+  });
 });

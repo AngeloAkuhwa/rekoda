@@ -8,14 +8,14 @@
 
 ## Current state at a glance
 
-| Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Current date**            | 2 October 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| **Current `main` SHA**      | `3612fcf` (1 Oct 2026, "feat: conversational continuation state (#260)", Build 6); before it `f5fb1ce` (#258, G-23), `2abb8a1` (#256, G-49), `6df1b91` (#255, G-61), `ce4755a` (#254, G-77), `ea7c7db` (#253, G-49), `b9c9562` (#252, G-48) and earlier                                                                                                                                                                                                                                                                         |
-| **Open branches**           | #259 (Build 7, `fix/g68-g24-nigerian-chat-routing`, G-68 and G-24, rebased onto `3612fcf`) and #261 (Build 8, `fix/g65-deterministic-chat-entitlement`, G-65). #260 (Build 6) MERGED as `3612fcf`; #258 (G-23) MERGED as `f5fb1ce`; #256 (G-49 dashboard fix) MERGED as `2abb8a1`; #255 (G-61) MERGED as `6df1b91`                                                                                                                                                                                                              |
-| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 158 migrations on this branch (0000 to 0157; main has 0000 to 0154); deployed to staging (automatic after CI on main since #249); never to production (the production stack boots on a clean CI runner since G-01); the Meta WhatsApp transport has been live-exercised on staging (real webhook ingress, outbound text and media); production Meta App Review and templates remain open; payment-provider live verification remains pending |
-| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                                                           |
+| Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Current date**            | 2 October 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| **Current `main` SHA**      | `f5ef123` (2 Oct 2026, "fix: Nigerian and chat routing correctness (G-68, G-24) (#259)", Build 7); before it `3612fcf` (#260, Build 6), `f5fb1ce` (#258, G-23), `2abb8a1` (#256, G-49), `6df1b91` (#255, G-61), `ce4755a` (#254, G-77) and earlier                                                                                                                                                                                                                                                              |
+| **Open branches**           | #261 (Build 8, `fix/g65-deterministic-chat-entitlement`, G-65, rebased onto `f5ef123`, ready for review) and the duplicate-purchase PR (`fix/purchase-cross-actor-idempotency`, G-81, OD-23, in progress). #259 (Build 7) MERGED as `f5ef123`; #260 (Build 6) MERGED as `3612fcf`; #258 (G-23) MERGED as `f5fb1ce`; #256 (G-49 dashboard fix) MERGED as `2abb8a1`                                                                                                                                               |
+| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 158 migrations (0000 to 0157, on `main` since #259); deployed to staging (automatic after CI on main since #249); never to production (the production stack boots on a clean CI runner since G-01); the Meta WhatsApp transport has been live-exercised on staging (real webhook ingress, outbound text and media); production Meta App Review and templates remain open; payment-provider live verification remains pending |
+| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                                           |
 
 **Build 1 (G-48) accepted (26 Sep 2026):**
 
@@ -129,8 +129,8 @@ merge, on staging: ask "how much did I sell?", answer "last month", check the
 figure; a delegate's "last month" must not answer the owner's question.
 
 **In review (1 Oct 2026, Build 8, G-65; CODE COMPLETE, staging acceptance
-pending; draft PR):** branch `fix/g65-deterministic-chat-entitlement` off
-`main` at `3612fcf` (Build 6, #260). Router-served commands no longer skip
+pending; ready for review):** branch `fix/g65-deterministic-chat-entitlement`
+on `main` at `f5ef123` (Build 7, #259; first cut off `3612fcf`). Router-served commands no longer skip
 the plan: `packages/core/src/chat-access.ts` classifies every deterministic
 intent, and the handler checks it after routing and before the command
 runs, in the model path's order (lapsed plan, then `REKODA_CHAT`). STOP,
@@ -146,7 +146,8 @@ that."; a lapsed paid plan is told its plan ended, never a free trial, on every
 Chat surface (`usageRepo.lapseOf`); on a plan without Chat, help,
 greetings, START, a stray number, an empty yes and a failed dashboard link
 name only what works. OD-17 (open): whether a live Integrate
-plan may use the three free reads by message; implemented as refused.
+plan may use the three free reads by message, and with them a resumed read;
+implemented as refused.
 OD-18 (open): the lapse exception, where a lapsed plan keeps five fixed reads
 its free-form equivalent is refused and `capabilities.ts` disagrees;
 implemented as kept. G-82 to G-84 record the voice, timing and model-path
@@ -317,7 +318,7 @@ G-71 (web's server-side calls share one per-IP bucket, P1) and G-72
 (production does not refuse `PAYSTACK_BASE_URL`, `MONO_BASE_URL`,
 `REKODA_LOCAL_STORAGE`, P2).
 
-**Next three actions:**
+**Next actions:**
 
 1. Angelo merges the G-75 PR, then provisions the staging host by
    `docs/runbooks/deploy.md` "First deployment" (a machine, Cloudflare DNS
@@ -333,6 +334,12 @@ G-71 (web's server-side calls share one per-IP bucket, P1) and G-72
    G-07 (fix the eval harness, then the owner runs the live eval), G-73
    (owner decision on the photo budget). G-06 is code complete and NOT live-verified until the G-05 drill
    confirms the real Paystack envelopes.
+4. Interstitial order after the two current lanes (#261 G-65, and the
+   duplicate-purchase lane G-81): G-80 (natural Nigerian opt-outs), then
+   G-85 (combining or overlay marks on a short answer), then the normal
+   roadmap (Build 9, command-bus enforcement). G-86 (replies that say "send
+   it again") goes into the smallest appropriate PR; G-87 (a purchase re-read
+   as an expense) is decided by the G-81 PR.
 
 **Known P0 blockers:** G-01 staging host (code complete) · G-02 backups · G-03
 Meta number, app review, templates · G-04 legal facts · G-05 Paystack §47

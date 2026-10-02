@@ -364,6 +364,22 @@ export function strayNumberWithoutChat(): Reply {
   );
 }
 
+/**
+ * `draftExpired` for a plan without Chat (G-65). The ordinary one invites a
+ * resend, which such a plan is refused; this says what is true instead.
+ * `lapse` names the kind of lapse; null is a live plan without Chat.
+ */
+export function draftExpiredWithoutChat(lapse: Lapse | null): Reply {
+  return reply(
+    'That request had expired, so nothing was saved. ' +
+      (lapse
+        ? `${lapsedOpening(lapse)}, so new records are paused.\n\n` +
+          'Reply *upgrade* and we will set you up.'
+        : 'Recording by message is part of the Chat plan, and your plan does not include ' +
+          'it.\n\nReply *upgrade* to add Chat.'),
+  );
+}
+
 /** `nothingToDecline` for a plan without Chat (G-65): no invitation to a sale. */
 export function nothingToDeclineWithoutChat(): Reply {
   return reply(
