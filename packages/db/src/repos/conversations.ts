@@ -1147,6 +1147,34 @@ export async function supersedeRebuild(
 }
 
 /**
+ * Undo a same-member replacement whose preview never reached the merchant
+ * (G-68, Codex review): the new draft is superseded, so no yes confirms a
+ * preview nobody saw, and every rebuild it replaced is pending again, so
+ * the preview the merchant DID see is the one a yes confirms. Conditional
+ * on each draft's state, so it undoes only what this message did.
+ */
+export async function undoReplacement(
+  tx: TenantDb,
+  businessId: string,
+  messageId: string,
+  replacedIds: readonly string[],
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE command_drafts SET state = 'superseded', updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND conversation_message_id = ${messageId}::uuid
+       AND state = 'pending'`);
+  for (const id of replacedIds) {
+    await tx.execute(sql`
+      UPDATE command_drafts SET state = 'pending', updated_at = clock_timestamp()
+       WHERE business_id = ${businessId}::uuid
+         AND id = ${id}::uuid
+         AND state = 'superseded'
+         AND rebuilt_from IS NOT NULL`);
+  }
+}
+
+/**
  * Undo a funding-answer rebuild whose preview never reached the merchant
  * (G-68, Codex review): the new draft is superseded so no yes can confirm a
  * preview nobody saw, and the retired question is restored to `abandoned`

@@ -429,6 +429,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             actorId,
             // Extracted-document text qualifies for dual extraction (item 9).
             read !== null,
+            outcome,
           );
 
     if (answer) {
@@ -453,6 +454,18 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
          * happened (Codex review): its new draft is superseded (never
          * confirmable), the retired question is restored, and the sender's
          * short answer re-opened inside its window, so "cash" again works. */
+        /* A same-member replacement nobody saw is undone too (Codex review):
+         * the new preview is superseded (never confirmable) and the rebuilt
+         * preview the merchant DID see is pending again, so it is still the
+         * one a yes confirms. */
+        if (outcome.replacedRebuilds?.length) {
+          await conversationsRepo.undoReplacement(
+            tx,
+            businessId,
+            message.id,
+            outcome.replacedRebuilds,
+          );
+        }
         if (outcome.rebuiltFrom) {
           await conversationsRepo.undoRebuild(tx, businessId, outcome.rebuiltFrom, message.id);
           const asked = await conversationsRepo.draftStateOf(tx, businessId, outcome.rebuiltFrom);
@@ -497,6 +510,8 @@ type RebuildOutcome = {
   retiredQuestion: boolean;
   rebuiltFrom?: string;
   retiredHolders?: { userId: string; expiresAt: Date }[];
+  /** Pending rebuilds this message's preview replaced (same member, total). */
+  replacedRebuilds?: string[];
 };
 
 /** A recording somebody made with the microphone button, not an attached file. */
@@ -3203,6 +3218,8 @@ async function interpretedReply(
   actorId: string | null,
   /** True when this text was extracted from a photographed document. */
   fromDocument = false,
+  /** What this reply did that a failed send must undo (G-68). */
+  outcome?: RebuildOutcome,
 ): Promise<Reply> {
   /**
    * The MONTHLY meter (docs/metering-v1.md), checked before the model is
@@ -3428,6 +3445,9 @@ async function interpretedReply(
         if (fate.replace) {
           if (await conversationsRepo.supersedeRebuild(tx, businessId, older.id)) {
             shown = replies.earlierPreviewReplaced(shown, fate.totalK);
+            /* Remembered, so a replacement that never reaches the merchant
+             * gives them back the preview they saw. */
+            if (outcome) (outcome.replacedRebuilds ??= []).push(older.id);
           }
         } else {
           shown = replies.earlierPreviewStillWaiting(shown, fate.totalK);

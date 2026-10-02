@@ -11203,6 +11203,26 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
       expect(await written(business.id)).toMatchObject({ purchases: 1 });
     });
 
+    it('a replacement whose send fails gives back the preview the merchant saw (Codex review)', async () => {
+      const business = await seedMerchant();
+      await say('wamid.F2c-f-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await reply('wamid.F2c-f-bank', 'bank');
+      expect(stubSender.lastText).toContain('Paid in full by transfer');
+      stubSender.failWith();
+      await say(
+        'wamid.F2c-f-resend',
+        { ...POS_PURCHASE, paymentMethod: 'cash' },
+        'I bought 10 cartons for 180k, paid cash',
+      );
+      /* Nobody saw the replacement: it is superseded, the Bank preview is
+       * pending again, and a yes books THAT one, once. */
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending', 'superseded']);
+      await reply('wamid.F2c-f-yes-1', 'yes');
+      await reply('wamid.F2c-f-yes-2', 'yes');
+      expect(await written(business.id)).toMatchObject({ purchases: 1 });
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'confirmed', 'superseded']);
+    });
+
     it('a rebuild with no recorded requester is never replaced', async () => {
       const business = await seedMerchant();
       await say('wamid.F2c-n-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');

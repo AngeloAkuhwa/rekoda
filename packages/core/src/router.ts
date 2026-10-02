@@ -1128,10 +1128,15 @@ export function answerIsUncertain(raw: string): boolean {
  * what a START may carry: a START also accepts a country flag, an
  * affirmation does not.
  * Anything else, a laughing face, a flag or a symbol keycap ("#️⃣", "*️⃣")
- * included, makes it `unsure`. A DIGIT keycap never gets this far: "yes
- * 1️⃣" keeps its digit through normalisation, is no affirmation phrase, and
- * goes to the model as an ordinary message. Either way it confirms nothing: the merchant is simply asked for a plain yes, which costs one
- * message and never books a preview they were mocking or refusing.
+ * included, makes it `unsure`. So does any SYMBOL that is not an emoji
+ * (Codex review): "yes ✗", "na so ✘", "yes ☒", "cash ×" are refusals the
+ * normaliser would otherwise strip, and the same closed-list rule covers
+ * them; only a plain check mark "✓" is added to the list for answers. A
+ * DIGIT keycap never gets this far: "yes 1️⃣" keeps its digit through
+ * normalisation, is no affirmation phrase, and goes to the model as an
+ * ordinary message. Either way it confirms nothing: the merchant is simply
+ * asked for a plain yes, which costs one message and never books a preview
+ * they were mocking or refusing.
  */
 function carriesNonAffirmingEmoji(raw: string): boolean {
   segmenter ??= new Intl.Segmenter('en', { granularity: 'grapheme' });
@@ -1139,10 +1144,11 @@ function carriesNonAffirmingEmoji(raw: string): boolean {
     const emoji =
       /\p{Extended_Pictographic}/u.test(segment) ||
       /\p{Regional_Indicator}/u.test(segment) ||
-      /\u20E3/u.test(segment);
+      /\u20E3/u.test(segment) ||
+      /\p{S}/u.test(segment);
     if (!emoji) continue;
     const core = segment.replace(/[\uFE0E\uFE0F\u{1F3FB}-\u{1F3FF}]/gu, '');
-    if (core === '\u203C') continue;
+    if (core === '\u203C' || core === '\u2713') continue;
     if (!AFFIRMING_EMOJI.has(core)) return true;
   }
   return false;
