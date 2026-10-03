@@ -1285,6 +1285,8 @@ export interface HeldPurchase {
   expiresAt: Date;
   /** The records the question named (0158). */
   askedAbout: { draftIds: string[]; expenseIds: string[] };
+  /** When it was last re-asked with a record added, or null (0158). */
+  reaskedAt: Date | null;
 }
 
 type HeldRow = {
@@ -1295,6 +1297,7 @@ type HeldRow = {
   expires_at: Date | string;
   asked_about_drafts: string[] | null;
   asked_about_expenses: string[] | null;
+  reasked_at: Date | string | null;
 };
 
 const heldOf = (row: HeldRow): HeldPurchase => ({
@@ -1307,6 +1310,7 @@ const heldOf = (row: HeldRow): HeldPurchase => ({
     draftIds: row.asked_about_drafts ?? [],
     expenseIds: row.asked_about_expenses ?? [],
   },
+  reaskedAt: row.reasked_at === null ? null : new Date(row.reasked_at),
 });
 
 /** The named records as the two id arrays a held row stores. */
@@ -1335,7 +1339,7 @@ export async function heldPurchaseDraft(
   const rows = await tx.execute<HeldRow>(sql`
     SELECT id, command, requested_by, rebuilt_from, expires_at,
            asked_about_drafts::text[] AS asked_about_drafts,
-           asked_about_expenses::text[] AS asked_about_expenses
+           asked_about_expenses::text[] AS asked_about_expenses, reasked_at
       FROM command_drafts
      WHERE business_id = ${businessId}::uuid
        AND id = ${draftId}::uuid
@@ -1465,7 +1469,7 @@ export async function reaskHeld(
   draftId: string,
   added: readonly { draftId: string | null; expenseId: string | null }[],
 ): Promise<{
-  previous: { draftIds: string[]; expenseIds: string[]; expiresAt: Date };
+  previous: { draftIds: string[]; expenseIds: string[]; expiresAt: Date; reaskedAt: Date | null };
   expiresAt: Date;
 } | null> {
   const arrays = namedArrays(added);
@@ -1473,6 +1477,7 @@ export async function reaskHeld(
     previous_drafts: string[] | null;
     previous_expenses: string[] | null;
     previous_expires_at: Date | string;
+    previous_reasked_at: Date | string | null;
     expires_at: Date | string;
   }>(sql`
     UPDATE command_drafts d
@@ -1480,14 +1485,17 @@ export async function reaskHeld(
            asked_about_expenses =
              coalesce(old.asked_about_expenses, '{}'::uuid[]) || ${arrays.expenses},
            expires_at = clock_timestamp() + make_interval(secs => ${PURCHASE_QUESTION_SECONDS}),
+           reasked_at = clock_timestamp(),
            updated_at = clock_timestamp()
-      FROM (SELECT id, asked_about_drafts, asked_about_expenses, expires_at FROM command_drafts
+      FROM (SELECT id, asked_about_drafts, asked_about_expenses, expires_at, reasked_at
+              FROM command_drafts
              WHERE id = ${draftId}::uuid AND business_id = ${businessId}::uuid
              FOR UPDATE) old
      WHERE d.id = old.id AND d.state = 'held'
     RETURNING old.asked_about_drafts::text[] AS previous_drafts,
               old.asked_about_expenses::text[] AS previous_expenses,
-              old.expires_at AS previous_expires_at, d.expires_at`);
+              old.expires_at AS previous_expires_at,
+              old.reasked_at AS previous_reasked_at, d.expires_at`);
   const row = [...rows][0];
   return row
     ? {
@@ -1495,6 +1503,7 @@ export async function reaskHeld(
           draftIds: row.previous_drafts ?? [],
           expenseIds: row.previous_expenses ?? [],
           expiresAt: new Date(row.previous_expires_at),
+          reaskedAt: row.previous_reasked_at === null ? null : new Date(row.previous_reasked_at),
         },
         expiresAt: new Date(row.expires_at),
       }
@@ -1510,13 +1519,14 @@ export async function restoreHeldAsk(
   tx: TenantDb,
   businessId: string,
   draftId: string,
-  previous: { draftIds: string[]; expenseIds: string[]; expiresAt: Date },
+  previous: { draftIds: string[]; expenseIds: string[]; expiresAt: Date; reaskedAt: Date | null },
 ): Promise<void> {
   await tx.execute(sql`
     UPDATE command_drafts
        SET asked_about_drafts = ${`{${previous.draftIds.join(',')}}`}::uuid[],
            asked_about_expenses = ${`{${previous.expenseIds.join(',')}}`}::uuid[],
            expires_at = ${previous.expiresAt.toISOString()}::timestamptz,
+           reasked_at = ${previous.reaskedAt ? previous.reaskedAt.toISOString() : null}::timestamptz,
            updated_at = clock_timestamp()
      WHERE business_id = ${businessId}::uuid
        AND id = ${draftId}::uuid

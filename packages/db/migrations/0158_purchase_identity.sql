@@ -59,6 +59,12 @@ ALTER TABLE command_drafts
   CHECK ((asked_about_drafts IS NULL AND asked_about_expenses IS NULL)
          OR intent = 'RecordPurchase');
 
+-- When the question was last RE-ASKED with a record added to what it names
+-- (Codex review of 30a5c8f), on the database clock. A "separate" sent
+-- before it answered the question as it then stood, so it never excuses
+-- what the re-ask added: it is asked again. Null until a re-ask.
+ALTER TABLE command_drafts ADD COLUMN reasked_at timestamptz;
+
 -- The identity question as a continuation: it names the held draft and
 -- nothing else, exactly as a funding-source question names its retired one.
 -- The 0155 constraint keeps its name (it now covers both questions about a

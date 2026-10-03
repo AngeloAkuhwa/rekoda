@@ -655,7 +655,7 @@ type RebuildOutcome = {
   /** The held purchase this message asked about again, and what it was (G-81). */
   reaskedHeld?: {
     heldId: string;
-    previous: { draftIds: string[]; expenseIds: string[]; expiresAt: Date };
+    previous: { draftIds: string[]; expenseIds: string[]; expiresAt: Date; reaskedAt: Date | null };
   };
   /** A purchase refused at this yes and held, and the window it had (G-81). */
   refusedHeld?: { draftId: string; previousExpiresAt: Date };
@@ -3392,6 +3392,13 @@ async function answerPurchaseIdentity(
     );
   }
 
+  /* A "separate" sent before the question was re-asked answered it as it
+   * then stood (Codex review of 30a5c8f): what the re-ask added was never
+   * shown to that reply, so it excuses nothing and the question is asked
+   * again. Nothing is written. */
+  if (held.reaskedAt && message.receivedAt.getTime() < held.reaskedAt.getTime()) {
+    return reaskPurchaseIdentity(tx, businessId, heldId, actorId, message);
+  }
   /* The read-only gates (role, plan, Chat) ran in the caller BEFORE the
    * question was claimed, so a refusal leaves it open. */
   const gate = gatePurchase(command as never);

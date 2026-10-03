@@ -14470,4 +14470,36 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       expect(stubSender.lastText).toContain(QUESTION);
     });
   });
+  describe('Codex review of 30a5c8f', () => {
+    it('P1: a "separate" sent before the question was re-asked never excuses what the re-ask named', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'Y1');
+      await say('wamid.Y1-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      /* The owner books another of the same total, declared separate. */
+      await say('wamid.Y1-o', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      await reply('wamid.Y1-o-sep', 'separate');
+      await reply('wamid.Y1-o-yes', 'yes');
+      expect(await purchases(business.id)).toBe(2);
+      /* The delegate's later "separate" is processed first and re-asks,
+       * naming the new booking. */
+      await reply('wamid.Y1-d-sep-late', 'separate', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      /* An earlier "separate", sent before that re-ask, arrives only now. */
+      stubTransport.replyWith(UNCLEAR);
+      await post(messagePayload(DELEGATE, 'wamid.Y1-d-sep-early', 'separate'));
+      await withBusiness(db, business.id, (tx) =>
+        tx.execute(sql`
+          UPDATE external_events SET created_at = (
+            SELECT created_at - interval '10 milliseconds' FROM external_events
+             WHERE business_id = ${business.id}::uuid AND external_id = 'wamid.Y1-d-sep-late')
+           WHERE business_id = ${business.id}::uuid AND external_id = 'wamid.Y1-d-sep-early'`),
+      );
+      await drain();
+      expect(stubSender.lastText).not.toContain(SEPARATE_LEAD);
+      await reply('wamid.Y1-d-yes', 'yes', DELEGATE);
+      expect(await purchases(business.id)).toBe(2);
+    });
+  });
 });
