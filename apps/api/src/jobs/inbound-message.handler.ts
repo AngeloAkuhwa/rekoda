@@ -1274,7 +1274,7 @@ async function deterministicReply(
       });
     }
     if (latest?.state === 'held') {
-      const asked = await askedAboutHeld(tx, businessId, latest.id, ctx.from);
+      const asked = await askedAboutHeld(tx, businessId, latest.id, ctx.from, ctx.receivedAt);
       if (asked && intent.kind === 'deny') {
         return reaskPurchaseIdentity(tx, businessId, latest.id, asked, ctx, { afterNo: true });
       }
@@ -1989,7 +1989,7 @@ async function confirmPendingDraft(
    * older is ever claimed behind it. Anybody else's yes is about what THEY
    * were shown, so the held purchase (never confirmable) is not in its way. */
   if (latest?.state === 'held') {
-    const asked = await askedAboutHeld(tx, businessId, latest.id, sender.from);
+    const asked = await askedAboutHeld(tx, businessId, latest.id, sender.from, sender.receivedAt);
     if (asked) {
       if (retrying) {
         await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
@@ -3174,10 +3174,17 @@ async function askedAboutHeld(
   businessId: string,
   heldId: string,
   from: string,
+  /** When the reply reached Rekoda: a question opened after it was never
+   * asked of it (Codex review). */
+  receivedAt: Date,
 ): Promise<string | null> {
   const actorId = await actorOf(tx, businessId, from);
   if (!actorId) return null;
-  return (await continuationsRepo.wasAskedAbout(tx, businessId, actorId, heldId)) ? actorId : null;
+  return (await continuationsRepo.wasAskedAbout(tx, businessId, actorId, heldId, {
+    now: receivedAt,
+  }))
+    ? actorId
+    : null;
 }
 
 /**
@@ -3531,7 +3538,7 @@ async function unsureReply(
   /* G-81: doubt about the identity question asks it again, from the member
    * who was asked; nobody else is held up by it. */
   if (latest?.state === 'held') {
-    const asked = await askedAboutHeld(tx, businessId, latest.id, sender.from);
+    const asked = await askedAboutHeld(tx, businessId, latest.id, sender.from, sender.receivedAt);
     if (asked) return reaskPurchaseIdentity(tx, businessId, latest.id, asked, sender);
     latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
       asOf: receivedAt,

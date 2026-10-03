@@ -20,6 +20,7 @@ import {
   identity,
   purchaseIdentityRepo,
   spendRepo,
+  stockRepo,
   withBusiness,
   type Db,
 } from './index.js';
@@ -457,5 +458,60 @@ describe('Codex review of ff9443e', () => {
       conversationsRepo.askedHeldNewerThan(tx, businessId, ownerId, null, { now: before }),
     );
     expect(asked).toBeNull();
+  });
+});
+
+describe('Codex review of cfc4720', () => {
+  it('P2: a reply sent before the question was opened was never asked it', async () => {
+    const { businessId, ownerId } = await seedBusiness();
+    const before = new Date(Date.now() - 60_000);
+    const held = await draft(businessId, MILO, { held: true, requestedBy: ownerId });
+    await withBusiness(app, businessId, (tx) =>
+      continuationsRepo.openContinuation(tx, {
+        businessId,
+        userId: ownerId,
+        sourceMessageId: held.messageId,
+        state: { kind: 'clarification', expects: 'purchase_identity', draftId: held.id },
+      }),
+    );
+    await withBusiness(app, businessId, async (tx) => {
+      expect(
+        await continuationsRepo.wasAskedAbout(tx, businessId, ownerId, held.id, { now: before }),
+      ).toBe(false);
+      expect(await continuationsRepo.wasAskedAbout(tx, businessId, ownerId, held.id)).toBe(true);
+    });
+  });
+
+  it('P1: a booking with more than one product line offers no conclusive product', async () => {
+    const { businessId } = await seedBusiness();
+    await withBusiness(app, businessId, async (tx) => {
+      const milo = await stockRepo.findOrCreateProduct(tx, businessId, 'Milo');
+      const peak = await stockRepo.findOrCreateProduct(tx, businessId, 'Peak milk');
+      await spendRepo.recordPurchase(tx, {
+        businessId,
+        description: 'PO-1',
+        amountK: 10_000_000,
+        paidK: 0,
+        method: null,
+        sourceType: 'purchase_order',
+        sourceId: 'po-1',
+        supplierId: null,
+      });
+      for (const product of [milo, peak]) {
+        await stockRepo.recordDelivery(tx, {
+          businessId,
+          product,
+          quantity: 5,
+          costK: 5_000_000,
+          sourceType: 'purchase_order',
+          sourceId: 'po-1',
+        });
+      }
+    });
+    const { records } = await withBusiness(app, businessId, (tx) =>
+      purchaseIdentityRepo.purchaseRecords(tx, businessId, 10_000_000),
+    );
+    expect(records).toHaveLength(1);
+    expect(records[0]!.product).toBeNull();
   });
 });

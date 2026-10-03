@@ -83,7 +83,7 @@ type DraftRow = {
 function draftsQuery(businessId: string, where: ReturnType<typeof sql>) {
   return sql`
     SELECT d.id, d.command, d.requested_by,
-           m.created_at AS at,
+           ${arrivalOf(sql`m`)} AS at,
            sep.asked_about_drafts::text[] AS named_drafts,
            sep.asked_about_expenses::text[] AS named_expenses,
            p.id AS product_id, p.external_catalogue_id IS NOT NULL AS product_trusted
@@ -158,8 +158,8 @@ export async function newPurchaseFacts(
     named_expenses: string[] | null;
   }>(sql`
     SELECT
-      (SELECT created_at FROM conversation_messages
-        WHERE id = ${input.messageId}::uuid AND business_id = ${businessId}::uuid) AS at,
+      (SELECT ${arrivalOf(sql`cm`)} FROM conversation_messages cm
+        WHERE cm.id = ${input.messageId}::uuid AND cm.business_id = ${businessId}::uuid) AS at,
       p.id AS product_id, p.external_catalogue_id IS NOT NULL AS product_trusted,
       h.asked_about_drafts::text[] AS named_drafts,
       h.asked_about_expenses::text[] AS named_expenses
@@ -273,7 +273,7 @@ export async function purchaseRecords(
     bill_number: string | null;
   }>(sql`
     SELECT e.id, d.id AS draft_id, e.created_at AS booked_at,
-           coalesce(m.created_at, e.created_at) AS at,
+           CASE WHEN m.id IS NULL THEN e.created_at ELSE ${arrivalOf(sql`m`)} END AS at,
            d.requested_by, d.command,
            sep.asked_about_drafts::text[] AS named_drafts,
            sep.asked_about_expenses::text[] AS named_expenses,
@@ -289,13 +289,17 @@ export async function purchaseRecords(
         ON m.id = d.conversation_message_id AND m.business_id = e.business_id
       LEFT JOIN command_drafts sep
         ON sep.id = d.separate_from AND sep.business_id = e.business_id
+      /* A booking's product is conclusive only when it moved exactly ONE
+       * product (Codex review): a multi-line received order is never
+       * represented by one of its lines, so it can never prove a purchase of
+       * another of them separate. */
       LEFT JOIN LATERAL (
-        SELECT im.product_id FROM inventory_movements im
+        SELECT CASE WHEN count(DISTINCT im.product_id) = 1
+                    THEN (array_agg(im.product_id))[1] END AS product_id
+          FROM inventory_movements im
          WHERE im.business_id = e.business_id
            AND im.source_type = e.source_type
-           AND im.source_id = e.source_id
-         ORDER BY im.created_at
-         LIMIT 1) mv ON true
+           AND im.source_id = e.source_id) mv ON true
       LEFT JOIN products p ON p.id = mv.product_id AND p.business_id = e.business_id
       LEFT JOIN bills b ON b.expense_id = e.id AND b.business_id = e.business_id
      WHERE e.business_id = ${businessId}::uuid

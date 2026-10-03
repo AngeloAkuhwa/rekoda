@@ -13808,6 +13808,9 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
         await tx.execute(sql`
           UPDATE command_drafts SET created_at = clock_timestamp() - interval '25 hours'
            WHERE business_id = ${business.id}::uuid`);
+        await tx.execute(sql`
+          UPDATE external_events SET created_at = clock_timestamp() - interval '25 hours'
+           WHERE business_id = ${business.id}::uuid`);
       });
       await reply('wamid.D4-yes-2', 'yes');
       expect(stubSender.lastText).toContain(RACE);
@@ -14115,6 +14118,66 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       expect(stubSender.lastText).toBe(replies.chatNotInPlan().text);
       expect(await purchaseStates(business.id)).toEqual(['confirmed', 'held']);
       expect(await purchases(business.id)).toBe(1);
+    });
+  });
+
+  describe('Codex review of cfc4720', () => {
+    it('P2: a purchase whose job ran late is aged from its webhook arrival, not from when it ran', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'C5a');
+      /* The owner's purchase reached Rekoda 25 hours ago, but its job (and the
+       * booking) ran only 23 hours ago, after a backlog. */
+      await withBusiness(db, business.id, async (tx) => {
+        await tx.execute(sql`
+          UPDATE external_events SET created_at = clock_timestamp() - interval '25 hours'
+           WHERE business_id = ${business.id}::uuid`);
+        for (const table of ['conversation_messages', 'expenses']) {
+          await tx.execute(sql`
+            UPDATE ${sql.raw(table)} SET created_at = clock_timestamp() - interval '23 hours'
+             WHERE business_id = ${business.id}::uuid`);
+        }
+      });
+      await say('wamid.C5a-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      expect(stubSender.lastText).not.toContain(QUESTION);
+      expect(stubSender.lastText).toContain('Paid in full by cash');
+    });
+
+    it('P1: a two-line received order and a chat purchase of its second product are asked about', async () => {
+      const business = await seedMerchant();
+      await knownProduct(business.id, 'Milo');
+      await knownProduct(business.id, 'Peak milk');
+      /* A received purchase order of ₦100,000 with two catalogue-linked lines. */
+      await withBusiness(db, business.id, async (tx) => {
+        const milo = await stockRepo.findOrCreateProduct(tx, business.id, 'Milo');
+        const peak = await stockRepo.findOrCreateProduct(tx, business.id, 'Peak milk');
+        await spendRepo.recordPurchase(tx, {
+          businessId: business.id,
+          description: 'PO-0001',
+          amountK: 10_000_000,
+          paidK: 0,
+          method: null,
+          sourceType: 'purchase_order',
+          sourceId: 'po-0001',
+          supplierId: null,
+        });
+        for (const product of [milo, peak]) {
+          await stockRepo.recordDelivery(tx, {
+            businessId: business.id,
+            product,
+            quantity: 5,
+            costK: 5_000_000,
+            sourceType: 'purchase_order',
+            sourceId: 'po-0001',
+          });
+        }
+      });
+      await say(
+        'wamid.C5b-peak',
+        { ...MILO, description: '10 cartons of Peak milk', productMention: 'Peak milk' },
+        'I bought 10 cartons of Peak milk for 100k cash',
+      );
+      expect(stubSender.lastText).toContain(QUESTION);
     });
   });
 });

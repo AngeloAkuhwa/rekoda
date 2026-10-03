@@ -352,3 +352,12 @@ describe('Codex review of ff9443e', () => {
     expect(purchaseMatches(facts(), [lateBooking], NOW)).toHaveLength(0);
   });
 });
+
+describe('Codex review of cfc4720', () => {
+  it.each(['0803-123-4567', '0803 123 4567', '+234 803 123 4567', '012-345-6789', '0123 456 789'])(
+    'P2: %j (a formatted phone or account number) is not a reference',
+    (raw) => {
+      expect(normalisePurchaseReference(raw)).toBeNull();
+    },
+  );
+});

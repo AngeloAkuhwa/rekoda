@@ -333,6 +333,9 @@ export async function wasAskedAbout(
   businessId: string,
   userId: string,
   draftId: string,
+  /** The reply's instant: a question opened after it was never asked of it
+   * (Codex review). */
+  options: { now?: Date } = {},
 ): Promise<boolean> {
   const rows = await tx.execute<{ asked: boolean }>(sql`
     SELECT EXISTS (
@@ -340,6 +343,7 @@ export async function wasAskedAbout(
        WHERE business_id = ${businessId}::uuid
          AND user_id = ${userId}::uuid
          AND expects = 'purchase_identity'
-         AND draft_id = ${draftId}::uuid) AS asked`);
+         AND draft_id = ${draftId}::uuid
+         AND created_at <= ${clock(options.now)}) AS asked`);
   return [...rows][0]?.asked === true;
 }

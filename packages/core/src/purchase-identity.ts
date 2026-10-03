@@ -138,7 +138,10 @@ export function normalisePurchaseReference(raw: unknown): string | null {
   /* A date. */
   if (/^\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}$/u.test(text)) return null;
   const digitRuns = text.match(/\d+/gu) ?? [];
-  if (digitRuns.length === 0 || digitRuns.some((run) => run.length >= 10)) return null;
+  /* Ten digits or more in all, however they are grouped, is a phone or an
+   * account number ("0803-123-4567", a NUBAN with spaces), never a
+   * document reference (Codex review). */
+  if (digitRuns.length === 0 || digitRuns.join('').length >= 10) return null;
   for (const token of text.split(/[\s#:,]+/u).filter(Boolean)) {
     if (/^[\p{L}.]+$/u.test(token)) {
       /* A word on its own must introduce the number, never name someone. */
