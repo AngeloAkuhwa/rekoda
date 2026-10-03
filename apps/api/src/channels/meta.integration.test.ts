@@ -14232,4 +14232,47 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       expect(stubSender.lastText).toContain('Nothing was saved from your yes.');
     });
   });
+
+  describe('Codex review of 71fad6b', () => {
+    it('P2: "separate" still answers a held question after an unrelated question opened since', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'C7a');
+      await say('wamid.C7a-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      /* A spending question with no period opens "Which period?". */
+      await say(
+        'wamid.C7a-q',
+        {
+          intent: 'Query',
+          topic: 'expenses_summary',
+          customer: null,
+          period: null,
+          periodText: null,
+          format: 'chat',
+        },
+        'how much did I spend?',
+        DELEGATE,
+      );
+      expect(stubSender.lastText).toContain('which period');
+      await reply('wamid.C7a-sep', 'separate', DELEGATE);
+      expect(stubSender.lastText).toContain(SEPARATE_LEAD);
+    });
+
+    it('P2: the supplier reference a merchant confirmed reaches the bill', async () => {
+      const business = await seedMerchant();
+      await say(
+        'wamid.C7b',
+        { ...MILO, reportedPayment: 0, paymentMethod: null, supplierReference: 'EMK-0041' },
+        'Milo 100k on credit, their invoice EMK-0041',
+      );
+      expect(stubSender.lastText).toContain('Reference: EMK-0041');
+      await reply('wamid.C7b-yes', 'yes');
+      const rows = await withBusiness(db, business.id, (tx) =>
+        tx.execute<{ ref: string | null }>(sql`
+          SELECT supplier_reference AS ref FROM bills WHERE business_id = ${business.id}::uuid`),
+      );
+      expect([...rows].map((r) => r.ref)).toEqual(['EMK-0041']);
+    });
+  });
 });

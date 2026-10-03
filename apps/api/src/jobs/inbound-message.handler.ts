@@ -39,6 +39,7 @@ import {
   purchaseIdentityVerdict,
   purchaseMatches,
   purchaseTotalK,
+  normalisePurchaseReference,
   ownerOf,
   sameRecord,
   PURCHASE_IDENTITY_WINDOW_SECONDS,
@@ -2686,6 +2687,13 @@ async function confirmPurchase(
     sourceType: 'chat',
     sourceId: draftId,
     supplierId,
+    /* The supplier's own document number the merchant confirmed, onto the
+     * bill a credit purchase raises (Codex review). */
+    supplierReference:
+      typeof command['supplierReference'] === 'string' &&
+      normalisePurchaseReference(command['supplierReference'])
+        ? command['supplierReference']
+        : null,
     arrivals: arriving
       ? [{ product: arriving.productMention, quantity: arriving.quantity, costK: gate.amountK }]
       : [],
@@ -3803,8 +3811,30 @@ async function continueConversation(
    *  - it was answered "separate" and that fresh preview still waits: said;
    *  - otherwise, only shortly after the question closed, that it closed.
    * Days later a bare "same" is an ordinary message. No model call. */
-  const identityAnswer =
-    !open && message.route.route === 'model' ? purchaseIdentityAnswer(message.text) : null;
+  /* "same" or "separate" while another, newer continuation is open (say
+   * "Which period?" after a spending question): it answers the sender's
+   * own held identity question, still inside its window and asked BEFORE
+   * this reply, never the newer question (Codex review). */
+  const spokenAnswer =
+    message.route.route === 'model' ? purchaseIdentityAnswer(message.text) : null;
+  if (
+    spokenAnswer &&
+    !(open?.state.kind === 'clarification' && open.state.expects === 'purchase_identity')
+  ) {
+    const heldId = await conversationsRepo.askedHeldNewerThan(tx, businessId, actorId, null, now);
+    if (heldId) {
+      if (answerIsUncertain(message.text)) {
+        return reaskPurchaseIdentity(tx, businessId, heldId, actorId, message);
+      }
+      if (spokenAnswer === 'separate') {
+        const refused = await fundingGateRefusal(tx, businessId, message.from);
+        if (refused) return refused;
+      }
+      await continuationsRepo.retireContinuations(tx, businessId, actorId, now);
+      return answerPurchaseIdentity(tx, businessId, actorId, heldId, spokenAnswer, message);
+    }
+  }
+  const identityAnswer = !open ? spokenAnswer : null;
   if (identityAnswer) {
     const newest = await continuationsRepo.newestContinuation(tx, businessId, actorId, now);
     if (newest?.kind === 'clarification' && newest.expects === 'purchase_identity') {

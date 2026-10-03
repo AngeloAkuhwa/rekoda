@@ -74,6 +74,9 @@ export interface RecordPurchaseCmdInput {
   sourceId: string;
   /** The vaulted supplier reference (migration 0050), never a name. */
   supplierId?: string | null;
+  /** The supplier's own document number, for the bill a credit purchase
+   * raises (G-81). Document-shaped only; never a name. */
+  supplierReference?: string | null;
   /**
    * The goods that arrived with the money, when the merchant counted them.
    * Empty is honest and common: inferring a quantity from an amount would
@@ -166,6 +169,7 @@ export async function recordPurchaseWork(
     sourceType: input.sourceType,
     sourceId: input.sourceId,
     supplierId: input.supplierId ?? null,
+    supplierReference: input.supplierReference ?? null,
   });
 
   const arrived: { name: string; onHand: number }[] = [];

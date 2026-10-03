@@ -65,10 +65,12 @@ export function sanitizeCommandForPersistence(command: unknown): unknown {
  */
 function normaliseReference(record: CommandRecord): CommandRecord {
   if (record['intent'] !== 'RecordPurchase' || !('supplierReference' in record)) return record;
-  const digits = normalisePurchaseReference(record['supplierReference']);
-  /* Stored as its digits behind a '#', the marker that makes it read back as
-   * the same reference; never the words or letters it arrived with. */
-  const normalised = digits === null ? null : `#${digits}`;
+  /* Kept as written when it is certainly a document number (so the bill
+   * shows what the supplier wrote), dropped otherwise: a name, an amount, a
+   * date or a phone number is never stored here. */
+  const raw = record['supplierReference'];
+  const normalised =
+    typeof raw === 'string' && normalisePurchaseReference(raw) !== null ? raw.trim() : null;
   if (normalised === record['supplierReference']) return record;
   return { ...record, supplierReference: normalised };
 }
