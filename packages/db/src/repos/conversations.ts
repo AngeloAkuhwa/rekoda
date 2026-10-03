@@ -1328,6 +1328,9 @@ export async function heldPurchaseDraft(
   tx: TenantDb,
   businessId: string,
   draftId: string,
+  /** The reply's instant (Codex review of 7f173b6): an answer sent inside
+   * the window but processed after it (a backlog, a retry) still finds it. */
+  options: { now?: Date } = {},
 ): Promise<HeldPurchase | null> {
   const rows = await tx.execute<HeldRow>(sql`
     SELECT id, command, requested_by, rebuilt_from, expires_at,
@@ -1340,7 +1343,7 @@ export async function heldPurchaseDraft(
        AND intent = 'RecordPurchase'
        /* A question past its window is no longer anything to answer (fresh
         * review of #262): later replies behave as if nothing were waiting. */
-       AND expires_at > clock_timestamp()`);
+       AND expires_at > ${draftClock(options.now)}`);
   const row = [...rows][0];
   return row ? heldOf(row) : null;
 }
@@ -1376,13 +1379,15 @@ export async function releaseHeld(
   tx: TenantDb,
   businessId: string,
   draftId: string,
+  /** The reply's instant, as for `heldPurchaseDraft`. */
+  options: { now?: Date } = {},
 ): Promise<boolean> {
   const rows = await tx.execute<{ id: string }>(sql`
     UPDATE command_drafts SET state = 'superseded', updated_at = clock_timestamp()
      WHERE business_id = ${businessId}::uuid
        AND id = ${draftId}::uuid
        AND state = 'held'
-       AND expires_at > clock_timestamp()
+       AND expires_at > ${draftClock(options.now)}
     RETURNING id`);
   return [...rows].length === 1;
 }

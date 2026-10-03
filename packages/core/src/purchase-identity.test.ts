@@ -442,3 +442,23 @@ describe('fresh review of 75fd1c9: references by document kind, never letters', 
     expect(normalisePurchaseReference(raw, total)).toBeNull();
   });
 });
+
+describe('Codex review of 7f173b6: the stored form meets every check', () => {
+  it.each([
+    ['INV:100000', 100_000],
+    ['INV:10000000', 100_000],
+    ['RCPT:20261002', null],
+    ['PO:0803123456', null],
+    ['INV:08031234567', null],
+    ['INV:0001', null],
+    ['OTHER:7', null],
+  ])('P2: %j in the stored form is not a reference (total %j)', (raw, total) => {
+    expect(storedPurchaseReference(raw, total)).toBeNull();
+    expect(normalisePurchaseReference(raw, total)).toBeNull();
+  });
+
+  it('a genuine stored reference still reads back unchanged', () => {
+    expect(storedPurchaseReference('INV:2231', 100_000)).toBe('INV:2231');
+    expect(storedPurchaseReference('OTHER:0041', 100_000)).toBe('OTHER:0041');
+  });
+});

@@ -131,3 +131,22 @@ describe("Codex review of #262: a supplier's name with a digit is not a referenc
     expect(stored['supplierReference']).toBeNull();
   });
 });
+
+describe('Codex review of 7f173b6', () => {
+  it('drops a model reference written in the stored form that is the total or a date', () => {
+    for (const supplierReference of ['INV:100000', 'INV:20261002']) {
+      const stored = sanitizeCommandForPersistence({
+        intent: 'RecordPurchase',
+        supplierMention: null,
+        description: 'Milo',
+        amount: 100_000,
+        reportedPayment: 100_000,
+        paymentMethod: 'cash',
+        productMention: 'Milo',
+        quantity: 10,
+        supplierReference,
+      }) as Record<string, unknown>;
+      expect(stored['supplierReference']).toBeNull();
+    }
+  });
+});

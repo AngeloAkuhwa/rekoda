@@ -23,6 +23,7 @@
 import { sql } from 'drizzle-orm';
 import {
   normalisePurchaseReference,
+  purchaseArrival,
   purchaseTotalK,
   type ProductIdentity,
   type PurchaseFacts,
@@ -113,7 +114,11 @@ function factsOf(row: DraftRow, amountK: number): PurchaseFacts {
   return {
     amountK,
     at: new Date(row.at),
-    product: productOf(row.product_id, row.product_trusted),
+    /* Only a product that arrives with a usable quantity is one (Codex
+     * review of 7f173b6): a mention with none delivers nothing. */
+    product: purchaseArrival(command as never)
+      ? productOf(row.product_id, row.product_trusted)
+      : null,
     reference: normalisePurchaseReference(command['supplierReference']),
     separateFrom: namedRefs(row.named_drafts, row.named_expenses),
     self: { draftId: row.id, expenseId: null },

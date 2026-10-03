@@ -1290,7 +1290,9 @@ async function deterministicReply(
       });
     }
     if (asking) {
-      closedHeld = await conversationsRepo.releaseHeld(tx, businessId, asking.heldId);
+      closedHeld = await conversationsRepo.releaseHeld(tx, businessId, asking.heldId, {
+        now: ctx.receivedAt,
+      });
       await continuationsRepo.retireContinuationsForDraft(tx, businessId, asking.heldId);
       latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
         asOf: ctx.receivedAt,
@@ -1302,7 +1304,9 @@ async function deterministicReply(
         return reaskPurchaseIdentity(tx, businessId, latest.id, asked, ctx, { afterNo: true });
       }
       if (asked) {
-        closedHeld = await conversationsRepo.releaseHeld(tx, businessId, latest.id);
+        closedHeld = await conversationsRepo.releaseHeld(tx, businessId, latest.id, {
+          now: ctx.receivedAt,
+        });
         await continuationsRepo.retireContinuationsForDraft(tx, businessId, latest.id);
       }
       latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
@@ -3125,8 +3129,10 @@ async function purchaseIdentityCheck(
   let facts = await purchaseIdentityRepo.newPurchaseFacts(tx, businessId, {
     messageId: input.messageId,
     amountK,
-    productMention:
-      typeof input.stored['productMention'] === 'string' ? input.stored['productMention'] : null,
+    /* Only the product that will actually arrive (Codex review of 7f173b6):
+     * with no usable quantity nothing is delivered, so there is no product
+     * to prove anything by. */
+    productMention: purchaseArrival(input.stored as never)?.productMention ?? null,
     reference: input.stored['supplierReference'],
     separateFrom: input.separateFrom ?? null,
   });
@@ -3272,7 +3278,9 @@ async function reaskPurchaseIdentity(
    * such a plan is told nothing was saved, as `reaskRetiredQuestion` is. */
   const refused = await draftRefusalWithoutChat(tx, businessId);
   if (refused) return refused;
-  const held = await conversationsRepo.heldPurchaseDraft(tx, businessId, heldId);
+  const held = await conversationsRepo.heldPurchaseDraft(tx, businessId, heldId, {
+    now: sender.receivedAt,
+  });
   if (!held || held.expiresAt.getTime() <= sender.receivedAt.getTime()) {
     return identityClosedReply(tx, businessId);
   }
@@ -3334,7 +3342,9 @@ async function answerPurchaseIdentity(
   answer: 'same' | 'separate',
   message: { messageId: string; from: string; receivedAt: Date; outcome?: RebuildOutcome },
 ): Promise<Reply> {
-  const held = await conversationsRepo.heldPurchaseDraft(tx, businessId, heldId);
+  const held = await conversationsRepo.heldPurchaseDraft(tx, businessId, heldId, {
+    now: message.receivedAt,
+  });
   if (!held || held.expiresAt.getTime() <= message.receivedAt.getTime()) {
     return identityClosedReply(tx, businessId);
   }
@@ -3342,7 +3352,9 @@ async function answerPurchaseIdentity(
   const amountK = purchaseTotalK(command);
 
   if (answer === 'same') {
-    if (!(await conversationsRepo.releaseHeld(tx, businessId, heldId))) {
+    if (
+      !(await conversationsRepo.releaseHeld(tx, businessId, heldId, { now: message.receivedAt }))
+    ) {
       return identityClosedReply(tx, businessId);
     }
     /* The held purchase was the newest thing in the way of older retired
@@ -3419,7 +3431,7 @@ async function answerPurchaseIdentity(
       { named: verdict.asked.length, newSince: true },
     );
   }
-  if (!(await conversationsRepo.releaseHeld(tx, businessId, heldId))) {
+  if (!(await conversationsRepo.releaseHeld(tx, businessId, heldId, { now: message.receivedAt }))) {
     return identityClosedReply(tx, businessId);
   }
   const draft = await conversationsRepo.recordDraft(tx, {
@@ -4070,7 +4082,9 @@ async function continueConversation(
       open.state.expects === 'purchase_identity' &&
       message.route.route === 'model'
     ) {
-      const held = await conversationsRepo.heldPurchaseDraft(tx, businessId, open.state.draftId);
+      const held = await conversationsRepo.heldPurchaseDraft(tx, businessId, open.state.draftId, {
+        now: message.receivedAt,
+      });
       if (held) {
         /* "cash" again after a funding answer whose purchase is now asked
          * about: the funding question was answered, and the identity

@@ -134,7 +134,7 @@ const KIND_LABEL: Readonly<Record<ReferenceKind, string>> = {
 };
 
 /** A reference as stored: its kind and its digits, nothing else. */
-const STORED = /^(INV|RCPT|WAYBILL|PO|OTHER):(\d{1,9})$/u;
+const STORED = /^(INV|RCPT|WAYBILL|PO|OTHER):(\d+)$/u;
 
 const kindOfWord = (token: string): ReferenceKind | undefined =>
   REFERENCE_WORDS.get(token.replace(/\.$/u, '').toUpperCase());
@@ -165,8 +165,14 @@ export function purchaseReference(
   totalNaira?: number | null,
 ): { readonly kind: ReferenceKind; readonly digits: string } | null {
   if (typeof raw !== 'string') return null;
+  /* The stored form skips only the re-parsing: the persistence boundary
+   * runs this on model output, which can be written in it ("INV:100000",
+   * "INV:20261002"), so every check on the number runs on it too (Codex
+   * review of 7f173b6). */
   const stored = STORED.exec(raw);
-  if (stored) return { kind: stored[1] as ReferenceKind, digits: stored[2]! };
+  if (stored) {
+    return checkedNumber(stored[1] as ReferenceKind, stored[2]!, stored[2]!, totalNaira);
+  }
   const text = raw.normalize('NFKC').trim();
   if (!text || text.length > 40) return null;
   /* A time, anywhere ("INV 10:30"). */
@@ -212,12 +218,28 @@ export function purchaseReference(
   }
   if (kind === null) return null;
 
-  /* Whatever marks it, the number itself is never an amount or a date. */
   const numberPart = tokens
     .filter((token) => !kindOfWord(token))
     .map((token) => token.replace(/^\p{L}+[-/.]?/u, ''))
     .join(' ')
     .trim();
+  return checkedNumber(kind, numberPart, digitRuns.join(''), totalNaira);
+}
+
+/**
+ * The checks every reference's number meets, parsed or stored: never a
+ * phone or account number, an amount, a date or the purchase's own total,
+ * and at least two significant digits.
+ */
+function checkedNumber(
+  kind: ReferenceKind,
+  numberPart: string,
+  digits: string,
+  totalNaira: number | null | undefined,
+): { readonly kind: ReferenceKind; readonly digits: string } | null {
+  /* Ten digits or more in all is a phone or account number. */
+  if (digits.length === 0 || digits.length >= 10) return null;
+  /* Whatever marks it, the number itself is never an amount or a date. */
   if (
     /^\d{1,3}(?:,\d{3})+(?:\.\d+)?$/u.test(numberPart) ||
     /^\d+\.\d{1,2}$/u.test(numberPart) ||
@@ -227,7 +249,6 @@ export function purchaseReference(
   ) {
     return null;
   }
-  const digits = digitRuns.join('');
   /* The purchase's own total copied into the reference. */
   if (totalNaira != null && Number.isFinite(totalNaira)) {
     const asWritten = digits.replace(/^0+/u, '');

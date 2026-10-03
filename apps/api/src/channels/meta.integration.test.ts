@@ -14389,4 +14389,85 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       expect(await purchases(business.id)).toBe(1);
     });
   });
+
+  describe('Codex review of 7f173b6', () => {
+    /** The delegate's question was asked 15 minutes ago and closed 5 minutes
+     * ago; their answer reached Rekoda 8 minutes ago, inside the window, and
+     * its job runs only now (a backlog or a retry). */
+    async function answerSentInsideProcessedAfter(businessId: string, wamid: string, text: string) {
+      stubTransport.replyWith(UNCLEAR);
+      await post(messagePayload(DELEGATE, wamid, text));
+      await withBusiness(db, businessId, async (tx) => {
+        await tx.execute(sql`
+          UPDATE external_events SET created_at = clock_timestamp() - interval '30 minutes'
+           WHERE business_id = ${businessId}::uuid AND external_id <> ${wamid}`);
+        await tx.execute(sql`
+          UPDATE external_events SET created_at = clock_timestamp() - interval '8 minutes'
+           WHERE business_id = ${businessId}::uuid AND external_id = ${wamid}`);
+        await tx.execute(sql`
+          UPDATE command_drafts
+             SET created_at = clock_timestamp() - interval '15 minutes',
+                 expires_at = clock_timestamp() - interval '5 minutes'
+           WHERE business_id = ${businessId}::uuid AND state = 'held'`);
+        await tx.execute(sql`
+          UPDATE conversation_continuations
+             SET created_at = clock_timestamp() - interval '15 minutes',
+                 expires_at = clock_timestamp() - interval '5 minutes'
+           WHERE business_id = ${businessId}::uuid AND expects = 'purchase_identity'`);
+      });
+      await drain();
+    }
+
+    it('P2: "same" sent inside the window but processed after it is answered, not closed', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'X1');
+      await say('wamid.X1-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      await answerSentInsideProcessedAfter(business.id, 'wamid.X1-same', 'same');
+      expect(stubSender.lastText).toContain(SAME_DONE);
+      expect(await purchaseStates(business.id)).toEqual(['confirmed', 'superseded']);
+      expect(await purchases(business.id)).toBe(1);
+    });
+
+    it('P2: "separate" sent inside the window but processed after it shows the fresh preview', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'X2');
+      await say('wamid.X2-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      await answerSentInsideProcessedAfter(business.id, 'wamid.X2-sep', 'separate');
+      expect(stubSender.lastText).toContain(SEPARATE_LEAD);
+    });
+
+    it('P2: a known product with no usable quantity proves nothing against a booked one', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await knownProduct(business.id, 'Milo');
+      await knownProduct(business.id, 'Peak milk');
+      await bookMilo(business.id, 'X3');
+      await say(
+        'wamid.X3-d',
+        { ...MILO, productMention: 'Peak milk', quantity: null },
+        'I bought Peak milk for 100k cash',
+        DELEGATE,
+      );
+      expect(stubSender.lastText).toContain(QUESTION);
+      expect(await purchases(business.id)).toBe(1);
+    });
+
+    it('P2: a waiting preview whose product has no quantity proves nothing either', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await knownProduct(business.id, 'Milo');
+      await knownProduct(business.id, 'Peak milk');
+      await say(
+        'wamid.X4-o',
+        { ...MILO, productMention: 'Peak milk', quantity: null },
+        'I bought Peak milk for 100k cash',
+      );
+      await say('wamid.X4-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+    });
+  });
 });
