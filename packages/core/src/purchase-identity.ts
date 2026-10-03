@@ -98,63 +98,124 @@ export interface PurchaseRecord extends PurchaseFacts {
   readonly billNumber: string | null;
 }
 
-/** Words that introduce a document number, in any case. */
-const REFERENCE_WORDS: ReadonlySet<string> = new Set([
-  'INV',
-  'INVOICE',
-  'RCPT',
-  'RCP',
-  'RECEIPT',
-  'REF',
-  'REFERENCE',
-  'NO',
-  'NUMBER',
-  'BILL',
-  'DOC',
-  'DOCUMENT',
-  'ORDER',
-  'PO',
+/**
+ * The kind of supplier document a reference names, from a CLOSED set. Only
+ * the kind and the digits are ever stored (ADR 0005): never the letters a
+ * merchant or a photo wrote, which can be a name ("TOLU-77").
+ */
+export type ReferenceKind = 'INV' | 'RCPT' | 'WAYBILL' | 'PO' | 'OTHER';
+
+/** Words that introduce a document number, in any case, and their kind. */
+const REFERENCE_WORDS: ReadonlyMap<string, ReferenceKind> = new Map([
+  ['INV', 'INV'],
+  ['INVOICE', 'INV'],
+  ['RCPT', 'RCPT'],
+  ['RCP', 'RCPT'],
+  ['RECEIPT', 'RCPT'],
+  ['WAYBILL', 'WAYBILL'],
+  ['WB', 'WAYBILL'],
+  ['PO', 'PO'],
+  ['ORDER', 'PO'],
+  ['REF', 'OTHER'],
+  ['REFERENCE', 'OTHER'],
+  ['NO', 'OTHER'],
+  ['NUMBER', 'OTHER'],
+  ['BILL', 'OTHER'],
+  ['DOC', 'OTHER'],
+  ['DOCUMENT', 'OTHER'],
 ]);
 
+const KIND_LABEL: Readonly<Record<ReferenceKind, string>> = {
+  INV: 'Invoice',
+  RCPT: 'Receipt',
+  WAYBILL: 'Waybill',
+  PO: 'Purchase order',
+  OTHER: 'Reference',
+};
+
+/** A reference as stored: its kind and its digits, nothing else. */
+const STORED = /^(INV|RCPT|WAYBILL|PO|OTHER):(\d{1,9})$/u;
+
+const kindOfWord = (token: string): ReferenceKind | undefined =>
+  REFERENCE_WORDS.get(token.replace(/\.$/u, '').toUpperCase());
+
 /**
- * An explicit supplier document reference, as its SIGNIFICANT DIGITS, or
- * null when what was given is not certainly one (fresh review of #262). One
- * number written two ways is one reference: "2231", "INV-2231" and "#2231"
- * are "2231"; "EMK-0041" and "EMK-00-41" are "41". If in doubt the side has NO reference,
- * which never proves anything. Never a reference: an amount ("100k",
- * "N100000"), a date ("12/09/2026"), a name with digits ("Ada 07"), a
- * phone or account number (ten digits or more), or fewer than two
- * significant digits. Only digits are ever returned, so a name is never
- * stored.
+ * An explicit supplier document reference, as its KIND and its digits, or
+ * null when what was given is not certainly one (fresh reviews of #262). If
+ * in doubt the side has NO reference, which never proves anything.
+ *
+ *  - It needs an explicit document marker: a reference word ("invoice",
+ *    "receipt", "waybill", "PO", "ref", "No."), a "#", or upper-case
+ *    letters written into the number ("EMK-0041"). Bare digits are in doubt.
+ *  - The kind comes from the word ("invoice 2231" is an invoice); a "#", a
+ *    generic word or a letter prefix is kind OTHER, which never proves two
+ *    purchases separate, because its letters are never stored and so two
+ *    prefixes cannot be told apart.
+ *  - Never a reference: an amount ("100k", "NGN150K", "125,000.00"), the
+ *    purchase's own total, a date or a time (whole, partial or compact,
+ *    "INV-2026-10-02", "INV 10:30"), a phone or account number (ten digits
+ *    or more in all), a name with digits written as a separate word ("Ada
+ *    07"), or fewer than two significant digits.
+ *
+ * `totalNaira` is the purchase's total when known: a "reference" equal to it
+ * is the amount copied into the wrong field.
  */
-export function normalisePurchaseReference(raw: unknown): string | null {
+export function purchaseReference(
+  raw: unknown,
+  totalNaira?: number | null,
+): { readonly kind: ReferenceKind; readonly digits: string } | null {
   if (typeof raw !== 'string') return null;
+  const stored = STORED.exec(raw);
+  if (stored) return { kind: stored[1] as ReferenceKind, digits: stored[2]! };
   const text = raw.normalize('NFKC').trim();
   if (!text || text.length > 40) return null;
+  /* A time, anywhere ("INV 10:30"). */
+  if (/\d{1,2}:\d{2}/u.test(text)) return null;
   /* An amount: a currency mark, or a k / m / naira suffix. */
-  if (/^(?:₦|NGN|N)\s*[\d,.]+$/iu.test(text) || /^[\d,.]+\s*(?:k|m|naira)$/iu.test(text)) {
+  if (
+    /(?:₦|\bNGN|\bN)\s*[\d,.]+[KkMm]?\b/u.test(text) ||
+    /\d[\d,.]*\s*(?:k|m|naira)\b/iu.test(text)
+  ) {
     return null;
   }
-  /* A date, whole or partial, separated or compact (Codex review). */
+  /* A date, whole or partial, separated or compact. */
   if (/^\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}$/u.test(text)) return null;
-  /* An explicit document marker is required (Codex review): a reference
-   * word ("INV", "receipt", "No."), a "#", or upper-case letters written
-   * into the number ("EMK-0041"). Bare digits ("2231", "125,000.00",
-   * "20261002") are in doubt, and a side in doubt has no reference. */
-  const marked =
-    text.includes('#') ||
-    text
-      .split(/[\s#:,]+/u)
-      .some(
-        (token) =>
-          REFERENCE_WORDS.has(token.replace(/\.$/u, '').toUpperCase()) ||
-          /^\p{Lu}+[\d/.-]*\d/u.test(token),
-      );
-  if (!marked) return null;
-  /* Whatever marks it, the number itself is never an amount or a date. */
-  const numberPart = text
+  const digitRuns = text.match(/\d+/gu) ?? [];
+  if (digitRuns.length === 0 || digitRuns.join('').length >= 10) return null;
+
+  /* Commas stay inside a token, so "125,000" is seen whole (an amount). */
+  const tokens = text
     .split(/[\s#:]+/u)
-    .filter((token) => !REFERENCE_WORDS.has(token.replace(/\.$/u, '').toUpperCase()))
+    .map((token) => token.replace(/,$/u, ''))
+    .filter(Boolean);
+  let kind: ReferenceKind | null = text.includes('#') ? 'OTHER' : null;
+  for (const token of tokens) {
+    if (/^[\p{L}.]+$/u.test(token)) {
+      /* A word on its own must introduce the number, never name someone. */
+      const named = kindOfWord(token);
+      if (!named) return null;
+      if (kind === null || kind === 'OTHER') kind = named;
+      continue;
+    }
+    if (!/^[\p{L}\d/.-]+$/u.test(token)) return null;
+    /* Letters inside a number are a written prefix ("EMK-0041", "INV-2231"):
+     * upper case and short, or a reference word. "Ada12" is a name. */
+    for (const letters of token.match(/\p{L}+/gu) ?? []) {
+      const named = kindOfWord(letters);
+      if (named) {
+        if (kind === null || kind === 'OTHER') kind = named;
+        continue;
+      }
+      if (letters !== letters.toUpperCase() || letters.length > 4) return null;
+      kind ??= 'OTHER';
+    }
+  }
+  if (kind === null) return null;
+
+  /* Whatever marks it, the number itself is never an amount or a date. */
+  const numberPart = tokens
+    .filter((token) => !kindOfWord(token))
+    .map((token) => token.replace(/^\p{L}+[-/.]?/u, ''))
     .join(' ')
     .trim();
   if (
@@ -166,32 +227,49 @@ export function normalisePurchaseReference(raw: unknown): string | null {
   ) {
     return null;
   }
-  const digitRuns = text.match(/\d+/gu) ?? [];
-  /* Ten digits or more in all, however they are grouped, is a phone or an
-   * account number ("0803-123-4567", a NUBAN with spaces), never a
-   * document reference (Codex review). */
-  if (digitRuns.length === 0 || digitRuns.join('').length >= 10) return null;
-  for (const token of text.split(/[\s#:,]+/u).filter(Boolean)) {
-    if (/^[\p{L}.]+$/u.test(token)) {
-      /* A word on its own must introduce the number, never name someone. */
-      if (!REFERENCE_WORDS.has(token.replace(/\.$/u, '').toUpperCase())) return null;
-      continue;
-    }
-    if (!/^[\p{L}\d/.-]+$/u.test(token)) return null;
-    /* Letters inside a number are a written prefix ("EMK-0041"): upper
-     * case and short, or a reference word. "Ada12" is a name. */
-    for (const letters of token.match(/\p{L}+/gu) ?? []) {
-      const known = REFERENCE_WORDS.has(letters.toUpperCase());
-      if (!known && (letters !== letters.toUpperCase() || letters.length > 4)) return null;
+  const digits = digitRuns.join('');
+  /* The purchase's own total copied into the reference. */
+  if (totalNaira != null && Number.isFinite(totalNaira)) {
+    const asWritten = digits.replace(/^0+/u, '');
+    if (
+      asWritten === String(Math.round(totalNaira)) ||
+      asWritten === String(Math.round(totalNaira * 100))
+    ) {
+      return null;
     }
   }
-  /* Its digits WITHOUT ZEROS (Codex review): padding and separators carry
-   * no identity, and "EMK-0041", "EMK 41" and "EMK-00-41" must be one
-   * reference. Dropping every zero can only make two different numbers
-   * look alike (a question asked), never one number look like two (a
-   * duplicate booked), which is the direction OD-23 D3 asks for. */
-  const significant = digitRuns.join('').replace(/0/gu, '');
-  return significant.length >= 2 ? significant : null;
+  /* At least two significant digits (zeros carry no identity). */
+  if (digits.replace(/0/gu, '').length < 2) return null;
+  return { kind, digits };
+}
+
+/**
+ * What two references are compared by: the kind and the digits WITHOUT
+ * ZEROS (padding and separators carry no identity: "EMK-0041" is
+ * "EMK-00-41"), or null when it is not certainly a reference.
+ */
+export function normalisePurchaseReference(
+  raw: unknown,
+  totalNaira?: number | null,
+): string | null {
+  const ref = purchaseReference(raw, totalNaira);
+  return ref ? `${ref.kind}:${ref.digits.replace(/0/gu, '')}` : null;
+}
+
+/**
+ * What is STORED for a reference: its kind and its digits as written
+ * ("INV:2231", "OTHER:0041"), never its letters. Null when it is not
+ * certainly a reference.
+ */
+export function storedPurchaseReference(raw: unknown, totalNaira?: number | null): string | null {
+  const ref = purchaseReference(raw, totalNaira);
+  return ref ? `${ref.kind}:${ref.digits}` : null;
+}
+
+/** How a stored reference is shown (a preview, a bill): "Invoice 2231". */
+export function describePurchaseReference(value: unknown): string | null {
+  const ref = purchaseReference(value);
+  return ref ? `${KIND_LABEL[ref.kind]} ${ref.digits}` : null;
 }
 
 /** A stored RecordPurchase command's total in kobo, or null. */
@@ -207,7 +285,20 @@ export function purchaseTotalK(command: unknown): number | null {
  * different stated reference, or two different TRUSTED products.
  */
 export function provenSeparate(a: PurchaseFacts, b: PurchaseFacts): boolean {
-  if (a.reference && b.reference && a.reference !== b.reference) return true;
+  /* References prove it only when both name the SAME KIND of document
+   * (invoice with invoice, receipt with receipt) with different numbers: an
+   * invoice and the receipt for one purchase carry different numbers. A
+   * reference of kind OTHER never proves it (fresh review of #262). */
+  const kindOf = (r: string) => r.slice(0, r.indexOf(':'));
+  if (
+    a.reference &&
+    b.reference &&
+    kindOf(a.reference) === kindOf(b.reference) &&
+    kindOf(a.reference) !== 'OTHER' &&
+    a.reference !== b.reference
+  ) {
+    return true;
+  }
   if (a.product?.trusted && b.product?.trusted && a.product.id !== b.product.id) return true;
   return false;
 }

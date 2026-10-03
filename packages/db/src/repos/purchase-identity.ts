@@ -4,11 +4,16 @@
  * it re-reads what is booked.
  *
  * Nothing here stores or logs a fingerprint. Every fact is a column that
- * already exists: the stored command's total and reference (digits only),
- * the product row a name resolves to or a booking moved and whether it is
- * catalogue-linked (`external_catalogue_id`, the only trusted product
- * identity, owner ruling D3), the message's arrival, and the records a held
- * question named. No supplier, product or customer text is read into a
+ * already exists: the stored command's total and reference (a document
+ * kind from a closed set and its digits, never letters), the product row a
+ * name resolves to or a booking moved and whether it is catalogue-linked
+ * (`external_catalogue_id`, the only trusted product identity, owner ruling
+ * D3), the message's arrival, and the records a held question named.
+ *
+ * Product proof is DORMANT: nothing writes `external_catalogue_id` today,
+ * so no product is trusted and no purchase is proven separate by product.
+ * A name only ever resolves to a row here; before any catalogue writer
+ * ships, product proof must never rest on that raw name match (G-81). No supplier, product or customer text is read into a
  * comparison or returned; a product name is folded and matched inside SQL,
  * as `productByName` does.
  *
@@ -30,11 +35,11 @@ import { LOCK_CLASS, type TenantDb } from '../client.js';
  * Serialise this business's chat purchases of ONE total, to the end of the
  * transaction (G-81). Taken by the purchase work at the yes, inside the
  * business's inbound lock on the chat path; nothing takes the two in the
- * other order. The preview-time read does not take it: the inbound lock and
- * message order already serialise it. A received purchase order does not
- * take it either (its own document, out of G-81's scope), so the guarantee
- * is one-directional: a chat purchase is refused against a received order,
- * never the reverse.
+ * other order. It is a BACKSTOP: chat yeses are already serialised by the
+ * business's inbound lock. The preview-time read does not take it: the
+ * inbound lock and message order already serialise it. A dashboard purchase
+ * order receive does not take it and is not compared (G-89, open): a chat
+ * purchase is refused against a received order, never yet the reverse.
  */
 export async function lockPurchaseTotal(
   tx: TenantDb,
@@ -177,7 +182,7 @@ export async function newPurchaseFacts(
     amountK: input.amountK,
     at: row?.at ? new Date(row.at) : new Date(),
     product: productOf(row?.product_id ?? null, row?.product_trusted ?? null),
-    reference: normalisePurchaseReference(input.reference),
+    reference: normalisePurchaseReference(input.reference, input.amountK / 100),
     separateFrom: namedRefs(row?.named_drafts ?? null, row?.named_expenses ?? null),
     self: { draftId: null, expenseId: null },
   };

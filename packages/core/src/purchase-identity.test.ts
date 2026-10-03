@@ -16,6 +16,7 @@ import {
   purchaseMatches,
   purchaseTotalK,
   sameRecord,
+  storedPurchaseReference,
   type PurchaseFacts,
   type PurchaseRecord,
 } from './purchase-identity.js';
@@ -82,10 +83,10 @@ describe('what proves two purchases of one total separate (D3, refined)', () => 
 
 describe('a stated supplier reference', () => {
   it.each([
-    ['EMK-0041', '41'],
-    ['#2231', '2231'],
-    ['INV/2026/114', '226114'],
-    ['inv 2231', '2231'],
+    ['EMK-0041', 'OTHER:41'],
+    ['#2231', 'OTHER:2231'],
+    ['INV/2026/114', 'INV:226114'],
+    ['inv 2231', 'INV:2231'],
   ])('%j normalises to %j', (raw, expected) => {
     expect(normalisePurchaseReference(raw)).toBe(expected);
   });
@@ -311,11 +312,11 @@ describe('fresh review of #262: one document number in two formats is one refere
     },
   );
 
-  it('different numbers still prove separate', () => {
+  it('different numbers of the same kind still prove separate', () => {
     expect(
       provenSeparate(
-        facts({ reference: normalisePurchaseReference('EMK-0041') }),
-        record({ reference: normalisePurchaseReference('EMK-0042') }),
+        facts({ reference: normalisePurchaseReference('INV-0041') }),
+        record({ reference: normalisePurchaseReference('INV-0042') }),
       ),
     ).toBe(true);
   });
@@ -377,8 +378,8 @@ describe('Codex review of 3fcc173', () => {
 
   it('P2: plain digits with no document marker are in doubt, so no reference', () => {
     expect(normalisePurchaseReference('2231')).toBeNull();
-    expect(normalisePurchaseReference('#2231')).toBe('2231');
-    expect(normalisePurchaseReference('INV-2231')).toBe('2231');
+    expect(normalisePurchaseReference('#2231')).toBe('OTHER:2231');
+    expect(normalisePurchaseReference('INV-2231')).toBe('INV:2231');
   });
 
   it('P2: two own waiting previews of one total are asked about, never both replaced', () => {
@@ -387,5 +388,57 @@ describe('Codex review of 3fcc173', () => {
     const verdict = purchaseIdentityVerdict([a, b], 'owner');
     expect(verdict.replace).toEqual([]);
     expect(verdict.asked).toEqual([a, b]);
+  });
+});
+
+describe('fresh review of 75fd1c9: references by document kind, never letters', () => {
+  const ref = (raw: string, total?: number) => normalisePurchaseReference(raw, total);
+
+  it('I1: an invoice number and a receipt number never prove one purchase two', () => {
+    expect(
+      provenSeparate(
+        facts({ reference: ref('invoice 2231') }),
+        record({ reference: ref('receipt RCPT-0041') }),
+      ),
+    ).toBe(false);
+  });
+
+  it('I1: two invoices with different numbers do prove it', () => {
+    expect(
+      provenSeparate(
+        facts({ reference: ref('invoice 2231') }),
+        record({ reference: ref('INV-2232') }),
+      ),
+    ).toBe(true);
+  });
+
+  it('I1: a reference of unknown kind ("#", a letter prefix) never proves it', () => {
+    expect(
+      provenSeparate(facts({ reference: ref('#2231') }), record({ reference: ref('#2232') })),
+    ).toBe(false);
+    expect(
+      provenSeparate(facts({ reference: ref('EMK-0041') }), record({ reference: ref('EMK-0042') })),
+    ).toBe(false);
+  });
+
+  it.each(['TOLU-77', 'JOHN99', '#ADA-12', 'IBK22', 'EMK-0041'])(
+    'I2: %j is stored with no letters',
+    (raw) => {
+      const stored = storedPurchaseReference(raw);
+      expect(stored).not.toBeNull();
+      expect(stored!).toMatch(/^(INV|RCPT|WAYBILL|PO|OTHER):\d+$/);
+      expect(stored!.slice(stored!.indexOf(':'))).not.toMatch(/[A-Za-z]/);
+      expect(stored!.startsWith('OTHER:')).toBe(true);
+    },
+  );
+
+  it.each([
+    ['receipt 120000', 120_000],
+    ['NGN150K', null],
+    ['INV-2026-10-02', null],
+    ['INV-20261002', null],
+    ['INV 10:30', null],
+  ])('minor: %j is not a reference (an amount, the total, a date or a time)', (raw, total) => {
+    expect(normalisePurchaseReference(raw, total)).toBeNull();
   });
 });

@@ -13276,12 +13276,12 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       await addDelegate(businessId);
       await say(
         'wamid.F6-o',
-        { ...MILO, supplierReference: 'EMK-0101' },
+        { ...MILO, supplierReference: 'invoice 0101' },
         'Milo 100k, receipt EMK-0101',
       );
       await say(
         'wamid.F6-d',
-        { ...MILO, supplierReference: 'EMK-0202' },
+        { ...MILO, supplierReference: 'invoice 0202' },
         'Milo 100k, receipt EMK-0202',
         DELEGATE,
       );
@@ -13351,7 +13351,11 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
     });
   });
 
-  describe('8. a different KNOWN product is a different purchase', () => {
+  describe('8. a different KNOWN product is a different purchase (dormant: no catalogue writer yet)', () => {
+    /* DORMANT in production (fresh review of 75fd1c9): nothing writes
+     * `external_catalogue_id` today, so this proof is set up by hand here and
+     * no live purchase is proven separate by product. Before any catalogue
+     * writer ships, product proof must never rest on a raw name match. */
     it('same supplier and amount, another known product: no question, both book', async () => {
       const business = await seedMerchant();
       await addDelegate(business.id);
@@ -13404,13 +13408,13 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       await addDelegate(business.id);
       await say(
         'wamid.F9-a',
-        { ...MILO, supplierReference: 'EMK-0041' },
+        { ...MILO, supplierReference: 'receipt 0041' },
         'Milo 100k receipt EMK-0041',
       );
       await reply('wamid.F9-a-yes', 'yes');
       await say(
         'wamid.F9-b',
-        { ...MILO, supplierReference: 'EMK-0042' },
+        { ...MILO, supplierReference: 'receipt 0042' },
         'Milo 100k receipt EMK-0042',
         DELEGATE,
       );
@@ -13424,13 +13428,13 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       await addDelegate(business.id);
       await say(
         'wamid.F9c-a',
-        { ...MILO, supplierReference: 'EMK-0041' },
+        { ...MILO, supplierReference: 'receipt 0041' },
         'Milo 100k receipt EMK-0041',
       );
       await reply('wamid.F9c-a-yes', 'yes');
       await say(
         'wamid.F9c-b',
-        { ...MILO, supplierReference: 'emk 0041' },
+        { ...MILO, supplierReference: 'RCPT-41' },
         'Milo 100k receipt emk 0041',
         DELEGATE,
       );
@@ -13499,7 +13503,9 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       expect(stubTransport.requests).toHaveLength(0);
       expect(await footprint(business.id)).toEqual(before);
       await reply('wamid.E11-d-yes', 'yes', DELEGATE);
-      expect(stubSender.lastText).toContain(CLOSED);
+      /* Past its window the question asks nothing (fresh review of #262): the
+       * yes is answered as one with nothing waiting, and saves nothing. */
+      expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
       expect(await purchases(business.id)).toBe(1);
       expect(await purchaseStates(business.id)).toEqual(['confirmed', 'held']);
     });
@@ -13633,10 +13639,14 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
      * them. The owner's is older; a yes confirms the delegate's first. */
     async function twoPending(businessId: string, tag: string) {
       await addDelegate(businessId);
-      await say(`wamid.${tag}-o`, { ...MILO, supplierReference: 'EMK-0101' }, 'Milo 100k EMK-0101');
+      await say(
+        `wamid.${tag}-o`,
+        { ...MILO, supplierReference: 'invoice 0101' },
+        'Milo 100k EMK-0101',
+      );
       await say(
         `wamid.${tag}-d`,
-        { ...MILO, supplierReference: 'EMK-0202' },
+        { ...MILO, supplierReference: 'invoice 0202' },
         'Milo 100k EMK-0202',
         DELEGATE,
       );
@@ -13788,8 +13798,8 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
     it('P1: a yes retried more than 24 hours after a matching booking is still refused', async () => {
       const business = await seedMerchant();
       await addDelegate(business.id);
-      await say('wamid.D4-o', REF('EMK-0101'), 'Milo 100k EMK-0101');
-      await say('wamid.D4-d', REF('EMK-0202'), 'Milo 100k EMK-0202', DELEGATE);
+      await say('wamid.D4-o', REF('invoice 0101'), 'Milo 100k EMK-0101');
+      await say('wamid.D4-d', REF('invoice 0202'), 'Milo 100k EMK-0202', DELEGATE);
       await withBusiness(db, business.id, (tx) =>
         tx.execute(sql`
           UPDATE command_drafts SET command = command - 'supplierReference'
@@ -13820,9 +13830,9 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
     it('P1: a purchase recorded after a "separate" answer is never excused by its message time', async () => {
       const business = await seedMerchant();
       await addDelegate(business.id);
-      await say('wamid.D5-o', REF('EMK-0707'), 'Milo 100k EMK-0707');
+      await say('wamid.D5-o', REF('invoice 0707'), 'Milo 100k EMK-0707');
       await reply('wamid.D5-o-yes', 'yes');
-      await say('wamid.D5-d', REF('EMK-0707'), 'Milo 100k EMK-0707', DELEGATE);
+      await say('wamid.D5-d', REF('invoice 0707'), 'Milo 100k EMK-0707', DELEGATE);
       expect(stubSender.lastText).toContain(QUESTION);
       await reply('wamid.D5-d-sep', 'separate', DELEGATE);
       await reply('wamid.D5-d-yes', 'yes', DELEGATE);
@@ -13838,7 +13848,7 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       );
       /* A purchase whose message reached Rekoda BEFORE the question, but
        * whose draft is recorded only now. */
-      await say('wamid.D5-late', REF('EMK-0808'), 'Milo 100k EMK-0808');
+      await say('wamid.D5-late', REF('invoice 0808'), 'Milo 100k EMK-0808');
       expect(stubSender.lastText).toContain('Paid in full by cash');
       await withBusiness(db, business.id, (tx) =>
         tx.execute(sql`
@@ -13965,10 +13975,10 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
     it('I5: a refused yes whose question never reached the merchant puts the preview back, and the next yes is asked', async () => {
       const business = await seedMerchant();
       await addDelegate(business.id);
-      await say('wamid.I5-o', { ...MILO, supplierReference: 'EMK-0011' }, 'Milo 100k EMK-0011');
+      await say('wamid.I5-o', { ...MILO, supplierReference: 'invoice 0011' }, 'Milo 100k EMK-0011');
       await say(
         'wamid.I5-d',
-        { ...MILO, supplierReference: 'EMK-0022' },
+        { ...MILO, supplierReference: 'invoice 0022' },
         'Milo 100k EMK-0022',
         DELEGATE,
       );
@@ -14272,7 +14282,111 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
         tx.execute<{ ref: string | null }>(sql`
           SELECT supplier_reference AS ref FROM bills WHERE business_id = ${business.id}::uuid`),
       );
-      expect([...rows].map((r) => r.ref)).toEqual(['EMK-0041']);
+      expect([...rows].map((r) => r.ref)).toEqual(['Reference 0041']);
+    });
+  });
+
+  describe('fresh review of 75fd1c9', () => {
+    it('I1: an invoice number and a receipt number for one purchase are asked about, never booked twice', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await say(
+        'wamid.V1-o',
+        { ...MILO, supplierReference: 'invoice 2231' },
+        'Milo 100k, invoice 2231',
+      );
+      await reply('wamid.V1-o-yes', 'yes');
+      await say(
+        'wamid.V1-d',
+        { ...MILO, supplierReference: 'receipt RCPT-0041' },
+        'Milo 100k, receipt RCPT-0041',
+        DELEGATE,
+      );
+      expect(stubSender.lastText).toContain(QUESTION);
+      expect(await purchases(business.id)).toBe(1);
+    });
+
+    it('I2: a reference that is a name with digits stores no letters, on the draft or the bill', async () => {
+      const business = await seedMerchant();
+      await say(
+        'wamid.V2',
+        { ...MILO, reportedPayment: 0, paymentMethod: null, supplierReference: 'TOLU-77' },
+        'Milo 100k on credit, TOLU-77',
+      );
+      await reply('wamid.V2-yes', 'yes');
+      const [row] = [
+        ...(await withBusiness(db, business.id, (tx) =>
+          tx.execute<{ draft: string | null; bill: string | null }>(sql`
+            SELECT (SELECT command->>'supplierReference' FROM command_drafts
+                     WHERE business_id = ${business.id}::uuid AND intent = 'RecordPurchase') AS draft,
+                   (SELECT supplier_reference FROM bills WHERE business_id = ${business.id}::uuid) AS bill`),
+        )),
+      ];
+      expect(row!.draft ?? '').not.toMatch(/TOLU/i);
+      expect(row!.bill ?? '').not.toMatch(/TOLU/i);
+    });
+
+    it('minor: after the question expired, "no" and "cancel" behave as with nothing waiting', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'V3');
+      await say('wamid.V3-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      await withBusiness(db, business.id, async (tx) => {
+        await tx.execute(sql`
+          UPDATE command_drafts SET expires_at = clock_timestamp() - interval '3 hours'
+           WHERE business_id = ${business.id}::uuid AND state = 'held'`);
+        await tx.execute(sql`
+          UPDATE conversation_continuations SET expires_at = clock_timestamp() - interval '3 hours'
+           WHERE business_id = ${business.id}::uuid`);
+      });
+      await reply('wamid.V3-no', 'no', DELEGATE);
+      expect(stubSender.lastText).toBe(replies.nothingToDecline().text);
+      await reply('wamid.V3-cancel', 'cancel', DELEGATE);
+      expect(stubSender.lastText).toBe(replies.nothingToCancel().text);
+      expect(await purchaseStates(business.id)).toEqual(['confirmed', 'held']);
+    });
+
+    it('minor: a re-asked question nobody saw keeps a continuation that ends with the restored window', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'V4');
+      await say('wamid.V4-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      await say('wamid.V4-o', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      await reply('wamid.V4-o-sep', 'separate');
+      await reply('wamid.V4-o-yes', 'yes');
+      stubSender.failWith();
+      await reply('wamid.V4-d-sep-1', 'separate', DELEGATE);
+      const rows = [
+        ...(await withBusiness(db, business.id, (tx) =>
+          tx.execute<{ held: string; open: string }>(sql`
+            SELECT h.expires_at::text AS held, c.expires_at::text AS open
+              FROM command_drafts h
+              JOIN conversation_continuations c
+                ON c.business_id = h.business_id AND c.draft_id = h.id AND c.state = 'open'
+             WHERE h.business_id = ${business.id}::uuid AND h.state = 'held'`),
+        )),
+      ];
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.open).toBe(rows[0]!.held);
+    });
+
+    it('minor: a second "cash" while the rebuilt purchase is held points at the identity question', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'V5');
+      await say(
+        'wamid.V5-pos',
+        { ...MILO, paymentMethod: 'pos' },
+        'I bought 10 cartons of Milo for 100k by POS',
+        DELEGATE,
+      );
+      await reply('wamid.V5-cash', 'cash', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      await reply('wamid.V5-cash-2', 'cash', DELEGATE);
+      expect(stubSender.lastText).toContain(REASK);
+      expect(stubSender.lastText).not.toBe(replies.fundingQuestionClosed().text);
+      expect(await purchases(business.id)).toBe(1);
     });
   });
 });

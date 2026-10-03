@@ -19,9 +19,9 @@ import {
   type PurchaseFacts,
   type PurchaseRecord,
 } from '@rekoda/core';
+import { outboxRepo, purchaseIdentityRepo, spendRepo, stockRepo, type TenantDb } from '@rekoda/db';
 
 const windowStart = (at: Date) => new Date(at.getTime() - PURCHASE_IDENTITY_WINDOW_SECONDS * 1000);
-import { outboxRepo, purchaseIdentityRepo, spendRepo, stockRepo, type TenantDb } from '@rekoda/db';
 
 export type RecordExpenseCmdInput = Parameters<typeof spendRepo.recordExpense>[1];
 

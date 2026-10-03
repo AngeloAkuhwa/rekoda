@@ -1385,6 +1385,12 @@ const PURCHASE_IDENTITY_ANSWERS: ReadonlyArray<
       'yes the same',
       'yes na the same',
       'yes it is the same',
+      'it is the same one',
+      /* "na him", "na am", "na that one": "it is that one". Reviewed: none is a
+       * router command, and none reads as a refusal. */
+      'na him',
+      'na am',
+      'na that one',
     ],
     'same',
   ],
@@ -1432,8 +1438,8 @@ const PURCHASE_IDENTITY_ANSWERS: ReadonlyArray<
       'no be d same',
       'e no be d same',
       'no separate',
-      'no different',
       'no another one',
+      'na another purchase',
       'no it is different',
       'no it s different',
       'no its different',

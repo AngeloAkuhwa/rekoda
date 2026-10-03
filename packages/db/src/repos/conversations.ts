@@ -1337,7 +1337,10 @@ export async function heldPurchaseDraft(
      WHERE business_id = ${businessId}::uuid
        AND id = ${draftId}::uuid
        AND state = 'held'
-       AND intent = 'RecordPurchase'`);
+       AND intent = 'RecordPurchase'
+       /* A question past its window is no longer anything to answer (fresh
+        * review of #262): later replies behave as if nothing were waiting. */
+       AND expires_at > clock_timestamp()`);
   const row = [...rows][0];
   return row ? heldOf(row) : null;
 }
@@ -1379,6 +1382,7 @@ export async function releaseHeld(
      WHERE business_id = ${businessId}::uuid
        AND id = ${draftId}::uuid
        AND state = 'held'
+       AND expires_at > clock_timestamp()
     RETURNING id`);
   return [...rows].length === 1;
 }

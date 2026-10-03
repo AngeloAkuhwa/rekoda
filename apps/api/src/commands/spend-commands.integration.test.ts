@@ -8,7 +8,15 @@
  * have a cheaper path to the ledger than a sentence does.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createDb, identity, sql, stockRepo, withBusiness, type Db } from '@rekoda/db';
+import {
+  conversationsRepo,
+  createDb,
+  identity,
+  sql,
+  stockRepo,
+  withBusiness,
+  type Db,
+} from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { CommandBus } from './command-bus.service.js';
 import { RiskPolicyService } from '../risk/risk-policy.service.js';
@@ -410,6 +418,63 @@ describe('two chat purchases of one total, at the same moment (G-81)', () => {
     expect(await count(businessId, 'ledger_transactions')).toBe(1);
     expect(await count(businessId, 'inventory_movements')).toBe(1);
     expect(await count(businessId, 'outbox_events', "AND type = 'purchase.recorded'")).toBe(1);
+  });
+
+  /* Two REAL previews (fresh review of 75fd1c9): each yes reads its own
+   * draft, so the net runs on the drafted path (the window from each
+   * draft's own message, compared by booking), not the no-draft fallback. */
+  async function preview(businessId: string, n: number): Promise<string> {
+    return withBusiness(appDb, businessId, async (tx) => {
+      const message = await conversationsRepo.recordInbound(tx, {
+        businessId,
+        channel: 'meta',
+        kind: 'text',
+        body: 'a purchase',
+        providerMessageId: `wamid.g81-race-${businessId}-${n}`,
+      });
+      const draft = await conversationsRepo.recordDraft(tx, {
+        businessId,
+        conversationMessageId: message.id,
+        intent: 'RecordPurchase',
+        command: {
+          intent: 'RecordPurchase',
+          supplierMention: null,
+          description: '10 cartons of Milo',
+          amount: 100_000,
+          reportedPayment: 100_000,
+          paymentMethod: 'cash',
+          productMention: 'Milo',
+          quantity: 10,
+        },
+        model: null,
+        previewed: true,
+      });
+      return draft.id;
+    });
+  }
+
+  it('two yeses for two REAL previews, on two connections, book ONE purchase', async () => {
+    const businessId = await seedBusiness();
+    const drafts = [await preview(businessId, 1), await preview(businessId, 2)];
+    const pools = drafts.map(() => createDb(urls.app, { max: 1 }));
+    let raced: PromiseSettledResult<unknown>[];
+    try {
+      raced = await Promise.allSettled(
+        pools.map(({ db }, i) =>
+          withBusiness(db, businessId, (tx) =>
+            recordPurchaseWork(tx, purchase(businessId, drafts[i]!)),
+          ),
+        ),
+      );
+    } finally {
+      await Promise.all(pools.map(({ close }) => close()));
+    }
+    expect(raced.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const refused = raced.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect(refused?.reason?.name).toBe('PurchaseIdentityCollision');
+    expect(await count(businessId, 'expenses')).toBe(1);
+    expect(await count(businessId, 'ledger_transactions')).toBe(1);
+    expect(await count(businessId, 'inventory_movements')).toBe(1);
   });
 
   it('eight at once still book exactly one', async () => {

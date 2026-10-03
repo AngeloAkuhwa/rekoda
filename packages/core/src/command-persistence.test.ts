@@ -99,7 +99,7 @@ describe("a purchase's supplier reference (G-81)", () => {
 
   it('is stored only in its normalised document-number shape', () => {
     const stored = sanitizeCommandForPersistence(purchase('EMK-0041')) as Record<string, unknown>;
-    expect(stored['supplierReference']).toBe('EMK-0041');
+    expect(stored['supplierReference']).toBe('OTHER:0041');
   });
 
   it('is dropped when it is not a document number, so a name is never stored', () => {

@@ -39,7 +39,7 @@ import {
   purchaseIdentityVerdict,
   purchaseMatches,
   purchaseTotalK,
-  normalisePurchaseReference,
+  describePurchaseReference,
   ownerOf,
   sameRecord,
   PURCHASE_IDENTITY_WINDOW_SECONDS,
@@ -471,7 +471,9 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
           tx,
           businessId,
           message.id,
-          outcome.reaskedHeld ? { keepDraftId: outcome.reaskedHeld.heldId } : {},
+          outcome.reaskedHeld && !outcome.supersededContinuation
+            ? { keepDraftId: outcome.reaskedHeld.heldId }
+            : {},
         );
         /* G-81: a re-asked identity question nobody saw names nothing as
          * declared separate: its instant and window go back to what the
@@ -483,6 +485,19 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             outcome.reaskedHeld.heldId,
             outcome.reaskedHeld.previous,
           );
+          /* The question kept open ends with the window it goes back to. */
+          await continuationsRepo.alignOpenedByExpiry(
+            tx,
+            businessId,
+            message.id,
+            outcome.reaskedHeld.heldId,
+            outcome.reaskedHeld.previous.expiresAt,
+          );
+        }
+        /* An identity answer given while another question was open retired
+         * that question; nobody saw the reply, so it is open again. */
+        if (outcome.supersededContinuation) {
+          await continuationsRepo.reopenSuperseded(tx, businessId, outcome.supersededContinuation);
         }
         /* A funding-answer rebuild nobody saw is undone as if it never
          * happened (Codex review): its new draft is superseded (never
@@ -515,7 +530,11 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         if (outcome.separatedFrom && actorId) {
           const { heldId, expiresAt } = outcome.separatedFrom;
           await conversationsRepo.undoSeparate(tx, businessId, message.id, heldId);
+          /* Re-opened for the sender only when it was the question open for
+           * them; answered past a newer question, that newer one is given
+           * back instead, and "separate" still reaches the held purchase. */
           if (
+            !outcome.supersededContinuation &&
             expiresAt.getTime() > event.receivedAt.getTime() &&
             (await conversationsRepo.heldPurchaseDraft(tx, businessId, heldId))
           ) {
@@ -640,6 +659,9 @@ type RebuildOutcome = {
   };
   /** A purchase refused at this yes and held, and the window it had (G-81). */
   refusedHeld?: { draftId: string; previousExpiresAt: Date };
+  /** The member's open continuation this message's identity answer retired
+   * (G-81): another question, newer than the identity one, they still see. */
+  supersededContinuation?: string;
 };
 
 /** A recording somebody made with the microphone button, not an attached file. */
@@ -2689,11 +2711,8 @@ async function confirmPurchase(
     supplierId,
     /* The supplier's own document number the merchant confirmed, onto the
      * bill a credit purchase raises (Codex review). */
-    supplierReference:
-      typeof command['supplierReference'] === 'string' &&
-      normalisePurchaseReference(command['supplierReference'])
-        ? command['supplierReference']
-        : null,
+    /* Name-free: its kind and number ("Invoice 2231"), never letters. */
+    supplierReference: describePurchaseReference(command['supplierReference']),
     arrivals: arriving
       ? [{ product: arriving.productMention, quantity: arriving.quantity, costK: gate.amountK }]
       : [],
@@ -3823,6 +3842,9 @@ async function continueConversation(
   ) {
     const heldId = await conversationsRepo.askedHeldNewerThan(tx, businessId, actorId, null, now);
     if (heldId) {
+      /* The open question this answer retires, given back if the reply
+       * never reaches the member. */
+      if (open && message.outcome) message.outcome.supersededContinuation = open.id;
       if (answerIsUncertain(message.text)) {
         return reaskPurchaseIdentity(tx, businessId, heldId, actorId, message);
       }
@@ -4046,10 +4068,18 @@ async function continueConversation(
     if (
       open?.state.kind === 'clarification' &&
       open.state.expects === 'purchase_identity' &&
-      message.route.route === 'model' &&
-      (await conversationsRepo.heldPurchaseDraft(tx, businessId, open.state.draftId))
+      message.route.route === 'model'
     ) {
-      return null;
+      const held = await conversationsRepo.heldPurchaseDraft(tx, businessId, open.state.draftId);
+      if (held) {
+        /* "cash" again after a funding answer whose purchase is now asked
+         * about: the funding question was answered, and the identity
+         * question is what is open, so that is what is asked again. */
+        if (held.rebuiltFrom && fundingSourceAnswer(message.text)) {
+          return reaskPurchaseIdentity(tx, businessId, held.id, actorId, message);
+        }
+        return null;
+      }
     }
     const retired = await continuationsRepo.retireContinuations(tx, businessId, actorId, now);
     if (retired > 0 && open?.state.kind === 'clarification' && message.outcome) {

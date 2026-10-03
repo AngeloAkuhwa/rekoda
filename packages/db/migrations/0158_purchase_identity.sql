@@ -14,11 +14,13 @@
 -- preview with its own G-23 window, which only a normal "yes" confirms.
 --
 -- Nothing here stores a fingerprint. The comparison reads columns that
--- already exist (the stored command's amount and its reference, kept as
--- significant digits only; the product row a booked purchase moved, and
--- whether it is catalogue-linked, the only trusted product identity under
--- owner ruling D3) and opaque ids; no supplier, product or customer text
--- is copied anywhere. A supplier row never proves two purchases separate.
+-- already exist (the stored command's amount and its reference, kept as a
+-- document KIND from a closed set and its digits, never letters, "INV:2231";
+-- the product row a booked purchase moved, and whether it is
+-- catalogue-linked, the only trusted product identity under owner ruling
+-- D3, dormant while nothing writes `external_catalogue_id`) and opaque ids;
+-- no supplier, product or customer text is copied anywhere. A supplier row
+-- never proves two purchases separate.
 
 -- A held purchase: asked "same or separate", never confirmable, never moved
 -- by the G-23 sweep (which moves only `pending`). Its `expires_at` is the
@@ -29,9 +31,9 @@ ALTER TABLE command_drafts ADD CONSTRAINT command_drafts_state_check
   CHECK (state IN ('pending', 'superseded', 'confirmed', 'abandoned', 'expired', 'held'));
 
 -- The held purchase a fresh preview was declared separate from (the answer
--- "separate"). Read for one thing: a record that existed when that question
--- was asked is not this purchase, in either direction, at preview time and
--- at the yes. Composite tenant key (the 0141 pattern); never its own source.
+-- "separate"). Read for one thing: a record that question NAMED
+-- (`asked_about_drafts`, `asked_about_expenses` below) is not this
+-- purchase, in either direction, at preview time and at the yes. Composite tenant key (the 0141 pattern); never its own source.
 ALTER TABLE command_drafts ADD COLUMN separate_from uuid;
 
 ALTER TABLE command_drafts

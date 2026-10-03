@@ -22,7 +22,7 @@
  * never stored" stays true in both halves.
  */
 
-import { normalisePurchaseReference } from './purchase-identity.js';
+import { storedPurchaseReference } from './purchase-identity.js';
 
 type CommandRecord = Record<string, unknown>;
 
@@ -58,19 +58,17 @@ export function sanitizeCommandForPersistence(command: unknown): unknown {
 }
 
 /**
- * A purchase's supplier document reference (G-81) is stored ONLY in its
- * normalised document-number shape, which must carry a digit, so a name the
- * model put there by mistake ("Emeka's receipt") is never stored: it is
- * dropped (null), and the purchase is then simply one with no reference.
+ * A purchase's supplier document reference (G-81) is stored ONLY as its
+ * document KIND from a closed set and its digits ("INV:2231", "OTHER:0041"),
+ * never the letters it was written with, which can be a name ("TOLU-77";
+ * ADR 0005). Anything that is not certainly a reference (a name, an amount,
+ * the purchase's own total, a date, a phone number) is dropped (null), and
+ * the purchase is then simply one with no reference.
  */
 function normaliseReference(record: CommandRecord): CommandRecord {
   if (record['intent'] !== 'RecordPurchase' || !('supplierReference' in record)) return record;
-  /* Kept as written when it is certainly a document number (so the bill
-   * shows what the supplier wrote), dropped otherwise: a name, an amount, a
-   * date or a phone number is never stored here. */
-  const raw = record['supplierReference'];
-  const normalised =
-    typeof raw === 'string' && normalisePurchaseReference(raw) !== null ? raw.trim() : null;
+  const total = typeof record['amount'] === 'number' ? record['amount'] : null;
+  const normalised = storedPurchaseReference(record['supplierReference'], total);
   if (normalised === record['supplierReference']) return record;
   return { ...record, supplierReference: normalised };
 }

@@ -1332,3 +1332,19 @@ describe('fresh review of #262: typed and natural identity answers', () => {
     expect(routeMessage(text).route).toBe('model');
   });
 });
+
+describe('fresh review of 75fd1c9: identity answers', () => {
+  it('"no different" is not "separate" (in Nigerian English it often means the same)', () => {
+    expect(purchaseIdentityAnswer('no different')).toBeNull();
+  });
+  it.each([
+    ['it is the same one', 'same'],
+    ['na him', 'same'],
+    ['na am', 'same'],
+    ['na that one', 'same'],
+    ['na another purchase', 'separate'],
+  ])('%j is %s', (text, answer) => {
+    expect(purchaseIdentityAnswer(text)).toBe(answer);
+    expect(routeMessage(text).route).toBe('model');
+  });
+});

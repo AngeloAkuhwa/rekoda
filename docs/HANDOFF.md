@@ -12,7 +12,7 @@
 | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Current date**            | 2 October 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | **Current `main` SHA**      | `29dc934` (2 Oct 2026, "fix: enforce Chat entitlement on deterministic commands (G-65) (#261)", Build 8); before it `f5ef123` (#259, Build 7), `3612fcf` (#260, Build 6), `f5fb1ce` (#258, G-23), `2abb8a1` (#256, G-49), `6df1b91` (#255, G-61), `ce4755a` (#254, G-77) and earlier                                                                                                                                                                                                                              |
-| **Open branches**           | #262 (duplicate purchases, `fix/purchase-cross-actor-idempotency`, G-81, G-88 and OD-23, rebased onto `29dc934`, migration 0158), and the G-80 lane once it opens. #261 (G-65) MERGED as `29dc934`                                                                                                                                                                                                                                                                                                                |
+| **Open branches**           | #262 (duplicate purchases, `fix/purchase-cross-actor-idempotency`, G-81, G-88 and OD-23, rebased onto `29dc934`, migration 0158), the only issue in progress. Paused: `fix/g80-natural-opt-out` at `c9f2059` (G-80), WIP, unreviewed                                                                                                                                                                                                                                                                              |
 | **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 158 migrations on `main` (0000 to 0157); 0158 on #262; deployed to staging (automatic after CI on main since #249); never to production (the production stack boots on a clean CI runner since G-01); the Meta WhatsApp transport has been live-exercised on staging (real webhook ingress, outbound text and media); production Meta App Review and templates remain open; payment-provider live verification remains pending |
 | **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                                             |
@@ -20,8 +20,11 @@
 **G-81 (owner-prioritised interstitial, OD-23 / OWN-21): CODE COMPLETE, in review on
 `fix/purchase-cross-actor-idempotency` (migration 0158).** A purchase that may be one
 already waiting or booked in the last 24 hours is held and asked "same or separate";
-the purchase work refuses a booked duplicate under a lock before any posting. Rebase
-onto #261 (G-65) if that merges first. G-88 (purchases carry no `posting_purpose`)
+the purchase work refuses a booked duplicate under a lock before any posting. G-81
+closes Chat purchase collision handling and protects Chat against booked purchase
+facts, including bookings from a PO. G-89 (dashboard PO receive is not compared with
+Chat bookings) remains OPEN, required pre-public-launch, so the system-wide invariant
+is not certified until G-89 closes. G-88 (purchases carry no `posting_purpose`)
 recorded, not fixed.
 
 **Build 1 (G-48) accepted (26 Sep 2026):**
@@ -341,9 +344,12 @@ G-71 (web's server-side calls share one per-IP bucket, P1) and G-72
    G-07 (fix the eval harness, then the owner runs the live eval), G-73
    (owner decision on the photo budget). G-06 is code complete and NOT live-verified until the G-05 drill
    confirms the real Paystack envelopes.
-4. Interstitial order after the two current lanes (#261 G-65, and #262 the
-   duplicate-purchase lane G-81, whose second gap is G-88): G-80 (natural
-   Nigerian opt-outs), then G-85 (combining or overlay marks on a short
+4. Strict serial mode: #262 (G-81, duplicate purchases; its second gap is
+   G-88) is the only issue in progress. Once #262 merges, the recommended
+   next issue is G-89 (cross-ingress purchase duplicate protection for
+   dashboard PO receive, owner directed 2 Oct 2026). G-80 (natural Nigerian
+   opt-outs) stays paused on `fix/g80-natural-opt-out` at `c9f2059` (WIP,
+   unreviewed). Then G-85 (combining or overlay marks on a short
    answer), then the normal roadmap (Build 9, command-bus enforcement). G-86
    (replies that say "send it again") goes into the smallest appropriate PR;
    G-87 (a purchase re-read as an expense) STAYS OPEN as #262's follow-up,

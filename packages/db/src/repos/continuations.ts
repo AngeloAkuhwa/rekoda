@@ -344,6 +344,64 @@ export async function wasAskedAbout(
          AND user_id = ${userId}::uuid
          AND expects = 'purchase_identity'
          AND draft_id = ${draftId}::uuid
-         AND created_at <= ${clock(options.now)}) AS asked`);
+         AND created_at <= ${clock(options.now)})
+      /* ... and still askable: a held purchase past its window asks nothing. */
+      AND EXISTS (
+      SELECT 1 FROM command_drafts h
+       WHERE h.business_id = ${businessId}::uuid
+         AND h.id = ${draftId}::uuid
+         AND h.state = 'held'
+         AND h.expires_at > ${clock(options.now)}) AS asked`);
   return [...rows][0]?.asked === true;
+}
+
+/**
+ * A re-asked identity question that never reached the merchant (G-81): the
+ * continuation kept open for it ends when the held purchase's restored
+ * window ends, never later. Returns how many moved.
+ */
+export async function alignOpenedByExpiry(
+  tx: TenantDb,
+  businessId: string,
+  sourceMessageId: string,
+  draftId: string,
+  expiresAt: Date,
+): Promise<number> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE conversation_continuations
+       SET expires_at = ${expiresAt.toISOString()}::timestamptz,
+           updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND source_message_id = ${sourceMessageId}::uuid
+       AND draft_id = ${draftId}::uuid
+       AND state = 'open'
+    RETURNING id`);
+  return [...rows].length;
+}
+
+/**
+ * Re-open a continuation a reply superseded when that reply never reached
+ * the member (G-81): the question they last saw is the one they are still
+ * answering. Only while it is inside its window, and only when this member
+ * has nothing else open. Returns whether it re-opened.
+ */
+export async function reopenSuperseded(
+  tx: TenantDb,
+  businessId: string,
+  continuationId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE conversation_continuations c
+       SET state = 'open', updated_at = clock_timestamp()
+     WHERE c.id = ${continuationId}::uuid
+       AND c.business_id = ${businessId}::uuid
+       AND c.state = 'superseded'
+       AND c.expires_at > clock_timestamp()
+       AND NOT EXISTS (
+         SELECT 1 FROM conversation_continuations o
+          WHERE o.business_id = c.business_id
+            AND o.user_id = c.user_id
+            AND o.state = 'open')
+    RETURNING c.id`);
+  return [...rows].length === 1;
 }
