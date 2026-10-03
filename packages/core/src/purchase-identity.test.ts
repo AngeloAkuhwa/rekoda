@@ -361,3 +361,31 @@ describe('Codex review of cfc4720', () => {
     },
   );
 });
+
+describe('Codex review of 3fcc173', () => {
+  it.each([
+    '125,000.00',
+    '125000.00',
+    '20261002',
+    '2026-10',
+    '10/2026',
+    'Receipt 12/09/2026',
+    'INV 125,000',
+  ])('P2: %j (an amount or a date) is not a reference', (raw) => {
+    expect(normalisePurchaseReference(raw)).toBeNull();
+  });
+
+  it('P2: plain digits with no document marker are in doubt, so no reference', () => {
+    expect(normalisePurchaseReference('2231')).toBeNull();
+    expect(normalisePurchaseReference('#2231')).toBe('2231');
+    expect(normalisePurchaseReference('INV-2231')).toBe('2231');
+  });
+
+  it('P2: two own waiting previews of one total are asked about, never both replaced', () => {
+    const a = record({ id: 'a', state: 'pending', bookedAt: null, requestedBy: 'owner' });
+    const b = record({ id: 'b', state: 'pending', bookedAt: null, requestedBy: 'owner' });
+    const verdict = purchaseIdentityVerdict([a, b], 'owner');
+    expect(verdict.replace).toEqual([]);
+    expect(verdict.asked).toEqual([a, b]);
+  });
+});

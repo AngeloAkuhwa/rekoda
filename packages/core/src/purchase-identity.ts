@@ -135,8 +135,37 @@ export function normalisePurchaseReference(raw: unknown): string | null {
   if (/^(?:₦|NGN|N)\s*[\d,.]+$/iu.test(text) || /^[\d,.]+\s*(?:k|m|naira)$/iu.test(text)) {
     return null;
   }
-  /* A date. */
+  /* A date, whole or partial, separated or compact (Codex review). */
   if (/^\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}$/u.test(text)) return null;
+  /* An explicit document marker is required (Codex review): a reference
+   * word ("INV", "receipt", "No."), a "#", or upper-case letters written
+   * into the number ("EMK-0041"). Bare digits ("2231", "125,000.00",
+   * "20261002") are in doubt, and a side in doubt has no reference. */
+  const marked =
+    text.includes('#') ||
+    text
+      .split(/[\s#:,]+/u)
+      .some(
+        (token) =>
+          REFERENCE_WORDS.has(token.replace(/\.$/u, '').toUpperCase()) ||
+          /^\p{Lu}+[\d/.-]*\d/u.test(token),
+      );
+  if (!marked) return null;
+  /* Whatever marks it, the number itself is never an amount or a date. */
+  const numberPart = text
+    .split(/[\s#:]+/u)
+    .filter((token) => !REFERENCE_WORDS.has(token.replace(/\.$/u, '').toUpperCase()))
+    .join(' ')
+    .trim();
+  if (
+    /^\d{1,3}(?:,\d{3})+(?:\.\d+)?$/u.test(numberPart) ||
+    /^\d+\.\d{1,2}$/u.test(numberPart) ||
+    /^\d{1,4}[/.-]\d{1,2}(?:[/.-]\d{1,4})?$/u.test(numberPart) ||
+    /^\d{1,2}[/.-]\d{4}$/u.test(numberPart) ||
+    /^(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])$/u.test(numberPart)
+  ) {
+    return null;
+  }
   const digitRuns = text.match(/\d+/gu) ?? [];
   /* Ten digits or more in all, however they are grouped, is a phone or an
    * account number ("0803-123-4567", a NUBAN with spaces), never a
@@ -254,7 +283,7 @@ export function refOf(record: PurchaseRecord): RecordRef {
 
 /**
  * D4's split, for a new preview by `actorId`:
- *  - `replace`: the member's OWN waiting previews this one replaces, as
+ *  - `replace`: the member's ONE own waiting preview this one replaces, as
  *    Build 7 replaces their own rebuild (never another member's, and never
  *    one Rekoda cannot attribute: a null requester is never "you");
  *  - `asked`: EVERY other match, which the question names (booked first);
@@ -268,7 +297,11 @@ export function purchaseIdentityVerdict(
   readonly asked: readonly PurchaseRecord[];
   readonly ask: PurchaseRecord | null;
 } {
-  const replace = matches.filter((m) => m.state === 'pending' && ownerOf(m, actorId) === 'you');
+  const own = matches.filter((m) => m.state === 'pending' && ownerOf(m, actorId) === 'you');
+  /* One own waiting preview is replaced. Two or more coexist only because
+   * something proved them separate, so a resend that matches several is
+   * asked about, never allowed to replace them all (Codex review). */
+  const replace = own.length === 1 ? own : [];
   const asked = matches.filter((m) => !replace.includes(m));
   return { replace, asked, ask: asked[0] ?? null };
 }

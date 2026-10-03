@@ -14180,4 +14180,56 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       expect(stubSender.lastText).toContain(QUESTION);
     });
   });
+
+  describe('Codex review of 3fcc173', () => {
+    const RICE = {
+      ...MILO,
+      description: '5 bags of rice',
+      amount: 50_000,
+      reportedPayment: 50_000,
+      productMention: 'bags of rice',
+      quantity: 5,
+    };
+
+    it('P1: a yes sent while a preview was waiting never claims an older one once that preview is held', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      /* An older, unrelated preview of the delegate's. */
+      await say('wamid.C6-rice', RICE, 'bought 5 bags rice 50k cash', DELEGATE);
+      /* The owner's Milo preview, the newest. */
+      await say('wamid.C6-o', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      expect(stubSender.lastText).toContain('Paid in full by cash');
+      /* A received order of the same total is booked after it was shown. */
+      await withBusiness(db, business.id, (tx) =>
+        spendRepo.recordPurchase(tx, {
+          businessId: business.id,
+          description: 'PO-0007',
+          amountK: 10_000_000,
+          paidK: 0,
+          method: null,
+          sourceType: 'purchase_order',
+          sourceId: 'po-0007',
+          supplierId: null,
+        }),
+      );
+      /* The owner's yes is refused at the work, and the preview is held. */
+      await reply('wamid.C6-o-yes', 'yes');
+      expect(stubSender.lastText).toContain(RACE);
+      expect(await purchaseStates(business.id)).toEqual(['pending', 'held']);
+      /* A delegate yes that reached Rekoda BEFORE that preview was held (its
+       * job ran late): it was about the Milo preview, never the rice. */
+      stubTransport.replyWith(UNCLEAR);
+      await post(messagePayload(DELEGATE, 'wamid.C6-d-yes', 'yes'));
+      await withBusiness(db, business.id, (tx) =>
+        tx.execute(sql`
+          UPDATE external_events SET created_at = (
+            SELECT created_at + interval '10 milliseconds' FROM command_drafts
+             WHERE business_id = ${business.id}::uuid AND state = 'held')
+           WHERE business_id = ${business.id}::uuid AND external_id = 'wamid.C6-d-yes'`),
+      );
+      await drain();
+      expect(await purchases(business.id)).toBe(1);
+      expect(stubSender.lastText).toContain('Nothing was saved from your yes.');
+    });
+  });
 });

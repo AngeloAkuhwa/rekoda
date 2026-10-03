@@ -65,7 +65,10 @@ export function sanitizeCommandForPersistence(command: unknown): unknown {
  */
 function normaliseReference(record: CommandRecord): CommandRecord {
   if (record['intent'] !== 'RecordPurchase' || !('supplierReference' in record)) return record;
-  const normalised = normalisePurchaseReference(record['supplierReference']);
+  const digits = normalisePurchaseReference(record['supplierReference']);
+  /* Stored as its digits behind a '#', the marker that makes it read back as
+   * the same reference; never the words or letters it arrived with. */
+  const normalised = digits === null ? null : `#${digits}`;
   if (normalised === record['supplierReference']) return record;
   return { ...record, supplierReference: normalised };
 }

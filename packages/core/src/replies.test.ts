@@ -321,6 +321,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
     replies.purchaseIdentityAtYes(subject, IDENTITY_NOW),
   ),
   purchaseIdentityReask: [replies.purchaseIdentityReask()],
+  previewUnderQuestion: [replies.previewUnderQuestion()],
   samePurchase: [
     replies.samePurchase(null, IDENTITY_NOW),
     ...IDENTITY_SUBJECTS.map((subject) => replies.samePurchase(subject, IDENTITY_NOW)),

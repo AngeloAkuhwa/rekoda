@@ -878,6 +878,8 @@ export interface LatestDraft {
   previewed: boolean;
   /** The member whose message drafted it (0157), or null. */
   requestedBy: string | null;
+  /** When its state last changed. */
+  updatedAt: Date;
 }
 
 async function newestDraft(
@@ -893,6 +895,7 @@ async function newestDraft(
       expiresAt: commandDrafts.expiresAt,
       previewed: commandDrafts.previewed,
       requestedBy: commandDrafts.requestedBy,
+      updatedAt: commandDrafts.updatedAt,
     })
     .from(commandDrafts)
     .where(

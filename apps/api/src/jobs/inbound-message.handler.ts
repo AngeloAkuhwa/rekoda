@@ -1996,6 +1996,15 @@ async function confirmPendingDraft(
       }
       return reaskPurchaseIdentity(tx, businessId, latest.id, asked, sender);
     }
+    /* A preview that was still WAITING when this yes reached Rekoda, held
+     * since by another yes the purchase work refused (Codex review): this
+     * yes was about it, so nothing older is ever claimed behind it. */
+    if (latest.previewed && latest.updatedAt.getTime() > receivedAt.getTime()) {
+      if (retrying) {
+        await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
+      }
+      return replies.previewUnderQuestion();
+    }
     latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
       asOf: receivedAt,
       skipHeld: true,

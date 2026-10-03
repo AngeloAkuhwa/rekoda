@@ -2015,6 +2015,18 @@ export function purchaseIdentityReask(options: { readonly afterNo?: boolean } = 
   );
 }
 
+/**
+ * A yes sent while a preview was waiting, which another yes since found to
+ * match a purchase already saved (G-81, Codex review): nothing is saved from
+ * this yes, and nothing older is claimed in its place.
+ */
+export function previewUnderQuestion(): Reply {
+  return reply(
+    'Nothing was saved from your yes. That preview matches a purchase already saved, and ' +
+      'the member who confirmed it is being asked whether it is the same one.',
+  );
+}
+
 /** "same": nothing more is saved, and the merchant is pointed at the record. */
 export function samePurchase(
   subject: PurchaseIdentitySubject | null,
