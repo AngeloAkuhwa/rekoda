@@ -63,6 +63,12 @@ export const LOCK_CLASS = {
   sweep: 1,
   /** Per-business serialisation of inbound work. */
   business: 2,
+  /**
+   * One business's chat purchases of one total (G-81): the purchase work
+   * re-reads what is booked under this lock before any posting, so two
+   * confirmations of one purchase on two connections book it once.
+   */
+  purchaseIdentity: 3,
 } as const;
 
 /**

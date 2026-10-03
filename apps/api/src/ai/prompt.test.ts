@@ -26,3 +26,9 @@ describe('the prompt on a question’s period', () => {
     expect(withoutTheProhibition.toLowerCase()).not.toContain('assume this month');
   });
 });
+
+describe('the supplier reference (G-81, Codex review of 71fad6b)', () => {
+  it('asks for the number WITH the word that names it, so a bare number keeps its context', () => {
+    expect(SYSTEM_PROMPT).toContain('together with the word that names it');
+  });
+});

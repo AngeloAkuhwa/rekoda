@@ -34,9 +34,9 @@
  * Pure: no database, no clock. The repository persists it, keyed to the
  * actual person who was asked (`user_id`), never just the business.
  */
-import type { AnsweredPeriod, FundingSource, Route } from './router.js';
+import type { AnsweredPeriod, FundingSource, PurchaseIdentityAnswer, Route } from './router.js';
 import { nairaToKobo } from './money.js';
-import { fundingSourceAnswer, periodAnswer } from './router.js';
+import { fundingSourceAnswer, periodAnswer, purchaseIdentityAnswer } from './router.js';
 
 /**
  * How long a question Rekoda asked, or a read it just answered, stays open
@@ -181,14 +181,32 @@ export interface FundingSourceClarification {
   readonly draftId: string;
 }
 
+/**
+ * B: Rekoda asked whether a stock purchase is the same one already saved or
+ * already waiting (G-81, OD-23). Holds ONLY the id of the HELD purchase
+ * draft that asked; "same" closes it and writes nothing, "separate" builds a
+ * FRESH preview through the ordinary gates. It never executes the held
+ * draft (migration 0158).
+ */
+export interface PurchaseIdentityClarification {
+  readonly kind: 'clarification';
+  readonly expects: 'purchase_identity';
+  readonly draftId: string;
+}
+
 export type ContinuationState =
-  PeriodClarification | ChoiceClarification | FundingSourceClarification | QueryContinuation;
+  | PeriodClarification
+  | ChoiceClarification
+  | FundingSourceClarification
+  | PurchaseIdentityClarification
+  | QueryContinuation;
 
 /** What a short reply answered, when it fits what was expected. */
 export type ContinuationAnswer =
   | { readonly kind: 'period'; readonly period: AnsweredPeriod }
   | { readonly kind: 'choice'; readonly option: ChoiceOption }
-  | { readonly kind: 'funding_source'; readonly source: FundingSource };
+  | { readonly kind: 'funding_source'; readonly source: FundingSource }
+  | { readonly kind: 'purchase_identity'; readonly answer: PurchaseIdentityAnswer };
 
 /**
  * Does this message answer the open state? Null when it does not fit, and
@@ -225,6 +243,11 @@ export function continuationAnswer(
   if (state.kind === 'clarification' && state.expects === 'funding_source') {
     const source = fundingSourceAnswer(message.text);
     return source ? { kind: 'funding_source', source } : null;
+  }
+
+  if (state.kind === 'clarification' && state.expects === 'purchase_identity') {
+    const answer = purchaseIdentityAnswer(message.text);
+    return answer ? { kind: 'purchase_identity', answer } : null;
   }
 
   if (state.kind === 'clarification') {
@@ -356,6 +379,11 @@ export function parseContinuation(row: ContinuationColumns): ContinuationState |
       if (row.topic !== null || row.options !== null) return null;
       return { kind: 'clarification', expects: 'funding_source', draftId: row.draftId };
     }
+    if (row.expects === 'purchase_identity') {
+      if (row.draftId === null || !DRAFT_ID.test(row.draftId)) return null;
+      if (row.topic !== null || row.options !== null) return null;
+      return { kind: 'clarification', expects: 'purchase_identity', draftId: row.draftId };
+    }
     return null;
   }
   if (row.kind === 'query' && row.expects === null) {
@@ -393,13 +421,16 @@ export function continuationColumns(state: ContinuationState): ContinuationColum
       draftId: null,
     };
   }
-  if (state.kind === 'clarification' && state.expects === 'funding_source') {
+  if (
+    state.kind === 'clarification' &&
+    (state.expects === 'funding_source' || state.expects === 'purchase_identity')
+  ) {
     if (!DRAFT_ID.test(state.draftId)) {
-      throw new Error('continuation: a funding-source question names its draft by id');
+      throw new Error('continuation: a question about a draft names it by id');
     }
     return {
       kind: 'clarification',
-      expects: 'funding_source',
+      expects: state.expects,
       topic: null,
       period: null,
       customerToken: null,

@@ -497,6 +497,16 @@ export const commandDrafts = pgTable(
      * superseded draft.
      */
     withdrawn: boolean('withdrawn').notNull().default(false),
+    /**
+     * The HELD purchase this fresh preview was declared separate from, by
+     * the answer "separate" (migration 0158, G-81). A record that existed
+     * when that question was asked is not this purchase, in either
+     * direction. Null on every other draft.
+     */
+    separateFrom: uuid('separate_from'),
+    /** The records a HELD purchase's identity question named (0158). */
+    askedAboutDrafts: uuid('asked_about_drafts').array(),
+    askedAboutExpenses: uuid('asked_about_expenses').array(),
   },
   (t) => [
     // One draft per message — a job that runs twice must not give the merchant
@@ -548,7 +558,11 @@ export const conversationContinuations = pgTable(
       .default(sql`clock_timestamp() + interval '600 seconds'`),
   },
   (t) => [
-    uniqueIndex('conversation_continuations_message_ux').on(t.sourceMessageId, t.userId),
+    uniqueIndex('conversation_continuations_message_ux').on(
+      t.sourceMessageId,
+      t.userId,
+      sql`coalesce(${t.expects}, '')`,
+    ),
     uniqueIndex('conversation_continuations_open_ux')
       .on(t.businessId, t.userId)
       .where(sql`state = 'open'`),

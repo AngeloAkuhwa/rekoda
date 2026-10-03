@@ -38,6 +38,7 @@ export * from './extraction-compare.js';
 export * from './command-persistence.js';
 export * from './confirmation-context.js';
 export * from './continuation.js';
+export * from './purchase-identity.js';
 export * from './margin.js';
 export * from './billing.js';
 export * from './retention.js';

@@ -35,6 +35,14 @@ import {
   fundingSourceAnswer,
   type FundingSource,
   periodAnswer,
+  purchaseIdentityAnswer,
+  purchaseIdentityVerdict,
+  purchaseMatches,
+  purchaseTotalK,
+  describePurchaseReference,
+  ownerOf,
+  sameRecord,
+  PURCHASE_IDENTITY_WINDOW_SECONDS,
   resumedRead,
   chatDraftAccess,
   deterministicAccess,
@@ -47,6 +55,7 @@ import {
   type ContinuationState,
   type DeterministicIntent,
   type PeriodTopic,
+  type PurchaseRecord,
   type Reply,
   type Route,
   type UsageUnit,
@@ -67,6 +76,7 @@ import {
   issueRepo,
   jobsRepo,
   ordersRepo,
+  purchaseIdentityRepo,
   reportsRepo,
   settleRepo,
   spendRepo,
@@ -99,6 +109,7 @@ import {
   type RecordPaymentResult,
 } from '../commands/payment-commands.js';
 import {
+  PurchaseIdentityCollision,
   recordExpenseWork,
   recordPurchaseWork,
   type RecordExpenseCmdInput,
@@ -419,6 +430,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             retrying,
             receivedAt: event.receivedAt,
             retiredQuestion: outcome.retiredQuestion,
+            outcome,
           })
         : await interpretedReply(
             deps,
@@ -455,7 +467,38 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         /* Build 6: nor was the question or the answer a continuation holds
          * on to. A member who never saw "Which period?" is not answering it
          * with a later "last month". */
-        await continuationsRepo.retireContinuationOpenedBy(tx, businessId, message.id);
+        await continuationsRepo.retireContinuationOpenedBy(
+          tx,
+          businessId,
+          message.id,
+          outcome.reaskedHeld && !outcome.supersededContinuation
+            ? { keepDraftId: outcome.reaskedHeld.heldId }
+            : {},
+        );
+        /* G-81: a re-asked identity question nobody saw names nothing as
+         * declared separate: its instant and window go back to what the
+         * merchant last saw, and the question they DID see stays open. */
+        if (outcome.reaskedHeld) {
+          await conversationsRepo.restoreHeldAsk(
+            tx,
+            businessId,
+            outcome.reaskedHeld.heldId,
+            outcome.reaskedHeld.previous,
+          );
+          /* The question kept open ends with the window it goes back to. */
+          await continuationsRepo.alignOpenedByExpiry(
+            tx,
+            businessId,
+            message.id,
+            outcome.reaskedHeld.heldId,
+            outcome.reaskedHeld.previous.expiresAt,
+          );
+        }
+        /* An identity answer given while another question was open retired
+         * that question; nobody saw the reply, so it is open again. */
+        if (outcome.supersededContinuation) {
+          await continuationsRepo.reopenSuperseded(tx, businessId, outcome.supersededContinuation);
+        }
         /* A funding-answer rebuild nobody saw is undone as if it never
          * happened (Codex review): its new draft is superseded (never
          * confirmable), the retired question is restored, and the sender's
@@ -468,6 +511,42 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
          * review): it is withdrawn and the questions are restored, with the
          * short answer of every member who held one and of the sender, each
          * inside its window, so "cash" answers the question again. */
+        /* G-81: an identity question nobody saw asked nobody: its held
+         * purchase is withdrawn (the continuation was retired just above).
+         * A fresh "separate" preview nobody saw is withdrawn too, and the
+         * held purchase is held again with its question re-opened for the
+         * sender inside its window, so "separate" again works. */
+        for (const heldId of outcome.heldDrafts ?? []) {
+          await conversationsRepo.withdrawHeld(tx, businessId, heldId);
+        }
+        if (outcome.refusedHeld) {
+          await conversationsRepo.unholdRefusedPurchase(
+            tx,
+            businessId,
+            outcome.refusedHeld.draftId,
+            outcome.refusedHeld.previousExpiresAt,
+          );
+        }
+        if (outcome.separatedFrom && actorId) {
+          const { heldId, expiresAt } = outcome.separatedFrom;
+          await conversationsRepo.undoSeparate(tx, businessId, message.id, heldId);
+          /* Re-opened for the sender only when it was the question open for
+           * them; answered past a newer question, that newer one is given
+           * back instead, and "separate" still reaches the held purchase. */
+          if (
+            !outcome.supersededContinuation &&
+            expiresAt.getTime() > event.receivedAt.getTime() &&
+            (await conversationsRepo.heldPurchaseDraft(tx, businessId, heldId))
+          ) {
+            await continuationsRepo.openContinuation(tx, {
+              businessId,
+              userId: actorId,
+              sourceMessageId: message.id,
+              state: { kind: 'clarification', expects: 'purchase_identity', draftId: heldId },
+              expiresAt,
+            });
+          }
+        }
         if (outcome.closedQuestions?.length) {
           await conversationsRepo.withdrawPreviewAndRestore(
             tx,
@@ -568,6 +647,21 @@ type RebuildOutcome = {
   replacedRebuilds?: string[];
   /** Retired questions this message's new preview closed, and who held them. */
   closedQuestions?: { id: string; holders: { userId: string; expiresAt: Date }[] }[];
+  /** Purchases HELD and asked about by this message's reply (G-81): its own
+   * draft, or the draft a yes was refused for (Codex review). */
+  heldDrafts?: string[];
+  /** The held purchase this message's "separate" answer closed (G-81). */
+  separatedFrom?: { heldId: string; expiresAt: Date };
+  /** The held purchase this message asked about again, and what it was (G-81). */
+  reaskedHeld?: {
+    heldId: string;
+    previous: { draftIds: string[]; expenseIds: string[]; expiresAt: Date; reaskedAt: Date | null };
+  };
+  /** A purchase refused at this yes and held, and the window it had (G-81). */
+  refusedHeld?: { draftId: string; previousExpiresAt: Date };
+  /** The member's open continuation this message's identity answer retired
+   * (G-81): another question, newer than the identity one, they still see. */
+  supersededContinuation?: string;
 };
 
 /** A recording somebody made with the microphone button, not an attached file. */
@@ -1105,6 +1199,8 @@ interface CommandContext {
   receivedAt: Date;
   /** This message retired a question Rekoda had asked the sender (G-68). */
   retiredQuestion?: boolean;
+  /** What this reply did that a failed send must undo (G-81). */
+  outcome?: RebuildOutcome;
 }
 
 /**
@@ -1142,7 +1238,13 @@ async function deterministicReply(
       ctx.retrying,
       ctx.receivedAt,
       ctx.eventId,
-      { messageId: ctx.messageId, from: ctx.from, receivedAt: ctx.receivedAt },
+      {
+        messageId: ctx.messageId,
+        from: ctx.from,
+        receivedAt: ctx.receivedAt,
+        /* G-81: a question asked at a refused yes is undone if never sent. */
+        ...(ctx.outcome ? { outcome: ctx.outcome } : {}),
+      },
     );
     /* G-65: "nothing waiting for a yes" goes on to invite a sale, which a
      * plan without Chat is refused. It is answered from several places in
@@ -1171,9 +1273,47 @@ async function deterministicReply(
      * it still closes past a read asked since (Build 6), exactly as a "yes"
      * there still re-asks it. A question answered long ago by a resend is
      * not what this "no" is about. */
-    const latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
+    let latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
       asOf: ctx.receivedAt,
     });
+    /* G-81: to the member asked "Is this the same purchase?", a "no" could
+     * mean "no, not the same" or "no, do not save it", so it is asked
+     * again and nothing moves. A "cancel" closes the question and its held
+     * purchase (and, as every cancel does, every pending draft). Anybody
+     * else's no or cancel is about what they were shown. */
+    let closedHeld = false;
+    /* The sender's own open question first (Codex review). */
+    const asking = await senderBeingAsked(tx, businessId, ctx.from, ctx.receivedAt);
+    if (asking && intent.kind === 'deny') {
+      return reaskPurchaseIdentity(tx, businessId, asking.heldId, asking.actorId, ctx, {
+        afterNo: true,
+      });
+    }
+    if (asking) {
+      closedHeld = await conversationsRepo.releaseHeld(tx, businessId, asking.heldId, {
+        now: ctx.receivedAt,
+      });
+      await continuationsRepo.retireContinuationsForDraft(tx, businessId, asking.heldId);
+      latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
+        asOf: ctx.receivedAt,
+      });
+    }
+    if (latest?.state === 'held') {
+      const asked = await askedAboutHeld(tx, businessId, latest.id, ctx.from, ctx.receivedAt);
+      if (asked && intent.kind === 'deny') {
+        return reaskPurchaseIdentity(tx, businessId, latest.id, asked, ctx, { afterNo: true });
+      }
+      if (asked) {
+        closedHeld = await conversationsRepo.releaseHeld(tx, businessId, latest.id, {
+          now: ctx.receivedAt,
+        });
+        await continuationsRepo.retireContinuationsForDraft(tx, businessId, latest.id);
+      }
+      latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
+        asOf: ctx.receivedAt,
+        skipHeld: true,
+      });
+    }
     /* The last thing the merchant saw had already expired: this "no" is
      * about it, so nothing else is touched. A clarification or a question
      * that lapsed was never a preview, and is answered as before. */
@@ -1193,7 +1333,7 @@ async function deterministicReply(
       asOf: ctx.receivedAt,
     });
     await conversationsRepo.supersedePendingDrafts(tx, businessId, { asOf: ctx.receivedAt });
-    const dropped = (cancellable ? 1 : 0) + (closedQuestion ? 1 : 0);
+    const dropped = (cancellable ? 1 : 0) + (closedQuestion ? 1 : 0) + (closedHeld ? 1 : 0);
     /* A bare "no" or "cancel" with nothing to refuse is answered, never met
      * with silence, and never told something was cancelled (G-68). */
     if (dropped > 0) return replies.cancelled();
@@ -1842,8 +1982,9 @@ async function confirmPendingDraft(
   receivedAt: Date,
   /** The stored event this "yes" came in on, where its reservations are recorded. */
   eventId: string,
-  /** The message and its sender, for re-opening a re-asked funding question. */
-  sender: { messageId: string; from: string; receivedAt: Date },
+  /** The message and its sender, for re-opening a re-asked funding question,
+   * and what its reply did that a failed send must undo (G-81). */
+  sender: { messageId: string; from: string; receivedAt: Date; outcome?: RebuildOutcome },
 ): Promise<Reply | null> {
   /*
    * G-61: the last thing the merchant was shown may be a purchase question
@@ -1858,9 +1999,44 @@ async function confirmPendingDraft(
   await conversationsRepo.expireStaleDrafts(tx, businessId, { now: receivedAt });
   /* Only drafts that existed when this "yes" arrived: a retry overtaken by a
    * newer request confirms what it was sent for, never the newer preview. */
-  const latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
+  /* G-81: the sender is being asked "same or separate": this yes is about
+   * that question, whatever else is newer (Codex review). */
+  const asking = await senderBeingAsked(tx, businessId, sender.from, receivedAt);
+  if (asking) {
+    if (retrying) {
+      await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
+    }
+    return reaskPurchaseIdentity(tx, businessId, asking.heldId, asking.actorId, sender);
+  }
+  let latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
     asOf: receivedAt,
   });
+  /* G-81: a purchase held for its identity question. The yes of the member
+   * who was asked is about that question: it is asked again, and nothing
+   * older is ever claimed behind it. Anybody else's yes is about what THEY
+   * were shown, so the held purchase (never confirmable) is not in its way. */
+  if (latest?.state === 'held') {
+    const asked = await askedAboutHeld(tx, businessId, latest.id, sender.from, sender.receivedAt);
+    if (asked) {
+      if (retrying) {
+        await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
+      }
+      return reaskPurchaseIdentity(tx, businessId, latest.id, asked, sender);
+    }
+    /* A preview that was still WAITING when this yes reached Rekoda, held
+     * since by another yes the purchase work refused (Codex review): this
+     * yes was about it, so nothing older is ever claimed behind it. */
+    if (latest.previewed && latest.updatedAt.getTime() > receivedAt.getTime()) {
+      if (retrying) {
+        await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
+      }
+      return replies.previewUnderQuestion();
+    }
+    latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
+      asOf: receivedAt,
+      skipHeld: true,
+    });
+  }
   /* `abandoned` is only ever a retired purchase question; a draft the
    * merchant cancelled is `superseded` and is never asked again. */
   if (latest?.state === 'abandoned') {
@@ -2126,7 +2302,7 @@ async function confirmPendingDraft(
   if (command.intent === 'RecordExpense')
     return confirmExpense(deps, tx, businessId, draft.id, command);
   if (command.intent === 'RecordPurchase')
-    return confirmPurchase(deps, tx, businessId, draft.id, command);
+    return confirmPurchase(deps, tx, businessId, draft.id, command, sender);
   if (command.intent === 'EraseData') {
     // Erasure confirms ONLY with the exact phrase. A "yes" is "anything
     // else" in the confirmation copy's terms, and anything else keeps the data.
@@ -2509,6 +2685,8 @@ async function confirmPurchase(
   businessId: string,
   draftId: string,
   command: Record<string, unknown>,
+  /** The yes: who sent it, and when it reached Rekoda (G-81). */
+  sender: { messageId: string; from: string; receivedAt: Date; outcome?: RebuildOutcome },
 ): Promise<Reply> {
   const gate = gatePurchase(command as never);
   if (gate.gate !== 'CG2') return replies.arithmeticQuestion(gate.question);
@@ -2535,31 +2713,69 @@ async function confirmPurchase(
     sourceType: 'chat',
     sourceId: draftId,
     supplierId,
+    /* The supplier's own document number the merchant confirmed, onto the
+     * bill a credit purchase raises (Codex review). */
+    /* Name-free: its kind and number ("Invoice 2231"), never letters. */
+    supplierReference: describePurchaseReference(command['supplierReference']),
     arrivals: arriving
       ? [{ product: arriving.productMention, quantity: arriving.quantity, costK: gate.amountK }]
       : [],
   };
 
-  /* The A1 rollout seam (spec §25). */
-  let recorded: Awaited<ReturnType<typeof recordPurchaseWork>>;
-  if (deps.config.commandRecordPurchase) {
-    const run = await deps.commandBus.run(
-      tx,
-      {
+  /* The A1 rollout seam (spec §25), inside a SAVEPOINT (G-81): the purchase
+   * work refuses a purchase that may be one booked since this preview was
+   * shown, before its first posting, and the savepoint takes back whatever
+   * the attempt wrote (the bus's idempotency claim included), so a refusal
+   * leaves no row, posting, stock movement, bill, number or event. */
+  let recorded: Awaited<ReturnType<typeof recordPurchaseWork>> | null;
+  try {
+    recorded = await tx.transaction(async (sp) => {
+      if (deps.config.commandRecordPurchase) {
+        const run = await deps.commandBus.run(
+          sp,
+          {
+            businessId,
+            command: 'RecordPurchase',
+            payload: input,
+            actor: 'system',
+            ingress: 'CHAT',
+            idempotencyKey: `draft:${draftId}`,
+          },
+          () => recordPurchaseWork(sp, input),
+        );
+        return run.outcome === 'done' ? run.result : null;
+      }
+      return recordPurchaseWork(sp, input);
+    });
+  } catch (error) {
+    if (!(error instanceof PurchaseIdentityCollision)) throw error;
+    /* The claim this yes made is turned into a held question in the same
+     * transaction, so it never stands for a purchase that was not booked,
+     * and the member who said yes is asked "same or separate". */
+    /* Asked now, on the database clock, naming the booking it matched. */
+    const refused = await conversationsRepo.holdRefusedPurchase(tx, businessId, draftId, [
+      error.match.self,
+    ]);
+    /* Remembered, so a question that never reaches the merchant puts the
+     * preview back as it was (fresh review of #262): the next yes is refused
+     * and asked again, never answered by an older preview behind it. */
+    if (sender.outcome && refused) {
+      sender.outcome.refusedHeld = { draftId, previousExpiresAt: refused.previousExpiresAt };
+    }
+    const actorId = await actorOf(tx, businessId, sender.from);
+    if (actorId) {
+      const held = await conversationsRepo.heldPurchaseDraft(tx, businessId, draftId);
+      await continuationsRepo.openContinuation(tx, {
         businessId,
-        command: 'RecordPurchase',
-        payload: input,
-        actor: 'system',
-        ingress: 'CHAT',
-        idempotencyKey: `draft:${draftId}`,
-      },
-      () => recordPurchaseWork(tx, input),
-    );
-    if (run.outcome !== 'done') return replies.notYet('Recording that purchase');
-    recorded = run.result;
-  } else {
-    recorded = await recordPurchaseWork(tx, input);
+        userId: actorId,
+        sourceMessageId: sender.messageId,
+        state: { kind: 'clarification', expects: 'purchase_identity', draftId },
+        ...(held ? { expiresAt: held.expiresAt } : {}),
+      });
+    }
+    return replies.purchaseIdentityAtYes(identitySubject(error.match, actorId), sender.receivedAt);
   }
+  if (!recorded) return replies.notYet('Recording that purchase');
 
   const landed = recorded.arrived[0];
   return landed
@@ -2817,17 +3033,495 @@ async function answerFundingSource(
     message.outcome.rebuiltFrom = retired.id;
     message.outcome.retiredHolders = holders;
   }
-  await conversationsRepo.recordDraft(tx, {
+  /* G-81: the rebuilt purchase is compared exactly as a typed one is, and
+   * held and asked about when it may be one already waiting or booked. */
+  const actorId = await actorOf(tx, businessId, message.from);
+  const identity = await purchaseIdentityCheck(tx, businessId, {
+    messageId: message.messageId,
+    receivedAt: message.receivedAt,
+    actorId,
+    stored: rebuilt,
+  });
+  const holding = identity?.ask != null;
+  const draft = await conversationsRepo.recordDraft(tx, {
     businessId,
     conversationMessageId: message.messageId,
     intent: 'RecordPurchase',
     command: rebuilt,
     model: null,
     previewed: true,
-    requestedBy: await actorOf(tx, businessId, message.from),
+    requestedBy: actorId,
     rebuiltFrom: retired.id,
+    held: holding,
+    separateFrom: holding ? null : (identity?.inheritFrom ?? null),
   });
-  return replies.preview(gate.preview);
+  let shown = replies.preview(gate.preview);
+  if (holding && identity?.ask) {
+    shown = replies.purchaseIdentityQuestion(
+      identitySubject(identity.ask, actorId),
+      message.receivedAt,
+      { named: identity.asked.length },
+    );
+    if (draft.isNew) {
+      await conversationsRepo.nameHeldRecords(
+        tx,
+        businessId,
+        draft.id,
+        identity.asked.map((r) => r.self),
+      );
+      if (actorId) {
+        const held = await conversationsRepo.heldPurchaseDraft(tx, businessId, draft.id);
+        await continuationsRepo.openContinuation(tx, {
+          businessId,
+          userId: actorId,
+          sourceMessageId: message.messageId,
+          state: { kind: 'clarification', expects: 'purchase_identity', draftId: draft.id },
+          ...(held ? { expiresAt: held.expiresAt } : {}),
+        });
+      }
+      if (message.outcome) (message.outcome.heldDrafts ??= []).push(draft.id);
+    }
+  }
+  if (identity && draft.isNew && !holding) {
+    shown = await replaceOwnPreviews(tx, businessId, identity.replace, shown, message.outcome);
+  }
+  return shown;
+}
+
+/**
+ * Is a stock purchase about to be previewed possibly one already waiting or
+ * booked (G-81, OD-23)? The facts are read from SQL and decided in core
+ * (`purchaseMatches`): the same total (integer kobo), a waiting preview or
+ * a purchase booked in the last 24 hours, and nothing that PROVES them
+ * separate (a different stated supplier reference, or two different
+ * catalogue-linked products: owner ruling D3). Suppliers, quantity, raw
+ * names and wording are never proof. Read-only; the caller decides what to
+ * write. Null for a command that is not a readable purchase.
+ *
+ * Records are read by message ORDER, never by mixing the webhook's clock
+ * with processing stamps (fresh review of #262). A resend of the member's
+ * own fresh "separate" preview inherits what that preview was declared
+ * separate from, so it replaces it instead of asking the same question
+ * again (`inheritFrom`, stored on the new draft as its `separate_from`).
+ */
+async function purchaseIdentityCheck(
+  tx: TenantDb,
+  businessId: string,
+  input: {
+    messageId: string;
+    receivedAt: Date;
+    actorId: string | null;
+    /** The command as it will be stored: supplier resolved to a vault row. */
+    stored: Record<string, unknown>;
+    /** The held purchase a "separate" answer is about, if this is one. */
+    separateFrom?: string;
+    /** The draft being answered, never its own duplicate. */
+    excludeDraftId?: string;
+  },
+): Promise<{
+  replace: readonly PurchaseRecord[];
+  asked: readonly PurchaseRecord[];
+  ask: PurchaseRecord | null;
+  inheritFrom: string | null;
+} | null> {
+  const amountK = purchaseTotalK(input.stored);
+  if (amountK === null) return null;
+  let facts = await purchaseIdentityRepo.newPurchaseFacts(tx, businessId, {
+    messageId: input.messageId,
+    amountK,
+    /* Only the product that will actually arrive (Codex review of 7f173b6):
+     * with no usable quantity nothing is delivered, so there is no product
+     * to prove anything by. */
+    productMention: purchaseArrival(input.stored as never)?.productMention ?? null,
+    reference: input.stored['supplierReference'],
+    separateFrom: input.separateFrom ?? null,
+  });
+  const { records } = await purchaseIdentityRepo.purchaseRecords(tx, businessId, amountK, {
+    asOf: input.receivedAt,
+    excludeDraftId: input.excludeDraftId ?? null,
+    messageId: input.messageId,
+  });
+  /* Ordered by message, so no upper bound by clock (fresh review of #262). */
+  const window = {
+    from: new Date(input.receivedAt.getTime() - PURCHASE_IDENTITY_WINDOW_SECONDS * 1000),
+    to: null,
+  };
+  let verdict = purchaseIdentityVerdict(
+    purchaseMatches(facts, records, input.receivedAt, window),
+    input.actorId,
+  );
+  let inheritFrom: string | null = null;
+  if (!input.separateFrom) {
+    for (const own of verdict.replace) {
+      if (own.separateFrom.length === 0) continue;
+      const from = await conversationsRepo.separateFromOf(tx, businessId, own.id);
+      if (!from) continue;
+      inheritFrom = from;
+      facts = { ...facts, separateFrom: [...facts.separateFrom, ...own.separateFrom] };
+    }
+    if (inheritFrom) {
+      verdict = purchaseIdentityVerdict(
+        purchaseMatches(facts, records, input.receivedAt, window),
+        input.actorId,
+      );
+    }
+  }
+  return { ...verdict, inheritFrom };
+}
+
+/** What the merchant is told about a matching record: never a name. */
+function identitySubject(record: PurchaseRecord, actorId: string | null) {
+  return {
+    state: record.state,
+    amountK: record.amountK,
+    owner: ownerOf(record, actorId),
+    bookedAt: record.bookedAt,
+    billNumber: record.billNumber,
+  } as const;
+}
+
+/**
+ * D4: the member's OWN waiting previews of the same purchase are replaced by
+ * the newer one, and the reply always says so with the total, exactly as
+ * Build 7 replaces their own rebuild, so their one purchase is never two
+ * confirmable previews. Only when the newer one is itself a preview: a
+ * purchase held for a question replaces nothing (fresh review of #262), so
+ * "replaced by this one" is never said of something nothing can confirm.
+ * Remembered, so a reply that never reaches them gives back the preview
+ * they saw.
+ */
+async function replaceOwnPreviews(
+  tx: TenantDb,
+  businessId: string,
+  replace: readonly PurchaseRecord[],
+  shown: Reply,
+  outcome?: RebuildOutcome,
+): Promise<Reply> {
+  let reply = shown;
+  for (const own of replace) {
+    if (await conversationsRepo.supersedeOwnPreview(tx, businessId, own.id)) {
+      reply = replies.earlierPreviewReplaced(reply, own.amountK);
+      if (outcome) (outcome.replacedRebuilds ??= []).push(own.id);
+    }
+  }
+  return reply;
+}
+
+/**
+ * Was this sender asked the identity question about this held purchase?
+ * Only then is their yes, no or doubtful answer about it.
+ */
+async function askedAboutHeld(
+  tx: TenantDb,
+  businessId: string,
+  heldId: string,
+  from: string,
+  /** When the reply reached Rekoda: a question opened after it was never
+   * asked of it (Codex review). */
+  receivedAt: Date,
+): Promise<string | null> {
+  const actorId = await actorOf(tx, businessId, from);
+  if (!actorId) return null;
+  return (await continuationsRepo.wasAskedAbout(tx, businessId, actorId, heldId, {
+    now: receivedAt,
+  }))
+    ? actorId
+    : null;
+}
+
+/**
+ * The identity question this SENDER is still being asked (Codex review;
+ * fresh review of #262): a purchase still held and inside its window that
+ * they were asked about, NEWER than the preview their yes, no or doubt
+ * would otherwise reach. Found whether or not its continuation is still open
+ * (another message from them retires it), and whatever another member's
+ * held question hides. Such a reply is about that question: it re-asks, and
+ * never confirms or drops an older preview.
+ */
+async function senderBeingAsked(
+  tx: TenantDb,
+  businessId: string,
+  from: string,
+  receivedAt: Date,
+): Promise<{ heldId: string; actorId: string } | null> {
+  const actorId = await actorOf(tx, businessId, from);
+  if (!actorId) return null;
+  const candidate = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
+    asOf: receivedAt,
+  });
+  const heldId = await conversationsRepo.askedHeldNewerThan(
+    tx,
+    businessId,
+    actorId,
+    candidate?.id ?? null,
+    { now: receivedAt },
+  );
+  return heldId ? { heldId, actorId } : null;
+}
+
+/**
+ * A yes, a no or a doubtful answer from the member who was asked "same or
+ * separate" (G-81): never an answer, never a confirmation of any older
+ * preview. Inside the question's window it is asked again, and the short
+ * answer re-opened for them; after it, the question has closed. After a
+ * "no", the merchant is told that a cancel drops the question.
+ */
+async function reaskPurchaseIdentity(
+  tx: TenantDb,
+  businessId: string,
+  heldId: string,
+  actorId: string,
+  sender: { messageId: string; receivedAt: Date },
+  options: { afterNo?: boolean } = {},
+): Promise<Reply> {
+  /* G-65: the re-ask invites "separate", which a plan without Chat refuses:
+   * such a plan is told nothing was saved, as `reaskRetiredQuestion` is. */
+  const refused = await draftRefusalWithoutChat(tx, businessId);
+  if (refused) return refused;
+  const held = await conversationsRepo.heldPurchaseDraft(tx, businessId, heldId, {
+    now: sender.receivedAt,
+  });
+  if (!held || held.expiresAt.getTime() <= sender.receivedAt.getTime()) {
+    return identityClosedReply(tx, businessId);
+  }
+  const live = await continuationsRepo.currentContinuation(tx, businessId, actorId, {
+    now: sender.receivedAt,
+  });
+  const open =
+    live?.state.kind === 'clarification' &&
+    live.state.expects === 'purchase_identity' &&
+    live.state.draftId === heldId;
+  if (!open) {
+    await continuationsRepo.openContinuation(tx, {
+      businessId,
+      userId: actorId,
+      sourceMessageId: sender.messageId,
+      state: { kind: 'clarification', expects: 'purchase_identity', draftId: heldId },
+      now: sender.receivedAt,
+      expiresAt: held.expiresAt,
+    });
+  }
+  return replies.purchaseIdentityReask(options);
+}
+
+/**
+ * "That question has closed" (G-81), or, on a plan without Chat, what
+ * `closedQuestionReply` says there (G-65): the closed reply invites sending
+ * the purchase again, which such a plan refuses.
+ */
+async function identityClosedReply(
+  tx: TenantDb,
+  businessId: string,
+  options: { freshPreviewWaiting?: boolean } = {},
+): Promise<Reply> {
+  return (await draftRefusalWithoutChat(tx, businessId)) ?? replies.purchaseIdentityClosed(options);
+}
+
+/**
+ * The answer to "Is this the same purchase?" (G-81), from the member who was
+ * asked, inside the question's window. The continuation was claimed by the
+ * caller.
+ *
+ *  - "same": the held purchase is closed and NOTHING is written: no purchase,
+ *    stock movement, posting, bill, document or unit. Older retired purchase
+ *    questions it was blocking are closed too. The merchant is pointed,
+ *    truthfully, at the record the question NAMED, as it stands now.
+ *  - "separate": after the read-only gates (role, plan, Chat, run by the
+ *    caller before the question is claimed), the purchase is compared again
+ *    with ONLY the records the question named excused; anything else that
+ *    matches is asked about (and added to what the question names).
+ *    Otherwise the held purchase is closed and a FRESH preview is recorded,
+ *    with its own G-23 window, declared separate from exactly those records;
+ *    only a normal yes books it.
+ */
+async function answerPurchaseIdentity(
+  tx: TenantDb,
+  businessId: string,
+  actorId: string,
+  heldId: string,
+  answer: 'same' | 'separate',
+  message: { messageId: string; from: string; receivedAt: Date; outcome?: RebuildOutcome },
+): Promise<Reply> {
+  const held = await conversationsRepo.heldPurchaseDraft(tx, businessId, heldId, {
+    now: message.receivedAt,
+  });
+  if (!held || held.expiresAt.getTime() <= message.receivedAt.getTime()) {
+    return identityClosedReply(tx, businessId);
+  }
+  const command = held.command as Record<string, unknown>;
+  const amountK = purchaseTotalK(command);
+
+  if (answer === 'same') {
+    if (
+      !(await conversationsRepo.releaseHeld(tx, businessId, heldId, { now: message.receivedAt }))
+    ) {
+      return identityClosedReply(tx, businessId);
+    }
+    /* The held purchase was the newest thing in the way of older retired
+     * G-61 questions; with it gone, no member is asked a stale one. */
+    for (const closed of await conversationsRepo.closeRetiredQuestionsBefore(
+      tx,
+      businessId,
+      heldId,
+    )) {
+      await continuationsRepo.retireContinuationsForDraft(tx, businessId, closed);
+    }
+    if (amountK === null) {
+      return replies.samePurchase(null, message.receivedAt, {
+        withoutChat: (await withoutChat(tx, businessId)) !== null,
+      });
+    }
+    const { records } = await purchaseIdentityRepo.purchaseRecords(tx, businessId, amountK, {
+      asOf: message.receivedAt,
+      excludeDraftId: heldId,
+    });
+    const named = [
+      ...held.askedAbout.draftIds.map((draftId) => ({ draftId, expenseId: null })),
+      ...held.askedAbout.expenseIds.map((expenseId) => ({ draftId: null, expenseId })),
+    ];
+    const pointedAt = records.filter((r) => named.some((n) => sameRecord(n, r.self)));
+    const pointed = pointedAt.find((m) => m.state === 'booked') ?? pointedAt[0] ?? null;
+    /* "same" writes nothing, so it is answered on every plan (G-65); without
+     * Chat its copy invites neither a yes nor a resend that would be refused. */
+    return replies.samePurchase(
+      pointed ? identitySubject(pointed, actorId) : null,
+      message.receivedAt,
+      {
+        withoutChat: (await withoutChat(tx, businessId)) !== null,
+      },
+    );
+  }
+
+  /* A "separate" sent before the question was re-asked answered it as it
+   * then stood (Codex review of 30a5c8f): what the re-ask added was never
+   * shown to that reply, so it excuses nothing and the question is asked
+   * again. Nothing is written. */
+  if (held.reaskedAt && message.receivedAt.getTime() < held.reaskedAt.getTime()) {
+    return reaskPurchaseIdentity(tx, businessId, heldId, actorId, message);
+  }
+  /* The read-only gates (role, plan, Chat) ran in the caller BEFORE the
+   * question was claimed, so a refusal leaves it open. */
+  const gate = gatePurchase(command as never);
+  if (gate.gate !== 'CG2') return replies.arithmeticQuestion(gate.question);
+
+  const verdict = await purchaseIdentityCheck(tx, businessId, {
+    messageId: message.messageId,
+    receivedAt: message.receivedAt,
+    actorId,
+    stored: command,
+    separateFrom: heldId,
+    excludeDraftId: heldId,
+  });
+  if (verdict?.ask) {
+    /* Something matching that the question did NOT name: the merchant
+     * answered about what they were shown, not about this. It is named now,
+     * added to what the question names, with a fresh window. */
+    const again = await conversationsRepo.reaskHeld(
+      tx,
+      businessId,
+      heldId,
+      verdict.asked.map((r) => r.self),
+    );
+    if (!again) return identityClosedReply(tx, businessId);
+    if (message.outcome) message.outcome.reaskedHeld = { heldId, previous: again.previous };
+    await continuationsRepo.openContinuation(tx, {
+      businessId,
+      userId: actorId,
+      sourceMessageId: message.messageId,
+      state: { kind: 'clarification', expects: 'purchase_identity', draftId: heldId },
+      now: message.receivedAt,
+      expiresAt: again.expiresAt,
+    });
+    return replies.purchaseIdentityQuestion(
+      identitySubject(verdict.ask, actorId),
+      message.receivedAt,
+      { named: verdict.asked.length, newSince: true },
+    );
+  }
+  if (!(await conversationsRepo.releaseHeld(tx, businessId, heldId, { now: message.receivedAt }))) {
+    return identityClosedReply(tx, businessId);
+  }
+  const draft = await conversationsRepo.recordDraft(tx, {
+    businessId,
+    conversationMessageId: message.messageId,
+    intent: 'RecordPurchase',
+    command,
+    model: null,
+    previewed: true,
+    requestedBy: actorId,
+    separateFrom: heldId,
+    /* A held rebuild stays a rebuild (fresh review of #262). */
+    rebuiltFrom: held.rebuiltFrom,
+  });
+  if (message.outcome) {
+    message.outcome.separatedFrom = { heldId, expiresAt: held.expiresAt };
+  }
+  let shown = replies.separatePurchase(replies.preview(gate.preview));
+  if (draft.isNew) {
+    shown = await replaceOwnPreviews(
+      tx,
+      businessId,
+      verdict?.replace ?? [],
+      shown,
+      message.outcome,
+    );
+    shown = await afterNewPreview(
+      tx,
+      businessId,
+      draft.id,
+      command,
+      actorId,
+      shown,
+      message.outcome,
+    );
+  }
+  return shown;
+}
+
+/**
+ * What every NEW financial preview does once recorded (G-68, kept as Build 7
+ * wrote it, and shared with the "separate" answer since G-81): the SAME
+ * member's pending funding-answer rebuild of the same total is superseded
+ * and the reply says so (a different total leaves it waiting, and the reply
+ * says that too); never across members, never for a rebuild with no
+ * recorded requester. And every older retired purchase question is closed,
+ * with every member's short answer to it, so nobody can rebuild it into a
+ * second preview of the same purchase.
+ */
+async function afterNewPreview(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  command: unknown,
+  actorId: string | null,
+  shown: Reply,
+  outcome?: RebuildOutcome,
+): Promise<Reply> {
+  let reply = shown;
+  if (actorId && (command as { intent?: unknown } | null)?.intent === 'RecordPurchase') {
+    for (const older of await conversationsRepo.pendingRebuildsBefore(tx, businessId, draftId)) {
+      if (older.requestedBy !== actorId) continue;
+      const fate = rebuiltPurchaseFate(older.command, command);
+      if (!fate) continue;
+      if (fate.replace) {
+        if (await conversationsRepo.supersedeRebuild(tx, businessId, older.id)) {
+          reply = replies.earlierPreviewReplaced(reply, fate.totalK);
+          if (outcome) (outcome.replacedRebuilds ??= []).push(older.id);
+        }
+      } else {
+        reply = replies.earlierPreviewStillWaiting(reply, fate.totalK);
+      }
+    }
+  }
+  for (const closed of await conversationsRepo.closeRetiredQuestionsBefore(
+    tx,
+    businessId,
+    draftId,
+  )) {
+    const holders = await continuationsRepo.retireContinuationsForDraft(tx, businessId, closed);
+    if (outcome) (outcome.closedQuestions ??= []).push({ id: closed, holders });
+  }
+  return reply;
 }
 
 /**
@@ -2860,6 +3554,11 @@ async function unsureReply(
     return replies.erasureKept();
   }
 
+  /* G-81 first: doubt from a member still being asked "same or separate" is
+   * about that question (gated without Chat inside the re-ask). */
+  const asking = await senderBeingAsked(tx, businessId, sender.from, receivedAt);
+  if (asking) return reaskPurchaseIdentity(tx, businessId, asking.heldId, asking.actorId, sender);
+
   /* G-65: every answer below invites a plain yes (or re-asks a question a
    * "bank" answers), which a plan without Chat is then refused. Such a plan
    * is told nothing was saved when something was waiting, and pointed at
@@ -2890,7 +3589,17 @@ async function unsureReply(
       : replies.nothingToConfirmWithoutChat();
   }
 
-  const latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, { asOf: receivedAt });
+  let latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, { asOf: receivedAt });
+  /* G-81: doubt about the identity question asks it again, from the member
+   * who was asked; nobody else is held up by it. */
+  if (latest?.state === 'held') {
+    const asked = await askedAboutHeld(tx, businessId, latest.id, sender.from, sender.receivedAt);
+    if (asked) return reaskPurchaseIdentity(tx, businessId, latest.id, asked, sender);
+    latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
+      asOf: receivedAt,
+      skipHeld: true,
+    });
+  }
   if (latest?.state === 'abandoned') {
     return (
       (await reaskRetiredQuestion(tx, businessId, latest, sender)) ?? replies.nothingToConfirm()
@@ -3061,6 +3770,10 @@ async function closedQuestionReply(
   return replies.previewAlreadyWaiting(differs ? paid : undefined);
 }
 
+/** How long after an identity question closes "same" or "separate" is still
+ * told it closed (G-81); after it, the words are an ordinary message. */
+const IDENTITY_CLOSED_GRACE_MS = 2 * 60 * 60 * 1000;
+
 /** When a funding question's answer window closes (OD-19). */
 function fundingWindowEnd(askedAt: Date): Date {
   return new Date(askedAt.getTime() + FUNDING_ANSWER_WINDOW_SECONDS * 1000);
@@ -3129,6 +3842,93 @@ async function continueConversation(
     }
   }
 
+  /* G-81: "same" or "separate" with nothing open, when this member's
+   * newest continuation was the identity question (fresh review of #262):
+   *  - its purchase is still held and inside its window (another message
+   *    retired the short answer): it IS the answer, taken as one;
+   *  - it was answered "separate" and that fresh preview still waits: said;
+   *  - otherwise, only shortly after the question closed, that it closed.
+   * Days later a bare "same" is an ordinary message. No model call. */
+  /* "same" or "separate" while another, newer continuation is open (say
+   * "Which period?" after a spending question): it answers the sender's
+   * own held identity question, still inside its window and asked BEFORE
+   * this reply, never the newer question (Codex review). */
+  const spokenAnswer =
+    message.route.route === 'model' ? purchaseIdentityAnswer(message.text) : null;
+  if (
+    spokenAnswer &&
+    !(open?.state.kind === 'clarification' && open.state.expects === 'purchase_identity')
+  ) {
+    const heldId = await conversationsRepo.askedHeldNewerThan(tx, businessId, actorId, null, now);
+    if (heldId) {
+      /* The open question this answer retires, given back if the reply
+       * never reaches the member. */
+      if (open && message.outcome) message.outcome.supersededContinuation = open.id;
+      if (answerIsUncertain(message.text)) {
+        return reaskPurchaseIdentity(tx, businessId, heldId, actorId, message);
+      }
+      if (spokenAnswer === 'separate') {
+        const refused = await fundingGateRefusal(tx, businessId, message.from);
+        if (refused) return refused;
+      }
+      await continuationsRepo.retireContinuations(tx, businessId, actorId, now);
+      return answerPurchaseIdentity(tx, businessId, actorId, heldId, spokenAnswer, message);
+    }
+  }
+  const identityAnswer = !open ? spokenAnswer : null;
+  if (identityAnswer) {
+    const newest = await continuationsRepo.newestContinuation(tx, businessId, actorId, now);
+    if (newest?.kind === 'clarification' && newest.expects === 'purchase_identity') {
+      const asked = await conversationsRepo.identityQuestionState(
+        tx,
+        businessId,
+        newest.draftId,
+        now,
+      );
+      const t = message.receivedAt.getTime();
+      if (
+        asked?.state === 'held' &&
+        asked.expiresAt.getTime() > t &&
+        !answerIsUncertain(message.text)
+      ) {
+        if (identityAnswer === 'separate') {
+          const refused = await fundingGateRefusal(tx, businessId, message.from);
+          if (refused) return refused;
+        }
+        return answerPurchaseIdentity(
+          tx,
+          businessId,
+          actorId,
+          newest.draftId,
+          identityAnswer,
+          message,
+        );
+      }
+      if (asked?.freshPreviewWaiting) {
+        return identityClosedReply(tx, businessId, { freshPreviewWaiting: true });
+      }
+      if (asked && t < asked.expiresAt.getTime() + IDENTITY_CLOSED_GRACE_MS) {
+        return identityClosedReply(tx, businessId);
+      }
+    }
+  }
+
+  /* G-81: a "yes", "na so", "no" or "cancel" while the identity question is
+   * open is about the question, never an answer to it: it goes down its
+   * ordinary path, which asks the question again (or, for a cancel, closes
+   * it), and the question stays open for the short answer it asks for. */
+  if (
+    open?.state.kind === 'clarification' &&
+    open.state.expects === 'purchase_identity' &&
+    message.route.route === 'deterministic' &&
+    (message.route.intent.kind === 'affirm' ||
+      message.route.intent.kind === 'unsure' ||
+      message.route.intent.kind === 'deny' ||
+      message.route.intent.kind === 'cancel')
+  ) {
+    return null;
+  }
+
   /* G-61: a "yes" (or "na so", "oya") to the funding-source question is
    * about the question itself, and is answered by asking it again, exactly
    * as before (G-68 Phase 2). The question stays open for the short answer
@@ -3193,6 +3993,40 @@ async function continueConversation(
     return answerFundingSource(tx, businessId, draftId, answer.source, message);
   }
 
+  /* "same" or "separate" to the identity question (G-81, OD-23), from the
+   * member who was asked, inside its window. Doubt ("same?", "separate 🤔")
+   * asks again and acts on nothing. "separate" meets the read-only gates
+   * BEFORE the question is claimed, so a refusal leaves it open. Claimed
+   * once, then answered: "same" writes nothing, "separate" shows a FRESH
+   * preview that only a normal yes books. */
+  if (
+    open &&
+    answer?.kind === 'purchase_identity' &&
+    open.state.kind === 'clarification' &&
+    open.state.expects === 'purchase_identity'
+  ) {
+    const heldId = open.state.draftId;
+    if (answerIsUncertain(message.text)) {
+      return reaskPurchaseIdentity(tx, businessId, heldId, actorId, message);
+    }
+    if (answer.answer === 'separate') {
+      const refused = await fundingGateRefusal(tx, businessId, message.from);
+      if (refused) return refused;
+    }
+    const claimed = await continuationsRepo.consumeContinuation(
+      tx,
+      businessId,
+      actorId,
+      open.id,
+      now,
+    );
+    if (!claimed) {
+      await continuationsRepo.retireContinuations(tx, businessId, actorId, now);
+      return null;
+    }
+    return answerPurchaseIdentity(tx, businessId, actorId, heldId, answer.answer, message);
+  }
+
   /* "2" from an explicit numbered list this member was shown and that is
    * still open (G-68 Phase 2): the list is CONSUMED by its answer, never
    * merely superseded. No question in Rekoda presents a numbered list yet,
@@ -3246,6 +4080,28 @@ async function continueConversation(
       ? await continuationsRepo.consumeContinuation(tx, businessId, actorId, open.id, now)
       : read !== null;
   if (!read || !claimed) {
+    /* G-81 (fresh review of #262): a reply that is not an answer leaves the
+     * identity question open while its purchase can still be answered, so
+     * a later "separate" is never told the question closed while a yes
+     * would re-ask it. */
+    if (
+      open?.state.kind === 'clarification' &&
+      open.state.expects === 'purchase_identity' &&
+      message.route.route === 'model'
+    ) {
+      const held = await conversationsRepo.heldPurchaseDraft(tx, businessId, open.state.draftId, {
+        now: message.receivedAt,
+      });
+      if (held) {
+        /* "cash" again after a funding answer whose purchase is now asked
+         * about: the funding question was answered, and the identity
+         * question is what is open, so that is what is asked again. */
+        if (held.rebuiltFrom && fundingSourceAnswer(message.text)) {
+          return reaskPurchaseIdentity(tx, businessId, held.id, actorId, message);
+        }
+        return null;
+      }
+    }
     const retired = await continuationsRepo.retireContinuations(tx, businessId, actorId, now);
     if (retired > 0 && open?.state.kind === 'clarification' && message.outcome) {
       message.outcome.retiredQuestion = true;
@@ -3710,16 +4566,39 @@ async function interpretedReply(
     stored = { ...command, supplierMention: null, supplierId: supplier?.supplierId ?? null };
   }
 
+  /* G-81 (OD-23): a purchase that would be previewed is first compared with
+   * every purchase of the same total waiting for a yes or booked in the last
+   * 24 hours. The member's OWN waiting preview of it is replaced (D4, as
+   * Build 7 replaces their own rebuild). Anything else that may be the same
+   * purchase, booked by anyone, waiting for another member, or waiting with
+   * no recorded requester (never treated as "you"), makes this purchase
+   * HELD and asked about instead: never silently dropped, never silently
+   * previewed for a second booking. A question Rekoda must ask first (CG1,
+   * the G-61 funding source) is asked first; the comparison waits for the
+   * purchase to be previewable. */
+  const identity =
+    command.intent === 'RecordPurchase' && answered.previewed === true
+      ? await purchaseIdentityCheck(tx, businessId, {
+          messageId: conversationMessageId,
+          receivedAt,
+          actorId,
+          stored,
+        })
+      : null;
+  const holding = identity?.ask != null;
+
   const draft = await conversationsRepo.recordDraft(tx, {
     businessId,
     conversationMessageId,
     intent: command.intent,
     command: stored,
     model: deps.config.aiModelDefault,
-    identityLink: answered.linkAsked ? link : null,
+    identityLink: answered.linkAsked && !holding ? link : null,
     previewed: answered.previewed === true,
     confirmationContext: answered.confirmationContext ?? null,
     requestedBy: actorId ?? null,
+    held: holding,
+    separateFrom: holding ? null : (identity?.inheritFrom ?? null),
   });
 
   /* Build 6: a read Rekoda just answered, or the one question it asked
@@ -3735,50 +4614,58 @@ async function interpretedReply(
     });
   }
 
+  let shown = answered.reply;
+  if (holding && identity?.ask) {
+    /* The question, never the preview: nothing a yes could confirm exists.
+     * "same" or "separate" is answered through a typed, member-scoped,
+     * expiring continuation naming the held draft. A sender with no
+     * membership cannot reach a purchase at all (the role rule above); if
+     * one ever did, nobody could answer, and nothing would be confirmable. */
+    shown = replies.purchaseIdentityQuestion(identitySubject(identity.ask, actorId), receivedAt, {
+      named: identity.asked.length,
+    });
+    if (draft.isNew) {
+      /* Exactly what the question names, so "separate" excuses only those. */
+      await conversationsRepo.nameHeldRecords(
+        tx,
+        businessId,
+        draft.id,
+        identity.asked.map((r) => r.self),
+      );
+      if (actorId) {
+        /* The question's window opens when it is ASKED, on the database
+         * clock, never when a delayed message arrived (Codex review), and
+         * the continuation closes exactly with it. */
+        const held = await conversationsRepo.heldPurchaseDraft(tx, businessId, draft.id);
+        await continuationsRepo.openContinuation(tx, {
+          businessId,
+          userId: actorId,
+          sourceMessageId: conversationMessageId,
+          state: { kind: 'clarification', expects: 'purchase_identity', draftId: draft.id },
+          ...(held ? { expiresAt: held.expiresAt } : {}),
+        });
+      }
+      if (outcome) (outcome.heldDrafts ??= []).push(draft.id);
+    }
+  }
+  /* A purchase held for a question replaces nothing (fresh review of #262):
+   * the member's own waiting preview stays the one confirmable preview. */
+  if (identity && draft.isNew && !holding) {
+    shown = await replaceOwnPreviews(tx, businessId, identity.replace, shown, outcome);
+  }
+
   /* G-68 review: a NEW financial preview means the merchant has moved on
    * from any retired purchase question asked before it (typically they sent
    * the purchase again, the base way to answer it). Each such question is
    * closed in this transaction, and every member's short answer to it is
    * retired, so nobody can rebuild it into a second preview of the same
-   * purchase. */
-  let shown = answered.reply;
-  if (answered.previewed === true && draft.isNew) {
-    /* The SAME member's purchase sent again (final-head review): their own
-     * pending rebuilt preview of the same TOTAL (integer kobo) is superseded,
-     * so their two yeses cannot book one purchase twice, and the reply ALWAYS
-     * says so with the total, so a different purchase is sent again by the
-     * one person who can tell. A different total leaves it waiting, and the
-     * reply says that too. Never across members, and never for a rebuild
-     * with no recorded requester: both previews then stay pending, exactly
-     * as base (whose preview a member may confirm is OD-15). Product names
-     * are free text and are never compared. */
-    if (command.intent === 'RecordPurchase' && actorId) {
-      for (const older of await conversationsRepo.pendingRebuildsBefore(tx, businessId, draft.id)) {
-        if (older.requestedBy !== actorId) continue;
-        const fate = rebuiltPurchaseFate(older.command, command);
-        if (!fate) continue;
-        if (fate.replace) {
-          if (await conversationsRepo.supersedeRebuild(tx, businessId, older.id)) {
-            shown = replies.earlierPreviewReplaced(shown, fate.totalK);
-            /* Remembered, so a replacement that never reaches the merchant
-             * gives them back the preview they saw. */
-            if (outcome) (outcome.replacedRebuilds ??= []).push(older.id);
-          }
-        } else {
-          shown = replies.earlierPreviewStillWaiting(shown, fate.totalK);
-        }
-      }
-    }
-    for (const closed of await conversationsRepo.closeRetiredQuestionsBefore(
-      tx,
-      businessId,
-      draft.id,
-    )) {
-      const holders = await continuationsRepo.retireContinuationsForDraft(tx, businessId, closed);
-      /* Remembered, so a preview that never reaches the merchant gives the
-       * questions it closed back, with every member's short answer. */
-      if (outcome) (outcome.closedQuestions ??= []).push({ id: closed, holders });
-    }
+   * purchase. And the SAME member's pending rebuilt preview of the same
+   * TOTAL (integer kobo) is superseded, so their two yeses cannot book one
+   * purchase twice, and the reply ALWAYS says so (final-head review); a
+   * different total leaves it waiting, and the reply says that too. Never
+   * across members, and never for a rebuild with no recorded requester. */
+  if (answered.previewed === true && draft.isNew && !holding) {
+    shown = await afterNewPreview(tx, businessId, draft.id, command, actorId, shown, outcome);
   }
 
   /* G-61: the draft that asked a purchase question is kept on the record,

@@ -83,3 +83,70 @@ describe('sanitising a command for draft persistence', () => {
     expect(sanitizeCommandForPersistence(unknown)).toBe(unknown);
   });
 });
+
+describe("a purchase's supplier reference (G-81)", () => {
+  const purchase = (supplierReference: unknown) => ({
+    intent: 'RecordPurchase',
+    supplierMention: null,
+    description: '10 cartons of Milo',
+    amount: 100_000,
+    reportedPayment: 100_000,
+    paymentMethod: 'cash',
+    productMention: 'Milo',
+    quantity: 10,
+    supplierReference,
+  });
+
+  it('is stored only in its normalised document-number shape', () => {
+    const stored = sanitizeCommandForPersistence(purchase('EMK-0041')) as Record<string, unknown>;
+    expect(stored['supplierReference']).toBe('OTHER:0041');
+  });
+
+  it('is dropped when it is not a document number, so a name is never stored', () => {
+    for (const raw of ["Emeka's receipt", 'Emeka Stores', 'the paper']) {
+      const stored = sanitizeCommandForPersistence(purchase(raw)) as Record<string, unknown>;
+      expect(stored['supplierReference']).toBeNull();
+    }
+  });
+
+  it('leaves a purchase without one exactly as it was', () => {
+    const command = { ...purchase(null) };
+    delete (command as Record<string, unknown>)['supplierReference'];
+    expect(sanitizeCommandForPersistence(command)).toBe(command);
+  });
+});
+
+describe("Codex review of #262: a supplier's name with a digit is not a reference", () => {
+  it.each(['3 Brothers Ventures', '2 Sisters Stores', 'Emeka 2'])('%j is dropped', (raw) => {
+    const stored = sanitizeCommandForPersistence({
+      intent: 'RecordPurchase',
+      supplierMention: null,
+      description: 'stock',
+      amount: 100,
+      reportedPayment: null,
+      productMention: null,
+      quantity: null,
+      supplierReference: raw,
+    }) as Record<string, unknown>;
+    expect(stored['supplierReference']).toBeNull();
+  });
+});
+
+describe('Codex review of 7f173b6', () => {
+  it('drops a model reference written in the stored form that is the total or a date', () => {
+    for (const supplierReference of ['INV:100000', 'INV:20261002']) {
+      const stored = sanitizeCommandForPersistence({
+        intent: 'RecordPurchase',
+        supplierMention: null,
+        description: 'Milo',
+        amount: 100_000,
+        reportedPayment: 100_000,
+        paymentMethod: 'cash',
+        productMention: 'Milo',
+        quantity: 10,
+        supplierReference,
+      }) as Record<string, unknown>;
+      expect(stored['supplierReference']).toBeNull();
+    }
+  });
+});

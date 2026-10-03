@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import {
   consentIntentOf,
   fundingSourceAnswer,
+  purchaseIdentityAnswer,
   answerIsUncertain,
   periodAnswer,
   uncountablePeriod,
@@ -1224,4 +1225,126 @@ describe('an affirmation may carry only emoji that mean yes (Codex review)', () 
       expect(intentOf(m)).toEqual({ kind: 'affirm' });
     },
   );
+});
+
+/**
+ * G-81 (OD-23): the answer to "Is this the same purchase?". Whole-message
+ * only, English and Pidgin, and never a router command: the router keeps
+ * "yes", "no" and "na so" for itself, and the handler asks again when one
+ * of those arrives instead of an answer.
+ */
+describe('the purchase identity answer (G-81)', () => {
+  const SAME = [
+    'same',
+    'the same',
+    'same one',
+    'same purchase',
+    'it is the same',
+    "it's the same",
+    'na same',
+    'na the same',
+    'na di same',
+    'na same one',
+    'e be the same',
+    'di same',
+    'Same!',
+    'ok same',
+    'abeg na the same o',
+  ];
+  const SEPARATE = [
+    'separate',
+    'a separate one',
+    'separate purchase',
+    'another',
+    'another one',
+    'another purchase',
+    'na another one',
+    'different',
+    'different one',
+    'e different',
+    'new',
+    'new one',
+    'a new one',
+    'not the same',
+    'no be the same',
+    'e no be the same',
+    'no be same',
+    'Separate.',
+  ];
+
+  it.each(SAME)('%j is "same"', (text) => {
+    expect(purchaseIdentityAnswer(text)).toBe('same');
+  });
+
+  it.each(SEPARATE)('%j is "separate"', (text) => {
+    expect(purchaseIdentityAnswer(text)).toBe('separate');
+  });
+
+  it.each([...SAME, ...SEPARATE])('%j is never a router command', (text) => {
+    expect(routeMessage(text).route).toBe('model');
+  });
+
+  it.each([
+    'yes',
+    'no',
+    'na so',
+    'no be so',
+    'correct',
+    'wrong',
+    'both',
+    'two',
+    'again',
+    'duplicate',
+    'same supplier, different price',
+    'I bought the same thing again',
+    'same as yesterday',
+    'not sure',
+    'cash',
+    'separate 20k',
+  ])('%j is not an answer', (text) => {
+    expect(purchaseIdentityAnswer(text)).toBeNull();
+  });
+
+  it('a doubtful answer still reads as one, and is marked uncertain for the handler', () => {
+    expect(purchaseIdentityAnswer('same?')).toBe('same');
+    expect(answerIsUncertain('same?')).toBe(true);
+    expect(answerIsUncertain('separate 🤔')).toBe(true);
+    expect(answerIsUncertain('separate ❌')).toBe(true);
+    expect(answerIsUncertain('same')).toBe(false);
+    expect(answerIsUncertain('na another one o')).toBe(false);
+  });
+});
+
+describe('fresh review of #262: typed and natural identity answers', () => {
+  it.each([
+    ['seperate', 'separate'],
+    ['na separate', 'separate'],
+    ['not same', 'separate'],
+    ["it's different", 'separate'],
+    ['no be d same', 'separate'],
+    ['no, separate', 'separate'],
+    ['no it is different', 'separate'],
+    ['its the same', 'same'],
+    ['na d same', 'same'],
+    ['yes same', 'same'],
+  ])('%j is %s', (text, answer) => {
+    expect(purchaseIdentityAnswer(text)).toBe(answer);
+    expect(routeMessage(text).route).toBe('model');
+  });
+});
+
+describe('fresh review of 75fd1c9: identity answers', () => {
+  it('"no different" is not "separate" (in Nigerian English it often means the same)', () => {
+    expect(purchaseIdentityAnswer('no different')).toBeNull();
+  });
+  it.each([
+    ['it is the same one', 'same'],
+    ['na him', 'same'],
+    ['na am', 'same'],
+    ['na that one', 'same'],
+    ['na another purchase', 'separate'],
+  ])('%j is %s', (text, answer) => {
+    expect(purchaseIdentityAnswer(text)).toBe(answer);
+    expect(routeMessage(text).route).toBe('model');
+  });
 });

@@ -58,6 +58,7 @@ export * as stocktakeRepo from './repos/stocktake.js';
 export * as subscriptionsRepo from './repos/subscriptions.js';
 export * as shopsRepo from './repos/shops.js';
 export * as spendRepo from './repos/spend.js';
+export * as purchaseIdentityRepo from './repos/purchase-identity.js';
 export * as taxRepo from './repos/tax.js';
 export * as returnsRepo from './repos/returns.js';
 export * as usageRepo from './repos/usage.js';

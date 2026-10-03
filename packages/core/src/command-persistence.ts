@@ -22,6 +22,8 @@
  * never stored" stays true in both halves.
  */
 
+import { storedPurchaseReference } from './purchase-identity.js';
+
 type CommandRecord = Record<string, unknown>;
 
 /**
@@ -52,13 +54,32 @@ export function sanitizeCommandForPersistence(command: unknown): unknown {
   if (command === null || typeof command !== 'object' || Array.isArray(command)) {
     return command;
   }
-  const record = command as CommandRecord;
+  return stripTransientFields(normaliseReference(command as CommandRecord));
+}
+
+/**
+ * A purchase's supplier document reference (G-81) is stored ONLY as its
+ * document KIND from a closed set and its digits ("INV:2231", "OTHER:0041"),
+ * never the letters it was written with, which can be a name ("TOLU-77";
+ * ADR 0005). Anything that is not certainly a reference (a name, an amount,
+ * the purchase's own total, a date, a phone number) is dropped (null), and
+ * the purchase is then simply one with no reference.
+ */
+function normaliseReference(record: CommandRecord): CommandRecord {
+  if (record['intent'] !== 'RecordPurchase' || !('supplierReference' in record)) return record;
+  const total = typeof record['amount'] === 'number' ? record['amount'] : null;
+  const normalised = storedPurchaseReference(record['supplierReference'], total);
+  if (normalised === record['supplierReference']) return record;
+  return { ...record, supplierReference: normalised };
+}
+
+function stripTransientFields(record: CommandRecord): unknown {
   const intent = record['intent'];
   const transient = typeof intent === 'string' ? TRANSIENT_FIELDS[intent] : undefined;
-  if (!transient || transient.length === 0) return command;
+  if (!transient || transient.length === 0) return record;
 
   const dirty = transient.some((field) => field in record && record[field] !== null);
-  if (!dirty) return command;
+  if (!dirty) return record;
 
   const sanitised: CommandRecord = { ...record };
   for (const field of transient) {
