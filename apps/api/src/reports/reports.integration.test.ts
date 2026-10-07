@@ -4042,12 +4042,12 @@ describe('purchase orders, and what receiving one does', () => {
 
     it('SEPARATE from one purchase still asks about one booked after the question', async () => {
       const { auth, businessId } = await onboard('+2348177000506');
-      const first = await chatBooked(businessId, 'invoice 2001');
+      const first = await chatBooked(businessId, 'invoice 5501');
       const poNumber = await openPo(auth);
       const asked = await receive(auth, { poNumber, paidK: 0 });
       expect(asked).toMatchObject({ outcome: 'possible_duplicate', expenseIds: [first] });
 
-      const second = await chatBooked(businessId, 'invoice 2002');
+      const second = await chatBooked(businessId, 'invoice 5502');
       expect(await receive(auth, { poNumber, paidK: 0, separateFrom: [first] })).toMatchObject({
         outcome: 'possible_duplicate',
         expenseIds: [second],
