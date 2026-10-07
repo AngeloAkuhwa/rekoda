@@ -477,11 +477,6 @@ export function ownerOf(record: PurchaseRecord, actorId: string | null): RecordO
   return record.requestedBy === actorId ? 'you' : 'another_member';
 }
 
-/** The record ref a question names a matching record by. */
-export function refOf(record: PurchaseRecord): RecordRef {
-  return record.self;
-}
-
 /**
  * D4's split, for a new preview by `actorId`:
  *  - `replace`: the member's ONE own waiting preview this one replaces, as

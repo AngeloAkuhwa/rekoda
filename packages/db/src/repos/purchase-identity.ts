@@ -252,9 +252,13 @@ export async function purchaseRecords(
   const asOf = sql`coalesce(${options.asOf ? options.asOf.toISOString() : null}::timestamptz, clock_timestamp())`;
   const exclude = options.excludeDraftId ?? null;
   const excludeUuid = exclude && UUID.test(exclude) ? exclude : null;
+  /* When the message cannot be read, the bound falls back to `asOf`, which
+   * keeps every record a readable message would: a missing row makes the
+   * check stricter, never switches it off (fan-out review of 8dfce8f). */
   const cutoff = options.messageId
-    ? sql`(SELECT ${arrivalOf(sql`cm`)} FROM conversation_messages cm
-            WHERE cm.id = ${options.messageId}::uuid AND cm.business_id = ${businessId}::uuid)`
+    ? sql`coalesce((SELECT ${arrivalOf(sql`cm`)} FROM conversation_messages cm
+            WHERE cm.id = ${options.messageId}::uuid AND cm.business_id = ${businessId}::uuid),
+            ${asOf})`
     : null;
 
   const records: PurchaseRecord[] = [];
@@ -398,8 +402,9 @@ export async function unseenOwnPurchaseDrafts(
           AND d.requested_by = ${options.actorId}::uuid
           AND d.expires_at > ${options.asOf.toISOString()}::timestamptz
           AND d.id IS DISTINCT FROM ${excludeUuid}::uuid
-          AND ${arrivalOf(sql`m`)} <= (SELECT ${arrivalOf(sql`cm`)} FROM conversation_messages cm
-                WHERE cm.id = ${options.messageId}::uuid AND cm.business_id = ${businessId}::uuid)`,
+          AND ${arrivalOf(sql`m`)} <= coalesce((SELECT ${arrivalOf(sql`cm`)} FROM conversation_messages cm
+                WHERE cm.id = ${options.messageId}::uuid AND cm.business_id = ${businessId}::uuid),
+                ${options.asOf.toISOString()}::timestamptz)`,
     ),
   );
   const records: PurchaseRecord[] = [];

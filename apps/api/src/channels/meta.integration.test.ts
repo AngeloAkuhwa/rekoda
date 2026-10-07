@@ -14737,6 +14737,23 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       expect(await purchases(business.id)).toBe(3);
     });
 
+    it('a funding-answer rebuild that replaced an own preview, then failed to send, leaves the question answerable (fan-out review of 8dfce8f)', async () => {
+      const business = await seedMerchant();
+      await say('wamid.R7-cash', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      expect(stubSender.lastText).toContain('Paid in full by cash');
+      await say('wamid.R7-pos', POS_MILO, 'I bought 10 cartons of Milo for 100k, paid by POS');
+      /* The rebuild replaces the member's own waiting preview, and its send
+       * fails: everything goes back as the member last saw it. */
+      stubSender.failWith();
+      await reply('wamid.R7-bank-1', 'bank');
+      await reply('wamid.R7-bank-2', 'bank');
+      expect(stubSender.lastText).toContain('Paid in full by transfer');
+      expect(stubSender.lastText).not.toContain(CLOSED);
+      await reply('wamid.R7-yes-1', 'yes');
+      await reply('wamid.R7-yes-2', 'yes');
+      expect(await purchases(business.id)).toBe(1);
+    });
+
     it('a reference equal to the reported part payment is not stored', async () => {
       const business = await seedMerchant();
       await say(

@@ -593,6 +593,14 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
           }
         }
         if (outcome.replacedRebuilds?.length) {
+          /* A funding-answer rebuild that replaced the member's own preview
+           * (G-81): mark it the undone rebuild of its question FIRST, or
+           * undoReplacement supersedes it unmarked and the question can never
+           * be answered again (fan-out review of 8dfce8f). undoRebuild below
+           * then finds nothing more to do. */
+          if (outcome.rebuiltFrom) {
+            await conversationsRepo.undoRebuild(tx, businessId, outcome.rebuiltFrom, message.id);
+          }
           await conversationsRepo.undoReplacement(
             tx,
             businessId,
@@ -3310,7 +3318,8 @@ async function senderBeingAsked(
  * separate" (G-81): never an answer, never a confirmation of any older
  * preview. Inside the question's window it is asked again, and the short
  * answer re-opened for them; after it, the question has closed. After a
- * "no", the merchant is told that a cancel drops the question.
+ * "no", the merchant is told that *same* saves nothing more (never
+ * *cancel*, which withdraws every waiting preview in the business).
  */
 async function reaskPurchaseIdentity(
   tx: TenantDb,

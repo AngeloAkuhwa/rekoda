@@ -541,7 +541,7 @@ export const conversationContinuations = pgTable(
     sourceMessageId: uuid('source_message_id').notNull(),
     /** clarification | query */
     kind: text('kind').notNull(),
-    /** period | choice, for a clarification; null for a query continuation. */
+    /** period | choice | funding_source (0155) | purchase_identity (0158), for a clarification; null for a query continuation. */
     expects: text('expects'),
     topic: text('topic'),
     period: text('period'),
@@ -549,9 +549,9 @@ export const conversationContinuations = pgTable(
     documentRef: text('document_ref'),
     /** The exact lines of a numbered list shown; invoice numbers only. */
     options: jsonb('options'),
-    /** The retired purchase draft a funding-source question asked about (0155). */
+    /** The draft a funding-source question asked about (0155), or the held purchase a purchase-identity question asks about (0158). */
     draftId: uuid('draft_id'),
-    /** open | consumed | superseded | expired; one-way out of open. */
+    /** open | consumed | superseded | expired; out of open, except that a row an undelivered reply superseded is reopened inside its window (`reopenSuperseded`, G-81). */
     state: text('state').notNull().default('open'),
     insertionSeq: bigint('insertion_seq', { mode: 'number' }).notNull().generatedAlwaysAsIdentity(),
     createdAt: insertedAt('created_at'),
