@@ -245,7 +245,11 @@ function checkedNumber(
     /^\d+\.\d{1,2}$/u.test(numberPart) ||
     /^\d{1,4}[/.-]\d{1,2}(?:[/.-]\d{1,4})?$/u.test(numberPart) ||
     /^\d{1,2}[/.-]\d{4}$/u.test(numberPart) ||
-    /^(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])$/u.test(numberPart)
+    /^(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])$/u.test(numberPart) ||
+    /* Day-first and month-first compact dates too ("03102026"; Codex
+     * review of 0e9bf52): a date read off a photo is never a reference. */
+    /^(?:0[1-9]|[12]\d|3[01])(?:0[1-9]|1[0-2])(?:19|20)\d{2}$/u.test(numberPart) ||
+    /^(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?:19|20)\d{2}$/u.test(numberPart)
   ) {
     return null;
   }

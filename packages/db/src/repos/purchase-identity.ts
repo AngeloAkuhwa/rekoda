@@ -52,6 +52,32 @@ export async function lockPurchaseTotal(
   );
 }
 
+/**
+ * Everything a "separate" answer declared this purchase apart from, as a
+ * LATERAL join aliased `alias` with `asked_about_drafts` and
+ * `asked_about_expenses` (Codex review of 0e9bf52): the records the held
+ * question `start` named, and those of every question before it in its
+ * line. A fresh preview refused at its yes is held again (keeping its own
+ * `separate_from`), so a later "separate" to that refusal still carries what
+ * the first answer declared, and the merchant is never asked about it again.
+ * Bounded, and tenant-scoped at every step.
+ */
+const declaredLineage = (start: ReturnType<typeof sql>, businessId: string, alias: string) => sql`
+  LEFT JOIN LATERAL (
+    WITH RECURSIVE line(id, separate_from, named_drafts, named_expenses, depth) AS (
+      SELECT c.id, c.separate_from, c.asked_about_drafts, c.asked_about_expenses, 0
+        FROM command_drafts c
+       WHERE c.id = ${start} AND c.business_id = ${businessId}::uuid
+      UNION ALL
+      SELECT c.id, c.separate_from, c.asked_about_drafts, c.asked_about_expenses, line.depth + 1
+        FROM command_drafts c
+        JOIN line ON c.id = line.separate_from
+       WHERE c.business_id = ${businessId}::uuid AND line.depth < 16)
+    SELECT (SELECT array_agg(DISTINCT x) FROM line, unnest(line.named_drafts) x)
+             AS asked_about_drafts,
+           (SELECT array_agg(DISTINCT y) FROM line, unnest(line.named_expenses) y)
+             AS asked_about_expenses) ${sql.raw(alias)} ON true`;
+
 /** The fold `productByName` matches on, applied to a stored mention. */
 const foldedMention = (mention: ReturnType<typeof sql>) =>
   sql`lower(regexp_replace(btrim(${mention}), '[[:space:]]+', ' ', 'g'))`;
@@ -96,8 +122,7 @@ function draftsQuery(businessId: string, where: ReturnType<typeof sql>) {
       FROM command_drafts d
       JOIN conversation_messages m
         ON m.id = d.conversation_message_id AND m.business_id = d.business_id
-      LEFT JOIN command_drafts sep
-        ON sep.id = d.separate_from AND sep.business_id = d.business_id
+      ${declaredLineage(sql`d.separate_from`, businessId, 'sep')}
       LEFT JOIN LATERAL (
         SELECT p.id, p.external_catalogue_id FROM products p
          WHERE p.business_id = d.business_id
@@ -180,8 +205,7 @@ export async function newPurchaseFacts(
            AND ${foldedMention(sql`p.name`)} = ${foldedMention(sql`${input.productMention}::text`)}
          ORDER BY p.created_at
          LIMIT 1) p ON true
-      LEFT JOIN command_drafts h
-        ON h.id = ${input.separateFrom ?? null}::uuid AND h.business_id = ${businessId}::uuid`);
+      ${declaredLineage(sql`${input.separateFrom ?? null}::uuid`, businessId, 'h')}`);
   const row = [...rows][0];
   return {
     amountK: input.amountK,
@@ -297,8 +321,7 @@ export async function purchaseRecords(
                        THEN e.source_id::uuid END
       LEFT JOIN conversation_messages m
         ON m.id = d.conversation_message_id AND m.business_id = e.business_id
-      LEFT JOIN command_drafts sep
-        ON sep.id = d.separate_from AND sep.business_id = e.business_id
+      ${declaredLineage(sql`d.separate_from`, businessId, 'sep')}
       /* A booking's product is conclusive only when it moved exactly ONE
        * product (Codex review): a multi-line received order is never
        * represented by one of its lines, so it can never prove a purchase of

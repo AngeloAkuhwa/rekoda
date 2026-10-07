@@ -14502,4 +14502,70 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       expect(await purchases(business.id)).toBe(2);
     });
   });
+
+  describe('Codex review of 0e9bf52', () => {
+    it('P2: a refused fresh preview keeps what its first answer declared separate', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'Z1');
+      await say('wamid.Z1-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      await reply('wamid.Z1-d-sep', 'separate', DELEGATE);
+      expect(stubSender.lastText).toContain(SEPARATE_LEAD);
+      /* A received order of the same total is booked after that preview. */
+      await withBusiness(db, business.id, (tx) =>
+        spendRepo.recordPurchase(tx, {
+          businessId: business.id,
+          description: 'PO-0009',
+          amountK: 10_000_000,
+          paidK: 0,
+          method: null,
+          sourceType: 'purchase_order',
+          sourceId: 'po-0009',
+          supplierId: null,
+        }),
+      );
+      await reply('wamid.Z1-d-yes-1', 'yes', DELEGATE);
+      expect(stubSender.lastText).toContain(RACE);
+      /* "separate" to THAT is about the order only: the owner's booking was
+       * already declared separate, so it is not asked about again. */
+      await reply('wamid.Z1-d-sep-2', 'separate', DELEGATE);
+      expect(stubSender.lastText).toContain(SEPARATE_LEAD);
+      await reply('wamid.Z1-d-yes-2', 'yes', DELEGATE);
+      expect(await purchases(business.id)).toBe(3);
+    });
+
+    it('P2: a yes re-ask nobody saw gives back the newer question it retired', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'Z2');
+      await say('wamid.Z2-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      await say(
+        'wamid.Z2-q',
+        {
+          intent: 'Query',
+          topic: 'expenses_summary',
+          customer: null,
+          period: null,
+          periodText: null,
+          format: 'chat',
+        },
+        'how much did I spend?',
+        DELEGATE,
+      );
+      expect(stubSender.lastText).toContain('which period');
+      stubSender.failWith();
+      await reply('wamid.Z2-d-yes', 'yes', DELEGATE);
+      const open = [
+        ...(await withBusiness(db, business.id, (tx) =>
+          tx.execute<{ expects: string | null }>(sql`
+            SELECT expects FROM conversation_continuations
+             WHERE business_id = ${business.id}::uuid AND state = 'open'`),
+        )),
+      ].map((r) => r.expects);
+      expect(open).toEqual(['period']);
+      expect(await purchases(business.id)).toBe(1);
+    });
+  });
 });

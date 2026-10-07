@@ -12,13 +12,14 @@
  * connections, and nothing else.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import {
   continuationsRepo,
   conversationsRepo,
   createDb,
   identity,
   purchaseIdentityRepo,
+  schema,
   spendRepo,
   stockRepo,
   withBusiness,
@@ -513,5 +514,26 @@ describe('Codex review of cfc4720', () => {
     );
     expect(records).toHaveLength(1);
     expect(records[0]!.product).toBeNull();
+  });
+});
+
+describe('Codex review of 0e9bf52', () => {
+  it('P2: the Drizzle schema maps reasked_at, set by a re-ask', async () => {
+    const { businessId } = await seedBusiness();
+    const held = await draft(businessId, MILO, { held: true });
+    const other = await draft(businessId);
+    const reasked = await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.reaskHeld(tx, businessId, held.id, [
+        { draftId: other.id, expenseId: null },
+      ]),
+    );
+    expect(reasked?.previous.reaskedAt).toBeNull();
+    const [row] = await withBusiness(app, businessId, (tx) =>
+      tx
+        .select({ reaskedAt: schema.commandDrafts.reaskedAt })
+        .from(schema.commandDrafts)
+        .where(eq(schema.commandDrafts.id, held.id)),
+    );
+    expect(row?.reaskedAt).toBeInstanceOf(Date);
   });
 });

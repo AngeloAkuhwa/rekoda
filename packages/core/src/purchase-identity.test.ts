@@ -462,3 +462,17 @@ describe('Codex review of 7f173b6: the stored form meets every check', () => {
     expect(storedPurchaseReference('OTHER:0041', 100_000)).toBe('OTHER:0041');
   });
 });
+
+describe('Codex review of 0e9bf52: compact dates in any order', () => {
+  it.each(['invoice 03102026', 'INV:03102026', 'INV-10032026', 'receipt 31122025'])(
+    'P2: %j is a date, never a reference',
+    (raw) => {
+      expect(normalisePurchaseReference(raw, 100_000)).toBeNull();
+      expect(storedPurchaseReference(raw, 100_000)).toBeNull();
+    },
+  );
+
+  it('an eight-digit invoice number that is not a date is still one', () => {
+    expect(storedPurchaseReference('invoice 45102026', 100_000)).toBe('INV:45102026');
+  });
+});

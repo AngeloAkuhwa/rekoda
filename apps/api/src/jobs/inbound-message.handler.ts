@@ -662,6 +662,10 @@ type RebuildOutcome = {
   /** The member's open continuation this message's identity answer retired
    * (G-81): another question, newer than the identity one, they still see. */
   supersededContinuation?: string;
+  /** The member's open continuation this message retired because it did not
+   * answer it (Codex review of 0e9bf52). Given back only when the reply
+   * that replaced it was an identity re-ask nobody received. */
+  retiredContinuation?: string;
 };
 
 /** A recording somebody made with the microphone button, not an attached file. */
@@ -3271,9 +3275,15 @@ async function reaskPurchaseIdentity(
   businessId: string,
   heldId: string,
   actorId: string,
-  sender: { messageId: string; receivedAt: Date },
+  sender: { messageId: string; receivedAt: Date; outcome?: RebuildOutcome },
   options: { afterNo?: boolean } = {},
 ): Promise<Reply> {
+  /* A newer question this message retired on its way here (a "yes" past
+   * "Which period?"; Codex review of 0e9bf52) is given back if this re-ask
+   * never reaches the member, as for a "same" or "separate". */
+  if (sender.outcome?.retiredContinuation && !sender.outcome.supersededContinuation) {
+    sender.outcome.supersededContinuation = sender.outcome.retiredContinuation;
+  }
   /* G-65: the re-ask invites "separate", which a plan without Chat refuses:
    * such a plan is told nothing was saved, as `reaskRetiredQuestion` is. */
   const refused = await draftRefusalWithoutChat(tx, businessId);
@@ -4106,6 +4116,7 @@ async function continueConversation(
     if (retired > 0 && open?.state.kind === 'clarification' && message.outcome) {
       message.outcome.retiredQuestion = true;
     }
+    if (retired > 0 && open && message.outcome) message.outcome.retiredContinuation = open.id;
     return null;
   }
 

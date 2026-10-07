@@ -499,14 +499,18 @@ export const commandDrafts = pgTable(
     withdrawn: boolean('withdrawn').notNull().default(false),
     /**
      * The HELD purchase this fresh preview was declared separate from, by
-     * the answer "separate" (migration 0158, G-81). A record that existed
-     * when that question was asked is not this purchase, in either
-     * direction. Null on every other draft.
+     * the answer "separate" (migration 0158, G-81). A record that question
+     * NAMED is not this purchase, in either direction. Null on every other
+     * draft.
      */
     separateFrom: uuid('separate_from'),
     /** The records a HELD purchase's identity question named (0158). */
     askedAboutDrafts: uuid('asked_about_drafts').array(),
     askedAboutExpenses: uuid('asked_about_expenses').array(),
+    /** When the identity question was last re-asked with a record added
+     * (0158, Codex review of 30a5c8f): a "separate" sent before it is
+     * asked again. Null until a re-ask. */
+    reaskedAt: timestamp('reasked_at', { withTimezone: true }),
   },
   (t) => [
     // One draft per message — a job that runs twice must not give the merchant
