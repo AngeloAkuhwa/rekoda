@@ -648,7 +648,8 @@ type RebuildOutcome = {
   /** Retired questions this message's new preview closed, and who held them. */
   closedQuestions?: { id: string; holders: { userId: string; expiresAt: Date }[] }[];
   /** Purchases HELD and asked about by this message's reply (G-81): its own
-   * draft, or the draft a yes was refused for (Codex review). */
+   * draft. A draft a yes was refused for is put back as a preview if its
+   * question is never delivered (`unholdRefusedPurchase`), not withdrawn. */
   heldDrafts?: string[];
   /** The held purchase this message's "separate" answer closed (G-81). */
   separatedFrom?: { heldId: string; expiresAt: Date };

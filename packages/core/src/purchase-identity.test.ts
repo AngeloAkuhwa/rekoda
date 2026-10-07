@@ -417,16 +417,20 @@ describe('fresh review of 75fd1c9: references by document kind, never letters', 
     ).toBe(false);
   });
 
-  it.each(['TOLU-77', 'JOHN99', '#ADA-12', 'IBK22', 'EMK-0041'])(
-    'I2: %j is stored with no letters',
+  it.each(['JOHN99', 'IBK22'])(
+    'I2: %j (letters touching the number) is no reference, so nothing is stored',
     (raw) => {
-      const stored = storedPurchaseReference(raw);
-      expect(stored).not.toBeNull();
-      expect(stored!).toMatch(/^(INV|RCPT|WAYBILL|PO|OTHER):\d+$/);
-      expect(stored!.slice(stored!.indexOf(':'))).not.toMatch(/[A-Za-z]/);
-      expect(stored!.startsWith('OTHER:')).toBe(true);
+      expect(storedPurchaseReference(raw)).toBeNull();
     },
   );
+
+  it.each(['TOLU-77', '#ADA-12', 'EMK-0041'])('I2: %j is stored with no letters', (raw) => {
+    const stored = storedPurchaseReference(raw);
+    expect(stored).not.toBeNull();
+    expect(stored!).toMatch(/^(INV|RCPT|WAYBILL|PO|OTHER):\d+$/);
+    expect(stored!.slice(stored!.indexOf(':'))).not.toMatch(/[A-Za-z]/);
+    expect(stored!.startsWith('OTHER:')).toBe(true);
+  });
 
   it.each([
     ['receipt 120000', 120_000],
@@ -492,6 +496,14 @@ describe('final-head review of #262: one reference is one document, never a date
     'INV/2026/114',
     'INV 2026 1003',
     'INV 22 31',
+    'INV I231',
+    'INV S231',
+    'invoice B231',
+    'INV Z231',
+    'INV O231',
+    'EMK0041',
+    'INV 3102026',
+    'INV 1032026',
     'invoice receipt 2231',
     'INV 2231A',
   ])('B: %j names more than one document, so it is no reference', (raw) => {
@@ -544,6 +556,31 @@ describe('final-head review of #262: one reference is one document, never a date
     ['invoice 2231', 'INV:2231'],
     ['PO 1203', 'PO:1203'],
   ])('a single reference is still kept: %j', (raw, stored) => {
+    expect(storedPurchaseReference(raw, 100_000)).toBe(stored);
+  });
+});
+
+describe('final-head review of b5cd526: a letter touching the number is no prefix', () => {
+  it.each([
+    ['invoice 1231', 'INV I231'],
+    ['invoice 5231', 'INV S231'],
+    ['invoice 8231', 'INV B231'],
+    ['invoice 2231', 'INV Z231'],
+  ])('%j and a misread %j never prove separate', (typed, misread) => {
+    expect(normalisePurchaseReference(misread, 100_000)).toBeNull();
+    expect(
+      provenSeparate(
+        facts({ reference: normalisePurchaseReference(typed, 100_000) }),
+        record({ reference: normalisePurchaseReference(misread, 100_000) }),
+      ),
+    ).toBe(false);
+  });
+
+  it.each([
+    ['INV2231', 'INV:2231'],
+    ['EMK-0041', 'OTHER:0041'],
+    ['receipt RCPT-0041', 'RCPT:0041'],
+  ])('a reference word touching the number, or a separated prefix, is kept: %j', (raw, stored) => {
     expect(storedPurchaseReference(raw, 100_000)).toBe(stored);
   });
 });

@@ -226,6 +226,14 @@ export function purchaseReference(
       continue;
     }
     if (!/^[\p{L}\d/.-]+$/u.test(token)) return null;
+    /* Letters touching the number with no separator are part of what was
+     * read, not a prefix: "INV I231" may be a misread "1231" (I/1, S/5,
+     * B/8, Z/2, O/0), and dropping the letter would make a different
+     * number. Only a reference word may touch it ("INV2231"; final-head
+     * review of b5cd526). */
+    for (const touching of token.match(/\p{L}+(?=\d)/gu) ?? []) {
+      if (!kindOfWord(touching)) return null;
+    }
     /* Letters inside a number are a written prefix ("EMK-0041", "INV-2231"):
      * upper case and short, or a reference word. "Ada12" is a name. */
     for (const run of token.match(/\p{L}+|\d+/gu) ?? []) {
@@ -276,7 +284,9 @@ function checkedNumber(
     /* Day-first and month-first compact dates too ("03102026"; Codex
      * review of 0e9bf52): a date read off a photo is never a reference. */
     /^(?:0[1-9]|[12]\d|3[01])(?:0[1-9]|1[0-2])(?:19|20)\d{2}$/u.test(numberPart) ||
-    /^(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?:19|20)\d{2}$/u.test(numberPart)
+    /^(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?:19|20)\d{2}$/u.test(numberPart) ||
+    /* Seven digits, with one unpadded day or month ("3102026", "1032026"). */
+    /^(?:0?[1-9]|[12]\d|3[01])(?:0?[1-9]|1[0-2])(?:19|20)\d{2}$/u.test(numberPart)
   ) {
     return null;
   }
@@ -313,7 +323,9 @@ function checkedNumber(
 
 /**
  * What two references are compared by: the kind and the digits WITHOUT
- * ZEROS (padding carries no identity: "EMK-0041" is "EMK-41"), or null when it is not certainly a reference.
+ * ZEROS (every zero, not only padding: "EMK-0041" is "EMK-41", and "PO 4500"
+ * is "PO 45", which can only ever ask a question), or null when it is not
+ * certainly a reference.
  */
 export function normalisePurchaseReference(
   raw: unknown,
