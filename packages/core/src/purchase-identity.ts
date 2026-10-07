@@ -153,6 +153,8 @@ const kindOfWord = (token: string): ReferenceKind | undefined =>
  *    generic word or a letter prefix is kind OTHER, which never proves two
  *    purchases separate, because its letters are never stored and so two
  *    prefixes cannot be told apart.
+ *  - The number is ONE run of digits; two runs however joined
+ *    ("INV 2231/2232", "EMK-00-41", "INV/2026/114") are in doubt.
  *  - Never a reference: an amount ("100k", "NGN150K", "125,000.00"), the
  *    purchase's own total, a date or a time (whole, partial or compact,
  *    "INV-2026-10-02", "INV 031026", "INV 2026", "INV 10:30"), a phone or
@@ -192,9 +194,13 @@ export function purchaseReference(
   if (/^\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}$/u.test(text)) return null;
   const digitRuns = text.match(/\d+/gu) ?? [];
   if (digitRuns.length === 0 || digitRuns.join('').length >= 10) return null;
-  /* Two numbers listed ("invoice 2231, 2232") are two references, never one
-   * (final-head review of #262). */
-  if (/\d\s*[,;&+]/u.test(text)) return null;
+  /* A reference is ONE run of digits. Two runs, however they are joined
+   * ("invoice 2231, 2232", "INV 2231/2232", "INV 2231 2232", "INV
+   * 100.500"), may be two documents, and gluing them into one number lets
+   * it prove a purchase separate from one of its own numbers. A scheme the
+   * document splits ("INV/2026/114") is dropped too: that only asks a
+   * question (final-head reviews of #262). */
+  if (digitRuns.length !== 1) return null;
 
   /* Commas stay inside a token, so "125,000" is seen whole (an amount). */
   const tokens = text
@@ -277,9 +283,7 @@ function checkedNumber(
   /* A number written as one run of digits is never date-shaped either: a
    * year ("2026"), a year then a short month and day ("2026103"), or a
    * six-digit date with a two-digit year in any order ("031026", "261003").
-   * A number the document itself splits ("INV/2026/114") is a numbering
-   * scheme, not a date. Erring here only asks a question (final-head review
-   * of #262). */
+   * Erring here only asks a question (final-head review of #262). */
   const compact = numberPart.replace(/\s+/gu, '');
   if (
     /^\d+$/u.test(compact) &&
@@ -309,8 +313,7 @@ function checkedNumber(
 
 /**
  * What two references are compared by: the kind and the digits WITHOUT
- * ZEROS (padding and separators carry no identity: "EMK-0041" is
- * "EMK-00-41"), or null when it is not certainly a reference.
+ * ZEROS (padding carries no identity: "EMK-0041" is "EMK-41"), or null when it is not certainly a reference.
  */
 export function normalisePurchaseReference(
   raw: unknown,

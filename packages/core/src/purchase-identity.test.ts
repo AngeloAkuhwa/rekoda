@@ -85,7 +85,6 @@ describe('a stated supplier reference', () => {
   it.each([
     ['EMK-0041', 'OTHER:41'],
     ['#2231', 'OTHER:2231'],
-    ['INV/2026/114', 'INV:226114'],
     ['inv 2231', 'INV:2231'],
   ])('%j normalises to %j', (raw, expected) => {
     expect(normalisePurchaseReference(raw)).toBe(expected);
@@ -278,7 +277,6 @@ describe('fresh review of #262: one document number in two formats is one refere
   it.each([
     ['2231', 'INV-2231'],
     ['EMK-0041', 'EMK 41'],
-    ['INV/2026/0114', 'inv 2026 114'],
     ['RCPT 2231', '#2231'],
   ])('%j and %j never prove separate', (a, b) => {
     expect(
@@ -305,12 +303,9 @@ describe('fresh review of #262: one document number in two formats is one refere
     expect(normalisePurchaseReference(raw)).toBeNull();
   });
 
-  it.each(['EMK-0041', 'INV 2231', '#2231', 'INV/2026/114', 'receipt 4471'])(
-    '%j is a reference',
-    (raw) => {
-      expect(normalisePurchaseReference(raw)).not.toBeNull();
-    },
-  );
+  it.each(['EMK-0041', 'INV 2231', '#2231', 'receipt 4471'])('%j is a reference', (raw) => {
+    expect(normalisePurchaseReference(raw)).not.toBeNull();
+  });
 
   it('different numbers of the same kind still prove separate', () => {
     expect(
@@ -339,7 +334,8 @@ describe('the window is a rolling 24 hours, never a Lagos day (D2)', () => {
 });
 
 describe('Codex review of ff9443e', () => {
-  it('P1: zero padding split by a separator is still one reference', () => {
+  it('P1: zero padding split by a separator never proves separate (now no reference at all)', () => {
+    expect(normalisePurchaseReference('EMK-00-41')).toBeNull();
     expect(
       provenSeparate(
         facts({ reference: normalisePurchaseReference('EMK-0041') }),
@@ -486,6 +482,16 @@ describe('final-head review of #262: one reference is one document, never a date
     'invoice 2231 & 2232',
     'INV-2231 RCPT-41',
     'INV-2231 EMK-41',
+    'invoice 2231/2232',
+    'invoice 2231 / 2232',
+    'INV 2231 2232',
+    'INV 2231-2232',
+    'INV 2231.2232',
+    'INV 2231 7',
+    'INV 100.500',
+    'INV/2026/114',
+    'INV 2026 1003',
+    'INV 22 31',
     'invoice receipt 2231',
     'INV 2231A',
   ])('B: %j names more than one document, so it is no reference', (raw) => {
@@ -506,7 +512,13 @@ describe('final-head review of #262: one reference is one document, never a date
   it('a merged document never proves a purchase separate from one of its own numbers', () => {
     const one = normalisePurchaseReference('receipt 0041', 100_000);
     expect(one).toBe('RCPT:41');
-    for (const merged of ['receipt 0041 invoice 2231', 'invoice 2231, 2232', 'invoice 031026']) {
+    for (const merged of [
+      'receipt 0041 invoice 2231',
+      'invoice 2231, 2232',
+      'invoice 031026',
+      'receipt 0041/2231',
+      'receipt 0041 2231',
+    ]) {
       expect(
         provenSeparate(
           facts({ reference: normalisePurchaseReference(merged, 100_000) }),
@@ -527,7 +539,6 @@ describe('final-head review of #262: one reference is one document, never a date
   });
 
   it.each([
-    ['INV 22 31', 'INV:2231'],
     ['Invoice No. 2231', 'INV:2231'],
     ['receipt EMK-0041', 'RCPT:0041'],
     ['invoice 2231', 'INV:2231'],
