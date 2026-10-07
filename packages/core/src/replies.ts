@@ -602,14 +602,18 @@ export function preview(text: string): Reply {
 }
 
 /**
- * A purchase preview that REPLACED the same member's earlier rebuilt preview
- * of the same total (G-68, final-head review). Always said, with the total,
- * so the one person who can tell sends a different purchase again.
+ * A purchase preview that REPLACED the same member's earlier waiting preview
+ * of the same total (G-68; G-81 D4(2)). Always said, with the total. A
+ * different purchase sent again while this one waits would only replace it
+ * again, so the merchant is told to save this one first: the resend then
+ * meets a SAVED purchase and is asked same or separate (final-head review
+ * of #262).
  */
 export function earlierPreviewReplaced(shown: Reply, earlierK: number): Reply {
   return reply(
     `${shown.text}\n\nYour earlier preview of ${formatKobo(earlierK)} was replaced by ` +
-      'this one. If that was a different purchase, send the purchase again.',
+      'this one. If that was a different purchase, reply *yes* to save this one first, then ' +
+      'send the other purchase.',
   );
 }
 
@@ -2023,7 +2027,7 @@ export function purchaseIdentityReask(options: { readonly afterNo?: boolean } = 
 export function previewUnderQuestion(): Reply {
   return reply(
     'Nothing was saved from your yes. That preview matches a purchase already saved, and ' +
-      'the member who confirmed it is being asked whether it is the same one.',
+      'the member who said yes to it is being asked whether it is the same one.',
   );
 }
 

@@ -11202,11 +11202,37 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
         'I bought carton indomie for 180k, paid cash',
       );
       expect(stubSender.lastText).toContain(
-        'Your earlier preview of ₦180,000 was replaced by this one. If that was a different purchase, send the purchase again.',
+        'Your earlier preview of ₦180,000 was replaced by this one. If that was a different purchase, reply *yes* to save this one first, then send the other purchase.',
       );
       await reply('wamid.F2c-r-yes-1', 'yes');
       await reply('wamid.F2c-r-yes-2', 'yes');
       expect(await written(business.id)).toMatchObject({ purchases: 1 });
+    });
+
+    it('the same member following the replacement advice gets BOTH purchases in (final-head review of #262)', async () => {
+      const business = await seedMerchant();
+      await say('wamid.F2c-a-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await reply('wamid.F2c-a-bank', 'bank');
+      await say(
+        'wamid.F2c-a-indomie',
+        { ...POS_PURCHASE, paymentMethod: 'cash', productMention: 'carton indomie' },
+        'I bought carton indomie for 180k, paid cash',
+      );
+      expect(stubSender.lastText).toContain('reply *yes* to save this one first');
+      /* As advised: save this one, then send the other purchase. It now
+       * meets a SAVED purchase, so it is asked about, never replaced. */
+      await reply('wamid.F2c-a-yes-1', 'yes');
+      expect(await written(business.id)).toMatchObject({ purchases: 1 });
+      await say(
+        'wamid.F2c-a-milo',
+        { ...POS_PURCHASE, paymentMethod: 'cash' },
+        'I bought 10 cartons for 180k, paid cash',
+      );
+      expect(stubSender.lastText).toContain('Is this the same purchase?');
+      expect(stubSender.lastText).not.toContain('was replaced by this one');
+      await reply('wamid.F2c-a-sep', 'separate');
+      await reply('wamid.F2c-a-yes-2', 'yes');
+      expect(await written(business.id)).toMatchObject({ purchases: 2 });
     });
 
     it('a replacement whose send fails gives back the preview the merchant saw (Codex review)', async () => {

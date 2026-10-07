@@ -115,7 +115,9 @@ const REFERENCE_WORDS: ReadonlyMap<string, ReferenceKind> = new Map([
   ['WAYBILL', 'WAYBILL'],
   ['WB', 'WAYBILL'],
   ['PO', 'PO'],
-  ['ORDER', 'PO'],
+  /* A supplier's "order 55" is not the merchant's PO, so it proves nothing
+   * against one (final-head review of #262). */
+  ['ORDER', 'OTHER'],
   ['REF', 'OTHER'],
   ['REFERENCE', 'OTHER'],
   ['NO', 'OTHER'],
@@ -153,9 +155,11 @@ const kindOfWord = (token: string): ReferenceKind | undefined =>
  *    prefixes cannot be told apart.
  *  - Never a reference: an amount ("100k", "NGN150K", "125,000.00"), the
  *    purchase's own total, a date or a time (whole, partial or compact,
- *    "INV-2026-10-02", "INV 10:30"), a phone or account number (ten digits
- *    or more in all), a name with digits written as a separate word ("Ada
- *    07"), or fewer than two significant digits.
+ *    "INV-2026-10-02", "INV 031026", "INV 2026", "INV 10:30"), a phone or
+ *    account number (ten digits or more in all), a name with digits written
+ *    as a separate word ("Ada 07"), more than one document ("receipt 0041
+ *    invoice 2231", "invoice 2231, 2232"), letters after the number, or
+ *    fewer than two significant digits.
  *
  * `totalNaira` is the purchase's total when known: a "reference" equal to it
  * is the amount copied into the wrong field.
@@ -188,6 +192,9 @@ export function purchaseReference(
   if (/^\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}$/u.test(text)) return null;
   const digitRuns = text.match(/\d+/gu) ?? [];
   if (digitRuns.length === 0 || digitRuns.join('').length >= 10) return null;
+  /* Two numbers listed ("invoice 2231, 2232") are two references, never one
+   * (final-head review of #262). */
+  if (/\d\s*[,;&+]/u.test(text)) return null;
 
   /* Commas stay inside a token, so "125,000" is seen whole (an amount). */
   const tokens = text
@@ -195,24 +202,38 @@ export function purchaseReference(
     .map((token) => token.replace(/,$/u, ''))
     .filter(Boolean);
   let kind: ReferenceKind | null = text.includes('#') ? 'OTHER' : null;
+  /* One reference is its marker, THEN its number: letters after a digit
+   * start another document ("receipt 0041 invoice 2231", "INV-2231
+   * RCPT-41") or a suffix nobody can compare, so the text is in doubt and
+   * is no reference at all (final-head review of #262). */
+  let seenDigit = false;
+  const named = (word: ReferenceKind): boolean => {
+    if (kind !== null && kind !== 'OTHER' && word !== 'OTHER' && word !== kind) return false;
+    if (kind === null || kind === 'OTHER') kind = word;
+    return true;
+  };
   for (const token of tokens) {
     if (/^[\p{L}.]+$/u.test(token)) {
       /* A word on its own must introduce the number, never name someone. */
-      const named = kindOfWord(token);
-      if (!named) return null;
-      if (kind === null || kind === 'OTHER') kind = named;
+      const word = kindOfWord(token);
+      if (!word || seenDigit || !named(word)) return null;
       continue;
     }
     if (!/^[\p{L}\d/.-]+$/u.test(token)) return null;
     /* Letters inside a number are a written prefix ("EMK-0041", "INV-2231"):
      * upper case and short, or a reference word. "Ada12" is a name. */
-    for (const letters of token.match(/\p{L}+/gu) ?? []) {
-      const named = kindOfWord(letters);
-      if (named) {
-        if (kind === null || kind === 'OTHER') kind = named;
+    for (const run of token.match(/\p{L}+|\d+/gu) ?? []) {
+      if (/^\d/u.test(run)) {
+        seenDigit = true;
         continue;
       }
-      if (letters !== letters.toUpperCase() || letters.length > 4) return null;
+      if (seenDigit) return null;
+      const word = kindOfWord(run);
+      if (word) {
+        if (!named(word)) return null;
+        continue;
+      }
+      if (run !== run.toUpperCase() || run.length > 4) return null;
       kind ??= 'OTHER';
     }
   }
@@ -250,6 +271,24 @@ function checkedNumber(
      * review of 0e9bf52): a date read off a photo is never a reference. */
     /^(?:0[1-9]|[12]\d|3[01])(?:0[1-9]|1[0-2])(?:19|20)\d{2}$/u.test(numberPart) ||
     /^(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?:19|20)\d{2}$/u.test(numberPart)
+  ) {
+    return null;
+  }
+  /* A number written as one run of digits is never date-shaped either: a
+   * year ("2026"), a year then a short month and day ("2026103"), or a
+   * six-digit date with a two-digit year in any order ("031026", "261003").
+   * A number the document itself splits ("INV/2026/114") is a numbering
+   * scheme, not a date. Erring here only asks a question (final-head review
+   * of #262). */
+  const compact = numberPart.replace(/\s+/gu, '');
+  if (
+    /^\d+$/u.test(compact) &&
+    (/^(?:19|20)\d{2}$/u.test(compact) ||
+      /^(?:19|20)\d{2}(?:[1-9]|1[0-2])(?:[1-9]|[12]\d|3[01])$/u.test(compact) ||
+      /^(?:19|20)\d{2}(?:0[1-9]|1[0-2])[1-9]$/u.test(compact) ||
+      /^(?:0[1-9]|[12]\d|3[01])(?:0[1-9]|1[0-2])\d{2}$/u.test(compact) ||
+      /^(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{2}$/u.test(compact) ||
+      /^\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])$/u.test(compact))
   ) {
     return null;
   }

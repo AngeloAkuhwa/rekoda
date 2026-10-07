@@ -476,3 +476,63 @@ describe('Codex review of 0e9bf52: compact dates in any order', () => {
     expect(storedPurchaseReference('invoice 45102026', 100_000)).toBe('INV:45102026');
   });
 });
+
+describe('final-head review of #262: one reference is one document, never a date', () => {
+  it.each([
+    'receipt 0041 invoice 2231',
+    'invoice 2231 receipt 41',
+    'invoice 2231, 2232',
+    'invoice 2231; 2232',
+    'invoice 2231 & 2232',
+    'INV-2231 RCPT-41',
+    'INV-2231 EMK-41',
+    'invoice receipt 2231',
+    'INV 2231A',
+  ])('B: %j names more than one document, so it is no reference', (raw) => {
+    expect(storedPurchaseReference(raw, 100_000)).toBeNull();
+  });
+
+  it.each([
+    'invoice 031026',
+    'invoice 261003',
+    'INV 100326',
+    'INV 2026103',
+    'INV 2026',
+    'INV:031026',
+  ])('I: %j is date-shaped, so it is no reference', (raw) => {
+    expect(storedPurchaseReference(raw, 100_000)).toBeNull();
+  });
+
+  it('a merged document never proves a purchase separate from one of its own numbers', () => {
+    const one = normalisePurchaseReference('receipt 0041', 100_000);
+    expect(one).toBe('RCPT:41');
+    for (const merged of ['receipt 0041 invoice 2231', 'invoice 2231, 2232', 'invoice 031026']) {
+      expect(
+        provenSeparate(
+          facts({ reference: normalisePurchaseReference(merged, 100_000) }),
+          record({ reference: one }),
+        ),
+      ).toBe(false);
+    }
+  });
+
+  it('a supplier order number is kind OTHER, so it never proves anything against a PO', () => {
+    expect(storedPurchaseReference('order 55', 100_000)).toBe('OTHER:55');
+    expect(
+      provenSeparate(
+        facts({ reference: normalisePurchaseReference('order 55', 100_000) }),
+        record({ reference: normalisePurchaseReference('PO 1203', 100_000) }),
+      ),
+    ).toBe(false);
+  });
+
+  it.each([
+    ['INV 22 31', 'INV:2231'],
+    ['Invoice No. 2231', 'INV:2231'],
+    ['receipt EMK-0041', 'RCPT:0041'],
+    ['invoice 2231', 'INV:2231'],
+    ['PO 1203', 'PO:1203'],
+  ])('a single reference is still kept: %j', (raw, stored) => {
+    expect(storedPurchaseReference(raw, 100_000)).toBe(stored);
+  });
+});

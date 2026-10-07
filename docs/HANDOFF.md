@@ -25,7 +25,8 @@ closes Chat purchase collision handling and protects Chat against booked purchas
 facts, including bookings from a PO. G-89 (dashboard PO receive is not compared with
 Chat bookings) remains OPEN, required pre-public-launch, so the system-wide invariant
 is not certified until G-89 closes. G-88 (purchases carry no `posting_purpose`)
-recorded, not fixed.
+recorded, not fixed. G-90 (two purchase-identity copy issues from the final-head
+review) recorded, not fixed.
 
 **Build 1 (G-48) accepted (26 Sep 2026):**
 
