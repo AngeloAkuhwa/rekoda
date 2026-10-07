@@ -110,6 +110,7 @@ import {
   createPurchaseOrderRequest,
   createQuoteRequest,
   receivePurchaseOrderRequest,
+  MAX_NAMED_PURCHASES,
   createRecurringRequest,
   openingBalancesRequest,
   stockCountRequest,
@@ -166,7 +167,6 @@ import {
 import { recordPaymentWork, type RecordPaymentInput } from '../commands/payment-commands.js';
 import {
   PurchaseIdentityCollision,
-  purchaseOrderMatches,
   recordPurchaseWork,
   type RecordPurchaseCmdInput,
 } from '../commands/spend-commands.js';
@@ -1289,8 +1289,11 @@ export class ReportsController {
    * `expenseId`. The order is marked received and linked to it in one
    * statement, and NOTHING else is written: no purchase, stock, cash, bank,
    * payable, bill or posting, whatever the form said was paid. Under the
-   * identity lock, the purchase must still be one this order may be; a link
-   * is never replaced, and a repeat answers what already happened.
+   * identity lock, the purchase must still be a recorded Chat purchase of
+   * this total that no order is linked to, checked by identity and not by
+   * the 24-hour window (an answer given after the booking aged out is still
+   * SAME, never a reason to book it again); a link is never replaced, and a
+   * repeat answers what already happened.
    */
   private async receiveAsChatPurchase(
     businessId: string,
@@ -1313,8 +1316,10 @@ export class ReportsController {
       const early = settled(po);
       if (early || !po) return early ?? { outcome: 'not_found' };
 
-      const matches = await purchaseOrderMatches(tx, businessId, po.totalK);
-      if (!matches.some((m) => m.id === expenseId)) {
+      await purchaseIdentityRepo.lockPurchaseTotal(tx, businessId, po.totalK);
+      if (
+        !(await purchaseIdentityRepo.linkableChatPurchase(tx, businessId, expenseId, po.totalK))
+      ) {
         return { outcome: 'no_longer_matches', poNumber };
       }
       const linked = await ordersRepo.linkReceivedPurchaseOrder(tx, businessId, po.id, expenseId);
@@ -2547,6 +2552,7 @@ function possibleDuplicate(
       bookedBy: ownerOf(first, userId),
       billNumber: first.billNumber,
     },
-    expenseIds: matches.map((m) => m.id),
+    /* As many as an answer may name (the request's own bound). */
+    expenseIds: matches.slice(0, MAX_NAMED_PURCHASES).map((m) => m.id),
   };
 }

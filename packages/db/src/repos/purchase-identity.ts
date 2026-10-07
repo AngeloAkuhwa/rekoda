@@ -386,6 +386,35 @@ export async function purchaseRecords(
   return { now, records };
 }
 
+/**
+ * Whether `expenseId` is still a purchase a received order may be linked to
+ * as SAME (G-89): a recorded stock purchase booked in Chat, of exactly this
+ * total, that no order is linked to yet. Deliberately NOT bounded by the
+ * 24-hour window: the window decides when to ASK, and the merchant's SAME
+ * about a purchase that aged out while they answered is still the truth
+ * (fresh review of 23e0803). Read under the identity lock by the caller.
+ */
+export async function linkableChatPurchase(
+  tx: TenantDb,
+  businessId: string,
+  expenseId: string,
+  amountK: number,
+): Promise<boolean> {
+  if (!UUID.test(expenseId)) return false;
+  const rows = await tx.execute<{ ok: number }>(sql`
+    SELECT 1 AS ok FROM expenses e
+     WHERE e.business_id = ${businessId}::uuid
+       AND e.id = ${expenseId}::uuid
+       AND e.source_type = 'chat'
+       AND e.category = 'stock'
+       AND e.status = 'recorded'
+       AND e.amount_k = ${amountK}
+       AND NOT EXISTS (SELECT 1 FROM orders o
+                        WHERE o.business_id = e.business_id
+                          AND o.received_expense_id = e.id)`);
+  return [...rows].length === 1;
+}
+
 async function clockOf(tx: TenantDb, asOf: Date | undefined): Promise<Date> {
   if (asOf) return asOf;
   const rows = await tx.execute<{ now: Date | string }>(sql`SELECT clock_timestamp() AS now`);

@@ -558,6 +558,9 @@ async function receivePurchaseOrderActionUnguarded(
   _prev: PurchaseOrderFormState,
   formData: FormData,
 ): Promise<PurchaseOrderFormState> {
+  /* Leaving the SAME / SEPARATE question unanswered (G-89): nothing was
+   * recorded when it was asked, so going back writes nothing either. */
+  if (formData.get('answer') === 'back') return {};
   const token = await readSessionToken();
   if (!token) return { error: 'Your session expired. Sign in again.' };
   const poNumber = String(formData.get('poNumber') ?? '').trim();
@@ -651,7 +654,7 @@ async function receivePurchaseOrderActionUnguarded(
   if (outcome.outcome === 'no_longer_matches') {
     return {
       error:
-        'That Chat purchase no longer looks like this order, so nothing was changed. Mark it received again to see where it stands.',
+        'That Chat purchase can no longer be linked to this order: it was voided, changed or linked to another order. Nothing was changed. Check your purchases before marking this order received.',
     };
   }
 

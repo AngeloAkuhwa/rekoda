@@ -141,6 +141,9 @@ export function ReceivePurchaseOrderForm({ orders }: { orders: OpenPurchaseOrder
         <Button type="submit" name="answer" value="separate" variant="secondary" disabled={pending}>
           Separate purchase
         </Button>
+        <Button type="submit" name="answer" value="back" variant="secondary" disabled={pending}>
+          Not now: choose another order
+        </Button>
       </form>
     );
   }
@@ -150,6 +153,11 @@ export function ReceivePurchaseOrderForm({ orders }: { orders: OpenPurchaseOrder
         {state.done ? (
           <p className="rk-fineprint" role="status">
             {state.done}
+          </p>
+        ) : null}
+        {state.error ? (
+          <p className="rk-fineprint" role="alert">
+            {state.error}
           </p>
         ) : null}
         <p className="rk-fineprint">No open purchase orders right now. Saved ones appear here.</p>

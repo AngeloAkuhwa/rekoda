@@ -198,7 +198,16 @@ describe('a receive that may be a purchase already booked in Chat (G-89)', () =>
 
     receive.mockResolvedValue({ outcome: 'no_longer_matches', poNumber: 'PO-2026-000001' });
     expect((await receivePurchaseOrderAction({}, answer)).error).toBe(
-      'That Chat purchase no longer looks like this order, so nothing was changed. Mark it received again to see where it stands.',
+      'That Chat purchase can no longer be linked to this order: it was voided, changed or linked to another order. Nothing was changed. Check your purchases before marking this order received.',
     );
+  });
+
+  it('going back from the question records nothing and calls nothing', async () => {
+    const state = await receivePurchaseOrderAction(
+      {},
+      form({ poNumber: 'PO-2026-000001', paid: '100000', method: 'transfer', answer: 'back' }),
+    );
+    expect(state).toEqual({});
+    expect(receive).not.toHaveBeenCalled();
   });
 });

@@ -711,6 +711,13 @@ export const createPurchaseOrderResponse = z.discriminatedUnion('outcome', [
  * chat purchase takes (stock in, cash out for what was paid, the rest owed to
  * the supplier) and every line becomes counted stock at its line cost.
  */
+/**
+ * How many Chat purchases one possible-duplicate question names, and so one
+ * SEPARATE answer may (G-89): the question never names more than the answer
+ * can carry back, so a genuine second purchase can always be received.
+ */
+export const MAX_NAMED_PURCHASES = 1000;
+
 export const receivePurchaseOrderRequest = z
   .object({
     poNumber: z.string().trim().min(1),
@@ -732,7 +739,7 @@ export const receivePurchaseOrderRequest = z
      * question named), so it is received normally. A purchase booked after
      * the question is still asked about.
      */
-    separateFrom: z.array(z.string().uuid()).min(1).max(50).optional(),
+    separateFrom: z.array(z.string().uuid()).min(1).max(MAX_NAMED_PURCHASES).optional(),
   })
   .refine((v) => v.paidK === 0 || v.method !== undefined, {
     message: 'say how it was paid: cash or transfer',
@@ -778,7 +785,7 @@ export const receivePurchaseOrderResponse = z.discriminatedUnion('outcome', [
       /** The supplier bill it raised, when bought on credit. */
       billNumber: z.string().nullable(),
     }),
-    expenseIds: z.array(z.string().uuid()).min(1),
+    expenseIds: z.array(z.string().uuid()).min(1).max(MAX_NAMED_PURCHASES),
   }),
   /** SAME: received and linked to the Chat purchase; nothing booked again. */
   z.object({ outcome: z.literal('linked'), poNumber: z.string(), expenseId: z.string().uuid() }),
@@ -793,7 +800,10 @@ export const receivePurchaseOrderResponse = z.discriminatedUnion('outcome', [
    * another Chat purchase): nothing changed, and the link is never replaced.
    */
   z.object({ outcome: z.literal('linked_elsewhere'), poNumber: z.string() }),
-  /** SAME naming a purchase that is no longer a possible duplicate: nothing written. */
+  /**
+   * SAME naming a purchase that can no longer be this order's (voided, a
+   * different total, or already linked to another order): nothing written.
+   */
   z.object({ outcome: z.literal('no_longer_matches'), poNumber: z.string() }),
 ]);
 

@@ -3915,6 +3915,49 @@ describe('purchase orders, and what receiving one does', () => {
       await unchanged();
     });
 
+    it('SAME answered after the Chat purchase aged past 24 hours still links, never books again', async () => {
+      const { auth, businessId } = await onboard('+2348177000520');
+      const expenseId = await chatBooked(businessId);
+      const poNumber = await openPo(auth);
+      expect((await receive(auth, { poNumber, paidK: 0 })).outcome).toBe('possible_duplicate');
+
+      /* The merchant answers a day later: the booking has left the window
+       * that decides when to ASK, but SAME is still the truth (fresh review
+       * of 23e0803: re-checking by window turned a late SAME into a refusal
+       * whose advice booked the purchase twice). */
+      await withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`UPDATE expenses SET created_at = created_at - interval '25 hours'
+                        WHERE business_id = ${businessId}::uuid AND id = ${expenseId}::uuid`),
+      );
+      const before = await counts(businessId);
+      expect(await receive(auth, { poNumber, paidK: 0, sameAs: expenseId })).toEqual({
+        outcome: 'linked',
+        poNumber,
+        expenseId,
+      });
+      expect(await receive(auth, { poNumber, paidK: 0 })).toEqual({ outcome: 'already_received' });
+      expect(await counts(businessId)).toEqual(before);
+      expect(await onHand(businessId, 'Ankara bale')).toBe(10);
+    });
+
+    it('SAME naming a voided Chat purchase writes nothing and leaves the order open', async () => {
+      const { auth, businessId } = await onboard('+2348177000521');
+      const expenseId = await chatBooked(businessId);
+      const poNumber = await openPo(auth);
+      await withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`UPDATE expenses SET status = 'voided'
+                        WHERE business_id = ${businessId}::uuid AND id = ${expenseId}::uuid`),
+      );
+      expect(await receive(auth, { poNumber, paidK: 0, sameAs: expenseId })).toEqual({
+        outcome: 'no_longer_matches',
+        poNumber,
+      });
+      expect(await poRow(businessId, poNumber)).toEqual({
+        status: 'open',
+        received_expense_id: null,
+      });
+    });
+
     it('SAME naming a different purchase than the PO is linked to fails safe', async () => {
       const { auth, businessId } = await onboard('+2348177000502');
       /* Two genuine Chat purchases of one total, proven separate by their
