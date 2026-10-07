@@ -8,7 +8,8 @@
 --
 -- A purchase that may be one already waiting or booked in the last 24 hours
 -- (OD-23 D1, D2) is now ASKED about, never silently dropped and never
--- silently booked. Its draft is HELD: kept on the record, never confirmable,
+-- silently booked; the one exception is the member's own single waiting
+-- preview of the same total, which is REPLACED and the reply says so (D4(2)). Its draft is HELD: kept on the record, never confirmable,
 -- and the member is asked "same or separate" through a typed continuation
 -- naming it. "same" closes it and writes nothing; "separate" builds a FRESH
 -- preview with its own G-23 window, which only a normal "yes" confirms.
