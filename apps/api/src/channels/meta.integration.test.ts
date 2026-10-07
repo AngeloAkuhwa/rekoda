@@ -14621,6 +14621,20 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       expect(await purchases(business.id)).toBe(1);
     });
 
+    it('a replacing preview whose own send fails gives back the undelivered draft (final-head review of eb0ad6d)', async () => {
+      const business = await seedMerchant();
+      stubSender.failWith();
+      await say('wamid.U6-buy', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      stubSender.failWith();
+      await say('wamid.U6-again', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      /* The resend reached nobody, so what it replaced comes back and the
+       * resend is withdrawn: still one confirmable draft. */
+      expect(await purchaseStates(business.id)).toEqual(['pending', 'superseded']);
+      await reply('wamid.U6-yes-1', 'yes');
+      await reply('wamid.U6-yes-2', 'yes');
+      expect(await purchases(business.id)).toBe(1);
+    });
+
     it('a purchase held back for an arithmetic question is no undelivered copy (final-head review of 77e9da8)', async () => {
       const business = await seedMerchant();
       stubSender.failWith();

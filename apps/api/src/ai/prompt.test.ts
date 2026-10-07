@@ -29,6 +29,11 @@ describe('the prompt on a question’s period', () => {
 
 describe('the supplier reference (G-81, Codex review of 71fad6b)', () => {
   it('asks for the number WITH the word that names it, so a bare number keeps its context', () => {
-    expect(SYSTEM_PROMPT).toContain('together with the word that names it');
+    expect(SYSTEM_PROMPT).toContain('Copy only the word that names the document and the number');
+  });
+
+  it('never teaches a form core drops: no surrounding words like "their" (final-head review of eb0ad6d)', () => {
+    expect(SYSTEM_PROMPT).not.toContain('their invoice 2231');
+    expect(SYSTEM_PROMPT).toContain('never "their", "supplier" or other words around them');
   });
 });
