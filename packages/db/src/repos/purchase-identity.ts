@@ -22,6 +22,7 @@
  */
 import { sql } from 'drizzle-orm';
 import {
+  gatePurchase,
   normalisePurchaseReference,
   purchaseArrival,
   purchaseTotalK,
@@ -372,8 +373,8 @@ async function clockOf(tx: TenantDb, asOf: Date | undefined): Promise<Date> {
 }
 
 /**
- * The sender's OWN pending purchase drafts of this total whose preview never
- * reached them (its send failed, so `previewed` is false), as records the
+ * The sender's OWN pending purchase previews of this total whose send failed
+ * (so `previewed` is false, and the purchase would preview), as records the
  * caller compares exactly as any other (Codex review of 5bfe87e; was G-91):
  * never described as waiting previews, but still claimable. The caller
  * replaces one only when it is the single one that may be the same
@@ -404,6 +405,12 @@ export async function unseenOwnPurchaseDrafts(
   const records: PurchaseRecord[] = [];
   for (const row of rows) {
     if (purchaseTotalK(row.command) !== amountK) continue;
+    /* Only a draft that was a confirmable PREVIEW whose send failed: a
+     * purchase held back for a question (CG1 arithmetic, the G-61 funding
+     * source) is also stored unpreviewed, but its question was delivered
+     * and it can never be confirmed, so it is no copy of anything (final-head
+     * review of 77e9da8). */
+    if (gatePurchase(row.command as never).gate !== 'CG2') continue;
     records.push({
       ...factsOf(row, amountK),
       id: row.id,

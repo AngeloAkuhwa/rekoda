@@ -36,7 +36,11 @@
  */
 import type { AnsweredPeriod, FundingSource, PurchaseIdentityAnswer, Route } from './router.js';
 import { nairaToKobo } from './money.js';
-import { normalisePurchaseReference, referencesProveSeparate } from './purchase-identity.js';
+import {
+  commandPurchaseReference,
+  normalisePurchaseReference,
+  referencesProveSeparate,
+} from './purchase-identity.js';
 import { fundingSourceAnswer, periodAnswer, purchaseIdentityAnswer } from './router.js';
 
 /**
@@ -103,10 +107,10 @@ export function rebuiltPurchaseFate(
   const rebuiltK = total(rebuilt);
   const nextK = total(next);
   if (rebuiltK === null || nextK === null) return null;
-  const reference = (c: unknown): string | null => {
-    const x = c as Record<string, unknown>;
-    return normalisePurchaseReference(x['supplierReference'], x['amount'] as number);
-  };
+  /* Exactly the value stored and compared (its total and reported payment
+   * checked): one reading of a reference everywhere. */
+  const reference = (c: unknown): string | null =>
+    normalisePurchaseReference(commandPurchaseReference(c));
   const separate = referencesProveSeparate(reference(rebuilt), reference(next));
   return { totalK: rebuiltK, replace: rebuiltK === nextK && !separate };
 }

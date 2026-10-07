@@ -14097,6 +14097,10 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       await reply('wamid.M3-no', 'no', DELEGATE);
       expect(stubSender.lastText).toContain('If you do not want it saved, reply *same*');
       expect(stubSender.lastText).not.toContain('*cancel*');
+      /* Following it literally: the question closes and nothing more is saved. */
+      await reply('wamid.M3-same', 'same', DELEGATE);
+      expect(stubSender.lastText).toContain(SAME_DONE);
+      expect(await purchases(business.id)).toBe(1);
     });
 
     it('minor: a closed question mentions the fresh preview still waiting', async () => {
@@ -14615,6 +14619,23 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       await reply('wamid.U1-yes-1', 'yes');
       await reply('wamid.U1-yes-2', 'yes');
       expect(await purchases(business.id)).toBe(1);
+    });
+
+    it('a purchase held back for an arithmetic question is no undelivered copy (final-head review of 77e9da8)', async () => {
+      const business = await seedMerchant();
+      stubSender.failWith();
+      await say('wamid.U5-buy', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      /* Paid more than the total: CG1 asks, and its draft is unpreviewed. */
+      await say(
+        'wamid.U5-cg1',
+        { ...MILO, reportedPayment: 150_000 },
+        'I bought 10 cartons of Milo for 100k, paid 150k',
+      );
+      await say('wamid.U5-again', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      /* The question is not counted, so the one undelivered preview is the
+       * single match and is replaced. */
+      expect((await purchaseStates(business.id))[0]).toBe('superseded');
+      expect((await purchaseStates(business.id)).at(-1)).toBe('pending');
     });
 
     it('an undelivered draft proven separate by its reference is never replaced (final-head review of ffb5404)', async () => {
