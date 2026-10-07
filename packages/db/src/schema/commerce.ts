@@ -187,12 +187,23 @@ export const orders = pgTable(
     validUntil: date('valid_until'),
     sourceType: text('source_type').notNull(),
     sourceId: text('source_id'),
+    /**
+     * The purchase already booked in Chat that a received purchase order
+     * turned out to be: the merchant answered SAME (G-89, migration 0159), so
+     * the order is `received` and no second purchase was booked. Null on
+     * every other order, including one received with its own purchase. The
+     * composite FK to `expenses (business_id, id)` lives in the migration.
+     */
+    receivedExpenseId: uuid('received_expense_id'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [
     uniqueIndex('orders_number_ux').on(t.businessId, t.orderNumber),
     uniqueIndex('orders_external_ux').on(t.businessId, t.externalRef),
+    uniqueIndex('orders_received_expense_ux')
+      .on(t.businessId, t.receivedExpenseId)
+      .where(sql`received_expense_id IS NOT NULL`),
     index('orders_business_ix').on(t.businessId),
   ],
 );

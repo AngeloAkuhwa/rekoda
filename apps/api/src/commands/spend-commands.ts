@@ -83,6 +83,12 @@ export interface RecordPurchaseCmdInput {
    * put a stock count in the books that nobody took.
    */
   arrivals: readonly PurchaseArrival[];
+  /**
+   * A received purchase order only (G-89): the Chat purchases the merchant
+   * answered SEPARATE about, as expense ids. Exactly those are not compared;
+   * one booked after the question still is.
+   */
+  separateFrom?: readonly string[];
 }
 
 export interface RecordedPurchase {
@@ -94,17 +100,54 @@ export interface RecordedPurchase {
 }
 
 /**
- * A chat purchase refused BEFORE anything was written (G-81, OD-23): a
+ * A purchase refused BEFORE anything was written (G-81, G-89, OD-23): a
  * purchase of the same total that nothing proves separate was booked in
- * the last 24 hours. Carries the record it matched, as opaque ids, a total
- * and a time, so the caller can ask the merchant "same or separate"; it
- * never carries, and nothing logs, a fingerprint.
+ * the last 24 hours. Carries the record it matched first (and every match),
+ * as opaque ids, a total and a time, so the caller can ask the merchant
+ * "same or separate"; it never carries, and nothing logs, a fingerprint.
  */
 export class PurchaseIdentityCollision extends Error {
   override readonly name = 'PurchaseIdentityCollision';
-  constructor(readonly match: PurchaseRecord) {
+  readonly match: PurchaseRecord;
+  constructor(readonly matches: readonly [PurchaseRecord, ...PurchaseRecord[]]) {
     super('a purchase of the same total was booked since this one was previewed');
+    this.match = matches[0];
   }
+}
+
+/**
+ * The Chat purchases a dashboard purchase order receive of `amountK` may be
+ * (G-89), under the SAME policy as a chat yes (OD-23 / OWN-21): booked in
+ * the 24 hours before now, never proven separate. A purchase order carries
+ * no reference and no trusted product, so only the merchant's own SEPARATE
+ * (`separateFrom`) sets one apart. Takes the identity lock for the total,
+ * so a chat yes and this receive of one total never both read before the
+ * other books; the caller must write, or refuse, inside the same
+ * transaction.
+ */
+export async function purchaseOrderMatches(
+  tx: TenantDb,
+  businessId: string,
+  amountK: number,
+  separateFrom: readonly string[] = [],
+): Promise<PurchaseRecord[]> {
+  await purchaseIdentityRepo.lockPurchaseTotal(tx, businessId, amountK);
+  /* The 24 hours before now, on the database clock (the repository's
+   * default window), never the application's. */
+  const { now, records } = await purchaseIdentityRepo.purchaseRecords(tx, businessId, amountK, {
+    bookedOnly: true,
+    chatOnly: true,
+  });
+  if (records.length === 0) return [];
+  const self: PurchaseFacts = {
+    amountK,
+    at: now,
+    product: null,
+    reference: null,
+    separateFrom: separateFrom.map((expenseId) => ({ draftId: null, expenseId })),
+    self: { draftId: null, expenseId: null },
+  };
+  return purchaseMatches(self, records, now, { from: windowStart(now), to: null, by: 'booking' });
 }
 
 /**
@@ -114,10 +157,20 @@ export class PurchaseIdentityCollision extends Error {
  * is booked, and refuses before the first posting if one may be this one.
  * Two confirmations of one purchase on two connections therefore book it
  * once; the second sees the first's booking because it reads after the
- * first commits. A received purchase order is its own document and is not
- * compared here.
+ * first commits. A received purchase order is compared with what Chat
+ * booked, under the same lock (G-89), never with another order.
  */
 async function refuseBookedDuplicate(tx: TenantDb, input: RecordPurchaseCmdInput): Promise<void> {
+  if (input.sourceType === 'purchase_order') {
+    const [first, ...rest] = await purchaseOrderMatches(
+      tx,
+      input.businessId,
+      input.amountK,
+      input.separateFrom,
+    );
+    if (first) throw new PurchaseIdentityCollision([first, ...rest]);
+    return;
+  }
   if (input.sourceType !== 'chat') return;
   await purchaseIdentityRepo.lockPurchaseTotal(tx, input.businessId, input.amountK);
   const drafted = await purchaseIdentityRepo.draftFacts(tx, input.businessId, input.sourceId);
@@ -152,7 +205,7 @@ async function refuseBookedDuplicate(tx: TenantDb, input: RecordPurchaseCmdInput
     to: null,
     by: 'booking',
   });
-  if (match) throw new PurchaseIdentityCollision(match);
+  if (match) throw new PurchaseIdentityCollision([match]);
 }
 
 export async function recordPurchaseWork(

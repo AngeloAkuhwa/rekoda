@@ -1350,11 +1350,13 @@ export async function receivePurchaseOrder(
   paidK: number,
   /** How the paid part was handed over; required by the API when paidK > 0. */
   method: 'cash' | 'transfer' | null,
+  /** The answer to a possible duplicate of a Chat purchase (G-89), if any. */
+  answer?: { sameAs: string } | { separateFrom: string[] },
 ): Promise<ReceivePurchaseOrderResponse | null> {
   const { status, json } = await call({
     method: 'POST',
     path: '/v1/reports/purchase-orders/receive',
-    body: { poNumber, paidK, ...(method ? { method } : {}) },
+    body: { poNumber, paidK, ...(method ? { method } : {}), ...(answer ?? {}) },
     headers: { authorization: `Bearer ${sessionToken}` },
     expect: [200, 400],
   });

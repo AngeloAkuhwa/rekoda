@@ -474,7 +474,41 @@ export async function disposeAssetAction(
 export interface PurchaseOrderFormState {
   error?: string;
   done?: string;
+  /**
+   * A receive that may be a purchase already booked in Chat (G-89): nothing
+   * was recorded, and the form asks SAME or SEPARATE, sending back what was
+   * typed and the purchases the question is about.
+   */
+  question?: {
+    poNumber: string;
+    paid: string;
+    method: string;
+    expenseId: string;
+    expenseIds: string[];
+    text: string;
+  };
 }
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** `7 Oct 2026, 14:05`, Lagos, from an ISO instant. */
+function lagosMoment(iso: string): string {
+  return new Date(iso).toLocaleString('en-GB', {
+    timeZone: 'Africa/Lagos',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+const BOOKED_BY = {
+  you: 'You',
+  another_member: 'Another member',
+  unknown: 'Someone',
+} as const;
 
 async function createPurchaseOrderActionUnguarded(
   _prev: PurchaseOrderFormState,
@@ -543,12 +577,25 @@ async function receivePurchaseOrderActionUnguarded(
     return { error: 'Say where the payment came from: physical cash or your bank account.' };
   }
 
-  const outcome = await receivePurchaseOrder(
-    token,
-    poNumber,
-    toKobo(paidNaira),
-    paidNaira > 0 ? method : null,
-  );
+  /* The answer to a possible duplicate (G-89), carrying the purchases the
+   * question named. An answer naming nothing readable is never sent. */
+  const answerRaw = String(formData.get('answer') ?? '');
+  let answer: { sameAs: string } | { separateFrom: string[] } | undefined;
+  if (answerRaw === 'same' || answerRaw === 'separate') {
+    const expenseId = String(formData.get('expenseId') ?? '');
+    const expenseIds = String(formData.get('expenseIds') ?? '')
+      .split(',')
+      .filter((id) => UUID.test(id));
+    if (answerRaw === 'same' && UUID.test(expenseId)) answer = { sameAs: expenseId };
+    else if (answerRaw === 'separate' && expenseIds.length > 0)
+      answer = { separateFrom: expenseIds };
+    else return { error: 'That answer could not be read. Nothing was recorded. Try again.' };
+  }
+
+  const args = [token, poNumber, toKobo(paidNaira), paidNaira > 0 ? method : null] as const;
+  const outcome = await (answer
+    ? receivePurchaseOrder(...args, answer)
+    : receivePurchaseOrder(...args));
   if (!outcome) return { error: 'That did not go through. Nothing was recorded.' };
 
   if (outcome.outcome === 'not_found') return { error: 'No purchase order with that number.' };
@@ -563,6 +610,49 @@ async function receivePurchaseOrderActionUnguarded(
   if (outcome.outcome === 'already_received') {
     revalidatePath('/app/expenses');
     return { done: 'Already received. Nothing was recorded twice.' };
+  }
+  if (outcome.outcome === 'possible_duplicate') {
+    const others = outcome.expenseIds.length - 1;
+    return {
+      question: {
+        poNumber: outcome.poNumber,
+        paid: paidText,
+        method: method ?? '',
+        expenseId: outcome.match.expenseId,
+        expenseIds: outcome.expenseIds,
+        text:
+          `${BOOKED_BY[outcome.match.bookedBy]} recorded a ${formatKobo(outcome.totalK)} purchase ` +
+          `in Chat on ${lagosMoment(outcome.match.bookedAt)}` +
+          (others > 0 ? `, and ${others} more of the same amount` : '') +
+          `. Is ${outcome.poNumber} that same purchase?`,
+      },
+    };
+  }
+  if (outcome.outcome === 'linked') {
+    revalidatePath('/app/expenses');
+    return {
+      done:
+        `${outcome.poNumber} marked as received and linked to the purchase already recorded in Chat. ` +
+        'No additional purchase or accounting entry was created.',
+    };
+  }
+  if (outcome.outcome === 'already_linked') {
+    revalidatePath('/app/expenses');
+    return {
+      done: `${outcome.poNumber} is already received and linked to the purchase recorded in Chat. Nothing was recorded twice.`,
+    };
+  }
+  if (outcome.outcome === 'linked_elsewhere') {
+    revalidatePath('/app/expenses');
+    return {
+      error: `${outcome.poNumber} is already received against a different purchase. Nothing was changed. Check your purchases before recording anything else for it.`,
+    };
+  }
+  if (outcome.outcome === 'no_longer_matches') {
+    return {
+      error:
+        'That Chat purchase no longer looks like this order, so nothing was changed. Mark it received again to see where it stands.',
+    };
   }
 
   revalidatePath('/app/expenses');

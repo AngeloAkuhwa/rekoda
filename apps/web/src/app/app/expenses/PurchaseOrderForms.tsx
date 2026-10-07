@@ -115,6 +115,35 @@ export function ReceivePurchaseOrderForm({ orders }: { orders: OpenPurchaseOrder
     receivePurchaseOrderAction,
     {},
   );
+  /* G-89: this order may be a purchase already booked in Chat. Nothing was
+   * recorded; the merchant says which it is, and the answer goes back with
+   * what was typed and the purchases the question named. Never a silent
+   * receive, never a permanent refusal. */
+  if (state.question) {
+    const q = state.question;
+    return (
+      <form action={action} className="rk-form" noValidate>
+        <p className="rk-fineprint" role="alert">
+          {q.text}
+        </p>
+        <input type="hidden" name="poNumber" value={q.poNumber} />
+        <input type="hidden" name="paid" value={q.paid} />
+        <input type="hidden" name="method" value={q.method} />
+        <input type="hidden" name="expenseId" value={q.expenseId} />
+        <input type="hidden" name="expenseIds" value={q.expenseIds.join(',')} />
+        <p className="rk-fineprint">
+          Same purchase: the order is marked received and linked to it, and nothing is recorded
+          again. Separate purchase: the order is received as its own purchase.
+        </p>
+        <Button type="submit" name="answer" value="same" disabled={pending}>
+          {pending ? 'Recording…' : 'Same purchase'}
+        </Button>
+        <Button type="submit" name="answer" value="separate" variant="secondary" disabled={pending}>
+          Separate purchase
+        </Button>
+      </form>
+    );
+  }
   if (orders.length === 0) {
     return (
       <>
