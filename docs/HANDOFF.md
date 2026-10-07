@@ -28,7 +28,9 @@ Chat bookings) remains OPEN, required pre-public-launch, so the system-wide inva
 is not certified until G-89 closes. G-88 (purchases carry no `posting_purpose`)
 recorded, not fixed. G-90 (purchase-identity copy issues), G-91 (an undelivered own
 preview is not replaced) and G-92 (reference parser and held-question
-residuals) recorded, not fixed.
+residuals) recorded, not fixed. G-92(5) books one real purchase twice with no
+model error under OD-23 D3 as ruled (two different same-kind documents for one
+purchase), for the owner to revisit.
 
 **Build 1 (G-48) accepted (26 Sep 2026):**
 

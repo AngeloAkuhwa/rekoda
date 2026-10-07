@@ -8,16 +8,19 @@
 --
 -- A purchase that may be one already waiting or booked in the last 24 hours
 -- (OD-23 D1, D2) is now ASKED about, never silently dropped and never
--- silently booked; the one exception is the member's own single waiting
--- preview of the same total, which is REPLACED and the reply says so (D4(2)). Its draft is HELD: kept on the record, never confirmable,
--- and the member is asked "same or separate" through a typed continuation
--- naming it. "same" closes it and writes nothing; "separate" builds a FRESH
--- preview with its own G-23 window, which only a normal "yes" confirms.
+-- silently booked. One exception: when its only possible match is the
+-- member's own single waiting preview of the same total, that preview is
+-- REPLACED and the reply says so (D4(2)). Otherwise the new purchase's
+-- draft is HELD: kept on the record, never confirmable, and the member is
+-- asked "same or separate" through a typed continuation naming it. "same"
+-- closes it and writes nothing; "separate" builds a FRESH preview with its
+-- own G-23 window, which only a normal "yes" confirms.
 --
 -- Nothing here stores a fingerprint. The comparison reads columns that
 -- already exist (the stored command's amount and its reference, kept as a
 -- document KIND from a closed set and its digits, never letters, "INV:2231";
--- the product row a booked purchase moved, and whether it is
+-- the product row a booked purchase moved, or for a waiting draft the
+-- product its stored name matches, folded inside SQL; and whether it is
 -- catalogue-linked, the only trusted product identity under owner ruling
 -- D3, dormant while nothing writes `external_catalogue_id`) and opaque ids;
 -- no supplier, product or customer text is copied anywhere. A supplier row
