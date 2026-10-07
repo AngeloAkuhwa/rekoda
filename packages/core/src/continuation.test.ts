@@ -323,6 +323,22 @@ describe('rebuiltPurchaseFate (G-68, final-head review)', () => {
       replace: false,
     });
   });
+  it('the same total with references that prove two purchases stays waiting (Codex review of 50f030f)', () => {
+    const a = { ...pos, supplierReference: 'INV:0101' };
+    expect(rebuiltPurchaseFate(a, { ...pos, supplierReference: 'invoice 0202' })).toEqual({
+      totalK: 18_000_000,
+      replace: false,
+    });
+    /* Same number, another kind, or kind OTHER: never proof, so replaced. */
+    expect(rebuiltPurchaseFate(a, { ...pos, supplierReference: 'invoice 0101' })?.replace).toBe(
+      true,
+    );
+    expect(rebuiltPurchaseFate(a, { ...pos, supplierReference: 'receipt 0202' })?.replace).toBe(
+      true,
+    );
+    expect(rebuiltPurchaseFate(a, { ...pos, supplierReference: '#0202' })?.replace).toBe(true);
+    expect(rebuiltPurchaseFate(a, pos)?.replace).toBe(true);
+  });
   it('anything unreadable decides nothing', () => {
     expect(rebuiltPurchaseFate(pos, { ...pos, intent: 'RecordExpense' })).toBeNull();
     expect(rebuiltPurchaseFate(null, pos)).toBeNull();

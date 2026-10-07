@@ -179,7 +179,12 @@ export function purchaseReference(
   if (stored) {
     return checkedNumber(stored[1] as ReferenceKind, stored[2]!, stored[2]!, totalNaira);
   }
-  const text = raw.normalize('NFKC').trim();
+  /* "purchase order 2231" names a PO in two words; a bare "order" stays
+   * kind OTHER (Codex review of 50f030f). */
+  const text = raw
+    .normalize('NFKC')
+    .trim()
+    .replace(/\bpurchase[\s-]+order\b/giu, 'PO');
   if (!text || text.length > 40) return null;
   /* A time, anywhere ("INV 10:30"). */
   if (/\d{1,2}:\d{2}/u.test(text)) return null;
@@ -298,6 +303,10 @@ function checkedNumber(
   if (
     /^\d+$/u.test(compact) &&
     (/^(?:19|20)\d{2}$/u.test(compact) ||
+      /* A year and a month, either way round ("202610", "102026", "20261";
+       * Codex review of 50f030f). */
+      /^(?:19|20)\d{2}(?:0?[1-9]|1[0-2])$/u.test(compact) ||
+      /^(?:0?[1-9]|1[0-2])(?:19|20)\d{2}$/u.test(compact) ||
       /^(?:19|20)\d{2}(?:[1-9]|1[0-2])(?:[1-9]|[12]\d|3[01])$/u.test(compact) ||
       /^(?:19|20)\d{2}(?:0[1-9]|1[0-2])[1-9]$/u.test(compact) ||
       /^(?:0[1-9]|[12]\d|3[01])(?:0[1-9]|1[0-2])\d{2}$/u.test(compact) ||
@@ -360,24 +369,24 @@ export function purchaseTotalK(command: unknown): number | null {
 }
 
 /**
+ * Do two NORMALISED references prove two purchases different? Only when both
+ * name the SAME KIND of document (invoice with invoice, receipt with
+ * receipt) with different numbers: an invoice and the receipt for one
+ * purchase carry different numbers. A reference of kind OTHER never proves
+ * it (fresh review of #262).
+ */
+export function referencesProveSeparate(a: string | null, b: string | null): boolean {
+  if (!a || !b) return false;
+  const kindOf = (r: string) => r.slice(0, r.indexOf(':'));
+  return kindOf(a) === kindOf(b) && kindOf(a) !== 'OTHER' && a !== b;
+}
+
+/**
  * D3 (refined): are these two purchases PROVEN to be different ones? Only a
  * different stated reference, or two different TRUSTED products.
  */
 export function provenSeparate(a: PurchaseFacts, b: PurchaseFacts): boolean {
-  /* References prove it only when both name the SAME KIND of document
-   * (invoice with invoice, receipt with receipt) with different numbers: an
-   * invoice and the receipt for one purchase carry different numbers. A
-   * reference of kind OTHER never proves it (fresh review of #262). */
-  const kindOf = (r: string) => r.slice(0, r.indexOf(':'));
-  if (
-    a.reference &&
-    b.reference &&
-    kindOf(a.reference) === kindOf(b.reference) &&
-    kindOf(a.reference) !== 'OTHER' &&
-    a.reference !== b.reference
-  ) {
-    return true;
-  }
+  if (referencesProveSeparate(a.reference, b.reference)) return true;
   if (a.product?.trusted && b.product?.trusted && a.product.id !== b.product.id) return true;
   return false;
 }

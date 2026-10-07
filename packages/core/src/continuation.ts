@@ -36,6 +36,7 @@
  */
 import type { AnsweredPeriod, FundingSource, PurchaseIdentityAnswer, Route } from './router.js';
 import { nairaToKobo } from './money.js';
+import { normalisePurchaseReference, referencesProveSeparate } from './purchase-identity.js';
 import { fundingSourceAnswer, periodAnswer, purchaseIdentityAnswer } from './router.js';
 
 /**
@@ -85,8 +86,10 @@ export function withinFundingWindow(askedAt: Date, receivedAt: Date): boolean {
  * cannot say whether two purchases are one. The same total replaces the
  * rebuild (and the reply always says so, so a different purchase is sent
  * again by the one person who can tell); a different total leaves it
- * waiting (and the reply says that too). Members are never compared here:
- * the caller only asks about the sender's own rebuilds.
+ * waiting (and the reply says that too), and so does the same total when
+ * both state references that prove two purchases (G-81 D4(4); Codex review
+ * of 50f030f). Members are never compared here: the caller only asks about
+ * the sender's own rebuilds.
  */
 export function rebuiltPurchaseFate(
   rebuilt: unknown,
@@ -100,7 +103,12 @@ export function rebuiltPurchaseFate(
   const rebuiltK = total(rebuilt);
   const nextK = total(next);
   if (rebuiltK === null || nextK === null) return null;
-  return { totalK: rebuiltK, replace: rebuiltK === nextK };
+  const reference = (c: unknown): string | null => {
+    const x = c as Record<string, unknown>;
+    return normalisePurchaseReference(x['supplierReference'], x['amount'] as number);
+  };
+  const separate = referencesProveSeparate(reference(rebuilt), reference(next));
+  return { totalK: rebuiltK, replace: rebuiltK === nextK && !separate };
 }
 
 /** The Query topics a continuation may carry (the command contract's list). */

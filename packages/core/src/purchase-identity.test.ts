@@ -584,3 +584,21 @@ describe('final-head review of b5cd526: a letter touching the number is no prefi
     expect(storedPurchaseReference(raw, 100_000)).toBe(stored);
   });
 });
+
+describe('Codex review of 50f030f', () => {
+  it.each(['invoice 202610', 'invoice 102026', 'INV 20261', 'INV:202610', 'invoice 2231\n2232'])(
+    '%j is no reference',
+    (raw) => {
+      expect(storedPurchaseReference(raw, 100_000)).toBeNull();
+    },
+  );
+
+  it.each([
+    ['purchase order 2231', 'PO:2231'],
+    ['Purchase-Order 2231', 'PO:2231'],
+    ['PO 2231', 'PO:2231'],
+    ['order 2231', 'OTHER:2231'],
+  ])('%j is read as %j', (raw, stored) => {
+    expect(storedPurchaseReference(raw, 100_000)).toBe(stored);
+  });
+});

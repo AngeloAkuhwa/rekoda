@@ -89,8 +89,9 @@ ALTER TABLE conversation_continuations
 -- the identity question on that message; if the question is never delivered,
 -- the funding question is given back on the same message, and 0156's
 -- (message, member) unique made that impossible: the retired identity row
--- stood in its place. A replay still finds its own row. Rows are still never
--- reopened.
+-- stood in its place. A replay still finds its own row. A row this PR's
+-- identity reply superseded is reopened only when that reply is never
+-- delivered (`continuationsRepo.reopenSuperseded`).
 DROP INDEX conversation_continuations_message_ux;
 CREATE UNIQUE INDEX conversation_continuations_message_ux
   ON conversation_continuations (source_message_id, user_id, (coalesce(expects, '')));
