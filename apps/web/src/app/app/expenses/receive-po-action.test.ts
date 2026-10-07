@@ -28,6 +28,7 @@ vi.mock('@/server/api', () => ({
 }));
 
 const api = await import('@/server/api');
+const { receivePurchaseOrderRequest } = await import('@rekoda/contracts');
 const { receivePurchaseOrderAction } = await import('./actions');
 const receive = vi.mocked(api.receivePurchaseOrder);
 
@@ -85,17 +86,24 @@ describe('a receive that may be a purchase already booked in Chat (G-89)', () =>
     outcome: 'possible_duplicate' as const,
     poNumber: 'PO-2026-000001',
     totalK: 18_000_000,
-    match: {
-      expenseId: EXPENSE,
-      bookedAt: '2026-10-07T13:05:00.000Z',
-      bookedBy: 'another_member' as const,
-      billNumber: null,
-    },
-    expenseIds: [EXPENSE, OTHER],
+    matches: [
+      {
+        expenseId: EXPENSE,
+        bookedAt: '2026-10-07T13:05:00.000Z',
+        bookedBy: 'another_member' as const,
+        billNumber: null as string | null,
+      },
+      {
+        expenseId: OTHER,
+        bookedAt: '2026-10-07T09:30:00.000Z',
+        bookedBy: 'you' as const,
+        billNumber: 'BILL-2026-000004' as string | null,
+      },
+    ],
     alreadySeparate: [] as string[],
   };
 
-  it('asks SAME or SEPARATE, carrying the purchases the question is about', async () => {
+  it('asks which purchase it is, offering every match, or SEPARATE', async () => {
     receive.mockResolvedValue(ASKED);
     const state = await receivePurchaseOrderAction(
       {},
@@ -107,12 +115,42 @@ describe('a receive that may be a purchase already booked in Chat (G-89)', () =>
       poNumber: 'PO-2026-000001',
       paid: '100000',
       method: 'transfer',
-      expenseId: EXPENSE,
+      options: [
+        { expenseId: EXPENSE, text: 'Another member recorded it on 7 Oct 2026, 14:05' },
+        { expenseId: OTHER, text: 'You recorded it on 7 Oct 2026, 10:30, bill BILL-2026-000004' },
+      ],
       expenseIds: [EXPENSE, OTHER],
       text:
-        'Another member recorded a ₦180,000 purchase in Chat on 7 Oct 2026, 14:05, ' +
-        'and 1 more of the same amount. Is PO-2026-000001 that same purchase?',
+        '2 purchases of ₦180,000 are already recorded in Chat. ' +
+        'Is PO-2026-000001 one of them? Pick the one it is, or say it is a separate purchase.',
     });
+  });
+
+  it('asks plainly when there is only one match', async () => {
+    receive.mockResolvedValue({ ...ASKED, matches: [ASKED.matches[0]!] });
+    const state = await receivePurchaseOrderAction(
+      {},
+      form({ poNumber: 'PO-2026-000001', paid: '' }),
+    );
+    expect(state.question?.text).toBe(
+      'A ₦180,000 purchase is already recorded in Chat. Is PO-2026-000001 that same purchase?',
+    );
+    expect(state.question?.options).toHaveLength(1);
+  });
+
+  it('SAME sends the purchase the merchant PICKED, not the newest (Codex review of 4582f91)', async () => {
+    receive.mockResolvedValue({ outcome: 'linked', poNumber: 'PO-2026-000001', expenseId: OTHER });
+    await receivePurchaseOrderAction(
+      {},
+      form({
+        poNumber: 'PO-2026-000001',
+        paid: '',
+        answer: 'same',
+        expenseId: OTHER,
+        expenseIds: `${EXPENSE},${OTHER}`,
+      }),
+    );
+    expect(receive).toHaveBeenCalledWith('tok', 'PO-2026-000001', 0, null, { sameAs: OTHER });
   });
 
   it('SAME sends the purchase it is the same as, and says nothing was recorded again', async () => {
@@ -214,13 +252,40 @@ describe('a receive that may be a purchase already booked in Chat (G-89)', () =>
 
   it('carries every purchase already answered SEPARATE into the next answer', async () => {
     const EARLIER = '9d1e2f30-4a5b-4c6d-8e7f-0a1b2c3d4e55';
-    receive.mockResolvedValue({ ...ASKED, expenseIds: [EXPENSE], alreadySeparate: [EARLIER] });
+    receive.mockResolvedValue({
+      ...ASKED,
+      matches: [ASKED.matches[0]!],
+      alreadySeparate: [EARLIER],
+    });
     const state = await receivePurchaseOrderAction(
       {},
       form({ poNumber: 'PO-2026-000001', paid: '', answer: 'separate', expenseIds: EARLIER }),
     );
-    expect(state.question?.expenseIds).toEqual([EARLIER, EXPENSE]);
-    /* Only the NEW purchase is described and counted. */
-    expect(state.question?.text).not.toMatch(/more of the same amount/);
+    /* The new match first, then the earlier answer. */
+    expect(state.question?.expenseIds).toEqual([EXPENSE, EARLIER]);
+    /* Only the NEW purchase is offered. */
+    expect(state.question?.options.map((o) => o.expenseId)).toEqual([EXPENSE]);
+  });
+
+  it('never cuts the carried purchases short, however many (Codex review of 4582f91)', async () => {
+    const earlier = Array.from(
+      { length: 1500 },
+      (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+    );
+    receive.mockResolvedValue({ ...ASKED, matches: [ASKED.matches[0]!], alreadySeparate: earlier });
+    const state = await receivePurchaseOrderAction(
+      {},
+      form({ poNumber: 'PO-2026-000001', paid: '' }),
+    );
+    expect(state.question?.expenseIds).toHaveLength(1501);
+    expect(state.question?.expenseIds[0]).toBe(EXPENSE);
+    /* And the API takes an answer that long. */
+    expect(
+      receivePurchaseOrderRequest.safeParse({
+        poNumber: 'PO-2026-000001',
+        paidK: 0,
+        separateFrom: state.question?.expenseIds,
+      }).success,
+    ).toBe(true);
   });
 });

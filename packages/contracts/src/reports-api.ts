@@ -711,13 +711,6 @@ export const createPurchaseOrderResponse = z.discriminatedUnion('outcome', [
  * chat purchase takes (stock in, cash out for what was paid, the rest owed to
  * the supplier) and every line becomes counted stock at its line cost.
  */
-/**
- * How many Chat purchases one possible-duplicate question names, and so one
- * SEPARATE answer may (G-89): the question never names more than the answer
- * can carry back, so a genuine second purchase can always be received.
- */
-export const MAX_NAMED_PURCHASES = 1000;
-
 export const receivePurchaseOrderRequest = z
   .object({
     poNumber: z.string().trim().min(1),
@@ -735,11 +728,13 @@ export const receivePurchaseOrderRequest = z
      */
     sameAs: z.string().uuid().optional(),
     /**
-     * SEPARATE: this order is none of these Chat purchases (the ids the
-     * question named), so it is received normally. A purchase booked after
-     * the question is still asked about.
+     * SEPARATE: this order is none of these Chat purchases (every id the
+     * questions named), so it is received normally. A purchase booked after
+     * the question is still asked about. No count bound but the request's
+     * size (Codex review of 4582f91): any smaller cap could drop a purchase
+     * the merchant was shown and ask about it forever.
      */
-    separateFrom: z.array(z.string().uuid()).min(1).max(MAX_NAMED_PURCHASES).optional(),
+    separateFrom: z.array(z.string().uuid()).min(1).optional(),
   })
   .refine((v) => v.paidK === 0 || v.method !== undefined, {
     message: 'say how it was paid: cash or transfer',
@@ -769,30 +764,34 @@ export const receivePurchaseOrderResponse = z.discriminatedUnion('outcome', [
   /**
    * G-89: a purchase of this total, booked in Chat in the last 24 hours and
    * not proven separate, may be this order. NOTHING was written and the order
-   * is still open; the merchant answers SAME (`sameAs`) or SEPARATE
-   * (`separateFrom`). `match` is the newest booking, described; `expenseIds`
-   * is every one the question is about.
+   * is still open; the merchant answers SAME (`sameAs`, naming WHICH of
+   * `matches` it is) or SEPARATE (`separateFrom`). `matches` is every
+   * booking the question is about, newest first, each described so the
+   * merchant can pick the right one (Codex review of 4582f91).
    */
   z.object({
     outcome: z.literal('possible_duplicate'),
     poNumber: z.string(),
     totalK: kobo,
-    match: z.object({
-      expenseId: z.string().uuid(),
-      bookedAt: z.string(),
-      /** Who said yes to it in Chat, from the asking member's side. */
-      bookedBy: z.enum(['you', 'another_member', 'unknown']),
-      /** The supplier bill it raised, when bought on credit. */
-      billNumber: z.string().nullable(),
-    }),
-    expenseIds: z.array(z.string().uuid()).min(1).max(MAX_NAMED_PURCHASES),
+    matches: z
+      .array(
+        z.object({
+          expenseId: z.string().uuid(),
+          bookedAt: z.string(),
+          /** Who said yes to it in Chat, from the asking member's side. */
+          bookedBy: z.enum(['you', 'another_member', 'unknown']),
+          /** The supplier bill it raised, when bought on credit. */
+          billNumber: z.string().nullable(),
+        }),
+      )
+      .min(1),
     /**
      * The purchases this order was ALREADY answered SEPARATE from, echoed
      * from the request, for the next SEPARATE to carry forward with
-     * `expenseIds` (fresh review of 662e93a): otherwise two answers excuse
-     * one purchase each and ask about the other forever.
+     * `matches` (fresh review of 662e93a): otherwise two answers excuse one
+     * purchase each and ask about the other forever.
      */
-    alreadySeparate: z.array(z.string().uuid()).max(MAX_NAMED_PURCHASES),
+    alreadySeparate: z.array(z.string().uuid()),
   }),
   /** SAME: received and linked to the Chat purchase; nothing booked again. */
   z.object({ outcome: z.literal('linked'), poNumber: z.string(), expenseId: z.string().uuid() }),

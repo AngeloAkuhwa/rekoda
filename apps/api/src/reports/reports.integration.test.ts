@@ -3853,8 +3853,7 @@ describe('purchase orders, and what receiving one does', () => {
         outcome: 'possible_duplicate',
         poNumber,
         totalK: PO_TOTAL_K,
-        match: { expenseId, billNumber: null },
-        expenseIds: [expenseId],
+        matches: [{ expenseId, billNumber: null }],
       });
 
       /* Nothing moved: no purchase, posting, stock, bill or cash. */
@@ -3969,7 +3968,9 @@ describe('purchase orders, and what receiving one does', () => {
       const asked = await receive(auth, { poNumber, paidK: 0 });
       expect(asked.outcome).toBe('possible_duplicate');
       if (asked.outcome !== 'possible_duplicate') return;
-      expect([...asked.expenseIds].sort()).toEqual([first, second].sort());
+      /* Every match is offered, newest first, so SAME can name the OLDER
+       * one the order really is (Codex review of 4582f91). */
+      expect(asked.matches.map((m) => m.expenseId)).toEqual([second, first]);
 
       expect(await receive(auth, { poNumber, paidK: 0, sameAs: first })).toMatchObject({
         outcome: 'linked',
@@ -3986,6 +3987,13 @@ describe('purchase orders, and what receiving one does', () => {
         received_expense_id: first,
       });
       expect(await counts(businessId)).toEqual(before);
+
+      /* The purchase NOT picked is left for the order it really is. */
+      const nextPo = await openPo(auth);
+      expect(await receive(auth, { poNumber: nextPo, paidK: 0 })).toMatchObject({
+        outcome: 'possible_duplicate',
+        matches: [{ expenseId: second }],
+      });
     });
 
     it('SAME on a PO already received with its own purchase changes nothing', async () => {
@@ -4045,12 +4053,15 @@ describe('purchase orders, and what receiving one does', () => {
       const first = await chatBooked(businessId, 'invoice 5501');
       const poNumber = await openPo(auth);
       const asked = await receive(auth, { poNumber, paidK: 0 });
-      expect(asked).toMatchObject({ outcome: 'possible_duplicate', expenseIds: [first] });
+      expect(asked).toMatchObject({
+        outcome: 'possible_duplicate',
+        matches: [{ expenseId: first }],
+      });
 
       const second = await chatBooked(businessId, 'invoice 5502');
       expect(await receive(auth, { poNumber, paidK: 0, separateFrom: [first] })).toMatchObject({
         outcome: 'possible_duplicate',
-        expenseIds: [second],
+        matches: [{ expenseId: second }],
         alreadySeparate: [first],
       });
       expect((await counts(businessId)).expenses).toBe(2);

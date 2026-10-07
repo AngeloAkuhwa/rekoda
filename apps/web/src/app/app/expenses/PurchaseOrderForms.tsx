@@ -129,11 +129,26 @@ export function ReceivePurchaseOrderForm({ orders }: { orders: OpenPurchaseOrder
         <input type="hidden" name="poNumber" value={q.poNumber} />
         <input type="hidden" name="paid" value={q.paid} />
         <input type="hidden" name="method" value={q.method} />
-        <input type="hidden" name="expenseId" value={q.expenseId} />
         <input type="hidden" name="expenseIds" value={q.expenseIds.join(',')} />
+        <fieldset className="rk-form">
+          <legend className="rk-fineprint">
+            {q.options.length > 1 ? 'Which one is it?' : 'The purchase in Chat'}
+          </legend>
+          {q.options.map((option, i) => (
+            <label key={option.expenseId} className="rk-fineprint">
+              <input
+                type="radio"
+                name="expenseId"
+                value={option.expenseId}
+                defaultChecked={i === 0}
+              />{' '}
+              {option.text}
+            </label>
+          ))}
+        </fieldset>
         <p className="rk-fineprint">
-          Same purchase: the order is marked received and linked to it, and nothing is recorded
-          again. Separate purchase: the order is received as its own purchase.
+          Same purchase: the order is marked received and linked to the purchase you picked, and
+          nothing is recorded again. Separate purchase: the order is received as its own purchase.
         </p>
         <Button type="submit" name="answer" value="same" disabled={pending}>
           {pending ? 'Recording…' : 'Same purchase'}

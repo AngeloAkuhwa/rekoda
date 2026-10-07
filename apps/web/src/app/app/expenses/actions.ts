@@ -2,7 +2,6 @@
 
 import { revalidatePath } from 'next/cache';
 import { formatKobo, parseAmountText, toKobo } from '@rekoda/core';
-import { MAX_NAMED_PURCHASES } from '@rekoda/contracts';
 import {
   cancelPurchaseOrder,
   createPurchaseOrder,
@@ -477,14 +476,16 @@ export interface PurchaseOrderFormState {
   done?: string;
   /**
    * A receive that may be a purchase already booked in Chat (G-89): nothing
-   * was recorded, and the form asks SAME or SEPARATE, sending back what was
-   * typed and the purchases the question is about.
+   * was recorded, and the form asks which purchase it is (SAME, naming one
+   * of `options`) or that it is a SEPARATE purchase, sending back what was
+   * typed and every purchase the questions named.
    */
   question?: {
     poNumber: string;
     paid: string;
     method: string;
-    expenseId: string;
+    /** Each purchase it may be, newest first; SAME names the one picked. */
+    options: { expenseId: string; text: string }[];
     expenseIds: string[];
     text: string;
   };
@@ -616,24 +617,31 @@ async function receivePurchaseOrderActionUnguarded(
     return { done: 'Already received. Nothing was recorded twice.' };
   }
   if (outcome.outcome === 'possible_duplicate') {
-    const others = outcome.expenseIds.length - 1;
+    const several = outcome.matches.length > 1;
     return {
       question: {
         poNumber: outcome.poNumber,
         paid: paidText,
         method: method ?? '',
-        expenseId: outcome.match.expenseId,
-        /* Everything already answered SEPARATE goes forward with the new
-         * matches, so two answers never bounce between two purchases. */
-        expenseIds: [...new Set([...outcome.alreadySeparate, ...outcome.expenseIds])].slice(
-          0,
-          MAX_NAMED_PURCHASES,
-        ),
-        text:
-          `${BOOKED_BY[outcome.match.bookedBy]} recorded a ${formatKobo(outcome.totalK)} purchase ` +
-          `in Chat on ${lagosMoment(outcome.match.bookedAt)}` +
-          (others > 0 ? `, and ${others} more of the same amount` : '') +
-          `. Is ${outcome.poNumber} that same purchase?`,
+        /* Every purchase it may be, so SAME links the one the merchant
+         * means, never just the newest (Codex review of 4582f91). */
+        options: outcome.matches.map((m) => ({
+          expenseId: m.expenseId,
+          text:
+            `${BOOKED_BY[m.bookedBy]} recorded it on ${lagosMoment(m.bookedAt)}` +
+            (m.billNumber ? `, bill ${m.billNumber}` : ''),
+        })),
+        /* The new matches first, then everything already answered SEPARATE,
+         * never cut short, so two answers never bounce between purchases
+         * and no purchase shown is ever dropped (Codex review of 4582f91). */
+        expenseIds: [
+          ...new Set([...outcome.matches.map((m) => m.expenseId), ...outcome.alreadySeparate]),
+        ],
+        text: several
+          ? `${outcome.matches.length} purchases of ${formatKobo(outcome.totalK)} are already recorded in Chat. ` +
+            `Is ${outcome.poNumber} one of them? Pick the one it is, or say it is a separate purchase.`
+          : `A ${formatKobo(outcome.totalK)} purchase is already recorded in Chat. ` +
+            `Is ${outcome.poNumber} that same purchase?`,
       },
     };
   }

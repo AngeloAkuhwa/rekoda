@@ -110,7 +110,6 @@ import {
   createPurchaseOrderRequest,
   createQuoteRequest,
   receivePurchaseOrderRequest,
-  MAX_NAMED_PURCHASES,
   createRecurringRequest,
   openingBalancesRequest,
   stockCountRequest,
@@ -2537,9 +2536,10 @@ function roleWord(role: string): string {
 }
 
 /**
- * The question a receive that may be a Chat purchase asks (G-89): the newest
- * booking described by opaque id, time and who said yes to it, and every
- * booking the answer is about. Never a name or a product.
+ * The question a receive that may be a Chat purchase asks (G-89): EVERY
+ * booking it may be, newest first, each described by opaque id, time, who
+ * said yes to it and its bill, so the merchant can say which one it is.
+ * Never a name or a product.
  */
 function possibleDuplicate(
   poNumber: string,
@@ -2548,19 +2548,16 @@ function possibleDuplicate(
   userId: string | null,
   alreadySeparate: readonly string[],
 ): ReceivePurchaseOrderResponse {
-  const [first] = matches;
   return {
     outcome: 'possible_duplicate',
     poNumber,
     totalK,
-    match: {
-      expenseId: first.id,
-      bookedAt: (first.bookedAt ?? first.at).toISOString(),
-      bookedBy: ownerOf(first, userId),
-      billNumber: first.billNumber,
-    },
-    /* As many as an answer may name (the request's own bound). */
-    expenseIds: matches.slice(0, MAX_NAMED_PURCHASES).map((m) => m.id),
+    matches: matches.map((m) => ({
+      expenseId: m.id,
+      bookedAt: (m.bookedAt ?? m.at).toISOString(),
+      bookedBy: ownerOf(m, userId),
+      billNumber: m.billNumber,
+    })),
     alreadySeparate: [...alreadySeparate],
   };
 }
