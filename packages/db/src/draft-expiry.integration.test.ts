@@ -397,6 +397,13 @@ describe('the migration, run as it ships, against drafts written before it', () 
                     ${state}, ${createdAt}::timestamptz)`;
         }
         await tx.unsafe(file);
+        /* Replaying 0153 rewinds its state CHECK; later migrations widened it
+         * (0158 adds `held`, G-81), and the files after this one run on the
+         * same schema, so the current CHECK is put back. */
+        await tx.unsafe(`
+          ALTER TABLE command_drafts DROP CONSTRAINT command_drafts_state_check;
+          ALTER TABLE command_drafts ADD CONSTRAINT command_drafts_state_check
+            CHECK (state IN ('pending', 'superseded', 'confirmed', 'abandoned', 'expired', 'held'));`);
       });
     } finally {
       await client.end();

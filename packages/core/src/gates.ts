@@ -11,6 +11,7 @@
  * schema. Domain rules should not need to know what shape a webhook uses.
  */
 import { computeMoney, formatKobo, type MoneyBlock, type MoneyDraft } from './money.js';
+import { commandPurchaseReference, describePurchaseReference } from './purchase-identity.js';
 
 export interface SaleItemLike {
   readonly name: string;
@@ -191,6 +192,8 @@ export interface PurchaseLike {
    * including nothing, is not known, and a paid amount then needs asking.
    */
   readonly paymentMethod?: string | null | undefined;
+  /** The supplier's own document number, when one was stated (G-81). */
+  readonly supplierReference?: string | null | undefined;
 }
 
 /**
@@ -332,6 +335,14 @@ export function gatePurchase(
   const lines: string[] = ['Please check this before I save it:', ''];
   lines.push(`Stock: ${purchase.description}`);
   if (purchase.supplierMention) lines.push(`From: ${purchase.supplierMention}`);
+  /* Shown when it will be compared (G-81): a reference is what tells two
+   * purchases of one total apart, so the merchant sees the one Rekoda read.
+   * Exactly as it will be stored and put on the bill, by its kind and
+   * number ("Invoice 2231"), never as written: a reference dropped as an
+   * amount is never shown, and no letters the merchant or a photo wrote
+   * reach the preview text (final-head review of ffb5404; was G-92(2)). */
+  const reference = describePurchaseReference(commandPurchaseReference(purchase));
+  if (reference) lines.push(`Reference: ${reference.replace(/^Reference /u, '')}`);
   /* The delivery, named on its own line when the merchant counted it. A
    * purchase that moves stock and does not say so in the preview is a stock
    * change nobody confirmed. */

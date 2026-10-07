@@ -297,6 +297,10 @@ export const expenses = pgTable(
   (t) => [
     index('expenses_business_ix').on(t.businessId),
     index('expenses_business_status_ix').on(t.businessId, t.status),
+    /* G-81 (0158): stock purchases of one total in a window. */
+    index('expenses_purchase_identity_ix')
+      .on(t.businessId, t.amountK, t.createdAt)
+      .where(sql`category = 'stock'`),
   ],
 );
 

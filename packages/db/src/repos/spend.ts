@@ -83,6 +83,8 @@ export interface RecordPurchaseInput {
   method: 'cash' | 'transfer' | null;
   sourceType: string;
   sourceId: string;
+  /** The supplier's own document number, carried onto the bill (G-81). */
+  supplierReference?: string | null;
   /** The vaulted supplier this purchase came from (migration 0050), when
    * the mention resolved to one. A reference, never a name. */
   supplierId?: string | null;
@@ -208,6 +210,7 @@ export async function recordPurchase(
       supplierId: input.supplierId ?? null,
       expenseId: row.id,
       billNumber,
+      supplierReference: input.supplierReference ?? null,
       totalK: owedK,
       billedOn: lagosDay(now),
       ledgerTransactionId,

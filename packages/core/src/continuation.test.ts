@@ -323,8 +323,94 @@ describe('rebuiltPurchaseFate (G-68, final-head review)', () => {
       replace: false,
     });
   });
+  it('the same total with references that prove two purchases stays waiting (Codex review of 50f030f)', () => {
+    const a = { ...pos, supplierReference: 'INV:0101' };
+    expect(rebuiltPurchaseFate(a, { ...pos, supplierReference: 'invoice 0202' })).toEqual({
+      totalK: 18_000_000,
+      replace: false,
+    });
+    /* Same number, another kind, or kind OTHER: never proof, so replaced. */
+    expect(rebuiltPurchaseFate(a, { ...pos, supplierReference: 'invoice 0101' })?.replace).toBe(
+      true,
+    );
+    expect(rebuiltPurchaseFate(a, { ...pos, supplierReference: 'receipt 0202' })?.replace).toBe(
+      true,
+    );
+    expect(rebuiltPurchaseFate(a, { ...pos, supplierReference: '#0202' })?.replace).toBe(true);
+    expect(rebuiltPurchaseFate(a, pos)?.replace).toBe(true);
+  });
   it('anything unreadable decides nothing', () => {
     expect(rebuiltPurchaseFate(pos, { ...pos, intent: 'RecordExpense' })).toBeNull();
     expect(rebuiltPurchaseFate(null, pos)).toBeNull();
+  });
+});
+
+/**
+ * G-81 (OD-23): "Is this the same purchase?" as a typed continuation naming
+ * the HELD purchase draft. It takes only a whole-message "same" or
+ * "separate", in either register, and resumes nothing: the handler closes
+ * the held draft ("same") or builds a FRESH preview ("separate").
+ */
+describe('the purchase identity question (G-81)', () => {
+  const HELD = '7a2c4e6f-8b9d-4e1f-a2b3-c4d5e6f70819';
+  const IDENTITY: ContinuationState = {
+    kind: 'clarification',
+    expects: 'purchase_identity',
+    draftId: HELD,
+  };
+
+  it.each([
+    ['same', 'same'],
+    ['Same.', 'same'],
+    ['na the same', 'same'],
+    ['na di same o', 'same'],
+    ['e be the same', 'same'],
+    ['separate', 'separate'],
+    ['another one', 'separate'],
+    ['na another one', 'separate'],
+    ['abeg na another one o', 'separate'],
+    ['no be the same', 'separate'],
+    ['different', 'separate'],
+    ['new one', 'separate'],
+  ])('%j is %s', (text, answer) => {
+    expect(continuationAnswer(IDENTITY, said(text))).toEqual({ kind: 'purchase_identity', answer });
+  });
+
+  it.each(['yes', 'na so', 'no', 'no be so', 'cancel', 'bank', 'cash', '2', 'last month', 'ok'])(
+    '%j is not an answer to it',
+    (text) => {
+      expect(continuationAnswer(IDENTITY, said(text))).toBeNull();
+    },
+  );
+
+  it('only the identity question takes "same" or "separate"', () => {
+    expect(continuationAnswer(PERIOD_QUESTION, said('same'))).toBeNull();
+    expect(continuationAnswer(INVOICE_LIST, said('separate'))).toBeNull();
+    expect(continuationAnswer(SALES_READ, said('same'))).toBeNull();
+  });
+
+  it('is one-shot, and never resumes a read', () => {
+    expect(isOneShot(IDENTITY)).toBe(true);
+    expect(resumedRead(IDENTITY, { kind: 'purchase_identity', answer: 'same' })).toBeNull();
+  });
+
+  it('round-trips through its columns, naming only the held draft', () => {
+    const columns = continuationColumns(IDENTITY);
+    expect(columns).toMatchObject({
+      expects: 'purchase_identity',
+      draftId: HELD,
+      topic: null,
+      options: null,
+      customerToken: null,
+    });
+    expect(parseContinuation(columns)).toEqual(IDENTITY);
+  });
+
+  it('reads back defensively, and refuses to name anything but a draft id', () => {
+    const columns = continuationColumns(IDENTITY);
+    expect(parseContinuation({ ...columns, draftId: null })).toBeNull();
+    expect(parseContinuation({ ...columns, draftId: 'Emeka' })).toBeNull();
+    expect(parseContinuation({ ...columns, topic: 'debtors' })).toBeNull();
+    expect(() => continuationColumns({ ...IDENTITY, draftId: 'Emeka' })).toThrow();
   });
 });

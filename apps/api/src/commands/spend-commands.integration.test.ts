@@ -8,7 +8,15 @@
  * have a cheaper path to the ledger than a sentence does.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createDb, identity, sql, stockRepo, withBusiness, type Db } from '@rekoda/db';
+import {
+  conversationsRepo,
+  createDb,
+  identity,
+  sql,
+  stockRepo,
+  withBusiness,
+  type Db,
+} from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { CommandBus } from './command-bus.service.js';
 import { RiskPolicyService } from '../risk/risk-policy.service.js';
@@ -359,5 +367,144 @@ describe('the announcements reach the production dispatcher', () => {
     const pass = await buildOutboxDispatcher().runOnce(workerDb);
     expect(pass.failed).toBe(0);
     expect(pass.delivered).toBe(2);
+  });
+});
+
+/**
+ * G-81 (OD-23): the final net against one purchase becoming two financial
+ * truths sits in the purchase WORK, not only in the chat flow. Two chat
+ * purchases of one total that nothing proves separate, confirmed at the same
+ * moment on separate connections, book once: the work serialises them on an
+ * advisory lock keyed by business and total and re-reads what is booked
+ * before any posting. The loser throws before it writes anything.
+ */
+describe('two chat purchases of one total, at the same moment (G-81)', () => {
+  const purchase = (businessId: string, sourceId: string): RecordPurchaseCmdInput => ({
+    businessId,
+    description: '10 cartons of Milo',
+    amountK: 10_000_000,
+    paidK: 10_000_000,
+    method: 'cash',
+    sourceType: 'chat',
+    sourceId,
+    supplierId: null,
+    arrivals: [{ product: 'Milo', quantity: 10, costK: 10_000_000 }],
+  });
+
+  async function settle(businessId: string, ways: number) {
+    /* One pool per confirmation: each runs on its own connection, in its
+     * own transaction, exactly as two jobs on two worker lanes do. */
+    const pools = Array.from({ length: ways }, () => createDb(urls.app, { max: 1 }));
+    try {
+      return await Promise.allSettled(
+        pools.map(({ db }, i) =>
+          withBusiness(db, businessId, (tx) =>
+            recordPurchaseWork(tx, purchase(businessId, `00000000-0000-4000-8000-00000000000${i}`)),
+          ),
+        ),
+      );
+    } finally {
+      await Promise.all(pools.map(({ close }) => close()));
+    }
+  }
+
+  it('two confirmations on two connections book ONE purchase; the other writes nothing', async () => {
+    const businessId = await seedBusiness();
+    const raced = await settle(businessId, 2);
+    expect(raced.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const refused = raced.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect(refused?.reason?.name).toBe('PurchaseIdentityCollision');
+    expect(await count(businessId, 'expenses')).toBe(1);
+    expect(await count(businessId, 'ledger_transactions')).toBe(1);
+    expect(await count(businessId, 'inventory_movements')).toBe(1);
+    expect(await count(businessId, 'outbox_events', "AND type = 'purchase.recorded'")).toBe(1);
+  });
+
+  /* Two REAL previews (fresh review of 75fd1c9): each yes reads its own
+   * draft, so the net runs on the drafted path (the window from each
+   * draft's own message, compared by booking), not the no-draft fallback. */
+  async function preview(businessId: string, n: number): Promise<string> {
+    return withBusiness(appDb, businessId, async (tx) => {
+      const message = await conversationsRepo.recordInbound(tx, {
+        businessId,
+        channel: 'meta',
+        kind: 'text',
+        body: 'a purchase',
+        providerMessageId: `wamid.g81-race-${businessId}-${n}`,
+      });
+      const draft = await conversationsRepo.recordDraft(tx, {
+        businessId,
+        conversationMessageId: message.id,
+        intent: 'RecordPurchase',
+        command: {
+          intent: 'RecordPurchase',
+          supplierMention: null,
+          description: '10 cartons of Milo',
+          amount: 100_000,
+          reportedPayment: 100_000,
+          paymentMethod: 'cash',
+          productMention: 'Milo',
+          quantity: 10,
+        },
+        model: null,
+        previewed: true,
+      });
+      return draft.id;
+    });
+  }
+
+  it('two yeses for two REAL previews, on two connections, book ONE purchase', async () => {
+    const businessId = await seedBusiness();
+    const drafts = [await preview(businessId, 1), await preview(businessId, 2)];
+    const pools = drafts.map(() => createDb(urls.app, { max: 1 }));
+    let raced: PromiseSettledResult<unknown>[];
+    try {
+      raced = await Promise.allSettled(
+        pools.map(({ db }, i) =>
+          withBusiness(db, businessId, (tx) =>
+            recordPurchaseWork(tx, purchase(businessId, drafts[i]!)),
+          ),
+        ),
+      );
+    } finally {
+      await Promise.all(pools.map(({ close }) => close()));
+    }
+    expect(raced.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const refused = raced.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect(refused?.reason?.name).toBe('PurchaseIdentityCollision');
+    expect(await count(businessId, 'expenses')).toBe(1);
+    expect(await count(businessId, 'ledger_transactions')).toBe(1);
+    expect(await count(businessId, 'inventory_movements')).toBe(1);
+  });
+
+  it('eight at once still book exactly one', async () => {
+    const businessId = await seedBusiness();
+    const raced = await settle(businessId, 8);
+    expect(raced.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(await count(businessId, 'expenses')).toBe(1);
+  });
+
+  it('a different total is never blocked', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(appDb, businessId, (tx) =>
+      recordPurchaseWork(tx, purchase(businessId, '00000000-0000-4000-8000-0000000000a1')),
+    );
+    await withBusiness(appDb, businessId, (tx) =>
+      recordPurchaseWork(tx, {
+        ...purchase(businessId, '00000000-0000-4000-8000-0000000000a2'),
+        amountK: 10_000_100,
+      }),
+    );
+    expect(await count(businessId, 'expenses')).toBe(2);
+  });
+
+  it('a received purchase order is not a chat purchase and is not compared', async () => {
+    const businessId = await seedBusiness();
+    for (const id of ['po-1', 'po-2']) {
+      await withBusiness(appDb, businessId, (tx) =>
+        recordPurchaseWork(tx, { ...purchase(businessId, id), sourceType: 'purchase_order' }),
+      );
+    }
+    expect(await count(businessId, 'expenses')).toBe(2);
   });
 });

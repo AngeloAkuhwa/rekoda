@@ -34,6 +34,40 @@ const shelf: replies.StockLine[] = Array.from({ length: 20 }, (_, i) => ({
   onHand: i,
 }));
 
+/** The records an identity question can be about (G-81), every wording. */
+const IDENTITY_NOW = new Date('2026-10-02T12:00:00Z');
+const IDENTITY_SUBJECTS: replies.PurchaseIdentitySubject[] = [
+  {
+    state: 'booked',
+    amountK: NAIRA_MILLIONS,
+    owner: 'you',
+    bookedAt: new Date('2026-10-02T09:42:00Z'),
+    billNumber: null,
+  },
+  {
+    state: 'booked',
+    amountK: NAIRA_MILLIONS,
+    owner: 'another_member',
+    bookedAt: new Date('2026-10-01T21:15:00Z'),
+    billNumber: 'BILL-2026-000012',
+  },
+  {
+    state: 'booked',
+    amountK: NAIRA_MILLIONS,
+    owner: 'unknown',
+    bookedAt: new Date('2026-10-02T11:59:00Z'),
+    billNumber: null,
+  },
+  {
+    state: 'pending',
+    amountK: NAIRA_MILLIONS,
+    owner: 'another_member',
+    bookedAt: null,
+    billNumber: null,
+  },
+  { state: 'pending', amountK: NAIRA_MILLIONS, owner: 'unknown', bookedAt: null, billNumber: null },
+];
+
 const ALL: Record<string, readonly replies.Reply[]> = {
   greeting: [replies.greeting()],
   help: [replies.help()],
@@ -280,6 +314,25 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   ],
   stockSaved: [replies.stockSaved(LONG_NAME, 412, 412), replies.stockSaved(LONG_NAME, -412, 0)],
   graduationNudge: [replies.graduationNudge(NAIRA_MILLIONS, 200_000_000)],
+  purchaseIdentityQuestion: IDENTITY_SUBJECTS.map((subject) =>
+    replies.purchaseIdentityQuestion(subject, IDENTITY_NOW),
+  ),
+  purchaseIdentityAtYes: IDENTITY_SUBJECTS.map((subject) =>
+    replies.purchaseIdentityAtYes(subject, IDENTITY_NOW),
+  ),
+  purchaseIdentityReask: [
+    replies.purchaseIdentityReask(),
+    replies.purchaseIdentityReask({ afterNo: true }),
+  ],
+  previewUnderQuestion: [replies.previewUnderQuestion()],
+  samePurchase: [
+    replies.samePurchase(null, IDENTITY_NOW),
+    ...IDENTITY_SUBJECTS.map((subject) => replies.samePurchase(subject, IDENTITY_NOW)),
+  ],
+  separatePurchase: [
+    replies.separatePurchase(replies.preview('Please check this before I save it:')),
+  ],
+  purchaseIdentityClosed: [replies.purchaseIdentityClosed()],
 };
 
 /* Exported, and deliberately not a reply builder. `isSendable` and
@@ -873,5 +926,122 @@ describe('a bare "no" or "cancel" with nothing waiting (G-68)', () => {
     expect(text).toContain('nothing has changed');
     /* "forget am" right after a confirmed invoice: it is still there. */
     expect(text).toContain('already saved is still saved');
+  });
+});
+
+describe('the purchase identity question (G-81, OD-23)', () => {
+  const now = new Date('2026-10-02T12:00:00Z');
+  const booked = (owner: 'you' | 'another_member' | 'unknown', billNumber: string | null = null) =>
+    ({
+      state: 'booked',
+      amountK: 10_000_000,
+      owner,
+      bookedAt: new Date('2026-10-02T09:42:00Z'),
+      billNumber,
+    }) as const;
+
+  it('says what was saved, when, by whom and under which bill, and asks one question', () => {
+    expect(
+      replies.purchaseIdentityQuestion(booked('another_member', 'BILL-2026-000012'), now).text,
+    ).toBe(
+      'A stock purchase of ₦100,000 was already saved today at 10:42, sent by another member ' +
+        '(bill BILL-2026-000012). Is this the same purchase?\n\n' +
+        'Reply *same* if it is the same one, and nothing more will be saved.\n' +
+        'Reply *separate* if it is a different purchase, and I will show it to you to check first.',
+    );
+  });
+
+  it('names the member as "you" only for their own record, and nobody when it cannot say', () => {
+    expect(replies.purchaseIdentityQuestion(booked('you'), now).text).toContain(', sent by you.');
+    const unknown = replies.purchaseIdentityQuestion(booked('unknown'), now).text;
+    expect(unknown).not.toMatch(/sent by|another member/);
+  });
+
+  it('a waiting preview is described as waiting, never as saved', () => {
+    const text = replies.purchaseIdentityQuestion(
+      {
+        state: 'pending',
+        amountK: 10_000_000,
+        owner: 'another_member',
+        bookedAt: null,
+        billNumber: null,
+      },
+      now,
+    ).text;
+    expect(text).toContain(
+      'A preview of a ₦100,000 stock purchase is already waiting for a yes, from another member.',
+    );
+    expect(text).not.toContain('saved today');
+  });
+
+  it('a yes refused by the purchase work says nothing was saved', () => {
+    expect(replies.purchaseIdentityAtYes(booked('another_member'), now).text).toMatch(
+      /^Nothing was saved from your yes\. A stock purchase of ₦100,000 was already saved/,
+    );
+  });
+
+  it('"same" claims nothing was saved and points at the record as it stands', () => {
+    expect(replies.samePurchase(booked('you', 'BILL-2026-000012'), now).text).toBe(
+      'OK, nothing more was saved. The ₦100,000 purchase saved today at 10:42 ' +
+        '(bill BILL-2026-000012) stays as it is.',
+    );
+    expect(replies.samePurchase(null, now).text).toContain('no longer waiting');
+  });
+
+  it('a record from yesterday, Lagos time, says yesterday', () => {
+    const late = { ...booked('you'), bookedAt: new Date('2026-10-01T21:15:00Z') };
+    expect(replies.purchaseIdentityQuestion(late, now).text).toContain('yesterday at 22:15');
+  });
+
+  it('never uses a contraction, and names no supplier or product', () => {
+    for (const reply of [
+      replies.purchaseIdentityQuestion(booked('you'), now),
+      replies.purchaseIdentityReask(),
+      replies.purchaseIdentityReask({ afterNo: true }),
+      replies.purchaseIdentityClosed(),
+      replies.samePurchase(null, now),
+    ]) {
+      expect(reply.text).not.toMatch(/[–—]|n't|'re|'ll|'s /);
+    }
+  });
+});
+
+describe('Codex review of #262: "same" about a waiting preview', () => {
+  it('never says only the member who sent it can confirm it (any member may, OD-15)', () => {
+    const text = replies.samePurchase(
+      {
+        state: 'pending',
+        amountK: 10_000_000,
+        owner: 'another_member',
+        bookedAt: null,
+        billNumber: null,
+      },
+      new Date('2026-10-02T12:00:00Z'),
+    ).text;
+    expect(text).not.toContain('member who sent it');
+    expect(text).toContain('still waiting for a yes');
+  });
+});
+
+describe('fresh review of #262: no reply invites a different command', () => {
+  /* "send it again" is the resend command (G-86 defect class). */
+  const RESEND = /\bsend it again\b|\bsend am again\b|\bresend\b/i;
+  it.each([
+    ['purchaseIdentityClosed', () => replies.purchaseIdentityClosed()],
+    ['samePurchase(null)', () => replies.samePurchase(null, new Date('2026-10-02T12:00:00Z'))],
+    [
+      'earlierPreviewReplaced',
+      () => replies.earlierPreviewReplaced(replies.preview('P'), 10_000_000),
+    ],
+  ])('%s', (_, build) => {
+    expect(build().text).not.toMatch(RESEND);
+  });
+});
+
+describe('purchaseIdentityReask after a no (Codex review of 5bfe87e)', () => {
+  it('never offers cancel, which withdraws every waiting preview in the business', () => {
+    const text = replies.purchaseIdentityReask({ afterNo: true }).text;
+    expect(text).not.toMatch(/cancel/i);
+    expect(text).toContain('reply *same*');
   });
 });

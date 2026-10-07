@@ -120,6 +120,17 @@ export const RecordPurchase = z.object({
    */
   productMention: text(120).nullable(),
   quantity: quantity.nullable(),
+  /**
+   * The supplier's own invoice, receipt or document number, only when the
+   * merchant or the photographed document states one ("receipt EMK-0041").
+   * Two purchases of the same total with DIFFERENT references are two
+   * purchases (G-81, OD-23 D3). Optional, because almost no purchase states
+   * one and drafts written before G-81 carry none. Never a name: core keeps
+   * it only when it is certainly ONE document number (an explicit marker,
+   * no amount, date, phone number or second number) and stores only its
+   * kind and digits ("INV:2231"), never its letters; otherwise it is dropped.
+   */
+  supplierReference: text(40).nullish(),
 });
 
 export const AdjustInventory = z.object({
