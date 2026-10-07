@@ -1,9 +1,12 @@
 /**
- * Receiving a purchase order from the dashboard (G-61).
+ * Receiving a purchase order from the dashboard (G-61, G-89).
  *
  * Money handed over on delivery left Cash or Bank, and the form never picks
  * one: a paid receive names its account or is refused before the API is
  * called; a receive wholly on credit needs none.
+ *
+ * A receive that may be a purchase already booked in Chat is a question,
+ * SAME or SEPARATE, and the answer goes back with the purchases it is about.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -72,5 +75,130 @@ describe('receiving a purchase order', () => {
       await receivePurchaseOrderAction({}, form({ poNumber: 'PO-2026-000001', paid: '', method }));
       expect(receive).toHaveBeenCalledWith('tok', 'PO-2026-000001', 0, null);
     }
+  });
+});
+
+describe('a receive that may be a purchase already booked in Chat (G-89)', () => {
+  const EXPENSE = '0b6f8a52-2c3e-4c41-9b7e-6a1f0e0d9c11';
+  const OTHER = '6a3c1e8d-7f20-4d55-8a0e-2b9c4f1d7e22';
+  const ASKED = {
+    outcome: 'possible_duplicate' as const,
+    poNumber: 'PO-2026-000001',
+    totalK: 18_000_000,
+    match: {
+      expenseId: EXPENSE,
+      bookedAt: '2026-10-07T13:05:00.000Z',
+      bookedBy: 'another_member' as const,
+      billNumber: null,
+    },
+    expenseIds: [EXPENSE, OTHER],
+  };
+
+  it('asks SAME or SEPARATE, carrying the purchases the question is about', async () => {
+    receive.mockResolvedValue(ASKED);
+    const state = await receivePurchaseOrderAction(
+      {},
+      form({ poNumber: 'PO-2026-000001', paid: '100000', method: 'transfer' }),
+    );
+    expect(state.error).toBeUndefined();
+    expect(state.done).toBeUndefined();
+    expect(state.question).toEqual({
+      poNumber: 'PO-2026-000001',
+      paid: '100000',
+      method: 'transfer',
+      expenseId: EXPENSE,
+      expenseIds: [EXPENSE, OTHER],
+      text:
+        'Another member recorded a ₦180,000 purchase in Chat on 7 Oct 2026, 14:05, ' +
+        'and 1 more of the same amount. Is PO-2026-000001 that same purchase?',
+    });
+  });
+
+  it('SAME sends the purchase it is the same as, and says nothing was recorded again', async () => {
+    receive.mockResolvedValue({
+      outcome: 'linked',
+      poNumber: 'PO-2026-000001',
+      expenseId: EXPENSE,
+    });
+    const state = await receivePurchaseOrderAction(
+      {},
+      form({
+        poNumber: 'PO-2026-000001',
+        paid: '100000',
+        method: 'transfer',
+        answer: 'same',
+        expenseId: EXPENSE,
+        expenseIds: `${EXPENSE},${OTHER}`,
+      }),
+    );
+    expect(receive).toHaveBeenCalledWith('tok', 'PO-2026-000001', 10_000_000, 'transfer', {
+      sameAs: EXPENSE,
+    });
+    expect(state.done).toBe(
+      'PO-2026-000001 marked as received and linked to the purchase already recorded in Chat. ' +
+        'No additional purchase or accounting entry was created.',
+    );
+  });
+
+  it('SEPARATE sends every purchase the question named', async () => {
+    receive.mockResolvedValue({
+      outcome: 'received',
+      poNumber: 'PO-2026-000001',
+      totalK: 18_000_000,
+      owedK: 8_000_000,
+      linesArrived: 1,
+    });
+    const state = await receivePurchaseOrderAction(
+      {},
+      form({
+        poNumber: 'PO-2026-000001',
+        paid: '100000',
+        method: 'transfer',
+        answer: 'separate',
+        expenseId: EXPENSE,
+        expenseIds: `${EXPENSE},${OTHER}`,
+      }),
+    );
+    expect(receive).toHaveBeenCalledWith('tok', 'PO-2026-000001', 10_000_000, 'transfer', {
+      separateFrom: [EXPENSE, OTHER],
+    });
+    expect(state.done).toMatch(/^PO-2026-000001 received:/);
+  });
+
+  it('never sends an answer that names no readable purchase', async () => {
+    const state = await receivePurchaseOrderAction(
+      {},
+      form({ poNumber: 'PO-2026-000001', paid: '', answer: 'same', expenseId: 'not-an-id' }),
+    );
+    expect(receive).not.toHaveBeenCalled();
+    expect(state.error).toBe('That answer could not be read. Nothing was recorded. Try again.');
+  });
+
+  it('says what a repeated SAME, a conflicting link and a stale answer did', async () => {
+    const answer = form({
+      poNumber: 'PO-2026-000001',
+      paid: '',
+      answer: 'same',
+      expenseId: EXPENSE,
+      expenseIds: EXPENSE,
+    });
+    receive.mockResolvedValue({
+      outcome: 'already_linked',
+      poNumber: 'PO-2026-000001',
+      expenseId: EXPENSE,
+    });
+    expect((await receivePurchaseOrderAction({}, answer)).done).toBe(
+      'PO-2026-000001 is already received and linked to the purchase recorded in Chat. Nothing was recorded twice.',
+    );
+
+    receive.mockResolvedValue({ outcome: 'linked_elsewhere', poNumber: 'PO-2026-000001' });
+    expect((await receivePurchaseOrderAction({}, answer)).error).toBe(
+      'PO-2026-000001 is already received against a different purchase. Nothing was changed. Check your purchases before recording anything else for it.',
+    );
+
+    receive.mockResolvedValue({ outcome: 'no_longer_matches', poNumber: 'PO-2026-000001' });
+    expect((await receivePurchaseOrderAction({}, answer)).error).toBe(
+      'That Chat purchase no longer looks like this order, so nothing was changed. Mark it received again to see where it stands.',
+    );
   });
 });
