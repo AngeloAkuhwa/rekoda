@@ -337,8 +337,10 @@ export function gatePurchase(
   if (purchase.supplierMention) lines.push(`From: ${purchase.supplierMention}`);
   /* Shown when it will be compared (G-81): a reference is what tells two
    * purchases of one total apart, so the merchant sees the one Rekoda read.
-   * As written, from the live command (never stored); a stored one (a fresh
-   * "separate" preview) is shown by its kind and number. */
+   * As written, from the live command: never stored in the command or the
+   * bill, though the preview text itself is kept with the outbound message
+   * (G-92(2)); a stored one (a fresh "separate" preview) is shown by its
+   * kind and number. */
   const reference = purchase.supplierReference;
   if (purchaseReference(reference, purchase.amount)) {
     lines.push(
