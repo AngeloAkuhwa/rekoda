@@ -3493,8 +3493,8 @@ async function answerPurchaseIdentity(
  * What every NEW financial preview does once recorded (G-68, kept as Build 7
  * wrote it, and shared with the "separate" answer since G-81): the SAME
  * member's pending funding-answer rebuild of the same total is superseded
- * and the reply says so (a different total leaves it waiting, and the reply
- * says that too); never across members, never for a rebuild with no
+ * and the reply says so (a different total, or references that prove two
+ * purchases since G-81, leaves it waiting, and the reply says that too); never across members, never for a rebuild with no
  * recorded requester. And every older retired purchase question is closed,
  * with every member's short answer to it, so nobody can rebuild it into a
  * second preview of the same purchase.
@@ -4674,8 +4674,8 @@ async function interpretedReply(
    * purchase. And the SAME member's pending rebuilt preview of the same
    * TOTAL (integer kobo) is superseded, so their two yeses cannot book one
    * purchase twice, and the reply ALWAYS says so (final-head review); a
-   * different total leaves it waiting, and the reply says that too. Never
-   * across members, and never for a rebuild with no recorded requester. */
+   * different total, or references that prove two purchases (G-81), leaves
+   * it waiting, and the reply says that too. Never across members, and never for a rebuild with no recorded requester. */
   if (answered.previewed === true && draft.isNew && !holding) {
     shown = await afterNewPreview(tx, businessId, draft.id, command, actorId, shown, outcome);
   }
