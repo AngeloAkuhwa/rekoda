@@ -138,6 +138,9 @@ const KIND_LABEL: Readonly<Record<ReferenceKind, string>> = {
 /** A reference as stored: its kind and its digits, nothing else. */
 const STORED = /^(INV|RCPT|WAYBILL|PO|OTHER):(\d+)$/u;
 
+/** The purchase's amounts in naira (its total, a part payment), when known. */
+export type PurchaseAmounts = number | null | undefined | readonly (number | null | undefined)[];
+
 const kindOfWord = (token: string): ReferenceKind | undefined =>
   REFERENCE_WORDS.get(token.replace(/\.$/u, '').toUpperCase());
 
@@ -163,12 +166,13 @@ const kindOfWord = (token: string): ReferenceKind | undefined =>
  *    invoice 2231", "invoice 2231, 2232"), letters after the number, or
  *    fewer than two significant digits.
  *
- * `totalNaira` is the purchase's total when known: a "reference" equal to it
- * is the amount copied into the wrong field.
+ * `totalNaira` is the purchase's amounts when known (its total, and what was
+ * reported paid): a "reference" equal to one of them is an amount copied
+ * into the wrong field (Codex review of 5bfe87e: a part payment too).
  */
 export function purchaseReference(
   raw: unknown,
-  totalNaira?: number | null,
+  totalNaira?: PurchaseAmounts,
 ): { readonly kind: ReferenceKind; readonly digits: string } | null {
   if (typeof raw !== 'string') return null;
   /* The stored form skips only the re-parsing: the persistence boundary
@@ -275,7 +279,7 @@ function checkedNumber(
   kind: ReferenceKind,
   numberPart: string,
   digits: string,
-  totalNaira: number | null | undefined,
+  totalNaira: PurchaseAmounts,
 ): { readonly kind: ReferenceKind; readonly digits: string } | null {
   /* Ten digits or more in all is a phone or account number. */
   if (digits.length === 0 || digits.length >= 10) return null;
@@ -315,12 +319,14 @@ function checkedNumber(
   ) {
     return null;
   }
-  /* The purchase's own total copied into the reference. */
-  if (totalNaira != null && Number.isFinite(totalNaira)) {
-    const asWritten = digits.replace(/^0+/u, '');
+  /* One of the purchase's own amounts (its total, a part payment) copied
+   * into the reference. */
+  const asWritten = digits.replace(/^0+/u, '');
+  for (const amount of [totalNaira ?? null].flat()) {
+    if (amount == null || !Number.isFinite(amount)) continue;
     if (
-      asWritten === String(Math.round(totalNaira)) ||
-      asWritten === String(Math.round(totalNaira * 100))
+      asWritten === String(Math.round(amount)) ||
+      asWritten === String(Math.round(amount * 100))
     ) {
       return null;
     }
@@ -338,7 +344,7 @@ function checkedNumber(
  */
 export function normalisePurchaseReference(
   raw: unknown,
-  totalNaira?: number | null,
+  totalNaira?: PurchaseAmounts,
 ): string | null {
   const ref = purchaseReference(raw, totalNaira);
   return ref ? `${ref.kind}:${ref.digits.replace(/0/gu, '')}` : null;
@@ -349,9 +355,25 @@ export function normalisePurchaseReference(
  * ("INV:2231", "OTHER:0041"), never its letters. Null when it is not
  * certainly a reference.
  */
-export function storedPurchaseReference(raw: unknown, totalNaira?: number | null): string | null {
+export function storedPurchaseReference(raw: unknown, totalNaira?: PurchaseAmounts): string | null {
   const ref = purchaseReference(raw, totalNaira);
   return ref ? `${ref.kind}:${ref.digits}` : null;
+}
+
+/**
+ * The reference a purchase COMMAND carries, exactly as it is stored: checked
+ * against the command's total and its reported payment. The persistence
+ * boundary stores this, and the preview compares this, so the preview and
+ * the yes read one value (Codex review of 5bfe87e; G-92(6)).
+ */
+export function commandPurchaseReference(command: unknown): string | null {
+  const c = command as Record<string, unknown> | null;
+  if (!c) return null;
+  const amount = (key: string) => (typeof c[key] === 'number' ? (c[key] as number) : null);
+  return storedPurchaseReference(c['supplierReference'], [
+    amount('amount'),
+    amount('reportedPayment'),
+  ]);
 }
 
 /** How a stored reference is shown (a preview, a bill): "Invoice 2231". */

@@ -17,6 +17,7 @@ import {
   purchaseTotalK,
   sameRecord,
   storedPurchaseReference,
+  commandPurchaseReference,
   type PurchaseFacts,
   type PurchaseRecord,
 } from './purchase-identity.js';
@@ -600,5 +601,45 @@ describe('Codex review of 50f030f', () => {
     ['order 2231', 'OTHER:2231'],
   ])('%j is read as %j', (raw, stored) => {
     expect(storedPurchaseReference(raw, 100_000)).toBe(stored);
+  });
+});
+
+describe('Codex review of 5bfe87e: a reported part payment is never a reference', () => {
+  const purchase = (supplierReference: string, reportedPayment: number | null) => ({
+    intent: 'RecordPurchase',
+    amount: 100_000,
+    reportedPayment,
+    supplierReference,
+  });
+
+  it('a reference equal to the part payment is dropped, at storage and so at the preview', () => {
+    expect(storedPurchaseReference('invoice 35000', [100_000, 35_000])).toBeNull();
+    expect(commandPurchaseReference(purchase('invoice 35000', 35_000))).toBeNull();
+    /* So it never proves the purchase separate from the real invoice number. */
+    expect(
+      provenSeparate(
+        facts({
+          reference: normalisePurchaseReference(
+            commandPurchaseReference(purchase('invoice 35000', 35_000)),
+          ),
+        }),
+        record({ reference: normalisePurchaseReference('invoice 2231') }),
+      ),
+    ).toBe(false);
+  });
+
+  it('a real reference on a part-paid purchase is kept', () => {
+    expect(commandPurchaseReference(purchase('invoice 2231', 35_000))).toBe('INV:2231');
+    expect(commandPurchaseReference(purchase('invoice 2231', null))).toBe('INV:2231');
+  });
+
+  it('the total is still refused, and a stored form meets the same checks', () => {
+    expect(commandPurchaseReference(purchase('invoice 100000', 35_000))).toBeNull();
+    expect(commandPurchaseReference(purchase('INV:35000', 35_000))).toBeNull();
+  });
+
+  it('anything that is not a purchase command has no reference', () => {
+    expect(commandPurchaseReference(null)).toBeNull();
+    expect(commandPurchaseReference({ intent: 'RecordPurchase', amount: 100_000 })).toBeNull();
   });
 });

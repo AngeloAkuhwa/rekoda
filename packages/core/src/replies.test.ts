@@ -320,7 +320,10 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   purchaseIdentityAtYes: IDENTITY_SUBJECTS.map((subject) =>
     replies.purchaseIdentityAtYes(subject, IDENTITY_NOW),
   ),
-  purchaseIdentityReask: [replies.purchaseIdentityReask()],
+  purchaseIdentityReask: [
+    replies.purchaseIdentityReask(),
+    replies.purchaseIdentityReask({ afterNo: true }),
+  ],
   previewUnderQuestion: [replies.previewUnderQuestion()],
   samePurchase: [
     replies.samePurchase(null, IDENTITY_NOW),
@@ -994,6 +997,7 @@ describe('the purchase identity question (G-81, OD-23)', () => {
     for (const reply of [
       replies.purchaseIdentityQuestion(booked('you'), now),
       replies.purchaseIdentityReask(),
+      replies.purchaseIdentityReask({ afterNo: true }),
       replies.purchaseIdentityClosed(),
       replies.samePurchase(null, now),
     ]) {
@@ -1031,5 +1035,13 @@ describe('fresh review of #262: no reply invites a different command', () => {
     ],
   ])('%s', (_, build) => {
     expect(build().text).not.toMatch(RESEND);
+  });
+});
+
+describe('purchaseIdentityReask after a no (Codex review of 5bfe87e)', () => {
+  it('never offers cancel, which withdraws every waiting preview in the business', () => {
+    const text = replies.purchaseIdentityReask({ afterNo: true }).text;
+    expect(text).not.toMatch(/cancel/i);
+    expect(text).toContain('reply *same*');
   });
 });

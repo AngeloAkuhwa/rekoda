@@ -22,7 +22,7 @@
  * never stored" stays true in both halves.
  */
 
-import { storedPurchaseReference } from './purchase-identity.js';
+import { commandPurchaseReference } from './purchase-identity.js';
 
 type CommandRecord = Record<string, unknown>;
 
@@ -62,13 +62,12 @@ export function sanitizeCommandForPersistence(command: unknown): unknown {
  * document KIND from a closed set and its digits ("INV:2231", "OTHER:0041"),
  * never the letters it was written with, which can be a name ("TOLU-77";
  * ADR 0005). Anything that is not certainly a reference (a name, an amount,
- * the purchase's own total, a date, a phone number) is dropped (null), and
- * the purchase is then simply one with no reference.
+ * the purchase's own total or reported payment, a date, a phone number) is
+ * dropped (null), and the purchase is then simply one with no reference.
  */
 function normaliseReference(record: CommandRecord): CommandRecord {
   if (record['intent'] !== 'RecordPurchase' || !('supplierReference' in record)) return record;
-  const total = typeof record['amount'] === 'number' ? record['amount'] : null;
-  const normalised = storedPurchaseReference(record['supplierReference'], total);
+  const normalised = commandPurchaseReference(record);
   if (normalised === record['supplierReference']) return record;
   return { ...record, supplierReference: normalised };
 }

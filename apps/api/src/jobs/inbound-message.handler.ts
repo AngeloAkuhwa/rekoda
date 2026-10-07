@@ -39,6 +39,7 @@ import {
   purchaseIdentityVerdict,
   purchaseMatches,
   purchaseTotalK,
+  commandPurchaseReference,
   describePurchaseReference,
   ownerOf,
   sameRecord,
@@ -3088,7 +3089,14 @@ async function answerFundingSource(
     }
   }
   if (identity && draft.isNew && !holding) {
-    shown = await replaceOwnPreviews(tx, businessId, identity.replace, shown, message.outcome);
+    shown = await replaceOwnPreviews(
+      tx,
+      businessId,
+      identity.replace,
+      shown,
+      message.outcome,
+      identity.unseen,
+    );
   }
   return shown;
 }
@@ -3128,6 +3136,10 @@ async function purchaseIdentityCheck(
   asked: readonly PurchaseRecord[];
   ask: PurchaseRecord | null;
   inheritFrom: string | null;
+  /** The sender's own drafts of this total whose preview never reached
+   * them: replaced silently when this one is previewed (Codex review of
+   * 5bfe87e). */
+  unseen: readonly string[];
 } | null> {
   const amountK = purchaseTotalK(input.stored);
   if (amountK === null) return null;
@@ -3138,7 +3150,10 @@ async function purchaseIdentityCheck(
      * with no usable quantity nothing is delivered, so there is no product
      * to prove anything by. */
     productMention: purchaseArrival(input.stored as never)?.productMention ?? null,
-    reference: input.stored['supplierReference'],
+    /* The reference exactly as it will be stored (its total and reported
+     * payment checked), so the preview and the yes compare one value
+     * (Codex review of 5bfe87e). */
+    reference: commandPurchaseReference(input.stored),
     separateFrom: input.separateFrom ?? null,
   });
   const { records } = await purchaseIdentityRepo.purchaseRecords(tx, businessId, amountK, {
@@ -3171,7 +3186,15 @@ async function purchaseIdentityCheck(
       );
     }
   }
-  return { ...verdict, inheritFrom };
+  const unseen = input.actorId
+    ? await purchaseIdentityRepo.unseenOwnPurchaseDrafts(tx, businessId, amountK, {
+        actorId: input.actorId,
+        asOf: input.receivedAt,
+        messageId: input.messageId,
+        excludeDraftId: input.excludeDraftId ?? null,
+      })
+    : [];
+  return { ...verdict, inheritFrom, unseen };
 }
 
 /** What the merchant is told about a matching record: never a name. */
@@ -3201,12 +3224,20 @@ async function replaceOwnPreviews(
   replace: readonly PurchaseRecord[],
   shown: Reply,
   outcome?: RebuildOutcome,
+  /** The sender's own drafts whose preview never reached them: replaced
+   * too, but silently, since they never saw them (Codex review of 5bfe87e). */
+  unseen: readonly string[] = [],
 ): Promise<Reply> {
   let reply = shown;
   for (const own of replace) {
     if (await conversationsRepo.supersedeOwnPreview(tx, businessId, own.id)) {
       reply = replies.earlierPreviewReplaced(reply, own.amountK);
       if (outcome) (outcome.replacedRebuilds ??= []).push(own.id);
+    }
+  }
+  for (const id of unseen) {
+    if (await conversationsRepo.supersedeOwnPreview(tx, businessId, id)) {
+      if (outcome) (outcome.replacedRebuilds ??= []).push(id);
     }
   }
   return reply;
@@ -3475,6 +3506,7 @@ async function answerPurchaseIdentity(
       verdict?.replace ?? [],
       shown,
       message.outcome,
+      verdict?.unseen ?? [],
     );
     shown = await afterNewPreview(
       tx,
@@ -3510,8 +3542,13 @@ async function afterNewPreview(
 ): Promise<Reply> {
   let reply = shown;
   if (actorId && (command as { intent?: unknown } | null)?.intent === 'RecordPurchase') {
+    /* What a "separate" answer declared this purchase apart from (its
+     * `separate_from` line): a rebuild named there is a different purchase
+     * by the member's own answer, never replaced (Codex review of 5bfe87e). */
+    const declared = (await purchaseIdentityRepo.draftFacts(tx, businessId, draftId))?.separateFrom;
     for (const older of await conversationsRepo.pendingRebuildsBefore(tx, businessId, draftId)) {
       if (older.requestedBy !== actorId) continue;
+      if (declared?.some((ref) => ref.draftId === older.id)) continue;
       const fate = rebuiltPurchaseFate(older.command, command);
       if (!fate) continue;
       if (fate.replace) {
@@ -4663,7 +4700,14 @@ async function interpretedReply(
   /* A purchase held for a question replaces nothing (fresh review of #262):
    * the member's own waiting preview stays the one confirmable preview. */
   if (identity && draft.isNew && !holding) {
-    shown = await replaceOwnPreviews(tx, businessId, identity.replace, shown, outcome);
+    shown = await replaceOwnPreviews(
+      tx,
+      businessId,
+      identity.replace,
+      shown,
+      outcome,
+      identity.unseen,
+    );
   }
 
   /* G-68 review: a NEW financial preview means the merchant has moved on

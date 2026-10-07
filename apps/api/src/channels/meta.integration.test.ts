@@ -14594,4 +14594,93 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       expect(await purchases(business.id)).toBe(1);
     });
   });
+
+  describe('Codex review of 5bfe87e', () => {
+    const POS_MILO = { ...MILO, paymentMethod: 'pos' };
+
+    it("the sender's own undelivered preview is replaced by their resend, silently (was G-91)", async () => {
+      const business = await seedMerchant();
+      stubSender.failWith();
+      await say('wamid.U1-buy', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      /* The preview never reached them: still pending, never described. */
+      expect(await purchaseStates(business.id)).toEqual(['pending']);
+      await say('wamid.U1-again', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      expect(stubSender.lastText).toContain('Paid in full by cash');
+      expect(stubSender.lastText).not.toContain('Your earlier preview');
+      expect(stubSender.lastText).not.toContain(QUESTION);
+      /* One confirmable draft, so two yeses book it once. */
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending']);
+      await reply('wamid.U1-yes-1', 'yes');
+      await reply('wamid.U1-yes-2', 'yes');
+      expect(await purchases(business.id)).toBe(1);
+    });
+
+    it("another member's undelivered preview is never replaced by it", async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      stubSender.failWith();
+      await say('wamid.U2-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      await say('wamid.U2-o', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      expect(await purchaseStates(business.id)).toEqual(['pending', 'pending']);
+    });
+
+    it('a rebuild the member declared "separate" is never replaced by the fresh preview', async () => {
+      const business = await seedMerchant();
+      /* A funding-answer rebuild with invoice 2231. */
+      await say(
+        'wamid.L1-pos',
+        { ...POS_MILO, supplierReference: 'invoice 2231' },
+        'I bought 10 cartons of Milo for 100k, paid by POS, invoice 2231',
+      );
+      await reply('wamid.L1-bank', 'bank');
+      expect(stubSender.lastText).toContain('Paid in full by transfer');
+      /* A typed purchase with invoice 2281: proven separate, both wait. */
+      await say(
+        'wamid.L1-typed',
+        { ...MILO, supplierReference: 'invoice 2281' },
+        'I bought 10 cartons of Milo for 100k cash, invoice 2281',
+      );
+      expect(stubSender.lastText).toContain('is still waiting');
+      /* The same total with no reference matches both: asked about both. */
+      await say('wamid.L1-again', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      expect(stubSender.lastText).toContain(QUESTION);
+      await reply('wamid.L1-sep', 'separate');
+      expect(stubSender.lastText).toContain(SEPARATE_LEAD);
+      expect(stubSender.lastText).not.toContain('was replaced by this one');
+      /* The rebuild, the typed preview and the fresh one all still wait. */
+      expect((await purchaseStates(business.id)).filter((s) => s === 'pending')).toHaveLength(3);
+      await reply('wamid.L1-yes-1', 'yes');
+      await reply('wamid.L1-yes-2', 'yes');
+      await reply('wamid.L1-yes-3', 'yes');
+      expect(await purchases(business.id)).toBe(3);
+    });
+
+    it('a reference equal to the reported part payment is not stored', async () => {
+      const business = await seedMerchant();
+      await say(
+        'wamid.R1-buy',
+        { ...MILO, reportedPayment: 35_000, supplierReference: 'invoice 35000' },
+        'I bought 10 cartons of Milo for 100k, paid 35k, invoice 35000',
+      );
+      const [row] = [
+        ...(await withBusiness(db, business.id, (tx) =>
+          tx.execute<{ ref: string | null }>(sql`
+            SELECT command->>'supplierReference' AS ref FROM command_drafts
+             WHERE business_id = ${business.id}::uuid AND intent = 'RecordPurchase'`),
+        )),
+      ];
+      expect(row!.ref).toBeNull();
+    });
+
+    it('the re-ask after a no never offers cancel', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'C9');
+      await say('wamid.C9-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      expect(stubSender.lastText).toContain(QUESTION);
+      await reply('wamid.C9-no', 'no', DELEGATE);
+      expect(stubSender.lastText).toContain(REASK);
+      expect(stubSender.lastText).not.toMatch(/cancel/i);
+    });
+  });
 });

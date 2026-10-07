@@ -2015,7 +2015,10 @@ export function purchaseIdentityReask(options: { readonly afterNo?: boolean } = 
   return reply(
     'Please reply *same* or *separate*, so I know whether this is a second purchase. ' +
       'Nothing was saved.' +
-      (options.afterNo ? ' Reply *cancel* to drop the question instead.' : ''),
+      /* Never "cancel" here: it withdraws every waiting preview in the
+       * business, another member's too (Codex review of 5bfe87e). "same"
+       * closes this question and saves nothing more. */
+      (options.afterNo ? ' If you do not want it saved, reply *same*: nothing more is saved.' : ''),
   );
 }
 

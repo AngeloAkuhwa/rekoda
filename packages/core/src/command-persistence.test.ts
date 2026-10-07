@@ -150,3 +150,15 @@ describe('Codex review of 7f173b6', () => {
     }
   });
 });
+
+describe('a purchase reference equal to the reported payment (Codex review of 5bfe87e)', () => {
+  it('is dropped before anything is stored', () => {
+    const stored = sanitizeCommandForPersistence({
+      intent: 'RecordPurchase',
+      amount: 100_000,
+      reportedPayment: 35_000,
+      supplierReference: 'invoice 35000',
+    }) as Record<string, unknown>;
+    expect(stored['supplierReference']).toBeNull();
+  });
+});
