@@ -14089,13 +14089,14 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       expect(await purchases(business.id)).toBe(2);
     });
 
-    it('minor: a "no" to the question says that cancel closes it', async () => {
+    it('minor: a "no" to the question says how to save nothing (same, never cancel: Codex review of 5bfe87e)', async () => {
       const business = await seedMerchant();
       await addDelegate(business.id);
       await bookMilo(business.id, 'M3');
       await say('wamid.M3-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
       await reply('wamid.M3-no', 'no', DELEGATE);
-      expect(stubSender.lastText).toContain('*cancel*');
+      expect(stubSender.lastText).toContain('If you do not want it saved, reply *same*');
+      expect(stubSender.lastText).not.toContain('*cancel*');
     });
 
     it('minor: a closed question mentions the fresh preview still waiting', async () => {
@@ -14302,7 +14303,8 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
         { ...MILO, reportedPayment: 0, paymentMethod: null, supplierReference: 'EMK-0041' },
         'Milo 100k on credit, their invoice EMK-0041',
       );
-      expect(stubSender.lastText).toContain('Reference: EMK-0041');
+      expect(stubSender.lastText).toContain('Reference: 0041');
+      expect(stubSender.lastText).not.toContain('EMK');
       await reply('wamid.C7b-yes', 'yes');
       const rows = await withBusiness(db, business.id, (tx) =>
         tx.execute<{ ref: string | null }>(sql`
@@ -14613,6 +14615,51 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       await reply('wamid.U1-yes-1', 'yes');
       await reply('wamid.U1-yes-2', 'yes');
       expect(await purchases(business.id)).toBe(1);
+    });
+
+    it('an undelivered draft proven separate by its reference is never replaced (final-head review of ffb5404)', async () => {
+      const business = await seedMerchant();
+      stubSender.failWith();
+      await say(
+        'wamid.U3-milo',
+        { ...MILO, supplierReference: 'invoice 2231' },
+        'I bought 10 cartons of Milo for 100k cash, invoice 2231',
+      );
+      await say(
+        'wamid.U3-rice',
+        {
+          ...MILO,
+          description: '4 bags of rice',
+          productMention: 'rice',
+          quantity: 4,
+          supplierReference: 'invoice 5590',
+        },
+        'I bought 4 bags of rice for 100k cash, invoice 5590',
+      );
+      expect(await purchaseStates(business.id)).toEqual(['pending', 'pending']);
+    });
+
+    it('a resend replaces only the one undelivered draft it may be, never another proven separate', async () => {
+      const business = await seedMerchant();
+      stubSender.failWith();
+      await say(
+        'wamid.U4-a',
+        { ...MILO, supplierReference: 'invoice 2231' },
+        'I bought 10 cartons of Milo for 100k cash, invoice 2231',
+      );
+      stubSender.failWith();
+      await say(
+        'wamid.U4-b',
+        { ...MILO, supplierReference: 'invoice 5590' },
+        'I bought 10 cartons of Milo for 100k cash, invoice 5590',
+      );
+      await say(
+        'wamid.U4-again',
+        { ...MILO, supplierReference: 'invoice 2231' },
+        'I bought 10 cartons of Milo for 100k cash, invoice 2231',
+      );
+      /* The invoice 2231 draft is replaced; invoice 5590 is another purchase. */
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending', 'pending']);
     });
 
     it("another member's undelivered preview is never replaced by it", async () => {

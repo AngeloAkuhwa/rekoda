@@ -11,7 +11,7 @@
  * schema. Domain rules should not need to know what shape a webhook uses.
  */
 import { computeMoney, formatKobo, type MoneyBlock, type MoneyDraft } from './money.js';
-import { describePurchaseReference, purchaseReference } from './purchase-identity.js';
+import { commandPurchaseReference, describePurchaseReference } from './purchase-identity.js';
 
 export interface SaleItemLike {
   readonly name: string;
@@ -337,16 +337,12 @@ export function gatePurchase(
   if (purchase.supplierMention) lines.push(`From: ${purchase.supplierMention}`);
   /* Shown when it will be compared (G-81): a reference is what tells two
    * purchases of one total apart, so the merchant sees the one Rekoda read.
-   * As written, from the live command: never stored in the command or the
-   * bill, though the preview text itself is kept with the outbound message
-   * (G-92(2)); a stored one (a fresh "separate" preview) is shown by its
-   * kind and number. */
-  const reference = purchase.supplierReference;
-  if (purchaseReference(reference, purchase.amount)) {
-    lines.push(
-      `Reference: ${/^[A-Z]+:\d+$/u.test(reference!) ? describePurchaseReference(reference) : reference!.trim()}`,
-    );
-  }
+   * Exactly as it will be stored and put on the bill, by its kind and
+   * number ("Invoice 2231"), never as written: a reference dropped as an
+   * amount is never shown, and no letters the merchant or a photo wrote
+   * reach the preview text (final-head review of ffb5404; was G-92(2)). */
+  const reference = describePurchaseReference(commandPurchaseReference(purchase));
+  if (reference) lines.push(`Reference: ${reference.replace(/^Reference /u, '')}`);
   /* The delivery, named on its own line when the merchant counted it. A
    * purchase that moves stock and does not say so in the preview is a stock
    * change nobody confirmed. */

@@ -3186,7 +3186,14 @@ async function purchaseIdentityCheck(
       );
     }
   }
-  const unseen = input.actorId
+  /* The sender's own undelivered drafts are compared exactly as any other
+   * record (references, products, a "separate" answer's line), and one is
+   * replaced only when it is the SINGLE own draft that may be this purchase
+   * and no waiting preview of theirs is being replaced already: two or more
+   * coexist only because something proved them separate (final-head review
+   * of ffb5404). Otherwise they are left as they are, and the purchase work
+   * at the yes still refuses a second booking. */
+  const unseenRecords = input.actorId
     ? await purchaseIdentityRepo.unseenOwnPurchaseDrafts(tx, businessId, amountK, {
         actorId: input.actorId,
         asOf: input.receivedAt,
@@ -3194,6 +3201,9 @@ async function purchaseIdentityCheck(
         excludeDraftId: input.excludeDraftId ?? null,
       })
     : [];
+  const unseenMatches = purchaseMatches(facts, unseenRecords, input.receivedAt, window);
+  const unseen =
+    unseenMatches.length === 1 && verdict.replace.length === 0 ? [unseenMatches[0]!.id] : [];
   return { ...verdict, inheritFrom, unseen };
 }
 

@@ -373,35 +373,45 @@ async function clockOf(tx: TenantDb, asOf: Date | undefined): Promise<Date> {
 
 /**
  * The sender's OWN pending purchase drafts of this total whose preview never
- * reached them (its send failed, so `previewed` is false): never described
- * as waiting previews, but still claimable, so the sender's resend of the
- * same purchase replaces them silently and their one purchase is never two
- * confirmable drafts (Codex review of 5bfe87e; was G-91). Bounded by
- * message order, as `purchaseRecords` is. Another member's unseen draft is
- * never touched.
+ * reached them (its send failed, so `previewed` is false), as records the
+ * caller compares exactly as any other (Codex review of 5bfe87e; was G-91):
+ * never described as waiting previews, but still claimable. The caller
+ * replaces one only when it is the single one that may be the same
+ * purchase, never one proven or declared separate. Bounded by message
+ * order, as `purchaseRecords` is. Another member's unseen draft is never
+ * read.
  */
 export async function unseenOwnPurchaseDrafts(
   tx: TenantDb,
   businessId: string,
   amountK: number,
   options: { actorId: string; asOf: Date; messageId: string; excludeDraftId?: string | null },
-): Promise<string[]> {
+): Promise<PurchaseRecord[]> {
   if (!UUID.test(options.actorId) || !UUID.test(options.messageId)) return [];
   const exclude = options.excludeDraftId ?? null;
   const excludeUuid = exclude && UUID.test(exclude) ? exclude : null;
-  const rows = await tx.execute<{ id: string; command: unknown }>(sql`
-    SELECT d.id, d.command
-      FROM command_drafts d
-      JOIN conversation_messages m
-        ON m.id = d.conversation_message_id AND m.business_id = d.business_id
-     WHERE d.business_id = ${businessId}::uuid
-       AND d.intent = 'RecordPurchase'
-       AND d.state = 'pending'
-       AND NOT d.previewed
-       AND d.requested_by = ${options.actorId}::uuid
-       AND d.expires_at > ${options.asOf.toISOString()}::timestamptz
-       AND d.id IS DISTINCT FROM ${excludeUuid}::uuid
-       AND ${arrivalOf(sql`m`)} <= (SELECT ${arrivalOf(sql`cm`)} FROM conversation_messages cm
-             WHERE cm.id = ${options.messageId}::uuid AND cm.business_id = ${businessId}::uuid)`);
-  return [...rows].filter((row) => purchaseTotalK(row.command) === amountK).map((row) => row.id);
+  const rows = await tx.execute<DraftRow>(
+    draftsQuery(
+      businessId,
+      sql`d.state = 'pending' AND NOT d.previewed
+          AND d.requested_by = ${options.actorId}::uuid
+          AND d.expires_at > ${options.asOf.toISOString()}::timestamptz
+          AND d.id IS DISTINCT FROM ${excludeUuid}::uuid
+          AND ${arrivalOf(sql`m`)} <= (SELECT ${arrivalOf(sql`cm`)} FROM conversation_messages cm
+                WHERE cm.id = ${options.messageId}::uuid AND cm.business_id = ${businessId}::uuid)`,
+    ),
+  );
+  const records: PurchaseRecord[] = [];
+  for (const row of rows) {
+    if (purchaseTotalK(row.command) !== amountK) continue;
+    records.push({
+      ...factsOf(row, amountK),
+      id: row.id,
+      state: 'pending',
+      bookedAt: null,
+      requestedBy: row.requested_by,
+      billNumber: null,
+    });
+  }
+  return records;
 }

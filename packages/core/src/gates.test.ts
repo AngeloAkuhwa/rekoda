@@ -658,7 +658,20 @@ describe('a stated supplier reference on a purchase preview (G-81)', () => {
 
   it('is shown when it is a document number, so the merchant sees what is compared', () => {
     const gate = gatePurchase({ ...base, supplierReference: 'EMK-0041' });
-    expect(gate.gate === 'CG2' && gate.preview).toContain('Reference: EMK-0041');
+    /* As stored and billed: its number, never the letters written. */
+    expect(gate.gate === 'CG2' && gate.preview).toContain('Reference: 0041');
+    expect(gate.gate === 'CG2' && gate.preview).not.toContain('EMK');
+    const invoice = gatePurchase({ ...base, supplierReference: 'invoice 2231' });
+    expect(invoice.gate === 'CG2' && invoice.preview).toContain('Reference: Invoice 2231');
+  });
+
+  it('is not shown when it will not be stored: the total or the reported payment (final-head review of ffb5404)', () => {
+    const paid = gatePurchase({
+      ...base,
+      reportedPayment: 35_000,
+      supplierReference: 'invoice 35000',
+    });
+    expect(paid.gate === 'CG2' && paid.preview).not.toContain('Reference');
   });
 
   it('is not shown when it is not one', () => {
