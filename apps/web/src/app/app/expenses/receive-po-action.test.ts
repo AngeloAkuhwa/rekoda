@@ -92,6 +92,7 @@ describe('a receive that may be a purchase already booked in Chat (G-89)', () =>
       billNumber: null,
     },
     expenseIds: [EXPENSE, OTHER],
+    alreadySeparate: [] as string[],
   };
 
   it('asks SAME or SEPARATE, carrying the purchases the question is about', async () => {
@@ -193,7 +194,7 @@ describe('a receive that may be a purchase already booked in Chat (G-89)', () =>
 
     receive.mockResolvedValue({ outcome: 'linked_elsewhere', poNumber: 'PO-2026-000001' });
     expect((await receivePurchaseOrderAction({}, answer)).error).toBe(
-      'PO-2026-000001 is already received against a different purchase. Nothing was changed. Check your purchases before recording anything else for it.',
+      'PO-2026-000001 is already received against a different purchase. Nothing was changed. Check your purchases: if this order and the Chat purchase are the same, one of them may now be recorded twice.',
     );
 
     receive.mockResolvedValue({ outcome: 'no_longer_matches', poNumber: 'PO-2026-000001' });
@@ -209,5 +210,17 @@ describe('a receive that may be a purchase already booked in Chat (G-89)', () =>
     );
     expect(state).toEqual({});
     expect(receive).not.toHaveBeenCalled();
+  });
+
+  it('carries every purchase already answered SEPARATE into the next answer', async () => {
+    const EARLIER = '9d1e2f30-4a5b-4c6d-8e7f-0a1b2c3d4e55';
+    receive.mockResolvedValue({ ...ASKED, expenseIds: [EXPENSE], alreadySeparate: [EARLIER] });
+    const state = await receivePurchaseOrderAction(
+      {},
+      form({ poNumber: 'PO-2026-000001', paid: '', answer: 'separate', expenseIds: EARLIER }),
+    );
+    expect(state.question?.expenseIds).toEqual([EARLIER, EXPENSE]);
+    /* Only the NEW purchase is described and counted. */
+    expect(state.question?.text).not.toMatch(/more of the same amount/);
   });
 });

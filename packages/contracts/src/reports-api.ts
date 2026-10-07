@@ -786,6 +786,13 @@ export const receivePurchaseOrderResponse = z.discriminatedUnion('outcome', [
       billNumber: z.string().nullable(),
     }),
     expenseIds: z.array(z.string().uuid()).min(1).max(MAX_NAMED_PURCHASES),
+    /**
+     * The purchases this order was ALREADY answered SEPARATE from, echoed
+     * from the request, for the next SEPARATE to carry forward with
+     * `expenseIds` (fresh review of 662e93a): otherwise two answers excuse
+     * one purchase each and ask about the other forever.
+     */
+    alreadySeparate: z.array(z.string().uuid()).max(MAX_NAMED_PURCHASES),
   }),
   /** SAME: received and linked to the Chat purchase; nothing booked again. */
   z.object({ outcome: z.literal('linked'), poNumber: z.string(), expenseId: z.string().uuid() }),

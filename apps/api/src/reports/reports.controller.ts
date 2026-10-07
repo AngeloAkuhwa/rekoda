@@ -1203,7 +1203,13 @@ export class ReportsController {
       if (!(error instanceof PurchaseIdentityCollision)) throw error;
       /* The whole transaction rolled back: the order is still open, and no
        * purchase, stock, posting, bill or idempotency claim was kept. */
-      return possibleDuplicate(poNumber, po.totalK, error.matches, request.auth!.userId);
+      return possibleDuplicate(
+        poNumber,
+        po.totalK,
+        error.matches,
+        request.auth!.userId,
+        parsed.data.separateFrom ?? [],
+      );
     }
   }
 
@@ -2540,6 +2546,7 @@ function possibleDuplicate(
   totalK: number,
   matches: readonly [PurchaseRecord, ...PurchaseRecord[]],
   userId: string | null,
+  alreadySeparate: readonly string[],
 ): ReceivePurchaseOrderResponse {
   const [first] = matches;
   return {
@@ -2554,5 +2561,6 @@ function possibleDuplicate(
     },
     /* As many as an answer may name (the request's own bound). */
     expenseIds: matches.slice(0, MAX_NAMED_PURCHASES).map((m) => m.id),
+    alreadySeparate: [...alreadySeparate],
   };
 }

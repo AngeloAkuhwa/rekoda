@@ -4051,8 +4051,17 @@ describe('purchase orders, and what receiving one does', () => {
       expect(await receive(auth, { poNumber, paidK: 0, separateFrom: [first] })).toMatchObject({
         outcome: 'possible_duplicate',
         expenseIds: [second],
+        alreadySeparate: [first],
       });
       expect((await counts(businessId)).expenses).toBe(2);
+
+      /* Answering the second question with BOTH (what the form carries
+       * forward) receives it; the answers never bounce between the two
+       * purchases (fresh review of 662e93a). */
+      expect(
+        await receive(auth, { poNumber, paidK: 0, separateFrom: [first, second] }),
+      ).toMatchObject({ outcome: 'received', poNumber });
+      expect((await counts(businessId)).expenses).toBe(3);
     });
 
     it('a Chat purchase of another total is never asked about', async () => {

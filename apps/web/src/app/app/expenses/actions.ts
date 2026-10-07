@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { formatKobo, parseAmountText, toKobo } from '@rekoda/core';
+import { MAX_NAMED_PURCHASES } from '@rekoda/contracts';
 import {
   cancelPurchaseOrder,
   createPurchaseOrder,
@@ -622,7 +623,12 @@ async function receivePurchaseOrderActionUnguarded(
         paid: paidText,
         method: method ?? '',
         expenseId: outcome.match.expenseId,
-        expenseIds: outcome.expenseIds,
+        /* Everything already answered SEPARATE goes forward with the new
+         * matches, so two answers never bounce between two purchases. */
+        expenseIds: [...new Set([...outcome.alreadySeparate, ...outcome.expenseIds])].slice(
+          0,
+          MAX_NAMED_PURCHASES,
+        ),
         text:
           `${BOOKED_BY[outcome.match.bookedBy]} recorded a ${formatKobo(outcome.totalK)} purchase ` +
           `in Chat on ${lagosMoment(outcome.match.bookedAt)}` +
@@ -648,7 +654,7 @@ async function receivePurchaseOrderActionUnguarded(
   if (outcome.outcome === 'linked_elsewhere') {
     revalidatePath('/app/expenses');
     return {
-      error: `${outcome.poNumber} is already received against a different purchase. Nothing was changed. Check your purchases before recording anything else for it.`,
+      error: `${outcome.poNumber} is already received against a different purchase. Nothing was changed. Check your purchases: if this order and the Chat purchase are the same, one of them may now be recorded twice.`,
     };
   }
   if (outcome.outcome === 'no_longer_matches') {
