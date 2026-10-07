@@ -35,9 +35,12 @@ ALTER TABLE command_drafts ADD CONSTRAINT command_drafts_state_check
   CHECK (state IN ('pending', 'superseded', 'confirmed', 'abandoned', 'expired', 'held'));
 
 -- The held purchase a fresh preview was declared separate from (the answer
--- "separate"). Read for one thing: a record that question NAMED
+-- "separate"). Read so that a record that question NAMED
 -- (`asked_about_drafts`, `asked_about_expenses` below) is not this
--- purchase, in either direction, at preview time and at the yes. Composite tenant key (the 0141 pattern); never its own source.
+-- purchase, in either direction, at preview time and at the yes; also
+-- read to carry that declaration to a later hold of the same purchase
+-- and to tell a member the preview their answer made is still waiting.
+-- Composite tenant key (the 0141 pattern); never its own source.
 ALTER TABLE command_drafts ADD COLUMN separate_from uuid;
 
 ALTER TABLE command_drafts
