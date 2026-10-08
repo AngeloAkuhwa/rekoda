@@ -40,15 +40,44 @@ purchase), for the owner to revisit.
 **Build 3 (G-77) accepted (27 Sep 2026, reported by the owner):**
 
 - G-77: STAGING ACCEPTED (#254, merged as `ce4755a`).
+- Physical staging evidence (reported by the owner, recorded 8 Oct 2026, staging at
+  `88b577c`): the public API was exercised on the Safe Deal test business through one
+  application ("G77 Staging Test"). Two keyed paid sales of ₦10,000 each (`INV-2026-000014`,
+  `INV-2026-000015`) each added exactly one invoice, payment, allocation, merchant
+  verification, claim, receipt and ledger transaction, with distinct `sale-k-…` /
+  `api:sale-k-…` identities (never the application id, never the raw key). A replay
+  returned the original response and wrote nothing; the same key with another body
+  answered 400 and wrote nothing. Details in the G-77 row of
+  `REKODA_LAUNCH_READINESS.md`.
+- To run it, the `developer_api_starter` add-on had to be granted directly in staging
+  data: nothing in the product grants it (G-17), and API applications and keys have no
+  dashboard UI (G-94).
 
 **Build 2 (G-49) accepted (reported by the owner):**
 
 - G-49: STAGING ACCEPTED (#253 merged as `ea7c7db`; the dashboard
   confirmation form fixed by #256, merged as `2abb8a1`, after staging found
   it resetting the amount to the balance on 28 Sep 2026).
+- Physical staging evidence (reported by the owner, recorded 8 Oct 2026): a ₦120,000
+  transfer against a ₦100,000 invoice, in WhatsApp (previewed ₦100,000 applied and ₦20,000
+  customer credit) and on the dashboard (a confirmation step first); after the yes, one ₦120,000 payment, a
+  ₦100,000 allocation, ₦20,000 customer credit, a ₦120,000 receipt and ₦0 owing. On the
+  dashboard the first submit wrote nothing (row counts checked), the invoice ended `paid`,
+  and the posting was DR 1020 Bank ₦120,000, CR 1100 Accounts Receivable ₦100,000, CR 2300
+  Customer credits ₦20,000. A WhatsApp confirmation made stale by a balance change was
+  refused and wrote nothing. Details in the G-49 row of
+  `REKODA_LAUNCH_READINESS.md`.
+
+**G-89 (8 Oct 2026): PR REVIEWED, READY TO MERGE, staging acceptance pending.** PR #263
+(`fix/g89-po-receive-idempotency`, head `db2e488`, base `88b577c`): all seven checks green,
+Codex reviewed `db2e488` with no major issues, fresh reviewers clean at `db2e488`, three of
+three threads resolved, no commit since. Not merged, so `main` does not contain it; its
+readiness row moves to MERGED and then STAGING ACCEPTED only after the merge and the owner's
+physical staging test.
 
 **Build 4 (G-61): CODE COMPLETE and MERGED (#255 as `6df1b91`, 28 Sep
-2026); staging acceptance in progress (run by the owner), not yet accepted.** Was branch
+2026); deployed to staging (staging runs `88b577c`, which contains it); staging
+acceptance in progress (run by the owner), not yet accepted.** Was branch
 `fix/g61-purchase-payment-method` off `main` at `ce4755a`. The paid part
 of a stock purchase now leaves the account the merchant named (cash or transfer), the preview says which, and money paid
 from an account nobody named is asked about, never defaulted; the ledger
