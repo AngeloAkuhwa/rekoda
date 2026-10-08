@@ -337,11 +337,14 @@ reason and its time where operations notes live: it is temporary.
 
 **Not for PlaceOrder:** its direct path was retired after its own rollout,
 so `REKODA_COMMAND_PLACE_ORDER=0` does not roll back, it stops the storefront
-and the WhatsApp catalogue taking orders. Only `1` and `0` are accepted, and
-a variable written with no value (`REKODA_COMMAND_RECORD_SALE=`) counts as
-invalid too; any other value (`false`, `off`, a typo)
-refuses to start the api and worker, naming the variable, so a mistyped
-rollback is never silently ignored. **Never use this for a HIGH_RISK
+and the WhatsApp catalogue taking orders.
+
+**Every flag:** only `1` and `0` are accepted. A variable written with no
+value (`REKODA_COMMAND_RECORD_SALE=`) and any other value (`false`, `off`, a
+typo) refuse to start the api and worker, naming the variable, so a mistyped
+rollback is never silently ignored. Before the first deploy of Build 9, check
+the host's `.env` for any `REKODA_COMMAND_*` line: remove it unless it is a
+deliberate `0`. **Never use this for a HIGH_RISK
 command** (refunds, voids, reopening a period, erasure and the rest): they
 have no rollout flag and always cross the bus and its confirmation, by
 design. A correctness or security problem there is fixed in code, not

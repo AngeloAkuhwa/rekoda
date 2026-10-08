@@ -403,7 +403,9 @@ describe('pairing the two sides, end to end', () => {
   });
 
   /* Build 9: a line released and classified again is classified again: a
-   * new journal and a new match, never a replay of the first answer. */
+   * new journal and a new match, never a replay of the first answer. The
+   * FIRST journal stays posted, which is the direct path's behaviour too and
+   * is recorded as G-95; this test pins parity, not that outcome as right. */
   it('classifies a released line again, with a new journal and a new match', async () => {
     const { auth } = await onboard('+2348177000093');
     await post('/v1/bank/statement', { csv: AUG }, auth);

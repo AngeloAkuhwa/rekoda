@@ -6491,7 +6491,7 @@ describe('counting stock', () => {
    * adding stock is STANDARD.
    *
    * This used to run under `commandAdjustInventory: true`, and that was the
-   * defect it hid. The flag defaults OFF, and with it off the write-off fell
+   * defect it hid. The flag then defaulted OFF, and with it off the write-off fell
    * to a bare `adjustInventoryWork` call: stock disappeared from a chat
    * message with no confirmation claimed and none ever opened. The flag now
    * governs the ADDITIVE path only; `destructive` crosses the bus whatever it

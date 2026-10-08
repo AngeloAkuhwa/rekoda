@@ -1,12 +1,14 @@
 /**
- * The dashboard overpayment two-step with the RecordPayment command bus ON
- * (REKODA_COMMAND_RECORD_PAYMENT=1), G-49 / OWN-16.
+ * The dashboard overpayment two-step on the RecordPayment command bus, the
+ * default since Build 9 (OD-4, OWN-22), G-49 / OWN-16.
  *
- * The flag decides whether the bus's idempotency claim wraps the work, and
- * with it on a refusal is recorded as the form key's answer. So this proves
- * the bargain the form relies on: the question claims nothing, the confirmed
- * submit claims its key once, a retry of it is a duplicate, and after a stale
- * confirmation a FRESH key re-asks and books.
+ * Since Build 9 the dashboard payment passes the bus NO idempotency key: a
+ * resubmitted form is a `duplicate` through the pre-check and the payment's
+ * unique client reference, exactly as on the direct path, and a key would
+ * only have replayed an old answer. So this proves the bargain the form
+ * relies on without one: the question books nothing, the confirmed submit
+ * books once, a retry of it is a duplicate, a stale confirmation books
+ * nothing however often it is sent, and a FRESH key re-asks and books.
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -127,7 +129,7 @@ async function record(auth: Record<string, string>, body: Record<string, unknown
 }
 
 describe('the dashboard overpayment two-step, command bus on (G-49)', () => {
-  it('the question claims no key; the confirmation claims it once; a retry is a duplicate', async () => {
+  it('the question books nothing; the confirmation books once; a retry is a duplicate', async () => {
     const { auth, businessId } = await onboard('+2348177000201');
     const invoiceNumber = await unpaidSale(businessId);
     const clientRef = randomUUID();
@@ -150,7 +152,8 @@ describe('the dashboard overpayment two-step, command bus on (G-49)', () => {
       creditK: 3_000_000,
     });
     const booked = await counts(businessId);
-    expect(booked).toEqual({ payments: 1, credits: 0, marks: 1, receipts: 1, claims: 1 });
+    /* No bus key, so no claim row: the payment itself is the record. */
+    expect(booked).toEqual({ payments: 1, credits: 0, marks: 1, receipts: 1, claims: 0 });
 
     expect(await record(auth, confirm)).toEqual({ outcome: 'duplicate' });
     expect(await counts(businessId)).toEqual(booked);
@@ -177,9 +180,14 @@ describe('the dashboard overpayment two-step, command bus on (G-49)', () => {
     expect(
       await record(auth, { ...ask, confirmOverpayment: true, expectedBalanceK: 15_000_000 }),
     ).toMatchObject({ outcome: 'balance_moved', balanceDueK: 10_000_000 });
-    const afterStale = await counts(businessId);
-    /* Nothing booked; the refusal is the stale key's recorded answer. */
-    expect({ ...afterStale, claims: 0 }).toEqual({ ...before, claims: 0 });
+    /* Nothing booked. */
+    expect(await counts(businessId)).toEqual(before);
+    /* The same stale confirmation again is refused again, never booked: with
+     * no key, nothing replays an old answer, and the balance is re-checked. */
+    expect(
+      await record(auth, { ...ask, confirmOverpayment: true, expectedBalanceK: 15_000_000 }),
+    ).toMatchObject({ outcome: 'balance_moved', balanceDueK: 10_000_000 });
+    expect(await counts(businessId)).toEqual(before);
 
     /* The form rotates its key after that refusal (freshKey): re-asked, then booked. */
     const freshKey = randomUUID();
