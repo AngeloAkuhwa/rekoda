@@ -15241,7 +15241,9 @@ describe('the command bus is the default door, and 0 rolls back to the same trut
             (SELECT count(*)::int FROM expenses WHERE business_id = ${businessId}::uuid) AS purchases,
             (SELECT count(*)::int FROM bills WHERE business_id = ${businessId}::uuid) AS bills,
             (SELECT count(*)::int FROM inventory_movements WHERE business_id = ${businessId}::uuid) AS movements,
-            (SELECT count(*)::int FROM ledger_transactions WHERE business_id = ${businessId}::uuid) AS postings
+            (SELECT count(*)::int FROM ledger_transactions WHERE business_id = ${businessId}::uuid) AS postings,
+            (SELECT count(*)::int FROM outbox_events WHERE business_id = ${businessId}::uuid) AS announcements,
+            (SELECT count(*)::int FROM jobs WHERE business_id = ${businessId}::uuid AND kind = 'document.render') AS documents
         `),
       )),
     ];
@@ -15275,13 +15277,16 @@ describe('the command bus is the default door, and 0 rolls back to the same trut
     expect(await claims(direct.id, 'RecordSale')).toHaveLength(0);
   });
 
-  it('a redelivered yes on the bus books nothing twice', async () => {
+  it('a redelivered yes, and a second yes, on the bus book nothing twice', async () => {
     const bus = await seedMerchant(BUS);
     await say(BUS, 'wamid.B9-r', SALE, 'Ada bought 3 wigs 150k, paid 100k transfer');
     await plain(BUS, 'wamid.B9-r-yes', 'yes');
     const once = await truth(bus.id);
-    /* Meta redelivers the same webhook. */
+    /* Meta redelivers the same webhook (dropped by the message's own
+     * dedupe), and the merchant says yes again (a new message: the draft is
+     * already claimed, so nothing reaches the bus a second time). */
     await plain(BUS, 'wamid.B9-r-yes', 'yes');
+    await plain(BUS, 'wamid.B9-r-yes-2', 'yes');
     expect(await truth(bus.id)).toEqual(once);
     expect(await claims(bus.id, 'RecordSale')).toHaveLength(1);
   });

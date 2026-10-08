@@ -786,10 +786,11 @@ export class ReportsController {
               payload: input,
               actor: input.actor,
               ingress: 'DASHBOARD',
-              /* The form's one-shot key, when the form brought one. Absent
-               * means the caller accepts a retry may run again — the same
-               * honesty the clientRef-less path always had. */
-              idempotencyKey: input.clientRef ? `payrec:${input.clientRef}` : null,
+              /* No bus key (Build 9): the pre-check above and the unique client
+               * reference already answer a resubmitted form `duplicate`, as on
+               * the direct path; a key here would replay the first answer (or a
+               * stale refusal) instead. */
+              idempotencyKey: null,
             },
             () => recordPaymentWork(tx, input),
           );

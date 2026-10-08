@@ -69,7 +69,8 @@ with sandbox notes per provider, is `docs/REKODA_LAUNCH_READINESS.md` §11.1.
   `REKODA_API_PUBLIC_URL`, `REKODA_WEB_URL`, `REKODA_CORS_ORIGINS`), the ACME
   contact (`REKODA_ACME_EMAIL`), the legal facts (`NEXT_PUBLIC_LEGAL_*`,
   `NEXT_PUBLIC_PRIVACY_EMAIL`, `NEXT_PUBLIC_SUPPORT_EMAIL`), Rekoda's WhatsApp
-  number, and the command-bus flags (OD-4).
+  number. The command-bus flags are not a fact to decide: leave every
+  `REKODA_COMMAND_*` unset (OD-4, OWN-22); see "Roll back one write command".
 
 A value in `.env` must not contain a `$`: compose reads the file too and would
 treat it as a variable. Every generated value above is hex.
@@ -320,7 +321,8 @@ Every write runs through the command bus by default (OWN-22). Do not set any
 misbehaves on the bus and must run directly while it is fixed:
 
 ```bash
-echo 'REKODA_COMMAND_RECORD_PURCHASE=0' >> .env   # only the affected command
+# in .env, edit or add ONE line, for the affected command only:
+#   REKODA_COMMAND_RECORD_PURCHASE=0
 dc up -d --wait                                   # recreates api and worker on the SAME image: no build
 curl -fsS https://<api host>/health
 ```
@@ -333,7 +335,11 @@ reason and its time where operations notes live: it is temporary.
 `/health`, and repeat the smoke transaction: the command is back on the bus
 (an `idempotency_records` row appears for it again).
 
-Only `1` and `0` are accepted; any other value (`false`, `off`, a typo)
+**Not for PlaceOrder:** its direct path was retired after its own rollout,
+so `REKODA_COMMAND_PLACE_ORDER=0` does not roll back, it stops the storefront
+and the WhatsApp catalogue taking orders. Only `1` and `0` are accepted, and
+a variable written with no value (`REKODA_COMMAND_RECORD_SALE=`) counts as
+invalid too; any other value (`false`, `off`, a typo)
 refuses to start the api and worker, naming the variable, so a mistyped
 rollback is never silently ignored. **Never use this for a HIGH_RISK
 command** (refunds, voids, reopening a period, erasure and the rest): they

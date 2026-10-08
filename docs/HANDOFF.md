@@ -400,7 +400,7 @@ G-71 (web's server-side calls share one per-IP bucket, P1) and G-72
 
 1. Done: the staging host is live and deploys automatically after CI on
    `main` (since #249; `/health` reported `staging-3d462c1` on 8 Oct 2026).
-   Still with Angelo: rule OD-4 (which command-bus flags ship on); delete the leftover GitHub
+   OD-4 is ruled (OWN-22, 8 Oct 2026; Build 9 implements it). Still with Angelo: delete the leftover GitHub
    environments `agents*` and the `builder:*`, `risk:*`, `status:*`,
    `agent-task` labels (gap G-45); turn on branch protection (G-09; `main`
    was still unprotected on 8 Oct 2026).
