@@ -108,7 +108,7 @@ Build 9 follows G-65 directly; the long-term roadmap is otherwise unchanged):**
 
 **Build 4 (G-61): CODE COMPLETE and MERGED (#255 as `6df1b91`, 28 Sep
 2026); deployed to staging (every staging release since #255 contains it); staging
-acceptance in progress (run by the owner), not yet accepted.** Was branch
+acceptance pending (run by the owner), not yet accepted.** Was branch
 `fix/g61-purchase-payment-method` off `main` at `ce4755a`. The paid part
 of a stock purchase now leaves the account the merchant named (cash or transfer), the preview says which, and money paid
 from an account nobody named is asked about, never defaulted; the ledger
