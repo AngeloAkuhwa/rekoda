@@ -315,7 +315,7 @@ called from `apps/api/src/commands/`.
 
 - **Routes:** `GET /v1/shops` (sitemap, capped 5,000, reports `truncated`), `GET /v1/shop/:slug`, `/:slug/photo/:id`, `POST /:slug/orders`, `POST /:slug/pay-with-transfer`, `GET /:slug/transfer-status`, `v1/shop-settings` publish/unpublish (owner).
 - **Works:** `shopBySlug` is the only cross-tenant read without a session in `packages/db` (worker-credential sweeps read across tenants by design), in its own table so a public policy can never reach financial columns; cross-shop photo IDOR closed and tested; no existence oracle; on-hand never crosses the wire; orders are server-priced, entitlement-gated before metering, refunded on every failure, PII vaulted only after cheap refusals, flood-limited in the database; pay-with-transfer books only what Paystack confirms.
-- **Not yet:** the cart is client-side `localStorage` and does not hold stock.
+- **Not yet:** the cart is client-side `localStorage` and does not hold stock. A resubmitted order replays the first one but still meters an order and a document unit, and a resubmit with a changed price answers 500 instead of `duplicate` (G-96).
 - **Bug:** losing the race for the last unit throws `InsufficientStock` (`order-commands.ts:160,432`), which `shop.controller.ts:437-441` does not catch, so the customer gets a 500 rendered as a generic "did not go through" (G-53).
 
 ### 5.26 Plans, trial, entitlements — PARTIAL

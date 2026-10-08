@@ -118,10 +118,11 @@ export interface ApiConfig {
    * on, the command bus (entitlement → risk → idempotency → work); off, the
    * work called directly, which is exactly what the ingress did before the
    * command existed (except PlaceOrder, whose direct path was retired: its
-   * off refuses orders and is not a rollback). Only `0` switches one off: an environment that forgot a
-   * variable gets the door that checks, never the legacy one. Rollback is
-   * `0`, per command: no code deployment, but a configuration change and a
-   * restart of the same image (OD-4, OWN-22; the deploy runbook).
+   * off refuses orders and is not a rollback). Only `0` switches one off:
+   * an environment that forgot a variable gets the door that checks, never
+   * the legacy one. Rollback is `0`, per command: no code deployment, but a
+   * configuration change and a restart of the same image (OD-4, OWN-22; the
+   * deploy runbook).
    */
   commandRecordSale: boolean;
   commandIssueInvoice: boolean;

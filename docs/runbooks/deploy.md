@@ -335,10 +335,13 @@ reason and its time where operations notes live: it is temporary.
 `/health`, confirm the line is gone from the running containers
 (`dc exec api printenv | grep REKODA_COMMAND_` prints nothing, or `=1`), and
 repeat the smoke transaction. An `idempotency_records` row confirms the bus
-only for an ingress that passes a key (a chat yes, a PO receive, a recurring
-entry, a payment confirmation, a shop order); the dashboard journal, payment,
-opening balances, quote convert, bank match and classify pass none, so no
-row appears for them by design.
+only for an ingress that passes a key: a chat confirmation, a PO receive, a
+recurring entry, a payment confirmation, a storefront or WhatsApp catalogue
+order, and a public-API call that sends its own idempotency key. The
+dashboard journal, payment, opening balances, close period and quote
+convert, the bank upload and feed sync, and the bank match and classify pass
+none, so no row appears for them by design: for those, the `printenv` check
+and the smoke transaction are the confirmation.
 
 **Not for PlaceOrder:** its direct path was retired after its own rollout,
 so `REKODA_COMMAND_PLACE_ORDER=0` does not roll back, it stops the storefront
