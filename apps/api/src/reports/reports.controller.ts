@@ -1035,9 +1035,11 @@ export class ReportsController {
               payload: input,
               actor: input.actor,
               ingress: 'DASHBOARD',
-              /* One quote, one invoice: a retry that lost its response is
-               * handed the first answer instead of a second conversion. */
-              idempotencyKey: `quote-convert:${quote.id}`,
+              /* No bus key (Build 9): the work refuses a quote already taken
+               * (`QuoteAlreadyTaken`, answered `already_converted` below), as
+               * on the direct path. A key here turned a second staff member's
+               * simultaneous convert into `key_reused`, a 500. */
+              idempotencyKey: null,
             },
             () => issueInvoiceWork(tx, input),
           );

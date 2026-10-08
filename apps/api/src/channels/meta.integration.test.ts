@@ -1011,8 +1011,8 @@ describe('every order ingress goes through PlaceOrder (remediation R2)', () => {
         { retailerId: wigId, quantity: 1 },
       ]),
     );
-    /* The branch is kept for one release so a rollback has somewhere to land.
-     * It must not quietly take an order while it waits there. */
+    /* PlaceOrder's 0 is not a rollback (OD-4, OWN-22): the legacy branch was
+     * retired, and it must refuse rather than quietly take an order. */
     expect(
       await buildRunner(workerDb, db, {
         ...deps,
