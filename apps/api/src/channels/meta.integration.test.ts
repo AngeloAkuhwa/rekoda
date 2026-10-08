@@ -10917,6 +10917,26 @@ describe('G-68 review: doubt, the funding gates, and closing a question', () => 
       },
     );
 
+    /* G-85: a mark the normaliser would drop (a ring drawn through the word,
+     * an x over it) is not a yes either. */
+    it.each(['yes⃘', 'na soͯ', 'yes͓', '⃘yes', 'e correct⃚', 'YES⃙'])(
+      'G-85: a marked %j to a live preview writes nothing, and only a plain yes saves it',
+      async (text) => {
+        const business = await seedMerchant();
+        await say('wamid.R-g85-sale', A_SALE, 'sold Ada 3 wigs for 45k');
+        expect(stubSender.lastText).toContain('Please check this before I save it');
+
+        await reply('wamid.R-g85-marked', text);
+        expect(stubSender.lastText).toBe(replies.plainYesNeeded().text);
+        expect(await footprint(business.id)).toEqual({ invoices: 0, purchases: 0, postings: 0 });
+        /* `reply` resets the transport log: zero means no model since. */
+        expect(modelCalls()).toBe(0);
+
+        await reply('wamid.R-g85-yes', 'yes');
+        expect((await footprint(business.id)).invoices).toBe(1);
+      },
+    );
+
     it('with nothing waiting, it says nothing is waiting for a yes', async () => {
       await seedMerchant();
       await reply('wamid.R-q-none', 'na so?');
@@ -12110,6 +12130,23 @@ describe('G-68 Codex review: erasure events, emoji, failed rebuild send, gates, 
       expect(await purchaseStates(business.id)).toEqual(['abandoned']);
       /* Still open: a plain answer now rebuilds it. */
       await reply('wamid.CX2-e-cash', 'cash');
+      expect(stubSender.lastText).toContain('Paid in full by cash');
+    },
+  );
+
+  /* G-85: a funding answer with a mark drawn over it names no account. */
+  it.each(['cash⃘', 'bank͓', 'bankͯ', 'na cash⃚', 'transfer̀'])(
+    'G-85: a marked %j to the funding question rebuilds nothing and keeps it open',
+    async (text) => {
+      const business = await seedMerchant();
+      await say('wamid.G85-f-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await reply('wamid.G85-f', text);
+      expect(stubSender.lastText).toContain(POS_QUESTION);
+      expect(await purchaseStates(business.id)).toEqual(['abandoned']);
+      /* `reply` resets the transport log: none since means no model. */
+      expect(stubTransport.requests).toHaveLength(0);
+      /* Still open: a plain answer now rebuilds it. */
+      await reply('wamid.G85-f-cash', 'cash');
       expect(stubSender.lastText).toContain('Paid in full by cash');
     },
   );
@@ -13880,6 +13917,29 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       await reply('wamid.P14b-d-yes', 'yes', DELEGATE);
       expect(await purchases(business.id)).toBe(2);
     });
+
+    /* G-85: "same" or "separate" with a mark drawn over it decides nothing:
+     * no link, no second booking, the purchase stays held and is asked
+     * about again. */
+    it.each(['same⃘', 'na sameͯ', 'separate͓', 'another one⃚'])(
+      'G-85: a marked %j re-asks, and the purchase stays held',
+      async (text) => {
+        const business = await seedMerchant();
+        await addDelegate(business.id);
+        await bookMilo(business.id, 'G85i');
+        await say('wamid.G85i-d', MILO, 'I buy another 10 carton Milo 100k cash', DELEGATE);
+        await reply('wamid.G85i-marked', text, DELEGATE);
+        expect(stubSender.lastText).toContain(REASK);
+        /* `reply` resets the transport log: none since means no model. */
+        expect(stubTransport.requests).toHaveLength(0);
+        expect(await purchases(business.id)).toBe(1);
+        expect(await purchaseStates(business.id)).toEqual(['confirmed', 'held']);
+        /* A plain answer still decides it. */
+        await reply('wamid.G85i-same', 'same', DELEGATE);
+        expect(stubSender.lastText).toContain(SAME_DONE);
+        expect(await purchases(business.id)).toBe(1);
+      },
+    );
 
     it('another member\'s "same" answers nothing', async () => {
       const business = await seedMerchant();

@@ -1333,7 +1333,31 @@ function doubted(raw: string, intent: DeterministicIntent): DeterministicIntent 
  * acts.
  */
 export function answerIsUncertain(raw: string): boolean {
-  return soundsDoubtful(raw) || carriesNonAffirmingEmoji(raw);
+  return soundsDoubtful(raw) || carriesNonAffirmingEmoji(raw) || carriesStrayMark(raw);
+}
+
+/**
+ * A combining mark still standing after NFKC (G-85), other than a variation
+ * selector and the keycap (read as an emoji above). `normalise` turns such
+ * a mark into a space, so a ring drawn through "yes⃘", an x under "cash͓"
+ * or an accent on "samè" vanished and the answer acted.
+ *
+ * A CLASS rule, never a list (NEGATING_MARK's list missed the ring overlays
+ * and the x marks), and safe for Nigerian text because of WHERE it is
+ * asked: only of a message that already matched a short answer, and every
+ * one of those is plain ASCII. A mark left on one is therefore never
+ * orthography: real Yoruba or Igbo ("bẹ́ẹ̀ni", "Ọlọ́run") never matches an
+ * answer and never reaches here, and an accent NFKC folds into its letter
+ * ("yès") no longer spells the answer. Nothing is stripped or rejected
+ * elsewhere.
+ */
+const STRAY_MARK = /(?![\uFE00-\uFE0F\u20E3\u{E0100}-\u{E01EF}])\p{M}/u;
+
+function carriesStrayMark(raw: string): boolean {
+  /* After the SAME casing `normalise` applies (Codex review): NFKC composes
+   * "I" + U+0307 to "İ", and lowercasing splits it back into "i" +
+   * U+0307, a mark the normaliser would then drop. */
+  return STRAY_MARK.test(raw.normalize('NFKC').toLowerCase());
 }
 
 /**

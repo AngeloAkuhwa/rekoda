@@ -11,8 +11,8 @@
 | Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Current date**            | 8 October 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| **Current `main` SHA**      | `f7d7119` (8 Oct 2026, "docs: record G-49 and G-77 physical staging evidence, and the developer API gap (#264)"); before it `3d462c1` (#263, G-89), `88b577c` (#262, G-81), `29dc934` (#261, Build 8), `f5ef123` (#259, Build 7), `3612fcf` (#260, Build 6), `f5fb1ce` (#258, G-23), `2abb8a1` (#256, G-49), `6df1b91` (#255, G-61), `ce4755a` (#254, G-77) and earlier                                                                                                                             |
-| **Open branches**           | G-80, PR #265 (`fix/g80-natural-opt-out`), the only issue in progress: code complete, in review, staging acceptance pending. Rebuilt from fresh `main`; the old unreviewed WIP `c9f2059` is kept locally as `backup/g80-wip-c9f2059` (never pushed)                                                                                                                                                                                                                                                 |
+| **Current `main` SHA**      | `f2a155a` (8 Oct 2026, "fix: hear natural Nigerian opt-outs as STOP, with no model (G-80) (#265)"); before it `f7d7119` (#264, docs), `3d462c1` (#263, G-89), `88b577c` (#262, G-81), `29dc934` (#261, Build 8), `f5ef123` (#259, Build 7), `3612fcf` (#260, Build 6), `f5fb1ce` (#258, G-23), `2abb8a1` (#256, G-49), `6df1b91` (#255, G-61), `ce4755a` (#254, G-77) and earlier                                                                                                                   |
+| **Open branches**           | G-85 (`fix/g85-combining-overlay-short-answers`, off `f2a155a`), the only issue in progress. G-80 merged as `f2a155a`; its old WIP stays local as `backup/g80-wip-c9f2059` (never pushed)                                                                                                                                                                                                                                                                                                           |
 | **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 160 migrations on `main` (0000 to 0159); deployed to staging (automatic after CI on main since #249); never to production (the production stack boots on a clean CI runner since G-01); the Meta WhatsApp transport has been live-exercised on staging (real webhook ingress, outbound text and media); production Meta App Review and templates remain open; payment-provider live verification remains pending |
 | **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                               |
@@ -85,19 +85,20 @@ keeps its own status, and none is accepted because a related one passed.**
 | G-65 Chat entitlement on commands   | #261 (`29dc934`) | MERGED, staging acceptance pending              |
 | G-81 Chat purchase identity         | #262 (`88b577c`) | MERGED, staging acceptance pending              |
 | G-89 dashboard PO receive vs Chat   | #263 (`3d462c1`) | MERGED, DEPLOYED TO STAGING, acceptance pending |
+| G-80 natural Nigerian opt-outs      | #265 (`f2a155a`) | MERGED, staging acceptance pending              |
 
 **Staging acceptance queue (the owner, in this order):** G-61, G-23, Build 6, G-68 / G-24,
-G-65, G-81, G-89. G-89 may be tested first while it is fresh; that waives nothing earlier.
+G-65, G-81, G-89, G-80. G-89 and G-80 may be tested first while they are fresh; that waives
+nothing earlier.
 
 **Immediate engineering order (owner, 8 Oct 2026; supersedes the earlier assumption that
 Build 9 follows G-65 directly; the long-term roadmap is otherwise unchanged):**
 
-1. **G-80, natural Nigerian opt-outs (IN PROGRESS).** G-24 made STOP/START exact and
+1. **G-80, natural Nigerian opt-outs (MERGED, #265 as `f2a155a`; staging acceptance pending).** G-24 made STOP/START exact and
    deterministic, but natural opt-outs (`abeg stop`, `stop abeg`, `abeg stop am`,
    `no send me again`, `stop o`) went to the model, so protecting a merchant's consent
-   depended on a model call. PR #265 makes them a typed STOP from a closed list; in
-   review, staging acceptance pending.
-2. **G-85**, combining or overlay marks on short deterministic answers: the same safety
+   depended on a model call. PR #265 made them a typed STOP from a closed list.
+2. **G-85 (IN PROGRESS)**, combining or overlay marks on short deterministic answers: the same safety
    boundary as G-80.
 3. **Build 9**, command-bus production enforcement.
 4. **G-57**, AI metering before the role check (authorization ordering).
