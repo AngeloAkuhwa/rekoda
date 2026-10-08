@@ -25,7 +25,7 @@ closes Chat purchase collision handling and protects Chat against booked purchas
 facts, including bookings from a PO that committed before the chat yes (a receive
 still in flight was not seen until G-89). G-89 (dashboard PO receive compared with
 Chat bookings, SAME links the PO to the Chat purchase, SEPARATE receives it) is
-merged (#263 as `3d462c1`, migration 0159) with staging acceptance pending, NOT closed
+merged (#263 as `3d462c1`, migration 0159) and deployed to staging (`staging-3d462c1`), staging acceptance pending, NOT closed
 and required pre-public-launch, so the system-wide invariant is not certified until G-89 closes. G-88 (purchases carry no `posting_purpose`)
 recorded, not fixed. G-90 (purchase-identity copy issues) and G-92 (reference parser and held-question
 residuals) recorded, not fixed. G-92(5) books one real purchase twice with no
@@ -84,7 +84,7 @@ keeps its own status, and none is accepted because a related one passed.**
 | G-68 / G-24 routing, STOP/START        | #259 (`f5ef123`)  | MERGED, staging acceptance pending                  |
 | G-65 Chat entitlement on commands       | #261 (`29dc934`)  | MERGED, staging acceptance pending                  |
 | G-81 Chat purchase identity             | #262 (`88b577c`)  | MERGED, staging acceptance pending                  |
-| G-89 dashboard PO receive vs Chat       | #263 (`3d462c1`)  | MERGED, staging acceptance pending                  |
+| G-89 dashboard PO receive vs Chat       | #263 (`3d462c1`)  | MERGED, DEPLOYED TO STAGING, acceptance pending     |
 
 **Staging acceptance queue (the owner, in this order):** G-61, G-23, Build 6, G-68 / G-24,
 G-65, G-81, G-89. G-89 may be tested first while it is fresh; that waives nothing earlier.
