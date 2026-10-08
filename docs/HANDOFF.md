@@ -8,14 +8,14 @@
 
 ## Current state at a glance
 
-| Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Current date**            | 8 October 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| **Current `main` SHA**      | `3d462c1` (8 Oct 2026, "fix: compare a dashboard PO receive with purchases booked in Chat (G-89) (#263)"); before it `88b577c` (#262, G-81), `29dc934` (#261, Build 8), `f5ef123` (#259, Build 7), `3612fcf` (#260, Build 6), `f5fb1ce` (#258, G-23), `2abb8a1` (#256, G-49), `6df1b91` (#255, G-61), `ce4755a` (#254, G-77) and earlier                                                                                                                                                                          |
-| **Open branches**           | #264 (docs only: staging evidence and state reconciliation). No code issue in progress; the next is G-80 (see "Immediate engineering order" below). Paused, local only, never pushed: `fix/g80-natural-opt-out` at `c9f2059` (G-80), WIP, unreviewed, on an old base; it is preserved and G-80 restarts from fresh `main`                                                                                                                                                                                         |
+| Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Current date**            | 8 October 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| **Current `main` SHA**      | `3d462c1` (8 Oct 2026, "fix: compare a dashboard PO receive with purchases booked in Chat (G-89) (#263)"); before it `88b577c` (#262, G-81), `29dc934` (#261, Build 8), `f5ef123` (#259, Build 7), `3612fcf` (#260, Build 6), `f5fb1ce` (#258, G-23), `2abb8a1` (#256, G-49), `6df1b91` (#255, G-61), `ce4755a` (#254, G-77) and earlier                                                                                                                                                            |
+| **Open branches**           | #264 (docs only: staging evidence and state reconciliation). No code issue in progress; the next is G-80 (see "Immediate engineering order" below). Paused, local only, never pushed: `fix/g80-natural-opt-out` at `c9f2059` (G-80), WIP, unreviewed, on an old base; it is preserved and G-80 restarts from fresh `main`                                                                                                                                                                           |
 | **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 160 migrations on `main` (0000 to 0159); deployed to staging (automatic after CI on main since #249); never to production (the production stack boots on a clean CI runner since G-01); the Meta WhatsApp transport has been live-exercised on staging (real webhook ingress, outbound text and media); production Meta App Review and templates remain open; payment-provider live verification remains pending |
-| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                                             |
+| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                               |
 
 **G-81 (owner-prioritised interstitial, OD-23 / OWN-21): MERGED 7 Oct 2026 (#262,
 `88b577c`, migration 0158); staging acceptance pending.** A purchase that may be one
@@ -73,18 +73,18 @@ purchase), for the owner to revisit.
 **Status board (8 Oct 2026). Acceptance and engineering are separate lanes; each build
 keeps its own status, and none is accepted because a related one passed.**
 
-| Build                                   | PR (merge)        | Status                                              |
-| --------------------------------------- | ----------------- | --------------------------------------------------- |
-| G-48 receipt for a paid sale            | #252 (`b9c9562`)  | STAGING ACCEPTED                                    |
-| G-49 merchant overpayment               | #253, #256        | STAGING ACCEPTED                                    |
-| G-77 public API sale identity           | #254 (`ce4755a`)  | STAGING ACCEPTED                                    |
-| G-61 purchase funding account           | #255 (`6df1b91`)  | MERGED, staging acceptance pending                  |
-| G-23 draft expiry                       | #258 (`f5fb1ce`)  | MERGED, staging acceptance pending                  |
-| Build 6 conversational continuation     | #260 (`3612fcf`)  | MERGED, staging acceptance pending                  |
-| G-68 / G-24 routing, STOP/START        | #259 (`f5ef123`)  | MERGED, staging acceptance pending                  |
-| G-65 Chat entitlement on commands       | #261 (`29dc934`)  | MERGED, staging acceptance pending                  |
-| G-81 Chat purchase identity             | #262 (`88b577c`)  | MERGED, staging acceptance pending                  |
-| G-89 dashboard PO receive vs Chat       | #263 (`3d462c1`)  | MERGED, DEPLOYED TO STAGING, acceptance pending     |
+| Build                               | PR (merge)       | Status                                          |
+| ----------------------------------- | ---------------- | ----------------------------------------------- |
+| G-48 receipt for a paid sale        | #252 (`b9c9562`) | STAGING ACCEPTED                                |
+| G-49 merchant overpayment           | #253, #256       | STAGING ACCEPTED                                |
+| G-77 public API sale identity       | #254 (`ce4755a`) | STAGING ACCEPTED                                |
+| G-61 purchase funding account       | #255 (`6df1b91`) | MERGED, staging acceptance pending              |
+| G-23 draft expiry                   | #258 (`f5fb1ce`) | MERGED, staging acceptance pending              |
+| Build 6 conversational continuation | #260 (`3612fcf`) | MERGED, staging acceptance pending              |
+| G-68 / G-24 routing, STOP/START     | #259 (`f5ef123`) | MERGED, staging acceptance pending              |
+| G-65 Chat entitlement on commands   | #261 (`29dc934`) | MERGED, staging acceptance pending              |
+| G-81 Chat purchase identity         | #262 (`88b577c`) | MERGED, staging acceptance pending              |
+| G-89 dashboard PO receive vs Chat   | #263 (`3d462c1`) | MERGED, DEPLOYED TO STAGING, acceptance pending |
 
 **Staging acceptance queue (the owner, in this order):** G-61, G-23, Build 6, G-68 / G-24,
 G-65, G-81, G-89. G-89 may be tested first while it is fresh; that waives nothing earlier.
@@ -395,18 +395,17 @@ G-71 (web's server-side calls share one per-IP bucket, P1) and G-72
 
 **Next actions:**
 
-1. Angelo merges the G-75 PR, then provisions the staging host by
-   `docs/runbooks/deploy.md` "First deployment" (a machine, Cloudflare DNS
-   for the site and API hostnames), fills the staging `.env` and
-   `secrets/` from `REKODA_LAUNCH_READINESS.md` §11.1 (the G-08 owner
-   half) and rules OD-4 (which command-bus flags ship on); deletes the leftover GitHub
+1. Done: the staging host is live and deploys automatically after CI on
+   `main` (since #249; `/health` reported `staging-3d462c1` on 8 Oct 2026).
+   Still with Angelo: rule OD-4 (which command-bus flags ship on); delete the leftover GitHub
    environments `agents*` and the `builder:*`, `risk:*`, `status:*`,
-   `agent-task` labels (gap G-45); turns on branch protection (G-09).
+   `agent-task` labels (gap G-45); turn on branch protection (G-09; `main`
+   was still unprotected on 8 Oct 2026).
 2. Rule on OD-1 to OD-7 in `REKODA_LAUNCH_READINESS.md` §6 (R0A-i on an
    empty database, VAT, which unwired modules ship, command-bus flags,
    renewal copy, erasure scope, backup design).
-3. Claude continues: G-02 (backups per OD-7, which a real host now needs),
-   G-07 (fix the eval harness, then the owner runs the live eval), G-73
+3. Also open, outside the immediate order in item 4 (owner to place): G-02
+   (backups per OD-7, which a real host now needs), G-73
    (owner decision on the photo budget). G-06 is code complete and NOT live-verified until the G-05 drill
    confirms the real Paystack envelopes.
 4. Strict serial mode, one issue at a time from fresh `main`, in the
@@ -418,7 +417,7 @@ G-71 (web's server-side calls share one per-IP bucket, P1) and G-72
    G-87 (a purchase re-read as an expense) STAYS OPEN as #262's follow-up,
    as that PR has decided.
 
-**Known P0 blockers:** G-01 staging host (code complete) · G-02 backups · G-03
+**Known P0 blockers:** G-01 production host (code complete; staging is live, production is not) · G-02 backups · G-03
 Meta number, app review, templates · G-04 legal facts · G-05 Paystack §47
 and live drill · G-07 AI eval never run · G-08 production environment
 (`REKODA_LAUNCH_READINESS.md` §4). G-06 code complete on 11 Sep 2026, not live-verified until G-05.
