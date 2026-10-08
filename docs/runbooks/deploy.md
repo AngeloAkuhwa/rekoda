@@ -313,6 +313,34 @@ runs against the newer schema. A migration that must itself be reverted is a
 restore from backup, and **there is no backup mechanism yet** (G-02 in
 `docs/REKODA_LAUNCH_READINESS.md`; `backup-restore.md` describes the plan).
 
+## Roll back one write command (OD-4)
+
+Every write runs through the command bus by default (OWN-22). Do not set any
+`REKODA_COMMAND_*` variable in a normal deployment. If one write command
+misbehaves on the bus and must run directly while it is fixed:
+
+```bash
+echo 'REKODA_COMMAND_RECORD_PURCHASE=0' >> .env   # only the affected command
+dc up -d --wait                                   # recreates api and worker on the SAME image: no build
+curl -fsS https://<api host>/health
+```
+
+Then run one smoke transaction for that command (for a purchase: a chat
+purchase and its yes) and check it booked once. Record the rollback, its
+reason and its time where operations notes live: it is temporary.
+
+**Restore:** delete the line (or set it to `1`), `dc up -d --wait`, check
+`/health`, and repeat the smoke transaction: the command is back on the bus
+(an `idempotency_records` row appears for it again).
+
+Only `1` and `0` are accepted; any other value (`false`, `off`, a typo)
+refuses to start the api and worker, naming the variable, so a mistyped
+rollback is never silently ignored. **Never use this for a HIGH_RISK
+command** (refunds, voids, reopening a period, erasure and the rest): they
+have no rollout flag and always cross the bus and its confirmation, by
+design. A correctness or security problem there is fixed in code, not
+switched off.
+
 ## What must never be run
 
 - **Never give the app credentials to anything but the app.** Migrations
@@ -488,7 +516,8 @@ only says a dependency failed, and the line is in `dc logs edge-check`:
   localhost, a container name, a private address, or a reserved `.invalid`,
   `.test` or `.example` name);
   `R2_ACCOUNT_ID` must be the 32-hex account id (G-72);
-  `REKODA_RELEASE` and `REKODA_COMMIT` must be short tokens.
+  `REKODA_RELEASE` and `REKODA_COMMIT` must be short tokens;
+  each `REKODA_COMMAND_*` must be unset, `1` or `0` (OD-4).
 - **The edge** (`edge-check`, before caddy starts): `REKODA_EDGE_PROXIES`
   must not trust effectively the whole internet (G-74), nor name
   `private_ranges` or any range holding the edge network's gateway,
