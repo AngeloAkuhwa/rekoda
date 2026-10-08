@@ -461,36 +461,33 @@ const APOSTROPHES: ReadonlySet<string> = new Set(["'", '\u2019']);
 const COMMAS: ReadonlySet<string> = new Set([',', '\uFF0C']);
 /**
  * The only emoji a natural form may carry: please, and the signs that mean
- * stop or no. A bare STOP takes any emoji; a natural form is closer to a
- * sentence, and "abeg stop 😂" is banter, not an opt-out (fresh review).
+ * stop. A bare STOP takes any emoji; a natural form is closer to a sentence:
+ * "abeg stop 😂" is banter, and a cross or a thumbs down can mean "that is
+ * wrong" (fresh reviews).
  */
 const NATURAL_EMOJI: ReadonlySet<string> = new Set([
-  '\u{1F64F}', // 🙏 folded hands: please
-  '\u270B', // ✋ raised hand
-  '\u{1F6D1}', // 🛑 stop sign
-  '\u{1F6AB}', // 🚫 prohibited
-  '\u274C', // ❌ cross mark
-  '\u26D4', // ⛔ no entry
-  '\u{1F44E}', // 👎 thumbs down
+  '\u{1F64F}', // folded hands: please
+  '✋', // raised hand
+  '\u{1F6D1}', // stop sign
+  '\u{1F6AB}', // prohibited
+  '⛔', // no entry
 ]);
 /**
- * The only marks a natural form may carry around it: emphasis and an ending.
+ * The only marks that may END a natural form: a full stop or an exclamation.
  * An ALLOW-list, because the rest are each a reason to refuse: a quote is
- * somebody else's words, `~…~` is WhatsApp strikethrough (taken back), and
- * ";)", ":)", "^_^" are banter, like a laughing face (fresh reviews).
+ * somebody else's words, `~…~` is WhatsApp strikethrough (taken back), ";)"
+ * and "^_^" are banter, and a comma or an ellipsis at either edge says the
+ * sentence goes on in another message (fresh reviews). Before the words,
+ * nothing but a list bullet and the opening `*` of a bold pair.
  */
-const NATURAL_MARKS: ReadonlySet<string> = new Set([
+const NATURAL_ENDINGS: ReadonlySet<string> = new Set([
   '.',
   '!',
-  ',',
-  '*',
-  '…', // …
-  '。', // 。
-  '！', // ！
-  '．', // ．
-  '，', // ，
-  '❗', // ❗
-  '❕', // ❕
+  '。', // ideographic full stop
+  '！', // full-width exclamation
+  '．', // full-width full stop
+  '❗', // heavy exclamation mark
+  '❕', // white exclamation mark
 ]);
 
 /**
@@ -929,10 +926,11 @@ function isBullet(text: string): boolean {
  *    word or filler meets the core ("abeg, stop", "stop, o"), never inside
  *    the core ("No, send me again" asks for a resend); an apostrophe only in
  *    "don't"; any other mark or emoji between the words refuses;
- *  - around it, under the same cap and dash rule as a STOP, ONLY spaces,
- *    the marks in `NATURAL_MARKS` and the emoji in `NATURAL_EMOJI`: no
- *    quotes, no strikethrough, no smiley built from marks (";)") or drawn
- *    ("😂"), and no question or doubt in any form ("abeg stop?").
+ *  - around it, under the same cap and dash rule as a STOP: before, only a
+ *    bullet and the opening `*` of a bold pair; after, only the closing `*`,
+ *    the endings in `NATURAL_ENDINGS` and the emoji in `NATURAL_EMOJI`. So
+ *    no quote, strikethrough, smiley (";)", "😂"), edge comma or ellipsis
+ *    (more is coming), lone `*` (a correction), or question or doubt.
  */
 function naturalOptOut(
   runs: readonly string[],
@@ -974,14 +972,26 @@ function naturalOptOut(
   if (lead.length > DECORATION || after.length > DECORATION) return false;
   if (!lead.every((g) => decoratesStop(g) && !(g.kind === 'mark' && g.dash))) return false;
   if (!after.every(decoratesStop)) return false;
-  const around = [...lead, ...after];
-  /* Only spaces, emphasis and an ending around it, and only the emoji that
-   * say please or stop; a question or doubt, in any form, refuses. */
-  const allowed = (g: Grapheme): boolean =>
-    g.kind === 'space' ||
-    (g.kind === 'mark' && !g.question && NATURAL_MARKS.has(g.value)) ||
-    (g.kind === 'emoji' && NATURAL_EMOJI.has(g.value));
-  if (!around.every(allowed)) return false;
+  /* Before the words: spaces and the opening `*` of a bold pair. After:
+   * spaces, the closing `*`, a full stop or exclamation, and only the emoji
+   * that say please or stop. A question or doubt, in any form, refuses. */
+  const star = (g: Grapheme): boolean => g.kind === 'mark' && g.value === '*';
+  const opens = lead.every((g) => g.kind === 'space' || star(g));
+  const closes = after.every(
+    (g) =>
+      g.kind === 'space' ||
+      star(g) ||
+      (g.kind === 'mark' && !g.question && NATURAL_ENDINGS.has(g.value)) ||
+      (g.kind === 'emoji' && NATURAL_EMOJI.has(g.value)),
+  );
+  if (!opens || !closes) return false;
+  /* A lone `*` marks a correction; only a matched `*bold*` pair is emphasis. */
+  if (lead.filter(star).length !== after.filter(star).length) return false;
+  /* One full stop ends it; "..." typed as stops is an ellipsis: more coming. */
+  const stops = after.filter(
+    (g) => g.kind === 'mark' && (g.value === '.' || g.value === '。' || g.value === '．'),
+  );
+  if (stops.length > 1) return false;
   if (soundsDoubtful(text)) return false;
   return true;
 }
