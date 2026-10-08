@@ -954,7 +954,9 @@ function naturalOptOut(
     }
     const marks = between.filter((g) => g.kind !== 'space');
     const mark = marks[0];
-    if (marks.length > 1 || between.length > DECORATION) return false;
+    /* Spaces between words are spaces however many (the whole message is
+     * length-capped); only the MARKS between them are limited (Codex P1). */
+    if (marks.length > 1) return false;
     if (mark && !(mark.kind === 'mark' && COMMAS.has(mark.value))) return false;
     words.push(runs[i]!);
     comma.push(mark !== undefined);
