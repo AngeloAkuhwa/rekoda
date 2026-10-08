@@ -258,6 +258,29 @@ describe('the sweep', () => {
     expect((await registerOf(auth)).entries).toHaveLength(1);
   });
 
+  /* Build 9: the sweep's default is the command bus (OD-4). A worker that
+   * runs again the same day books once and leaves one completed claim keyed
+   * on the schedule and its due date. The second run raises nothing because
+   * the first advanced the schedule in the same transaction; the claim is the
+   * bus's record of the one booking, not what stops the second. `sweep` above
+   * passes 0 and covers rollback. */
+  it('on the command bus, run twice on the same day raises one entry and one claim', async () => {
+    const { auth, businessId, id, firstDueOn } = await scheduleFor('+2348177200016', 1);
+    const onBus = (now: Date) =>
+      sweepRecurring({ workerDb, appDb: db, commandBus: testBus, commandRecordExpense: true }, now);
+
+    expect(await onBus(at(firstDueOn))).toEqual({ raised: 1, skipped: 0 });
+    expect(await onBus(at(firstDueOn))).toEqual({ raised: 0, skipped: 0 });
+    expect((await registerOf(auth)).entries).toHaveLength(1);
+
+    const claims = await withBusiness(db, businessId, async (tx) => [
+      ...(await tx.execute<{ key: string; completed: boolean }>(sql`
+        SELECT key, completed_at IS NOT NULL AS completed FROM idempotency_records
+         WHERE business_id = ${businessId}::uuid AND command_name = 'RecordExpense'`)),
+    ]);
+    expect(claims).toEqual([{ key: `recurring:${id}:${firstDueOn}`, completed: true }]);
+  });
+
   it('run by two processes at once raises one entry, not two', async () => {
     const { auth, firstDueOn } = await scheduleFor('+2348177200007', 1);
 

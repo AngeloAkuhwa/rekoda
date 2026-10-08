@@ -1011,8 +1011,8 @@ describe('every order ingress goes through PlaceOrder (remediation R2)', () => {
         { retailerId: wigId, quantity: 1 },
       ]),
     );
-    /* The branch is kept for one release so a rollback has somewhere to land.
-     * It must not quietly take an order while it waits there. */
+    /* PlaceOrder's 0 is not a rollback (OD-4, OWN-22): the legacy branch was
+     * retired, and it must refuse rather than quietly take an order. */
     expect(
       await buildRunner(workerDb, db, {
         ...deps,
@@ -6491,7 +6491,7 @@ describe('counting stock', () => {
    * adding stock is STANDARD.
    *
    * This used to run under `commandAdjustInventory: true`, and that was the
-   * defect it hid. The flag defaults OFF, and with it off the write-off fell
+   * defect it hid. The flag then defaulted OFF, and with it off the write-off fell
    * to a bare `adjustInventoryWork` call: stock disappeared from a chat
    * message with no confirmation claimed and none ever opened. The flag now
    * governs the ADDITIVE path only; `destructive` crosses the bus whatever it
@@ -6531,6 +6531,32 @@ describe('counting stock', () => {
     expect(row?.command).toBe('AdjustInventory');
     expect(row?.consequence).toContain('Removing 15 bags of rice');
     expect(row?.claimed_at).not.toBeNull();
+  });
+
+  it('a write-off still crosses the bus and its confirmation when the flag is 0 (Build 9)', async () => {
+    const config = deps.config as unknown as { commandAdjustInventory: boolean };
+    const was = config.commandAdjustInventory;
+    config.commandAdjustInventory = false;
+    try {
+      const business = await seedMerchant('+2348031234567');
+      await say('wamid.SD0-1', adjust('bags of rice', 20), 'add 20 bags of rice');
+      await plain('wamid.SD0-2', 'yes');
+      await say('wamid.SD0-3', adjust('bags of rice', -15), '15 bags got water damage');
+      await plain('wamid.SD0-4', 'yes');
+      expect((await onHand(business.id, 'bags of rice'))?.onHand).toBe(5);
+      /* HIGH_RISK: the confirmation was opened and claimed through the bus,
+       * whatever the rollout flag said. */
+      const claimed = await withBusiness(db, business.id, (tx) =>
+        tx.execute<{ n: string }>(
+          sql`SELECT count(*)::text AS n FROM pending_confirmations
+              WHERE business_id = ${business.id}::uuid AND command = 'AdjustInventory'
+                AND claimed_at IS NOT NULL`,
+        ),
+      );
+      expect(Number([...claimed][0]?.n)).toBe(1);
+    } finally {
+      config.commandAdjustInventory = was;
+    }
   });
 
   it('adds onto a count that is already there', async () => {
@@ -15117,5 +15143,192 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       expect(stubSender.lastText).toContain(REASK);
       expect(stubSender.lastText).not.toMatch(/cancel/i);
     });
+  });
+});
+
+/**
+ * Build 9, OD-4 (approved 8 Oct 2026): the command bus is the default door.
+ *
+ * The rest of this file now runs every write through the bus by default;
+ * these prove it at the ingress, side by side with the rollback. Two
+ * merchants, one on the default configuration and one with that command's
+ * flag at `0`, book the same thing: the business truth (documents, money,
+ * stock and every ledger account's net movement) must be identical, and
+ * the only difference is the bus's own idempotency claim.
+ */
+describe('the command bus is the default door, and 0 rolls back to the same truth (Build 9)', () => {
+  const BUS = '2348039991011';
+  const DIRECT = '2348039991012';
+  const SALE = {
+    intent: 'RecordSale',
+    customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+    items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+    statedTotal: 150_000,
+    reportedPayment: 100_000,
+    paymentMethod: 'transfer',
+    discount: null,
+    deliveryFee: null,
+    dueDescription: null,
+  };
+  const PURCHASE = {
+    intent: 'RecordPurchase',
+    supplierMention: 'Emeka',
+    description: '10 cartons',
+    amount: 180_000,
+    reportedPayment: 100_000,
+    paymentMethod: 'cash',
+    productMention: 'cartons',
+    quantity: 10,
+  };
+
+  async function seedMerchant(phone: string) {
+    const user = await identity.upsertUserByPhone(db, `+${phone}`);
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  async function say(phone: string, wamid: string, command: Record<string, unknown>, text: string) {
+    stubTransport.replyWith(command);
+    await post(messagePayload(phone, wamid, text));
+    await drain();
+  }
+
+  async function plain(phone: string, wamid: string, text: string) {
+    await post(messagePayload(phone, wamid, text));
+    await drain();
+  }
+
+  /** Run `fn` with one command flag set as an operator's `0` would set it. */
+  async function rolledBack<T>(flag: keyof ApiConfig, fn: () => Promise<T>): Promise<T> {
+    const config = deps.config as unknown as Record<string, boolean>;
+    const was = config[flag as string]!;
+    config[flag as string] = false;
+    try {
+      return await fn();
+    } finally {
+      config[flag as string] = was;
+    }
+  }
+
+  async function claims(businessId: string, command: string) {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ key: string; completed: boolean }>(sql`
+        SELECT key, completed_at IS NOT NULL AS completed FROM idempotency_records
+         WHERE business_id = ${businessId}::uuid AND command_name = ${command}
+         ORDER BY created_at`),
+    );
+    return [...rows];
+  }
+
+  /** The business truth: documents, money, stock, and every account's net. */
+  async function truth(businessId: string) {
+    const [row] = [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<Record<string, number>>(sql`
+          SELECT
+            (SELECT count(*)::int FROM invoices WHERE business_id = ${businessId}::uuid) AS invoices,
+            (SELECT count(*)::int FROM payments WHERE business_id = ${businessId}::uuid) AS payments,
+            (SELECT count(*)::int FROM receipts WHERE business_id = ${businessId}::uuid) AS receipts,
+            (SELECT count(*)::int FROM expenses WHERE business_id = ${businessId}::uuid) AS purchases,
+            (SELECT count(*)::int FROM bills WHERE business_id = ${businessId}::uuid) AS bills,
+            (SELECT count(*)::int FROM inventory_movements WHERE business_id = ${businessId}::uuid) AS movements,
+            (SELECT count(*)::int FROM ledger_transactions WHERE business_id = ${businessId}::uuid) AS postings,
+            (SELECT count(*)::int FROM outbox_events WHERE business_id = ${businessId}::uuid) AS announcements,
+            (SELECT count(*)::int FROM jobs WHERE business_id = ${businessId}::uuid AND kind = 'document.render') AS documents
+        `),
+      )),
+    ];
+    const nets: Record<string, number> = {};
+    const entries = await withBusiness(db, businessId, (tx) =>
+      issueRepo.ledgerEntriesFor(tx, businessId),
+    );
+    for (const e of entries) nets[e.account] = (nets[e.account] ?? 0) + e.debitK - e.creditK;
+    return { counts: row!, nets };
+  }
+
+  it('a Chat sale takes the bus by default; 0 books the same sale, payment, receipt and ledger directly', async () => {
+    const bus = await seedMerchant(BUS);
+    const direct = await seedMerchant(DIRECT);
+
+    await say(BUS, 'wamid.B9-s-bus', SALE, 'Ada bought 3 wigs 150k, paid 100k transfer');
+    await plain(BUS, 'wamid.B9-s-bus-yes', 'yes');
+    await rolledBack('commandRecordSale', async () => {
+      await say(DIRECT, 'wamid.B9-s-dir', SALE, 'Ada bought 3 wigs 150k, paid 100k transfer');
+      await plain(DIRECT, 'wamid.B9-s-dir-yes', 'yes');
+    });
+
+    const onBus = await truth(bus.id);
+    expect(onBus.counts).toMatchObject({ invoices: 1, payments: 1, receipts: 1 });
+    expect(await truth(direct.id)).toEqual(onBus);
+    /* The only difference is the bus's claim, keyed on the confirmed draft. */
+    const busClaims = await claims(bus.id, 'RecordSale');
+    expect(busClaims).toHaveLength(1);
+    expect(busClaims[0]!.key).toMatch(/^draft:/);
+    expect(busClaims[0]!.completed).toBe(true);
+    expect(await claims(direct.id, 'RecordSale')).toHaveLength(0);
+  });
+
+  it('a redelivered yes, and a second yes, on the bus book nothing twice', async () => {
+    const bus = await seedMerchant(BUS);
+    await say(BUS, 'wamid.B9-r', SALE, 'Ada bought 3 wigs 150k, paid 100k transfer');
+    await plain(BUS, 'wamid.B9-r-yes', 'yes');
+    const once = await truth(bus.id);
+    /* Meta redelivers the same webhook (dropped by the message's own
+     * dedupe), and the merchant says yes again (a new message: the draft is
+     * already claimed, so nothing reaches the bus a second time). */
+    await plain(BUS, 'wamid.B9-r-yes', 'yes');
+    await plain(BUS, 'wamid.B9-r-yes-2', 'yes');
+    expect(await truth(bus.id)).toEqual(once);
+    expect(await claims(bus.id, 'RecordSale')).toHaveLength(1);
+  });
+
+  it('a Chat purchase takes the bus by default; 0 books the same purchase, stock, bill and accounts', async () => {
+    const bus = await seedMerchant(BUS);
+    const direct = await seedMerchant(DIRECT);
+
+    await say(BUS, 'wamid.B9-p-bus', PURCHASE, 'bought 10 cartons from Emeka 180k, paid 100k cash');
+    await plain(BUS, 'wamid.B9-p-bus-yes', 'yes');
+    await rolledBack('commandRecordPurchase', async () => {
+      await say(
+        DIRECT,
+        'wamid.B9-p-dir',
+        PURCHASE,
+        'bought 10 cartons from Emeka 180k, paid 100k cash',
+      );
+      await plain(DIRECT, 'wamid.B9-p-dir-yes', 'yes');
+    });
+
+    const onBus = await truth(bus.id);
+    /* G-61 unchanged: the paid part leaves Cash, the rest is owed. */
+    expect(onBus.counts).toMatchObject({ purchases: 1, bills: 1, movements: 1 });
+    expect(onBus.nets).toMatchObject({
+      INVENTORY: 18_000_000,
+      CASH: -10_000_000,
+      ACCOUNTS_PAYABLE: -8_000_000,
+    });
+    expect(await truth(direct.id)).toEqual(onBus);
+    expect(await claims(bus.id, 'RecordPurchase')).toHaveLength(1);
+    expect(await claims(direct.id, 'RecordPurchase')).toHaveLength(0);
+  });
+
+  it('one command rolled back leaves every other command on the bus', async () => {
+    const bus = await seedMerchant(BUS);
+    await rolledBack('commandRecordSale', async () => {
+      await say(BUS, 'wamid.B9-o-p', PURCHASE, 'bought 10 cartons from Emeka 180k, paid 100k cash');
+      await plain(BUS, 'wamid.B9-o-p-yes', 'yes');
+      await say(BUS, 'wamid.B9-o-s', SALE, 'Ada bought 3 wigs 150k, paid 100k transfer');
+      await plain(BUS, 'wamid.B9-o-s-yes', 'yes');
+    });
+    expect(await claims(bus.id, 'RecordPurchase')).toHaveLength(1);
+    expect(await claims(bus.id, 'RecordSale')).toHaveLength(0);
   });
 });

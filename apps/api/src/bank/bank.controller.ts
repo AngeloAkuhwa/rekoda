@@ -270,7 +270,11 @@ export class BankController {
             payload: input,
             actor: input.actor,
             ingress: 'DASHBOARD',
-            idempotencyKey: `match:${input.lineId}:${input.transactionId}`,
+            /* No bus key (Build 9): a line and an entry are a PAIR, not a
+             * request. A pair released and matched again must be matched
+             * again; `matchByHand` already refuses a second match of a
+             * matched line, inside this transaction. */
+            idempotencyKey: null,
           },
           () => confirmReconciliationWork(tx, input),
         );
@@ -352,7 +356,10 @@ export class BankController {
               tx,
               businessId,
               'PostJournal',
-              `classify-journal:${parsed.data.lineId}`,
+              /* No bus key (Build 9): a line released and classified again
+               * gets a new journal; the line's own state refuses a second
+               * classification while it is matched. */
+              null,
               actor,
               { lineId: parsed.data.lineId, classification: parsed.data.classification },
               () => postJournalWork(tx, prepared.journal),
@@ -371,7 +378,7 @@ export class BankController {
               tx,
               businessId,
               'ConfirmReconciliation',
-              `classify-match:${parsed.data.lineId}`,
+              null,
               actor,
               matchInput,
               () => confirmReconciliationWork(tx, matchInput),
@@ -401,7 +408,7 @@ export class BankController {
     tx: Parameters<typeof confirmReconciliationWork>[0],
     businessId: string,
     command: 'PostJournal' | 'ConfirmReconciliation',
-    idempotencyKey: string,
+    idempotencyKey: string | null,
     actor: string,
     payload: unknown,
     work: () => Promise<T>,

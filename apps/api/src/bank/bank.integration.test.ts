@@ -402,6 +402,42 @@ describe('pairing the two sides, end to end', () => {
     ).toEqual({ outcome: 'refused', reason: 'line_already_matched' });
   });
 
+  /* Build 9: a line released and classified again is classified again: a
+   * new journal and a new match, never a replay of the first answer. The
+   * FIRST journal stays posted, which is the direct path's behaviour too and
+   * is recorded as G-95; this test pins parity, not that outcome as right. */
+  it('classifies a released line again, with a new journal and a new match', async () => {
+    const { auth } = await onboard('+2348177000093');
+    await post('/v1/bank/statement', { csv: AUG }, auth);
+    const before = bankPositionResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/bank/position', headers: auth })).json(),
+    );
+    const line = before.lines.find((l) => l.amountK === 15_000_000)!;
+    const classify = async () =>
+      classifyLineResponse.parse(
+        (
+          await post(
+            '/v1/bank/classify',
+            { lineId: line.id, classification: 'OWNER_CAPITAL' },
+            auth,
+          )
+        ).json(),
+      );
+
+    expect(await classify()).toEqual({ outcome: 'classified', journalNumber: 'JNL-2026-000001' });
+    expect((await post('/v1/bank/unmatch', { lineId: line.id }, auth)).json()).toEqual({
+      released: 1,
+    });
+    expect(await classify()).toEqual({ outcome: 'classified', journalNumber: 'JNL-2026-000002' });
+
+    const after = bankPositionResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/bank/position', headers: auth })).json(),
+    );
+    expect(after.lines.find((l) => l.id === line.id)!.matchedTo).toMatchObject({
+      memo: expect.stringContaining('JNL-2026-000002'),
+    });
+  });
+
   it('names why a hand-made match was refused', async () => {
     const { auth } = await onboard('+2348177000086');
     await post('/v1/bank/statement', { csv: AUG }, auth);
@@ -483,6 +519,50 @@ describe('pairing the two sides, end to end', () => {
       bankRef: line.bankRef,
     });
     expect(released.reconciliation).toMatchObject({ matched: 0, pairable: 1 });
+  });
+
+  /* Build 9: a hand match released and made again is made again. The pair is
+   * not a request: a replay of the first "matched" would leave it unmatched. */
+  it('matches a released pair again by hand, and it is matched', async () => {
+    const { auth } = await onboard('+2348177000088');
+    await post('/v1/bank/statement', { csv: AUG }, auth);
+    await post(
+      '/v1/reports/journal',
+      {
+        memo: 'A transfer',
+        amountK: 15_000_000,
+        intoAccount: 'BANK',
+        outOfAccount: 'OWNERS_EQUITY',
+        occurredOn: '2026-08-03',
+      },
+      auth,
+    );
+    const seen = bankPositionResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/bank/position', headers: auth })).json(),
+    );
+    const line = seen.lines.find((l) => l.amountK === 15_000_000)!;
+    const movement = seen.openMovements.find((m) => m.amountK === 15_000_000)!;
+    const match = async () =>
+      matchLineResponse.parse(
+        (
+          await post(
+            '/v1/bank/match',
+            { lineId: line.id, transactionId: movement.transactionId },
+            auth,
+          )
+        ).json(),
+      );
+
+    expect(await match()).toMatchObject({ outcome: 'matched' });
+    expect((await post('/v1/bank/unmatch', { lineId: line.id }, auth)).json()).toEqual({
+      released: 1,
+    });
+    expect(await match()).toMatchObject({ outcome: 'matched' });
+
+    const after = bankPositionResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/bank/position', headers: auth })).json(),
+    );
+    expect(after.lines.find((l) => l.id === line.id)!.matchedTo).not.toBeNull();
   });
 
   it('refuses a caller with no session, and a body that is not a pairing', async () => {

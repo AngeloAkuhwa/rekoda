@@ -112,12 +112,17 @@ export interface ApiConfig {
   /** Concurrent job lanes per worker process. SKIP LOCKED makes N lanes safe. */
   workerConcurrency: number;
   /**
-   * A1 rollout flags (spec §25), one per command, default OFF.
+   * A1 rollout flags (spec §25), one per command, default ON since Build 9.
    *
    * The flag decides which path an ingress takes to the SAME work function:
    * on, the command bus (entitlement → risk → idempotency → work); off, the
    * work called directly, which is exactly what the ingress did before the
-   * command existed. Rollback is a flag flip, per command, with no deploy.
+   * command existed (except PlaceOrder, whose direct path was retired: its
+   * off refuses orders and is not a rollback). Only `0` switches one off:
+   * an environment that forgot a variable gets the door that checks, never
+   * the legacy one. Rollback is `0`, per command: no code deployment, but a
+   * configuration change and a restart of the same image (OD-4, OWN-22; the
+   * deploy runbook).
    */
   commandRecordSale: boolean;
   commandIssueInvoice: boolean;
@@ -1018,6 +1023,25 @@ function optionalHexKey(env: NodeJS.ProcessEnv, key: string): string {
  * is the one non-production state that carries no name.
  */
 const NON_PRODUCTION_ENVS = new Set(['development', 'test']);
+/**
+ * A command bus rollout flag (OD-4, approved by the owner 8 Oct 2026).
+ *
+ * Unset or `1` runs the command bus; `0` is the per-command emergency
+ * rollback to the same work called directly. Anything else is a deployment
+ * typo and refuses to load, in every environment, like every other
+ * malformed value here: an operator who typed `false` meant a rollback, and
+ * quietly running the bus would misreport what they asked for. No trimming,
+ * no synonyms: the contract is exactly two characters.
+ */
+function commandRolloutFlag(env: NodeJS.ProcessEnv, name: string): boolean {
+  const raw = env[name];
+  if (raw === undefined || raw === '1') return true;
+  if (raw === '0') return false;
+  throw new ConfigError(
+    `${name} must be 1 (the command bus, also the default when unset) or 0 (emergency rollback to the direct call)`,
+  );
+}
+
 export function isProductionEnv(env: NodeJS.ProcessEnv): boolean {
   const value = env['NODE_ENV'];
   if (value === undefined || value === '') return false;
@@ -1164,28 +1188,31 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     /* The old `Math.max(1, Number(...))` was a floor that could not hold:
      * `Math.max(1, NaN)` is NaN. */
     workerConcurrency: positiveInteger(env, 'REKODA_WORKER_CONCURRENCY', 4),
-    commandRecordSale: env['REKODA_COMMAND_RECORD_SALE'] === '1',
-    commandIssueInvoice: env['REKODA_COMMAND_ISSUE_INVOICE'] === '1',
-    commandRecordPayment: env['REKODA_COMMAND_RECORD_PAYMENT'] === '1',
-    commandConfirmPayment: env['REKODA_COMMAND_CONFIRM_PAYMENT'] === '1',
-    commandRecordExpense: env['REKODA_COMMAND_RECORD_EXPENSE'] === '1',
-    commandRecordPurchase: env['REKODA_COMMAND_RECORD_PURCHASE'] === '1',
-    commandPostJournal: env['REKODA_COMMAND_POST_JOURNAL'] === '1',
-    commandClosePeriod: env['REKODA_COMMAND_CLOSE_PERIOD'] === '1',
-    commandOpeningBalances: env['REKODA_COMMAND_OPENING_BALANCES'] === '1',
+    commandRecordSale: commandRolloutFlag(env, 'REKODA_COMMAND_RECORD_SALE'),
+    commandIssueInvoice: commandRolloutFlag(env, 'REKODA_COMMAND_ISSUE_INVOICE'),
+    commandRecordPayment: commandRolloutFlag(env, 'REKODA_COMMAND_RECORD_PAYMENT'),
+    commandConfirmPayment: commandRolloutFlag(env, 'REKODA_COMMAND_CONFIRM_PAYMENT'),
+    commandRecordExpense: commandRolloutFlag(env, 'REKODA_COMMAND_RECORD_EXPENSE'),
+    commandRecordPurchase: commandRolloutFlag(env, 'REKODA_COMMAND_RECORD_PURCHASE'),
+    commandPostJournal: commandRolloutFlag(env, 'REKODA_COMMAND_POST_JOURNAL'),
+    commandClosePeriod: commandRolloutFlag(env, 'REKODA_COMMAND_CLOSE_PERIOD'),
+    commandOpeningBalances: commandRolloutFlag(env, 'REKODA_COMMAND_OPENING_BALANCES'),
     /**
-     * On unless explicitly switched off, which is the opposite sense of its
-     * siblings. PlaceOrder finished its rollout: the storefront and the WABA
+     * On unless explicitly switched off, like every sibling since Build 9.
+     * PlaceOrder finished its rollout first: the storefront and the WABA
      * catalogue both run it in production, and leaving the default at off
      * meant an environment that forgot the variable took orders through a
      * path with no entitlement check and no idempotency key. Absent
      * configuration should mean the safe door, not the legacy one.
      */
-    commandPlaceOrder: env['REKODA_COMMAND_PLACE_ORDER'] !== '0',
-    commandRecordOrder: env['REKODA_COMMAND_RECORD_ORDER'] === '1',
-    commandIngestFinancialTransaction: env['REKODA_COMMAND_INGEST_FINANCIAL_TRANSACTION'] === '1',
-    commandConfirmReconciliation: env['REKODA_COMMAND_CONFIRM_RECONCILIATION'] === '1',
-    commandAdjustInventory: env['REKODA_COMMAND_ADJUST_INVENTORY'] === '1',
+    commandPlaceOrder: commandRolloutFlag(env, 'REKODA_COMMAND_PLACE_ORDER'),
+    commandRecordOrder: commandRolloutFlag(env, 'REKODA_COMMAND_RECORD_ORDER'),
+    commandIngestFinancialTransaction: commandRolloutFlag(
+      env,
+      'REKODA_COMMAND_INGEST_FINANCIAL_TRANSACTION',
+    ),
+    commandConfirmReconciliation: commandRolloutFlag(env, 'REKODA_COMMAND_CONFIRM_RECONCILIATION'),
+    commandAdjustInventory: commandRolloutFlag(env, 'REKODA_COMMAND_ADJUST_INVENTORY'),
     /**
      * Optional. The deterministic router answers most messages
      * without a model, so a missing key degrades the product rather than

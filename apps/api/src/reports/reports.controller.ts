@@ -786,10 +786,11 @@ export class ReportsController {
               payload: input,
               actor: input.actor,
               ingress: 'DASHBOARD',
-              /* The form's one-shot key, when the form brought one. Absent
-               * means the caller accepts a retry may run again — the same
-               * honesty the clientRef-less path always had. */
-              idempotencyKey: input.clientRef ? `payrec:${input.clientRef}` : null,
+              /* No bus key (Build 9): the pre-check above and the unique client
+               * reference already answer a resubmitted form `duplicate`, as on
+               * the direct path; a key here would replay the first answer (or a
+               * stale refusal) instead. */
+              idempotencyKey: null,
             },
             () => recordPaymentWork(tx, input),
           );
@@ -1034,9 +1035,11 @@ export class ReportsController {
               payload: input,
               actor: input.actor,
               ingress: 'DASHBOARD',
-              /* One quote, one invoice: a retry that lost its response is
-               * handed the first answer instead of a second conversion. */
-              idempotencyKey: `quote-convert:${quote.id}`,
+              /* No bus key (Build 9): the work refuses a quote already taken
+               * (`QuoteAlreadyTaken`, answered `already_converted` below), as
+               * on the direct path. A key here turned a second staff member's
+               * simultaneous convert into `key_reused`, a 500. */
+              idempotencyKey: null,
             },
             () => issueInvoiceWork(tx, input),
           );
@@ -1740,7 +1743,10 @@ export class ReportsController {
               payload: input,
               actor: input.actor,
               ingress: 'DASHBOARD',
-              idempotencyKey: `opening:${asAt}`,
+              /* No bus key (Build 9): once-only is the database's, and a
+               * repeat must be told `already_set`, as on the direct path, not
+               * handed the first answer again. */
+              idempotencyKey: null,
             },
             () => recordOpeningBalancesWork(tx, input),
           );
@@ -1890,7 +1896,11 @@ export class ReportsController {
               payload: input,
               actor: input.actor,
               ingress: 'DASHBOARD',
-              idempotencyKey: input.clientRef ? `journal:${input.clientRef}` : null,
+              /* No bus key (Build 9): the ledger's unique `client_ref` already
+               * makes a resubmitted form a `duplicate`, answered below exactly
+               * as the direct path answers it. A key here replayed the first
+               * answer as `recorded` instead. */
+              idempotencyKey: null,
             },
             () => postJournalWork(tx, input),
           );

@@ -69,7 +69,8 @@ with sandbox notes per provider, is `docs/REKODA_LAUNCH_READINESS.md` §11.1.
   `REKODA_API_PUBLIC_URL`, `REKODA_WEB_URL`, `REKODA_CORS_ORIGINS`), the ACME
   contact (`REKODA_ACME_EMAIL`), the legal facts (`NEXT_PUBLIC_LEGAL_*`,
   `NEXT_PUBLIC_PRIVACY_EMAIL`, `NEXT_PUBLIC_SUPPORT_EMAIL`), Rekoda's WhatsApp
-  number, and the command-bus flags (OD-4).
+  number. The command-bus flags are not a fact to decide: leave every
+  `REKODA_COMMAND_*` unset (OD-4, OWN-22); see "Roll back one write command".
 
 A value in `.env` must not contain a `$`: compose reads the file too and would
 treat it as a variable. Every generated value above is hex.
@@ -313,6 +314,50 @@ runs against the newer schema. A migration that must itself be reverted is a
 restore from backup, and **there is no backup mechanism yet** (G-02 in
 `docs/REKODA_LAUNCH_READINESS.md`; `backup-restore.md` describes the plan).
 
+## Roll back one write command (OD-4)
+
+Every write runs through the command bus by default (OWN-22). Do not set any
+`REKODA_COMMAND_*` variable in a normal deployment. If one write command
+misbehaves on the bus and must run directly while it is fixed:
+
+```bash
+# in .env, edit or add ONE line, for the affected command only:
+#   REKODA_COMMAND_RECORD_PURCHASE=0
+dc up -d --wait                                   # recreates api and worker on the SAME image: no build
+curl -fsS https://<api host>/health
+```
+
+Then run one smoke transaction for that command (for a purchase: a chat
+purchase and its yes) and check it booked once. Record the rollback, its
+reason and its time where operations notes live: it is temporary.
+
+**Restore:** delete the line (or set it to `1`), `dc up -d --wait`, check
+`/health`, confirm the line is gone from the running containers
+(`dc exec api printenv | grep REKODA_COMMAND_` prints nothing, or `=1`), and
+repeat the smoke transaction. An `idempotency_records` row confirms the bus
+only for an ingress that passes a key: a chat confirmation, a PO receive, a
+recurring entry, a payment confirmation, a storefront or WhatsApp catalogue
+order, and a public-API call that sends its own idempotency key. The
+dashboard journal, payment, opening balances, close period and quote
+convert, the bank upload and feed sync, and the bank match and classify pass
+none, so no row appears for them by design: for those, the `printenv` check
+and the smoke transaction are the confirmation.
+
+**Not for PlaceOrder:** its direct path was retired after its own rollout,
+so `REKODA_COMMAND_PLACE_ORDER=0` does not roll back, it stops the storefront
+and the WhatsApp catalogue taking orders.
+
+**Every flag:** only `1` and `0` are accepted. A variable written with no
+value (`REKODA_COMMAND_RECORD_SALE=`) and any other value (`false`, `off`, a
+typo) refuse to start the api and worker, naming the variable, so a mistyped
+rollback is never silently ignored. Before the first deploy of Build 9, check
+the host's `.env` for any `REKODA_COMMAND_*` line: remove it unless it is a
+deliberate `0`. **Never use this for a HIGH_RISK
+command** (refunds, voids, reopening a period, erasure and the rest): they
+have no rollout flag and always cross the bus and its confirmation, by
+design. A correctness or security problem there is fixed in code, not
+switched off.
+
 ## What must never be run
 
 - **Never give the app credentials to anything but the app.** Migrations
@@ -488,7 +533,8 @@ only says a dependency failed, and the line is in `dc logs edge-check`:
   localhost, a container name, a private address, or a reserved `.invalid`,
   `.test` or `.example` name);
   `R2_ACCOUNT_ID` must be the 32-hex account id (G-72);
-  `REKODA_RELEASE` and `REKODA_COMMIT` must be short tokens.
+  `REKODA_RELEASE` and `REKODA_COMMIT` must be short tokens;
+  each `REKODA_COMMAND_*` must be unset, `1` or `0` (OD-4).
 - **The edge** (`edge-check`, before caddy starts): `REKODA_EDGE_PROXIES`
   must not trust effectively the whole internet (G-74), nor name
   `private_ranges` or any range holding the edge network's gateway,

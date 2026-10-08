@@ -233,7 +233,9 @@ describe('IssueInvoice through the bus', () => {
       payload: input,
       actor: 'user:test',
       ingress: 'DASHBOARD' as const,
-      idempotencyKey: `quote-convert:${quoteId}`,
+      /* The bus's own replay, under a request key. The dashboard convert
+       * passes no key since Build 9 (the next test but one). */
+      idempotencyKey: 'convert-request-1',
     };
 
     const first = await withBusiness(appDb, businessId, (tx) =>
@@ -270,6 +272,37 @@ describe('IssueInvoice through the bus', () => {
 
     expect(await count(businessId, 'invoices')).toBe(1);
     expect(await count(businessId, 'outbox_events')).toBe(1);
+  });
+
+  /* Build 9: the dashboard convert crosses the bus with no key, so a second
+   * convert (a double-click, a second member of staff) is refused by the
+   * quote's own state, never answered by a replayed claim. */
+  it('on the bus with no key, a second convert is refused and leaves no claim', async () => {
+    const businessId = await seedBusiness();
+    const { quoteId } = await seedQuote(businessId);
+    const input = invoiceInput(businessId, quoteId);
+    const envelope = {
+      businessId,
+      command: 'IssueInvoice' as const,
+      payload: input,
+      actor: 'user:test',
+      ingress: 'DASHBOARD' as const,
+      idempotencyKey: null,
+    };
+
+    const first = await withBusiness(appDb, businessId, (tx) =>
+      bus.run(tx, envelope, () => issueInvoiceWork(tx, input)),
+    );
+    expect(first.outcome).toBe('done');
+    await expect(
+      withBusiness(appDb, businessId, (tx) =>
+        bus.run(tx, { ...envelope, actor: 'user:other' }, () => issueInvoiceWork(tx, input)),
+      ),
+    ).rejects.toThrow(QuoteAlreadyTaken);
+
+    expect(await count(businessId, 'invoices')).toBe(1);
+    expect(await count(businessId, 'outbox_events')).toBe(1);
+    expect(await count(businessId, 'idempotency_records')).toBe(0);
   });
 });
 
