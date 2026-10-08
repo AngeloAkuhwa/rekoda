@@ -1419,6 +1419,15 @@ describe('natural Nigerian opt-outs (G-80)', () => {
     'abeg​ stop',
     /* Spaces inside are spaces, however many. */
     'abeg   stop',
+    /* A comma where the politeness word or filler meets the core. */
+    'stop, o',
+    'abeg, stop o',
+    'abeg, no send me again',
+    /* The emoji that say stop or please. */
+    'abeg stop 🛑',
+    'please stop ✋🏽',
+    'no send me again 🚫',
+    "don't message me again",
   ];
 
   /* Every one of these must change NOBODY's consent. */
@@ -1512,6 +1521,35 @@ describe('natural Nigerian opt-outs (G-80)', () => {
     'abegstop',
     /* Look-alike letters are not the word. */
     'abeg ѕtop',
+    /* A comma INSIDE a core flips its meaning: "No, send me again" asks
+     * for a resend (fresh review of 2aa6cc2, BLOCKING). */
+    'no, send me again',
+    'No, send me message again',
+    'no, send me messages again',
+    'abeg, no, send, me, again',
+    'do, not, send, me, messages, again',
+    'stop, all',
+    'stop, sending me messages',
+    'make, una stop',
+    /* A laughing or smiling face is banter, not an opt-out (IMPORTANT). */
+    'abeg stop 😂',
+    'abeg stop 😂😂😂',
+    'stop o 🤣',
+    'please stop 😄',
+    'make una stop 😅',
+    /* Only the apostrophe of "don't" joins words. */
+    "s'top",
+    "abeg s'top",
+    'sto’p abeg',
+    "un'subscribe me",
+    "do'nt send me messages again",
+    "dont't message me again",
+    /* Quoted, it is somebody else's words. */
+    '"abeg stop"',
+    "'abeg stop'",
+    '“no send me again”',
+    '> abeg stop',
+    '«stop o»',
     /* START gains nothing here. */
     'abeg start',
     'please start',

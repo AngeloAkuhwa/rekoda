@@ -3388,10 +3388,7 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
       expect(stubSender.lastText).toBe(replies.optedOut().text);
       expect(await identity.optedOutAt(db, '+2348031234567')).not.toBeNull();
 
-      // A natural START-like phrase does not undo it; START does.
-      await post(messagePayload('2348031234567', 'wamid.G80-NOTSTART', 'abeg start'));
-      await buildRunner(workerDb, db, deps).runOnce();
-      expect(await identity.optedOutAt(db, '+2348031234567')).not.toBeNull();
+      // START undoes it ("abeg start" does not; see the G-80 START test).
       await post(messagePayload('2348031234567', 'wamid.G80-START', 'START'));
       expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
       expect(await identity.optedOutAt(db, '+2348031234567')).toBeNull();
@@ -4130,11 +4127,6 @@ describe('a voice note', () => {
     return rows.find((row) => row.unit === 'VOICE_MINUTES')?.used ?? 0;
   };
 
-  /**
-   * Spec §4.3 rule 2: nothing that costs money at a provider is dispatched
-   * before authorisation. An Integrate-only merchant holds the customer-side
-   * half of the product and not this one, and the transcriber is a bill.
-   */
   it('a voice note that says a natural opt-out opts out as a typed STOP does, with no model (G-80)', async () => {
     const business = await seedMerchant('+2348031234567');
     arrangeAudio();
@@ -4152,6 +4144,11 @@ describe('a voice note', () => {
     expect(usage.find((r) => r.unit === 'AI_ACTIONS')?.used ?? 0).toBe(0);
   });
 
+  /**
+   * Spec §4.3 rule 2: nothing that costs money at a provider is dispatched
+   * before authorisation. An Integrate-only merchant holds the customer-side
+   * half of the product and not this one, and the transcriber is a bill.
+   */
   it('never reaches the transcriber for a merchant whose plan has no Chat', async () => {
     const business = await seedMerchant('+2348031234567');
     await moveToPlan(business.id, 'integrate');
@@ -10257,7 +10254,7 @@ describe('Nigerian and chat routing (G-68, G-24)', () => {
       expect(stubTransport.requests).toHaveLength(0);
       expect(await aiActions(business.id)).toBe(0);
       // Stored as what it was, not what it said, like any deterministic message.
-      expect(await lastInboundBody(business.id)).not.toBe(text);
+      expect(await lastInboundBody(business.id)).toBe('[stop]');
     });
 
     it('a natural opt-out is honoured while a preview is waiting, and leaves it unconfirmed', async () => {
@@ -10460,14 +10457,13 @@ describe('Nigerian and Pidgin answers continue what was asked (G-68 Phase 2)', (
         const natural = await seedMerchant(`+${NATURAL}`);
         await say('wamid.G80-p-typed', cash, 'bought 10 cartons 180k cash', TYPED);
         await say('wamid.G80-p-natural', cash, 'bought 10 cartons 180k cash', NATURAL);
-        const calls = modelCalls();
-
         await reply('wamid.G80-p-typed-stop', 'STOP', TYPED);
         expect(stubSender.lastText).toBe(replies.optedOut().text);
         await reply('wamid.G80-p-natural-stop', text, NATURAL);
         expect(stubSender.lastText).toBe(replies.optedOut().text);
 
-        expect(modelCalls()).toBe(calls);
+        /* `reply` resets the stub's request log: the natural reply made none. */
+        expect(modelCalls()).toBe(0);
         const a = await aftermath(typed.id, TYPED);
         const b = await aftermath(natural.id, NATURAL);
         expect(b).toEqual(a);
@@ -10486,13 +10482,12 @@ describe('Nigerian and Pidgin answers continue what was asked (G-68 Phase 2)', (
         expect(stubSender.lastText).toBe(WHICH_PERIOD);
         await say('wamid.G80-q-natural', HOW_MUCH_DID_I_SELL, 'How much did I sell?', NATURAL);
         expect(stubSender.lastText).toBe(WHICH_PERIOD);
-        const calls = modelCalls();
-
         await reply('wamid.G80-q-typed-stop', 'STOP', TYPED);
         await reply('wamid.G80-q-natural-stop', text, NATURAL);
         expect(stubSender.lastText).toBe(replies.optedOut().text);
 
-        expect(modelCalls()).toBe(calls);
+        /* `reply` resets the stub's request log: the natural reply made none. */
+        expect(modelCalls()).toBe(0);
         const b = await aftermath(natural.id, NATURAL);
         expect(b).toEqual(await aftermath(typed.id, TYPED));
         expect(b.optedOut).toBe(true);
@@ -10506,13 +10501,12 @@ describe('Nigerian and Pidgin answers continue what was asked (G-68 Phase 2)', (
       expect(stubSender.lastText).toContain(POS_QUESTION);
       await say('wamid.G80-f-natural', POS_PURCHASE, 'bought 10 cartons 180k POS', NATURAL);
       expect(stubSender.lastText).toContain(POS_QUESTION);
-      const calls = modelCalls();
-
       await reply('wamid.G80-f-typed-stop', 'STOP', TYPED);
       await reply('wamid.G80-f-natural-stop', 'abeg stop', NATURAL);
       expect(stubSender.lastText).toBe(replies.optedOut().text);
 
-      expect(modelCalls()).toBe(calls);
+      /* `reply` resets the stub's request log: the natural reply made none. */
+      expect(modelCalls()).toBe(0);
       const b = await aftermath(natural.id, NATURAL);
       expect(b).toEqual(await aftermath(typed.id, TYPED));
       expect(b.optedOut).toBe(true);
