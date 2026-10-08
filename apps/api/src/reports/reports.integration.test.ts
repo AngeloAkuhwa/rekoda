@@ -4101,6 +4101,16 @@ describe('purchase orders, and what receiving one does', () => {
         (await receive(auth, { poNumber: firstPo, paidK: 0, sameAs: expenseId })).outcome,
       ).toBe('linked');
       const secondPo = await openPo(auth);
+      /* SAME from a second order to the purchase the first is linked to is
+       * refused cleanly, never relinked and never a server error. */
+      expect(await receive(auth, { poNumber: secondPo, paidK: 0, sameAs: expenseId })).toEqual({
+        outcome: 'no_longer_matches',
+        poNumber: secondPo,
+      });
+      expect(await poRow(businessId, secondPo)).toEqual({
+        status: 'open',
+        received_expense_id: null,
+      });
       expect((await receive(auth, { poNumber: secondPo, paidK: 0 })).outcome).toBe('received');
     });
 

@@ -116,8 +116,11 @@ describe('a receive that may be a purchase already booked in Chat (G-89)', () =>
       paid: '100000',
       method: 'transfer',
       options: [
-        { expenseId: EXPENSE, text: 'Another member recorded it on 7 Oct 2026, 14:05' },
-        { expenseId: OTHER, text: 'You recorded it on 7 Oct 2026, 10:30, bill BILL-2026-000004' },
+        { expenseId: EXPENSE, text: 'Another member recorded it on 7 Oct 2026, 14:05:00' },
+        {
+          expenseId: OTHER,
+          text: 'You recorded it on 7 Oct 2026, 10:30:00, bill BILL-2026-000004',
+        },
       ],
       expenseIds: [EXPENSE, OTHER],
       text:
@@ -287,5 +290,24 @@ describe('a receive that may be a purchase already booked in Chat (G-89)', () =>
         separateFrom: state.question?.expenseIds,
       }).success,
     ).toBe(true);
+  });
+
+  it('tells apart purchases recorded in the same second (Codex review of 05f93d0)', async () => {
+    const at = '2026-10-07T13:05:32.000Z';
+    receive.mockResolvedValue({
+      ...ASKED,
+      matches: [
+        { expenseId: EXPENSE, bookedAt: at, bookedBy: 'you' as const, billNumber: null },
+        { expenseId: OTHER, bookedAt: at, bookedBy: 'you' as const, billNumber: null },
+      ],
+    });
+    const state = await receivePurchaseOrderAction(
+      {},
+      form({ poNumber: 'PO-2026-000001', paid: '' }),
+    );
+    expect(state.question?.options).toEqual([
+      { expenseId: EXPENSE, text: '1 of 2, newest first: You recorded it on 7 Oct 2026, 14:05:32' },
+      { expenseId: OTHER, text: '2 of 2, newest first: You recorded it on 7 Oct 2026, 14:05:32' },
+    ]);
   });
 });

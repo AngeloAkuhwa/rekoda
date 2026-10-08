@@ -493,7 +493,8 @@ export interface PurchaseOrderFormState {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** `7 Oct 2026, 14:05`, Lagos, from an ISO instant. */
+/** `7 Oct 2026, 14:05:32`, Lagos, from an ISO instant: to the second, so
+ * two purchases recorded in one minute read apart (Codex review of 05f93d0). */
 function lagosMoment(iso: string): string {
   return new Date(iso).toLocaleString('en-GB', {
     timeZone: 'Africa/Lagos',
@@ -502,6 +503,7 @@ function lagosMoment(iso: string): string {
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    second: '2-digit',
     hour12: false,
   });
 }
@@ -511,6 +513,28 @@ const BOOKED_BY = {
   another_member: 'Another member',
   unknown: 'Someone',
 } as const;
+
+/** Each match as a choice, numbered newest first whenever two would
+ * otherwise read the same, so every option can be told apart. */
+function matchOptions(
+  matches: readonly {
+    expenseId: string;
+    bookedAt: string;
+    bookedBy: keyof typeof BOOKED_BY;
+    billNumber: string | null;
+  }[],
+): { expenseId: string; text: string }[] {
+  const texts = matches.map(
+    (m) =>
+      `${BOOKED_BY[m.bookedBy]} recorded it on ${lagosMoment(m.bookedAt)}` +
+      (m.billNumber ? `, bill ${m.billNumber}` : ''),
+  );
+  const alike = texts.some((t, i) => texts.indexOf(t) !== i);
+  return matches.map((m, i) => ({
+    expenseId: m.expenseId,
+    text: alike ? `${i + 1} of ${matches.length}, newest first: ${texts[i]}` : texts[i]!,
+  }));
+}
 
 async function createPurchaseOrderActionUnguarded(
   _prev: PurchaseOrderFormState,
@@ -625,12 +649,7 @@ async function receivePurchaseOrderActionUnguarded(
         method: method ?? '',
         /* Every purchase it may be, so SAME links the one the merchant
          * means, never just the newest (Codex review of 4582f91). */
-        options: outcome.matches.map((m) => ({
-          expenseId: m.expenseId,
-          text:
-            `${BOOKED_BY[m.bookedBy]} recorded it on ${lagosMoment(m.bookedAt)}` +
-            (m.billNumber ? `, bill ${m.billNumber}` : ''),
-        })),
+        options: matchOptions(outcome.matches),
         /* The new matches first, then everything already answered SEPARATE,
          * never cut short, so two answers never bounce between purchases
          * and no purchase shown is ever dropped (Codex review of 4582f91). */
