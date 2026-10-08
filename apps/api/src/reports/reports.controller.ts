@@ -1740,7 +1740,10 @@ export class ReportsController {
               payload: input,
               actor: input.actor,
               ingress: 'DASHBOARD',
-              idempotencyKey: `opening:${asAt}`,
+              /* No bus key (Build 9): once-only is the database's, and a
+               * repeat must be told `already_set`, as on the direct path, not
+               * handed the first answer again. */
+              idempotencyKey: null,
             },
             () => recordOpeningBalancesWork(tx, input),
           );
@@ -1890,7 +1893,11 @@ export class ReportsController {
               payload: input,
               actor: input.actor,
               ingress: 'DASHBOARD',
-              idempotencyKey: input.clientRef ? `journal:${input.clientRef}` : null,
+              /* No bus key (Build 9): the ledger's unique `client_ref` already
+               * makes a resubmitted form a `duplicate`, answered below exactly
+               * as the direct path answers it. A key here replayed the first
+               * answer as `recorded` instead. */
+              idempotencyKey: null,
             },
             () => postJournalWork(tx, input),
           );
