@@ -398,6 +398,101 @@ const STOP_WORDS: ReadonlySet<string> = new Set([
 const START_WORDS: ReadonlySet<string> = new Set(['start', 'unstop', 'subscribe']);
 
 /**
+ * Natural opt-outs (G-80): how Nigerian merchants and customers actually ask
+ * to be left alone, in English, Nigerian English and Pidgin. A CLOSED list of
+ * whole messages, read by the same grapheme matcher as STOP (see
+ * `naturalOptOut`), never a pattern and never a model: the model cannot opt
+ * anyone out, so a missed opt-out keeps messaging somebody who asked us not
+ * to. STOP only. START gains nothing here; a false START re-subscribes
+ * somebody, so "abeg start" stays refused.
+ *
+ * A form is a CORE, optionally with ONE politeness word before it and ONE
+ * politeness word or Pidgin filler after it. Each piece was chosen because,
+ * as a WHOLE message sent to a business, it has one reading: stop messaging
+ * me. Left out on purpose, and refused (recorded in the G-80 row): "stop it"
+ * (in English it reacts to one thing just said), "stop now" and "oya stop"
+ * (earlier verdicts; they read as "cancel this" mid-conversation), "quit"
+ * with politeness ("please quit" can mean leave this flow), "no more
+ * messages" ("I have no more to send"), "stop jare" and "stop jor", "leave me
+ * alone", "remove me", the object-less English "don't send me again" (after
+ * a resend it means "not that again"), the filler "ehn" (a question tag
+ * as often as emphasis), two politeness words in a row, a politeness word
+ * after a filler, and any form with an extra word ("abeg stop the sale",
+ * "stop am for Ada account", "no send Ada invoice again").
+ */
+const NATURAL_POLITE = ['abeg', 'please', 'pls', 'plz', 'biko'];
+/** Pidgin fillers that close a sentence ("stop o", "stop na"), after only. */
+const NATURAL_FILLERS = ['o', 'oo', 'ooo', 'na'];
+const NATURAL_CORES = [
+  'stop',
+  'stop all',
+  /* Pidgin: "stop it". */
+  'stop am',
+  'unsubscribe',
+  'unsubscribe me',
+  /* Pidgin: "you (plural), stop". */
+  'make una stop',
+  /* Pidgin: "do not send me (messages) again". */
+  'no send me again',
+  'no send me message again',
+  'no send me messages again',
+  /* Nigerian English, with "don't" read as "dont". Always naming the
+   * messages: an object-less "don't send me again" after a resend means
+   * "not that again", not "stop messaging me". */
+  'dont send me messages again',
+  'do not send me messages again',
+  'dont message me again',
+  'do not message me again',
+  'stop sending me messages',
+  'stop messaging me',
+];
+const NATURAL_CORE_SET: ReadonlySet<string> = new Set(NATURAL_CORES);
+const NATURAL_LEADS: ReadonlySet<string> = new Set(NATURAL_POLITE);
+const NATURAL_TAILS: ReadonlySet<string> = new Set([...NATURAL_POLITE, ...NATURAL_FILLERS]);
+/** The longest natural form, in words ("please do not send me messages again please"). */
+const NATURAL_MAX_WORDS = 8;
+/** The apostrophe of "don't" ("don’t"), the ONLY one that joins two words. */
+const APOSTROPHES: ReadonlySet<string> = new Set(["'", '\u2019']);
+/**
+ * The one mark that may separate words, and only where the politeness word
+ * or filler meets the core ("abeg, stop", "stop, o"). Inside a core it flips
+ * the meaning: "No, send me again" asks for a resend (fresh review).
+ */
+const COMMAS: ReadonlySet<string> = new Set([',', '\uFF0C']);
+/**
+ * The only emoji a natural form may carry: please, and the signs that mean
+ * stop. A bare STOP takes any emoji; a natural form is closer to a sentence:
+ * "abeg stop 😂" is banter, and a cross or a thumbs down can mean "that is
+ * wrong" (fresh reviews).
+ */
+const NATURAL_EMOJI: ReadonlySet<string> = new Set([
+  '\u{1F64F}', // folded hands: please
+  '✋', // raised hand
+  '\u{1F6D1}', // stop sign
+  '\u{1F6AB}', // prohibited
+  '⛔', // no entry
+]);
+/**
+ * The only marks that may END a natural form: a full stop or an exclamation.
+ * An ALLOW-list, because the rest are each a reason to refuse: a quote is
+ * somebody else's words, `~…~` is WhatsApp strikethrough (taken back), ";)"
+ * and "^_^" are banter, and a comma or an ellipsis at either edge says the
+ * sentence goes on in another message (fresh reviews). Before the words,
+ * nothing but a list bullet and the opening `*` of a bold pair.
+ */
+const NATURAL_ENDINGS: ReadonlySet<string> = new Set([
+  '.',
+  '!',
+  '。', // ideographic full stop
+  '！', // full-width exclamation
+  '．', // full-width full stop
+  '❗', // heavy exclamation mark
+  '❕', // white exclamation mark
+]);
+/** The full stops among the endings: at most ONE may end a natural form. */
+const NATURAL_FULL_STOPS: ReadonlySet<string> = new Set(['.', '\u3002', '\uFF0E']);
+
+/**
  * How much may decorate a STOP, per side, counted in GRAPHEMES (what a person
  * sees as one character: a skin-toned emoji, a flag, a keycap or a whole
  * family is one).
@@ -551,9 +646,9 @@ type Grapheme =
   | { kind: 'letter'; value: string }
   | { kind: 'space' }
   /** One displayed emoji: a pictograph sequence, a flag, or a keycap. */
-  | { kind: 'emoji'; affirming: boolean }
+  | { kind: 'emoji'; affirming: boolean; value: string }
   /** One punctuation or symbol code point, judged on its RAW form. */
-  | { kind: 'mark'; question: boolean; startable: boolean; dash: boolean }
+  | { kind: 'mark'; question: boolean; startable: boolean; dash: boolean; value: string }
   /** A digit, a non-Latin letter, anything else: never decoration. */
   | { kind: 'other' };
 
@@ -573,19 +668,21 @@ function classify(grapheme: string): Grapheme {
   const plain = bare(grapheme);
   if (/^\s+$/u.test(plain)) return { kind: 'space' };
   if (QUESTION_MARKS.has(plain)) {
-    return { kind: 'mark', question: true, startable: false, dash: false };
+    return { kind: 'mark', question: true, startable: false, dash: false, value: plain };
   }
   if (START_PUNCTUATION.has(plain)) {
-    return { kind: 'mark', question: false, startable: true, dash: false };
+    return { kind: 'mark', question: false, startable: true, dash: false, value: plain };
   }
   /* A keycap is one emoji, never a digit (carve-out, see above). */
-  if (/^[0-9#*]\uFE0F?\u20E3$/u.test(grapheme)) return { kind: 'emoji', affirming: false };
+  if (/^[0-9#*]\uFE0F?\u20E3$/u.test(grapheme)) {
+    return { kind: 'emoji', affirming: false, value: plain };
+  }
   if (LETTERLIKE_DECORATION.has(plain)) {
-    return { kind: 'mark', question: false, startable: false, dash: false };
+    return { kind: 'mark', question: false, startable: false, dash: false, value: plain };
   }
   /* A flag: a PAIR of regional indicators. */
   if (/^\p{Regional_Indicator}{2}$/u.test(plain)) {
-    return { kind: 'emoji', affirming: !NEGATING_FLAGS.has(plain) };
+    return { kind: 'emoji', affirming: !NEGATING_FLAGS.has(plain), value: plain };
   }
   /* Anything that reads as a letter or a number is not decoration: an
    * enclosed letter, a lone regional indicator, a symbol whose NFKC form
@@ -605,10 +702,16 @@ function classify(grapheme: string): Grapheme {
   if (letterlike) return { kind: 'other' };
   if (/\p{Extended_Pictographic}/u.test(grapheme)) {
     const core = plain.replace(/[\u{1F3FB}-\u{1F3FF}]/gu, '');
-    return { kind: 'emoji', affirming: AFFIRMING_EMOJI.has(core) };
+    return { kind: 'emoji', affirming: AFFIRMING_EMOJI.has(core), value: core };
   }
   if ([...plain].length === 1 && /^[\p{P}\p{S}]$/u.test(plain)) {
-    return { kind: 'mark', question: false, startable: false, dash: /^\p{Pd}$/u.test(plain) };
+    return {
+      kind: 'mark',
+      question: false,
+      startable: false,
+      dash: /^\p{Pd}$/u.test(plain),
+      value: plain,
+    };
   }
   if (/^[a-z]+$/u.test(folded)) return { kind: 'letter', value: folded };
   return { kind: 'other' };
@@ -774,7 +877,10 @@ function consentOnOneLine(text: string): 'stop' | 'start' | null {
     units.every((u) => u === units[0]) &&
     STOP_WORDS.has(units[0]!) &&
     inside.length <= DECORATION;
-  if (units.length > 1 && !repeatedStop) return null;
+  if (units.length > 1 && !repeatedStop) {
+    /* Not one keyword: a natural opt-out from the closed list, or nothing. */
+    return naturalOptOut(runs, separators, before, after, text) ? 'stop' : null;
+  }
   const word = units[0]!;
 
   if (STOP_WORDS.has(word) && (units.length === 1 || repeatedStop)) {
@@ -807,6 +913,112 @@ function consentOnOneLine(text: string): 'stop' | 'start' | null {
 /** Does the message open with a bullet character ("•" and its relatives)? */
 function isBullet(text: string): boolean {
   return /^[\u2022\u2023\u2043]/u.test(text);
+}
+
+/**
+ * Is this ONE line, already split into word runs, a natural opt-out (G-80)?
+ *
+ * Whole-message only, and stricter than a bare STOP, because a phrase is
+ * closer to a sentence than a keyword is:
+ *
+ *  - the message parses as ONE core from `NATURAL_CORES`, with at most one
+ *    politeness word before it and one politeness word or filler after it;
+ *    no substring, no fuzzy match, no extra word ("abeg stop the sale");
+ *  - the words are separated by spaces; a comma only where the politeness
+ *    word or filler meets the core ("abeg, stop", "stop, o"), never inside
+ *    the core ("No, send me again" asks for a resend); an apostrophe only in
+ *    "don't"; any other mark or emoji between the words refuses;
+ *  - around it, under the same cap and dash rule as a STOP: before, only a
+ *    bullet and the opening `*` of a bold pair; after, only the closing `*`,
+ *    the endings in `NATURAL_ENDINGS` and the emoji in `NATURAL_EMOJI`. So
+ *    no quote, strikethrough, smiley (";)", "😂"), edge comma or ellipsis
+ *    (more is coming), lone `*` (a correction), or question or doubt.
+ */
+function naturalOptOut(
+  runs: readonly string[],
+  separators: readonly (readonly Grapheme[])[],
+  before: readonly Grapheme[],
+  after: readonly Grapheme[],
+  text: string,
+): boolean {
+  if (runs.length < 2 || runs.length > NATURAL_MAX_WORDS + 1) return false;
+  /* The words, with "don" + "'" + "t" read as one, and whether a comma
+   * stands in each gap between two words. */
+  const words: string[] = [runs[0]!];
+  const comma: boolean[] = [];
+  for (let i = 1; i < runs.length; i++) {
+    const between = separators[i - 1] ?? [];
+    const only = between.length === 1 ? between[0]! : null;
+    if (only?.kind === 'mark' && APOSTROPHES.has(only.value)) {
+      if (words[words.length - 1] !== 'don' || runs[i] !== 't') return false;
+      words[words.length - 1] = 'dont';
+      continue;
+    }
+    const marks = between.filter((g) => g.kind !== 'space');
+    const mark = marks[0];
+    /* Spaces between words are spaces however many (the whole message is
+     * length-capped); only the MARKS between them are limited (Codex P1). */
+    if (marks.length > 1) return false;
+    if (mark && !(mark.kind === 'mark' && COMMAS.has(mark.value))) return false;
+    words.push(runs[i]!);
+    comma.push(mark !== undefined);
+  }
+  if (words.length < 2 || words.length > NATURAL_MAX_WORDS) return false;
+  if (!parsesAsNatural(words, comma)) return false;
+
+  const lead =
+    before.length >= 2 &&
+    before[0]!.kind === 'mark' &&
+    (before[0]!.dash || isBullet(text)) &&
+    before[1]!.kind === 'space'
+      ? before.slice(2)
+      : before;
+  if (lead.length > DECORATION || after.length > DECORATION) return false;
+  if (!after.every(decoratesStop)) return false;
+  /* Before the words: spaces and the opening `*` of a bold pair. After:
+   * spaces, the closing `*`, a full stop or exclamation, and only the emoji
+   * that say please or stop. A question or doubt, in any form, refuses. */
+  const star = (g: Grapheme): boolean => g.kind === 'mark' && g.value === '*';
+  const opens = lead.every((g) => g.kind === 'space' || star(g));
+  const closes = after.every(
+    (g) =>
+      g.kind === 'space' ||
+      star(g) ||
+      (g.kind === 'mark' && !g.question && NATURAL_ENDINGS.has(g.value)) ||
+      (g.kind === 'emoji' && NATURAL_EMOJI.has(g.value)),
+  );
+  if (!opens || !closes) return false;
+  /* A lone `*` marks a correction; only a matched `*bold*` pair is emphasis. */
+  if (lead.filter(star).length !== after.filter(star).length) return false;
+  /* One full stop ends it; "..." typed as stops is an ellipsis: more coming. */
+  const stops = after.filter((g) => g.kind === 'mark' && NATURAL_FULL_STOPS.has(g.value));
+  if (stops.length > 1) return false;
+  if (soundsDoubtful(text)) return false;
+  return true;
+}
+
+/**
+ * Do these words parse as [politeness] CORE [politeness or filler], with a
+ * comma, if any, only at the seam between the core and what surrounds it?
+ * Every way of reading the first and last word is tried; one must fit.
+ */
+function parsesAsNatural(words: readonly string[], comma: readonly boolean[]): boolean {
+  for (const leadLength of [0, 1]) {
+    if (leadLength === 1 && !NATURAL_LEADS.has(words[0]!)) continue;
+    for (const tailLength of [0, 1]) {
+      if (tailLength === 1 && !NATURAL_TAILS.has(words[words.length - 1]!)) continue;
+      const coreEnd = words.length - tailLength;
+      if (coreEnd - leadLength < 1) continue;
+      if (!NATURAL_CORE_SET.has(words.slice(leadLength, coreEnd).join(' '))) continue;
+      /* Gap i sits between words[i] and words[i + 1]: the seams are the gap
+       * after the lead and the gap before the tail. */
+      const seams = new Set<number>();
+      if (leadLength === 1) seams.add(0);
+      if (tailLength === 1) seams.add(coreEnd - 1);
+      if (comma.every((c, i) => !c || seams.has(i))) return true;
+    }
+  }
+  return false;
 }
 
 /**

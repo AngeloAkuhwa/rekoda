@@ -1555,6 +1555,45 @@ describe("a customer's own STOP (PR-135)", () => {
     expect(stubSender.connectionTexts[0]!.text).toContain('messages from this shop');
   });
 
+  it.each([
+    ['abeg stop', 'PN-STOP-G80-1'],
+    ['no send me again', 'PN-STOP-G80-2'],
+    ['make una stop', 'PN-STOP-G80-3'],
+  ])('a natural %j from a customer silences the shop as STOP does (G-80)', async (text, pnid) => {
+    const businessId = await seedShop(pnid);
+    await say(pnid, `wamid.STOP.G80.${pnid}`, text);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    const [row] = [...(await refusals(businessId))];
+    expect(row!.n).toBe('1');
+    expect(row!.opted_out_at).not.toBeNull();
+    expect(stubSender.connectionTexts).toHaveLength(1);
+    expect(stubSender.connectionTexts[0]!.text).toContain('messages from this shop');
+    // No model reads a consent message, and none is metered.
+    expect(stubTransport.requests).toHaveLength(0);
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'AI_ACTIONS')?.used ?? 0).toBe(0);
+
+    /* And the shop is quiet afterwards. */
+    await say(pnid, `wamid.STOP.G80.${pnid}.after`, 'How much is the wig?');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    expect(stubSender.connectionTexts).toHaveLength(1);
+    // The merchant's own consent is untouched.
+    expect(await identity.optedOutAt(db, OWNER)).toBeNull();
+  });
+
+  it('a customer sentence that merely contains a natural form is still a question (G-80)', async () => {
+    const businessId = await seedShop('PN-STOP-G80-4');
+    await say(
+      'PN-STOP-G80-4',
+      'wamid.STOP.G80.C4',
+      'abeg stop the wig order, I go buy am tomorrow',
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    expect([...(await refusals(businessId))][0]!.n).toBe('0');
+  });
+
   it('does not opt the MERCHANT out of anything', async () => {
     const businessId = await seedShop('PN-STOP-2');
 
@@ -3310,6 +3349,52 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
     expect(await identity.optedOutAt(db, '+2348031234567')).toBeNull();
   });
 
+  it.each(['abeg stop', 'no send me again', 'stop o'])(
+    'a natural %j persists, suppresses proactive deliveries, and START undoes it (G-80)',
+    async (text) => {
+      const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+
+      await post(messagePayload('2348031234567', 'wamid.G80-STOP1', text));
+      expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+      expect(stubSender.lastText).toBe(replies.optedOut().text);
+      expect(await identity.optedOutAt(db, '+2348031234567')).not.toBeNull();
+      expect(stubTransport.requests).toHaveLength(0);
+
+      // A receipt delivery, the proactive send class, goes nowhere now.
+      await deps.storage.put('test/g80-suppressed', Buffer.from('%PDF-fake'), 'application/pdf');
+      const doc = await withBusiness(db, business.id, (tx) =>
+        issueRepo.recordDocument(tx, {
+          businessId: business.id,
+          kind: 'receipt_pdf',
+          storageKey: 'test/g80-suppressed',
+          refNumber: 'RCT-2026-000010',
+          bytes: 9,
+        }),
+      );
+      await withBusiness(db, business.id, (tx) =>
+        jobsRepo.enqueue(tx, {
+          businessId: business.id,
+          kind: 'document.deliver',
+          payload: { documentId: doc.id },
+          singletonKey: `deliver:${doc.id}`,
+        }),
+      );
+      expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+      expect(stubSender.documents).toHaveLength(0);
+
+      // Saying it again changes nothing and still answers the same way.
+      await post(messagePayload('2348031234567', 'wamid.G80-STOP2', text));
+      expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+      expect(stubSender.lastText).toBe(replies.optedOut().text);
+      expect(await identity.optedOutAt(db, '+2348031234567')).not.toBeNull();
+
+      // START undoes it ("abeg start" does not; see the G-80 START test).
+      await post(messagePayload('2348031234567', 'wamid.G80-START', 'START'));
+      expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+      expect(await identity.optedOutAt(db, '+2348031234567')).toBeNull();
+    },
+  );
+
   it('an explicit resend still delivers to an opted-out merchant — they asked', async () => {
     const business = await seedMerchant('+2348031234567', 'Ada Fashion');
     await identity.setOptOut(db, '+2348031234567', new Date());
@@ -4041,6 +4126,23 @@ describe('a voice note', () => {
     );
     return rows.find((row) => row.unit === 'VOICE_MINUTES')?.used ?? 0;
   };
+
+  it('a voice note that says a natural opt-out opts out as a typed STOP does, with no model (G-80)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio();
+    stubStt.answerWith({ text: 'abeg stop', seconds: 2, confidence: 0.95 });
+
+    await post(voicePayload('2348031234567', 'wamid.V-G80'));
+    await drain();
+
+    expect(await identity.optedOutAt(db, '+2348031234567')).not.toBeNull();
+    expect(stubSender.lastText).toBe(replies.optedOut().text);
+    expect(stubTransport.requests).toHaveLength(0);
+    const usage = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'AI_ACTIONS')?.used ?? 0).toBe(0);
+  });
 
   /**
    * Spec §4.3 rule 2: nothing that costs money at a provider is dispatched
@@ -10128,6 +10230,79 @@ describe('Nigerian and chat routing (G-68, G-24)', () => {
       expect(await identity.optedOutAt(db, PHONE)).toBeNull();
     });
   });
+
+  /* G-80: a natural Nigerian opt-out is a typed STOP, from a closed list,
+   * heard with no model and no AI action. */
+  describe('a natural Nigerian opt-out is heard as STOP (G-80)', () => {
+    it.each([
+      'abeg stop',
+      'no send me again',
+      'stop abeg',
+      'abeg stop am',
+      'abeg no send me again',
+      'please stop',
+      'stop o',
+      'stop na',
+      'make una stop',
+      'stop sending me messages',
+    ])('%j opts the merchant out, exactly as STOP does', async (text) => {
+      const business = await seedMerchant();
+      await plain('wamid.G80-stop', text);
+      expect(await identity.optedOutAt(db, PHONE)).not.toBeNull();
+      // The opt-out reply is unchanged: the copy a typed STOP gets.
+      expect(stubSender.lastText).toBe(replies.optedOut().text);
+      expect(stubTransport.requests).toHaveLength(0);
+      expect(await aiActions(business.id)).toBe(0);
+      // Stored as what it was, not what it said, like any deterministic message.
+      expect(await lastInboundBody(business.id)).toBe('[stop]');
+    });
+
+    it('a natural opt-out is honoured while a preview is waiting, and leaves it unconfirmed', async () => {
+      const business = await seedMerchant();
+      await say('wamid.G80-sale', A_SALE, 'Ada bought 3 wigs 300k');
+      const requests = stubTransport.requests.length;
+      await plain('wamid.G80-abeg', 'abeg stop');
+      expect(await identity.optedOutAt(db, PHONE)).not.toBeNull();
+      expect(stubTransport.requests).toHaveLength(requests);
+      expect((await written(business.id)).invoices).toBe(0);
+      expect(await states(business.id)).not.toContain('confirmed');
+    });
+
+    it.each([
+      'stop by my shop',
+      'stop payment on invoice INV-1',
+      'I told him to stop',
+      "don't stop sending receipts",
+      'how do I stop an invoice?',
+      'stop the sale',
+      'abeg stop the sale',
+      'stop am for Ada account',
+      'no send Ada invoice again',
+      'abeg send me again',
+      'abeg stop?',
+      `${'-'.repeat(400)} abeg stop ${'-'.repeat(400)}`,
+      'abeg stop\nI will pay tomorrow',
+      "don't send me again",
+      'stop ehn',
+      'abeg stop, I want to check something',
+      'customer said abeg stop',
+    ])('%j does not opt a merchant out', async (text) => {
+      await seedMerchant();
+      await plain('wamid.G80-not-stop', text);
+      expect(await identity.optedOutAt(db, PHONE)).toBeNull();
+    });
+
+    it.each(['abeg start', 'please start', 'start o'])(
+      '%j does not re-subscribe an opted-out merchant: START gains nothing',
+      async (text) => {
+        await seedMerchant();
+        const at = new Date('2026-09-30T08:00:00Z');
+        await identity.setOptOut(db, PHONE, at);
+        await plain('wamid.G80-not-start', text);
+        expect(await identity.optedOutAt(db, PHONE)).toEqual(at);
+      },
+    );
+  });
 });
 
 /**
@@ -10254,6 +10429,91 @@ describe('Nigerian and Pidgin answers continue what was asked (G-68 Phase 2)', (
     const inbound = messages.filter((m) => m.direction === 'inbound');
     return inbound[inbound.length - 1]?.body ?? null;
   }
+
+  /**
+   * G-80: a natural opt-out while something is waiting takes EXACTLY the
+   * typed STOP's path. Two merchants, one sends STOP and the other a natural
+   * form, and everything they leave behind must match: never an answer to
+   * the open question, never a yes to the preview, no model, no AI action.
+   */
+  describe('a natural opt-out while something is waiting is a typed STOP (G-80)', () => {
+    const TYPED = '2348039990011';
+    const NATURAL = '2348039990012';
+
+    async function aftermath(businessId: string, phone: string) {
+      return {
+        optedOut: (await identity.optedOutAt(db, `+${phone}`)) !== null,
+        drafts: await draftStates(businessId),
+        continuations: (await continuations(businessId)).map((c) => `${c.kind}:${c.state}`),
+        written: await written(businessId),
+        aiActions: await aiActions(businessId),
+      };
+    }
+
+    it.each(['abeg stop', 'no send me again', 'stop o', 'abeg stop am'])(
+      'with a purchase preview waiting, %j does what STOP does and confirms nothing',
+      async (text) => {
+        const cash = { ...POS_PURCHASE, paymentMethod: 'cash' };
+        const typed = await seedMerchant(`+${TYPED}`);
+        const natural = await seedMerchant(`+${NATURAL}`);
+        await say('wamid.G80-p-typed', cash, 'bought 10 cartons 180k cash', TYPED);
+        await say('wamid.G80-p-natural', cash, 'bought 10 cartons 180k cash', NATURAL);
+        await reply('wamid.G80-p-typed-stop', 'STOP', TYPED);
+        expect(stubSender.lastText).toBe(replies.optedOut().text);
+        await reply('wamid.G80-p-natural-stop', text, NATURAL);
+        expect(stubSender.lastText).toBe(replies.optedOut().text);
+
+        /* `reply` resets the stub's request log: the natural reply made none. */
+        expect(modelCalls()).toBe(0);
+        const a = await aftermath(typed.id, TYPED);
+        const b = await aftermath(natural.id, NATURAL);
+        expect(b).toEqual(a);
+        expect(b.optedOut).toBe(true);
+        expect(b.drafts.some((d) => d.endsWith(':confirmed'))).toBe(false);
+        expect(b.written.purchases).toBe(0);
+      },
+    );
+
+    it.each(['abeg stop', 'stop abeg'])(
+      'with "Which period?" open, %j does what STOP does and is not taken as an answer',
+      async (text) => {
+        const typed = await seedMerchant(`+${TYPED}`);
+        const natural = await seedMerchant(`+${NATURAL}`);
+        await say('wamid.G80-q-typed', HOW_MUCH_DID_I_SELL, 'How much did I sell?', TYPED);
+        expect(stubSender.lastText).toBe(WHICH_PERIOD);
+        await say('wamid.G80-q-natural', HOW_MUCH_DID_I_SELL, 'How much did I sell?', NATURAL);
+        expect(stubSender.lastText).toBe(WHICH_PERIOD);
+        await reply('wamid.G80-q-typed-stop', 'STOP', TYPED);
+        await reply('wamid.G80-q-natural-stop', text, NATURAL);
+        expect(stubSender.lastText).toBe(replies.optedOut().text);
+
+        /* `reply` resets the stub's request log: the natural reply made none. */
+        expect(modelCalls()).toBe(0);
+        const b = await aftermath(natural.id, NATURAL);
+        expect(b).toEqual(await aftermath(typed.id, TYPED));
+        expect(b.optedOut).toBe(true);
+      },
+    );
+
+    it('with the funding question open, "abeg stop" does what STOP does and rebuilds nothing', async () => {
+      const typed = await seedMerchant(`+${TYPED}`);
+      const natural = await seedMerchant(`+${NATURAL}`);
+      await say('wamid.G80-f-typed', POS_PURCHASE, 'bought 10 cartons 180k POS', TYPED);
+      expect(stubSender.lastText).toContain(POS_QUESTION);
+      await say('wamid.G80-f-natural', POS_PURCHASE, 'bought 10 cartons 180k POS', NATURAL);
+      expect(stubSender.lastText).toContain(POS_QUESTION);
+      await reply('wamid.G80-f-typed-stop', 'STOP', TYPED);
+      await reply('wamid.G80-f-natural-stop', 'abeg stop', NATURAL);
+      expect(stubSender.lastText).toBe(replies.optedOut().text);
+
+      /* `reply` resets the stub's request log: the natural reply made none. */
+      expect(modelCalls()).toBe(0);
+      const b = await aftermath(natural.id, NATURAL);
+      expect(b).toEqual(await aftermath(typed.id, TYPED));
+      expect(b.optedOut).toBe(true);
+      expect(b.written.purchases).toBe(0);
+    });
+  });
 
   describe('A. a period answer resumes "Which period?", in either register', () => {
     it.each([
@@ -12234,6 +12494,22 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
     expect(await send('delete my data')).toContain('Done. Your customers');
     expect(stubTransport.requests).toHaveLength(0);
   });
+
+  it.each(['integrate', 'lapsed'] as const)(
+    'a natural opt-out is as universal as STOP when the plan is %s (G-80)',
+    async (standing) => {
+      const business = await seedMerchant();
+      if (standing === 'integrate') await moveToPlan(business.id, 'integrate');
+      else await lapse(business.id);
+
+      expect(await send('abeg stop')).toBe(replies.optedOut().text);
+      expect(await identity.optedOutAt(db, `+${OWNER}`)).not.toBeNull();
+      expect(await send('START')).toBe(replies.optedInWithoutChat().text);
+      expect(await send('no send me again')).toBe(replies.optedOut().text);
+      expect(await identity.optedOutAt(db, `+${OWNER}`)).not.toBeNull();
+      expect(stubTransport.requests).toHaveLength(0);
+    },
+  );
 
   it('keeps consent and erasure open on a lapsed plan too', async () => {
     const business = await seedMerchant();
