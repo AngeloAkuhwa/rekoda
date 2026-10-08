@@ -116,8 +116,11 @@ describe('the regulatory keywords', () => {
   });
 
   it('does not let politeness turn a sentence into an opt-out', () => {
-    // Filler stripping is deliberately not applied to these.
-    expect(goesToModel('please stop')).toBe(true);
+    // Filler stripping is deliberately not applied to these. A polite STOP
+    // ("please stop") IS an opt-out since G-80, from a closed list; a polite
+    // SENTENCE with the word in it is not.
+    expect(goesToModel('please stop sending invoices to Ada')).toBe(true);
+    expect(goesToModel('abeg stop the sale')).toBe(true);
   });
 });
 
@@ -139,7 +142,7 @@ describe('the same keywords, read on a customer thread (PR-135)', () => {
 
   it('reads nothing into an ordinary customer message', () => {
     expect(customerConsentIntent('do you have red shoes')).toBeNull();
-    expect(customerConsentIntent('please stop')).toBeNull();
+    expect(customerConsentIntent('please stop by the shop')).toBeNull();
     expect(customerConsentIntent('when do you start selling again')).toBeNull();
     expect(customerConsentIntent('')).toBeNull();
   });
@@ -718,7 +721,7 @@ describe('STOP and START are exact, on every path (G-24)', () => {
     'start generator',
     'please stop sending invoices to Ada',
     'start recording another sale',
-    'please stop',
+    /* "please stop" opts out since G-80; these two still do not. */
     'oya stop',
     'abeg start',
     'stop now',
@@ -1346,5 +1349,205 @@ describe('fresh review of 75fd1c9: identity answers', () => {
   ])('%j is %s', (text, answer) => {
     expect(purchaseIdentityAnswer(text)).toBe(answer);
     expect(routeMessage(text).route).toBe('model');
+  });
+});
+
+/**
+ * G-80: natural Nigerian opt-outs. A closed list of whole-message forms in
+ * English, Nigerian English and Pidgin, heard by the SAME matcher on every
+ * path and never by a model. Everything not on the list, including a
+ * sentence that merely contains one of these forms, changes nobody's
+ * consent.
+ */
+describe('natural Nigerian opt-outs (G-80)', () => {
+  const NATURAL_STOPS = [
+    /* A politeness word before or after the STOP. */
+    'abeg stop',
+    'stop abeg',
+    'please stop',
+    'stop please',
+    'pls stop',
+    'plz stop',
+    'biko stop',
+    'stop biko',
+    'Abeg STOP',
+    'PLEASE STOP!!!',
+    'abeg, stop',
+    'please, stop.',
+    'abeg stop 🙏🏾',
+    '*abeg stop*',
+    /* A Pidgin filler after it. */
+    'stop o',
+    'stop oo',
+    'stop ooo',
+    'stop na',
+    'abeg stop o',
+    'please stop na',
+    /* "stop am": stop it. */
+    'stop am',
+    'abeg stop am',
+    'stop am abeg',
+    'stop am o',
+    /* "make una stop": you people, stop. */
+    'make una stop',
+    'abeg make una stop',
+    'make una stop abeg',
+    'make una stop o',
+    /* "do not send me again", in Pidgin and English. */
+    'no send me again',
+    'abeg no send me again',
+    'no send me again o',
+    'no send me message again',
+    'no send me messages again',
+    "don't send me messages again",
+    'do not send me messages again',
+    "don't message me again",
+    'do not message me again',
+    'stop sending me messages',
+    'please stop sending me messages',
+    'stop messaging me',
+    'abeg stop messaging me',
+    /* An unsubscribe asked politely, and a polite STOP ALL. */
+    'please unsubscribe',
+    'unsubscribe me',
+    'please unsubscribe me',
+    'please stop all',
+    /* Empty lines around it are not content, as for a bare STOP. */
+    '\nabeg stop',
+    'no send me again\n',
+    /* Invisible characters are removed, as for a bare STOP. */
+    'abeg​ stop',
+    /* Spaces inside are spaces, however many. */
+    'abeg   stop',
+  ];
+
+  /* Every one of these must change NOBODY's consent. */
+  const NOT_NATURAL_STOPS = [
+    /* The false-positive controls the gap names. */
+    'stop by my shop',
+    'stop payment on invoice INV-1',
+    'I told him to stop',
+    "don't stop sending receipts",
+    'how do I stop an invoice?',
+    'stop the sale',
+    'abeg stop the sale',
+    'stop am for Ada account',
+    'no send Ada invoice again',
+    'abeg send me again',
+    'please send me again',
+    /* Not on the closed list: refused, the safe direction (see G-80). */
+    /* Object-less English: after a resend it means "not that again", not
+     * "stop messaging me". The Pidgin idiom "no send me again" is kept. */
+    "don't send me again",
+    'don’t send me again',
+    'dont send me again',
+    'do not send me again',
+    "please don't send me again",
+    /* "ehn" is a question tag as often as it is emphasis. */
+    'stop ehn',
+    'abeg stop ehn',
+    /* More than one clause, or a report of what somebody else said. */
+    'abeg stop, I want to check something',
+    'please stop. Ada paid 50k',
+    'customer said abeg stop',
+    'abeg stop sending reminders to Ada',
+    'make una stop the delivery',
+    'if you no stop I go report',
+    'can you stop',
+    'abeg stop am?',
+    'stop the reminder',
+    'oya stop',
+    'stop now',
+    'please stop now',
+    'stop it',
+    'please stop it',
+    'abeg quit',
+    'please quit',
+    'stop jare',
+    'stop jor',
+    'no more messages',
+    'leave me alone',
+    'remove me',
+    'abeg please stop',
+    'stop abeg o',
+    'abeg abeg stop',
+    'na stop',
+    'o stop',
+    'ehn stop',
+    'stop oooooo',
+    'make una stop am',
+    'stop sending me invoices',
+    'no send me invoice again',
+    /* A question, or doubt, is not an opt-out (Build 7's marks). */
+    'abeg stop?',
+    'please stop?',
+    'no send me again?',
+    "don't send me again?",
+    'make una stop ❓',
+    'abeg stop 🤔',
+    'stop o :/',
+    'abeg stop ⁉️',
+    /* A natural form wrapped in pasted content is a paste. */
+    `abeg stop${'!'.repeat(17)}`,
+    `${'*'.repeat(17)}abeg stop`,
+    `${'-'.repeat(400)} abeg stop ${'-'.repeat(400)}`,
+    '-----abeg stop-----',
+    'abeg stop\nI will pay tomorrow',
+    'Ada bought 3 wigs\nno send me again',
+    'abeg\nstop',
+    '‮abeg stop',
+    'abeg ⁦stop⁩',
+    `abeg stop ${'🛑'.repeat(400)}`,
+    /* Decoration BETWEEN the words is not a natural form. */
+    'abeg 🙏 stop',
+    'abeg - stop',
+    'abeg. stop',
+    'abeg,, stop',
+    'stop!!! abeg',
+    'no-send-me-again',
+    'abeg.stop',
+    /* Letters and digits beside it are never decoration. */
+    'abeg stop 2',
+    'abeg stopx',
+    'abegstop',
+    /* Look-alike letters are not the word. */
+    'abeg ѕtop',
+    /* START gains nothing here. */
+    'abeg start',
+    'please start',
+    'start abeg',
+    'start o',
+    'make una start',
+    'abeg send me again o',
+  ];
+
+  it.each(NATURAL_STOPS)('%j opts out, on every path, with no model', (message) => {
+    expect(routeMessage(message)).toEqual({ route: 'deterministic', intent: { kind: 'stop' } });
+    expect(customerConsentIntent(message)).toBe('stop');
+    expect(consentIntentOf({ text: message, replyId: null, replyTitle: null })).toBe('stop');
+    expect(consentIntentOf({ text: null, replyId: message, replyTitle: null })).toBe('stop');
+    expect(consentIntentOf({ text: null, replyId: null, replyTitle: message })).toBe('stop');
+  });
+
+  it.each(NOT_NATURAL_STOPS)('%j changes nobody’s consent, on any path', (message) => {
+    const route = routeMessage(message);
+    const kind = route.route === 'deterministic' ? route.intent.kind : null;
+    expect(kind).not.toBe('stop');
+    expect(kind).not.toBe('start');
+    expect(customerConsentIntent(message)).toBeNull();
+    expect(consentIntentOf({ text: message, replyId: message, replyTitle: message })).toBeNull();
+  });
+
+  it('a natural form never re-subscribes anybody: START gains nothing', () => {
+    for (const message of NATURAL_STOPS) {
+      expect(customerConsentIntent(message)).not.toBe('start');
+    }
+  });
+
+  it('a tapped button labelled with a natural form is heard as the typed one', () => {
+    expect(consentIntentOf({ text: null, replyId: 'btn_7', replyTitle: 'Abeg stop' })).toBe('stop');
+    expect(
+      consentIntentOf({ text: null, replyId: 'btn_7', replyTitle: 'Stop sending me messages' }),
+    ).toBe('stop');
   });
 });
