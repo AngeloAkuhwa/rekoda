@@ -1351,10 +1351,13 @@ export function answerIsUncertain(raw: string): boolean {
  * ("yès") no longer spells the answer. Nothing is stripped or rejected
  * elsewhere.
  */
-const STRAY_MARK = /(?![︀-️⃣\u{E0100}-\u{E01EF}])\p{M}/u;
+const STRAY_MARK = /(?![\uFE00-\uFE0F\u20E3\u{E0100}-\u{E01EF}])\p{M}/u;
 
 function carriesStrayMark(raw: string): boolean {
-  return STRAY_MARK.test(raw.normalize('NFKC'));
+  /* After the SAME casing `normalise` applies (Codex review): NFKC composes
+   * "I" + U+0307 to "İ", and lowercasing splits it back into "i" +
+   * U+0307, a mark the normaliser would then drop. */
+  return STRAY_MARK.test(raw.normalize('NFKC').toLowerCase());
 }
 
 /**
