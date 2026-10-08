@@ -1020,6 +1020,25 @@ function optionalHexKey(env: NodeJS.ProcessEnv, key: string): string {
  * is the one non-production state that carries no name.
  */
 const NON_PRODUCTION_ENVS = new Set(['development', 'test']);
+/**
+ * A command bus rollout flag (OD-4, approved by the owner 8 Oct 2026).
+ *
+ * Unset or `1` runs the command bus; `0` is the per-command emergency
+ * rollback to the same work called directly. Anything else is a deployment
+ * typo and refuses to load, in every environment, like every other
+ * malformed value here: an operator who typed `false` meant a rollback, and
+ * quietly running the bus would misreport what they asked for. No trimming,
+ * no synonyms: the contract is exactly two characters.
+ */
+function commandRolloutFlag(env: NodeJS.ProcessEnv, name: string): boolean {
+  const raw = env[name];
+  if (raw === undefined || raw === '1') return true;
+  if (raw === '0') return false;
+  throw new ConfigError(
+    `${name} must be 1 (the command bus, also the default when unset) or 0 (emergency rollback to the direct call)`,
+  );
+}
+
 export function isProductionEnv(env: NodeJS.ProcessEnv): boolean {
   const value = env['NODE_ENV'];
   if (value === undefined || value === '') return false;
@@ -1166,15 +1185,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     /* The old `Math.max(1, Number(...))` was a floor that could not hold:
      * `Math.max(1, NaN)` is NaN. */
     workerConcurrency: positiveInteger(env, 'REKODA_WORKER_CONCURRENCY', 4),
-    commandRecordSale: env['REKODA_COMMAND_RECORD_SALE'] !== '0',
-    commandIssueInvoice: env['REKODA_COMMAND_ISSUE_INVOICE'] !== '0',
-    commandRecordPayment: env['REKODA_COMMAND_RECORD_PAYMENT'] !== '0',
-    commandConfirmPayment: env['REKODA_COMMAND_CONFIRM_PAYMENT'] !== '0',
-    commandRecordExpense: env['REKODA_COMMAND_RECORD_EXPENSE'] !== '0',
-    commandRecordPurchase: env['REKODA_COMMAND_RECORD_PURCHASE'] !== '0',
-    commandPostJournal: env['REKODA_COMMAND_POST_JOURNAL'] !== '0',
-    commandClosePeriod: env['REKODA_COMMAND_CLOSE_PERIOD'] !== '0',
-    commandOpeningBalances: env['REKODA_COMMAND_OPENING_BALANCES'] !== '0',
+    commandRecordSale: commandRolloutFlag(env, 'REKODA_COMMAND_RECORD_SALE'),
+    commandIssueInvoice: commandRolloutFlag(env, 'REKODA_COMMAND_ISSUE_INVOICE'),
+    commandRecordPayment: commandRolloutFlag(env, 'REKODA_COMMAND_RECORD_PAYMENT'),
+    commandConfirmPayment: commandRolloutFlag(env, 'REKODA_COMMAND_CONFIRM_PAYMENT'),
+    commandRecordExpense: commandRolloutFlag(env, 'REKODA_COMMAND_RECORD_EXPENSE'),
+    commandRecordPurchase: commandRolloutFlag(env, 'REKODA_COMMAND_RECORD_PURCHASE'),
+    commandPostJournal: commandRolloutFlag(env, 'REKODA_COMMAND_POST_JOURNAL'),
+    commandClosePeriod: commandRolloutFlag(env, 'REKODA_COMMAND_CLOSE_PERIOD'),
+    commandOpeningBalances: commandRolloutFlag(env, 'REKODA_COMMAND_OPENING_BALANCES'),
     /**
      * On unless explicitly switched off, like every sibling since Build 9.
      * PlaceOrder finished its rollout first: the storefront and the WABA
@@ -1183,11 +1202,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      * path with no entitlement check and no idempotency key. Absent
      * configuration should mean the safe door, not the legacy one.
      */
-    commandPlaceOrder: env['REKODA_COMMAND_PLACE_ORDER'] !== '0',
-    commandRecordOrder: env['REKODA_COMMAND_RECORD_ORDER'] !== '0',
-    commandIngestFinancialTransaction: env['REKODA_COMMAND_INGEST_FINANCIAL_TRANSACTION'] !== '0',
-    commandConfirmReconciliation: env['REKODA_COMMAND_CONFIRM_RECONCILIATION'] !== '0',
-    commandAdjustInventory: env['REKODA_COMMAND_ADJUST_INVENTORY'] !== '0',
+    commandPlaceOrder: commandRolloutFlag(env, 'REKODA_COMMAND_PLACE_ORDER'),
+    commandRecordOrder: commandRolloutFlag(env, 'REKODA_COMMAND_RECORD_ORDER'),
+    commandIngestFinancialTransaction: commandRolloutFlag(
+      env,
+      'REKODA_COMMAND_INGEST_FINANCIAL_TRANSACTION',
+    ),
+    commandConfirmReconciliation: commandRolloutFlag(env, 'REKODA_COMMAND_CONFIRM_RECONCILIATION'),
+    commandAdjustInventory: commandRolloutFlag(env, 'REKODA_COMMAND_ADJUST_INVENTORY'),
     /**
      * Optional. The deterministic router answers most messages
      * without a model, so a missing key degrades the product rather than
