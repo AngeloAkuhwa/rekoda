@@ -398,6 +398,71 @@ const STOP_WORDS: ReadonlySet<string> = new Set([
 const START_WORDS: ReadonlySet<string> = new Set(['start', 'unstop', 'subscribe']);
 
 /**
+ * Natural opt-outs (G-80): how Nigerian merchants and customers actually ask
+ * to be left alone, in English, Nigerian English and Pidgin. A CLOSED list of
+ * whole messages, read by the same grapheme matcher as STOP (see
+ * `naturalOptOut`), never a pattern and never a model: the model cannot opt
+ * anyone out, so a missed opt-out keeps messaging somebody who asked us not
+ * to. STOP only. START gains nothing here; a false START re-subscribes
+ * somebody, so "abeg start" stays refused.
+ *
+ * A form is a CORE, optionally with ONE politeness word before it and ONE
+ * politeness word or Pidgin filler after it. Each piece was chosen because,
+ * as a WHOLE message sent to a business, it has one reading: stop messaging
+ * me. Left out on purpose, and refused (recorded in the G-80 row): "stop it"
+ * (in English it reacts to one thing just said), "stop now" and "oya stop"
+ * (earlier verdicts; they read as "cancel this" mid-conversation), "quit"
+ * with politeness ("please quit" can mean leave this flow), "no more
+ * messages" ("I have no more to send"), "stop jare" and "stop jor", "leave me
+ * alone", "remove me", the object-less English "don't send me again" (after
+ * a resend it means "not that again"), the filler "ehn" (a question tag
+ * as often as emphasis), two politeness words in a row, a politeness word
+ * after a filler, and any form with an extra word ("abeg stop the sale",
+ * "stop am for Ada account", "no send Ada invoice again").
+ */
+const NATURAL_POLITE = ['abeg', 'please', 'pls', 'plz', 'biko'];
+/** Pidgin fillers that close a sentence ("stop o", "stop na"), after only. */
+const NATURAL_FILLERS = ['o', 'oo', 'ooo', 'na'];
+const NATURAL_CORES = [
+  'stop',
+  'stop all',
+  /* Pidgin: "stop it". */
+  'stop am',
+  'unsubscribe',
+  'unsubscribe me',
+  /* Pidgin: "you (plural), stop". */
+  'make una stop',
+  /* Pidgin: "do not send me (messages) again". */
+  'no send me again',
+  'no send me message again',
+  'no send me messages again',
+  /* Nigerian English, with "don't" read as "dont". Always naming the
+   * messages: an object-less "don't send me again" after a resend means
+   * "not that again", not "stop messaging me". */
+  'dont send me messages again',
+  'do not send me messages again',
+  'dont message me again',
+  'do not message me again',
+  'stop sending me messages',
+  'stop messaging me',
+];
+const NATURAL_OPT_OUTS: ReadonlySet<string> = new Set(
+  NATURAL_CORES.flatMap((core) =>
+    ['', ...NATURAL_POLITE].flatMap((lead) =>
+      ['', ...NATURAL_POLITE, ...NATURAL_FILLERS].map((tail) =>
+        [lead, core, tail].filter((part) => part !== '').join(' '),
+      ),
+    ),
+  ),
+);
+/** The longest natural form, in words ("please do not send me messages again please"). */
+const NATURAL_MAX_WORDS = 8;
+/** An apostrophe inside a contraction ("don't", "don’t"). */
+const APOSTROPHES: ReadonlySet<string> = new Set(["'", '\u2019']);
+/** The one mark that may separate the words of a natural form. */
+const COMMAS: ReadonlySet<string> = new Set([',', '\uFF0C']);
+
+/**
  * How much may decorate a STOP, per side, counted in GRAPHEMES (what a person
  * sees as one character: a skin-toned emoji, a flag, a keycap or a whole
  * family is one).
@@ -553,7 +618,7 @@ type Grapheme =
   /** One displayed emoji: a pictograph sequence, a flag, or a keycap. */
   | { kind: 'emoji'; affirming: boolean }
   /** One punctuation or symbol code point, judged on its RAW form. */
-  | { kind: 'mark'; question: boolean; startable: boolean; dash: boolean }
+  | { kind: 'mark'; question: boolean; startable: boolean; dash: boolean; value: string }
   /** A digit, a non-Latin letter, anything else: never decoration. */
   | { kind: 'other' };
 
@@ -573,15 +638,15 @@ function classify(grapheme: string): Grapheme {
   const plain = bare(grapheme);
   if (/^\s+$/u.test(plain)) return { kind: 'space' };
   if (QUESTION_MARKS.has(plain)) {
-    return { kind: 'mark', question: true, startable: false, dash: false };
+    return { kind: 'mark', question: true, startable: false, dash: false, value: plain };
   }
   if (START_PUNCTUATION.has(plain)) {
-    return { kind: 'mark', question: false, startable: true, dash: false };
+    return { kind: 'mark', question: false, startable: true, dash: false, value: plain };
   }
   /* A keycap is one emoji, never a digit (carve-out, see above). */
   if (/^[0-9#*]\uFE0F?\u20E3$/u.test(grapheme)) return { kind: 'emoji', affirming: false };
   if (LETTERLIKE_DECORATION.has(plain)) {
-    return { kind: 'mark', question: false, startable: false, dash: false };
+    return { kind: 'mark', question: false, startable: false, dash: false, value: plain };
   }
   /* A flag: a PAIR of regional indicators. */
   if (/^\p{Regional_Indicator}{2}$/u.test(plain)) {
@@ -608,7 +673,13 @@ function classify(grapheme: string): Grapheme {
     return { kind: 'emoji', affirming: AFFIRMING_EMOJI.has(core) };
   }
   if ([...plain].length === 1 && /^[\p{P}\p{S}]$/u.test(plain)) {
-    return { kind: 'mark', question: false, startable: false, dash: /^\p{Pd}$/u.test(plain) };
+    return {
+      kind: 'mark',
+      question: false,
+      startable: false,
+      dash: /^\p{Pd}$/u.test(plain),
+      value: plain,
+    };
   }
   if (/^[a-z]+$/u.test(folded)) return { kind: 'letter', value: folded };
   return { kind: 'other' };
@@ -774,7 +845,10 @@ function consentOnOneLine(text: string): 'stop' | 'start' | null {
     units.every((u) => u === units[0]) &&
     STOP_WORDS.has(units[0]!) &&
     inside.length <= DECORATION;
-  if (units.length > 1 && !repeatedStop) return null;
+  if (units.length > 1 && !repeatedStop) {
+    /* Not one keyword: a natural opt-out from the closed list, or nothing. */
+    return naturalOptOut(runs, separators, before, after, text) ? 'stop' : null;
+  }
   const word = units[0]!;
 
   if (STOP_WORDS.has(word) && (units.length === 1 || repeatedStop)) {
@@ -807,6 +881,66 @@ function consentOnOneLine(text: string): 'stop' | 'start' | null {
 /** Does the message open with a bullet character ("•" and its relatives)? */
 function isBullet(text: string): boolean {
   return /^[\u2022\u2023\u2043]/u.test(text);
+}
+
+/**
+ * Is this ONE line, already split into word runs, a natural opt-out from
+ * `NATURAL_OPT_OUTS` (G-80)?
+ *
+ * Whole-message only, and stricter than a bare STOP, because a phrase is
+ * closer to a sentence than a keyword is:
+ *
+ *  - the words must be separated by spaces, at most one comma ("abeg, stop"),
+ *    or a single apostrophe inside a contraction ("don't"); any other mark
+ *    or emoji BETWEEN the words refuses;
+ *  - the phrase, read that way, must be on the closed list exactly: no
+ *    substring, no fuzzy match, no extra word ("abeg stop the sale");
+ *  - around it, the same decoration a STOP may carry, under the same cap and
+ *    the same dash rule, EXCEPT that a question or doubt in any form refuses
+ *    ("abeg stop?", "no send me again?", "abeg stop 🤔"): a STOP word alone
+ *    with a question mark is still a STOP, but "no send me again?" reads as
+ *    a question about what we will do.
+ */
+function naturalOptOut(
+  runs: readonly string[],
+  separators: readonly (readonly Grapheme[])[],
+  before: readonly Grapheme[],
+  after: readonly Grapheme[],
+  text: string,
+): boolean {
+  if (runs.length < 2 || runs.length > NATURAL_MAX_WORDS) return false;
+  let phrase = runs[0]!;
+  for (let i = 1; i < runs.length; i++) {
+    const between = separators[i - 1] ?? [];
+    const only = between.length === 1 ? between[0]! : null;
+    if (only?.kind === 'mark' && APOSTROPHES.has(only.value)) {
+      /* A contraction: "don't" and "don’t" are read as "dont". */
+      phrase += runs[i]!;
+      continue;
+    }
+    const marks = between.filter((g) => g.kind !== 'space');
+    const mark = marks[0];
+    const spacedOrComma =
+      marks.length === 0 || (marks.length === 1 && mark?.kind === 'mark' && COMMAS.has(mark.value));
+    if (!spacedOrComma || between.length > DECORATION) return false;
+    phrase += ` ${runs[i]!}`;
+  }
+  if (!NATURAL_OPT_OUTS.has(phrase)) return false;
+
+  const lead =
+    before.length >= 2 &&
+    before[0]!.kind === 'mark' &&
+    (before[0]!.dash || isBullet(text)) &&
+    before[1]!.kind === 'space'
+      ? before.slice(2)
+      : before;
+  if (lead.length > DECORATION || after.length > DECORATION) return false;
+  if (!lead.every((g) => decoratesStop(g) && !(g.kind === 'mark' && g.dash))) return false;
+  if (!after.every(decoratesStop)) return false;
+  /* A question or doubt, in any form, anywhere: asked, not said. */
+  if ([...lead, ...after].some((g) => g.kind === 'mark' && g.question)) return false;
+  if (soundsDoubtful(text)) return false;
+  return true;
 }
 
 /**

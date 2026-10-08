@@ -1585,7 +1585,11 @@ describe("a customer's own STOP (PR-135)", () => {
 
   it('a customer sentence that merely contains a natural form is still a question (G-80)', async () => {
     const businessId = await seedShop('PN-STOP-G80-4');
-    await say('PN-STOP-G80-4', 'wamid.STOP.G80.C4', 'abeg stop the wig order, I go buy am tomorrow');
+    await say(
+      'PN-STOP-G80-4',
+      'wamid.STOP.G80.C4',
+      'abeg stop the wig order, I go buy am tomorrow',
+    );
     expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
     expect([...(await refusals(businessId))][0]!.n).toBe('0');
   });
