@@ -1423,6 +1423,11 @@ describe('natural Nigerian opt-outs (G-80)', () => {
     'stop, o',
     'abeg, stop o',
     'abeg, no send me again',
+    /* The marks a natural form may carry. */
+    'abeg stop!',
+    'abeg stop…',
+    'abeg stop ❗',
+    'ABEG STOP！',
     /* The emoji that say stop or please. */
     'abeg stop 🛑',
     'please stop ✋🏽',
@@ -1544,6 +1549,25 @@ describe('natural Nigerian opt-outs (G-80)', () => {
     "un'subscribe me",
     "do'nt send me messages again",
     "dont't message me again",
+    /* Mark-built faces are banter too (fresh review of 8455efc, IMPORTANT). */
+    'abeg stop ;)',
+    'stop am ;-)',
+    'stop o ;)',
+    'abeg stop :)',
+    'abeg stop =)',
+    'abeg stop (:',
+    'abeg stop ^_^',
+    'stop na ;)',
+    /* WhatsApp strikethrough: words taken back (IMPORTANT). */
+    '~abeg stop~',
+    '~please stop~',
+    /* Any other mark around a natural form: only . ! … * , are allowed. */
+    '「abeg stop」',
+    '〝abeg stop〞',
+    'abeg stop +',
+    'abeg stop ₦',
+    'abeg stop @',
+    '(abeg stop)',
     /* Quoted, it is somebody else's words. */
     '"abeg stop"',
     "'abeg stop'",
