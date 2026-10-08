@@ -332,8 +332,13 @@ purchase and its yes) and check it booked once. Record the rollback, its
 reason and its time where operations notes live: it is temporary.
 
 **Restore:** delete the line (or set it to `1`), `dc up -d --wait`, check
-`/health`, and repeat the smoke transaction: the command is back on the bus
-(an `idempotency_records` row appears for it again).
+`/health`, confirm the line is gone from the running containers
+(`dc exec api printenv | grep REKODA_COMMAND_` prints nothing, or `=1`), and
+repeat the smoke transaction. An `idempotency_records` row confirms the bus
+only for an ingress that passes a key (a chat yes, a PO receive, a recurring
+entry, a payment confirmation, a shop order); the dashboard journal, payment,
+opening balances, quote convert, bank match and classify pass none, so no
+row appears for them by design.
 
 **Not for PlaceOrder:** its direct path was retired after its own rollout,
 so `REKODA_COMMAND_PLACE_ORDER=0` does not roll back, it stops the storefront

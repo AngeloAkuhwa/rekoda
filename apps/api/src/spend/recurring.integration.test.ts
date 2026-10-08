@@ -259,8 +259,11 @@ describe('the sweep', () => {
   });
 
   /* Build 9: the sweep's default is the command bus (OD-4). A worker that
-   * retries the same day books once, with one completed claim keyed on the
-   * schedule and its due date; `sweep` above passes 0 and covers rollback. */
+   * runs again the same day books once and leaves one completed claim keyed
+   * on the schedule and its due date. The second run raises nothing because
+   * the first advanced the schedule in the same transaction; the claim is the
+   * bus's record of the one booking, not what stops the second. `sweep` above
+   * passes 0 and covers rollback. */
   it('on the command bus, run twice on the same day raises one entry and one claim', async () => {
     const { auth, businessId, id, firstDueOn } = await scheduleFor('+2348177200016', 1);
     const onBus = (now: Date) =>

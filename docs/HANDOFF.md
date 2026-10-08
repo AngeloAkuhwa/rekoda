@@ -102,7 +102,9 @@ Build 9 follows G-65 directly; the long-term roadmap is otherwise unchanged):**
 2. **G-85 (MERGED, #266 as `e539439`; staging acceptance pending)**, combining or overlay marks on short deterministic answers: the same safety
    boundary as G-80.
 3. **Build 9 (IN PROGRESS, PR #267)**, command-bus production enforcement: all fourteen flags default on,
-   `0` the per-command rollback, any other value invalid (OD-4, approved as OWN-22).
+   `0` the per-command rollback (PlaceOrder's `0` refuses orders instead), any other value
+   invalid (OD-4, approved as OWN-22). Its review found G-95 (pre-existing: releasing a
+   classified bank line leaves its journal posted), an open owner decision.
 4. **G-57**, AI metering before the role check (authorization ordering).
 5. **G-60**, identity facet conflicts lost silently (identity and privacy correctness).
 6. **G-07** (the AI launch harness, then the owner's live eval) **and G-59** (model-family
