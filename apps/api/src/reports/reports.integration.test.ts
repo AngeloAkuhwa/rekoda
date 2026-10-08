@@ -1824,6 +1824,16 @@ describe('what the business was already holding', () => {
     ).toEqual({ outcome: 'already_set' });
   });
 
+  /* Build 9: the SAME request again is answered exactly as the direct path
+   * answers it. Once-only is the database's, so the bus must not replay the
+   * first answer as if it were new. */
+  it('opens once, and says so plainly when the same request comes again', async () => {
+    const { auth } = await onboard('+2348177000025');
+    const body = { asAt: '2026-07-31', cashK: 1_000, bankK: 0, stockK: 0 };
+    expect((await open(auth, body)).json()).toMatchObject({ outcome: 'recorded' });
+    expect((await open(auth, body)).json()).toEqual({ outcome: 'already_set' });
+  });
+
   it('refuses an entry of nothing, and a day that has not happened', async () => {
     const { auth } = await onboard('+2348177000024');
     expect(
