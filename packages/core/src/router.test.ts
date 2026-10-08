@@ -1745,6 +1745,16 @@ describe('combining and overlay marks on short actionable answers (G-85)', () =>
     },
   );
 
+  /* A mark lowercasing brings back (Codex P2 of c8659bf): NFKC composes
+   * "I" + U+0307 to "İ", and lowercasing splits it into "i" + U+0307,
+   * which the normaliser then drops. */
+  it.each(['İ paid cash', 'İ paid cash'])(
+    '%j names no account: the mark is looked for after the same casing',
+    (text) => {
+      expect(fundingSourceAnswer(text) === null || answerIsUncertain(text)).toBe(true);
+    },
+  );
+
   /* Consent has its own matcher (G-24, G-80) and is unchanged by G-85. */
   it('consent is untouched', () => {
     for (const text of [

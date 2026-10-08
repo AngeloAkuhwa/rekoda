@@ -13930,6 +13930,8 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
         await say('wamid.G85i-d', MILO, 'I buy another 10 carton Milo 100k cash', DELEGATE);
         await reply('wamid.G85i-marked', text, DELEGATE);
         expect(stubSender.lastText).toContain(REASK);
+        /* `reply` resets the transport log: none since means no model. */
+        expect(stubTransport.requests).toHaveLength(0);
         expect(await purchases(business.id)).toBe(1);
         expect(await purchaseStates(business.id)).toEqual(['confirmed', 'held']);
         /* A plain answer still decides it. */
