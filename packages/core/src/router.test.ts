@@ -1419,6 +1419,9 @@ describe('natural Nigerian opt-outs (G-80)', () => {
     'abeg​ stop',
     /* Spaces inside are spaces, however many. */
     'abeg   stop',
+    /* However many spaces sit between the words (Codex P1 of b6c0218). */
+    `abeg${' '.repeat(20)}stop`,
+    `no send me${' '.repeat(40)}again`,
     /* A comma where the politeness word or filler meets the core. */
     'stop, o',
     'abeg, stop o',
