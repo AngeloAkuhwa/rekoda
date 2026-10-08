@@ -419,6 +419,8 @@ export interface PurchaseOrderWithLines {
   status: string;
   totalK: number;
   expectedOn: string | null;
+  /** The Chat purchase a SAME answer linked it to (G-89), or null. */
+  receivedExpenseId: string | null;
   lines: Array<{
     productId: string | null;
     name: string;
@@ -440,6 +442,7 @@ export async function purchaseOrderByNumber(
       status: orders.status,
       totalK: orders.totalK,
       expectedOn: orders.validUntil,
+      receivedExpenseId: orders.receivedExpenseId,
     })
     .from(orders)
     .where(and(eq(orders.businessId, businessId), eq(orders.orderNumber, poNumber)))
@@ -464,6 +467,7 @@ export async function purchaseOrderByNumber(
     status: po.status,
     totalK: Number(po.totalK),
     expectedOn: po.expectedOn,
+    receivedExpenseId: po.receivedExpenseId,
     lines: lines.map((l) => ({
       productId: l.productId,
       name: l.name,
@@ -475,6 +479,28 @@ export async function purchaseOrderByNumber(
 }
 
 export type MarkOutcome = 'marked' | 'already' | 'not_found';
+
+/**
+ * Mark an open purchase order received AS a purchase already booked in Chat
+ * (G-89, the answer SAME), once and only once: the status and the link move
+ * in ONE statement, guarded by `status = 'open'` exactly as `markOrder` is,
+ * so a racing receive, cancel or SAME leaves it untouched. Writes no money,
+ * stock or document; the caller has already proved, under the purchase
+ * identity lock, that the purchase may be this order.
+ */
+export async function linkReceivedPurchaseOrder(
+  tx: TenantDb,
+  businessId: string,
+  id: string,
+  expenseId: string,
+): Promise<'linked' | 'not_open'> {
+  const moved = await tx
+    .update(orders)
+    .set({ status: 'received', receivedExpenseId: expenseId, updatedAt: new Date() })
+    .where(and(eq(orders.businessId, businessId), eq(orders.id, id), eq(orders.status, 'open')))
+    .returning({ id: orders.id });
+  return moved.length === 1 ? 'linked' : 'not_open';
+}
 
 /**
  * Move an order on, once and only once.

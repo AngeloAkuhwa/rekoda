@@ -68,7 +68,9 @@ import {
   statementSheets,
   toCsv,
   usagePeriod,
+  ownerOf,
   type AccountSums,
+  type PurchaseRecord,
 } from '@rekoda/core';
 import { FontsMissing, renderStatementsPdf } from '../documents/pdf.js';
 import type {
@@ -100,6 +102,7 @@ import {
   type ConvertQuoteResponse,
   type CreatePurchaseOrderResponse,
   type CreateQuoteResponse,
+  type ReceivePurchaseOrderRequest,
   type ReceivePurchaseOrderResponse,
   cancelPurchaseOrderRequest,
   cancelQuoteRequest,
@@ -136,6 +139,7 @@ import {
   jobsRepo,
   ordersRepo,
   portabilityRepo,
+  purchaseIdentityRepo,
   openingRepo,
   stocktakeRepo,
   closeRepo,
@@ -160,7 +164,11 @@ import {
   type IssuedInvoice,
 } from '../commands/sale-commands.js';
 import { recordPaymentWork, type RecordPaymentInput } from '../commands/payment-commands.js';
-import { recordPurchaseWork, type RecordPurchaseCmdInput } from '../commands/spend-commands.js';
+import {
+  PurchaseIdentityCollision,
+  recordPurchaseWork,
+  type RecordPurchaseCmdInput,
+} from '../commands/spend-commands.js';
 import {
   closePeriodWork,
   postJournalWork,
@@ -1149,6 +1157,14 @@ export class ReportsController {
    * A line naming something the shop has never counted creates the product,
    * which is what the chat flow does when a merchant buys something new —
    * a thing deliberately ordered by the crate is a thing the shop counts.
+   *
+   * One real purchase, one financial truth, across Chat and the dashboard
+   * (G-89, OD-23 / OWN-21): the purchase work compares the receive with the
+   * purchases already BOOKED in Chat, under the lock a chat yes takes, and
+   * refuses before its first write when one may be this order. Nothing is
+   * written and the merchant is asked SAME or SEPARATE. A chat preview still
+   * waiting for a yes is not a purchase and is never compared here; its own
+   * yes compares itself with this receive.
    */
   @Post('purchase-orders/receive')
   @Roles('owner', 'delegate')
@@ -1168,6 +1184,9 @@ export class ReportsController {
       ordersRepo.purchaseOrderByNumber(tx, businessId, poNumber),
     );
     if (!po || !poNumber.startsWith('PO-')) return { outcome: 'not_found' };
+    if (parsed.data.sameAs !== undefined) {
+      return this.receiveAsChatPurchase(businessId, poNumber, parsed.data.sameAs);
+    }
     if (po.status === 'received') return { outcome: 'already_received' };
     if (po.status !== 'open') return { outcome: 'cancelled' };
     /* More than the order costs is a prepayment, and this posting cannot say
@@ -1177,7 +1196,33 @@ export class ReportsController {
       return { outcome: 'more_than_total', totalK: po.totalK };
     }
 
+    try {
+      return await this.receiveOpenOrder(request, businessId, po, poNumber, parsed.data);
+    } catch (error) {
+      if (!(error instanceof PurchaseIdentityCollision)) throw error;
+      /* The whole transaction rolled back: the order is still open, and no
+       * purchase, stock, posting, bill or idempotency claim was kept. */
+      return possibleDuplicate(
+        poNumber,
+        po.totalK,
+        error.matches,
+        request.auth!.userId,
+        parsed.data.separateFrom ?? [],
+      );
+    }
+  }
+
+  private async receiveOpenOrder(
+    request: AuthedRequest,
+    businessId: string,
+    po: ordersRepo.PurchaseOrderWithLines,
+    poNumber: string,
+    body: ReceivePurchaseOrderRequest,
+  ): Promise<ReceivePurchaseOrderResponse> {
     return withBusiness(this.db, businessId, async (tx) => {
+      /* The identity lock BEFORE the order row (G-89): a SAME answer takes
+       * them in this order too, so the two never wait on each other. */
+      await purchaseIdentityRepo.lockPurchaseTotal(tx, businessId, po.totalK);
       const marked = await ordersRepo.markOrder(tx, businessId, po.id, 'open', 'received');
       if (marked !== 'marked') {
         /* A racing receive or cancel got here first; nothing was written.
@@ -1192,12 +1237,14 @@ export class ReportsController {
         businessId,
         description: `Purchase order ${poNumber}`,
         amountK: po.totalK,
-        paidK: parsed.data.paidK,
+        paidK: body.paidK,
         /* The account the paid part left, required by the request whenever
          * something was paid (G-61); nothing paid funds no account. */
-        method: parsed.data.paidK > 0 ? (parsed.data.method ?? null) : null,
+        method: body.paidK > 0 ? (body.method ?? null) : null,
         sourceType: 'purchase_order',
         sourceId: po.id,
+        /* SEPARATE from exactly the Chat purchases the question named. */
+        ...(body.separateFrom ? { separateFrom: body.separateFrom } : {}),
         /* Every line arrives with the money: receiving a PO is exactly the
          * counted delivery the chat purchase describes, line by line. */
         arrivals: po.lines.map((line) => ({
@@ -1239,6 +1286,57 @@ export class ReportsController {
         owedK: recorded.owedK,
         linesArrived: recorded.arrived.length,
       };
+    });
+  }
+
+  /**
+   * SAME (G-89): this order is the purchase already booked in Chat as
+   * `expenseId`. The order is marked received and linked to it in one
+   * statement, and NOTHING else is written: no purchase, stock, cash, bank,
+   * payable, bill or posting, whatever the form said was paid. Under the
+   * identity lock, the purchase must still be a recorded Chat purchase of
+   * this total that no order is linked to, checked by identity and not by
+   * the 24-hour window (an answer given after the booking aged out is still
+   * SAME, never a reason to book it again); a link is never replaced, and a
+   * repeat answers what already happened.
+   */
+  private async receiveAsChatPurchase(
+    businessId: string,
+    poNumber: string,
+    expenseId: string,
+  ): Promise<ReceivePurchaseOrderResponse> {
+    return withBusiness(this.db, businessId, async (tx) => {
+      const settled = (
+        po: ordersRepo.PurchaseOrderWithLines | null,
+      ): ReceivePurchaseOrderResponse | null => {
+        if (!po) return { outcome: 'not_found' };
+        if (po.status === 'received') {
+          return po.receivedExpenseId === expenseId
+            ? { outcome: 'already_linked', poNumber, expenseId }
+            : { outcome: 'linked_elsewhere', poNumber };
+        }
+        return po.status === 'open' ? null : { outcome: 'cancelled' };
+      };
+      const po = await ordersRepo.purchaseOrderByNumber(tx, businessId, poNumber);
+      const early = settled(po);
+      if (early || !po) return early ?? { outcome: 'not_found' };
+
+      await purchaseIdentityRepo.lockPurchaseTotal(tx, businessId, po.totalK);
+      if (
+        !(await purchaseIdentityRepo.linkableChatPurchase(tx, businessId, expenseId, po.totalK))
+      ) {
+        return { outcome: 'no_longer_matches', poNumber };
+      }
+      const linked = await ordersRepo.linkReceivedPurchaseOrder(tx, businessId, po.id, expenseId);
+      if (linked === 'linked') return { outcome: 'linked', poNumber, expenseId };
+
+      /* A racing receive, cancel or SAME got there first: say which. */
+      return (
+        settled(await ordersRepo.purchaseOrderByNumber(tx, businessId, poNumber)) ?? {
+          outcome: 'no_longer_matches',
+          poNumber,
+        }
+      );
     });
   }
 
@@ -2435,4 +2533,31 @@ function roleWord(role: string): string {
   if (role === 'accountant') return 'Accountant';
   if (role === 'delegate') return 'Delegate';
   return role;
+}
+
+/**
+ * The question a receive that may be a Chat purchase asks (G-89): EVERY
+ * booking it may be, newest first, each described by opaque id, time, who
+ * said yes to it and its bill, so the merchant can say which one it is.
+ * Never a name or a product.
+ */
+function possibleDuplicate(
+  poNumber: string,
+  totalK: number,
+  matches: readonly [PurchaseRecord, ...PurchaseRecord[]],
+  userId: string | null,
+  alreadySeparate: readonly string[],
+): ReceivePurchaseOrderResponse {
+  return {
+    outcome: 'possible_duplicate',
+    poNumber,
+    totalK,
+    matches: matches.map((m) => ({
+      expenseId: m.id,
+      bookedAt: (m.bookedAt ?? m.at).toISOString(),
+      bookedBy: ownerOf(m, userId),
+      billNumber: m.billNumber,
+    })),
+    alreadySeparate: [...alreadySeparate],
+  };
 }

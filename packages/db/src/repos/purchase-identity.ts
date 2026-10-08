@@ -34,14 +34,15 @@ import {
 import { LOCK_CLASS, type TenantDb } from '../client.js';
 
 /**
- * Serialise this business's chat purchases of ONE total, to the end of the
- * transaction (G-81). Taken by the purchase work at the yes, inside the
- * business's inbound lock on the chat path; nothing takes the two in the
- * other order. It is a BACKSTOP: chat yeses are already serialised by the
- * business's inbound lock. The preview-time read does not take it: the
- * inbound lock and message order already serialise it. A dashboard purchase
- * order receive does not take it and is not compared (G-89, open): a chat
- * purchase is refused against a received order, never yet the reverse.
+ * Serialise this business's purchases of ONE total, to the end of the
+ * transaction (G-81, G-89). Taken by the purchase work at a chat yes, inside
+ * the business's inbound lock on the chat path, and at a dashboard purchase
+ * order receive (and its SAME answer), which takes no inbound lock; nothing
+ * takes the inbound lock after this one. Between chat yeses it is a
+ * BACKSTOP, since the inbound lock already serialises them; between a chat
+ * yes and a dashboard receive it is the only net, so whichever commits
+ * second reads the first's booking. The preview-time read does not take it:
+ * the inbound lock and message order already serialise it.
  */
 export async function lockPurchaseTotal(
   tx: TenantDb,
@@ -247,6 +248,13 @@ export async function purchaseRecords(
     bookedOnly?: boolean;
     bookedSince?: Date;
     messageId?: string;
+    /**
+     * Only purchases booked in CHAT that no purchase order was answered
+     * SAME against (G-89): what a dashboard receive is compared with. Another
+     * received order is its own document, never this one's duplicate, and a
+     * Chat purchase already linked to an order is that order's delivery.
+     */
+    chatOnly?: boolean;
   } = {},
 ): Promise<{ now: Date; records: PurchaseRecord[] }> {
   const asOf = sql`coalesce(${options.asOf ? options.asOf.toISOString() : null}::timestamptz, clock_timestamp())`;
@@ -345,6 +353,14 @@ export async function purchaseRecords(
        AND e.status = 'recorded'
        AND e.amount_k = ${amountK}
        AND ${window}
+       ${
+         options.chatOnly
+           ? sql`AND e.source_type = 'chat'
+                 AND NOT EXISTS (SELECT 1 FROM orders o
+                                  WHERE o.business_id = e.business_id
+                                    AND o.received_expense_id = e.id)`
+           : sql``
+       }
        AND (${exclude}::text IS NULL
             OR NOT (e.source_type = 'chat' AND e.source_id = ${exclude}::text))
      ORDER BY e.created_at DESC`);
@@ -368,6 +384,35 @@ export async function purchaseRecords(
 
   const now = await clockOf(tx, options.asOf);
   return { now, records };
+}
+
+/**
+ * Whether `expenseId` is still a purchase a received order may be linked to
+ * as SAME (G-89): a recorded stock purchase booked in Chat, of exactly this
+ * total, that no order is linked to yet. Deliberately NOT bounded by the
+ * 24-hour window: the window decides when to ASK, and the merchant's SAME
+ * about a purchase that aged out while they answered is still the truth
+ * (fresh review of 23e0803). Read under the identity lock by the caller.
+ */
+export async function linkableChatPurchase(
+  tx: TenantDb,
+  businessId: string,
+  expenseId: string,
+  amountK: number,
+): Promise<boolean> {
+  if (!UUID.test(expenseId)) return false;
+  const rows = await tx.execute<{ ok: number }>(sql`
+    SELECT 1 AS ok FROM expenses e
+     WHERE e.business_id = ${businessId}::uuid
+       AND e.id = ${expenseId}::uuid
+       AND e.source_type = 'chat'
+       AND e.category = 'stock'
+       AND e.status = 'recorded'
+       AND e.amount_k = ${amountK}
+       AND NOT EXISTS (SELECT 1 FROM orders o
+                        WHERE o.business_id = e.business_id
+                          AND o.received_expense_id = e.id)`);
+  return [...rows].length === 1;
 }
 
 async function clockOf(tx: TenantDb, asOf: Date | undefined): Promise<Date> {

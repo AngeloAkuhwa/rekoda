@@ -507,4 +507,91 @@ describe('two chat purchases of one total, at the same moment (G-81)', () => {
     }
     expect(await count(businessId, 'expenses')).toBe(2);
   });
+
+  /* G-89: a received purchase order IS compared with what Chat booked, by
+   * the same policy and under the same lock, never with another order. */
+  const received = (businessId: string, separateFrom?: string[]): RecordPurchaseCmdInput => ({
+    ...purchase(businessId, '00000000-0000-4000-8000-0000000000b1'),
+    sourceType: 'purchase_order',
+    ...(separateFrom ? { separateFrom } : {}),
+  });
+
+  it('a received purchase order that may be a chat purchase is refused before any write', async () => {
+    const businessId = await seedBusiness();
+    const chat = await withBusiness(appDb, businessId, (tx) =>
+      recordPurchaseWork(tx, purchase(businessId, '00000000-0000-4000-8000-0000000000c1')),
+    );
+    await expect(
+      withBusiness(appDb, businessId, (tx) => recordPurchaseWork(tx, received(businessId))),
+    ).rejects.toMatchObject({
+      name: 'PurchaseIdentityCollision',
+      matches: [expect.objectContaining({ id: chat.expenseId })],
+    });
+    expect(await count(businessId, 'expenses')).toBe(1);
+    expect(await count(businessId, 'ledger_transactions')).toBe(1);
+    expect(await count(businessId, 'inventory_movements')).toBe(1);
+
+    /* SEPARATE from exactly that purchase: received normally. */
+    await withBusiness(appDb, businessId, (tx) =>
+      recordPurchaseWork(tx, received(businessId, [chat.expenseId])),
+    );
+    expect(await count(businessId, 'expenses')).toBe(2);
+    expect(await count(businessId, 'inventory_movements')).toBe(2);
+  });
+
+  it('through the bus, a refused receive keeps no idempotency claim, so SEPARATE goes through', async () => {
+    const businessId = await seedBusiness();
+    const chat = await withBusiness(appDb, businessId, (tx) =>
+      recordPurchaseWork(tx, purchase(businessId, '00000000-0000-4000-8000-0000000000c3')),
+    );
+    const viaBus = (input: RecordPurchaseCmdInput) =>
+      withBusiness(appDb, businessId, (tx) =>
+        bus.run(
+          tx,
+          {
+            businessId,
+            command: 'RecordPurchase' as const,
+            payload: input,
+            actor: 'user:test',
+            ingress: 'DASHBOARD' as const,
+            idempotencyKey: 'po-receive:00000000-0000-4000-8000-0000000000b1',
+          },
+          () => recordPurchaseWork(tx, input),
+        ),
+      );
+    await expect(viaBus(received(businessId))).rejects.toMatchObject({
+      name: 'PurchaseIdentityCollision',
+    });
+    expect(await count(businessId, 'idempotency_records')).toBe(0);
+
+    /* The answer differs from the refused request (it names what it is
+     * separate from), and is neither "key reused" nor "in progress". */
+    const separate = await viaBus(received(businessId, [chat.expenseId]));
+    expect(separate.outcome).toBe('done');
+    expect(await count(businessId, 'expenses')).toBe(2);
+  });
+
+  it('a received purchase order and a chat yes on two connections book ONE purchase', async () => {
+    const businessId = await seedBusiness();
+    const pools = [createDb(urls.app, { max: 1 }), createDb(urls.app, { max: 1 })];
+    let raced: PromiseSettledResult<unknown>[];
+    try {
+      raced = await Promise.allSettled([
+        withBusiness(pools[0]!.db, businessId, (tx) =>
+          recordPurchaseWork(tx, purchase(businessId, '00000000-0000-4000-8000-0000000000c2')),
+        ),
+        withBusiness(pools[1]!.db, businessId, (tx) =>
+          recordPurchaseWork(tx, received(businessId)),
+        ),
+      ]);
+    } finally {
+      await Promise.all(pools.map(({ close }) => close()));
+    }
+    expect(raced.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const refused = raced.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect(refused?.reason?.name).toBe('PurchaseIdentityCollision');
+    expect(await count(businessId, 'expenses')).toBe(1);
+    expect(await count(businessId, 'ledger_transactions')).toBe(1);
+    expect(await count(businessId, 'inventory_movements')).toBe(1);
+  });
 });

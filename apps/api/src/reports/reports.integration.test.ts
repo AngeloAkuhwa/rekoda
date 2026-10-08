@@ -40,6 +40,7 @@ import {
   voidInvoiceResponse,
 } from '@rekoda/contracts';
 import {
+  conversationsRepo,
   customersRepo,
   jobsRepo,
   ordersRepo,
@@ -58,6 +59,7 @@ import {
   reportsRepo,
 } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { recordPurchaseWork } from '../commands/spend-commands.js';
 
 /** These call sites always expect a successful record; narrow the union once. */
 function recordedAsset(res: { json(): unknown }): { assetId: string; owedK: number } {
@@ -3737,6 +3739,424 @@ describe('purchase orders, and what receiving one does', () => {
     );
     expect(spend.entries).toEqual([]);
     expect(spend.payableK).toBe(0);
+  });
+
+  /* G-89: a dashboard receive is compared with the purchases already BOOKED
+   * in Chat, under the same OD-23 / OWN-21 policy and the same lock as a
+   * chat yes. A waiting chat preview is conversational state, not a
+   * purchase, and is never compared from here. */
+  describe('a receive that may be a purchase already booked in Chat (G-89)', () => {
+    let seq = 0;
+
+    /** A chat purchase preview of the PO's total, waiting for a yes. */
+    async function chatPreview(businessId: string, reference: string | null = null) {
+      seq += 1;
+      return withBusiness(db, businessId, async (tx) => {
+        const message = await conversationsRepo.recordInbound(tx, {
+          businessId,
+          channel: 'meta',
+          kind: 'text',
+          body: 'a purchase',
+          providerMessageId: `wamid.g89-${businessId}-${seq}`,
+        });
+        const draft = await conversationsRepo.recordDraft(tx, {
+          businessId,
+          conversationMessageId: message.id,
+          intent: 'RecordPurchase',
+          command: {
+            intent: 'RecordPurchase',
+            supplierMention: null,
+            supplierReference: reference,
+            description: '10 Ankara bales and 5 thread spools',
+            amount: PO_TOTAL_K / 100,
+            reportedPayment: PO_TOTAL_K / 100,
+            paymentMethod: 'transfer',
+            productMention: 'Ankara bale',
+            quantity: 10,
+          },
+          model: null,
+          previewed: true,
+        });
+        return draft.id;
+      });
+    }
+
+    /** The yes on a chat preview: the purchase work, exactly as chat runs it. */
+    function chatYes(on: Db, businessId: string, draftId: string) {
+      return withBusiness(on, businessId, (tx) =>
+        recordPurchaseWork(tx, {
+          businessId,
+          description: '10 Ankara bales and 5 thread spools',
+          amountK: PO_TOTAL_K,
+          paidK: PO_TOTAL_K,
+          method: 'transfer',
+          sourceType: 'chat',
+          sourceId: draftId,
+          supplierId: null,
+          arrivals: [{ product: 'Ankara bale', quantity: 10, costK: PO_TOTAL_K }],
+        }),
+      );
+    }
+
+    async function chatBooked(businessId: string, reference: string | null = null) {
+      const draftId = await chatPreview(businessId, reference);
+      const booked = await chatYes(db, businessId, draftId);
+      return booked.expenseId;
+    }
+
+    async function counts(businessId: string) {
+      const rows = await withBusiness(db, businessId, (tx) =>
+        tx.execute<Record<string, string>>(sql`
+          SELECT
+            (SELECT count(*) FROM expenses WHERE business_id = ${businessId}::uuid)::text AS expenses,
+            (SELECT count(*) FROM ledger_transactions WHERE business_id = ${businessId}::uuid)::text AS postings,
+            (SELECT count(*) FROM inventory_movements WHERE business_id = ${businessId}::uuid)::text AS movements,
+            (SELECT count(*) FROM bills WHERE business_id = ${businessId}::uuid)::text AS bills`),
+      );
+      const row = [...rows][0]!;
+      return {
+        expenses: Number(row['expenses']),
+        postings: Number(row['postings']),
+        movements: Number(row['movements']),
+        bills: Number(row['bills']),
+      };
+    }
+
+    async function poRow(businessId: string, poNumber: string) {
+      const rows = await withBusiness(db, businessId, (tx) =>
+        tx.execute<{ status: string; received_expense_id: string | null }>(sql`
+          SELECT status, received_expense_id::text AS received_expense_id FROM orders
+           WHERE business_id = ${businessId}::uuid AND order_number = ${poNumber}`),
+      );
+      return [...rows][0]!;
+    }
+
+    const onHand = async (businessId: string, name: string) =>
+      (await withBusiness(db, businessId, (tx) => stockRepo.stockList(tx, businessId))).rows.find(
+        (r) => r.name === name,
+      )?.onHand ?? 0;
+
+    async function receive(auth: Record<string, string>, body: Record<string, unknown>) {
+      return receivePurchaseOrderResponse.parse(
+        (await post('/v1/reports/purchase-orders/receive', body, auth)).json(),
+      );
+    }
+
+    it('Chat booked first: the receive asks SAME or SEPARATE and writes nothing', async () => {
+      const { auth, businessId } = await onboard('+2348177000500');
+      const expenseId = await chatBooked(businessId);
+      const poNumber = await openPo(auth);
+      const before = { ...(await counts(businessId)), books: await books(auth) };
+
+      const asked = await receive(auth, { poNumber, paidK: PO_TOTAL_K, method: 'cash' });
+      expect(asked).toMatchObject({
+        outcome: 'possible_duplicate',
+        poNumber,
+        totalK: PO_TOTAL_K,
+        matches: [{ expenseId, billNumber: null }],
+      });
+
+      /* Nothing moved: no purchase, posting, stock, bill or cash. */
+      expect(await counts(businessId)).toEqual({
+        expenses: before.expenses,
+        postings: before.postings,
+        movements: before.movements,
+        bills: before.bills,
+      });
+      expect(await books(auth)).toEqual(before.books);
+      expect(await poRow(businessId, poNumber)).toEqual({
+        status: 'open',
+        received_expense_id: null,
+      });
+      expect(await onHand(businessId, 'Ankara bale')).toBe(10);
+    });
+
+    it('SAME: the PO is received and linked, and nothing financial happens twice', async () => {
+      const { auth, businessId } = await onboard('+2348177000501');
+      const expenseId = await chatBooked(businessId);
+      const poNumber = await openPo(auth);
+      const before = { ...(await counts(businessId)), books: await books(auth) };
+
+      /* The paid amount and account on the form must not move money again. */
+      const same = await receive(auth, {
+        poNumber,
+        paidK: PO_TOTAL_K,
+        method: 'cash',
+        sameAs: expenseId,
+      });
+      expect(same).toEqual({ outcome: 'linked', poNumber, expenseId });
+      expect(await poRow(businessId, poNumber)).toEqual({
+        status: 'received',
+        received_expense_id: expenseId,
+      });
+
+      const unchanged = async () => {
+        expect(await counts(businessId)).toEqual({
+          expenses: before.expenses,
+          postings: before.postings,
+          movements: before.movements,
+          bills: before.bills,
+        });
+        expect(await books(auth)).toEqual(before.books);
+        expect(await onHand(businessId, 'Ankara bale')).toBe(10);
+        expect(await onHand(businessId, 'Thread spools')).toBe(0);
+      };
+      await unchanged();
+
+      /* A repeated SAME (a retry after a lost response) is idempotent. */
+      expect(
+        await receive(auth, { poNumber, paidK: PO_TOTAL_K, method: 'cash', sameAs: expenseId }),
+      ).toEqual({ outcome: 'already_linked', poNumber, expenseId });
+      /* And a plain receive of the linked PO books nothing. */
+      expect(await receive(auth, { poNumber, paidK: 0 })).toEqual({
+        outcome: 'already_received',
+      });
+      await unchanged();
+    });
+
+    it('SAME answered after the Chat purchase aged past 24 hours still links, never books again', async () => {
+      const { auth, businessId } = await onboard('+2348177000520');
+      const expenseId = await chatBooked(businessId);
+      const poNumber = await openPo(auth);
+      expect((await receive(auth, { poNumber, paidK: 0 })).outcome).toBe('possible_duplicate');
+
+      /* The merchant answers a day later: the booking has left the window
+       * that decides when to ASK, but SAME is still the truth (fresh review
+       * of 23e0803: re-checking by window turned a late SAME into a refusal
+       * whose advice booked the purchase twice). */
+      await withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`UPDATE expenses SET created_at = created_at - interval '25 hours'
+                        WHERE business_id = ${businessId}::uuid AND id = ${expenseId}::uuid`),
+      );
+      const before = await counts(businessId);
+      expect(await receive(auth, { poNumber, paidK: 0, sameAs: expenseId })).toEqual({
+        outcome: 'linked',
+        poNumber,
+        expenseId,
+      });
+      expect(await receive(auth, { poNumber, paidK: 0 })).toEqual({ outcome: 'already_received' });
+      expect(await counts(businessId)).toEqual(before);
+      expect(await onHand(businessId, 'Ankara bale')).toBe(10);
+    });
+
+    it('SAME naming a voided Chat purchase writes nothing and leaves the order open', async () => {
+      const { auth, businessId } = await onboard('+2348177000521');
+      const expenseId = await chatBooked(businessId);
+      const poNumber = await openPo(auth);
+      await withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`UPDATE expenses SET status = 'voided'
+                        WHERE business_id = ${businessId}::uuid AND id = ${expenseId}::uuid`),
+      );
+      expect(await receive(auth, { poNumber, paidK: 0, sameAs: expenseId })).toEqual({
+        outcome: 'no_longer_matches',
+        poNumber,
+      });
+      expect(await poRow(businessId, poNumber)).toEqual({
+        status: 'open',
+        received_expense_id: null,
+      });
+    });
+
+    it('SAME naming a different purchase than the PO is linked to fails safe', async () => {
+      const { auth, businessId } = await onboard('+2348177000502');
+      /* Two genuine Chat purchases of one total, proven separate by their
+       * different invoice numbers: the PO, with no reference, may be either. */
+      const first = await chatBooked(businessId, 'invoice 1001');
+      const second = await chatBooked(businessId, 'invoice 1002');
+      const poNumber = await openPo(auth);
+
+      const asked = await receive(auth, { poNumber, paidK: 0 });
+      expect(asked.outcome).toBe('possible_duplicate');
+      if (asked.outcome !== 'possible_duplicate') return;
+      /* Every match is offered, newest first, so SAME can name the OLDER
+       * one the order really is (Codex review of 4582f91). */
+      expect(asked.matches.map((m) => m.expenseId)).toEqual([second, first]);
+
+      expect(await receive(auth, { poNumber, paidK: 0, sameAs: first })).toMatchObject({
+        outcome: 'linked',
+        expenseId: first,
+      });
+      const before = await counts(businessId);
+      expect(await receive(auth, { poNumber, paidK: 0, sameAs: second })).toEqual({
+        outcome: 'linked_elsewhere',
+        poNumber,
+      });
+      /* Never silently relinked. */
+      expect(await poRow(businessId, poNumber)).toEqual({
+        status: 'received',
+        received_expense_id: first,
+      });
+      expect(await counts(businessId)).toEqual(before);
+
+      /* The purchase NOT picked is left for the order it really is. */
+      const nextPo = await openPo(auth);
+      expect(await receive(auth, { poNumber: nextPo, paidK: 0 })).toMatchObject({
+        outcome: 'possible_duplicate',
+        matches: [{ expenseId: second }],
+      });
+    });
+
+    it('SAME on a PO already received with its own purchase changes nothing', async () => {
+      const { auth, businessId } = await onboard('+2348177000503');
+      const poNumber = await openPo(auth);
+      expect((await receive(auth, { poNumber, paidK: 0 })).outcome).toBe('received');
+      const before = await counts(businessId);
+      expect(await receive(auth, { poNumber, paidK: 0, sameAs: randomUUID() })).toEqual({
+        outcome: 'linked_elsewhere',
+        poNumber,
+      });
+      expect(await counts(businessId)).toEqual(before);
+    });
+
+    it('SAME naming a purchase that is not a possible duplicate writes nothing', async () => {
+      const { auth, businessId } = await onboard('+2348177000504');
+      const poNumber = await openPo(auth);
+      expect(await receive(auth, { poNumber, paidK: 0, sameAs: randomUUID() })).toEqual({
+        outcome: 'no_longer_matches',
+        poNumber,
+      });
+      expect(await poRow(businessId, poNumber)).toEqual({
+        status: 'open',
+        received_expense_id: null,
+      });
+      expect((await counts(businessId)).expenses).toBe(0);
+    });
+
+    it('SEPARATE: a genuine second purchase is received normally, exactly once', async () => {
+      const { auth, businessId } = await onboard('+2348177000505');
+      const expenseId = await chatBooked(businessId);
+      const poNumber = await openPo(auth);
+      const asked = await receive(auth, { poNumber, paidK: 2_000_000, method: 'transfer' });
+      expect(asked.outcome).toBe('possible_duplicate');
+
+      const body = { poNumber, paidK: 2_000_000, method: 'transfer', separateFrom: [expenseId] };
+      expect(await receive(auth, body)).toMatchObject({
+        outcome: 'received',
+        poNumber,
+        owedK: PO_TOTAL_K - 2_000_000,
+      });
+      /* A retried SEPARATE books nothing twice. */
+      expect(await receive(auth, body)).toEqual({ outcome: 'already_received' });
+
+      expect(await counts(businessId)).toMatchObject({ expenses: 2 });
+      expect(await onHand(businessId, 'Ankara bale')).toBe(20);
+      expect(await onHand(businessId, 'Thread spools')).toBe(5);
+      expect(await poRow(businessId, poNumber)).toEqual({
+        status: 'received',
+        received_expense_id: null,
+      });
+      expect((await books(auth)).balanced).toBe(true);
+    });
+
+    it('SEPARATE from one purchase still asks about one booked after the question', async () => {
+      const { auth, businessId } = await onboard('+2348177000506');
+      const first = await chatBooked(businessId, 'invoice 5501');
+      const poNumber = await openPo(auth);
+      const asked = await receive(auth, { poNumber, paidK: 0 });
+      expect(asked).toMatchObject({
+        outcome: 'possible_duplicate',
+        matches: [{ expenseId: first }],
+      });
+
+      const second = await chatBooked(businessId, 'invoice 5502');
+      expect(await receive(auth, { poNumber, paidK: 0, separateFrom: [first] })).toMatchObject({
+        outcome: 'possible_duplicate',
+        matches: [{ expenseId: second }],
+        alreadySeparate: [first],
+      });
+      expect((await counts(businessId)).expenses).toBe(2);
+
+      /* Answering the second question with BOTH (what the form carries
+       * forward) receives it; the answers never bounce between the two
+       * purchases (fresh review of 662e93a). */
+      expect(
+        await receive(auth, { poNumber, paidK: 0, separateFrom: [first, second] }),
+      ).toMatchObject({ outcome: 'received', poNumber });
+      expect((await counts(businessId)).expenses).toBe(3);
+    });
+
+    it('a Chat purchase of another total is never asked about', async () => {
+      const { auth, businessId } = await onboard('+2348177000507');
+      await withBusiness(db, businessId, (tx) =>
+        recordPurchaseWork(tx, {
+          businessId,
+          description: 'thread',
+          amountK: PO_TOTAL_K - 100,
+          paidK: 0,
+          method: null,
+          sourceType: 'chat',
+          sourceId: randomUUID(),
+          arrivals: [],
+        }),
+      );
+      const poNumber = await openPo(auth);
+      expect((await receive(auth, { poNumber, paidK: 0 })).outcome).toBe('received');
+    });
+
+    it('a Chat purchase already linked to another PO is not asked about again', async () => {
+      const { auth, businessId } = await onboard('+2348177000508');
+      const expenseId = await chatBooked(businessId);
+      const firstPo = await openPo(auth);
+      expect(
+        (await receive(auth, { poNumber: firstPo, paidK: 0, sameAs: expenseId })).outcome,
+      ).toBe('linked');
+      const secondPo = await openPo(auth);
+      /* SAME from a second order to the purchase the first is linked to is
+       * refused cleanly, never relinked and never a server error. */
+      expect(await receive(auth, { poNumber: secondPo, paidK: 0, sameAs: expenseId })).toEqual({
+        outcome: 'no_longer_matches',
+        poNumber: secondPo,
+      });
+      expect(await poRow(businessId, secondPo)).toEqual({
+        status: 'open',
+        received_expense_id: null,
+      });
+      expect((await receive(auth, { poNumber: secondPo, paidK: 0 })).outcome).toBe('received');
+    });
+
+    it('a waiting Chat preview is not compared; its later yes is refused, not booked twice', async () => {
+      const { auth, businessId } = await onboard('+2348177000509');
+      const draftId = await chatPreview(businessId);
+      const poNumber = await openPo(auth);
+      /* A preview is no purchase yet: the receive goes through. */
+      expect((await receive(auth, { poNumber, paidK: 0 })).outcome).toBe('received');
+
+      /* The yes re-checks at execution time and finds the received PO
+       * (G-81 turns this into the SAME / SEPARATE question in Chat). */
+      await expect(chatYes(db, businessId, draftId)).rejects.toMatchObject({
+        name: 'PurchaseIdentityCollision',
+      });
+      expect(await counts(businessId)).toMatchObject({ expenses: 1 });
+      expect(await onHand(businessId, 'Ankara bale')).toBe(10);
+    });
+
+    it('a receive racing a Chat yes never makes two purchases', async () => {
+      for (let round = 0; round < 3; round += 1) {
+        const { auth, businessId } = await onboard(`+234817700051${round}`);
+        const draftId = await chatPreview(businessId);
+        const poNumber = await openPo(auth);
+        const chat = createDb(urls.app, { max: 1 });
+        let raced: [PromiseSettledResult<unknown>, PromiseSettledResult<unknown>];
+        try {
+          raced = (await Promise.allSettled([
+            chatYes(chat.db, businessId, draftId),
+            receive(auth, { poNumber, paidK: 0 }),
+          ])) as typeof raced;
+        } finally {
+          await chat.close();
+        }
+        const [yes, received] = raced;
+        expect(received.status).toBe('fulfilled');
+        const outcome = (received as PromiseFulfilledResult<{ outcome: string }>).value.outcome;
+        if (yes.status === 'fulfilled') {
+          expect(outcome).toBe('possible_duplicate');
+        } else {
+          expect(yes.reason?.name).toBe('PurchaseIdentityCollision');
+          expect(outcome).toBe('received');
+        }
+        expect((await counts(businessId)).expenses).toBe(1);
+      }
+    });
   });
 });
 

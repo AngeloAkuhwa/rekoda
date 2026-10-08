@@ -721,10 +721,28 @@ export const receivePurchaseOrderRequest = z
      * transfer leave different accounts, and nothing below this picks one.
      */
     method: z.enum(['cash', 'transfer']).optional(),
+    /**
+     * The merchant's answer to `possible_duplicate` (G-89). SAME: this order
+     * IS the purchase already booked in Chat with this id, so nothing is
+     * booked again and the order is received linked to it.
+     */
+    sameAs: z.string().uuid().optional(),
+    /**
+     * SEPARATE: this order is none of these Chat purchases (every id the
+     * questions named), so it is received normally. A purchase booked after
+     * the question is still asked about. No count bound but the request's
+     * size (Codex review of 4582f91): any smaller cap could drop a purchase
+     * the merchant was shown and ask about it forever.
+     */
+    separateFrom: z.array(z.string().uuid()).min(1).optional(),
   })
   .refine((v) => v.paidK === 0 || v.method !== undefined, {
     message: 'say how it was paid: cash or transfer',
     path: ['method'],
+  })
+  .refine((v) => v.sameAs === undefined || v.separateFrom === undefined, {
+    message: 'answer same or separate, not both',
+    path: ['sameAs'],
   });
 
 export const receivePurchaseOrderResponse = z.discriminatedUnion('outcome', [
@@ -743,6 +761,56 @@ export const receivePurchaseOrderResponse = z.discriminatedUnion('outcome', [
   z.object({ outcome: z.literal('cancelled') }),
   /** Paying more than the order costs is a prepayment, and this is not that. */
   z.object({ outcome: z.literal('more_than_total'), totalK: kobo }),
+  /**
+   * G-89: a purchase of this total, booked in Chat in the last 24 hours and
+   * not proven separate, may be this order. NOTHING was written and the order
+   * is still open; the merchant answers SAME (`sameAs`, naming WHICH of
+   * `matches` it is) or SEPARATE (`separateFrom`). `matches` is every
+   * booking the question is about, newest first, each described so the
+   * merchant can pick the right one (Codex review of 4582f91).
+   */
+  z.object({
+    outcome: z.literal('possible_duplicate'),
+    poNumber: z.string(),
+    totalK: kobo,
+    matches: z
+      .array(
+        z.object({
+          expenseId: z.string().uuid(),
+          bookedAt: z.string(),
+          /** Who said yes to it in Chat, from the asking member's side. */
+          bookedBy: z.enum(['you', 'another_member', 'unknown']),
+          /** The supplier bill it raised, when bought on credit. */
+          billNumber: z.string().nullable(),
+        }),
+      )
+      .min(1),
+    /**
+     * The purchases this order was ALREADY answered SEPARATE from, echoed
+     * from the request, for the next SEPARATE to carry forward with
+     * `matches` (fresh review of 662e93a): otherwise two answers excuse one
+     * purchase each and ask about the other forever.
+     */
+    alreadySeparate: z.array(z.string().uuid()),
+  }),
+  /** SAME: received and linked to the Chat purchase; nothing booked again. */
+  z.object({ outcome: z.literal('linked'), poNumber: z.string(), expenseId: z.string().uuid() }),
+  /** SAME again for the purchase it is already linked to: nothing changed. */
+  z.object({
+    outcome: z.literal('already_linked'),
+    poNumber: z.string(),
+    expenseId: z.string().uuid(),
+  }),
+  /**
+   * SAME for an order already received as a DIFFERENT purchase (its own, or
+   * another Chat purchase): nothing changed, and the link is never replaced.
+   */
+  z.object({ outcome: z.literal('linked_elsewhere'), poNumber: z.string() }),
+  /**
+   * SAME naming a purchase that can no longer be this order's (voided, a
+   * different total, or already linked to another order): nothing written.
+   */
+  z.object({ outcome: z.literal('no_longer_matches'), poNumber: z.string() }),
 ]);
 
 export const cancelPurchaseOrderRequest = z.object({

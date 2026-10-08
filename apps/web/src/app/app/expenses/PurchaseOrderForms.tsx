@@ -115,12 +115,64 @@ export function ReceivePurchaseOrderForm({ orders }: { orders: OpenPurchaseOrder
     receivePurchaseOrderAction,
     {},
   );
+  /* G-89: this order may be a purchase already booked in Chat. Nothing was
+   * recorded; the merchant says which it is, and the answer goes back with
+   * what was typed and the purchases the question named. Never a silent
+   * receive, never a permanent refusal. */
+  if (state.question) {
+    const q = state.question;
+    return (
+      <form action={action} className="rk-form" noValidate>
+        <p className="rk-fineprint" role="alert">
+          {q.text}
+        </p>
+        <input type="hidden" name="poNumber" value={q.poNumber} />
+        <input type="hidden" name="paid" value={q.paid} />
+        <input type="hidden" name="method" value={q.method} />
+        <input type="hidden" name="expenseIds" value={q.expenseIds.join(',')} />
+        <fieldset className="rk-form">
+          <legend className="rk-fineprint">
+            {q.options.length > 1 ? 'Which one is it?' : 'The purchase in Chat'}
+          </legend>
+          {q.options.map((option, i) => (
+            <label key={option.expenseId} className="rk-fineprint">
+              <input
+                type="radio"
+                name="expenseId"
+                value={option.expenseId}
+                defaultChecked={i === 0}
+              />{' '}
+              {option.text}
+            </label>
+          ))}
+        </fieldset>
+        <p className="rk-fineprint">
+          Same purchase: the order is marked received and linked to the purchase you picked, and
+          nothing is recorded again. Separate purchase: the order is received as its own purchase.
+        </p>
+        <Button type="submit" name="answer" value="same" disabled={pending}>
+          {pending ? 'Recording…' : 'Same purchase'}
+        </Button>
+        <Button type="submit" name="answer" value="separate" variant="secondary" disabled={pending}>
+          Separate purchase
+        </Button>
+        <Button type="submit" name="answer" value="back" variant="secondary" disabled={pending}>
+          Not now: choose another order
+        </Button>
+      </form>
+    );
+  }
   if (orders.length === 0) {
     return (
       <>
         {state.done ? (
           <p className="rk-fineprint" role="status">
             {state.done}
+          </p>
+        ) : null}
+        {state.error ? (
+          <p className="rk-fineprint" role="alert">
+            {state.error}
           </p>
         ) : null}
         <p className="rk-fineprint">No open purchase orders right now. Saved ones appear here.</p>
