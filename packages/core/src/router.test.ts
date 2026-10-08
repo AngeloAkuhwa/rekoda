@@ -1636,3 +1636,130 @@ describe('natural Nigerian opt-outs (G-80)', () => {
     ).toBe('stop');
   });
 });
+
+/**
+ * G-85: a combining mark the normaliser would quietly drop. `normalise`
+ * turns every mark NFKC cannot fold into a letter into a space, so a ring,
+ * an x or an accent drawn over a short answer vanished and "yes⃘" confirmed
+ * a preview. Every actionable answer is plain ASCII, so a mark still
+ * standing after NFKC on one is never orthography: the answer is uncertain
+ * and is asked again. Real Yoruba, Igbo and accented text never matches an
+ * answer and is untouched; consent has its own matcher and is unchanged.
+ */
+describe('combining and overlay marks on short actionable answers (G-85)', () => {
+  /* Each mark, after the answer, before it, beside it and stacked. */
+  const MARKS = [
+    '⃘', // ring overlay
+    '⃙', // clockwise ring overlay
+    '⃚', // anticlockwise ring overlay
+    '͓', // x below
+    'ͯ', // latin small x above
+    '̀', // grave
+    '́', // acute
+    '̲', // low line
+    '᪰', // double arched breve (extended block)
+    '᷀', // dotted grave (supplement block)
+    '︠', // ligature left half (half marks)
+  ];
+  const marked = (word: string) =>
+    MARKS.flatMap((m) => [
+      `${word}${m}`,
+      `${m}${word}`,
+      `${word} ${m}`,
+      `${word}${m}${m}${m}`,
+      word.replace(/(\S+)/g, `$1${m}`),
+    ]);
+
+  it.each(['yes', 'na so', 'e correct', 'oya', 'YES'].flatMap(marked))(
+    'a marked affirmation %j is unsure, never a yes',
+    (text) => {
+      expect(intentOf(text)).not.toEqual({ kind: 'affirm' });
+    },
+  );
+
+  it.each(['cash', 'bank', 'transfer', 'na cash', 'na bank'].flatMap(marked))(
+    'a marked funding answer %j never names an account',
+    (text) => {
+      /* Either it is no answer at all (NFKC folded the mark into another
+       * letter) or it is an uncertain one, which is asked again. */
+      expect(fundingSourceAnswer(text) === null || answerIsUncertain(text)).toBe(true);
+    },
+  );
+
+  it.each(['same', 'separate', 'na same', 'another one'].flatMap(marked))(
+    'a marked purchase identity answer %j decides nothing',
+    (text) => {
+      expect(purchaseIdentityAnswer(text) === null || answerIsUncertain(text)).toBe(true);
+    },
+  );
+
+  it.each(['yes', 'na so', 'e correct', 'oya'])('plain %j is still a yes', (text) => {
+    expect(intentOf(text)).toEqual({ kind: 'affirm' });
+    expect(answerIsUncertain(text)).toBe(false);
+  });
+
+  it.each([
+    ['cash', 'cash'],
+    ['bank', 'transfer'],
+    ['na cash', 'cash'],
+    ['na bank', 'transfer'],
+  ])('plain %j still answers %s', (text, source) => {
+    expect(fundingSourceAnswer(text)).toBe(source);
+    expect(answerIsUncertain(text)).toBe(false);
+  });
+
+  it.each([
+    ['same', 'same'],
+    ['separate', 'separate'],
+    ['na same', 'same'],
+  ])('plain %j still answers %s', (text, answer) => {
+    expect(purchaseIdentityAnswer(text)).toBe(answer);
+    expect(answerIsUncertain(text)).toBe(false);
+  });
+
+  /* Variation selectors, skin tones and the affirming emoji still affirm. */
+  it.each(['yes 👍', 'yes 👍🏽', 'yes ✅️', 'na so ✔️', 'yes️', 'oya 🙏🏾'])(
+    '%j is still a yes',
+    (text) => {
+      expect(intentOf(text)).toEqual({ kind: 'affirm' });
+    },
+  );
+
+  /* G-68's protections hold exactly as before. */
+  it.each(['yes?', 'yes 🤔', 'yes⃠', 'y̶e̶s̶', 'cash?', 'cash ❌'])(
+    '%j is still uncertain',
+    (text) => {
+      expect(answerIsUncertain(text)).toBe(true);
+      expect(intentOf(text)).not.toEqual({ kind: 'affirm' });
+    },
+  );
+
+  /* Real Nigerian and accented text is never an answer, marked or not, and
+   * nothing is stripped from it: it goes to the model as before. */
+  it.each(['bẹ́ẹ̀ni', 'Ọlọ́run', 'Adébáyọ̀ bought 2 wigs', 'na so ọ', 'yès', 'ỳes', 'caśh'])(
+    '%j is not an actionable answer and goes to the model',
+    (text) => {
+      expect(routeMessage(text).route).toBe('model');
+      expect(fundingSourceAnswer(text)).toBeNull();
+      expect(purchaseIdentityAnswer(text)).toBeNull();
+    },
+  );
+
+  /* Consent has its own matcher (G-24, G-80) and is unchanged by G-85. */
+  it('consent is untouched', () => {
+    for (const text of [
+      'STOP',
+      'abeg stop',
+      'stop abeg',
+      'abeg stop am',
+      'no send me again',
+      'stop o',
+    ]) {
+      expect(customerConsentIntent(text)).toBe('stop');
+    }
+    expect(customerConsentIntent('START')).toBe('start');
+    for (const text of ['stop⃘', 'START⃘', 'abeg stop⃘', 'start̀']) {
+      expect(customerConsentIntent(text)).toBeNull();
+    }
+  });
+});
