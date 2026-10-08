@@ -473,23 +473,24 @@ const NATURAL_EMOJI: ReadonlySet<string> = new Set([
   '\u26D4', // ⛔ no entry
   '\u{1F44E}', // 👎 thumbs down
 ]);
-/** Quotation marks: a quoted form is somebody else's words. */
-const QUOTES: ReadonlySet<string> = new Set([
-  '"',
-  "'",
-  '\u2018',
-  '\u2019',
-  '\u201C',
-  '\u201D',
-  '\u201E',
-  '\u00AB',
-  '\u00BB',
-  '\u2039',
-  '\u203A',
-  '`',
-  '>',
-  '\uFF02',
-  '\uFF07',
+/**
+ * The only marks a natural form may carry around it: emphasis and an ending.
+ * An ALLOW-list, because the rest are each a reason to refuse: a quote is
+ * somebody else's words, `~…~` is WhatsApp strikethrough (taken back), and
+ * ";)", ":)", "^_^" are banter, like a laughing face (fresh reviews).
+ */
+const NATURAL_MARKS: ReadonlySet<string> = new Set([
+  '.',
+  '!',
+  ',',
+  '*',
+  '…', // …
+  '。', // 。
+  '！', // ！
+  '．', // ．
+  '，', // ，
+  '❗', // ❗
+  '❕', // ❕
 ]);
 
 /**
@@ -928,10 +929,10 @@ function isBullet(text: string): boolean {
  *    word or filler meets the core ("abeg, stop", "stop, o"), never inside
  *    the core ("No, send me again" asks for a resend); an apostrophe only in
  *    "don't"; any other mark or emoji between the words refuses;
- *  - around it, the decoration a STOP may carry, under the same cap and dash
- *    rule, EXCEPT: no question or doubt in any form ("abeg stop?",
- *    "abeg stop 🤔"), no quotation marks (a quoted form is somebody else's
- *    words), and only the emoji in `NATURAL_EMOJI` ("abeg stop 😂" is banter).
+ *  - around it, under the same cap and dash rule as a STOP, ONLY spaces,
+ *    the marks in `NATURAL_MARKS` and the emoji in `NATURAL_EMOJI`: no
+ *    quotes, no strikethrough, no smiley built from marks (";)") or drawn
+ *    ("😂"), and no question or doubt in any form ("abeg stop?").
  */
 function naturalOptOut(
   runs: readonly string[],
@@ -974,10 +975,13 @@ function naturalOptOut(
   if (!lead.every((g) => decoratesStop(g) && !(g.kind === 'mark' && g.dash))) return false;
   if (!after.every(decoratesStop)) return false;
   const around = [...lead, ...after];
-  /* A question or doubt, in any form, anywhere: asked, not said. */
-  if (around.some((g) => g.kind === 'mark' && g.question)) return false;
-  if (around.some((g) => g.kind === 'mark' && QUOTES.has(g.value))) return false;
-  if (around.some((g) => g.kind === 'emoji' && !NATURAL_EMOJI.has(g.value))) return false;
+  /* Only spaces, emphasis and an ending around it, and only the emoji that
+   * say please or stop; a question or doubt, in any form, refuses. */
+  const allowed = (g: Grapheme): boolean =>
+    g.kind === 'space' ||
+    (g.kind === 'mark' && !g.question && NATURAL_MARKS.has(g.value)) ||
+    (g.kind === 'emoji' && NATURAL_EMOJI.has(g.value));
+  if (!around.every(allowed)) return false;
   if (soundsDoubtful(text)) return false;
   return true;
 }
