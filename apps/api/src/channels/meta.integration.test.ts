@@ -10265,6 +10265,7 @@ describe('Nigerian and chat routing (G-68, G-24)', () => {
       expect(await identity.optedOutAt(db, PHONE)).not.toBeNull();
       expect(stubTransport.requests).toHaveLength(requests);
       expect((await written(business.id)).invoices).toBe(0);
+      expect(await states(business.id)).not.toContain('confirmed');
     });
 
     it.each([

@@ -1436,7 +1436,7 @@ describe('natural Nigerian opt-outs (G-80)', () => {
     'please stop ✋🏽',
     'no send me again 🚫',
     'stop o ⛔',
-    "don't message me again",
+    'don’t message me again',
   ];
 
   /* Every one of these must change NOBODY's consent. */

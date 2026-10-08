@@ -489,6 +489,8 @@ const NATURAL_ENDINGS: ReadonlySet<string> = new Set([
   '❗', // heavy exclamation mark
   '❕', // white exclamation mark
 ]);
+/** The full stops among the endings: at most ONE may end a natural form. */
+const NATURAL_FULL_STOPS: ReadonlySet<string> = new Set(['.', '\u3002', '\uFF0E']);
 
 /**
  * How much may decorate a STOP, per side, counted in GRAPHEMES (what a person
@@ -972,7 +974,6 @@ function naturalOptOut(
       ? before.slice(2)
       : before;
   if (lead.length > DECORATION || after.length > DECORATION) return false;
-  if (!lead.every((g) => decoratesStop(g) && !(g.kind === 'mark' && g.dash))) return false;
   if (!after.every(decoratesStop)) return false;
   /* Before the words: spaces and the opening `*` of a bold pair. After:
    * spaces, the closing `*`, a full stop or exclamation, and only the emoji
@@ -990,9 +991,7 @@ function naturalOptOut(
   /* A lone `*` marks a correction; only a matched `*bold*` pair is emphasis. */
   if (lead.filter(star).length !== after.filter(star).length) return false;
   /* One full stop ends it; "..." typed as stops is an ellipsis: more coming. */
-  const stops = after.filter(
-    (g) => g.kind === 'mark' && (g.value === '.' || g.value === '。' || g.value === '．'),
-  );
+  const stops = after.filter((g) => g.kind === 'mark' && NATURAL_FULL_STOPS.has(g.value));
   if (stops.length > 1) return false;
   if (soundsDoubtful(text)) return false;
   return true;
