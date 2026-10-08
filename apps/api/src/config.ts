@@ -112,12 +112,14 @@ export interface ApiConfig {
   /** Concurrent job lanes per worker process. SKIP LOCKED makes N lanes safe. */
   workerConcurrency: number;
   /**
-   * A1 rollout flags (spec §25), one per command, default OFF.
+   * A1 rollout flags (spec §25), one per command, default ON since Build 9.
    *
    * The flag decides which path an ingress takes to the SAME work function:
    * on, the command bus (entitlement → risk → idempotency → work); off, the
    * work called directly, which is exactly what the ingress did before the
-   * command existed. Rollback is a flag flip, per command, with no deploy.
+   * command existed. Only `0` switches one off: an environment that forgot a
+   * variable gets the door that checks, never the legacy one. Rollback is
+   * `0`, per command, with no deploy.
    */
   commandRecordSale: boolean;
   commandIssueInvoice: boolean;
@@ -1164,28 +1166,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     /* The old `Math.max(1, Number(...))` was a floor that could not hold:
      * `Math.max(1, NaN)` is NaN. */
     workerConcurrency: positiveInteger(env, 'REKODA_WORKER_CONCURRENCY', 4),
-    commandRecordSale: env['REKODA_COMMAND_RECORD_SALE'] === '1',
-    commandIssueInvoice: env['REKODA_COMMAND_ISSUE_INVOICE'] === '1',
-    commandRecordPayment: env['REKODA_COMMAND_RECORD_PAYMENT'] === '1',
-    commandConfirmPayment: env['REKODA_COMMAND_CONFIRM_PAYMENT'] === '1',
-    commandRecordExpense: env['REKODA_COMMAND_RECORD_EXPENSE'] === '1',
-    commandRecordPurchase: env['REKODA_COMMAND_RECORD_PURCHASE'] === '1',
-    commandPostJournal: env['REKODA_COMMAND_POST_JOURNAL'] === '1',
-    commandClosePeriod: env['REKODA_COMMAND_CLOSE_PERIOD'] === '1',
-    commandOpeningBalances: env['REKODA_COMMAND_OPENING_BALANCES'] === '1',
+    commandRecordSale: env['REKODA_COMMAND_RECORD_SALE'] !== '0',
+    commandIssueInvoice: env['REKODA_COMMAND_ISSUE_INVOICE'] !== '0',
+    commandRecordPayment: env['REKODA_COMMAND_RECORD_PAYMENT'] !== '0',
+    commandConfirmPayment: env['REKODA_COMMAND_CONFIRM_PAYMENT'] !== '0',
+    commandRecordExpense: env['REKODA_COMMAND_RECORD_EXPENSE'] !== '0',
+    commandRecordPurchase: env['REKODA_COMMAND_RECORD_PURCHASE'] !== '0',
+    commandPostJournal: env['REKODA_COMMAND_POST_JOURNAL'] !== '0',
+    commandClosePeriod: env['REKODA_COMMAND_CLOSE_PERIOD'] !== '0',
+    commandOpeningBalances: env['REKODA_COMMAND_OPENING_BALANCES'] !== '0',
     /**
-     * On unless explicitly switched off, which is the opposite sense of its
-     * siblings. PlaceOrder finished its rollout: the storefront and the WABA
+     * On unless explicitly switched off, like every sibling since Build 9.
+     * PlaceOrder finished its rollout first: the storefront and the WABA
      * catalogue both run it in production, and leaving the default at off
      * meant an environment that forgot the variable took orders through a
      * path with no entitlement check and no idempotency key. Absent
      * configuration should mean the safe door, not the legacy one.
      */
     commandPlaceOrder: env['REKODA_COMMAND_PLACE_ORDER'] !== '0',
-    commandRecordOrder: env['REKODA_COMMAND_RECORD_ORDER'] === '1',
-    commandIngestFinancialTransaction: env['REKODA_COMMAND_INGEST_FINANCIAL_TRANSACTION'] === '1',
-    commandConfirmReconciliation: env['REKODA_COMMAND_CONFIRM_RECONCILIATION'] === '1',
-    commandAdjustInventory: env['REKODA_COMMAND_ADJUST_INVENTORY'] === '1',
+    commandRecordOrder: env['REKODA_COMMAND_RECORD_ORDER'] !== '0',
+    commandIngestFinancialTransaction: env['REKODA_COMMAND_INGEST_FINANCIAL_TRANSACTION'] !== '0',
+    commandConfirmReconciliation: env['REKODA_COMMAND_CONFIRM_RECONCILIATION'] !== '0',
+    commandAdjustInventory: env['REKODA_COMMAND_ADJUST_INVENTORY'] !== '0',
     /**
      * Optional. The deterministic router answers most messages
      * without a model, so a missing key degrades the product rather than
