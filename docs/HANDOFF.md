@@ -64,10 +64,10 @@ purchase), for the owner to revisit.
   transfer against a ₦100,000 invoice, in WhatsApp (previewed ₦100,000 applied and ₦20,000
   customer credit) and on the dashboard (a confirmation step first); after the yes, one ₦120,000 payment, a
   ₦100,000 allocation, ₦20,000 customer credit, a ₦120,000 receipt and ₦0 owing. On the
-  dashboard the first submit wrote nothing (row counts checked), the invoice ended `paid`,
+  dashboard the first submit created no financial records (row counts checked), the invoice ended `paid`,
   and the posting was DR 1020 Bank ₦120,000, CR 1100 Accounts Receivable ₦100,000, CR 2300
   Customer credits ₦20,000. A WhatsApp confirmation made stale by a balance change was
-  refused and wrote nothing. Details in the G-49 row of
+  refused and created no new financial records. Details in the G-49 row of
   `REKODA_LAUNCH_READINESS.md`.
 
 **Status board (8 Oct 2026). Acceptance and engineering are separate lanes; each build
@@ -117,8 +117,8 @@ Purchase-order receive requires the method when anything is paid. No
 migration. After merge: a transfer, a cash, a credit and a part-paid
 purchase in chat, and a paid PO receive, on staging.
 
-**In review (1 Oct 2026, Build 5, G-23; CODE COMPLETE, staging acceptance
-pending):** branch `fix/g23-draft-expiry` off `main` at `2abb8a1`. A
+**Build 5 (G-23): MERGED as `f5fb1ce` (#258); staging acceptance pending. As
+recorded while in review (1 Oct 2026):** branch `fix/g23-draft-expiry` off `main` at `2abb8a1`. A
 preview is confirmable only inside its confirmation window:
 `command_drafts.expires_at` (migration 0153) from `CONFIRMATION_TTL_SECONDS`
 (300 seconds, the HIGH_RISK window), a claim that carries `expires_at > now`
@@ -129,8 +129,8 @@ normally; a fresh sale answered "yes" after more than five minutes gets the
 expiry sentence and zero financial rows. (G-23 has since MERGED as
 `f5fb1ce`, #258.)
 
-**In review (1 Oct 2026, Build 7, G-68 Phases 1 and 2 and G-24; CODE
-COMPLETE, staging acceptance pending):** PR #259, branch
+**Build 7 (G-68 Phases 1 and 2 and G-24): MERGED 2 Oct 2026 as `f5ef123` (#259);
+staging acceptance pending. As recorded while in review (1 Oct 2026):** PR #259, branch
 `fix/g68-g24-nigerian-chat-routing`, rebased onto `main` at `3612fcf`. Owner decision OWN-18: standard English, Nigerian
 English, Nigerian Pidgin and code-switching are first-class merchant
 registers. `na so` confirms like `yes` (a leading `na` is no longer stripped
@@ -203,8 +203,8 @@ question open with `periodNotCountable` instead. After
 merge, on staging: ask "how much did I sell?", answer "last month", check the
 figure; a delegate's "last month" must not answer the owner's question.
 
-**In review (1 Oct 2026, Build 8, G-65; CODE COMPLETE, staging acceptance
-pending; ready for review):** branch `fix/g65-deterministic-chat-entitlement`
+**Build 8 (G-65): MERGED 2 Oct 2026 as `29dc934` (#261); staging acceptance
+pending. As recorded while in review (1 Oct 2026):** branch `fix/g65-deterministic-chat-entitlement`
 on `main` at `f5ef123` (Build 7, #259; first cut off `3612fcf`). Router-served commands no longer skip
 the plan: `packages/core/src/chat-access.ts` classifies every deterministic
 intent, and the handler checks it after routing and before the command
