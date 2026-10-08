@@ -1425,13 +1425,14 @@ describe('natural Nigerian opt-outs (G-80)', () => {
     'abeg, no send me again',
     /* The marks a natural form may carry. */
     'abeg stop!',
-    'abeg stop…',
+    'abeg stop.',
     'abeg stop ❗',
     'ABEG STOP！',
     /* The emoji that say stop or please. */
     'abeg stop 🛑',
     'please stop ✋🏽',
     'no send me again 🚫',
+    'stop o ⛔',
     "don't message me again",
   ];
 
@@ -1549,6 +1550,25 @@ describe('natural Nigerian opt-outs (G-80)', () => {
     "un'subscribe me",
     "do'nt send me messages again",
     "dont't message me again",
+    /* A trailing comma or ellipsis says more is coming; a leading one
+     * continues an earlier message (fresh review of b6c0218, IMPORTANT). */
+    'abeg stop,',
+    'please stop,',
+    'no send me again,',
+    'abeg stop ,,,',
+    'abeg stop...',
+    'abeg stop…',
+    '...abeg stop',
+    '…abeg stop',
+    ', abeg stop',
+    '! abeg stop',
+    /* A lone asterisk marks a correction; only a *bold* pair is emphasis. */
+    'abeg stop*',
+    '*abeg stop',
+    '**abeg stop*',
+    /* A cross or thumbs down can mean "that is wrong". */
+    'abeg stop ❌',
+    'abeg stop 👎',
     /* Mark-built faces are banter too (fresh review of 8455efc, IMPORTANT). */
     'abeg stop ;)',
     'stop am ;-)',
