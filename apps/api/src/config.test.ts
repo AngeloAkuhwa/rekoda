@@ -283,14 +283,78 @@ describe('PlaceOrder is the default door (remediation R2)', () => {
   it('reads 1 as on, so an environment that set it during rollout is unchanged', () => {
     expect(loadConfig({ ...BASE, REKODA_COMMAND_PLACE_ORDER: '1' }).commandPlaceOrder).toBe(true);
   });
+});
 
-  it('leaves the sibling command flags off by default', () => {
-    /* Only PlaceOrder finished its rollout. If this ever fails, a flag was
-     * flipped without the proof this PR carried for its own. */
-    const config = loadConfig(BASE);
-    expect(config.commandRecordOrder).toBe(false);
-    expect(config.commandRecordSale).toBe(false);
-    expect(config.commandAdjustInventory).toBe(false);
+/**
+ * Build 9: every write takes the command bus unless a flag says otherwise
+ * (OD-4). An environment that forgot a variable must get the door that
+ * checks entitlement, risk and the idempotency key, not the legacy one;
+ * PlaceOrder's inverted sense, now for all fourteen. `0` is the rollback,
+ * per command, with no deploy.
+ */
+describe('the command bus is the default door for every write (Build 9)', () => {
+  const FLAGS = [
+    ['REKODA_COMMAND_RECORD_SALE', 'commandRecordSale'],
+    ['REKODA_COMMAND_ISSUE_INVOICE', 'commandIssueInvoice'],
+    ['REKODA_COMMAND_RECORD_PAYMENT', 'commandRecordPayment'],
+    ['REKODA_COMMAND_CONFIRM_PAYMENT', 'commandConfirmPayment'],
+    ['REKODA_COMMAND_RECORD_EXPENSE', 'commandRecordExpense'],
+    ['REKODA_COMMAND_RECORD_PURCHASE', 'commandRecordPurchase'],
+    ['REKODA_COMMAND_POST_JOURNAL', 'commandPostJournal'],
+    ['REKODA_COMMAND_CLOSE_PERIOD', 'commandClosePeriod'],
+    ['REKODA_COMMAND_OPENING_BALANCES', 'commandOpeningBalances'],
+    ['REKODA_COMMAND_PLACE_ORDER', 'commandPlaceOrder'],
+    ['REKODA_COMMAND_RECORD_ORDER', 'commandRecordOrder'],
+    ['REKODA_COMMAND_INGEST_FINANCIAL_TRANSACTION', 'commandIngestFinancialTransaction'],
+    ['REKODA_COMMAND_CONFIRM_RECONCILIATION', 'commandConfirmReconciliation'],
+    ['REKODA_COMMAND_ADJUST_INVENTORY', 'commandAdjustInventory'],
+  ] as const;
+
+  it('covers all fourteen flags', () => {
+    expect(FLAGS).toHaveLength(14);
+  });
+
+  it.each(FLAGS)('%s: unset runs the command bus', (_name, key) => {
+    expect(loadConfig(BASE)[key]).toBe(true);
+  });
+
+  it.each(FLAGS)(
+    '%s: 1 runs the command bus (an opted-in environment is unchanged)',
+    (name, key) => {
+      expect(loadConfig({ ...BASE, [name]: '1' })[key]).toBe(true);
+    },
+  );
+
+  it.each(FLAGS)('%s: 0 is the per-command rollback to the direct call', (name, key) => {
+    expect(loadConfig({ ...BASE, [name]: '0' })[key]).toBe(false);
+  });
+
+  it.each(FLAGS)('%s: only 0 switches it off; anything else keeps the safe door', (name, key) => {
+    for (const value of ['', ' ', 'false', 'off', 'no', '00', 'O', 'true', 'yes']) {
+      expect(loadConfig({ ...BASE, [name]: value })[key]).toBe(true);
+    }
+  });
+
+  it('one rollback leaves every other command on the bus', () => {
+    const config = loadConfig({ ...BASE, REKODA_COMMAND_RECORD_PURCHASE: '0' });
+    for (const [, key] of FLAGS) {
+      expect(config[key]).toBe(key !== 'commandRecordPurchase');
+    }
+  });
+
+  it('a production configuration that names no flag runs every write on the bus', () => {
+    const config = loadConfig({
+      ...BASE,
+      NODE_ENV: 'production',
+      REKODA_TRUSTED_PROXIES: '172.30.10.10',
+      REKODA_TRUSTED_WEB: '172.30.10.11',
+      META_APP_SECRET: 'm'.repeat(40),
+      META_VERIFY_TOKEN: 'v'.repeat(40),
+      OPERATOR_OIDC_ISSUER: 'https://issuer.example.com',
+      OPERATOR_OIDC_AUDIENCE: 'rekoda-ops',
+      OPERATOR_OIDC_JWKS_URL: 'https://issuer.example.com/jwks',
+    } as NodeJS.ProcessEnv);
+    for (const [, key] of FLAGS) expect(config[key]).toBe(true);
   });
 });
 
