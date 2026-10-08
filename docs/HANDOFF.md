@@ -11,9 +11,9 @@
 | Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Current date**            | 8 October 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| **Current `main` SHA**      | `88b577c` (7 Oct 2026, "fix: prevent duplicate purchase booking across actors (#262)", G-81); before it `29dc934` (#261, Build 8), `f5ef123` (#259, Build 7), `3612fcf` (#260, Build 6), `f5fb1ce` (#258, G-23), `2abb8a1` (#256, G-49), `6df1b91` (#255, G-61), `ce4755a` (#254, G-77) and earlier                                                                                                                                                                                                               |
-| **Open branches**           | #263 (G-89, dashboard PO receive against Chat bookings, `fix/g89-po-receive-idempotency`, migration 0159), the only issue in progress. Paused: `fix/g80-natural-opt-out` at `c9f2059` (G-80), WIP, unreviewed                                                                                                                                                                                                                                                                                                     |
-| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 159 migrations on `main` (0000 to 0158); 0159 on #263; deployed to staging (automatic after CI on main since #249); never to production (the production stack boots on a clean CI runner since G-01); the Meta WhatsApp transport has been live-exercised on staging (real webhook ingress, outbound text and media); production Meta App Review and templates remain open; payment-provider live verification remains pending |
+| **Current `main` SHA**      | `3d462c1` (8 Oct 2026, "fix: compare a dashboard PO receive with purchases booked in Chat (G-89) (#263)"); before it `88b577c` (#262, G-81), `29dc934` (#261, Build 8), `f5ef123` (#259, Build 7), `3612fcf` (#260, Build 6), `f5fb1ce` (#258, G-23), `2abb8a1` (#256, G-49), `6df1b91` (#255, G-61), `ce4755a` (#254, G-77) and earlier                                                                                                                                                                          |
+| **Open branches**           | #264 (docs only: staging evidence and state reconciliation). No code issue in progress; the next is G-80 (see "Immediate engineering order" below). Paused, local only, never pushed: `fix/g80-natural-opt-out` at `c9f2059` (G-80), WIP, unreviewed, on an old base; it is preserved and G-80 restarts from fresh `main`                                                                                                                                                                                         |
+| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 160 migrations on `main` (0000 to 0159); deployed to staging (automatic after CI on main since #249); never to production (the production stack boots on a clean CI runner since G-01); the Meta WhatsApp transport has been live-exercised on staging (real webhook ingress, outbound text and media); production Meta App Review and templates remain open; payment-provider live verification remains pending |
 | **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                                             |
 
@@ -24,9 +24,9 @@ the purchase work refuses a booked duplicate under a lock before any posting. G-
 closes Chat purchase collision handling and protects Chat against booked purchase
 facts, including bookings from a PO that committed before the chat yes (a receive
 still in flight was not seen until G-89). G-89 (dashboard PO receive compared with
-Chat bookings, SAME links the PO to the Chat purchase, SEPARATE receives it) is code
-complete and in review on #263 (migration 0159), NOT closed and required
-pre-public-launch, so the system-wide invariant is not certified until G-89 closes. G-88 (purchases carry no `posting_purpose`)
+Chat bookings, SAME links the PO to the Chat purchase, SEPARATE receives it) is
+merged (#263 as `3d462c1`, migration 0159) with staging acceptance pending, NOT closed
+and required pre-public-launch, so the system-wide invariant is not certified until G-89 closes. G-88 (purchases carry no `posting_purpose`)
 recorded, not fixed. G-90 (purchase-identity copy issues) and G-92 (reference parser and held-question
 residuals) recorded, not fixed. G-92(5) books one real purchase twice with no
 model error under OD-23 D3 as ruled (two different same-kind documents for one
@@ -46,8 +46,10 @@ purchase), for the owner to revisit.
   `INV-2026-000015`) each added exactly one invoice, payment, allocation, merchant
   verification, claim, receipt and ledger transaction, with distinct `sale-k-…` /
   `api:sale-k-…` identities (never the application id, never the raw key). A replay
-  returned the original response and wrote nothing; the same key with another body
-  answered 400 and wrote nothing. Details in the G-77 row of
+  returned the original response and the same key with another body answered 400; both
+  left the seven financial tables unchanged (zero new financial records). They still
+  write operational state (the rate limit, an `API_REQUEST_UNITS` unit for the live
+  key), so this proves financial idempotency, not the absence of every write. Details in the G-77 row of
   `REKODA_LAUNCH_READINESS.md`.
 - To run it, the `developer_api_starter` add-on had to be granted directly in staging
   data: nothing in the product grants it (G-17), and API applications and keys have no
@@ -68,15 +70,44 @@ purchase), for the owner to revisit.
   refused and wrote nothing. Details in the G-49 row of
   `REKODA_LAUNCH_READINESS.md`.
 
-**G-89 (8 Oct 2026): PR REVIEWED, READY TO MERGE, staging acceptance pending.** PR #263
-(`fix/g89-po-receive-idempotency`, head `db2e488`, base `88b577c`): all seven checks green,
-Codex reviewed `db2e488` with no major issues, fresh reviewers clean at `db2e488`, three of
-three threads resolved, no commit since. Not merged, so `main` does not contain it; its
-readiness row moves to MERGED and then STAGING ACCEPTED only after the merge and the owner's
-physical staging test.
+**Status board (8 Oct 2026). Acceptance and engineering are separate lanes; each build
+keeps its own status, and none is accepted because a related one passed.**
+
+| Build                                   | PR (merge)        | Status                                              |
+| --------------------------------------- | ----------------- | --------------------------------------------------- |
+| G-48 receipt for a paid sale            | #252 (`b9c9562`)  | STAGING ACCEPTED                                    |
+| G-49 merchant overpayment               | #253, #256        | STAGING ACCEPTED                                    |
+| G-77 public API sale identity           | #254 (`ce4755a`)  | STAGING ACCEPTED                                    |
+| G-61 purchase funding account           | #255 (`6df1b91`)  | MERGED, staging acceptance pending                  |
+| G-23 draft expiry                       | #258 (`f5fb1ce`)  | MERGED, staging acceptance pending                  |
+| Build 6 conversational continuation     | #260 (`3612fcf`)  | MERGED, staging acceptance pending                  |
+| G-68 / G-24 routing, STOP/START        | #259 (`f5ef123`)  | MERGED, staging acceptance pending                  |
+| G-65 Chat entitlement on commands       | #261 (`29dc934`)  | MERGED, staging acceptance pending                  |
+| G-81 Chat purchase identity             | #262 (`88b577c`)  | MERGED, staging acceptance pending                  |
+| G-89 dashboard PO receive vs Chat       | #263 (`3d462c1`)  | MERGED, staging acceptance pending                  |
+
+**Staging acceptance queue (the owner, in this order):** G-61, G-23, Build 6, G-68 / G-24,
+G-65, G-81, G-89. G-89 may be tested first while it is fresh; that waives nothing earlier.
+
+**Immediate engineering order (owner, 8 Oct 2026; supersedes the earlier assumption that
+Build 9 follows G-65 directly; the long-term roadmap is otherwise unchanged):**
+
+1. **G-80, natural Nigerian opt-outs (NEXT).** G-24 made STOP/START exact and
+   deterministic, but natural opt-outs (`abeg stop`, `stop abeg`, `abeg stop am`,
+   `no send me again`, `stop o`) still go to the model, so protecting a merchant's consent
+   depends on a model call. Pre-public-launch consent and privacy gap; restart from fresh
+   `main`, keeping the `c9f2059` WIP as a reference only.
+2. **G-85**, combining or overlay marks on short deterministic answers: the same safety
+   boundary as G-80.
+3. **Build 9**, command-bus production enforcement.
+4. **G-57**, AI metering before the role check (authorization ordering).
+5. **G-60**, identity facet conflicts lost silently (identity and privacy correctness).
+6. **G-07** (the AI launch harness, then the owner's live eval) **and G-59** (model-family
+   pricing matched by substring). The Nigerian evaluation corpus belongs with G-07; it has no
+   gap ID of its own.
 
 **Build 4 (G-61): CODE COMPLETE and MERGED (#255 as `6df1b91`, 28 Sep
-2026); deployed to staging (staging runs `88b577c`, which contains it); staging
+2026); deployed to staging (every staging release since #255 contains it); staging
 acceptance in progress (run by the owner), not yet accepted.** Was branch
 `fix/g61-purchase-payment-method` off `main` at `ce4755a`. The paid part
 of a stock purchase now leaves the account the merchant named (cash or transfer), the preview says which, and money paid
@@ -378,13 +409,11 @@ G-71 (web's server-side calls share one per-IP bucket, P1) and G-72
    G-07 (fix the eval harness, then the owner runs the live eval), G-73
    (owner decision on the photo budget). G-06 is code complete and NOT live-verified until the G-05 drill
    confirms the real Paystack envelopes.
-4. Strict serial mode: #263 (G-89, cross-ingress purchase duplicate
-   protection for dashboard PO receive, owner directed 2 Oct 2026) is the
-   only issue in progress. #262 (G-81) merged as `88b577c` on 7 Oct 2026; it
-   records G-88, G-90 and G-92 as open and closed G-91. G-80 (natural Nigerian
-   opt-outs) stays paused on `fix/g80-natural-opt-out` at `c9f2059` (WIP,
-   unreviewed). Then G-85 (combining or overlay marks on a short
-   answer), then the normal roadmap (Build 9, command-bus enforcement). G-86
+4. Strict serial mode, one issue at a time from fresh `main`, in the
+   "Immediate engineering order" above: G-80 next, then G-85, then Build 9,
+   G-57, G-60, and G-07 with G-59. #263 (G-89) merged as `3d462c1` on
+   8 Oct 2026 and recorded G-93; #262 (G-81) merged as `88b577c` on
+   7 Oct 2026; it records G-88, G-90 and G-92 as open and closed G-91. G-86
    (replies that say "send it again") goes into the smallest appropriate PR;
    G-87 (a purchase re-read as an expense) STAYS OPEN as #262's follow-up,
    as that PR has decided.
