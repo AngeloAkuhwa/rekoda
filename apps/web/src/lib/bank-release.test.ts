@@ -58,7 +58,15 @@ describe('what the bank page says after a day is forgotten (G-97)', () => {
     );
     expect(forgetMessage({ outcome: 'forgotten', removed: 1, reversedClassifications: 1 })).toEqual(
       {
-        done: 'Removed 1 line from that day, and Rekoda reversed the 1 classification entry created from that line. Other entries in your books are unchanged. You can import the day again at any time.',
+        done: 'Removed 1 line from that day, and Rekoda reversed the classification entry created from that line. Other entries in your books are unchanged. You can import the day again at any time.',
+      },
+    );
+  });
+
+  it('says one entry came from one of several lines', () => {
+    expect(forgetMessage({ outcome: 'forgotten', removed: 5, reversedClassifications: 1 })).toEqual(
+      {
+        done: 'Removed 5 lines from that day, and Rekoda reversed the classification entry created from one of those lines. Other entries in your books are unchanged. You can import the day again at any time.',
       },
     );
   });

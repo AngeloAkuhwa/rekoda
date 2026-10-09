@@ -68,6 +68,10 @@ export async function importStatementLines(
     chunkRows?: number;
   },
 ): Promise<ImportedStatement> {
+  /* Takes turns with a forget of the same day (G-97): read mid-forget, the
+   * lines about to go would count as duplicates, and the day would vanish
+   * behind an answer saying it was already here. */
+  await lockBankPairings(tx, input.businessId);
   /* With PR-073 the DO NOTHING absorbs conflicts on BOTH identities: the
    * fingerprint (same content re-imported through any door) and the
    * partial provider-identity unique (the same external id re-polled
@@ -365,16 +369,17 @@ export interface ForgottenDay {
  * (`PeriodClosed`, today's month closed) leaves every line where it was.
  * It takes turns under `LOCK_CLASS.bankPairing` with everything else that
  * pairs a line (classify, hand match, release, reconcile), so a pairing in
- * flight commits first and is seen, or waits and then finds no line. Only
- * the lines read here are deleted: a line imported for the same day while
- * this runs was never looked at, and stays.
+ * flight commits first and is seen, or waits and then finds no line. An
+ * import takes the same lock, so it lands wholly before (and is forgotten
+ * with the day) or wholly after (and stays). Only the lines read here are
+ * deleted, all the same.
  */
 export async function forgetStatementDay(
   tx: TenantDb,
   input: { businessId: string; postedOn: string; actor: string },
 ): Promise<ForgottenDay> {
   await lockBankPairings(tx, input.businessId);
-  const locked = await tx
+  const dayLines = await tx
     .select({ id: bankStatementLines.id })
     .from(bankStatementLines)
     .where(
@@ -384,8 +389,8 @@ export async function forgetStatementDay(
       ),
     )
     .orderBy(bankStatementLines.id);
-  if (locked.length === 0) return { removed: 0, reversed: [] };
-  const lineIds = locked.map((l) => l.id);
+  if (dayLines.length === 0) return { removed: 0, reversed: [] };
+  const lineIds = dayLines.map((l) => l.id);
 
   /* The day's classifications, by provenance: the matched posting is the
    * line's own `bank_classification`, not itself a reversal, and not
@@ -986,7 +991,7 @@ export async function matchByHand(
  *
  * Taken by everything that writes or removes a line's match: a committing
  * reconcile, a hand match, a classification (before its pre-check), a
- * release and a forget. Row locks cannot do this job: the application role
+ * release and a forget; and by an import, so it never reads a day mid-forget. Row locks cannot do this job: the application role
  * holds no UPDATE on the append-only statement lines, so it cannot take
  * `FOR SHARE` or `FOR UPDATE` on them.
  */

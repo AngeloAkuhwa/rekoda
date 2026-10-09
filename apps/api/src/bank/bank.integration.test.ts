@@ -729,7 +729,7 @@ function holdOpen<T>(businessId: string, work: (tx: TenantDb) => Promise<T>) {
   };
 }
 
-/* Long enough for the second transaction to reach the row lock it waits on. */
+/* Long enough for the second transaction to reach the lock it waits on. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 300));
 
 /** Whether `pending` is still waiting after a settle: proof of overlap. */
@@ -1369,7 +1369,7 @@ describe('forgetting a statement day (G-97)', () => {
   /* B, P: an entry that existed apart from the statement is never reversed,
    * even a hand-written journal that reads exactly like a classification
    * (the same shape a pre-G-95 classification has: `journal`, no line). */
-  it('leaves an ordinarily matched posting untouched, however it is worded', async () => {
+  it('leaves an ordinarily matched posting untouched, even one worded like a classification', async () => {
     const { businessId, auth, line } = await setUp('+2348177000403');
     await post(
       '/v1/reports/journal',
@@ -1850,6 +1850,65 @@ describe('forgetting a statement day (G-97)', () => {
 
     expect((await reconciling).json()).toMatchObject({ matched: 0, unmatchedMovements: 0 });
     expect(await nets(businessId)).toEqual({});
+  });
+
+  /* Forget vs release, both orders: one reversal, never two. */
+  it('reverses once when a release commits while the forget waits', async () => {
+    const { businessId, auth, line } = await setUp('+2348177000424');
+    await classify(auth, line.id);
+    const releasing = holdOpen(businessId, (tx) =>
+      bankRepo.releaseLine(tx, { businessId, lineId: line.id, actor: 'user:held' }),
+    );
+    expect(await releasing.ready).toMatchObject({ outcome: 'released_classification' });
+
+    const forgetting = forget(auth, '2026-08-03');
+    expect(await stillWaiting(forgetting)).toBe(true);
+    await releasing.commit();
+
+    expect(await forgetting).toEqual({
+      outcome: 'forgotten',
+      removed: 1,
+      reversedClassifications: 0,
+    });
+    expect((await postings(businessId)).filter((p) => p.reverses_id !== null)).toHaveLength(1);
+    expect(await nets(businessId)).toEqual({});
+  });
+
+  it('finds nothing to release once the forget has committed', async () => {
+    const { businessId, auth, line } = await setUp('+2348177000425');
+    await classify(auth, line.id);
+    const forgetting = holdOpen(businessId, (tx) =>
+      bankRepo.forgetStatementDay(tx, { businessId, postedOn: '2026-08-03', actor: 'user:held' }),
+    );
+    expect(await forgetting.ready).toMatchObject({ removed: 1 });
+
+    const releasing = release(auth, line.id);
+    expect(await stillWaiting(releasing)).toBe(true);
+    await forgetting.commit();
+
+    expect(await releasing).toEqual({ outcome: 'not_matched', released: 0 });
+    expect((await postings(businessId)).filter((p) => p.reverses_id !== null)).toHaveLength(1);
+    expect(await nets(businessId)).toEqual({});
+  });
+
+  /* Forget vs re-import: the import waits, then brings the day back whole,
+   * rather than counting lines about to be deleted as already here. */
+  it('imports the day afresh when the upload arrives while the forget is committing', async () => {
+    const { businessId, auth } = await setUp('+2348177000426');
+    const forgetting = holdOpen(businessId, (tx) =>
+      bankRepo.forgetStatementDay(tx, { businessId, postedOn: '2026-08-03', actor: 'user:held' }),
+    );
+    expect(await forgetting.ready).toMatchObject({ removed: 1 });
+
+    const importing = post('/v1/bank/statement', { csv: ONE_CREDIT }, auth);
+    expect(await stillWaiting(importing)).toBe(true);
+    await forgetting.commit();
+
+    expect(importStatementResponse.parse((await importing).json())).toMatchObject({
+      imported: 1,
+      duplicates: 0,
+    });
+    expect(await linesOn(businessId, '2026-08-03')).toHaveLength(1);
   });
 
   /* O: two forgets of the same day. One does the work; the other finds none. */

@@ -53,6 +53,6 @@ export function forgetMessage(
     };
   }
   return {
-    done: `Removed ${lines} from that day, and Rekoda reversed the ${n === 1 ? '1 classification entry' : `${n} classification entries`} created from ${outcome.removed === 1 ? 'that line' : 'those lines'}. Other entries in your books are unchanged. You can import the day again at any time.`,
+    done: `Removed ${lines} from that day, and Rekoda reversed ${n === 1 ? 'the classification entry' : `the ${n} classification entries`} created from ${outcome.removed === 1 ? 'that line' : n === 1 ? 'one of those lines' : 'those lines'}. Other entries in your books are unchanged. You can import the day again at any time.`,
   };
 }
