@@ -22,7 +22,7 @@ import {
   type BankStatementLine,
   type LedgerLine,
 } from '@rekoda/core';
-import type { Db, TenantDb } from '../client.js';
+import { LOCK_CLASS, type Db, type TenantDb } from '../client.js';
 import { codeOf } from './accounts.js';
 import { writePosting } from './issue.js';
 import { BANK_CLASSIFICATION_SOURCE } from './journal.js';
@@ -500,6 +500,11 @@ export async function reconcile(
   tx: TenantDb,
   input: { businessId: string; commit: boolean; batchSize?: number },
 ): Promise<Reconciliation> {
+  /* A committing pass takes turns with a classification release (G-95).
+   * Its reads are separate statements, so without this it could read the
+   * movements from before a release and the pairings from after it, and
+   * pair the line with the journal that release just reversed. */
+  if (input.commit) await lockBankPairings(tx, input.businessId);
   const [lines, movements, existing] = await Promise.all([
     /* The WHOLE statement, not a page of it: the counts this returns sit on
      * the same screen as an uncapped COUNT(*), and a rule fed five thousand
@@ -875,6 +880,13 @@ export async function matchByHand(
   return { outcome: 'matched' };
 }
 
+/** One business's pairings, one writer at a time (`LOCK_CLASS.bankPairing`). */
+async function lockBankPairings(tx: TenantDb, businessId: string): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(${LOCK_CLASS.bankPairing}, hashtext(${businessId}))`,
+  );
+}
+
 /** What a release did, so the merchant is told the truth about it. */
 export type ReleaseOutcome =
   | { outcome: 'not_matched' }
@@ -917,7 +929,9 @@ export class UnreversibleClassification extends Error {
  *
  * The DELETE is the claim, made before anything is written, as the voids
  * claim their row first: it takes the match row's lock, so a second release
- * arriving together waits, then finds nothing and posts nothing. The
+ * arriving together waits, then finds nothing and posts nothing. A
+ * committing reconcile takes turns with it under `LOCK_CLASS.bankPairing`,
+ * so the rule cannot pair the line again with the journal being reversed. The
  * reversal is dated today, like every void, and a refusal from the ledger
  * (`PeriodClosed`) rolls the claim back with everything else. The
  * application holds no UPDATE here, and `ledger_tx_reversal_once_ux` stands
@@ -927,6 +941,7 @@ export async function releaseLine(
   tx: TenantDb,
   input: { businessId: string; lineId: string; actor: string },
 ): Promise<ReleaseOutcome> {
+  await lockBankPairings(tx, input.businessId);
   const [claimed] = await tx
     .delete(bankLineMatches)
     .where(
@@ -935,8 +950,12 @@ export async function releaseLine(
         eq(bankLineMatches.lineId, input.lineId),
       ),
     )
-    .returning({ transactionId: bankLineMatches.transactionId });
+    .returning({ lineId: bankLineMatches.lineId, transactionId: bankLineMatches.transactionId });
   if (!claimed) return { outcome: 'not_matched' };
+  /* The line's id as the database holds it. The caller's spelling matched
+   * the uuid column case-insensitively, but `source_id` is text, and an
+   * upper-case id must not turn a classification into an ordinary release. */
+  const lineId = claimed.lineId;
 
   const [matched] = await tx
     .select({
@@ -955,7 +974,7 @@ export async function releaseLine(
   const classified =
     matched !== undefined &&
     matched.sourceType === BANK_CLASSIFICATION_SOURCE &&
-    matched.sourceId === input.lineId &&
+    matched.sourceId === lineId &&
     matched.reversesId === null;
 
   if (!classified) {
@@ -963,7 +982,7 @@ export async function releaseLine(
       businessId: input.businessId,
       actor: input.actor,
       entity: 'bank_line_match',
-      entityId: input.lineId,
+      entityId: lineId,
       action: 'released',
       oldValue: { transactionId: claimed.transactionId } as never,
       sourceType: 'dashboard',
@@ -1000,7 +1019,7 @@ export async function releaseLine(
     input.businessId,
     reversal({ memo: matched.memo, lines }, `Classification released: ${matched.memo}`),
     BANK_CLASSIFICATION_SOURCE,
-    input.lineId,
+    lineId,
     { reversesId: claimed.transactionId },
   );
 
@@ -1008,11 +1027,11 @@ export async function releaseLine(
     businessId: input.businessId,
     actor: input.actor,
     entity: 'bank_line_match',
-    entityId: input.lineId,
+    entityId: lineId,
     action: 'classification_released',
     oldValue: { transactionId: claimed.transactionId } as never,
     newValue: {
-      lineId: input.lineId,
+      lineId,
       originalLedgerTransactionId: claimed.transactionId,
       reversalLedgerTransactionId: reversalTransactionId,
     } as never,

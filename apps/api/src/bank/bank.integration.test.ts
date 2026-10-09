@@ -8,7 +8,7 @@
  * merchant's lines reach that merchant and nobody else.
  */
 import { randomBytes } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   bankPositionResponse,
   classifyLineResponse,
@@ -707,9 +707,17 @@ describe('releasing a classification (G-95)', () => {
    * A transaction held open after its work, so a second one can be started
    * against it for real rather than run one after the other.
    */
+  const held: (() => void)[] = [];
+  /* A test that fails while holding a transaction must not hold it into the
+   * next test: every gate opens when the test ends, pass or fail. */
+  afterEach(() => {
+    for (const letGo of held.splice(0)) letGo();
+  });
+
   function holdOpen<T>(businessId: string, work: (tx: TenantDb) => Promise<T>) {
     let letGo!: () => void;
     const gate = new Promise<void>((resolve) => (letGo = resolve));
+    held.push(letGo);
     let reached!: (value: T) => void;
     const workDone = new Promise<T>((resolve) => (reached = resolve));
     const committed = withBusiness(db, businessId, async (tx) => {
@@ -729,6 +737,10 @@ describe('releasing a classification (G-95)', () => {
 
   /* Long enough for the second transaction to reach the row lock it waits on. */
   const settle = () => new Promise((resolve) => setTimeout(resolve, 300));
+
+  /** Whether `pending` is still waiting after a settle: proof of overlap. */
+  const stillWaiting = (pending: Promise<unknown>) =>
+    Promise.race([pending.then(() => false), settle().then(() => true)]);
 
   it('books one bank credit once after it is classified, released and classified again', async () => {
     const { businessId, auth, line } = await setUp('+2348177000201');
@@ -975,7 +987,7 @@ describe('releasing a classification (G-95)', () => {
     expect(await first.ready).toMatchObject({ outcome: 'released_classification' });
     /* The second, through the real door, waits on the first's claim. */
     const second = release(auth, line.id);
-    await settle();
+    expect(await stillWaiting(second)).toBe(true);
     await first.commit();
 
     expect(await second).toEqual({ outcome: 'not_matched', released: 0 });
@@ -1027,7 +1039,7 @@ describe('releasing a classification (G-95)', () => {
     );
     await releasing.ready;
     const matching = post('/v1/bank/match', { lineId: line.id, transactionId: written!.id }, auth);
-    await settle();
+    expect(await stillWaiting(matching)).toBe(true);
     await releasing.commit();
 
     expect((await matching).json()).toEqual({ outcome: 'matched' });
@@ -1082,6 +1094,48 @@ describe('releasing a classification (G-95)', () => {
       reverses_id: original!.id,
     });
     expect(await nets(businessId)).toEqual({});
+  });
+
+  /* Reviewer B, P2-1: the id is matched to the uuid column whatever its
+   * case, and the classification must be recognised the same way. */
+  it('reverses a classification released with the line id in capitals', async () => {
+    const { businessId, auth, line } = await setUp('+2348177000216');
+    await classify(auth, line.id);
+    const original = (await matchedTo(auth, line.id))!;
+
+    expect(await release(auth, line.id.toUpperCase())).toEqual({
+      outcome: 'released_classification',
+      released: 1,
+    });
+    expect(await nets(businessId)).toEqual({});
+    const reversal = (await postings(businessId)).find((p) => p.reverses_id !== null)!;
+    /* Recorded under the line's own id, as the database spells it. */
+    expect(reversal).toMatchObject({ source_id: line.id, reverses_id: original.transactionId });
+    expect(await classify(auth, line.id)).toMatchObject({ outcome: 'classified' });
+    expect(await nets(businessId)).toEqual({ BANK: 15_000_000, OWNERS_EQUITY: -15_000_000 });
+  });
+
+  /* Reviewer B, P2-2: a reconcile that read the books before the release
+   * and the pairings after it would pair the line with the journal being
+   * reversed. They take turns, and the reconcile sees the release whole. */
+  it('does not let a reconcile pair the line with the journal being reversed', async () => {
+    const { businessId, auth, line } = await setUp('+2348177000217');
+    await classify(auth, line.id);
+
+    const releasing = holdOpen(businessId, (tx) =>
+      bankRepo.releaseLine(tx, { businessId, lineId: line.id, actor: 'user:first' }),
+    );
+    expect(await releasing.ready).toMatchObject({ outcome: 'released_classification' });
+    const reconciling = post('/v1/bank/reconcile', {}, auth);
+    expect(await stillWaiting(reconciling)).toBe(true);
+    await releasing.commit();
+
+    expect((await reconciling).statusCode).toBe(200);
+    expect(await matchedTo(auth, line.id)).toBeNull();
+    expect(await nets(businessId)).toEqual({});
+    /* And the line can still be classified, once. */
+    expect(await classify(auth, line.id)).toMatchObject({ outcome: 'classified' });
+    expect(await nets(businessId)).toEqual({ BANK: 15_000_000, OWNERS_EQUITY: -15_000_000 });
   });
 
   /* K */

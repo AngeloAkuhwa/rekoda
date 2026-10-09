@@ -103,8 +103,13 @@ export function LineMatchCell({
     return <span className="rk-fineprint">Not matched yet.</span>;
   }
 
+  /* What a release just did (G-95). The line is unmatched after it, so the
+   * sentence has to be said HERE: a classification's entry was reversed,
+   * an ordinary entry was untouched, and the merchant is told which. */
+  const released = releaseState.done ?? null;
+
   if (candidates.length === 0) {
-    return <ClassifyCell lineId={lineId} lineLabel={lineLabel} />;
+    return <ClassifyCell lineId={lineId} lineLabel={lineLabel} released={released} />;
   }
 
   return (
@@ -112,6 +117,11 @@ export function LineMatchCell({
       {state.error ? (
         <p className="rk-fineprint" role="alert">
           {state.error}
+        </p>
+      ) : null}
+      {released && !matchState.done ? (
+        <p className="rk-fineprint" role="status">
+          {released}
         </p>
       ) : null}
       <form action={match} className="rk-match-pick">
@@ -170,7 +180,16 @@ function decidedLabel(
  * refund, their own cash moving. One submit posts the entry that judgement
  * implies and pairs it — Rekoda never decides this silently.
  */
-function ClassifyCell({ lineId, lineLabel }: { lineId: string; lineLabel: string }) {
+function ClassifyCell({
+  lineId,
+  lineLabel,
+  released,
+}: {
+  lineId: string;
+  lineLabel: string;
+  /** What the release that left this line unmatched did, if one just ran. */
+  released: string | null;
+}) {
   const [state, classify, classifying] = useActionState<StatementState, FormData>(
     classifyLineAction,
     {},
@@ -186,6 +205,11 @@ function ClassifyCell({ lineId, lineLabel }: { lineId: string; lineLabel: string
         </p>
       ) : null}
       {state.done ? <p className="rk-fineprint">{state.done}</p> : null}
+      {released && !state.done && !state.error ? (
+        <p className="rk-fineprint" role="status">
+          {released}
+        </p>
+      ) : null}
       <form action={classify} className="rk-match-pick">
         <input type="hidden" name="lineId" value={lineId} />
         <label className="rk-sr-only" htmlFor={`c-${lineId}`}>
