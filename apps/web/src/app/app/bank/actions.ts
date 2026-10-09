@@ -13,6 +13,7 @@ import {
   viewOnlyRefusal,
 } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
+import { releaseMessage } from '@/lib/bank-release';
 
 export interface StatementState {
   error?: string;
@@ -197,7 +198,9 @@ async function matchLineActionUnguarded(
  *
  * The counterpart to matching by hand, and the reason an automatic match is
  * safe to offer at all: a merchant who spots a wrong one can undo it without
- * touching the statement or the posting.
+ * touching the statement or the posting. Releasing a CLASSIFICATION is the
+ * one release that moves the books: Rekoda reverses the entry it wrote for
+ * it (G-95), and the sentence says which happened.
  */
 async function unmatchLineActionUnguarded(
   _prev: StatementState,
@@ -212,13 +215,10 @@ async function unmatchLineActionUnguarded(
   const outcome = await unmatchBankLine(token, lineId);
   if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
 
-  revalidatePath('/app/bank');
-  return {
-    done:
-      outcome.released > 0
-        ? 'Released. The line and the entry are back where they were, both unmatched.'
-        : 'That line was not matched to anything.',
-  };
+  const said = releaseMessage(outcome);
+  /* A refusal changed nothing, so there is nothing to re-render. */
+  if ('done' in said) revalidatePath('/app/bank');
+  return said;
 }
 
 /**

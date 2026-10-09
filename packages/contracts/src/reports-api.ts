@@ -1687,9 +1687,23 @@ export const matchLineResponse = z.discriminatedUnion('outcome', [
 ]);
 
 export const unmatchLineRequest = z.object({ lineId: z.string().uuid() });
-export const unmatchLineResponse = z.object({
-  released: z.number().int().nonnegative(),
-});
+/**
+ * What a release did (G-95, OD-24). `released` stays for any reader of the
+ * old shape; `outcome` says WHICH release it was, because releasing a
+ * classification reverses the journal Rekoda wrote for it and releasing an
+ * ordinary match moves nothing, and the merchant is told which.
+ */
+export const unmatchLineResponse = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.literal('not_matched'), released: z.literal(0) }),
+  z.object({ outcome: z.literal('released_match'), released: z.literal(1) }),
+  z.object({ outcome: z.literal('released_classification'), released: z.literal(1) }),
+  /* The reversal is dated today and today's month is closed: nothing moved. */
+  z.object({
+    outcome: z.literal('period_closed'),
+    released: z.literal(0),
+    closedThrough: z.string(),
+  }),
+]);
 
 /**
  * §22.2's WHEN, as a door: the merchant classifies an unmatched line, and

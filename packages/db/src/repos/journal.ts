@@ -30,6 +30,25 @@ import { recordPostedDraft } from './journal-drafts.js';
 /** What the ledger calls an entry a person wrote rather than an event. */
 export const JOURNAL_SOURCE = 'journal';
 
+/**
+ * What the ledger calls the journal a bank-line classification implies
+ * (G-95, OD-24). Its source id is the LINE, not the journal number: the
+ * journal exists because the merchant said what that line was, and
+ * releasing the line has to be able to find, structurally, the posting
+ * that judgement created. A hand-written journal paired to the same line
+ * is `journal` and is never reversed by a release.
+ */
+export const BANK_CLASSIFICATION_SOURCE = 'bank_classification';
+
+/**
+ * Where a journal came from, when it is not the journal form.
+ *
+ * Deliberately narrow: trusted server code names one known origin; no
+ * caller supplies a free source type or id, and no request schema carries
+ * this. The journal number is minted the same way either way.
+ */
+export type JournalOrigin = { kind: 'bank_classification'; lineId: string };
+
 export interface JournalInput {
   businessId: string;
   /** Why. Required, because an entry nobody can explain is the one that hurts. */
@@ -50,6 +69,8 @@ export interface JournalInput {
   actor: string;
   /** One-shot key from the journal form. A resubmission posts nothing twice. */
   clientRef?: string | null;
+  /** Absent for the journal form. Set only by the bank classify door. */
+  origin?: JournalOrigin;
 }
 
 export interface JournalRecorded {
@@ -73,8 +94,8 @@ export async function recordJournal(tx: TenantDb, input: JournalInput): Promise<
     tx,
     input.businessId,
     { ...posting, memo: `${journalNumber}: ${input.memo}` },
-    JOURNAL_SOURCE,
-    journalNumber,
+    input.origin ? BANK_CLASSIFICATION_SOURCE : JOURNAL_SOURCE,
+    input.origin ? input.origin.lineId : journalNumber,
     { occurredAt: at, clientRef: input.clientRef ?? null },
   );
 

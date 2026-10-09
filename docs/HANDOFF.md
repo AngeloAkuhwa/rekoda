@@ -10,9 +10,9 @@
 
 | Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Current date**            | 8 October 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| **Current `main` SHA**      | `e539439` (8 Oct 2026, "fix: a mark left on a short answer makes it uncertain, never an action (G-85) (#266)"); before it `f2a155a` (#265, G-80), `f7d7119` (#264, docs), `3d462c1` (#263, G-89), `88b577c` (#262, G-81), `29dc934` (#261, Build 8), `f5ef123` (#259, Build 7), `3612fcf` (#260, Build 6), `f5fb1ce` (#258, G-23), `2abb8a1` (#256, G-49), `6df1b91` (#255, G-61), `ce4755a` (#254, G-77) and earlier                                                                               |
-| **Open branches**           | Build 9 (`fix/build9-command-bus-production-enforcement`, off `e539439`), the only issue in progress; its policy is OD-4, approved as OWN-22 (8 Oct 2026). G-80 (`f2a155a`) and G-85 (`e539439`) merged; the old G-80 WIP stays local as `backup/g80-wip-c9f2059` (never pushed)                                                                                                                                                                                                                    |
+| **Current date**            | 9 October 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| **Current `main` SHA**      | `8b59d26` (8 Oct 2026, "fix: make the command bus the default for every write (Build 9) (#267)"); before it `e539439` (#266, G-85), `f2a155a` (#265, G-80), `f7d7119` (#264, docs), `3d462c1` (#263, G-89), `88b577c` (#262, G-81), `29dc934` (#261, Build 8), `f5ef123` (#259, Build 7), `3612fcf` (#260, Build 6), `f5fb1ce` (#258, G-23), `2abb8a1` (#256, G-49), `6df1b91` (#255, G-61), `ce4755a` (#254, G-77) and earlier                                                                               |
+| **Open branches**           | G-95 (`fix/g95-bank-classification-release`, off `8b59d26`, PR #268), the only issue in progress; its policy is OD-24, approved as OWN-23 (8 Oct 2026). Build 9 (`8b59d26`), G-80 (`f2a155a`) and G-85 (`e539439`) merged; the old G-80 WIP stays local as `backup/g80-wip-c9f2059` (never pushed)                                                                                                                                                                                                                    |
 | **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 160 migrations on `main` (0000 to 0159); deployed to staging (automatic after CI on main since #249); never to production (the production stack boots on a clean CI runner since G-01); the Meta WhatsApp transport has been live-exercised on staging (real webhook ingress, outbound text and media); production Meta App Review and templates remain open; payment-provider live verification remains pending |
 | **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                               |
@@ -101,18 +101,22 @@ Build 9 follows G-65 directly; the long-term roadmap is otherwise unchanged):**
    depended on a model call. PR #265 made them a typed STOP from a closed list.
 2. **G-85 (MERGED, #266 as `e539439`; staging acceptance pending)**, combining or overlay marks on short deterministic answers: the same safety
    boundary as G-80.
-3. **Build 9 (IN PROGRESS, PR #267)**, command-bus production enforcement: all fourteen flags default on,
+3. **Build 9 (MERGED, #267 as `8b59d26`; staging deployment to be confirmed by `/health`; staging acceptance pending)**, command-bus production enforcement: all fourteen flags default on,
    `0` the per-command rollback (PlaceOrder's `0` refuses orders instead), any other value
-   invalid (OD-4, approved as OWN-22). **Before Angelo merges it**, check the staging
-   host's `.env` for any `REKODA_COMMAND_*` line (staging deploys on merge, and an empty
-   or `true` value now refuses to boot): remove each unless it is a deliberate `0`. Its
-   reviews recorded two pre-existing gaps: G-95 (releasing a classified bank line leaves
+   invalid (OD-4, approved as OWN-22). Angelo ran the pre-merge staging check on 8 Oct 2026: no
+   `REKODA_COMMAND_*` value in `.env`, in what Compose resolves, or in the running api or
+   worker (SAFE). Its reviews recorded two pre-existing gaps: G-95 (releasing a classified bank line leaves
    its journal posted, so classifying it again posts a second journal; owner decision
    OD-24) and G-96 (two simultaneous submits of one storefront form meter two units for
    one order; a mid-flight price change answers 500).
-4. **G-57**, AI metering before the role check (authorization ordering).
-5. **G-60**, identity facet conflicts lost silently (identity and privacy correctness).
-6. **G-07** (the AI launch harness, then the owner's live eval) **and G-59** (model-family
+4. **G-95 (IN DEVELOPMENT, PR #268)**, releasing a classified bank line reverses the journal
+   Rekoda wrote for it (OD-24 approved as OWN-23, Option A; no migration). Moved ahead of
+   G-57 by the owner on 8 Oct 2026: it duplicates posted journals. Found while fixing it,
+   recorded and not fixed: G-97 (forgetting a statement day strands a classified line's
+   journal; owner decision) and G-98 (classifying a line from a closed month answers 500).
+5. **G-57 (next after G-95)**, AI metering before the role check (authorization ordering).
+6. **G-60**, identity facet conflicts lost silently (identity and privacy correctness).
+7. **G-07** (the AI launch harness, then the owner's live eval) **and G-59** (model-family
    pricing matched by substring). The Nigerian evaluation corpus belongs with G-07; it has no
    gap ID of its own.
 

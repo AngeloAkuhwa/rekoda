@@ -213,6 +213,15 @@ export function describeAuditEvent(row: AuditRow): AuditDescription {
     };
   }
 
+  /* G-95: a classification released, its journal reversed rather than
+   * deleted. The ids stay in the stored value for anyone tracing it. */
+  if (entity === 'bank_line_match' && action === 'classification_released') {
+    return {
+      summary: 'Bank line classification released and its entry reversed',
+      amountK: null,
+    };
+  }
+
   /* Unknown shape. Name what happened and print nothing that was stored: a
    * writer added since this file was last read must be dull here, never loud. */
   return { summary: `${humanise(entity)}: ${humanise(action)}`, amountK: null };

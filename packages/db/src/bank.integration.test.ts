@@ -553,9 +553,9 @@ describe('pairing the two sides', () => {
 
     expect(
       await withBusiness(db, businessId, (tx) =>
-        bankRepo.unmatchLine(tx, { businessId, lineId: line.id, actor: 'user:1' }),
+        bankRepo.releaseLine(tx, { businessId, lineId: line.id, actor: 'user:1' }),
       ),
-    ).toBe(1);
+    ).toMatchObject({ outcome: 'released_match' });
 
     /* The line is still exactly what the bank said, and the posting is still
      * in the books: neither was ever altered by being matched. */
@@ -570,9 +570,9 @@ describe('pairing the two sides', () => {
     /* Releasing what is not matched is not an error, it is a no-op. */
     expect(
       await withBusiness(db, businessId, (tx) =>
-        bankRepo.unmatchLine(tx, { businessId, lineId: line.id, actor: 'user:1' }),
+        bankRepo.releaseLine(tx, { businessId, lineId: line.id, actor: 'user:1' }),
       ),
-    ).toBe(0);
+    ).toEqual({ outcome: 'not_matched' });
   });
 
   /* A merchant of one business must not be able to name another's posting,
