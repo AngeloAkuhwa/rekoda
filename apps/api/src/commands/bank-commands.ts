@@ -140,6 +140,9 @@ export async function prepareClassification(
   tx: TenantDb,
   input: ClassifyLineInput,
 ): Promise<ClassificationPrepared> {
+  /* Before the pre-check, so a forget of the line's day in flight finishes
+   * first and this reads its outcome, never a line about to go (G-97). */
+  await bankRepo.lockBankPairings(tx, input.businessId);
   const line = await bankRepo.lineFor(tx, input.businessId, input.lineId);
   if (!line) return { outcome: 'refused', reason: 'no_such_line' };
   if (line.matched) return { outcome: 'refused', reason: 'line_already_matched' };

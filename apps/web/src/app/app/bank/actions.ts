@@ -13,7 +13,7 @@ import {
   viewOnlyRefusal,
 } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
-import { releaseMessage } from '@/lib/bank-release';
+import { forgetMessage, releaseMessage } from '@/lib/bank-release';
 
 export interface StatementState {
   error?: string;
@@ -100,12 +100,10 @@ async function forgetDayActionUnguarded(
   const outcome = await forgetStatementDay(token, postedOn);
   if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
 
-  revalidatePath('/app/bank');
-  return outcome.removed === 0
-    ? { done: 'There was nothing from that day to remove.' }
-    : {
-        done: `Removed ${outcome.removed} ${outcome.removed === 1 ? 'line' : 'lines'} from that day. You can import them again at any time.`,
-      };
+  const said = forgetMessage(outcome);
+  /* A refusal changed nothing, so there is nothing to re-render. */
+  if ('done' in said) revalidatePath('/app/bank');
+  return said;
 }
 
 /**

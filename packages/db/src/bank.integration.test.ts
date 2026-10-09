@@ -220,7 +220,7 @@ describe('taking an import back out', () => {
     const removed = await withBusiness(db, businessId, (tx) =>
       bankRepo.forgetStatementDay(tx, { businessId, postedOn: '2026-08-05', actor: 'user:1' }),
     );
-    expect(removed).toBe(1);
+    expect(removed).toEqual({ removed: 1, reversed: [] });
     expect((await position(businessId)).lines).toBe(1);
 
     /* Forgotten means forgotten: the fingerprint is gone with the row, so the
@@ -234,7 +234,7 @@ describe('taking an import back out', () => {
       await withBusiness(db, businessId, (tx) =>
         bankRepo.forgetStatementDay(tx, { businessId, postedOn: '2026-08-05', actor: 'user:1' }),
       ),
-    ).toBe(0);
+    ).toEqual({ removed: 0, reversed: [] });
   });
 });
 
