@@ -1891,10 +1891,11 @@ describe('forgetting a statement day (G-97)', () => {
     expect(await nets(businessId)).toEqual({});
   });
 
-  /* Forget vs re-import: the import waits, then brings the day back whole,
-   * rather than counting lines about to be deleted as already here. */
+  /* Forget vs re-import, after the forget's DELETE: the unique index makes
+   * the import wait and then insert afresh. This pins the outcome; the next
+   * test pins the lock that covers the earlier window. */
   it('imports the day afresh when the upload arrives while the forget is committing', async () => {
-    const { businessId, auth } = await setUp('+2348177000426');
+    const { businessId, auth, line } = await setUp('+2348177000426');
     const forgetting = holdOpen(businessId, (tx) =>
       bankRepo.forgetStatementDay(tx, { businessId, postedOn: '2026-08-03', actor: 'user:held' }),
     );
@@ -1908,7 +1909,47 @@ describe('forgetting a statement day (G-97)', () => {
       imported: 1,
       duplicates: 0,
     });
-    expect(await linesOn(businessId, '2026-08-03')).toHaveLength(1);
+    const [fresh] = await linesOn(businessId, '2026-08-03');
+    expect(fresh).toBeDefined();
+    expect(fresh).not.toBe(line.id);
+  });
+
+  /* The window the index does not cover: a forget that holds the lock and
+   * has not yet deleted (it is still writing reversals). Parked there for
+   * real, then let run in the SAME transaction. Without the import taking
+   * the pairing lock, the import answers at once that every line is a
+   * duplicate, and then the forget deletes them: the day is gone. */
+  it('makes an import wait for a forget that has not yet deleted, then imports afresh', async () => {
+    const { businessId, auth, line } = await setUp('+2348177000427');
+    let resume!: () => void;
+    const midGate = new Promise<void>((resolve) => (resume = resolve));
+    held.push(resume);
+    let parked!: () => void;
+    const isParked = new Promise<void>((resolve) => (parked = resolve));
+    const forgetting = withBusiness(db, businessId, async (tx) => {
+      await bankRepo.lockBankPairings(tx, businessId);
+      parked();
+      await midGate;
+      return bankRepo.forgetStatementDay(tx, {
+        businessId,
+        postedOn: '2026-08-03',
+        actor: 'user:held',
+      });
+    });
+    await isParked;
+
+    const importing = post('/v1/bank/statement', { csv: ONE_CREDIT }, auth);
+    expect(await stillWaiting(importing)).toBe(true);
+    resume();
+
+    expect(await forgetting).toEqual({ removed: 1, reversed: [] });
+    expect(importStatementResponse.parse((await importing).json())).toMatchObject({
+      imported: 1,
+      duplicates: 0,
+    });
+    const after = await linesOn(businessId, '2026-08-03');
+    expect(after).toHaveLength(1);
+    expect(after[0]).not.toBe(line.id);
   });
 
   /* O: two forgets of the same day. One does the work; the other finds none. */

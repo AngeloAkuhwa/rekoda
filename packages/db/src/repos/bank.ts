@@ -68,9 +68,12 @@ export async function importStatementLines(
     chunkRows?: number;
   },
 ): Promise<ImportedStatement> {
-  /* Takes turns with a forget of the same day (G-97): read mid-forget, the
-   * lines about to go would count as duplicates, and the day would vanish
-   * behind an answer saying it was already here. */
+  /* Takes turns with a forget of the same day (G-97). The unique index
+   * alone covers an import arriving after the forget's DELETE: it waits on
+   * the deleted rows and then inserts. It does not cover one arriving
+   * earlier, while the forget is still writing reversals: those rows are
+   * still live, so they would count as duplicates and then be deleted, and
+   * the day would vanish behind an answer saying it was already here. */
   await lockBankPairings(tx, input.businessId);
   /* With PR-073 the DO NOTHING absorbs conflicts on BOTH identities: the
    * fingerprint (same content re-imported through any door) and the
@@ -991,9 +994,14 @@ export async function matchByHand(
  *
  * Taken by everything that writes or removes a line's match: a committing
  * reconcile, a hand match, a classification (before its pre-check), a
- * release and a forget; and by an import, so it never reads a day mid-forget. Row locks cannot do this job: the application role
- * holds no UPDATE on the append-only statement lines, so it cannot take
- * `FOR SHARE` or `FOR UPDATE` on them.
+ * release and a forget; and by an import, so none lands mid-forget. Row
+ * locks cannot do this job: the application role holds no UPDATE on the
+ * append-only statement lines, so it cannot take `FOR SHARE` or
+ * `FOR UPDATE` on them.
+ *
+ * A waiter is bounded by the 30s `statement_timeout`, so a very long
+ * import makes a pairing for the same business fail rather than queue;
+ * imports take seconds in practice.
  */
 export async function lockBankPairings(tx: TenantDb, businessId: string): Promise<void> {
   await tx.execute(

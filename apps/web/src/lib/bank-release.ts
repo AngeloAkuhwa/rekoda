@@ -41,7 +41,7 @@ export function forgetMessage(
 ): { done: string } | { error: string } {
   if (outcome.outcome === 'period_closed') {
     return {
-      error: `Your books are closed through ${periodLabel(outcome.closedThrough)}, so Rekoda cannot reverse the classifications on that day today. Nothing was removed.`,
+      error: `Your books are closed through ${periodLabel(outcome.closedThrough)}, so Rekoda cannot reverse the classification entries on that day today. Nothing was removed.`,
     };
   }
   if (outcome.removed === 0) return { done: 'There was nothing from that day to remove.' };
