@@ -1891,9 +1891,10 @@ describe('forgetting a statement day (G-97)', () => {
     expect(await nets(businessId)).toEqual({});
   });
 
-  /* Forget vs re-import, after the forget's DELETE: the unique index makes
-   * the import wait and then insert afresh. This pins the outcome; the next
-   * test pins the lock that covers the earlier window. */
+  /* Forget vs re-import, after the forget's DELETE: the import waits (on the
+   * pairing lock here; the unique index alone would also hold it) and then
+   * inserts afresh. This pins the outcome; the next test pins the lock that
+   * covers the earlier window. */
   it('imports the day afresh when the upload arrives while the forget is committing', async () => {
     const { businessId, auth, line } = await setUp('+2348177000426');
     const forgetting = holdOpen(businessId, (tx) =>
@@ -1909,9 +1910,9 @@ describe('forgetting a statement day (G-97)', () => {
       imported: 1,
       duplicates: 0,
     });
-    const [fresh] = await linesOn(businessId, '2026-08-03');
-    expect(fresh).toBeDefined();
-    expect(fresh).not.toBe(line.id);
+    const after = await linesOn(businessId, '2026-08-03');
+    expect(after).toHaveLength(1);
+    expect(after[0]).not.toBe(line.id);
   });
 
   /* The window the index does not cover: a forget that holds the lock and
@@ -1936,7 +1937,7 @@ describe('forgetting a statement day (G-97)', () => {
         actor: 'user:held',
       });
     });
-    await isParked;
+    await Promise.race([isParked, forgetting]);
 
     const importing = post('/v1/bank/statement', { csv: ONE_CREDIT }, auth);
     expect(await stillWaiting(importing)).toBe(true);
