@@ -607,6 +607,133 @@ describe('pairing the two sides, end to end', () => {
   });
 });
 
+/* Shared by the classification suites below (G-95 release, G-97 forget):
+ * they assert the money, not the number of journals. */
+const ONE_CREDIT = `Date,Description,Amount
+03/08/2026,TRF FROM ADEBAYO O,150000.00
+`;
+const CREDIT_AND_DEBIT = `Date,Description,Amount
+03/08/2026,TRF FROM ADEBAYO O,150000.00
+05/08/2026,POS PURCHASE SHOPRITE,-20000.00
+`;
+
+/** Each account's net (debit minus credit) in kobo, keyed by chart key. */
+async function nets(businessId: string): Promise<Partial<Record<AccountKey, number>>> {
+  const rows = await withBusiness(db, businessId, (tx) =>
+    tx.execute<{ code: string; net: string }>(sql`
+        SELECT a.code, SUM(e.debit_k - e.credit_k)::bigint AS net
+        FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+        WHERE e.business_id = ${businessId}::uuid
+        GROUP BY a.code
+      `),
+  );
+  return Object.fromEntries(
+    [...rows]
+      .filter((r) => Number(r.net) !== 0)
+      .map((r) => [KEY_BY_CODE[r.code] ?? r.code, Number(r.net)]),
+  );
+}
+
+/** Every posting's provenance, oldest first. */
+async function postings(businessId: string) {
+  const rows = await withBusiness(db, businessId, (tx) =>
+    tx.execute<{
+      id: string;
+      source_type: string;
+      source_id: string | null;
+      reverses_id: string | null;
+      month: string;
+    }>(sql`
+        SELECT id, source_type, source_id, reverses_id,
+               to_char(created_at AT TIME ZONE 'Africa/Lagos', 'YYYY-MM') AS month
+        FROM ledger_transactions WHERE business_id = ${businessId}::uuid
+        ORDER BY created_at, id
+      `),
+  );
+  return [...rows];
+}
+
+/** What the audit trail says happened to the pairing. */
+async function releaseAudits(businessId: string) {
+  const rows = await withBusiness(db, businessId, (tx) =>
+    tx.execute<{ action: string; old_value: unknown; new_value: unknown }>(sql`
+        SELECT action, old_value, new_value FROM audit_events
+        WHERE business_id = ${businessId}::uuid AND entity = 'bank_line_match'
+          AND action IN ('released', 'classification_released')
+        ORDER BY created_at, id
+      `),
+  );
+  return [...rows];
+}
+
+async function position(auth: Record<string, string>) {
+  return bankPositionResponse.parse(
+    (await app.inject({ method: 'GET', url: '/v1/bank/position', headers: auth })).json(),
+  );
+}
+
+const matchedTo = async (auth: Record<string, string>, lineId: string) =>
+  (await position(auth)).lines.find((l) => l.id === lineId)!.matchedTo;
+
+const classify = async (
+  auth: Record<string, string>,
+  lineId: string,
+  classification: Classification = 'OWNER_CAPITAL',
+) =>
+  classifyLineResponse.parse(
+    (await post('/v1/bank/classify', { lineId, classification }, auth)).json(),
+  );
+
+const release = async (auth: Record<string, string>, lineId: string) =>
+  unmatchLineResponse.parse((await post('/v1/bank/unmatch', { lineId }, auth)).json());
+
+/** One statement, one business, the line of the amount asked for. */
+async function setUp(phone: string, csv = ONE_CREDIT, amountK = 15_000_000) {
+  const { businessId, auth } = await onboard(phone);
+  await post('/v1/bank/statement', { csv }, auth);
+  const line = (await position(auth)).lines.find((l) => l.amountK === amountK)!;
+  return { businessId, auth, line };
+}
+
+/**
+ * A transaction held open after its work, so a second one can be started
+ * against it for real rather than run one after the other.
+ */
+const held: (() => void)[] = [];
+/* A test that fails while holding a transaction must not hold it into the
+ * next test: every gate opens when the test ends, pass or fail. */
+afterEach(() => {
+  for (const letGo of held.splice(0)) letGo();
+});
+
+function holdOpen<T>(businessId: string, work: (tx: TenantDb) => Promise<T>) {
+  let letGo!: () => void;
+  const gate = new Promise<void>((resolve) => (letGo = resolve));
+  held.push(letGo);
+  let reached!: (value: T) => void;
+  const workDone = new Promise<T>((resolve) => (reached = resolve));
+  const committed = withBusiness(db, businessId, async (tx) => {
+    const value = await work(tx);
+    reached(value);
+    await gate;
+    return value;
+  });
+  return {
+    ready: Promise.race([workDone, committed]),
+    commit: () => {
+      letGo();
+      return committed;
+    },
+  };
+}
+
+/* Long enough for the second transaction to reach the row lock it waits on. */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 300));
+
+/** Whether `pending` is still waiting after a settle: proof of overlap. */
+const stillWaiting = (pending: Promise<unknown>) =>
+  Promise.race([pending.then(() => false), settle().then(() => true)]);
+
 /**
  * Releasing a classification (G-95, OD-24 Option A).
  *
@@ -617,131 +744,6 @@ describe('pairing the two sides, end to end', () => {
  * the money, not the number of journals.
  */
 describe('releasing a classification (G-95)', () => {
-  const ONE_CREDIT = `Date,Description,Amount
-03/08/2026,TRF FROM ADEBAYO O,150000.00
-`;
-  const CREDIT_AND_DEBIT = `Date,Description,Amount
-03/08/2026,TRF FROM ADEBAYO O,150000.00
-05/08/2026,POS PURCHASE SHOPRITE,-20000.00
-`;
-
-  /** Each account's net (debit minus credit) in kobo, keyed by chart key. */
-  async function nets(businessId: string): Promise<Partial<Record<AccountKey, number>>> {
-    const rows = await withBusiness(db, businessId, (tx) =>
-      tx.execute<{ code: string; net: string }>(sql`
-        SELECT a.code, SUM(e.debit_k - e.credit_k)::bigint AS net
-        FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
-        WHERE e.business_id = ${businessId}::uuid
-        GROUP BY a.code
-      `),
-    );
-    return Object.fromEntries(
-      [...rows]
-        .filter((r) => Number(r.net) !== 0)
-        .map((r) => [KEY_BY_CODE[r.code] ?? r.code, Number(r.net)]),
-    );
-  }
-
-  /** Every posting's provenance, oldest first. */
-  async function postings(businessId: string) {
-    const rows = await withBusiness(db, businessId, (tx) =>
-      tx.execute<{
-        id: string;
-        source_type: string;
-        source_id: string | null;
-        reverses_id: string | null;
-        month: string;
-      }>(sql`
-        SELECT id, source_type, source_id, reverses_id,
-               to_char(created_at AT TIME ZONE 'Africa/Lagos', 'YYYY-MM') AS month
-        FROM ledger_transactions WHERE business_id = ${businessId}::uuid
-        ORDER BY created_at, id
-      `),
-    );
-    return [...rows];
-  }
-
-  /** What the audit trail says happened to the pairing. */
-  async function releaseAudits(businessId: string) {
-    const rows = await withBusiness(db, businessId, (tx) =>
-      tx.execute<{ action: string; old_value: unknown; new_value: unknown }>(sql`
-        SELECT action, old_value, new_value FROM audit_events
-        WHERE business_id = ${businessId}::uuid AND entity = 'bank_line_match'
-          AND action IN ('released', 'classification_released')
-        ORDER BY created_at, id
-      `),
-    );
-    return [...rows];
-  }
-
-  async function position(auth: Record<string, string>) {
-    return bankPositionResponse.parse(
-      (await app.inject({ method: 'GET', url: '/v1/bank/position', headers: auth })).json(),
-    );
-  }
-
-  const matchedTo = async (auth: Record<string, string>, lineId: string) =>
-    (await position(auth)).lines.find((l) => l.id === lineId)!.matchedTo;
-
-  const classify = async (
-    auth: Record<string, string>,
-    lineId: string,
-    classification: Classification = 'OWNER_CAPITAL',
-  ) =>
-    classifyLineResponse.parse(
-      (await post('/v1/bank/classify', { lineId, classification }, auth)).json(),
-    );
-
-  const release = async (auth: Record<string, string>, lineId: string) =>
-    unmatchLineResponse.parse((await post('/v1/bank/unmatch', { lineId }, auth)).json());
-
-  /** One statement, one business, the line of the amount asked for. */
-  async function setUp(phone: string, csv = ONE_CREDIT, amountK = 15_000_000) {
-    const { businessId, auth } = await onboard(phone);
-    await post('/v1/bank/statement', { csv }, auth);
-    const line = (await position(auth)).lines.find((l) => l.amountK === amountK)!;
-    return { businessId, auth, line };
-  }
-
-  /**
-   * A transaction held open after its work, so a second one can be started
-   * against it for real rather than run one after the other.
-   */
-  const held: (() => void)[] = [];
-  /* A test that fails while holding a transaction must not hold it into the
-   * next test: every gate opens when the test ends, pass or fail. */
-  afterEach(() => {
-    for (const letGo of held.splice(0)) letGo();
-  });
-
-  function holdOpen<T>(businessId: string, work: (tx: TenantDb) => Promise<T>) {
-    let letGo!: () => void;
-    const gate = new Promise<void>((resolve) => (letGo = resolve));
-    held.push(letGo);
-    let reached!: (value: T) => void;
-    const workDone = new Promise<T>((resolve) => (reached = resolve));
-    const committed = withBusiness(db, businessId, async (tx) => {
-      const value = await work(tx);
-      reached(value);
-      await gate;
-      return value;
-    });
-    return {
-      ready: Promise.race([workDone, committed]),
-      commit: () => {
-        letGo();
-        return committed;
-      },
-    };
-  }
-
-  /* Long enough for the second transaction to reach the row lock it waits on. */
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 300));
-
-  /** Whether `pending` is still waiting after a settle: proof of overlap. */
-  const stillWaiting = (pending: Promise<unknown>) =>
-    Promise.race([pending.then(() => false), settle().then(() => true)]);
-
   it('books one bank credit once after it is classified, released and classified again', async () => {
     const { businessId, auth, line } = await setUp('+2348177000201');
     expect(await nets(businessId)).toEqual({});
@@ -1238,6 +1240,39 @@ describe('releasing a classification (G-95)', () => {
     const config = app.get<ApiConfig>(CONFIG);
     expect(config.commandPostJournal).toBe(true);
     expect(config.commandConfirmReconciliation).toBe(true);
+  });
+});
+
+/**
+ * Forgetting a statement day that holds a classification (G-97).
+ *
+ * Forgetting deletes the day's lines and their matches go with them. A
+ * classification's journal exists only because a line was classified, so it
+ * used to outlive the evidence that created it: re-import the same day,
+ * classify the fresh line, and one physical movement was booked twice.
+ */
+describe('forgetting a statement day (G-97)', () => {
+  const forget = async (auth: Record<string, string>, postedOn: string) =>
+    (await post('/v1/bank/statement/forget', { postedOn }, auth)).json() as Record<string, unknown>;
+
+  it('books one bank credit once after it is classified, forgotten, re-imported and classified again', async () => {
+    const { businessId, auth, line } = await setUp('+2348177000401');
+    expect(await classify(auth, line.id)).toMatchObject({ outcome: 'classified' });
+    expect(await nets(businessId)).toEqual({ BANK: 15_000_000, OWNERS_EQUITY: -15_000_000 });
+
+    expect(await forget(auth, '2026-08-03')).toMatchObject({ removed: 1 });
+
+    expect(
+      importStatementResponse.parse(
+        (await post('/v1/bank/statement', { csv: ONE_CREDIT }, auth)).json(),
+      ),
+    ).toMatchObject({ imported: 1, duplicates: 0 });
+    const again = (await position(auth)).lines.find((l) => l.amountK === 15_000_000)!;
+    expect(again.id).not.toBe(line.id);
+    expect(await classify(auth, again.id)).toMatchObject({ outcome: 'classified' });
+
+    /* One ₦150,000 credit, one owner contribution. Not ₦300,000 of either. */
+    expect(await nets(businessId)).toEqual({ BANK: 15_000_000, OWNERS_EQUITY: -15_000_000 });
   });
 });
 
