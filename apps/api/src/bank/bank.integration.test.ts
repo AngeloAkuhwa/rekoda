@@ -870,7 +870,9 @@ describe('releasing a classification (G-95)', () => {
     await post(
       '/v1/reports/journal',
       {
-        memo: 'My savings',
+        /* Written to look like a classification. Identity is the ledger's
+         * provenance, never the words, so this is still an ordinary entry. */
+        memo: 'Owner capital',
         amountK: 15_000_000,
         intoAccount: 'BANK',
         outOfAccount: 'OWNERS_EQUITY',
