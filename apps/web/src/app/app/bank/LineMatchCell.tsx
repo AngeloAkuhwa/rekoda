@@ -1,6 +1,6 @@
 'use client';
 
-import { useActionState, useState } from 'react';
+import { useActionState } from 'react';
 import { Button } from '@/components/ui/Button';
 import {
   classifyLineAction,
@@ -64,18 +64,7 @@ export function LineMatchCell({
     unmatchLineAction,
     {},
   );
-  /* Both states live as long as the page does, so "which one is current"
-   * is the action the merchant took LAST, never whichever has a message. */
-  const [last, setLast] = useState<'match' | 'release' | null>(null);
-  const state = last === 'match' ? matchState : releaseState;
-  const matchNow = (formData: FormData) => {
-    setLast('match');
-    match(formData);
-  };
-  const releaseNow = (formData: FormData) => {
-    setLast('release');
-    release(formData);
-  };
+  const state = matchState.error || matchState.done ? matchState : releaseState;
 
   if (matchedTo) {
     if (!canPair) {
@@ -95,7 +84,7 @@ export function LineMatchCell({
             {state.error}
           </p>
         ) : null}
-        <form action={releaseNow}>
+        <form action={release}>
           <input type="hidden" name="lineId" value={lineId} />
           <Button
             type="submit"
@@ -117,7 +106,7 @@ export function LineMatchCell({
   /* What a release just did (G-95). The line is unmatched after it, so the
    * sentence has to be said HERE: a classification's entry was reversed,
    * an ordinary entry was untouched, and the merchant is told which. */
-  const released = last === 'release' ? (releaseState.done ?? null) : null;
+  const released = releaseState.done ?? null;
 
   if (candidates.length === 0) {
     return <ClassifyCell lineId={lineId} lineLabel={lineLabel} released={released} />;
@@ -130,12 +119,12 @@ export function LineMatchCell({
           {state.error}
         </p>
       ) : null}
-      {released ? (
+      {released && !matchState.done ? (
         <p className="rk-fineprint" role="status">
           {released}
         </p>
       ) : null}
-      <form action={matchNow} className="rk-match-pick">
+      <form action={match} className="rk-match-pick">
         <input type="hidden" name="lineId" value={lineId} />
         <label className="rk-sr-only" htmlFor={`m-${lineId}`}>
           Which entry in your books is this line

@@ -72,6 +72,8 @@ test('every release of an ordinary match says the entry is untouched', async ({ 
   await onboard(page, freshPhone());
 
   await page.goto('/app/reports');
+  // The journal form sits in a closed <details> until asked for.
+  await page.locator('summary', { hasText: 'Move money, or fix an entry' }).click();
   await page.fill('#amount', '150000');
   await page.selectOption('#outOf', 'OWNERS_EQUITY');
   await page.selectOption('#into', 'BANK');
