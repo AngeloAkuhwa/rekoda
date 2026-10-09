@@ -12,7 +12,7 @@
  * person. What a person then decides is stored as their decision, not the
  * rule's.
  */
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import {
   KEY_BY_CODE,
   fingerprintLines,
@@ -374,26 +374,19 @@ export interface ForgottenDay {
  * pairs a line (classify, hand match, release, reconcile), so a pairing in
  * flight commits first and is seen, or waits and then finds no line. An
  * import takes the same lock, so it lands wholly before (and is forgotten
- * with the day) or wholly after (and stays). Only the lines read here are
- * deleted, all the same.
+ * with the day) or wholly after (and stays). That is also why the day is
+ * named by its business and date, never by a list of line ids: one day can
+ * hold more lines than a statement may carry bind parameters.
  */
 export async function forgetStatementDay(
   tx: TenantDb,
   input: { businessId: string; postedOn: string; actor: string },
 ): Promise<ForgottenDay> {
   await lockBankPairings(tx, input.businessId);
-  const dayLines = await tx
-    .select({ id: bankStatementLines.id })
-    .from(bankStatementLines)
-    .where(
-      and(
-        eq(bankStatementLines.businessId, input.businessId),
-        eq(bankStatementLines.postedOn, input.postedOn),
-      ),
-    )
-    .orderBy(bankStatementLines.id);
-  if (dayLines.length === 0) return { removed: 0, reversed: [] };
-  const lineIds = dayLines.map((l) => l.id);
+  const theDay = and(
+    eq(bankStatementLines.businessId, input.businessId),
+    eq(bankStatementLines.postedOn, input.postedOn),
+  );
 
   /* The day's classifications, by provenance: the matched posting is the
    * line's own `bank_classification`, not itself a reversal, and not
@@ -412,10 +405,16 @@ export async function forgetStatementDay(
         eq(ledgerTransactions.id, bankLineMatches.transactionId),
       ),
     )
+    .innerJoin(
+      bankStatementLines,
+      and(
+        eq(bankStatementLines.businessId, bankLineMatches.businessId),
+        eq(bankStatementLines.id, bankLineMatches.lineId),
+      ),
+    )
     .where(
       and(
-        eq(bankLineMatches.businessId, input.businessId),
-        inArray(bankLineMatches.lineId, lineIds),
+        theDay,
         eq(ledgerTransactions.sourceType, BANK_CLASSIFICATION_SOURCE),
         sql`${ledgerTransactions.sourceId} = ${bankLineMatches.lineId}::text`,
         isNull(ledgerTransactions.reversesId),
@@ -443,13 +442,11 @@ export async function forgetStatementDay(
 
   const removed = await tx
     .delete(bankStatementLines)
-    .where(
-      and(
-        eq(bankStatementLines.businessId, input.businessId),
-        inArray(bankStatementLines.id, lineIds),
-      ),
-    )
+    .where(theDay)
     .returning({ id: bankStatementLines.id });
+  /* Nothing on that day: nothing reversed either, since a classification
+   * needs a line. No audit row, as before. */
+  if (removed.length === 0) return { removed: 0, reversed: [] };
 
   await tx.insert(auditEvents).values({
     businessId: input.businessId,
