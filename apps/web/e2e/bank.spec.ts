@@ -65,22 +65,22 @@ test('releasing a classification says its entry was reversed', async ({ page }) 
   await expect(page.getByRole('button', { name: /^Record .+ as what you chose$/ })).toBeVisible();
 });
 
-/* An ordinary entry paired, released, paired again and released again: the
+/* An ordinary posting paired, released, paired again and released again: the
  * second release must say what it did too, not stay silent because an
  * earlier pairing in the same cell succeeded. */
 test('every release of an ordinary match says the entry is untouched', async ({ page }) => {
   await onboard(page, freshPhone());
 
+  /* An ordinary bank posting that existed before any statement: the books
+   * opened with ₦150,000 in the bank on the line's day. (A fresh business's
+   * reports page offers only this; the journal form needs a posted month.) */
   await page.goto('/app/reports');
-  // The journal form sits in a closed <details> until asked for.
-  await page.locator('summary', { hasText: 'Move money, or fix an entry' }).click();
-  await page.fill('#amount', '150000');
-  await page.selectOption('#outOf', 'OWNERS_EQUITY');
-  await page.selectOption('#into', 'BANK');
-  await page.fill('#memo', 'Savings into the business account');
-  await page.fill('#occurredOn', '2026-08-03');
-  await page.getByRole('button', { name: /Record this correction|Recording/ }).click();
-  await expect(page.getByText(/^Recorded as JNL-/)).toBeVisible();
+  await page.locator('summary', { hasText: 'Open your books with what you already had' }).click();
+  await page.fill('#asAt', '2026-08-03');
+  await page.fill('#bank', '150000');
+  await page.getByRole('button', { name: /Open my books|Opening/ }).click();
+  // Opened: the page no longer offers to open the books.
+  await expect(page.getByText('Open your books with what you already had')).toHaveCount(0);
 
   await page.goto('/app/bank');
   await page.setInputFiles('#statement', {
