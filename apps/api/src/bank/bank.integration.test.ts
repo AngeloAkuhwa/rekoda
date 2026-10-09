@@ -16,8 +16,8 @@ import {
   reconcileResponse,
   matchLineResponse,
 } from '@rekoda/contracts';
-import { lagosDay } from '@rekoda/core';
-import { createDb, issueRepo, withBusiness, type Db } from '@rekoda/db';
+import { KEY_BY_CODE, lagosDay, type AccountKey } from '@rekoda/core';
+import { createDb, issueRepo, sql, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 
@@ -585,6 +585,79 @@ describe('pairing the two sides, end to end', () => {
       matched: 0,
       unmatchedLines: 0,
     });
+  });
+});
+
+/**
+ * Releasing a classification (G-95, OD-24 Option A).
+ *
+ * A classification is not a pairing of two facts that existed apart: the
+ * journal exists BECAUSE the merchant said what this line was. Releasing it
+ * used to unpair the line and leave that journal standing, so classifying
+ * the line again booked the same money a second time. These tests assert
+ * the money, not the number of journals.
+ */
+describe('releasing a classification (G-95)', () => {
+  const ONE_CREDIT = `Date,Description,Amount
+03/08/2026,TRF FROM ADEBAYO O,150000.00
+`;
+
+  /** Each account's net (debit minus credit) in kobo, keyed by chart key. */
+  async function nets(businessId: string): Promise<Partial<Record<AccountKey, number>>> {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ code: string; net: string }>(sql`
+        SELECT a.code, SUM(e.debit_k - e.credit_k)::bigint AS net
+        FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+        WHERE e.business_id = ${businessId}::uuid
+        GROUP BY a.code
+      `),
+    );
+    return Object.fromEntries(
+      [...rows]
+        .filter((r) => Number(r.net) !== 0)
+        .map((r) => [KEY_BY_CODE[r.code] ?? r.code, Number(r.net)]),
+    );
+  }
+
+  async function position(auth: Record<string, string>) {
+    return bankPositionResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/bank/position', headers: auth })).json(),
+    );
+  }
+
+  it('books one bank credit once after it is classified, released and classified again', async () => {
+    const { businessId, auth } = await onboard('+2348177000201');
+    await post('/v1/bank/statement', { csv: ONE_CREDIT }, auth);
+    const line = (await position(auth)).lines.find((l) => l.amountK === 15_000_000)!;
+    expect(await nets(businessId)).toEqual({});
+
+    const classify = async () =>
+      classifyLineResponse.parse(
+        (
+          await post(
+            '/v1/bank/classify',
+            { lineId: line.id, classification: 'OWNER_CAPITAL' },
+            auth,
+          )
+        ).json(),
+      );
+
+    expect(await classify()).toMatchObject({ outcome: 'classified' });
+    const first = (await position(auth)).lines.find((l) => l.id === line.id)!.matchedTo!;
+    expect(await nets(businessId)).toEqual({ BANK: 15_000_000, OWNERS_EQUITY: -15_000_000 });
+
+    expect((await post('/v1/bank/unmatch', { lineId: line.id }, auth)).json()).toMatchObject({
+      released: 1,
+    });
+    expect((await position(auth)).lines.find((l) => l.id === line.id)!.matchedTo).toBeNull();
+
+    expect(await classify()).toMatchObject({ outcome: 'classified' });
+    const second = (await position(auth)).lines.find((l) => l.id === line.id)!.matchedTo!;
+    expect(second.transactionId).not.toBe(first.transactionId);
+
+    /* One ₦150,000 credit: the bank went up ₦150,000 and the owner put in
+     * ₦150,000. Not ₦300,000 of either. */
+    expect(await nets(businessId)).toEqual({ BANK: 15_000_000, OWNERS_EQUITY: -15_000_000 });
   });
 });
 
