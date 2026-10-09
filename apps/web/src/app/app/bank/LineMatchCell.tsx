@@ -1,6 +1,6 @@
 'use client';
 
-import { useActionState } from 'react';
+import { useActionState, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import {
   classifyLineAction,
@@ -64,7 +64,18 @@ export function LineMatchCell({
     unmatchLineAction,
     {},
   );
-  const state = matchState.error || matchState.done ? matchState : releaseState;
+  /* Both states live as long as the page does, so "which one is current"
+   * is the action the merchant took LAST, never whichever has a message. */
+  const [last, setLast] = useState<'match' | 'release' | null>(null);
+  const state = last === 'match' ? matchState : releaseState;
+  const matchNow = (formData: FormData) => {
+    setLast('match');
+    match(formData);
+  };
+  const releaseNow = (formData: FormData) => {
+    setLast('release');
+    release(formData);
+  };
 
   if (matchedTo) {
     if (!canPair) {
@@ -84,7 +95,7 @@ export function LineMatchCell({
             {state.error}
           </p>
         ) : null}
-        <form action={release}>
+        <form action={releaseNow}>
           <input type="hidden" name="lineId" value={lineId} />
           <Button
             type="submit"
@@ -103,8 +114,13 @@ export function LineMatchCell({
     return <span className="rk-fineprint">Not matched yet.</span>;
   }
 
+  /* What a release just did (G-95). The line is unmatched after it, so the
+   * sentence has to be said HERE: a classification's entry was reversed,
+   * an ordinary entry was untouched, and the merchant is told which. */
+  const released = last === 'release' ? (releaseState.done ?? null) : null;
+
   if (candidates.length === 0) {
-    return <ClassifyCell lineId={lineId} lineLabel={lineLabel} />;
+    return <ClassifyCell lineId={lineId} lineLabel={lineLabel} released={released} />;
   }
 
   return (
@@ -114,7 +130,12 @@ export function LineMatchCell({
           {state.error}
         </p>
       ) : null}
-      <form action={match} className="rk-match-pick">
+      {released ? (
+        <p className="rk-fineprint" role="status">
+          {released}
+        </p>
+      ) : null}
+      <form action={matchNow} className="rk-match-pick">
         <input type="hidden" name="lineId" value={lineId} />
         <label className="rk-sr-only" htmlFor={`m-${lineId}`}>
           Which entry in your books is this line
@@ -170,7 +191,16 @@ function decidedLabel(
  * refund, their own cash moving. One submit posts the entry that judgement
  * implies and pairs it — Rekoda never decides this silently.
  */
-function ClassifyCell({ lineId, lineLabel }: { lineId: string; lineLabel: string }) {
+function ClassifyCell({
+  lineId,
+  lineLabel,
+  released,
+}: {
+  lineId: string;
+  lineLabel: string;
+  /** What the release that left this line unmatched did, if one just ran. */
+  released: string | null;
+}) {
   const [state, classify, classifying] = useActionState<StatementState, FormData>(
     classifyLineAction,
     {},
@@ -186,6 +216,11 @@ function ClassifyCell({ lineId, lineLabel }: { lineId: string; lineLabel: string
         </p>
       ) : null}
       {state.done ? <p className="rk-fineprint">{state.done}</p> : null}
+      {released && !state.done && !state.error ? (
+        <p className="rk-fineprint" role="status">
+          {released}
+        </p>
+      ) : null}
       <form action={classify} className="rk-match-pick">
         <input type="hidden" name="lineId" value={lineId} />
         <label className="rk-sr-only" htmlFor={`c-${lineId}`}>

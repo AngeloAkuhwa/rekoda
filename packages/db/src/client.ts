@@ -69,6 +69,13 @@ export const LOCK_CLASS = {
    * confirmations of one purchase on two connections book it once.
    */
   purchaseIdentity: 3,
+  /**
+   * One business's bank pairings (G-95): a classification release and a
+   * committing reconcile take turns, so the rule never reads the books from
+   * before a release and the pairings from after it, and re-pairs a line
+   * with the journal that release just reversed.
+   */
+  bankPairing: 4,
 } as const;
 
 /**

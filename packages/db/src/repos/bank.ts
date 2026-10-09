@@ -14,19 +14,26 @@
  */
 import { and, eq, sql } from 'drizzle-orm';
 import {
+  KEY_BY_CODE,
   fingerprintLines,
   matchStatement,
   paymentReferencesIn,
+  reversal,
   type BankStatementLine,
+  type LedgerLine,
 } from '@rekoda/core';
-import type { Db, TenantDb } from '../client.js';
+import { LOCK_CLASS, type Db, type TenantDb } from '../client.js';
 import { codeOf } from './accounts.js';
+import { writePosting } from './issue.js';
+import { BANK_CLASSIFICATION_SOURCE } from './journal.js';
 import {
   bankLineMatches,
   bankStatementLines,
   financialAccountConnections,
+  ledgerEntries,
+  ledgerTransactions,
 } from '../schema/finance.js';
-import { financialAccounts } from '../schema/accounts.js';
+import { accounts, financialAccounts } from '../schema/accounts.js';
 import { auditEvents } from '../schema/ops.js';
 
 export interface ImportedStatement {
@@ -399,6 +406,35 @@ export interface Reconciliation {
 }
 
 /**
+ * A released classification and its reversal, kept off the reconciliation
+ * (G-95, OD-24).
+ *
+ * Releasing a classification reverses the journal Rekoda wrote for it, and
+ * both postings move the bank: offered as candidates, or counted as money
+ * the statement never saw, they would be two "unexplained" entries that
+ * together are nothing. Narrow on purpose, and structural: only a
+ * `bank_classification` posting with a reversal of the SAME line, and that
+ * reversal. Every other reversal (a voided expense paid from the bank, a
+ * voided invoice) stays exactly as visible as it was.
+ *
+ * `alias` is the query's own name for `ledger_transactions`; the SQL carries
+ * no value from outside.
+ */
+const notAReleasedClassification = (alias: 't' | 'lt') =>
+  sql.raw(`
+      AND NOT (${alias}.source_type = '${BANK_CLASSIFICATION_SOURCE}' AND (
+        EXISTS (SELECT 1 FROM ledger_transactions rev
+                 WHERE rev.business_id = ${alias}.business_id
+                   AND rev.reverses_id = ${alias}.id
+                   AND rev.source_type = ${alias}.source_type
+                   AND rev.source_id = ${alias}.source_id)
+        OR EXISTS (SELECT 1 FROM ledger_transactions orig
+                    WHERE orig.business_id = ${alias}.business_id
+                      AND orig.id = ${alias}.reverses_id
+                      AND orig.source_type = ${alias}.source_type
+                      AND orig.source_id = ${alias}.source_id)))`);
+
+/**
  * Movement on the merchant's own bank account, one figure per posting.
  *
  * Grouped by transaction rather than listed by entry, because a posting is
@@ -435,7 +471,7 @@ async function bankMovements(
     FROM ledger_entries e
     JOIN accounts acc ON acc.id = e.account_id
     JOIN ledger_transactions lt ON lt.id = e.transaction_id
-    WHERE e.business_id = ${businessId}::uuid AND acc.code = ${codeOf('BANK')}
+    WHERE e.business_id = ${businessId}::uuid AND acc.code = ${codeOf('BANK')}${notAReleasedClassification('lt')}
     GROUP BY e.transaction_id, (e.created_at AT TIME ZONE 'Africa/Lagos')::date
     HAVING SUM(e.debit_k) - SUM(e.credit_k) <> 0
   `);
@@ -464,6 +500,11 @@ export async function reconcile(
   tx: TenantDb,
   input: { businessId: string; commit: boolean; batchSize?: number },
 ): Promise<Reconciliation> {
+  /* A committing pass takes turns with a classification release (G-95).
+   * Its reads are separate statements, so without this it could read the
+   * movements from before a release and the pairings from after it, and
+   * pair the line with the journal that release just reversed. */
+  if (input.commit) await lockBankPairings(tx, input.businessId);
   const [lines, movements, existing] = await Promise.all([
     /* The WHOLE statement, not a page of it: the counts this returns sit on
      * the same screen as an uncapped COUNT(*), and a rule fed five thousand
@@ -629,7 +670,7 @@ export async function openMovements(
     JOIN accounts acc ON acc.id = e.account_id
     JOIN ledger_transactions t ON t.id = e.transaction_id
     WHERE e.business_id = ${businessId}::uuid
-      AND acc.code = ${codeOf('BANK')}${onlyIds}
+      AND acc.code = ${codeOf('BANK')}${onlyIds}${notAReleasedClassification('t')}
       AND NOT EXISTS (
         SELECT 1 FROM bank_line_matches m
          WHERE m.business_id = ${businessId}::uuid
@@ -839,20 +880,69 @@ export async function matchByHand(
   return { outcome: 'matched' };
 }
 
+/** One business's pairings, one writer at a time (`LOCK_CLASS.bankPairing`). */
+async function lockBankPairings(tx: TenantDb, businessId: string): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(${LOCK_CLASS.bankPairing}, hashtext(${businessId}))`,
+  );
+}
+
+/** What a release did, so the merchant is told the truth about it. */
+export type ReleaseOutcome =
+  | { outcome: 'not_matched' }
+  /** Two facts that existed apart are no longer paired. Nothing posted. */
+  | { outcome: 'released_match'; transactionId: string }
+  /** The journal Rekoda wrote for this line's classification is reversed. */
+  | {
+      outcome: 'released_classification';
+      originalTransactionId: string;
+      reversalTransactionId: string;
+    };
+
 /**
- * Undo a pairing.
- *
- * A DELETE, never an UPDATE into a different match: the application holds no
- * UPDATE on this table, and releasing then deciding again is two facts a
- * merchant can follow in the audit trail rather than one that overwrote the
- * other. The line and the posting are left exactly as they were, because
- * neither was ever changed by being matched.
+ * A classification whose stored posting cannot be named in the chart.
+ * Thrown so the release rolls back whole: reversing what cannot be named
+ * would be worse than refusing, and the match must not go without it.
  */
-export async function unmatchLine(
+export class UnreversibleClassification extends Error {
+  constructor(public readonly transactionId: string) {
+    super(`classification posting ${transactionId} cannot be reversed from its stored entries`);
+  }
+}
+
+/**
+ * Undo a pairing, and what the pairing meant (G-95, OD-24 Option A).
+ *
+ * Two different things share the Release button. A line paired with a
+ * posting that existed on its own (a sale, an expense, a journal somebody
+ * wrote) is two facts no longer said to correspond: the pairing goes and
+ * the books do not move. A line Rekoda CLASSIFIED is different: the journal
+ * exists only because the merchant said what that money was, so releasing
+ * the judgement reverses it. Left standing, a second classification of the
+ * same line booked the same money twice.
+ *
+ * Which one it is comes from the ledger's own provenance and nothing else:
+ * the matched posting is `bank_classification` for THIS line and is not
+ * itself a reversal. No memo, reason, account pair or date is read.
+ * Classifications posted before this rule carry `journal` and are released
+ * the ordinary way; they are not inferred.
+ *
+ * The DELETE is the claim, made before anything is written, as the voids
+ * claim their row first: it takes the match row's lock, so a second release
+ * arriving together waits, then finds nothing and posts nothing. A
+ * committing reconcile takes turns with it under `LOCK_CLASS.bankPairing`,
+ * so the rule cannot pair the line again with the journal being reversed. The
+ * reversal is dated today, like every void, and a refusal from the ledger
+ * (`PeriodClosed`) rolls the claim back with everything else. The
+ * application holds no UPDATE here, and `ledger_tx_reversal_once_ux` stands
+ * behind the claim in case anything ever gets past it.
+ */
+export async function releaseLine(
   tx: TenantDb,
   input: { businessId: string; lineId: string; actor: string },
-): Promise<number> {
-  const removed = await tx
+): Promise<ReleaseOutcome> {
+  await lockBankPairings(tx, input.businessId);
+  const [claimed] = await tx
     .delete(bankLineMatches)
     .where(
       and(
@@ -860,20 +950,98 @@ export async function unmatchLine(
         eq(bankLineMatches.lineId, input.lineId),
       ),
     )
-    .returning({ transactionId: bankLineMatches.transactionId });
+    .returning({ lineId: bankLineMatches.lineId, transactionId: bankLineMatches.transactionId });
+  if (!claimed) return { outcome: 'not_matched' };
+  /* The line's id as the database holds it. The caller's spelling matched
+   * the uuid column case-insensitively, but `source_id` is text, and an
+   * upper-case id must not turn a classification into an ordinary release. */
+  const lineId = claimed.lineId;
 
-  if (removed.length > 0) {
+  const [matched] = await tx
+    .select({
+      memo: ledgerTransactions.memo,
+      sourceType: ledgerTransactions.sourceType,
+      sourceId: ledgerTransactions.sourceId,
+      reversesId: ledgerTransactions.reversesId,
+    })
+    .from(ledgerTransactions)
+    .where(
+      and(
+        eq(ledgerTransactions.businessId, input.businessId),
+        eq(ledgerTransactions.id, claimed.transactionId),
+      ),
+    );
+  const classified =
+    matched !== undefined &&
+    matched.sourceType === BANK_CLASSIFICATION_SOURCE &&
+    matched.sourceId === lineId &&
+    matched.reversesId === null;
+
+  if (!classified) {
     await tx.insert(auditEvents).values({
       businessId: input.businessId,
       actor: input.actor,
       entity: 'bank_line_match',
-      entityId: input.lineId,
+      entityId: lineId,
       action: 'released',
-      oldValue: { transactionId: removed[0]!.transactionId } as never,
+      oldValue: { transactionId: claimed.transactionId } as never,
       sourceType: 'dashboard',
     });
+    return { outcome: 'released_match', transactionId: claimed.transactionId };
   }
-  return removed.length;
+
+  /* The posting as it was WRITTEN, not as the classification rules would
+   * write it today: the stored entries are the truth being reversed. */
+  const entries = await tx
+    .select({
+      accountCode: accounts.code,
+      debitK: ledgerEntries.debitK,
+      creditK: ledgerEntries.creditK,
+    })
+    .from(ledgerEntries)
+    .innerJoin(accounts, eq(accounts.id, ledgerEntries.accountId))
+    .where(
+      and(
+        eq(ledgerEntries.businessId, input.businessId),
+        eq(ledgerEntries.transactionId, claimed.transactionId),
+      ),
+    );
+  const lines: LedgerLine[] = [];
+  for (const entry of entries) {
+    const account = KEY_BY_CODE[entry.accountCode];
+    if (!account) throw new UnreversibleClassification(claimed.transactionId);
+    lines.push({ account, debitK: Number(entry.debitK), creditK: Number(entry.creditK) });
+  }
+  if (lines.length === 0) throw new UnreversibleClassification(claimed.transactionId);
+
+  const reversalTransactionId = await writePosting(
+    tx,
+    input.businessId,
+    reversal({ memo: matched.memo, lines }, `Classification released: ${matched.memo}`),
+    BANK_CLASSIFICATION_SOURCE,
+    lineId,
+    { reversesId: claimed.transactionId },
+  );
+
+  await tx.insert(auditEvents).values({
+    businessId: input.businessId,
+    actor: input.actor,
+    entity: 'bank_line_match',
+    entityId: lineId,
+    action: 'classification_released',
+    oldValue: { transactionId: claimed.transactionId } as never,
+    newValue: {
+      lineId,
+      originalLedgerTransactionId: claimed.transactionId,
+      reversalLedgerTransactionId: reversalTransactionId,
+    } as never,
+    sourceType: 'dashboard',
+  });
+  return {
+    outcome: 'released_classification',
+    originalTransactionId: claimed.transactionId,
+    reversalTransactionId,
+  };
 }
 
 /* ── the live feed's standing link (fix-plan 4, G5) ──────────────────────── */

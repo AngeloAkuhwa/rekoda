@@ -43,7 +43,7 @@ import {
   type MatchLineResponse,
   type UnmatchLineResponse,
 } from '@rekoda/contracts';
-import { bankRepo, withBusiness, type Db } from '@rekoda/db';
+import { bankRepo, closeRepo, withBusiness, type Db } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { DB } from '../db/db.module.js';
@@ -291,8 +291,10 @@ export class BankController {
    * Release a pairing.
    *
    * An automatic match on the wrong posting has to be undoable, or the rule's
-   * timidity is the only protection a merchant has. Releasing changes neither
-   * the line nor the posting: neither was ever altered by being matched.
+   * timidity is the only protection a merchant has. Releasing an ordinary
+   * match changes neither the line nor the posting: neither was ever altered
+   * by being matched. Releasing a CLASSIFICATION reverses the journal Rekoda
+   * wrote for it, in the same transaction (G-95, OD-24; `releaseLine`).
    */
   @Post('unmatch')
   @Roles('owner', 'accountant')
@@ -305,14 +307,26 @@ export class BankController {
     if (!parsed.success) throw new BadRequestException('the line to release');
 
     const businessId = request.auth!.businessId;
-    const released = await withBusiness(this.db, businessId, (tx) =>
-      bankRepo.unmatchLine(tx, {
-        businessId,
-        lineId: parsed.data.lineId,
-        actor: `user:${request.auth!.userId}`,
-      }),
-    );
-    return { released };
+    try {
+      const released = await withBusiness(this.db, businessId, (tx) =>
+        bankRepo.releaseLine(tx, {
+          businessId,
+          lineId: parsed.data.lineId,
+          actor: `user:${request.auth!.userId}`,
+        }),
+      );
+      /* The ledger ids stay in the audit event; the page needs only which. */
+      return released.outcome === 'not_matched'
+        ? { outcome: 'not_matched', released: 0 }
+        : { outcome: released.outcome, released: 1 };
+    } catch (error) {
+      /* Thrown before the reversal was written, so the claim rolled back:
+       * the line is still matched and nothing moved. */
+      if (error instanceof closeRepo.PeriodClosed) {
+        return { outcome: 'period_closed', released: 0, closedThrough: error.closedThrough };
+      }
+      throw error;
+    }
   }
 
   /**

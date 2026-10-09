@@ -119,6 +119,21 @@ describe('every shape a writer actually stores', () => {
     });
   });
 
+  /* G-95: the journal is reversed, not deleted, and the sentence says so.
+   * The ledger ids stay in the stored value, never in the sentence. */
+  it('says a released classification reversed its entry', () => {
+    expect(
+      describe_('bank_line_match', 'classification_released', {
+        lineId: 'line-1',
+        originalLedgerTransactionId: 'tx-1',
+        reversalLedgerTransactionId: 'tx-2',
+      }),
+    ).toEqual({
+      summary: 'Bank line classification released and its entry reversed',
+      amountK: null,
+    });
+  });
+
   it('carries what the books were opened with, summed from the three figures', () => {
     expect(
       describe_('opening_balances', 'recorded', {

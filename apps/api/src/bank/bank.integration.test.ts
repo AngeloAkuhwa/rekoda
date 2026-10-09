@@ -8,18 +8,34 @@
  * merchant's lines reach that merchant and nobody else.
  */
 import { randomBytes } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   bankPositionResponse,
   classifyLineResponse,
   importStatementResponse,
   reconcileResponse,
   matchLineResponse,
+  unmatchLineResponse,
 } from '@rekoda/contracts';
-import { lagosDay } from '@rekoda/core';
-import { createDb, issueRepo, withBusiness, type Db } from '@rekoda/db';
+import { KEY_BY_CODE, lagosDay, postJournal, reversal, type AccountKey } from '@rekoda/core';
+import {
+  bankRepo,
+  closeRepo,
+  createDb,
+  issueRepo,
+  sql,
+  withBusiness,
+  type Db,
+  type TenantDb,
+} from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+import {
+  CLASSIFICATIONS,
+  prepareClassification,
+  type Classification,
+} from '../commands/bank-commands.js';
+import { CONFIG, type ApiConfig } from '../config.js';
 
 let urls: Urls;
 let app: NestFastifyApplication;
@@ -403,9 +419,9 @@ describe('pairing the two sides, end to end', () => {
   });
 
   /* Build 9: a line released and classified again is classified again: a
-   * new journal and a new match, never a replay of the first answer. The
-   * FIRST journal stays posted, which is the direct path's behaviour too and
-   * is recorded as G-95; this test pins parity, not that outcome as right. */
+   * new journal and a new match, never a replay of the first answer. Since
+   * G-95 the release reverses the first journal; the money is asserted in
+   * the "releasing a classification (G-95)" block below. */
   it('classifies a released line again, with a new journal and a new match', async () => {
     const { auth } = await onboard('+2348177000093');
     await post('/v1/bank/statement', { csv: AUG }, auth);
@@ -426,6 +442,7 @@ describe('pairing the two sides, end to end', () => {
 
     expect(await classify()).toEqual({ outcome: 'classified', journalNumber: 'JNL-2026-000001' });
     expect((await post('/v1/bank/unmatch', { lineId: line.id }, auth)).json()).toEqual({
+      outcome: 'released_classification',
       released: 1,
     });
     expect(await classify()).toEqual({ outcome: 'classified', journalNumber: 'JNL-2026-000002' });
@@ -505,6 +522,7 @@ describe('pairing the two sides, end to end', () => {
     expect(line.matchedTo).toMatchObject({ decidedBy: 'auto' });
 
     expect((await post('/v1/bank/unmatch', { lineId: line.id }, auth)).json()).toEqual({
+      outcome: 'released_match',
       released: 1,
     });
 
@@ -555,6 +573,7 @@ describe('pairing the two sides, end to end', () => {
 
     expect(await match()).toMatchObject({ outcome: 'matched' });
     expect((await post('/v1/bank/unmatch', { lineId: line.id }, auth)).json()).toEqual({
+      outcome: 'released_match',
       released: 1,
     });
     expect(await match()).toMatchObject({ outcome: 'matched' });
@@ -585,6 +604,640 @@ describe('pairing the two sides, end to end', () => {
       matched: 0,
       unmatchedLines: 0,
     });
+  });
+});
+
+/**
+ * Releasing a classification (G-95, OD-24 Option A).
+ *
+ * A classification is not a pairing of two facts that existed apart: the
+ * journal exists BECAUSE the merchant said what this line was. Releasing it
+ * used to unpair the line and leave that journal standing, so classifying
+ * the line again booked the same money a second time. These tests assert
+ * the money, not the number of journals.
+ */
+describe('releasing a classification (G-95)', () => {
+  const ONE_CREDIT = `Date,Description,Amount
+03/08/2026,TRF FROM ADEBAYO O,150000.00
+`;
+  const CREDIT_AND_DEBIT = `Date,Description,Amount
+03/08/2026,TRF FROM ADEBAYO O,150000.00
+05/08/2026,POS PURCHASE SHOPRITE,-20000.00
+`;
+
+  /** Each account's net (debit minus credit) in kobo, keyed by chart key. */
+  async function nets(businessId: string): Promise<Partial<Record<AccountKey, number>>> {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ code: string; net: string }>(sql`
+        SELECT a.code, SUM(e.debit_k - e.credit_k)::bigint AS net
+        FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+        WHERE e.business_id = ${businessId}::uuid
+        GROUP BY a.code
+      `),
+    );
+    return Object.fromEntries(
+      [...rows]
+        .filter((r) => Number(r.net) !== 0)
+        .map((r) => [KEY_BY_CODE[r.code] ?? r.code, Number(r.net)]),
+    );
+  }
+
+  /** Every posting's provenance, oldest first. */
+  async function postings(businessId: string) {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{
+        id: string;
+        source_type: string;
+        source_id: string | null;
+        reverses_id: string | null;
+        month: string;
+      }>(sql`
+        SELECT id, source_type, source_id, reverses_id,
+               to_char(created_at AT TIME ZONE 'Africa/Lagos', 'YYYY-MM') AS month
+        FROM ledger_transactions WHERE business_id = ${businessId}::uuid
+        ORDER BY created_at, id
+      `),
+    );
+    return [...rows];
+  }
+
+  /** What the audit trail says happened to the pairing. */
+  async function releaseAudits(businessId: string) {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ action: string; old_value: unknown; new_value: unknown }>(sql`
+        SELECT action, old_value, new_value FROM audit_events
+        WHERE business_id = ${businessId}::uuid AND entity = 'bank_line_match'
+          AND action IN ('released', 'classification_released')
+        ORDER BY created_at, id
+      `),
+    );
+    return [...rows];
+  }
+
+  async function position(auth: Record<string, string>) {
+    return bankPositionResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/bank/position', headers: auth })).json(),
+    );
+  }
+
+  const matchedTo = async (auth: Record<string, string>, lineId: string) =>
+    (await position(auth)).lines.find((l) => l.id === lineId)!.matchedTo;
+
+  const classify = async (
+    auth: Record<string, string>,
+    lineId: string,
+    classification: Classification = 'OWNER_CAPITAL',
+  ) =>
+    classifyLineResponse.parse(
+      (await post('/v1/bank/classify', { lineId, classification }, auth)).json(),
+    );
+
+  const release = async (auth: Record<string, string>, lineId: string) =>
+    unmatchLineResponse.parse((await post('/v1/bank/unmatch', { lineId }, auth)).json());
+
+  /** One statement, one business, the line of the amount asked for. */
+  async function setUp(phone: string, csv = ONE_CREDIT, amountK = 15_000_000) {
+    const { businessId, auth } = await onboard(phone);
+    await post('/v1/bank/statement', { csv }, auth);
+    const line = (await position(auth)).lines.find((l) => l.amountK === amountK)!;
+    return { businessId, auth, line };
+  }
+
+  /**
+   * A transaction held open after its work, so a second one can be started
+   * against it for real rather than run one after the other.
+   */
+  const held: (() => void)[] = [];
+  /* A test that fails while holding a transaction must not hold it into the
+   * next test: every gate opens when the test ends, pass or fail. */
+  afterEach(() => {
+    for (const letGo of held.splice(0)) letGo();
+  });
+
+  function holdOpen<T>(businessId: string, work: (tx: TenantDb) => Promise<T>) {
+    let letGo!: () => void;
+    const gate = new Promise<void>((resolve) => (letGo = resolve));
+    held.push(letGo);
+    let reached!: (value: T) => void;
+    const workDone = new Promise<T>((resolve) => (reached = resolve));
+    const committed = withBusiness(db, businessId, async (tx) => {
+      const value = await work(tx);
+      reached(value);
+      await gate;
+      return value;
+    });
+    return {
+      ready: Promise.race([workDone, committed]),
+      commit: () => {
+        letGo();
+        return committed;
+      },
+    };
+  }
+
+  /* Long enough for the second transaction to reach the row lock it waits on. */
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 300));
+
+  /** Whether `pending` is still waiting after a settle: proof of overlap. */
+  const stillWaiting = (pending: Promise<unknown>) =>
+    Promise.race([pending.then(() => false), settle().then(() => true)]);
+
+  it('books one bank credit once after it is classified, released and classified again', async () => {
+    const { businessId, auth, line } = await setUp('+2348177000201');
+    expect(await nets(businessId)).toEqual({});
+
+    expect(await classify(auth, line.id)).toMatchObject({ outcome: 'classified' });
+    const first = (await matchedTo(auth, line.id))!;
+    expect(await nets(businessId)).toEqual({ BANK: 15_000_000, OWNERS_EQUITY: -15_000_000 });
+
+    expect((await post('/v1/bank/unmatch', { lineId: line.id }, auth)).json()).toMatchObject({
+      released: 1,
+    });
+    expect(await matchedTo(auth, line.id)).toBeNull();
+
+    expect(await classify(auth, line.id)).toMatchObject({ outcome: 'classified' });
+    const second = (await matchedTo(auth, line.id))!;
+    expect(second.transactionId).not.toBe(first.transactionId);
+
+    /* One ₦150,000 credit: the bank went up ₦150,000 and the owner put in
+     * ₦150,000. Not ₦300,000 of either. */
+    expect(await nets(businessId)).toEqual({ BANK: 15_000_000, OWNERS_EQUITY: -15_000_000 });
+
+    /* Structurally: the first journal, its reversal, and the second. Both
+     * classifications carry the line's day; the reversal is today's. */
+    const rows = await postings(businessId);
+    expect(rows).toHaveLength(3);
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: first.transactionId, reverses_id: null }),
+        expect.objectContaining({ reverses_id: first.transactionId }),
+        expect.objectContaining({ id: second.transactionId, reverses_id: null }),
+      ]),
+    );
+  });
+
+  /* B */
+  it('reverses the journal it wrote, exactly, and leaves the line unmatched', async () => {
+    const { businessId, auth, line } = await setUp('+2348177000202');
+    expect(await classify(auth, line.id)).toEqual({
+      outcome: 'classified',
+      journalNumber: 'JNL-2026-000001',
+    });
+    const original = (await matchedTo(auth, line.id))!;
+
+    expect(await release(auth, line.id)).toEqual({
+      outcome: 'released_classification',
+      released: 1,
+    });
+    expect(await matchedTo(auth, line.id)).toBeNull();
+    /* Back to the books before the classification: nothing, net. */
+    expect(await nets(businessId)).toEqual({});
+
+    const [kept, reversal] = await postings(businessId);
+    /* The classification is the line's own, by provenance, not by memo. */
+    expect(kept).toMatchObject({
+      id: original.transactionId,
+      source_type: 'bank_classification',
+      source_id: line.id,
+      reverses_id: null,
+      month: '2026-08',
+    });
+    expect(reversal).toMatchObject({
+      source_type: 'bank_classification',
+      source_id: line.id,
+      reverses_id: original.transactionId,
+    });
+
+    /* The original is untouched: its own two lines, still there. */
+    const entries = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ transaction_id: string; code: string; debit_k: string; credit_k: string }>(sql`
+        SELECT e.transaction_id, a.code, e.debit_k, e.credit_k
+        FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+        WHERE e.business_id = ${businessId}::uuid ORDER BY e.transaction_id, a.code
+      `),
+    );
+    const of = (id: string) =>
+      [...entries]
+        .filter((e) => e.transaction_id === id)
+        .map((e) => [KEY_BY_CODE[e.code], Number(e.debit_k), Number(e.credit_k)]);
+    expect(of(original.transactionId)).toEqual(
+      expect.arrayContaining([
+        ['BANK', 15_000_000, 0],
+        ['OWNERS_EQUITY', 0, 15_000_000],
+      ]),
+    );
+    expect(of(reversal!.id)).toEqual(
+      expect.arrayContaining([
+        ['BANK', 0, 15_000_000],
+        ['OWNERS_EQUITY', 15_000_000, 0],
+      ]),
+    );
+
+    /* The journal number is still minted, still on the memo and the draft. */
+    const draft = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ memo: string; created_by: string; lines: number }>(sql`
+        SELECT d.memo, d.created_by,
+               (SELECT count(*)::int FROM journal_draft_lines l WHERE l.draft_id = d.id) AS lines
+        FROM journal_drafts d
+        WHERE d.business_id = ${businessId}::uuid AND d.posted_journal_id = ${original.transactionId}::uuid
+      `),
+    );
+    expect([...draft]).toEqual([
+      {
+        memo: 'JNL-2026-000001: Owner capital',
+        created_by: expect.stringMatching(/^user:/),
+        lines: 2,
+      },
+    ]);
+
+    /* And the trail names both postings, so the release can be traced. */
+    expect(await releaseAudits(businessId)).toEqual([
+      {
+        action: 'classification_released',
+        old_value: { transactionId: original.transactionId },
+        new_value: {
+          lineId: line.id,
+          originalLedgerTransactionId: original.transactionId,
+          reversalLedgerTransactionId: reversal!.id,
+        },
+      },
+    ]);
+  });
+
+  /* A */
+  it('releases an ordinary match without touching the posting', async () => {
+    const { businessId, auth, line } = await setUp('+2348177000203');
+    await post(
+      '/v1/reports/journal',
+      {
+        /* Written to look like a classification. Identity is the ledger's
+         * provenance, never the words, so this is still an ordinary entry. */
+        memo: 'Owner capital',
+        amountK: 15_000_000,
+        intoAccount: 'BANK',
+        outOfAccount: 'OWNERS_EQUITY',
+        occurredOn: '2026-08-03',
+      },
+      auth,
+    );
+    const [entry] = await postings(businessId);
+    /* A journal somebody wrote keeps the journal's own provenance. */
+    expect(entry).toMatchObject({ source_type: 'journal', source_id: 'JNL-2026-000001' });
+    expect(
+      (await post('/v1/bank/match', { lineId: line.id, transactionId: entry!.id }, auth)).json(),
+    ).toEqual({ outcome: 'matched' });
+    const before = await nets(businessId);
+
+    expect(await release(auth, line.id)).toEqual({ outcome: 'released_match', released: 1 });
+    expect(await matchedTo(auth, line.id)).toBeNull();
+    expect(await nets(businessId)).toEqual(before);
+    expect(await postings(businessId)).toEqual([entry]);
+    expect(await releaseAudits(businessId)).toEqual([
+      { action: 'released', old_value: { transactionId: entry!.id }, new_value: null },
+    ]);
+    /* Still there to be matched again, because it is still a real entry. */
+    expect((await position(auth)).openMovements.map((m) => m.transactionId)).toContain(entry!.id);
+  });
+
+  /* The provenance is the server's: a merchant cannot send it. */
+  it('does not let the journal form claim to be a classification', async () => {
+    const { businessId, auth, line } = await setUp('+2348177000204');
+    await post(
+      '/v1/reports/journal',
+      {
+        memo: 'Pretending',
+        amountK: 15_000_000,
+        intoAccount: 'BANK',
+        outOfAccount: 'OWNERS_EQUITY',
+        occurredOn: '2026-08-03',
+        origin: { kind: 'bank_classification', lineId: line.id },
+        sourceType: 'bank_classification',
+        sourceId: line.id,
+      },
+      auth,
+    );
+    const [entry] = await postings(businessId);
+    expect(entry).toMatchObject({ source_type: 'journal', source_id: 'JNL-2026-000001' });
+
+    await post('/v1/bank/match', { lineId: line.id, transactionId: entry!.id }, auth);
+    expect(await release(auth, line.id)).toMatchObject({ outcome: 'released_match' });
+    expect(await postings(businessId)).toHaveLength(1);
+  });
+
+  /* B, C, D, E: every classification, both directions. The expected journal
+   * comes from the classify door's own builder, never from this test. */
+  it.each([
+    ['OWNER_CAPITAL', 15_000_000],
+    ['SUPPLIER_REFUND', 15_000_000],
+    ['INTERNAL_TRANSFER', 15_000_000],
+    ['OWNER_CAPITAL', -2_000_000],
+    ['SUPPLIER_REFUND', -2_000_000],
+    ['INTERNAL_TRANSFER', -2_000_000],
+  ] as const)(
+    'reverses a %s classification of a %i kobo line exactly, and classifies it again once',
+    async (classification, amountK) => {
+      const phone = `+23481770003${String(Object.keys(CLASSIFICATIONS).indexOf(classification))}${amountK > 0 ? 1 : 2}`;
+      const { businessId, auth, line } = await setUp(phone, CREDIT_AND_DEBIT, amountK);
+
+      const prepared = await withBusiness(db, businessId, (tx) =>
+        prepareClassification(tx, { businessId, lineId: line.id, classification, actor: 'test' }),
+      );
+      if (prepared.outcome !== 'ready') throw new Error(prepared.outcome);
+      const once = {
+        [prepared.journal.intoAccount]: prepared.journal.amountK,
+        [prepared.journal.outOfAccount]: -prepared.journal.amountK,
+      };
+      /* The sign is the line's: a debit line moves money OUT of the bank. */
+      expect(once['BANK']).toBe(amountK);
+
+      expect(await classify(auth, line.id, classification)).toMatchObject({
+        outcome: 'classified',
+      });
+      expect(await nets(businessId)).toEqual(once);
+
+      expect(await release(auth, line.id)).toMatchObject({
+        outcome: 'released_classification',
+      });
+      expect(await nets(businessId)).toEqual({});
+
+      expect(await classify(auth, line.id, classification)).toMatchObject({
+        outcome: 'classified',
+      });
+      expect(await nets(businessId)).toEqual(once);
+    },
+  );
+
+  /* F */
+  it('reverses once however many times it is released', async () => {
+    const { businessId, auth, line } = await setUp('+2348177000205');
+    await classify(auth, line.id);
+    expect(await release(auth, line.id)).toMatchObject({ outcome: 'released_classification' });
+    expect(await release(auth, line.id)).toEqual({ outcome: 'not_matched', released: 0 });
+    expect(await release(auth, line.id)).toEqual({ outcome: 'not_matched', released: 0 });
+    expect((await postings(businessId)).filter((p) => p.reverses_id !== null)).toHaveLength(1);
+    expect(await nets(businessId)).toEqual({});
+  });
+
+  /* G */
+  it('reverses once when two releases arrive together', async () => {
+    const { businessId, auth, line } = await setUp('+2348177000206');
+    await classify(auth, line.id);
+
+    const first = holdOpen(businessId, (tx) =>
+      bankRepo.releaseLine(tx, { businessId, lineId: line.id, actor: 'user:first' }),
+    );
+    expect(await first.ready).toMatchObject({ outcome: 'released_classification' });
+    /* The second, through the real door, waits on the first's claim. */
+    const second = release(auth, line.id);
+    expect(await stillWaiting(second)).toBe(true);
+    await first.commit();
+
+    expect(await second).toEqual({ outcome: 'not_matched', released: 0 });
+    expect((await postings(businessId)).filter((p) => p.reverses_id !== null)).toHaveLength(1);
+    expect(await nets(businessId)).toEqual({});
+  });
+
+  /* H */
+  it('does not classify a line again while its release is still in flight', async () => {
+    const { businessId, auth, line } = await setUp('+2348177000207');
+    await classify(auth, line.id);
+
+    const releasing = holdOpen(businessId, (tx) =>
+      bankRepo.releaseLine(tx, { businessId, lineId: line.id, actor: 'user:first' }),
+    );
+    await releasing.ready;
+    /* The line is still matched to anyone outside the release. */
+    expect(await classify(auth, line.id)).toEqual({
+      outcome: 'refused',
+      reason: 'line_already_matched',
+    });
+    await releasing.commit();
+    expect(await nets(businessId)).toEqual({});
+
+    /* Once it has committed, a deliberate classification is one journal. */
+    expect(await classify(auth, line.id)).toMatchObject({ outcome: 'classified' });
+    expect(await nets(businessId)).toEqual({ BANK: 15_000_000, OWNERS_EQUITY: -15_000_000 });
+  });
+
+  /* I */
+  it('ends with one pairing when a hand match races the release', async () => {
+    const { businessId, auth, line } = await setUp('+2348177000209');
+    await post(
+      '/v1/reports/journal',
+      {
+        memo: 'What it really was',
+        amountK: 15_000_000,
+        intoAccount: 'BANK',
+        outOfAccount: 'OWNERS_EQUITY',
+        occurredOn: '2026-08-03',
+      },
+      auth,
+    );
+    const [written] = await postings(businessId);
+    await classify(auth, line.id);
+
+    const releasing = holdOpen(businessId, (tx) =>
+      bankRepo.releaseLine(tx, { businessId, lineId: line.id, actor: 'user:first' }),
+    );
+    await releasing.ready;
+    const matching = post('/v1/bank/match', { lineId: line.id, transactionId: written!.id }, auth);
+    expect(await stillWaiting(matching)).toBe(true);
+    await releasing.commit();
+
+    expect((await matching).json()).toEqual({ outcome: 'matched' });
+    expect((await matchedTo(auth, line.id))!.transactionId).toBe(written!.id);
+    /* The classification is reversed; the hand-written entry is what explains
+     * the line now. One ₦150,000 of each, not two. */
+    expect(await nets(businessId)).toEqual({ BANK: 15_000_000, OWNERS_EQUITY: -15_000_000 });
+  });
+
+  /* J, and L's refusal: the reversal is dated today, and today closed. */
+  it('changes nothing when the reversal cannot be written', async () => {
+    const { businessId, auth, line } = await setUp('+2348177000210');
+    await classify(auth, line.id);
+    const original = (await matchedTo(auth, line.id))!;
+    const before = await nets(businessId);
+    /* Close the month we are in, through the real close, from a future
+     * vantage point; the release's reversal then falls in a closed month. */
+    const thisMonth = lagosDay(new Date()).slice(0, 7);
+    await withBusiness(db, businessId, (tx) =>
+      closeRepo.closeBooks(tx, {
+        businessId,
+        through: thisMonth,
+        actor: 'user:test',
+        now: new Date('2099-01-15T12:00:00Z'),
+      }),
+    );
+
+    expect(await release(auth, line.id)).toEqual({
+      outcome: 'period_closed',
+      released: 0,
+      closedThrough: thisMonth,
+    });
+    expect((await matchedTo(auth, line.id))!.transactionId).toBe(original.transactionId);
+    expect(await nets(businessId)).toEqual(before);
+    expect(await postings(businessId)).toHaveLength(1);
+    expect(await releaseAudits(businessId)).toEqual([]);
+  });
+
+  /* L: the original sits in a closed month; the correction is today's. */
+  it('reverses a classification from a closed month today, leaving the month alone', async () => {
+    const { businessId, auth, line } = await setUp('+2348177000211');
+    await classify(auth, line.id);
+    await withBusiness(db, businessId, (tx) =>
+      closeRepo.closeBooks(tx, { businessId, through: '2026-08', actor: 'user:test' }),
+    );
+
+    expect(await release(auth, line.id)).toMatchObject({ outcome: 'released_classification' });
+    const [original, reversal] = await postings(businessId);
+    expect(original).toMatchObject({ month: '2026-08', reverses_id: null });
+    expect(reversal).toMatchObject({
+      month: lagosDay(new Date()).slice(0, 7),
+      reverses_id: original!.id,
+    });
+    expect(await nets(businessId)).toEqual({});
+  });
+
+  /* Reviewer B, P2-1: the id is matched to the uuid column whatever its
+   * case, and the classification must be recognised the same way. */
+  it('reverses a classification released with the line id in capitals', async () => {
+    const { businessId, auth, line } = await setUp('+2348177000216');
+    await classify(auth, line.id);
+    const original = (await matchedTo(auth, line.id))!;
+
+    expect(await release(auth, line.id.toUpperCase())).toEqual({
+      outcome: 'released_classification',
+      released: 1,
+    });
+    expect(await nets(businessId)).toEqual({});
+    const reversal = (await postings(businessId)).find((p) => p.reverses_id !== null)!;
+    /* Recorded under the line's own id, as the database spells it. */
+    expect(reversal).toMatchObject({ source_id: line.id, reverses_id: original.transactionId });
+    expect(await classify(auth, line.id)).toMatchObject({ outcome: 'classified' });
+    expect(await nets(businessId)).toEqual({ BANK: 15_000_000, OWNERS_EQUITY: -15_000_000 });
+  });
+
+  /* Reviewer B, P2-2: a reconcile that read the books before the release
+   * and the pairings after it would pair the line with the journal being
+   * reversed. They take turns, and the reconcile sees the release whole. */
+  it('does not let a reconcile pair the line with the journal being reversed', async () => {
+    const { businessId, auth, line } = await setUp('+2348177000217');
+    await classify(auth, line.id);
+
+    const releasing = holdOpen(businessId, (tx) =>
+      bankRepo.releaseLine(tx, { businessId, lineId: line.id, actor: 'user:first' }),
+    );
+    expect(await releasing.ready).toMatchObject({ outcome: 'released_classification' });
+    const reconciling = post('/v1/bank/reconcile', {}, auth);
+    expect(await stillWaiting(reconciling)).toBe(true);
+    await releasing.commit();
+
+    expect((await reconciling).statusCode).toBe(200);
+    expect(await matchedTo(auth, line.id)).toBeNull();
+    expect(await nets(businessId)).toEqual({});
+    /* And the line can still be classified, once. */
+    expect(await classify(auth, line.id)).toMatchObject({ outcome: 'classified' });
+    expect(await nets(businessId)).toEqual({ BANK: 15_000_000, OWNERS_EQUITY: -15_000_000 });
+  });
+
+  /* K */
+  it('cannot release another business`s line', async () => {
+    const mine = await setUp('+2348177000212');
+    const theirs = await setUp('+2348177000213');
+    await classify(mine.auth, mine.line.id);
+
+    expect(await release(theirs.auth, mine.line.id)).toEqual({
+      outcome: 'not_matched',
+      released: 0,
+    });
+    /* Even naming this business in the call, the session's tenant decides. */
+    expect(
+      await withBusiness(db, theirs.businessId, (tx) =>
+        bankRepo.releaseLine(tx, {
+          businessId: theirs.businessId,
+          lineId: mine.line.id,
+          actor: 'user:theirs',
+        }),
+      ),
+    ).toEqual({ outcome: 'not_matched' });
+
+    expect(await matchedTo(mine.auth, mine.line.id)).not.toBeNull();
+    expect(await nets(mine.businessId)).toEqual({
+      BANK: 15_000_000,
+      OWNERS_EQUITY: -15_000_000,
+    });
+    expect(await postings(theirs.businessId)).toEqual([]);
+  });
+
+  /* M */
+  it('keeps a released classification and its reversal off the reconciliation', async () => {
+    const { auth, line } = await setUp('+2348177000214');
+    await classify(auth, line.id);
+    const original = (await matchedTo(auth, line.id))!;
+    await release(auth, line.id);
+
+    const seen = await position(auth);
+    expect(seen.openMovements).toEqual([]);
+    expect(seen.reconciliation).toMatchObject({ unmatchedMovements: 0, unmatchedLines: 1 });
+    /* Nor can the reversed journal be picked to explain the line. */
+    expect(
+      (
+        await post(
+          '/v1/bank/match',
+          { lineId: line.id, transactionId: original.transactionId },
+          auth,
+        )
+      ).json(),
+    ).toEqual({ outcome: 'refused', reason: 'no_such_movement' });
+  });
+
+  /* N */
+  it('leaves every other reversed bank posting exactly as visible as before', async () => {
+    const { businessId, auth } = await setUp('+2348177000215');
+    /* A bank payment and its void, through the same reversal convention the
+     * voids use: neither is a classification, so both stay on the page. */
+    const [paid, voided] = await withBusiness(db, businessId, async (tx) => {
+      const paidId = await issueRepo.writePosting(
+        tx,
+        businessId,
+        postJournal({
+          memo: 'Expense: generator fuel',
+          amountK: 500_000,
+          intoAccount: 'EXPENSES',
+          outOfAccount: 'BANK',
+        }),
+        'dashboard',
+        'expense-1',
+      );
+      const voidId = await issueRepo.writePosting(
+        tx,
+        businessId,
+        reversal(
+          postJournal({
+            memo: 'Expense: generator fuel',
+            amountK: 500_000,
+            intoAccount: 'EXPENSES',
+            outOfAccount: 'BANK',
+          }),
+          'Void expense: generator fuel',
+        ),
+        'dashboard',
+        'expense-1',
+        { reversesId: paidId },
+      );
+      return [paidId, voidId];
+    });
+
+    const open = await withBusiness(db, businessId, (tx) => bankRepo.openMovements(tx, businessId));
+    expect(open.map((m) => m.transactionId).sort()).toEqual([paid, voided].sort());
+    expect((await position(auth)).reconciliation).toMatchObject({ unmatchedMovements: 2 });
+  });
+
+  /* O: the classify door above ran on the bus, as Build 9 made the default. */
+  it('ran every classification here through the command bus', () => {
+    const config = app.get<ApiConfig>(CONFIG);
+    expect(config.commandPostJournal).toBe(true);
+    expect(config.commandConfirmReconciliation).toBe(true);
   });
 });
 

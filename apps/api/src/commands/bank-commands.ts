@@ -122,6 +122,9 @@ export type ClassificationPrepared =
         intoAccount: 'BANK' | 'OWNERS_EQUITY' | 'EXPENSES' | 'CASH';
         outOfAccount: 'BANK' | 'OWNERS_EQUITY' | 'EXPENSES' | 'CASH';
         occurredAt: Date;
+        /** G-95: the ledger records this journal as the line's
+         * classification, so a release can find and reverse it. */
+        origin: { kind: 'bank_classification'; lineId: string };
       };
       reason: string;
     }
@@ -154,6 +157,7 @@ export async function prepareClassification(
       outOfAccount: line.amountK > 0 ? spec.account : 'BANK',
       /* The line's own day: the classification is ABOUT that movement. */
       occurredAt: new Date(`${line.postedOn}T12:00:00+01:00`),
+      origin: { kind: 'bank_classification', lineId: line.id },
     },
     reason: note
       ? `Classified as ${spec.label.toLowerCase()}: ${note}`
