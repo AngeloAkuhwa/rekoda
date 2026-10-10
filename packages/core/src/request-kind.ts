@@ -430,6 +430,8 @@ const DATES = new RegExp(
 
 function hasFigure(raw: string): boolean {
   const text = raw.replace(DATES, ' ');
+  /* "did Ada pay one?": "one" as the amount paid (Codex P2). */
+  if (/\b(?:pa(?:y|ys|id)|received?|collected|sold|bought|spent)\s+one\b/i.test(text)) return true;
   if (text.includes('₦') || NUMBER_WORDS.test(text)) return true;
   /* "paid half", "settled the rest": amounts RecordPayment reads as
    * relativeAmount (Codex P2), but only beside a payment, so "show the rest
@@ -599,6 +601,11 @@ function saysSomethingOfItsOwn(part: string, afterComma: boolean): boolean {
   if (words.some((w) => CHANGE_VERBS.has(w) || RECORD_INSTRUCTIONS.has(w))) return true;
   /* A question of its own ("…, how much do I have to collect?") is still a
    * question. */
+  /* "how much do CUSTOMER_7K2 and CUSTOMER_9M4 owe": the second name
+   * shares the question's verb, not a debt stated on its own. */
+  if (!afterComma && words[1] === 'owe' && (SUBJECTS.has(words[0]!) || !knownWord(words[0]!))) {
+    return false;
+  }
   const kind = clauseKind(part);
   if (kind === 'read' || kind === 'neutral') return false;
   /* A name the vault has not met yet stays plain text: "…, Ada sent money",
@@ -1002,6 +1009,8 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
     text
       .replace(/p&l/g, 'pnl')
       .replace(/cash flow/g, 'cashflow')
+      /* "create a general ledger" (Codex P2). */
+      .replace(/general ledger/g, 'ledger')
       .replace(/\bi'd\b/g, 'i would')
       /* "trial balance": a report the product names (final review C). */
       .replace(/trial balance/g, 'balance')
@@ -1066,9 +1075,29 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
   }
   /* "update me on sales", "add up my expenses": a summary asked for, not
    * a change (final review C). */
+  /* "balance the account", "balance my books": reconciling, not asking
+   * (Codex P2); "balance sheet", "balance for CUSTOMER_7K2" ask. */
+  if (words[0] === 'balance' && ['the', 'my', 'our', 'all'].includes(words[1] ?? '')) {
+    return 'unknown';
+  }
+  /* "report a sale", "report an expense": record one (Codex P2). */
+  if (
+    words[0] === 'report' &&
+    words.slice(1, 3).some((w) => RECORD_NOUNS.has(w) && !LISTED_RECORDS.has(w))
+  ) {
+    return 'write';
+  }
+  /* "check off the invoice": marking it done (Codex P2). */
+  if (words.some((w, i) => w === 'check' && words[i + 1] === 'off')) return 'unknown';
   /* "write me the list of debtors", "write out who owes me": Nigerian
    * English for "list for me" (final review C). */
-  if (words[0] === 'write' && ['me', 'us', 'out'].includes(words[1] ?? '') && words.length > 2) {
+  if (
+    words[0] === 'write' &&
+    ['me', 'us', 'out'].includes(words[1] ?? '') &&
+    words.length > 2 &&
+    /* Never "write me an invoice" (Codex P2). */
+    !words.some((w) => RECORD_NOUNS.has(w) && !LISTED_RECORDS.has(w))
+  ) {
     words.splice(0, 2, 'show');
   }
   if (words[0] === 'update' && (words[1] === 'me' || words[1] === 'us' || words[1] === 'on')) {
@@ -1176,7 +1205,13 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
           LISTED_RECORDS.has(w) ||
           BOOK_TOPICS.has(w),
       );
-  if (words.some((w, i) => CHANGE_VERBS.has(w) && !describes(i))) return 'unknown';
+  /* "did sales increase this month", "did the balance change": the books
+   * changing, asked about (Codex P2); never "can you change the balance". */
+  const trend = (i: number) =>
+    asks &&
+    TREND_VERBS.has(words[i]!) &&
+    (LISTED_RECORDS.has(words[i - 1] ?? '') || BOOK_TOPICS.has(words[i - 1] ?? ''));
+  if (words.some((w, i) => CHANGE_VERBS.has(w) && !describes(i) && !trend(i))) return 'unknown';
   /* "have an invoice made for Ada", "can we have the payment made": a
    * request for a record, as "get … made" is (round 25). */
   if (words.some((w, i) => w === 'made' && causative(words, i))) return 'unknown';
@@ -1208,7 +1243,9 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
     /* "who owes me CUSTOMER_7K2 paid": a statement run on (final review A). */
     if (statesTrade(words)) return 'unknown';
     if (trade) return words.some((w) => QUESTION_FRAMES.has(w)) ? 'read' : 'unknown';
-    return topic || recordNoun ? 'read' : 'unknown';
+    /* "show transaction for March", "what was the last transaction?"
+     * (Codex P2); outside a question one transaction may be a record. */
+    return topic || recordNoun || words.includes('transaction') ? 'read' : 'unknown';
   }
 
   /* Trade with a figure is a record: "sold rice 5k", "Ada paid me 20k".
@@ -1216,6 +1253,15 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
    * this month"); "sold rice to Ada" could be either. */
   if (trade) {
     if (figure) return 'write';
+    /* "payments received this month", "sales made this month": records
+     * the participle describes, over a period (Codex P2). */
+    if (
+      period &&
+      onlyBooksWords(words) &&
+      words.some((w, i) => TRADE_VERBS.has(w) && LISTED_RECORDS.has(words[i - 1] ?? ''))
+    ) {
+      return 'read';
+    }
     return summary && onlyBooksWords(words) ? 'read' : 'unknown';
   }
 
@@ -1232,7 +1278,12 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
   /* "CUSTOMER_7K2 owes me", "she owed me": someone stating a debt, which
    * may be a credit sale to record, not a question about one (Codex P2).
    * "how much do Ada and Chidi owe" asks, and is a question above. */
-  if (words.some((w) => SUBJECTS.has(w)) && words.some((w) => w === 'owes' || w === 'owed')) {
+  /* "I owe supplier", "CUSTOMER_7K2 owe me", "the business owes the
+   * supplier" (Codex P2). */
+  if (
+    words.some((w) => w === 'owe' || w === 'owes') ||
+    (words.some((w) => SUBJECTS.has(w) || w === 'business') && words.includes('owed'))
+  ) {
     return 'unknown';
   }
   if (topic) return 'read';
@@ -1292,7 +1343,10 @@ function statesTrade(words: readonly string[]): boolean {
       PERIODS.has(lead) ||
       RANGE_WORDS.has(lead) ||
       isYear(lead) ||
-      ['me', 'us', 'owe', 'owes', 'owed', 'owing'].includes(lead)
+      ['me', 'us', 'owe', 'owes', 'owed', 'owing'].includes(lead) ||
+      /* "how much did we sell Ada paid me", "what did Ada buy she paid
+       * cash": a second trade, after the first (Codex P2). */
+      TRADE_VERBS.has(lead)
     ) {
       return true;
     }
@@ -1327,6 +1381,12 @@ const SUBJECT_LINKS = new Set([
 
 /** Verbs that show the books, never ask about who follows them. */
 const VIEWING_LEADS = new Set(['show', 'list', 'check', 'see', 'know']);
+
+/** How the books move: "did sales increase", "how did expenses change". */
+const TREND_VERBS = new Set(['increase', 'increased', 'change', 'changed', 'reduce', 'reduced']);
+
+/** Words after a verb that are no one: "list out the debtors", "show only my sales". */
+const VERB_PARTICLES = new Set(['out', 'down', 'up', 'only', 'just', 'all', 'off', 'again']);
 
 /** Titles before a name: "Mr. CUSTOMER_7K2", "Mama Chidi". */
 const TITLES = new Set([
@@ -1514,7 +1574,9 @@ function forTheMerchant(words: readonly string[], verb: number): boolean {
    * gateway did not tokenise, before a possessive (final review D). */
   let n = 1;
   while (TITLES.has(at(n))) n += 1;
-  if ((n > 1 || !knownWord(at(n))) && ['her', 'his', 'their'].includes(at(n + 1))) return false;
+  if ((n > 1 || (!knownWord(at(n)) && !VERB_PARTICLES.has(at(n)))) && DETERMINERS.has(at(n + 1))) {
+    return false;
+  }
   if (['the', 'my', 'our'].includes(at(1)) && PEOPLE.has(at(2)) && DETERMINERS.has(at(3))) {
     return false;
   }

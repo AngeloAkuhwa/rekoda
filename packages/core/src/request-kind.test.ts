@@ -1090,6 +1090,44 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Codex, on 9b090ed and 9cca0f9. */
+  it.each([
+    ['check off the invoice', 'unknown'],
+    ['can you check off CUSTOMER_7K2 invoice', 'unknown'],
+    ['create a general ledger', 'read'],
+    ['show transaction for March', 'read'],
+    ['what was the last transaction?', 'read'],
+    ['a transaction today', 'unknown'],
+    ['balance the account', 'unknown'],
+    ['balance my accounts', 'unknown'],
+    ['balance sheet', 'read'],
+    ['I owe supplier', 'unknown'],
+    ['CUSTOMER_7K2 owe me', 'unknown'],
+    ['the business owes the supplier', 'unknown'],
+    ['how much do CUSTOMER_7K2 and CUSTOMER_9M4 owe?', 'read'],
+    ['write me an invoice', 'write'],
+    ['write out the invoice', 'write'],
+    ['show Ada the invoice', 'unknown'],
+    ['can you show Ada the invoice', 'unknown'],
+    ['list out the debtors', 'read'],
+    ['did Ada pay one?', 'unknown'],
+    ['which one paid', 'read'],
+    ['how much did we sell Ada paid me', 'unknown'],
+    ['what did Ada buy she paid cash', 'unknown'],
+    ['report a sale', 'write'],
+    ['report an expense', 'write'],
+    ['payments received this month', 'read'],
+    ['sales made this month', 'read'],
+    ['expenses paid this month', 'read'],
+    ['payments received 5k this month', 'write'],
+    ['did sales increase this month', 'read'],
+    ['how did sales change this month', 'read'],
+    ['did the balance change', 'read'],
+    ['can you change the balance', 'unknown'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');
