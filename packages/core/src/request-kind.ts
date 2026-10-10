@@ -1042,6 +1042,9 @@ function opensAQuestion(words: readonly string[]): boolean {
   const first = words[0]!;
   /* In Nigerian English "do invoice for Ada" means make one. */
   if (first === 'do') return ['i', 'we', 'you', 'they', 'customer', 'any'].includes(words[1] ?? '');
+  /* "show CUSTOMER_7K2 her balance" shows the books to someone else, as
+   * the "can you show…" form does (round-22 review). */
+  if (first === 'show' || first === 'list') return forTheMerchant(words, 0);
   if (QUESTION_OPENERS.has(first)) return true;
   /* "can I see…", "could we get…"; "can you…" only before a read verb
    * ("can you show me sales?"), never before work ("can you reverse…"). */
@@ -1063,79 +1066,117 @@ function opensAQuestion(words: readonly string[]): boolean {
   /* "send me the P&L", "give me sales today", "send my records for March". */
   return (
     (first === 'send' || first === 'give' || first === 'get') &&
-    (words[1] === 'me' || words[1] === 'my' || words[1] === 'our')
+    (words[1] === 'me' || words[1] === 'my' || words[1] === 'our') &&
+    forTheMerchant(words, 0)
   );
 }
 
 /**
  * Is a read verb's output for the person asking? "show me my sales", "send
- * me the P&L", "show sales to CUSTOMER_7K2" (a filter) are; "send the
- * statement to CUSTOMER_7K2", "send her the invoice", "show CUSTOMER_7K2 her
- * balance" send the books to someone else, which is not a question about
- * them (round-20 review). Only what marks a recipient counts (round 21):
- * "all", "customers balances" and "sales from Monday to Friday" do not.
+ * me the P&L", "show sales to CUSTOMER_7K2" (a filter) are; "send my
+ * invoice to my customer", "send her the invoice", "show CUSTOMER_7K2 her
+ * balance", "export sales to the accountant" send the books to someone
+ * else, which is not a question about them (rounds 20 to 22). Three roles:
+ *
+ *  - sending (send, give, get, tell): the asker must be named, after the
+ *    verb or as "to me/us", and any "to" must name the asker, a format or
+ *    channel ("to my email", "to Excel") or a period;
+ *  - delivering (export, download, print): "to" a person is a send;
+ *  - viewing (show, list): "to" a person is a send unless it filters the
+ *    records or trade before it ("sales to CUSTOMER_7K2").
+ *
+ * An indirect object is a send in every role: "him/them", a customer or
+ * "her" before a determiner, or "my/our/the" + a person-like noun + a
+ * determiner ("send my accountant the P&L").
  */
 function forTheMerchant(words: readonly string[], verb: number): boolean {
   const v = words[verb]!;
   const at = (k: number) => words[verb + k] ?? '';
-  const sending = v === 'send' || v === 'give' || v === 'tell';
-  const delivering = sending || v === 'export' || v === 'download' || v === 'print';
+  const sending = v === 'send' || v === 'give' || v === 'get' || v === 'tell';
+  const viewing = v === 'show' || v === 'list';
 
-  /* "send", "give" and "tell" must name the asker, not "my customer". */
-  if (sending) {
-    if (!ASKERS.has(at(1))) return false;
-    if ((at(1) === 'my' || at(1) === 'our') && /^customers?$/.test(at(2))) return false;
+  const toTargets: { at: number; person: boolean; channel: boolean }[] = [];
+  for (let i = verb + 1; i < words.length; i += 1) {
+    if (words[i] !== 'to') continue;
+    let t = words[i + 1] ?? '';
+    if (t === 'my' || t === 'our' || t === 'the') t = words[i + 2] ?? '';
+    const channel =
+      ASKERS_DIRECT.has(words[i + 1] ?? '') ||
+      CHANNELS.has(t) ||
+      PERIODS.has(t) ||
+      RANGE_WORDS.has(t) ||
+      /^\d/.test(t);
+    toTargets.push({ at: i, person: PEOPLE.has(t), channel });
   }
 
-  /* An indirect object: "show him the sales", "show CUSTOMER_7K2 her
-   * balance", "send her the invoice", "show ada her balance", "show the
-   * customer the invoice". */
+  /* Sending names the asker: "send me…", "send my…", "send it to me". */
+  if (sending) {
+    const named =
+      ASKERS.has(at(1)) || toTargets.some((t) => ASKERS_DIRECT.has(words[t.at + 1] ?? ''));
+    if (!named) return false;
+    if ((at(1) === 'my' || at(1) === 'our') && PEOPLE.has(at(2))) return false;
+  }
+
+  /* An indirect object. */
   if (at(1) === 'him' || at(1) === 'them') return false;
-  const person = (w: string) => w === 'customer' || w === 'her' || !knownWord(w);
-  if (person(at(1)) && DETERMINERS.has(at(2))) return false;
-  if (['the', 'my', 'our'].includes(at(1)) && at(2) === 'customer' && DETERMINERS.has(at(3))) {
+  if ((at(1) === 'customer' || at(1) === 'her') && DETERMINERS.has(at(2))) return false;
+  if (['the', 'my', 'our'].includes(at(1)) && PEOPLE.has(at(2)) && DETERMINERS.has(at(3))) {
     return false;
   }
 
-  for (let i = verb + 1; i < words.length; i += 1) {
-    if (words[i] !== 'to') continue;
-    const target = words[i + 1] ?? '';
-    /* A period or a format: "1 to 5 October", "Monday to Friday", "to date",
-     * "to Excel", "to my email". */
-    if (RANGE_OR_FORMAT.has(target) || PERIODS.has(target) || /^\d/.test(target)) continue;
-    const toPerson =
-      target === 'customer' || target === 'her' || target === 'him' || target === 'them';
-    /* Sending or exporting to a person sends the books out; after show or
-     * list, "sales to CUSTOMER_7K2" filters the records it follows. */
-    if (toPerson && delivering) return false;
-    if (toPerson && !RECORD_NOUNS.has(words[i - 1] ?? '') && !TRADE_VERBS.has(words[i - 1] ?? '')) {
-      return false;
-    }
-    /* "send the statement to the accountant": only the asker or a format. */
-    if (sending && !ASKERS.has(target)) return false;
+  for (const t of toTargets) {
+    if (t.channel) continue;
+    const before = words[t.at - 1] ?? '';
+    const filters = LISTED_RECORDS.has(before) || TRADE_VERBS.has(before);
+    if (sending) return false;
+    if (t.person && (!viewing || !filters)) return false;
   }
   return true;
 }
 
 /** Words that name the asker. */
 const ASKERS = new Set(['me', 'us', 'my', 'our']);
+const ASKERS_DIRECT = new Set(['me', 'us']);
 
 /** What begins an object after an indirect object: "send her THE invoice". */
 const DETERMINERS = new Set(['the', 'a', 'an', 'her', 'his', 'their', 'its', 'my', 'our']);
 
-/** What may follow "to" without naming a recipient. */
-const RANGE_OR_FORMAT = new Set([
-  'me',
-  'us',
-  'my',
-  'our',
+/** People the books might be sent to. */
+const PEOPLE = new Set([
+  'customer',
+  'customers',
+  'client',
+  'clients',
+  'accountant',
+  'her',
+  'him',
+  'them',
+  'boss',
+  'partner',
+  'wife',
+  'husband',
+  'manager',
+  'staff',
+]);
+
+/** Formats and channels a report may go to: "to my email", "to Excel". */
+const CHANNELS = new Set([
   'excel',
   'pdf',
   'csv',
   'spreadsheet',
+  'sheet',
   'email',
+  'mail',
+  'gmail',
+  'inbox',
   'whatsapp',
+  'phone',
   'date',
+]);
+
+/** Words after "to" that close a range: "Monday to Friday", "to now". */
+const RANGE_WORDS = new Set([
   'now',
   'last',
   'this',

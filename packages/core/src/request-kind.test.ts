@@ -709,11 +709,55 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     'can you send my customer the invoice',
     'can you show my customer her balance',
     'can you show the customer the invoice',
-    'can you show ada her balance',
+    'can you show CUSTOMER_9M4 her balance',
     'can you show him the sales',
     'can you send the statement to the accountant',
   ])('never reads %j as a question', (text) => {
     expect(requestKind(text)).not.toBe('read');
+  });
+
+  /* Round 22: "to my/our/the …" names a person or a channel; particles
+   * are not people; bare send/show meet the same check. */
+  it.each([
+    'can you send my invoice to my customer',
+    'can you send my statement to my customer',
+    'can you send our statement to our customers',
+    'can you send my sales report to my accountant',
+    'export sales to my customer',
+    'export the invoice to my client',
+    'export sales to the accountant',
+    'can you show the invoice to the customer',
+    'can you show my invoice to my customer',
+    'send my invoice to my customer',
+    'send my report to my accountant',
+    'show CUSTOMER_7K2 her balance',
+    'show the customer the invoice',
+    'can you send my accountant the pnl',
+    'send our accountant the pnl',
+    'can you show my client the invoice',
+  ])('never reads %j as a question', (text) => {
+    expect(requestKind(text)).not.toBe('read');
+  });
+
+  it.each([
+    'print out the statement',
+    'can you print out the statement',
+    'can you list out my debtors',
+    'can you list down the debtors',
+    'can you show only the sales',
+    'can you show just my sales',
+    'export out my sales',
+    'can you send the report to me',
+    'can you send me the report to my email',
+    'can you send me my statement to my whatsapp',
+    'can you show sales to my customers',
+    'can you list sales to the customer',
+    'export payments to suppliers',
+    'show me sales to CUSTOMER_7K2',
+    'list out the debtors',
+    'show sales from monday to friday',
+  ])('reads %j as a question about the books', (text) => {
+    expect(requestKind(text)).toBe('read');
   });
 
   it('is not fooled by a year into seeing money', () => {
