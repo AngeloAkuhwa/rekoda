@@ -675,6 +675,47 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Round 21: only what marks a recipient keeps a read from the asker;
+   * "all", "customers balances", filters and ranges do not. */
+  it.each([
+    'can you list all debtors',
+    'can you please list all debtors',
+    'could you show all sales this month',
+    'export all sales to excel',
+    'print all invoices',
+    'download all reports',
+    'can you show customers balances',
+    'can you list customers who owe me',
+    'print customer balances',
+    'can you show me sales to CUSTOMER_7K2',
+    'can you list sales to CUSTOMER_7K2 this month',
+    'can you show me payments to suppliers',
+    'export payments to suppliers',
+    'can you show sales from monday to friday',
+    'can you show sales from jan to mar',
+    'can you show me profit from january to now',
+    'can you send me sales to my email',
+    'can you export sales to spreadsheet',
+  ])('reads %j as a question about the books', (text) => {
+    expect(requestKind(text)).toBe('read');
+  });
+
+  it.each([
+    'can you please send the statement to CUSTOMER_7K2',
+    'can you please send her the invoice',
+    'can you please show CUSTOMER_7K2 her balance',
+    'can you send the report to EMAIL_1',
+    'can you please export sales to CUSTOMER_7K2',
+    'can you send my customer the invoice',
+    'can you show my customer her balance',
+    'can you show the customer the invoice',
+    'can you show ada her balance',
+    'can you show him the sales',
+    'can you send the statement to the accountant',
+  ])('never reads %j as a question', (text) => {
+    expect(requestKind(text)).not.toBe('read');
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');

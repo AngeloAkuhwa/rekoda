@@ -1069,30 +1069,98 @@ function opensAQuestion(words: readonly string[]): boolean {
 
 /**
  * Is a read verb's output for the person asking? "show me my sales", "send
- * me the P&L" are; "send the statement to CUSTOMER_7K2", "send her the
- * invoice", "show CUSTOMER_7K2 her balance" send the books to someone else,
- * which is not a question about them (round-20 review). "tell", "send" and
- * "give" must name the asker; any read verb aimed at a customer, a pronoun
- * or "to" someone other than me/us is not for the merchant.
+ * me the P&L", "show sales to CUSTOMER_7K2" (a filter) are; "send the
+ * statement to CUSTOMER_7K2", "send her the invoice", "show CUSTOMER_7K2 her
+ * balance" send the books to someone else, which is not a question about
+ * them (round-20 review). Only what marks a recipient counts (round 21):
+ * "all", "customers balances" and "sales from Monday to Friday" do not.
  */
 function forTheMerchant(words: readonly string[], verb: number): boolean {
-  const next = words[verb + 1] ?? '';
-  const named = next === 'me' || next === 'us' || next === 'my' || next === 'our';
-  if (['tell', 'send', 'give'].includes(words[verb]!) && !named) return false;
-  if (THIRD_PARTIES.has(next)) return false;
-  return !words.some(
-    (w, i) =>
-      i > verb &&
-      w === 'to' &&
-      !['me', 'us', 'excel', 'pdf', 'csv', 'date'].includes(words[i + 1] ?? '') &&
-      /* "from 1 to 5 October", "to date": a period, not a recipient. */
-      !/^\d/.test(words[i + 1] ?? '') &&
-      !PERIODS.has(words[i + 1] ?? ''),
-  );
+  const v = words[verb]!;
+  const at = (k: number) => words[verb + k] ?? '';
+  const sending = v === 'send' || v === 'give' || v === 'tell';
+  const delivering = sending || v === 'export' || v === 'download' || v === 'print';
+
+  /* "send", "give" and "tell" must name the asker, not "my customer". */
+  if (sending) {
+    if (!ASKERS.has(at(1))) return false;
+    if ((at(1) === 'my' || at(1) === 'our') && /^customers?$/.test(at(2))) return false;
+  }
+
+  /* An indirect object: "show him the sales", "show CUSTOMER_7K2 her
+   * balance", "send her the invoice", "show ada her balance", "show the
+   * customer the invoice". */
+  if (at(1) === 'him' || at(1) === 'them') return false;
+  const person = (w: string) => w === 'customer' || w === 'her' || !knownWord(w);
+  if (person(at(1)) && DETERMINERS.has(at(2))) return false;
+  if (['the', 'my', 'our'].includes(at(1)) && at(2) === 'customer' && DETERMINERS.has(at(3))) {
+    return false;
+  }
+
+  for (let i = verb + 1; i < words.length; i += 1) {
+    if (words[i] !== 'to') continue;
+    const target = words[i + 1] ?? '';
+    /* A period or a format: "1 to 5 October", "Monday to Friday", "to date",
+     * "to Excel", "to my email". */
+    if (RANGE_OR_FORMAT.has(target) || PERIODS.has(target) || /^\d/.test(target)) continue;
+    const toPerson =
+      target === 'customer' || target === 'her' || target === 'him' || target === 'them';
+    /* Sending or exporting to a person sends the books out; after show or
+     * list, "sales to CUSTOMER_7K2" filters the records it follows. */
+    if (toPerson && delivering) return false;
+    if (toPerson && !RECORD_NOUNS.has(words[i - 1] ?? '') && !TRADE_VERBS.has(words[i - 1] ?? '')) {
+      return false;
+    }
+    /* "send the statement to the accountant": only the asker or a format. */
+    if (sending && !ASKERS.has(target)) return false;
+  }
+  return true;
 }
 
-/** Someone other than the asker: a customer token, or a pronoun for one. */
-const THIRD_PARTIES = new Set(['customer', 'customers', 'her', 'him', 'them', 'all']);
+/** Words that name the asker. */
+const ASKERS = new Set(['me', 'us', 'my', 'our']);
+
+/** What begins an object after an indirect object: "send her THE invoice". */
+const DETERMINERS = new Set(['the', 'a', 'an', 'her', 'his', 'their', 'its', 'my', 'our']);
+
+/** What may follow "to" without naming a recipient. */
+const RANGE_OR_FORMAT = new Set([
+  'me',
+  'us',
+  'my',
+  'our',
+  'excel',
+  'pdf',
+  'csv',
+  'spreadsheet',
+  'email',
+  'whatsapp',
+  'date',
+  'now',
+  'last',
+  'this',
+  'next',
+  'today',
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+  'sunday',
+  'jan',
+  'feb',
+  'mar',
+  'apr',
+  'jun',
+  'jul',
+  'aug',
+  'sep',
+  'sept',
+  'oct',
+  'nov',
+  'dec',
+]);
 
 function isYear(word: string): boolean {
   return /^(19|20)\d\d$/.test(word);
