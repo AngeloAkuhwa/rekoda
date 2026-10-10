@@ -967,6 +967,44 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Final review C: common view-only reads the grammar missed (a closing
+   * courtesy, would/will you, "i want to see", a run-in greeting, "check",
+   * a determiner before a list), and the records beside them. */
+  it.each([
+    ['sales for today please', 'read'],
+    ['P&L pls', 'read'],
+    ['CUSTOMER_7K2 balance abeg', 'read'],
+    ['would you show me sales for today', 'read'],
+    ['will you send me the report', 'read'],
+    ['i want to see my sales for today', 'read'],
+    ['let me see who owes me', 'read'],
+    ['make i see who dey owe me', 'read'],
+    ['i need the P&L for last month', 'read'],
+    ['i want my debtors', 'read'],
+    ['good morning how much did we sell yesterday', 'read'],
+    ['good evening who owes me', 'read'],
+    ['check CUSTOMER_7K2 balance', 'read'],
+    ['check if CUSTOMER_7K2 has paid', 'read'],
+    ['can you check who owes me', 'read'],
+    ['my sales', 'read'],
+    ['all my transactions', 'read'],
+    ['sales list', 'read'],
+    ['sold rice 5k please', 'write'],
+    ['i want to record a sale', 'write'],
+    ['would you record a sale for me', 'write'],
+    ['good morning Ada paid 20k', 'write'],
+    ['would you send the invoice to CUSTOMER_7K2', 'unknown'],
+    ['let me see Ada pay', 'unknown'],
+    ['i want the sale reversed', 'unknown'],
+    ['i need the invoice cancelled', 'unknown'],
+    ['i want rice 5k', 'unknown'],
+    ['check CUSTOMER_7K2 paid 5k', 'unknown'],
+    ['my sales 5k', 'unknown'],
+    ['sales for today please and add rice sale', 'unknown'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');

@@ -48,6 +48,38 @@ const OPENING_FILLERS = new Set([
   'rekoda',
 ]);
 
+/** A courtesy or particle closing a message: "sales today please". */
+const TRAILING_FILLERS = new Set([
+  'please',
+  'pls',
+  'plz',
+  'abeg',
+  'biko',
+  'o',
+  'oo',
+  'sha',
+  'abi',
+  'na',
+  'sir',
+  'ma',
+  'boss',
+  'thanks',
+]);
+
+/** Asking to see the books: "i want to see my sales", "make i see". */
+const SEEING_PREFIXES: readonly (readonly string[])[] = [
+  ['i', 'want', 'to', 'see'],
+  ['i', 'want', 'to', 'know'],
+  ['i', 'need', 'to', 'see'],
+  ['i', 'need', 'to', 'know'],
+  ['let', 'me', 'see'],
+  ['let', 'me', 'know'],
+  ['make', 'i', 'see'],
+  ['make', 'i', 'know'],
+  ['i', 'wan', 'see'],
+  ['i', 'wan', 'know'],
+];
+
 /** Asking Rekoda to record something, said as an instruction. */
 const RECORD_INSTRUCTIONS = new Set([
   'record',
@@ -797,7 +829,17 @@ const COMPARISONS = new Set([
 ]);
 
 /** Verbs that only ask to see: "can you show me…". */
-const READ_VERBS = new Set(['show', 'list', 'export', 'send', 'give', 'tell', 'download', 'print']);
+const READ_VERBS = new Set([
+  'show',
+  'list',
+  'check',
+  'export',
+  'send',
+  'give',
+  'tell',
+  'download',
+  'print',
+]);
 
 /** Verbs that only ever send to someone: "can I whatsapp the invoice…". */
 const SEND_ONLY_VERBS = new Set(['whatsapp', 'email', 'mail', 'forward', 'share', 'text', 'sms']);
@@ -892,6 +934,14 @@ const NEUTRAL_WORDS = new Set([
 
 /** Greetings that open like a question ("how", "what", "wetin"). */
 const GREETING_PREFIXES: readonly (readonly string[])[] = [
+  /* "good morning how much did we sell" (final review C). */
+  ['good', 'morning'],
+  ['good', 'afternoon'],
+  ['good', 'evening'],
+  ['good', 'day'],
+  ['morning'],
+  ['afternoon'],
+  ['evening'],
   ['wetin', 'dey', 'happen'],
   ['how', 'are', 'you'],
   ['how', 'you', 'dey'],
@@ -964,6 +1014,40 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
     start += greeting.length;
   }
   const words = all.slice(start);
+  /* "sales for today please", "P&L pls", "CUSTOMER_7K2 balance abeg": a
+   * courtesy or particle at the end, as the router strips (final review C). */
+  while (words.length > 1 && TRAILING_FILLERS.has(words[words.length - 1]!)) words.pop();
+  /* "i want to see…", "let me see…", "make i see…", "i need the P&L": a
+   * request to see the books, read as "show" (final review C). */
+  /* Not "i want the sale reversed": a change asked for, not a sight. */
+  const asksAChange = words.some(
+    (w, i) =>
+      CHANGE_PARTICIPLES.has(w) &&
+      i > 0 &&
+      !['the', 'my', 'our', 'all', 'any', 'see', 'know', 'want', 'need'].includes(words[i - 1]!),
+  );
+  for (const prefix of SEEING_PREFIXES) {
+    if (!asksAChange && words.length > prefix.length && startsWith(words, prefix)) {
+      words.splice(0, prefix.length, 'show');
+      break;
+    }
+  }
+  if (
+    !asksAChange &&
+    words.length > 2 &&
+    words[0] === 'i' &&
+    (words[1] === 'want' || words[1] === 'need') &&
+    words[2] !== 'to' &&
+    words
+      .slice(2)
+      .every(
+        (w) =>
+          w === 'list' ||
+          (onlyBooksWords([w]) && !TRADE_VERBS.has(w) && !CHANGE_PARTICIPLES.has(w)),
+      )
+  ) {
+    words.splice(0, 2, 'show');
+  }
   /* "record of sales", "log of payments": the records, not an instruction
    * to make one (Codex P2). Read as "report". */
   if (['record', 'records', 'log'].includes(words[0] ?? '') && words[1] === 'of') {
@@ -1089,6 +1173,10 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
    * every word is about the books ("my debtors", "sales this month", "total
    * expenses"): "expense today fuel" says something more, and stays
    * unknown. */
+  /* "my sales", "all my transactions", "sales list": the list, with only a
+   * determiner beside it (final review C). */
+  const listed = words.filter((w) => !['my', 'our', 'the', 'all', 'list'].includes(w));
+  if (!figure && listed.length === 1 && BARE_LISTS.has(listed[0]!)) return 'read';
   if (figure || !onlyBooksWords(words)) return 'unknown';
   /* "CUSTOMER_7K2 owes me", "she owed me": someone stating a debt, which
    * may be a credit sale to record, not a question about one (Codex P2).
@@ -1138,10 +1226,15 @@ function statesTrade(words: readonly string[]): boolean {
     while (t > 0 && TITLES.has(words[t - 1]!)) t -= 1;
     if (t === 0) continue;
     const lead = words[t - 1]!;
+    /* "show CUSTOMER_7K2 paid", "let me see Ada pay": a viewing verb does
+     * not ask about the subject after it. */
+    if (VIEWING_LEADS.has(lead)) return true;
     if (
       AUXILIARIES.has(lead) ||
       QUESTION_FRAMES.has(lead) ||
-      QUESTION_OPENERS.has(lead) ||
+      /* "show CUSTOMER_7K2 paid", "let me see Ada pay": no question word
+       * leads the subject. */
+      (QUESTION_OPENERS.has(lead) && lead !== 'show' && lead !== 'list') ||
       SUBJECT_LEADS.has(lead) ||
       /* "expenses we paid", "everything I sold": the merchant's own trade
        * describing the records asked for. */
@@ -1179,6 +1272,9 @@ const SUBJECT_LINKS = new Set([
   'got',
   'gotten',
 ]);
+
+/** Verbs that show the books, never ask about who follows them. */
+const VIEWING_LEADS = new Set(['show', 'list', 'check', 'see', 'know']);
 
 /** Titles before a name: "Mr. CUSTOMER_7K2", "Mama Chidi". */
 const TITLES = new Set([
@@ -1224,7 +1320,14 @@ const SUBJECT_LEADS = new Set([
   'may',
 ]);
 
-const BARE_LISTS = new Set(['sales', 'expenses', 'purchases', 'payments', 'invoices']);
+const BARE_LISTS = new Set([
+  'sales',
+  'expenses',
+  'purchases',
+  'payments',
+  'invoices',
+  'transactions',
+]);
 
 /** A question by its opening, not by a trailing question mark. */
 function opensAQuestion(words: readonly string[]): boolean {
@@ -1233,10 +1336,16 @@ function opensAQuestion(words: readonly string[]): boolean {
   if (first === 'do') return ['i', 'we', 'you', 'they', 'customer', 'any'].includes(words[1] ?? '');
   /* "show CUSTOMER_7K2 her balance" shows the books to someone else, as
    * the "can you show…" form does (round-22 review). */
-  if (first === 'show' || first === 'list') return forTheMerchant(words, 0);
+  if (first === 'show' || first === 'list' || first === 'check') return forTheMerchant(words, 0);
   if (QUESTION_OPENERS.has(first)) return true;
   /* "can I see…", "could we get…"; "can you…" only before a read verb
    * ("can you show me sales?"), never before work ("can you reverse…"). */
+  /* "would you show me sales", "will you send me the report" (final review C). */
+  if ((first === 'will' || first === 'would') && words[1] === 'you') {
+    let k = 2;
+    while (OPENING_FILLERS.has(words[k] ?? '')) k += 1;
+    return READ_VERBS.has(words[k] ?? '') && forTheMerchant(words, k);
+  }
   if (first === 'can' || first === 'could') {
     if (words[1] === 'i' || words[1] === 'we') {
       /* "can I send the invoice to CUSTOMER_7K2", "can I show Ada her
@@ -1291,7 +1400,7 @@ function forTheMerchant(words: readonly string[], verb: number): boolean {
   const v = words[verb]!;
   const at = (k: number) => words[verb + k] ?? '';
   const sending = v === 'send' || v === 'give' || v === 'get' || v === 'tell';
-  const viewing = v === 'show' || v === 'list';
+  const viewing = v === 'show' || v === 'list' || v === 'check';
 
   const toTargets: { at: number; person: boolean; counterparty: boolean; channel: boolean }[] = [];
   for (let i = verb + 1; i < words.length; i += 1) {
