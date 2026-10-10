@@ -466,6 +466,23 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Codex, on 76c605a: every figure must be governed by a comparison, a
+   * comparison may be in words, and a participle needs a real subject. */
+  it.each([
+    ['who owes me more than fifty thousand', 'read'],
+    ['who owes me more than N50k', 'read'],
+    ['who owes me above #20,000', 'read'],
+    ['did CUSTOMER_7K2 pay 20k over 2 transfers', 'unknown'],
+    ['have now settled the balance', 'unknown'],
+    ['has just cancelled the invoice', 'unknown'],
+    ['can i get the invoice cancelled?', 'unknown'],
+    ['how many invoices were cancelled this month?', 'read'],
+    ['has CUSTOMER_7K2 settled her balance?', 'read'],
+    ['show refunded payments this month', 'read'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');

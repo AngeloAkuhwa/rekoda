@@ -520,8 +520,26 @@ function knownWord(w: string): boolean {
  * A comparison that governs a figure: "more than 50k", "over 5k", "50k and
  * above". "paid 20k over transfer" is no filter.
  */
-const COMPARISON_FILTER =
-  /\b(?:(?:more|less|greater|bigger|higher|lower|fewer)\s+than|over|above|under|below|exceeding|at\s+(?:least|most))\s+(?:₦\s*)?\d|\d[\d,.]*\s*k?\s+(?:and|or)\s+(?:above|more|over|below|less|under)\b/;
+const COMPARISON_FILTER = new RegExp(
+  [
+    /* "more than 50k", "over ₦5,000", "above N20,000", "at least #10k" */
+    String.raw`\b(?:(?:more|less|greater|bigger|higher|lower|fewer)\s+than|over|above|under|below|exceeding|at\s+(?:least|most))\s+(?:(?:[₦#]|n(?=\d))\s*)?\d[\d,.]*\s*(?:k|m|naira)?\b`,
+    /* "more than fifty thousand", "over five hundred naira" */
+    String.raw`\b(?:(?:more|less|greater|bigger|higher|lower|fewer)\s+than|over|above|under|below|exceeding|at\s+(?:least|most))\s+(?:[a-z]+\s+){0,3}?(?:hundred|thousand|million|billion)(?:\s+naira)?\b`,
+    /* "50k and above", "20,000 or less" */
+    String.raw`(?:[₦#]\s*)?\d[\d,.]*\s*(?:k|m)?\s+(?:and|or)\s+(?:above|more|over|below|less|under)\b`,
+  ].join('|'),
+  'g',
+);
+
+/**
+ * Is a figure left once every compared figure is taken out? "who owes me
+ * more than 50k" leaves none; "did Ada pay 20k over 2 transfers" leaves
+ * the 20k, which is still an amount (Codex P2).
+ */
+function figureBeyondFilters(text: string): boolean {
+  return hasFigure(text.replace(COMPARISON_FILTER, ' '));
+}
 
 /** Records that can be listed: the plural forms. */
 const LISTED_RECORDS = new Set([
@@ -788,12 +806,23 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
    * own ("how many invoices were cancelled", "has CUSTOMER_7K2 settled"),
    * never straight after the opening auxiliary ("have cleared the debt"). */
   const asks = opensAQuestion(words);
+  /* The evidence must be a real subject, a record or a read verb: "have
+   * now settled the balance" and "can I get the invoice cancelled" are
+   * changes, whatever words sit between (Codex P2). */
   const describes = (i: number) =>
     asks &&
     CHANGE_PARTICIPLES.has(words[i]!) &&
+    !words.slice(1, i).some((w) => w === 'get' || w === 'have') &&
     words
       .slice(0, i)
-      .some((w) => READ_VERBS.has(w) || (!AUXILIARIES.has(w) && !QUESTION_OPENERS.has(w)));
+      .some(
+        (w) =>
+          READ_VERBS.has(w) ||
+          SUBJECTS.has(w) ||
+          RECORD_NOUNS.has(w) ||
+          LISTED_RECORDS.has(w) ||
+          BOOK_TOPICS.has(w),
+      );
   if (words.some((w, i) => CHANGE_VERBS.has(w) && !describes(i))) return 'unknown';
 
   const figure = hasFigure(text);
@@ -819,8 +848,7 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
     /* "list sales and add rice sale" asks for a record halfway through. */
     if (words.some((w) => RECORD_INSTRUCTIONS.has(w))) return 'unknown';
     /* "who owes me more than 50k": a filter, not an amount (Codex P2). */
-    const filters = COMPARISON_FILTER.test(text);
-    if (figure && !filters && (trade || recordNoun || topic)) return 'unknown';
+    if (figure && figureBeyondFilters(text) && (trade || recordNoun || topic)) return 'unknown';
     if (trade) return words.some((w) => QUESTION_FRAMES.has(w)) ? 'read' : 'unknown';
     return topic || recordNoun ? 'read' : 'unknown';
   }
