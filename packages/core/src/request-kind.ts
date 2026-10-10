@@ -558,6 +558,8 @@ const COMPARISON_FILTER = new RegExp(
     String.raw`\b(?:(?:more|less|greater|bigger|higher|lower|fewer)\s+than|over|above|under|below|exceeding|at\s+(?:least|most))\s+(?:(?:two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\s*){1,3}\b`,
     /* "between 20k and 50k", "from 20k to 50k" (Codex P2) */
     String.raw`\b(?:between|from)\s+(?:(?:[₦#]|n(?=\d))\s*)?\d[\d,.]*(?:\s*(?:k|m|thousand|million|naira)\b)?\s*(?:and|to|-|–)\s*(?:(?:[₦#]|n(?=\d))\s*)?\d[\d,.]*(?:\s*(?:k|m|thousand|million|naira)\b){0,2}`,
+    /* "between twenty thousand and fifty thousand" (Codex P2) */
+    String.raw`\b(?:between|from)\s+(?:(?:(?:[₦#]|n(?=\d))\s*)?\d[\d,.]*(?:\s*(?:k|m|thousand|million|naira)\b){0,2}|(?:(?:a|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)\s+){0,4}(?:hundred|thousand|million|billion|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:\s+naira)?\b)\s*(?:and|to|-|–)\s*(?:(?:(?:[₦#]|n(?=\d))\s*)?\d[\d,.]*(?:\s*(?:k|m|thousand|million|naira)\b){0,2}|(?:(?:a|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)\s+){0,4}(?:hundred|thousand|million|billion|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:\s+naira)?\b)`,
     /* "50k and above", "20,000 or less" */
     String.raw`(?:[₦#]\s*)?\d[\d,.]*\s*(?:k|m)?\s+(?:and|or)\s+(?:above|more|over|below|less|under)\b`,
   ].join('|'),
@@ -1045,9 +1047,14 @@ function opensAQuestion(words: readonly string[]): boolean {
    * ("can you show me sales?"), never before work ("can you reverse…"). */
   if (first === 'can' || first === 'could') {
     if (words[1] === 'i' || words[1] === 'we') return true;
-    if (words[1] === 'you' && READ_VERBS.has(words[2] ?? '')) {
-      /* "can you tell me…", never "can you tell Ada she owes". */
-      return words[2] !== 'tell' || words[3] === 'me' || words[3] === 'us';
+    if (words[1] === 'you') {
+      /* "can you please show me…", "could you kindly list…" (Codex P2). */
+      let k = 2;
+      while (OPENING_FILLERS.has(words[k] ?? '')) k += 1;
+      if (READ_VERBS.has(words[k] ?? '')) {
+        /* "can you tell me…", never "can you tell Ada she owes". */
+        return words[k] !== 'tell' || words[k + 1] === 'me' || words[k + 1] === 'us';
+      }
     }
   }
   /* "tell me what I sold", never "tell CUSTOMER_7K2 she owes me" (Codex P2). */

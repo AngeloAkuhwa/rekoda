@@ -637,6 +637,23 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Codex, on a4847c7: word amounts in a bounded range; courtesy words
+   * between "you" and a read verb. */
+  it.each([
+    ['show sales between twenty thousand and fifty thousand', 'read'],
+    ['show sales from twenty thousand to fifty thousand', 'read'],
+    ['who owes me between 20k and fifty thousand?', 'read'],
+    ['did CUSTOMER_7K2 pay 5k between twenty and fifty thousand', 'unknown'],
+    ['sold rice from twenty thousand to fifty thousand', 'write'],
+    ['can you please show me sales this month?', 'read'],
+    ['could you kindly list expenses?', 'read'],
+    ['can you please tell me who owes me?', 'read'],
+    ['can you please tell CUSTOMER_7K2 she owes', 'unknown'],
+    ['can you please reverse the last sale?', 'unknown'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');
