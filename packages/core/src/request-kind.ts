@@ -450,11 +450,20 @@ function segmentKind(segment: string): RequestKind | 'neutral' {
   if (whole !== 'read') return whole;
   /* A comparison is a filter, already judged with its figure: taken out
    * first, so "more than one hundred and fifty thousand" is not split. */
-  const parts = body
+  const later: [string, boolean][] = [];
+  body
     .replace(COMPARISON_FILTER, ' ')
-    .split(/(?<!\d),|,(?!\d)|\s+(?:and|but|then|also|plus)\s+/i)
-    .filter((part) => part.trim().length > 0);
-  return parts.slice(1).some(saysSomethingOfItsOwn) ? 'unknown' : 'read';
+    .split(/(?<!\d),|,(?!\d)/)
+    .forEach((clause, c) =>
+      clause.split(/\s+(?:and|but|then|also|plus)\s+/i).forEach((part, a) => {
+        /* The first part of each comma clause stands after a comma; the
+         * rest continue a list ("fuel and diesel"). */
+        if ((c > 0 || a > 0) && part.trim().length > 0) later.push([part, a === 0]);
+      }),
+    );
+  return later.some(([part, afterComma]) => saysSomethingOfItsOwn(part, afterComma))
+    ? 'unknown'
+    : 'read';
 }
 
 /** Someone doing something: the mark of a statement, not a question's tail. */
@@ -469,7 +478,7 @@ const BREAKDOWN_WORDS = new Set(['by', 'per', 'each', 'every', 'which']);
  * or a bare name given as an answer ("…, CUSTOMER_7K2"). "spend this month"
  * (trade first, no subject) and "customer owe" continue the question.
  */
-function saysSomethingOfItsOwn(part: string): boolean {
+function saysSomethingOfItsOwn(part: string, afterComma: boolean): boolean {
   const lower = part.toLowerCase();
   const words = (lower.match(/[\p{L}\p{N}']+/gu) ?? []).map((w) => w.replace(/'s$/, ''));
   if (words.length === 0) return false;
@@ -495,7 +504,8 @@ function saysSomethingOfItsOwn(part: string): boolean {
    * the question (Codex P2). */
   const [first, second] = words;
   if (first !== undefined && !knownWord(first)) {
-    if (second === undefined || (!booksWord(second) && !knownWord(second))) return true;
+    /* Alone only after a comma ("…, ada"): "fuel and diesel" is a list. */
+    if (second === undefined ? afterComma : !booksWord(second) && !knownWord(second)) return true;
   }
   if (words.slice(1).some((w) => TRADE_VERBS.has(w))) return true;
   /* A subject of its own: "CUSTOMER_7K2 sent money", "yes she did",
@@ -538,7 +548,7 @@ const COMPARISON_FILTER = new RegExp(
     /* "more than 50k", "over ₦5,000", "above N20,000", "at least #10k" */
     String.raw`\b(?:(?:more|less|greater|bigger|higher|lower|fewer)\s+than|over|above|under|below|exceeding|at\s+(?:least|most))\s+(?:(?:[₦#]|n(?=\d))\s*)?\d[\d,.]*(?:\s*(?:k|m|thousand|million|naira)\b){0,2}`,
     /* "more than fifty thousand", "over five hundred naira" */
-    String.raw`\b(?:(?:more|less|greater|bigger|higher|lower|fewer)\s+than|over|above|under|below|exceeding|at\s+(?:least|most))\s+(?:[a-z]+\s+){0,6}(?:hundred|thousand|million|billion)(?:\s+naira)?\b`,
+    String.raw`\b(?:(?:more|less|greater|bigger|higher|lower|fewer)\s+than|over|above|under|below|exceeding|at\s+(?:least|most))\s+(?:(?:a|an|and|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million)\s+){0,6}(?:hundred|thousand|million|billion)(?:\s+naira)?\b`,
     /* "50k and above", "20,000 or less" */
     String.raw`(?:[₦#]\s*)?\d[\d,.]*\s*(?:k|m)?\s+(?:and|or)\s+(?:above|more|over|below|less|under)\b`,
   ].join('|'),
@@ -581,6 +591,18 @@ const PERIOD_JOINERS = new Set([
 
 /** Ordinary words a trailing part may hold that are not names. */
 const OTHER_KNOWN = new Set([
+  'asap',
+  'quickly',
+  'anyone',
+  'names',
+  'exactly',
+  'roughly',
+  'sha',
+  'abi',
+  'o',
+  'joor',
+  'nna',
+  'ehen',
   'pdf',
   'excel',
   'csv',

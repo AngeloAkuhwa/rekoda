@@ -550,6 +550,28 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Round 15: a list after "and" is a list; a word-amount comparison
+   * holds only number words. */
+  it.each([
+    ['how much did i spend on fuel and transport', 'read'],
+    ['how much did i spend on fuel and diesel?', 'read'],
+    ['how much did i spend on data and airtime', 'read'],
+    ['who bought rice and beans', 'read'],
+    ['show me invoices and receipts', 'read'],
+    ['how much did i receive via transfer and pos', 'read'],
+    ['who owes me, asap', 'read'],
+    ['how much did i sell today, sha', 'read'],
+    ['who owes me, ada', 'unknown'],
+    ['who owes me, ada sent money', 'unknown'],
+    ['who owes me more than ten thousand and CUSTOMER_7K2 paid five thousand', 'unknown'],
+    ['who owes me more than five thousand and ada paid two thousand', 'unknown'],
+    ['who owes me over ten and sold rice five thousand', 'unknown'],
+    ['who owes me more than one hundred and fifty thousand', 'read'],
+    ['who owes me more than five hundred thousand', 'read'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');
