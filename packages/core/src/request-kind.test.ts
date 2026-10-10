@@ -782,7 +782,36 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     ['how much did we make this month?', 'read'],
     ['how much money did we make today?', 'read'],
     ['how much did we earn last week?', 'read'],
-    ['made 50k today', 'unknown'],
+    ['made 50k today', 'write'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
+  /* Round 24: make/earn read only in a question frame; someone else's
+   * channel is a send; one transaction is a record; a relative amount
+   * counts only beside a payment. */
+  it.each([
+    ['made a sale today', 'unknown'],
+    ['I made a sale', 'unknown'],
+    ['customer made a payment today', 'unknown'],
+    ['make an invoice today', 'unknown'],
+    ['made sales today', 'unknown'],
+    ['we made a profit this month', 'unknown'],
+    ['earned today', 'unknown'],
+    ['what did I make today', 'read'],
+    ['my earnings', 'read'],
+    ['send us statement on customer whatsapp', 'unknown'],
+    ['send me statement on CUSTOMER_7K2 whatsapp', 'unknown'],
+    ["send me the invoice on Ada's whatsapp", 'unknown'],
+    ['send me statement on whatsapp', 'read'],
+    ['send me the sales pdf', 'read'],
+    ['a transaction today', 'unknown'],
+    ['transaction for customer today', 'unknown'],
+    ['transactions today', 'read'],
+    ['show the rest of my sales', 'read'],
+    ['who owes me the rest', 'read'],
+    ['customer paid the rest', 'write'],
+    ['paid the remainder', 'write'],
   ] as const)('reads %j as %s', (text, kind) => {
     expect(requestKind(text)).toBe(kind);
   });

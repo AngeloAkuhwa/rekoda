@@ -236,6 +236,12 @@ const TRADE_VERBS = new Set([
   'damaged',
   'spoilt',
   'spoiled',
+  /* "how much did we make/earn this month?" reads in a question frame
+   * (Codex P2); "made a sale today", "made 50k" stay records (round 24). */
+  'make',
+  'made',
+  'earn',
+  'earned',
 ]);
 
 /**
@@ -243,12 +249,6 @@ const TRADE_VERBS = new Set([
  * where the word itself asks: nobody records a "debtors".
  */
 const BOOK_TOPICS = new Set([
-  /* "how much did we make/earn this month?" (Codex P2): a sales question,
-   * never a record on its own ("made 50k" carries a figure). */
-  'make',
-  'made',
-  'earn',
-  'earned',
   'earnings',
   'revenue',
   'income',
@@ -295,7 +295,6 @@ const BOOK_TOPICS = new Set([
  * this month" asks, "sale rice" records. Read only beside a period.
  */
 const RECORD_NOUNS = new Set([
-  'transaction',
   'transactions',
   'invoice',
   'invoices',
@@ -383,9 +382,15 @@ const DATES = new RegExp(
 function hasFigure(raw: string): boolean {
   const text = raw.replace(DATES, ' ');
   if (text.includes('₦') || NUMBER_WORDS.test(text)) return true;
-  /* "half", "the rest", "the remainder": amounts RecordPayment reads as
-   * relativeAmount (Codex P2). */
-  if (/\b(?:half|remainder|the\s+rest)\b/.test(text)) return true;
+  /* "paid half", "settled the rest": amounts RecordPayment reads as
+   * relativeAmount (Codex P2), but only beside a payment, so "show the rest
+   * of my sales" still asks (round 24). */
+  if (
+    /\b(?:half|remainder|the\s+rest)\b/.test(text) &&
+    /\b(?:pa(?:y|ys|id|ying)|settled?|received?|collected?|cleared?|balanced?)\b/.test(text)
+  ) {
+    return true;
+  }
   /* Digits glued to a letter ("q3") name something, not an amount. */
   for (const match of text.matchAll(/(?<![a-mo-z])\d[\d,.]*\s*(k|m|naira|ngn)?/g)) {
     /* Only a bare four-digit token: "2,026" and "20.26" are amounts. */
@@ -1133,6 +1138,17 @@ function forTheMerchant(words: readonly string[], verb: number): boolean {
       ASKERS.has(at(1)) || toTargets.some((t) => ASKERS_DIRECT.has(words[t.at + 1] ?? ''));
     if (!named) return false;
     if ((at(1) === 'my' || at(1) === 'our') && PEOPLE.has(at(2))) return false;
+  }
+
+  /* "on customer WhatsApp", "to Ada's email": someone else's channel
+   * (round 24). */
+  for (let j = verb + 1; j < words.length; j += 1) {
+    if (!CHANNELS.has(words[j]!) || words[j] === 'date') continue;
+    const owner = words[j - 1] ?? '';
+    const name = !knownWord(owner) && !['as', 'in', 'into', 'via', 'by', 'through'].includes(owner);
+    if (PEOPLE.has(owner) || owner === 'his' || owner === 'their' || name) {
+      return false;
+    }
   }
 
   /* An indirect object. */
