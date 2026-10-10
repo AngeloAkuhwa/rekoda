@@ -267,7 +267,15 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     let spoken: { transcript: Transcript; messageId: string } | null = null;
     let read: { text: string; messageId: string } | null = null;
     if (isVoiceNote(inbound)) {
-      spoken = await transcribeVoiceNote(deps, tx, businessId, inbound, log, retrying);
+      spoken = await transcribeVoiceNote(
+        deps,
+        tx,
+        businessId,
+        inbound,
+        log,
+        retrying,
+        event.receivedAt,
+      );
       if (!spoken) {
         /* Already answered inside, and already marked new-or-not. Nothing to
          * interpret and nothing to charge for. Still the newest thing this
@@ -277,7 +285,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         return;
       }
     } else if (isReceiptPhoto(inbound)) {
-      read = await readReceiptPhoto(deps, tx, businessId, inbound, log, retrying);
+      read = await readReceiptPhoto(deps, tx, businessId, inbound, log, retrying, event.receivedAt);
       if (!read) {
         await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
         await events.markProcessed(tx, eventId, null, businessId);
@@ -445,6 +453,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             message.id,
             retrying,
             event.receivedAt,
+            eventId,
             tokenised!.link,
             inbound.from,
             liveTokens!,
@@ -756,6 +765,8 @@ async function readReceiptPhoto(
   inbound: { externalId: string; from: string; imageId: string | null; caption: string | null },
   log: Logger,
   retrying: boolean,
+  /** When the photo arrived: its unit belongs to that month on every attempt. */
+  receivedAt: Date,
 ): Promise<{ text: string; messageId: string } | null> {
   const recorded = await conversationsRepo.recordInbound(
     tx,
@@ -866,7 +877,7 @@ async function readReceiptPhoto(
     return null;
   }
 
-  const period = usagePeriod(new Date());
+  const period = usagePeriod(receivedAt);
   const allowance = await meterAllowance(deps.config, tx, businessId, plan, 'DOCUMENTS_UNDERSTOOD');
   /* Skipped on a retry, as AI_ACTIONS is (see `retrying`): attempt 1's unit
    * committed in its own transaction and survived the job's rollback, and
@@ -929,9 +940,12 @@ async function readReceiptPhoto(
       // The provider was never reached: nothing spent, the daily slot back.
       await quotaRepo.releaseDocExtraction(deps.db, businessId);
     }
-    await withBusiness(deps.db, businessId, (own) =>
-      usageRepo.refundUnit(own, businessId, period, 'DOCUMENTS_UNDERSTOOD'),
-    );
+    /* Only the attempt that took the unit gives it back: a retry took none. */
+    if (!retrying) {
+      await withBusiness(deps.db, businessId, (own) =>
+        usageRepo.refundUnit(own, businessId, period, 'DOCUMENTS_UNDERSTOOD'),
+      );
+    }
     await deps.replySender.send(tx, {
       businessId,
       to: inbound.from,
@@ -978,6 +992,8 @@ async function transcribeVoiceNote(
   inbound: { externalId: string; from: string; audioId: string | null },
   log: Logger,
   retrying: boolean,
+  /** When the note arrived: its seconds belong to that month on every attempt. */
+  receivedAt: Date,
 ): Promise<{ transcript: Transcript; messageId: string } | null> {
   const recorded = await conversationsRepo.recordInbound(
     tx,
@@ -1099,7 +1115,7 @@ async function transcribeVoiceNote(
    * transcriber is called. Its own short transaction, like the message unit,
    * because the counter must not be held across a network call.
    */
-  const period = usagePeriod(new Date());
+  const period = usagePeriod(receivedAt);
   const allowance = await meterAllowance(deps.config, tx, businessId, plan, 'VOICE_MINUTES');
   /* Skipped on a retry, as AI_ACTIONS is (see `retrying`): attempt 1's
    * seconds committed in their own transaction and survived the job's
@@ -1127,9 +1143,12 @@ async function transcribeVoiceNote(
   } catch (error) {
     /* An outage, not the merchant's fault, so THEIR seconds go back. The
      * reason is logged without the audio and without their words. */
-    await withBusiness(deps.db, businessId, (own) =>
-      usageRepo.refundUnit(own, businessId, period, 'VOICE_MINUTES', seconds),
-    );
+    /* Only the attempt that took the seconds gives them back. */
+    if (!retrying) {
+      await withBusiness(deps.db, businessId, (own) =>
+        usageRepo.refundUnit(own, businessId, period, 'VOICE_MINUTES', seconds),
+      );
+    }
     /* The DAILY ceiling follows the money, not the merchant: released only
      * when the provider was never reached; kept when the call was billed
      * (an answered-but-unusable response) or may have been (a timeout). */
@@ -4471,6 +4490,8 @@ async function interpretedReply(
   retrying: boolean,
   /** When this message reached Rekoda; see CommandContext.receivedAt. */
   receivedAt: Date,
+  /** The stored event this message came in on, where its unit is recorded. */
+  eventId: string,
   /** Two records this message may have made of one person. Usually null. */
   link: IdentityLinkProposal | null,
   /** The sender's wa id, for the role check on write commands. */
@@ -4540,7 +4561,7 @@ async function interpretedReply(
      * for and stays on Rekoda's books. */
     if (fromDocument) {
       await withBusiness(deps.db, businessId, (own) =>
-        usageRepo.refundUnit(own, businessId, usagePeriod(new Date()), 'DOCUMENTS_UNDERSTOOD'),
+        usageRepo.refundUnit(own, businessId, usagePeriod(receivedAt), 'DOCUMENTS_UNDERSTOOD'),
       );
       return replies.viewOnlyRole();
     }
@@ -4550,7 +4571,10 @@ async function interpretedReply(
   }
 
   const monthlyMessages = await meterAllowance(deps.config, tx, businessId, plan, 'AI_ACTIONS');
-  const period = usagePeriod(new Date());
+  /* The month this message ARRIVED in, not the month an attempt runs in:
+   * a retry that crosses midnight at a month's end must give back the unit
+   * it took in the old month, never take one from the new (G-57, Codex). */
+  const period = usagePeriod(receivedAt);
 
   /**
    * The consume runs in its OWN short transaction, not this job's.
@@ -4565,7 +4589,8 @@ async function interpretedReply(
   /* Skipped on a retry: attempt 1's consume committed in its own transaction
    * and survived this job's rollback, so taking another would charge the
    * merchant again for one message. */
-  const granted = retrying || (await consumeMessage(deps, businessId, period, monthlyMessages));
+  const granted =
+    retrying || (await consumeMessage(deps, businessId, eventId, period, monthlyMessages));
   if (!granted) return replies.allowanceExhausted(monthlyMessages);
 
   const interpreted = await deps.interpreter.interpret(
@@ -4581,14 +4606,11 @@ async function interpretedReply(
    * failures.
    */
   /* Run on a retry too (G-57 final review B): attempt 1's unit may still be
-   * taken if its reply failed after the model answered, and this attempt
-   * delivered nothing. A unit already given back can be given back again
-   * on each later attempt, so at most max_attempts - 1 (4) extra units,
-   * floored at zero: the under-count this job chooses (see `retrying`). It
-   * needs a failure on Rekoda's side after the decision, which no sender
-   * can cause, and every attempt still takes a daily model slot. */
+   * held if its reply failed after the model answered, and this attempt
+   * delivered nothing. `refundMessage` gives back the recorded reservation
+   * exactly once, in the month it was taken. */
   if (interpreted.outcome !== 'command') {
-    await refundMessage(deps, businessId, period);
+    await refundMessage(tx, businessId, eventId, period);
   }
 
   /**
@@ -4639,11 +4661,10 @@ async function interpretedReply(
     }
     /* A refused request consumes nothing (spec §4.3 rule 4): the call is
      * spent, but the unit goes back, as for every outcome that did not
-     * deliver. Run on a retry too (Codex P2): if attempt 1's refund failed,
-     * this is the only one; if it committed, refunding again under-counts,
-     * by at most max_attempts - 1 (4) units floored at zero, the side this
-     * job already chooses to err on (see `retrying`). */
-    await refundMessage(deps, businessId, period);
+     * deliver. Run on a retry too (Codex P2): the recorded reservation is
+     * given back exactly once, in the month it was taken, whichever attempt
+     * answers. */
+    await refundMessage(tx, businessId, eventId, period);
     return replies.viewOnlyRole();
   }
 
@@ -5132,22 +5153,38 @@ async function acknowledge(
 function consumeMessage(
   deps: InboundMessageDeps,
   businessId: string,
+  eventId: string,
   period: string,
   allowance: number,
 ): Promise<boolean> {
-  return withBusiness(deps.db, businessId, (tx) =>
-    usageRepo.consumeUnit(tx, businessId, period, 'AI_ACTIONS', allowance),
-  );
+  /* The unit is recorded on the message in the SAME committed transaction
+   * as the consume, so every later attempt knows exactly what this message
+   * holds, in which month (G-57: the reservation's identity). */
+  return withBusiness(deps.db, businessId, async (tx) => {
+    const ok = await usageRepo.consumeUnit(tx, businessId, period, 'AI_ACTIONS', allowance);
+    if (ok) await events.noteReservedUnit(tx, businessId, eventId, 'AI_ACTIONS');
+    return ok;
+  });
 }
 
-function refundMessage(
-  deps: InboundMessageDeps,
+/**
+ * Give back the message unit this message holds, if it holds one.
+ *
+ * Taken and refunded in the JOB's transaction: the refund commits only with
+ * the attempt that answers, so an attempt that dies after refunding gives
+ * nothing back and leaves the reservation for the next. Exactly once, in
+ * the month it was taken, never below zero, never twice, and never for an
+ * attempt that took nothing (G-57; replaces the earlier retry under-count).
+ */
+async function refundMessage(
+  tx: TenantDb,
   businessId: string,
+  eventId: string,
   period: string,
 ): Promise<void> {
-  return withBusiness(deps.db, businessId, (tx) =>
-    usageRepo.refundUnit(tx, businessId, period, 'AI_ACTIONS'),
-  );
+  if (await events.takeReservedUnit(tx, businessId, eventId, 'AI_ACTIONS')) {
+    await usageRepo.refundUnit(tx, businessId, period, 'AI_ACTIONS');
+  }
 }
 
 function describeIntent(intent: DeterministicIntent): string {

@@ -11,7 +11,7 @@
  * thing that can happen.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   billingRepo,
   createDb,
@@ -867,6 +867,115 @@ describe('the chat surface enforces roles', () => {
   /* Final review B on 5f98eec: the non-command refund was skipped on a
    * retry. A question whose first reply failed, and whose retry then finds
    * the provider down, delivered nothing, so it must cost nothing. */
+  /* Owner decision on G-57, with Codex: a unit taken just before midnight
+   * at a month's end (Lagos time) and refused on a retry after it goes back
+   * to THAT month, exactly once, and the new month is never touched. */
+  it('refunds the original month once when a retry crosses the month boundary (G-57)', async () => {
+    const businessId = await seedBusiness('Role Gate Month Ltd', '+2348140010047');
+    await memberOf(businessId, '+2348140010048', 'accountant');
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    const used = async (period: string) => {
+      const [row] = await ownerDb.execute<{ used: number }>(sql`
+        SELECT COALESCE(sum(used), 0)::int AS used FROM usage_counters
+         WHERE business_id = ${businessId}::uuid AND unit = 'AI_ACTIONS' AND period = ${period}`);
+      return Number(row?.used ?? 0);
+    };
+    try {
+      /* Other messages already used units in both months. */
+      await ownerDb.execute(sql`
+        INSERT INTO usage_counters (business_id, period, unit, used)
+        VALUES (${businessId}::uuid, '2026-09', 'AI_ACTIONS', 1),
+               (${businessId}::uuid, '2026-10', 'AI_ACTIONS', 2)`);
+      /* The first reply fails once, so the job really retries. */
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g57_month_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g57_month_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF NEW.usage_type = 'SERVICE_MESSAGE' AND nextval('g57_month_once') = 1 THEN
+            RAISE EXCEPTION 'g57: first reply fails';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g57_month_fail_once BEFORE INSERT ON usage_events
+          FOR EACH ROW EXECUTE FUNCTION g57_month_fail_once()`);
+
+      /* A question the model reads as a sale: refused after the model. */
+      stubTransport.replyWith(A_SALE);
+      const waId = '2348140010048';
+      const externalId = `wamid.${randomBytes(8).toString('hex')}`;
+      const body = {
+        object: 'whatsapp_business_account',
+        entry: [
+          {
+            id: 'WABA',
+            changes: [
+              {
+                field: 'messages',
+                value: {
+                  messaging_product: 'whatsapp',
+                  metadata: { display_phone_number: '15550001', phone_number_id: 'PNID' },
+                  contacts: [{ profile: { name: 'X' }, wa_id: waId }],
+                  messages: [
+                    {
+                      id: externalId,
+                      from: waId,
+                      timestamp: '1700000000',
+                      type: 'text',
+                      text: { body: 'how much did we sell this month?' },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      };
+      const recorded = await recordPinned({
+        provider: 'meta',
+        eventType: 'message.text',
+        externalId,
+        payload: sealPayload(body, config.vaultKey, 'meta', externalId),
+        businessId,
+      });
+      /* It arrived at 23:59:30 on 30 September, Lagos time (UTC+1). */
+      await ownerDb.execute(sql`
+        UPDATE external_events SET created_at = '2026-09-30T22:59:30Z'
+         WHERE id = ${storedEventId(recorded)}::uuid`);
+      await enqueue(businessId, 'inbound.message', { eventId: storedEventId(recorded) });
+
+      vi.useFakeTimers({ toFake: ['Date'] });
+      /* Attempt 1, still September: takes the unit, then its reply fails. */
+      vi.setSystemTime(new Date('2026-09-30T22:59:50Z'));
+      await buildRunner(workerDb, appDb, deps).runOnce();
+      expect(await used('2026-09')).toBe(2);
+      /* The retry, after midnight: now October in Lagos. */
+      vi.setSystemTime(new Date('2026-09-30T23:00:30Z'));
+      await ownerDb.execute(sql`
+        UPDATE jobs SET run_at = now() WHERE business_id = ${businessId}::uuid AND state <> 'done'`);
+      await buildRunner(workerDb, appDb, deps).runOnce();
+
+      const [job] = await ownerDb.execute<{ state: string; attempts: number }>(sql`
+        SELECT state, attempts FROM jobs
+         WHERE business_id = ${businessId}::uuid AND kind = 'inbound.message'
+         ORDER BY created_at DESC LIMIT 1`);
+      expect(job).toMatchObject({ state: 'done', attempts: 2 });
+      expect(stubSender.sent[stubSender.sent.length - 1]?.text).toBe(replies.viewOnlyRole().text);
+      /* September's unit back, once; October untouched. */
+      expect({ september: await used('2026-09'), october: await used('2026-10') }).toEqual({
+        september: 1,
+        october: 2,
+      });
+    } finally {
+      vi.useRealTimers();
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g57_month_fail_once ON usage_events`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g57_month_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g57_month_once`);
+      await close();
+    }
+  });
+
   it('refunds a question whose retry finds the provider down (G-57)', async () => {
     const businessId = await seedBusiness('Role Gate Retry Down Ltd', '+2348140010045');
     await memberOf(businessId, '+2348140010046', 'accountant');
