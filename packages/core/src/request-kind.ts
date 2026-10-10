@@ -153,6 +153,9 @@ const CHANGE_VERBS = new Set([
 
 /** Words that only join books words: "the sales for this month so far". */
 const JOINING_WORDS = new Set([
+  'over',
+  'during',
+  'within',
   'my',
   'our',
   'the',
@@ -240,6 +243,13 @@ const TRADE_VERBS = new Set([
  * where the word itself asks: nobody records a "debtors".
  */
 const BOOK_TOPICS = new Set([
+  /* "how much did we make/earn this month?" (Codex P2): a sales question,
+   * never a record on its own ("made 50k" carries a figure). */
+  'make',
+  'made',
+  'earn',
+  'earned',
+  'earnings',
   'revenue',
   'income',
   'turnover',
@@ -285,6 +295,8 @@ const BOOK_TOPICS = new Set([
  * this month" asks, "sale rice" records. Read only beside a period.
  */
 const RECORD_NOUNS = new Set([
+  'transaction',
+  'transactions',
   'invoice',
   'invoices',
   'sale',
@@ -361,6 +373,8 @@ const DATES = new RegExp(
     '\\b(?:0?[1-9]|[12]\\d|3[01])\\/(?:0?[1-9]|1[0-2])(?:\\/\\d{2,4})?\\b',
     '\\b(?:0?[1-9]|[12]\\d|3[01])-(?:0?[1-9]|1[0-2])-\\d{2,4}\\b',
     '\\b\\d{1,2}(?:st|nd|rd|th)\\b',
+    /* "for 2 weeks", "over 7 days", "in three months" (Codex P2). */
+    '\\b(?:for|in|over|during|within)\\s+(?:the\\s+)?(?:\\d{1,3}|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\\s+(?:days?|weeks?|months?|years?)\\b',
     '\\b(?:last|past|next)\\s+(?:\\d{1,3}|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\\s+(?:days?|weeks?|months?|years?)\\b',
   ].join('|'),
   'g',
@@ -369,6 +383,9 @@ const DATES = new RegExp(
 function hasFigure(raw: string): boolean {
   const text = raw.replace(DATES, ' ');
   if (text.includes('₦') || NUMBER_WORDS.test(text)) return true;
+  /* "half", "the rest", "the remainder": amounts RecordPayment reads as
+   * relativeAmount (Codex P2). */
+  if (/\b(?:half|remainder|the\s+rest)\b/.test(text)) return true;
   /* Digits glued to a letter ("q3") name something, not an amount. */
   for (const match of text.matchAll(/(?<![a-mo-z])\d[\d,.]*\s*(k|m|naira|ngn)?/g)) {
     /* Only a bare four-digit token: "2,026" and "20.26" are amounts. */
@@ -577,6 +594,7 @@ function figureBeyondFilters(text: string): boolean {
 
 /** Records that can be listed: the plural forms. */
 const LISTED_RECORDS = new Set([
+  'transactions',
   'sales',
   'payments',
   'invoices',
@@ -1066,7 +1084,7 @@ function opensAQuestion(words: readonly string[]): boolean {
   /* "send me the P&L", "give me sales today", "send my records for March". */
   return (
     (first === 'send' || first === 'give' || first === 'get') &&
-    (words[1] === 'me' || words[1] === 'my' || words[1] === 'our') &&
+    (words[1] === 'me' || words[1] === 'us' || words[1] === 'my' || words[1] === 'our') &&
     forTheMerchant(words, 0)
   );
 }
