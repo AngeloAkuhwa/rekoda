@@ -654,6 +654,27 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Round 20: a read verb aimed at someone else sends the books out; it is
+   * not a question about them. */
+  it.each([
+    ['can you please send the statement to CUSTOMER_7K2', 'unknown'],
+    ['can you please send CUSTOMER_7K2 the invoice', 'unknown'],
+    ['can you please send her the invoice', 'unknown'],
+    ['can you please send reminder to all debtors', 'unknown'],
+    ['can you send the report to EMAIL_1', 'unknown'],
+    ['could you please give CUSTOMER_7K2 her statement', 'unknown'],
+    ['can you please show CUSTOMER_7K2 her balance', 'unknown'],
+    ['can you please export sales to CUSTOMER_7K2', 'unknown'],
+    ['can you please send me the P&L', 'read'],
+    ['can you please show me sales this month?', 'read'],
+    ['export sales to Excel', 'read'],
+    ['export sales from 1 to 5 October', 'read'],
+    ['show me sales from 1 to 5 October', 'read'],
+    ['download the sales report', 'read'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');

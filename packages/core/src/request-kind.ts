@@ -1051,22 +1051,48 @@ function opensAQuestion(words: readonly string[]): boolean {
       /* "can you please show me…", "could you kindly list…" (Codex P2). */
       let k = 2;
       while (OPENING_FILLERS.has(words[k] ?? '')) k += 1;
-      if (READ_VERBS.has(words[k] ?? '')) {
-        /* "can you tell me…", never "can you tell Ada she owes". */
-        return words[k] !== 'tell' || words[k + 1] === 'me' || words[k + 1] === 'us';
-      }
+      if (READ_VERBS.has(words[k] ?? '')) return forTheMerchant(words, k);
     }
   }
   /* "tell me what I sold", never "tell CUSTOMER_7K2 she owes me" (Codex P2). */
   if (first === 'tell') return words[1] === 'me' || words[1] === 'us';
   /* "export sales to Excel", "download the sales report" (Codex P2). */
-  if (first === 'export' || first === 'download' || first === 'print') return true;
+  if (first === 'export' || first === 'download' || first === 'print') {
+    return forTheMerchant(words, 0);
+  }
   /* "send me the P&L", "give me sales today", "send my records for March". */
   return (
     (first === 'send' || first === 'give' || first === 'get') &&
     (words[1] === 'me' || words[1] === 'my' || words[1] === 'our')
   );
 }
+
+/**
+ * Is a read verb's output for the person asking? "show me my sales", "send
+ * me the P&L" are; "send the statement to CUSTOMER_7K2", "send her the
+ * invoice", "show CUSTOMER_7K2 her balance" send the books to someone else,
+ * which is not a question about them (round-20 review). "tell", "send" and
+ * "give" must name the asker; any read verb aimed at a customer, a pronoun
+ * or "to" someone other than me/us is not for the merchant.
+ */
+function forTheMerchant(words: readonly string[], verb: number): boolean {
+  const next = words[verb + 1] ?? '';
+  const named = next === 'me' || next === 'us' || next === 'my' || next === 'our';
+  if (['tell', 'send', 'give'].includes(words[verb]!) && !named) return false;
+  if (THIRD_PARTIES.has(next)) return false;
+  return !words.some(
+    (w, i) =>
+      i > verb &&
+      w === 'to' &&
+      !['me', 'us', 'excel', 'pdf', 'csv', 'date'].includes(words[i + 1] ?? '') &&
+      /* "from 1 to 5 October", "to date": a period, not a recipient. */
+      !/^\d/.test(words[i + 1] ?? '') &&
+      !PERIODS.has(words[i + 1] ?? ''),
+  );
+}
+
+/** Someone other than the asker: a customer token, or a pronoun for one. */
+const THIRD_PARTIES = new Set(['customer', 'customers', 'her', 'him', 'them', 'all']);
 
 function isYear(word: string): boolean {
   return /^(19|20)\d\d$/.test(word);
