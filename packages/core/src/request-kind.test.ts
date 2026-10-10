@@ -253,6 +253,57 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Round 4: "and" inside one question keeps it a question; a participle
+   * after a split is no instruction; separators without spaces, in capitals,
+   * or as a colon, "&", "+" or "/" still separate; a bare name or a money
+   * word is never a neutral fragment. */
+  it.each([
+    ['how much did we sell and spend this month?', 'read'],
+    ['how much have I spent and received this month', 'read'],
+    ['how much did we spend on fuel and transport this month?', 'read'],
+    ['how much do CUSTOMER_7K2 and CUSTOMER_9M4 owe?', 'read'],
+    ['what do CUSTOMER_7K2 and CUSTOMER_9M4 owe me', 'read'],
+    ['what is my cash and bank balance?', 'read'],
+    ['profit and loss', 'read'],
+    ['sales and purchases this month', 'read'],
+    ['send me the P & L for last month', 'read'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
+  it.each([
+    'how many sales were cancelled and refunded this month?',
+    'how many orders were returned and refunded',
+    'how much was paid and refunded this month',
+    'how much did we receive, refund or reverse this month',
+  ])('never reads the question %j as a write', (text) => {
+    expect(requestKind(text)).not.toBe('write');
+  });
+
+  it.each([
+    'who owes me And CUSTOMER_7K2 has paid',
+    'WHO OWES ME AND CUSTOMER_7K2 HAS PAID',
+    'how much did we sell today?I sold rice to CUSTOMER_7K2',
+    'how much did we sell today.I sold rice to CUSTOMER_7K2',
+    'who owes me?Ada paid me',
+    'how much did we sell today: I sold rice to CUSTOMER_7K2',
+    'what happened today: CUSTOMER_7K2 bought rice',
+    'who owes me & Ada paid me',
+    'who owes me + Ada paid me',
+    'who owes me / Ada paid me',
+    'who owes me\r\nAda paid me',
+    'who owes me but Ada paid me',
+    "what's my balance? CUSTOMER_7K2 is up to date now",
+    'who owes me? CUSTOMER_7K2 money dey bank',
+    "what's my balance? CUSTOMER_7K2 money is in my account now",
+    'who paid me today? CUSTOMER_7K2, all of it',
+    'any sales today? ok CUSTOMER_7K2 all of it today',
+    'which customer paid today? CUSTOMER_7K2 full',
+    'which customer bought rice today, CUSTOMER_7K2',
+  ])('never reads %j as a question', (text) => {
+    expect(requestKind(text)).not.toBe('read');
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');

@@ -365,6 +365,8 @@ const VAULT_TOKEN = /\b(?:CUSTOMER|PHONE|EMAIL|ACCOUNT)_[A-Z0-9]+\b(?:['’]s)?/
 export function requestKind(raw: string): RequestKind {
   const text = raw
     .replace(VAULT_TOKEN, ' customer ')
+    /* Before "&" separates anything. */
+    .replace(/p\s*&\s*l\b/gi, 'pnl')
     /* "vs." and "Mr." end no sentence. */
     .replace(/\b(mr|mrs|ms|dr|vs|etc|e\.g|i\.e)\./gi, '$1');
 
@@ -373,23 +375,83 @@ export function requestKind(raw: string): RequestKind {
   if (clauseKind(text) === 'write') return 'write';
 
   /*
-   * Then clause by clause. One WhatsApp message often says two things,
-   * joined by a new line, a comma, "and", a dash or an emoji: "how much did
-   * we sell today, Ada paid me". A message reads only when every clause
-   * reads; one record makes it a record; anything else is unknown. A clause
-   * that only greets or trails ("how are you", "thanks", "this month") says
-   * nothing either way and is left out, and one the grammar does not know
-   * makes the whole message unknown, so a greeting missing from the lists
-   * costs a rephrase prompt, never a model call.
+   * Then part by part. One WhatsApp message often says two things: "how
+   * much did we sell today\nAda paid me", "who owes me? Ada paid me". A new
+   * line, sentence punctuation, an emoji, a dash, a colon, "&", "+" or "/"
+   * separates SEGMENTS, and each is judged whole. A message reads only when
+   * every segment reads; one record makes it a record; anything else is
+   * unknown. A segment that only greets or trails ("how are you", "thanks",
+   * "this month") is left out, and one the grammar does not know makes the
+   * whole message unknown, so a greeting missing from the lists costs a
+   * rephrase prompt, never a model call.
    */
-  const clauses = text
-    .split(/\n+|(?<=[.!?…;])\s+|\s+[-–—]\s+|(?<!\d),|,(?!\d)|\s+and\s+|\p{Extended_Pictographic}/u)
-    .filter((part) => part !== undefined && part.trim().length > 0);
-  const kinds = clauses.map(clauseKind).filter((kind) => kind !== 'neutral');
+  const segments = text
+    .split(
+      /\n+|\r+|[!?…;。؟]\s*|\.(?!\d)\s*|\s*[-–—]\s+|\s+[-–—]\s*|:(?!\d)|[&+]|(?<!\d)\/|\/(?!\d)|\p{Extended_Pictographic}/u,
+    )
+    .filter((part) => part.trim().length > 0);
+  const kinds = segments.map(segmentKind).filter((kind) => kind !== 'neutral');
   if (kinds.length === 0) return 'unknown';
   if (kinds.includes('write')) return 'write';
   return kinds.every((kind) => kind === 'read') ? 'read' : 'unknown';
 }
+
+/**
+ * One segment, judged whole: "how much did we sell and spend this month"
+ * is one question, and splitting at "and" would lose its frame. Commas and
+ * "and" can only make a reading segment unknown, never a write: a later
+ * part that states something of its own ("who owes me and Ada paid me",
+ * "how much did we sell, I sold rice to Ada") is not part of the question.
+ */
+function segmentKind(segment: string): RequestKind | 'neutral' {
+  const whole = clauseKind(segment);
+  if (whole !== 'read') return whole;
+  const parts = segment
+    .split(/(?<!\d),|,(?!\d)|\s+(?:and|but|then|also|plus)\s+/i)
+    .filter((part) => part.trim().length > 0);
+  return parts.slice(1).some(saysSomethingOfItsOwn) ? 'unknown' : 'read';
+}
+
+/**
+ * A later part of a question that is a statement in its own right: a
+ * figure, a change, an instruction, a subject doing trade ("Ada paid me"),
+ * or a bare name given as an answer ("…, CUSTOMER_7K2"). "spend this month"
+ * (trade first, no subject) and "customer owe" continue the question.
+ */
+function saysSomethingOfItsOwn(part: string): boolean {
+  const lower = part.toLowerCase();
+  const words = (lower.match(/[\p{L}\p{N}']+/gu) ?? []).map((w) => w.replace(/'s$/, ''));
+  if (words.length === 0) return false;
+  if (hasFigure(lower)) return true;
+  if (words.some((w) => CHANGE_VERBS.has(w) || RECORD_INSTRUCTIONS.has(w))) return true;
+  /* A question of its own ("…, how much do I have to collect?") is still a
+   * question. */
+  const kind = clauseKind(part);
+  if (kind === 'read' || kind === 'neutral') return false;
+  if (words.slice(1).some((w) => TRADE_VERBS.has(w))) return true;
+  return words.every((w) => w === 'customer' || NEUTRAL_FUNCTION.has(w));
+}
+
+/** Function words a trailing fragment may hold; never a name or money word. */
+const NEUTRAL_FUNCTION = new Set([
+  'and',
+  'so',
+  'me',
+  'i',
+  'you',
+  'the',
+  'this',
+  'that',
+  'last',
+  'of',
+  'it',
+  'all',
+  'my',
+  'our',
+  'for',
+  'please',
+  'abeg',
+]);
 
 /** Words a greeting, a courtesy or a trailing fragment is made of. */
 const NEUTRAL_WORDS = new Set([
@@ -473,10 +535,12 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
   )
     .map((w) => w.replace(/'s$/, ''))
     .filter((w) => w.length > 0);
+  /* Only greetings, courtesies and periods: never a name ("customer") or
+   * a money word, which could be the point of the message. */
   if (
     all.every(
       (w) =>
-        OPENING_FILLERS.has(w) || NEUTRAL_WORDS.has(w) || JOINING_WORDS.has(w) || PERIODS.has(w),
+        OPENING_FILLERS.has(w) || NEUTRAL_WORDS.has(w) || NEUTRAL_FUNCTION.has(w) || PERIODS.has(w),
     )
   ) {
     return 'neutral';
