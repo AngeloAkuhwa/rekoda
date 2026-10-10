@@ -301,6 +301,11 @@ const RECORD_NOUNS = new Set([
 const PERIODS = new Set([
   'today',
   'yesterday',
+  'day',
+  'days',
+  'weeks',
+  'months',
+  'years',
   'week',
   'weekly',
   'month',
@@ -338,7 +343,23 @@ const SUMMARY_WORDS = new Set(['total', 'summary', 'report', 'altogether']);
 /** Amounts said in words, as typed or as a transcript renders them. */
 const NUMBER_WORDS = /\b(hundred|thousand|million|billion|naira)\b/;
 
-function hasFigure(text: string): boolean {
+/**
+ * Calendar dates and spans: a period, never money (Codex P2). "10 October
+ * 2026", "October 10th", "10/10/2026", "the 5th", "last 7 days".
+ */
+const DATES = new RegExp(
+  [
+    '\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\b',
+    '\\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\s+\\d{1,2}(?:st|nd|rd|th)?\\b',
+    '\\b\\d{1,2}[\\/.-]\\d{1,2}(?:[\\/.-]\\d{2,4})?\\b',
+    '\\b\\d{1,2}(?:st|nd|rd|th)\\b',
+    '\\b(?:last|past|next)\\s+\\d{1,3}\\s+(?:days?|weeks?|months?|years?)\\b',
+  ].join('|'),
+  'g',
+);
+
+function hasFigure(raw: string): boolean {
+  const text = raw.replace(DATES, ' ');
   if (text.includes('₦') || NUMBER_WORDS.test(text)) return true;
   /* Digits glued to a letter ("q3") name something, not an amount. */
   for (const match of text.matchAll(/(?<![a-z])\d[\d,.]*\s*(k|m|naira|ngn)?/g)) {
@@ -601,6 +622,12 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
     start += greeting.length;
   }
   const words = all.slice(start);
+  /* "record of sales", "log of payments": the records, not an instruction
+   * to make one (Codex P2). Read as "report". */
+  if (['record', 'records', 'log'].includes(words[0] ?? '') && words[1] === 'of') {
+    words.splice(0, 2, 'report');
+    if (words.length === 1) return 'read';
+  }
 
   /* An instruction to record, plain or softened, is a write even when it
    * ends in a question mark: "can you add a 5k sale?" asks for a record. */
@@ -658,6 +685,12 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
    * expenses"): "expense today fuel" says something more, and stays
    * unknown. */
   if (figure || !onlyBooksWords(words)) return 'unknown';
+  /* "CUSTOMER_7K2 owes me", "she owed me": someone stating a debt, which
+   * may be a credit sale to record, not a question about one (Codex P2).
+   * "how much do Ada and Chidi owe" asks, and is a question above. */
+  if (words.some((w) => SUBJECTS.has(w)) && words.some((w) => w === 'owes' || w === 'owed')) {
+    return 'unknown';
+  }
   if (topic) return 'read';
   if (recordNoun && (period || summary)) return 'read';
   /* "sales", "expenses" alone: the list, not one record. */
@@ -677,6 +710,8 @@ function opensAQuestion(words: readonly string[]): boolean {
   if ((first === 'can' || first === 'could') && (words[1] === 'i' || words[1] === 'we')) {
     return true;
   }
+  /* "export sales to Excel", "download the sales report" (Codex P2). */
+  if (first === 'export' || first === 'download' || first === 'print') return true;
   /* "send me the P&L", "give me sales today". */
   return (first === 'send' || first === 'give' || first === 'get') && words[1] === 'me';
 }
@@ -695,6 +730,8 @@ function onlyBooksWords(words: readonly string[]): boolean {
       SUMMARY_WORDS.has(w) ||
       TRADE_VERBS.has(w) ||
       JOINING_WORDS.has(w) ||
-      isYear(w),
+      isYear(w) ||
+      /* A number left over once the figure check passed is a date's. */
+      /^\d+$/.test(w),
   );
 }
