@@ -572,6 +572,25 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Codex, on 6b0bc76: a day range in one month is a period; making a
+   * report of the books is a read. */
+  it.each([
+    ['show sales from 1 to 5 October', 'read'],
+    ['how much did we sell between 1 and 5 October', 'read'],
+    ['sales for 1-5 October', 'read'],
+    ['show sales from 1 October to 5 October', 'read'],
+    ['sold rice 1 to 5 bags 20k', 'write'],
+    ['create a sales report', 'read'],
+    ['create the P&L report for March', 'read'],
+    ['issue a statement', 'read'],
+    ['can you create a sales report for this month?', 'read'],
+    ['issue an invoice', 'write'],
+    ['create a sale', 'write'],
+    ['create a report of 5k sale', 'write'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');

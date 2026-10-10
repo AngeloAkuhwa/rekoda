@@ -349,6 +349,10 @@ const NUMBER_WORDS = /\b(hundred|thousand|million|billion|naira)\b/;
  */
 const DATES = new RegExp(
   [
+    /* A range of days in one month (Codex P2): "1 to 5 October", "1 and 5
+     * October", "1-5 October". Before the single day, which would leave the
+     * first day behind as a figure. */
+    '\\b\\d{1,2}(?:st|nd|rd|th)?\\s*(?:to|and|till|until|-|–)\\s*\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\b',
     '\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\b',
     '\\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\s+\\d{1,2}(?:st|nd|rd|th)?\\b',
     /* A real day and month, slashed ("10/10", "10/10/2026") or dashed with a
@@ -671,6 +675,18 @@ const PASSIVE_FILLERS = new Set([
   'and',
 ]);
 
+/** What a report of the books is called. */
+const REPORT_NOUNS = new Set([
+  'report',
+  'reports',
+  'statement',
+  'statements',
+  'pnl',
+  'summary',
+  'ledger',
+  'cashflow',
+]);
+
 /** Quantifiers, which may stand before an object or before a participle. */
 const QUANTIFIERS = new Set(['any', 'some', 'all', 'no']);
 
@@ -869,10 +885,16 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
 
   /* An instruction to record, plain or softened, is a write even when it
    * ends in a question mark: "can you add a 5k sale?" asks for a record. */
-  if (RECORD_INSTRUCTIONS.has(words[0]!)) return 'write';
+  /* "create a sales report", "issue a statement": making a report of the
+   * books is a read, not a record (Codex P2). "issue an invoice" is not. */
+  const reports = (from: number) =>
+    words.slice(from).some((w) => REPORT_NOUNS.has(w)) &&
+    !hasFigure(text) &&
+    onlyBooksWords(words.slice(from));
+  if (RECORD_INSTRUCTIONS.has(words[0]!)) return reports(1) ? 'read' : 'write';
   for (const opener of ASKING_OPENERS) {
     if (startsWith(words, opener) && RECORD_INSTRUCTIONS.has(words[opener.length] ?? '')) {
-      return 'write';
+      return reports(opener.length + 1) ? 'read' : 'write';
     }
   }
 
