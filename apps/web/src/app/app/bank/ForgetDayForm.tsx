@@ -30,6 +30,12 @@ export function ForgetDayForm({ today }: { today: string }) {
         <span>Day to remove</span>
         <input type="date" name="postedOn" id="postedOn" max={today} className="rk-input" />
       </label>
+      {/* G-97: said before the click, because removing a day can move the
+       * books — only for lines the merchant classified. */}
+      <p className="rk-fineprint">
+        Rekoda reverses any classification entries it made for lines from that day. Sales, payments
+        and other entries in your books stay as they are.
+      </p>
       <Button type="submit" disabled={pending}>
         {pending ? 'Removing…' : 'Remove that day'}
       </Button>

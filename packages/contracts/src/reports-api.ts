@@ -1740,9 +1740,24 @@ export const forgetStatementDayRequest = z.object({
     .regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/, 'a day like 2026-08-21'),
 });
 
-export const forgetStatementDayResponse = z.object({
-  removed: z.number().int().nonnegative(),
-});
+export const forgetStatementDayResponse = z.discriminatedUnion('outcome', [
+  /* `reversedClassifications`: journals Rekoda wrote because a line on that
+   * day was classified, reversed because the line went (G-97). Ordinary
+   * matches are never counted here: their postings are not touched. */
+  z.object({
+    outcome: z.literal('forgotten'),
+    removed: z.number().int().nonnegative(),
+    reversedClassifications: z.number().int().nonnegative(),
+  }),
+  /* A classification's reversal is dated today and today's month is closed:
+   * nothing was removed and nothing moved. */
+  z.object({
+    outcome: z.literal('period_closed'),
+    removed: z.literal(0),
+    reversedClassifications: z.literal(0),
+    closedThrough: z.string(),
+  }),
+]);
 
 /**
  * The live bank feed (fix-plan 4, G5; MASTER-PLAN B0, ADR 0012).

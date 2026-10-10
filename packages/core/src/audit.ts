@@ -222,6 +222,24 @@ export function describeAuditEvent(row: AuditRow): AuditDescription {
     };
   }
 
+  /* G-97: a statement day taken out. Its classifications were reversed with
+   * it; the ledger ids stay in the stored value for anyone tracing them. */
+  if (entity === 'bank_statement' && action === 'forgotten') {
+    const removed = int(newValue, 'removed');
+    const reversed = int(newValue, 'reversedClassifications') ?? 0;
+    const lines =
+      removed === null
+        ? 'Statement day removed'
+        : `Statement day removed (${removed} ${removed === 1 ? 'line' : 'lines'})`;
+    return {
+      summary:
+        reversed > 0
+          ? `${lines}, ${reversed} classification ${reversed === 1 ? 'entry' : 'entries'} reversed`
+          : lines,
+      amountK: null,
+    };
+  }
+
   /* Unknown shape. Name what happened and print nothing that was stored: a
    * writer added since this file was last read must be dull here, never loud. */
   return { summary: `${humanise(entity)}: ${humanise(action)}`, amountK: null };

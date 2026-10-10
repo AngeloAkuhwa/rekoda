@@ -12,7 +12,7 @@
  * person. What a person then decides is stored as their decision, not the
  * rule's.
  */
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import {
   KEY_BY_CODE,
   fingerprintLines,
@@ -68,6 +68,13 @@ export async function importStatementLines(
     chunkRows?: number;
   },
 ): Promise<ImportedStatement> {
+  /* Takes turns with a forget of the same day (G-97). The unique index
+   * alone covers an import arriving after the forget's DELETE: it waits on
+   * the deleted rows and then inserts. It does not cover one arriving
+   * earlier, while the forget is still writing reversals: those rows are
+   * still live, so they would count as duplicates and then be deleted, and
+   * the day would vanish behind an answer saying it was already here. */
+  await lockBankPairings(tx, input.businessId);
   /* With PR-073 the DO NOTHING absorbs conflicts on BOTH identities: the
    * fingerprint (same content re-imported through any door) and the
    * partial provider-identity unique (the same external id re-polled
@@ -329,39 +336,134 @@ export async function allBankLinesFor(
   }
 }
 
+/** One classification a forgotten day took with it, reversed. */
+export interface ForgottenClassification {
+  lineId: string;
+  originalLedgerTransactionId: string;
+  reversalLedgerTransactionId: string;
+}
+
+/** What forgetting a day did, so the merchant is told the truth about it. */
+export interface ForgottenDay {
+  removed: number;
+  /** Classification journals reversed because their lines went (G-97). */
+  reversed: ForgottenClassification[];
+}
+
 /**
  * Take an import back out.
  *
  * A merchant who uploaded the wrong account's statement has to be able to
  * undo it, and there is no honest way to edit a line into being right. The
  * whole day range goes, because that is the unit a person can picture.
+ *
+ * The lines' matches go with them, and for an ordinary match that is all:
+ * a sale, a payment or a journal somebody wrote existed apart from the
+ * statement and is not touched. A CLASSIFICATION is different (G-97, OD-24's
+ * principle): its journal exists only because the line was classified, so
+ * it is reversed here, before the line goes, exactly as a release reverses
+ * it. Left standing, the same day imported again and classified again
+ * booked one movement twice. Which matches are classifications comes from
+ * provenance alone, as in `releaseLine`; classifications posted before G-95
+ * carry `journal` and are left as ordinary matches, not inferred.
+ *
+ * One transaction for the whole day: every reversal, the deletion and the
+ * audit row commit together or not at all, and a refusal from the ledger
+ * (`PeriodClosed`, today's month closed) leaves every line where it was.
+ * It takes turns under `LOCK_CLASS.bankPairing` with everything else that
+ * pairs a line (classify, hand match, release, reconcile), so a pairing in
+ * flight commits first and is seen, or waits and then finds no line. An
+ * import takes the same lock, so it lands wholly before (and is forgotten
+ * with the day) or wholly after (and stays). That is also why the day is
+ * named by its business and date, never by a list of line ids: one day can
+ * hold more lines than a statement may carry bind parameters.
  */
 export async function forgetStatementDay(
   tx: TenantDb,
   input: { businessId: string; postedOn: string; actor: string },
-): Promise<number> {
-  const removed = await tx
-    .delete(bankStatementLines)
-    .where(
+): Promise<ForgottenDay> {
+  await lockBankPairings(tx, input.businessId);
+  const theDay = and(
+    eq(bankStatementLines.businessId, input.businessId),
+    eq(bankStatementLines.postedOn, input.postedOn),
+  );
+
+  /* The day's classifications, by provenance: the matched posting is the
+   * line's own `bank_classification`, not itself a reversal, and not
+   * already reversed (the unique reversal index stands behind this). */
+  const classified = await tx
+    .select({
+      lineId: bankLineMatches.lineId,
+      transactionId: ledgerTransactions.id,
+      memo: ledgerTransactions.memo,
+    })
+    .from(bankLineMatches)
+    .innerJoin(
+      ledgerTransactions,
       and(
-        eq(bankStatementLines.businessId, input.businessId),
-        eq(bankStatementLines.postedOn, input.postedOn),
+        eq(ledgerTransactions.businessId, bankLineMatches.businessId),
+        eq(ledgerTransactions.id, bankLineMatches.transactionId),
       ),
     )
-    .returning({ id: bankStatementLines.id });
+    .innerJoin(
+      bankStatementLines,
+      and(
+        eq(bankStatementLines.businessId, bankLineMatches.businessId),
+        eq(bankStatementLines.id, bankLineMatches.lineId),
+      ),
+    )
+    .where(
+      and(
+        theDay,
+        eq(ledgerTransactions.sourceType, BANK_CLASSIFICATION_SOURCE),
+        sql`${ledgerTransactions.sourceId} = ${bankLineMatches.lineId}::text`,
+        isNull(ledgerTransactions.reversesId),
+        sql`NOT EXISTS (SELECT 1 FROM ledger_transactions rev
+                         WHERE rev.business_id = ${ledgerTransactions.businessId}
+                           AND rev.reverses_id = ${ledgerTransactions.id})`,
+      ),
+    )
+    .orderBy(bankLineMatches.lineId);
 
-  if (removed.length > 0) {
-    await tx.insert(auditEvents).values({
-      businessId: input.businessId,
-      actor: input.actor,
-      entity: 'bank_statement',
-      entityId: input.postedOn,
-      action: 'forgotten',
-      newValue: { removed: removed.length } as never,
-      sourceType: 'dashboard',
+  const reversed: ForgottenClassification[] = [];
+  for (const c of classified) {
+    reversed.push({
+      lineId: c.lineId,
+      originalLedgerTransactionId: c.transactionId,
+      reversalLedgerTransactionId: await reverseClassification(tx, {
+        businessId: input.businessId,
+        lineId: c.lineId,
+        transactionId: c.transactionId,
+        memo: `Statement day forgotten: ${c.memo}`,
+        original: c.memo,
+      }),
     });
   }
-  return removed.length;
+
+  const removed = await tx
+    .delete(bankStatementLines)
+    .where(theDay)
+    .returning({ id: bankStatementLines.id });
+  /* Nothing on that day: nothing reversed either, since a classification
+   * needs a line. No audit row, as before. */
+  if (removed.length === 0) return { removed: 0, reversed: [] };
+
+  await tx.insert(auditEvents).values({
+    businessId: input.businessId,
+    actor: input.actor,
+    entity: 'bank_statement',
+    entityId: input.postedOn,
+    action: 'forgotten',
+    /* Bounded by the day's classifications, each one a person's decision,
+     * never by the number of lines the bank sent. */
+    newValue: {
+      removed: removed.length,
+      reversedClassifications: reversed.length,
+      ...(reversed.length > 0 ? { classificationReversals: reversed } : {}),
+    } as never,
+    sourceType: 'dashboard',
+  });
+  return { removed: removed.length, reversed };
 }
 
 export interface Reconciliation {
@@ -741,7 +843,8 @@ export async function matchesFor(
 }
 
 /** One line, with whether anything already claims it — the classify
- * door's pre-check (§22.2), read before a journal is minted for it. */
+ * door's pre-check (§22.2), read before a journal is minted for it. The
+ * caller holds `lockBankPairings` first (G-97). */
 export async function lineFor(
   tx: TenantDb,
   businessId: string,
@@ -809,6 +912,9 @@ export async function matchByHand(
     reason: string;
   },
 ): Promise<MatchByHandOutcome> {
+  /* A forget of this line's day takes turns with the pairing: it waits
+   * and then sees the match, or went first and this finds no line (G-97). */
+  await lockBankPairings(tx, input.businessId);
   const [line] = await tx
     .select({ id: bankStatementLines.id, amountK: bankStatementLines.amountK })
     .from(bankStatementLines)
@@ -880,8 +986,21 @@ export async function matchByHand(
   return { outcome: 'matched' };
 }
 
-/** One business's pairings, one writer at a time (`LOCK_CLASS.bankPairing`). */
-async function lockBankPairings(tx: TenantDb, businessId: string): Promise<void> {
+/**
+ * One business's pairings, one writer at a time (`LOCK_CLASS.bankPairing`).
+ *
+ * Taken by everything that writes or removes a line's match: a committing
+ * reconcile, a hand match, a classification (before its pre-check), a
+ * release and a forget; and by an import, so none lands mid-forget. Row
+ * locks cannot do this job: the application role holds no UPDATE on the
+ * append-only statement lines, so it cannot take `FOR SHARE` or
+ * `FOR UPDATE` on them.
+ *
+ * A waiter is bounded by the 30s `statement_timeout`, so a very long
+ * import makes a pairing for the same business fail rather than queue;
+ * imports take seconds in practice.
+ */
+export async function lockBankPairings(tx: TenantDb, businessId: string): Promise<void> {
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(${LOCK_CLASS.bankPairing}, hashtext(${businessId}))`,
   );
@@ -908,6 +1027,61 @@ export class UnreversibleClassification extends Error {
   constructor(public readonly transactionId: string) {
     super(`classification posting ${transactionId} cannot be reversed from its stored entries`);
   }
+}
+
+/**
+ * Reverse one classification's posting, exactly as it was written (G-95,
+ * reused by G-97).
+ *
+ * The caller has already proven, from provenance alone, that the posting is
+ * this line's own unreversed `bank_classification`, and owns the
+ * transaction: this writes, it decides nothing. The stored entries are the
+ * truth being reversed, not what the classification rules would write
+ * today. Dated now, like every void, so a closed month refuses through the
+ * ledger's own `PeriodClosed` and the caller's whole transaction rolls back.
+ */
+async function reverseClassification(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    lineId: string;
+    transactionId: string;
+    /** The original posting's memo, carried onto the reversed shape. */
+    original: string;
+    /** What the reversal says about itself. */
+    memo: string;
+  },
+): Promise<string> {
+  const entries = await tx
+    .select({
+      accountCode: accounts.code,
+      debitK: ledgerEntries.debitK,
+      creditK: ledgerEntries.creditK,
+    })
+    .from(ledgerEntries)
+    .innerJoin(accounts, eq(accounts.id, ledgerEntries.accountId))
+    .where(
+      and(
+        eq(ledgerEntries.businessId, input.businessId),
+        eq(ledgerEntries.transactionId, input.transactionId),
+      ),
+    );
+  const lines: LedgerLine[] = [];
+  for (const entry of entries) {
+    const account = KEY_BY_CODE[entry.accountCode];
+    if (!account) throw new UnreversibleClassification(input.transactionId);
+    lines.push({ account, debitK: Number(entry.debitK), creditK: Number(entry.creditK) });
+  }
+  if (lines.length === 0) throw new UnreversibleClassification(input.transactionId);
+
+  return writePosting(
+    tx,
+    input.businessId,
+    reversal({ memo: input.original, lines }, input.memo),
+    BANK_CLASSIFICATION_SOURCE,
+    input.lineId,
+    { reversesId: input.transactionId },
+  );
 }
 
 /**
@@ -990,38 +1164,13 @@ export async function releaseLine(
     return { outcome: 'released_match', transactionId: claimed.transactionId };
   }
 
-  /* The posting as it was WRITTEN, not as the classification rules would
-   * write it today: the stored entries are the truth being reversed. */
-  const entries = await tx
-    .select({
-      accountCode: accounts.code,
-      debitK: ledgerEntries.debitK,
-      creditK: ledgerEntries.creditK,
-    })
-    .from(ledgerEntries)
-    .innerJoin(accounts, eq(accounts.id, ledgerEntries.accountId))
-    .where(
-      and(
-        eq(ledgerEntries.businessId, input.businessId),
-        eq(ledgerEntries.transactionId, claimed.transactionId),
-      ),
-    );
-  const lines: LedgerLine[] = [];
-  for (const entry of entries) {
-    const account = KEY_BY_CODE[entry.accountCode];
-    if (!account) throw new UnreversibleClassification(claimed.transactionId);
-    lines.push({ account, debitK: Number(entry.debitK), creditK: Number(entry.creditK) });
-  }
-  if (lines.length === 0) throw new UnreversibleClassification(claimed.transactionId);
-
-  const reversalTransactionId = await writePosting(
-    tx,
-    input.businessId,
-    reversal({ memo: matched.memo, lines }, `Classification released: ${matched.memo}`),
-    BANK_CLASSIFICATION_SOURCE,
+  const reversalTransactionId = await reverseClassification(tx, {
+    businessId: input.businessId,
     lineId,
-    { reversesId: claimed.transactionId },
-  );
+    transactionId: claimed.transactionId,
+    memo: `Classification released: ${matched.memo}`,
+    original: matched.memo,
+  });
 
   await tx.insert(auditEvents).values({
     businessId: input.businessId,

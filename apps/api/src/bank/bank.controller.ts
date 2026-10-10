@@ -544,7 +544,9 @@ export class BankController {
    *
    * A merchant who uploaded the wrong account's statement has to be able to
    * undo it, and there is no honest way to edit a line into being right: a
-   * statement line is what the bank said.
+   * statement line is what the bank said. A classification made on one of
+   * the day's lines is reversed with it, in the same transaction; an
+   * ordinary match's posting is not touched (G-97; `forgetStatementDay`).
    */
   @Post('statement/forget')
   @Roles('owner')
@@ -557,13 +559,31 @@ export class BankController {
     if (!parsed.success) throw new BadRequestException('the day to forget');
 
     const businessId = request.auth!.businessId;
-    const removed = await withBusiness(this.db, businessId, (tx) =>
-      bankRepo.forgetStatementDay(tx, {
-        businessId,
-        postedOn: parsed.data.postedOn,
-        actor: `user:${request.auth!.userId}`,
-      }),
-    );
-    return { removed };
+    try {
+      const forgotten = await withBusiness(this.db, businessId, (tx) =>
+        bankRepo.forgetStatementDay(tx, {
+          businessId,
+          postedOn: parsed.data.postedOn,
+          actor: `user:${request.auth!.userId}`,
+        }),
+      );
+      return {
+        outcome: 'forgotten',
+        removed: forgotten.removed,
+        reversedClassifications: forgotten.reversed.length,
+      };
+    } catch (error) {
+      /* Thrown by a reversal before any line was deleted, and the whole day
+       * rolled back with it: every line, match and posting is as it was. */
+      if (error instanceof closeRepo.PeriodClosed) {
+        return {
+          outcome: 'period_closed',
+          removed: 0,
+          reversedClassifications: 0,
+          closedThrough: error.closedThrough,
+        };
+      }
+      throw error;
+    }
   }
 }

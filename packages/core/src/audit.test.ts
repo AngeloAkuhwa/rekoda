@@ -134,6 +134,27 @@ describe('every shape a writer actually stores', () => {
     });
   });
 
+  it('says a forgotten statement day reversed its classifications, and how many (G-97)', () => {
+    expect(
+      describe_('bank_statement', 'forgotten', {
+        removed: 4,
+        reversedClassifications: 2,
+        classificationReversals: [
+          { lineId: 'l1', originalLedgerTransactionId: 't1', reversalLedgerTransactionId: 't2' },
+          { lineId: 'l2', originalLedgerTransactionId: 't3', reversalLedgerTransactionId: 't4' },
+        ],
+      }),
+    ).toEqual({
+      summary: 'Statement day removed (4 lines), 2 classification entries reversed',
+      amountK: null,
+    });
+    /* Rows written before G-97 carry only the count. */
+    expect(describe_('bank_statement', 'forgotten', { removed: 1 })).toEqual({
+      summary: 'Statement day removed (1 line)',
+      amountK: null,
+    });
+  });
+
   it('carries what the books were opened with, summed from the three figures', () => {
     expect(
       describe_('opening_balances', 'recorded', {

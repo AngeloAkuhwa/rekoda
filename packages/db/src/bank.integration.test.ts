@@ -220,7 +220,7 @@ describe('taking an import back out', () => {
     const removed = await withBusiness(db, businessId, (tx) =>
       bankRepo.forgetStatementDay(tx, { businessId, postedOn: '2026-08-05', actor: 'user:1' }),
     );
-    expect(removed).toBe(1);
+    expect(removed).toEqual({ removed: 1, reversed: [] });
     expect((await position(businessId)).lines).toBe(1);
 
     /* Forgotten means forgotten: the fingerprint is gone with the row, so the
@@ -228,13 +228,38 @@ describe('taking an import back out', () => {
     expect(await importIt(businessId, AUGUST)).toEqual({ imported: 1, duplicates: 1 });
   });
 
+  /* G-97, Codex P2: the day is named by business and date, never by a list
+   * of its line ids, which past 65,535 lines would exceed the bind
+   * parameters one statement may carry. */
+  it('forgets a day holding more lines than one statement has parameters', async () => {
+    const businessId = await seedBusiness('+2348110000022');
+    const lines = Array.from({ length: 65_600 }, (_, i) => ({
+      postedOn: '2026-08-07',
+      amountK: i + 1,
+      narration: `bulk line ${i + 1}`,
+      bankRef: null,
+      row: i + 1,
+    }));
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        bankRepo.importStatementLines(tx, { businessId, lines, actor: 'user:1' }),
+      ),
+    ).toEqual({ imported: 65_600, duplicates: 0 });
+
+    const forgotten = await withBusiness(db, businessId, (tx) =>
+      bankRepo.forgetStatementDay(tx, { businessId, postedOn: '2026-08-07', actor: 'user:1' }),
+    );
+    expect(forgotten).toEqual({ removed: 65_600, reversed: [] });
+    expect((await position(businessId)).lines).toBe(0);
+  }, 120_000);
+
   it('says nothing was there rather than failing', async () => {
     const businessId = await seedBusiness('+2348110000021');
     expect(
       await withBusiness(db, businessId, (tx) =>
         bankRepo.forgetStatementDay(tx, { businessId, postedOn: '2026-08-05', actor: 'user:1' }),
       ),
-    ).toBe(0);
+    ).toEqual({ removed: 0, reversed: [] });
   });
 });
 
