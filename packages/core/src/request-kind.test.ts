@@ -614,6 +614,29 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Codex, on 3ee0d0e: bare spelled-out amounts are amounts; a negative
+   * contraction opens a question like the auxiliary it negates. Round 18:
+   * a singular record anywhere in a made report keeps it a record. */
+  it.each([
+    ['did Ada pay fifty?', 'unknown'],
+    ['did Ada pay ten?', 'unknown'],
+    ['has CUSTOMER_7K2 paid twenty?', 'unknown'],
+    ['sold rice fifty', 'write'],
+    ['sales for the last two weeks', 'read'],
+    ['who owes me more than fifty', 'read'],
+    ['which one owes me?', 'read'],
+    ["didn't CUSTOMER_7K2 pay?", 'read'],
+    ["hasn't CUSTOMER_7K2 paid?", 'read'],
+    ["don't any customers owe me?", 'read'],
+    ['didnt CUSTOMER_7K2 pay', 'read'],
+    ["can't i see my sales?", 'read'],
+    ['create a sheet for invoice', 'write'],
+    ['create sheet invoice', 'write'],
+    ['create a sales report', 'read'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');

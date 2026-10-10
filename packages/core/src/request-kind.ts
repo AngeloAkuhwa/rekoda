@@ -341,7 +341,8 @@ const SUMMARY_WORDS = new Set(['total', 'summary', 'report', 'altogether']);
  * money, unless it carries a multiplier ("2026k").
  */
 /** Amounts said in words, as typed or as a transcript renders them. */
-const NUMBER_WORDS = /\b(hundred|thousand|million|billion|naira)\b/;
+const NUMBER_WORDS =
+  /\b(hundred|thousand|million|billion|naira|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\b/;
 
 /**
  * Calendar dates and spans: a period, never money (Codex P2). "10 October
@@ -360,7 +361,7 @@ const DATES = new RegExp(
     '\\b(?:0?[1-9]|[12]\\d|3[01])\\/(?:0?[1-9]|1[0-2])(?:\\/\\d{2,4})?\\b',
     '\\b(?:0?[1-9]|[12]\\d|3[01])-(?:0?[1-9]|1[0-2])-\\d{2,4}\\b',
     '\\b\\d{1,2}(?:st|nd|rd|th)\\b',
-    '\\b(?:last|past|next)\\s+\\d{1,3}\\s+(?:days?|weeks?|months?|years?)\\b',
+    '\\b(?:last|past|next)\\s+(?:\\d{1,3}|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\\s+(?:days?|weeks?|months?|years?)\\b',
   ].join('|'),
   'g',
 );
@@ -553,6 +554,8 @@ const COMPARISON_FILTER = new RegExp(
     String.raw`\b(?:(?:more|less|greater|bigger|higher|lower|fewer)\s+than|over|above|under|below|exceeding|at\s+(?:least|most))\s+(?:(?:[₦#]|n(?=\d))\s*)?\d[\d,.]*(?:\s*(?:k|m|thousand|million|naira)\b){0,2}`,
     /* "more than fifty thousand", "over five hundred naira" */
     String.raw`\b(?:(?:more|less|greater|bigger|higher|lower|fewer)\s+than|over|above|under|below|exceeding|at\s+(?:least|most))\s+(?:(?:a|an|and|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million)\s+){0,6}(?:hundred|thousand|million|billion)(?:\s+naira)?\b`,
+    /* "more than fifty", "over twenty five" (Codex P2) */
+    String.raw`\b(?:(?:more|less|greater|bigger|higher|lower|fewer)\s+than|over|above|under|below|exceeding|at\s+(?:least|most))\s+(?:(?:two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\s*){1,3}\b`,
     /* "between 20k and 50k", "from 20k to 50k" (Codex P2) */
     String.raw`\b(?:between|from)\s+(?:(?:[₦#]|n(?=\d))\s*)?\d[\d,.]*(?:\s*(?:k|m|thousand|million|naira)\b)?\s*(?:and|to|-|–)\s*(?:(?:[₦#]|n(?=\d))\s*)?\d[\d,.]*(?:\s*(?:k|m|thousand|million|naira)\b){0,2}`,
     /* "50k and above", "20,000 or less" */
@@ -676,6 +679,17 @@ const PASSIVE_FILLERS = new Set([
   'or',
   'and',
 ]);
+
+/**
+ * "didn't", "hasn't", "don't" (and "didnt"): the auxiliary they negate, so
+ * "didn't CUSTOMER_7K2 pay?" opens a question as "did" does (Codex P2).
+ */
+function uncontract(w: string): string {
+  if (w === "can't" || w === 'cant') return 'can';
+  if (w === "won't" || w === 'wont') return 'will';
+  const m = /^(did|has|have|do|does|is|are|was|were|could|would|should)n'?t$/.exec(w);
+  return m ? m[1]! : w;
+}
 
 /** What a report of the books is called. */
 /** Instructions that make a document rather than record a fact. */
@@ -858,7 +872,7 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
       .replace(/cash flow/g, 'cashflow')
       .match(/[\p{L}\p{N}']+/gu) ?? []
   )
-    .map((w) => w.replace(/'s$/, ''))
+    .map((w) => uncontract(w.replace(/'s$/, '')))
     .filter((w) => w.length > 0);
   /* Only greetings, courtesies and periods: never a name ("customer") or
    * a money word, which could be the point of the message. */
@@ -905,12 +919,10 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
     const at = object.findIndex((w) => REPORT_NOUNS.has(w));
     return (
       at >= 0 &&
-      !object.slice(0, at).some(
-        (w) =>
-          DESTINATIONS.has(w) ||
-          /* "create sale report" names one record; "sales report" the list. */
-          (RECORD_NOUNS.has(w) && !LISTED_RECORDS.has(w)),
-      ) &&
+      !object.slice(0, at).some((w) => DESTINATIONS.has(w)) &&
+      /* "create sale report", "create a sheet for invoice" name one record;
+       * "sales report" names the list. */
+      !object.some((w) => RECORD_NOUNS.has(w) && !LISTED_RECORDS.has(w)) &&
       !hasFigure(text) &&
       onlyBooksWords(object)
     );
@@ -1027,7 +1039,7 @@ const BARE_LISTS = new Set(['sales', 'expenses', 'purchases', 'payments', 'invoi
 function opensAQuestion(words: readonly string[]): boolean {
   const first = words[0]!;
   /* In Nigerian English "do invoice for Ada" means make one. */
-  if (first === 'do') return ['i', 'we', 'you', 'they', 'customer'].includes(words[1] ?? '');
+  if (first === 'do') return ['i', 'we', 'you', 'they', 'customer', 'any'].includes(words[1] ?? '');
   if (QUESTION_OPENERS.has(first)) return true;
   /* "can I see…", "could we get…"; "can you…" only before a read verb
    * ("can you show me sales?"), never before work ("can you reverse…"). */
@@ -1065,6 +1077,8 @@ function onlyBooksWords(words: readonly string[]): boolean {
       JOINING_WORDS.has(w) ||
       isYear(w) ||
       /* A number left over once the figure check passed is a date's. */
-      /^\d+$/.test(w),
+      /^\d+$/.test(w) ||
+      /* So is a cardinal in words ("the last two weeks"). */
+      NUMBER_WORDS.test(w),
   );
 }
