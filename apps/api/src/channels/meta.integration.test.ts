@@ -4447,6 +4447,55 @@ describe('a voice note', () => {
     expect(await voiceUsed(business.id)).toBe(5);
   });
 
+  /* Final review B on 8816a40: the seconds a note holds go back when a
+   * retry finds the transcriber down, whichever attempt took them. */
+  it('gives the seconds back when a retry finds the transcriber down', async () => {
+    const business = await seedMerchant('+2348031234593');
+    arrangeAudio();
+    stubStt.answerWith({ text: 'how much did we sell this month', seconds: 5, confidence: 0.9 });
+    stubTransport.replyWith({
+      intent: 'Query',
+      topic: 'sales_summary',
+      customer: null,
+      period: 'month',
+      periodText: null,
+      format: 'chat',
+    });
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS voice_down_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION voice_down_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF NEW.usage_type = 'SERVICE_MESSAGE' AND nextval('voice_down_once') = 1 THEN
+            RAISE EXCEPTION 'voice_down: first reply fails';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER voice_down_fail_once BEFORE INSERT ON usage_events
+          FOR EACH ROW EXECUTE FUNCTION voice_down_fail_once()`);
+
+      await post(voicePayload('2348031234593', 'wamid.V.RETRY_DOWN'));
+      await drain();
+      expect(await voiceUsed(business.id)).toBe(5);
+      stubStt.failWith();
+      await ownerDb.execute(
+        sql`UPDATE jobs SET run_at = now() - interval '1 minute'
+             WHERE business_id = ${business.id}::uuid AND state <> 'done'`,
+      );
+      await drain();
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS voice_down_fail_once ON usage_events`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS voice_down_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS voice_down_once`);
+      await close();
+    }
+    /* The note was never answered: its seconds are back. */
+    expect(await voiceUsed(business.id)).toBe(0);
+  });
+
   /**
    * Item 7 of the AI hardening plan: a HOSTED transcription is provider
    * money, and provider money appears in usage_events — priced per minute,
@@ -5679,6 +5728,49 @@ describe('a receipt photo', () => {
    * retries nothing, so the A2 probe above never re-ran the job. A real
    * retry (the reply's usage row failing once) must still bill the page
    * once. */
+  /* Final review B on 8816a40: a photo refused at the allowance and then
+   * retried is metered again, not read for free. */
+  it('does not read a photo for free on the retry of an allowance refusal', async () => {
+    const business = await seedMerchant('+2348031234592');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'DIESEL 12,000', confidence: 0.95 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS photo_full_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION photo_full_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF NEW.usage_type = 'SERVICE_MESSAGE' AND nextval('photo_full_once') = 1 THEN
+            RAISE EXCEPTION 'photo_full: first reply fails';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER photo_full_fail_once BEFORE INSERT ON usage_events
+          FOR EACH ROW EXECUTE FUNCTION photo_full_fail_once()`);
+
+      await ownerDb.execute(sql`
+        INSERT INTO usage_counters (business_id, period, unit, used)
+        VALUES (${business.id}::uuid, ${usagePeriod(new Date())}, 'DOCUMENTS_UNDERSTOOD', 100000)`);
+      await post(photoPayload('2348031234592', 'wamid.P.FULL_RETRY'));
+      await drain();
+      await ownerDb.execute(
+        sql`UPDATE jobs SET run_at = now() - interval '1 minute'
+             WHERE business_id = ${business.id}::uuid AND state <> 'done'`,
+      );
+      await drain();
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS photo_full_fail_once ON usage_events`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS photo_full_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS photo_full_once`);
+      await close();
+    }
+    expect(stubOcr.calls).toHaveLength(0);
+    expect(await readsUsed(business.id)).toBe(100000);
+  });
+
   it('bills a photo once across a real job retry (G-57 final review B)', async () => {
     const business = await seedMerchant('+2348031234595');
     arrangePhoto();

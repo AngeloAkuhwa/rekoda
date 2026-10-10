@@ -870,6 +870,50 @@ describe('the chat surface enforces roles', () => {
   /* Owner decision on G-57, with Codex: a unit taken just before midnight
    * at a month's end (Lagos time) and refused on a retry after it goes back
    * to THAT month, exactly once, and the new month is never touched. */
+  /* Final review B on 8816a40: a message refused at the allowance whose
+   * reply then failed is metered again on the retry, never sent to the
+   * model for free. */
+  it('does not call the model for free on the retry of an allowance refusal (G-57)', async () => {
+    const businessId = await seedBusiness('Role Gate Full Ltd', '+2348140010049');
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g57_full_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g57_full_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF NEW.usage_type = 'SERVICE_MESSAGE' AND nextval('g57_full_once') = 1 THEN
+            RAISE EXCEPTION 'g57_full: first reply fails';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g57_full_fail_once BEFORE INSERT ON usage_events
+          FOR EACH ROW EXECUTE FUNCTION g57_full_fail_once()`);
+
+      await ownerDb.execute(sql`
+        INSERT INTO usage_counters (business_id, period, unit, used)
+        VALUES (${businessId}::uuid, ${usagePeriod(new Date())}, 'AI_ACTIONS', 100000)`);
+      stubTransport.replyWith(A_SALES_QUESTION);
+      await saysOverChat(businessId, '+2348140010049', 'how much did we sell this month?');
+      await ownerDb.execute(sql`
+        UPDATE jobs SET run_at = now() WHERE business_id = ${businessId}::uuid AND state <> 'done'`);
+      await buildRunner(workerDb, appDb, deps).runOnce();
+      const [job] = await ownerDb.execute<{ state: string; attempts: number }>(sql`
+        SELECT state, attempts FROM jobs
+         WHERE business_id = ${businessId}::uuid AND kind = 'inbound.message'
+         ORDER BY created_at DESC LIMIT 1`);
+      expect(job).toMatchObject({ state: 'done', attempts: 2 });
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g57_full_fail_once ON usage_events`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g57_full_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g57_full_once`);
+      await close();
+    }
+    expect(stubTransport.requests).toHaveLength(0);
+    expect((await footprint(businessId)).ai_actions).toBe(100000);
+  });
+
   it('refunds the original month once when a retry crosses the month boundary (G-57)', async () => {
     const businessId = await seedBusiness('Role Gate Month Ltd', '+2348140010047');
     await memberOf(businessId, '+2348140010048', 'accountant');

@@ -275,6 +275,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         log,
         retrying,
         event.receivedAt,
+        eventId,
       );
       if (!spoken) {
         /* Already answered inside, and already marked new-or-not. Nothing to
@@ -285,7 +286,16 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         return;
       }
     } else if (isReceiptPhoto(inbound)) {
-      read = await readReceiptPhoto(deps, tx, businessId, inbound, log, retrying, event.receivedAt);
+      read = await readReceiptPhoto(
+        deps,
+        tx,
+        businessId,
+        inbound,
+        log,
+        retrying,
+        event.receivedAt,
+        eventId,
+      );
       if (!read) {
         await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
         await events.markProcessed(tx, eventId, null, businessId);
@@ -767,6 +777,8 @@ async function readReceiptPhoto(
   retrying: boolean,
   /** When the photo arrived: its unit belongs to that month on every attempt. */
   receivedAt: Date,
+  /** The stored event, where the page's unit is recorded. */
+  eventId: string,
 ): Promise<{ text: string; messageId: string } | null> {
   const recorded = await conversationsRepo.recordInbound(
     tx,
@@ -882,11 +894,23 @@ async function readReceiptPhoto(
   /* Skipped on a retry, as AI_ACTIONS is (see `retrying`): attempt 1's unit
    * committed in its own transaction and survived the job's rollback, and
    * the guard above did not (G-57 final review B). */
+  /* The unit is recorded on the message in the same transaction it is
+   * taken in. A retry is granted only when the message holds it: attempt 1
+   * took it and survived the job's rollback; one that was refused, or took
+   * nothing, is metered now, as any message is (G-57 final review B). */
   const granted =
-    retrying ||
-    (await withBusiness(deps.db, businessId, (own) =>
-      usageRepo.consumeUnit(own, businessId, period, 'DOCUMENTS_UNDERSTOOD', allowance),
-    ));
+    (retrying && (await holdsUnit(deps, businessId, eventId, 'DOCUMENTS_UNDERSTOOD'))) ||
+    (await withBusiness(deps.db, businessId, async (own) => {
+      const ok = await usageRepo.consumeUnit(
+        own,
+        businessId,
+        period,
+        'DOCUMENTS_UNDERSTOOD',
+        allowance,
+      );
+      if (ok) await events.noteReservedUnit(own, businessId, eventId, 'DOCUMENTS_UNDERSTOOD');
+      return ok;
+    }));
   if (!granted) {
     // The plan refused after the day allowed: no provider was reached, so
     // the daily slot goes back too.
@@ -940,12 +964,9 @@ async function readReceiptPhoto(
       // The provider was never reached: nothing spent, the daily slot back.
       await quotaRepo.releaseDocExtraction(deps.db, businessId);
     }
-    /* Only the attempt that took the unit gives it back: a retry took none. */
-    if (!retrying) {
-      await withBusiness(deps.db, businessId, (own) =>
-        usageRepo.refundUnit(own, businessId, period, 'DOCUMENTS_UNDERSTOOD'),
-      );
-    }
+    /* The page this message holds goes back, whichever attempt took it,
+     * exactly once. */
+    await giveBackUnit(deps, businessId, eventId, period, 'DOCUMENTS_UNDERSTOOD');
     await deps.replySender.send(tx, {
       businessId,
       to: inbound.from,
@@ -994,6 +1015,8 @@ async function transcribeVoiceNote(
   retrying: boolean,
   /** When the note arrived: its seconds belong to that month on every attempt. */
   receivedAt: Date,
+  /** The stored event, where the note's seconds are recorded. */
+  eventId: string,
 ): Promise<{ transcript: Transcript; messageId: string } | null> {
   const recorded = await conversationsRepo.recordInbound(
     tx,
@@ -1120,11 +1143,22 @@ async function transcribeVoiceNote(
   /* Skipped on a retry, as AI_ACTIONS is (see `retrying`): attempt 1's
    * seconds committed in their own transaction and survived the job's
    * rollback (G-57 final review B). */
+  /* As for a photo: recorded where taken, and a retry is granted only when
+   * the message holds the seconds (G-57 final review B). */
   const granted =
-    retrying ||
-    (await withBusiness(deps.db, businessId, (own) =>
-      usageRepo.consumeUnit(own, businessId, period, 'VOICE_MINUTES', allowance, seconds),
-    ));
+    (retrying && (await holdsUnit(deps, businessId, eventId, 'VOICE_MINUTES'))) ||
+    (await withBusiness(deps.db, businessId, async (own) => {
+      const ok = await usageRepo.consumeUnit(
+        own,
+        businessId,
+        period,
+        'VOICE_MINUTES',
+        allowance,
+        seconds,
+      );
+      if (ok) await events.noteReservedUnit(own, businessId, eventId, 'VOICE_MINUTES');
+      return ok;
+    }));
   if (!granted) {
     // The plan refused after the day allowed: no provider was reached, so
     // the daily seconds go back too.
@@ -1143,12 +1177,9 @@ async function transcribeVoiceNote(
   } catch (error) {
     /* An outage, not the merchant's fault, so THEIR seconds go back. The
      * reason is logged without the audio and without their words. */
-    /* Only the attempt that took the seconds gives them back. */
-    if (!retrying) {
-      await withBusiness(deps.db, businessId, (own) =>
-        usageRepo.refundUnit(own, businessId, period, 'VOICE_MINUTES', seconds),
-      );
-    }
+    /* The seconds this message holds go back, whichever attempt took them,
+     * exactly once. The same note always measures the same seconds. */
+    await giveBackUnit(deps, businessId, eventId, period, 'VOICE_MINUTES', seconds);
     /* The DAILY ceiling follows the money, not the merchant: released only
      * when the provider was never reached; kept when the call was billed
      * (an answered-but-unusable response) or may have been (a timeout). */
@@ -2030,7 +2061,12 @@ async function refundRecordedReservations(
   eventId: string,
   period: string,
 ): Promise<void> {
-  const units = await events.takeReservedUnits(tx, businessId, eventId);
+  /* Only what a confirmation reserves: a voice note's seconds or a
+   * message unit recorded on the same event are not a confirmation's. */
+  const units = await events.takeReservedUnitsOf(tx, businessId, eventId, [
+    'DOCUMENT_GENERATION',
+    'CATALOGUE_ORDERS',
+  ]);
   for (const unit of units) {
     await usageRepo.refundUnit(tx, businessId, period, unit as UsageUnit);
   }
@@ -4560,8 +4596,12 @@ async function interpretedReply(
      * unit goes back (G-57 final review B). The reading itself was paid
      * for and stays on Rekoda's books. */
     if (fromDocument) {
-      await withBusiness(deps.db, businessId, (own) =>
-        usageRepo.refundUnit(own, businessId, usagePeriod(receivedAt), 'DOCUMENTS_UNDERSTOOD'),
+      await giveBackUnit(
+        deps,
+        businessId,
+        eventId,
+        usagePeriod(receivedAt),
+        'DOCUMENTS_UNDERSTOOD',
       );
       return replies.viewOnlyRole();
     }
@@ -4589,8 +4629,12 @@ async function interpretedReply(
   /* Skipped on a retry: attempt 1's consume committed in its own transaction
    * and survived this job's rollback, so taking another would charge the
    * merchant again for one message. */
+  /* A retry is granted only when the message holds its unit: attempt 1
+   * took it. One refused at the allowance, or that took nothing, is metered
+   * now (G-57 final review B). */
   const granted =
-    retrying || (await consumeMessage(deps, businessId, eventId, period, monthlyMessages));
+    (retrying && (await holdsUnit(deps, businessId, eventId, 'AI_ACTIONS'))) ||
+    (await consumeMessage(deps, businessId, eventId, period, monthlyMessages));
   if (!granted) return replies.allowanceExhausted(monthlyMessages);
 
   const interpreted = await deps.interpreter.interpret(
@@ -5164,6 +5208,38 @@ function consumeMessage(
     const ok = await usageRepo.consumeUnit(tx, businessId, period, 'AI_ACTIONS', allowance);
     if (ok) await events.noteReservedUnit(tx, businessId, eventId, 'AI_ACTIONS');
     return ok;
+  });
+}
+
+/** Does this message hold a unit of `unit`, taken by an earlier attempt? */
+function holdsUnit(
+  deps: InboundMessageDeps,
+  businessId: string,
+  eventId: string,
+  unit: UsageUnit,
+): Promise<boolean> {
+  return withBusiness(deps.db, businessId, (own) =>
+    events.holdsReservedUnit(own, businessId, eventId, unit),
+  );
+}
+
+/**
+ * Give back the `unit` this message holds, if it holds one: taken off the
+ * message and refunded in one short transaction, so exactly once, in the
+ * month it was taken, never for an attempt that took nothing.
+ */
+function giveBackUnit(
+  deps: InboundMessageDeps,
+  businessId: string,
+  eventId: string,
+  period: string,
+  unit: UsageUnit,
+  n = 1,
+): Promise<void> {
+  return withBusiness(deps.db, businessId, async (own) => {
+    if (await events.takeReservedUnit(own, businessId, eventId, unit)) {
+      await usageRepo.refundUnit(own, businessId, period, unit, n);
+    }
   });
 }
 
