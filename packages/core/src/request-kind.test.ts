@@ -911,6 +911,35 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Final review A: a question run straight into someone doing trade, with
+   * no comma or "and", states a record; a subject led by a question word,
+   * an auxiliary or a determiner stays inside the question. */
+  it.each([
+    ['who owes me CUSTOMER_7K2 paid', 'unknown'],
+    ['who owes me CUSTOMER_7K2 has paid', 'unknown'],
+    ['who owes me CUSTOMER_7K2 settled', 'unknown'],
+    ['who owes me she paid', 'unknown'],
+    ['show sales today ada paid me', 'unknown'],
+    ['wetin we sell today CUSTOMER_7K2 don pay', 'unknown'],
+    ['how much does CUSTOMER_7K2 owe she has paid', 'unknown'],
+    ['what did we sell today CUSTOMER_7K2 bought rice on credit', 'unknown'],
+    ['how much did we spend today we paid rent', 'unknown'],
+    ['how much did we sell this month i paid the supplier', 'unknown'],
+    ['did CUSTOMER_7K2 pay me', 'read'],
+    ['which customer paid', 'read'],
+    ['how much has CUSTOMER_7K2 paid so far', 'read'],
+    ['what did Mr. CUSTOMER_7K2 pay?', 'read'],
+    ['what the customer bought', 'read'],
+    ['how much we sell today', 'read'],
+    ['show me what i sold today', 'read'],
+    ['show me products sold today', 'read'],
+    ['show expenses we paid this month', 'read'],
+    ['list payments we received today', 'read'],
+    ['have any invoices been fully cancelled?', 'read'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');

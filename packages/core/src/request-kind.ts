@@ -1067,6 +1067,8 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
     if (words.some((w) => RECORD_INSTRUCTIONS.has(w))) return 'unknown';
     /* "who owes me more than 50k": a filter, not an amount (Codex P2). */
     if (figure && figureBeyondFilters(text) && (trade || recordNoun || topic)) return 'unknown';
+    /* "who owes me CUSTOMER_7K2 paid": a statement run on (final review A). */
+    if (statesTrade(words)) return 'unknown';
     if (trade) return words.some((w) => QUESTION_FRAMES.has(w)) ? 'read' : 'unknown';
     return topic || recordNoun ? 'read' : 'unknown';
   }
@@ -1097,6 +1099,127 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
   if (words.length === 1 && BARE_LISTS.has(words[0]!)) return 'read';
   return 'unknown';
 }
+
+/**
+ * Does a question run on into someone doing trade, with no comma or "and"
+ * between? "who owes me CUSTOMER_7K2 paid", "show sales today ada paid me",
+ * "how much did we spend today we paid rent" state a payment after asking
+ * (final review A). The subject stays inside the question when a question
+ * word, an auxiliary or a determiner leads it: "did CUSTOMER_7K2 pay",
+ * "which customer paid", "how much we sell", "what the customer bought".
+ */
+function statesTrade(words: readonly string[]): boolean {
+  for (let i = 2; i < words.length; i += 1) {
+    if (!TRADE_VERBS.has(words[i]!) && !CHANGE_PARTICIPLES.has(words[i]!)) continue;
+    let s = i - 1;
+    /* Auxiliaries, "been", "get", adverbs ("fully") and other participles
+     * ("cancelled or voided") stand between a subject and its verb. */
+    while (
+      s > 0 &&
+      (SUBJECT_LINKS.has(words[s]!) ||
+        CHANGE_PARTICIPLES.has(words[s]!) ||
+        words[s] === 'or' ||
+        /^[a-z]{3,}ly$/.test(words[s]!))
+    ) {
+      s -= 1;
+    }
+    if (s === 0) continue;
+    const subject = words[s]!;
+    /* A name or a token; "products sold today" is no one. */
+    const person =
+      SUBJECTS.has(subject) ||
+      (!knownWord(subject) && !(subject.length > 3 && subject.endsWith('s')));
+    if (!person) continue;
+    /* "what did Mr. CUSTOMER_7K2 pay": a title belongs to the name. */
+    let t = s;
+    while (t > 0 && TITLES.has(words[t - 1]!)) t -= 1;
+    if (t === 0) continue;
+    const lead = words[t - 1]!;
+    if (
+      AUXILIARIES.has(lead) ||
+      QUESTION_FRAMES.has(lead) ||
+      QUESTION_OPENERS.has(lead) ||
+      SUBJECT_LEADS.has(lead) ||
+      /* "expenses we paid", "everything I sold": the merchant's own trade
+       * describing the records asked for. */
+      ((subject === 'we' || subject === 'i') &&
+        (LISTED_RECORDS.has(lead) || RECORD_NOUNS.has(lead) || lead === 'everything'))
+    ) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+/** Between a subject and its trade verb: "CUSTOMER_7K2 has paid", "don pay". */
+const SUBJECT_LINKS = new Set([
+  'has',
+  'have',
+  'had',
+  'did',
+  'does',
+  'do',
+  'is',
+  'was',
+  'were',
+  'don',
+  'dey',
+  'just',
+  'already',
+  'not',
+  'never',
+  'also',
+  'been',
+  'being',
+  'get',
+  'got',
+  'gotten',
+]);
+
+/** Titles before a name: "Mr. CUSTOMER_7K2", "Mama Chidi". */
+const TITLES = new Set([
+  'mr',
+  'mrs',
+  'ms',
+  'dr',
+  'madam',
+  'mama',
+  'papa',
+  'oga',
+  'aunty',
+  'auntie',
+  'uncle',
+  'chief',
+  'alhaji',
+  'alhaja',
+  'mummy',
+  'daddy',
+]);
+
+/** What keeps a subject inside the question: "the customer", "if she paid". */
+const SUBJECT_LEADS = new Set([
+  'the',
+  'my',
+  'our',
+  'each',
+  'every',
+  'all',
+  'and',
+  'or',
+  'if',
+  'whether',
+  'that',
+  'much',
+  'many',
+  'how',
+  'can',
+  'could',
+  'will',
+  'would',
+  'should',
+  'may',
+]);
 
 const BARE_LISTS = new Set(['sales', 'expenses', 'purchases', 'payments', 'invoices']);
 
