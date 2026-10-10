@@ -485,6 +485,75 @@ describe('the chat surface enforces roles', () => {
     expect(answer).toContain('view only');
   });
 
+  /** What a refused message must leave untouched (G-57). */
+  async function footprint(businessId: string) {
+    const [row] = await withBusiness(appDb, businessId, (tx) =>
+      tx.execute<Record<string, string>>(sql`
+        SELECT
+          (SELECT COALESCE(sum(used), 0) FROM usage_counters
+            WHERE business_id = ${businessId}::uuid AND unit = 'AI_ACTIONS') AS ai_actions,
+          /* Every usage and provider-cost row but the reply's own send. */
+          (SELECT count(*) FROM usage_events WHERE business_id = ${businessId}::uuid
+            AND usage_type <> 'SERVICE_MESSAGE') AS usage_events,
+          (SELECT count(*) FROM command_drafts WHERE business_id = ${businessId}::uuid) AS drafts,
+          (SELECT count(*) FROM invoices WHERE business_id = ${businessId}::uuid) AS invoices,
+          (SELECT count(*) FROM payments WHERE business_id = ${businessId}::uuid) AS payments,
+          (SELECT count(*) FROM ledger_transactions
+            WHERE business_id = ${businessId}::uuid) AS postings,
+          (SELECT count(*) FROM inventory_movements
+            WHERE business_id = ${businessId}::uuid) AS stock_moves`),
+    );
+    /* Provider cost is platform data the app role cannot read: as the owner. */
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      const [cost] = await ownerDb.execute<{ n: string }>(sql`
+        SELECT count(*) AS n FROM platform_cost_events WHERE business_id = ${businessId}::uuid`);
+      return {
+        ...Object.fromEntries(Object.entries(row!).map(([k, v]) => [k, Number(v)])),
+        cost_events: Number(cost!.n),
+      };
+    } finally {
+      await close();
+    }
+  }
+
+  /* G-57: a view-only member asking to CHANGE the books is refused before
+   * anything is paid for. The canonical rule (spec §4.3, rules 2 to 4): a
+   * refused request consumes no allowance and calls no provider. The model
+   * fixture would name it a sale; it must never be asked. */
+  it('refuses an accountant`s free-form sale before metering or calling the model', async () => {
+    const businessId = await seedBusiness('Role Gate Meter Ltd', '+2348140010011');
+    await memberOf(businessId, '+2348140010012', 'accountant');
+    stubTransport.replyWith({
+      intent: 'RecordSale',
+      customer: { kind: 'none' },
+      items: [{ name: 'rice', quantity: 1, unitPrice: 50_000 }],
+      statedTotal: 50_000,
+      reportedPayment: 50_000,
+      paymentMethod: 'cash',
+      discount: null,
+      deliveryFee: null,
+      dueDescription: null,
+    });
+
+    const answer = await saysOverChat(businessId, '+2348140010012', 'record a sale of 50k cash');
+    expect(answer).toContain('view only');
+    expect({
+      modelCalls: stubTransport.requests.length,
+      ...(await footprint(businessId)),
+    }).toEqual({
+      modelCalls: 0,
+      ai_actions: 0,
+      usage_events: 0,
+      cost_events: 0,
+      drafts: 0,
+      invoices: 0,
+      payments: 0,
+      postings: 0,
+      stock_moves: 0,
+    });
+  });
+
   it('answers a QUESTION from that same accountant, because reads are theirs', async () => {
     const businessId = await seedBusiness('Role Gate Reads Ltd', '+2348140010003');
     await memberOf(businessId, '+2348140010004', 'accountant');
