@@ -940,6 +940,33 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Final review D: "can I/we" sends take the same recipient check; a
+   * plain name before her/his/their is an indirect object; a file format
+   * "of" the records is no one's channel. */
+  it.each([
+    ['can I send the invoice to CUSTOMER_7K2', 'unknown'],
+    ['can we send CUSTOMER_7K2 her statement', 'unknown'],
+    ['can I tell CUSTOMER_7K2 she owes me', 'unknown'],
+    ['can I show CUSTOMER_7K2 her balance', 'unknown'],
+    ['can I whatsapp the invoice to CUSTOMER_7K2', 'unknown'],
+    ['can I email the statement to EMAIL_1', 'unknown'],
+    ['can I send the P&L to my accountant', 'unknown'],
+    ['could we send the statement to CUSTOMER_7K2', 'unknown'],
+    ['show Ada her balance', 'unknown'],
+    ['show Mama Nkechi her balance', 'unknown'],
+    ['list Ada her invoices', 'unknown'],
+    ['send me a pdf of my sales', 'read'],
+    ['give me a pdf of my P&L', 'read'],
+    ['download a pdf of the statement', 'read'],
+    ['send me a csv of my sales', 'read'],
+    ['can I see my sales', 'read'],
+    ['can I please see sales today', 'read'],
+    ['can I export my sales to excel', 'read'],
+    ['show me her balance', 'read'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');

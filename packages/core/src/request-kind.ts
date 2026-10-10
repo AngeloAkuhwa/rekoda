@@ -799,6 +799,9 @@ const COMPARISONS = new Set([
 /** Verbs that only ask to see: "can you show me…". */
 const READ_VERBS = new Set(['show', 'list', 'export', 'send', 'give', 'tell', 'download', 'print']);
 
+/** Verbs that only ever send to someone: "can I whatsapp the invoice…". */
+const SEND_ONLY_VERBS = new Set(['whatsapp', 'email', 'mail', 'forward', 'share', 'text', 'sms']);
+
 /** Change verbs in the past participle, which can describe records. */
 const CHANGE_PARTICIPLES = new Set([
   'cleared',
@@ -1235,7 +1238,16 @@ function opensAQuestion(words: readonly string[]): boolean {
   /* "can I see…", "could we get…"; "can you…" only before a read verb
    * ("can you show me sales?"), never before work ("can you reverse…"). */
   if (first === 'can' || first === 'could') {
-    if (words[1] === 'i' || words[1] === 'we') return true;
+    if (words[1] === 'i' || words[1] === 'we') {
+      /* "can I send the invoice to CUSTOMER_7K2", "can I show Ada her
+       * balance": the same recipient check as the plain forms (final
+       * review D). "can I see…", "can I get…" stay questions. */
+      let k = 2;
+      while (OPENING_FILLERS.has(words[k] ?? '')) k += 1;
+      if (SEND_ONLY_VERBS.has(words[k] ?? '')) return false;
+      if (READ_VERBS.has(words[k] ?? '')) return forTheMerchant(words, k);
+      return true;
+    }
     if (words[1] === 'you') {
       /* "can you please show me…", "could you kindly list…" (Codex P2). */
       let k = 2;
@@ -1315,7 +1327,8 @@ function forTheMerchant(words: readonly string[], verb: number): boolean {
       (words[j + 1] === 'by' && words[j + 2] === 'line') ||
       (words[j - 1] === 'by' && (words[j - 2] === 'line' || words[j + 1] === undefined));
     if (words[j] === 'line' && (words[j - 1] === 'product' || lineByLine)) continue;
-    if (words[j + 1] === 'of') return false;
+    /* "a pdf of my sales" is a format; "the WhatsApp of Ada" is Ada's. */
+    if (words[j + 1] === 'of' && !FORMAT_CHANNELS.has(words[j]!)) return false;
     const owner = words[j - 1] ?? '';
     const mine = words[j - 2] === 'my' || words[j - 2] === 'our';
     /* "the number I gave you", "another WhatsApp": someone else's unless
@@ -1344,6 +1357,11 @@ function forTheMerchant(words: readonly string[], verb: number): boolean {
   /* An indirect object. */
   if (at(1) === 'him' || at(1) === 'them') return false;
   if ((at(1) === 'customer' || at(1) === 'her') && DETERMINERS.has(at(2))) return false;
+  /* "show Ada her balance", "show Mama Nkechi his statement": a name the
+   * gateway did not tokenise, before a possessive (final review D). */
+  let n = 1;
+  while (TITLES.has(at(n))) n += 1;
+  if ((n > 1 || !knownWord(at(n))) && ['her', 'his', 'their'].includes(at(n + 1))) return false;
   if (['the', 'my', 'our'].includes(at(1)) && PEOPLE.has(at(2)) && DETERMINERS.has(at(3))) {
     return false;
   }
@@ -1442,6 +1460,9 @@ const OWN_CONTACT_LEADS = new Set([
 
 /** A channel that is one of several: the merchant's only after my/our. */
 const SOME_OTHER = new Set(['new', 'other', 'another', 'second', 'this', 'that']);
+
+/** Channels that are a file format, never anyone's: "a pdf of my sales". */
+const FORMAT_CHANNELS = new Set(['excel', 'pdf', 'csv', 'spreadsheet', 'sheet']);
 
 /** Formats and channels a report may go to: "to my email", "to Excel". */
 const CHANNELS = new Set([
