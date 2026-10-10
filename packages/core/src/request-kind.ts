@@ -391,6 +391,19 @@ const PERIODS = new Set([
   'october',
   'november',
   'december',
+  /* "sales for Jan", "expenses for Sept" (Codex P2). */
+  'jan',
+  'feb',
+  'mar',
+  'apr',
+  'jun',
+  'jul',
+  'aug',
+  'sep',
+  'sept',
+  'oct',
+  'nov',
+  'dec',
 ]);
 
 /** Words that make a sentence about trade a summary of it: "total sold". */
@@ -422,16 +435,19 @@ const DATES = new RegExp(
     '\\b(?:0?[1-9]|[12]\\d|3[01])-(?:0?[1-9]|1[0-2])-\\d{2,4}\\b',
     '\\b\\d{1,2}(?:st|nd|rd|th)\\b',
     /* "for 2 weeks", "over 7 days", "in three months" (Codex P2). */
-    '\\b(?:for|in|over|during|within)\\s+(?:the\\s+)?(?:\\d{1,3}|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\\s+(?:days?|weeks?|months?|years?)\\b',
-    '\\b(?:last|past|next)\\s+(?:\\d{1,3}|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\\s+(?:days?|weeks?|months?|years?)\\b',
+    '\\b(?:for|in|over|during|within)\\s+(?:the\\s+)?(?:\\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\\s+(?:days?|weeks?|months?|years?)\\b',
+    '\\b(?:last|past|next)\\s+(?:\\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\\s+(?:days?|weeks?|months?|years?)\\b',
   ].join('|'),
   'g',
 );
 
 function hasFigure(raw: string): boolean {
   const text = raw.replace(DATES, ' ');
-  /* "did Ada pay one?": "one" as the amount paid (Codex P2). */
-  if (/\b(?:pa(?:y|ys|id)|received?|collected|sold|bought|spent)\s+one\b/i.test(text)) return true;
+  /* "did Ada pay one?", "did Ada pay 2026?": the amount paid, not a count
+   * or a year (Codex P2); "sales in 2026" keeps its year. */
+  if (/\b(?:pa(?:y|ys|id)|received?|collected|sold|bought|spent)\s+(?:one|\d{4})\b/i.test(text)) {
+    return true;
+  }
   if (text.includes('₦') || NUMBER_WORDS.test(text)) return true;
   /* "paid half", "settled the rest": amounts RecordPayment reads as
    * relativeAmount (Codex P2), but only beside a payment, so "show the rest
@@ -1237,7 +1253,20 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
    * statement rules below. */
   if (opensAQuestion(words)) {
     /* "list sales and add rice sale" asks for a record halfway through. */
-    if (words.some((w) => RECORD_INSTRUCTIONS.has(w))) return 'unknown';
+    /* Not "how many sales did I record", "which payments did we log":
+     * the verb under a past auxiliary describes what is there (Codex P2). */
+    if (
+      words.some(
+        (w, i) =>
+          RECORD_INSTRUCTIONS.has(w) &&
+          !(
+            SUBJECTS.has(words[i - 1] ?? '') &&
+            ['did', 'have', 'has', 'had'].includes(words[i - 2] ?? '')
+          ),
+      )
+    ) {
+      return 'unknown';
+    }
     /* "who owes me more than 50k": a filter, not an amount (Codex P2). */
     if (figure && figureBeyondFilters(text) && (trade || recordNoun || topic)) return 'unknown';
     /* "who owes me CUSTOMER_7K2 paid": a statement run on (final review A). */
@@ -1574,9 +1603,12 @@ function forTheMerchant(words: readonly string[], verb: number): boolean {
    * gateway did not tokenise, before a possessive (final review D). */
   let n = 1;
   while (TITLES.has(at(n))) n += 1;
-  if ((n > 1 || (!knownWord(at(n)) && !VERB_PARTICLES.has(at(n)))) && DETERMINERS.has(at(n + 1))) {
-    return false;
+  /* The whole name, "Ada Obi" as well as "Ada" (Codex P2). */
+  let k = n;
+  while (at(k) && !knownWord(at(k)) && !VERB_PARTICLES.has(at(k)) && !DETERMINERS.has(at(k))) {
+    k += 1;
   }
+  if ((k > n || n > 1) && DETERMINERS.has(at(k))) return false;
   if (['the', 'my', 'our'].includes(at(1)) && PEOPLE.has(at(2)) && DETERMINERS.has(at(3))) {
     return false;
   }
@@ -1770,6 +1802,8 @@ function onlyBooksWords(words: readonly string[]): boolean {
       isYear(w) ||
       /* A number left over once the figure check passed is a date's. */
       /^\d+$/.test(w) ||
+      /* "sales for one week" (Codex P2). */
+      w === 'one' ||
       /* So is a cardinal in words ("the last two weeks"). */
       NUMBER_WORDS.test(w),
   );

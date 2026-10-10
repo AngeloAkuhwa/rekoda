@@ -1128,6 +1128,26 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Codex, on 04a8c8f. */
+  it.each([
+    ['did Ada pay 2026?', 'unknown'],
+    ['has CUSTOMER_7K2 paid 2025?', 'unknown'],
+    ['how much did we sell in 2026?', 'read'],
+    ['sales for one week', 'read'],
+    ['expenses over one month', 'read'],
+    ['show Ada Obi the invoice', 'unknown'],
+    ['list Ada Obi the invoices', 'unknown'],
+    ['how many sales did I record this month', 'read'],
+    ['which payments did we log today', 'read'],
+    ['did I record any expenses today', 'read'],
+    ['can you record a sale', 'write'],
+    ['did you record the sale 5k', 'unknown'],
+    ['sales for Jan', 'read'],
+    ['expenses for Sept', 'read'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');

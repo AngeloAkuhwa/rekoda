@@ -4612,8 +4612,10 @@ async function interpretedReply(
     }
     /* A refused request consumes nothing (spec §4.3 rule 4): the call is
      * spent, but the unit goes back, as for every outcome that did not
-     * deliver. Skipped on a retry, like the refund above. */
-    if (!retrying) await refundMessage(deps, businessId, period);
+     * deliver. Run on a retry too (Codex P2): if attempt 1's refund failed,
+     * this is the only one; if it committed, refunding again under-counts by
+     * one, the side this job already chooses to err on (see `retrying`). */
+    await refundMessage(deps, businessId, period);
     return replies.viewOnlyRole();
   }
 

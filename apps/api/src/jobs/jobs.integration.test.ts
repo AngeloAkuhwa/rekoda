@@ -812,6 +812,57 @@ describe('the chat surface enforces roles', () => {
     expect(last.length).toBeGreaterThan(0);
   });
 
+  /* Codex P2 on 04a8c8f: the post-model refund runs in its own
+   * transaction; if it fails once, the retry must still give the unit back
+   * rather than assume attempt 1's refund committed. */
+  it('refunds a refused record on the retry when the first refund failed (G-57)', async () => {
+    const businessId = await seedBusiness('Role Gate Refund Retry Ltd', '+2348140010043');
+    await memberOf(businessId, '+2348140010044', 'accountant');
+    stubTransport.replyWith(A_SALES_QUESTION);
+    await saysOverChat(businessId, '+2348140010043', 'how much did we sell this month?');
+    const before = await footprint(businessId);
+    expect(before.ai_actions).toBe(1);
+    stubTransport.replyWith(A_SALE);
+
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g57_refund_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g57_refund_fails_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF NEW.unit = 'AI_ACTIONS' AND NEW.used < OLD.used THEN
+            IF nextval('g57_refund_once') = 1 THEN
+              RAISE EXCEPTION 'g57: first refund fails';
+            END IF;
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g57_refund_fails_once BEFORE UPDATE ON usage_counters
+          FOR EACH ROW EXECUTE FUNCTION g57_refund_fails_once()`);
+      await saysOverChat(businessId, '+2348140010044', 'how much did we sell this month?');
+      await ownerDb.execute(sql`
+        UPDATE jobs SET run_at = now() WHERE business_id = ${businessId}::uuid AND state <> 'done'`);
+      await buildRunner(workerDb, appDb, deps).runOnce();
+      const [job] = await ownerDb.execute<{ state: string; attempts: number }>(sql`
+        SELECT state, attempts FROM jobs
+         WHERE business_id = ${businessId}::uuid AND kind = 'inbound.message'
+         ORDER BY created_at DESC LIMIT 1`);
+      expect(job).toMatchObject({ state: 'done', attempts: 2 });
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g57_refund_fails_once ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g57_refund_fails_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g57_refund_once`);
+      await close();
+    }
+    expect(stubSender.sent[stubSender.sent.length - 1]?.text).toBe(replies.viewOnlyRole().text);
+    const after = await footprint(businessId);
+    for (const key of ['ai_actions', 'drafts', 'invoices', 'payments', 'postings', 'stock_moves']) {
+      expect(after[key], key).toBe(before[key]);
+    }
+  });
+
   it('answers a QUESTION from that same accountant, because reads are theirs', async () => {
     const businessId = await seedBusiness('Role Gate Reads Ltd', '+2348140010003');
     await memberOf(businessId, '+2348140010004', 'accountant');
