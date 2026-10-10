@@ -892,6 +892,25 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Round 28: a token after a destination word stays a contact; "work",
+   * "shop"… make a number the merchant's only after the/my/our or a
+   * preposition; only "line by line" is no channel. */
+  it.each([
+    ['send me sales cc EMAIL_1 is my accountant', 'unknown'],
+    ['send me the report on PHONE_1 is that ok', 'unknown'],
+    ["send me the p&l on PHONE_1's", 'unknown'],
+    ['send me sales on his personal number', 'unknown'],
+    ["send me sales on my supplier's work number", 'unknown'],
+    ['send me sales on CUSTOMER_1 work number', 'unknown'],
+    ["send me sales on ada's office line", 'unknown'],
+    ['send me sales on his line by evening', 'unknown'],
+    ['send me sales on the other line by tomorrow', 'unknown'],
+    ['send me sales on my work number', 'read'],
+    ['send me sales on shop number', 'read'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');

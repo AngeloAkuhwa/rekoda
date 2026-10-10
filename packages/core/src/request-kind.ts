@@ -438,6 +438,10 @@ function contactToken(
 ): string {
   const before = whole.slice(0, at);
   const after = possessive ? "'s" + whole.slice(at + token.length) : whole.slice(at + token.length);
+  /* "on PHONE_1 is fine": a destination first, whatever follows (round 28). */
+  if (/\b(?:to|on|via|through|at|cc|bcc|email|mail|phone|number|whatsapp)\s*$/i.test(before)) {
+    return ` customer ${kind === 'PHONE' ? 'phone' : 'email'} `;
+  }
   const subject =
     before.trim() === '' ||
     SUBJECT_AFTER.test(after) ||
@@ -1184,12 +1188,10 @@ function forTheMerchant(words: readonly string[], verb: number): boolean {
     /* "number of sales" counts; "the WhatsApp of Ada" belongs to Ada. */
     if (words[j] === 'number' && words[j + 1] === 'of') continue;
     /* "product line", "line by line": no channel (round 27). */
-    if (
-      words[j] === 'line' &&
-      (words[j - 1] === 'product' || words[j - 1] === 'by' || words[j + 1] === 'by')
-    ) {
-      continue;
-    }
+    const lineByLine =
+      (words[j + 1] === 'by' && words[j + 2] === 'line') ||
+      (words[j - 1] === 'by' && (words[j - 2] === 'line' || words[j + 1] === undefined));
+    if (words[j] === 'line' && (words[j - 1] === 'product' || lineByLine)) continue;
     if (words[j + 1] === 'of') return false;
     const owner = words[j - 1] ?? '';
     const mine = words[j - 2] === 'my' || words[j - 2] === 'our';
@@ -1200,7 +1202,7 @@ function forTheMerchant(words: readonly string[], verb: number): boolean {
       owner !== 'my' &&
       owner !== 'our' &&
       !(SOME_OTHER.has(owner) && mine) &&
-      !OWN_CONTACT_WORDS.has(owner)
+      !(OWN_CONTACT_WORDS.has(owner) && OWN_CONTACT_LEADS.has(words[j - 2] ?? ''))
     ) {
       return false;
     }
@@ -1301,6 +1303,19 @@ const OWN_CHANNEL_WORDS = new Set([
 
 /** What makes a number or line the business's own: "the shop number". */
 const OWN_CONTACT_WORDS = new Set(['work', 'office', 'business', 'shop', 'personal']);
+/** …and only straight after one of these: "his work number" is his (round 28). */
+const OWN_CONTACT_LEADS = new Set([
+  'the',
+  'my',
+  'our',
+  'on',
+  'to',
+  'via',
+  'at',
+  'through',
+  'by',
+  'in',
+]);
 
 /** A channel that is one of several: the merchant's only after my/our. */
 const SOME_OTHER = new Set(['new', 'other', 'another', 'second', 'this', 'that']);
