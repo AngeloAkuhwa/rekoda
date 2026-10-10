@@ -1169,11 +1169,25 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).not.toBe('read');
   });
 
-  /* A proposal is not a question; a question introduced by "about" still is. */
+  /* A proposal is not a question; a question introduced by "about" still is.
+   * Only an action straight after "what/how about" is a proposal: these read
+   * at 5f98eec and must keep reading (final review C). */
   it.each([
     ['what about outstanding invoices', 'read'],
     ['what about CUSTOMER_7K2 balance', 'read'],
+    ['what about pending invoices', 'read'],
+    ['what about opening balance', 'read'],
+    ['what about marketing expenses', 'read'],
+    ['what about morning sales', 'read'],
+    ['what about anything outstanding', 'read'],
+    ['what about remaining invoices', 'read'],
+    ['how about evening sales today', 'read'],
+    ['what about selling price of rice', 'read'],
+    ['what do my records say about shipping expenses', 'read'],
     ['how about we invoice CUSTOMER_7K2', 'unknown'],
+    ['how about invoicing CUSTOMER_7K2', 'unknown'],
+    ['what about cancelling the invoice', 'unknown'],
+    ['what about paying Ada', 'unknown'],
   ] as const)('reads %j as %s', (text, kind) => {
     expect(requestKind(text)).toBe(kind);
   });

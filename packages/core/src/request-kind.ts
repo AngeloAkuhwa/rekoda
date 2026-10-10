@@ -1254,14 +1254,18 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
   if (opensAQuestion(words)) {
     /* "what about selling rice", "how about forwarding Ada the report",
      * "how about we invoice Ada": a proposal to act, not a question about
-     * the books (G-57 final review). "what about outstanding invoices"
-     * still asks. */
+     * the books (G-57 final review). Only straight after "what/how about",
+     * and only an action this grammar knows: "what about pending
+     * invoices", "what about marketing expenses", "what about opening
+     * balance" still ask (final review C). */
     const about = words.indexOf('about');
     const proposed = words[about + 1] ?? '';
     if (
       about > 0 &&
+      ['what', 'how', 'whats', "what's"].includes(words[about - 1] ?? '') &&
       (['we', 'i', 'you'].includes(proposed) ||
-        (/ing$/.test(proposed) && !BOOK_TOPICS.has(proposed) && !LISTED_RECORDS.has(proposed)))
+        /* Not "selling price": a noun, not an act. */
+        (proposesAction(proposed) && !['price', 'prices'].includes(words[about + 2] ?? '')))
     ) {
       return 'unknown';
     }
@@ -1429,6 +1433,47 @@ const TREND_VERBS = new Set(['increase', 'increased', 'change', 'changed', 'redu
 
 /** Words after a verb that are no one: "list out the debtors", "show only my sales". */
 const VERB_PARTICLES = new Set(['out', 'down', 'up', 'only', 'just', 'all', 'off', 'again']);
+
+/**
+ * Is this -ing word an action the grammar knows ("selling", "forwarding",
+ * "recording", "cancelling", "invoicing")? Positive, so an -ing adjective
+ * or noun ("pending", "opening", "marketing", "morning") is never one.
+ */
+function proposesAction(word: string): boolean {
+  if (!/ing$/.test(word)) return false;
+  const stem = word.slice(0, -3);
+  const stems = [stem, `${stem}e`];
+  /* "cancelling" -> "cancel", "shipping" -> "ship". */
+  if (stem.length > 2 && stem[stem.length - 1] === stem[stem.length - 2])
+    stems.push(stem.slice(0, -1));
+  return stems.some(
+    (w) =>
+      TRADE_VERBS.has(w) ||
+      CHANGE_VERBS.has(w) ||
+      RECORD_INSTRUCTIONS.has(w) ||
+      MAKING_VERBS.has(w) ||
+      SEND_ONLY_VERBS.has(w) ||
+      PROPOSED_ACTIONS.has(w),
+  );
+}
+
+/** Actions a proposal names that the other lists do not: "how about invoicing Ada". */
+const PROPOSED_ACTIONS = new Set([
+  'send',
+  'invoice',
+  'bill',
+  'charge',
+  'credit',
+  'debit',
+  'write',
+  'remind',
+  'chase',
+  'post',
+  'transfer',
+  'waive',
+  'discount',
+  'mark',
+]);
 
 /** Titles before a name: "Mr. CUSTOMER_7K2", "Mama Chidi". */
 const TITLES = new Set([
