@@ -134,7 +134,7 @@ export function viewOnlyRole(): Reply {
 export function viewOnlyAskAQuestion(): Reply {
   return reply(
     'I can help you check the books, but this access cannot record changes, so nothing was saved. ' +
-      "Ask me a question like 'How much does Ada owe?' or 'How much did we sell this month?'",
+      'Ask me a question like "How much does Ada owe?" or "How much did we sell this month?"',
   );
 }
 
@@ -145,8 +145,8 @@ export function viewOnlyAskAQuestion(): Reply {
  */
 export function viewOnlyPhoto(): Reply {
   return reply(
-    'I can help you check the books, but this access cannot record transactions from a photo, so nothing was saved. ' +
-      "Ask me a question about the books instead, like 'How much did we sell this month?'",
+    'I can help you check the books, but this access cannot record changes, so I did not read this photo and nothing was saved. ' +
+      'Ask me a question about the books instead, like "How much did we sell this month?"',
   );
 }
 

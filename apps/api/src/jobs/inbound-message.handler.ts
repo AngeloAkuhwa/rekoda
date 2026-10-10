@@ -4514,8 +4514,9 @@ async function interpretedReply(
    * `requestKind` names the kind of request and nothing else; `mayTransact`
    * is still the role rule, and the check after the model below still
    * refuses a write this let through. A photographed document is refused
-   * before it is read (`readReceiptPhoto`); refusing one here too keeps that
-   * true if a document ever reaches this path another way.
+   * before it is read (`readReceiptPhoto`), which is what saves its cost;
+   * refusing one here too only keeps the authorisation true if a document
+   * ever reaches this path another way, by which time it was paid for.
    */
   const transacts = await mayTransact(tx, businessId, from);
   let asked: RequestKind | null = null;
@@ -4588,16 +4589,18 @@ async function interpretedReply(
    *
    * A question is a read and answers for every member; anything else changes
    * the books, and a view-only member does not get a draft to say yes to.
-   * The check above already turned away every message that plainly asked to
-   * record something (G-57); this one is the authority, and catches a
-   * question that the model reads as a record. That costs the unit and the
+   * The check above turned away the messages its small grammar could tell
+   * were records, or could not tell at all (G-57); this one is the
+   * authority, and catches a question that the model reads as a record. That costs the unit and the
    * call the early check exists to save, so it is logged (the intent and
    * nothing the merchant wrote) as evidence for widening the early grammar.
    */
   if (
     interpreted.command.intent !== 'Query' &&
     interpreted.command.intent !== 'Unclear' &&
-    !transacts
+    /* Read again, not reused: the model call can take twenty seconds, and a
+     * member demoted meanwhile must not get a draft. */
+    !(await mayTransact(tx, businessId, from))
   ) {
     if (asked === 'read') {
       authorisationLog.warn(

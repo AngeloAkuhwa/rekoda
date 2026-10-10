@@ -753,8 +753,10 @@ describe('the chat surface enforces roles', () => {
         CREATE OR REPLACE FUNCTION g57_fail_once() RETURNS trigger
           SECURITY DEFINER AS $$
         BEGIN
-          IF NEW.usage_type = 'SERVICE_MESSAGE' AND nextval('g57_once') = 1 THEN
-            RAISE EXCEPTION 'g57: first reply fails';
+          IF NEW.usage_type = 'SERVICE_MESSAGE' THEN
+            IF nextval('g57_once') = 1 THEN
+              RAISE EXCEPTION 'g57: first reply fails';
+            END IF;
           END IF;
           RETURN NEW;
         END $$ LANGUAGE plpgsql`);

@@ -59,12 +59,102 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
   });
 
   it('never reads a figure beside trade as a question, even with a question mark', () => {
-    expect(requestKind('Ada paid me 20k?')).toBe('unknown');
-    expect(requestKind('sold rice 5k?')).toBe('unknown');
+    expect(requestKind('Ada paid me 20k?')).not.toBe('read');
+    expect(requestKind('sold rice 5k?')).not.toBe('read');
+    expect(requestKind('did Ada pay 20k?')).not.toBe('read');
+  });
+
+  /* Reviewer A, round 1: changes to what is recorded, and statements that say
+   * more than a books question, were read as questions and sent to the
+   * model. None of them may read. */
+  it.each([
+    'Ada settled her balance',
+    'Ada cleared her balance',
+    'Ada don clear her debt',
+    "clear Ada's debt",
+    'Ada debt cleared',
+    'write off Ada debt',
+    'update Ada balance',
+    'reduce Ada balance',
+    'increase Ada debt',
+    'set opening balance',
+    'remove the sale from yesterday',
+    "refund Ada's payment today",
+    'expense today fuel',
+    'fuel expense today',
+    'today expense: fuel',
+    'sales today: rice and beans',
+    'purchase today from Chidi',
+    'payment today Ada',
+    'Can you reverse the last sale?',
+    "Could you delete yesterday's expense?",
+    "Can you mark Ada's invoice as paid?",
+    'sold rice to Ada?',
+    'reconcile the Moniepoint transfer',
+    'how do I delete a sale?',
+  ])('never reads %j as a question', (text) => {
+    expect(requestKind(text)).not.toBe('read');
+  });
+
+  it.each([
+    ["clear Ada's debt", 'write'],
+    ['reverse the last sale', 'write'],
+    ['delete yesterday expense', 'write'],
+    ['Ada settled her balance', 'unknown'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
+  /* Reviewer C, round 1: common summary phrasings a view-only member uses. */
+  it.each([
+    "today's sales",
+    "this month's sales",
+    "this month's expenses",
+    'total sales',
+    'total expenses',
+    'overdue invoices',
+    'invoices this month',
+    'how many invoices',
+    'unmatched payments',
+    'cash flow',
+    'sales for 2025',
+    'sales in Q3',
+    'profit this month',
+    'P&L for September',
+    'send me my statement',
+    'unpaid invoices',
+    'bank reconciliation',
+    'report for last month',
+    'debtors list',
+    'income statement',
+    'balance sheet',
+    'monthly report',
+    'purchases this month',
+    'show me the ledger',
+    'can I see sales this week?',
+  ])('reads %j as a question about the books', (text) => {
+    expect(requestKind(text)).toBe('read');
+  });
+
+  /* It reads the gateway's tokenised text: a customer or contact token is a
+   * name, and the digits inside it are not money. */
+  it('never reads the digits in a vault token as a figure', () => {
+    expect(requestKind('sales for CUSTOMER_7K2 this month')).toBe('read');
+    expect(requestKind('what did CUSTOMER_7K2 buy?')).toBe('read');
+    expect(requestKind('how much does CUSTOMER_9M4 owe?')).toBe('read');
+    expect(requestKind('CUSTOMER_7K2 paid me 20k')).toBe('write');
+    expect(requestKind('CUSTOMER_7K2 20k')).toBe('unknown');
+    expect(requestKind('send me the report for CUSTOMER_7K2')).toBe('read');
+    expect(requestKind('send the report to EMAIL_1')).toBe('unknown');
+    expect(requestKind('how much has CUSTOMER_7KQ paid this month?')).toBe('read');
+    expect(requestKind('did CUSTOMER_9ZZ pay?')).toBe('read');
+    expect(requestKind('what did CUSTOMER_A3C buy this month?')).toBe('read');
+    expect(requestKind('CUSTOMER_7KQ balance')).toBe('read');
   });
 
   it('is not fooled by a year into seeing money', () => {
-    expect(requestKind('sales in 2026')).toBe('unknown');
+    expect(requestKind('sales in 2026')).toBe('read');
+    expect(requestKind('sold rice 2026k')).toBe('write');
     expect(requestKind('how much did we sell in 2026?')).toBe('read');
   });
 });

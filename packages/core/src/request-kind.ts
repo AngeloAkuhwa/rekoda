@@ -23,8 +23,9 @@
  * This decides nothing about WHO may do what. It names the kind of request;
  * the caller's role rule (`mayTransact`) decides whether that member may make
  * it, and the model's structured intent is still checked afterwards. Kept
- * small on purpose: it reads verbs and topic words, never amounts, names,
- * items or periods, which stay the model's job. Pure; no IO.
+ * small on purpose: it reads verbs and topic words, and notes only whether a
+ * figure or a period is present. It extracts no amount, name, item or period;
+ * those stay the model's job. Pure; no IO.
  */
 
 export type RequestKind = 'read' | 'write' | 'unknown';
@@ -102,8 +103,110 @@ const QUESTION_OPENERS = new Set([
   'tell',
   'wetin',
   'any',
-  'can',
-  'could',
+]);
+
+/**
+ * Changing what is already recorded: undoing, clearing, correcting. Not one
+ * of these is a question about the books; as the opening word each is an
+ * instruction.
+ */
+const CHANGE_VERBS = new Set([
+  'clear',
+  'cleared',
+  'settle',
+  'settled',
+  'cancel',
+  'cancelled',
+  'canceled',
+  'delete',
+  'deleted',
+  'remove',
+  'removed',
+  'reverse',
+  'reversed',
+  'void',
+  'voided',
+  'refund',
+  'refunded',
+  'update',
+  'updated',
+  'change',
+  'changed',
+  'edit',
+  'correct',
+  'corrected',
+  'adjust',
+  'adjusted',
+  'set',
+  'reduce',
+  'reduced',
+  'increase',
+  'increased',
+  'mark',
+  'marked',
+  'reconcile',
+  'reconciled',
+  'return',
+  'returned',
+  'write',
+  'wrote',
+]);
+
+/** Words that only join books words: "the sales for this month so far". */
+const JOINING_WORDS = new Set([
+  'my',
+  'our',
+  'the',
+  'a',
+  'an',
+  'for',
+  'this',
+  'that',
+  'last',
+  'past',
+  'of',
+  'in',
+  'on',
+  'at',
+  'all',
+  'so',
+  'far',
+  'to',
+  'from',
+  'by',
+  'me',
+  'i',
+  'we',
+  'us',
+  'list',
+  'current',
+  'still',
+  'now',
+  'and',
+  'with',
+  'per',
+  'each',
+  'every',
+  'up',
+  'date',
+  'account',
+  'accounts',
+  'customer',
+  'customers',
+  'supplier',
+  'suppliers',
+  'bank',
+  'business',
+  'money',
+  'wey',
+  'dey',
+  'who',
+  'which',
+  'till',
+  'until',
+  'overall',
+  'full',
+  'sheet',
 ]);
 
 /** Trade happening: a sale, a purchase, money in or out. */
@@ -166,6 +269,8 @@ const BOOK_TOPICS = new Set([
   'unreconciled',
   'reconcile',
   'reconciliation',
+  'overdue',
+  'unmatched',
   'report',
   'reports',
   'statement',
@@ -180,6 +285,8 @@ const BOOK_TOPICS = new Set([
  * this month" asks, "sale rice" records. Read only beside a period.
  */
 const RECORD_NOUNS = new Set([
+  'invoice',
+  'invoices',
   'sale',
   'sales',
   'expense',
@@ -199,7 +306,14 @@ const PERIODS = new Set([
   'month',
   'monthly',
   'year',
+  'yearly',
+  'daily',
   'quarter',
+  'quarterly',
+  'q1',
+  'q2',
+  'q3',
+  'q4',
   'january',
   'february',
   'march',
@@ -223,7 +337,8 @@ const SUMMARY_WORDS = new Set(['total', 'summary', 'report', 'altogether']);
  */
 function hasFigure(text: string): boolean {
   if (text.includes('₦')) return true;
-  for (const match of text.matchAll(/\d[\d,.]*\s*(k|m|naira|ngn)?/g)) {
+  /* Digits glued to a letter ("q3") name something, not an amount. */
+  for (const match of text.matchAll(/(?<![a-z])\d[\d,.]*\s*(k|m|naira|ngn)?/g)) {
     const digits = match[0].replace(/[^\d]/g, '');
     const isYear = /^(19|20)\d\d$/.test(digits) && !match[1];
     if (!isYear) return true;
@@ -235,11 +350,28 @@ function startsWith(words: readonly string[], prefix: readonly string[]): boolea
   return prefix.every((w, i) => words[i] === w);
 }
 
+/**
+ * The privacy gateway's tokens (`CUSTOMER_7K2`, `PHONE_1`, `EMAIL_1`): a name
+ * or a contact, never an amount. Blanked before reading, so the digits inside
+ * a token are never mistaken for money (this reads the tokenised text).
+ */
+const VAULT_TOKEN = /\b[A-Z]+_[A-Z0-9]+\b/g;
+
 export function requestKind(raw: string): RequestKind {
-  const text = raw.toLowerCase().replace(/[‘’]/g, "'").replace(/\s+/g, ' ').trim();
+  const text = raw
+    .replace(VAULT_TOKEN, ' ')
+    .toLowerCase()
+    .replace(/[‘’]/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
   if (text.length === 0) return 'unknown';
   const asksAQuestion = text.endsWith('?');
-  const all = text.replace(/p&l/g, 'pnl').match(/[\p{L}\p{N}']+/gu) ?? [];
+  const all = (
+    text
+      .replace(/p&l/g, 'pnl')
+      .replace(/cash flow/g, 'cashflow')
+      .match(/[\p{L}\p{N}']+/gu) ?? []
+  ).map((w) => w.replace(/'s$/, ''));
   let start = 0;
   while (start < all.length - 1 && OPENING_FILLERS.has(all[start]!)) start += 1;
   const words = all.slice(start);
@@ -254,33 +386,75 @@ export function requestKind(raw: string): RequestKind {
     }
   }
 
+  /* A change to what is already recorded ("clear Ada's debt", "reverse the
+   * last sale") is a write when it is the instruction, and otherwise could
+   * be one ("Ada settled her balance", "how do I delete a sale?"). */
+  if (CHANGE_VERBS.has(words[0]!)) return 'write';
+  if (words.some((w) => CHANGE_VERBS.has(w))) return 'unknown';
+
   const figure = hasFigure(text);
   const trade = words.some((w) => TRADE_VERBS.has(w));
   const topic = words.some((w) => BOOK_TOPICS.has(w));
   const recordNoun = words.some((w) => RECORD_NOUNS.has(w));
+  const summary = words.some((w) => SUMMARY_WORDS.has(w));
+  const period = words.some((w) => PERIODS.has(w) || isYear(w));
 
-  /* A question about the books reads: "how much did we sell?", "who paid me
-   * this month?". One that also carries a figure beside trade ("did Ada pay
-   * 20k?", "is it ok I sold rice 5k?") may be a record asked as a question,
-   * and a question about nothing on the books ("what is this?") is not a
-   * books question: both stay unknown. */
-  if (asksAQuestion || QUESTION_OPENERS.has(words[0]!)) {
+  /* A question, by its opening words, about the books reads: "how much did
+   * we sell?", "who paid me this month?", "can I see sales?". One that also
+   * carries a figure beside trade ("did Ada pay 20k?") may be a record asked
+   * as a question, and one about nothing on the books ("what is this?") is
+   * not a books question: both stay unknown. A question mark alone opens
+   * nothing: "sold rice to Ada?" is held to the statement rules below. */
+  if (opensAQuestion(words)) {
     if (figure && (trade || recordNoun)) return 'unknown';
     return trade || topic || recordNoun ? 'read' : 'unknown';
   }
 
   /* Trade with a figure is a record: "sold rice 5k", "Ada paid me 20k".
-   * Without one it is a record or a summary: "total sold this month" says
-   * which; "sold rice to Ada" does not. */
+   * Without one it is a summary only when nothing else is said ("total sold
+   * this month"); "sold rice to Ada" could be either. */
   if (trade) {
     if (figure) return 'write';
-    return words.some((w) => SUMMARY_WORDS.has(w)) ? 'read' : 'unknown';
+    return summary && onlyBooksWords(words) ? 'read' : 'unknown';
   }
 
-  /* No trade verb. A figure beside anything ("Ada 20k", "expense 5k fuel")
-   * could be a record. */
-  if (figure) return 'unknown';
+  /* No trade verb, and not a question. A figure beside anything ("Ada 20k",
+   * "expense 5k fuel") could be a record. Otherwise it reads only when
+   * every word is about the books ("my debtors", "sales this month", "total
+   * expenses"): "expense today fuel" says something more, and stays
+   * unknown. */
+  if (figure || !onlyBooksWords(words)) return 'unknown';
   if (topic) return 'read';
-  if (recordNoun && words.some((w) => PERIODS.has(w))) return 'read';
+  if (recordNoun && (period || summary)) return 'read';
   return 'unknown';
+}
+
+/** A question by its opening, not by a trailing question mark. */
+function opensAQuestion(words: readonly string[]): boolean {
+  const first = words[0]!;
+  if (QUESTION_OPENERS.has(first)) return true;
+  /* "can I see…", "could we get…", never "can you…": that asks for work. */
+  if ((first === 'can' || first === 'could') && (words[1] === 'i' || words[1] === 'we')) {
+    return true;
+  }
+  /* "send me the P&L", "give me sales today". */
+  return (first === 'send' || first === 'give' || first === 'get') && words[1] === 'me';
+}
+
+function isYear(word: string): boolean {
+  return /^(19|20)\d\d$/.test(word);
+}
+
+/** Every word is a books word, a period, or a word that joins them. */
+function onlyBooksWords(words: readonly string[]): boolean {
+  return words.every(
+    (w) =>
+      BOOK_TOPICS.has(w) ||
+      RECORD_NOUNS.has(w) ||
+      PERIODS.has(w) ||
+      SUMMARY_WORDS.has(w) ||
+      TRADE_VERBS.has(w) ||
+      JOINING_WORDS.has(w) ||
+      isYear(w),
+  );
 }
