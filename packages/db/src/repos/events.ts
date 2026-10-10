@@ -151,6 +151,64 @@ export async function takeReservedUnits(
   return [...rows][0]?.units ?? [];
 }
 
+/** Does the event hold `unit`? A retry's question before it meters again. */
+export async function holdsReservedUnit(
+  tx: TenantDb,
+  businessId: string,
+  eventId: string,
+  unit: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ held: boolean }>(sql`
+    SELECT ${unit} = ANY(reserved_units) AS held FROM external_events
+     WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid`);
+  return [...rows][0]?.held === true;
+}
+
+/**
+ * Take every recorded unit of the given kinds off the event and return them,
+ * once each as recorded; other kinds stay. For a flow that reserves only
+ * those kinds (a confirmation's document and order units).
+ */
+export async function takeReservedUnitsOf(
+  tx: TenantDb,
+  businessId: string,
+  eventId: string,
+  kinds: readonly string[],
+): Promise<string[]> {
+  const rows = await tx.execute<{ units: string[] }>(sql`
+    SELECT reserved_units AS units FROM external_events
+     WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid
+     FOR UPDATE`);
+  const held = [...rows][0]?.units ?? [];
+  const taken = held.filter((u) => kinds.includes(u));
+  if (taken.length === 0) return [];
+  const kept = held.filter((u) => !kinds.includes(u));
+  await tx.execute(sql`
+    UPDATE external_events SET reserved_units = ${kept}::text[]
+     WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid`);
+  return taken;
+}
+
+/**
+ * Take ONE recorded unit off the event, if it is there, and say whether it
+ * was. Unlike `takeReservedUnits`, which clears all of them, this leaves the
+ * rest: a voice note's seconds stay charged when its message unit goes back.
+ * In the caller's transaction, beside the refund, so they commit together.
+ */
+export async function takeReservedUnit(
+  tx: TenantDb,
+  businessId: string,
+  eventId: string,
+  unit: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE external_events SET reserved_units = array_remove(reserved_units, ${unit})
+     WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid
+       AND ${unit} = ANY(reserved_units)
+    RETURNING id`);
+  return [...rows].length === 1;
+}
+
 /**
  * Mark an event handled. Errors are recorded, not thrown away.
  *

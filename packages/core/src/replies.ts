@@ -126,6 +126,31 @@ export function viewOnlyRole(): Reply {
 }
 
 /**
+ * A view-only member's message that is neither a clear question nor a clear
+ * record (G-57, OWN-25). It was deliberately NOT sent to the model, so this
+ * never says "I did not understand": it says what this access can do, that
+ * nothing was saved, and what a question looks like.
+ */
+export function viewOnlyAskAQuestion(): Reply {
+  return reply(
+    'I can help you check the books, but this access cannot record changes, so nothing was saved. ' +
+      'Ask me a question like "How much does Ada owe?" or "How much did we sell this month?"',
+  );
+}
+
+/**
+ * A view-only member's photograph (G-57, OWN-25). Today a photographed
+ * document only ever becomes a sale, an expense, a purchase or a payment, so
+ * it is refused before the image is downloaded or read.
+ */
+export function viewOnlyPhoto(): Reply {
+  return reply(
+    'I can help you check the books, but this access cannot record changes, so I did not read this photo and nothing was saved. ' +
+      'Ask me a question about the books instead, like "How much did we sell this month?"',
+  );
+}
+
+/**
  * Erasure, performed. The count makes the claim checkable: a merchant who
  * knows they had customers and reads "0 records" knows to ask questions.
  *

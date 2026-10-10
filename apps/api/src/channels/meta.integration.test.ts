@@ -4386,6 +4386,116 @@ describe('a voice note', () => {
     expect(rows.find((r) => r.unit === 'VOICE_MINUTES')?.used).toBe(5);
   });
 
+  /* Final review B on a1e54e3: the photo path already reads and bills
+   * once across a job retry (A2); a voice note must too, or a reply that
+   * fails after the transcriber answered charges the seconds again. */
+  it('does not transcribe or meter twice when the job fails AFTER the transcriber answered', async () => {
+    const business = await seedMerchant('+2348031234596');
+    arrangeAudio();
+    stubStt.answerWith({ text: 'how much did we sell this month', seconds: 5, confidence: 0.9 });
+    stubTransport.replyWith({
+      intent: 'Query',
+      topic: 'sales_summary',
+      customer: null,
+      period: 'month',
+      periodText: null,
+      format: 'chat',
+    });
+
+    /* A failed WhatsApp send is swallowed and retries nothing, so the job is
+     * made to fail where a real retry comes from: the reply's own usage row,
+     * once, after the transcriber has answered. */
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS voice_retry_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION voice_retry_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF NEW.usage_type = 'SERVICE_MESSAGE' AND nextval('voice_retry_once') = 1 THEN
+            RAISE EXCEPTION 'voice retry: first reply fails';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER voice_retry_fail_once BEFORE INSERT ON usage_events
+          FOR EACH ROW EXECUTE FUNCTION voice_retry_fail_once()`);
+
+      await post(voicePayload('2348031234596', 'wamid.V.LATE_FAILURE'));
+      await drain();
+      await ownerDb.execute(
+        sql`UPDATE jobs SET run_at = now() - interval '1 minute'
+             WHERE business_id = ${business.id}::uuid AND state <> 'done'`,
+      );
+      await drain();
+
+      const [job] = await ownerDb.execute<{ attempts: number; state: string }>(sql`
+        SELECT attempts, state FROM jobs
+         WHERE business_id = ${business.id}::uuid AND kind = 'inbound.message'
+         ORDER BY created_at DESC LIMIT 1`);
+      expect({ attempts: Number(job?.attempts), state: job?.state }).toEqual({
+        attempts: 2,
+        state: 'done',
+      });
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS voice_retry_fail_once ON usage_events`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS voice_retry_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS voice_retry_once`);
+      await close();
+    }
+    /* The note's seconds are taken once, however many passes the job makes. */
+    expect(await voiceUsed(business.id)).toBe(5);
+  });
+
+  /* Final review B on 8816a40: the seconds a note holds go back when a
+   * retry finds the transcriber down, whichever attempt took them. */
+  it('gives the seconds back when a retry finds the transcriber down', async () => {
+    const business = await seedMerchant('+2348031234593');
+    arrangeAudio();
+    stubStt.answerWith({ text: 'how much did we sell this month', seconds: 5, confidence: 0.9 });
+    stubTransport.replyWith({
+      intent: 'Query',
+      topic: 'sales_summary',
+      customer: null,
+      period: 'month',
+      periodText: null,
+      format: 'chat',
+    });
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS voice_down_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION voice_down_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF NEW.usage_type = 'SERVICE_MESSAGE' AND nextval('voice_down_once') = 1 THEN
+            RAISE EXCEPTION 'voice_down: first reply fails';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER voice_down_fail_once BEFORE INSERT ON usage_events
+          FOR EACH ROW EXECUTE FUNCTION voice_down_fail_once()`);
+
+      await post(voicePayload('2348031234593', 'wamid.V.RETRY_DOWN'));
+      await drain();
+      expect(await voiceUsed(business.id)).toBe(5);
+      stubStt.failWith();
+      await ownerDb.execute(
+        sql`UPDATE jobs SET run_at = now() - interval '1 minute'
+             WHERE business_id = ${business.id}::uuid AND state <> 'done'`,
+      );
+      await drain();
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS voice_down_fail_once ON usage_events`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS voice_down_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS voice_down_once`);
+      await close();
+    }
+    /* The note was never answered: its seconds are back. */
+    expect(await voiceUsed(business.id)).toBe(0);
+  });
+
   /**
    * Item 7 of the AI hardening plan: a HOSTED transcription is provider
    * money, and provider money appears in usage_events — priced per minute,
@@ -4626,6 +4736,102 @@ describe('a voice note', () => {
 
     expect(stubSender.lastText).toContain('read photos of receipts');
     expect(stubStt.calls).toHaveLength(0);
+  });
+
+  /** What a view-only member's message must leave untouched (G-57). */
+  async function g57Footprint(businessId: string) {
+    const [row] = await withBusiness(db, businessId, (tx) =>
+      tx.execute<Record<string, string>>(sql`
+        SELECT
+          (SELECT COALESCE(sum(used), 0) FROM usage_counters
+            WHERE business_id = ${businessId}::uuid AND unit = 'AI_ACTIONS') AS ai_actions,
+          (SELECT COALESCE(sum(used), 0) FROM usage_counters
+            WHERE business_id = ${businessId}::uuid AND unit = 'DOCUMENTS_UNDERSTOOD') AS documents,
+          (SELECT count(*) FROM command_drafts WHERE business_id = ${businessId}::uuid) AS drafts,
+          (SELECT count(*) FROM invoices WHERE business_id = ${businessId}::uuid) AS invoices,
+          (SELECT count(*) FROM payments WHERE business_id = ${businessId}::uuid) AS payments,
+          (SELECT count(*) FROM ledger_transactions
+            WHERE business_id = ${businessId}::uuid) AS postings`),
+    );
+    return Object.fromEntries(Object.entries(row!).map(([k, v]) => [k, Number(v)]));
+  }
+
+  const NOTHING_TOUCHED = {
+    ai_actions: 0,
+    documents: 0,
+    drafts: 0,
+    invoices: 0,
+    payments: 0,
+    postings: 0,
+  };
+
+  async function accountantOn(businessId: string) {
+    const accountant = await identity.upsertUserByPhone(db, '+2348039990001');
+    await identity.addMembership(db, businessId, accountant.id, 'accountant');
+  }
+
+  /* G-57, OWN-25: a voice note cannot be judged before it is heard, so it is
+   * transcribed under the voice policy as before (VOICE_MINUTES, the
+   * transcriber). What it then asks decides the rest: a record is refused
+   * before any unit of AI_ACTIONS or any model call. */
+  it('transcribes a view-only member`s spoken sale, then refuses it before the model (G-57)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await accountantOn(business.id);
+    arrangeAudio();
+    stubStt.answerWith({ text: 'Record a sale of 50k cash', seconds: 4, confidence: 0.95 });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348039990001', 'wamid.V-G57-W'));
+    await drain();
+
+    expect(stubSender.lastText).toBe(replies.viewOnlyRole().text);
+    expect(stubStt.calls).toHaveLength(1);
+    expect(await voiceUsed(business.id)).toBeGreaterThan(0);
+    expect(stubTransport.requests).toHaveLength(0);
+    expect(await g57Footprint(business.id)).toEqual(NOTHING_TOUCHED);
+  });
+
+  it('asks a view-only member for a question when the transcript could be either (G-57)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await accountantOn(business.id);
+    arrangeAudio();
+    stubStt.answerWith({ text: 'Ada 20k', seconds: 2, confidence: 0.95 });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348039990001', 'wamid.V-G57-U'));
+    await drain();
+
+    expect(stubSender.lastText).toBe(replies.viewOnlyAskAQuestion().text);
+    expect(stubStt.calls).toHaveLength(1);
+    expect(stubTransport.requests).toHaveLength(0);
+    expect(await g57Footprint(business.id)).toEqual(NOTHING_TOUCHED);
+  });
+
+  it('answers a view-only member`s spoken question through the model as before (G-57)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await accountantOn(business.id);
+    arrangeAudio();
+    stubStt.answerWith({
+      text: 'How much did we sell this month?',
+      seconds: 3,
+      confidence: 0.95,
+    });
+    stubTransport.replyWith({
+      intent: 'Query',
+      topic: 'sales_summary',
+      customer: null,
+      period: 'month',
+      periodText: null,
+      format: 'chat',
+    });
+
+    await post(voicePayload('2348039990001', 'wamid.V-G57-R'));
+    await drain();
+
+    expect(stubSender.lastText).not.toBe(replies.viewOnlyRole().text);
+    expect(stubSender.lastText).not.toBe(replies.viewOnlyAskAQuestion().text);
+    expect(stubTransport.requests.length).toBeGreaterThan(0);
+    expect((await g57Footprint(business.id)).ai_actions).toBe(1);
   });
 });
 
@@ -5516,6 +5722,200 @@ describe('a receipt photo', () => {
         billed: 1,
       });
     });
+  });
+
+  /* Final review B on a1e54e3: a failed WhatsApp send is swallowed and
+   * retries nothing, so the A2 probe above never re-ran the job. A real
+   * retry (the reply's usage row failing once) must still bill the page
+   * once. */
+  /* Final review B on 8816a40: a photo refused at the allowance and then
+   * retried is metered again, not read for free. */
+  it('does not read a photo for free on the retry of an allowance refusal', async () => {
+    const business = await seedMerchant('+2348031234592');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'DIESEL 12,000', confidence: 0.95 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS photo_full_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION photo_full_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF NEW.usage_type = 'SERVICE_MESSAGE' AND nextval('photo_full_once') = 1 THEN
+            RAISE EXCEPTION 'photo_full: first reply fails';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER photo_full_fail_once BEFORE INSERT ON usage_events
+          FOR EACH ROW EXECUTE FUNCTION photo_full_fail_once()`);
+
+      await ownerDb.execute(sql`
+        INSERT INTO usage_counters (business_id, period, unit, used)
+        VALUES (${business.id}::uuid, ${usagePeriod(new Date())}, 'DOCUMENTS_UNDERSTOOD', 100000)`);
+      await post(photoPayload('2348031234592', 'wamid.P.FULL_RETRY'));
+      await drain();
+      await ownerDb.execute(
+        sql`UPDATE jobs SET run_at = now() - interval '1 minute'
+             WHERE business_id = ${business.id}::uuid AND state <> 'done'`,
+      );
+      await drain();
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS photo_full_fail_once ON usage_events`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS photo_full_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS photo_full_once`);
+      await close();
+    }
+    expect(stubOcr.calls).toHaveLength(0);
+    expect(await readsUsed(business.id)).toBe(100000);
+  });
+
+  it('bills a photo once across a real job retry (G-57 final review B)', async () => {
+    const business = await seedMerchant('+2348031234595');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'DIESEL 12,000', confidence: 0.95 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS photo_retry_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION photo_retry_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF NEW.usage_type = 'SERVICE_MESSAGE' AND nextval('photo_retry_once') = 1 THEN
+            RAISE EXCEPTION 'photo retry: first reply fails';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER photo_retry_fail_once BEFORE INSERT ON usage_events
+          FOR EACH ROW EXECUTE FUNCTION photo_retry_fail_once()`);
+
+      await post(photoPayload('2348031234595', 'wamid.P.LATE_FAILURE'));
+      await drain();
+      await ownerDb.execute(
+        sql`UPDATE jobs SET run_at = now() - interval '1 minute'
+             WHERE business_id = ${business.id}::uuid AND state <> 'done'`,
+      );
+      await drain();
+
+      const [job] = await ownerDb.execute<{ attempts: number; state: string }>(sql`
+        SELECT attempts, state FROM jobs
+         WHERE business_id = ${business.id}::uuid AND kind = 'inbound.message'
+         ORDER BY created_at DESC LIMIT 1`);
+      expect({ attempts: Number(job?.attempts), state: job?.state }).toEqual({
+        attempts: 2,
+        state: 'done',
+      });
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS photo_retry_fail_once ON usage_events`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS photo_retry_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS photo_retry_once`);
+      await close();
+    }
+    expect(await readsUsed(business.id)).toBe(1);
+  });
+
+  /** What a view-only member's message must leave untouched (G-57). */
+  async function g57Footprint(businessId: string) {
+    const [row] = await withBusiness(db, businessId, (tx) =>
+      tx.execute<Record<string, string>>(sql`
+        SELECT
+          (SELECT COALESCE(sum(used), 0) FROM usage_counters
+            WHERE business_id = ${businessId}::uuid AND unit = 'AI_ACTIONS') AS ai_actions,
+          (SELECT COALESCE(sum(used), 0) FROM usage_counters
+            WHERE business_id = ${businessId}::uuid AND unit = 'DOCUMENTS_UNDERSTOOD') AS documents,
+          (SELECT count(*) FROM command_drafts WHERE business_id = ${businessId}::uuid) AS drafts,
+          (SELECT count(*) FROM invoices WHERE business_id = ${businessId}::uuid) AS invoices,
+          (SELECT count(*) FROM payments WHERE business_id = ${businessId}::uuid) AS payments,
+          (SELECT count(*) FROM ledger_transactions
+            WHERE business_id = ${businessId}::uuid) AS postings`),
+    );
+    return Object.fromEntries(Object.entries(row!).map(([k, v]) => [k, Number(v)]));
+  }
+
+  const NOTHING_TOUCHED = {
+    ai_actions: 0,
+    documents: 0,
+    drafts: 0,
+    invoices: 0,
+    payments: 0,
+    postings: 0,
+  };
+
+  /* G-57, OWN-25: a photograph only ever becomes a write today, so a member
+   * who may not write is refused before the image is fetched, read,
+   * classified or metered. No media is arranged: had the handler fetched,
+   * the reply would be the could-not-read one. */
+  it('refuses a view-only member`s photo before fetching, reading or metering it (G-57)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const accountant = await identity.upsertUserByPhone(db, '+2348039990001');
+    await identity.addMembership(db, business.id, accountant.id, 'accountant');
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    await post(photoPayload('2348039990001', 'wamid.P-G57'));
+    await drain();
+
+    expect(stubSender.lastText).toBe(replies.viewOnlyPhoto().text);
+    expect(stubOcr.calls).toHaveLength(0);
+    expect(stubTransport.requests).toHaveLength(0);
+    expect(await g57Footprint(business.id)).toEqual(NOTHING_TOUCHED);
+  });
+
+  /* Final review B on a1e54e3: a member demoted while their photo was being
+   * read is refused after the reading, and a refused request consumes
+   * nothing (spec §4.3 rule 4), so the page's unit goes back. */
+  it('gives the page back when the member is demoted while it is read (G-57)', async () => {
+    const business = await seedMerchant('+2348031234594');
+    const delegate = await identity.upsertUserByPhone(db, '+2348039990003');
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    const read = stubOcr.extract.bind(stubOcr);
+    stubOcr.extract = async (bytes, mimeType) => {
+      await ownerDb.execute(sql`
+        UPDATE memberships SET role = 'accountant'
+         WHERE business_id = ${business.id}::uuid AND user_id = ${delegate.id}::uuid`);
+      return read(bytes, mimeType);
+    };
+    try {
+      await post(photoPayload('2348039990003', 'wamid.P-G57-DEMOTED'));
+      await drain();
+    } finally {
+      stubOcr.extract = read;
+      await close();
+    }
+
+    expect(stubOcr.calls).toHaveLength(1);
+    expect(stubSender.lastText).toBe(replies.viewOnlyRole().text);
+    /* The page's unit is back and no message unit was taken; nothing was
+     * drafted. (The document-type check already ran on the read page.) */
+    expect(await g57Footprint(business.id)).toEqual(NOTHING_TOUCHED);
+  });
+
+  /* The same photograph from a delegate, who may record trade, is read and
+   * previewed exactly as an owner's is: the refusal is the role's, not the
+   * photo's. */
+  it('reads the same photo from a delegate as before (G-57 control)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const delegate = await identity.upsertUserByPhone(db, '+2348039990002');
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    await post(photoPayload('2348039990002', 'wamid.P-G57-D'));
+    await drain();
+
+    expect(stubOcr.calls).toHaveLength(1);
+    expect(stubSender.lastText).toContain('Reply *yes*');
+    expect(await readsUsed(business.id)).toBe(1);
   });
 });
 

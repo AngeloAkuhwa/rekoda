@@ -48,6 +48,7 @@ import {
   chatDraftAccess,
   deterministicAccess,
   needsChatStanding,
+  requestKind,
   resumedReadAccess,
   type ChatAccess,
   type ChatStanding,
@@ -58,6 +59,7 @@ import {
   type PeriodTopic,
   type PurchaseRecord,
   type Reply,
+  type RequestKind,
   type Route,
   type UsageUnit,
 } from '@rekoda/core';
@@ -130,6 +132,7 @@ const merchantThread = (businessId: string) =>
   ({ kind: 'MERCHANT', businessId, channel: 'meta' }) as const;
 
 const paymentLog = new Logger('InboundMessageJob');
+const authorisationLog = new Logger('InboundMessageJob');
 
 export interface InboundMessageDeps {
   gateway: PrivacyGateway;
@@ -264,7 +267,16 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     let spoken: { transcript: Transcript; messageId: string } | null = null;
     let read: { text: string; messageId: string } | null = null;
     if (isVoiceNote(inbound)) {
-      spoken = await transcribeVoiceNote(deps, tx, businessId, inbound, log);
+      spoken = await transcribeVoiceNote(
+        deps,
+        tx,
+        businessId,
+        inbound,
+        log,
+        retrying,
+        event.receivedAt,
+        eventId,
+      );
       if (!spoken) {
         /* Already answered inside, and already marked new-or-not. Nothing to
          * interpret and nothing to charge for. Still the newest thing this
@@ -274,7 +286,16 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         return;
       }
     } else if (isReceiptPhoto(inbound)) {
-      read = await readReceiptPhoto(deps, tx, businessId, inbound, log);
+      read = await readReceiptPhoto(
+        deps,
+        tx,
+        businessId,
+        inbound,
+        log,
+        retrying,
+        event.receivedAt,
+        eventId,
+      );
       if (!read) {
         await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
         await events.markProcessed(tx, eventId, null, businessId);
@@ -442,6 +463,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             message.id,
             retrying,
             event.receivedAt,
+            eventId,
             tokenised!.link,
             inbound.from,
             liveTokens!,
@@ -752,6 +774,11 @@ async function readReceiptPhoto(
   businessId: string,
   inbound: { externalId: string; from: string; imageId: string | null; caption: string | null },
   log: Logger,
+  retrying: boolean,
+  /** When the photo arrived: its unit belongs to that month on every attempt. */
+  receivedAt: Date,
+  /** The stored event, where the page's unit is recorded. */
+  eventId: string,
 ): Promise<{ text: string; messageId: string } | null> {
   const recorded = await conversationsRepo.recordInbound(
     tx,
@@ -787,6 +814,21 @@ async function readReceiptPhoto(
       businessId,
       to: inbound.from,
       reply: replies.chatNotInPlan(),
+    });
+    return null;
+  }
+
+  /* AUTHORISATION BEFORE ANY PROVIDER IS TOUCHED (G-57, OWN-25). Today a
+   * photographed document only ever becomes a sale, an expense, a purchase or
+   * a payment, all of them changes to the books, so a member who may not
+   * change them is refused before the image is downloaded, read, classified
+   * or metered. Pinned to what photos do now: a photo feature that only reads
+   * would need its own path, not this refusal. */
+  if (!(await mayTransact(tx, businessId, inbound.from))) {
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.viewOnlyPhoto(),
     });
     return null;
   }
@@ -847,11 +889,28 @@ async function readReceiptPhoto(
     return null;
   }
 
-  const period = usagePeriod(new Date());
+  const period = usagePeriod(receivedAt);
   const allowance = await meterAllowance(deps.config, tx, businessId, plan, 'DOCUMENTS_UNDERSTOOD');
-  const granted = await withBusiness(deps.db, businessId, (own) =>
-    usageRepo.consumeUnit(own, businessId, period, 'DOCUMENTS_UNDERSTOOD', allowance),
-  );
+  /* Skipped on a retry, as AI_ACTIONS is (see `retrying`): attempt 1's unit
+   * committed in its own transaction and survived the job's rollback, and
+   * the guard above did not (G-57 final review B). */
+  /* The unit is recorded on the message in the same transaction it is
+   * taken in. A retry is granted only when the message holds it: attempt 1
+   * took it and survived the job's rollback; one that was refused, or took
+   * nothing, is metered now, as any message is (G-57 final review B). */
+  const granted =
+    (retrying && (await holdsUnit(deps, businessId, eventId, 'DOCUMENTS_UNDERSTOOD'))) ||
+    (await withBusiness(deps.db, businessId, async (own) => {
+      const ok = await usageRepo.consumeUnit(
+        own,
+        businessId,
+        period,
+        'DOCUMENTS_UNDERSTOOD',
+        allowance,
+      );
+      if (ok) await events.noteReservedUnit(own, businessId, eventId, 'DOCUMENTS_UNDERSTOOD');
+      return ok;
+    }));
   if (!granted) {
     // The plan refused after the day allowed: no provider was reached, so
     // the daily slot goes back too.
@@ -905,9 +964,9 @@ async function readReceiptPhoto(
       // The provider was never reached: nothing spent, the daily slot back.
       await quotaRepo.releaseDocExtraction(deps.db, businessId);
     }
-    await withBusiness(deps.db, businessId, (own) =>
-      usageRepo.refundUnit(own, businessId, period, 'DOCUMENTS_UNDERSTOOD'),
-    );
+    /* The page this message holds goes back, whichever attempt took it,
+     * exactly once. */
+    await giveBackUnit(deps, businessId, eventId, period, 'DOCUMENTS_UNDERSTOOD');
     await deps.replySender.send(tx, {
       businessId,
       to: inbound.from,
@@ -953,6 +1012,11 @@ async function transcribeVoiceNote(
   businessId: string,
   inbound: { externalId: string; from: string; audioId: string | null },
   log: Logger,
+  retrying: boolean,
+  /** When the note arrived: its seconds belong to that month on every attempt. */
+  receivedAt: Date,
+  /** The stored event, where the note's seconds are recorded. */
+  eventId: string,
 ): Promise<{ transcript: Transcript; messageId: string } | null> {
   const recorded = await conversationsRepo.recordInbound(
     tx,
@@ -1074,11 +1138,27 @@ async function transcribeVoiceNote(
    * transcriber is called. Its own short transaction, like the message unit,
    * because the counter must not be held across a network call.
    */
-  const period = usagePeriod(new Date());
+  const period = usagePeriod(receivedAt);
   const allowance = await meterAllowance(deps.config, tx, businessId, plan, 'VOICE_MINUTES');
-  const granted = await withBusiness(deps.db, businessId, (own) =>
-    usageRepo.consumeUnit(own, businessId, period, 'VOICE_MINUTES', allowance, seconds),
-  );
+  /* Skipped on a retry, as AI_ACTIONS is (see `retrying`): attempt 1's
+   * seconds committed in their own transaction and survived the job's
+   * rollback (G-57 final review B). */
+  /* As for a photo: recorded where taken, and a retry is granted only when
+   * the message holds the seconds (G-57 final review B). */
+  const granted =
+    (retrying && (await holdsUnit(deps, businessId, eventId, 'VOICE_MINUTES'))) ||
+    (await withBusiness(deps.db, businessId, async (own) => {
+      const ok = await usageRepo.consumeUnit(
+        own,
+        businessId,
+        period,
+        'VOICE_MINUTES',
+        allowance,
+        seconds,
+      );
+      if (ok) await events.noteReservedUnit(own, businessId, eventId, 'VOICE_MINUTES');
+      return ok;
+    }));
   if (!granted) {
     // The plan refused after the day allowed: no provider was reached, so
     // the daily seconds go back too.
@@ -1097,9 +1177,9 @@ async function transcribeVoiceNote(
   } catch (error) {
     /* An outage, not the merchant's fault, so THEIR seconds go back. The
      * reason is logged without the audio and without their words. */
-    await withBusiness(deps.db, businessId, (own) =>
-      usageRepo.refundUnit(own, businessId, period, 'VOICE_MINUTES', seconds),
-    );
+    /* The seconds this message holds go back, whichever attempt took them,
+     * exactly once. The same note always measures the same seconds. */
+    await giveBackUnit(deps, businessId, eventId, period, 'VOICE_MINUTES', seconds);
     /* The DAILY ceiling follows the money, not the merchant: released only
      * when the provider was never reached; kept when the call was billed
      * (an answered-but-unusable response) or may have been (a timeout). */
@@ -1981,7 +2061,12 @@ async function refundRecordedReservations(
   eventId: string,
   period: string,
 ): Promise<void> {
-  const units = await events.takeReservedUnits(tx, businessId, eventId);
+  /* Only what a confirmation reserves: a voice note's seconds or a
+   * message unit recorded on the same event are not a confirmation's. */
+  const units = await events.takeReservedUnitsOf(tx, businessId, eventId, [
+    'DOCUMENT_GENERATION',
+    'CATALOGUE_ORDERS',
+  ]);
   for (const unit of units) {
     await usageRepo.refundUnit(tx, businessId, period, unit as UsageUnit);
   }
@@ -4441,6 +4526,8 @@ async function interpretedReply(
   retrying: boolean,
   /** When this message reached Rekoda; see CommandContext.receivedAt. */
   receivedAt: Date,
+  /** The stored event this message came in on, where its unit is recorded. */
+  eventId: string,
   /** Two records this message may have made of one person. Usually null. */
   link: IdentityLinkProposal | null,
   /** The sender's wa id, for the role check on write commands. */
@@ -4483,8 +4570,51 @@ async function interpretedReply(
     return replies.chatNotInPlan();
   }
 
+  /**
+   * AUTHORISATION BEFORE METER, and before the model is paid for (G-57,
+   * OWN-25; spec §4.3, rules 2 to 4).
+   *
+   * A member who may not change the books is refused here when the message
+   * plainly asks to change them, and is asked for a question when it could be
+   * either: in both cases no unit is taken and no model is called. Only a
+   * plain question about the books goes on. Owners and delegates never pass
+   * through this; what they send reaches the model exactly as before.
+   *
+   * `requestKind` names the kind of request and nothing else; `mayTransact`
+   * is still the role rule, and the check after the model below still
+   * refuses a write this let through. A photographed document is refused
+   * before it is read (`readReceiptPhoto`), which is what saves its cost;
+   * refusing one here too only keeps the authorisation true if a document
+   * ever reaches this path another way, by which time it was paid for.
+   */
+  const transacts = await mayTransact(tx, businessId, from);
+  let asked: RequestKind | null = null;
+  if (!transacts) {
+    /* Not `viewOnlyPhoto`: by now the photo WAS read, and that reply says it
+     * was not. Reached only by a member demoted while their photo was read;
+     * a refused request consumes nothing (spec §4.3 rule 4), so the page's
+     * unit goes back (G-57 final review B). The reading itself was paid
+     * for and stays on Rekoda's books. */
+    if (fromDocument) {
+      await giveBackUnit(
+        deps,
+        businessId,
+        eventId,
+        usagePeriod(receivedAt),
+        'DOCUMENTS_UNDERSTOOD',
+      );
+      return replies.viewOnlyRole();
+    }
+    asked = requestKind(safeText);
+    if (asked === 'write') return replies.viewOnlyRole();
+    if (asked === 'unknown') return replies.viewOnlyAskAQuestion();
+  }
+
   const monthlyMessages = await meterAllowance(deps.config, tx, businessId, plan, 'AI_ACTIONS');
-  const period = usagePeriod(new Date());
+  /* The month this message ARRIVED in, not the month an attempt runs in:
+   * a retry that crosses midnight at a month's end must give back the unit
+   * it took in the old month, never take one from the new (G-57, Codex). */
+  const period = usagePeriod(receivedAt);
 
   /**
    * The consume runs in its OWN short transaction, not this job's.
@@ -4499,7 +4629,12 @@ async function interpretedReply(
   /* Skipped on a retry: attempt 1's consume committed in its own transaction
    * and survived this job's rollback, so taking another would charge the
    * merchant again for one message. */
-  const granted = retrying || (await consumeMessage(deps, businessId, period, monthlyMessages));
+  /* A retry is granted only when the message holds its unit: attempt 1
+   * took it. One refused at the allowance, or that took nothing, is metered
+   * now (G-57 final review B). */
+  const granted =
+    (retrying && (await holdsUnit(deps, businessId, eventId, 'AI_ACTIONS'))) ||
+    (await consumeMessage(deps, businessId, eventId, period, monthlyMessages));
   if (!granted) return replies.allowanceExhausted(monthlyMessages);
 
   const interpreted = await deps.interpreter.interpret(
@@ -4514,8 +4649,12 @@ async function interpretedReply(
    * back — a merchant must never watch their allowance shrink on Rekoda's
    * failures.
    */
-  if (interpreted.outcome !== 'command' && !retrying) {
-    await refundMessage(deps, businessId, period);
+  /* Run on a retry too (G-57 final review B): attempt 1's unit may still be
+   * held if its reply failed after the model answered, and this attempt
+   * delivered nothing. `refundMessage` gives back the recorded reservation
+   * exactly once, in the month it was taken. */
+  if (interpreted.outcome !== 'command') {
+    await refundMessage(tx, businessId, eventId, period);
   }
 
   /**
@@ -4541,19 +4680,35 @@ async function interpretedReply(
   }
 
   /**
-   * The role rule, applied where the intent is first known.
+   * The role rule, applied again where the intent is fully known.
    *
    * A question is a read and answers for every member; anything else changes
    * the books, and a view-only member does not get a draft to say yes to.
-   * Checked after the model because only the model knows which of the two
-   * this message was; the message unit it spent is the ordinary price of
-   * finding out.
+   * The check above turned away the messages its small grammar could tell
+   * were records, or could not tell at all (G-57); this one is the
+   * authority, and catches a question that the model reads as a record. That costs the call the
+   * early check exists to save (the unit is refunded below), so it is logged
+   * (the intent and nothing the merchant wrote) as evidence for widening the
+   * early grammar.
    */
   if (
     interpreted.command.intent !== 'Query' &&
     interpreted.command.intent !== 'Unclear' &&
+    /* Read again, not reused: the model call can take twenty seconds, and a
+     * member demoted meanwhile must not get a draft. */
     !(await mayTransact(tx, businessId, from))
   ) {
+    if (asked === 'read') {
+      authorisationLog.warn(
+        `view-only message read as a question before the model, as ${interpreted.command.intent} after it`,
+      );
+    }
+    /* A refused request consumes nothing (spec §4.3 rule 4): the call is
+     * spent, but the unit goes back, as for every outcome that did not
+     * deliver. Run on a retry too (Codex P2): the recorded reservation is
+     * given back exactly once, in the month it was taken, whichever attempt
+     * answers. */
+    await refundMessage(tx, businessId, eventId, period);
     return replies.viewOnlyRole();
   }
 
@@ -5042,22 +5197,70 @@ async function acknowledge(
 function consumeMessage(
   deps: InboundMessageDeps,
   businessId: string,
+  eventId: string,
   period: string,
   allowance: number,
 ): Promise<boolean> {
-  return withBusiness(deps.db, businessId, (tx) =>
-    usageRepo.consumeUnit(tx, businessId, period, 'AI_ACTIONS', allowance),
+  /* The unit is recorded on the message in the SAME committed transaction
+   * as the consume, so every later attempt knows exactly what this message
+   * holds, in which month (G-57: the reservation's identity). */
+  return withBusiness(deps.db, businessId, async (tx) => {
+    const ok = await usageRepo.consumeUnit(tx, businessId, period, 'AI_ACTIONS', allowance);
+    if (ok) await events.noteReservedUnit(tx, businessId, eventId, 'AI_ACTIONS');
+    return ok;
+  });
+}
+
+/** Does this message hold a unit of `unit`, taken by an earlier attempt? */
+function holdsUnit(
+  deps: InboundMessageDeps,
+  businessId: string,
+  eventId: string,
+  unit: UsageUnit,
+): Promise<boolean> {
+  return withBusiness(deps.db, businessId, (own) =>
+    events.holdsReservedUnit(own, businessId, eventId, unit),
   );
 }
 
-function refundMessage(
+/**
+ * Give back the `unit` this message holds, if it holds one: taken off the
+ * message and refunded in one short transaction, so exactly once, in the
+ * month it was taken, never for an attempt that took nothing.
+ */
+function giveBackUnit(
   deps: InboundMessageDeps,
   businessId: string,
+  eventId: string,
+  period: string,
+  unit: UsageUnit,
+  n = 1,
+): Promise<void> {
+  return withBusiness(deps.db, businessId, async (own) => {
+    if (await events.takeReservedUnit(own, businessId, eventId, unit)) {
+      await usageRepo.refundUnit(own, businessId, period, unit, n);
+    }
+  });
+}
+
+/**
+ * Give back the message unit this message holds, if it holds one.
+ *
+ * Taken and refunded in the JOB's transaction: the refund commits only with
+ * the attempt that answers, so an attempt that dies after refunding gives
+ * nothing back and leaves the reservation for the next. Exactly once, in
+ * the month it was taken, never below zero, never twice, and never for an
+ * attempt that took nothing (G-57; replaces the earlier retry under-count).
+ */
+async function refundMessage(
+  tx: TenantDb,
+  businessId: string,
+  eventId: string,
   period: string,
 ): Promise<void> {
-  return withBusiness(deps.db, businessId, (tx) =>
-    usageRepo.refundUnit(tx, businessId, period, 'AI_ACTIONS'),
-  );
+  if (await events.takeReservedUnit(tx, businessId, eventId, 'AI_ACTIONS')) {
+    await usageRepo.refundUnit(tx, businessId, period, 'AI_ACTIONS');
+  }
 }
 
 function describeIntent(intent: DeterministicIntent): string {
