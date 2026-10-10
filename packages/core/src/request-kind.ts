@@ -273,6 +273,7 @@ const BOOK_TOPICS = new Set([
   'unmatched',
   'report',
   'reports',
+  'records',
   'statement',
   'statements',
   'summary',
@@ -389,8 +390,8 @@ const VAULT_TOKEN = /\b(?:CUSTOMER|PHONE|EMAIL|ACCOUNT)_[A-Z0-9]+\b(?:['’]s)?/
 export function requestKind(raw: string): RequestKind {
   const text = raw
     .replace(VAULT_TOKEN, ' customer ')
-    /* Before "&" separates anything. */
-    .replace(/p\s*&\s*l\b/gi, 'pnl')
+    /* P&L and P/L, before "&" or "/" separates anything. */
+    .replace(/p\s*[&/]\s*l\b/gi, 'pnl')
     /* "vs." and "Mr." end no sentence. */
     .replace(/\b(mr|mrs|ms|dr|vs|etc|e\.g|i\.e)\./gi, '$1');
 
@@ -473,6 +474,16 @@ function saysSomethingOfItsOwn(part: string): boolean {
    * question. */
   const kind = clauseKind(part);
   if (kind === 'read' || kind === 'neutral') return false;
+  /* A name the vault has not met yet stays plain text: "…, Ada sent money",
+   * "which customer paid today, Ada" (Codex P2). A capitalised word the
+   * grammar does not know is taken as one. */
+  if (
+    (part.match(/[\p{L}\p{N}']+/gu) ?? []).some(
+      (w) => /^\p{Lu}/u.test(w) && !knownWord(w.toLowerCase().replace(/'s$/, '')),
+    )
+  ) {
+    return true;
+  }
   if (words.slice(1).some((w) => TRADE_VERBS.has(w))) return true;
   /* A subject of its own: "CUSTOMER_7K2 sent money", "yes she did",
    * "rice to CUSTOMER_7K2" (not "by customer"). */
@@ -484,6 +495,68 @@ function saysSomethingOfItsOwn(part: string): boolean {
   if (TRADE_VERBS.has(words[0]!) && words[1] !== undefined && !booksWord(words[1])) return true;
   return words.every((w) => w === 'customer' || NEUTRAL_FUNCTION.has(w));
 }
+
+/** Any word this grammar has a meaning for. */
+function knownWord(w: string): boolean {
+  return (
+    booksWord(w) ||
+    NEUTRAL_WORDS.has(w) ||
+    NEUTRAL_FUNCTION.has(w) ||
+    OPENING_FILLERS.has(w) ||
+    QUESTION_OPENERS.has(w) ||
+    QUESTION_FRAMES.has(w) ||
+    TRADE_VERBS.has(w) ||
+    CHANGE_VERBS.has(w) ||
+    RECORD_INSTRUCTIONS.has(w) ||
+    SUBJECTS.has(w) ||
+    AUXILIARIES.has(w) ||
+    COMPARISONS.has(w) ||
+    READ_VERBS.has(w)
+  );
+}
+
+/** Comparisons that make a figure a filter: "more than 50k". */
+const COMPARISONS = new Set([
+  'more',
+  'less',
+  'over',
+  'under',
+  'above',
+  'below',
+  'than',
+  'least',
+  'most',
+  'exceeding',
+  'greater',
+  'bigger',
+  'higher',
+  'lower',
+]);
+
+/** Verbs that only ask to see: "can you show me…". */
+const READ_VERBS = new Set(['show', 'list', 'export', 'send', 'give', 'tell', 'download', 'print']);
+
+/** Change verbs in the past participle, which can describe records. */
+const CHANGE_PARTICIPLES = new Set([
+  'cleared',
+  'settled',
+  'cancelled',
+  'canceled',
+  'deleted',
+  'removed',
+  'reversed',
+  'voided',
+  'refunded',
+  'updated',
+  'changed',
+  'corrected',
+  'adjusted',
+  'reduced',
+  'increased',
+  'marked',
+  'reconciled',
+  'returned',
+]);
 
 /** A word a books question is made of. */
 function booksWord(w: string): boolean {
@@ -644,8 +717,22 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
   /* A change to what is already recorded ("clear Ada's debt", "reverse the
    * last sale") is a write when it is the instruction, and otherwise could
    * be one ("Ada settled her balance", "how do I delete a sale?"). */
+  /* "refunded payments this month", "how many invoices were cancelled?":
+   * a past participle describing records, not an instruction to change
+   * them (Codex P2). The bare instruction ("refund", "cancel") stays one. */
+  if (
+    words.length > 1 &&
+    CHANGE_PARTICIPLES.has(words[0]!) &&
+    !hasFigure(text) &&
+    onlyBooksWords(words.slice(1))
+  ) {
+    return 'read';
+  }
   if (CHANGE_VERBS.has(words[0]!)) return 'write';
-  if (words.some((w) => CHANGE_VERBS.has(w))) return 'unknown';
+  const asks = opensAQuestion(words);
+  if (words.some((w) => CHANGE_VERBS.has(w) && !(asks && CHANGE_PARTICIPLES.has(w)))) {
+    return 'unknown';
+  }
 
   const figure = hasFigure(text);
   const trade = words.some((w) => TRADE_VERBS.has(w));
@@ -669,7 +756,9 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
   if (opensAQuestion(words)) {
     /* "list sales and add rice sale" asks for a record halfway through. */
     if (words.some((w) => RECORD_INSTRUCTIONS.has(w))) return 'unknown';
-    if (figure && (trade || recordNoun || topic)) return 'unknown';
+    /* "who owes me more than 50k": a filter, not an amount (Codex P2). */
+    const filters = words.some((w) => COMPARISONS.has(w));
+    if (figure && !filters && (trade || recordNoun || topic)) return 'unknown';
     if (trade) return words.some((w) => QUESTION_FRAMES.has(w)) ? 'read' : 'unknown';
     return topic || recordNoun ? 'read' : 'unknown';
   }
@@ -709,14 +798,19 @@ function opensAQuestion(words: readonly string[]): boolean {
   /* In Nigerian English "do invoice for Ada" means make one. */
   if (first === 'do') return ['i', 'we', 'you', 'they', 'customer'].includes(words[1] ?? '');
   if (QUESTION_OPENERS.has(first)) return true;
-  /* "can I see…", "could we get…", never "can you…": that asks for work. */
-  if ((first === 'can' || first === 'could') && (words[1] === 'i' || words[1] === 'we')) {
-    return true;
+  /* "can I see…", "could we get…"; "can you…" only before a read verb
+   * ("can you show me sales?"), never before work ("can you reverse…"). */
+  if (first === 'can' || first === 'could') {
+    if (words[1] === 'i' || words[1] === 'we') return true;
+    if (words[1] === 'you' && READ_VERBS.has(words[2] ?? '')) return true;
   }
   /* "export sales to Excel", "download the sales report" (Codex P2). */
   if (first === 'export' || first === 'download' || first === 'print') return true;
-  /* "send me the P&L", "give me sales today". */
-  return (first === 'send' || first === 'give' || first === 'get') && words[1] === 'me';
+  /* "send me the P&L", "give me sales today", "send my records for March". */
+  return (
+    (first === 'send' || first === 'give' || first === 'get') &&
+    (words[1] === 'me' || words[1] === 'my' || words[1] === 'our')
+  );
 }
 
 function isYear(word: string): boolean {

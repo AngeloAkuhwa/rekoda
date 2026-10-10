@@ -395,6 +395,31 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Codex, on b183fbf. */
+  it.each([
+    ['who owes me more than 50k', 'read'],
+    ['which customers owe above 100k?', 'read'],
+    ['can you show me sales this month?', 'read'],
+    ['could you show me the ledger?', 'read'],
+    ['can you export my P&L as PDF?', 'read'],
+    ['send my records for March', 'read'],
+    ['show refunded payments this month', 'read'],
+    ['how many invoices were cancelled this month?', 'read'],
+    ['refunded payments this month', 'read'],
+    ['show me P/L for last month', 'read'],
+    ['export P/L as PDF', 'read'],
+    ['who owes me, Ada sent money', 'unknown'],
+    ['who owes me, Bola transferred', 'unknown'],
+    ['which customer paid today, Ada', 'unknown'],
+    ['can you reverse the last sale?', 'unknown'],
+    ['refund Ada 5k', 'write'],
+    ['cancel the last invoice', 'write'],
+    ['did Ada pay 20k?', 'unknown'],
+    ['sold rice for more than 50k', 'write'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');
