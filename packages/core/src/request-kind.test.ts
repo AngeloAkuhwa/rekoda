@@ -380,6 +380,21 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Round 7: a decimal or a range is a figure, not a date. */
+  it.each([
+    ['sales today 5.5', 'unknown'],
+    ['sales today 2-3', 'unknown'],
+    ['sales yesterday 15/20', 'unknown'],
+    ['record of sales 10.5', 'unknown'],
+    ['Ada paid 10.5', 'write'],
+    ['sold 2-3 bags', 'write'],
+    ['bought fuel 12.50', 'write'],
+    ['what were sales on 10/10/2026', 'read'],
+    ['sales on 10-10-2026', 'read'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');

@@ -351,7 +351,10 @@ const DATES = new RegExp(
   [
     '\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\b',
     '\\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\s+\\d{1,2}(?:st|nd|rd|th)?\\b',
-    '\\b\\d{1,2}[\\/.-]\\d{1,2}(?:[\\/.-]\\d{2,4})?\\b',
+    /* A real day and month, slashed ("10/10", "10/10/2026") or dashed with a
+     * year ("10-10-2026"): never "5.5", "2-3" or "15/20", which are figures. */
+    '\\b(?:0?[1-9]|[12]\\d|3[01])\\/(?:0?[1-9]|1[0-2])(?:\\/\\d{2,4})?\\b',
+    '\\b(?:0?[1-9]|[12]\\d|3[01])-(?:0?[1-9]|1[0-2])-\\d{2,4}\\b',
     '\\b\\d{1,2}(?:st|nd|rd|th)\\b',
     '\\b(?:last|past|next)\\s+\\d{1,3}\\s+(?:days?|weeks?|months?|years?)\\b',
   ].join('|'),
