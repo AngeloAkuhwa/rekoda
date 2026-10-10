@@ -597,7 +597,7 @@ function causative(words: readonly string[], i: number): boolean {
     if (words[j] !== 'get' && words[j] !== 'have') continue;
     const between = words.slice(j + 1, i);
     /* "have any invoices been cancelled": a perfect passive, a question. */
-    if (between.includes('been')) continue;
+    if (words[i - 1] === 'been') continue;
     const next = between[0]!;
     if (!NOT_AN_OBJECT.has(next)) return true;
     /* A quantifier is the object unless the participle follows it straight
