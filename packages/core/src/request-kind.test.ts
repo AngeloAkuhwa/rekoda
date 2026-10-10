@@ -843,6 +843,29 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Round 26: "the number", "another WhatsApp" are someone else's unless
+   * "my"; a contact token is a destination only after a preposition or a
+   * channel; "line" is no channel. */
+  it.each([
+    ['send me the invoice to the number I gave you', 'unknown'],
+    ['send me the invoice to the number above', 'unknown'],
+    ['send me the invoice to this number', 'unknown'],
+    ['send me the invoice on another number', 'unknown'],
+    ['send me the invoice on another whatsapp', 'unknown'],
+    ['send me the invoice by new email', 'unknown'],
+    ['send me my P&L on email EMAIL_1', 'unknown'],
+    ['send me sales on my other phone', 'read'],
+    ['send me sales on my new email', 'read'],
+    ['PHONE_1 balance', 'read'],
+    ['list invoices for PHONE_1', 'read'],
+    ['send me PHONE_1 statement', 'read'],
+    ['show me EMAIL_1 balance', 'read'],
+    ['show my product line sales', 'read'],
+    ['show sales by product line', 'read'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');

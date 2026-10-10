@@ -418,9 +418,12 @@ const VAULT_TOKEN = /\b(?:CUSTOMER|PHONE|EMAIL|ACCOUNT)_[A-Z0-9]+\b(?:['’]s)?/
 
 export function requestKind(raw: string): RequestKind {
   const text = raw
-    /* "on PHONE_1", "to EMAIL_1": someone's contact (round 25). */
-    .replace(/\b(PHONE|EMAIL)_[A-Z0-9]+\b(?:['’]s)?/g, (_, kind: string) =>
-      kind === 'PHONE' ? ' customer phone ' : ' customer email ',
+    /* "on PHONE_1", "to EMAIL_1": someone's contact as the destination
+     * (round 25); "PHONE_1 balance" is still the customer (round 26). */
+    .replace(
+      /\b(to|on|via|through|at|cc|email|mail|phone|number|whatsapp)\s+(PHONE|EMAIL)_[A-Z0-9]+\b(?:['’]s)?/gi,
+      (_, prep: string, kind: string) =>
+        ` ${prep} customer ${kind.toUpperCase() === 'PHONE' ? 'phone' : 'email'} `,
     )
     .replace(VAULT_TOKEN, ' customer ')
     /* "INV-2026-000004": a document, not an amount (Codex P2). */
@@ -1155,12 +1158,19 @@ function forTheMerchant(words: readonly string[], verb: number): boolean {
   for (let j = verb + 1; j < words.length; j += 1) {
     if (!CHANNELS.has(words[j]!) || words[j] === 'date') continue;
     /* "number of sales" counts; "the WhatsApp of Ada" belongs to Ada. */
-    if (words[j + 1] === 'of' && words[j] !== 'number' && words[j] !== 'line') return false;
+    if (words[j] === 'number' && words[j + 1] === 'of') continue;
+    if (words[j + 1] === 'of') return false;
     const owner = words[j - 1] ?? '';
+    const mine = words[j - 2] === 'my' || words[j - 2] === 'our';
+    /* "the number I gave you", "another WhatsApp": someone else's unless
+     * it is "my number", "my other phone" (round 26). */
+    if (words[j] === 'number' && owner !== 'my' && owner !== 'our') return false;
+    if (SOME_OTHER.has(owner) && !mine) return false;
     const name =
       !knownWord(owner) &&
       !RANGE_WORDS.has(owner) &&
       !OWN_CHANNEL_WORDS.has(owner) &&
+      !(SOME_OTHER.has(owner) && mine) &&
       !/^\d/.test(owner);
     if (PEOPLE.has(owner) || owner === 'his' || owner === 'their' || name) {
       return false;
@@ -1247,12 +1257,11 @@ const OWN_CHANNEL_WORDS = new Set([
   'personal',
   'business',
   'shop',
-  'new',
-  'other',
-  'another',
-  'second',
   'your',
 ]);
+
+/** A channel that is one of several: the merchant's only after my/our. */
+const SOME_OTHER = new Set(['new', 'other', 'another', 'second', 'this', 'that']);
 
 /** Formats and channels a report may go to: "to my email", "to Excel". */
 const CHANNELS = new Set([
@@ -1268,7 +1277,6 @@ const CHANNELS = new Set([
   'whatsapp',
   'phone',
   'number',
-  'line',
   'date',
 ]);
 
