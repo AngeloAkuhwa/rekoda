@@ -591,6 +591,29 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Codex, on 69f3d6c: a report must be what is made, not where a record
+   * goes; a balance sheet is a report; a bounded range is a filter. */
+  it.each([
+    ['add sale to ledger', 'write'],
+    ['record sale in ledger', 'write'],
+    ['can you add sale to ledger?', 'write'],
+    ['add a sale to the report', 'write'],
+    ['record sales summary', 'write'],
+    ['add sales report for today', 'write'],
+    ['create a sales report', 'read'],
+    ['issue a statement', 'read'],
+    ['create a balance sheet', 'read'],
+    ['issue a balance sheet', 'read'],
+    ['can you create the balance sheet for March?', 'read'],
+    ['show payments between 20k and 50k', 'read'],
+    ['show sales from 20k to 50k', 'read'],
+    ['who owes me between 10k and 50k?', 'read'],
+    ['sold rice from 5k to 10k', 'write'],
+    ['did CUSTOMER_7K2 pay 20k between 1k and 5k', 'unknown'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');

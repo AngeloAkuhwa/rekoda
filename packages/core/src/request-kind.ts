@@ -553,6 +553,8 @@ const COMPARISON_FILTER = new RegExp(
     String.raw`\b(?:(?:more|less|greater|bigger|higher|lower|fewer)\s+than|over|above|under|below|exceeding|at\s+(?:least|most))\s+(?:(?:[₦#]|n(?=\d))\s*)?\d[\d,.]*(?:\s*(?:k|m|thousand|million|naira)\b){0,2}`,
     /* "more than fifty thousand", "over five hundred naira" */
     String.raw`\b(?:(?:more|less|greater|bigger|higher|lower|fewer)\s+than|over|above|under|below|exceeding|at\s+(?:least|most))\s+(?:(?:a|an|and|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million)\s+){0,6}(?:hundred|thousand|million|billion)(?:\s+naira)?\b`,
+    /* "between 20k and 50k", "from 20k to 50k" (Codex P2) */
+    String.raw`\b(?:between|from)\s+(?:(?:[₦#]|n(?=\d))\s*)?\d[\d,.]*(?:\s*(?:k|m|thousand|million|naira)\b)?\s*(?:and|to|-|–)\s*(?:(?:[₦#]|n(?=\d))\s*)?\d[\d,.]*(?:\s*(?:k|m|thousand|million|naira)\b){0,2}`,
     /* "50k and above", "20,000 or less" */
     String.raw`(?:[₦#]\s*)?\d[\d,.]*\s*(?:k|m)?\s+(?:and|or)\s+(?:above|more|over|below|less|under)\b`,
   ].join('|'),
@@ -676,7 +678,14 @@ const PASSIVE_FILLERS = new Set([
 ]);
 
 /** What a report of the books is called. */
+/** Instructions that make a document rather than record a fact. */
+const MAKING_VERBS = new Set(['create', 'issue', 'raise']);
+
+/** Words that send something INTO a report: "add sale to ledger". */
+const DESTINATIONS = new Set(['to', 'in', 'into', 'onto']);
+
 const REPORT_NOUNS = new Set([
+  'sheet',
   'report',
   'reports',
   'statement',
@@ -887,14 +896,29 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
    * ends in a question mark: "can you add a 5k sale?" asks for a record. */
   /* "create a sales report", "issue a statement": making a report of the
    * books is a read, not a record (Codex P2). "issue an invoice" is not. */
-  const reports = (from: number) =>
-    words.slice(from).some((w) => REPORT_NOUNS.has(w)) &&
-    !hasFigure(text) &&
-    onlyBooksWords(words.slice(from));
-  if (RECORD_INSTRUCTIONS.has(words[0]!)) return reports(1) ? 'read' : 'write';
+  /* Only a verb that MAKES something (create, issue, raise), with the
+   * report as its object: "add sale to ledger", "record sales summary" and
+   * "record sale in ledger" are records (Codex P2). */
+  const reports = (verb: number) => {
+    if (!MAKING_VERBS.has(words[verb] ?? '')) return false;
+    const object = words.slice(verb + 1);
+    const at = object.findIndex((w) => REPORT_NOUNS.has(w));
+    return (
+      at >= 0 &&
+      !object.slice(0, at).some(
+        (w) =>
+          DESTINATIONS.has(w) ||
+          /* "create sale report" names one record; "sales report" the list. */
+          (RECORD_NOUNS.has(w) && !LISTED_RECORDS.has(w)),
+      ) &&
+      !hasFigure(text) &&
+      onlyBooksWords(object)
+    );
+  };
+  if (RECORD_INSTRUCTIONS.has(words[0]!)) return reports(0) ? 'read' : 'write';
   for (const opener of ASKING_OPENERS) {
     if (startsWith(words, opener) && RECORD_INSTRUCTIONS.has(words[opener.length] ?? '')) {
-      return reports(opener.length + 1) ? 'read' : 'write';
+      return reports(opener.length) ? 'read' : 'write';
     }
   }
 
