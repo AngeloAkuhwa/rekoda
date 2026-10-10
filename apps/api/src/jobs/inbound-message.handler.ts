@@ -4560,7 +4560,11 @@ async function interpretedReply(
    * back — a merchant must never watch their allowance shrink on Rekoda's
    * failures.
    */
-  if (interpreted.outcome !== 'command' && !retrying) {
+  /* Run on a retry too (G-57 final review B): attempt 1's unit may still be
+   * taken if its reply failed after the model answered, and this attempt
+   * delivered nothing. A unit already given back is given back again at
+   * most once more, the under-count this job chooses (see `retrying`). */
+  if (interpreted.outcome !== 'command') {
     await refundMessage(deps, businessId, period);
   }
 

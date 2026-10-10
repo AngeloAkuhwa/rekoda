@@ -36,6 +36,7 @@ import { buildRunner, type RunnerDeps } from './jobs.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
+import { ProviderUnreachable } from '../ai/transport.js';
 import { StubSender } from '../channels/sender.stub.js';
 import { StubTextExtraction } from '../ai/ocr.stub.js';
 import { StubSpeechToText } from '../ai/stt.stub.js';
@@ -861,6 +862,28 @@ describe('the chat surface enforces roles', () => {
     for (const key of ['ai_actions', 'drafts', 'invoices', 'payments', 'postings', 'stock_moves']) {
       expect(after[key], key).toBe(before[key]);
     }
+  });
+
+  /* Final review B on 5f98eec: the non-command refund was skipped on a
+   * retry. A question whose first reply failed, and whose retry then finds
+   * the provider down, delivered nothing, so it must cost nothing. */
+  it('refunds a question whose retry finds the provider down (G-57)', async () => {
+    const businessId = await seedBusiness('Role Gate Retry Down Ltd', '+2348140010045');
+    await memberOf(businessId, '+2348140010046', 'accountant');
+    stubTransport.script(
+      {
+        toolInput: { command: A_SALES_QUESTION },
+        usage: { inputTokens: 1_800, outputTokens: 120 },
+        stopReason: 'tool_use',
+      },
+      new ProviderUnreachable('stub provider down'),
+    );
+
+    await withFirstReplyFailing(businessId, async () => {
+      await saysOverChat(businessId, '+2348140010046', 'how much did we sell this month?');
+    });
+    expect(stubSender.sent[stubSender.sent.length - 1]?.text).toBe(replies.busyRightNow().text);
+    expect((await footprint(businessId)).ai_actions).toBe(0);
   });
 
   it('answers a QUESTION from that same accountant, because reads are theirs', async () => {
