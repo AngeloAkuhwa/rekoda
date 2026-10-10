@@ -13,6 +13,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
+  billingRepo,
   createDb,
   events as eventsRepo,
   identity,
@@ -21,9 +22,11 @@ import {
   ordersRepo,
   schema,
   sql,
+  usageRepo,
   withBusiness,
   type Db,
 } from '@rekoda/db';
+import { allowanceFor, replies, usagePeriod } from '@rekoda/core';
 import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '@rekoda/db/testing';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -486,7 +489,7 @@ describe('the chat surface enforces roles', () => {
   });
 
   /** What a refused message must leave untouched (G-57). */
-  async function footprint(businessId: string) {
+  async function footprint(businessId: string): Promise<Record<string, number>> {
     const [row] = await withBusiness(appDb, businessId, (tx) =>
       tx.execute<Record<string, string>>(sql`
         SELECT
@@ -552,6 +555,251 @@ describe('the chat surface enforces roles', () => {
       postings: 0,
       stock_moves: 0,
     });
+  });
+
+  const ZERO = {
+    modelCalls: 0,
+    ai_actions: 0,
+    usage_events: 0,
+    cost_events: 0,
+    drafts: 0,
+    invoices: 0,
+    payments: 0,
+    postings: 0,
+    stock_moves: 0,
+  };
+  const A_SALE = {
+    intent: 'RecordSale',
+    customer: { kind: 'none' },
+    items: [{ name: 'rice', quantity: 1, unitPrice: 20_000 }],
+    statedTotal: 20_000,
+    reportedPayment: 20_000,
+    paymentMethod: 'cash',
+    discount: null,
+    deliveryFee: null,
+    dueDescription: null,
+  };
+  const A_SALES_QUESTION = {
+    intent: 'Query',
+    topic: 'sales_summary',
+    customer: null,
+    period: 'month',
+    periodText: null,
+    format: 'chat',
+  };
+  const seen = async (businessId: string) => ({
+    modelCalls: stubTransport.requests.length,
+    ...(await footprint(businessId)),
+  });
+
+  /* D, E, F (C is above): each kind of record, plainly asked for. */
+  it.each([
+    ['a purchase', 'bought 10 cartons for 180k'],
+    ['an expense', 'I spent 20k on fuel'],
+    ['a payment', 'Ada paid me 20k'],
+    ['a sale', 'sold rice 5k'],
+  ])('refuses %s from an accountant before the meter or the model (G-57)', async (_, text) => {
+    const businessId = await seedBusiness('Role Gate Kinds Ltd', '+2348140010021');
+    await memberOf(businessId, '+2348140010022', 'accountant');
+    stubTransport.replyWith(A_SALE);
+
+    expect(await saysOverChat(businessId, '+2348140010022', text)).toBe(
+      replies.viewOnlyRole().text,
+    );
+    expect(await seen(businessId)).toEqual(ZERO);
+  });
+
+  /* O (OWN-25): could be either, so it is never sent to the model, never
+   * metered, and never called a record: the member is asked for a question. */
+  it('asks an accountant for a question when the message could be either (G-57)', async () => {
+    const businessId = await seedBusiness('Role Gate Unknown Ltd', '+2348140010023');
+    await memberOf(businessId, '+2348140010024', 'accountant');
+    stubTransport.replyWith(A_SALE);
+
+    for (const text of ['Ada 20k', 'rice and beans for Chidi']) {
+      expect(await saysOverChat(businessId, '+2348140010024', text)).toBe(
+        replies.viewOnlyAskAQuestion().text,
+      );
+    }
+    expect(await seen(businessId)).toEqual(ZERO);
+  });
+
+  /* G: a question is still theirs, through the model, metered as any read. */
+  it('answers an accountant free-form question through the model, metered once (G-57)', async () => {
+    const businessId = await seedBusiness('Role Gate Question Ltd', '+2348140010025');
+    await memberOf(businessId, '+2348140010026', 'accountant');
+    stubTransport.replyWith(A_SALES_QUESTION);
+
+    const answer = await saysOverChat(
+      businessId,
+      '+2348140010026',
+      'how much did we sell this month?',
+    );
+    expect(answer).not.toBe(replies.viewOnlyRole().text);
+    expect(answer).not.toBe(replies.viewOnlyAskAQuestion().text);
+    expect(stubTransport.requests).toHaveLength(1);
+    expect((await footprint(businessId)).ai_actions).toBe(1);
+  });
+
+  /* Defence in depth: the early check is not the boundary. A question the
+   * model reads as a sale is still refused after the model, and nothing is
+   * drafted or booked; only the unit and the call it cost are spent. */
+  it('still refuses after the model when a question turns out to be a record (G-57)', async () => {
+    const businessId = await seedBusiness('Role Gate Depth Ltd', '+2348140010027');
+    await memberOf(businessId, '+2348140010028', 'accountant');
+    stubTransport.replyWith(A_SALE);
+
+    expect(
+      await saysOverChat(businessId, '+2348140010028', 'how much did we sell this month?'),
+    ).toBe(replies.viewOnlyRole().text);
+    expect(await seen(businessId)).toMatchObject({
+      modelCalls: 1,
+      ai_actions: 1,
+      drafts: 0,
+      invoices: 0,
+      payments: 0,
+      postings: 0,
+      stock_moves: 0,
+    });
+  });
+
+  /* A, B, and the control OWN-25 insists on: a member who may record is never
+   * put through the early check, so "Ada 20k" reaches the model as before. */
+  it.each([
+    ['the owner', null],
+    ['a delegate', 'delegate'],
+  ] as const)('sends free-form text from %s to the model as before (G-57)', async (_, role) => {
+    const businessId = await seedBusiness('Role Gate Writers Ltd', '+2348140010031');
+    const phone = role ? '+2348140010032' : '+2348140010031';
+    if (role) await memberOf(businessId, phone, role);
+    stubTransport.replyWith(A_SALE);
+
+    const preview = await saysOverChat(businessId, phone, 'sold rice 20k');
+    expect(preview).toContain('Reply *yes*');
+    expect(stubTransport.requests).toHaveLength(1);
+    expect((await footprint(businessId)).ai_actions).toBe(1);
+
+    stubTransport.replyWith(A_SALE);
+    await saysOverChat(businessId, phone, 'Ada 20k');
+    expect(stubTransport.requests).toHaveLength(1);
+    expect((await footprint(businessId)).ai_actions).toBe(2);
+  });
+
+  /* I, J: the plan is refused first, exactly as before, and costs nothing. */
+  it('refuses an Integrate-only or lapsed accountant on the plan first, costing nothing (G-57)', async () => {
+    const integrate = await seedBusiness('Role Gate Integrate Ltd', '+2348140010033');
+    await memberOf(integrate, '+2348140010034', 'accountant');
+    await billingRepo.setPlan(appDb, {
+      businessId: integrate,
+      plan: 'integrate',
+      expiresAt: null,
+      actor: 'operator:test-plan',
+    });
+    stubTransport.replyWith(A_SALE);
+    expect(await saysOverChat(integrate, '+2348140010034', 'sold rice 5k')).toBe(
+      replies.chatNotInPlan().text,
+    );
+    expect(await seen(integrate)).toEqual(ZERO);
+
+    const lapsed = await seedBusiness('Role Gate Lapsed Ltd', '+2348140010035');
+    await memberOf(lapsed, '+2348140010036', 'accountant');
+    await billingRepo.setPlan(appDb, {
+      businessId: lapsed,
+      plan: 'trial',
+      expiresAt: new Date(Date.now() - 1_000),
+      actor: 'operator:test-clock',
+    });
+    stubTransport.replyWith(A_SALES_QUESTION);
+    const answer = await saysOverChat(lapsed, '+2348140010036', 'how much did we sell?');
+    expect(answer).not.toBe(replies.viewOnlyRole().text);
+    expect(await seen(lapsed)).toEqual(ZERO);
+  });
+
+  /* K: an accountant's question with the allowance gone is refused at the
+   * meter, before the model, and takes nothing more. */
+  it('refuses an accountant question at an exhausted allowance before the model (G-57)', async () => {
+    const businessId = await seedBusiness('Role Gate Exhausted Ltd', '+2348140010037');
+    await memberOf(businessId, '+2348140010038', 'accountant');
+    const allowance = allowanceFor('trial', 'AI_ACTIONS');
+    await withBusiness(appDb, businessId, (tx) =>
+      usageRepo.consumeUnit(
+        tx,
+        businessId,
+        usagePeriod(new Date()),
+        'AI_ACTIONS',
+        allowance,
+        allowance,
+      ),
+    );
+    stubTransport.replyWith(A_SALES_QUESTION);
+
+    expect(
+      await saysOverChat(businessId, '+2348140010038', 'how much did we sell this month?'),
+    ).toBe(replies.allowanceExhausted(allowance).text);
+    expect(stubTransport.requests).toHaveLength(0);
+    expect((await footprint(businessId)).ai_actions).toBe(allowance);
+  });
+
+  /**
+   * L, M: a job that fails after deciding is retried, and the retry must not
+   * charge again. The reply's service-message row fails once, so attempt 1
+   * rolls back after its decision; the retry runs with `retrying`.
+   */
+  async function withFirstReplyFailing(businessId: string, run: () => Promise<void>) {
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g57_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g57_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF NEW.usage_type = 'SERVICE_MESSAGE' AND nextval('g57_once') = 1 THEN
+            RAISE EXCEPTION 'g57: first reply fails';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g57_fail_once BEFORE INSERT ON usage_events
+          FOR EACH ROW EXECUTE FUNCTION g57_fail_once()`);
+      await run();
+      /* The failed attempt was rescheduled; make it due and run it. */
+      await ownerDb.execute(sql`
+        UPDATE jobs SET run_at = now() WHERE business_id = ${businessId}::uuid AND state <> 'done'`);
+      await buildRunner(workerDb, appDb, deps).runOnce();
+      const [job] = await ownerDb.execute<{ state: string; attempts: number }>(sql`
+        SELECT state, attempts FROM jobs
+         WHERE business_id = ${businessId}::uuid AND kind = 'inbound.message'
+         ORDER BY created_at DESC LIMIT 1`);
+      expect(job).toMatchObject({ state: 'done', attempts: 2 });
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g57_fail_once ON usage_events`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g57_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g57_once`);
+      await close();
+    }
+  }
+
+  it('charges nothing on the retry of an early refusal (G-57)', async () => {
+    const businessId = await seedBusiness('Role Gate Retry Ltd', '+2348140010039');
+    await memberOf(businessId, '+2348140010040', 'accountant');
+    stubTransport.replyWith(A_SALE);
+
+    await withFirstReplyFailing(businessId, async () => {
+      await saysOverChat(businessId, '+2348140010040', 'record a sale of 50k cash');
+    });
+    expect(stubSender.sent[stubSender.sent.length - 1]?.text).toBe(replies.viewOnlyRole().text);
+    expect(await seen(businessId)).toEqual(ZERO);
+  });
+
+  it('does not charge twice for a question whose reply failed once (G-57)', async () => {
+    const businessId = await seedBusiness('Role Gate Retry Read Ltd', '+2348140010041');
+    await memberOf(businessId, '+2348140010042', 'accountant');
+    stubTransport.replyWith(A_SALES_QUESTION);
+
+    await withFirstReplyFailing(businessId, async () => {
+      await saysOverChat(businessId, '+2348140010042', 'how much did we sell this month?');
+    });
+    expect((await footprint(businessId)).ai_actions).toBe(1);
   });
 
   it('answers a QUESTION from that same accountant, because reads are theirs', async () => {

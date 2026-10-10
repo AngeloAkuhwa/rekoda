@@ -48,6 +48,7 @@ import {
   chatDraftAccess,
   deterministicAccess,
   needsChatStanding,
+  requestKind,
   resumedReadAccess,
   type ChatAccess,
   type ChatStanding,
@@ -58,6 +59,7 @@ import {
   type PeriodTopic,
   type PurchaseRecord,
   type Reply,
+  type RequestKind,
   type Route,
   type UsageUnit,
 } from '@rekoda/core';
@@ -130,6 +132,7 @@ const merchantThread = (businessId: string) =>
   ({ kind: 'MERCHANT', businessId, channel: 'meta' }) as const;
 
 const paymentLog = new Logger('InboundMessageJob');
+const authorisationLog = new Logger('InboundMessageJob');
 
 export interface InboundMessageDeps {
   gateway: PrivacyGateway;
@@ -787,6 +790,21 @@ async function readReceiptPhoto(
       businessId,
       to: inbound.from,
       reply: replies.chatNotInPlan(),
+    });
+    return null;
+  }
+
+  /* AUTHORISATION BEFORE ANY PROVIDER IS TOUCHED (G-57, OWN-25). Today a
+   * photographed document only ever becomes a sale, an expense, a purchase or
+   * a payment, all of them changes to the books, so a member who may not
+   * change them is refused before the image is downloaded, read, classified
+   * or metered. Pinned to what photos do now: a photo feature that only reads
+   * would need its own path, not this refusal. */
+  if (!(await mayTransact(tx, businessId, inbound.from))) {
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.viewOnlyPhoto(),
     });
     return null;
   }
@@ -4483,6 +4501,31 @@ async function interpretedReply(
     return replies.chatNotInPlan();
   }
 
+  /**
+   * AUTHORISATION BEFORE METER, and before the model is paid for (G-57,
+   * OWN-25; spec §4.3, rules 2 to 4).
+   *
+   * A member who may not change the books is refused here when the message
+   * plainly asks to change them, and is asked for a question when it could be
+   * either: in both cases no unit is taken and no model is called. Only a
+   * plain question about the books goes on. Owners and delegates never pass
+   * through this; what they send reaches the model exactly as before.
+   *
+   * `requestKind` names the kind of request and nothing else; `mayTransact`
+   * is still the role rule, and the check after the model below still
+   * refuses a write this let through. A photographed document is refused
+   * before it is read (`readReceiptPhoto`); refusing one here too keeps that
+   * true if a document ever reaches this path another way.
+   */
+  const transacts = await mayTransact(tx, businessId, from);
+  let asked: RequestKind | null = null;
+  if (!transacts) {
+    if (fromDocument) return replies.viewOnlyPhoto();
+    asked = requestKind(safeText);
+    if (asked === 'write') return replies.viewOnlyRole();
+    if (asked === 'unknown') return replies.viewOnlyAskAQuestion();
+  }
+
   const monthlyMessages = await meterAllowance(deps.config, tx, businessId, plan, 'AI_ACTIONS');
   const period = usagePeriod(new Date());
 
@@ -4541,19 +4584,26 @@ async function interpretedReply(
   }
 
   /**
-   * The role rule, applied where the intent is first known.
+   * The role rule, applied again where the intent is fully known.
    *
    * A question is a read and answers for every member; anything else changes
    * the books, and a view-only member does not get a draft to say yes to.
-   * Checked after the model because only the model knows which of the two
-   * this message was; the message unit it spent is the ordinary price of
-   * finding out.
+   * The check above already turned away every message that plainly asked to
+   * record something (G-57); this one is the authority, and catches a
+   * question that the model reads as a record. That costs the unit and the
+   * call the early check exists to save, so it is logged (the intent and
+   * nothing the merchant wrote) as evidence for widening the early grammar.
    */
   if (
     interpreted.command.intent !== 'Query' &&
     interpreted.command.intent !== 'Unclear' &&
-    !(await mayTransact(tx, businessId, from))
+    !transacts
   ) {
+    if (asked === 'read') {
+      authorisationLog.warn(
+        `view-only message read as a question before the model, as ${interpreted.command.intent} after it`,
+      );
+    }
     return replies.viewOnlyRole();
   }
 

@@ -4627,6 +4627,102 @@ describe('a voice note', () => {
     expect(stubSender.lastText).toContain('read photos of receipts');
     expect(stubStt.calls).toHaveLength(0);
   });
+
+  /** What a view-only member's message must leave untouched (G-57). */
+  async function g57Footprint(businessId: string) {
+    const [row] = await withBusiness(db, businessId, (tx) =>
+      tx.execute<Record<string, string>>(sql`
+        SELECT
+          (SELECT COALESCE(sum(used), 0) FROM usage_counters
+            WHERE business_id = ${businessId}::uuid AND unit = 'AI_ACTIONS') AS ai_actions,
+          (SELECT COALESCE(sum(used), 0) FROM usage_counters
+            WHERE business_id = ${businessId}::uuid AND unit = 'DOCUMENTS_UNDERSTOOD') AS documents,
+          (SELECT count(*) FROM command_drafts WHERE business_id = ${businessId}::uuid) AS drafts,
+          (SELECT count(*) FROM invoices WHERE business_id = ${businessId}::uuid) AS invoices,
+          (SELECT count(*) FROM payments WHERE business_id = ${businessId}::uuid) AS payments,
+          (SELECT count(*) FROM ledger_transactions
+            WHERE business_id = ${businessId}::uuid) AS postings`),
+    );
+    return Object.fromEntries(Object.entries(row!).map(([k, v]) => [k, Number(v)]));
+  }
+
+  const NOTHING_TOUCHED = {
+    ai_actions: 0,
+    documents: 0,
+    drafts: 0,
+    invoices: 0,
+    payments: 0,
+    postings: 0,
+  };
+
+  async function accountantOn(businessId: string) {
+    const accountant = await identity.upsertUserByPhone(db, '+2348039990001');
+    await identity.addMembership(db, businessId, accountant.id, 'accountant');
+  }
+
+  /* G-57, OWN-25: a voice note cannot be judged before it is heard, so it is
+   * transcribed under the voice policy as before (VOICE_MINUTES, the
+   * transcriber). What it then asks decides the rest: a record is refused
+   * before any unit of AI_ACTIONS or any model call. */
+  it('transcribes a view-only member`s spoken sale, then refuses it before the model (G-57)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await accountantOn(business.id);
+    arrangeAudio();
+    stubStt.answerWith({ text: 'Record a sale of 50k cash', seconds: 4, confidence: 0.95 });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348039990001', 'wamid.V-G57-W'));
+    await drain();
+
+    expect(stubSender.lastText).toBe(replies.viewOnlyRole().text);
+    expect(stubStt.calls).toHaveLength(1);
+    expect(await voiceUsed(business.id)).toBeGreaterThan(0);
+    expect(stubTransport.requests).toHaveLength(0);
+    expect(await g57Footprint(business.id)).toEqual(NOTHING_TOUCHED);
+  });
+
+  it('asks a view-only member for a question when the transcript could be either (G-57)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await accountantOn(business.id);
+    arrangeAudio();
+    stubStt.answerWith({ text: 'Ada 20k', seconds: 2, confidence: 0.95 });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348039990001', 'wamid.V-G57-U'));
+    await drain();
+
+    expect(stubSender.lastText).toBe(replies.viewOnlyAskAQuestion().text);
+    expect(stubStt.calls).toHaveLength(1);
+    expect(stubTransport.requests).toHaveLength(0);
+    expect(await g57Footprint(business.id)).toEqual(NOTHING_TOUCHED);
+  });
+
+  it('answers a view-only member`s spoken question through the model as before (G-57)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await accountantOn(business.id);
+    arrangeAudio();
+    stubStt.answerWith({
+      text: 'How much did we sell this month?',
+      seconds: 3,
+      confidence: 0.95,
+    });
+    stubTransport.replyWith({
+      intent: 'Query',
+      topic: 'sales_summary',
+      customer: null,
+      period: 'month',
+      periodText: null,
+      format: 'chat',
+    });
+
+    await post(voicePayload('2348039990001', 'wamid.V-G57-R'));
+    await drain();
+
+    expect(stubSender.lastText).not.toBe(replies.viewOnlyRole().text);
+    expect(stubSender.lastText).not.toBe(replies.viewOnlyAskAQuestion().text);
+    expect(stubTransport.requests.length).toBeGreaterThan(0);
+    expect((await g57Footprint(business.id)).ai_actions).toBe(1);
+  });
 });
 
 /**
@@ -5516,6 +5612,72 @@ describe('a receipt photo', () => {
         billed: 1,
       });
     });
+  });
+
+  /** What a view-only member's message must leave untouched (G-57). */
+  async function g57Footprint(businessId: string) {
+    const [row] = await withBusiness(db, businessId, (tx) =>
+      tx.execute<Record<string, string>>(sql`
+        SELECT
+          (SELECT COALESCE(sum(used), 0) FROM usage_counters
+            WHERE business_id = ${businessId}::uuid AND unit = 'AI_ACTIONS') AS ai_actions,
+          (SELECT COALESCE(sum(used), 0) FROM usage_counters
+            WHERE business_id = ${businessId}::uuid AND unit = 'DOCUMENTS_UNDERSTOOD') AS documents,
+          (SELECT count(*) FROM command_drafts WHERE business_id = ${businessId}::uuid) AS drafts,
+          (SELECT count(*) FROM invoices WHERE business_id = ${businessId}::uuid) AS invoices,
+          (SELECT count(*) FROM payments WHERE business_id = ${businessId}::uuid) AS payments,
+          (SELECT count(*) FROM ledger_transactions
+            WHERE business_id = ${businessId}::uuid) AS postings`),
+    );
+    return Object.fromEntries(Object.entries(row!).map(([k, v]) => [k, Number(v)]));
+  }
+
+  const NOTHING_TOUCHED = {
+    ai_actions: 0,
+    documents: 0,
+    drafts: 0,
+    invoices: 0,
+    payments: 0,
+    postings: 0,
+  };
+
+  /* G-57, OWN-25: a photograph only ever becomes a write today, so a member
+   * who may not write is refused before the image is fetched, read,
+   * classified or metered. No media is arranged: had the handler fetched,
+   * the reply would be the could-not-read one. */
+  it('refuses a view-only member`s photo before fetching, reading or metering it (G-57)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const accountant = await identity.upsertUserByPhone(db, '+2348039990001');
+    await identity.addMembership(db, business.id, accountant.id, 'accountant');
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    await post(photoPayload('2348039990001', 'wamid.P-G57'));
+    await drain();
+
+    expect(stubSender.lastText).toBe(replies.viewOnlyPhoto().text);
+    expect(stubOcr.calls).toHaveLength(0);
+    expect(stubTransport.requests).toHaveLength(0);
+    expect(await g57Footprint(business.id)).toEqual(NOTHING_TOUCHED);
+  });
+
+  /* The same photograph from a delegate, who may record trade, is read and
+   * previewed exactly as an owner's is: the refusal is the role's, not the
+   * photo's. */
+  it('reads the same photo from a delegate as before (G-57 control)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const delegate = await identity.upsertUserByPhone(db, '+2348039990002');
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    await post(photoPayload('2348039990002', 'wamid.P-G57-D'));
+    await drain();
+
+    expect(stubOcr.calls).toHaveLength(1);
+    expect(stubSender.lastText).toContain('Reply *yes*');
+    expect(await readsUsed(business.id)).toBe(1);
   });
 });
 
