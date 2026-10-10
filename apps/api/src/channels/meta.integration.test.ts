@@ -4386,6 +4386,67 @@ describe('a voice note', () => {
     expect(rows.find((r) => r.unit === 'VOICE_MINUTES')?.used).toBe(5);
   });
 
+  /* Final review B on a1e54e3: the photo path already reads and bills
+   * once across a job retry (A2); a voice note must too, or a reply that
+   * fails after the transcriber answered charges the seconds again. */
+  it('does not transcribe or meter twice when the job fails AFTER the transcriber answered', async () => {
+    const business = await seedMerchant('+2348031234596');
+    arrangeAudio();
+    stubStt.answerWith({ text: 'how much did we sell this month', seconds: 5, confidence: 0.9 });
+    stubTransport.replyWith({
+      intent: 'Query',
+      topic: 'sales_summary',
+      customer: null,
+      period: 'month',
+      periodText: null,
+      format: 'chat',
+    });
+
+    /* A failed WhatsApp send is swallowed and retries nothing, so the job is
+     * made to fail where a real retry comes from: the reply's own usage row,
+     * once, after the transcriber has answered. */
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS voice_retry_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION voice_retry_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF NEW.usage_type = 'SERVICE_MESSAGE' AND nextval('voice_retry_once') = 1 THEN
+            RAISE EXCEPTION 'voice retry: first reply fails';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER voice_retry_fail_once BEFORE INSERT ON usage_events
+          FOR EACH ROW EXECUTE FUNCTION voice_retry_fail_once()`);
+
+      await post(voicePayload('2348031234596', 'wamid.V.LATE_FAILURE'));
+      await drain();
+      await ownerDb.execute(
+        sql`UPDATE jobs SET run_at = now() - interval '1 minute'
+             WHERE business_id = ${business.id}::uuid AND state <> 'done'`,
+      );
+      await drain();
+
+      const [job] = await ownerDb.execute<{ attempts: number; state: string }>(sql`
+        SELECT attempts, state FROM jobs
+         WHERE business_id = ${business.id}::uuid AND kind = 'inbound.message'
+         ORDER BY created_at DESC LIMIT 1`);
+      expect({ attempts: Number(job?.attempts), state: job?.state }).toEqual({
+        attempts: 2,
+        state: 'done',
+      });
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS voice_retry_fail_once ON usage_events`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS voice_retry_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS voice_retry_once`);
+      await close();
+    }
+    /* The note's seconds are taken once, however many passes the job makes. */
+    expect(await voiceUsed(business.id)).toBe(5);
+  });
+
   /**
    * Item 7 of the AI hardening plan: a HOSTED transcription is provider
    * money, and provider money appears in usage_events — priced per minute,
@@ -5614,6 +5675,57 @@ describe('a receipt photo', () => {
     });
   });
 
+  /* Final review B on a1e54e3: a failed WhatsApp send is swallowed and
+   * retries nothing, so the A2 probe above never re-ran the job. A real
+   * retry (the reply's usage row failing once) must still bill the page
+   * once. */
+  it('bills a photo once across a real job retry (G-57 final review B)', async () => {
+    const business = await seedMerchant('+2348031234595');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'DIESEL 12,000', confidence: 0.95 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS photo_retry_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION photo_retry_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF NEW.usage_type = 'SERVICE_MESSAGE' AND nextval('photo_retry_once') = 1 THEN
+            RAISE EXCEPTION 'photo retry: first reply fails';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER photo_retry_fail_once BEFORE INSERT ON usage_events
+          FOR EACH ROW EXECUTE FUNCTION photo_retry_fail_once()`);
+
+      await post(photoPayload('2348031234595', 'wamid.P.LATE_FAILURE'));
+      await drain();
+      await ownerDb.execute(
+        sql`UPDATE jobs SET run_at = now() - interval '1 minute'
+             WHERE business_id = ${business.id}::uuid AND state <> 'done'`,
+      );
+      await drain();
+
+      const [job] = await ownerDb.execute<{ attempts: number; state: string }>(sql`
+        SELECT attempts, state FROM jobs
+         WHERE business_id = ${business.id}::uuid AND kind = 'inbound.message'
+         ORDER BY created_at DESC LIMIT 1`);
+      expect({ attempts: Number(job?.attempts), state: job?.state }).toEqual({
+        attempts: 2,
+        state: 'done',
+      });
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS photo_retry_fail_once ON usage_events`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS photo_retry_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS photo_retry_once`);
+      await close();
+    }
+    expect(await readsUsed(business.id)).toBe(1);
+  });
+
   /** What a view-only member's message must leave untouched (G-57). */
   async function g57Footprint(businessId: string) {
     const [row] = await withBusiness(db, businessId, (tx) =>
@@ -5658,6 +5770,40 @@ describe('a receipt photo', () => {
     expect(stubSender.lastText).toBe(replies.viewOnlyPhoto().text);
     expect(stubOcr.calls).toHaveLength(0);
     expect(stubTransport.requests).toHaveLength(0);
+    expect(await g57Footprint(business.id)).toEqual(NOTHING_TOUCHED);
+  });
+
+  /* Final review B on a1e54e3: a member demoted while their photo was being
+   * read is refused after the reading, and a refused request consumes
+   * nothing (spec §4.3 rule 4), so the page's unit goes back. */
+  it('gives the page back when the member is demoted while it is read (G-57)', async () => {
+    const business = await seedMerchant('+2348031234594');
+    const delegate = await identity.upsertUserByPhone(db, '+2348039990003');
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    const read = stubOcr.extract.bind(stubOcr);
+    stubOcr.extract = async (bytes, mimeType) => {
+      await ownerDb.execute(sql`
+        UPDATE memberships SET role = 'accountant'
+         WHERE business_id = ${business.id}::uuid AND user_id = ${delegate.id}::uuid`);
+      return read(bytes, mimeType);
+    };
+    try {
+      await post(photoPayload('2348039990003', 'wamid.P-G57-DEMOTED'));
+      await drain();
+    } finally {
+      stubOcr.extract = read;
+      await close();
+    }
+
+    expect(stubOcr.calls).toHaveLength(1);
+    expect(stubSender.lastText).toBe(replies.viewOnlyRole().text);
+    /* The page's unit is back and no message unit was taken; nothing was
+     * drafted. (The document-type check already ran on the read page.) */
     expect(await g57Footprint(business.id)).toEqual(NOTHING_TOUCHED);
   });
 

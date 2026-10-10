@@ -267,7 +267,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     let spoken: { transcript: Transcript; messageId: string } | null = null;
     let read: { text: string; messageId: string } | null = null;
     if (isVoiceNote(inbound)) {
-      spoken = await transcribeVoiceNote(deps, tx, businessId, inbound, log);
+      spoken = await transcribeVoiceNote(deps, tx, businessId, inbound, log, retrying);
       if (!spoken) {
         /* Already answered inside, and already marked new-or-not. Nothing to
          * interpret and nothing to charge for. Still the newest thing this
@@ -277,7 +277,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         return;
       }
     } else if (isReceiptPhoto(inbound)) {
-      read = await readReceiptPhoto(deps, tx, businessId, inbound, log);
+      read = await readReceiptPhoto(deps, tx, businessId, inbound, log, retrying);
       if (!read) {
         await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
         await events.markProcessed(tx, eventId, null, businessId);
@@ -755,6 +755,7 @@ async function readReceiptPhoto(
   businessId: string,
   inbound: { externalId: string; from: string; imageId: string | null; caption: string | null },
   log: Logger,
+  retrying: boolean,
 ): Promise<{ text: string; messageId: string } | null> {
   const recorded = await conversationsRepo.recordInbound(
     tx,
@@ -867,9 +868,14 @@ async function readReceiptPhoto(
 
   const period = usagePeriod(new Date());
   const allowance = await meterAllowance(deps.config, tx, businessId, plan, 'DOCUMENTS_UNDERSTOOD');
-  const granted = await withBusiness(deps.db, businessId, (own) =>
-    usageRepo.consumeUnit(own, businessId, period, 'DOCUMENTS_UNDERSTOOD', allowance),
-  );
+  /* Skipped on a retry, as AI_ACTIONS is (see `retrying`): attempt 1's unit
+   * committed in its own transaction and survived the job's rollback, and
+   * the guard above did not (G-57 final review B). */
+  const granted =
+    retrying ||
+    (await withBusiness(deps.db, businessId, (own) =>
+      usageRepo.consumeUnit(own, businessId, period, 'DOCUMENTS_UNDERSTOOD', allowance),
+    ));
   if (!granted) {
     // The plan refused after the day allowed: no provider was reached, so
     // the daily slot goes back too.
@@ -971,6 +977,7 @@ async function transcribeVoiceNote(
   businessId: string,
   inbound: { externalId: string; from: string; audioId: string | null },
   log: Logger,
+  retrying: boolean,
 ): Promise<{ transcript: Transcript; messageId: string } | null> {
   const recorded = await conversationsRepo.recordInbound(
     tx,
@@ -1094,9 +1101,14 @@ async function transcribeVoiceNote(
    */
   const period = usagePeriod(new Date());
   const allowance = await meterAllowance(deps.config, tx, businessId, plan, 'VOICE_MINUTES');
-  const granted = await withBusiness(deps.db, businessId, (own) =>
-    usageRepo.consumeUnit(own, businessId, period, 'VOICE_MINUTES', allowance, seconds),
-  );
+  /* Skipped on a retry, as AI_ACTIONS is (see `retrying`): attempt 1's
+   * seconds committed in their own transaction and survived the job's
+   * rollback (G-57 final review B). */
+  const granted =
+    retrying ||
+    (await withBusiness(deps.db, businessId, (own) =>
+      usageRepo.consumeUnit(own, businessId, period, 'VOICE_MINUTES', allowance, seconds),
+    ));
   if (!granted) {
     // The plan refused after the day allowed: no provider was reached, so
     // the daily seconds go back too.
@@ -4522,8 +4534,16 @@ async function interpretedReply(
   let asked: RequestKind | null = null;
   if (!transacts) {
     /* Not `viewOnlyPhoto`: by now the photo WAS read, and that reply says it
-     * was not. */
-    if (fromDocument) return replies.viewOnlyRole();
+     * was not. Reached only by a member demoted while their photo was read;
+     * a refused request consumes nothing (spec §4.3 rule 4), so the page's
+     * unit goes back (G-57 final review B). The reading itself was paid
+     * for and stays on Rekoda's books. */
+    if (fromDocument) {
+      await withBusiness(deps.db, businessId, (own) =>
+        usageRepo.refundUnit(own, businessId, usagePeriod(new Date()), 'DOCUMENTS_UNDERSTOOD'),
+      );
+      return replies.viewOnlyRole();
+    }
     asked = requestKind(safeText);
     if (asked === 'write') return replies.viewOnlyRole();
     if (asked === 'unknown') return replies.viewOnlyAskAQuestion();
@@ -4562,8 +4582,11 @@ async function interpretedReply(
    */
   /* Run on a retry too (G-57 final review B): attempt 1's unit may still be
    * taken if its reply failed after the model answered, and this attempt
-   * delivered nothing. A unit already given back is given back again at
-   * most once more, the under-count this job chooses (see `retrying`). */
+   * delivered nothing. A unit already given back can be given back again
+   * on each later attempt, so at most max_attempts - 1 (4) extra units,
+   * floored at zero: the under-count this job chooses (see `retrying`). It
+   * needs a failure on Rekoda's side after the decision, which no sender
+   * can cause, and every attempt still takes a daily model slot. */
   if (interpreted.outcome !== 'command') {
     await refundMessage(deps, businessId, period);
   }
@@ -4617,8 +4640,9 @@ async function interpretedReply(
     /* A refused request consumes nothing (spec §4.3 rule 4): the call is
      * spent, but the unit goes back, as for every outcome that did not
      * deliver. Run on a retry too (Codex P2): if attempt 1's refund failed,
-     * this is the only one; if it committed, refunding again under-counts by
-     * one, the side this job already chooses to err on (see `retrying`). */
+     * this is the only one; if it committed, refunding again under-counts,
+     * by at most max_attempts - 1 (4) units floored at zero, the side this
+     * job already chooses to err on (see `retrying`). */
     await refundMessage(deps, businessId, period);
     return replies.viewOnlyRole();
   }
