@@ -363,50 +363,139 @@ function startsWith(words: readonly string[], prefix: readonly string[]): boolea
 const VAULT_TOKEN = /\b(?:CUSTOMER|PHONE|EMAIL|ACCOUNT)_[A-Z0-9]+\b(?:['’]s)?/g;
 
 export function requestKind(raw: string): RequestKind {
-  /* One message can say two things: "How far? CUSTOMER_7K2 paid me".
-   * Each sentence is judged; one record makes it a record, and it reads
-   * only when every sentence reads. */
-  const sentences = raw
+  const text = raw
     .replace(VAULT_TOKEN, ' customer ')
-    .split(/(?<=[.!?])\s+(?=\S)/)
-    .filter((part) => part.trim().length > 0);
-  if (sentences.length === 0) return 'unknown';
-  /* A sentence that only greets ("How far?", "Good morning.") says
-   * nothing either way, and is left out. */
-  const kinds = sentences.map(sentenceKind).filter((kind) => kind !== 'greeting');
+    /* "vs." and "Mr." end no sentence. */
+    .replace(/\b(mr|mrs|ms|dr|vs|etc|e\.g|i\.e)\./gi, '$1');
+
+  /* The whole message first: "bought rice and beans 5k" is one record, even
+   * though "and" would split it below. */
+  if (clauseKind(text) === 'write') return 'write';
+
+  /*
+   * Then clause by clause. One WhatsApp message often says two things,
+   * joined by a new line, a comma, "and", a dash or an emoji: "how much did
+   * we sell today, Ada paid me". A message reads only when every clause
+   * reads; one record makes it a record; anything else is unknown. A clause
+   * that only greets or trails ("how are you", "thanks", "this month") says
+   * nothing either way and is left out, and one the grammar does not know
+   * makes the whole message unknown, so a greeting missing from the lists
+   * costs a rephrase prompt, never a model call.
+   */
+  const clauses = text
+    .split(/\n+|(?<=[.!?…;])\s+|\s+[-–—]\s+|(?<!\d),|,(?!\d)|\s+and\s+|\p{Extended_Pictographic}/u)
+    .filter((part) => part !== undefined && part.trim().length > 0);
+  const kinds = clauses.map(clauseKind).filter((kind) => kind !== 'neutral');
   if (kinds.length === 0) return 'unknown';
   if (kinds.includes('write')) return 'write';
   return kinds.every((kind) => kind === 'read') ? 'read' : 'unknown';
 }
 
-/** Words a greeting is made of, and nothing a books question needs. */
-const GREETING_WORDS = new Set(['how', 'far', 'good', 'morning', 'afternoon', 'evening']);
+/** Words a greeting, a courtesy or a trailing fragment is made of. */
+const NEUTRAL_WORDS = new Set([
+  'how',
+  'far',
+  'good',
+  'morning',
+  'afternoon',
+  'evening',
+  'are',
+  'you',
+  'dey',
+  'body',
+  'na',
+  'what',
+  'whats',
+  'up',
+  'wetin',
+  'happen',
+  'is',
+  'it',
+  'going',
+  'hope',
+  'well',
+  'thanks',
+  'thank',
+  'ok',
+  'okay',
+  'una',
+  'much',
+  'many',
+  'about',
+]);
 
-function sentenceKind(raw: string): RequestKind | 'greeting' {
+/** Greetings that open like a question ("how", "what", "wetin"). */
+const GREETING_PREFIXES: readonly (readonly string[])[] = [
+  ['wetin', 'dey', 'happen'],
+  ['how', 'are', 'you'],
+  ['how', 'you', 'dey'],
+  ['how', 'is', 'it', 'going'],
+  ['how', 'it', 'going'],
+  ['how', 'body'],
+  ['how', 'far'],
+  ['how', 'na'],
+  ['what', 'up'],
+  ['whats', 'up'],
+];
+
+/** A question that asks about trade asks with one of these. */
+const QUESTION_FRAMES = new Set([
+  'much',
+  'many',
+  'who',
+  'whom',
+  'whose',
+  'what',
+  'which',
+  'wetin',
+  'did',
+  'does',
+  'do',
+  'has',
+  'have',
+  'any',
+  'total',
+  'list',
+  'show',
+  'when',
+]);
+
+/** "has paid", "did sold": an auxiliary straight onto trade has no subject. */
+const AUXILIARIES = new Set(['has', 'have', 'is', 'was', 'were', 'did', 'does', 'do']);
+
+function clauseKind(raw: string): RequestKind | 'neutral' {
   const text = raw.toLowerCase().replace(/[‘’]/g, "'").replace(/\s+/g, ' ').trim();
-  if (text.length === 0) return 'unknown';
   const all = (
     text
       .replace(/p&l/g, 'pnl')
       .replace(/cash flow/g, 'cashflow')
       .match(/[\p{L}\p{N}']+/gu) ?? []
-  ).map((w) => w.replace(/'s$/, ''));
+  )
+    .map((w) => w.replace(/'s$/, ''))
+    .filter((w) => w.length > 0);
+  if (
+    all.every(
+      (w) =>
+        OPENING_FILLERS.has(w) || NEUTRAL_WORDS.has(w) || JOINING_WORDS.has(w) || PERIODS.has(w),
+    )
+  ) {
+    return 'neutral';
+  }
   let start = 0;
   for (;;) {
-    if (start < all.length - 1 && OPENING_FILLERS.has(all[start]!)) start += 1;
-    /* "how far" is the commonest Pidgin greeting, not a question. */ else if (
-      all[start] === 'how' &&
-      all[start + 1] === 'far' &&
-      start + 2 < all.length
-    )
-      start += 2;
-    else break;
-  }
-  if (all.length > 0 && all.every((w) => OPENING_FILLERS.has(w) || GREETING_WORDS.has(w))) {
-    return 'greeting';
+    if (start < all.length - 1 && OPENING_FILLERS.has(all[start]!)) {
+      start += 1;
+      continue;
+    }
+    /* "how far", "how are you", "wetin dey happen": greetings, not
+     * questions, even run straight into what follows. */
+    const greeting = GREETING_PREFIXES.find(
+      (prefix) => start + prefix.length < all.length && startsWith(all.slice(start), prefix),
+    );
+    if (!greeting) break;
+    start += greeting.length;
   }
   const words = all.slice(start);
-  if (words.length === 0) return 'unknown';
 
   /* An instruction to record, plain or softened, is a write even when it
    * ends in a question mark: "can you add a 5k sale?" asks for a record. */
@@ -430,17 +519,24 @@ function sentenceKind(raw: string): RequestKind | 'greeting' {
   const summary = words.some((w) => SUMMARY_WORDS.has(w));
   const period = words.some((w) => PERIODS.has(w) || isYear(w));
 
+  /* "has paid me" with no one between: the subject was dropped ("boss has
+   * paid me" once "boss" is read as politeness), so it is no question. */
+  if (AUXILIARIES.has(words[0]!) && TRADE_VERBS.has(words[1] ?? '')) return 'unknown';
+
   /* A question, by its opening words, about the books reads: "how much did
    * we sell?", "who paid me this month?", "can I see sales?". One that also
-   * carries a figure beside trade ("did Ada pay 20k?") may be a record asked
-   * as a question, and one about nothing on the books ("what is this?") is
-   * not a books question: both stay unknown. A question mark alone opens
-   * nothing: "sold rice to Ada?" is held to the statement rules below. */
+   * carries a figure ("did Ada pay 20k?") may be a record asked as a
+   * question; one about trade without a question frame ("how are you Ada
+   * don pay") is a greeting before a record; one about nothing on the books
+   * ("what is this?") is not a books question: all stay unknown. A question
+   * mark alone does not make a question: "sold rice to Ada?" is held to the
+   * statement rules below. */
   if (opensAQuestion(words)) {
     /* "list sales and add rice sale" asks for a record halfway through. */
     if (words.some((w) => RECORD_INSTRUCTIONS.has(w))) return 'unknown';
     if (figure && (trade || recordNoun || topic)) return 'unknown';
-    return trade || topic || recordNoun ? 'read' : 'unknown';
+    if (trade) return words.some((w) => QUESTION_FRAMES.has(w)) ? 'read' : 'unknown';
+    return topic || recordNoun ? 'read' : 'unknown';
   }
 
   /* Trade with a figure is a record: "sold rice 5k", "Ada paid me 20k".

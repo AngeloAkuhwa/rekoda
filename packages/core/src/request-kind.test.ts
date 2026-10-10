@@ -198,6 +198,61 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Reviewer A, round 3: greetings phrased as questions, and second clauses
+   * joined by a new line, a comma, "and", a dash or an emoji, must not carry
+   * a record through; a dropped subject is no question. */
+  it.each([
+    'how are you, CUSTOMER_7K2 paid me',
+    'how you dey, Ada paid me',
+    'how are you CUSTOMER_7K2 don pay',
+    'how body, Ada paid me',
+    'how na, Ada paid me',
+    "how's it going, CUSTOMER_7K2 has paid",
+    'how is it going, sold rice to Ada',
+    "what's up, CUSTOMER_7K2 paid me",
+    'whats up CUSTOMER_7K2 paid',
+    'wetin dey, Ada paid me',
+    'wetin dey happen CUSTOMER_7K2 don pay',
+    'how much did we sell today\nI sold rice to Ada',
+    'how much did we sell today\nCUSTOMER_7K2 paid me',
+    'who owes me\nAda paid me',
+    'how you dey\nAda paid me',
+    'how much did we sell today, I sold rice to Ada',
+    'what is my balance, Ada paid me',
+    'show my sales today, Ada bought rice',
+    'who owes me and CUSTOMER_7K2 paid me',
+    'how much did we sell today; sold rice to Ada',
+    'how much did we sell today… sold rice to Ada',
+    'how much did we sell today - sold rice to Ada',
+    'how much did we sell today 🙏 sold rice to Ada',
+    'boss has paid me',
+    'sir has paid me',
+    'ma has paid',
+    'did sold rice',
+    'have sold rice to CUSTOMER_7K2',
+    'has collected',
+  ])('never reads %j as a question', (text) => {
+    expect(requestKind(text)).not.toBe('read');
+  });
+
+  it.each([
+    ['how much did we sell today? thanks', 'read'],
+    ['how much did we sell today? thank you', 'read'],
+    ["what's my balance? thanks boss", 'read'],
+    ['how much did we sell today? 🙏', 'read'],
+    ['who owes me? how much?', 'read'],
+    ['how much did we sell today? and yesterday?', 'read'],
+    ['how much did we sell vs. last month?', 'read'],
+    ['what did Mr. CUSTOMER_7K2 pay?', 'read'],
+    ['how much did we sell, this month?', 'read'],
+    ['sales and expenses this month', 'read'],
+    ['bought rice and beans 5k', 'write'],
+    ['how much did we sell today\nsold rice 5k', 'write'],
+    ['customer paid ₦7,500 transfer', 'write'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');

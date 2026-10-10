@@ -648,20 +648,23 @@ describe('the chat surface enforces roles', () => {
   it('still refuses after the model when a question turns out to be a record (G-57)', async () => {
     const businessId = await seedBusiness('Role Gate Depth Ltd', '+2348140010027');
     await memberOf(businessId, '+2348140010028', 'accountant');
+    /* The owner's own message first, so the counter is not at zero and a
+     * second refund would show (refundUnit never goes below zero). */
+    stubTransport.replyWith(A_SALES_QUESTION);
+    await saysOverChat(businessId, '+2348140010027', 'how much did we sell this month?');
+    const before = await footprint(businessId);
+    expect(before.ai_actions).toBe(1);
     stubTransport.replyWith(A_SALE);
 
     expect(
       await saysOverChat(businessId, '+2348140010028', 'how much did we sell this month?'),
     ).toBe(replies.viewOnlyRole().text);
-    expect(await seen(businessId)).toMatchObject({
-      modelCalls: 1,
-      ai_actions: 0,
-      drafts: 0,
-      invoices: 0,
-      payments: 0,
-      postings: 0,
-      stock_moves: 0,
-    });
+    /* One call spent, the unit back, and nothing drafted or booked. */
+    expect(stubTransport.requests).toHaveLength(1);
+    const after = await footprint(businessId);
+    for (const key of ['ai_actions', 'drafts', 'invoices', 'payments', 'postings', 'stock_moves']) {
+      expect(after[key], key).toBe(before[key]);
+    }
   });
 
   /* A, B, and the control OWN-25 insists on: a member who may record is never

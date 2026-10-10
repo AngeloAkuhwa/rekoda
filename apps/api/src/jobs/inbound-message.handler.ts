@@ -4593,9 +4593,10 @@ async function interpretedReply(
    * the books, and a view-only member does not get a draft to say yes to.
    * The check above turned away the messages its small grammar could tell
    * were records, or could not tell at all (G-57); this one is the
-   * authority, and catches a question that the model reads as a record. That costs the unit and the
-   * call the early check exists to save, so it is logged (the intent and
-   * nothing the merchant wrote) as evidence for widening the early grammar.
+   * authority, and catches a question that the model reads as a record. That costs the call the
+   * early check exists to save (the unit is refunded below), so it is logged
+   * (the intent and nothing the merchant wrote) as evidence for widening the
+   * early grammar.
    */
   if (
     interpreted.command.intent !== 'Query' &&
