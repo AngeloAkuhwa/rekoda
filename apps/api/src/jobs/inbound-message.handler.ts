@@ -4521,7 +4521,9 @@ async function interpretedReply(
   const transacts = await mayTransact(tx, businessId, from);
   let asked: RequestKind | null = null;
   if (!transacts) {
-    if (fromDocument) return replies.viewOnlyPhoto();
+    /* Not `viewOnlyPhoto`: by now the photo WAS read, and that reply says it
+     * was not. */
+    if (fromDocument) return replies.viewOnlyRole();
     asked = requestKind(safeText);
     if (asked === 'write') return replies.viewOnlyRole();
     if (asked === 'unknown') return replies.viewOnlyAskAQuestion();
@@ -4607,6 +4609,10 @@ async function interpretedReply(
         `view-only message read as a question before the model, as ${interpreted.command.intent} after it`,
       );
     }
+    /* A refused request consumes nothing (spec §4.3 rule 4): the call is
+     * spent, but the unit goes back, as for every outcome that did not
+     * deliver. Skipped on a retry, like the refund above. */
+    if (!retrying) await refundMessage(deps, businessId, period);
     return replies.viewOnlyRole();
   }
 

@@ -335,8 +335,11 @@ const SUMMARY_WORDS = new Set(['total', 'summary', 'report', 'altogether']);
  * A figure: digits, or a naira sign. A bare year ("2026") is a period, not
  * money, unless it carries a multiplier ("2026k").
  */
+/** Amounts said in words, as typed or as a transcript renders them. */
+const NUMBER_WORDS = /\b(hundred|thousand|million|billion|naira)\b/;
+
 function hasFigure(text: string): boolean {
-  if (text.includes('₦')) return true;
+  if (text.includes('₦') || NUMBER_WORDS.test(text)) return true;
   /* Digits glued to a letter ("q3") name something, not an amount. */
   for (const match of text.matchAll(/(?<![a-z])\d[\d,.]*\s*(k|m|naira|ngn)?/g)) {
     const digits = match[0].replace(/[^\d]/g, '');
@@ -351,21 +354,37 @@ function startsWith(words: readonly string[], prefix: readonly string[]): boolea
 }
 
 /**
- * The privacy gateway's tokens (`CUSTOMER_7K2`, `PHONE_1`, `EMAIL_1`): a name
- * or a contact, never an amount. Blanked before reading, so the digits inside
- * a token are never mistaken for money (this reads the tokenised text).
+ * The privacy gateway's tokens (`CUSTOMER_7K2`, `PHONE_1`, `EMAIL_1`,
+ * `ACCOUNT_1`): a name or a contact, never an amount. Read as the word
+ * "customer", so the digits inside a token are never mistaken for money, and
+ * a token that is the subject ("CUSTOMER_7K2 has paid") keeps its place
+ * instead of letting the next word ("has") open a question.
  */
-const VAULT_TOKEN = /\b[A-Z]+_[A-Z0-9]+\b/g;
+const VAULT_TOKEN = /\b(?:CUSTOMER|PHONE|EMAIL|ACCOUNT)_[A-Z0-9]+\b(?:['’]s)?/g;
 
 export function requestKind(raw: string): RequestKind {
-  const text = raw
-    .replace(VAULT_TOKEN, ' ')
-    .toLowerCase()
-    .replace(/[‘’]/g, "'")
-    .replace(/\s+/g, ' ')
-    .trim();
+  /* One message can say two things: "How far? CUSTOMER_7K2 paid me".
+   * Each sentence is judged; one record makes it a record, and it reads
+   * only when every sentence reads. */
+  const sentences = raw
+    .replace(VAULT_TOKEN, ' customer ')
+    .split(/(?<=[.!?])\s+(?=\S)/)
+    .filter((part) => part.trim().length > 0);
+  if (sentences.length === 0) return 'unknown';
+  /* A sentence that only greets ("How far?", "Good morning.") says
+   * nothing either way, and is left out. */
+  const kinds = sentences.map(sentenceKind).filter((kind) => kind !== 'greeting');
+  if (kinds.length === 0) return 'unknown';
+  if (kinds.includes('write')) return 'write';
+  return kinds.every((kind) => kind === 'read') ? 'read' : 'unknown';
+}
+
+/** Words a greeting is made of, and nothing a books question needs. */
+const GREETING_WORDS = new Set(['how', 'far', 'good', 'morning', 'afternoon', 'evening']);
+
+function sentenceKind(raw: string): RequestKind | 'greeting' {
+  const text = raw.toLowerCase().replace(/[‘’]/g, "'").replace(/\s+/g, ' ').trim();
   if (text.length === 0) return 'unknown';
-  const asksAQuestion = text.endsWith('?');
   const all = (
     text
       .replace(/p&l/g, 'pnl')
@@ -373,7 +392,19 @@ export function requestKind(raw: string): RequestKind {
       .match(/[\p{L}\p{N}']+/gu) ?? []
   ).map((w) => w.replace(/'s$/, ''));
   let start = 0;
-  while (start < all.length - 1 && OPENING_FILLERS.has(all[start]!)) start += 1;
+  for (;;) {
+    if (start < all.length - 1 && OPENING_FILLERS.has(all[start]!)) start += 1;
+    /* "how far" is the commonest Pidgin greeting, not a question. */ else if (
+      all[start] === 'how' &&
+      all[start + 1] === 'far' &&
+      start + 2 < all.length
+    )
+      start += 2;
+    else break;
+  }
+  if (all.length > 0 && all.every((w) => OPENING_FILLERS.has(w) || GREETING_WORDS.has(w))) {
+    return 'greeting';
+  }
   const words = all.slice(start);
   if (words.length === 0) return 'unknown';
 
@@ -406,7 +437,9 @@ export function requestKind(raw: string): RequestKind {
    * not a books question: both stay unknown. A question mark alone opens
    * nothing: "sold rice to Ada?" is held to the statement rules below. */
   if (opensAQuestion(words)) {
-    if (figure && (trade || recordNoun)) return 'unknown';
+    /* "list sales and add rice sale" asks for a record halfway through. */
+    if (words.some((w) => RECORD_INSTRUCTIONS.has(w))) return 'unknown';
+    if (figure && (trade || recordNoun || topic)) return 'unknown';
     return trade || topic || recordNoun ? 'read' : 'unknown';
   }
 
@@ -426,12 +459,18 @@ export function requestKind(raw: string): RequestKind {
   if (figure || !onlyBooksWords(words)) return 'unknown';
   if (topic) return 'read';
   if (recordNoun && (period || summary)) return 'read';
+  /* "sales", "expenses" alone: the list, not one record. */
+  if (words.length === 1 && BARE_LISTS.has(words[0]!)) return 'read';
   return 'unknown';
 }
+
+const BARE_LISTS = new Set(['sales', 'expenses', 'purchases', 'payments', 'invoices']);
 
 /** A question by its opening, not by a trailing question mark. */
 function opensAQuestion(words: readonly string[]): boolean {
   const first = words[0]!;
+  /* In Nigerian English "do invoice for Ada" means make one. */
+  if (first === 'do') return ['i', 'we', 'you', 'they', 'customer'].includes(words[1] ?? '');
   if (QUESTION_OPENERS.has(first)) return true;
   /* "can I see…", "could we get…", never "can you…": that asks for work. */
   if ((first === 'can' || first === 'could') && (words[1] === 'i' || words[1] === 'we')) {

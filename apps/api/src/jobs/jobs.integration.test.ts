@@ -643,7 +643,8 @@ describe('the chat surface enforces roles', () => {
 
   /* Defence in depth: the early check is not the boundary. A question the
    * model reads as a sale is still refused after the model, and nothing is
-   * drafted or booked; only the unit and the call it cost are spent. */
+   * drafted or booked. The call is spent; the unit goes back (spec §4.3
+   * rule 4: a refused request consumes nothing). */
   it('still refuses after the model when a question turns out to be a record (G-57)', async () => {
     const businessId = await seedBusiness('Role Gate Depth Ltd', '+2348140010027');
     await memberOf(businessId, '+2348140010028', 'accountant');
@@ -654,7 +655,7 @@ describe('the chat surface enforces roles', () => {
     ).toBe(replies.viewOnlyRole().text);
     expect(await seen(businessId)).toMatchObject({
       modelCalls: 1,
-      ai_actions: 1,
+      ai_actions: 0,
       drafts: 0,
       invoices: 0,
       payments: 0,
@@ -802,6 +803,10 @@ describe('the chat surface enforces roles', () => {
       await saysOverChat(businessId, '+2348140010042', 'how much did we sell this month?');
     });
     expect((await footprint(businessId)).ai_actions).toBe(1);
+    /* And the retry delivered the answer, not a refusal. */
+    const last = stubSender.sent[stubSender.sent.length - 1]?.text ?? '';
+    expect(last).not.toBe(replies.viewOnlyRole().text);
+    expect(last.length).toBeGreaterThan(0);
   });
 
   it('answers a QUESTION from that same accountant, because reads are theirs', async () => {

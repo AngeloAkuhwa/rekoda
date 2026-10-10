@@ -152,6 +152,52 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind('CUSTOMER_7KQ balance')).toBe('read');
   });
 
+  /* Reviewer A, round 2: a token that is the subject must not let the next
+   * word open a question; a greeting or a second sentence must not carry a
+   * record through as a question; amounts in words are amounts. */
+  it.each([
+    'CUSTOMER_7K2 has paid',
+    'CUSTOMER_7K2 has paid in full',
+    'CUSTOMER_7K2 has paid for the invoice',
+    'CUSTOMER_7K2 has paid her balance',
+    'CUSTOMER_7K2 have paid',
+    'CUSTOMER_7K2 did pay me',
+    'CUSTOMER_7K2 has bought rice',
+    'CUSTOMER_7K2 has collected the goods',
+    'CUSTOMER_7K2 has received the goods',
+    'CUSTOMER_7K2 was paid',
+    'How far, I sold two bags of rice to CUSTOMER_7K2 for fifty thousand naira',
+    'How far, CUSTOMER_7K2 paid me fifty thousand',
+    'how far boss, sold rice to CUSTOMER_7K2',
+    'how far, CUSTOMER_7K2 don pay',
+    'Is it ok? I sold rice to CUSTOMER_7K2',
+    'did you get it? CUSTOMER_7K2 paid me',
+    'any payment from CUSTOMER_7K2? she paid fifty thousand',
+    'list sales and add rice sale',
+    'do invoice for CUSTOMER_7K2',
+    'do invoice for CUSTOMER_7K2 two bags rice',
+    'do sale for CUSTOMER_7K2',
+    'tell CUSTOMER_7K2 she owes 5k',
+  ])('never reads %j as a question', (text) => {
+    expect(requestKind(text)).not.toBe('read');
+  });
+
+  it.each([
+    ['How far, CUSTOMER_7K2 paid me fifty thousand', 'write'],
+    ['sold rice five thousand naira', 'write'],
+    ['how far? how much did we sell today?', 'read'],
+    ['how far, how much do I have to collect?', 'read'],
+    ["CUSTOMER_7K2's balance", 'read'],
+    ['did CUSTOMER_7K2 pay?', 'read'],
+    ['do I owe any supplier?', 'read'],
+    ['sales', 'read'],
+    ['expenses', 'read'],
+    ['Good morning. How much did we sell this month?', 'read'],
+    ['How far?', 'unknown'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');
