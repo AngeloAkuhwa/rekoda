@@ -1058,6 +1058,38 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Final reviews D and C on 9b090ed: a report sent straight to a person
+   * or token is a send; one record wanted may be one to make; a noun
+   * before the subject is the question's object; "write me…" lists. */
+  it.each([
+    ['send CUSTOMER_7K2 sales report', 'unknown'],
+    ['send PHONE_1 sales report', 'unknown'],
+    ['send EMAIL_1 invoices', 'unknown'],
+    ['send debtors the report', 'unknown'],
+    ['send customers report', 'unknown'],
+    ['can you send CUSTOMER_7K2 report', 'unknown'],
+    ['send report CUSTOMER_7K2', 'unknown'],
+    ['i want invoice for CUSTOMER_7K2', 'unknown'],
+    ['i need an invoice for CUSTOMER_7K2', 'unknown'],
+    ['i want CUSTOMER_7K2 invoice', 'unknown'],
+    ['i need a sale for CUSTOMER_7K2', 'unknown'],
+    ['how much money we made today', 'read'],
+    ['how much rice we sell today', 'read'],
+    ['how many bags we sold', 'read'],
+    ['show me which invoices CUSTOMER_7K2 paid', 'read'],
+    ['show me the things Ada bought', 'read'],
+    ['show invoices Ada paid', 'read'],
+    ['write me the list of debtors', 'read'],
+    ['write out who owes me', 'read'],
+    ['send the debtors list', 'read'],
+    ['i want the P&L', 'read'],
+    ['show invoices Ada paid 5k', 'unknown'],
+    ['write fuel 5k', 'write'],
+    ['write me a receipt for Ada', 'unknown'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');

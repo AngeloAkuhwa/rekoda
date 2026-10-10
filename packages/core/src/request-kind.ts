@@ -1066,6 +1066,11 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
   }
   /* "update me on sales", "add up my expenses": a summary asked for, not
    * a change (final review C). */
+  /* "write me the list of debtors", "write out who owes me": Nigerian
+   * English for "list for me" (final review C). */
+  if (words[0] === 'write' && ['me', 'us', 'out'].includes(words[1] ?? '') && words.length > 2) {
+    words.splice(0, 2, 'show');
+  }
   if (words[0] === 'update' && (words[1] === 'me' || words[1] === 'us' || words[1] === 'on')) {
     words.splice(0, words[1] === 'on' ? 2 : words[2] === 'on' ? 3 : 2, 'show');
   } else if (
@@ -1082,13 +1087,15 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
     !asksAChange &&
     words.length > wanting.length &&
     words[wanting.length] !== 'to' &&
-    words
-      .slice(wanting.length)
-      .every(
-        (w) =>
-          w === 'list' ||
-          (onlyBooksWords([w]) && !TRADE_VERBS.has(w) && !CHANGE_PARTICIPLES.has(w)),
-      )
+    words.slice(wanting.length).every(
+      (w) =>
+        w === 'list' ||
+        (onlyBooksWords([w]) &&
+          !TRADE_VERBS.has(w) &&
+          !CHANGE_PARTICIPLES.has(w) &&
+          /* "i want invoice for CUSTOMER_7K2" may ask for one to be made. */
+          !(RECORD_NOUNS.has(w) && !LISTED_RECORDS.has(w))),
+    )
   ) {
     words.splice(0, wanting.length, 'show');
   }
@@ -1276,21 +1283,19 @@ function statesTrade(words: readonly string[]): boolean {
     /* "show CUSTOMER_7K2 paid", "let me see Ada pay": a viewing verb does
      * not ask about the subject after it. */
     if (VIEWING_LEADS.has(lead)) return true;
+    /* Only where the question has already ended: after a period, "me/us"
+     * or "owe" ("who owes me CUSTOMER_7K2 paid", "show sales today ada paid
+     * me", "how much does CUSTOMER_7K2 owe she has paid"). A noun before
+     * the subject is the question's object: "how much money we made",
+     * "show invoices Ada paid" (final review D). */
     if (
-      AUXILIARIES.has(lead) ||
-      QUESTION_FRAMES.has(lead) ||
-      /* "show CUSTOMER_7K2 paid", "let me see Ada pay": no question word
-       * leads the subject. */
-      (QUESTION_OPENERS.has(lead) && lead !== 'show' && lead !== 'list') ||
-      SUBJECT_LEADS.has(lead) ||
-      /* "expenses we paid", "everything I sold": the merchant's own trade
-       * describing the records asked for. */
-      ((subject === 'we' || subject === 'i') &&
-        (LISTED_RECORDS.has(lead) || RECORD_NOUNS.has(lead) || lead === 'everything'))
+      PERIODS.has(lead) ||
+      RANGE_WORDS.has(lead) ||
+      isYear(lead) ||
+      ['me', 'us', 'owe', 'owes', 'owed', 'owing'].includes(lead)
     ) {
-      continue;
+      return true;
     }
-    return true;
   }
   return false;
 }
@@ -1341,30 +1346,6 @@ const TITLES = new Set([
   'alhaja',
   'mummy',
   'daddy',
-]);
-
-/** What keeps a subject inside the question: "the customer", "if she paid". */
-const SUBJECT_LEADS = new Set([
-  'the',
-  'my',
-  'our',
-  'each',
-  'every',
-  'all',
-  'and',
-  'or',
-  'if',
-  'whether',
-  'that',
-  'much',
-  'many',
-  'how',
-  'can',
-  'could',
-  'will',
-  'would',
-  'should',
-  'may',
 ]);
 
 const BARE_LISTS = new Set([
@@ -1551,6 +1532,11 @@ function forTheMerchant(words: readonly string[], verb: number): boolean {
 
 /** Only a report of the books, never one customer's document. */
 function reportOnly(object: readonly string[]): boolean {
+  /* "send CUSTOMER_7K2 sales report", "send debtors the report": a person
+   * straight after the verb receives it (final review D). */
+  if (PEOPLE.has(object[0] ?? '') || object.some((w) => w === 'customer' || w === 'customers')) {
+    return false;
+  }
   return (
     object.length > 0 &&
     object.some(
