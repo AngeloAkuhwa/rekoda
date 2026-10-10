@@ -416,15 +416,39 @@ function startsWith(words: readonly string[], prefix: readonly string[]): boolea
  */
 const VAULT_TOKEN = /\b(?:CUSTOMER|PHONE|EMAIL|ACCOUNT)_[A-Z0-9]+\b(?:['’]s)?/g;
 
+/**
+ * A phone or email token is someone's contact ("on PHONE_1", "report
+ * EMAIL_1", "bcc EMAIL_1": a destination, rounds 25 and 27) unless it is
+ * plainly the customer the question is about: the first word, before a
+ * books word ("PHONE_1 balance", "PHONE_1 paid"), or after for/of/from/with
+ * in a message that sends nothing ("invoices for PHONE_1").
+ */
+const CONTACT_TOKEN = /\b(PHONE|EMAIL)_[A-Z0-9]+\b((?:['’]s)?)/g;
+const SUBJECT_AFTER =
+  /^\s*(?:['’]s\b|balances?\b|statements?\b|invoices?\b|sales\b|payments?\b|owes?\b|owed\b|paid\b|pays?\b|bought\b|buys?\b|has\b|have\b|did\b|does\b|is\b|was\b|transactions?\b|debts?\b|account\b)/i;
+const SENDS =
+  /^\s*(?:(?:please|pls|kindly|can|could|will|would|you|abeg)\s+)*(?:send|give|get|forward|share|export|email|mail|text|whatsapp|tell|download|print)\b/i;
+
+function contactToken(
+  token: string,
+  kind: string,
+  possessive: string,
+  at: number,
+  whole: string,
+): string {
+  const before = whole.slice(0, at);
+  const after = possessive ? "'s" + whole.slice(at + token.length) : whole.slice(at + token.length);
+  const subject =
+    before.trim() === '' ||
+    SUBJECT_AFTER.test(after) ||
+    (/\b(?:for|of|from|with)\s*$/i.test(before) && !SENDS.test(whole));
+  if (subject) return ' customer ';
+  return ` customer ${kind === 'PHONE' ? 'phone' : 'email'} `;
+}
+
 export function requestKind(raw: string): RequestKind {
   const text = raw
-    /* "on PHONE_1", "to EMAIL_1": someone's contact as the destination
-     * (round 25); "PHONE_1 balance" is still the customer (round 26). */
-    .replace(
-      /\b(to|on|via|through|at|cc|email|mail|phone|number|whatsapp)\s+(PHONE|EMAIL)_[A-Z0-9]+\b(?:['’]s)?/gi,
-      (_, prep: string, kind: string) =>
-        ` ${prep} customer ${kind.toUpperCase() === 'PHONE' ? 'phone' : 'email'} `,
-    )
+    .replace(CONTACT_TOKEN, contactToken)
     .replace(VAULT_TOKEN, ' customer ')
     /* "INV-2026-000004": a document, not an amount (Codex P2). */
     .replace(/\b[a-z]{2,5}-\d{4}-\d{3,}\b/gi, ' invoice ')
@@ -1159,12 +1183,27 @@ function forTheMerchant(words: readonly string[], verb: number): boolean {
     if (!CHANNELS.has(words[j]!) || words[j] === 'date') continue;
     /* "number of sales" counts; "the WhatsApp of Ada" belongs to Ada. */
     if (words[j] === 'number' && words[j + 1] === 'of') continue;
+    /* "product line", "line by line": no channel (round 27). */
+    if (
+      words[j] === 'line' &&
+      (words[j - 1] === 'product' || words[j - 1] === 'by' || words[j + 1] === 'by')
+    ) {
+      continue;
+    }
     if (words[j + 1] === 'of') return false;
     const owner = words[j - 1] ?? '';
     const mine = words[j - 2] === 'my' || words[j - 2] === 'our';
     /* "the number I gave you", "another WhatsApp": someone else's unless
-     * it is "my number", "my other phone" (round 26). */
-    if (words[j] === 'number' && owner !== 'my' && owner !== 'our') return false;
+     * it is "my number", "my other phone", "the shop line" (rounds 26, 27). */
+    if (
+      (words[j] === 'number' || words[j] === 'line') &&
+      owner !== 'my' &&
+      owner !== 'our' &&
+      !(SOME_OTHER.has(owner) && mine) &&
+      !OWN_CONTACT_WORDS.has(owner)
+    ) {
+      return false;
+    }
     if (SOME_OTHER.has(owner) && !mine) return false;
     const name =
       !knownWord(owner) &&
@@ -1260,6 +1299,9 @@ const OWN_CHANNEL_WORDS = new Set([
   'your',
 ]);
 
+/** What makes a number or line the business's own: "the shop number". */
+const OWN_CONTACT_WORDS = new Set(['work', 'office', 'business', 'shop', 'personal']);
+
 /** A channel that is one of several: the merchant's only after my/our. */
 const SOME_OTHER = new Set(['new', 'other', 'another', 'second', 'this', 'that']);
 
@@ -1277,6 +1319,7 @@ const CHANNELS = new Set([
   'whatsapp',
   'phone',
   'number',
+  'line',
   'date',
 ]);
 

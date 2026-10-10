@@ -866,6 +866,32 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Round 27: "line" is a contact again outside "product line" and "line
+   * by line"; a phone or email token is a contact unless it is plainly
+   * the customer asked about. */
+  it.each([
+    ["send me the report on Ada's line", 'unknown'],
+    ['send me the report on his line', 'unknown'],
+    ['send me the report on CUSTOMER_1 line', 'unknown'],
+    ['send me the report on the line I gave you', 'unknown'],
+    ['show sales line by line', 'read'],
+    ['send me sales on my line', 'read'],
+    ['send me sales on the shop number', 'read'],
+    ['send me sales on my other number', 'read'],
+    ['send me the report PHONE_1', 'unknown'],
+    ['send me the report bcc EMAIL_1', 'unknown'],
+    ['send me the report with PHONE_1', 'unknown'],
+    ['send me and PHONE_1 the report', 'unknown'],
+    ['send me the report for EMAIL_1', 'unknown'],
+    ["PHONE_1's balance", 'read'],
+    ['what does PHONE_1 owe', 'read'],
+    ['show transactions with PHONE_1', 'read'],
+    ['show payments from PHONE_1', 'read'],
+    ['sold rice to PHONE_1 5k', 'write'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');
