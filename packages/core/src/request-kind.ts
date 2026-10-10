@@ -366,7 +366,7 @@ function hasFigure(raw: string): boolean {
   const text = raw.replace(DATES, ' ');
   if (text.includes('₦') || NUMBER_WORDS.test(text)) return true;
   /* Digits glued to a letter ("q3") name something, not an amount. */
-  for (const match of text.matchAll(/(?<![a-z])\d[\d,.]*\s*(k|m|naira|ngn)?/g)) {
+  for (const match of text.matchAll(/(?<![a-mo-z])\d[\d,.]*\s*(k|m|naira|ngn)?/g)) {
     const digits = match[0].replace(/[^\d]/g, '');
     const isYear = /^(19|20)\d\d$/.test(digits) && !match[1];
     if (!isYear) return true;
@@ -523,7 +523,7 @@ function knownWord(w: string): boolean {
 const COMPARISON_FILTER = new RegExp(
   [
     /* "more than 50k", "over ₦5,000", "above N20,000", "at least #10k" */
-    String.raw`\b(?:(?:more|less|greater|bigger|higher|lower|fewer)\s+than|over|above|under|below|exceeding|at\s+(?:least|most))\s+(?:(?:[₦#]|n(?=\d))\s*)?\d[\d,.]*\s*(?:k|m|naira)?\b`,
+    String.raw`\b(?:(?:more|less|greater|bigger|higher|lower|fewer)\s+than|over|above|under|below|exceeding|at\s+(?:least|most))\s+(?:(?:[₦#]|n(?=\d))\s*)?\d[\d,.]*(?:\s*(?:k|m|thousand|million|naira)\b){0,2}`,
     /* "more than fifty thousand", "over five hundred naira" */
     String.raw`\b(?:(?:more|less|greater|bigger|higher|lower|fewer)\s+than|over|above|under|below|exceeding|at\s+(?:least|most))\s+(?:[a-z]+\s+){0,3}?(?:hundred|thousand|million|billion)(?:\s+naira)?\b`,
     /* "50k and above", "20,000 or less" */
@@ -583,6 +583,25 @@ const OTHER_KNOWN = new Set([
   'saturday',
   'sunday',
 ]);
+
+/**
+ * "get/have the invoice cancelled": get or have, then an object of its own,
+ * then the participle closing the phrase. Not "have been", "have I", "have
+ * any", "get reversed", or "the list of cancelled invoices", where the
+ * participle describes the records that follow it.
+ */
+function causative(words: readonly string[], i: number): boolean {
+  if (LISTED_RECORDS.has(words[i + 1] ?? '')) return false;
+  for (let j = 1; j < i - 1; j += 1) {
+    if (words[j] !== 'get' && words[j] !== 'have') continue;
+    const next = words[j + 1]!;
+    if (!NOT_AN_OBJECT.has(next)) return true;
+  }
+  return false;
+}
+
+/** What follows "have"/"get" when it is not causative. */
+const NOT_AN_OBJECT = new Set(['been', 'i', 'we', 'they', 'you', 'any', 'some', 'all', 'no']);
 
 /** Comparisons that make a figure a filter: "more than 50k". */
 const COMPARISONS = new Set([
@@ -806,13 +825,15 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
    * own ("how many invoices were cancelled", "has CUSTOMER_7K2 settled"),
    * never straight after the opening auxiliary ("have cleared the debt"). */
   const asks = opensAQuestion(words);
-  /* The evidence must be a real subject, a record or a read verb: "have
-   * now settled the balance" and "can I get the invoice cancelled" are
-   * changes, whatever words sit between (Codex P2). */
+  /* The evidence must be a real subject, a record or a read verb, so "have
+   * now settled the balance" is a change (Codex P2). "can I get the invoice
+   * cancelled" is causative, a request for the change; "which invoices have
+   * been cancelled", "do I have any cancelled invoices" and "did the sale get
+   * reversed" are questions about what happened. */
   const describes = (i: number) =>
     asks &&
     CHANGE_PARTICIPLES.has(words[i]!) &&
-    !words.slice(1, i).some((w) => w === 'get' || w === 'have') &&
+    !causative(words, i) &&
     words
       .slice(0, i)
       .some(

@@ -483,6 +483,30 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Round 11: perfect tenses and passive "get" are questions; causative
+   * get/have is a request for a change; units after a compared figure go
+   * with it; N5k is naira. */
+  it.each([
+    ['which invoices have been cancelled', 'read'],
+    ['how many invoices have been cancelled this month', 'read'],
+    ['what sales have been reversed', 'read'],
+    ['which payments have been refunded', 'read'],
+    ['what invoices have i voided this week', 'read'],
+    ['do i have any cancelled invoices', 'read'],
+    ['did the sale get reversed', 'read'],
+    ['can i get cancelled invoices', 'read'],
+    ['can i get the list of cancelled invoices', 'read'],
+    ['can i get the invoice cancelled?', 'unknown'],
+    ['can i have the invoice voided?', 'unknown'],
+    ['who owes me more than 50 thousand', 'read'],
+    ['who owes me more than 50k naira', 'read'],
+    ['who owes me more than 50 thousand naira', 'read'],
+    ['did CUSTOMER_7K2 pay me N5k?', 'unknown'],
+    ['has customer paid N5k', 'unknown'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');
