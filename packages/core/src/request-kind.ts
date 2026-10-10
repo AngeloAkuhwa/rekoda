@@ -100,7 +100,6 @@ const QUESTION_OPENERS = new Set([
   'have',
   'show',
   'list',
-  'tell',
   'wetin',
   'any',
 ]);
@@ -367,8 +366,9 @@ function hasFigure(raw: string): boolean {
   if (text.includes('₦') || NUMBER_WORDS.test(text)) return true;
   /* Digits glued to a letter ("q3") name something, not an amount. */
   for (const match of text.matchAll(/(?<![a-mo-z])\d[\d,.]*\s*(k|m|naira|ngn)?/g)) {
-    const digits = match[0].replace(/[^\d]/g, '');
-    const isYear = /^(19|20)\d\d$/.test(digits) && !match[1];
+    /* Only a bare four-digit token: "2,026" and "20.26" are amounts. */
+    const number = /^\d[\d,.]*/.exec(match[0])![0].replace(/[.,]$/, '');
+    const isYear = /^(19|20)\d\d$/.test(number) && !match[1];
     if (!isYear) return true;
   }
   return false;
@@ -390,6 +390,8 @@ const VAULT_TOKEN = /\b(?:CUSTOMER|PHONE|EMAIL|ACCOUNT)_[A-Z0-9]+\b(?:['’]s)?/
 export function requestKind(raw: string): RequestKind {
   const text = raw
     .replace(VAULT_TOKEN, ' customer ')
+    /* "INV-2026-000004": a document, not an amount (Codex P2). */
+    .replace(/\b[a-z]{2,5}-\d{4}-\d{3,}\b/gi, ' invoice ')
     /* P&L and P/L, before "&" or "/" separates anything. */
     .replace(/p\s*[&/]\s*l\b/gi, 'pnl')
     /* "vs." and "Mr." end no sentence. */
@@ -446,7 +448,10 @@ function segmentKind(segment: string): RequestKind | 'neutral' {
     }
   }
   if (whole !== 'read') return whole;
+  /* A comparison is a filter, already judged with its figure: taken out
+   * first, so "more than one hundred and fifty thousand" is not split. */
   const parts = body
+    .replace(COMPARISON_FILTER, ' ')
     .split(/(?<!\d),|,(?!\d)|\s+(?:and|but|then|also|plus)\s+/i)
     .filter((part) => part.trim().length > 0);
   return parts.slice(1).some(saysSomethingOfItsOwn) ? 'unknown' : 'read';
@@ -483,6 +488,14 @@ function saysSomethingOfItsOwn(part: string): boolean {
     )
   ) {
     return true;
+  }
+  /* The same in lower case, as WhatsApp is usually typed: an unknown first
+   * word with an unknown word after it ("ada sent money", "bola
+   * transferred"), or alone ("…, ada"). "transport this month" continues
+   * the question (Codex P2). */
+  const [first, second] = words;
+  if (first !== undefined && !knownWord(first)) {
+    if (second === undefined || (!booksWord(second) && !knownWord(second))) return true;
   }
   if (words.slice(1).some((w) => TRADE_VERBS.has(w))) return true;
   /* A subject of its own: "CUSTOMER_7K2 sent money", "yes she did",
@@ -525,7 +538,7 @@ const COMPARISON_FILTER = new RegExp(
     /* "more than 50k", "over ₦5,000", "above N20,000", "at least #10k" */
     String.raw`\b(?:(?:more|less|greater|bigger|higher|lower|fewer)\s+than|over|above|under|below|exceeding|at\s+(?:least|most))\s+(?:(?:[₦#]|n(?=\d))\s*)?\d[\d,.]*(?:\s*(?:k|m|thousand|million|naira)\b){0,2}`,
     /* "more than fifty thousand", "over five hundred naira" */
-    String.raw`\b(?:(?:more|less|greater|bigger|higher|lower|fewer)\s+than|over|above|under|below|exceeding|at\s+(?:least|most))\s+(?:[a-z]+\s+){0,3}?(?:hundred|thousand|million|billion)(?:\s+naira)?\b`,
+    String.raw`\b(?:(?:more|less|greater|bigger|higher|lower|fewer)\s+than|over|above|under|below|exceeding|at\s+(?:least|most))\s+(?:[a-z]+\s+){0,6}(?:hundred|thousand|million|billion)(?:\s+naira)?\b`,
     /* "50k and above", "20,000 or less" */
     String.raw`(?:[₦#]\s*)?\d[\d,.]*\s*(?:k|m)?\s+(?:and|or)\s+(?:above|more|over|below|less|under)\b`,
   ].join('|'),
@@ -596,8 +609,9 @@ function causative(words: readonly string[], i: number): boolean {
   for (let j = 0; j < i - 1; j += 1) {
     if (words[j] !== 'get' && words[j] !== 'have') continue;
     const between = words.slice(j + 1, i);
-    /* "have any invoices been cancelled": a perfect passive, a question. */
-    if (words[i - 1] === 'been') continue;
+    /* "have any invoices been (fully) cancelled": a perfect passive, a
+     * question, adverbs and "or voided" allowed between (Codex P2). */
+    if (perfectPassive(words, i)) continue;
     const next = between[0]!;
     if (!NOT_AN_OBJECT.has(next)) return true;
     /* A quantifier is the object unless the participle follows it straight
@@ -607,6 +621,33 @@ function causative(words: readonly string[], i: number): boolean {
   }
   return false;
 }
+
+/** "been", then only adverbs or other participles, then the participle. */
+function perfectPassive(words: readonly string[], i: number): boolean {
+  for (let k = i - 1; k >= 0; k -= 1) {
+    const w = words[k]!;
+    if (w === 'been') return true;
+    if (!PASSIVE_FILLERS.has(w) && !CHANGE_PARTICIPLES.has(w)) return false;
+  }
+  return false;
+}
+
+const PASSIVE_FILLERS = new Set([
+  'fully',
+  'partially',
+  'partly',
+  'already',
+  'just',
+  'recently',
+  'really',
+  'properly',
+  'completely',
+  'ever',
+  'not',
+  'all',
+  'or',
+  'and',
+]);
 
 /** Quantifiers, which may stand before an object or before a participle. */
 const QUANTIFIERS = new Set(['any', 'some', 'all', 'no']);
@@ -924,8 +965,13 @@ function opensAQuestion(words: readonly string[]): boolean {
    * ("can you show me sales?"), never before work ("can you reverse…"). */
   if (first === 'can' || first === 'could') {
     if (words[1] === 'i' || words[1] === 'we') return true;
-    if (words[1] === 'you' && READ_VERBS.has(words[2] ?? '')) return true;
+    if (words[1] === 'you' && READ_VERBS.has(words[2] ?? '')) {
+      /* "can you tell me…", never "can you tell Ada she owes". */
+      return words[2] !== 'tell' || words[3] === 'me' || words[3] === 'us';
+    }
   }
+  /* "tell me what I sold", never "tell CUSTOMER_7K2 she owes me" (Codex P2). */
+  if (first === 'tell') return words[1] === 'me' || words[1] === 'us';
   /* "export sales to Excel", "download the sales report" (Codex P2). */
   if (first === 'export' || first === 'download' || first === 'print') return true;
   /* "send me the P&L", "give me sales today", "send my records for March". */

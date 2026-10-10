@@ -524,6 +524,32 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Codex, on b3e4927. */
+  it.each([
+    ['who owes me, ada sent money', 'unknown'],
+    ['who owes me, bola transferred', 'unknown'],
+    ['which customer paid today, ada', 'unknown'],
+    ['how much did we spend on fuel and transport this month?', 'read'],
+    ['who owes me more than five hundred thousand', 'read'],
+    ['who owes me more than one hundred and fifty thousand', 'read'],
+    ['have any invoices been fully cancelled?', 'read'],
+    ['have invoices been partially refunded?', 'read'],
+    ['have any invoices been cancelled or voided', 'read'],
+    ['can i get the invoice cancelled?', 'unknown'],
+    ['did Ada pay 2,026?', 'unknown'],
+    ['did Ada pay 20.26?', 'unknown'],
+    ['how much did we sell in 2026?', 'read'],
+    ['tell CUSTOMER_7K2 she owes me', 'unknown'],
+    ['tell CUSTOMER_7K2 about the unpaid invoice', 'unknown'],
+    ['tell me who owes me', 'read'],
+    ['can you tell me my sales this month?', 'read'],
+    ['what happened with INV-2026-000004 last week', 'read'],
+    ['show invoice INV-2026-000004', 'read'],
+    ['INV-2026-000004 paid 20k', 'write'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');
