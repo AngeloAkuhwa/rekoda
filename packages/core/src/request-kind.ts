@@ -592,13 +592,24 @@ const OTHER_KNOWN = new Set([
  */
 function causative(words: readonly string[], i: number): boolean {
   if (LISTED_RECORDS.has(words[i + 1] ?? '')) return false;
-  for (let j = 1; j < i - 1; j += 1) {
+  /* From the first word: "have the invoice cancelled" is an instruction. */
+  for (let j = 0; j < i - 1; j += 1) {
     if (words[j] !== 'get' && words[j] !== 'have') continue;
-    const next = words[j + 1]!;
+    const between = words.slice(j + 1, i);
+    /* "have any invoices been cancelled": a perfect passive, a question. */
+    if (between.includes('been')) continue;
+    const next = between[0]!;
     if (!NOT_AN_OBJECT.has(next)) return true;
+    /* A quantifier is the object unless the participle follows it straight
+     * away: "have any cancelled invoices" asks, "get all the invoices
+     * cancelled" requests the change. */
+    if (QUANTIFIERS.has(next) && between.length > 1) return true;
   }
   return false;
 }
+
+/** Quantifiers, which may stand before an object or before a participle. */
+const QUANTIFIERS = new Set(['any', 'some', 'all', 'no']);
 
 /** What follows "have"/"get" when it is not causative. */
 const NOT_AN_OBJECT = new Set(['been', 'i', 'we', 'they', 'you', 'any', 'some', 'all', 'no']);

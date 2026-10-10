@@ -507,6 +507,20 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Round 12: a quantified object is still an object. */
+  it.each([
+    ['can i get all the invoices cancelled', 'unknown'],
+    ['can i get all invoices cancelled', 'unknown'],
+    ['can we have all the sales for today deleted', 'unknown'],
+    ['can i have some invoices voided', 'unknown'],
+    ['please have the invoice cancelled', 'unknown'],
+    ['have any invoices been cancelled this month?', 'read'],
+    ['do i have any cancelled invoices', 'read'],
+    ['which invoices have been cancelled', 'read'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');
