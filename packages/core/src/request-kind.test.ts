@@ -816,6 +816,33 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Round 25: "have … made" asks for a record; a channel belongs to whoever
+   * is named beside it, before or after; a contact token is a contact. */
+  it.each([
+    ['have an invoice made for Ada', 'unknown'],
+    ['can we have the payment made to supplier', 'unknown'],
+    ['please have the receipt made', 'unknown'],
+    ['how much have we made this month?', 'read'],
+    ['send me statement on supplier email', 'unknown'],
+    ['send me statement on oga whatsapp', 'unknown'],
+    ['send me statement on the whatsapp of customer', 'unknown'],
+    ['send me statement on Ada number', 'unknown'],
+    ['send me the report on PHONE_1', 'unknown'],
+    ['send me the report on EMAIL_1', 'unknown'],
+    ['send my debtors a reminder', 'unknown'],
+    ['send my supplier the invoice', 'unknown'],
+    ['send me sales to my number', 'read'],
+    ['send me sales on work email', 'read'],
+    ['send me sales for jan excel', 'read'],
+    ['show number of sales', 'read'],
+    ['export payments to suppliers', 'read'],
+    ['list my debtors', 'read'],
+    ['collect the rest from Ada', 'write'],
+    ['PHONE_1 paid 5k', 'write'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');

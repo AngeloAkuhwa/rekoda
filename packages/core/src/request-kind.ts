@@ -387,7 +387,9 @@ function hasFigure(raw: string): boolean {
    * of my sales" still asks (round 24). */
   if (
     /\b(?:half|remainder|the\s+rest)\b/.test(text) &&
-    /\b(?:pa(?:y|ys|id|ying)|settled?|received?|collected?|cleared?|balanced?)\b/.test(text)
+    /\b(?:pa(?:y|ys|id|ying)|settl(?:e|es|ed)|receiv(?:e|es|ed)|collect(?:s|ed)?|clear(?:s|ed)?|balanced?)\b/.test(
+      text,
+    )
   ) {
     return true;
   }
@@ -416,6 +418,10 @@ const VAULT_TOKEN = /\b(?:CUSTOMER|PHONE|EMAIL|ACCOUNT)_[A-Z0-9]+\b(?:['’]s)?/
 
 export function requestKind(raw: string): RequestKind {
   const text = raw
+    /* "on PHONE_1", "to EMAIL_1": someone's contact (round 25). */
+    .replace(/\b(PHONE|EMAIL)_[A-Z0-9]+\b(?:['’]s)?/g, (_, kind: string) =>
+      kind === 'PHONE' ? ' customer phone ' : ' customer email ',
+    )
     .replace(VAULT_TOKEN, ' customer ')
     /* "INV-2026-000004": a document, not an amount (Codex P2). */
     .replace(/\b[a-z]{2,5}-\d{4}-\d{3,}\b/gi, ' invoice ')
@@ -1002,6 +1008,9 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
           BOOK_TOPICS.has(w),
       );
   if (words.some((w, i) => CHANGE_VERBS.has(w) && !describes(i))) return 'unknown';
+  /* "have an invoice made for Ada", "can we have the payment made": a
+   * request for a record, as "get … made" is (round 25). */
+  if (words.some((w, i) => w === 'made' && causative(words, i))) return 'unknown';
 
   const figure = hasFigure(text);
   const trade = words.some((w) => TRADE_VERBS.has(w));
@@ -1118,7 +1127,7 @@ function forTheMerchant(words: readonly string[], verb: number): boolean {
   const sending = v === 'send' || v === 'give' || v === 'get' || v === 'tell';
   const viewing = v === 'show' || v === 'list';
 
-  const toTargets: { at: number; person: boolean; channel: boolean }[] = [];
+  const toTargets: { at: number; person: boolean; counterparty: boolean; channel: boolean }[] = [];
   for (let i = verb + 1; i < words.length; i += 1) {
     if (words[i] !== 'to') continue;
     let t = words[i + 1] ?? '';
@@ -1129,7 +1138,7 @@ function forTheMerchant(words: readonly string[], verb: number): boolean {
       PERIODS.has(t) ||
       RANGE_WORDS.has(t) ||
       /^\d/.test(t);
-    toTargets.push({ at: i, person: PEOPLE.has(t), channel });
+    toTargets.push({ at: i, person: PEOPLE.has(t), counterparty: COUNTERPARTIES.has(t), channel });
   }
 
   /* Sending names the asker: "send me…", "send my…", "send it to me". */
@@ -1142,10 +1151,17 @@ function forTheMerchant(words: readonly string[], verb: number): boolean {
 
   /* "on customer WhatsApp", "to Ada's email": someone else's channel
    * (round 24). */
+  /* "the WhatsApp of Ada", "Ada number" (round 25). */
   for (let j = verb + 1; j < words.length; j += 1) {
     if (!CHANNELS.has(words[j]!) || words[j] === 'date') continue;
+    /* "number of sales" counts; "the WhatsApp of Ada" belongs to Ada. */
+    if (words[j + 1] === 'of' && words[j] !== 'number' && words[j] !== 'line') return false;
     const owner = words[j - 1] ?? '';
-    const name = !knownWord(owner) && !['as', 'in', 'into', 'via', 'by', 'through'].includes(owner);
+    const name =
+      !knownWord(owner) &&
+      !RANGE_WORDS.has(owner) &&
+      !OWN_CHANNEL_WORDS.has(owner) &&
+      !/^\d/.test(owner);
     if (PEOPLE.has(owner) || owner === 'his' || owner === 'their' || name) {
       return false;
     }
@@ -1163,7 +1179,8 @@ function forTheMerchant(words: readonly string[], verb: number): boolean {
     const before = words[t.at - 1] ?? '';
     const filters = LISTED_RECORDS.has(before) || TRADE_VERBS.has(before);
     if (sending) return false;
-    if (t.person && (!viewing || !filters)) return false;
+    /* "export payments to suppliers" filters by counterparty (round 25). */
+    if (t.person && !(filters && (viewing || t.counterparty))) return false;
   }
   return true;
 }
@@ -1191,6 +1208,50 @@ const PEOPLE = new Set([
   'husband',
   'manager',
   'staff',
+  /* Round 25: owners of a channel, and senders' usual recipients. */
+  'supplier',
+  'suppliers',
+  'vendor',
+  'vendors',
+  'debtor',
+  'debtors',
+  'creditor',
+  'creditors',
+  'auditor',
+  'oga',
+]);
+
+/**
+ * Who the merchant pays: "export payments to suppliers" filters. Never a
+ * customer: "export sales to my customer" sends the books to them.
+ */
+const COUNTERPARTIES = new Set([
+  'supplier',
+  'suppliers',
+  'vendor',
+  'vendors',
+  'creditor',
+  'creditors',
+]);
+
+/** What may stand before the merchant's own channel: "as PDF", "work email". */
+const OWN_CHANNEL_WORDS = new Set([
+  'as',
+  'in',
+  'into',
+  'via',
+  'by',
+  'through',
+  'work',
+  'office',
+  'personal',
+  'business',
+  'shop',
+  'new',
+  'other',
+  'another',
+  'second',
+  'your',
 ]);
 
 /** Formats and channels a report may go to: "to my email", "to Excel". */
@@ -1206,6 +1267,8 @@ const CHANNELS = new Set([
   'inbox',
   'whatsapp',
   'phone',
+  'number',
+  'line',
   'date',
 ]);
 
