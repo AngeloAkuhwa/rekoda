@@ -404,13 +404,34 @@ export function requestKind(raw: string): RequestKind {
  * "how much did we sell, I sold rice to Ada") is not part of the question.
  */
 function segmentKind(segment: string): RequestKind | 'neutral' {
-  const whole = clauseKind(segment);
+  let body = segment;
+  let whole = clauseKind(segment);
+  /* "Good morning, who owes me?", "sales today, thanks": a greeting,
+   * courtesy or period set off by a comma is dropped, and what is left is
+   * judged. A neutral part holds no name and no money word, so dropping it
+   * hides nothing. */
+  if (whole === 'unknown') {
+    const parts = segment.split(/(?<!\d),|,(?!\d)/);
+    while (parts.length > 1 && clauseKind(parts[0]!) === 'neutral') parts.shift();
+    while (parts.length > 1 && clauseKind(parts[parts.length - 1]!) === 'neutral') parts.pop();
+    const rest = parts.join(',');
+    if (rest !== segment && clauseKind(rest) === 'read') {
+      body = rest;
+      whole = 'read';
+    }
+  }
   if (whole !== 'read') return whole;
-  const parts = segment
+  const parts = body
     .split(/(?<!\d),|,(?!\d)|\s+(?:and|but|then|also|plus)\s+/i)
     .filter((part) => part.trim().length > 0);
   return parts.slice(1).some(saysSomethingOfItsOwn) ? 'unknown' : 'read';
 }
+
+/** Someone doing something: the mark of a statement, not a question's tail. */
+const SUBJECTS = new Set(['customer', 'he', 'she', 'they', 'i', 'we']);
+
+/** "by customer", "per customer": a breakdown, not a subject. */
+const BREAKDOWN_WORDS = new Set(['by', 'per', 'each', 'every', 'which']);
 
 /**
  * A later part of a question that is a statement in its own right: a
@@ -429,7 +450,27 @@ function saysSomethingOfItsOwn(part: string): boolean {
   const kind = clauseKind(part);
   if (kind === 'read' || kind === 'neutral') return false;
   if (words.slice(1).some((w) => TRADE_VERBS.has(w))) return true;
+  /* A subject of its own: "CUSTOMER_7K2 sent money", "yes she did",
+   * "rice to CUSTOMER_7K2" (not "by customer"). */
+  if (words.some((w, i) => SUBJECTS.has(w) && !BREAKDOWN_WORDS.has(words[i - 1] ?? ''))) {
+    return true;
+  }
+  /* Trade with an object: "sold rice to…", "bought fuel today". "spend
+   * this month" continues the question. */
+  if (TRADE_VERBS.has(words[0]!) && words[1] !== undefined && !booksWord(words[1])) return true;
   return words.every((w) => w === 'customer' || NEUTRAL_FUNCTION.has(w));
+}
+
+/** A word a books question is made of. */
+function booksWord(w: string): boolean {
+  return (
+    BOOK_TOPICS.has(w) ||
+    RECORD_NOUNS.has(w) ||
+    PERIODS.has(w) ||
+    SUMMARY_WORDS.has(w) ||
+    JOINING_WORDS.has(w) ||
+    isYear(w)
+  );
 }
 
 /** Function words a trailing fragment may hold; never a name or money word. */

@@ -304,6 +304,57 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).not.toBe('read');
   });
 
+  /* Round 5: a greeting, courtesy or period set off by a comma does not sink
+   * the question; a later part with a subject or a traded object of its own
+   * is a statement, not the question's tail. */
+  it.each([
+    'good morning, how much did we sell today?',
+    'Good morning, who owes me?',
+    'good afternoon, what are my sales today',
+    'good evening, show me sales for today',
+    'good morning sir, who owes me',
+    'morning, who owes me',
+    'hello, good morning, who owes me',
+    'ok, who owes me',
+    'thanks, how much did we sell today?',
+    'today, how much did we sell?',
+    'this month, how much did we spend?',
+    'sales today, thanks',
+    'profit this month, please',
+    'sales and expenses for this month, please',
+    'how much did we sell, by customer',
+  ])('reads %j as a question about the books', (text) => {
+    expect(requestKind(text)).toBe('read');
+  });
+
+  it.each([
+    'who owes me, CUSTOMER_7K2 sent money',
+    'who owes me, CUSTOMER_7K2 transferred',
+    'who owes me, CUSTOMER_7K2 don transfer',
+    'who owes me, CUSTOMER_7K2 no longer owes',
+    'who owes me, CUSTOMER_7K2 owes nothing now',
+    'did CUSTOMER_7K2 pay me, she sent it',
+    'did CUSTOMER_7K2 pay today, yes she did',
+    'how much did we sell today, sold rice to CUSTOMER_7K2',
+    'how much did we sell today and sold rice to CUSTOMER_7K2',
+    'how much did we sell today, also sold rice to CUSTOMER_7K2',
+    'how much did I spend, bought fuel today',
+    'how much did we sell today, rice to CUSTOMER_7K2',
+    'who owes me, not CUSTOMER_7K2',
+    'who owes me, except CUSTOMER_7K2',
+  ])('never reads %j as a question', (text) => {
+    expect(requestKind(text)).not.toBe('read');
+  });
+
+  /* Deliberate, per OWN-25 (a rephrase is cheaper than a guess): a name set
+   * off on its own is not trusted to be part of the question. */
+  it.each([
+    "what's my balance with CUSTOMER_7K2 and CUSTOMER_9M4",
+    'CUSTOMER_7K2, how much does she owe?',
+  ])('asks for %j to be rephrased', (text) => {
+    expect(requestKind(text)).toBe('unknown');
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');
