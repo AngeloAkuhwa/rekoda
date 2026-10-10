@@ -1005,6 +1005,59 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Final review A on 0eb679b: "do CUSTOMER_7K2 invoice" is Nigerian
+   * English for making one; "do" opens a question only before a books
+   * topic, "have" or trade. */
+  it.each([
+    ['do CUSTOMER_7K2 invoice', 'unknown'],
+    ['pls do CUSTOMER_7K2 invoice today', 'unknown'],
+    ['do CUSTOMER_7K2 sale', 'unknown'],
+    ['do CUSTOMER_7K2 payment', 'unknown'],
+    ['do i invoice CUSTOMER_7K2 for rice', 'unknown'],
+    ['do PHONE_1 invoice', 'unknown'],
+    ['do any customers owe me', 'read'],
+    ['do we owe suppliers', 'read'],
+    ['do i have any sale today', 'read'],
+    ['do we have any expenses today', 'read'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
+  /* Final review C on 0eb679b: "update me on…" and "add up…" ask for a
+   * summary; a report sent with no recipient is the asker's; formal
+   * openers; "trial balance"; one customer's records. Customer documents
+   * and named recipients stay unknown. */
+  it.each([
+    ['update me on sales this month', 'read'],
+    ['update on sales this month', 'read'],
+    ['add up my expenses for this month', 'read'],
+    ['send the report', 'read'],
+    ['kindly send the P&L', 'read'],
+    ['can you send the P&L for last month', 'read'],
+    ['send the debtors list', 'read'],
+    ['I would like to see the sales for today', 'read'],
+    ["I'd like the P&L", 'read'],
+    ['may I have the report', 'read'],
+    ['I just want to see my sales for today', 'read'],
+    ['I want to download the report', 'read'],
+    ['I want to check CUSTOMER_7K2 balance', 'read'],
+    ['trial balance for this month', 'read'],
+    ['invoices for CUSTOMER_7K2', 'read'],
+    ['payments from CUSTOMER_7K2', 'read'],
+    ['send the invoice', 'unknown'],
+    ['send the statement', 'unknown'],
+    ['send the report to CUSTOMER_7K2', 'unknown'],
+    ['send the P&L to my accountant', 'unknown'],
+    ['send CUSTOMER_7K2 the report', 'unknown'],
+    ['update CUSTOMER_7K2 balance to 5k', 'write'],
+    ['add up the sale', 'write'],
+    ["i'd like to record a sale", 'unknown'],
+    ['invoice for CUSTOMER_7K2', 'unknown'],
+    ['payments from CUSTOMER_7K2 20k', 'unknown'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');

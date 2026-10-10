@@ -66,8 +66,25 @@ const TRAILING_FILLERS = new Set([
   'thanks',
 ]);
 
+/** Asking for the books by name: "i want the P&L", "may i have the report". */
+const WANTING_PREFIXES: readonly (readonly string[])[] = [
+  ['i', 'would', 'like'],
+  ['i', 'just', 'want'],
+  ['i', 'only', 'want'],
+  ['i', 'just', 'need'],
+  ['i', 'want'],
+  ['i', 'need'],
+  ['may', 'i', 'have'],
+];
+
 /** Asking to see the books: "i want to see my sales", "make i see". */
 const SEEING_PREFIXES: readonly (readonly string[])[] = [
+  ['i', 'would', 'like', 'to', 'see'],
+  ['i', 'would', 'like', 'to', 'know'],
+  ['i', 'just', 'want', 'to', 'see'],
+  ['i', 'only', 'want', 'to', 'see'],
+  ['may', 'i', 'see'],
+  ['may', 'i', 'know'],
   ['i', 'want', 'to', 'see'],
   ['i', 'want', 'to', 'know'],
   ['i', 'need', 'to', 'see'],
@@ -985,6 +1002,9 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
     text
       .replace(/p&l/g, 'pnl')
       .replace(/cash flow/g, 'cashflow')
+      .replace(/\bi'd\b/g, 'i would')
+      /* "trial balance": a report the product names (final review C). */
+      .replace(/trial balance/g, 'balance')
       .match(/[\p{L}\p{N}']+/gu) ?? []
   )
     .map((w) => uncontract(w.replace(/'s$/, '')))
@@ -1032,21 +1052,45 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
       break;
     }
   }
-  if (
-    !asksAChange &&
+  /* "i want to check / download / export…": that verb, asked politely. */
+  for (const prefix of [
+    ['i', 'want', 'to'],
+    ['i', 'need', 'to'],
+    ['i', 'would', 'like', 'to'],
+  ]) {
+    const verb = words[prefix.length] ?? '';
+    if (startsWith(words, prefix) && ['check', 'download', 'export', 'print'].includes(verb)) {
+      words.splice(0, prefix.length);
+      break;
+    }
+  }
+  /* "update me on sales", "add up my expenses": a summary asked for, not
+   * a change (final review C). */
+  if (words[0] === 'update' && (words[1] === 'me' || words[1] === 'us' || words[1] === 'on')) {
+    words.splice(0, words[1] === 'on' ? 2 : words[2] === 'on' ? 3 : 2, 'show');
+  } else if (
+    words[0] === 'add' &&
+    words[1] === 'up' &&
     words.length > 2 &&
-    words[0] === 'i' &&
-    (words[1] === 'want' || words[1] === 'need') &&
-    words[2] !== 'to' &&
+    !words.some((w) => RECORD_NOUNS.has(w) && !LISTED_RECORDS.has(w))
+  ) {
+    words.splice(0, 2, 'total');
+  }
+  const wanting = WANTING_PREFIXES.find((prefix) => startsWith(words, prefix));
+  if (
+    wanting &&
+    !asksAChange &&
+    words.length > wanting.length &&
+    words[wanting.length] !== 'to' &&
     words
-      .slice(2)
+      .slice(wanting.length)
       .every(
         (w) =>
           w === 'list' ||
           (onlyBooksWords([w]) && !TRADE_VERBS.has(w) && !CHANGE_PARTICIPLES.has(w)),
       )
   ) {
-    words.splice(0, 2, 'show');
+    words.splice(0, wanting.length, 'show');
   }
   /* "record of sales", "log of payments": the records, not an instruction
    * to make one (Codex P2). Read as "report". */
@@ -1186,6 +1230,9 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
   }
   if (topic) return 'read';
   if (recordNoun && (period || summary)) return 'read';
+  /* "invoices for CUSTOMER_7K2", "CUSTOMER_7K2 payments": one customer's
+   * records, plural (final review C). */
+  if (words.includes('customer') && words.some((w) => LISTED_RECORDS.has(w))) return 'read';
   /* "sales", "expenses" alone: the list, not one record. */
   if (words.length === 1 && BARE_LISTS.has(words[0]!)) return 'read';
   return 'unknown';
@@ -1333,7 +1380,17 @@ const BARE_LISTS = new Set([
 function opensAQuestion(words: readonly string[]): boolean {
   const first = words[0]!;
   /* In Nigerian English "do invoice for Ada" means make one. */
-  if (first === 'do') return ['i', 'we', 'you', 'they', 'customer', 'any'].includes(words[1] ?? '');
+  /* "do CUSTOMER_7K2 invoice" makes one too: a question needs a books
+   * topic, "have" or trade after it ("do we owe suppliers", "do i have any
+   * sale today") (final review A). */
+  if (first === 'do') {
+    return (
+      ['i', 'we', 'you', 'they', 'customer', 'any'].includes(words[1] ?? '') &&
+      words
+        .slice(2)
+        .some((w) => BOOK_TOPICS.has(w) || TRADE_VERBS.has(w) || w === 'have' || w === 'has')
+    );
+  }
   /* "show CUSTOMER_7K2 her balance" shows the books to someone else, as
    * the "can you show…" form does (round-22 review). */
   if (first === 'show' || first === 'list' || first === 'check') return forTheMerchant(words, 0);
@@ -1371,6 +1428,7 @@ function opensAQuestion(words: readonly string[]): boolean {
     return forTheMerchant(words, 0);
   }
   /* "send me the P&L", "give me sales today", "send my records for March". */
+  if (first === 'send' && reportOnly(words.slice(1))) return forTheMerchant(words, 0);
   return (
     (first === 'send' || first === 'give' || first === 'get') &&
     (words[1] === 'me' || words[1] === 'us' || words[1] === 'my' || words[1] === 'our') &&
@@ -1420,7 +1478,12 @@ function forTheMerchant(words: readonly string[], verb: number): boolean {
   if (sending) {
     const named =
       ASKERS.has(at(1)) || toTargets.some((t) => ASKERS_DIRECT.has(words[t.at + 1] ?? ''));
-    if (!named) return false;
+    /* "send the report", "send the P&L for September": a report with no
+     * recipient is only ever for the asker (final review C). Never "send
+     * the invoice" or "send the statement", which go to customers. */
+    if (!named && !(v === 'send' && toTargets.length === 0 && reportOnly(words.slice(verb + 1)))) {
+      return false;
+    }
     if ((at(1) === 'my' || at(1) === 'our') && PEOPLE.has(at(2))) return false;
   }
 
@@ -1484,6 +1547,29 @@ function forTheMerchant(words: readonly string[], verb: number): boolean {
     if (t.person && !(filters && (viewing || t.counterparty))) return false;
   }
   return true;
+}
+
+/** Only a report of the books, never one customer's document. */
+function reportOnly(object: readonly string[]): boolean {
+  return (
+    object.length > 0 &&
+    object.some(
+      (w) =>
+        (REPORT_NOUNS.has(w) && w !== 'statement' && w !== 'statements') ||
+        LISTED_RECORDS.has(w) ||
+        w === 'debtors' ||
+        w === 'records',
+    ) &&
+    object.every(
+      (w) =>
+        w === 'list' ||
+        (onlyBooksWords([w]) &&
+          !TRADE_VERBS.has(w) &&
+          w !== 'statement' &&
+          w !== 'statements' &&
+          !(RECORD_NOUNS.has(w) && !LISTED_RECORDS.has(w))),
+    )
+  );
 }
 
 /** Words that name the asker. */
