@@ -511,9 +511,60 @@ function knownWord(w: string): boolean {
     SUBJECTS.has(w) ||
     AUXILIARIES.has(w) ||
     COMPARISONS.has(w) ||
-    READ_VERBS.has(w)
+    READ_VERBS.has(w) ||
+    OTHER_KNOWN.has(w)
   );
 }
+
+/**
+ * A comparison that governs a figure: "more than 50k", "over 5k", "50k and
+ * above". "paid 20k over transfer" is no filter.
+ */
+const COMPARISON_FILTER =
+  /\b(?:(?:more|less|greater|bigger|higher|lower|fewer)\s+than|over|above|under|below|exceeding|at\s+(?:least|most))\s+(?:₦\s*)?\d|\d[\d,.]*\s*k?\s+(?:and|or)\s+(?:above|more|over|below|less|under)\b/;
+
+/** Records that can be listed: the plural forms. */
+const LISTED_RECORDS = new Set([
+  'sales',
+  'payments',
+  'invoices',
+  'expenses',
+  'purchases',
+  'orders',
+]);
+
+/** Words that join a list to its period: "for the last month so far". */
+const PERIOD_JOINERS = new Set([
+  'this',
+  'last',
+  'past',
+  'for',
+  'in',
+  'of',
+  'so',
+  'far',
+  'to',
+  'date',
+  'all',
+]);
+
+/** Ordinary words a trailing part may hold that are not names. */
+const OTHER_KNOWN = new Set([
+  'pdf',
+  'excel',
+  'csv',
+  'oga',
+  'bro',
+  'god',
+  'bless',
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+  'sunday',
+]);
 
 /** Comparisons that make a figure a filter: "more than 50k". */
 const COMPARISONS = new Set([
@@ -720,19 +771,30 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
   /* "refunded payments this month", "how many invoices were cancelled?":
    * a past participle describing records, not an instruction to change
    * them (Codex P2). The bare instruction ("refund", "cancel") stays one. */
+  /* Only before plural records and a period: "cancelled invoices last
+   * month" describes; "cancelled the invoice", "cleared CUSTOMER_7K2 debt"
+   * is dropped-subject shorthand for a change, and stays one. */
   if (
     words.length > 1 &&
     CHANGE_PARTICIPLES.has(words[0]!) &&
     !hasFigure(text) &&
-    onlyBooksWords(words.slice(1))
+    words.slice(1).some((w) => LISTED_RECORDS.has(w)) &&
+    words.slice(1).every((w) => LISTED_RECORDS.has(w) || PERIODS.has(w) || PERIOD_JOINERS.has(w))
   ) {
     return 'read';
   }
   if (CHANGE_VERBS.has(words[0]!)) return 'write';
+  /* Inside a question a participle describes only after a subject of its
+   * own ("how many invoices were cancelled", "has CUSTOMER_7K2 settled"),
+   * never straight after the opening auxiliary ("have cleared the debt"). */
   const asks = opensAQuestion(words);
-  if (words.some((w) => CHANGE_VERBS.has(w) && !(asks && CHANGE_PARTICIPLES.has(w)))) {
-    return 'unknown';
-  }
+  const describes = (i: number) =>
+    asks &&
+    CHANGE_PARTICIPLES.has(words[i]!) &&
+    words
+      .slice(0, i)
+      .some((w) => READ_VERBS.has(w) || (!AUXILIARIES.has(w) && !QUESTION_OPENERS.has(w)));
+  if (words.some((w, i) => CHANGE_VERBS.has(w) && !describes(i))) return 'unknown';
 
   const figure = hasFigure(text);
   const trade = words.some((w) => TRADE_VERBS.has(w));
@@ -757,7 +819,7 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
     /* "list sales and add rice sale" asks for a record halfway through. */
     if (words.some((w) => RECORD_INSTRUCTIONS.has(w))) return 'unknown';
     /* "who owes me more than 50k": a filter, not an amount (Codex P2). */
-    const filters = words.some((w) => COMPARISONS.has(w));
+    const filters = COMPARISON_FILTER.test(text);
     if (figure && !filters && (trade || recordNoun || topic)) return 'unknown';
     if (trade) return words.some((w) => QUESTION_FRAMES.has(w)) ? 'read' : 'unknown';
     return topic || recordNoun ? 'read' : 'unknown';

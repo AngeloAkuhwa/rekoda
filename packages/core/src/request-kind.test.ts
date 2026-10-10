@@ -420,6 +420,52 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     expect(requestKind(text)).toBe(kind);
   });
 
+  /* Round 9: dropped-subject past tense is shorthand for a change, not a
+   * description; a comparison filters only the figure it governs. */
+  it.each([
+    'cleared CUSTOMER_7K2 debt',
+    "cleared CUSTOMER_7K2's debt",
+    'Cleared CUSTOMER_7K2 debt today',
+    'settled CUSTOMER_7K2 balance',
+    'settled the balance',
+    'settled all my debts',
+    'refunded CUSTOMER_7K2',
+    'refunded the customer',
+    'cancelled the invoice',
+    'cancelled the last invoice',
+    'cancelled invoice',
+    'deleted the last sale',
+    'reversed the last payment',
+    'voided the last invoice',
+    'marked invoice paid',
+    'updated CUSTOMER_7K2 balance',
+    'reconciled the bank',
+    'have cleared the debt',
+    'have settled the balance',
+    'has cancelled the invoice',
+    'when CUSTOMER_7K2 paid me 20k over transfer',
+    'did CUSTOMER_7K2 pay 20k over transfer',
+    'who paid 20k over transfer',
+  ])('never reads %j as a question', (text) => {
+    expect(requestKind(text)).not.toBe('read');
+  });
+
+  it.each([
+    ['cancelled invoices last month', 'read'],
+    ['refunded payments this month', 'read'],
+    ['show refunded payments this month', 'read'],
+    ['how many invoices were cancelled this month?', 'read'],
+    ['has CUSTOMER_7K2 settled her balance?', 'read'],
+    ['who owes me more than 50k', 'read'],
+    ['list expenses over 5k this month', 'read'],
+    ['who owes me 50k and above', 'read'],
+    ['who owes me, PDF', 'read'],
+    ['how much did I sell, Monday', 'read'],
+    ['show me sales, Oga', 'read'],
+  ] as const)('reads %j as %s', (text, kind) => {
+    expect(requestKind(text)).toBe(kind);
+  });
+
   it('is not fooled by a year into seeing money', () => {
     expect(requestKind('sales in 2026')).toBe('read');
     expect(requestKind('sold rice 2026k')).toBe('write');
