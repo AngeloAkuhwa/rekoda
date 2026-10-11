@@ -443,9 +443,13 @@ const DATES = new RegExp(
 
 function hasFigure(raw: string): boolean {
   const text = raw.replace(DATES, ' ');
-  /* "did Ada pay a grand": a thousand naira; never "grand total" (Codex P2). */
+  /* "did Ada pay a grand": a thousand naira; never "grand total" (Codex P2),
+   * and never a filter, "more than a grand", as "more than 1000" is not
+   * (final review C). */
   if (
-    /\b(?:a|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+grand\b(?!\s+total)/i.test(text)
+    /(?<!\b(?:above|over|than|under|below|least|most|exceeding)\s)\b(?:a|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+grand\b(?!\s+total)/i.test(
+      text,
+    )
   ) {
     return true;
   }
@@ -1266,16 +1270,34 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
      * balance" still ask (final review C). */
     /* "show the invoice as paid", "show the sale as refunded": setting a
      * status, not showing one (Codex P2). */
-    if (words.some((w, i) => w === 'as' && STATUS_SET.has(words[i + 1] ?? ''))) return 'unknown';
-    /* "what if we sell rice", "what if I pay Ada": a proposal (Codex P2). */
+    /* "invoices marked as paid", "sales recorded as paid" filter by a
+     * status already set; they still read (final review D). */
+    if (
+      words.some(
+        (w, i) =>
+          w === 'as' &&
+          STATUS_SET.has(words[i + 1] ?? '') &&
+          !STATUS_FILTERS.has(words[i - 1] ?? '') &&
+          !(words[i - 1] === 'in' && words[i - 2] === 'came'),
+      )
+    ) {
+      return 'unknown';
+    }
+    /* "what if we sell rice", "what if I pay Ada", "what if we just invoice
+     * Ada": a subject, then a present-tense action (Codex P2). "what if any
+     * invoice is overdue" and "what if anyone paid" ask (final review C). */
     if (
       words[0] === 'what' &&
       words[1] === 'if' &&
-      words
-        .slice(2, 5)
-        .some((w) => TRADE_VERBS.has(w) || CHANGE_VERBS.has(w) || proposesAction(`${w}ing`))
+      ['we', 'i', 'you', 'they'].includes(words[2] ?? '')
     ) {
-      return 'unknown';
+      let k = 3;
+      while (
+        ['just', 'now', 'also', 'should', 'can', 'could', 'go', 'then'].includes(words[k] ?? '')
+      ) {
+        k += 1;
+      }
+      if (PRESENT_ACTIONS.has(words[k] ?? '')) return 'unknown';
     }
     const about = words.indexOf('about');
     const proposed = words[about + 1] ?? '';
@@ -1476,6 +1498,20 @@ function proposesAction(word: string): boolean {
   );
 }
 
+/** What makes "as <status>" a filter: "invoices MARKED as paid". */
+const STATUS_FILTERS = new Set([
+  'record',
+  'marked',
+  'flagged',
+  'recorded',
+  'listed',
+  'tagged',
+  'showing',
+  'shown',
+  'entered',
+  'logged',
+]);
+
 /** A status a record is set to: "show the invoice AS PAID". */
 const STATUS_SET = new Set([
   'paid',
@@ -1493,6 +1529,58 @@ const STATUS_SET = new Set([
   'complete',
   'completed',
   'received',
+]);
+
+/** Present-tense actions a "what if we …" proposal names. */
+const PRESENT_ACTIONS = new Set([
+  'sell',
+  'buy',
+  'pay',
+  'spend',
+  'receive',
+  'collect',
+  'restock',
+  'order',
+  'record',
+  'add',
+  'log',
+  'enter',
+  'book',
+  'create',
+  'issue',
+  'raise',
+  'save',
+  'clear',
+  'settle',
+  'cancel',
+  'delete',
+  'remove',
+  'reverse',
+  'void',
+  'refund',
+  'update',
+  'change',
+  'edit',
+  'correct',
+  'adjust',
+  'mark',
+  'reconcile',
+  'return',
+  'send',
+  'forward',
+  'share',
+  'invoice',
+  'bill',
+  'charge',
+  'credit',
+  'debit',
+  'write',
+  'remind',
+  'chase',
+  'post',
+  'transfer',
+  'waive',
+  'discount',
 ]);
 
 /** Actions a proposal names that the other lists do not: "how about invoicing Ada". */

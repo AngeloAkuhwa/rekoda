@@ -158,10 +158,38 @@ export async function holdsReservedUnit(
   eventId: string,
   unit: string,
 ): Promise<boolean> {
+  /* A unit may carry its quantity: "VOICE_MINUTES:5". */
   const rows = await tx.execute<{ held: boolean }>(sql`
-    SELECT ${unit} = ANY(reserved_units) AS held FROM external_events
+    SELECT EXISTS (
+      SELECT 1 FROM unnest(reserved_units) AS u
+       WHERE u = ${unit} OR u LIKE ${unit} || ':%') AS held
+      FROM external_events
      WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid`);
   return [...rows][0]?.held === true;
+}
+
+/**
+ * Take one recorded unit of `unit` off the event, with or without a
+ * quantity ("VOICE_MINUTES:5"), and return it as recorded, or null when the
+ * event holds none. In the caller's transaction, beside the refund.
+ */
+export async function takeRecordedUnit(
+  tx: TenantDb,
+  businessId: string,
+  eventId: string,
+  unit: string,
+): Promise<string | null> {
+  const rows = await tx.execute<{ u: string }>(sql`
+    SELECT u FROM external_events, unnest(reserved_units) AS u
+     WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid
+       AND (u = ${unit} OR u LIKE ${unit} || ':%')
+     LIMIT 1`);
+  const held = [...rows][0]?.u;
+  if (!held) return null;
+  await tx.execute(sql`
+    UPDATE external_events SET reserved_units = array_remove(reserved_units, ${held})
+     WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid`);
+  return held;
 }
 
 /**

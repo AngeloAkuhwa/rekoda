@@ -279,8 +279,11 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       );
       if (!spoken) {
         /* Already answered inside, and already marked new-or-not. Nothing to
-         * interpret and nothing to charge for. Still the newest thing this
-         * member said, so whatever was open for them is retired (Build 6). */
+         * interpret and nothing to charge for: whatever an earlier attempt
+         * of this message took goes back (G-57 final review B). Still the
+         * newest thing this member said, so whatever was open for them is
+         * retired (Build 6). */
+        await releaseHeldUnits(deps, businessId, eventId, usagePeriod(event.receivedAt));
         await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
         await events.markProcessed(tx, eventId, null, businessId);
         return;
@@ -297,6 +300,9 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         eventId,
       );
       if (!read) {
+        /* Refused or failed before anything was delivered: whatever an
+         * earlier attempt of this message took goes back. */
+        await releaseHeldUnits(deps, businessId, eventId, usagePeriod(event.receivedAt));
         await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
         await events.markProcessed(tx, eventId, null, businessId);
         return;
@@ -1171,7 +1177,9 @@ async function transcribeVoiceNote(
         allowance,
         seconds,
       );
-      if (ok) await events.noteReservedUnit(own, businessId, eventId, 'VOICE_MINUTES');
+      /* The seconds are recorded with the unit, so a give-back returns
+       * exactly what was taken (G-57 final review B). */
+      if (ok) await events.noteReservedUnit(own, businessId, eventId, `VOICE_MINUTES:${seconds}`);
       return ok;
     }));
   if (!granted) {
@@ -4574,7 +4582,11 @@ async function interpretedReply(
    * plan carries the fact (allowances are all zero), so the gate below still
    * refuses; what changes is what the merchant is told, and a lapsed PAID
    * plan is not told its free trial ended (G-65, `lapsedReply`). */
-  if (plan === 'expired') return lapsedReply(tx, businessId, from);
+  if (plan === 'expired') {
+    /* A retry after the plan lapsed: attempt 1's unit goes back. */
+    await refundMessage(tx, businessId, eventId, usagePeriod(receivedAt));
+    return lapsedReply(tx, businessId, from);
+  }
 
   /* ENTITLEMENT BEFORE METER, and before the model is paid for (spec §4.3,
    * rules 1 to 3). An Integrate-only merchant holds the customer-facing half
@@ -4582,6 +4594,7 @@ async function interpretedReply(
    * provider is called — so there is nothing to refund and no path where the
    * meter can drift. */
   if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_CHAT')) {
+    await refundMessage(tx, businessId, eventId, usagePeriod(receivedAt));
     return replies.chatNotInPlan();
   }
 
@@ -4618,6 +4631,7 @@ async function interpretedReply(
         usagePeriod(receivedAt),
         'DOCUMENTS_UNDERSTOOD',
       );
+      await refundMessage(tx, businessId, eventId, usagePeriod(receivedAt));
       return replies.viewOnlyRole();
     }
     asked = requestKind(safeText);
@@ -5257,10 +5271,30 @@ function giveBackUnit(
   n = 1,
 ): Promise<void> {
   return withBusiness(deps.db, businessId, async (own) => {
-    if (await events.takeReservedUnit(own, businessId, eventId, unit)) {
-      await usageRepo.refundUnit(own, businessId, period, unit, n);
-    }
+    const held = await events.takeRecordedUnit(own, businessId, eventId, unit);
+    if (!held) return;
+    /* The quantity recorded when it was taken, if there is one. */
+    const recorded = Number(held.split(':')[1]);
+    await usageRepo.refundUnit(own, businessId, period, unit, recorded > 0 ? recorded : n);
   });
+}
+
+/**
+ * Give back EVERYTHING this message holds: its message unit, a page, a
+ * note's seconds. For a message that ends delivering nothing (a refusal or
+ * a failure before the interpreter answered), on whichever attempt: a unit
+ * an earlier attempt took is never left charged (G-57 final review B). On a
+ * first attempt that took nothing, it gives back nothing.
+ */
+async function releaseHeldUnits(
+  deps: InboundMessageDeps,
+  businessId: string,
+  eventId: string,
+  period: string,
+): Promise<void> {
+  for (const unit of ['AI_ACTIONS', 'DOCUMENTS_UNDERSTOOD', 'VOICE_MINUTES'] as const) {
+    await giveBackUnit(deps, businessId, eventId, period, unit);
+  }
 }
 
 /**
@@ -5268,7 +5302,12 @@ function giveBackUnit(
  *
  * Taken and refunded in the JOB's transaction: the refund commits only with
  * the attempt that answers, so an attempt that dies after refunding gives
- * nothing back and leaves the reservation for the next. Exactly once, in
+ * nothing back and leaves the reservation for the next. The counter row is
+ * therefore held until the job commits, through the reply send, as the G-23
+ * confirmation refund already is; inbound jobs for a business are
+ * serialised anyway, and the only other writer (a pack credit) waits. Lock
+ * order differs from the consume's (event, then counter), which is safe
+ * only because every writer of an event row holds the business lock. Exactly once, in
  * the month it was taken, never below zero, never twice, and never for an
  * attempt that took nothing (G-57; replaces the earlier retry under-count).
  */
