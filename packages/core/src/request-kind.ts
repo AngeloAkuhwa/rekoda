@@ -1271,13 +1271,16 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
     /* "show the invoice as paid", "show the sale as refunded": setting a
      * status, not showing one (Codex P2). */
     /* "invoices marked as paid", "sales recorded as paid" filter by a
-     * status already set; they still read (final review D). */
+     * status already set; they still read (final review D), as do "which
+     * sales did we log as refunded" and "did we record the sale as paid",
+     * where the filtering verb comes earlier in the question (final review
+     * C/D). */
     if (
       words.some(
         (w, i) =>
           w === 'as' &&
           STATUS_SET.has(words[i + 1] ?? '') &&
-          !STATUS_FILTERS.has(words[i - 1] ?? '') &&
+          !words.slice(0, i).some((v) => STATUS_FILTERS.has(v)) &&
           !(words[i - 1] === 'in' && words[i - 2] === 'came'),
       )
     ) {
@@ -1501,6 +1504,11 @@ function proposesAction(word: string): boolean {
 /** What makes "as <status>" a filter: "invoices MARKED as paid". */
 const STATUS_FILTERS = new Set([
   'record',
+  'log',
+  'flag',
+  'enter',
+  'tag',
+  'mark',
   'marked',
   'flagged',
   'recorded',
