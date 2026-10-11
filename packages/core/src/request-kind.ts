@@ -443,6 +443,12 @@ const DATES = new RegExp(
 
 function hasFigure(raw: string): boolean {
   const text = raw.replace(DATES, ' ');
+  /* "did Ada pay a grand": a thousand naira; never "grand total" (Codex P2). */
+  if (
+    /\b(?:a|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+grand\b(?!\s+total)/i.test(text)
+  ) {
+    return true;
+  }
   /* "did Ada pay one?", "did Ada pay 2026?": the amount paid, not a count
    * or a year (Codex P2); "sales in 2026" keeps its year. */
   if (/\b(?:pa(?:y|ys|id)|received?|collected|sold|bought|spent)\s+(?:one|\d{4})\b/i.test(text)) {
@@ -1258,6 +1264,19 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
      * and only an action this grammar knows: "what about pending
      * invoices", "what about marketing expenses", "what about opening
      * balance" still ask (final review C). */
+    /* "show the invoice as paid", "show the sale as refunded": setting a
+     * status, not showing one (Codex P2). */
+    if (words.some((w, i) => w === 'as' && STATUS_SET.has(words[i + 1] ?? ''))) return 'unknown';
+    /* "what if we sell rice", "what if I pay Ada": a proposal (Codex P2). */
+    if (
+      words[0] === 'what' &&
+      words[1] === 'if' &&
+      words
+        .slice(2, 5)
+        .some((w) => TRADE_VERBS.has(w) || CHANGE_VERBS.has(w) || proposesAction(`${w}ing`))
+    ) {
+      return 'unknown';
+    }
     const about = words.indexOf('about');
     const proposed = words[about + 1] ?? '';
     if (
@@ -1456,6 +1475,25 @@ function proposesAction(word: string): boolean {
       PROPOSED_ACTIONS.has(w),
   );
 }
+
+/** A status a record is set to: "show the invoice AS PAID". */
+const STATUS_SET = new Set([
+  'paid',
+  'unpaid',
+  'cancelled',
+  'canceled',
+  'refunded',
+  'reversed',
+  'void',
+  'voided',
+  'settled',
+  'cleared',
+  'deleted',
+  'done',
+  'complete',
+  'completed',
+  'received',
+]);
 
 /** Actions a proposal names that the other lists do not: "how about invoicing Ada". */
 const PROPOSED_ACTIONS = new Set([

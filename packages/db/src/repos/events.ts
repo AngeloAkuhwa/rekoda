@@ -181,11 +181,13 @@ export async function takeReservedUnitsOf(
      FOR UPDATE`);
   const held = [...rows][0]?.units ?? [];
   const taken = held.filter((u) => kinds.includes(u));
-  if (taken.length === 0) return [];
-  const kept = held.filter((u) => !kinds.includes(u));
-  await tx.execute(sql`
-    UPDATE external_events SET reserved_units = ${kept}::text[]
-     WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid`);
+  /* One kind at a time: `array_remove` takes every occurrence of it, and a
+   * bound array would be expanded into separate parameters. */
+  for (const kind of new Set(taken)) {
+    await tx.execute(sql`
+      UPDATE external_events SET reserved_units = array_remove(reserved_units, ${kind})
+       WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid`);
+  }
   return taken;
 }
 

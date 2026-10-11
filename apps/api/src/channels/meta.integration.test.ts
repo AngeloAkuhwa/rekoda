@@ -5894,9 +5894,11 @@ describe('a receipt photo', () => {
 
     expect(stubOcr.calls).toHaveLength(1);
     expect(stubSender.lastText).toBe(replies.viewOnlyRole().text);
-    /* The page's unit is back and no message unit was taken; nothing was
-     * drafted. (The document-type check already ran on the read page.) */
+    /* The page's unit is back, no message unit was taken, nothing was
+     * drafted, and the role is checked again before the paid document
+     * classifier, so no model was called (Codex P2). */
     expect(await g57Footprint(business.id)).toEqual(NOTHING_TOUCHED);
+    expect(stubTransport.requests).toHaveLength(0);
   });
 
   /* The same photograph from a delegate, who may record trade, is read and

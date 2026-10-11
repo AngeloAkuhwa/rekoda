@@ -1188,6 +1188,15 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     ['how about invoicing CUSTOMER_7K2', 'unknown'],
     ['what about cancelling the invoice', 'unknown'],
     ['what about paying Ada', 'unknown'],
+    // Codex on 8816a40 and 20091db
+    ['show the invoice as paid', 'unknown'],
+    ['show the sale as refunded', 'unknown'],
+    ['show paid invoices', 'read'],
+    ['what if we sell rice', 'unknown'],
+    ['what if I pay Ada', 'unknown'],
+    ['what did we sell today', 'read'],
+    ['did Ada pay a grand', 'unknown'],
+    ['show the grand total of sales this month', 'read'],
   ] as const)('reads %j as %s', (text, kind) => {
     expect(requestKind(text)).toBe(kind);
   });

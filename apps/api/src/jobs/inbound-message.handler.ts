@@ -825,6 +825,9 @@ async function readReceiptPhoto(
    * or metered. Pinned to what photos do now: a photo feature that only reads
    * would need its own path, not this refusal. */
   if (!(await mayTransact(tx, businessId, inbound.from))) {
+    /* A retry whose member was demoted after attempt 1 read the page gives
+     * that page back: the request ends refused (Codex P2). */
+    await giveBackUnit(deps, businessId, eventId, usagePeriod(receivedAt), 'DOCUMENTS_UNDERSTOOD');
     await deps.replySender.send(tx, {
       businessId,
       to: inbound.from,
@@ -981,6 +984,18 @@ async function readReceiptPhoto(
    * stub) writes no row. `ocr_vision` matches the OCR cost class. */
   if (extracted.usage) {
     await recordVisionRead(deps, businessId, extracted.usage, recorded.id, log);
+  }
+
+  /* A member demoted while the page was being read is refused here, before
+   * the paid document classifier, and the page goes back (Codex P2). */
+  if (!(await mayTransact(tx, businessId, inbound.from))) {
+    await giveBackUnit(deps, businessId, eventId, period, 'DOCUMENTS_UNDERSTOOD');
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.viewOnlyRole(),
+    });
+    return null;
   }
 
   /* The caption is what the merchant TYPED, and it says what the photograph
@@ -4606,8 +4621,13 @@ async function interpretedReply(
       return replies.viewOnlyRole();
     }
     asked = requestKind(safeText);
-    if (asked === 'write') return replies.viewOnlyRole();
-    if (asked === 'unknown') return replies.viewOnlyAskAQuestion();
+    if (asked !== 'read') {
+      /* A member demoted between attempts may have left a unit on the
+       * message from attempt 1; a refused request consumes nothing, so it
+       * goes back, once (Codex P2). Nothing is held on a first attempt. */
+      await refundMessage(tx, businessId, eventId, usagePeriod(receivedAt));
+      return asked === 'write' ? replies.viewOnlyRole() : replies.viewOnlyAskAQuestion();
+    }
   }
 
   const monthlyMessages = await meterAllowance(deps.config, tx, businessId, plan, 'AI_ACTIONS');
