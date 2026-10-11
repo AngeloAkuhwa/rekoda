@@ -14,6 +14,7 @@ export * from './risk.js';
 export * from './entitlements.js';
 export * from './capabilities.js';
 export * from './chat-access.js';
+export * from './request-kind.js';
 export * from './provenance.js';
 export * from './chart.js';
 export * from './invoice-layout.js';

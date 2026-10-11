@@ -151,6 +151,94 @@ export async function takeReservedUnits(
   return [...rows][0]?.units ?? [];
 }
 
+/** Does the event hold `unit`? A retry's question before it meters again. */
+export async function holdsReservedUnit(
+  tx: TenantDb,
+  businessId: string,
+  eventId: string,
+  unit: string,
+): Promise<boolean> {
+  /* A unit may carry its quantity: "VOICE_MINUTES:5". */
+  const rows = await tx.execute<{ held: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM unnest(reserved_units) AS u
+       WHERE u = ${unit} OR u LIKE ${unit} || ':%') AS held
+      FROM external_events
+     WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid`);
+  return [...rows][0]?.held === true;
+}
+
+/**
+ * Take one recorded unit of `unit` off the event, with or without a
+ * quantity ("VOICE_MINUTES:5"), and return it as recorded, or null when the
+ * event holds none. In the caller's transaction, beside the refund.
+ */
+export async function takeRecordedUnit(
+  tx: TenantDb,
+  businessId: string,
+  eventId: string,
+  unit: string,
+): Promise<string | null> {
+  const rows = await tx.execute<{ u: string }>(sql`
+    SELECT u FROM external_events, unnest(reserved_units) AS u
+     WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid
+       AND (u = ${unit} OR u LIKE ${unit} || ':%')
+     LIMIT 1`);
+  const held = [...rows][0]?.u;
+  if (!held) return null;
+  await tx.execute(sql`
+    UPDATE external_events SET reserved_units = array_remove(reserved_units, ${held})
+     WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid`);
+  return held;
+}
+
+/**
+ * Take every recorded unit of the given kinds off the event and return them,
+ * once each as recorded; other kinds stay. For a flow that reserves only
+ * those kinds (a confirmation's document and order units).
+ */
+export async function takeReservedUnitsOf(
+  tx: TenantDb,
+  businessId: string,
+  eventId: string,
+  kinds: readonly string[],
+): Promise<string[]> {
+  const rows = await tx.execute<{ units: string[] }>(sql`
+    SELECT reserved_units AS units FROM external_events
+     WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid
+     FOR UPDATE`);
+  const held = [...rows][0]?.units ?? [];
+  const taken = held.filter((u) => kinds.includes(u));
+  /* One kind at a time: `array_remove` takes every occurrence of it, and a
+   * bound array would be expanded into separate parameters. */
+  for (const kind of new Set(taken)) {
+    await tx.execute(sql`
+      UPDATE external_events SET reserved_units = array_remove(reserved_units, ${kind})
+       WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid`);
+  }
+  return taken;
+}
+
+/**
+ * Take ONE recorded unit off the event, if it is there, and say whether it
+ * was. Unlike `takeReservedUnits`, which clears all of them, this leaves the
+ * rest: a voice note's seconds stay charged when its message unit goes back.
+ * In the caller's transaction, beside the refund, so they commit together.
+ */
+export async function takeReservedUnit(
+  tx: TenantDb,
+  businessId: string,
+  eventId: string,
+  unit: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE external_events SET reserved_units = array_remove(reserved_units, ${unit})
+     WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid
+       AND ${unit} = ANY(reserved_units)
+    RETURNING id`);
+  return [...rows].length === 1;
+}
+
 /**
  * Mark an event handled. Errors are recorded, not thrown away.
  *

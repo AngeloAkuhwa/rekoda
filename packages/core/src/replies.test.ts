@@ -86,6 +86,8 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   ],
   erasureKept: [replies.erasureKept()],
   viewOnlyRole: [replies.viewOnlyRole()],
+  viewOnlyAskAQuestion: [replies.viewOnlyAskAQuestion()],
+  viewOnlyPhoto: [replies.viewOnlyPhoto()],
   strayNumber: [replies.strayNumber()],
   clarification: [replies.clarification('Which invoice was that payment against?')],
   allowanceExhausted: [
