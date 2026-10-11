@@ -341,12 +341,14 @@ export class PublicShopController {
     };
 
     /* Only now — with the gates cleared and the units paid — does the
-     * customer's identity enter the vault. A refused phone refunds both. */
-    const customer = await this.gateway.resolveStorefrontCustomer(
-      businessId,
-      parsed.data.customerName,
-      parsed.data.customerPhone,
-    );
+     * customer's identity enter the vault. A refused phone refunds both, and
+     * so does a vault failure, which then surfaces (G-60). */
+    const customer = await this.gateway
+      .resolveStorefrontCustomer(businessId, parsed.data.customerName, parsed.data.customerPhone)
+      .catch(async (error: unknown) => {
+        await refundBoth();
+        throw error;
+      });
     if (!customer) {
       await refundBoth();
       return { outcome: 'bad_phone' };

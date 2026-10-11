@@ -9,9 +9,10 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createDb, identity, schema, withBusiness, type Db } from '@rekoda/db';
+import { createDb, customersRepo, identity, schema, sql, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
-import { decryptFacet } from '@rekoda/core/vault';
+import { decryptFacet, encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
+import { rehydrate } from '@rekoda/core/privacy';
 import { PrivacyGateway } from './gateway.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
 
@@ -306,5 +307,175 @@ describe('a known customer name never reaches a model', () => {
     const { text } = await gateway.tokenise(businessId, 'balance due from Ada Obi');
     expect(text).not.toContain('Ada Obi');
     expect(text).toContain(token);
+  });
+});
+
+/**
+ * G-60: one customer named by several facets in one message, a token that a
+ * later pass must treat as opaque, and a storefront facet that conflicts.
+ */
+describe('one person, several facets, one message (G-60)', () => {
+  /** A customer known by name AND phone, as a storefront checkout leaves them. */
+  async function adaKnownByNameAndPhone(businessId: string) {
+    const { token, customerId } = await gateway.resolveMention(businessId, 'Ada Obi');
+    await customersRepo.addIdentityFacet(db, businessId, customerId, {
+      facet: 'phone',
+      ciphertext: encryptFacet('08031234567', config.vaultKey, `${businessId}:phone`),
+      matchKey: matchKeyFor(
+        businessId,
+        'phone',
+        normaliseFacet('phone', '08031234567'),
+        config.matchKey,
+      ),
+    });
+    return token;
+  }
+
+  it('shows every facet the merchant typed, name first, whichever pass ran last', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const token = await adaKnownByNameAndPhone(businessId);
+
+    const tokenised = await gateway.tokenise(businessId, 'Ada Obi on 08031234567 paid 20k');
+    expect(tokenised.text).toBe(`${token} on ${token} paid 20k`);
+    /* One token for one person, and the reply names her by what was typed:
+     * never the name standing where the phone was, nor the reverse. */
+    expect(rehydrate(`Receipt sent to ${token}`, tokenised.tokens)).toBe(
+      'Receipt sent to Ada Obi (08031234567)',
+    );
+  });
+
+  it('gives the same display whatever order the facets were typed in', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const token = await adaKnownByNameAndPhone(businessId);
+
+    const nameFirst = await gateway.tokenise(businessId, 'Ada Obi on 08031234567 paid 20k');
+    const phoneFirst = await gateway.tokenise(businessId, '08031234567 is Ada Obi, paid 20k');
+    expect(phoneFirst.tokens.get(token)).toBe(nameFirst.tokens.get(token));
+  });
+
+  it('shows one number once when it is typed in two formats', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const tokenised = await gateway.tokenise(
+      businessId,
+      '08031234567 paid, call +234 803 123 4567 tomorrow',
+    );
+    const [token] = [...tokenised.tokens.keys()];
+    expect(tokenised.tokens.size).toBe(1);
+    expect(tokenised.tokens.get(token!)).toBe('08031234567');
+  });
+
+  it('keeps two different customers apart', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const ada = await adaKnownByNameAndPhone(businessId);
+    const bola = (await gateway.resolveMention(businessId, 'Bola Ade')).token;
+    const tokenised = await gateway.tokenise(businessId, 'Ada Obi and Bola Ade paid');
+    expect(tokenised.tokens.get(ada)).toBe('Ada Obi');
+    expect(tokenised.tokens.get(bola)).toBe('Bola Ade');
+  });
+});
+
+describe('a token is one opaque span (G-60)', () => {
+  /** A customer whose token we choose, known by a phone number. */
+  async function customerWithToken(businessId: string, token: string, phone: string) {
+    await customersRepo.createCustomerWithIdentities(db, businessId, token, [
+      {
+        facet: 'phone',
+        ciphertext: encryptFacet(phone, config.vaultKey, `${businessId}:phone`),
+        matchKey: matchKeyFor(businessId, 'phone', normaliseFacet('phone', phone), config.matchKey),
+      },
+    ]);
+  }
+
+  it.each([
+    ['at the start', '08031234567 paid 20k'],
+    ['in the middle', 'today 08031234567 paid 20k'],
+    ['beside punctuation', 'paid by (08031234567).'],
+  ])('survives byte for byte %s, even when a stored name spells part of it', async (_, text) => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    await customerWithToken(businessId, 'CUSTOMER_ABC', '08031234567');
+    /* Names that spell the token's own words, and one that runs past it. */
+    await gateway.resolveMention(businessId, 'Abc');
+    await gateway.resolveMention(businessId, 'Customer');
+    await gateway.resolveMention(businessId, 'Abc Paid');
+
+    const tokenised = await gateway.tokenise(businessId, text);
+    expect(tokenised.text).toBe(text.replace('08031234567', 'CUSTOMER_ABC'));
+    expect(rehydrate(tokenised.text, tokenised.tokens)).toBe(text);
+  });
+
+  it('keeps two tokens whole and still replaces a real name beside them', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    await customerWithToken(businessId, 'CUSTOMER_ABC', '08031234567');
+    await customerWithToken(businessId, 'CUSTOMER_XYZ', '08099998888');
+    await gateway.resolveMention(businessId, 'Abc');
+    await gateway.resolveMention(businessId, 'Xyz');
+    const bola = (await gateway.resolveMention(businessId, 'Bola Ade')).token;
+
+    const text = 'Bola Ade, 08031234567 and 08099998888 paid Bola Ade';
+    const tokenised = await gateway.tokenise(businessId, text);
+    expect(tokenised.text).toBe(`${bola}, CUSTOMER_ABC and CUSTOMER_XYZ paid ${bola}`);
+    expect(rehydrate(tokenised.text, tokenised.tokens)).toBe(text);
+  });
+
+  it('never reads a token the merchant pasted back as a name', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    await customerWithToken(businessId, 'CUSTOMER_ABC', '08031234567');
+    await gateway.resolveMention(businessId, 'Abc');
+    const tokenised = await gateway.tokenise(businessId, 'did CUSTOMER_ABC pay?');
+    expect(tokenised.text).toBe('did CUSTOMER_ABC pay?');
+  });
+});
+
+describe('a storefront checkout attaches the typed name only when it is free (G-60)', () => {
+  it('attaches a new name to a new phone', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const resolved = await gateway.resolveStorefrontCustomer(businessId, 'Ada Obi', '08031234567');
+    const named = await gateway.resolveMention(businessId, 'Ada Obi');
+    expect(named.customerId).toBe(resolved!.customerId);
+  });
+
+  it('keeps the phone anchor and merges nothing when the name is another customer', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const other = await gateway.resolveMention(businessId, 'Ada Obi');
+
+    const resolved = await gateway.resolveStorefrontCustomer(businessId, 'Ada Obi', '08031234567');
+    expect(resolved!.customerId).not.toBe(other.customerId);
+    /* The name still belongs to the customer who had it; the phone anchors
+     * a separate record, and nothing moved between them. */
+    expect((await gateway.resolveMention(businessId, 'Ada Obi')).customerId).toBe(other.customerId);
+    const facets = await customersRepo.identitiesForCustomer(db, businessId, resolved!.customerId);
+    expect(facets.map((f) => f.facet)).toEqual(['phone']);
+  });
+
+  it('does not swallow a failure that is not an identity conflict', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_name_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.facet = 'name' THEN RAISE EXCEPTION 'g60: the vault is unavailable'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_name_fails BEFORE INSERT ON customer_identities
+          FOR EACH ROW EXECUTE FUNCTION g60_name_fails()`);
+
+      const failure = await gateway
+        .resolveStorefrontCustomer(businessId, 'Ada Obi', '08031234567')
+        .then(
+          () => null,
+          (error: unknown) => error as Error,
+        );
+      /* It surfaces, with the database's reason and nothing it was writing:
+       * no ciphertext, no match key, no statement. */
+      expect(failure?.message).toMatch(/the vault is unavailable/);
+      expect(failure?.message).not.toMatch(/insert into|params|v[0-9]\./i);
+      expect(failure?.message).not.toContain('Ada Obi');
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_name_fails ON customer_identities`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_name_fails()`);
+      await closeOwner();
+    }
   });
 });

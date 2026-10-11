@@ -1,11 +1,14 @@
 import { randomBytes } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import {
+  displayOf,
   generateCustomerToken,
+  protectedSpans,
   sequentialToken,
   tokeniseMessage,
   type PiiSpan,
   type TokenisedMessage,
+  type TypedFacet,
 } from '@rekoda/core/privacy';
 import { encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
 import { customersRepo, suppliersRepo, withBusiness, type Db } from '@rekoda/db';
@@ -148,10 +151,24 @@ export class PrivacyGateway {
       if (!placeholders.has(token)) tokens.set(token, value);
     }
 
+    /**
+     * Every facet the merchant typed for each customer token, in the order
+     * typed (G-60). One person named by phone AND name is one token, so the
+     * model still sees one person; what the reply shows for that token is
+     * composed from all of them once both passes are done, never from
+     * whichever pass wrote last.
+     */
+    const typed = new Map<string, TypedFacet[]>();
+    const note = (token: string, facet: TypedFacet['facet'], value: string) => {
+      const list = typed.get(token) ?? [];
+      list.push({ facet, value, key: normaliseFacet(facet, value) });
+      typed.set(token, list);
+    };
+
     for (const item of pending) {
       const resolved = await this.customerTokenFor(businessId, item.kind, item.value);
       out = out.split(item.placeholder).join(resolved.token);
-      tokens.set(resolved.token, item.value);
+      note(resolved.token, item.kind, item.value);
       if (!seen.some((c) => c.customerId === resolved.customerId)) seen.push(resolved);
     }
 
@@ -169,10 +186,18 @@ export class PrivacyGateway {
      * typed, and there is no cap above which a real customer stops being
      * recognised.
      */
-    const words = [...out.matchAll(NAME_WORD)].map((m) => {
-      const start = m.index ?? 0;
-      return { start, end: start + m[0].length };
-    });
+    /* A token is one opaque span (G-60). No word inside one is a candidate,
+     * and no candidate runs across one, so a stored name can neither splice
+     * into a token nor join the words either side of it. */
+    const shielded = protectedSpans(out, [...tokens.keys(), ...typed.keys()]);
+    const touchesToken = (start: number, end: number) =>
+      shielded.some((s) => start < s.end && s.start < end);
+    const words = [...out.matchAll(NAME_WORD)]
+      .map((m) => {
+        const start = m.index ?? 0;
+        return { start, end: start + m[0].length };
+      })
+      .filter((w) => !touchesToken(w.start, w.end));
     const candidates: Array<{ start: number; end: number; matchKey: string }> = [];
     const keys = new Set<string>();
     for (let i = 0; i < words.length; i++) {
@@ -183,6 +208,7 @@ export class PrivacyGateway {
         if (!to) continue;
         const start = from.start;
         const end = to.end;
+        if (touchesToken(start, end)) break;
         const normalised = normaliseFacet('name', out.slice(start, end));
         if (normalised.length < MIN_NAME_LENGTH) continue;
         const matchKey = matchKeyFor(businessId, 'name', normalised, this.config.matchKey);
@@ -216,16 +242,19 @@ export class PrivacyGateway {
       });
     }
 
+    for (const c of [...claimed].sort((a, b) => a.start - b.start)) {
+      note(c.token, 'name', out.slice(c.start, c.end));
+    }
     /* Rewrite right to left so an earlier span's offsets survive a later
      * substitution that changes the string's length. */
     for (const c of [...claimed].sort((a, b) => b.start - a.start)) {
-      tokens.set(c.token, out.slice(c.start, c.end));
       out = out.slice(0, c.start) + c.token + out.slice(c.end);
       if (!seen.some((s) => s.customerId === c.customerId)) {
         seen.push({ token: c.token, customerId: c.customerId, facet: 'name', created: false });
       }
     }
 
+    for (const [token, facets] of typed) tokens.set(token, displayOf(facets));
     return { text: out, tokens, link: proposeLink(seen) };
   }
 
@@ -301,9 +330,11 @@ export class PrivacyGateway {
             this.config.matchKey,
           ),
         });
-      } catch {
+      } catch (error) {
         /* The name already keys another customer. Attaching it is a courtesy;
-         * the phone-anchored identity stands either way. */
+         * the phone-anchored identity stands, and the two records are never
+         * merged on a typed name. Anything else is a real failure (G-60). */
+        if (!(error instanceof customersRepo.IdentityConflict)) throw error;
       }
     }
     return { token: byPhone.token, customerId: byPhone.customerId };

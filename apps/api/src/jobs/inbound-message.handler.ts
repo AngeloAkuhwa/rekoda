@@ -4783,7 +4783,9 @@ async function interpretedReply(
   if ('customer' in command && command.customer && command.customer.kind === 'mention') {
     const mention = command.customer.mention;
     const named = await deps.gateway.resolveMention(businessId, mention);
-    tokens.set(named.token, mention);
+    /* A token the gateway already showed keeps what it composed from what
+     * the merchant typed (G-60); a mention only adds one it did not see. */
+    if (!tokens.has(named.token)) tokens.set(named.token, mention);
     command = {
       ...command,
       customer: { kind: 'token', token: named.token },

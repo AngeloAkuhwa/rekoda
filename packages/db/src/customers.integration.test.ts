@@ -283,3 +283,117 @@ describe('linking two customers', () => {
     expect(Number([...survived][0]?.n)).toBe(1);
   });
 });
+
+/**
+ * G-60: adding a facet to a customer has an explicit contract. A facet that
+ * already keys ANOTHER customer is an `IdentityConflict`, never a raw
+ * database error and never a second owner; the same facet on the same
+ * customer is already done; anything else is a real failure and surfaces.
+ */
+describe('adding a facet to a known customer (G-60)', () => {
+  const nameFacet = (businessId: string, name: string) => ({
+    facet: 'name' as const,
+    ciphertext: encryptFacet(name, VAULT_KEY),
+    matchKey: matchKeyFor(businessId, 'name', normaliseFacet('name', name), MATCH_KEY),
+  });
+
+  async function ownersOf(businessId: string, matchKey: string): Promise<string[]> {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ customer_id: string }>(sql`
+        SELECT customer_id FROM customer_identities
+         WHERE business_id = ${businessId}::uuid AND match_key = ${matchKey}`),
+    );
+    return [...rows].map((r) => r.customer_id);
+  }
+
+  it('attaches a facet nobody holds', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000201');
+    const ada = await rememberCustomer(business.id, '08031111111', 'Ada Obi');
+    const facet = nameFacet(business.id, 'Ada Obi');
+
+    await expect(customersRepo.addIdentityFacet(db, business.id, ada.id, facet)).resolves.toBe(
+      'attached',
+    );
+    expect(await ownersOf(business.id, facet.matchKey)).toEqual([ada.id]);
+  });
+
+  it('treats the same facet on the same customer as already done', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000202');
+    const ada = await rememberCustomer(business.id, '08031111111', 'Ada Obi');
+    const facet = nameFacet(business.id, 'Ada Obi');
+    await customersRepo.addIdentityFacet(db, business.id, ada.id, facet);
+
+    await expect(customersRepo.addIdentityFacet(db, business.id, ada.id, facet)).resolves.toBe(
+      'already-attached',
+    );
+    expect(await ownersOf(business.id, facet.matchKey)).toEqual([ada.id]);
+  });
+
+  it('refuses a facet that keys another customer, as an IdentityConflict', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000203');
+    const ada = await rememberCustomer(business.id, '08031111111', 'Ada Obi');
+    const bola = await rememberCustomer(business.id, '08032222222', 'Bola Ade');
+    const facet = nameFacet(business.id, 'Ada Obi');
+    await customersRepo.addIdentityFacet(db, business.id, ada.id, facet);
+
+    await expect(
+      customersRepo.addIdentityFacet(db, business.id, bola.id, facet),
+    ).rejects.toBeInstanceOf(customersRepo.IdentityConflict);
+    expect(await ownersOf(business.id, facet.matchKey)).toEqual([ada.id]);
+  });
+
+  it('gives one owner when two customers race for the same facet', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000204');
+    const ada = await rememberCustomer(business.id, '08031111111', 'Ada Obi');
+    const bola = await rememberCustomer(business.id, '08032222222', 'Bola Ade');
+    const facet = nameFacet(business.id, 'Ada Obi');
+
+    const outcomes = await Promise.allSettled([
+      customersRepo.addIdentityFacet(db, business.id, ada.id, facet),
+      customersRepo.addIdentityFacet(db, business.id, bola.id, facet),
+    ]);
+    const won = outcomes.filter((o) => o.status === 'fulfilled');
+    const lost = outcomes.filter((o) => o.status === 'rejected');
+    expect(won).toHaveLength(1);
+    expect(lost).toHaveLength(1);
+    expect((lost[0] as PromiseRejectedResult).reason).toBeInstanceOf(
+      customersRepo.IdentityConflict,
+    );
+    const owners = await ownersOf(business.id, facet.matchKey);
+    expect(owners).toHaveLength(1);
+  });
+
+  it('lets a failure that is not a conflict surface as itself', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000205');
+    const facet = nameFacet(business.id, 'Ada Obi');
+    /* No such customer: a foreign-key failure, not somebody else's facet. */
+    const missing = '00000000-0000-4000-8000-000000000000';
+    const failure = await customersRepo.addIdentityFacet(db, business.id, missing, facet).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(customersRepo.IdentityConflict);
+    /* The database's reason, never the row it was writing. */
+    expect((failure as Error).message).toMatch(/foreign key/i);
+    expect((failure as Error).message).not.toContain(facet.ciphertext);
+    expect((failure as Error).message).not.toContain(facet.matchKey);
+    expect(await ownersOf(business.id, facet.matchKey)).toEqual([]);
+  });
+
+  it('cannot attach a facet to another business customer', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348030000206');
+    const bola = await seedBusiness('Bola Electronics', '+2348030000207');
+    const theirs = await rememberCustomer(ada.id, '08031111111', 'Ada Obi');
+    const facet = nameFacet(bola.id, 'Ada Obi');
+
+    const failure = await customersRepo.addIdentityFacet(db, bola.id, theirs.id, facet).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(customersRepo.IdentityConflict);
+    expect(await ownersOf(bola.id, facet.matchKey)).toEqual([]);
+    expect(await ownersOf(ada.id, facet.matchKey)).toEqual([]);
+  });
+});

@@ -9,7 +9,9 @@ import {
 } from './vault.js';
 import {
   detectStructuralPii,
+  displayOf,
   generateCustomerToken,
+  protectedSpans,
   redactForLog,
   rehydrate,
   sequentialToken,
@@ -245,5 +247,44 @@ describe('log redaction — the last line of defence', () => {
     expect(redactForLog('invoice INV-0042 failed to render')).toBe(
       'invoice INV-0042 failed to render',
     );
+  });
+});
+
+describe('one token, one deterministic display (G-60)', () => {
+  const ada = { facet: 'name' as const, value: 'Ada Obi', key: 'ada obi' };
+  const phone = { facet: 'phone' as const, value: '08031234567', key: '2348031234567' };
+  const sameNumber = { facet: 'phone' as const, value: '+234 803 123 4567', key: '2348031234567' };
+  const email = { facet: 'email' as const, value: 'ada@mail.com', key: 'ada@mail.com' };
+
+  it('shows a lone facet as typed', () => {
+    expect(displayOf([phone])).toBe('08031234567');
+  });
+
+  it('puts the name first and the rest beside it, whatever the order typed', () => {
+    expect(displayOf([phone, ada, email])).toBe('Ada Obi (08031234567, ada@mail.com)');
+    expect(displayOf([email, ada, phone])).toBe('Ada Obi (08031234567, ada@mail.com)');
+  });
+
+  it('shows one number once, in the form typed first', () => {
+    expect(displayOf([phone, sameNumber])).toBe('08031234567');
+    expect(displayOf([sameNumber, phone])).toBe('+234 803 123 4567');
+  });
+});
+
+describe('a token is an opaque span (G-60)', () => {
+  it('finds every given token and anything shaped like one', () => {
+    const text = 'CUSTOMER_ABC paid ACCOUNT_1, and CUSTOMER_X9Z. ref CUSTOMER_ABC';
+    expect(protectedSpans(text, ['CUSTOMER_ABC']).map((s) => text.slice(s.start, s.end))).toEqual([
+      'CUSTOMER_ABC',
+      'CUSTOMER_ABC',
+      'ACCOUNT_1',
+      'CUSTOMER_X9Z',
+      'CUSTOMER_ABC',
+      'CUSTOMER_ABC',
+    ]);
+  });
+
+  it('leaves ordinary words alone', () => {
+    expect(protectedSpans('Customer Ada paid 20k', [])).toEqual([]);
   });
 });

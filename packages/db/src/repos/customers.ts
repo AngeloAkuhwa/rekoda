@@ -104,12 +104,14 @@ export async function namesByMatchKeys(
 export class TokenCollision extends Error {}
 
 /**
- * Another transaction created this identity first.
+ * This identity already belongs to a customer (`identities_match_ux`).
  *
- * Not an error the caller should surface — it means the customer now exists
- * and the right response is to look them up. Distinct from `TokenCollision`,
- * which means "try a different token for the SAME new customer"; here the
- * customer is not new any more.
+ * Creating a customer, it means another transaction created this very person
+ * first, and the right response is to look them up. Adding a facet, it means
+ * the facet keys ANOTHER customer, and the two records stay apart: a typed
+ * name is never a reason to merge two people (G-60). Distinct from
+ * `TokenCollision`, which means "try a different token for the SAME new
+ * customer". It carries no identity value, ciphertext or key.
  */
 export class IdentityConflict extends Error {}
 
@@ -212,22 +214,46 @@ export async function createCustomerWithIdentities(
   });
 }
 
-/** Add a facet to a customer we already know — a phone for a name, say. */
+/**
+ * Add a facet to a customer we already know — a phone for a name, say.
+ *
+ * The contract (G-60): `'attached'`, or `'already-attached'` when this
+ * customer already holds the facet; an `IdentityConflict` when the facet keys
+ * ANOTHER customer of this business, decided by `identities_match_ux`, so two
+ * racing attachments still leave one owner. Any other failure (a customer
+ * that does not exist, another tenant's customer, an outage) is thrown as it
+ * came: it is not a conflict and must not be handled as one.
+ */
 export async function addIdentityFacet(
   db: Db,
   businessId: string,
   customerId: string,
   identity: IdentityInput,
-): Promise<void> {
-  await withBusiness(db, businessId, async (tx) => {
-    await tx.insert(customerIdentities).values({
-      businessId,
-      customerId,
-      facet: identity.facet,
-      ciphertext: identity.ciphertext,
-      matchKey: identity.matchKey,
+): Promise<'attached' | 'already-attached'> {
+  try {
+    await withBusiness(db, businessId, async (tx) => {
+      await tx.insert(customerIdentities).values({
+        businessId,
+        customerId,
+        facet: identity.facet,
+        ciphertext: identity.ciphertext,
+        matchKey: identity.matchKey,
+      });
     });
-  });
+    return 'attached';
+  } catch (error) {
+    if (violatedConstraint(error) !== 'identities_match_ux' || identity.matchKey === null) {
+      /* Surfaced, with the database's own reason and without the statement:
+       * drizzle's wrapper message lists every bound value, and those are the
+       * facet's ciphertext and match key. */
+      throw new Error(`could not attach an identity facet: ${databaseReason(error)}`);
+    }
+  }
+  /* The insert rolled back; who holds the facet is read in its own
+   * transaction. Unique on (business, facet, key), so there is one owner. */
+  const owner = await findCustomerByMatchKey(db, businessId, identity.facet, identity.matchKey);
+  if (owner?.id === customerId) return 'already-attached';
+  throw new IdentityConflict('this identity already belongs to another customer');
 }
 
 /**
@@ -293,6 +319,27 @@ export async function eraseFacet(
       .returning({ id: customerIdentities.id });
     return deleted.length;
   });
+}
+
+/** What PostgreSQL said, skipping drizzle's "Failed query: <sql> params: …" wrapper. */
+function databaseReason(error: unknown): string {
+  for (let e: unknown = error, depth = 0; e && depth < 5; depth++) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (!message.startsWith('Failed query:')) return message;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return 'unknown database error';
+}
+
+/** Which unique constraint rejected a write, when PostgreSQL says. */
+function violatedConstraint(error: unknown): string | null {
+  for (let e: unknown = error, depth = 0; e && depth < 5; depth++) {
+    if (typeof e === 'object' && e !== null && (e as { code?: string }).code === '23505') {
+      return (e as { constraint_name?: string }).constraint_name ?? null;
+    }
+    e = (e as { cause?: unknown }).cause;
+  }
+  return null;
 }
 
 /** PostgreSQL unique-violation, wrapped by drizzle 0.45 under `.cause`. */

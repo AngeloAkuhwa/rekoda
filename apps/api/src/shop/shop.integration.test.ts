@@ -28,6 +28,7 @@ import {
   stockRepo,
   usageRepo,
   entitlementsRepo,
+  sql,
   withBusiness,
   type Db,
 } from '@rekoda/db';
@@ -707,6 +708,52 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
     expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+  });
+
+  /* G-60: a vault failure while attaching the typed name is no longer
+   * swallowed. The checkout fails visibly, books nothing, and gives back
+   * the two units it had already paid. */
+  it('a vault failure fails the checkout visibly and spends nothing', async () => {
+    const { businessId, ids } = await openShop('+2348177400033', 'ada-vault-down');
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    let status = 0;
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_shop_name_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.facet = 'name' THEN RAISE EXCEPTION 'g60: the vault is unavailable'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_shop_name_fails BEFORE INSERT ON customer_identities
+          FOR EACH ROW EXECUTE FUNCTION g60_shop_name_fails()`);
+
+      status = (
+        await order('ada-vault-down', {
+          items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+          customerName: 'Chidi Okafor',
+          customerPhone: '08035551234',
+          clientRef: randomUUID(),
+        })
+      ).statusCode;
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_shop_name_fails ON customer_identities`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_shop_name_fails()`);
+      await close();
+    }
+
+    expect(status).toBeGreaterThanOrEqual(500);
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+    const orders = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM orders WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect(Number([...orders][0]?.n)).toBe(0);
   });
 });
 

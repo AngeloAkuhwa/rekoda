@@ -138,6 +138,65 @@ export function tokeniseMessage(text: string, assign: TokenAssigner): TokenisedM
   return { text: out, tokens };
 }
 
+/** One identity the merchant typed for a token, and its normalised form. */
+export interface TypedFacet {
+  readonly facet: 'name' | 'phone' | 'email';
+  readonly value: string;
+  /** Normalised, so one number typed two ways is shown once. */
+  readonly key: string;
+}
+
+const DISPLAY_ORDER = { name: 0, phone: 1, email: 2 } as const;
+
+/**
+ * What a token reads as in a reply, when the merchant named one customer by
+ * more than one facet in one message (G-60).
+ *
+ * Every distinct facet they typed, name first, then phones, then emails, each
+ * in the order typed: "Ada Obi (08031234567)". Never one facet standing in for
+ * another, and never decided by which pass happened to run last.
+ */
+export function displayOf(typed: readonly TypedFacet[]): string {
+  const seen = new Set<string>();
+  const shown = [...typed]
+    .map((t, i) => ({ ...t, i }))
+    .sort((a, b) => DISPLAY_ORDER[a.facet] - DISPLAY_ORDER[b.facet] || a.i - b.i)
+    .filter((t) => {
+      const id = `${t.facet}:${t.key}`;
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    })
+    .map((t) => t.value);
+  const [first, ...rest] = shown;
+  return rest.length > 0 ? `${first} (${rest.join(', ')})` : (first ?? '');
+}
+
+/** Every placeholder shape this pipeline writes: CUSTOMER_X81, PHONE_1, ACCOUNT_2. */
+const TOKEN_SHAPE = /\b(?:CUSTOMER|PHONE|EMAIL|ACCOUNT)_[0-9A-Z]+\b/g;
+
+/**
+ * The spans of `text` that are tokens, and so opaque to every later pass
+ * (G-60): each token this message was given, wherever it stands, and anything
+ * shaped like one, such as a token the merchant pasted back from a preview.
+ * A later detector may neither match inside one nor run across one.
+ */
+export function protectedSpans(
+  text: string,
+  tokens: Iterable<string>,
+): Array<{ start: number; end: number }> {
+  const spans: Array<{ start: number; end: number }> = [];
+  for (const token of tokens) {
+    for (let at = text.indexOf(token); at !== -1; at = text.indexOf(token, at + token.length)) {
+      spans.push({ start: at, end: at + token.length });
+    }
+  }
+  for (const m of text.matchAll(TOKEN_SHAPE)) {
+    spans.push({ start: m.index, end: m.index + m[0].length });
+  }
+  return spans.sort((a, b) => a.start - b.start);
+}
+
 /**
  * Put the real values back. THE OUTPUT LAYER ONLY.
  *
