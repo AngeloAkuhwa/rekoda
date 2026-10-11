@@ -1270,26 +1270,9 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
      * and only an action this grammar knows: "what about pending
      * invoices", "what about marketing expenses", "what about opening
      * balance" still ask (final review C). */
-    /* "show the invoice as paid", "show the sale as refunded": setting a
-     * status, not showing one (Codex P2). */
-    /* "invoices marked as paid", "sales recorded as paid" filter by a
-     * status already set; they still read (final review D), as do "which
-     * sales did we log as refunded" and "did we record the sale as paid",
-     * where the filtering verb comes earlier in the question (final review
-     * C/D). */
-    if (
-      words.some(
-        (w, i) =>
-          w === 'as' &&
-          STATUS_SET.has(words[i + 1] ?? '') &&
-          /* Any participle before "as" describes a status already given,
-           * "reported as paid", "appearing as paid" (Codex P2). */
-          !words.slice(0, i).some((v) => STATUS_FILTERS.has(v) || describesStatus(v)) &&
-          !(words[i - 1] === 'in' && words[i - 2] === 'came'),
-      )
-    ) {
-      return 'unknown';
-    }
+    /* "show the invoice as paid", "can you show the sale as refunded":
+     * setting a status, not showing one (Codex P2). */
+    if (setsStatus(words)) return 'unknown';
     /* "what if we sell rice", "what if I pay Ada", "what if we just invoice
      * Ada": a subject, then a present-tense action (Codex P2). "what if any
      * invoice is overdue" and "what if anyone paid" ask (final review C). */
@@ -1319,6 +1302,7 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
         /* Not "selling price", "selling expenses", "billing reports": a
          * kind of figure, not an act (Codex P2). */
         (proposesAction(proposed) &&
+          !toTheAsker(words, about + 1, proposed) &&
           (!namesBooks(words[about + 2] ?? '') || recordsGerund(proposed))))
     ) {
       return 'unknown';
@@ -1513,32 +1497,6 @@ function proposesAction(word: string): boolean {
 }
 
 /** What makes "as <status>" a filter: "invoices MARKED as paid". */
-const STATUS_FILTERS = new Set([
-  'record',
-  'log',
-  'flag',
-  'enter',
-  'tag',
-  'mark',
-  'marked',
-  'flagged',
-  'recorded',
-  'listed',
-  'tagged',
-  'showing',
-  'shown',
-  'entered',
-  'logged',
-  /* "invoices classified as paid": a status already given (Codex P2). */
-  'classified',
-  'classed',
-  'categorised',
-  'categorized',
-  'labelled',
-  'labeled',
-  'counted',
-  'treated',
-]);
 
 /**
  * Is the word at `at` a proposed action? Sending to the asker is a read,
@@ -1547,13 +1505,7 @@ const STATUS_FILTERS = new Set([
 function proposedAt(words: readonly string[], at: number): boolean {
   const verb = words[at] ?? '';
   if (!PRESENT_ACTIONS.has(verb)) return false;
-  const toTheAsker = words.slice(at + 1).some((w) => w === 'me' || w === 'us');
-  return !(['send', 'share', 'forward'].includes(verb) && toTheAsker);
-}
-
-/** A participle ("reported", "appearing", "shown"): a status described, not set. */
-function describesStatus(word: string): boolean {
-  return word.length >= 5 && /(?:ed|en|wn|ing)$/.test(word);
+  return !toTheAsker(words, at, verb);
 }
 
 /** A books word a gerund can modify: "billing STATEMENTS", "selling PROFITS". */
@@ -1564,6 +1516,60 @@ function namesBooks(word: string): boolean {
     RECORD_NOUNS.has(word) ||
     REPORT_NOUNS.has(word) ||
     SUMMARY_WORDS.has(word)
+  );
+}
+
+/** Words a status-setting request may hold between its verb and "as". */
+const SET_OBJECT = new Set([
+  'the',
+  'this',
+  'that',
+  'my',
+  'our',
+  'a',
+  'an',
+  'customer',
+  'customers',
+  ...RECORD_NOUNS,
+]);
+
+/** What may come before the verb of a request: "can you", "please". */
+const REQUEST_OPENERS = new Set([
+  'can',
+  'could',
+  'would',
+  'will',
+  'you',
+  'u',
+  'please',
+  'pls',
+  'kindly',
+  'abeg',
+  'just',
+]);
+
+/**
+ * One closed shape: a request verb, the record, "as", a status. "show the
+ * invoice as paid", "can you show CUSTOMER_7K2 invoice as paid". Anything
+ * else, "which invoices count as paid", "did we record the sale as paid",
+ * "invoices reported as paid", asks about a status and reads (final review).
+ */
+function setsStatus(words: readonly string[]): boolean {
+  const as = words.indexOf('as');
+  if (as < 2 || !STATUS_SET.has(words[as + 1] ?? '')) return false;
+  let verb = as - 1;
+  while (verb >= 0 && SET_OBJECT.has(words[verb] ?? '')) verb -= 1;
+  if (verb === as - 1 || !['show', 'set', 'mark', 'put', 'make'].includes(words[verb] ?? '')) {
+    return false;
+  }
+  return words.slice(0, verb).every((w) => REQUEST_OPENERS.has(w));
+}
+
+/** Sending to the asker is a read: "send ME the P&L", "share it with US". */
+function toTheAsker(words: readonly string[], at: number, verb: string): boolean {
+  return (
+    ['send', 'share', 'forward', 'sending', 'sharing', 'forwarding'].includes(verb) &&
+    words.slice(at + 1).some((w) => w === 'me' || w === 'us')
   );
 }
 

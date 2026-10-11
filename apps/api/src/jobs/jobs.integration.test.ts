@@ -964,6 +964,56 @@ describe('the chat surface enforces roles', () => {
     expect((await footprint(businessId)).ai_actions).toBe(0);
   });
 
+  /* Final exact-head review on 017d5a8: a delegate's "yes" reserved its
+   * document unit, the attempt rolled back, and the member was demoted
+   * before the retry. The retry confirms nothing, so the unit goes back. */
+  it('gives back the document unit when a yes is refused after a demotion between attempts (G-57)', async () => {
+    const businessId = await seedBusiness('Role Gate Yes Ltd', '+2348140010053');
+    await memberOf(businessId, '+2348140010054', 'delegate');
+    stubTransport.replyWith(A_SALE);
+    await saysOverChat(businessId, '+2348140010054', 'sold rice 20k cash');
+    const documents = async () => {
+      const [row] = await withBusiness(appDb, businessId, (tx) =>
+        tx.execute<{ used: string }>(sql`
+          SELECT COALESCE(sum(used), 0) AS used FROM usage_counters
+           WHERE business_id = ${businessId}::uuid AND unit = 'DOCUMENT_GENERATION'`),
+      );
+      return Number(row?.used);
+    };
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g57_yes_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g57_yes_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF nextval('g57_yes_once') = 1 THEN RAISE EXCEPTION 'g57_yes: first posting fails'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g57_yes_fail_once BEFORE INSERT ON ledger_transactions
+          FOR EACH ROW EXECUTE FUNCTION g57_yes_fail_once()`);
+
+      await saysOverChat(businessId, '+2348140010054', 'yes');
+      expect(await documents()).toBe(1);
+
+      await ownerDb.execute(sql`
+        UPDATE memberships SET role = 'accountant' WHERE business_id = ${businessId}::uuid
+           AND user_id = (SELECT id FROM users WHERE phone = '+2348140010054')`);
+      await ownerDb.execute(sql`
+        UPDATE jobs SET run_at = now() WHERE business_id = ${businessId}::uuid AND state <> 'done'`);
+      await buildRunner(workerDb, appDb, deps).runOnce();
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g57_yes_fail_once ON ledger_transactions`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g57_yes_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g57_yes_once`);
+      await close();
+    }
+    expect(stubSender.sent[stubSender.sent.length - 1]?.text).toBe(replies.viewOnlyRole().text);
+    expect((await footprint(businessId)).postings).toBe(0);
+    expect(await documents()).toBe(0);
+  });
+
   it('refunds the original month once when a retry crosses the month boundary (G-57)', async () => {
     const businessId = await seedBusiness('Role Gate Month Ltd', '+2348140010047');
     await memberOf(businessId, '+2348140010048', 'accountant');

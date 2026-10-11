@@ -1253,6 +1253,21 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     ['how about you share the report with me', 'read'],
     ['what if you send me the P&L', 'read'],
     ['how about you send Ada the invoice', 'unknown'],
+    /* Status setting is one closed shape, a request verb, the record, "as",
+     * a status; any other "as" + status question reads (final review). */
+    ['which invoices count as paid?', 'read'],
+    ['which invoices appear as paid?', 'read'],
+    ['which sales show up as refunded?', 'read'],
+    ['which invoices remain as unpaid', 'read'],
+    ['list invoices with status as paid', 'read'],
+    ['which invoices do you have as paid?', 'read'],
+    ['can you show the sale as refunded', 'unknown'],
+    ['please show the invoice as paid', 'unknown'],
+    ['show CUSTOMER_7K2 invoice as paid', 'unknown'],
+    ['how about sending me the report', 'read'],
+    ['what about forwarding me the P&L', 'read'],
+    ['how about sharing the sales report with me', 'read'],
+    ['how about sending Ada the report', 'unknown'],
     ['what about selling rice', 'unknown'],
   ] as const)('reads %j as %s', (text, kind) => {
     expect(requestKind(text)).toBe(kind);

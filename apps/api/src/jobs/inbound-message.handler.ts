@@ -1364,7 +1364,13 @@ async function deterministicReply(
    * role rule as making the draft: view-only members confirm nothing, not
    * even a draft the owner parked. */
   if (intent.kind === 'affirm') {
-    if (!(await mayTransact(tx, businessId, ctx.from))) return replies.viewOnlyRole();
+    if (!(await mayTransact(tx, businessId, ctx.from))) {
+      /* A yes an earlier attempt reserved for, refused now (the member was
+       * demoted between attempts): it confirmed nothing, so what it reserved
+       * goes back, in the month it was taken (final exact-head review). */
+      await refundRecordedReservations(tx, businessId, ctx.eventId, usagePeriod(ctx.receivedAt));
+      return replies.viewOnlyRole();
+    }
     const answer = await confirmPendingDraft(
       deps,
       tx,
