@@ -25,6 +25,7 @@ import {
   Get,
   HttpCode,
   Inject,
+  Logger,
   NotFoundException,
   Param,
   Post,
@@ -88,6 +89,9 @@ function isDuplicateOnOrders(error: unknown): boolean {
     pg?.code === '23505' && (pg.constraint_name ?? pg.constraint ?? '').includes('orders_external')
   );
 }
+
+/** No identity, amount or key in any line it writes. */
+const shopLog = new Logger('ShopController');
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -346,7 +350,18 @@ export class PublicShopController {
     const customer = await this.gateway
       .resolveStorefrontCustomer(businessId, parsed.data.customerName, parsed.data.customerPhone)
       .catch(async (error: unknown) => {
-        await refundBoth();
+        /* Each unit on its own: a refund that fails too (the same outage)
+         * neither stops the other nor replaces the failure that matters. */
+        const refunds = await Promise.allSettled(
+          (['CATALOGUE_ORDERS', 'DOCUMENT_GENERATION'] as const).map((unit) =>
+            withBusiness(this.db, businessId, (own) =>
+              usageRepo.refundUnit(own, businessId, period, unit),
+            ),
+          ),
+        );
+        if (refunds.some((r) => r.status === 'rejected')) {
+          shopLog.error('a storefront refund failed after a vault failure; a unit stays spent');
+        }
         throw error;
       });
     if (!customer) {

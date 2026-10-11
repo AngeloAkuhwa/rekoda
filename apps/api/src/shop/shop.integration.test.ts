@@ -755,6 +755,59 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
     );
     expect(Number([...orders][0]?.n)).toBe(0);
   });
+
+  /* Codex P2 on #271: a refund that fails while the vault is down must not
+   * stop the other refund from being tried. */
+  it('tries both refunds when one of them fails too', async () => {
+    const { businessId, ids } = await openShop('+2348177400034', 'ada-refund-down');
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    let status = 0;
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_shop_name_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.facet = 'name' THEN RAISE EXCEPTION 'g60: the vault is unavailable'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_shop_name_fails BEFORE INSERT ON customer_identities
+          FOR EACH ROW EXECUTE FUNCTION g60_shop_name_fails()`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_orders_refund_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.unit = 'CATALOGUE_ORDERS' AND NEW.used < OLD.used THEN
+            RAISE EXCEPTION 'g60: the orders refund failed';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_orders_refund_fails BEFORE UPDATE ON usage_counters
+          FOR EACH ROW EXECUTE FUNCTION g60_orders_refund_fails()`);
+
+      status = (
+        await order('ada-refund-down', {
+          items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+          customerName: 'Chidi Okafor',
+          customerPhone: '08035551234',
+          clientRef: randomUUID(),
+        })
+      ).statusCode;
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_shop_name_fails ON customer_identities`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_shop_name_fails()`);
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_orders_refund_fails ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_orders_refund_fails()`);
+      await close();
+    }
+
+    expect(status).toBeGreaterThanOrEqual(500);
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    /* The orders refund failed; the document refund was still made. */
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(1);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+  });
 });
 
 describe('the storefront cannot be farmed (fix-plan 7, H7b)', () => {

@@ -251,7 +251,14 @@ export async function addIdentityFacet(
   }
   /* The insert rolled back; who holds the facet is read in its own
    * transaction. Unique on (business, facet, key), so there is one owner. */
-  const owner = await findCustomerByMatchKey(db, businessId, identity.facet, identity.matchKey);
+  const owner = await findCustomerByMatchKey(
+    db,
+    businessId,
+    identity.facet,
+    identity.matchKey,
+  ).catch((error: unknown) => {
+    throw new Error(`could not attach an identity facet: ${databaseReason(error)}`);
+  });
   if (owner?.id === customerId) return 'already-attached';
   throw new IdentityConflict('this identity already belongs to another customer');
 }

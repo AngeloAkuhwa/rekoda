@@ -381,6 +381,40 @@ describe('adding a facet to a known customer (G-60)', () => {
     expect(await ownersOf(business.id, facet.matchKey)).toEqual([]);
   });
 
+  /* Codex P2 on #271: when the facet is taken and the lookup of its holder
+   * then fails, that failure is scrubbed like the insert's. */
+  it('scrubs a failure of the holder lookup that follows a conflict', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000208');
+    const ada = await rememberCustomer(business.id, '08031111111', 'Ada Obi');
+    const bola = await rememberCustomer(business.id, '08032222222', 'Bola Ade');
+    const facet = nameFacet(business.id, 'Ada Obi');
+    await customersRepo.addIdentityFacet(db, business.id, ada.id, facet);
+
+    const { db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 1 });
+    let failure: unknown = null;
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_lookup_fails() RETURNS boolean AS $$
+        BEGIN RAISE EXCEPTION 'g60: the lookup is unavailable'; END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE POLICY g60_lookup_fails ON customer_identities AS RESTRICTIVE FOR SELECT
+          USING (g60_lookup_fails())`);
+      failure = await customersRepo.addIdentityFacet(db, business.id, bola.id, facet).then(
+        () => null,
+        (error: unknown) => error,
+      );
+    } finally {
+      await ownerDb.execute(sql`DROP POLICY IF EXISTS g60_lookup_fails ON customer_identities`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_lookup_fails()`);
+      await closeOwner();
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(customersRepo.IdentityConflict);
+    expect((failure as Error).message).toMatch(/the lookup is unavailable/);
+    expect((failure as Error).message).not.toContain(facet.matchKey);
+    expect((failure as Error).message).not.toMatch(/select|params/i);
+  });
+
   it('cannot attach a facet to another business customer', async () => {
     const ada = await seedBusiness('Ada Fashion', '+2348030000206');
     const bola = await seedBusiness('Bola Electronics', '+2348030000207');
