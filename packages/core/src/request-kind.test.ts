@@ -1235,6 +1235,24 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     ['what about shipping costs', 'read'],
     ['what about recording expenses', 'unknown'],
     ['how about logging the costs', 'unknown'],
+    /* The narrow rules hold structurally, not by word lists (Codex P2 on
+     * e330ebe): a participle before "as" filters, a gerund before a books
+     * word modifies it, and "grand" before a noun is not an amount. */
+    ['show invoices reported as paid', 'read'],
+    ['show invoices appearing as paid', 'read'],
+    ['which invoices are reported as paid', 'read'],
+    ['what about billing statements', 'read'],
+    ['what about selling profits', 'read'],
+    ['show expenses for a grand opening', 'read'],
+    ['what were expenses for a grand opening', 'read'],
+    ['what about selling the rice', 'unknown'],
+    ['did Ada pay a grand for rice', 'unknown'],
+    ['did Ada pay a grand?', 'unknown'],
+    /* Sending to the asker is a read, as at 5f98eec (final review). */
+    ['how about you send me the P&L', 'read'],
+    ['how about you share the report with me', 'read'],
+    ['what if you send me the P&L', 'read'],
+    ['how about you send Ada the invoice', 'unknown'],
     ['what about selling rice', 'unknown'],
   ] as const)('reads %j as %s', (text, kind) => {
     expect(requestKind(text)).toBe(kind);

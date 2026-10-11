@@ -445,9 +445,11 @@ function hasFigure(raw: string): boolean {
   const text = raw.replace(DATES, ' ');
   /* "did Ada pay a grand": a thousand naira; never "grand total" (Codex P2),
    * and never a filter, "more than a grand" or "a grand or more", as
-   * "more than 1000" and "1k or more" are not (final review C). */
+   * "more than 1000" and "1k or more" are not (final review C). Only where
+   * an amount can stand: at the end, before punctuation or a function word,
+   * never before a noun it describes, "a grand opening" (Codex P2). */
   if (
-    /(?<!\b(?:above|over|than|under|below|least|most|exceeding)\s)\b(?:a|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+grand\b(?!\s+(?:total\b|(?:and|or)\s+(?:above|more|over|below|less|under)\b))/i.test(
+    /(?<!\b(?:above|over|than|under|below|least|most|exceeding)\s)\b(?:a|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+grand\b(?!\s+(?:total\b|(?:and|or)\s+(?:above|more|over|below|less|under)\b))(?=\s*$|\s*[^\w\s]|\s+(?:for|on|from|to|in|into|and|or|by|via|with|at|last|this|that|yesterday|today|naira|cash|worth|of|already|ago|each|per|so|now|only)\b)/i.test(
       text,
     )
   ) {
@@ -1280,7 +1282,9 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
         (w, i) =>
           w === 'as' &&
           STATUS_SET.has(words[i + 1] ?? '') &&
-          !words.slice(0, i).some((v) => STATUS_FILTERS.has(v)) &&
+          /* Any participle before "as" describes a status already given,
+           * "reported as paid", "appearing as paid" (Codex P2). */
+          !words.slice(0, i).some((v) => STATUS_FILTERS.has(v) || describesStatus(v)) &&
           !(words[i - 1] === 'in' && words[i - 2] === 'came'),
       )
     ) {
@@ -1300,7 +1304,7 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
       ) {
         k += 1;
       }
-      if (PRESENT_ACTIONS.has(words[k] ?? '')) return 'unknown';
+      if (proposedAt(words, k)) return 'unknown';
     }
     const about = words.indexOf('about');
     const proposed = words[about + 1] ?? '';
@@ -1311,11 +1315,11 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
     if (
       about > 0 &&
       ['what', 'how', 'whats', "what's"].includes(words[about - 1] ?? '') &&
-      ((['we', 'i', 'you'].includes(proposed) && PRESENT_ACTIONS.has(words[acted] ?? '')) ||
+      ((['we', 'i', 'you'].includes(proposed) && proposedAt(words, acted)) ||
         /* Not "selling price", "selling expenses", "billing reports": a
          * kind of figure, not an act (Codex P2). */
         (proposesAction(proposed) &&
-          (!FIGURE_KINDS.has(words[about + 2] ?? '') || recordsGerund(proposed))))
+          (!namesBooks(words[about + 2] ?? '') || recordsGerund(proposed))))
     ) {
       return 'unknown';
     }
@@ -1535,6 +1539,33 @@ const STATUS_FILTERS = new Set([
   'counted',
   'treated',
 ]);
+
+/**
+ * Is the word at `at` a proposed action? Sending to the asker is a read,
+ * "how about you send me the P&L" (final review); to anyone else it is not.
+ */
+function proposedAt(words: readonly string[], at: number): boolean {
+  const verb = words[at] ?? '';
+  if (!PRESENT_ACTIONS.has(verb)) return false;
+  const toTheAsker = words.slice(at + 1).some((w) => w === 'me' || w === 'us');
+  return !(['send', 'share', 'forward'].includes(verb) && toTheAsker);
+}
+
+/** A participle ("reported", "appearing", "shown"): a status described, not set. */
+function describesStatus(word: string): boolean {
+  return word.length >= 5 && /(?:ed|en|wn|ing)$/.test(word);
+}
+
+/** A books word a gerund can modify: "billing STATEMENTS", "selling PROFITS". */
+function namesBooks(word: string): boolean {
+  return (
+    FIGURE_KINDS.has(word) ||
+    BOOK_TOPICS.has(word) ||
+    RECORD_NOUNS.has(word) ||
+    REPORT_NOUNS.has(word) ||
+    SUMMARY_WORDS.has(word)
+  );
+}
 
 /** "recording expenses", "logging costs": still a record, whatever follows. */
 function recordsGerund(word: string): boolean {
