@@ -1304,12 +1304,18 @@ function clauseKind(raw: string): RequestKind | 'neutral' {
     }
     const about = words.indexOf('about');
     const proposed = words[about + 1] ?? '';
+    /* "how about we invoice Ada" proposes; "how about you show me the
+     * sales" asks (final exact-head review). */
+    let acted = about + 2;
+    while (['just', 'now', 'also', 'go', 'then'].includes(words[acted] ?? '')) acted += 1;
     if (
       about > 0 &&
       ['what', 'how', 'whats', "what's"].includes(words[about - 1] ?? '') &&
-      (['we', 'i', 'you'].includes(proposed) ||
-        /* Not "selling price": a noun, not an act. */
-        (proposesAction(proposed) && !['price', 'prices'].includes(words[about + 2] ?? '')))
+      ((['we', 'i', 'you'].includes(proposed) && PRESENT_ACTIONS.has(words[acted] ?? '')) ||
+        /* Not "selling price", "selling expenses", "billing reports": a
+         * kind of figure, not an act (Codex P2). */
+        (proposesAction(proposed) &&
+          (!FIGURE_KINDS.has(words[about + 2] ?? '') || recordsGerund(proposed))))
     ) {
       return 'unknown';
     }
@@ -1519,6 +1525,37 @@ const STATUS_FILTERS = new Set([
   'shown',
   'entered',
   'logged',
+  /* "invoices classified as paid": a status already given (Codex P2). */
+  'classified',
+  'classed',
+  'categorised',
+  'categorized',
+  'labelled',
+  'labeled',
+  'counted',
+  'treated',
+]);
+
+/** "recording expenses", "logging costs": still a record, whatever follows. */
+function recordsGerund(word: string): boolean {
+  const stem = word.slice(0, -3);
+  return [stem, `${stem}e`, stem.slice(0, -1)].some((w) => RECORD_INSTRUCTIONS.has(w));
+}
+
+/** What a gerund names rather than proposes: "selling PRICE", "billing REPORTS". */
+const FIGURE_KINDS = new Set([
+  'price',
+  'prices',
+  'expense',
+  'expenses',
+  'cost',
+  'costs',
+  'report',
+  'reports',
+  'history',
+  'figures',
+  'total',
+  'totals',
 ]);
 
 /** A status a record is set to: "show the invoice AS PAID". */

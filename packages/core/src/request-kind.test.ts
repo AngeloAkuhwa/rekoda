@@ -1216,6 +1216,26 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     ['which customers owe a grand or more?', 'read'],
     ['what about spending last month?', 'read'],
     ['how about spending this week', 'read'],
+    /* A pronoun after "about" proposes only with an action after it
+     * (final exact-head review). */
+    ['how about you show me the sales', 'read'],
+    ['how about I check my balance', 'read'],
+    ['how about we review the invoices', 'read'],
+    ['what about we look at sales', 'read'],
+    ['how about we just sell rice', 'unknown'],
+    ['what about I record the sale', 'unknown'],
+    /* A status a record was classified under, and a gerund naming a kind of
+     * figure, still read as at 5f98eec (Codex P2). */
+    ['show invoices classified as paid', 'read'],
+    ['which invoices are classified as paid', 'read'],
+    ['which invoices are labelled as paid', 'read'],
+    ['which invoices are categorized as paid', 'read'],
+    ['what about selling expenses', 'read'],
+    ['what about billing reports', 'read'],
+    ['what about shipping costs', 'read'],
+    ['what about recording expenses', 'unknown'],
+    ['how about logging the costs', 'unknown'],
+    ['what about selling rice', 'unknown'],
   ] as const)('reads %j as %s', (text, kind) => {
     expect(requestKind(text)).toBe(kind);
   });

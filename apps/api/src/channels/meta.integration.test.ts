@@ -4496,6 +4496,101 @@ describe('a voice note', () => {
     expect(await voiceUsed(business.id)).toBe(0);
   });
 
+  const unitUsed = async (businessId: string, unit: string) => {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    return rows.find((row) => row.unit === unit)?.used ?? 0;
+  };
+
+  /* Final exact-head review: a job reclaimed after it answered and committed
+   * runs again and finds the note already recorded. That note delivered, so
+   * what it holds stays charged; only "nothing delivered" gives units back. */
+  it('a second run of a note already answered keeps its seconds and its message unit', async () => {
+    const business = await seedMerchant('+2348031234594');
+    arrangeAudio();
+    stubStt.answerWith({ text: 'how much did we sell this month', seconds: 5, confidence: 0.9 });
+    stubTransport.replyWith({
+      intent: 'Query',
+      topic: 'sales_summary',
+      customer: null,
+      period: 'month',
+      periodText: null,
+      format: 'chat',
+    });
+    await post(voicePayload('2348031234594', 'wamid.V.RERUN'));
+    await drain();
+    expect(await voiceUsed(business.id)).toBe(5);
+    expect(await unitUsed(business.id, 'AI_ACTIONS')).toBe(1);
+
+    /* The runner reclaims the finished job, as a stalled-lock sweep can. */
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`
+        UPDATE jobs SET state = 'pending', run_at = now() - interval '1 minute'
+         WHERE business_id = ${business.id}::uuid AND kind = 'inbound.message'`);
+    } finally {
+      await close();
+    }
+    await drain();
+
+    expect(stubStt.calls).toHaveLength(1);
+    expect(await voiceUsed(business.id)).toBe(5);
+    expect(await unitUsed(business.id, 'AI_ACTIONS')).toBe(1);
+  });
+
+  /* Codex P2 on 5804882: a spoken "yes" reserves its document unit on
+   * attempt 1; if that attempt rolls back and the retry cannot hear the note,
+   * nothing was confirmed, so the unit goes back with the seconds. */
+  it('a spoken yes whose retry cannot be transcribed gives back the document unit too', async () => {
+    const business = await seedMerchant('+2348031234592');
+    stubTransport.replyWith(A_SPOKEN_SALE);
+    await post(messagePayload('2348031234592', 'wamid.V.YES-SALE', 'sold Ada 3 wigs for 150k'));
+    await drain();
+
+    arrangeAudio(1);
+    stubStt.answerWith({ text: 'yes', seconds: 1, confidence: 0.95 });
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS voice_yes_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION voice_yes_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF nextval('voice_yes_once') = 1 THEN RAISE EXCEPTION 'voice yes: first issue fails'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER voice_yes_fail_once BEFORE INSERT ON invoices
+          FOR EACH ROW EXECUTE FUNCTION voice_yes_fail_once()`);
+
+      await post(voicePayload('2348031234592', 'wamid.V.YES'));
+      await drain();
+      expect(await unitUsed(business.id, 'DOCUMENT_GENERATION')).toBe(1);
+
+      stubStt.failWith();
+      await ownerDb.execute(
+        sql`UPDATE jobs SET run_at = now() - interval '1 minute'
+             WHERE business_id = ${business.id}::uuid AND state <> 'done'`,
+      );
+      await drain();
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS voice_yes_fail_once ON invoices`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS voice_yes_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS voice_yes_once`);
+      await close();
+    }
+
+    const [row] = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM invoices WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    expect(Number(row?.n)).toBe(0);
+    expect(await unitUsed(business.id, 'DOCUMENT_GENERATION')).toBe(0);
+    expect(await voiceUsed(business.id)).toBe(0);
+  });
+
   /**
    * Item 7 of the AI hardening plan: a HOSTED transcription is provider
    * money, and provider money appears in usage_events — priced per minute,

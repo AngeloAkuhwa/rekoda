@@ -134,6 +134,13 @@ const merchantThread = (businessId: string) =>
 const paymentLog = new Logger('InboundMessageJob');
 const authorisationLog = new Logger('InboundMessageJob');
 
+/**
+ * A voice note or photo an earlier run already answered and committed (a
+ * reclaimed job, a redelivered webhook). It delivered, so what it holds
+ * stays charged; only "nothing delivered" gives units back (final review).
+ */
+const ALREADY_ANSWERED = Symbol('already answered');
+
 export interface InboundMessageDeps {
   gateway: PrivacyGateway;
   interpreter: Interpreter;
@@ -267,7 +274,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     let spoken: { transcript: Transcript; messageId: string } | null = null;
     let read: { text: string; messageId: string } | null = null;
     if (isVoiceNote(inbound)) {
-      spoken = await transcribeVoiceNote(
+      const heard = await transcribeVoiceNote(
         deps,
         tx,
         businessId,
@@ -277,6 +284,11 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         event.receivedAt,
         eventId,
       );
+      if (heard === ALREADY_ANSWERED) {
+        await events.markProcessed(tx, eventId, null, businessId);
+        return;
+      }
+      spoken = heard;
       if (!spoken) {
         /* Already answered inside, and already marked new-or-not. Nothing to
          * interpret and nothing to charge for: whatever an earlier attempt
@@ -289,7 +301,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         return;
       }
     } else if (isReceiptPhoto(inbound)) {
-      read = await readReceiptPhoto(
+      const seen = await readReceiptPhoto(
         deps,
         tx,
         businessId,
@@ -299,6 +311,11 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         event.receivedAt,
         eventId,
       );
+      if (seen === ALREADY_ANSWERED) {
+        await events.markProcessed(tx, eventId, null, businessId);
+        return;
+      }
+      read = seen;
       if (!read) {
         /* Refused or failed before anything was delivered: whatever an
          * earlier attempt of this message took goes back. */
@@ -785,7 +802,7 @@ async function readReceiptPhoto(
   receivedAt: Date,
   /** The stored event, where the page's unit is recorded. */
   eventId: string,
-): Promise<{ text: string; messageId: string } | null> {
+): Promise<{ text: string; messageId: string } | null | typeof ALREADY_ANSWERED> {
   const recorded = await conversationsRepo.recordInbound(
     tx,
     {
@@ -798,7 +815,7 @@ async function readReceiptPhoto(
     merchantThread(businessId),
   );
   /* A redelivered webhook must not read, meter and answer twice. */
-  if (!recorded.isNew) return null;
+  if (!recorded.isNew) return ALREADY_ANSWERED;
 
   const plan = await usageRepo.planFor(tx, businessId);
   if (plan === 'expired') {
@@ -1038,7 +1055,7 @@ async function transcribeVoiceNote(
   receivedAt: Date,
   /** The stored event, where the note's seconds are recorded. */
   eventId: string,
-): Promise<{ transcript: Transcript; messageId: string } | null> {
+): Promise<{ transcript: Transcript; messageId: string } | null | typeof ALREADY_ANSWERED> {
   const recorded = await conversationsRepo.recordInbound(
     tx,
     {
@@ -1052,7 +1069,7 @@ async function transcribeVoiceNote(
   );
   /* A redelivered webhook must not transcribe, meter and answer twice. The
    * body is replaced with the transcript below only on the first pass. */
-  if (!recorded.isNew) return null;
+  if (!recorded.isNew) return ALREADY_ANSWERED;
 
   const plan = await usageRepo.planFor(tx, businessId);
   if (plan === 'expired') {
@@ -5281,7 +5298,8 @@ function giveBackUnit(
 
 /**
  * Give back EVERYTHING this message holds: its message unit, a page, a
- * note's seconds. For a message that ends delivering nothing (a refusal or
+ * note's seconds, and what a spoken or photographed "yes" reserved on an
+ * attempt that rolled back (Codex P2). For a message that ends delivering nothing (a refusal or
  * a failure before the interpreter answered), on whichever attempt: a unit
  * an earlier attempt took is never left charged (G-57 final review B). On a
  * first attempt that took nothing, it gives back nothing.
@@ -5292,7 +5310,13 @@ async function releaseHeldUnits(
   eventId: string,
   period: string,
 ): Promise<void> {
-  for (const unit of ['AI_ACTIONS', 'DOCUMENTS_UNDERSTOOD', 'VOICE_MINUTES'] as const) {
+  for (const unit of [
+    'AI_ACTIONS',
+    'DOCUMENTS_UNDERSTOOD',
+    'VOICE_MINUTES',
+    'DOCUMENT_GENERATION',
+    'CATALOGUE_ORDERS',
+  ] as const) {
     await giveBackUnit(deps, businessId, eventId, period, unit);
   }
 }
