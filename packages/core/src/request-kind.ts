@@ -444,10 +444,10 @@ const DATES = new RegExp(
 function hasFigure(raw: string): boolean {
   const text = raw.replace(DATES, ' ');
   /* "did Ada pay a grand": a thousand naira; never "grand total" (Codex P2),
-   * and never a filter, "more than a grand", as "more than 1000" is not
-   * (final review C). */
+   * and never a filter, "more than a grand" or "a grand or more", as
+   * "more than 1000" and "1k or more" are not (final review C). */
   if (
-    /(?<!\b(?:above|over|than|under|below|least|most|exceeding)\s)\b(?:a|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+grand\b(?!\s+total)/i.test(
+    /(?<!\b(?:above|over|than|under|below|least|most|exceeding)\s)\b(?:a|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+grand\b(?!\s+(?:total\b|(?:and|or)\s+(?:above|more|over|below|less|under)\b))/i.test(
       text,
     )
   ) {
@@ -1484,7 +1484,8 @@ const VERB_PARTICLES = new Set(['out', 'down', 'up', 'only', 'just', 'all', 'off
  * or noun ("pending", "opening", "marketing", "morning") is never one.
  */
 function proposesAction(word: string): boolean {
-  if (!/ing$/.test(word)) return false;
+  /* "what about spending?": a books topic, not an act (final review C). */
+  if (!/ing$/.test(word) || BOOK_TOPICS.has(word)) return false;
   const stem = word.slice(0, -3);
   const stems = [stem, `${stem}e`];
   /* "cancelling" -> "cancel", "shipping" -> "ship". */

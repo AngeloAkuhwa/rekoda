@@ -1209,6 +1209,13 @@ describe('what a view-only member is asking for (G-57, OWN-25)', () => {
     ['what did we sell today', 'read'],
     ['did Ada pay a grand', 'unknown'],
     ['show the grand total of sales this month', 'read'],
+    /* A trailing comparison is a filter too, as "1k or more" is (exact-head
+     * review C); a books topic is never a proposed act. */
+    ['who owes me a grand or more', 'read'],
+    ['who owes me a grand and above', 'read'],
+    ['which customers owe a grand or more?', 'read'],
+    ['what about spending last month?', 'read'],
+    ['how about spending this week', 'read'],
   ] as const)('reads %j as %s', (text, kind) => {
     expect(requestKind(text)).toBe(kind);
   });
