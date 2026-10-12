@@ -94,7 +94,11 @@ import type { ApiConfig } from '../config.js';
 import { meterAllowance } from '../billing/plan-terms.js';
 import { LINK_MINUTES, mintDashboardLink } from '../auth/dashboard-link.js';
 import type { Interpreter } from '../ai/interpreter.service.js';
-import type { IdentityLinkProposal, PrivacyGateway } from '../privacy/gateway.service.js';
+import type {
+  IdentityLinkProposal,
+  LiveTokens,
+  PrivacyGateway,
+} from '../privacy/gateway.service.js';
 import type { ReplySender } from '../replies/reply.service.js';
 import type { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
@@ -435,7 +439,12 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
 
     /* Mutable copy: a mention resolved during interpretation adds its token
      * here so the SAME table serves the outbound rehydration below. */
-    const liveTokens = tokenised ? new Map(tokenised.tokens) : null;
+    const liveTokens: LiveTokens | null = tokenised
+      ? {
+          displays: new Map(tokenised.tokens),
+          facets: new Map([...tokenised.facets].map(([token, typed]) => [token, [...typed]])),
+        }
+      : null;
 
     /**
      * Build 6: does this message continue what Rekoda just asked THIS person,
@@ -502,7 +511,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         to: inbound.from,
         reply: answer,
         // Only the model path can produce a reply that names a customer.
-        ...(liveTokens ? { tokens: liveTokens } : {}),
+        ...(liveTokens ? { tokens: liveTokens.displays } : {}),
       });
       /* G-23: "previewed" means WhatsApp accepted the preview for delivery.
        * A preview whose send failed (swallowed so the draft survives) was
@@ -4584,7 +4593,7 @@ async function interpretedReply(
    * preview say the customer's name over the wire while every stored copy
    * holds the token.
    */
-  tokens: Map<string, string>,
+  tokens: LiveTokens,
   /** The member who sent this (Build 6), or null for a sender with none. */
   actorId: string | null,
   /** True when this text was extracted from a photographed document. */
@@ -4783,9 +4792,9 @@ async function interpretedReply(
   if ('customer' in command && command.customer && command.customer.kind === 'mention') {
     const mention = command.customer.mention;
     const named = await deps.gateway.resolveMention(businessId, mention);
-    /* A token the gateway already showed keeps what it composed from what
-     * the merchant typed (G-60); a mention only adds one it did not see. */
-    if (!tokens.has(named.token)) tokens.set(named.token, mention);
+    /* Composed with whatever the merchant typed for the same customer, so a
+     * phone and the name the model resolved read as one person (G-60). */
+    deps.gateway.noteMention(tokens, named.token, mention);
     command = {
       ...command,
       customer: { kind: 'token', token: named.token },

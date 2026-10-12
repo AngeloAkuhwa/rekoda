@@ -193,6 +193,58 @@ describe('what will not be sent', () => {
   });
 });
 
+describe('the text that leaves fits after rehydration (G-60 final review)', () => {
+  const display = 'Adaeze Okonkwo-Bello (08031234567, adaeze.okonkwo.bello@example.com)';
+
+  it('keeps the sent text within the limit when tokens expand it', async () => {
+    const businessId = await seedBusiness();
+    const tokens = new Map([['CUSTOMER_7K2', display]]);
+    const text = Array.from({ length: 60 }, () => 'CUSTOMER_7K2 owes').join(', ');
+    expect(text.length).toBeLessThan(replies.MAX_REPLY_CHARS * 2);
+
+    await withBusiness(db, businessId, (tx) =>
+      replySender.send(tx, { businessId, to: '2348031234567', reply: { text }, tokens }),
+    );
+
+    const sent = sender.lastText!;
+    expect(sent.length).toBeLessThanOrEqual(replies.MAX_REPLY_CHARS);
+    /* Cut between identities, never through one: with every whole display
+     * taken out, no fragment of a name, number or address is left. */
+    const rest = sent.replaceAll(display, '');
+    expect(rest).not.toMatch(/Adaeze|Okonkwo|Bello|0803|example/);
+    const [stored] = await messagesOf(businessId);
+    expect(stored!.body).not.toContain('Adaeze');
+    expect(stored!.body).toContain('CUSTOMER_7K2');
+    /* The record says what was sent, in tokens. */
+    expect((stored!.body ?? '').replaceAll('CUSTOMER_7K2', display)).toBe(sent);
+  });
+
+  it('fits one long display that alone pushes a short reply over', async () => {
+    const businessId = await seedBusiness();
+    const tokens = new Map([['CUSTOMER_7K2', 'A'.repeat(500)]]);
+    const text = `${'x'.repeat(600)} CUSTOMER_7K2 owes`;
+    await withBusiness(db, businessId, (tx) =>
+      replySender.send(tx, { businessId, to: '2348031234567', reply: { text }, tokens }),
+    );
+    expect(sender.lastText!.length).toBeLessThanOrEqual(replies.MAX_REPLY_CHARS);
+    expect(sender.lastText).not.toMatch(/A{1,499}…?$/);
+  });
+
+  it('leaves a short reply exactly as it was', async () => {
+    const businessId = await seedBusiness();
+    const tokens = new Map([['CUSTOMER_7K2', display]]);
+    await withBusiness(db, businessId, (tx) =>
+      replySender.send(tx, {
+        businessId,
+        to: '2348031234567',
+        reply: { text: 'CUSTOMER_7K2 now owes ₦50,000.' },
+        tokens,
+      }),
+    );
+    expect(sender.lastText).toBe(`${display} now owes ₦50,000.`);
+  });
+});
+
 describe('tenancy', () => {
   it('does not show one business another`s replies', async () => {
     const ada = await seedBusiness();

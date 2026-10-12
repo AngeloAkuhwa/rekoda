@@ -479,3 +479,85 @@ describe('a storefront checkout attaches the typed name only when it is free (G-
     }
   });
 });
+
+describe('every name the product can store is recognised (G-60 final review)', () => {
+  const SEVEN = 'Alhaji Musa Ibrahim Chukwu Emeka Obi Junior';
+  /* 80 characters: the longest name the contracts let anyone store. */
+  const LONGEST =
+    'Alhaji Ibrahim Musa Abubakar Sani Danjuma Chukwuemeka Obi Junior Ade Bello Okafo';
+
+  it('the longest fixture is exactly the contract limit', () => {
+    expect(LONGEST.length).toBe(80);
+  });
+
+  it.each([
+    ['a seven-word name', SEVEN, (n: string) => `${n} paid 20k for 2 wigs`],
+    ['the longest storable name', LONGEST, (n: string) => `${n} paid 20k for 2 wigs`],
+    ['a long name beside a phone', SEVEN, (n: string) => `${n} 08031234567 paid 20k`],
+    ['a long name beside an email', SEVEN, (n: string) => `${n} ada@mail.com paid 20k`],
+  ])('keeps %s away from the model', async (_, name, sentence) => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { token } = await gateway.resolveMention(businessId, name);
+    const tokenised = await gateway.tokenise(businessId, sentence(name));
+    for (const word of ['Alhaji', 'Ibrahim', 'Junior']) expect(tokenised.text).not.toContain(word);
+    expect(tokenised.text).toContain(token);
+    expect(tokenised.text).toContain('20k');
+  });
+
+  it('does not make long prose somebody else', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    await gateway.resolveMention(businessId, SEVEN);
+    const prose = 'sold seven bales of ankara and two cartons of lace to the man from Kano for 20k';
+    const tokenised = await gateway.tokenise(businessId, prose);
+    expect(tokenised.text).toBe(prose);
+  });
+});
+
+describe('a name beside a token is still a name (G-60 final review)', () => {
+  it.each([
+    'Ada Obi-08031234567 paid',
+    'Ada Obi08031234567 paid',
+    '08031234567-Ada Obi paid',
+    '08031234567Ada Obi paid',
+    'Ada Obi,ada@mail.com paid',
+    '08031234567 Ada Obi 08099998888 paid',
+  ])('tokenises the known name in %j and keeps every token whole', async (text) => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { token } = await gateway.resolveMention(businessId, 'Ada Obi');
+    const tokenised = await gateway.tokenise(businessId, text);
+    expect(tokenised.text).not.toContain('Ada');
+    expect(tokenised.text).not.toContain('Obi');
+    expect(tokenised.text).toContain(token);
+    expect(tokenised.text).not.toMatch(/\d{7}/);
+    expect(rehydrate(tokenised.text, tokenised.tokens)).toBe(text);
+  });
+});
+
+describe('a resolved mention composes with what the merchant typed (G-60 final review)', () => {
+  async function live(businessId: string, text: string) {
+    const tokenised = await gateway.tokenise(businessId, text);
+    return {
+      displays: new Map(tokenised.tokens),
+      facets: new Map([...tokenised.facets].map(([t, f]) => [t, [...f]])),
+    };
+  }
+
+  it('adds the name to the phone shown for the same customer, once', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const table = await live(businessId, '08031234567 paid 20k');
+    const [token] = [...table.displays.keys()];
+    gateway.noteMention(table, token!, 'Ada Obi');
+    expect(table.displays.get(token!)).toBe('Ada Obi (08031234567)');
+    gateway.noteMention(table, token!, 'ada  obi');
+    expect(table.displays.get(token!)).toBe('Ada Obi (08031234567)');
+  });
+
+  it('never folds one customer into another', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const table = await live(businessId, '08031234567 and 08099998888 paid');
+    const [ada, bola] = [...table.displays.keys()];
+    gateway.noteMention(table, bola!, 'Bola Ade');
+    expect(table.displays.get(ada!)).toBe('08031234567');
+    expect(table.displays.get(bola!)).toBe('Bola Ade (08099998888)');
+  });
+});

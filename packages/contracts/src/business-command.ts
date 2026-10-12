@@ -23,10 +23,18 @@ const naira = z.number().finite().nonnegative().max(10_000_000_000); // ₦10bn 
 const quantity = z.number().finite().positive().max(1_000_000);
 const text = (max: number) => z.string().trim().min(1).max(max);
 
+/**
+ * The longest customer name the product stores, from any door: a model's
+ * mention, a storefront checkout, a dashboard quote. The privacy gateway's
+ * known-name pass recognises names up to exactly this length, so every name
+ * that can be stored can be recognised (G-60).
+ */
+export const CUSTOMER_NAME_MAX_CHARS = 80;
+
 /** A customer as the AI may refer to one: resolved token or raw mention. */
 export const CustomerRef = z.union([
   z.object({ kind: z.literal('token'), token: z.string().regex(/^CUSTOMER_[A-Z0-9]{2,12}$/) }),
-  z.object({ kind: z.literal('mention'), mention: text(80) }),
+  z.object({ kind: z.literal('mention'), mention: text(CUSTOMER_NAME_MAX_CHARS) }),
   z.object({ kind: z.literal('none') }),
 ]);
 export type CustomerRef = z.infer<typeof CustomerRef>;

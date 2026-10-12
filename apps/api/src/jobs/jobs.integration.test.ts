@@ -14,6 +14,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   billingRepo,
+  customersRepo,
   createDb,
   events as eventsRepo,
   identity,
@@ -27,6 +28,7 @@ import {
   type Db,
 } from '@rekoda/db';
 import { allowanceFor, replies, usagePeriod } from '@rekoda/core';
+import { encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
 import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '@rekoda/db/testing';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1234,6 +1236,28 @@ describe('a customer name never reaches the model twice', () => {
     const runner = buildRunner(workerDb, appDb, deps);
     await runner.runOnce();
   }
+
+  /* Owner review of #271: the phone was tokenised, the model named the same
+   * customer by name; the reply shows both, as one person. */
+  it('composes a resolved name with the phone already shown for that customer', async () => {
+    const businessId = await seedBusiness('Names Compose Ltd', '+2348140020009');
+    const gateway = new PrivacyGateway(appDb, config);
+    const ada = await gateway.resolveMention(businessId, 'Ada Obi');
+    await customersRepo.addIdentityFacet(appDb, businessId, ada.customerId, {
+      facet: 'phone',
+      ciphertext: encryptFacet('08031234567', config.vaultKey, `${businessId}:phone`),
+      matchKey: matchKeyFor(
+        businessId,
+        'phone',
+        normaliseFacet('phone', '08031234567'),
+        config.matchKey,
+      ),
+    });
+
+    await saleMention(businessId, '+2348140020009', 'sold 3 wigs to 08031234567 for 150k, paid');
+    const preview = stubSender.sent[stubSender.sent.length - 1]?.text ?? '';
+    expect(preview).toContain('Ada Obi (08031234567)');
+  });
 
   it('stores the token everywhere and says the name only over the wire', async () => {
     const businessId = await seedBusiness('Names Once Ltd', '+2348140020001');

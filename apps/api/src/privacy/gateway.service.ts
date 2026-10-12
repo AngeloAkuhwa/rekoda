@@ -11,6 +11,7 @@ import {
   type TypedFacet,
 } from '@rekoda/core/privacy';
 import { encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
+import { CUSTOMER_NAME_MAX_CHARS } from '@rekoda/contracts';
 import { customersRepo, suppliersRepo, withBusiness, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
@@ -51,6 +52,21 @@ export interface IdentityLinkProposal {
 export interface GatewayTokenised extends TokenisedMessage {
   /** Null on almost every message. */
   readonly link: IdentityLinkProposal | null;
+  /**
+   * Every facet the merchant typed for each customer token, which the display
+   * in `tokens` was composed from (G-60). Authorised-layer only, like
+   * `tokens`: never logged, stored or sent to a model.
+   */
+  readonly facets: ReadonlyMap<string, readonly TypedFacet[]>;
+}
+
+/**
+ * The token table one message carries to its reply: what each token reads
+ * as, and the typed facets that reading was composed from.
+ */
+export interface LiveTokens {
+  readonly displays: Map<string, string>;
+  readonly facets: Map<string, TypedFacet[]>;
 }
 
 /**
@@ -89,14 +105,11 @@ function proposeLink(seen: ResolvedCustomer[]): IdentityLinkProposal | null {
 const MIN_NAME_LENGTH = 3;
 
 /**
- * The longest run of words the known-name pass will treat as one name.
- *
- * The message is scanned as overlapping word-groups of one to this many
- * words, and each group is hashed and looked up. Six covers a long Nigerian
- * name with titles ("Alhaji Ibrahim Musa Abubakar Sani") while keeping the
- * candidate count linear in the message length.
+ * Keys per lookup. A message's candidate count is linear in its length (each
+ * start word extends at most CUSTOMER_NAME_MAX_CHARS characters), so a long
+ * message is looked up in a few bounded queries rather than one huge one.
  */
-const MAX_NAME_WORDS = 6;
+const NAME_KEYS_PER_QUERY = 1_000;
 
 /**
  * A word for the purpose of name-matching: letters or digits, with an inner
@@ -104,6 +117,18 @@ const MAX_NAME_WORDS = 6;
  * one word rather than two.
  */
 const NAME_WORD = /[\p{L}\p{N}]+(?:['\u2019-][\p{L}\p{N}]+)*/gu;
+
+/** The stretches of `text` between its tokens, which alone may hold a name. */
+function openSegments(text: string, tokens: string[]): Array<{ start: number; end: number }> {
+  const segments: Array<{ start: number; end: number }> = [];
+  let cursor = 0;
+  for (const span of protectedSpans(text, tokens)) {
+    if (span.start > cursor) segments.push({ start: cursor, end: span.start });
+    cursor = Math.max(cursor, span.end);
+  }
+  if (cursor < text.length) segments.push({ start: cursor, end: text.length });
+  return segments;
+}
 
 @Injectable()
 export class PrivacyGateway {
@@ -178,49 +203,46 @@ export class PrivacyGateway {
      * mention resolved below), it is a stored identity like any other, and a
      * message naming that customer must not carry the name to a model.
      *
-     * The match is by keyed hash, not by decrypting names. Every run of one
-     * to MAX_NAME_WORDS words in the message is folded and hashed the same
-     * way a stored name was, and the whole set is looked up in one query. So
-     * the pass is complete for any customer count and costs the message's
-     * length, not the customer table: it never reads a name that was not
-     * typed, and there is no cap above which a real customer stops being
-     * recognised.
+     * The match is by keyed hash, not by decrypting names. Every run of words
+     * whose folded form could be a stored name (at most
+     * CUSTOMER_NAME_MAX_CHARS, the longest name any door stores) is hashed
+     * the same way a stored name was and looked up. So every name the product
+     * can store can be recognised, the pass is complete for any customer
+     * count, and it costs the message's length, not the customer table.
+     *
+     * Tokens are opaque separators (G-60). The text BETWEEN tokens is scanned
+     * segment by segment, so no candidate starts inside a token or runs across
+     * one, and a name glued to a token ("Ada Obi-08031234567") is still a
+     * name: the token ends the segment, it does not swallow the word.
      */
-    /* A token is one opaque span (G-60). No word inside one is a candidate,
-     * and no candidate runs across one, so a stored name can neither splice
-     * into a token nor join the words either side of it. */
-    const shielded = protectedSpans(out, [...tokens.keys(), ...typed.keys()]);
-    const touchesToken = (start: number, end: number) =>
-      shielded.some((s) => start < s.end && s.start < end);
-    const words = [...out.matchAll(NAME_WORD)]
-      .map((m) => {
-        const start = m.index ?? 0;
-        return { start, end: start + m[0].length };
-      })
-      .filter((w) => !touchesToken(w.start, w.end));
     const candidates: Array<{ start: number; end: number; matchKey: string }> = [];
     const keys = new Set<string>();
-    for (let i = 0; i < words.length; i++) {
-      const from = words[i];
-      if (!from) continue;
-      for (let n = 1; n <= MAX_NAME_WORDS && i + n <= words.length; n++) {
-        const to = words[i + n - 1];
-        if (!to) continue;
-        const start = from.start;
-        const end = to.end;
-        if (touchesToken(start, end)) break;
-        const normalised = normaliseFacet('name', out.slice(start, end));
-        if (normalised.length < MIN_NAME_LENGTH) continue;
-        const matchKey = matchKeyFor(businessId, 'name', normalised, this.config.matchKey);
-        candidates.push({ start, end, matchKey });
-        keys.add(matchKey);
+    for (const segment of openSegments(out, [...tokens.keys(), ...typed.keys()])) {
+      const words = [...out.slice(segment.start, segment.end).matchAll(NAME_WORD)].map((m) => {
+        const start = segment.start + (m.index ?? 0);
+        return { start, end: start + m[0].length };
+      });
+      for (let i = 0; i < words.length; i++) {
+        for (let j = i; j < words.length; j++) {
+          const start = words[i]!.start;
+          const end = words[j]!.end;
+          const normalised = normaliseFacet('name', out.slice(start, end));
+          if (normalised.length > CUSTOMER_NAME_MAX_CHARS) break;
+          if (normalised.length < MIN_NAME_LENGTH) continue;
+          const matchKey = matchKeyFor(businessId, 'name', normalised, this.config.matchKey);
+          candidates.push({ start, end, matchKey });
+          keys.add(matchKey);
+        }
       }
     }
 
-    const found = await customersRepo.namesByMatchKeys(this.db, businessId, [...keys]);
     const byKey = new Map<string, { token: string; customerId: string }>();
-    for (const row of found) {
-      if (!byKey.has(row.matchKey)) byKey.set(row.matchKey, row);
+    const allKeys = [...keys];
+    for (let at = 0; at < allKeys.length; at += NAME_KEYS_PER_QUERY) {
+      const batch = allKeys.slice(at, at + NAME_KEYS_PER_QUERY);
+      for (const row of await customersRepo.namesByMatchKeys(this.db, businessId, batch)) {
+        if (!byKey.has(row.matchKey)) byKey.set(row.matchKey, row);
+      }
     }
 
     /* Longest span first so "Ada Obi Junior" beats "Ada Obi", then leftmost;
@@ -255,7 +277,20 @@ export class PrivacyGateway {
     }
 
     for (const [token, facets] of typed) tokens.set(token, displayOf(facets));
-    return { text: out, tokens, link: proposeLink(seen) };
+    return { text: out, tokens, link: proposeLink(seen), facets: typed };
+  }
+
+  /**
+   * A name the model reported, resolved to `token`, added to what that token
+   * reads as in the reply (G-60). Composed from the typed facets, never by
+   * parsing a display: a phone the merchant typed and the name the model
+   * resolved to the same customer read as one person, "Ada Obi (0803…)".
+   */
+  noteMention(live: LiveTokens, token: string, mention: string): void {
+    const facets = live.facets.get(token) ?? [];
+    facets.push({ facet: 'name', value: mention, key: normaliseFacet('name', mention) });
+    live.facets.set(token, facets);
+    live.displays.set(token, displayOf(facets));
   }
 
   /**
@@ -318,7 +353,11 @@ export class PrivacyGateway {
   ): Promise<{ token: string; customerId: string } | null> {
     if (normaliseFacet('phone', phone).length < 7) return null;
     const byPhone = await this.customerTokenFor(businessId, 'phone', phone);
-    if (byPhone.created && name.trim().length > 0) {
+    /* Attached whenever the phone's customer has no name yet, not only when
+     * the phone is new: the phone row commits before the name, so a checkout
+     * whose name attach failed must complete it on the retry (G-60). A
+     * customer who already has a name keeps it. */
+    if (name.trim().length > 0 && !(await this.hasName(businessId, byPhone.customerId))) {
       try {
         await customersRepo.addIdentityFacet(this.db, businessId, byPhone.customerId, {
           facet: 'name',
@@ -338,6 +377,12 @@ export class PrivacyGateway {
       }
     }
     return { token: byPhone.token, customerId: byPhone.customerId };
+  }
+
+  /** Whether this customer already holds a name facet. Reads no plaintext. */
+  private async hasName(businessId: string, customerId: string): Promise<boolean> {
+    const facets = await customersRepo.identitiesForCustomer(this.db, businessId, customerId);
+    return facets.some((f) => f.facet === 'name');
   }
 
   /**

@@ -10,6 +10,7 @@ import {
 import {
   detectStructuralPii,
   displayOf,
+  fitRehydrated,
   generateCustomerToken,
   protectedSpans,
   redactForLog,
@@ -286,5 +287,33 @@ describe('a token is an opaque span (G-60)', () => {
 
   it('leaves ordinary words alone', () => {
     expect(protectedSpans('Customer Ada paid 20k', [])).toEqual([]);
+  });
+});
+
+describe('rehydration is one pass (G-60 final review)', () => {
+  it('never substitutes inside a value it has just put back', () => {
+    /* A typed email that happens to spell another token stays as typed. */
+    const tokens = new Map([
+      ['CUSTOMER_XYZ', 'CUSTOMER_ABC@mail.com'],
+      ['CUSTOMER_ABC', 'Ada Obi'],
+    ]);
+    expect(rehydrate('send to CUSTOMER_XYZ, cc CUSTOMER_ABC', tokens)).toBe(
+      'send to CUSTOMER_ABC@mail.com, cc Ada Obi',
+    );
+  });
+});
+
+describe('what leaves fits after rehydration (G-60 final review)', () => {
+  it('cuts between identities and marks the cut', () => {
+    const tokens = new Map([['CUSTOMER_ABC', 'Ada Obi (08031234567)']]);
+    const fitted = fitRehydrated('CUSTOMER_ABC, CUSTOMER_ABC, CUSTOMER_ABC', tokens, 50);
+    const shown = rehydrate(fitted, tokens);
+    expect(shown.length).toBeLessThanOrEqual(50);
+    expect(shown).toBe('Ada Obi (08031234567), Ada Obi (08031234567),…');
+  });
+
+  it('leaves text that already fits exactly as it is', () => {
+    const tokens = new Map([['CUSTOMER_ABC', 'Ada Obi']]);
+    expect(fitRehydrated('CUSTOMER_ABC paid', tokens, 50)).toBe('CUSTOMER_ABC paid');
   });
 });

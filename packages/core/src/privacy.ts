@@ -206,12 +206,62 @@ export function protectedSpans(
  * writing a log line, and never inside the core.
  */
 export function rehydrate(text: string, tokens: ReadonlyMap<string, string>): string {
-  let out = text;
-  // Longest tokens first: CUSTOMER_1 must not be substituted inside CUSTOMER_12.
-  for (const token of [...tokens.keys()].sort((a, b) => b.length - a.length)) {
-    out = out.split(token).join(tokens.get(token)!);
+  const pattern = tokenPattern(tokens);
+  /* One pass: a value put back is never read again, so a typed value that
+   * spells another token stays as typed (G-60). */
+  return pattern ? text.replace(pattern, (token) => tokens.get(token) ?? token) : text;
+}
+
+/** Every token, longest first, so CUSTOMER_1 never matches inside CUSTOMER_12. */
+function tokenPattern(tokens: ReadonlyMap<string, string>): RegExp | null {
+  if (tokens.size === 0) return null;
+  const alternatives = [...tokens.keys()]
+    .sort((a, b) => b.length - a.length)
+    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return new RegExp(alternatives.join('|'), 'g');
+}
+
+/**
+ * The tokenised text to send so that what leaves, once rehydrated, is at most
+ * `max` characters (G-60). A display can be far longer than its token, so a
+ * reply that fits in tokens need not fit in people. Cut only between tokens,
+ * never through a customer's identity, and marked with an ellipsis; the
+ * stored record is this text, so it still says exactly what was sent.
+ */
+export function fitRehydrated(
+  text: string,
+  tokens: ReadonlyMap<string, string>,
+  max: number,
+): string {
+  if (rehydrate(text, tokens).length <= max) return text;
+  const pattern = tokenPattern(tokens);
+  const budget = max - 1;
+  let kept = '';
+  let used = 0;
+  let cursor = 0;
+  const chunks: Array<{ raw: string; shown: string; token: boolean }> = [];
+  for (const m of pattern ? text.matchAll(pattern) : []) {
+    if (m.index > cursor) {
+      const literal = text.slice(cursor, m.index);
+      chunks.push({ raw: literal, shown: literal, token: false });
+    }
+    chunks.push({ raw: m[0], shown: tokens.get(m[0]) ?? m[0], token: true });
+    cursor = m.index + m[0].length;
   }
-  return out;
+  if (cursor < text.length) {
+    const literal = text.slice(cursor);
+    chunks.push({ raw: literal, shown: literal, token: false });
+  }
+  for (const chunk of chunks) {
+    if (used + chunk.shown.length <= budget) {
+      kept += chunk.raw;
+      used += chunk.shown.length;
+      continue;
+    }
+    if (!chunk.token) kept += chunk.raw.slice(0, budget - used);
+    break;
+  }
+  return `${kept.trimEnd()}…`;
 }
 
 /**

@@ -415,6 +415,64 @@ describe('adding a facet to a known customer (G-60)', () => {
     expect((failure as Error).message).not.toMatch(/select|params/i);
   });
 
+  /* Owner review of #271: the holder of a taken facet is erased between
+   * the conflict and the lookup. The facet is free, so this is no conflict:
+   * the attachment is tried again and wins. */
+  it('attaches, never a false conflict, when the holder is erased mid-way', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000209');
+    const ada = await rememberCustomer(business.id, '08031111111', 'Ada Obi');
+    const bola = await rememberCustomer(business.id, '08032222222', 'Bola Ade');
+    const facet = nameFacet(business.id, 'Ada Obi');
+    await customersRepo.addIdentityFacet(db, business.id, ada.id, facet);
+
+    const { db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 1 });
+    let outcome: unknown;
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g60_erase_once`);
+      /* The first holder lookup erases the holder and does not see it, as an
+       * erasure committed between the two statements would leave it. */
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_erase_holder(k text) RETURNS boolean
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF nextval('g60_erase_once') = 1 THEN
+            DELETE FROM customer_identities WHERE match_key = k AND facet = 'name';
+            RETURN false;
+          END IF;
+          RETURN true;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE POLICY g60_erase_holder ON customer_identities AS RESTRICTIVE FOR SELECT
+          USING (match_key IS DISTINCT FROM ${sql.raw(`'${facet.matchKey}'`)} OR g60_erase_holder(match_key))`);
+      outcome = await customersRepo.addIdentityFacet(db, business.id, bola.id, facet).then(
+        (r) => r,
+        (error: unknown) => error,
+      );
+    } finally {
+      await ownerDb.execute(sql`DROP POLICY IF EXISTS g60_erase_holder ON customer_identities`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_erase_holder(text)`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g60_erase_once`);
+      await closeOwner();
+    }
+    expect(outcome).toBe('attached');
+    expect(await ownersOf(business.id, facet.matchKey)).toEqual([bola.id]);
+  });
+
+  it('keeps the database error code on a failure it surfaces, and nothing unsafe', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000210');
+    const facet = nameFacet(business.id, 'Ada Obi');
+    const missing = '00000000-0000-4000-8000-000000000000';
+    const failure = (await customersRepo.addIdentityFacet(db, business.id, missing, facet).then(
+      () => null,
+      (error: unknown) => error,
+    )) as Error & { code?: string };
+    expect(failure.code).toBe('23503');
+    expect(failure).not.toBeInstanceOf(customersRepo.IdentityConflict);
+    expect(JSON.stringify(failure)).not.toContain(facet.matchKey);
+    expect(JSON.stringify(failure)).not.toContain(facet.ciphertext);
+    expect(String((failure as { cause?: unknown }).cause ?? '')).toBe('');
+  });
+
   it('cannot attach a facet to another business customer', async () => {
     const ada = await seedBusiness('Ada Fashion', '+2348030000206');
     const bola = await seedBusiness('Bola Electronics', '+2348030000207');

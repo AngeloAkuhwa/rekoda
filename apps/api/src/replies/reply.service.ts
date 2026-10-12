@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { billingPeriod, messageCostK, replies, type Reply } from '@rekoda/core';
-import { redactForLog, rehydrate } from '@rekoda/core/privacy';
+import { fitRehydrated, redactForLog, rehydrate } from '@rekoda/core/privacy';
 import { conversationsRepo, quotaRepo, type TenantDb } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
@@ -60,7 +60,16 @@ export class ReplySender {
    * is recoverable; a reply sent about a rolled-back draft is not.
    */
   async send(tx: TenantDb, input: SendReplyInput): Promise<{ delivered: boolean }> {
-    const safe = replies.truncateForSending(input.reply);
+    const truncated = replies.truncateForSending(input.reply);
+    /* The limit binds the text that LEAVES, after rehydration, where one token
+     * can read as a name and its numbers (G-60). Cut in tokens, between
+     * identities, and stored as cut, so the record is what was sent. */
+    const safe = input.tokens?.size
+      ? {
+          ...truncated,
+          text: fitRehydrated(truncated.text, input.tokens, replies.MAX_REPLY_CHARS),
+        }
+      : truncated;
     if (!replies.isSendable(safe)) {
       this.log.error('refused to send an empty reply');
       return { delivered: false };

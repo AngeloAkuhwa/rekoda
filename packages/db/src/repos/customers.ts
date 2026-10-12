@@ -215,14 +215,34 @@ export async function createCustomerWithIdentities(
 }
 
 /**
+ * A facet could not be attached for a reason that is not a conflict (G-60):
+ * a customer that does not exist, another tenant's customer, an outage.
+ * Carries PostgreSQL's reason and its SQLSTATE `code`, never the statement,
+ * its bound values (the facet's ciphertext and match key) or a `cause` that
+ * would carry them.
+ */
+export class IdentityFacetWriteFailed extends Error {
+  readonly code: string | null;
+  constructor(reason: string, code: string | null) {
+    super(`could not attach an identity facet: ${reason}`);
+    this.name = 'IdentityFacetWriteFailed';
+    this.code = code;
+  }
+}
+
+/** Attempts when the holder of a taken facet keeps vanishing before it is read. */
+const ATTACH_ATTEMPTS = 3;
+
+/**
  * Add a facet to a customer we already know — a phone for a name, say.
  *
  * The contract (G-60): `'attached'`, or `'already-attached'` when this
- * customer already holds the facet; an `IdentityConflict` when the facet keys
- * ANOTHER customer of this business, decided by `identities_match_ux`, so two
- * racing attachments still leave one owner. Any other failure (a customer
- * that does not exist, another tenant's customer, an outage) is thrown as it
- * came: it is not a conflict and must not be handled as one.
+ * customer already holds the facet; an `IdentityConflict` only when the facet
+ * ACTUALLY keys another customer of this business, decided by
+ * `identities_match_ux`, so two racing attachments still leave one owner.
+ * When the holder is erased between the conflict and the read of who holds
+ * it, the facet is free and the attachment is tried again, a bounded number
+ * of times. Any other failure is an `IdentityFacetWriteFailed`.
  */
 export async function addIdentityFacet(
   db: Db,
@@ -230,37 +250,53 @@ export async function addIdentityFacet(
   customerId: string,
   identity: IdentityInput,
 ): Promise<'attached' | 'already-attached'> {
-  try {
-    await withBusiness(db, businessId, async (tx) => {
-      await tx.insert(customerIdentities).values({
-        businessId,
-        customerId,
-        facet: identity.facet,
-        ciphertext: identity.ciphertext,
-        matchKey: identity.matchKey,
+  for (let attempt = 0; attempt < ATTACH_ATTEMPTS; attempt++) {
+    try {
+      await withBusiness(db, businessId, async (tx) => {
+        await tx.insert(customerIdentities).values({
+          businessId,
+          customerId,
+          facet: identity.facet,
+          ciphertext: identity.ciphertext,
+          matchKey: identity.matchKey,
+        });
       });
-    });
-    return 'attached';
-  } catch (error) {
-    if (violatedConstraint(error) !== 'identities_match_ux' || identity.matchKey === null) {
-      /* Surfaced, with the database's own reason and without the statement:
-       * drizzle's wrapper message lists every bound value, and those are the
-       * facet's ciphertext and match key. */
-      throw new Error(`could not attach an identity facet: ${databaseReason(error)}`);
+      return 'attached';
+    } catch (error) {
+      if (violatedConstraint(error) !== 'identities_match_ux' || identity.matchKey === null) {
+        throw writeFailed(error);
+      }
     }
+    /* The insert rolled back; who holds the facet is read in its own
+     * transaction. Unique on (business, facet, key), so there is one owner. */
+    const owner = await findCustomerByMatchKey(
+      db,
+      businessId,
+      identity.facet,
+      identity.matchKey,
+    ).catch((error: unknown) => {
+      throw writeFailed(error);
+    });
+    if (owner === null) continue;
+    if (owner.id === customerId) return 'already-attached';
+    throw new IdentityConflict('this identity already belongs to another customer');
   }
-  /* The insert rolled back; who holds the facet is read in its own
-   * transaction. Unique on (business, facet, key), so there is one owner. */
-  const owner = await findCustomerByMatchKey(
-    db,
-    businessId,
-    identity.facet,
-    identity.matchKey,
-  ).catch((error: unknown) => {
-    throw new Error(`could not attach an identity facet: ${databaseReason(error)}`);
-  });
-  if (owner?.id === customerId) return 'already-attached';
-  throw new IdentityConflict('this identity already belongs to another customer');
+  throw new IdentityFacetWriteFailed('its holder kept changing; try again', null);
+}
+
+/** A database failure as an `IdentityFacetWriteFailed`: reason and code only. */
+function writeFailed(error: unknown): IdentityFacetWriteFailed {
+  return new IdentityFacetWriteFailed(databaseReason(error), databaseCode(error));
+}
+
+/** The SQLSTATE PostgreSQL gave, wherever drizzle wrapped it. */
+function databaseCode(error: unknown): string | null {
+  for (let e: unknown = error, depth = 0; e && depth < 5; depth++) {
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code)) return code;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return null;
 }
 
 /**
