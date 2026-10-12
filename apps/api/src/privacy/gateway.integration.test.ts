@@ -736,3 +736,21 @@ describe('names followed by punctuation and clitics (G-60 final review, round 4)
     expect(tokenised.text).toBe(expected.replaceAll('@', token));
   });
 });
+
+describe('one name in either Unicode composition (G-60 final review, round 4)', () => {
+  const composed = 'Adébáyọ̀'.normalize('NFC');
+  const decomposed = 'Adébáyọ̀'.normalize('NFD');
+
+  it.each([
+    ['stored composed, typed decomposed', composed, decomposed],
+    ['stored decomposed, typed composed', decomposed, composed],
+  ])('recognises a name %s', async (_, stored, typed) => {
+    expect(stored).not.toBe(typed);
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { token, customerId } = await gateway.resolveMention(businessId, stored);
+    const tokenised = await gateway.tokenise(businessId, `${typed} paid 20k`);
+    expect(tokenised.text).toBe(`${token} paid 20k`);
+    /* And a mention in the other form is the same customer, not a new one. */
+    expect((await gateway.resolveMention(businessId, typed)).customerId).toBe(customerId);
+  });
+});

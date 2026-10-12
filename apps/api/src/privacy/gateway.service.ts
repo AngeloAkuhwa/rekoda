@@ -221,10 +221,10 @@ export class PrivacyGateway {
       const typedForm = out.slice(start, end).trim().replace(/\s+/g, ' ');
       if (typedForm.length > CUSTOMER_NAME_MAX_CHARS) return;
       if (typedForm.length < CUSTOMER_NAME_MIN_CHARS || !/\p{L}/u.test(typedForm)) return;
-      const normalised = normaliseFacet('name', out.slice(start, end));
-      const matchKey = matchKeyFor(businessId, 'name', normalised, this.config.matchKey);
-      candidates.push({ start, end, matchKey });
-      keys.add(matchKey);
+      for (const matchKey of this.nameKeys(businessId, out.slice(start, end))) {
+        candidates.push({ start, end, matchKey });
+        keys.add(matchKey);
+      }
     };
     for (const segment of openSegments(out, [...tokens.keys(), ...typed.keys()])) {
       const words = [...out.slice(segment.start, segment.end).matchAll(NAME_WORD)].map((m) => {
@@ -395,7 +395,7 @@ export class PrivacyGateway {
      * whose name attach failed must complete it on the retry (G-60). A
      * customer who already has a name keeps it, decided under a lock on the
      * customer so two checkouts at once cannot both add one. */
-    if (name.trim().length > 0) {
+    if (name.trim().length > 0 && !(await this.nameHeldElsewhere(businessId, name, byPhone))) {
       try {
         await customersRepo.addIdentityFacet(
           this.db,
@@ -424,6 +424,36 @@ export class PrivacyGateway {
   }
 
   /**
+   * Every match key a typed name could be stored under (G-60): as typed, and
+   * in each Unicode composition, NFC and NFD. Yoruba tone marks arrive both
+   * ways from different keyboards, and a stored name was keyed as it was
+   * typed, so looking up all forms recognises it without re-keying anything.
+   */
+  private nameKeys(businessId: string, value: string): string[] {
+    const forms = new Set([value, value.normalize('NFC'), value.normalize('NFD')]);
+    return [
+      ...new Set(
+        [...forms].map((form) =>
+          matchKeyFor(businessId, 'name', normaliseFacet('name', form), this.config.matchKey),
+        ),
+      ),
+    ];
+  }
+
+  /** Whether a name, in any composition, already keys a customer other than this one. */
+  private async nameHeldElsewhere(
+    businessId: string,
+    name: string,
+    customer: { customerId: string },
+  ): Promise<boolean> {
+    for (const key of this.nameKeys(businessId, name)) {
+      const holder = await customersRepo.findCustomerByMatchKey(this.db, businessId, 'name', key);
+      if (holder && holder.id !== customer.customerId) return true;
+    }
+    return false;
+  }
+
+  /**
    * The token for a person, creating them if this business has not seen them.
    *
    * The match key is a keyed HMAC that mixes in `businessId`, so the same
@@ -438,14 +468,13 @@ export class PrivacyGateway {
     const normalised = normaliseFacet(facet, value);
     const matchKey = matchKeyFor(businessId, facet, normalised, this.config.matchKey);
 
-    const existing = await customersRepo.findCustomerByMatchKey(
-      this.db,
-      businessId,
-      facet,
-      matchKey,
-    );
-    if (existing) {
-      return { token: existing.token, customerId: existing.id, facet, created: false };
+    /* A name in another Unicode composition is the same person (G-60). */
+    const candidates = facet === 'name' ? this.nameKeys(businessId, value) : [matchKey];
+    for (const key of candidates) {
+      const existing = await customersRepo.findCustomerByMatchKey(this.db, businessId, facet, key);
+      if (existing) {
+        return { token: existing.token, customerId: existing.id, facet, created: false };
+      }
     }
 
     /**
