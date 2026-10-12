@@ -230,6 +230,32 @@ describe('the text that leaves fits after rehydration (G-60 final review)', () =
     expect(sender.lastText).not.toMatch(/A{1,499}…?$/);
   });
 
+  it('never sends a fragment of a token', async () => {
+    const businessId = await seedBusiness();
+    const tokens = new Map([['CUSTOMER_7K2', 'Ada']]);
+    const text = `${'b'.repeat(893)} CUSTOMER_7K2 owes`;
+    await withBusiness(db, businessId, (tx) =>
+      replySender.send(tx, { businessId, to: '2348031234567', reply: { text }, tokens }),
+    );
+    expect(sender.lastText!.length).toBeLessThanOrEqual(replies.MAX_REPLY_CHARS);
+    expect(sender.lastText).not.toMatch(/CUSTO|CUSTOMER_/);
+  });
+
+  it('never sends a reply that is only an ellipsis', async () => {
+    const businessId = await seedBusiness();
+    const tokens = new Map([['CUSTOMER_7K2', 'X'.repeat(950)]]);
+    await withBusiness(db, businessId, (tx) =>
+      replySender.send(tx, {
+        businessId,
+        to: '2348031234567',
+        reply: { text: 'CUSTOMER_7K2 owes you 5k' },
+        tokens,
+      }),
+    );
+    expect(sender.lastText!.length).toBeLessThanOrEqual(replies.MAX_REPLY_CHARS);
+    expect(sender.lastText!.replace(/…$/, '').trim().length).toBeGreaterThan(0);
+  });
+
   it('leaves a short reply exactly as it was', async () => {
     const businessId = await seedBusiness();
     const tokens = new Map([['CUSTOMER_7K2', display]]);

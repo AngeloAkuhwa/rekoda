@@ -153,8 +153,9 @@ const DISPLAY_ORDER = { name: 0, phone: 1, email: 2 } as const;
  * more than one facet in one message (G-60).
  *
  * Every distinct facet they typed, name first, then phones, then emails, each
- * in the order typed: "Ada Obi (08031234567)". Never one facet standing in for
- * another, and never decided by which pass happened to run last.
+ * in the order typed, its spacing folded: "Ada Obi (08031234567)". Never one
+ * facet standing in for another, and never decided by which pass happened to
+ * run last.
  */
 export function displayOf(typed: readonly TypedFacet[]): string {
   const seen = new Set<string>();
@@ -167,7 +168,7 @@ export function displayOf(typed: readonly TypedFacet[]): string {
       seen.add(id);
       return true;
     })
-    .map((t) => t.value);
+    .map((t) => t.value.trim().replace(/\s+/g, ' '));
   const [first, ...rest] = shown;
   return rest.length > 0 ? `${first} (${rest.join(', ')})` : (first ?? '');
 }
@@ -178,23 +179,67 @@ const TOKEN_SHAPE = /\b(?:CUSTOMER|PHONE|EMAIL|ACCOUNT)_[0-9A-Z]+\b/g;
 /**
  * The spans of `text` that are tokens, and so opaque to every later pass
  * (G-60): each token this message was given, wherever it stands, and anything
- * shaped like one, such as a token the merchant pasted back from a preview.
- * A later detector may neither match inside one nor run across one.
+ * shaped like one that is not part of such a token, such as a token the
+ * merchant pasted back from a preview. A shape never runs past a real token
+ * into the letters glued after it ("CUSTOMER_X81ADA" keeps "ADA" readable).
  */
 export function protectedSpans(
   text: string,
   tokens: Iterable<string>,
 ): Array<{ start: number; end: number }> {
-  const spans: Array<{ start: number; end: number }> = [];
+  const exact: Array<{ start: number; end: number }> = [];
   for (const token of tokens) {
     for (let at = text.indexOf(token); at !== -1; at = text.indexOf(token, at + token.length)) {
-      spans.push({ start: at, end: at + token.length });
+      exact.push({ start: at, end: at + token.length });
     }
   }
+  const shaped: Array<{ start: number; end: number }> = [];
   for (const m of text.matchAll(TOKEN_SHAPE)) {
-    spans.push({ start: m.index, end: m.index + m[0].length });
+    const span = { start: m.index, end: m.index + m[0].length };
+    if (!exact.some((e) => span.start < e.end && e.start < span.end)) shaped.push(span);
   }
-  return spans.sort((a, b) => a.start - b.start);
+  return [...exact, ...shaped].sort((a, b) => a.start - b.start);
+}
+
+/** The stretches of `text` between its tokens, which alone may hold a name. */
+export function openSegments(
+  text: string,
+  tokens: Iterable<string>,
+): Array<{ start: number; end: number }> {
+  const segments: Array<{ start: number; end: number }> = [];
+  let cursor = 0;
+  for (const span of protectedSpans(text, tokens)) {
+    if (span.start > cursor) segments.push({ start: cursor, end: span.start });
+    cursor = Math.max(cursor, span.end);
+  }
+  if (cursor < text.length) segments.push({ start: cursor, end: text.length });
+  return segments;
+}
+
+/**
+ * Replace `phrase` with `replacement` wherever it stands as whole words in
+ * the text between tokens: case and spacing folded ("Ada   Obi"), and never
+ * inside a token ("CUSTOMER_ADA" is not "Ada"). For a name the model resolved
+ * after the message was stored (G-60).
+ */
+export function replaceOutsideTokens(
+  text: string,
+  phrase: string,
+  replacement: string,
+  tokens: Iterable<string>,
+): string {
+  const words = phrase.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return text;
+  const body = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
+  const pattern = new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])${body}(?![\\p{L}\\p{M}\\p{N}])`, 'giu');
+  let out = '';
+  let cursor = 0;
+  for (const segment of openSegments(text, tokens)) {
+    out += text.slice(cursor, segment.start);
+    out += text.slice(segment.start, segment.end).replace(pattern, replacement);
+    cursor = segment.end;
+  }
+  return out + text.slice(cursor);
 }
 
 /**
@@ -222,24 +267,25 @@ function tokenPattern(tokens: ReadonlyMap<string, string>): RegExp | null {
 }
 
 /**
- * The tokenised text to send so that what leaves, once rehydrated, is at most
- * `max` characters (G-60). A display can be far longer than its token, so a
- * reply that fits in tokens need not fit in people. Cut only between tokens,
- * never through a customer's identity, and marked with an ellipsis; the
- * stored record is this text, so it still says exactly what was sent.
+ * The tokenised text to send so that both it and what leaves once
+ * rehydrated are at most `max` characters (G-60). A display can be far
+ * longer than its token, so a reply that fits in tokens need not fit in
+ * people, and this is the ONLY cut a reply with tokens gets: never through a
+ * token, never through a customer's identity, marked with an ellipsis. The
+ * stored record is this text, so it says exactly what was sent. When even the
+ * first identity cannot fit, it is kept whole and the sender's own backstop
+ * shortens what leaves; that needs a single display of ~900 characters.
  */
 export function fitRehydrated(
   text: string,
   tokens: ReadonlyMap<string, string>,
   max: number,
 ): string {
-  if (rehydrate(text, tokens).length <= max) return text;
+  if (text.length <= max && rehydrate(text, tokens).length <= max) return text;
   const pattern = tokenPattern(tokens);
   const budget = max - 1;
-  let kept = '';
-  let used = 0;
-  let cursor = 0;
   const chunks: Array<{ raw: string; shown: string; token: boolean }> = [];
+  let cursor = 0;
   for (const m of pattern ? text.matchAll(pattern) : []) {
     if (m.index > cursor) {
       const literal = text.slice(cursor, m.index);
@@ -252,13 +298,18 @@ export function fitRehydrated(
     const literal = text.slice(cursor);
     chunks.push({ raw: literal, shown: literal, token: false });
   }
+  let kept = '';
+  let raw = 0;
+  let shown = 0;
   for (const chunk of chunks) {
-    if (used + chunk.shown.length <= budget) {
+    if (raw + chunk.raw.length <= budget && shown + chunk.shown.length <= budget) {
       kept += chunk.raw;
-      used += chunk.shown.length;
+      raw += chunk.raw.length;
+      shown += chunk.shown.length;
       continue;
     }
-    if (!chunk.token) kept += chunk.raw.slice(0, budget - used);
+    if (!chunk.token) kept += chunk.raw.slice(0, Math.min(budget - raw, budget - shown));
+    else if (kept.trim() === '') kept += chunk.raw;
     break;
   }
   return `${kept.trimEnd()}…`;

@@ -1286,6 +1286,40 @@ describe('a customer name never reaches the model twice', () => {
     expect(stubSender.sent[stubSender.sent.length - 1]?.text ?? '').toContain('Ada Obi');
   });
 
+  it('scrubs the name from the stored message however it was spaced', async () => {
+    const businessId = await seedBusiness('Names Spaced Ltd', '+2348140020010');
+    await saleMention(businessId, '+2348140020010', 'sold 3 wigs to Ada   Obi for 150k, paid');
+    const messages = await withBusiness(appDb, businessId, (tx) =>
+      tx.select().from(schema.conversationMessages),
+    );
+    for (const m of messages) expect(m.body ?? '').not.toMatch(/Obi/);
+  });
+
+  it('never rewrites a token while scrubbing a name', async () => {
+    const businessId = await seedBusiness('Names Token Ltd', '+2348140020011');
+    await customersRepo.createCustomerWithIdentities(appDb, businessId, 'CUSTOMER_ADA', [
+      {
+        facet: 'phone',
+        ciphertext: encryptFacet('08031234567', config.vaultKey, `${businessId}:phone`),
+        matchKey: matchKeyFor(
+          businessId,
+          'phone',
+          normaliseFacet('phone', '08031234567'),
+          config.matchKey,
+        ),
+      },
+    ]);
+    await saleMention(businessId, '+2348140020011', '08031234567 referred Ada, sold 3 wigs', {
+      ...ADA_SALE,
+      customer: { kind: 'mention', mention: 'Ada' },
+    });
+    const messages = await withBusiness(appDb, businessId, (tx) =>
+      tx.select().from(schema.conversationMessages),
+    );
+    const inbound = messages.find((m) => (m.body ?? '').includes('referred'));
+    expect(inbound?.body ?? '').toMatch(/^CUSTOMER_ADA referred CUSTOMER_[0-9A-Z]+, sold/);
+  });
+
   it('tokenises the SECOND message before the model ever sees it', async () => {
     const businessId = await seedBusiness('Names Twice Ltd', '+2348140020002');
     await saleMention(businessId, '+2348140020002', 'sold 3 wigs to Ada Obi for 150k, paid');

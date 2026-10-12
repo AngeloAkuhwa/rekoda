@@ -3,7 +3,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import {
   displayOf,
   generateCustomerToken,
-  protectedSpans,
+  openSegments,
   sequentialToken,
   tokeniseMessage,
   type PiiSpan,
@@ -11,7 +11,7 @@ import {
   type TypedFacet,
 } from '@rekoda/core/privacy';
 import { encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
-import { CUSTOMER_NAME_MAX_CHARS } from '@rekoda/contracts';
+import { CUSTOMER_NAME_MAX_CHARS, CUSTOMER_NAME_MIN_CHARS } from '@rekoda/contracts';
 import { customersRepo, suppliersRepo, withBusiness, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
@@ -101,9 +101,6 @@ function proposeLink(seen: ResolvedCustomer[]): IdentityLinkProposal | null {
   };
 }
 
-/** Names shorter than this match too much prose to be safe to substitute. */
-const MIN_NAME_LENGTH = 3;
-
 /**
  * Keys per lookup. A message's candidate count is linear in its length (each
  * start word extends at most CUSTOMER_NAME_MAX_CHARS characters), so a long
@@ -112,23 +109,13 @@ const MIN_NAME_LENGTH = 3;
 const NAME_KEYS_PER_QUERY = 1_000;
 
 /**
- * A word for the purpose of name-matching: letters or digits, with an inner
- * apostrophe or hyphen kept ("O'Neil", "Adaeze-Ann") so a hyphenated name is
- * one word rather than two.
+ * A part of a word for name-matching: letters (with their combining marks,
+ * so a Yoruba tone mark never ends a word) and digits. Inner apostrophes
+ * and hyphens split parts, and a candidate may start or end at any part, so
+ * "O'Neil" and "Adaeze-Ann" are still one name and "Obi's" still holds "Obi"
+ * (G-60).
  */
-const NAME_WORD = /[\p{L}\p{N}]+(?:['\u2019-][\p{L}\p{N}]+)*/gu;
-
-/** The stretches of `text` between its tokens, which alone may hold a name. */
-function openSegments(text: string, tokens: string[]): Array<{ start: number; end: number }> {
-  const segments: Array<{ start: number; end: number }> = [];
-  let cursor = 0;
-  for (const span of protectedSpans(text, tokens)) {
-    if (span.start > cursor) segments.push({ start: cursor, end: span.start });
-    cursor = Math.max(cursor, span.end);
-  }
-  if (cursor < text.length) segments.push({ start: cursor, end: text.length });
-  return segments;
-}
+const NAME_PART = /[\p{L}\p{M}\p{N}]+/gu;
 
 @Injectable()
 export class PrivacyGateway {
@@ -218,7 +205,7 @@ export class PrivacyGateway {
     const candidates: Array<{ start: number; end: number; matchKey: string }> = [];
     const keys = new Set<string>();
     for (const segment of openSegments(out, [...tokens.keys(), ...typed.keys()])) {
-      const words = [...out.slice(segment.start, segment.end).matchAll(NAME_WORD)].map((m) => {
+      const words = [...out.slice(segment.start, segment.end).matchAll(NAME_PART)].map((m) => {
         const start = segment.start + (m.index ?? 0);
         return { start, end: start + m[0].length };
       });
@@ -226,9 +213,12 @@ export class PrivacyGateway {
         for (let j = i; j < words.length; j++) {
           const start = words[i]!.start;
           const end = words[j]!.end;
+          /* Bounded before folding case: lowercasing can lengthen a name
+           * ("İ"), and the stored name was at most this long as typed. */
+          const typedForm = out.slice(start, end).trim().replace(/\s+/g, ' ');
+          if (typedForm.length > CUSTOMER_NAME_MAX_CHARS) break;
+          if (typedForm.length < CUSTOMER_NAME_MIN_CHARS) continue;
           const normalised = normaliseFacet('name', out.slice(start, end));
-          if (normalised.length > CUSTOMER_NAME_MAX_CHARS) break;
-          if (normalised.length < MIN_NAME_LENGTH) continue;
           const matchKey = matchKeyFor(businessId, 'name', normalised, this.config.matchKey);
           candidates.push({ start, end, matchKey });
           keys.add(matchKey);
@@ -356,19 +346,26 @@ export class PrivacyGateway {
     /* Attached whenever the phone's customer has no name yet, not only when
      * the phone is new: the phone row commits before the name, so a checkout
      * whose name attach failed must complete it on the retry (G-60). A
-     * customer who already has a name keeps it. */
-    if (name.trim().length > 0 && !(await this.hasName(businessId, byPhone.customerId))) {
+     * customer who already has a name keeps it, decided under a lock on the
+     * customer so two checkouts at once cannot both add one. */
+    if (name.trim().length > 0) {
       try {
-        await customersRepo.addIdentityFacet(this.db, businessId, byPhone.customerId, {
-          facet: 'name',
-          ciphertext: encryptFacet(name, this.config.vaultKey, `${businessId}:name`),
-          matchKey: matchKeyFor(
-            businessId,
-            'name',
-            normaliseFacet('name', name),
-            this.config.matchKey,
-          ),
-        });
+        await customersRepo.addIdentityFacet(
+          this.db,
+          businessId,
+          byPhone.customerId,
+          {
+            facet: 'name',
+            ciphertext: encryptFacet(name, this.config.vaultKey, `${businessId}:name`),
+            matchKey: matchKeyFor(
+              businessId,
+              'name',
+              normaliseFacet('name', name),
+              this.config.matchKey,
+            ),
+          },
+          { unlessTheCustomerHasOne: true },
+        );
       } catch (error) {
         /* The name already keys another customer. Attaching it is a courtesy;
          * the phone-anchored identity stands, and the two records are never
@@ -377,12 +374,6 @@ export class PrivacyGateway {
       }
     }
     return { token: byPhone.token, customerId: byPhone.customerId };
-  }
-
-  /** Whether this customer already holds a name facet. Reads no plaintext. */
-  private async hasName(businessId: string, customerId: string): Promise<boolean> {
-    const facets = await customersRepo.identitiesForCustomer(this.db, businessId, customerId);
-    return facets.some((f) => f.facet === 'name');
   }
 
   /**

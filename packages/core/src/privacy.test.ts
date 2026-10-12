@@ -273,14 +273,12 @@ describe('one token, one deterministic display (G-60)', () => {
 });
 
 describe('a token is an opaque span (G-60)', () => {
-  it('finds every given token and anything shaped like one', () => {
+  it('finds every given token and anything shaped like one, once', () => {
     const text = 'CUSTOMER_ABC paid ACCOUNT_1, and CUSTOMER_X9Z. ref CUSTOMER_ABC';
     expect(protectedSpans(text, ['CUSTOMER_ABC']).map((s) => text.slice(s.start, s.end))).toEqual([
       'CUSTOMER_ABC',
-      'CUSTOMER_ABC',
       'ACCOUNT_1',
       'CUSTOMER_X9Z',
-      'CUSTOMER_ABC',
       'CUSTOMER_ABC',
     ]);
   });

@@ -31,6 +31,13 @@ const text = (max: number) => z.string().trim().min(1).max(max);
  */
 export const CUSTOMER_NAME_MAX_CHARS = 80;
 
+/**
+ * The shortest customer name a person types at a door (a storefront
+ * checkout, a dashboard quote), and the shortest the known-name pass
+ * recognises (G-60). A one-character mention is an initial, not a name.
+ */
+export const CUSTOMER_NAME_MIN_CHARS = 2;
+
 /** A customer as the AI may refer to one: resolved token or raw mention. */
 export const CustomerRef = z.union([
   z.object({ kind: z.literal('token'), token: z.string().regex(/^CUSTOMER_[A-Z0-9]{2,12}$/) }),

@@ -8,7 +8,7 @@
  * second into the first.
  */
 import { z } from 'zod';
-import { CUSTOMER_NAME_MAX_CHARS } from './business-command.js';
+import { CUSTOMER_NAME_MAX_CHARS, CUSTOMER_NAME_MIN_CHARS } from './business-command.js';
 
 const kobo = z.number().int().finite().nonnegative();
 
@@ -150,7 +150,7 @@ export const publicOrderRequest = z.object({
     )
     .min(1)
     .max(20),
-  customerName: z.string().trim().min(2).max(CUSTOMER_NAME_MAX_CHARS),
+  customerName: z.string().trim().min(CUSTOMER_NAME_MIN_CHARS).max(CUSTOMER_NAME_MAX_CHARS),
   customerPhone: z.string().trim().min(7).max(20),
   /** One-shot key the checkout mints. A resubmission orders NOTHING twice. */
   clientRef: z.string().uuid(),

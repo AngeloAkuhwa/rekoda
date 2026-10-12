@@ -37,21 +37,23 @@ export async function findCustomerByMatchKey(
   facet: IdentityInput['facet'],
   matchKey: string,
 ): Promise<CustomerRow | null> {
-  return withBusiness(db, businessId, async (tx) => {
-    const rows = await tx
-      .select({ id: customers.id, token: customers.token })
-      .from(customerIdentities)
-      .innerJoin(customers, eq(customers.id, customerIdentities.customerId))
-      .where(
-        and(
-          eq(customerIdentities.businessId, businessId),
-          eq(customerIdentities.facet, facet),
-          eq(customerIdentities.matchKey, matchKey),
-        ),
-      )
-      .limit(1);
-    return rows[0] ?? null;
-  });
+  return vaultCall('look up a customer', () =>
+    withBusiness(db, businessId, async (tx) => {
+      const rows = await tx
+        .select({ id: customers.id, token: customers.token })
+        .from(customerIdentities)
+        .innerJoin(customers, eq(customers.id, customerIdentities.customerId))
+        .where(
+          and(
+            eq(customerIdentities.businessId, businessId),
+            eq(customerIdentities.facet, facet),
+            eq(customerIdentities.matchKey, matchKey),
+          ),
+        )
+        .limit(1);
+      return rows[0] ?? null;
+    }),
+  );
 }
 
 /** A customer name found by its keyed hash, for the gateway's known-name pass. */
@@ -77,28 +79,30 @@ export async function namesByMatchKeys(
   matchKeys: readonly string[],
 ): Promise<NameByKey[]> {
   if (matchKeys.length === 0) return [];
-  return withBusiness(db, businessId, async (tx) => {
-    const rows = await tx
-      .select({
-        matchKey: customerIdentities.matchKey,
-        token: customers.token,
-        customerId: customers.id,
-      })
-      .from(customerIdentities)
-      .innerJoin(customers, eq(customers.id, customerIdentities.customerId))
-      .where(
-        and(
-          eq(customerIdentities.businessId, businessId),
-          eq(customerIdentities.facet, 'name'),
-          inArray(customerIdentities.matchKey, [...matchKeys]),
-        ),
-      );
-    return rows
-      .filter(
-        (r): r is { matchKey: string; token: string; customerId: string } => r.matchKey !== null,
-      )
-      .map((r) => ({ matchKey: r.matchKey, token: r.token, customerId: r.customerId }));
-  });
+  return vaultCall('look up customer names', () =>
+    withBusiness(db, businessId, async (tx) => {
+      const rows = await tx
+        .select({
+          matchKey: customerIdentities.matchKey,
+          token: customers.token,
+          customerId: customers.id,
+        })
+        .from(customerIdentities)
+        .innerJoin(customers, eq(customers.id, customerIdentities.customerId))
+        .where(
+          and(
+            eq(customerIdentities.businessId, businessId),
+            eq(customerIdentities.facet, 'name'),
+            inArray(customerIdentities.matchKey, [...matchKeys]),
+          ),
+        );
+      return rows
+        .filter(
+          (r): r is { matchKey: string; token: string; customerId: string } => r.matchKey !== null,
+        )
+        .map((r) => ({ matchKey: r.matchKey, token: r.token, customerId: r.customerId }));
+    }),
+  );
 }
 
 export class TokenCollision extends Error {}
@@ -171,62 +175,81 @@ export async function createCustomerWithIdentities(
   token: string,
   identities: readonly IdentityInput[],
 ): Promise<CustomerRow> {
-  return withBusiness(db, businessId, async (tx) => {
-    let customer: CustomerRow;
-    try {
-      const rows = await tx.insert(customers).values({ businessId, token }).returning({
-        id: customers.id,
-        token: customers.token,
-      });
-      const row = rows[0];
-      if (!row) throw new Error('createCustomerWithIdentities: insert returned no row');
-      customer = row;
-    } catch (error) {
-      if (isUniqueViolation(error)) throw new TokenCollision(`token ${token} is already in use`);
-      throw error;
-    }
-
-    if (identities.length > 0) {
+  return vaultCall('create a customer', () =>
+    withBusiness(db, businessId, async (tx) => {
+      let customer: CustomerRow;
       try {
-        await tx.insert(customerIdentities).values(
-          identities.map((identity) => ({
-            businessId,
-            customerId: customer.id,
-            facet: identity.facet,
-            ciphertext: identity.ciphertext,
-            matchKey: identity.matchKey,
-          })),
-        );
+        const rows = await tx.insert(customers).values({ businessId, token }).returning({
+          id: customers.id,
+          token: customers.token,
+        });
+        const row = rows[0];
+        if (!row) throw new Error('createCustomerWithIdentities: insert returned no row');
+        customer = row;
       } catch (error) {
-        /**
-         * `identities_match_ux` (migration 0005) rejected it: someone else got
-         * there first. Throwing rolls back the customer row inserted above
-         * too — which is exactly right, because it would otherwise be a
-         * customer with no way to recognise them.
-         */
-        if (isUniqueViolation(error)) {
-          throw new IdentityConflict('this identity already belongs to a customer');
-        }
+        if (isUniqueViolation(error)) throw new TokenCollision(`token ${token} is already in use`);
         throw error;
       }
-    }
-    return customer;
-  });
+
+      if (identities.length > 0) {
+        try {
+          await tx.insert(customerIdentities).values(
+            identities.map((identity) => ({
+              businessId,
+              customerId: customer.id,
+              facet: identity.facet,
+              ciphertext: identity.ciphertext,
+              matchKey: identity.matchKey,
+            })),
+          );
+        } catch (error) {
+          /**
+           * `identities_match_ux` (migration 0005) rejected it: someone else got
+           * there first. Throwing rolls back the customer row inserted above
+           * too — which is exactly right, because it would otherwise be a
+           * customer with no way to recognise them.
+           */
+          if (isUniqueViolation(error)) {
+            throw new IdentityConflict('this identity already belongs to a customer');
+          }
+          throw error;
+        }
+      }
+      return customer;
+    }),
+  );
 }
 
 /**
- * A facet could not be attached for a reason that is not a conflict (G-60):
- * a customer that does not exist, another tenant's customer, an outage.
- * Carries PostgreSQL's reason and its SQLSTATE `code`, never the statement,
- * its bound values (the facet's ciphertext and match key) or a `cause` that
- * would carry them.
+ * An identity-vault read or write failed for a reason that is not one of its
+ * typed outcomes (G-60): a customer that does not exist, another tenant's
+ * customer, an outage, a misconfigured role. Carries PostgreSQL's reason and
+ * its SQLSTATE `code`, never the statement, its bound values (ciphertext,
+ * match keys, ids) or a `cause` that would carry them, so whatever logs it
+ * logs nothing of the customer.
  */
-export class IdentityFacetWriteFailed extends Error {
+export class IdentityVaultFailed extends Error {
   readonly code: string | null;
-  constructor(reason: string, code: string | null) {
-    super(`could not attach an identity facet: ${reason}`);
-    this.name = 'IdentityFacetWriteFailed';
+  constructor(operation: string, reason: string, code: string | null) {
+    super(`identity vault: could not ${operation}: ${reason}`);
+    this.name = 'IdentityVaultFailed';
     this.code = code;
+  }
+}
+
+/** Run a vault call, its typed outcomes passed through and anything else scrubbed. */
+async function vaultCall<T>(operation: string, call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    if (
+      error instanceof IdentityConflict ||
+      error instanceof TokenCollision ||
+      error instanceof IdentityVaultFailed
+    ) {
+      throw error;
+    }
+    throw new IdentityVaultFailed(operation, databaseReason(error), databaseCode(error));
   }
 }
 
@@ -242,17 +265,39 @@ const ATTACH_ATTEMPTS = 3;
  * `identities_match_ux`, so two racing attachments still leave one owner.
  * When the holder is erased between the conflict and the read of who holds
  * it, the facet is free and the attachment is tried again, a bounded number
- * of times. Any other failure is an `IdentityFacetWriteFailed`.
+ * of times. Any other failure is an `IdentityVaultFailed`.
+ *
+ * With `unlessTheCustomerHasOne`, a customer who already holds a facet of
+ * this kind keeps it (`'kept-existing'`). That is decided under a lock on the
+ * customer, in the same transaction as the insert, so two attachments at once
+ * cannot both add one.
  */
 export async function addIdentityFacet(
   db: Db,
   businessId: string,
   customerId: string,
   identity: IdentityInput,
-): Promise<'attached' | 'already-attached'> {
+  options: { unlessTheCustomerHasOne?: boolean } = {},
+): Promise<'attached' | 'already-attached' | 'kept-existing'> {
   for (let attempt = 0; attempt < ATTACH_ATTEMPTS; attempt++) {
+    let outcome: 'attached' | 'kept-existing';
     try {
-      await withBusiness(db, businessId, async (tx) => {
+      outcome = await withBusiness(db, businessId, async (tx) => {
+        if (options.unlessTheCustomerHasOne) {
+          await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${customerId}, 0))`);
+          const held = await tx
+            .select({ id: customerIdentities.id })
+            .from(customerIdentities)
+            .where(
+              and(
+                eq(customerIdentities.businessId, businessId),
+                eq(customerIdentities.customerId, customerId),
+                eq(customerIdentities.facet, identity.facet),
+              ),
+            )
+            .limit(1);
+          if (held.length > 0) return 'kept-existing' as const;
+        }
         await tx.insert(customerIdentities).values({
           businessId,
           customerId,
@@ -260,40 +305,40 @@ export async function addIdentityFacet(
           ciphertext: identity.ciphertext,
           matchKey: identity.matchKey,
         });
+        return 'attached' as const;
       });
-      return 'attached';
     } catch (error) {
       if (violatedConstraint(error) !== 'identities_match_ux' || identity.matchKey === null) {
-        throw writeFailed(error);
+        throw vaultFailed('attach an identity facet', error);
       }
+      /* The insert rolled back; who holds the facet is read in its own
+       * transaction. Unique on (business, facet, key), so there is one owner. */
+      const owner = await findCustomerByMatchKey(db, businessId, identity.facet, identity.matchKey);
+      if (owner === null) continue;
+      if (owner.id === customerId) return 'already-attached';
+      throw new IdentityConflict('this identity already belongs to another customer');
     }
-    /* The insert rolled back; who holds the facet is read in its own
-     * transaction. Unique on (business, facet, key), so there is one owner. */
-    const owner = await findCustomerByMatchKey(
-      db,
-      businessId,
-      identity.facet,
-      identity.matchKey,
-    ).catch((error: unknown) => {
-      throw writeFailed(error);
-    });
-    if (owner === null) continue;
-    if (owner.id === customerId) return 'already-attached';
-    throw new IdentityConflict('this identity already belongs to another customer');
+    return outcome;
   }
-  throw new IdentityFacetWriteFailed('its holder kept changing; try again', null);
+  throw new IdentityVaultFailed(
+    'attach an identity facet',
+    'its holder kept changing; try again',
+    null,
+  );
 }
 
-/** A database failure as an `IdentityFacetWriteFailed`: reason and code only. */
-function writeFailed(error: unknown): IdentityFacetWriteFailed {
-  return new IdentityFacetWriteFailed(databaseReason(error), databaseCode(error));
+/** A database failure as an `IdentityVaultFailed`: reason and code only. */
+function vaultFailed(operation: string, error: unknown): IdentityVaultFailed {
+  return new IdentityVaultFailed(operation, databaseReason(error), databaseCode(error));
 }
 
-/** The SQLSTATE PostgreSQL gave, wherever drizzle wrapped it. */
+/** The SQLSTATE PostgreSQL gave, read only off its own error, wherever drizzle wrapped it. */
 function databaseCode(error: unknown): string | null {
   for (let e: unknown = error, depth = 0; e && depth < 5; depth++) {
-    const code = (e as { code?: unknown }).code;
-    if (typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code)) return code;
+    const candidate = e as { name?: unknown; code?: unknown };
+    if (candidate.name === 'PostgresError' && typeof candidate.code === 'string') {
+      return candidate.code;
+    }
     e = (e as { cause?: unknown }).cause;
   }
   return null;

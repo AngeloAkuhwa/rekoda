@@ -102,7 +102,7 @@ import type {
 import type { ReplySender } from '../replies/reply.service.js';
 import type { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
-import { redactForLog } from '@rekoda/core/privacy';
+import { redactForLog, replaceOutsideTokens } from '@rekoda/core/privacy';
 import { describeFailure, JobDeferred, type JobContext, type JobHandler } from './runner.js';
 import { TranscriptionUnavailable, type SpeechToText, type Transcript } from '../ai/stt.js';
 import type { AudioMetadataProbe } from '../ai/audio-duration.js';
@@ -4804,9 +4804,8 @@ async function interpretedReply(
      * still carries the name. Scrubbed now, in the same transaction: the
      * conversation history must not hold a customer's real name, and "we
      * only learned it was a name a moment ago" is not an exemption. */
-    const escaped = mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const pattern = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'giu');
-    const scrubbed = safeText.replace(pattern, named.token);
+    /* However it was spaced, and never inside a token (G-60). */
+    const scrubbed = replaceOutsideTokens(safeText, mention, named.token, tokens.displays.keys());
     if (scrubbed !== safeText) {
       await conversationsRepo.setInboundBody(tx, businessId, conversationMessageId, scrubbed);
     }

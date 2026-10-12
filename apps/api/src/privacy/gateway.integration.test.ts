@@ -561,3 +561,134 @@ describe('a resolved mention composes with what the merchant typed (G-60 final r
     expect(table.displays.get(bola!)).toBe('Bola Ade (08099998888)');
   });
 });
+
+describe('every vault failure surfaces without what it was writing (G-60 final review)', () => {
+  async function withOwner(setup: string[], teardown: string[], run: () => Promise<unknown>) {
+    const { db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 1 });
+    try {
+      for (const statement of setup) await ownerDb.execute(sql.raw(statement));
+      return await run().then(
+        () => null,
+        (error: unknown) => error as Error,
+      );
+    } finally {
+      for (const statement of teardown) await ownerDb.execute(sql.raw(statement));
+      await closeOwner();
+    }
+  }
+
+  const unsafe = /Failed query|insert into|select |params|v[0-9]\./i;
+
+  it('scrubs a failure creating the phone customer', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const failure = (await withOwner(
+      [
+        `CREATE OR REPLACE FUNCTION g60_phone_fails() RETURNS trigger AS $$
+         BEGIN IF NEW.facet = 'phone' THEN RAISE EXCEPTION 'g60: the vault is unavailable'; END IF;
+         RETURN NEW; END $$ LANGUAGE plpgsql`,
+        `CREATE TRIGGER g60_phone_fails BEFORE INSERT ON customer_identities
+           FOR EACH ROW EXECUTE FUNCTION g60_phone_fails()`,
+      ],
+      [
+        'DROP TRIGGER IF EXISTS g60_phone_fails ON customer_identities',
+        'DROP FUNCTION IF EXISTS g60_phone_fails()',
+      ],
+      () => gateway.resolveStorefrontCustomer(businessId, 'Ada Obi', '08031234567'),
+    )) as Error | null;
+    expect(failure?.message).toMatch(/the vault is unavailable/);
+    expect(failure?.message).not.toMatch(unsafe);
+    expect((failure as { cause?: unknown } | null)?.cause).toBeUndefined();
+  });
+
+  it('scrubs a failure of the known-name lookup', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    await gateway.resolveMention(businessId, 'Ada Obi');
+    const failure = (await withOwner(
+      [
+        `CREATE OR REPLACE FUNCTION g60_lookup_fails() RETURNS boolean AS $$
+         BEGIN RAISE EXCEPTION 'g60: the lookup is unavailable'; END $$ LANGUAGE plpgsql`,
+        `CREATE POLICY g60_lookup_fails ON customer_identities AS RESTRICTIVE FOR SELECT
+           USING (g60_lookup_fails())`,
+      ],
+      [
+        'DROP POLICY IF EXISTS g60_lookup_fails ON customer_identities',
+        'DROP FUNCTION IF EXISTS g60_lookup_fails()',
+      ],
+      () => gateway.tokenise(businessId, 'Ada Obi paid 20k'),
+    )) as Error | null;
+    expect(failure?.message).toMatch(/the lookup is unavailable/);
+    expect(failure?.message).not.toMatch(unsafe);
+  });
+});
+
+describe('a nameless customer gets one name, however many checkouts race (G-60 final review)', () => {
+  it('attaches exactly one of two names typed at once', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const first = await gateway.tokenise(businessId, '08031234567 paid');
+    expect(first.tokens.size).toBe(1);
+
+    /* Each name insert is held open, so every checkout reads "no name yet"
+     * before any of them commits: the window a real race has. */
+    const { db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_slow_name() RETURNS trigger AS $$
+        BEGIN IF NEW.facet = 'name' THEN PERFORM pg_sleep(0.4); END IF; RETURN NEW; END
+        $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_slow_name BEFORE INSERT ON customer_identities
+          FOR EACH ROW EXECUTE FUNCTION g60_slow_name()`);
+      await Promise.all([
+        gateway.resolveStorefrontCustomer(businessId, 'Ada Obi', '08031234567'),
+        gateway.resolveStorefrontCustomer(businessId, 'Bola Ade', '08031234567'),
+        gateway.resolveStorefrontCustomer(businessId, 'Chidi Eze', '08031234567'),
+      ]);
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_slow_name ON customer_identities`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_slow_name()`);
+      await closeOwner();
+    }
+    const names = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM customer_identities
+         WHERE business_id = ${businessId}::uuid AND facet = 'name'`),
+    );
+    expect(Number([...names][0]?.n)).toBe(1);
+  });
+});
+
+describe('names as merchants actually type them (G-60 final review)', () => {
+  it.each([
+    ['a name ending in a tone mark', 'Tèmítọ́pẹ́', 'sold to Tèmítọ́pẹ́ 2 bags'],
+    ['a two-word name ending in one', 'Adé Fúnmiláyọ̀', 'Adé Fúnmiláyọ̀ paid 20k'],
+    ['a possessive', 'Ada Obi', "Ada Obi's balance please"],
+    ['a curly possessive', 'Chinedu', 'send Chinedu’s receipt'],
+    ['a name glued in capitals after a phone', 'Ada Obi', '08031234567ADA OBI paid'],
+    ['a two-letter name', 'Bo', 'Bo paid 20k'],
+  ])('keeps %s away from the model', async (_, name, text) => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { token } = await gateway.resolveMention(businessId, name);
+    const tokenised = await gateway.tokenise(businessId, text);
+    expect(tokenised.text).toContain(token);
+    for (const part of name.split(' ')) {
+      expect(tokenised.text.toLowerCase()).not.toContain(part.toLowerCase());
+    }
+    expect(rehydrate(tokenised.text, tokenised.tokens)).toBe(text);
+  });
+
+  it('recognises an 80-character name that lowercasing lengthens', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const name = `${'İ'.repeat(40)} ${'a'.repeat(39)}`;
+    expect(name.length).toBe(80);
+    const { token } = await gateway.resolveMention(businessId, name);
+    const tokenised = await gateway.tokenise(businessId, `${name} paid`);
+    expect(tokenised.text).toBe(`${token} paid`);
+  });
+
+  it('shows a name with its spacing folded, never a wall of whitespace', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { token } = await gateway.resolveMention(businessId, 'Ada Obi');
+    const tokenised = await gateway.tokenise(businessId, `Ada${' '.repeat(40)}Obi paid`);
+    expect(tokenised.tokens.get(token)).toBe('Ada Obi');
+  });
+});

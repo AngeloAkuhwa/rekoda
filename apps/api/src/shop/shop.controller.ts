@@ -335,13 +335,19 @@ export class PublicShopController {
       return { outcome: 'closed' };
     }
 
+    /* Each unit on its own: a refund that fails too (the same outage)
+     * neither stops the other nor replaces the failure that matters (G-60). */
     const refundBoth = async () => {
-      await withBusiness(this.db, businessId, (own) =>
-        usageRepo.refundUnit(own, businessId, period, 'CATALOGUE_ORDERS'),
+      const refunds = await Promise.allSettled(
+        (['CATALOGUE_ORDERS', 'DOCUMENT_GENERATION'] as const).map((unit) =>
+          withBusiness(this.db, businessId, (own) =>
+            usageRepo.refundUnit(own, businessId, period, unit),
+          ),
+        ),
       );
-      await withBusiness(this.db, businessId, (own) =>
-        usageRepo.refundUnit(own, businessId, period, 'DOCUMENT_GENERATION'),
-      );
+      if (refunds.some((r) => r.status === 'rejected')) {
+        shopLog.error('a storefront refund failed; a unit stays spent');
+      }
     };
 
     /* Only now — with the gates cleared and the units paid — does the
@@ -350,18 +356,7 @@ export class PublicShopController {
     const customer = await this.gateway
       .resolveStorefrontCustomer(businessId, parsed.data.customerName, parsed.data.customerPhone)
       .catch(async (error: unknown) => {
-        /* Each unit on its own: a refund that fails too (the same outage)
-         * neither stops the other nor replaces the failure that matters. */
-        const refunds = await Promise.allSettled(
-          (['CATALOGUE_ORDERS', 'DOCUMENT_GENERATION'] as const).map((unit) =>
-            withBusiness(this.db, businessId, (own) =>
-              usageRepo.refundUnit(own, businessId, period, unit),
-            ),
-          ),
-        );
-        if (refunds.some((r) => r.status === 'rejected')) {
-          shopLog.error('a storefront refund failed after a vault failure; a unit stays spent');
-        }
+        await refundBoth();
         throw error;
       });
     if (!customer) {

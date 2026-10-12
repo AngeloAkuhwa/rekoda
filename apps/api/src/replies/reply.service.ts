@@ -60,16 +60,17 @@ export class ReplySender {
    * is recoverable; a reply sent about a rolled-back draft is not.
    */
   async send(tx: TenantDb, input: SendReplyInput): Promise<{ delivered: boolean }> {
-    const truncated = replies.truncateForSending(input.reply);
-    /* The limit binds the text that LEAVES, after rehydration, where one token
-     * can read as a name and its numbers (G-60). Cut in tokens, between
-     * identities, and stored as cut, so the record is what was sent. */
+    /* With tokens, the token-aware fit is the ONLY cut: the limit binds the
+     * text that LEAVES, after rehydration, where one token can read as a name
+     * and its numbers, and a plain character cut could split a token (G-60).
+     * Cut in tokens, between identities, and stored as cut, so the record is
+     * what was sent. Without tokens, exactly as before. */
     const safe = input.tokens?.size
       ? {
-          ...truncated,
-          text: fitRehydrated(truncated.text, input.tokens, replies.MAX_REPLY_CHARS),
+          ...input.reply,
+          text: fitRehydrated(input.reply.text.trim(), input.tokens, replies.MAX_REPLY_CHARS),
         }
-      : truncated;
+      : replies.truncateForSending(input.reply);
     if (!replies.isSendable(safe)) {
       this.log.error('refused to send an empty reply');
       return { delivered: false };
@@ -89,7 +90,13 @@ export class ReplySender {
     );
 
     // The one moment. A local, not a field, not a log line, not a row.
-    const forHuman = input.tokens?.size ? rehydrate(safe.text, input.tokens) : safe.text;
+    const rehydrated = input.tokens?.size ? rehydrate(safe.text, input.tokens) : safe.text;
+    /* A backstop that needs one display of ~900 characters to fire: what
+     * leaves is never longer than the limit, whatever a token reads as. */
+    const forHuman =
+      rehydrated.length <= replies.MAX_REPLY_CHARS
+        ? rehydrated
+        : `${rehydrated.slice(0, replies.MAX_REPLY_CHARS - 1).trimEnd()}…`;
 
     try {
       const result = await this.sender.send({ to: input.to, text: forHuman });
