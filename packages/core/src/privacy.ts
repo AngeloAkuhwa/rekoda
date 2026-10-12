@@ -174,7 +174,9 @@ export function displayOf(typed: readonly TypedFacet[]): string {
 }
 
 /** Every placeholder shape this pipeline writes: CUSTOMER_X81, PHONE_1, ACCOUNT_2. */
-const TOKEN_SHAPE = /\b(?:CUSTOMER|PHONE|EMAIL|ACCOUNT)_[0-9A-Z]+\b/g;
+/* At its real length (CUSTOMER_ and three characters, PHONE_1, ACCOUNT_2),
+ * so a pasted token never swallows letters glued after it ("CUSTOMER_ZZ9ADA"). */
+const TOKEN_SHAPE = /\b(?:CUSTOMER_[0-9A-Z]{3}|(?:PHONE|EMAIL|ACCOUNT)_\d+)/g;
 
 /**
  * The spans of `text` that are tokens, and so opaque to every later pass
@@ -231,7 +233,13 @@ export function replaceOutsideTokens(
   const words = phrase.trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return text;
   const body = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
-  const pattern = new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])${body}(?![\\p{L}\\p{M}\\p{N}])`, 'giu');
+  /* Whole words: not inside a longer word, and not the stem of a joined
+   * word ("don't", "Mary-Ann"), though a possessive "'s" still ends one. */
+  const letter = '[\\p{L}\\p{M}\\p{N}]';
+  const pattern = new RegExp(
+    `(?<!${letter}|${letter}['’-])${body}(?!${letter})(?!['’-](?![sS](?!${letter}))${letter})`,
+    'giu',
+  );
   let out = '';
   let cursor = 0;
   for (const segment of openSegments(text, tokens)) {
@@ -240,6 +248,16 @@ export function replaceOutsideTokens(
     cursor = segment.end;
   }
   return out + text.slice(cursor);
+}
+
+/**
+ * The first `length` code units of `text`, never ending on half of a
+ * character made of two (an emoji): a lone surrogate is not text a
+ * messaging provider will deliver.
+ */
+export function sliceWhole(text: string, length: number): string {
+  const cut = text.slice(0, Math.max(0, length));
+  return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
 }
 
 /**
@@ -308,7 +326,7 @@ export function fitRehydrated(
       shown += chunk.shown.length;
       continue;
     }
-    if (!chunk.token) kept += chunk.raw.slice(0, Math.min(budget - raw, budget - shown));
+    if (!chunk.token) kept += sliceWhole(chunk.raw, Math.min(budget - raw, budget - shown));
     else if (kept.trim() === '') kept += chunk.raw;
     break;
   }

@@ -420,7 +420,9 @@ export class PublicShopController {
           );
           if (run.outcome === 'not_entitled') {
             /* Pre-gated above, so reaching this means the plan changed mid
-             * request. The shop reads as closed, which is the truth. */
+             * request. The shop reads as closed, which is the truth, and the
+             * two units it paid go back: nothing was booked (G-60). */
+            await refundBoth();
             return { outcome: 'closed' as const };
           }
           if (run.outcome !== 'done') {

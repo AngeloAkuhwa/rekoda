@@ -803,6 +803,44 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
     expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
   });
 
+  /* Final review of #271: Integrate lapses between the meter and the order;
+   * the order is refused, and the two units it had paid go back. */
+  it('a plan that lapses mid-checkout answers closed and spends nothing', async () => {
+    const { businessId, ids } = await openShop('+2348177400038', 'ada-lapse');
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    let outcome: unknown;
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_lapse() RETURNS trigger SECURITY DEFINER AS $$
+        BEGIN
+          UPDATE businesses SET plan = 'chat' WHERE id = NEW.business_id;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_lapse AFTER INSERT OR UPDATE ON usage_counters
+          FOR EACH ROW WHEN (NEW.unit = 'DOCUMENT_GENERATION' AND NEW.used > 0)
+          EXECUTE FUNCTION g60_lapse()`);
+      outcome = (
+        await order('ada-lapse', {
+          items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+          customerName: 'Chidi Okafor',
+          customerPhone: '08035551234',
+          clientRef: randomUUID(),
+        })
+      ).json();
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_lapse ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_lapse()`);
+      await close();
+    }
+    expect(outcome).toEqual({ outcome: 'closed' });
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+  });
+
   /* Owner review of #271: the phone customer is committed before the name
    * is attached, so a retried checkout must still attach the name. */
   it('a retried checkout attaches the name a failed attempt could not', async () => {

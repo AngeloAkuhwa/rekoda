@@ -13,6 +13,7 @@ import {
   fitRehydrated,
   generateCustomerToken,
   protectedSpans,
+  replaceOutsideTokens,
   redactForLog,
   rehydrate,
   sequentialToken,
@@ -313,5 +314,19 @@ describe('what leaves fits after rehydration (G-60 final review)', () => {
   it('leaves text that already fits exactly as it is', () => {
     const tokens = new Map([['CUSTOMER_ABC', 'Ada Obi']]);
     expect(fitRehydrated('CUSTOMER_ABC paid', tokens, 50)).toBe('CUSTOMER_ABC paid');
+  });
+});
+
+describe('cuts and scrubs keep text whole (G-60 final review, round 3)', () => {
+  it('never cuts through a character made of two code units', () => {
+    const tokens = new Map([['CUSTOMER_ABC', 'Ada']]);
+    const fitted = fitRehydrated(`${'x'.repeat(898)}😀${'y'.repeat(10)} CUSTOMER_ABC`, tokens, 900);
+    expect(fitted).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+
+  it('leaves a contraction alone while scrubbing the name', () => {
+    expect(replaceOutsideTokens("I don't know Don's price", 'Don', 'CUSTOMER_Q', [])).toBe(
+      "I don't know CUSTOMER_Q's price",
+    );
   });
 });

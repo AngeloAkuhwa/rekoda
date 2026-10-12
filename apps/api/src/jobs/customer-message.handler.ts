@@ -550,80 +550,99 @@ async function ingestCatalogueOrder(
    * produces no order and no invoice gives back exactly what was reserved,
    * and no branch decides for itself which of the two that is.
    */
+  let refunded = false;
   const refundReserved = async (): Promise<void> => {
-    await withBusiness(deps.db, businessId, (own) =>
-      usageRepo.refundUnit(own, businessId, period, 'CATALOGUE_ORDERS'),
-    );
-    await withBusiness(deps.db, businessId, (own) =>
-      usageRepo.refundUnit(own, businessId, period, 'DOCUMENT_GENERATION'),
+    /* Once per attempt, each unit on its own: a refund that fails too
+     * neither stops the other nor replaces the failure that matters. */
+    if (refunded) return;
+    refunded = true;
+    await Promise.allSettled(
+      (['CATALOGUE_ORDERS', 'DOCUMENT_GENERATION'] as const).map((unit) =>
+        withBusiness(deps.db, businessId, (own) =>
+          usageRepo.refundUnit(own, businessId, period, unit),
+        ),
+      ),
     );
   };
 
-  /* The customer, anchored on their own phone — the same vault door every
-   * identity passes through. Raw number in memory only. */
-  const resolved = await deps.gateway.resolveStorefrontCustomer(businessId, '', participant);
-
-  const input: CatalogueOrderCmdInput = {
-    businessId,
-    customerId: resolved?.customerId ?? null,
-    lines,
-    totalK,
-    sourceId: inbound.externalId,
-    externalRef,
-  };
-  let orderId: string;
-  if (deps.commandPlaceOrder) {
-    const run = await deps.commandBus.run(
-      tx,
-      {
-        businessId,
-        command: 'PlaceOrder',
-        payload: input,
-        actor: 'customer:waba',
-        ingress: 'WABA',
-        idempotencyKey: externalRef,
-      },
-      () => placeCatalogueOrderWork(tx, input),
-    );
-    /* A bus refusal here is a terminal fact about THIS cart, not a fault
-     * to retry: a business whose Integrate entitlement lapsed mid-cart
-     * takes no order, and the note says so. */
-    if (run.outcome === 'not_entitled') {
-      await refundReserved();
-      return 'order refused: not entitled';
-    }
-    if (run.outcome !== 'done') {
-      await refundReserved();
-      throw new Error(`PlaceOrder refused unexpectedly: ${run.outcome}`);
-    }
-    orderId = run.result.orderId;
-  } else {
-    /* Same refusal as the storefront: this branch never checked entitlement
-     * at all, so running it would take an order from a business whose plan
-     * does not carry Integrate. */
+  /* Anything that throws from here books nothing (the job's transaction
+   * rolls back) and the job will meter again on its retry, so what this
+   * attempt paid goes back first: a vault outage must not cost two units on
+   * every attempt (G-60). */
+  try {
+    return await placeTheOrder();
+  } catch (error) {
     await refundReserved();
-    throw new Error(
-      'REKODA_COMMAND_PLACE_ORDER is off. The legacy catalogue order path no longer places orders.',
-    );
+    throw error;
   }
 
-  /* §5.2, in the same transaction as the placement: server-side
-   * validation against real catalogue state and real stock, BEFORE any
-   * figure is shown. VALIDATED gets its invoice and its §19.1 charge
-   * records; a refusal leaves the order visibly CANCELLED with nothing
-   * financial behind it — and the atomicity means a crash between the two
-   * leaves no half-validated order anywhere. */
-  const validated = await validateCatalogueOrderWork(tx, {
-    businessId,
-    orderId,
-    actor: 'customer:waba',
-  });
-  if (validated.outcome === 'rejected') {
-    /* The order is visibly CANCELLED with nothing financial behind it, so
-     * no invoice came out and neither unit was spent on anything. */
-    await refundReserved();
-    log.warn(`customer.order: validation refused the cart (${validated.reason})`);
-    return `order rejected: ${validated.reason}`;
+  async function placeTheOrder(): Promise<string | null> {
+    /* The customer, anchored on their own phone — the same vault door every
+     * identity passes through. Raw number in memory only. */
+    const resolved = await deps.gateway.resolveStorefrontCustomer(businessId, '', participant);
+
+    const input: CatalogueOrderCmdInput = {
+      businessId,
+      customerId: resolved?.customerId ?? null,
+      lines,
+      totalK,
+      sourceId: inbound.externalId,
+      externalRef,
+    };
+    let orderId: string;
+    if (deps.commandPlaceOrder) {
+      const run = await deps.commandBus.run(
+        tx,
+        {
+          businessId,
+          command: 'PlaceOrder',
+          payload: input,
+          actor: 'customer:waba',
+          ingress: 'WABA',
+          idempotencyKey: externalRef,
+        },
+        () => placeCatalogueOrderWork(tx, input),
+      );
+      /* A bus refusal here is a terminal fact about THIS cart, not a fault
+       * to retry: a business whose Integrate entitlement lapsed mid-cart
+       * takes no order, and the note says so. */
+      if (run.outcome === 'not_entitled') {
+        await refundReserved();
+        return 'order refused: not entitled';
+      }
+      if (run.outcome !== 'done') {
+        await refundReserved();
+        throw new Error(`PlaceOrder refused unexpectedly: ${run.outcome}`);
+      }
+      orderId = run.result.orderId;
+    } else {
+      /* Same refusal as the storefront: this branch never checked entitlement
+       * at all, so running it would take an order from a business whose plan
+       * does not carry Integrate. */
+      await refundReserved();
+      throw new Error(
+        'REKODA_COMMAND_PLACE_ORDER is off. The legacy catalogue order path no longer places orders.',
+      );
+    }
+
+    /* §5.2, in the same transaction as the placement: server-side
+     * validation against real catalogue state and real stock, BEFORE any
+     * figure is shown. VALIDATED gets its invoice and its §19.1 charge
+     * records; a refusal leaves the order visibly CANCELLED with nothing
+     * financial behind it — and the atomicity means a crash between the two
+     * leaves no half-validated order anywhere. */
+    const validated = await validateCatalogueOrderWork(tx, {
+      businessId,
+      orderId,
+      actor: 'customer:waba',
+    });
+    if (validated.outcome === 'rejected') {
+      /* The order is visibly CANCELLED with nothing financial behind it, so
+       * no invoice came out and neither unit was spent on anything. */
+      await refundReserved();
+      log.warn(`customer.order: validation refused the cart (${validated.reason})`);
+      return `order rejected: ${validated.reason}`;
+    }
+    return null;
   }
-  return null;
 }

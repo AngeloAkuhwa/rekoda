@@ -569,6 +569,41 @@ describe('a catalogue cart becomes an order (spec §3.2; W3, PR-087)', () => {
     expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
   });
 
+  /* Final review of #271: the vault fails resolving the customer's phone on
+   * the WhatsApp order door; the attempt books nothing and keeps nothing. */
+  it('gives back both units when the vault fails resolving the buyer', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002269', 'PN-METER-9');
+    const period = usagePeriod(new Date());
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_buyer_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.facet = 'phone' THEN RAISE EXCEPTION 'g60: the vault is unavailable'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_buyer_fails BEFORE INSERT ON customer_identities
+          FOR EACH ROW EXECUTE FUNCTION g60_buyer_fails()`);
+      await post(
+        orderPayload('2349097776999', 'wamid.METER.9', 'PN-METER-9', [
+          { retailerId: wigId, quantity: 1 },
+        ]),
+      );
+      await buildRunner(workerDb, db, deps).runOnce();
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_buyer_fails ON customer_identities`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_buyer_fails()`);
+      await close();
+    }
+    expect([...(await ordersOf(businessId))]).toHaveLength(0);
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, period),
+    );
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+    expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+  });
+
   /* Idempotency and metering have to agree: Meta redelivers, and a second
    * delivery that places no second order must not charge for one either. */
   it('charges nothing twice for a redelivered webhook', async () => {

@@ -1047,3 +1047,11 @@ describe('purchaseIdentityReask after a no (Codex review of 5bfe87e)', () => {
     expect(text).toContain('reply *same*');
   });
 });
+
+describe('the length cut keeps characters whole (G-60 final review)', () => {
+  it('never leaves half of an emoji', () => {
+    const cut = replies.truncateForSending({ text: `${'x'.repeat(898)}😀${'y'.repeat(10)}` });
+    expect(cut.text.length).toBeLessThanOrEqual(replies.MAX_REPLY_CHARS);
+    expect(cut.text).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+});

@@ -692,3 +692,31 @@ describe('names as merchants actually type them (G-60 final review)', () => {
     expect(tokenised.tokens.get(token)).toBe('Ada Obi');
   });
 });
+
+describe('names and only names (G-60 final review, round 3)', () => {
+  it.each([
+    [
+      'a contraction whose stem is a stored name',
+      'Don',
+      "I don't have stock, Don paid",
+      "I don't have stock, @ paid",
+    ],
+    ['a hyphenated name that ends in one', 'Ann', 'Mary-Ann paid 5000', 'Mary-Ann paid 5000'],
+    ['a figure stored as a name', '10', 'sold 10 bags', 'sold 10 bags'],
+    ['a name ending in a full stop', 'Ada O.', 'Ada O. paid 5000', '@ paid 5000'],
+    ['a name in brackets', 'Mama Chidi (Ada)', 'Mama Chidi (Ada) paid', '@ paid'],
+    ['a name joined to a figure', 'Ada', 'Ada-2 wigs', '@-2 wigs'],
+  ])('handles %s', async (_, name, text, expected) => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { token } = await gateway.resolveMention(businessId, name);
+    const tokenised = await gateway.tokenise(businessId, text);
+    expect(tokenised.text).toBe(expected.replaceAll('@', token));
+  });
+
+  it('reads a known name glued to a pasted token as a name', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { token } = await gateway.resolveMention(businessId, 'Ada Obi');
+    const tokenised = await gateway.tokenise(businessId, 'CUSTOMER_ZZ9ADA OBI paid');
+    expect(tokenised.text).toBe(`CUSTOMER_ZZ9${token} paid`);
+  });
+});

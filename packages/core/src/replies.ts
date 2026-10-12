@@ -20,6 +20,7 @@
 
 import type { UsageUnit } from './allowances.js';
 import { formatKobo } from './money.js';
+import { sliceWhole } from './privacy.js';
 
 /** Every message carries the tokens it was built with, un-rehydrated. */
 export interface Reply {
@@ -1809,7 +1810,7 @@ export function isSendable(candidate: Reply): boolean {
 export function truncateForSending(candidate: Reply): Reply {
   const text = candidate.text.trim();
   if (text.length <= MAX_REPLY_CHARS) return reply(text);
-  return reply(`${text.slice(0, MAX_REPLY_CHARS - 1).trimEnd()}…`);
+  return reply(`${sliceWhole(text, MAX_REPLY_CHARS - 1).trimEnd()}…`);
 }
 
 /* ── stock ───────────────────────────────────────────────────────────────── */

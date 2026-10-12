@@ -109,13 +109,19 @@ function proposeLink(seen: ResolvedCustomer[]): IdentityLinkProposal | null {
 const NAME_KEYS_PER_QUERY = 1_000;
 
 /**
- * A part of a word for name-matching: letters (with their combining marks,
- * so a Yoruba tone mark never ends a word) and digits. Inner apostrophes
- * and hyphens split parts, and a candidate may start or end at any part, so
- * "O'Neil" and "Adaeze-Ann" are still one name and "Obi's" still holds "Obi"
- * (G-60).
+ * A word for name-matching: letters with their combining marks (a Yoruba
+ * tone mark never ends a word) and digits, an inner apostrophe or hyphen
+ * kept, so "O'Neil", "Adaeze-Ann", "don't" and "Mary-Ann" are one word each
+ * and never a shorter name (G-60).
  */
-const NAME_PART = /[\p{L}\p{M}\p{N}]+/gu;
+const NAME_WORD = /[\p{L}\p{M}\p{N}]+(?:['’-][\p{L}\p{M}\p{N}]+)*/gu;
+
+/** The two stems a word may also end at: "Obi's" holds "Obi", "Ada-2" holds "Ada". */
+const POSSESSIVE = /['’][sS]$/;
+const FIGURE_SUFFIX = /-\d+$/;
+
+/** Punctuation a stored name may begin or end with: "Ada O.", "Mama Chidi (Ada)". */
+const EDGE = /[^\s\p{L}\p{M}\p{N}]/u;
 
 @Injectable()
 export class PrivacyGateway {
@@ -204,24 +210,58 @@ export class PrivacyGateway {
      */
     const candidates: Array<{ start: number; end: number; matchKey: string }> = [];
     const keys = new Set<string>();
+    const spans = new Set<string>();
+    const consider = (start: number, end: number) => {
+      if (spans.has(`${start}:${end}`)) return;
+      spans.add(`${start}:${end}`);
+      /* Bounded before folding case: lowercasing can lengthen a name ("İ"),
+       * and the stored name was at most this long as typed. A name holds a
+       * letter: a figure is never one ("10"). */
+      const typedForm = out.slice(start, end).trim().replace(/\s+/g, ' ');
+      if (typedForm.length > CUSTOMER_NAME_MAX_CHARS) return;
+      if (typedForm.length < CUSTOMER_NAME_MIN_CHARS || !/\p{L}/u.test(typedForm)) return;
+      const normalised = normaliseFacet('name', out.slice(start, end));
+      const matchKey = matchKeyFor(businessId, 'name', normalised, this.config.matchKey);
+      candidates.push({ start, end, matchKey });
+      keys.add(matchKey);
+    };
     for (const segment of openSegments(out, [...tokens.keys(), ...typed.keys()])) {
-      const words = [...out.slice(segment.start, segment.end).matchAll(NAME_PART)].map((m) => {
+      const words = [...out.slice(segment.start, segment.end).matchAll(NAME_WORD)].map((m) => {
         const start = segment.start + (m.index ?? 0);
-        return { start, end: start + m[0].length };
+        const end = start + m[0].length;
+        const ends = [end];
+        const possessive = m[0].search(POSSESSIVE);
+        if (possessive > 0) ends.push(start + possessive);
+        const figure = m[0].search(FIGURE_SUFFIX);
+        if (figure > 0) ends.push(start + figure);
+        return { start, end, ends };
       });
+      const lead = (at: number) => {
+        let s = at;
+        while (s > segment.start && EDGE.test(out[s - 1] ?? '')) s -= 1;
+        return s;
+      };
+      const trail = (at: number) => {
+        let e = at;
+        while (e < segment.end && EDGE.test(out[e] ?? '')) e += 1;
+        return e;
+      };
       for (let i = 0; i < words.length; i++) {
         for (let j = i; j < words.length; j++) {
           const start = words[i]!.start;
-          const end = words[j]!.end;
-          /* Bounded before folding case: lowercasing can lengthen a name
-           * ("İ"), and the stored name was at most this long as typed. */
-          const typedForm = out.slice(start, end).trim().replace(/\s+/g, ' ');
-          if (typedForm.length > CUSTOMER_NAME_MAX_CHARS) break;
-          if (typedForm.length < CUSTOMER_NAME_MIN_CHARS) continue;
-          const normalised = normaliseFacet('name', out.slice(start, end));
-          const matchKey = matchKeyFor(businessId, 'name', normalised, this.config.matchKey);
-          candidates.push({ start, end, matchKey });
-          keys.add(matchKey);
+          /* Linear: past the longest storable name, longer runs cannot match. */
+          const shortest = Math.min(...words[j]!.ends);
+          if (
+            out.slice(start, shortest).trim().replace(/\s+/g, ' ').length > CUSTOMER_NAME_MAX_CHARS
+          ) {
+            break;
+          }
+          for (const end of words[j]!.ends) {
+            consider(start, end);
+            consider(lead(start), end);
+            consider(start, trail(end));
+            consider(lead(start), trail(end));
+          }
         }
       }
     }
@@ -331,8 +371,10 @@ export class PrivacyGateway {
    * A storefront checkout's customer (fix-plan 6, M5b).
    *
    * Anchored on the PHONE, the fact that survives repeat orders, with the
-   * typed name attached as a second facet on the same person when the phone
-   * is new. Both go straight to the vault; neither ever reaches a model.
+   * typed name attached as a second facet on the same person when that
+   * person has no name yet (G-60): a new phone, a phone-only customer, or a
+   * checkout retried after its name attach failed. A customer who has a name
+   * keeps it. Both go straight to the vault; neither ever reaches a model.
    * Null when the phone does not survive normalisation, so the caller can
    * answer with a sentence instead of vaulting seven stray digits.
    */
