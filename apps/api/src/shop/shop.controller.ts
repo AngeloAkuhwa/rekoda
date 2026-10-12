@@ -343,19 +343,29 @@ export class PublicShopController {
     }
 
     /* Each unit on its own: a refund that fails too (the same outage)
-     * neither stops the other nor replaces the failure that matters (G-60). */
+     * neither stops the other. A refund that fails THROWS: no terminal answer
+     * ("closed", "bad_phone", "items_changed") is given while a refund it owes
+     * has failed (G-60). Where a failure is already being surfaced, that one
+     * is rethrown instead (`refundQuietly`). */
+    const refunded = new Set<string>();
     const refundBoth = async () => {
+      /* Each unit at most once, however many paths reach here. */
       const refunds = await Promise.allSettled(
-        (['CATALOGUE_ORDERS', 'DOCUMENT_GENERATION'] as const).map((unit) =>
-          withBusiness(this.db, businessId, (own) =>
-            usageRepo.refundUnit(own, businessId, period, unit),
-          ),
-        ),
+        (['CATALOGUE_ORDERS', 'DOCUMENT_GENERATION'] as const)
+          .filter((unit) => !refunded.has(unit))
+          .map(async (unit) => {
+            await withBusiness(this.db, businessId, (own) =>
+              usageRepo.refundUnit(own, businessId, period, unit),
+            );
+            refunded.add(unit);
+          }),
       );
       if (refunds.some((r) => r.status === 'rejected')) {
         shopLog.error('a storefront refund failed; a unit stays spent');
+        throw new Error('a storefront refund failed');
       }
     };
+    const refundQuietly = () => refundBoth().catch(() => undefined);
 
     /* Only now — with the gates cleared and the units paid — does the
      * customer's identity enter the vault. A refused phone refunds both, and
@@ -363,7 +373,7 @@ export class PublicShopController {
     const customer = await this.gateway
       .resolveStorefrontCustomer(businessId, parsed.data.customerName, parsed.data.customerPhone)
       .catch(async (error: unknown) => {
-        await refundBoth();
+        await refundQuietly();
         throw error;
       });
     if (!customer) {
@@ -459,14 +469,23 @@ export class PublicShopController {
           displayName: shop.displayName,
         };
       });
-      if (lapsed) await refundBoth();
-      return answer;
+      if (!lapsed) return answer;
     } catch (error) {
-      await refundBoth();
-      if (error instanceof CartChanged) return { outcome: 'items_changed' };
-      if (isDuplicateOnOrders(error)) return { outcome: 'duplicate' };
+      if (error instanceof CartChanged) {
+        await refundBoth();
+        return { outcome: 'items_changed' };
+      }
+      if (isDuplicateOnOrders(error)) {
+        await refundBoth();
+        return { outcome: 'duplicate' };
+      }
+      await refundQuietly();
       throw error;
     }
+    /* Lapsed mid-checkout: the order transaction committed nothing, so the
+     * units go back now, outside it, once. */
+    await refundBoth();
+    return { outcome: 'closed' };
   }
 
   @Get(':slug')

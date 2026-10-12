@@ -427,11 +427,16 @@ describe('a token is one opaque span (G-60)', () => {
 });
 
 describe('a storefront checkout attaches the typed name only when it is free (G-60)', () => {
-  it('attaches a new name to a new phone', async () => {
+  it('attaches the typed name to a new phone, untrusted', async () => {
     const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
     const resolved = await gateway.resolveStorefrontCustomer(businessId, 'Ada Obi', '08031234567');
+    const facets = await customersRepo.identitiesForCustomer(db, businessId, resolved!.customerId);
+    expect(facets.map((f) => f.facet).sort()).toEqual(['name', 'phone']);
+    /* Not a known name: the merchant naming "Ada Obi" in chat is a trusted
+     * act that makes its own record, joined only by a merchant-confirmed
+     * link (owner decision, G-60). */
     const named = await gateway.resolveMention(businessId, 'Ada Obi');
-    expect(named.customerId).toBe(resolved!.customerId);
+    expect(named.customerId).not.toBe(resolved!.customerId);
   });
 
   it('keeps the phone anchor and merges nothing when the name is another customer', async () => {
@@ -440,11 +445,12 @@ describe('a storefront checkout attaches the typed name only when it is free (G-
 
     const resolved = await gateway.resolveStorefrontCustomer(businessId, 'Ada Obi', '08031234567');
     expect(resolved!.customerId).not.toBe(other.customerId);
-    /* The name still belongs to the customer who had it; the phone anchors
-     * a separate record, and nothing moved between them. */
+    /* The trusted name still belongs to the customer who had it; the phone
+     * anchors a separate record whose typed name is untrusted, and nothing
+     * moved between them. */
     expect((await gateway.resolveMention(businessId, 'Ada Obi')).customerId).toBe(other.customerId);
-    const facets = await customersRepo.identitiesForCustomer(db, businessId, resolved!.customerId);
-    expect(facets.map((f) => f.facet)).toEqual(['phone']);
+    const theirs = await customersRepo.identitiesForCustomer(db, businessId, other.customerId);
+    expect(theirs.map((f) => f.facet)).toEqual(['name']);
   });
 
   it('does not swallow a failure that is not an identity conflict', async () => {
@@ -752,5 +758,113 @@ describe('one name in either Unicode composition (G-60 final review, round 4)', 
     expect(tokenised.text).toBe(`${token} paid 20k`);
     /* And a mention in the other form is the same customer, not a new one. */
     expect((await gateway.resolveMention(businessId, typed)).customerId).toBe(customerId);
+  });
+});
+
+describe('a name typed at the public storefront is testimony, not identity (G-60 owner decision)', () => {
+  it.each([
+    ['No', 'No sale today'],
+    ['May', 'May sales were low'],
+    ['Gift', 'gift items sold today'],
+    ['Pay', 'pay me tomorrow'],
+  ])('a public buyer called %j cannot capture %j', async (name, prose) => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    await gateway.resolveStorefrontCustomer(businessId, name, '08035551234');
+    const tokenised = await gateway.tokenise(businessId, prose);
+    expect(tokenised.text).toBe(prose);
+  });
+
+  it('keeps the public name, encrypted, for the order and its documents', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const resolved = await gateway.resolveStorefrontCustomer(
+      businessId,
+      'Chidi Okafor',
+      '08035551234',
+    );
+    const facets = await customersRepo.identitiesForCustomer(db, businessId, resolved!.customerId);
+    const name = facets.find((f) => f.facet === 'name');
+    expect(name).toBeDefined();
+    expect(name!.ciphertext).not.toContain('Chidi');
+    expect(decryptFacet(name!.ciphertext, config.vaultKey, `${businessId}:name`)).toBe(
+      'Chidi Okafor',
+    );
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ match_key: string | null }>(sql`
+        SELECT match_key FROM customer_identities
+         WHERE business_id = ${businessId}::uuid AND facet = 'name'`),
+    );
+    expect([...rows].map((r) => r.match_key)).toEqual([null]);
+  });
+
+  it('still recognises a name the merchant established', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    await gateway.resolveStorefrontCustomer(businessId, 'Chidi Okafor', '08035551234');
+    const { token } = await gateway.resolveMention(businessId, 'Ada Obi');
+    const tokenised = await gateway.tokenise(businessId, 'Ada Obi and Chidi Okafor paid');
+    expect(tokenised.text).toBe(`${token} and Chidi Okafor paid`);
+  });
+});
+
+describe('one name, one customer, however its first two mentions race (G-60 final review)', () => {
+  it('creates one customer when the NFC and NFD forms arrive at once', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const composed = 'Adébáyọ̀ Ọlá'.normalize('NFC');
+    const decomposed = composed.normalize('NFD');
+    const { db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 1 });
+    let results: Array<{ customerId: string; token: string }> = [];
+    try {
+      /* Every name insert is held open, so both lookups run before either
+       * insert commits: the window a real race has. */
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_slow_name() RETURNS trigger AS $$
+        BEGIN IF NEW.facet = 'name' THEN PERFORM pg_sleep(0.4); END IF; RETURN NEW; END
+        $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_slow_name BEFORE INSERT ON customer_identities
+          FOR EACH ROW EXECUTE FUNCTION g60_slow_name()`);
+      results = await Promise.all([
+        gateway.resolveMention(businessId, composed),
+        gateway.resolveMention(businessId, decomposed),
+      ]);
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_slow_name ON customer_identities`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_slow_name()`);
+      await closeOwner();
+    }
+    expect(results[0]!.customerId).toBe(results[1]!.customerId);
+    expect((await gateway.resolveMention(businessId, composed)).customerId).toBe(
+      results[0]!.customerId,
+    );
+    expect((await gateway.resolveMention(businessId, decomposed)).customerId).toBe(
+      results[0]!.customerId,
+    );
+    const customers = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM customers WHERE business_id = ${businessId}::uuid`),
+    );
+    expect(Number([...customers][0]?.n)).toBe(1);
+  });
+
+  it('keeps names that are not equivalent apart', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const a = await gateway.resolveMention(businessId, 'Adébáyọ̀');
+    const b = await gateway.resolveMention(businessId, 'Adebayo');
+    expect(a.customerId).not.toBe(b.customerId);
+  });
+});
+
+describe('every storable name is recognised, whatever punctuation it carries (G-60 final review)', () => {
+  it.each([
+    ['(((((((((Ada)))))))))', 'sold to (((((((((Ada))))))))) 2 wigs'],
+    ['Ada O.', 'Sold to Ada O., 3 wigs'],
+    ["O'Neil-Bello", "O'Neil-Bello paid 5k"],
+    ['Tèmítọ́pẹ́', 'Tèmítọ́pẹ́ paid'],
+  ])('keeps the stored name %j away from the model', async (name, text) => {
+    expect(name.length).toBeLessThanOrEqual(80);
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { token } = await gateway.resolveMention(businessId, name);
+    const tokenised = await gateway.tokenise(businessId, text);
+    expect(tokenised.text).toContain(token);
+    expect(tokenised.text).not.toContain(name);
   });
 });

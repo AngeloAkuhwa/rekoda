@@ -877,6 +877,50 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
     expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
   });
 
+  /* Owner decision on #271: a terminal answer is never given while a refund
+   * it needs has failed; the failure surfaces instead. */
+  it('does not answer closed while the refund it owes has failed', async () => {
+    const { ids } = await openShop('+2348177400040', 'ada-lapse-refund');
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    let status = 0;
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_lapse() RETURNS trigger SECURITY DEFINER AS $$
+        BEGIN UPDATE businesses SET plan = 'chat' WHERE id = NEW.business_id; RETURN NEW; END
+        $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_lapse AFTER INSERT OR UPDATE ON usage_counters
+          FOR EACH ROW WHEN (NEW.unit = 'DOCUMENT_GENERATION' AND NEW.used > 0)
+          EXECUTE FUNCTION g60_lapse()`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_refund_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.unit = 'CATALOGUE_ORDERS' AND NEW.used < OLD.used THEN
+            RAISE EXCEPTION 'g60: the refund is unavailable';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_refund_fails BEFORE UPDATE ON usage_counters
+          FOR EACH ROW EXECUTE FUNCTION g60_refund_fails()`);
+      status = (
+        await order('ada-lapse-refund', {
+          items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+          customerName: 'Chidi Okafor',
+          customerPhone: '08035551234',
+          clientRef: randomUUID(),
+        })
+      ).statusCode;
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_lapse ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_lapse()`);
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_refund_fails ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_refund_fails()`);
+      await close();
+    }
+    expect(status).toBeGreaterThanOrEqual(500);
+  });
+
   /* Owner review of #271: the phone customer is committed before the name
    * is attached, so a retried checkout must still attach the name. */
   it('a retried checkout attaches the name a failed attempt could not', async () => {

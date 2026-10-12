@@ -38,10 +38,29 @@ export const CUSTOMER_NAME_MAX_CHARS = 80;
  */
 export const CUSTOMER_NAME_MIN_CHARS = 2;
 
+/**
+ * THE customer-name contract, one schema for every door that stores a name
+ * (G-60): trimmed, CUSTOMER_NAME_MIN_CHARS to CUSTOMER_NAME_MAX_CHARS long,
+ * holding at least one letter (a figure such as "10" is never a name). The
+ * privacy gateway's known-name pass recognises exactly this, so a name the
+ * product accepts is a name it can keep away from a model.
+ *
+ * Trusted doors, whose names the merchant's chat is matched against: a
+ * mention the merchant makes in chat, and a dashboard quote. The public
+ * storefront accepts the same shape but its name is untrusted testimony from
+ * an anonymous buyer: stored encrypted for the order, never a known name.
+ */
+export const customerName = z
+  .string()
+  .trim()
+  .min(CUSTOMER_NAME_MIN_CHARS)
+  .max(CUSTOMER_NAME_MAX_CHARS)
+  .refine((value) => /\p{L}/u.test(value), { message: 'a name holds a letter' });
+
 /** A customer as the AI may refer to one: resolved token or raw mention. */
 export const CustomerRef = z.union([
   z.object({ kind: z.literal('token'), token: z.string().regex(/^CUSTOMER_[A-Z0-9]{2,12}$/) }),
-  z.object({ kind: z.literal('mention'), mention: text(CUSTOMER_NAME_MAX_CHARS) }),
+  z.object({ kind: z.literal('mention'), mention: customerName }),
   z.object({ kind: z.literal('none') }),
 ]);
 export type CustomerRef = z.infer<typeof CustomerRef>;

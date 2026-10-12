@@ -121,9 +121,6 @@ const FIGURE_SUFFIX = /-\d+$/;
 /** Punctuation a stored name may begin or end with: "Ada O.", "Mama Chidi (Ada)". */
 const EDGE = /[^\s\p{L}\p{M}\p{N}]/u;
 
-/** How far a candidate may reach over edge punctuation, either side. */
-const EDGE_REACH = 8;
-
 @Injectable()
 export class PrivacyGateway {
   constructor(
@@ -238,10 +235,12 @@ export class PrivacyGateway {
         return { start, end, ends };
       });
       /* Every position across adjacent punctuation, not only the furthest:
-       * "Ada O.," holds "Ada O." (G-60). Bounded by EDGE_REACH. */
+       * "Ada O.," holds "Ada O." (G-60). Complete for every storable name and
+       * bounded by it: a name is at most CUSTOMER_NAME_MAX_CHARS long, so no
+       * candidate reaches further than that over punctuation either side. */
       const leads = (at: number) => {
         const out_: number[] = [at];
-        for (let s = at; s > segment.start && out_.length <= EDGE_REACH; s -= 1) {
+        for (let s = at; s > segment.start && at - s < CUSTOMER_NAME_MAX_CHARS; s -= 1) {
           if (!EDGE.test(out[s - 1] ?? '')) break;
           out_.push(s - 1);
         }
@@ -249,7 +248,7 @@ export class PrivacyGateway {
       };
       const trails = (at: number) => {
         const out_: number[] = [at];
-        for (let e = at; e < segment.end && out_.length <= EDGE_REACH; e += 1) {
+        for (let e = at; e < segment.end && e - at < CUSTOMER_NAME_MAX_CHARS; e += 1) {
           if (!EDGE.test(out[e] ?? '')) break;
           out_.push(e + 1);
         }
@@ -267,7 +266,10 @@ export class PrivacyGateway {
           }
           for (const end of words[j]!.ends) {
             for (const s of leads(start)) {
-              for (const e of trails(end)) consider(s, e);
+              for (const e of trails(end)) {
+                if (e - s > 2 * CUSTOMER_NAME_MAX_CHARS) break;
+                consider(s, e);
+              }
             }
           }
         }
@@ -382,6 +384,15 @@ export class PrivacyGateway {
    * keeps it. Both go straight to the vault; neither ever reaches a model.
    * Null when the phone does not survive normalisation, so the caller can
    * answer with a sentence instead of vaulting seven stray digits.
+   *
+   * The typed name is UNTRUSTED testimony from an anonymous buyer (owner
+   * decision, G-60). It is stored encrypted for the order, its documents and
+   * the dashboard, but with NO match key: it never becomes a known name the
+   * merchant's chat is matched against, so a buyer calling themselves "No"
+   * or "Pay" cannot capture those words. A name becomes trusted only when the
+   * merchant establishes it (a mention in chat, a dashboard customer); the
+   * two records are then joined by the merchant-confirmed link, never by the
+   * buyer's say-so.
    */
   async resolveStorefrontCustomer(
     businessId: string,
@@ -395,30 +406,19 @@ export class PrivacyGateway {
      * whose name attach failed must complete it on the retry (G-60). A
      * customer who already has a name keeps it, decided under a lock on the
      * customer so two checkouts at once cannot both add one. */
-    if (name.trim().length > 0 && !(await this.nameHeldElsewhere(businessId, name, byPhone))) {
-      try {
-        await customersRepo.addIdentityFacet(
-          this.db,
-          businessId,
-          byPhone.customerId,
-          {
-            facet: 'name',
-            ciphertext: encryptFacet(name, this.config.vaultKey, `${businessId}:name`),
-            matchKey: matchKeyFor(
-              businessId,
-              'name',
-              normaliseFacet('name', name),
-              this.config.matchKey,
-            ),
-          },
-          { unlessTheCustomerHasOne: true },
-        );
-      } catch (error) {
-        /* The name already keys another customer. Attaching it is a courtesy;
-         * the phone-anchored identity stands, and the two records are never
-         * merged on a typed name. Anything else is a real failure (G-60). */
-        if (!(error instanceof customersRepo.IdentityConflict)) throw error;
-      }
+    if (name.trim().length > 0) {
+      await customersRepo.addIdentityFacet(
+        this.db,
+        businessId,
+        byPhone.customerId,
+        {
+          facet: 'name',
+          ciphertext: encryptFacet(name, this.config.vaultKey, `${businessId}:name`),
+          /* Untrusted: no match key, so never a known name (see above). */
+          matchKey: null,
+        },
+        { unlessTheCustomerHasOne: true },
+      );
     }
     return { token: byPhone.token, customerId: byPhone.customerId };
   }
@@ -440,19 +440,6 @@ export class PrivacyGateway {
     ];
   }
 
-  /** Whether a name, in any composition, already keys a customer other than this one. */
-  private async nameHeldElsewhere(
-    businessId: string,
-    name: string,
-    customer: { customerId: string },
-  ): Promise<boolean> {
-    for (const key of this.nameKeys(businessId, name)) {
-      const holder = await customersRepo.findCustomerByMatchKey(this.db, businessId, 'name', key);
-      if (holder && holder.id !== customer.customerId) return true;
-    }
-    return false;
-  }
-
   /**
    * The token for a person, creating them if this business has not seen them.
    *
@@ -465,7 +452,14 @@ export class PrivacyGateway {
     facet: 'phone' | 'email' | 'name',
     value: string,
   ): Promise<ResolvedCustomer> {
-    const normalised = normaliseFacet(facet, value);
+    /* A NEW name is keyed in one canonical composition, NFC, so two first
+     * mentions of the same name in different compositions collide on
+     * `identities_match_ux` and the loser resolves to the winner: one
+     * person, one customer, however their first creation races (G-60).
+     * Names stored before keep their as-typed key and are still found by
+     * the lookups below, which try every composition. */
+    const canonical = facet === 'name' ? value.normalize('NFC') : value;
+    const normalised = normaliseFacet(facet, canonical);
     const matchKey = matchKeyFor(businessId, facet, normalised, this.config.matchKey);
 
     /* A name in another Unicode composition is the same person (G-60). */

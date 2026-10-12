@@ -589,6 +589,65 @@ describe('a catalogue cart becomes an order (spec §3.2; W3, PR-087)', () => {
     }
   }
 
+  /* Owner decision on #271: a terminal refusal whose refund fails is not
+   * processed; the retry gives back what the first attempt paid, once. */
+  it('retries a terminal refusal whose refund failed, and refunds exactly once', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002267', 'PN-METER-7');
+    const period = usagePeriod(new Date());
+    await post(
+      orderPayload('2349097776777', 'wamid.METER.7', 'PN-METER-7', [
+        { retailerId: wigId, quantity: 1 },
+      ]),
+    );
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      /* Integrate lapses the moment the document unit is paid, so the order
+       * is refused after the meter; the first orders refund fails. */
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_wa_lapse() RETURNS trigger SECURITY DEFINER AS $$
+        BEGIN UPDATE businesses SET plan = 'chat' WHERE id = NEW.business_id; RETURN NEW; END
+        $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_wa_lapse AFTER INSERT OR UPDATE ON usage_counters
+          FOR EACH ROW WHEN (NEW.unit = 'DOCUMENT_GENERATION' AND NEW.used > 0)
+          EXECUTE FUNCTION g60_wa_lapse()`);
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g60_wa_refund_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_wa_refund_fails() RETURNS trigger SECURITY DEFINER AS $$
+        BEGIN
+          IF NEW.unit = 'CATALOGUE_ORDERS' AND NEW.used < OLD.used
+             AND nextval('g60_wa_refund_once') = 1 THEN
+            RAISE EXCEPTION 'g60: the refund is unavailable';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_wa_refund_fails BEFORE UPDATE ON usage_counters
+          FOR EACH ROW EXECUTE FUNCTION g60_wa_refund_fails()`);
+
+      expect(await runUntilFailed(businessId, 'refund')).toBe(1);
+      await ownerDb.execute(sql`
+        UPDATE jobs SET run_at = now() WHERE business_id = ${businessId}::uuid AND state <> 'done'`);
+      const runner = buildRunner(workerDb, db, deps);
+      while (await runner.runOnce()) {
+        /* the retry, and anything else due */
+      }
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_wa_lapse ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_wa_lapse()`);
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_wa_refund_fails ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_wa_refund_fails()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g60_wa_refund_once`);
+      await close();
+    }
+    expect([...(await ordersOf(businessId))]).toHaveLength(0);
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, period),
+    );
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+    expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+  });
+
   /* Final review of #271: the order unit is taken, then the document meter
    * fails; the order unit goes back before the job retries. */
   it('gives the order unit back when the document meter fails', async () => {

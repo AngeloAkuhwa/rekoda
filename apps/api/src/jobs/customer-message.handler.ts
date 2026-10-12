@@ -210,7 +210,15 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
      * never through the merchant-operations command set: a customer's
      * message is a conversation plus, at most, this one narrow act. */
     if (inbound.messageType === 'order' && inbound.order && inbound.order.items.length > 0) {
-      const note = await ingestCatalogueOrder(tx, deps, businessId, participant, inbound);
+      const note = await ingestCatalogueOrder(
+        tx,
+        deps,
+        businessId,
+        participant,
+        inbound,
+        eventId,
+        event.receivedAt,
+      );
       await events.markProcessed(tx, eventId, note, businessId);
       return;
     }
@@ -459,6 +467,10 @@ async function ingestCatalogueOrder(
   businessId: string,
   participant: string,
   inbound: InboundEvent,
+  /** The stored event this order arrived on, where its units are reserved. */
+  eventId: string,
+  /** When it arrived: the month its units are metered and refunded in. */
+  receivedAt: Date,
 ): Promise<string | null> {
   const log = new Logger('CustomerMessageJob');
   const externalRef = `meta:${inbound.externalId}`;
@@ -509,80 +521,82 @@ async function ingestCatalogueOrder(
    * at all is told that rather than charged for finding out. The bus checks
    * the same entitlement again below: a second refusal is the matrix
    * holding, not a duplicate. */
-  const notEntitled = await withBusiness(deps.db, businessId, (own) =>
-    entitlementsRepo.requireEntitlement(own, businessId, 'REKODA_INTEGRATE'),
-  );
-  if (notEntitled) return 'order refused: not entitled';
-
-  const period = usagePeriod(new Date());
-  const plan = await withBusiness(deps.db, businessId, (own) => usageRepo.planFor(own, businessId));
-  const orderGranted = await withBusiness(deps.db, businessId, async (own) =>
-    usageRepo.consumeUnit(
-      own,
-      businessId,
-      period,
-      'CATALOGUE_ORDERS',
-      await meterAllowance(deps.config, own, businessId, plan, 'CATALOGUE_ORDERS'),
-    ),
-  );
-  if (!orderGranted) return 'order refused: no catalogue orders left in plan';
-
-  const documentGranted = await withBusiness(deps.db, businessId, async (own) =>
-    usageRepo.consumeUnit(
-      own,
-      businessId,
-      period,
-      'DOCUMENT_GENERATION',
-      await meterAllowance(deps.config, own, businessId, plan, 'DOCUMENT_GENERATION'),
-    ),
-  ).catch(async (error: unknown) => {
-    /* The order unit is already paid; a meter that fails now must not keep
-     * it, or every retry of this job would take another (G-60). */
-    await withBusiness(deps.db, businessId, (own) =>
-      usageRepo.refundUnit(own, businessId, period, 'CATALOGUE_ORDERS'),
-    ).catch(() => log.error('customer.order: a refund failed; a unit stays spent'));
-    throw error;
-  });
-  if (!documentGranted) {
-    await withBusiness(deps.db, businessId, (own) =>
-      usageRepo.refundUnit(own, businessId, period, 'CATALOGUE_ORDERS'),
-    );
-    return 'order refused: no documents left in plan';
-  }
-
   /**
-   * One way back for both units.
-   *
-   * The same shape the chat door was rewritten into: every exit that
-   * produces no order and no invoice gives back exactly what was reserved,
-   * and no branch decides for itself which of the two that is.
+   * The units this order pays for are RESERVATIONS on the stored event
+   * (G-60, as G-57 made them for chat): each is recorded on the event in the
+   * same transaction that consumes it, a retry reuses what the event already
+   * holds rather than paying again, and a give-back takes the record and
+   * refunds in one transaction, so it happens once. A refund that fails is
+   * never swallowed: the job fails, the event stays unprocessed, and the
+   * retry gives back what is still held. Every unit is metered in the month
+   * the message arrived.
    */
-  let refunded = false;
-  const refundReserved = async (): Promise<void> => {
-    /* Once per attempt, each unit on its own: a refund that fails too
-     * neither stops the other nor replaces the failure that matters. */
-    if (refunded) return;
-    refunded = true;
+  const period = usagePeriod(receivedAt);
+  const reserve = async (unit: 'CATALOGUE_ORDERS' | 'DOCUMENT_GENERATION'): Promise<boolean> => {
+    const held = await withBusiness(deps.db, businessId, (own) =>
+      events.holdsReservedUnit(own, businessId, eventId, unit),
+    );
+    if (held) return true;
+    return withBusiness(deps.db, businessId, async (own) => {
+      const plan = await usageRepo.planFor(own, businessId);
+      const ok = await usageRepo.consumeUnit(
+        own,
+        businessId,
+        period,
+        unit,
+        await meterAllowance(deps.config, own, businessId, plan, unit),
+      );
+      if (ok) await events.noteReservedUnit(own, businessId, eventId, unit);
+      return ok;
+    });
+  };
+  const giveBack = (unit: 'CATALOGUE_ORDERS' | 'DOCUMENT_GENERATION') =>
+    withBusiness(deps.db, businessId, async (own) => {
+      if (await events.takeReservedUnit(own, businessId, eventId, unit)) {
+        await usageRepo.refundUnit(own, businessId, period, unit);
+      }
+    });
+  /**
+   * Every exit that produces no order and no invoice gives back everything
+   * this event holds, each unit on its own. If any give-back fails, this
+   * throws: a terminal refusal is never recorded while its refund is owed.
+   */
+  const settle = async (): Promise<void> => {
     const refunds = await Promise.allSettled(
-      (['CATALOGUE_ORDERS', 'DOCUMENT_GENERATION'] as const).map((unit) =>
-        withBusiness(deps.db, businessId, (own) =>
-          usageRepo.refundUnit(own, businessId, period, unit),
-        ),
-      ),
+      (['CATALOGUE_ORDERS', 'DOCUMENT_GENERATION'] as const).map(giveBack),
     );
     if (refunds.some((r) => r.status === 'rejected')) {
-      log.error('customer.order: a refund failed; a unit stays spent');
+      throw new Error('customer.order: a refund failed; the job retries it');
     }
   };
 
-  /* Anything that throws from here books nothing (the job's transaction
-   * rolls back) and the job will meter again on its retry, so what this
-   * attempt paid goes back first: a vault outage must not cost two units on
-   * every attempt (G-60). */
+  const notEntitled = await withBusiness(deps.db, businessId, (own) =>
+    entitlementsRepo.requireEntitlement(own, businessId, 'REKODA_INTEGRATE'),
+  );
+  if (notEntitled) {
+    /* On a retry the event may still hold what an earlier attempt paid. */
+    await settle();
+    return 'order refused: not entitled';
+  }
+
   try {
+    if (!(await reserve('CATALOGUE_ORDERS'))) {
+      await settle();
+      return 'order refused: no catalogue orders left in plan';
+    }
+    if (!(await reserve('DOCUMENT_GENERATION'))) {
+      await settle();
+      return 'order refused: no documents left in plan';
+    }
     return await placeTheOrder();
   } catch (error) {
-    await refundReserved();
+    /* Nothing was booked (the job's transaction rolls back), so what this
+     * event holds goes back before the retry; if that fails too, the retry
+     * finds it still held and neither pays again nor loses it. The failure
+     * that matters is the one rethrown. */
+    await settle().catch(() =>
+      log.error('customer.order: a refund failed; the retry gives it back'),
+    );
     throw error;
   }
 
@@ -617,11 +631,11 @@ async function ingestCatalogueOrder(
        * to retry: a business whose Integrate entitlement lapsed mid-cart
        * takes no order, and the note says so. */
       if (run.outcome === 'not_entitled') {
-        await refundReserved();
+        await settle();
         return 'order refused: not entitled';
       }
       if (run.outcome !== 'done') {
-        await refundReserved();
+        await settle();
         throw new Error(`PlaceOrder refused unexpectedly: ${run.outcome}`);
       }
       orderId = run.result.orderId;
@@ -629,7 +643,7 @@ async function ingestCatalogueOrder(
       /* Same refusal as the storefront: this branch never checked entitlement
        * at all, so running it would take an order from a business whose plan
        * does not carry Integrate. */
-      await refundReserved();
+      await settle();
       throw new Error(
         'REKODA_COMMAND_PLACE_ORDER is off. The legacy catalogue order path no longer places orders.',
       );
@@ -649,7 +663,7 @@ async function ingestCatalogueOrder(
     if (validated.outcome === 'rejected') {
       /* The order is visibly CANCELLED with nothing financial behind it, so
        * no invoice came out and neither unit was spent on anything. */
-      await refundReserved();
+      await settle();
       log.warn(`customer.order: validation refused the cart (${validated.reason})`);
       return `order rejected: ${validated.reason}`;
     }

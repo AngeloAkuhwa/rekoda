@@ -7,7 +7,7 @@
  * formatKobo and nothing else.
  */
 import { z } from 'zod';
-import { CUSTOMER_NAME_MAX_CHARS, CUSTOMER_NAME_MIN_CHARS } from './business-command.js';
+import { customerName } from './business-command.js';
 
 const kobo = z.number().int().finite().nonnegative();
 
@@ -404,12 +404,7 @@ export type ReportsInvoicesResponse = z.infer<typeof reportsInvoicesResponse>;
  * place customer names leak around the gateway.
  */
 export const createQuoteRequest = z.object({
-  customerName: z
-    .string()
-    .trim()
-    .min(CUSTOMER_NAME_MIN_CHARS)
-    .max(CUSTOMER_NAME_MAX_CHARS)
-    .optional(),
+  customerName: customerName.optional(),
   items: z
     .array(
       z.object({
