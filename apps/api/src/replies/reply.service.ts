@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { billingPeriod, messageCostK, replies, type Reply } from '@rekoda/core';
-import { fitRehydrated, redactForLog, rehydrate } from '@rekoda/core/privacy';
+import { fitRehydrated, redactForLog, rehydrate, sliceWhole } from '@rekoda/core/privacy';
 import { conversationsRepo, quotaRepo, type TenantDb } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
@@ -96,7 +96,7 @@ export class ReplySender {
     const forHuman =
       rehydrated.length <= replies.MAX_REPLY_CHARS
         ? rehydrated
-        : `${rehydrated.slice(0, replies.MAX_REPLY_CHARS - 1).trimEnd()}…`;
+        : `${sliceWhole(rehydrated, replies.MAX_REPLY_CHARS - 1).trimEnd()}…`;
 
     try {
       const result = await this.sender.send({ to: input.to, text: forHuman });

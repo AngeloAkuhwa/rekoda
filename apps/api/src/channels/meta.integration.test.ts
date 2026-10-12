@@ -569,6 +569,60 @@ describe('a catalogue cart becomes an order (spec §3.2; W3, PR-087)', () => {
     expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
   });
 
+  /** Run the queue until a job has failed with `reason`, so the test is never vacuous. */
+  async function runUntilFailed(businessId: string, reason: string): Promise<number> {
+    const runner = buildRunner(workerDb, db, deps);
+    const { db: jobsDb, close: closeJobs } = createDb(urls.owner, { max: 1 });
+    try {
+      for (let pass = 0; pass < 20; pass++) {
+        const [row] = [
+          ...(await jobsDb.execute<{ n: number }>(sql`
+            SELECT count(*)::int AS n FROM jobs WHERE business_id = ${businessId}::uuid
+               AND last_error LIKE ${`%${reason}%`}`)),
+        ];
+        if (Number(row?.n) > 0) return Number(row?.n);
+        await runner.runOnce();
+      }
+      return 0;
+    } finally {
+      await closeJobs();
+    }
+  }
+
+  /* Final review of #271: the order unit is taken, then the document meter
+   * fails; the order unit goes back before the job retries. */
+  it('gives the order unit back when the document meter fails', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002268', 'PN-METER-8');
+    const period = usagePeriod(new Date());
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    /* Posted first: the webhook itself writes a usage row. */
+    await post(
+      orderPayload('2349097776888', 'wamid.METER.8', 'PN-METER-8', [
+        { retailerId: wigId, quantity: 1 },
+      ]),
+    );
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_doc_meter_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.unit = 'DOCUMENT_GENERATION' THEN RAISE EXCEPTION 'g60: the meter is unavailable'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_doc_meter_fails BEFORE INSERT OR UPDATE ON usage_counters
+          FOR EACH ROW EXECUTE FUNCTION g60_doc_meter_fails()`);
+      expect(await runUntilFailed(businessId, 'the meter is unavailable')).toBe(1);
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_doc_meter_fails ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_doc_meter_fails()`);
+      await close();
+    }
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, period),
+    );
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+  });
+
   /* Final review of #271: the vault fails resolving the customer's phone on
    * the WhatsApp order door; the attempt books nothing and keeps nothing. */
   it('gives back both units when the vault fails resolving the buyer', async () => {
@@ -590,7 +644,7 @@ describe('a catalogue cart becomes an order (spec §3.2; W3, PR-087)', () => {
           { retailerId: wigId, quantity: 1 },
         ]),
       );
-      await buildRunner(workerDb, db, deps).runOnce();
+      expect(await runUntilFailed(businessId, 'the vault is unavailable')).toBe(1);
     } finally {
       await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_buyer_fails ON customer_identities`);
       await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_buyer_fails()`);

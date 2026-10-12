@@ -535,7 +535,14 @@ async function ingestCatalogueOrder(
       'DOCUMENT_GENERATION',
       await meterAllowance(deps.config, own, businessId, plan, 'DOCUMENT_GENERATION'),
     ),
-  );
+  ).catch(async (error: unknown) => {
+    /* The order unit is already paid; a meter that fails now must not keep
+     * it, or every retry of this job would take another (G-60). */
+    await withBusiness(deps.db, businessId, (own) =>
+      usageRepo.refundUnit(own, businessId, period, 'CATALOGUE_ORDERS'),
+    ).catch(() => log.error('customer.order: a refund failed; a unit stays spent'));
+    throw error;
+  });
   if (!documentGranted) {
     await withBusiness(deps.db, businessId, (own) =>
       usageRepo.refundUnit(own, businessId, period, 'CATALOGUE_ORDERS'),
@@ -556,13 +563,16 @@ async function ingestCatalogueOrder(
      * neither stops the other nor replaces the failure that matters. */
     if (refunded) return;
     refunded = true;
-    await Promise.allSettled(
+    const refunds = await Promise.allSettled(
       (['CATALOGUE_ORDERS', 'DOCUMENT_GENERATION'] as const).map((unit) =>
         withBusiness(deps.db, businessId, (own) =>
           usageRepo.refundUnit(own, businessId, period, unit),
         ),
       ),
     );
+    if (refunds.some((r) => r.status === 'rejected')) {
+      log.error('customer.order: a refund failed; a unit stays spent');
+    }
   };
 
   /* Anything that throws from here books nothing (the job's transaction

@@ -9,7 +9,7 @@
  * Both tables are under row-level security, so every read and write here goes
  * through a tenant pin.
  */
-import { and, eq, sql, inArray } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
 import { withBusiness } from '../client.js';
 import { customerIdentities, customers } from '../schema/privacy.js';
@@ -93,7 +93,11 @@ export async function namesByMatchKeys(
           and(
             eq(customerIdentities.businessId, businessId),
             eq(customerIdentities.facet, 'name'),
-            inArray(customerIdentities.matchKey, [...matchKeys]),
+            /* ONE bound parameter however many keys: a long message's
+             * candidates exceed PostgreSQL's 65,535-parameter ceiling as an
+             * IN list. Match keys are base64url, so a comma never occurs in
+             * one (G-60). */
+            sql`${customerIdentities.matchKey} = ANY(string_to_array(${matchKeys.join(',')}, ','))`,
           ),
         );
       return rows

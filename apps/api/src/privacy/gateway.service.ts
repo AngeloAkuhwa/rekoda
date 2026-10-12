@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import {
+  CLITIC_SUFFIXES,
   displayOf,
   generateCustomerToken,
   openSegments,
@@ -102,13 +103,6 @@ function proposeLink(seen: ResolvedCustomer[]): IdentityLinkProposal | null {
 }
 
 /**
- * Keys per lookup. A message's candidate count is linear in its length (each
- * start word extends at most CUSTOMER_NAME_MAX_CHARS characters), so a long
- * message is looked up in a few bounded queries rather than one huge one.
- */
-const NAME_KEYS_PER_QUERY = 1_000;
-
-/**
  * A word for name-matching: letters with their combining marks (a Yoruba
  * tone mark never ends a word) and digits, an inner apostrophe or hyphen
  * kept, so "O'Neil", "Adaeze-Ann", "don't" and "Mary-Ann" are one word each
@@ -116,12 +110,19 @@ const NAME_KEYS_PER_QUERY = 1_000;
  */
 const NAME_WORD = /[\p{L}\p{M}\p{N}]+(?:['’-][\p{L}\p{M}\p{N}]+)*/gu;
 
-/** The two stems a word may also end at: "Obi's" holds "Obi", "Ada-2" holds "Ada". */
-const POSSESSIVE = /['’][sS]$/;
+/**
+ * The stems a word may also end at, a closed list shared with the stored-
+ * message scrub (`CLITIC_SUFFIXES` in @rekoda/core/privacy): "Obi's",
+ * "Ada'll", "Tunde'd" hold a name; "Ada-2" does too. "don't" does not.
+ */
+const CLITIC = new RegExp(`['’](?:${CLITIC_SUFFIXES.join('|')})$`, 'i');
 const FIGURE_SUFFIX = /-\d+$/;
 
 /** Punctuation a stored name may begin or end with: "Ada O.", "Mama Chidi (Ada)". */
 const EDGE = /[^\s\p{L}\p{M}\p{N}]/u;
+
+/** How far a candidate may reach over edge punctuation, either side. */
+const EDGE_REACH = 8;
 
 @Injectable()
 export class PrivacyGateway {
@@ -230,21 +231,29 @@ export class PrivacyGateway {
         const start = segment.start + (m.index ?? 0);
         const end = start + m[0].length;
         const ends = [end];
-        const possessive = m[0].search(POSSESSIVE);
-        if (possessive > 0) ends.push(start + possessive);
+        const clitic = m[0].search(CLITIC);
+        if (clitic > 0) ends.push(start + clitic);
         const figure = m[0].search(FIGURE_SUFFIX);
         if (figure > 0) ends.push(start + figure);
         return { start, end, ends };
       });
-      const lead = (at: number) => {
-        let s = at;
-        while (s > segment.start && EDGE.test(out[s - 1] ?? '')) s -= 1;
-        return s;
+      /* Every position across adjacent punctuation, not only the furthest:
+       * "Ada O.," holds "Ada O." (G-60). Bounded by EDGE_REACH. */
+      const leads = (at: number) => {
+        const out_: number[] = [at];
+        for (let s = at; s > segment.start && out_.length <= EDGE_REACH; s -= 1) {
+          if (!EDGE.test(out[s - 1] ?? '')) break;
+          out_.push(s - 1);
+        }
+        return out_;
       };
-      const trail = (at: number) => {
-        let e = at;
-        while (e < segment.end && EDGE.test(out[e] ?? '')) e += 1;
-        return e;
+      const trails = (at: number) => {
+        const out_: number[] = [at];
+        for (let e = at; e < segment.end && out_.length <= EDGE_REACH; e += 1) {
+          if (!EDGE.test(out[e] ?? '')) break;
+          out_.push(e + 1);
+        }
+        return out_;
       };
       for (let i = 0; i < words.length; i++) {
         for (let j = i; j < words.length; j++) {
@@ -257,22 +266,18 @@ export class PrivacyGateway {
             break;
           }
           for (const end of words[j]!.ends) {
-            consider(start, end);
-            consider(lead(start), end);
-            consider(start, trail(end));
-            consider(lead(start), trail(end));
+            for (const s of leads(start)) {
+              for (const e of trails(end)) consider(s, e);
+            }
           }
         }
       }
     }
 
     const byKey = new Map<string, { token: string; customerId: string }>();
-    const allKeys = [...keys];
-    for (let at = 0; at < allKeys.length; at += NAME_KEYS_PER_QUERY) {
-      const batch = allKeys.slice(at, at + NAME_KEYS_PER_QUERY);
-      for (const row of await customersRepo.namesByMatchKeys(this.db, businessId, batch)) {
-        if (!byKey.has(row.matchKey)) byKey.set(row.matchKey, row);
-      }
+    /* One lookup per message, however many candidates (G-60). */
+    for (const row of await customersRepo.namesByMatchKeys(this.db, businessId, [...keys])) {
+      if (!byKey.has(row.matchKey)) byKey.set(row.matchKey, row);
     }
 
     /* Longest span first so "Ada Obi Junior" beats "Ada Obi", then leftmost;

@@ -841,6 +841,42 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
     expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
   });
 
+  /* Final review of #271: the order unit is taken, then the document meter
+   * fails; the order unit goes back. */
+  it('gives the order unit back when the document meter fails', async () => {
+    const { businessId, ids } = await openShop('+2348177400039', 'ada-meter-down');
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    let status = 0;
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_doc_meter_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.unit = 'DOCUMENT_GENERATION' THEN RAISE EXCEPTION 'g60: the meter is unavailable'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_doc_meter_fails BEFORE INSERT OR UPDATE ON usage_counters
+          FOR EACH ROW EXECUTE FUNCTION g60_doc_meter_fails()`);
+      status = (
+        await order('ada-meter-down', {
+          items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+          customerName: 'Chidi Okafor',
+          customerPhone: '08035551234',
+          clientRef: randomUUID(),
+        })
+      ).statusCode;
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_doc_meter_fails ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_doc_meter_fails()`);
+      await close();
+    }
+    expect(status).toBeGreaterThanOrEqual(500);
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+  });
+
   /* Owner review of #271: the phone customer is committed before the name
    * is attached, so a retried checkout must still attach the name. */
   it('a retried checkout attaches the name a failed attempt could not', async () => {

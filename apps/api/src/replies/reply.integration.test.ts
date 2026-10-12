@@ -256,6 +256,21 @@ describe('the text that leaves fits after rehydration (G-60 final review)', () =
     expect(sender.lastText!.replace(/…$/, '').trim().length).toBeGreaterThan(0);
   });
 
+  it('never sends half an emoji, even from the backstop', async () => {
+    const businessId = await seedBusiness();
+    const tokens = new Map([['CUSTOMER_7K2', `${'A'.repeat(898)}😀${'B'.repeat(10)}`]]);
+    await withBusiness(db, businessId, (tx) =>
+      replySender.send(tx, {
+        businessId,
+        to: '2348031234567',
+        reply: { text: 'CUSTOMER_7K2 owes' },
+        tokens,
+      }),
+    );
+    expect(sender.lastText!.length).toBeLessThanOrEqual(replies.MAX_REPLY_CHARS);
+    expect(sender.lastText).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+
   it('leaves a short reply exactly as it was', async () => {
     const businessId = await seedBusiness();
     const tokens = new Map([['CUSTOMER_7K2', display]]);

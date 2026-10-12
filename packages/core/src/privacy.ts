@@ -219,6 +219,12 @@ export function openSegments(
 }
 
 /**
+ * The clitics after which a name still ends ("Ada'll", "Obi's"), a closed
+ * list the gateway's known-name pass uses too. "'t" is not one ("don't").
+ */
+export const CLITIC_SUFFIXES = ['s', 'll', 'd', 've', 're', 'm'] as const;
+
+/**
  * Replace `phrase` with `replacement` wherever it stands as whole words in
  * the text between tokens: case and spacing folded ("Ada   Obi"), and never
  * inside a token ("CUSTOMER_ADA" is not "Ada"). For a name the model resolved
@@ -234,10 +240,12 @@ export function replaceOutsideTokens(
   if (words.length === 0) return text;
   const body = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
   /* Whole words: not inside a longer word, and not the stem of a joined
-   * word ("don't", "Mary-Ann"), though a possessive "'s" still ends one. */
+   * word ("don't", "Mary-Ann"), though the stems the gateway takes still end
+   * one: a clitic ("'s", "'ll", "'d", "'ve", "'re", "'m") or a figure ("-2"). */
   const letter = '[\\p{L}\\p{M}\\p{N}]';
+  const clitic = `(?:${CLITIC_SUFFIXES.join('|')})(?!${letter})`;
   const pattern = new RegExp(
-    `(?<!${letter}|${letter}['’-])${body}(?!${letter})(?!['’-](?![sS](?!${letter}))${letter})`,
+    `(?<!${letter}|${letter}['’-])${body}(?!${letter})(?!['’](?!${clitic})${letter})(?!-(?!\\d+(?!${letter}))${letter})`,
     'giu',
   );
   let out = '';

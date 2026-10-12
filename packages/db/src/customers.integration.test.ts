@@ -489,3 +489,11 @@ describe('adding a facet to a known customer (G-60)', () => {
     expect(await ownersOf(ada.id, facet.matchKey)).toEqual([]);
   });
 });
+
+describe('the known-name lookup takes any number of keys (G-60 final review, round 4)', () => {
+  it('answers 70,000 keys in one call', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000211');
+    const keys = Array.from({ length: 70_000 }, (_, i) => `k${i}`);
+    await expect(customersRepo.namesByMatchKeys(db, business.id, keys)).resolves.toEqual([]);
+  });
+});

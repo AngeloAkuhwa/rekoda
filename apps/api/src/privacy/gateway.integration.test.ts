@@ -720,3 +720,19 @@ describe('names and only names (G-60 final review, round 3)', () => {
     expect(tokenised.text).toBe(`CUSTOMER_ZZ9${token} paid`);
   });
 });
+
+describe('names followed by punctuation and clitics (G-60 final review, round 4)', () => {
+  it.each([
+    ['Ada O.', 'Sold to Ada O., 3 wigs', 'Sold to @, 3 wigs'],
+    ['Ada O.', 'Sold to "Ada O." 3 wigs', 'Sold to "@" 3 wigs'],
+    ['Mama Chidi (Ada)', 'Mama Chidi (Ada). paid', '@. paid'],
+    ['Ada', "Ada'll pay 5k for 2 wigs", "@'ll pay 5k for 2 wigs"],
+    ['Tunde', "Tunde'd like 3 bags", "@'d like 3 bags"],
+    ['Don', "I don't have stock, Don paid", "I don't have stock, @ paid"],
+  ])('keeps the stored name %j away from the model', async (name, text, expected) => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { token } = await gateway.resolveMention(businessId, name);
+    const tokenised = await gateway.tokenise(businessId, text);
+    expect(tokenised.text).toBe(expected.replaceAll('@', token));
+  });
+});

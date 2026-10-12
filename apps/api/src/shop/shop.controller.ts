@@ -327,7 +327,14 @@ export class PublicShopController {
         'DOCUMENT_GENERATION',
         await meterAllowance(this.config, own, businessId, plan, 'DOCUMENT_GENERATION'),
       ),
-    );
+    ).catch(async (error: unknown) => {
+      /* The order unit is already paid; a meter that fails now must not keep
+       * it (G-60). The failure itself surfaces. */
+      await withBusiness(this.db, businessId, (own) =>
+        usageRepo.refundUnit(own, businessId, period, 'CATALOGUE_ORDERS'),
+      ).catch(() => shopLog.error('a storefront refund failed; a unit stays spent'));
+      throw error;
+    });
     if (!documentGranted) {
       await withBusiness(this.db, businessId, (own) =>
         usageRepo.refundUnit(own, businessId, period, 'CATALOGUE_ORDERS'),
@@ -364,8 +371,11 @@ export class PublicShopController {
       return { outcome: 'bad_phone' };
     }
 
+    /* Set inside the order transaction, acted on only after it commits, so a
+     * commit that fails afterwards refunds once, in the catch (G-60). */
+    let lapsed = false;
     try {
-      return await withBusiness(this.db, businessId, async (tx) => {
+      const answer = await withBusiness(this.db, businessId, async (tx) => {
         const wanted = parsed.data.items;
         const sellable = await catalogueRepo.sellableByIds(
           tx,
@@ -421,8 +431,9 @@ export class PublicShopController {
           if (run.outcome === 'not_entitled') {
             /* Pre-gated above, so reaching this means the plan changed mid
              * request. The shop reads as closed, which is the truth, and the
-             * two units it paid go back: nothing was booked (G-60). */
-            await refundBoth();
+             * two units it paid go back once this commits: nothing was
+             * booked (G-60). */
+            lapsed = true;
             return { outcome: 'closed' as const };
           }
           if (run.outcome !== 'done') {
@@ -448,6 +459,8 @@ export class PublicShopController {
           displayName: shop.displayName,
         };
       });
+      if (lapsed) await refundBoth();
+      return answer;
     } catch (error) {
       await refundBoth();
       if (error instanceof CartChanged) return { outcome: 'items_changed' };

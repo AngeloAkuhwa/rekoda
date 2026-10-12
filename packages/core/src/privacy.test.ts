@@ -330,3 +330,15 @@ describe('cuts and scrubs keep text whole (G-60 final review, round 3)', () => {
     );
   });
 });
+
+describe('the stored-message scrub takes what the gateway takes (G-60 final review, round 4)', () => {
+  it.each([
+    ['Ada-2 wigs 20k', 'Ada', 'T-2 wigs 20k'],
+    ["Ada'll pay 5k", 'Ada', "T'll pay 5k"],
+    ["Ada's order", 'Ada', "T's order"],
+    ["I don't know Don", 'Don', "I don't know T"],
+    ['Mary-Ann paid', 'Ann', 'Mary-Ann paid'],
+  ])('scrubs %j for %j', (text, name, expected) => {
+    expect(replaceOutsideTokens(text, name, 'T', [])).toBe(expected);
+  });
+});
