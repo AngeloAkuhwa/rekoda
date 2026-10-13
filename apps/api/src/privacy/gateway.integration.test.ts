@@ -13,6 +13,7 @@ import { createDb, customersRepo, identity, schema, sql, withBusiness, type Db }
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { decryptFacet, encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
 import { rehydrate } from '@rekoda/core/privacy';
+import { CUSTOMER_NAME_MAX_CHARS } from '@rekoda/contracts';
 import { PrivacyGateway } from './gateway.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
 
@@ -758,6 +759,24 @@ describe('one name in either Unicode composition (G-60 final review, round 4)', 
     expect(tokenised.text).toBe(`${token} paid 20k`);
     /* And a mention in the other form is the same customer, not a new one. */
     expect((await gateway.resolveMention(businessId, typed)).customerId).toBe(customerId);
+  });
+
+  /* A name's length is its length in the shortest composition: a valid name
+   * of at most CUSTOMER_NAME_MAX_CHARS composed can run past it decomposed,
+   * and must still be recognised (G-60 final review). */
+  const long = 'Olúwadámilọ́lá Adébáyọ̀-Ọláòṣebìkan Ògúntóyè Fáṣọlá Àdìgún Ọ̀ṣúnbíyìí';
+  it.each([
+    ['bare', (n: string) => `${n} paid 20k`, (t: string) => `${t} paid 20k`],
+    ['in punctuation', (n: string) => `(${n}), paid 20k`, (t: string) => `(${t}), paid 20k`],
+  ])('recognises a long name stored composed and typed decomposed, %s', async (_, say, want) => {
+    const stored = long.normalize('NFC');
+    const typed = long.normalize('NFD');
+    expect(stored.length).toBeLessThanOrEqual(CUSTOMER_NAME_MAX_CHARS);
+    expect(typed.length).toBeGreaterThan(CUSTOMER_NAME_MAX_CHARS);
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { token } = await gateway.resolveMention(businessId, stored);
+    const tokenised = await gateway.tokenise(businessId, say(typed));
+    expect(tokenised.text).toBe(want(token));
   });
 });
 

@@ -206,6 +206,8 @@ export class PrivacyGateway {
      * one, and a name glued to a token ("Ada Obi-08031234567") is still a
      * name: the token ends the segment, it does not swallow the word.
      */
+    /* A run as a name is measured: spacing folded, composed (NFC). */
+    const composed = (run: string) => run.trim().replace(/\s+/g, ' ').normalize('NFC');
     const candidates: Array<{ start: number; end: number; matchKey: string }> = [];
     const keys = new Set<string>();
     const spans = new Set<string>();
@@ -213,9 +215,12 @@ export class PrivacyGateway {
       if (spans.has(`${start}:${end}`)) return;
       spans.add(`${start}:${end}`);
       /* Bounded before folding case: lowercasing can lengthen a name ("İ"),
-       * and the stored name was at most this long as typed. A name holds a
-       * letter: a figure is never one ("10"). */
-      const typedForm = out.slice(start, end).trim().replace(/\s+/g, ' ');
+       * and the stored name was at most this long as typed. Measured
+       * composed (NFC), the shortest form and the one a new name is keyed
+       * in: a name within the limit composed can run past it decomposed
+       * ("Ọ̀ṣúnbíyìí" typed on a decomposing keyboard) and is still a name.
+       * A name holds a letter: a figure is never one ("10"). */
+      const typedForm = composed(out.slice(start, end));
       if (typedForm.length > CUSTOMER_NAME_MAX_CHARS) return;
       if (typedForm.length < CUSTOMER_NAME_MIN_CHARS || !/\p{L}/u.test(typedForm)) return;
       for (const matchKey of this.nameKeys(businessId, out.slice(start, end))) {
@@ -259,15 +264,16 @@ export class PrivacyGateway {
           const start = words[i]!.start;
           /* Linear: past the longest storable name, longer runs cannot match. */
           const shortest = Math.min(...words[j]!.ends);
-          if (
-            out.slice(start, shortest).trim().replace(/\s+/g, ' ').length > CUSTOMER_NAME_MAX_CHARS
-          ) {
-            break;
-          }
+          if (composed(out.slice(start, shortest)).length > CUSTOMER_NAME_MAX_CHARS) break;
           for (const end of words[j]!.ends) {
             for (const s of leads(start)) {
               for (const e of trails(end)) {
-                if (e - s > 2 * CUSTOMER_NAME_MAX_CHARS) break;
+                if (
+                  e - s > 2 * CUSTOMER_NAME_MAX_CHARS &&
+                  composed(out.slice(s, e)).length > 2 * CUSTOMER_NAME_MAX_CHARS
+                ) {
+                  break;
+                }
                 consider(s, e);
               }
             }
