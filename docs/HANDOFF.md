@@ -126,7 +126,7 @@ Build 9 follows G-65 directly; the long-term roadmap is otherwise unchanged):**
    refused or asked for a question before `AI_ACTIONS` and the model, and a view-only photo before
    any download or vision (OWN-25; no migration). Found while fixing it: G-99 (the command bus
    carries no member role; chat role enforcement lives in the handler; OPEN).
-7. **G-60 (IN DEVELOPMENT, PR #271)**, privacy-gateway identity correctness: one token per customer with a deterministic
+7. **G-60 (CODE COMPLETE, PR #271 awaiting the owner's merge; NOT merged; staging acceptance pending after merge)**, privacy-gateway identity correctness: one token per customer with a deterministic
    reply display composed from every facet typed (name first), tokens opaque to the known-name pass, a typed
    `IdentityConflict` from `addIdentityFacet`, and the storefront handling only that conflict (no migration).
 8. **G-07** (the AI launch harness, then the owner's live eval) **and G-59** (model-family
