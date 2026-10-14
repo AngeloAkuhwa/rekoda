@@ -97,6 +97,7 @@ import type { Interpreter } from '../ai/interpreter.service.js';
 import type {
   IdentityLinkProposal,
   LiveTokens,
+  ResolvedCustomer,
   PrivacyGateway,
 } from '../privacy/gateway.service.js';
 import type { ReplySender } from '../replies/reply.service.js';
@@ -497,6 +498,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             event.receivedAt,
             eventId,
             tokenised!.link,
+            tokenised!.customers,
             inbound.from,
             liveTokens!,
             actorId,
@@ -4585,6 +4587,8 @@ async function interpretedReply(
   eventId: string,
   /** Two records this message may have made of one person. Usually null. */
   link: IdentityLinkProposal | null,
+  /** Every customer the message referenced, for a link a mention reveals. */
+  referenced: readonly ResolvedCustomer[],
   /** The sender's wa id, for the role check on write commands. */
   from: string,
   /**
@@ -4792,6 +4796,10 @@ async function interpretedReply(
   if ('customer' in command && command.customer && command.customer.kind === 'mention') {
     const mention = command.customer.mention;
     const named = await deps.gateway.resolveMention(businessId, mention);
+    /* A name that is new beside a customer the message already named (a
+     * storefront buyer's phone) may be one person: asked, never joined
+     * (G-60 owner decision, 14 Oct 2026). */
+    link ??= await deps.gateway.linkAfterMention(businessId, referenced, named);
     /* Composed with whatever the merchant typed for the same customer, so a
      * phone and the name the model resolved read as one person (G-60). */
     deps.gateway.noteMention(tokens, named.token, mention);

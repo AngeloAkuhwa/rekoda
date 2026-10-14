@@ -5220,6 +5220,224 @@ describe('two records for one person', () => {
 
     expect(stubSender.lastText).not.toContain('same customer');
   });
+
+  it('forgets the question when the preview carrying it was never delivered', async () => {
+    const business = await seedMerchant('+2348031234567');
+    stubTransport.replyWith(A_SALE_TO_TOKEN);
+    stubSender.failWith();
+
+    await post(
+      messagePayload(
+        '2348031234567',
+        'wamid.L5',
+        'Ada 08031234567 ada@example.com bought 3 wigs for 150k',
+      ),
+    );
+    await drain();
+    await post(messagePayload('2348031234567', 'wamid.L5-yes', 'yes'));
+    await drain();
+
+    /* Nobody was asked, so a later yes joins nothing (G-60 owner decision). */
+    expect(await distinctCustomers(business.id)).toBe(2);
+  });
+});
+
+/**
+ * A buyer the merchant names in Chat after they checked out on the public
+ * storefront (G-60 owner decision, 14 Oct 2026). The storefront name is
+ * untrusted, so it never matches; the model's mention makes a NEW trusted
+ * customer beside the phone one. The merchant is asked whether they are one
+ * person, in the preview, and a yes leaves one customer whose one name is
+ * the one the merchant gave.
+ */
+describe('a storefront buyer named later in Chat', () => {
+  const PHONE = '08035551234';
+  const SALE_TO_CHIDI = {
+    intent: 'RecordSale',
+    customer: { kind: 'mention', mention: 'Chidi Okafor' },
+    items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+    statedTotal: 150_000,
+    reportedPayment: 0,
+    paymentMethod: 'transfer',
+    discount: null,
+    deliveryFee: null,
+    dueDescription: null,
+  };
+
+  async function seedMerchant() {
+    const user = await identity.upsertUserByPhone(db, '+2348031234567');
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  /** Customers, and each name facet with whether it is a known name. */
+  const ledger = (businessId: string) =>
+    withBusiness(db, businessId, async (tx) => {
+      const customers = [
+        ...(await tx.execute<{ n: number }>(
+          sql`SELECT count(*)::int AS n FROM customers WHERE business_id = ${businessId}::uuid`,
+        )),
+      ][0]!.n;
+      const names = [
+        ...(await tx.execute<{ customer_id: string; trusted: boolean }>(sql`
+          SELECT customer_id, match_key IS NOT NULL AS trusted FROM customer_identities
+           WHERE business_id = ${businessId}::uuid AND facet = 'name'`)),
+      ];
+      return { customers, names };
+    });
+
+  const tokenOf = async (businessId: string, text: string) =>
+    (await deps.gateway.tokenise(businessId, text)).text.match(/CUSTOMER_[0-9A-Z]+/)?.[0];
+
+  it('asks, joins on yes, and keeps the merchant-given name as the one name', async () => {
+    const business = await seedMerchant();
+    await deps.gateway.resolveStorefrontCustomer(business.id, 'Chidi Okafor', PHONE);
+    stubTransport.replyWith(SALE_TO_CHIDI);
+
+    await post(
+      messagePayload('2348031234567', 'wamid.SF1', `Chidi Okafor ${PHONE} bought 3 wigs for 150k`),
+    );
+    await drain();
+
+    expect(stubSender.lastText).toContain('same customer');
+    expect(stubSender.lastText).toContain('Reply *yes*');
+    // Asked, not done: two records until the merchant says yes.
+    expect((await ledger(business.id)).customers).toBe(2);
+
+    await post(messagePayload('2348031234567', 'wamid.SF1-yes', 'yes'));
+    await drain();
+
+    const after = await ledger(business.id);
+    expect(after.customers).toBe(1);
+    // One name, the trusted one, on the customer that kept the phone.
+    expect(after.names).toHaveLength(1);
+    expect(after.names[0]!.trusted).toBe(true);
+    const byPhone = await tokenOf(business.id, `call ${PHONE}`);
+    expect(byPhone).toBeDefined();
+    expect(await tokenOf(business.id, 'Chidi Okafor paid')).toBe(byPhone);
+    expect(await invoiceCount(business.id)).toBe(1);
+  });
+
+  it('keeps them apart when the merchant says no', async () => {
+    const business = await seedMerchant();
+    await deps.gateway.resolveStorefrontCustomer(business.id, 'Chidi Okafor', PHONE);
+    stubTransport.replyWith(SALE_TO_CHIDI);
+
+    await post(
+      messagePayload('2348031234567', 'wamid.SF2', `Chidi Okafor ${PHONE} bought 3 wigs for 150k`),
+    );
+    await drain();
+    await post(messagePayload('2348031234567', 'wamid.SF2-no', 'no'));
+    await drain();
+
+    expect((await ledger(business.id)).customers).toBe(2);
+    expect(await invoiceCount(business.id)).toBe(0);
+  });
+
+  it('asks nothing when the name is already a known customer', async () => {
+    const business = await seedMerchant();
+    await deps.gateway.resolveStorefrontCustomer(business.id, 'Chidi Okafor', PHONE);
+    await deps.gateway.resolveMention(business.id, 'Chidi Okafor');
+    stubTransport.replyWith(SALE_TO_CHIDI);
+
+    await post(
+      messagePayload('2348031234567', 'wamid.SF3', `Chidi Okafor ${PHONE} bought 3 wigs for 150k`),
+    );
+    await drain();
+
+    expect(stubSender.lastText).not.toContain('same customer');
+  });
+
+  it('asks nothing when the phone customer already has a known name of their own', async () => {
+    const business = await seedMerchant();
+    /* A merchant-named customer with this phone: a second trusted name would
+     * compete with the first, so no link is offered. */
+    const { token } = await deps.gateway.resolveMention(business.id, 'Emeka Obi');
+    const storefront = await deps.gateway.resolveStorefrontCustomer(business.id, '', PHONE);
+    const customerId = storefront!.customerId;
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        UPDATE customer_identities SET customer_id = (SELECT id FROM customers WHERE token = ${token})
+         WHERE business_id = ${business.id}::uuid AND customer_id = ${customerId}::uuid`),
+    );
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`DELETE FROM customers WHERE id = ${customerId}::uuid`),
+    );
+    stubTransport.replyWith(SALE_TO_CHIDI);
+
+    await post(
+      messagePayload('2348031234567', 'wamid.SF4', `Chidi Okafor ${PHONE} bought 3 wigs for 150k`),
+    );
+    await drain();
+
+    expect(stubSender.lastText).not.toContain('same customer');
+  });
+
+  it('asks nothing when the message names three customers', async () => {
+    const business = await seedMerchant();
+    await deps.gateway.resolveStorefrontCustomer(business.id, 'Chidi Okafor', PHONE);
+    await deps.gateway.resolveStorefrontCustomer(business.id, 'Bisi Ade', '08035559999');
+    stubTransport.replyWith(SALE_TO_CHIDI);
+
+    await post(
+      messagePayload(
+        '2348031234567',
+        'wamid.SF5',
+        `Chidi Okafor ${PHONE} and 08035559999 bought 3 wigs for 150k`,
+      ),
+    );
+    await drain();
+
+    expect(stubSender.lastText).not.toContain('same customer');
+  });
+
+  it('asks nothing on a question to the books, and a later yes joins nothing', async () => {
+    const business = await seedMerchant();
+    await deps.gateway.resolveStorefrontCustomer(business.id, 'Chidi Okafor', PHONE);
+    stubTransport.replyWith({
+      intent: 'Query',
+      topic: 'customer_balance',
+      customer: { kind: 'mention', mention: 'Chidi Okafor' },
+      period: null,
+      periodText: null,
+      format: null,
+    });
+
+    await post(
+      messagePayload('2348031234567', 'wamid.SF6', `how much does Chidi Okafor ${PHONE} owe`),
+    );
+    await drain();
+    expect(stubSender.lastText).not.toContain('same customer');
+
+    await post(messagePayload('2348031234567', 'wamid.SF6-yes', 'yes'));
+    await drain();
+    expect((await ledger(business.id)).customers).toBe(2);
+  });
+
+  it('forgets the question when the preview carrying it was never delivered', async () => {
+    const business = await seedMerchant();
+    await deps.gateway.resolveStorefrontCustomer(business.id, 'Chidi Okafor', PHONE);
+    stubTransport.replyWith(SALE_TO_CHIDI);
+    stubSender.failWith();
+
+    await post(
+      messagePayload('2348031234567', 'wamid.SF7', `Chidi Okafor ${PHONE} bought 3 wigs for 150k`),
+    );
+    await drain();
+    await post(messagePayload('2348031234567', 'wamid.SF7-yes', 'yes'));
+    await drain();
+
+    expect((await ledger(business.id)).customers).toBe(2);
+  });
 });
 
 /**

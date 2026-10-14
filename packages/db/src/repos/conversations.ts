@@ -674,7 +674,9 @@ export async function claimDraft(
  * The preview this message produced never reached the merchant (G-23): the
  * send failed and was swallowed so the draft could survive. Without this the
  * draft would still say `previewed`, and a later "yes" after its window
- * would be told an unseen request expired.
+ * would be told an unseen request expired. Nor was its link question asked,
+ * so the proposal goes too: a later "yes" never joins two customers over a
+ * question the merchant did not see (G-60).
  */
 export async function markDraftUnseen(
   tx: TenantDb,
@@ -682,7 +684,8 @@ export async function markDraftUnseen(
   conversationMessageId: string,
 ): Promise<void> {
   await tx.execute(sql`
-    UPDATE command_drafts SET previewed = false, updated_at = clock_timestamp()
+    UPDATE command_drafts SET previewed = false, identity_link = NULL,
+           updated_at = clock_timestamp()
      WHERE business_id = ${businessId}::uuid
        AND conversation_message_id = ${conversationMessageId}::uuid
        AND previewed`);

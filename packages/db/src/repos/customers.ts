@@ -503,6 +503,26 @@ export async function eraseAllIdentities(
  * Returns false when the merge was refused or either record has gone, which
  * the caller reports plainly rather than retrying: neither is transient.
  */
+/** Whether this customer holds a known (matchable) name (G-60). */
+export async function hasKnownName(
+  db: Db,
+  businessId: string,
+  customerId: string,
+): Promise<boolean> {
+  return vaultCall('look up a customer name', () =>
+    withBusiness(db, businessId, async (tx) => {
+      const rows = await tx.execute<{ known: boolean }>(sql`
+        SELECT EXISTS (
+          SELECT 1 FROM customer_identities
+           WHERE business_id = ${businessId}::uuid AND customer_id = ${customerId}::uuid
+             AND facet = 'name' AND match_key IS NOT NULL
+        ) AS known
+      `);
+      return [...rows][0]?.known === true;
+    }),
+  );
+}
+
 export async function linkCustomers(
   tx: TenantDb,
   businessId: string,
@@ -525,6 +545,27 @@ export async function linkCustomers(
     SELECT id FROM customers WHERE business_id = ${businessId}::uuid AND id = ${survivorId}::uuid
   `);
   if ([...survivor].length !== 1) return false;
+
+  /* One name per customer (G-60 owner decision, 14 Oct 2026). A name the
+   * orphan brings is one the merchant gave and has now confirmed: it replaces
+   * an untrusted storefront name the survivor holds, and the survivor never
+   * ends up holding two known names. */
+  const names = [
+    ...(await tx.execute<{ orphan: boolean; known: boolean }>(sql`
+      SELECT customer_id = ${orphanId}::uuid AS orphan, match_key IS NOT NULL AS known
+        FROM customer_identities
+       WHERE business_id = ${businessId}::uuid AND facet = 'name'
+         AND customer_id IN (${survivorId}::uuid, ${orphanId}::uuid)
+    `)),
+  ];
+  if (names.some((n) => n.orphan)) {
+    if (names.some((n) => !n.orphan && n.known)) return false;
+    await tx.execute(sql`
+      DELETE FROM customer_identities
+       WHERE business_id = ${businessId}::uuid AND customer_id = ${survivorId}::uuid
+         AND facet = 'name' AND match_key IS NULL
+    `);
+  }
 
   await tx.execute(sql`
     UPDATE customer_identities SET customer_id = ${survivorId}::uuid

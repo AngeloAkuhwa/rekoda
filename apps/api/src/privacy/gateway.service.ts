@@ -28,7 +28,7 @@ import { DB } from '../db/db.module.js';
  * Traffic here is one-way. Nothing in this file rehydrates.
  */
 /** One facet resolved to a customer, and whether that customer is brand new. */
-interface ResolvedCustomer {
+export interface ResolvedCustomer {
   token: string;
   customerId: string;
   facet: 'phone' | 'email' | 'name';
@@ -53,6 +53,12 @@ export interface IdentityLinkProposal {
 export interface GatewayTokenised extends TokenisedMessage {
   /** Null on almost every message. */
   readonly link: IdentityLinkProposal | null;
+  /**
+   * Every customer this message referenced, for a link that only a mention
+   * resolved after tokenising can reveal (`linkAfterMention`). Ids and
+   * tokens only, never an identity.
+   */
+  readonly customers: readonly ResolvedCustomer[];
   /**
    * Every facet the merchant typed for each customer token, which the display
    * in `tokens` was composed from (G-60). Authorised-layer only, like
@@ -320,7 +326,7 @@ export class PrivacyGateway {
     }
 
     for (const [token, facets] of typed) tokens.set(token, displayOf(facets));
-    return { text: out, tokens, link: proposeLink(seen), facets: typed };
+    return { text: out, tokens, link: proposeLink(seen), facets: typed, customers: seen };
   }
 
   /**
@@ -350,9 +356,36 @@ export class PrivacyGateway {
   async resolveMention(
     businessId: string,
     mention: string,
-  ): Promise<{ token: string; customerId: string }> {
+  ): Promise<{ token: string; customerId: string; created: boolean }> {
     const resolved = await this.customerTokenFor(businessId, 'name', mention);
-    return { token: resolved.token, customerId: resolved.customerId };
+    return { token: resolved.token, customerId: resolved.customerId, created: resolved.created };
+  }
+
+  /**
+   * Whether a name the model resolved AFTER tokenising split one person in
+   * two (G-60 owner decision, 14 Oct 2026). A storefront buyer's name is
+   * untrusted and never matches, so "Chidi Okafor 0803…" finds the phone
+   * customer and the mention makes a new one beside it.
+   *
+   * The same rule as `proposeLink`, with the mention added to what the
+   * message referenced: exactly two customers, at least one new, the one
+   * that existed survives, and it is only ever a question. Only a NEW name
+   * customer is an orphan here, and never onto a survivor that already has
+   * a known name of its own: two trusted names would compete for one person.
+   */
+  async linkAfterMention(
+    businessId: string,
+    referenced: readonly ResolvedCustomer[],
+    named: { token: string; customerId: string; created: boolean },
+  ): Promise<IdentityLinkProposal | null> {
+    if (!named.created) return null;
+    const seen = referenced.some((c) => c.customerId === named.customerId)
+      ? [...referenced]
+      : [...referenced, { ...named, facet: 'name' as const }];
+    const link = proposeLink(seen);
+    if (!link || link.orphanId !== named.customerId) return null;
+    if (await customersRepo.hasKnownName(this.db, businessId, link.survivorId)) return null;
+    return link;
   }
 
   /**
