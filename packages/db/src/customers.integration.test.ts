@@ -587,3 +587,131 @@ describe('a link and a storefront name attach at once', () => {
     expect([...names]).toEqual([{ trusted: true }]);
   });
 });
+
+/**
+ * Codex on #271, the inverse: the survivor holds a trusted name and the
+ * orphan is a new phone customer that a storefront checkout names at the
+ * same moment. The link holds the advisory lock of BOTH customers, taken in
+ * one order (sorted ids), so the checkout waits for it, and two links over
+ * the same pair in opposite directions never deadlock.
+ */
+describe('a link and a checkout on the orphan, and opposite links', () => {
+  const nameOf = (businessId: string, value: string) => ({
+    facet: 'name' as const,
+    ciphertext: encryptFacet(value, VAULT_KEY),
+    matchKey: matchKeyFor(businessId, 'name', normaliseFacet('name', value), MATCH_KEY),
+  });
+  const phoneOf = (businessId: string, value: string) => ({
+    facet: 'phone' as const,
+    ciphertext: encryptFacet(value, VAULT_KEY),
+    matchKey: matchKeyFor(businessId, 'phone', normaliseFacet('phone', value), MATCH_KEY),
+  });
+  const mint = (
+    businessId: string,
+    facet: ReturnType<typeof nameOf> | ReturnType<typeof phoneOf>,
+  ) =>
+    customersRepo.createCustomerWithIdentities(db, businessId, generateCustomerToken(random), [
+      facet,
+    ]);
+
+  /** Hold a link's transaction open until released; resolves its result. */
+  function holdLink(businessId: string, survivorId: string, orphanId: string) {
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let linked!: () => void;
+    const done = new Promise<void>((r) => (linked = r));
+    const result = withBusiness(db, businessId, async (tx) => {
+      const ok = await customersRepo.linkCustomers(tx, businessId, survivorId, orphanId);
+      linked();
+      await held;
+      return ok;
+    });
+    return { result, done, release };
+  }
+
+  async function waitingAdvisory(watcher: Db): Promise<number> {
+    for (let i = 0; i < 100; i++) {
+      const [row] = [
+        ...(await watcher.execute<{ n: number }>(
+          sql`SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted AND locktype = 'advisory'`,
+        )),
+      ];
+      if (Number(row?.n) > 0) return Number(row?.n);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return 0;
+  }
+
+  it('makes a checkout naming the orphan wait for the link, leaving one name', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000401');
+    const survivor = await mint(business.id, nameOf(business.id, 'Chidi Okafor'));
+    const orphan = await mint(business.id, phoneOf(business.id, '08035551234'));
+    const { db: watcher, close: closeWatcher } = createDb(urls.owner, { max: 1 });
+    const link = holdLink(business.id, survivor.id, orphan.id);
+    try {
+      await link.done;
+      const attaching = customersRepo
+        .addIdentityFacet(
+          db,
+          business.id,
+          orphan.id,
+          { facet: 'name', ciphertext: encryptFacet('Chidi O.', VAULT_KEY), matchKey: null },
+          { unlessTheCustomerHasOne: true },
+        )
+        .then(
+          (outcome) => outcome,
+          () => 'refused' as const,
+        );
+      /* The checkout waits on the orphan's lock, which the link holds. */
+      expect(await waitingAdvisory(watcher)).toBeGreaterThan(0);
+      link.release();
+      expect(await link.result).toBe(true);
+      /* The orphan is gone, so the checkout cannot name it; its retry finds
+       * the survivor by phone, which already has a name. */
+      expect(await attaching).toBe('refused');
+    } finally {
+      link.release();
+      await closeWatcher();
+    }
+    const names = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ trusted: boolean }>(sql`
+        SELECT match_key IS NOT NULL AS trusted FROM customer_identities
+         WHERE business_id = ${business.id}::uuid AND facet = 'name'`),
+    );
+    expect([...names]).toEqual([{ trusted: true }]);
+    const phones = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ customer_id: string }>(sql`
+        SELECT customer_id FROM customer_identities
+         WHERE business_id = ${business.id}::uuid AND facet = 'phone'`),
+    );
+    expect([...phones].map((p) => p.customer_id)).toEqual([survivor.id]);
+  });
+
+  it('runs two opposite links over one pair one after the other, without deadlock', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000402');
+    const one = await mint(business.id, phoneOf(business.id, '08035550001'));
+    const two = await mint(business.id, phoneOf(business.id, '08035550002'));
+    const { db: watcher, close: closeWatcher } = createDb(urls.owner, { max: 1 });
+    const first = holdLink(business.id, one.id, two.id);
+    try {
+      await first.done;
+      const second = withBusiness(db, business.id, (tx) =>
+        customersRepo.linkCustomers(tx, business.id, two.id, one.id),
+      );
+      expect(await waitingAdvisory(watcher)).toBeGreaterThan(0);
+      first.release();
+      expect(await first.result).toBe(true);
+      /* The second finds its survivor already absorbed, and refuses. */
+      expect(await second).toBe(false);
+    } finally {
+      first.release();
+      await closeWatcher();
+    }
+    const customers = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ id: string }>(
+        sql`SELECT id FROM customers WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    expect([...customers].map((c) => c.id)).toEqual([one.id]);
+  });
+});

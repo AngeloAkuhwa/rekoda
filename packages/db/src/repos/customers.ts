@@ -531,6 +531,15 @@ export async function linkCustomers(
 ): Promise<boolean> {
   if (survivorId === orphanId) return false;
 
+  /* Both customers' locks, the SAME key a storefront name attach takes
+   * (`addIdentityFacet`, unlessTheCustomerHasOne), held before anything is
+   * read: a checkout naming either record waits for the link, and the link
+   * for it (G-60, Codex on #271). Taken in sorted order, so two links over
+   * one pair in opposite directions queue rather than deadlock. */
+  for (const id of [survivorId, orphanId].sort()) {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${id}, 0))`);
+  }
+
   const rows = await tx.execute<{ history: number }>(sql`
     SELECT (
       (SELECT count(*) FROM invoices WHERE business_id = ${businessId}::uuid AND customer_id = ${orphanId}::uuid)
@@ -541,13 +550,7 @@ export async function linkCustomers(
   `);
   if (Number([...rows][0]?.history ?? 1) > 0) return false;
 
-  /* Locked on the SAME key a storefront name attach takes
-   * (`addIdentityFacet`, unlessTheCustomerHasOne), then the row: a link and a
-   * checkout naming one customer at once, or two links onto one survivor,
-   * are taken one after the other, so the one-name check below holds (G-60,
-   * Codex on #271). Both take the advisory lock first, so neither waits on
-   * the other in the opposite order. */
-  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${survivorId}, 0))`);
+  /* And the survivor's row, which the facets below are moved under. */
   const survivor = await tx.execute<{ id: string }>(sql`
     SELECT id FROM customers WHERE business_id = ${businessId}::uuid AND id = ${survivorId}::uuid
        FOR UPDATE

@@ -489,24 +489,22 @@ async function ingestCatalogueOrder(
    * the message arrived.
    */
   const period = usagePeriod(receivedAt);
-  const reserve = async (unit: 'CATALOGUE_ORDERS' | 'DOCUMENT_GENERATION'): Promise<boolean> => {
-    const held = await withBusiness(deps.db, businessId, (own) =>
-      events.holdsReservedUnit(own, businessId, eventId, unit),
+  /* Check, consume and record in one step under the event row's lock, so
+   * two attempts of this event (a stalled job reclaimed while its first
+   * worker still runs) never pay for one unit twice (Codex on #271). */
+  const reserve = (unit: 'CATALOGUE_ORDERS' | 'DOCUMENT_GENERATION'): Promise<boolean> =>
+    withBusiness(deps.db, businessId, (own) =>
+      events.reserveUnitForEvent(own, businessId, eventId, unit, async () => {
+        const plan = await usageRepo.planFor(own, businessId);
+        return usageRepo.consumeUnit(
+          own,
+          businessId,
+          period,
+          unit,
+          await meterAllowance(deps.config, own, businessId, plan, unit),
+        );
+      }),
     );
-    if (held) return true;
-    return withBusiness(deps.db, businessId, async (own) => {
-      const plan = await usageRepo.planFor(own, businessId);
-      const ok = await usageRepo.consumeUnit(
-        own,
-        businessId,
-        period,
-        unit,
-        await meterAllowance(deps.config, own, businessId, plan, unit),
-      );
-      if (ok) await events.noteReservedUnit(own, businessId, eventId, unit);
-      return ok;
-    });
-  };
   const giveBack = (unit: 'CATALOGUE_ORDERS' | 'DOCUMENT_GENERATION') =>
     withBusiness(deps.db, businessId, async (own) => {
       if (await events.takeReservedUnit(own, businessId, eventId, unit)) {

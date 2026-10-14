@@ -151,6 +151,35 @@ export async function takeReservedUnits(
   return [...rows][0]?.units ?? [];
 }
 
+/**
+ * Reserve `unit` for this event at most once (G-60, Codex on #271): the
+ * check, the consume and the record are ONE step, under the event row's
+ * lock. A second attempt of the same event (a stalled job reclaimed while
+ * its first worker still runs) waits for the first, then finds the unit held
+ * and reuses it rather than paying again, so an event never holds the same
+ * unit twice and a give-back never refunds one of two charges.
+ *
+ * `consume` meters the unit in this same transaction and says whether the
+ * plan allowed it; the reservation is recorded only when it did.
+ */
+export async function reserveUnitForEvent(
+  tx: TenantDb,
+  businessId: string,
+  eventId: string,
+  unit: string,
+  consume: () => Promise<boolean>,
+): Promise<boolean> {
+  const rows = await tx.execute<{ units: string[] }>(sql`
+    SELECT reserved_units AS units FROM external_events
+     WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid
+     FOR UPDATE`);
+  const held = [...rows][0]?.units ?? [];
+  if (held.some((u) => u === unit || u.startsWith(`${unit}:`))) return true;
+  if (!(await consume())) return false;
+  await noteReservedUnit(tx, businessId, eventId, unit);
+  return true;
+}
+
 /** Does the event hold `unit`? A retry's question before it meters again. */
 export async function holdsReservedUnit(
   tx: TenantDb,
