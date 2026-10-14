@@ -249,22 +249,31 @@ export class PrivacyGateway {
        * "Ada O.," holds "Ada O." (G-60). Complete for every storable name and
        * bounded by it: a name is at most CUSTOMER_NAME_MAX_CHARS long, so no
        * candidate reaches further than that over punctuation either side. */
-      const leads = (at: number) => {
+      /* Spaces between the punctuation and the word belong to the name too:
+       * "( Ada )" is a storable name (Codex on #271). A candidate edge is
+       * only ever a punctuation mark, never a space, and the walk counts
+       * each run of spaces once, as the name itself folds them. */
+      const walk = (at: number, step: -1 | 1, limit: number) => {
         const out_: number[] = [at];
-        for (let s = at; s > segment.start && at - s < CUSTOMER_NAME_MAX_CHARS; s -= 1) {
-          if (!EDGE.test(out[s - 1] ?? '')) break;
-          out_.push(s - 1);
+        let reach = 0;
+        let spaced = false;
+        for (let p = at; p !== limit && reach < CUSTOMER_NAME_MAX_CHARS; p += step) {
+          const ch = out[step < 0 ? p - 1 : p] ?? '';
+          if (EDGE.test(ch)) {
+            reach += 1;
+            spaced = false;
+            out_.push(step < 0 ? p - 1 : p + 1);
+          } else if (/\s/.test(ch)) {
+            if (!spaced) reach += 1;
+            spaced = true;
+          } else {
+            break;
+          }
         }
         return out_;
       };
-      const trails = (at: number) => {
-        const out_: number[] = [at];
-        for (let e = at; e < segment.end && e - at < CUSTOMER_NAME_MAX_CHARS; e += 1) {
-          if (!EDGE.test(out[e] ?? '')) break;
-          out_.push(e + 1);
-        }
-        return out_;
-      };
+      const leads = (at: number) => walk(at, -1, segment.start);
+      const trails = (at: number) => walk(at, 1, segment.end);
       for (let i = 0; i < words.length; i++) {
         for (let j = i; j < words.length; j++) {
           const start = words[i]!.start;

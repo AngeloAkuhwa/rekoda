@@ -717,6 +717,72 @@ describe('a catalogue cart becomes an order (spec §3.2; W3, PR-087)', () => {
     expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
   });
 
+  /* Codex on #271: an attempt dies holding both units (the buyer's vault
+   * write and every refund fail); before the retry the merchant unlists the
+   * item. The retry refuses the cart, and gives back what the event held. */
+  it('gives back carried units when a retry refuses a cart that changed', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002270', 'PN-METER-10');
+    const period = usagePeriod(new Date());
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_cart_buyer_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.facet = 'phone' THEN RAISE EXCEPTION 'g60: the vault is unavailable'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_cart_buyer_fails BEFORE INSERT ON customer_identities
+          FOR EACH ROW EXECUTE FUNCTION g60_cart_buyer_fails()`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_cart_refund_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.used < OLD.used THEN RAISE EXCEPTION 'g60: the refund is unavailable'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_cart_refund_fails BEFORE UPDATE ON usage_counters
+          FOR EACH ROW EXECUTE FUNCTION g60_cart_refund_fails()`);
+      await post(
+        orderPayload('2349097777010', 'wamid.METER.10', 'PN-METER-10', [
+          { retailerId: wigId, quantity: 1 },
+        ]),
+      );
+      expect(await runUntilFailed(businessId, 'the vault is unavailable')).toBe(1);
+    } finally {
+      await ownerDb.execute(
+        sql`DROP TRIGGER IF EXISTS g60_cart_buyer_fails ON customer_identities`,
+      );
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_cart_buyer_fails()`);
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_cart_refund_fails ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_cart_refund_fails()`);
+    }
+    try {
+      /* Both units are still held by the event the retry will run. */
+      const held = await withBusiness(db, businessId, (tx) =>
+        usageRepo.usageFor(tx, businessId, period),
+      );
+      expect(held.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(1);
+      expect(held.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
+      await ownerDb.execute(sql`UPDATE products SET active = 0 WHERE id = ${wigId}::uuid`);
+      await ownerDb.execute(sql`
+        UPDATE jobs SET run_at = now() WHERE business_id = ${businessId}::uuid AND state <> 'done'`);
+      const runner = buildRunner(workerDb, db, deps);
+      while (await runner.runOnce()) {
+        /* the retry, and anything else due */
+      }
+    } finally {
+      await close();
+    }
+    expect([...(await ordersOf(businessId))]).toHaveLength(0);
+    expect(await invoiceCount(businessId)).toBe(0);
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, period),
+    );
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+    expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+  });
+
   /* Idempotency and metering have to agree: Meta redelivers, and a second
    * delivery that places no second order must not charge for one either. */
   it('charges nothing twice for a redelivered webhook', async () => {

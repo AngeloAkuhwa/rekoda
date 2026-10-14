@@ -478,49 +478,6 @@ async function ingestCatalogueOrder(
   const existing = await ordersRepo.orderByExternalRef(tx, businessId, externalRef);
   if (existing) return null; // Redelivered webhook: the order already stands.
 
-  const wanted = inbound.order?.items ?? [];
-  /* Meta's retailer id is whatever string the merchant's catalog uses, which
-   * is not necessarily a Rekoda uuid. Resolving it as one turned a cart from
-   * an externally built catalog into a dead job rather than a refusal. */
-  const products = await catalogueRepo.sellableByRetailerIds(
-    tx,
-    businessId,
-    wanted.map((item) => item.retailerId),
-  );
-  const byId = new Map(products.map((p) => [p.retailerId, p]));
-  if (wanted.some((item) => !byId.has(item.retailerId))) {
-    log.warn('customer.order: cart names an item the shelf does not sell; order refused');
-    return 'order refused: unknown or unsellable item';
-  }
-
-  const lines = wanted.map((item) => {
-    const product = byId.get(item.retailerId)!;
-    return {
-      productId: product.id,
-      name: product.name,
-      quantity: item.quantity,
-      unitPriceK: product.unitPriceK,
-      lineTotalK: item.quantity * product.unitPriceK,
-    };
-  });
-  const totalK = lines.reduce((sum, line) => sum + line.lineTotalK, 0);
-
-  /* The meter, paid exactly as the storefront and the chat capture pay it:
-   * an order costs an order unit AND a document unit, because an invoice
-   * comes out of it.
-   *
-   * Until now this door alone paid neither, so the same cart was metered
-   * arriving through the shop and free arriving through WhatsApp, and a
-   * plan's order allowance was a boundary that existed on the pricing page
-   * and nowhere in the code.
-   *
-   * Priced AFTER the cart is resolved, because a cart naming something the
-   * shelf does not sell must not cost the merchant anything, and BEFORE the
-   * customer's identity enters the vault, so a refusal touches no personal
-   * data. The gate answers before the meter, so a business that cannot sell
-   * at all is told that rather than charged for finding out. The bus checks
-   * the same entitlement again below: a second refusal is the matrix
-   * holding, not a duplicate. */
   /**
    * The units this order pays for are RESERVATIONS on the stored event
    * (G-60, as G-57 made them for chat): each is recorded on the event in the
@@ -569,6 +526,53 @@ async function ingestCatalogueOrder(
       throw new Error('customer.order: a refund failed; the job retries it');
     }
   };
+
+  const wanted = inbound.order?.items ?? [];
+  /* Meta's retailer id is whatever string the merchant's catalog uses, which
+   * is not necessarily a Rekoda uuid. Resolving it as one turned a cart from
+   * an externally built catalog into a dead job rather than a refusal. */
+  const products = await catalogueRepo.sellableByRetailerIds(
+    tx,
+    businessId,
+    wanted.map((item) => item.retailerId),
+  );
+  const byId = new Map(products.map((p) => [p.retailerId, p]));
+  if (wanted.some((item) => !byId.has(item.retailerId))) {
+    log.warn('customer.order: cart names an item the shelf does not sell; order refused');
+    /* A retry may arrive here after the merchant unlisted an item: what an
+     * earlier attempt reserved goes back before the refusal is recorded. */
+    await settle();
+    return 'order refused: unknown or unsellable item';
+  }
+
+  const lines = wanted.map((item) => {
+    const product = byId.get(item.retailerId)!;
+    return {
+      productId: product.id,
+      name: product.name,
+      quantity: item.quantity,
+      unitPriceK: product.unitPriceK,
+      lineTotalK: item.quantity * product.unitPriceK,
+    };
+  });
+  const totalK = lines.reduce((sum, line) => sum + line.lineTotalK, 0);
+
+  /* The meter, paid exactly as the storefront and the chat capture pay it:
+   * an order costs an order unit AND a document unit, because an invoice
+   * comes out of it.
+   *
+   * Until now this door alone paid neither, so the same cart was metered
+   * arriving through the shop and free arriving through WhatsApp, and a
+   * plan's order allowance was a boundary that existed on the pricing page
+   * and nowhere in the code.
+   *
+   * Priced AFTER the cart is resolved, because a cart naming something the
+   * shelf does not sell must not cost the merchant anything, and BEFORE the
+   * customer's identity enters the vault, so a refusal touches no personal
+   * data. The gate answers before the meter, so a business that cannot sell
+   * at all is told that rather than charged for finding out. The bus checks
+   * the same entitlement again below: a second refusal is the matrix
+   * holding, not a duplicate. */
 
   const notEntitled = await withBusiness(deps.db, businessId, (own) =>
     entitlementsRepo.requireEntitlement(own, businessId, 'REKODA_INTEGRATE'),

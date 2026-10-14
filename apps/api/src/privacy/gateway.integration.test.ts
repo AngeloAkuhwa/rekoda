@@ -780,6 +780,47 @@ describe('one name in either Unicode composition (G-60 final review, round 4)', 
   });
 });
 
+describe('a pasted token and a twice-typed name (Codex on #271)', () => {
+  it.each([
+    'refCUSTOMER_ABC paid',
+    'xCUSTOMER_ABC paid',
+    '1CUSTOMER_ABC paid',
+    '_CUSTOMER_ABC paid',
+  ])('never rewrites inside the pasted token in %j', async (text) => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    await gateway.resolveMention(businessId, 'ABC');
+    expect((await gateway.tokenise(businessId, text)).text).toBe(text);
+  });
+
+  it('shows a name typed composed and decomposed in one message once', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { token } = await gateway.resolveMention(businessId, 'Adébáyọ̀'.normalize('NFC'));
+    const text = `${'Adébáyọ̀'.normalize('NFC')} and ${'Adébáyọ̀'.normalize('NFD')} paid`;
+    const tokenised = await gateway.tokenise(businessId, text);
+    expect(tokenised.text).toBe(`${token} and ${token} paid`);
+    expect(tokenised.tokens.get(token)).toBe('Adébáyọ̀'.normalize('NFC'));
+  });
+});
+
+describe('a name with spaced edge punctuation (Codex on #271)', () => {
+  it.each(['( Ada )', '[ Ada Obi ]', '(( Ada ))', "' Ada '", '-- Ada Obi --'])(
+    'recognises a stored %j typed again',
+    async (name) => {
+      const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+      const { token } = await gateway.resolveMention(businessId, name);
+      const tokenised = await gateway.tokenise(businessId, `${name} paid 20k`);
+      expect(tokenised.text).toBe(`${token} paid 20k`);
+    },
+  );
+
+  it('leaves the punctuation round a plain stored name as prose', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { token } = await gateway.resolveMention(businessId, 'Ada');
+    const tokenised = await gateway.tokenise(businessId, '( Ada ) paid, see - 20k');
+    expect(tokenised.text).toBe(`( ${token} ) paid, see - 20k`);
+  });
+});
+
 describe('a name typed at the public storefront is testimony, not identity (G-60 owner decision)', () => {
   it.each([
     ['No', 'No sale today'],

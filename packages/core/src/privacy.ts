@@ -163,7 +163,9 @@ export function displayOf(typed: readonly TypedFacet[]): string {
     .map((t, i) => ({ ...t, i }))
     .sort((a, b) => DISPLAY_ORDER[a.facet] - DISPLAY_ORDER[b.facet] || a.i - b.i)
     .filter((t) => {
-      const id = `${t.facet}:${t.key}`;
+      /* A name in either Unicode composition is one name (Codex on #271);
+       * this key only dedupes the display, it is never a vault key. */
+      const id = `${t.facet}:${t.facet === 'name' ? t.key.normalize('NFC') : t.key}`;
       if (seen.has(id)) return false;
       seen.add(id);
       return true;
@@ -175,8 +177,10 @@ export function displayOf(typed: readonly TypedFacet[]): string {
 
 /** Every placeholder shape this pipeline writes: CUSTOMER_X81, PHONE_1, ACCOUNT_2. */
 /* At its real length (CUSTOMER_ and three characters, PHONE_1, ACCOUNT_2),
- * so a pasted token never swallows letters glued after it ("CUSTOMER_ZZ9ADA"). */
-const TOKEN_SHAPE = /\b(?:CUSTOMER_[0-9A-Z]{3}|(?:PHONE|EMAIL|ACCOUNT)_\d+)/g;
+ * so a pasted token never swallows letters glued after it ("CUSTOMER_ZZ9ADA"),
+ * and found whatever is glued before it ("refCUSTOMER_ABC"): a token is
+ * opaque by its shape, not by a word boundary (Codex on #271). */
+const TOKEN_SHAPE = /(?:CUSTOMER_[0-9A-Z]{3}|(?:PHONE|EMAIL|ACCOUNT)_\d+)/g;
 
 /**
  * The spans of `text` that are tokens, and so opaque to every later pass

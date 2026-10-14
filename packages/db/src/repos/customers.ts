@@ -541,8 +541,13 @@ export async function linkCustomers(
   `);
   if (Number([...rows][0]?.history ?? 1) > 0) return false;
 
-  /* Locked: two confirmations bringing names onto one survivor at once are
-   * taken one after the other, so the one-name check below holds (G-60). */
+  /* Locked on the SAME key a storefront name attach takes
+   * (`addIdentityFacet`, unlessTheCustomerHasOne), then the row: a link and a
+   * checkout naming one customer at once, or two links onto one survivor,
+   * are taken one after the other, so the one-name check below holds (G-60,
+   * Codex on #271). Both take the advisory lock first, so neither waits on
+   * the other in the opposite order. */
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${survivorId}, 0))`);
   const survivor = await tx.execute<{ id: string }>(sql`
     SELECT id FROM customers WHERE business_id = ${businessId}::uuid AND id = ${survivorId}::uuid
        FOR UPDATE

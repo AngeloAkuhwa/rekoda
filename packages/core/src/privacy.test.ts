@@ -271,6 +271,19 @@ describe('one token, one deterministic display (G-60)', () => {
     expect(displayOf([phone, sameNumber])).toBe('08031234567');
     expect(displayOf([sameNumber, phone])).toBe('+234 803 123 4567');
   });
+
+  /* Codex on #271: one name typed composed and decomposed is one name. */
+  it('shows one name once, whichever Unicode composition each was typed in', () => {
+    const name = (value: string) => ({
+      facet: 'name' as const,
+      value,
+      key: normaliseFacet('name', value),
+    });
+    const nfc = name('Adébáyọ̀'.normalize('NFC'));
+    const nfd = name('Adébáyọ̀'.normalize('NFD'));
+    expect(displayOf([nfc, nfd])).toBe(nfc.value);
+    expect(displayOf([nfd, phone, nfc])).toBe(`${nfd.value} (08031234567)`);
+  });
 });
 
 describe('a token is an opaque span (G-60)', () => {
@@ -286,6 +299,20 @@ describe('a token is an opaque span (G-60)', () => {
 
   it('leaves ordinary words alone', () => {
     expect(protectedSpans('Customer Ada paid 20k', [])).toEqual([]);
+  });
+
+  /* Codex on #271: a pasted token is opaque whatever is glued to its left,
+   * and nothing outside it is swallowed on either side. */
+  it.each([
+    ['refCUSTOMER_ABC paid', 'ref'],
+    ['xCUSTOMER_ABC paid', 'x'],
+    ['1CUSTOMER_ABC paid', '1'],
+    ['_CUSTOMER_ABC paid', '_'],
+    ['CUSTOMER_ABCfoo paid', ''],
+  ])('protects the token in %j', (text, before) => {
+    const spans = protectedSpans(text, []);
+    expect(spans.map((s) => text.slice(s.start, s.end))).toEqual(['CUSTOMER_ABC']);
+    expect(spans[0]!.start).toBe(before.length);
   });
 });
 

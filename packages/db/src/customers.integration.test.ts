@@ -497,3 +497,93 @@ describe('the known-name lookup takes any number of keys (G-60 final review, rou
     await expect(customersRepo.namesByMatchKeys(db, business.id, keys)).resolves.toEqual([]);
   });
 });
+
+/**
+ * Codex on #271: a confirmed link bringing a trusted name onto a phone
+ * customer, while a storefront checkout attaches its untrusted name to the
+ * same customer. Both must contend on ONE lock, so the customer ends with one
+ * name: the link's trusted name when the link commits first.
+ */
+describe('a link and a storefront name attach at once', () => {
+  it('leaves one name, the trusted one, when the link commits first', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000301');
+    const phone = '08035551234';
+    const survivor = await customersRepo.createCustomerWithIdentities(
+      db,
+      business.id,
+      generateCustomerToken(random),
+      [
+        {
+          facet: 'phone',
+          ciphertext: encryptFacet(phone, VAULT_KEY),
+          matchKey: matchKeyFor(business.id, 'phone', normaliseFacet('phone', phone), MATCH_KEY),
+        },
+      ],
+    );
+    const orphan = await customersRepo.createCustomerWithIdentities(
+      db,
+      business.id,
+      generateCustomerToken(random),
+      [
+        {
+          facet: 'name',
+          ciphertext: encryptFacet('Chidi Okafor', VAULT_KEY),
+          matchKey: matchKeyFor(
+            business.id,
+            'name',
+            normaliseFacet('name', 'Chidi Okafor'),
+            MATCH_KEY,
+          ),
+        },
+      ],
+    );
+
+    const { db: watcher, close: closeWatcher } = createDb(urls.owner, { max: 1 });
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let linked!: () => void;
+    const moved = new Promise<void>((r) => (linked = r));
+    try {
+      /* The link moves the trusted name, then holds its transaction open. */
+      const linking = withBusiness(db, business.id, async (tx) => {
+        const ok = await customersRepo.linkCustomers(tx, business.id, survivor.id, orphan.id);
+        linked();
+        await held;
+        return ok;
+      });
+      await moved;
+      /* The checkout starts while the link is uncommitted. */
+      const attaching = customersRepo.addIdentityFacet(
+        db,
+        business.id,
+        survivor.id,
+        { facet: 'name', ciphertext: encryptFacet('Chidi O.', VAULT_KEY), matchKey: null },
+        { unlessTheCustomerHasOne: true },
+      );
+      /* Wait until the checkout is blocked on a lock, then let the link commit. */
+      for (let i = 0; i < 100; i++) {
+        const [row] = [
+          ...(await watcher.execute<{ n: number }>(
+            sql`SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted`,
+          )),
+        ];
+        if (Number(row?.n) > 0) break;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      release();
+      expect(await linking).toBe(true);
+      expect(await attaching).toBe('kept-existing');
+    } finally {
+      release();
+      await closeWatcher();
+    }
+
+    const names = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ trusted: boolean }>(sql`
+        SELECT match_key IS NOT NULL AS trusted FROM customer_identities
+         WHERE business_id = ${business.id}::uuid AND customer_id = ${survivor.id}::uuid
+           AND facet = 'name'`),
+    );
+    expect([...names]).toEqual([{ trusted: true }]);
+  });
+});

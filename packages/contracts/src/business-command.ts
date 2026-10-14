@@ -40,7 +40,7 @@ export const CUSTOMER_NAME_MIN_CHARS = 2;
 
 /**
  * THE customer-name contract, one schema for every door that stores a name
- * (G-60): trimmed, CUSTOMER_NAME_MIN_CHARS to CUSTOMER_NAME_MAX_CHARS long,
+ * (G-60): trimmed, CUSTOMER_NAME_MIN_CHARS to CUSTOMER_NAME_MAX_CHARS long composed,
  * holding at least one letter (a figure such as "10" is never a name). The
  * privacy gateway's known-name pass recognises exactly this, so a name the
  * product accepts is a name it can keep away from a model.
@@ -53,8 +53,15 @@ export const CUSTOMER_NAME_MIN_CHARS = 2;
 export const customerName = z
   .string()
   .trim()
-  .min(CUSTOMER_NAME_MIN_CHARS)
-  .max(CUSTOMER_NAME_MAX_CHARS)
+  /* Measured composed (NFC), so "Á" typed as A + an accent is one character
+   * and Unicode-equivalent spellings are equally valid; the known-name pass
+   * measures the same way. The value itself is kept as typed. */
+  .refine((value) => value.normalize('NFC').length >= CUSTOMER_NAME_MIN_CHARS, {
+    message: `a name is at least ${CUSTOMER_NAME_MIN_CHARS} characters`,
+  })
+  .refine((value) => value.normalize('NFC').length <= CUSTOMER_NAME_MAX_CHARS, {
+    message: `a name is at most ${CUSTOMER_NAME_MAX_CHARS} characters`,
+  })
   .refine((value) => /\p{L}/u.test(value), { message: 'a name holds a letter' });
 
 /** A customer as the AI may refer to one: resolved token or raw mention. */
