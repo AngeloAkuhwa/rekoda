@@ -487,22 +487,6 @@ export async function eraseAllIdentities(
   return deleted.length;
 }
 
-/**
- * Join two customer records the merchant has confirmed are one person.
- *
- * The orphan's identity facets move onto the survivor and the orphan row goes.
- * An UPDATE rather than a delete-and-reinsert, so the ciphertext is never
- * decrypted to be moved: the vault is not opened by a merge.
- *
- * REFUSES when the orphan has any history. A record with invoices, payments
- * or orders against it needs those moved too, and moving a merchant's
- * financial history is not something a `yes` in a chat should trigger. This
- * only ever joins a record created moments ago in the same message, which is
- * the split it exists to undo.
- *
- * Returns false when the merge was refused or either record has gone, which
- * the caller reports plainly rather than retrying: neither is transient.
- */
 /** Whether this customer holds a known (matchable) name (G-60). */
 export async function hasKnownName(
   db: Db,
@@ -523,6 +507,22 @@ export async function hasKnownName(
   );
 }
 
+/**
+ * Join two customer records the merchant has confirmed are one person.
+ *
+ * The orphan's identity facets move onto the survivor and the orphan row goes.
+ * An UPDATE rather than a delete-and-reinsert, so the ciphertext is never
+ * decrypted to be moved: the vault is not opened by a merge.
+ *
+ * REFUSES when the orphan has any history. A record with invoices, payments
+ * or orders against it needs those moved too, and moving a merchant's
+ * financial history is not something a `yes` in a chat should trigger. This
+ * only ever joins a record created moments ago in the same message, which is
+ * the split it exists to undo.
+ *
+ * Returns false when the merge was refused or either record has gone, which
+ * the caller reports plainly rather than retrying: neither is transient.
+ */
 export async function linkCustomers(
   tx: TenantDb,
   businessId: string,
@@ -541,8 +541,11 @@ export async function linkCustomers(
   `);
   if (Number([...rows][0]?.history ?? 1) > 0) return false;
 
+  /* Locked: two confirmations bringing names onto one survivor at once are
+   * taken one after the other, so the one-name check below holds (G-60). */
   const survivor = await tx.execute<{ id: string }>(sql`
     SELECT id FROM customers WHERE business_id = ${businessId}::uuid AND id = ${survivorId}::uuid
+       FOR UPDATE
   `);
   if ([...survivor].length !== 1) return false;
 

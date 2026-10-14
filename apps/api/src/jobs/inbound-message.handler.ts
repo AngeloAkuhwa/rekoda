@@ -2052,11 +2052,26 @@ async function customerIdFor(
  * which customer record disappears. Anything not shaped exactly right links
  * nothing.
  */
-function identityLinkOf(value: unknown): { survivorId: string; orphanId: string } | null {
+function identityLinkOf(value: unknown): {
+  survivorId: string;
+  orphanId: string;
+  survivorToken: string | null;
+  orphanToken: string | null;
+} | null {
   if (!value || typeof value !== 'object') return null;
-  const link = value as { survivorId?: unknown; orphanId?: unknown };
+  const link = value as {
+    survivorId?: unknown;
+    orphanId?: unknown;
+    survivorToken?: unknown;
+    orphanToken?: unknown;
+  };
   return typeof link.survivorId === 'string' && typeof link.orphanId === 'string'
-    ? { survivorId: link.survivorId, orphanId: link.orphanId }
+    ? {
+        survivorId: link.survivorId,
+        orphanId: link.orphanId,
+        survivorToken: typeof link.survivorToken === 'string' ? link.survivorToken : null,
+        orphanToken: typeof link.orphanToken === 'string' ? link.orphanToken : null,
+      }
     : null;
 }
 
@@ -2297,7 +2312,7 @@ async function confirmPendingDraft(
     if (newest) draft = newest;
   }
 
-  const command = draft.command as { intent?: string } & Record<string, unknown>;
+  let command = draft.command as { intent?: string } & Record<string, unknown>;
 
   /**
    * An invoice and a receipt are both metered documents (metering-v1.md §1),
@@ -2452,7 +2467,23 @@ async function confirmPendingDraft(
    */
   const proposal = identityLinkOf(draft.identityLink);
   if (proposal) {
-    await customersRepo.linkCustomers(tx, businessId, proposal.survivorId, proposal.orphanId);
+    const linked = await customersRepo.linkCustomers(
+      tx,
+      businessId,
+      proposal.survivorId,
+      proposal.orphanId,
+    );
+    /* A request naming the record this yes just absorbed names the one that
+     * survived: the sale lands on a customer that exists, by id and by token
+     * (G-60). A mention resolved to the new record always does. */
+    if (
+      linked &&
+      proposal.survivorToken &&
+      proposal.orphanToken &&
+      customerTokenOf(command) === proposal.orphanToken
+    ) {
+      command = { ...command, customer: { kind: 'token', token: proposal.survivorToken } };
+    }
   }
 
   if (command.intent === 'RecordExpense')

@@ -5325,6 +5325,20 @@ describe('a storefront buyer named later in Chat', () => {
     expect(byPhone).toBeDefined();
     expect(await tokenOf(business.id, 'Chidi Okafor paid')).toBe(byPhone);
     expect(await invoiceCount(business.id)).toBe(1);
+    /* The sale is on the customer that survived, by id and by token, never
+     * on the record the yes just absorbed. */
+    const [invoice] = await withBusiness(db, business.id, async (tx) => [
+      ...(await tx.execute<{ customer_id: string | null; token: string | null }>(sql`
+        SELECT i.customer_id, i.snapshot_json->>'customerToken' AS token
+          FROM invoices i WHERE i.business_id = ${business.id}::uuid`)),
+    ]);
+    const [survivor] = await withBusiness(db, business.id, async (tx) => [
+      ...(await tx.execute<{ id: string; token: string }>(
+        sql`SELECT id, token FROM customers WHERE business_id = ${business.id}::uuid`,
+      )),
+    ]);
+    expect(invoice!.customer_id).toBe(survivor!.id);
+    expect(invoice!.token).toBe(survivor!.token);
   });
 
   it('keeps them apart when the merchant says no', async () => {
