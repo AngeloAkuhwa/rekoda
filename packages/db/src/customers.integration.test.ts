@@ -687,6 +687,50 @@ describe('a link and a checkout on the orphan, and opposite links', () => {
     expect([...phones].map((p) => p.customer_id)).toEqual([survivor.id]);
   });
 
+  /* Codex on #271: between the question and the yes, a checkout gave the
+   * phone orphan an untrusted storefront name. The survivor's trusted name
+   * wins; the untrusted one is discarded, not a reason to refuse. */
+  it('discards the orphan untrusted name and keeps the survivor trusted one', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000403');
+    const survivor = await mint(business.id, nameOf(business.id, 'Chidi Okafor'));
+    const orphan = await customersRepo.createCustomerWithIdentities(
+      db,
+      business.id,
+      generateCustomerToken(random),
+      [
+        phoneOf(business.id, '08035551234'),
+        { facet: 'name', ciphertext: encryptFacet('Chidi O.', VAULT_KEY), matchKey: null },
+      ],
+    );
+
+    expect(
+      await withBusiness(db, business.id, (tx) =>
+        customersRepo.linkCustomers(tx, business.id, survivor.id, orphan.id),
+      ),
+    ).toBe(true);
+
+    const facets = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ facet: string; trusted: boolean; customer_id: string }>(sql`
+        SELECT facet, match_key IS NOT NULL AS trusted, customer_id FROM customer_identities
+         WHERE business_id = ${business.id}::uuid ORDER BY facet`),
+    );
+    expect([...facets]).toEqual([
+      { facet: 'name', trusted: true, customer_id: survivor.id },
+      { facet: 'phone', trusted: true, customer_id: survivor.id },
+    ]);
+  });
+
+  it('still refuses when both records hold a trusted name', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000404');
+    const survivor = await mint(business.id, nameOf(business.id, 'Chidi Okafor'));
+    const orphan = await mint(business.id, nameOf(business.id, 'Emeka Obi'));
+    expect(
+      await withBusiness(db, business.id, (tx) =>
+        customersRepo.linkCustomers(tx, business.id, survivor.id, orphan.id),
+      ),
+    ).toBe(false);
+  });
+
   it('runs two opposite links over one pair one after the other, without deadlock', async () => {
     const business = await seedBusiness('Ada Fashion', '+2348030000402');
     const one = await mint(business.id, phoneOf(business.id, '08035550001'));

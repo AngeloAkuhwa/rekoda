@@ -641,6 +641,17 @@ async function ingestCatalogueOrder(
         throw new Error(`PlaceOrder refused unexpectedly: ${run.outcome}`);
       }
       orderId = run.result.orderId;
+      if (run.replayed) {
+        /* Another attempt of this event (a stalled job reclaimed while its
+         * first worker still ran) placed this order and committed, validated
+         * or refused in the same transaction. Its outcome stands and is never
+         * validated twice (Codex on #271): an invoiced order keeps the units
+         * it paid; a refused one leaves nothing held. */
+        const placed = await ordersRepo.orderByExternalRef(tx, businessId, externalRef);
+        if (placed?.invoiceId) return null;
+        await settle();
+        return 'order rejected: refused by an earlier attempt';
+      }
     } else {
       /* Same refusal as the storefront: this branch never checked entitlement
        * at all, so running it would take an order from a business whose plan

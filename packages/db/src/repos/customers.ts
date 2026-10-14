@@ -557,10 +557,11 @@ export async function linkCustomers(
   `);
   if ([...survivor].length !== 1) return false;
 
-  /* One name per customer (G-60 owner decision, 14 Oct 2026). A name the
-   * orphan brings is one the merchant gave and has now confirmed: it replaces
-   * an untrusted storefront name the survivor holds, and the survivor never
-   * ends up holding two known names. */
+  /* One name per customer (G-60 owner decision, 14 Oct 2026). A trusted
+   * (keyed) name is one the merchant gave: whichever side holds it keeps it,
+   * and an untrusted storefront name on the other side is discarded. Two
+   * trusted names would compete, so that merge is refused. With no trusted
+   * name, the survivor's untrusted name stays and the orphan's goes. */
   const names = [
     ...(await tx.execute<{ orphan: boolean; known: boolean }>(sql`
       SELECT customer_id = ${orphanId}::uuid AS orphan, match_key IS NOT NULL AS known
@@ -569,11 +570,16 @@ export async function linkCustomers(
          AND customer_id IN (${survivorId}::uuid, ${orphanId}::uuid)
     `)),
   ];
-  if (names.some((n) => n.orphan)) {
-    if (names.some((n) => !n.orphan && n.known)) return false;
+  const orphanKnown = names.some((n) => n.orphan && n.known);
+  const survivorKnown = names.some((n) => !n.orphan && n.known);
+  const survivorNamed = names.some((n) => !n.orphan);
+  if (orphanKnown && survivorKnown) return false;
+  /* Only untrusted names are ever discarded here (Codex on #271). */
+  const discardFrom = orphanKnown ? survivorId : survivorNamed ? orphanId : null;
+  if (discardFrom && names.some((n) => !n.known)) {
     await tx.execute(sql`
       DELETE FROM customer_identities
-       WHERE business_id = ${businessId}::uuid AND customer_id = ${survivorId}::uuid
+       WHERE business_id = ${businessId}::uuid AND customer_id = ${discardFrom}::uuid
          AND facet = 'name' AND match_key IS NULL
     `);
   }

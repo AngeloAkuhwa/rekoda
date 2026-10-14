@@ -783,6 +783,70 @@ describe('a catalogue cart becomes an order (spec §3.2; W3, PR-087)', () => {
     expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
   });
 
+  /* Codex on #271: a reclaimed attempt runs beside the first, which has
+   * placed and validated the order but not yet committed. The second's
+   * PlaceOrder is a replay of the first: the order stands, so its units stay
+   * paid, once each. */
+  it('keeps the units of an order a reclaimed attempt finds already placed', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002272', 'PN-METER-12');
+    const period = usagePeriod(new Date());
+    /* A returning buyer: their thread already exists, so nothing else
+     * serialises the two attempts before the order. */
+    await post(
+      orderPayload('2349097777012', 'wamid.METER.12a', 'PN-METER-12', [
+        { retailerId: wigId, quantity: 1 },
+      ]),
+    );
+    const drain = buildRunner(workerDb, db, deps);
+    while (await drain.runOnce()) {
+      /* the first order and everything it queued */
+    }
+    /* A different cart, so it is not refused as a repeat of the first. */
+    const bag = await withBusiness(db, businessId, (tx) =>
+      catalogueRepo.createProduct(tx, businessId, { name: 'bag', unitPriceK: 50_000 }),
+    );
+    await post(
+      orderPayload('2349097777012', 'wamid.METER.12', 'PN-METER-12', [
+        { retailerId: bag.id, quantity: 1 },
+      ]),
+    );
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      /* The first attempt stalls once, after its invoice, before it commits. */
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g60_replay_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_invoice_stalls() RETURNS trigger SECURITY DEFINER AS $$
+        BEGIN
+          IF nextval('g60_replay_once') = 1 THEN PERFORM pg_sleep(2); END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_invoice_stalls AFTER INSERT ON invoices
+          FOR EACH ROW EXECUTE FUNCTION g60_invoice_stalls()`);
+
+      const first = buildRunner(workerDb, db, deps).runOnce();
+      await new Promise((r) => setTimeout(r, 700));
+      /* What `reclaimStalled` does to a job whose worker went quiet. */
+      await ownerDb.execute(sql`
+        UPDATE jobs SET state = 'pending', locked_at = NULL, locked_by = NULL
+         WHERE business_id = ${businessId}::uuid AND state = 'running'`);
+      const second = buildRunner(workerDb, db, deps).runOnce();
+      await Promise.allSettled([first, second]);
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_invoice_stalls ON invoices`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_invoice_stalls()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g60_replay_once`);
+      await close();
+    }
+    expect([...(await ordersOf(businessId))]).toHaveLength(2);
+    expect(await invoiceCount(businessId)).toBe(2);
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, period),
+    );
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(2);
+    expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(2);
+  });
+
   /* Idempotency and metering have to agree: Meta redelivers, and a second
    * delivery that places no second order must not charge for one either. */
   it('charges nothing twice for a redelivered webhook', async () => {
