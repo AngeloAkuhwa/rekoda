@@ -217,6 +217,9 @@ export class PrivacyGateway {
     const candidates: Array<{ start: number; end: number; matchKey: string }> = [];
     const keys = new Set<string>();
     const spans = new Set<string>();
+    /* Each distinct candidate is hashed once per message, however many
+     * places it stands (Codex on #271: bounded work for a crafted message). */
+    const keysOf = new Map<string, string[]>();
     const consider = (start: number, end: number) => {
       if (spans.has(`${start}:${end}`)) return;
       spans.add(`${start}:${end}`);
@@ -229,7 +232,13 @@ export class PrivacyGateway {
       const typedForm = composed(out.slice(start, end));
       if (typedForm.length > CUSTOMER_NAME_MAX_CHARS) return;
       if (typedForm.length < CUSTOMER_NAME_MIN_CHARS || !/\p{L}/u.test(typedForm)) return;
-      for (const matchKey of this.nameKeys(businessId, out.slice(start, end))) {
+      const asTyped = out.slice(start, end).trim().replace(/\s+/g, ' ');
+      let forms = keysOf.get(asTyped);
+      if (!forms) {
+        forms = this.nameKeys(businessId, asTyped);
+        keysOf.set(asTyped, forms);
+      }
+      for (const matchKey of forms) {
         candidates.push({ start, end, matchKey });
         keys.add(matchKey);
       }
@@ -253,8 +262,11 @@ export class PrivacyGateway {
        * "( Ada )" is a storable name (Codex on #271). A candidate edge is
        * only ever a punctuation mark, never a space, and the walk counts
        * each run of spaces once, as the name itself folds them. */
+      /* Each edge position with its reach: how much it adds to the name's
+       * folded length (a mark 1, a run of spaces 1), so a span that cannot
+       * fit a storable name is never built. */
       const walk = (at: number, step: -1 | 1, limit: number) => {
-        const out_: number[] = [at];
+        const out_: Array<{ at: number; reach: number }> = [{ at, reach: 0 }];
         let reach = 0;
         let spaced = false;
         for (let p = at; p !== limit && reach < CUSTOMER_NAME_MAX_CHARS; p += step) {
@@ -262,7 +274,7 @@ export class PrivacyGateway {
           if (EDGE.test(ch)) {
             reach += 1;
             spaced = false;
-            out_.push(step < 0 ? p - 1 : p + 1);
+            out_.push({ at: step < 0 ? p - 1 : p + 1, reach });
           } else if (/\s/.test(ch)) {
             if (!spaced) reach += 1;
             spaced = true;
@@ -272,8 +284,16 @@ export class PrivacyGateway {
         }
         return out_;
       };
-      const leads = (at: number) => walk(at, -1, segment.start);
-      const trails = (at: number) => walk(at, 1, segment.end);
+      const walked = new Map<string, Array<{ at: number; reach: number }>>();
+      const edges = (at: number, step: -1 | 1) => {
+        const key = `${at}:${step}`;
+        let found = walked.get(key);
+        if (!found) {
+          found = walk(at, step, step < 0 ? segment.start : segment.end);
+          walked.set(key, found);
+        }
+        return found;
+      };
       for (let i = 0; i < words.length; i++) {
         for (let j = i; j < words.length; j++) {
           const start = words[i]!.start;
@@ -281,15 +301,15 @@ export class PrivacyGateway {
           const shortest = Math.min(...words[j]!.ends);
           if (composed(out.slice(start, shortest)).length > CUSTOMER_NAME_MAX_CHARS) break;
           for (const end of words[j]!.ends) {
-            for (const s of leads(start)) {
-              for (const e of trails(end)) {
-                if (
-                  e - s > 2 * CUSTOMER_NAME_MAX_CHARS &&
-                  composed(out.slice(s, e)).length > 2 * CUSTOMER_NAME_MAX_CHARS
-                ) {
-                  break;
-                }
-                consider(s, e);
+            /* The folded length is the lead's reach, the run, and the trail's
+             * reach: exactly what `consider` measures, so pruning here loses
+             * no storable name. */
+            const run = composed(out.slice(start, end)).length;
+            for (const s of edges(start, -1)) {
+              if (s.reach + run > CUSTOMER_NAME_MAX_CHARS) break;
+              for (const e of edges(end, 1)) {
+                if (s.reach + run + e.reach > CUSTOMER_NAME_MAX_CHARS) break;
+                consider(s.at, e.at);
               }
             }
           }

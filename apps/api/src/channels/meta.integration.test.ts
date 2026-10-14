@@ -5471,6 +5471,29 @@ describe('a storefront buyer named later in Chat', () => {
     expect(invoice!.token).toBe(survivor!.token);
   });
 
+  /* Codex on #271: a preview long enough to be cut loses the question at
+   * its end; a yes to what the merchant saw never joins the customers. */
+  it('joins nothing when the question was cut from a long preview', async () => {
+    const business = await seedMerchant();
+    await deps.gateway.resolveStorefrontCustomer(business.id, 'Chidi Okafor', PHONE);
+    const items = Array.from({ length: 30 }, (_, i) => ({
+      name: `long description wig number ${i + 1}`,
+      quantity: 1,
+      unitPrice: 5_000,
+    }));
+    stubTransport.replyWith({ ...SALE_TO_CHIDI, items, statedTotal: 150_000 });
+
+    await post(
+      messagePayload('2348031234567', 'wamid.SF8', `Chidi Okafor ${PHONE} bought 30 wigs for 150k`),
+    );
+    await drain();
+    expect(stubSender.lastText).not.toContain('same customer');
+
+    await post(messagePayload('2348031234567', 'wamid.SF8-yes', 'yes'));
+    await drain();
+    expect((await ledger(business.id)).customers).toBe(2);
+  });
+
   it('keeps them apart when the merchant says no', async () => {
     const business = await seedMerchant();
     await deps.gateway.resolveStorefrontCustomer(business.id, 'Chidi Okafor', PHONE);

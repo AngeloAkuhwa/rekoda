@@ -8,7 +8,7 @@
  * customer by anyone holding a dump.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDb, customersRepo, identity, schema, sql, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { decryptFacet, encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
@@ -926,5 +926,28 @@ describe('every storable name is recognised, whatever punctuation it carries (G-
     const tokenised = await gateway.tokenise(businessId, text);
     expect(tokenised.text).toContain(token);
     expect(tokenised.text).not.toContain(name);
+  });
+});
+
+/* Codex on #271: a crafted message of long punctuation runs round short
+ * words must not make the known-name pass hash every span it can build.
+ * Only spans that fit a storable name are built, and each distinct one is
+ * hashed once. */
+describe('the known-name pass under a crafted message', () => {
+  it('hashes each distinct candidate once, and still finds a wrapped name', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const wrapped = `${'('.repeat(39)}Ada${')'.repeat(39)}`;
+    const { token } = await gateway.resolveMention(businessId, 'Ada');
+    const unit = `${'('.repeat(39)}a${')'.repeat(39)} `;
+    const text = `${unit.repeat(48)}${wrapped}`;
+    const hashed = vi.spyOn(gateway as unknown as { nameKeys: () => string[] }, 'nameKeys');
+    try {
+      const tokenised = await gateway.tokenise(businessId, text);
+      expect(tokenised.text.endsWith(`${'('.repeat(39)}${token}${')'.repeat(39)}`)).toBe(true);
+      /* 153,154 before the fix; about 5,500 distinct after. */
+      expect(hashed.mock.calls.length).toBeLessThan(10_000);
+    } finally {
+      hashed.mockRestore();
+    }
   });
 });

@@ -59,7 +59,18 @@ export class ReplySender {
    * allowed to fail after it. A reply nobody received but that we know we owed
    * is recoverable; a reply sent about a rolled-back draft is not.
    */
-  async send(tx: TenantDb, input: SendReplyInput): Promise<{ delivered: boolean }> {
+  async send(
+    tx: TenantDb,
+    input: SendReplyInput,
+  ): Promise<{
+    delivered: boolean;
+    /**
+     * The text that left, in its tokenised form, or null when the backstop
+     * cut it after rehydration and what the merchant read is not that text.
+     * For a caller that must know whether a line survived the cut (G-60).
+     */
+    shown?: string | null;
+  }> {
     /* With tokens, the token-aware fit is the ONLY cut: the limit binds the
      * text that LEAVES, after rehydration, where one token can read as a name
      * and its numbers, and a plain character cut could split a token (G-60).
@@ -102,7 +113,7 @@ export class ReplySender {
       const result = await this.sender.send({ to: input.to, text: forHuman });
       await conversationsRepo.markOutboundSent(tx, recorded.id, result.providerMessageId);
       await this.recordMessageCost(tx, input.businessId);
-      return { delivered: true };
+      return { delivered: true, shown: forHuman === rehydrated ? safe.text : null };
     } catch (error) {
       if (error instanceof SendFailed) {
         /**

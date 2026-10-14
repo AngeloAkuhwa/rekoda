@@ -519,6 +519,24 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
        * A preview whose send failed (swallowed so the draft survives) was
        * not sent. A delivery that fails later, after acceptance, comes back
        * as a status webhook nothing reads yet (G-20) and is not reflected. */
+      /* A link question cut from a long preview was not asked: the
+       * proposal goes, so a yes to what the merchant read never joins two
+       * customers (G-60, Codex on #271). */
+      if (sent.delivered) {
+        const proposal = identityLinkOf(
+          await conversationsRepo.draftIdentityLink(tx, businessId, message.id),
+        );
+        if (
+          proposal &&
+          !(
+            proposal.survivorToken &&
+            proposal.orphanToken &&
+            sent.shown?.includes(replies.linkQuestion(proposal.survivorToken, proposal.orphanToken))
+          )
+        ) {
+          await conversationsRepo.clearDraftIdentityLink(tx, businessId, message.id);
+        }
+      }
       if (!sent.delivered) {
         await conversationsRepo.markDraftUnseen(tx, businessId, message.id);
         /* Build 6: nor was the question or the answer a continuation holds
