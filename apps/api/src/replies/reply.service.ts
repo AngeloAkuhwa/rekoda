@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { billingPeriod, messageCostK, replies, type Reply } from '@rekoda/core';
-import { redactForLog, rehydrate } from '@rekoda/core/privacy';
+import { fitRehydrated, redactForLog, rehydrate, sliceWhole } from '@rekoda/core/privacy';
 import { conversationsRepo, quotaRepo, type TenantDb } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
@@ -59,8 +59,29 @@ export class ReplySender {
    * allowed to fail after it. A reply nobody received but that we know we owed
    * is recoverable; a reply sent about a rolled-back draft is not.
    */
-  async send(tx: TenantDb, input: SendReplyInput): Promise<{ delivered: boolean }> {
-    const safe = replies.truncateForSending(input.reply);
+  async send(
+    tx: TenantDb,
+    input: SendReplyInput,
+  ): Promise<{
+    delivered: boolean;
+    /**
+     * The text that left, in its tokenised form, or null when the backstop
+     * cut it after rehydration and what the merchant read is not that text.
+     * For a caller that must know whether a line survived the cut (G-60).
+     */
+    shown?: string | null;
+  }> {
+    /* With tokens, the token-aware fit is the ONLY cut: the limit binds the
+     * text that LEAVES, after rehydration, where one token can read as a name
+     * and its numbers, and a plain character cut could split a token (G-60).
+     * Cut in tokens, between identities, and stored as cut, so the record is
+     * what was sent. Without tokens, exactly as before. */
+    const safe = input.tokens?.size
+      ? {
+          ...input.reply,
+          text: fitRehydrated(input.reply.text.trim(), input.tokens, replies.MAX_REPLY_CHARS),
+        }
+      : replies.truncateForSending(input.reply);
     if (!replies.isSendable(safe)) {
       this.log.error('refused to send an empty reply');
       return { delivered: false };
@@ -80,13 +101,19 @@ export class ReplySender {
     );
 
     // The one moment. A local, not a field, not a log line, not a row.
-    const forHuman = input.tokens?.size ? rehydrate(safe.text, input.tokens) : safe.text;
+    const rehydrated = input.tokens?.size ? rehydrate(safe.text, input.tokens) : safe.text;
+    /* A backstop that needs one display of ~900 characters to fire: what
+     * leaves is never longer than the limit, whatever a token reads as. */
+    const forHuman =
+      rehydrated.length <= replies.MAX_REPLY_CHARS
+        ? rehydrated
+        : `${sliceWhole(rehydrated, replies.MAX_REPLY_CHARS - 1).trimEnd()}…`;
 
     try {
       const result = await this.sender.send({ to: input.to, text: forHuman });
       await conversationsRepo.markOutboundSent(tx, recorded.id, result.providerMessageId);
       await this.recordMessageCost(tx, input.businessId);
-      return { delivered: true };
+      return { delivered: true, shown: forHuman === rehydrated ? safe.text : null };
     } catch (error) {
       if (error instanceof SendFailed) {
         /**

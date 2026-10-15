@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseBusinessCommand } from './business-command.js';
+import { CUSTOMER_NAME_MAX_CHARS, customerName, parseBusinessCommand } from './business-command.js';
 
 describe('StructuredBusinessCommand — the AI border checkpoint', () => {
   it('accepts a well-formed sale', () => {
@@ -87,5 +87,28 @@ describe('StructuredBusinessCommand — the AI border checkpoint', () => {
     const r = parseBusinessCommand({ intent: 'RecordSale' });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain('customer');
+  });
+});
+
+/* Codex on #271: Unicode-equivalent spellings of one name are equally valid
+ * (G-60). Length is measured composed (NFC), the form the matcher uses. */
+describe('customerName, in either Unicode composition', () => {
+  const valid = (value: string) => customerName.safeParse(value).success;
+
+  it.each([
+    ['a one-letter initial', 'Á'],
+    ['a two-letter name', 'Áda'],
+    ['a long Yoruba name', 'Olúwadámilọ́lá Adébáyọ̀-Ọláòṣebìkan Ògúntóyè Fáṣọlá Àdìgún Ọ̀ṣúnbíyìí'],
+    ['a name one past the limit', `${'Ọ̀'.repeat(CUSTOMER_NAME_MAX_CHARS + 1)}`],
+    ['a name at the limit', `${'Ọ̀'.repeat(CUSTOMER_NAME_MAX_CHARS)}`],
+  ])('treats %s the same composed and decomposed', (_, name) => {
+    expect(valid(name.normalize('NFD'))).toBe(valid(name.normalize('NFC')));
+  });
+
+  it('refuses a one-letter initial in either form, and accepts a long valid name', () => {
+    expect(valid('Á')).toBe(false);
+    expect(valid('Á')).toBe(false);
+    const long = 'Olúwadámilọ́lá Adébáyọ̀-Ọláòṣebìkan Ògúntóyè Fáṣọlá Àdìgún Ọ̀ṣúnbíyìí';
+    expect(valid(long.normalize('NFD'))).toBe(true);
   });
 });

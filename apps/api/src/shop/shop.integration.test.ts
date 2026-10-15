@@ -28,6 +28,7 @@ import {
   stockRepo,
   usageRepo,
   entitlementsRepo,
+  sql,
   withBusiness,
   type Db,
 } from '@rekoda/db';
@@ -707,6 +708,345 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
     expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+  });
+
+  /* G-60: a vault failure while attaching the typed name is no longer
+   * swallowed. The checkout fails visibly, books nothing, and gives back
+   * the two units it had already paid. */
+  it('a vault failure fails the checkout visibly and spends nothing', async () => {
+    const { businessId, ids } = await openShop('+2348177400033', 'ada-vault-down');
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    let status = 0;
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_shop_name_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.facet = 'name' THEN RAISE EXCEPTION 'g60: the vault is unavailable'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_shop_name_fails BEFORE INSERT ON customer_identities
+          FOR EACH ROW EXECUTE FUNCTION g60_shop_name_fails()`);
+
+      status = (
+        await order('ada-vault-down', {
+          items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+          customerName: 'Chidi Okafor',
+          customerPhone: '08035551234',
+          clientRef: randomUUID(),
+        })
+      ).statusCode;
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_shop_name_fails ON customer_identities`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_shop_name_fails()`);
+      await close();
+    }
+
+    expect(status).toBeGreaterThanOrEqual(500);
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+    const orders = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM orders WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect(Number([...orders][0]?.n)).toBe(0);
+  });
+
+  /* Final review of #271: when the order itself fails during an outage and a
+   * refund fails too, the other refund is still made. */
+  it('tries both refunds when the order fails and one refund fails too', async () => {
+    const { businessId, ids } = await openShop('+2348177400037', 'ada-order-down');
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    let status = 0;
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_order_fails() RETURNS trigger AS $$
+        BEGIN RAISE EXCEPTION 'g60: the books are unavailable'; END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_order_fails BEFORE INSERT ON orders
+          FOR EACH ROW EXECUTE FUNCTION g60_order_fails()`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_orders_refund_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.unit = 'CATALOGUE_ORDERS' AND NEW.used < OLD.used THEN
+            RAISE EXCEPTION 'g60: the orders refund failed';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_orders_refund_fails BEFORE UPDATE ON usage_counters
+          FOR EACH ROW EXECUTE FUNCTION g60_orders_refund_fails()`);
+      status = (
+        await order('ada-order-down', {
+          items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+          customerName: 'Chidi Okafor',
+          customerPhone: '08035551234',
+          clientRef: randomUUID(),
+        })
+      ).statusCode;
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_order_fails ON orders`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_order_fails()`);
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_orders_refund_fails ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_orders_refund_fails()`);
+      await close();
+    }
+    expect(status).toBeGreaterThanOrEqual(500);
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(1);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+  });
+
+  /* Final review of #271: Integrate lapses between the meter and the order;
+   * the order is refused, and the two units it had paid go back. */
+  it('a plan that lapses mid-checkout answers closed and spends nothing', async () => {
+    const { businessId, ids } = await openShop('+2348177400038', 'ada-lapse');
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    let outcome: unknown;
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_lapse() RETURNS trigger SECURITY DEFINER AS $$
+        BEGIN
+          UPDATE businesses SET plan = 'chat' WHERE id = NEW.business_id;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_lapse AFTER INSERT OR UPDATE ON usage_counters
+          FOR EACH ROW WHEN (NEW.unit = 'DOCUMENT_GENERATION' AND NEW.used > 0)
+          EXECUTE FUNCTION g60_lapse()`);
+      outcome = (
+        await order('ada-lapse', {
+          items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+          customerName: 'Chidi Okafor',
+          customerPhone: '08035551234',
+          clientRef: randomUUID(),
+        })
+      ).json();
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_lapse ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_lapse()`);
+      await close();
+    }
+    expect(outcome).toEqual({ outcome: 'closed' });
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+  });
+
+  /* Final review of #271: the order unit is taken, then the document meter
+   * fails; the order unit goes back. */
+  it('gives the order unit back when the document meter fails', async () => {
+    const { businessId, ids } = await openShop('+2348177400039', 'ada-meter-down');
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    let status = 0;
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_doc_meter_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.unit = 'DOCUMENT_GENERATION' THEN RAISE EXCEPTION 'g60: the meter is unavailable'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_doc_meter_fails BEFORE INSERT OR UPDATE ON usage_counters
+          FOR EACH ROW EXECUTE FUNCTION g60_doc_meter_fails()`);
+      status = (
+        await order('ada-meter-down', {
+          items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+          customerName: 'Chidi Okafor',
+          customerPhone: '08035551234',
+          clientRef: randomUUID(),
+        })
+      ).statusCode;
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_doc_meter_fails ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_doc_meter_fails()`);
+      await close();
+    }
+    expect(status).toBeGreaterThanOrEqual(500);
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+  });
+
+  /* Owner decision on #271: a terminal answer is never given while a refund
+   * it needs has failed; the failure surfaces instead. */
+  it('does not answer closed while the refund it owes has failed', async () => {
+    const { ids } = await openShop('+2348177400040', 'ada-lapse-refund');
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    let status = 0;
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_lapse() RETURNS trigger SECURITY DEFINER AS $$
+        BEGIN UPDATE businesses SET plan = 'chat' WHERE id = NEW.business_id; RETURN NEW; END
+        $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_lapse AFTER INSERT OR UPDATE ON usage_counters
+          FOR EACH ROW WHEN (NEW.unit = 'DOCUMENT_GENERATION' AND NEW.used > 0)
+          EXECUTE FUNCTION g60_lapse()`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_refund_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.unit = 'CATALOGUE_ORDERS' AND NEW.used < OLD.used THEN
+            RAISE EXCEPTION 'g60: the refund is unavailable';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_refund_fails BEFORE UPDATE ON usage_counters
+          FOR EACH ROW EXECUTE FUNCTION g60_refund_fails()`);
+      status = (
+        await order('ada-lapse-refund', {
+          items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+          customerName: 'Chidi Okafor',
+          customerPhone: '08035551234',
+          clientRef: randomUUID(),
+        })
+      ).statusCode;
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_lapse ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_lapse()`);
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_refund_fails ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_refund_fails()`);
+      await close();
+    }
+    expect(status).toBeGreaterThanOrEqual(500);
+  });
+
+  /* Owner review of #271: the phone customer is committed before the name
+   * is attached, so a retried checkout must still attach the name. */
+  it('a retried checkout attaches the name a failed attempt could not', async () => {
+    const { businessId, ids } = await openShop('+2348177400035', 'ada-retry-name');
+    const clientRef = randomUUID();
+    const body = {
+      items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+      customerName: 'Chidi Okafor',
+      customerPhone: '08035551234',
+      clientRef,
+    };
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_shop_name_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.facet = 'name' THEN RAISE EXCEPTION 'g60: the vault is unavailable'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_shop_name_fails BEFORE INSERT ON customer_identities
+          FOR EACH ROW EXECUTE FUNCTION g60_shop_name_fails()`);
+      expect((await order('ada-retry-name', body)).statusCode).toBeGreaterThanOrEqual(500);
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_shop_name_fails ON customer_identities`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_shop_name_fails()`);
+      await close();
+    }
+
+    const placed = publicOrderResponse.parse((await order('ada-retry-name', body)).json());
+    expect(placed.outcome).toBe('placed');
+    const facets = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ customers: number; phones: number; names: number; orders: number }>(sql`
+        SELECT
+          (SELECT count(*)::int FROM customers WHERE business_id = ${businessId}::uuid) AS customers,
+          (SELECT count(*)::int FROM customer_identities
+            WHERE business_id = ${businessId}::uuid AND facet = 'phone') AS phones,
+          (SELECT count(*)::int FROM customer_identities
+            WHERE business_id = ${businessId}::uuid AND facet = 'name') AS names,
+          (SELECT count(*)::int FROM orders WHERE business_id = ${businessId}::uuid) AS orders`),
+    );
+    expect([...facets][0]).toEqual({ customers: 1, phones: 1, names: 1, orders: 1 });
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(1);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
+  });
+
+  it('a returning named customer keeps the name they have', async () => {
+    const { businessId, ids } = await openShop('+2348177400036', 'ada-named');
+    const first = {
+      items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+      customerName: 'Chidi Okafor',
+      customerPhone: '08035551234',
+      clientRef: randomUUID(),
+    };
+    expect(publicOrderResponse.parse((await order('ada-named', first)).json()).outcome).toBe(
+      'placed',
+    );
+    expect(
+      publicOrderResponse.parse(
+        (
+          await order('ada-named', { ...first, customerName: 'Chidi O.', clientRef: randomUUID() })
+        ).json(),
+      ).outcome,
+    ).toBe('placed');
+    const names = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM customer_identities
+         WHERE business_id = ${businessId}::uuid AND facet = 'name'`),
+    );
+    expect(Number([...names][0]?.n)).toBe(1);
+  });
+
+  /* Codex P2 on #271: a refund that fails while the vault is down must not
+   * stop the other refund from being tried. */
+  it('tries both refunds when one of them fails too', async () => {
+    const { businessId, ids } = await openShop('+2348177400034', 'ada-refund-down');
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    let status = 0;
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_shop_name_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.facet = 'name' THEN RAISE EXCEPTION 'g60: the vault is unavailable'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_shop_name_fails BEFORE INSERT ON customer_identities
+          FOR EACH ROW EXECUTE FUNCTION g60_shop_name_fails()`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_orders_refund_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.unit = 'CATALOGUE_ORDERS' AND NEW.used < OLD.used THEN
+            RAISE EXCEPTION 'g60: the orders refund failed';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_orders_refund_fails BEFORE UPDATE ON usage_counters
+          FOR EACH ROW EXECUTE FUNCTION g60_orders_refund_fails()`);
+
+      status = (
+        await order('ada-refund-down', {
+          items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+          customerName: 'Chidi Okafor',
+          customerPhone: '08035551234',
+          clientRef: randomUUID(),
+        })
+      ).statusCode;
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_shop_name_fails ON customer_identities`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_shop_name_fails()`);
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_orders_refund_fails ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_orders_refund_fails()`);
+      await close();
+    }
+
+    expect(status).toBeGreaterThanOrEqual(500);
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    /* The orders refund failed; the document refund was still made. */
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(1);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
   });
 });
 

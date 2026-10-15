@@ -20,6 +20,7 @@
 
 import type { UsageUnit } from './allowances.js';
 import { formatKobo } from './money.js';
+import { sliceWhole } from './privacy.js';
 
 /** Every message carries the tokens it was built with, un-rehydrated. */
 export interface Reply {
@@ -1379,6 +1380,17 @@ export function voiceTooLong(maxSeconds: number): Reply {
 }
 
 /**
+ * A message too dense to check for customer names before a model reads it
+ * (G-60). Nothing in it is read, so the merchant is told how to get it read.
+ */
+export function messageTooLong(): Reply {
+  return reply(
+    'That message is more than I can read safely at once.\n\nPlease send it ' +
+      'again in shorter parts and I will record every one of them.',
+  );
+}
+
+/**
  * The audio arrived and could not be read.
  *
  * Distinct from `voiceUnavailable`, which is the transcriber being down. This
@@ -1809,7 +1821,7 @@ export function isSendable(candidate: Reply): boolean {
 export function truncateForSending(candidate: Reply): Reply {
   const text = candidate.text.trim();
   if (text.length <= MAX_REPLY_CHARS) return reply(text);
-  return reply(`${text.slice(0, MAX_REPLY_CHARS - 1).trimEnd()}…`);
+  return reply(`${sliceWhole(text, MAX_REPLY_CHARS - 1).trimEnd()}…`);
 }
 
 /* ── stock ───────────────────────────────────────────────────────────────── */

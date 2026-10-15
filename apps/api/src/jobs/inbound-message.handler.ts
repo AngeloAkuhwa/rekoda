@@ -94,11 +94,16 @@ import type { ApiConfig } from '../config.js';
 import { meterAllowance } from '../billing/plan-terms.js';
 import { LINK_MINUTES, mintDashboardLink } from '../auth/dashboard-link.js';
 import type { Interpreter } from '../ai/interpreter.service.js';
-import type { IdentityLinkProposal, PrivacyGateway } from '../privacy/gateway.service.js';
+import type {
+  IdentityLinkProposal,
+  LiveTokens,
+  ResolvedCustomer,
+  PrivacyGateway,
+} from '../privacy/gateway.service.js';
 import type { ReplySender } from '../replies/reply.service.js';
 import type { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
-import { redactForLog } from '@rekoda/core/privacy';
+import { redactForLog, replaceOutsideTokens } from '@rekoda/core/privacy';
 import { describeFailure, JobDeferred, type JobContext, type JobHandler } from './runner.js';
 import { TranscriptionUnavailable, type SpeechToText, type Transcript } from '../ai/stt.js';
 import type { AudioMetadataProbe } from '../ai/audio-duration.js';
@@ -404,6 +409,19 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       return;
     }
 
+    /* The known-name pass could not finish (G-60, Codex on #271): an
+     * unfinished pass could miss a stored name, so no model reads it. */
+    if (tokenised?.unread) {
+      await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
+      await deps.replySender.send(tx, {
+        businessId,
+        to: inbound.from,
+        reply: replies.messageTooLong(),
+      });
+      await events.markProcessed(tx, eventId, null, businessId);
+      return;
+    }
+
     /**
      * THE CLASSIFIER GATE (docs/ai-model-strategy.md §1, AI hardening
      * item 1): a cheap read, only where it avoids expensive ones, which
@@ -435,7 +453,12 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
 
     /* Mutable copy: a mention resolved during interpretation adds its token
      * here so the SAME table serves the outbound rehydration below. */
-    const liveTokens = tokenised ? new Map(tokenised.tokens) : null;
+    const liveTokens: LiveTokens | null = tokenised
+      ? {
+          displays: new Map(tokenised.tokens),
+          facets: new Map([...tokenised.facets].map(([token, typed]) => [token, [...typed]])),
+        }
+      : null;
 
     /**
      * Build 6: does this message continue what Rekoda just asked THIS person,
@@ -488,6 +511,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             event.receivedAt,
             eventId,
             tokenised!.link,
+            tokenised!.customers,
             inbound.from,
             liveTokens!,
             actorId,
@@ -502,12 +526,30 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         to: inbound.from,
         reply: answer,
         // Only the model path can produce a reply that names a customer.
-        ...(liveTokens ? { tokens: liveTokens } : {}),
+        ...(liveTokens ? { tokens: liveTokens.displays } : {}),
       });
       /* G-23: "previewed" means WhatsApp accepted the preview for delivery.
        * A preview whose send failed (swallowed so the draft survives) was
        * not sent. A delivery that fails later, after acceptance, comes back
        * as a status webhook nothing reads yet (G-20) and is not reflected. */
+      /* A link question cut from a long preview was not asked: the
+       * proposal goes, so a yes to what the merchant read never joins two
+       * customers (G-60, Codex on #271). */
+      if (sent.delivered) {
+        const proposal = identityLinkOf(
+          await conversationsRepo.draftIdentityLink(tx, businessId, message.id),
+        );
+        if (
+          proposal &&
+          !(
+            proposal.survivorToken &&
+            proposal.orphanToken &&
+            sent.shown?.includes(replies.linkQuestion(proposal.survivorToken, proposal.orphanToken))
+          )
+        ) {
+          await conversationsRepo.clearDraftIdentityLink(tx, businessId, message.id);
+        }
+      }
       if (!sent.delivered) {
         await conversationsRepo.markDraftUnseen(tx, businessId, message.id);
         /* Build 6: nor was the question or the answer a continuation holds
@@ -2041,11 +2083,26 @@ async function customerIdFor(
  * which customer record disappears. Anything not shaped exactly right links
  * nothing.
  */
-function identityLinkOf(value: unknown): { survivorId: string; orphanId: string } | null {
+function identityLinkOf(value: unknown): {
+  survivorId: string;
+  orphanId: string;
+  survivorToken: string | null;
+  orphanToken: string | null;
+} | null {
   if (!value || typeof value !== 'object') return null;
-  const link = value as { survivorId?: unknown; orphanId?: unknown };
+  const link = value as {
+    survivorId?: unknown;
+    orphanId?: unknown;
+    survivorToken?: unknown;
+    orphanToken?: unknown;
+  };
   return typeof link.survivorId === 'string' && typeof link.orphanId === 'string'
-    ? { survivorId: link.survivorId, orphanId: link.orphanId }
+    ? {
+        survivorId: link.survivorId,
+        orphanId: link.orphanId,
+        survivorToken: typeof link.survivorToken === 'string' ? link.survivorToken : null,
+        orphanToken: typeof link.orphanToken === 'string' ? link.orphanToken : null,
+      }
     : null;
 }
 
@@ -2286,7 +2343,7 @@ async function confirmPendingDraft(
     if (newest) draft = newest;
   }
 
-  const command = draft.command as { intent?: string } & Record<string, unknown>;
+  let command = draft.command as { intent?: string } & Record<string, unknown>;
 
   /**
    * An invoice and a receipt are both metered documents (metering-v1.md §1),
@@ -2441,7 +2498,23 @@ async function confirmPendingDraft(
    */
   const proposal = identityLinkOf(draft.identityLink);
   if (proposal) {
-    await customersRepo.linkCustomers(tx, businessId, proposal.survivorId, proposal.orphanId);
+    const linked = await customersRepo.linkCustomers(
+      tx,
+      businessId,
+      proposal.survivorId,
+      proposal.orphanId,
+    );
+    /* A request naming the record this yes just absorbed names the one that
+     * survived: the sale lands on a customer that exists, by id and by token
+     * (G-60). A mention resolved to the new record always does. */
+    if (
+      linked &&
+      proposal.survivorToken &&
+      proposal.orphanToken &&
+      customerTokenOf(command) === proposal.orphanToken
+    ) {
+      command = { ...command, customer: { kind: 'token', token: proposal.survivorToken } };
+    }
   }
 
   if (command.intent === 'RecordExpense')
@@ -4576,6 +4649,8 @@ async function interpretedReply(
   eventId: string,
   /** Two records this message may have made of one person. Usually null. */
   link: IdentityLinkProposal | null,
+  /** Every customer the message referenced, for a link a mention reveals. */
+  referenced: readonly ResolvedCustomer[],
   /** The sender's wa id, for the role check on write commands. */
   from: string,
   /**
@@ -4584,7 +4659,7 @@ async function interpretedReply(
    * preview say the customer's name over the wire while every stored copy
    * holds the token.
    */
-  tokens: Map<string, string>,
+  tokens: LiveTokens,
   /** The member who sent this (Build 6), or null for a sender with none. */
   actorId: string | null,
   /** True when this text was extracted from a photographed document. */
@@ -4783,7 +4858,13 @@ async function interpretedReply(
   if ('customer' in command && command.customer && command.customer.kind === 'mention') {
     const mention = command.customer.mention;
     const named = await deps.gateway.resolveMention(businessId, mention);
-    tokens.set(named.token, mention);
+    /* A name that is new beside a customer the message already named (a
+     * storefront buyer's phone) may be one person: asked, never joined
+     * (G-60 owner decision, 14 Oct 2026). */
+    link ??= await deps.gateway.linkAfterMention(businessId, referenced, named);
+    /* Composed with whatever the merchant typed for the same customer, so a
+     * phone and the name the model resolved read as one person (G-60). */
+    deps.gateway.noteMention(tokens, named.token, mention);
     command = {
       ...command,
       customer: { kind: 'token', token: named.token },
@@ -4793,9 +4874,8 @@ async function interpretedReply(
      * still carries the name. Scrubbed now, in the same transaction: the
      * conversation history must not hold a customer's real name, and "we
      * only learned it was a name a moment ago" is not an exemption. */
-    const escaped = mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const pattern = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'giu');
-    const scrubbed = safeText.replace(pattern, named.token);
+    /* However it was spaced, and never inside a token (G-60). */
+    const scrubbed = replaceOutsideTokens(safeText, mention, named.token, tokens.displays.keys());
     if (scrubbed !== safeText) {
       await conversationsRepo.setInboundBody(tx, businessId, conversationMessageId, scrubbed);
     }

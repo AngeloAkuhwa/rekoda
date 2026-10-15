@@ -210,7 +210,15 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
      * never through the merchant-operations command set: a customer's
      * message is a conversation plus, at most, this one narrow act. */
     if (inbound.messageType === 'order' && inbound.order && inbound.order.items.length > 0) {
-      const note = await ingestCatalogueOrder(tx, deps, businessId, participant, inbound);
+      const note = await ingestCatalogueOrder(
+        tx,
+        deps,
+        businessId,
+        participant,
+        inbound,
+        eventId,
+        event.receivedAt,
+      );
       await events.markProcessed(tx, eventId, note, businessId);
       return;
     }
@@ -459,12 +467,63 @@ async function ingestCatalogueOrder(
   businessId: string,
   participant: string,
   inbound: InboundEvent,
+  /** The stored event this order arrived on, where its units are reserved. */
+  eventId: string,
+  /** When it arrived: the month its units are metered and refunded in. */
+  receivedAt: Date,
 ): Promise<string | null> {
   const log = new Logger('CustomerMessageJob');
   const externalRef = `meta:${inbound.externalId}`;
 
   const existing = await ordersRepo.orderByExternalRef(tx, businessId, externalRef);
   if (existing) return null; // Redelivered webhook: the order already stands.
+
+  /**
+   * The units this order pays for are RESERVATIONS on the stored event
+   * (G-60, as G-57 made them for chat): each is recorded on the event in the
+   * same transaction that consumes it, a retry reuses what the event already
+   * holds rather than paying again, and a give-back takes the record and
+   * refunds in one transaction, so it happens once. A refund that fails is
+   * never swallowed: the job fails, the event stays unprocessed, and the
+   * retry gives back what is still held. Every unit is metered in the month
+   * the message arrived.
+   */
+  const period = usagePeriod(receivedAt);
+  /* Check, consume and record in one step under the event row's lock, so
+   * two attempts of this event (a stalled job reclaimed while its first
+   * worker still runs) never pay for one unit twice (Codex on #271). */
+  const reserve = (unit: 'CATALOGUE_ORDERS' | 'DOCUMENT_GENERATION'): Promise<boolean> =>
+    withBusiness(deps.db, businessId, (own) =>
+      events.reserveUnitForEvent(own, businessId, eventId, unit, async () => {
+        const plan = await usageRepo.planFor(own, businessId);
+        return usageRepo.consumeUnit(
+          own,
+          businessId,
+          period,
+          unit,
+          await meterAllowance(deps.config, own, businessId, plan, unit),
+        );
+      }),
+    );
+  const giveBack = (unit: 'CATALOGUE_ORDERS' | 'DOCUMENT_GENERATION') =>
+    withBusiness(deps.db, businessId, async (own) => {
+      if (await events.takeReservedUnit(own, businessId, eventId, unit)) {
+        await usageRepo.refundUnit(own, businessId, period, unit);
+      }
+    });
+  /**
+   * Every exit that produces no order and no invoice gives back everything
+   * this event holds, each unit on its own. If any give-back fails, this
+   * throws: a terminal refusal is never recorded while its refund is owed.
+   */
+  const settle = async (): Promise<void> => {
+    const refunds = await Promise.allSettled(
+      (['CATALOGUE_ORDERS', 'DOCUMENT_GENERATION'] as const).map(giveBack),
+    );
+    if (refunds.some((r) => r.status === 'rejected')) {
+      throw new Error('customer.order: a refund failed; the job retries it');
+    }
+  };
 
   const wanted = inbound.order?.items ?? [];
   /* Meta's retailer id is whatever string the merchant's catalog uses, which
@@ -478,6 +537,9 @@ async function ingestCatalogueOrder(
   const byId = new Map(products.map((p) => [p.retailerId, p]));
   if (wanted.some((item) => !byId.has(item.retailerId))) {
     log.warn('customer.order: cart names an item the shelf does not sell; order refused');
+    /* A retry may arrive here after the merchant unlisted an item: what an
+     * earlier attempt reserved goes back before the refusal is recorded. */
+    await settle();
     return 'order refused: unknown or unsellable item';
   }
 
@@ -509,121 +571,115 @@ async function ingestCatalogueOrder(
    * at all is told that rather than charged for finding out. The bus checks
    * the same entitlement again below: a second refusal is the matrix
    * holding, not a duplicate. */
+
   const notEntitled = await withBusiness(deps.db, businessId, (own) =>
     entitlementsRepo.requireEntitlement(own, businessId, 'REKODA_INTEGRATE'),
   );
-  if (notEntitled) return 'order refused: not entitled';
-
-  const period = usagePeriod(new Date());
-  const plan = await withBusiness(deps.db, businessId, (own) => usageRepo.planFor(own, businessId));
-  const orderGranted = await withBusiness(deps.db, businessId, async (own) =>
-    usageRepo.consumeUnit(
-      own,
-      businessId,
-      period,
-      'CATALOGUE_ORDERS',
-      await meterAllowance(deps.config, own, businessId, plan, 'CATALOGUE_ORDERS'),
-    ),
-  );
-  if (!orderGranted) return 'order refused: no catalogue orders left in plan';
-
-  const documentGranted = await withBusiness(deps.db, businessId, async (own) =>
-    usageRepo.consumeUnit(
-      own,
-      businessId,
-      period,
-      'DOCUMENT_GENERATION',
-      await meterAllowance(deps.config, own, businessId, plan, 'DOCUMENT_GENERATION'),
-    ),
-  );
-  if (!documentGranted) {
-    await withBusiness(deps.db, businessId, (own) =>
-      usageRepo.refundUnit(own, businessId, period, 'CATALOGUE_ORDERS'),
-    );
-    return 'order refused: no documents left in plan';
+  if (notEntitled) {
+    /* On a retry the event may still hold what an earlier attempt paid. */
+    await settle();
+    return 'order refused: not entitled';
   }
 
-  /**
-   * One way back for both units.
-   *
-   * The same shape the chat door was rewritten into: every exit that
-   * produces no order and no invoice gives back exactly what was reserved,
-   * and no branch decides for itself which of the two that is.
-   */
-  const refundReserved = async (): Promise<void> => {
-    await withBusiness(deps.db, businessId, (own) =>
-      usageRepo.refundUnit(own, businessId, period, 'CATALOGUE_ORDERS'),
-    );
-    await withBusiness(deps.db, businessId, (own) =>
-      usageRepo.refundUnit(own, businessId, period, 'DOCUMENT_GENERATION'),
-    );
-  };
-
-  /* The customer, anchored on their own phone — the same vault door every
-   * identity passes through. Raw number in memory only. */
-  const resolved = await deps.gateway.resolveStorefrontCustomer(businessId, '', participant);
-
-  const input: CatalogueOrderCmdInput = {
-    businessId,
-    customerId: resolved?.customerId ?? null,
-    lines,
-    totalK,
-    sourceId: inbound.externalId,
-    externalRef,
-  };
-  let orderId: string;
-  if (deps.commandPlaceOrder) {
-    const run = await deps.commandBus.run(
-      tx,
-      {
-        businessId,
-        command: 'PlaceOrder',
-        payload: input,
-        actor: 'customer:waba',
-        ingress: 'WABA',
-        idempotencyKey: externalRef,
-      },
-      () => placeCatalogueOrderWork(tx, input),
-    );
-    /* A bus refusal here is a terminal fact about THIS cart, not a fault
-     * to retry: a business whose Integrate entitlement lapsed mid-cart
-     * takes no order, and the note says so. */
-    if (run.outcome === 'not_entitled') {
-      await refundReserved();
-      return 'order refused: not entitled';
+  try {
+    if (!(await reserve('CATALOGUE_ORDERS'))) {
+      await settle();
+      return 'order refused: no catalogue orders left in plan';
     }
-    if (run.outcome !== 'done') {
-      await refundReserved();
-      throw new Error(`PlaceOrder refused unexpectedly: ${run.outcome}`);
+    if (!(await reserve('DOCUMENT_GENERATION'))) {
+      await settle();
+      return 'order refused: no documents left in plan';
     }
-    orderId = run.result.orderId;
-  } else {
-    /* Same refusal as the storefront: this branch never checked entitlement
-     * at all, so running it would take an order from a business whose plan
-     * does not carry Integrate. */
-    await refundReserved();
-    throw new Error(
-      'REKODA_COMMAND_PLACE_ORDER is off. The legacy catalogue order path no longer places orders.',
+    return await placeTheOrder();
+  } catch (error) {
+    /* Nothing was booked (the job's transaction rolls back), so what this
+     * event holds goes back before the retry; if that fails too, the retry
+     * finds it still held and neither pays again nor loses it. The failure
+     * that matters is the one rethrown. */
+    await settle().catch(() =>
+      log.error('customer.order: a refund failed; the retry gives it back'),
     );
+    throw error;
   }
 
-  /* §5.2, in the same transaction as the placement: server-side
-   * validation against real catalogue state and real stock, BEFORE any
-   * figure is shown. VALIDATED gets its invoice and its §19.1 charge
-   * records; a refusal leaves the order visibly CANCELLED with nothing
-   * financial behind it — and the atomicity means a crash between the two
-   * leaves no half-validated order anywhere. */
-  const validated = await validateCatalogueOrderWork(tx, {
-    businessId,
-    orderId,
-    actor: 'customer:waba',
-  });
-  if (validated.outcome === 'rejected') {
-    /* The order is visibly CANCELLED with nothing financial behind it, so
-     * no invoice came out and neither unit was spent on anything. */
-    await refundReserved();
-    log.warn(`customer.order: validation refused the cart (${validated.reason})`);
-    return `order rejected: ${validated.reason}`;
+  async function placeTheOrder(): Promise<string | null> {
+    /* The customer, anchored on their own phone — the same vault door every
+     * identity passes through. Raw number in memory only. */
+    const resolved = await deps.gateway.resolveStorefrontCustomer(businessId, '', participant);
+
+    const input: CatalogueOrderCmdInput = {
+      businessId,
+      customerId: resolved?.customerId ?? null,
+      lines,
+      totalK,
+      sourceId: inbound.externalId,
+      externalRef,
+    };
+    let orderId: string;
+    if (deps.commandPlaceOrder) {
+      const run = await deps.commandBus.run(
+        tx,
+        {
+          businessId,
+          command: 'PlaceOrder',
+          payload: input,
+          actor: 'customer:waba',
+          ingress: 'WABA',
+          idempotencyKey: externalRef,
+        },
+        () => placeCatalogueOrderWork(tx, input),
+      );
+      /* A bus refusal here is a terminal fact about THIS cart, not a fault
+       * to retry: a business whose Integrate entitlement lapsed mid-cart
+       * takes no order, and the note says so. */
+      if (run.outcome === 'not_entitled') {
+        await settle();
+        return 'order refused: not entitled';
+      }
+      if (run.outcome !== 'done') {
+        await settle();
+        throw new Error(`PlaceOrder refused unexpectedly: ${run.outcome}`);
+      }
+      orderId = run.result.orderId;
+      if (run.replayed) {
+        /* Another attempt of this event (a stalled job reclaimed while its
+         * first worker still ran) placed this order and committed, validated
+         * or refused in the same transaction. Its outcome stands and is never
+         * validated twice (Codex on #271): an invoiced order keeps the units
+         * it paid; a refused one leaves nothing held. */
+        const placed = await ordersRepo.orderByExternalRef(tx, businessId, externalRef);
+        if (placed?.invoiceId) return null;
+        await settle();
+        return 'order rejected: refused by an earlier attempt';
+      }
+    } else {
+      /* Same refusal as the storefront: this branch never checked entitlement
+       * at all, so running it would take an order from a business whose plan
+       * does not carry Integrate. */
+      await settle();
+      throw new Error(
+        'REKODA_COMMAND_PLACE_ORDER is off. The legacy catalogue order path no longer places orders.',
+      );
+    }
+
+    /* §5.2, in the same transaction as the placement: server-side
+     * validation against real catalogue state and real stock, BEFORE any
+     * figure is shown. VALIDATED gets its invoice and its §19.1 charge
+     * records; a refusal leaves the order visibly CANCELLED with nothing
+     * financial behind it — and the atomicity means a crash between the two
+     * leaves no half-validated order anywhere. */
+    const validated = await validateCatalogueOrderWork(tx, {
+      businessId,
+      orderId,
+      actor: 'customer:waba',
+    });
+    if (validated.outcome === 'rejected') {
+      /* The order is visibly CANCELLED with nothing financial behind it, so
+       * no invoice came out and neither unit was spent on anything. */
+      await settle();
+      log.warn(`customer.order: validation refused the cart (${validated.reason})`);
+      return `order rejected: ${validated.reason}`;
+    }
+    return null;
   }
-  return null;
 }

@@ -261,6 +261,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   reminderNothingToChase: [replies.reminderNothingToChase('INV-2026-000041')],
   voiceUnavailable: [replies.voiceUnavailable()],
   voiceTooLong: [replies.voiceTooLong(120), replies.voiceTooLong(90), replies.voiceTooLong(60)],
+  messageTooLong: [replies.messageTooLong()],
   voiceUnreadable: [replies.voiceUnreadable()],
   whichPeriod: [replies.whichPeriod('sales'), replies.whichPeriod('spending')],
   previewBehindQuestion: [replies.previewBehindQuestion()],
@@ -1045,5 +1046,13 @@ describe('purchaseIdentityReask after a no (Codex review of 5bfe87e)', () => {
     const text = replies.purchaseIdentityReask({ afterNo: true }).text;
     expect(text).not.toMatch(/cancel/i);
     expect(text).toContain('reply *same*');
+  });
+});
+
+describe('the length cut keeps characters whole (G-60 final review)', () => {
+  it('never leaves half of an emoji', () => {
+    const cut = replies.truncateForSending({ text: `${'x'.repeat(898)}😀${'y'.repeat(10)}` });
+    expect(cut.text.length).toBeLessThanOrEqual(replies.MAX_REPLY_CHARS);
+    expect(cut.text).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
   });
 });

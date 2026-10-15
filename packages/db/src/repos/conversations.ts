@@ -670,11 +670,43 @@ export async function claimDraft(
   return row?.state === 'expired' ? { outcome: 'expired' } : { outcome: 'not_pending' };
 }
 
+/** The link proposal on the draft this message produced, or null (G-60). */
+export async function draftIdentityLink(
+  tx: TenantDb,
+  businessId: string,
+  conversationMessageId: string,
+): Promise<unknown> {
+  const [row] = [
+    ...(await tx.execute<{ link: unknown }>(sql`
+      SELECT identity_link AS link FROM command_drafts
+       WHERE business_id = ${businessId}::uuid
+         AND conversation_message_id = ${conversationMessageId}::uuid
+         AND identity_link IS NOT NULL
+       LIMIT 1`)),
+  ];
+  return row?.link ?? null;
+}
+
+/** Drop the link proposal on this message's draft: its question was not shown (G-60). */
+export async function clearDraftIdentityLink(
+  tx: TenantDb,
+  businessId: string,
+  conversationMessageId: string,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE command_drafts SET identity_link = NULL, updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND conversation_message_id = ${conversationMessageId}::uuid
+       AND identity_link IS NOT NULL`);
+}
+
 /**
  * The preview this message produced never reached the merchant (G-23): the
  * send failed and was swallowed so the draft could survive. Without this the
  * draft would still say `previewed`, and a later "yes" after its window
- * would be told an unseen request expired.
+ * would be told an unseen request expired. Nor was its link question asked,
+ * so the proposal goes too: a later "yes" never joins two customers over a
+ * question the merchant did not see (G-60).
  */
 export async function markDraftUnseen(
   tx: TenantDb,
@@ -682,7 +714,8 @@ export async function markDraftUnseen(
   conversationMessageId: string,
 ): Promise<void> {
   await tx.execute(sql`
-    UPDATE command_drafts SET previewed = false, updated_at = clock_timestamp()
+    UPDATE command_drafts SET previewed = false, identity_link = NULL,
+           updated_at = clock_timestamp()
      WHERE business_id = ${businessId}::uuid
        AND conversation_message_id = ${conversationMessageId}::uuid
        AND previewed`);

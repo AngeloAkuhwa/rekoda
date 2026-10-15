@@ -23,10 +23,51 @@ const naira = z.number().finite().nonnegative().max(10_000_000_000); // ₦10bn 
 const quantity = z.number().finite().positive().max(1_000_000);
 const text = (max: number) => z.string().trim().min(1).max(max);
 
+/**
+ * The longest customer name the product stores, from any door: a model's
+ * mention, a storefront checkout, a dashboard quote. The privacy gateway's
+ * known-name pass recognises names up to exactly this length, so every name
+ * that can be stored can be recognised (G-60).
+ */
+export const CUSTOMER_NAME_MAX_CHARS = 80;
+
+/**
+ * The shortest customer name a person types at a door (a storefront
+ * checkout, a dashboard quote), and the shortest the known-name pass
+ * recognises (G-60). A one-character mention is an initial, not a name.
+ */
+export const CUSTOMER_NAME_MIN_CHARS = 2;
+
+/**
+ * THE customer-name contract, one schema for every door that stores a name
+ * (G-60): trimmed, CUSTOMER_NAME_MIN_CHARS to CUSTOMER_NAME_MAX_CHARS long composed,
+ * holding at least one letter (a figure such as "10" is never a name). The
+ * privacy gateway's known-name pass recognises exactly this, so a name the
+ * product accepts is a name it can keep away from a model.
+ *
+ * Trusted doors, whose names the merchant's chat is matched against: a
+ * mention the merchant makes in chat, and a dashboard quote. The public
+ * storefront accepts the same shape but its name is untrusted testimony from
+ * an anonymous buyer: stored encrypted for the order, never a known name.
+ */
+export const customerName = z
+  .string()
+  .trim()
+  /* Measured composed (NFC), so "Á" typed as A + an accent is one character
+   * and Unicode-equivalent spellings are equally valid; the known-name pass
+   * measures the same way. The value itself is kept as typed. */
+  .refine((value) => value.normalize('NFC').length >= CUSTOMER_NAME_MIN_CHARS, {
+    message: `a name is at least ${CUSTOMER_NAME_MIN_CHARS} characters`,
+  })
+  .refine((value) => value.normalize('NFC').length <= CUSTOMER_NAME_MAX_CHARS, {
+    message: `a name is at most ${CUSTOMER_NAME_MAX_CHARS} characters`,
+  })
+  .refine((value) => /\p{L}/u.test(value), { message: 'a name holds a letter' });
+
 /** A customer as the AI may refer to one: resolved token or raw mention. */
 export const CustomerRef = z.union([
   z.object({ kind: z.literal('token'), token: z.string().regex(/^CUSTOMER_[A-Z0-9]{2,12}$/) }),
-  z.object({ kind: z.literal('mention'), mention: text(80) }),
+  z.object({ kind: z.literal('mention'), mention: customerName }),
   z.object({ kind: z.literal('none') }),
 ]);
 export type CustomerRef = z.infer<typeof CustomerRef>;

@@ -10,7 +10,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from './client.js';
-import { billingRepo, identity, usageRepo } from './index.js';
+import { billingRepo, events, identity, usageRepo } from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
 import { USAGE_UNITS, allowanceFor } from '@rekoda/core';
 
@@ -393,4 +393,84 @@ describe('the metered vocabulary (spec 4.2)', () => {
     );
     expect(rows.find((row) => row.unit === 'VOICE_MINUTES')?.used).toBe(137);
   });
+});
+
+/**
+ * Codex on #271: two attempts of one event (a stalled job reclaimed while its
+ * first worker still runs) reserve the same unit at once. One charge, one
+ * record, one refund.
+ */
+describe('a unit reserved for an event, by two attempts at once', () => {
+  async function seedEvent(businessId: string): Promise<string> {
+    const recorded = await withBusiness(db, businessId, (tx) =>
+      events.recordEvent(tx, {
+        provider: 'meta',
+        eventType: 'messages',
+        externalId: `g60-race-${Math.random()}`,
+        payload: {},
+        businessId,
+      }),
+    );
+    if (!recorded.isNew) throw new Error('event not recorded');
+    return recorded.id;
+  }
+
+  const usedOf = async (businessId: string, unit: 'CATALOGUE_ORDERS' | 'DOCUMENT_GENERATION') =>
+    (await withBusiness(db, businessId, (tx) => usageRepo.usageFor(tx, businessId, PERIOD))).find(
+      (r) => r.unit === unit,
+    )?.used ?? 0;
+
+  const heldOf = async (businessId: string, eventId: string) => {
+    const [row] = await withBusiness(db, businessId, async (tx) => [
+      ...(await tx.execute<{ units: string[] }>(
+        sql`SELECT reserved_units AS units FROM external_events WHERE id = ${eventId}::uuid`,
+      )),
+    ]);
+    return row!.units;
+  };
+
+  it.each(['CATALOGUE_ORDERS', 'DOCUMENT_GENERATION'] as const)(
+    'charges and records %s once, and gives it back once',
+    async (unit) => {
+      const businessId = await seedBusiness();
+      const eventId = await seedEvent(businessId);
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      let entered!: () => void;
+      const inside = new Promise<void>((r) => (entered = r));
+
+      /* Attempt A is inside its reservation, before it meters, when B starts. */
+      const a = withBusiness(db, businessId, (tx) =>
+        events.reserveUnitForEvent(tx, businessId, eventId, unit, async () => {
+          entered();
+          await gate;
+          return usageRepo.consumeUnit(tx, businessId, PERIOD, unit, 10);
+        }),
+      );
+      await inside;
+      const b = withBusiness(db, businessId, (tx) =>
+        events.reserveUnitForEvent(tx, businessId, eventId, unit, () =>
+          usageRepo.consumeUnit(tx, businessId, PERIOD, unit, 10),
+        ),
+      );
+      await new Promise((r) => setTimeout(r, 200));
+      release();
+      expect(await a).toBe(true);
+      expect(await b).toBe(true);
+
+      expect(await usedOf(businessId, unit)).toBe(1);
+      expect(await heldOf(businessId, eventId)).toEqual([unit]);
+
+      const giveBack = () =>
+        withBusiness(db, businessId, async (tx) => {
+          if (await events.takeReservedUnit(tx, businessId, eventId, unit)) {
+            await usageRepo.refundUnit(tx, businessId, PERIOD, unit);
+          }
+        });
+      await giveBack();
+      await giveBack();
+      expect(await usedOf(businessId, unit)).toBe(0);
+      expect(await heldOf(businessId, eventId)).toEqual([]);
+    },
+  );
 });

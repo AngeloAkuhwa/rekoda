@@ -9,7 +9,11 @@ import {
 } from './vault.js';
 import {
   detectStructuralPii,
+  displayOf,
+  fitRehydrated,
   generateCustomerToken,
+  protectedSpans,
+  replaceOutsideTokens,
   redactForLog,
   rehydrate,
   sequentialToken,
@@ -245,5 +249,123 @@ describe('log redaction — the last line of defence', () => {
     expect(redactForLog('invoice INV-0042 failed to render')).toBe(
       'invoice INV-0042 failed to render',
     );
+  });
+});
+
+describe('one token, one deterministic display (G-60)', () => {
+  const ada = { facet: 'name' as const, value: 'Ada Obi', key: 'ada obi' };
+  const phone = { facet: 'phone' as const, value: '08031234567', key: '2348031234567' };
+  const sameNumber = { facet: 'phone' as const, value: '+234 803 123 4567', key: '2348031234567' };
+  const email = { facet: 'email' as const, value: 'ada@mail.com', key: 'ada@mail.com' };
+
+  it('shows a lone facet as typed', () => {
+    expect(displayOf([phone])).toBe('08031234567');
+  });
+
+  it('puts the name first and the rest beside it, whatever the order typed', () => {
+    expect(displayOf([phone, ada, email])).toBe('Ada Obi (08031234567, ada@mail.com)');
+    expect(displayOf([email, ada, phone])).toBe('Ada Obi (08031234567, ada@mail.com)');
+  });
+
+  it('shows one number once, in the form typed first', () => {
+    expect(displayOf([phone, sameNumber])).toBe('08031234567');
+    expect(displayOf([sameNumber, phone])).toBe('+234 803 123 4567');
+  });
+
+  /* Codex on #271: one name typed composed and decomposed is one name. */
+  it('shows one name once, whichever Unicode composition each was typed in', () => {
+    const name = (value: string) => ({
+      facet: 'name' as const,
+      value,
+      key: normaliseFacet('name', value),
+    });
+    const nfc = name('Adébáyọ̀'.normalize('NFC'));
+    const nfd = name('Adébáyọ̀'.normalize('NFD'));
+    expect(displayOf([nfc, nfd])).toBe(nfc.value);
+    expect(displayOf([nfd, phone, nfc])).toBe(`${nfd.value} (08031234567)`);
+  });
+});
+
+describe('a token is an opaque span (G-60)', () => {
+  it('finds every given token and anything shaped like one, once', () => {
+    const text = 'CUSTOMER_ABC paid ACCOUNT_1, and CUSTOMER_X9Z. ref CUSTOMER_ABC';
+    expect(protectedSpans(text, ['CUSTOMER_ABC']).map((s) => text.slice(s.start, s.end))).toEqual([
+      'CUSTOMER_ABC',
+      'ACCOUNT_1',
+      'CUSTOMER_X9Z',
+      'CUSTOMER_ABC',
+    ]);
+  });
+
+  it('leaves ordinary words alone', () => {
+    expect(protectedSpans('Customer Ada paid 20k', [])).toEqual([]);
+  });
+
+  /* Codex on #271: a pasted token is opaque whatever is glued to its left,
+   * and nothing outside it is swallowed on either side. */
+  it.each([
+    ['refCUSTOMER_ABC paid', 'ref'],
+    ['xCUSTOMER_ABC paid', 'x'],
+    ['1CUSTOMER_ABC paid', '1'],
+    ['_CUSTOMER_ABC paid', '_'],
+    ['CUSTOMER_ABCfoo paid', ''],
+  ])('protects the token in %j', (text, before) => {
+    const spans = protectedSpans(text, []);
+    expect(spans.map((s) => text.slice(s.start, s.end))).toEqual(['CUSTOMER_ABC']);
+    expect(spans[0]!.start).toBe(before.length);
+  });
+});
+
+describe('rehydration is one pass (G-60 final review)', () => {
+  it('never substitutes inside a value it has just put back', () => {
+    /* A typed email that happens to spell another token stays as typed. */
+    const tokens = new Map([
+      ['CUSTOMER_XYZ', 'CUSTOMER_ABC@mail.com'],
+      ['CUSTOMER_ABC', 'Ada Obi'],
+    ]);
+    expect(rehydrate('send to CUSTOMER_XYZ, cc CUSTOMER_ABC', tokens)).toBe(
+      'send to CUSTOMER_ABC@mail.com, cc Ada Obi',
+    );
+  });
+});
+
+describe('what leaves fits after rehydration (G-60 final review)', () => {
+  it('cuts between identities and marks the cut', () => {
+    const tokens = new Map([['CUSTOMER_ABC', 'Ada Obi (08031234567)']]);
+    const fitted = fitRehydrated('CUSTOMER_ABC, CUSTOMER_ABC, CUSTOMER_ABC', tokens, 50);
+    const shown = rehydrate(fitted, tokens);
+    expect(shown.length).toBeLessThanOrEqual(50);
+    expect(shown).toBe('Ada Obi (08031234567), Ada Obi (08031234567),…');
+  });
+
+  it('leaves text that already fits exactly as it is', () => {
+    const tokens = new Map([['CUSTOMER_ABC', 'Ada Obi']]);
+    expect(fitRehydrated('CUSTOMER_ABC paid', tokens, 50)).toBe('CUSTOMER_ABC paid');
+  });
+});
+
+describe('cuts and scrubs keep text whole (G-60 final review, round 3)', () => {
+  it('never cuts through a character made of two code units', () => {
+    const tokens = new Map([['CUSTOMER_ABC', 'Ada']]);
+    const fitted = fitRehydrated(`${'x'.repeat(898)}😀${'y'.repeat(10)} CUSTOMER_ABC`, tokens, 900);
+    expect(fitted).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+
+  it('leaves a contraction alone while scrubbing the name', () => {
+    expect(replaceOutsideTokens("I don't know Don's price", 'Don', 'CUSTOMER_Q', [])).toBe(
+      "I don't know CUSTOMER_Q's price",
+    );
+  });
+});
+
+describe('the stored-message scrub takes what the gateway takes (G-60 final review, round 4)', () => {
+  it.each([
+    ['Ada-2 wigs 20k', 'Ada', 'T-2 wigs 20k'],
+    ["Ada'll pay 5k", 'Ada', "T'll pay 5k"],
+    ["Ada's order", 'Ada', "T's order"],
+    ["I don't know Don", 'Don', "I don't know T"],
+    ['Mary-Ann paid', 'Ann', 'Mary-Ann paid'],
+  ])('scrubs %j for %j', (text, name, expected) => {
+    expect(replaceOutsideTokens(text, name, 'T', [])).toBe(expected);
   });
 });

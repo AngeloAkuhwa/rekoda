@@ -569,6 +569,284 @@ describe('a catalogue cart becomes an order (spec §3.2; W3, PR-087)', () => {
     expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
   });
 
+  /** Run the queue until a job has failed with `reason`, so the test is never vacuous. */
+  async function runUntilFailed(businessId: string, reason: string): Promise<number> {
+    const runner = buildRunner(workerDb, db, deps);
+    const { db: jobsDb, close: closeJobs } = createDb(urls.owner, { max: 1 });
+    try {
+      for (let pass = 0; pass < 20; pass++) {
+        const [row] = [
+          ...(await jobsDb.execute<{ n: number }>(sql`
+            SELECT count(*)::int AS n FROM jobs WHERE business_id = ${businessId}::uuid
+               AND last_error LIKE ${`%${reason}%`}`)),
+        ];
+        if (Number(row?.n) > 0) return Number(row?.n);
+        await runner.runOnce();
+      }
+      return 0;
+    } finally {
+      await closeJobs();
+    }
+  }
+
+  /* Owner decision on #271: a terminal refusal whose refund fails is not
+   * processed; the retry gives back what the first attempt paid, once. */
+  it('retries a terminal refusal whose refund failed, and refunds exactly once', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002267', 'PN-METER-7');
+    const period = usagePeriod(new Date());
+    await post(
+      orderPayload('2349097776777', 'wamid.METER.7', 'PN-METER-7', [
+        { retailerId: wigId, quantity: 1 },
+      ]),
+    );
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      /* Integrate lapses the moment the document unit is paid, so the order
+       * is refused after the meter; the first orders refund fails. */
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_wa_lapse() RETURNS trigger SECURITY DEFINER AS $$
+        BEGIN UPDATE businesses SET plan = 'chat' WHERE id = NEW.business_id; RETURN NEW; END
+        $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_wa_lapse AFTER INSERT OR UPDATE ON usage_counters
+          FOR EACH ROW WHEN (NEW.unit = 'DOCUMENT_GENERATION' AND NEW.used > 0)
+          EXECUTE FUNCTION g60_wa_lapse()`);
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g60_wa_refund_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_wa_refund_fails() RETURNS trigger SECURITY DEFINER AS $$
+        BEGIN
+          IF NEW.unit = 'CATALOGUE_ORDERS' AND NEW.used < OLD.used
+             AND nextval('g60_wa_refund_once') = 1 THEN
+            RAISE EXCEPTION 'g60: the refund is unavailable';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_wa_refund_fails BEFORE UPDATE ON usage_counters
+          FOR EACH ROW EXECUTE FUNCTION g60_wa_refund_fails()`);
+
+      expect(await runUntilFailed(businessId, 'refund')).toBe(1);
+      await ownerDb.execute(sql`
+        UPDATE jobs SET run_at = now() WHERE business_id = ${businessId}::uuid AND state <> 'done'`);
+      const runner = buildRunner(workerDb, db, deps);
+      while (await runner.runOnce()) {
+        /* the retry, and anything else due */
+      }
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_wa_lapse ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_wa_lapse()`);
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_wa_refund_fails ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_wa_refund_fails()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g60_wa_refund_once`);
+      await close();
+    }
+    expect([...(await ordersOf(businessId))]).toHaveLength(0);
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, period),
+    );
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+    expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+  });
+
+  /* Final review of #271: the order unit is taken, then the document meter
+   * fails; the order unit goes back before the job retries. */
+  it('gives the order unit back when the document meter fails', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002268', 'PN-METER-8');
+    const period = usagePeriod(new Date());
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    /* Posted first: the webhook itself writes a usage row. */
+    await post(
+      orderPayload('2349097776888', 'wamid.METER.8', 'PN-METER-8', [
+        { retailerId: wigId, quantity: 1 },
+      ]),
+    );
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_doc_meter_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.unit = 'DOCUMENT_GENERATION' THEN RAISE EXCEPTION 'g60: the meter is unavailable'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_doc_meter_fails BEFORE INSERT OR UPDATE ON usage_counters
+          FOR EACH ROW EXECUTE FUNCTION g60_doc_meter_fails()`);
+      expect(await runUntilFailed(businessId, 'the meter is unavailable')).toBe(1);
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_doc_meter_fails ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_doc_meter_fails()`);
+      await close();
+    }
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, period),
+    );
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+  });
+
+  /* Final review of #271: the vault fails resolving the customer's phone on
+   * the WhatsApp order door; the attempt books nothing and keeps nothing. */
+  it('gives back both units when the vault fails resolving the buyer', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002269', 'PN-METER-9');
+    const period = usagePeriod(new Date());
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_buyer_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.facet = 'phone' THEN RAISE EXCEPTION 'g60: the vault is unavailable'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_buyer_fails BEFORE INSERT ON customer_identities
+          FOR EACH ROW EXECUTE FUNCTION g60_buyer_fails()`);
+      await post(
+        orderPayload('2349097776999', 'wamid.METER.9', 'PN-METER-9', [
+          { retailerId: wigId, quantity: 1 },
+        ]),
+      );
+      expect(await runUntilFailed(businessId, 'the vault is unavailable')).toBe(1);
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_buyer_fails ON customer_identities`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_buyer_fails()`);
+      await close();
+    }
+    expect([...(await ordersOf(businessId))]).toHaveLength(0);
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, period),
+    );
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+    expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+  });
+
+  /* Codex on #271: an attempt dies holding both units (the buyer's vault
+   * write and every refund fail); before the retry the merchant unlists the
+   * item. The retry refuses the cart, and gives back what the event held. */
+  it('gives back carried units when a retry refuses a cart that changed', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002270', 'PN-METER-10');
+    const period = usagePeriod(new Date());
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_cart_buyer_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.facet = 'phone' THEN RAISE EXCEPTION 'g60: the vault is unavailable'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_cart_buyer_fails BEFORE INSERT ON customer_identities
+          FOR EACH ROW EXECUTE FUNCTION g60_cart_buyer_fails()`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_cart_refund_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.used < OLD.used THEN RAISE EXCEPTION 'g60: the refund is unavailable'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_cart_refund_fails BEFORE UPDATE ON usage_counters
+          FOR EACH ROW EXECUTE FUNCTION g60_cart_refund_fails()`);
+      await post(
+        orderPayload('2349097777010', 'wamid.METER.10', 'PN-METER-10', [
+          { retailerId: wigId, quantity: 1 },
+        ]),
+      );
+      expect(await runUntilFailed(businessId, 'the vault is unavailable')).toBe(1);
+    } finally {
+      await ownerDb.execute(
+        sql`DROP TRIGGER IF EXISTS g60_cart_buyer_fails ON customer_identities`,
+      );
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_cart_buyer_fails()`);
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_cart_refund_fails ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_cart_refund_fails()`);
+    }
+    try {
+      /* Both units are still held by the event the retry will run. */
+      const held = await withBusiness(db, businessId, (tx) =>
+        usageRepo.usageFor(tx, businessId, period),
+      );
+      expect(held.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(1);
+      expect(held.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
+      await ownerDb.execute(sql`UPDATE products SET active = 0 WHERE id = ${wigId}::uuid`);
+      await ownerDb.execute(sql`
+        UPDATE jobs SET run_at = now() WHERE business_id = ${businessId}::uuid AND state <> 'done'`);
+      const runner = buildRunner(workerDb, db, deps);
+      while (await runner.runOnce()) {
+        /* the retry, and anything else due */
+      }
+    } finally {
+      await close();
+    }
+    expect([...(await ordersOf(businessId))]).toHaveLength(0);
+    expect(await invoiceCount(businessId)).toBe(0);
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, period),
+    );
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+    expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+  });
+
+  /* Codex on #271: a reclaimed attempt runs beside the first, which has
+   * placed and validated the order but not yet committed. The second's
+   * PlaceOrder is a replay of the first: the order stands, so its units stay
+   * paid, once each. */
+  it('keeps the units of an order a reclaimed attempt finds already placed', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002272', 'PN-METER-12');
+    const period = usagePeriod(new Date());
+    /* A returning buyer: their thread already exists, so nothing else
+     * serialises the two attempts before the order. */
+    await post(
+      orderPayload('2349097777012', 'wamid.METER.12a', 'PN-METER-12', [
+        { retailerId: wigId, quantity: 1 },
+      ]),
+    );
+    const drain = buildRunner(workerDb, db, deps);
+    while (await drain.runOnce()) {
+      /* the first order and everything it queued */
+    }
+    /* A different cart, so it is not refused as a repeat of the first. */
+    const bag = await withBusiness(db, businessId, (tx) =>
+      catalogueRepo.createProduct(tx, businessId, { name: 'bag', unitPriceK: 50_000 }),
+    );
+    await post(
+      orderPayload('2349097777012', 'wamid.METER.12', 'PN-METER-12', [
+        { retailerId: bag.id, quantity: 1 },
+      ]),
+    );
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      /* The first attempt stalls once, after its invoice, before it commits. */
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g60_replay_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_invoice_stalls() RETURNS trigger SECURITY DEFINER AS $$
+        BEGIN
+          IF nextval('g60_replay_once') = 1 THEN PERFORM pg_sleep(2); END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g60_invoice_stalls AFTER INSERT ON invoices
+          FOR EACH ROW EXECUTE FUNCTION g60_invoice_stalls()`);
+
+      const first = buildRunner(workerDb, db, deps).runOnce();
+      await new Promise((r) => setTimeout(r, 700));
+      /* What `reclaimStalled` does to a job whose worker went quiet. */
+      await ownerDb.execute(sql`
+        UPDATE jobs SET state = 'pending', locked_at = NULL, locked_by = NULL
+         WHERE business_id = ${businessId}::uuid AND state = 'running'`);
+      const second = buildRunner(workerDb, db, deps).runOnce();
+      await Promise.allSettled([first, second]);
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g60_invoice_stalls ON invoices`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_invoice_stalls()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g60_replay_once`);
+      await close();
+    }
+    expect([...(await ordersOf(businessId))]).toHaveLength(2);
+    expect(await invoiceCount(businessId)).toBe(2);
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, period),
+    );
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(2);
+    expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(2);
+  });
+
   /* Idempotency and metering have to agree: Meta redelivers, and a second
    * delivery that places no second order must not charge for one either. */
   it('charges nothing twice for a redelivered webhook', async () => {
@@ -5071,6 +5349,282 @@ describe('two records for one person', () => {
     await drain();
 
     expect(stubSender.lastText).not.toContain('same customer');
+  });
+
+  it('forgets the question when the preview carrying it was never delivered', async () => {
+    const business = await seedMerchant('+2348031234567');
+    stubTransport.replyWith(A_SALE_TO_TOKEN);
+    stubSender.failWith();
+
+    await post(
+      messagePayload(
+        '2348031234567',
+        'wamid.L5',
+        'Ada 08031234567 ada@example.com bought 3 wigs for 150k',
+      ),
+    );
+    await drain();
+    await post(messagePayload('2348031234567', 'wamid.L5-yes', 'yes'));
+    await drain();
+
+    /* Nobody was asked, so a later yes joins nothing (G-60 owner decision). */
+    expect(await distinctCustomers(business.id)).toBe(2);
+  });
+});
+
+/**
+ * A buyer the merchant names in Chat after they checked out on the public
+ * storefront (G-60 owner decision, 14 Oct 2026). The storefront name is
+ * untrusted, so it never matches; the model's mention makes a NEW trusted
+ * customer beside the phone one. The merchant is asked whether they are one
+ * person, in the preview, and a yes leaves one customer whose one name is
+ * the one the merchant gave.
+ */
+describe('a storefront buyer named later in Chat', () => {
+  const PHONE = '08035551234';
+  const SALE_TO_CHIDI = {
+    intent: 'RecordSale',
+    customer: { kind: 'mention', mention: 'Chidi Okafor' },
+    items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+    statedTotal: 150_000,
+    reportedPayment: 0,
+    paymentMethod: 'transfer',
+    discount: null,
+    deliveryFee: null,
+    dueDescription: null,
+  };
+
+  async function seedMerchant() {
+    const user = await identity.upsertUserByPhone(db, '+2348031234567');
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  /** Customers, and each name facet with whether it is a known name. */
+  const ledger = (businessId: string) =>
+    withBusiness(db, businessId, async (tx) => {
+      const customers = [
+        ...(await tx.execute<{ n: number }>(
+          sql`SELECT count(*)::int AS n FROM customers WHERE business_id = ${businessId}::uuid`,
+        )),
+      ][0]!.n;
+      const names = [
+        ...(await tx.execute<{ customer_id: string; trusted: boolean }>(sql`
+          SELECT customer_id, match_key IS NOT NULL AS trusted FROM customer_identities
+           WHERE business_id = ${businessId}::uuid AND facet = 'name'`)),
+      ];
+      return { customers, names };
+    });
+
+  const tokenOf = async (businessId: string, text: string) =>
+    (await deps.gateway.tokenise(businessId, text)).text.match(/CUSTOMER_[0-9A-Z]+/)?.[0];
+
+  it('asks, joins on yes, and keeps the merchant-given name as the one name', async () => {
+    const business = await seedMerchant();
+    await deps.gateway.resolveStorefrontCustomer(business.id, 'Chidi Okafor', PHONE);
+    stubTransport.replyWith(SALE_TO_CHIDI);
+
+    await post(
+      messagePayload('2348031234567', 'wamid.SF1', `Chidi Okafor ${PHONE} bought 3 wigs for 150k`),
+    );
+    await drain();
+
+    expect(stubSender.lastText).toContain('same customer');
+    expect(stubSender.lastText).toContain('Reply *yes*');
+    // Asked, not done: two records until the merchant says yes.
+    expect((await ledger(business.id)).customers).toBe(2);
+
+    await post(messagePayload('2348031234567', 'wamid.SF1-yes', 'yes'));
+    await drain();
+
+    const after = await ledger(business.id);
+    expect(after.customers).toBe(1);
+    // One name, the trusted one, on the customer that kept the phone.
+    expect(after.names).toHaveLength(1);
+    expect(after.names[0]!.trusted).toBe(true);
+    const byPhone = await tokenOf(business.id, `call ${PHONE}`);
+    expect(byPhone).toBeDefined();
+    expect(await tokenOf(business.id, 'Chidi Okafor paid')).toBe(byPhone);
+    expect(await invoiceCount(business.id)).toBe(1);
+    /* The sale is on the customer that survived, by id and by token, never
+     * on the record the yes just absorbed. */
+    const [invoice] = await withBusiness(db, business.id, async (tx) => [
+      ...(await tx.execute<{ customer_id: string | null; token: string | null }>(sql`
+        SELECT i.customer_id, i.snapshot_json->>'customerToken' AS token
+          FROM invoices i WHERE i.business_id = ${business.id}::uuid`)),
+    ]);
+    const [survivor] = await withBusiness(db, business.id, async (tx) => [
+      ...(await tx.execute<{ id: string; token: string }>(
+        sql`SELECT id, token FROM customers WHERE business_id = ${business.id}::uuid`,
+      )),
+    ]);
+    expect(invoice!.customer_id).toBe(survivor!.id);
+    expect(invoice!.token).toBe(survivor!.token);
+  });
+
+  /* Codex on #271: a preview long enough to be cut loses the question at
+   * its end; a yes to what the merchant saw never joins the customers. */
+  it('joins nothing when the question was cut from a long preview', async () => {
+    const business = await seedMerchant();
+    await deps.gateway.resolveStorefrontCustomer(business.id, 'Chidi Okafor', PHONE);
+    const items = Array.from({ length: 30 }, (_, i) => ({
+      name: `long description wig number ${i + 1}`,
+      quantity: 1,
+      unitPrice: 5_000,
+    }));
+    stubTransport.replyWith({ ...SALE_TO_CHIDI, items, statedTotal: 150_000 });
+
+    await post(
+      messagePayload('2348031234567', 'wamid.SF8', `Chidi Okafor ${PHONE} bought 30 wigs for 150k`),
+    );
+    await drain();
+    expect(stubSender.lastText).not.toContain('same customer');
+
+    await post(messagePayload('2348031234567', 'wamid.SF8-yes', 'yes'));
+    await drain();
+    expect((await ledger(business.id)).customers).toBe(2);
+  });
+
+  /* Codex on #271: a message the known-name pass could not finish reaches
+   * no model, and the merchant is asked to send it in parts. */
+  it('sends no model a message too crafted to read, and asks for shorter parts', async () => {
+    const business = await seedMerchant();
+    await deps.gateway.resolveMention(business.id, 'Chidi Okafor');
+    const marks = '!"#$%&()*+,./:;<=>?@[\\]^_`{|}~';
+    const run = (k: number) =>
+      Array.from({ length: 39 }, (_, i) => marks[(i * 7 + k * 13 + i * k) % 31]).join('');
+    const crafted = Array.from({ length: 48 }, (_, k) => `${run(k)}a${run(k + 100)}`).join(' ');
+    stubTransport.replyWith(SALE_TO_CHIDI);
+
+    await post(
+      messagePayload('2348031234567', 'wamid.SF9', `Chidi Okafor bought 3 wigs ${crafted}`),
+    );
+    await drain();
+
+    expect(stubTransport.requests).toHaveLength(0);
+    expect(stubSender.lastText).toContain('shorter parts');
+    expect(await invoiceCount(business.id)).toBe(0);
+  });
+
+  it('keeps them apart when the merchant says no', async () => {
+    const business = await seedMerchant();
+    await deps.gateway.resolveStorefrontCustomer(business.id, 'Chidi Okafor', PHONE);
+    stubTransport.replyWith(SALE_TO_CHIDI);
+
+    await post(
+      messagePayload('2348031234567', 'wamid.SF2', `Chidi Okafor ${PHONE} bought 3 wigs for 150k`),
+    );
+    await drain();
+    await post(messagePayload('2348031234567', 'wamid.SF2-no', 'no'));
+    await drain();
+
+    expect((await ledger(business.id)).customers).toBe(2);
+    expect(await invoiceCount(business.id)).toBe(0);
+  });
+
+  it('asks nothing when the name is already a known customer', async () => {
+    const business = await seedMerchant();
+    await deps.gateway.resolveStorefrontCustomer(business.id, 'Chidi Okafor', PHONE);
+    await deps.gateway.resolveMention(business.id, 'Chidi Okafor');
+    stubTransport.replyWith(SALE_TO_CHIDI);
+
+    await post(
+      messagePayload('2348031234567', 'wamid.SF3', `Chidi Okafor ${PHONE} bought 3 wigs for 150k`),
+    );
+    await drain();
+
+    expect(stubSender.lastText).not.toContain('same customer');
+  });
+
+  it('asks nothing when the phone customer already has a known name of their own', async () => {
+    const business = await seedMerchant();
+    /* A merchant-named customer with this phone: a second trusted name would
+     * compete with the first, so no link is offered. */
+    const { token } = await deps.gateway.resolveMention(business.id, 'Emeka Obi');
+    const storefront = await deps.gateway.resolveStorefrontCustomer(business.id, '', PHONE);
+    const customerId = storefront!.customerId;
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        UPDATE customer_identities SET customer_id = (SELECT id FROM customers WHERE token = ${token})
+         WHERE business_id = ${business.id}::uuid AND customer_id = ${customerId}::uuid`),
+    );
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`DELETE FROM customers WHERE id = ${customerId}::uuid`),
+    );
+    stubTransport.replyWith(SALE_TO_CHIDI);
+
+    await post(
+      messagePayload('2348031234567', 'wamid.SF4', `Chidi Okafor ${PHONE} bought 3 wigs for 150k`),
+    );
+    await drain();
+
+    expect(stubSender.lastText).not.toContain('same customer');
+  });
+
+  it('asks nothing when the message names three customers', async () => {
+    const business = await seedMerchant();
+    await deps.gateway.resolveStorefrontCustomer(business.id, 'Chidi Okafor', PHONE);
+    await deps.gateway.resolveStorefrontCustomer(business.id, 'Bisi Ade', '08035559999');
+    stubTransport.replyWith(SALE_TO_CHIDI);
+
+    await post(
+      messagePayload(
+        '2348031234567',
+        'wamid.SF5',
+        `Chidi Okafor ${PHONE} and 08035559999 bought 3 wigs for 150k`,
+      ),
+    );
+    await drain();
+
+    expect(stubSender.lastText).not.toContain('same customer');
+  });
+
+  it('asks nothing on a question to the books, and a later yes joins nothing', async () => {
+    const business = await seedMerchant();
+    await deps.gateway.resolveStorefrontCustomer(business.id, 'Chidi Okafor', PHONE);
+    stubTransport.replyWith({
+      intent: 'Query',
+      topic: 'customer_balance',
+      customer: { kind: 'mention', mention: 'Chidi Okafor' },
+      period: null,
+      periodText: null,
+      format: null,
+    });
+
+    await post(
+      messagePayload('2348031234567', 'wamid.SF6', `how much does Chidi Okafor ${PHONE} owe`),
+    );
+    await drain();
+    expect(stubSender.lastText).not.toContain('same customer');
+
+    await post(messagePayload('2348031234567', 'wamid.SF6-yes', 'yes'));
+    await drain();
+    expect((await ledger(business.id)).customers).toBe(2);
+  });
+
+  it('forgets the question when the preview carrying it was never delivered', async () => {
+    const business = await seedMerchant();
+    await deps.gateway.resolveStorefrontCustomer(business.id, 'Chidi Okafor', PHONE);
+    stubTransport.replyWith(SALE_TO_CHIDI);
+    stubSender.failWith();
+
+    await post(
+      messagePayload('2348031234567', 'wamid.SF7', `Chidi Okafor ${PHONE} bought 3 wigs for 150k`),
+    );
+    await drain();
+    await post(messagePayload('2348031234567', 'wamid.SF7-yes', 'yes'));
+    await drain();
+
+    expect((await ledger(business.id)).customers).toBe(2);
   });
 });
 

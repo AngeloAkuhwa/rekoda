@@ -283,3 +283,479 @@ describe('linking two customers', () => {
     expect(Number([...survived][0]?.n)).toBe(1);
   });
 });
+
+/**
+ * G-60: adding a facet to a customer has an explicit contract. A facet that
+ * already keys ANOTHER customer is an `IdentityConflict`, never a raw
+ * database error and never a second owner; the same facet on the same
+ * customer is already done; anything else is a real failure and surfaces.
+ */
+describe('adding a facet to a known customer (G-60)', () => {
+  const nameFacet = (businessId: string, name: string) => ({
+    facet: 'name' as const,
+    ciphertext: encryptFacet(name, VAULT_KEY),
+    matchKey: matchKeyFor(businessId, 'name', normaliseFacet('name', name), MATCH_KEY),
+  });
+
+  async function ownersOf(businessId: string, matchKey: string): Promise<string[]> {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ customer_id: string }>(sql`
+        SELECT customer_id FROM customer_identities
+         WHERE business_id = ${businessId}::uuid AND match_key = ${matchKey}`),
+    );
+    return [...rows].map((r) => r.customer_id);
+  }
+
+  it('attaches a facet nobody holds', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000201');
+    const ada = await rememberCustomer(business.id, '08031111111', 'Ada Obi');
+    const facet = nameFacet(business.id, 'Ada Obi');
+
+    await expect(customersRepo.addIdentityFacet(db, business.id, ada.id, facet)).resolves.toBe(
+      'attached',
+    );
+    expect(await ownersOf(business.id, facet.matchKey)).toEqual([ada.id]);
+  });
+
+  it('treats the same facet on the same customer as already done', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000202');
+    const ada = await rememberCustomer(business.id, '08031111111', 'Ada Obi');
+    const facet = nameFacet(business.id, 'Ada Obi');
+    await customersRepo.addIdentityFacet(db, business.id, ada.id, facet);
+
+    await expect(customersRepo.addIdentityFacet(db, business.id, ada.id, facet)).resolves.toBe(
+      'already-attached',
+    );
+    expect(await ownersOf(business.id, facet.matchKey)).toEqual([ada.id]);
+  });
+
+  it('refuses a facet that keys another customer, as an IdentityConflict', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000203');
+    const ada = await rememberCustomer(business.id, '08031111111', 'Ada Obi');
+    const bola = await rememberCustomer(business.id, '08032222222', 'Bola Ade');
+    const facet = nameFacet(business.id, 'Ada Obi');
+    await customersRepo.addIdentityFacet(db, business.id, ada.id, facet);
+
+    await expect(
+      customersRepo.addIdentityFacet(db, business.id, bola.id, facet),
+    ).rejects.toBeInstanceOf(customersRepo.IdentityConflict);
+    expect(await ownersOf(business.id, facet.matchKey)).toEqual([ada.id]);
+  });
+
+  it('gives one owner when two customers race for the same facet', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000204');
+    const ada = await rememberCustomer(business.id, '08031111111', 'Ada Obi');
+    const bola = await rememberCustomer(business.id, '08032222222', 'Bola Ade');
+    const facet = nameFacet(business.id, 'Ada Obi');
+
+    const outcomes = await Promise.allSettled([
+      customersRepo.addIdentityFacet(db, business.id, ada.id, facet),
+      customersRepo.addIdentityFacet(db, business.id, bola.id, facet),
+    ]);
+    const won = outcomes.filter((o) => o.status === 'fulfilled');
+    const lost = outcomes.filter((o) => o.status === 'rejected');
+    expect(won).toHaveLength(1);
+    expect(lost).toHaveLength(1);
+    expect((lost[0] as PromiseRejectedResult).reason).toBeInstanceOf(
+      customersRepo.IdentityConflict,
+    );
+    const owners = await ownersOf(business.id, facet.matchKey);
+    expect(owners).toHaveLength(1);
+  });
+
+  it('lets a failure that is not a conflict surface as itself', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000205');
+    const facet = nameFacet(business.id, 'Ada Obi');
+    /* No such customer: a foreign-key failure, not somebody else's facet. */
+    const missing = '00000000-0000-4000-8000-000000000000';
+    const failure = await customersRepo.addIdentityFacet(db, business.id, missing, facet).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(customersRepo.IdentityConflict);
+    /* The database's reason, never the row it was writing. */
+    expect((failure as Error).message).toMatch(/foreign key/i);
+    expect((failure as Error).message).not.toContain(facet.ciphertext);
+    expect((failure as Error).message).not.toContain(facet.matchKey);
+    expect(await ownersOf(business.id, facet.matchKey)).toEqual([]);
+  });
+
+  /* Codex P2 on #271: when the facet is taken and the lookup of its holder
+   * then fails, that failure is scrubbed like the insert's. */
+  it('scrubs a failure of the holder lookup that follows a conflict', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000208');
+    const ada = await rememberCustomer(business.id, '08031111111', 'Ada Obi');
+    const bola = await rememberCustomer(business.id, '08032222222', 'Bola Ade');
+    const facet = nameFacet(business.id, 'Ada Obi');
+    await customersRepo.addIdentityFacet(db, business.id, ada.id, facet);
+
+    const { db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 1 });
+    let failure: unknown = null;
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_lookup_fails() RETURNS boolean AS $$
+        BEGIN RAISE EXCEPTION 'g60: the lookup is unavailable'; END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE POLICY g60_lookup_fails ON customer_identities AS RESTRICTIVE FOR SELECT
+          USING (g60_lookup_fails())`);
+      failure = await customersRepo.addIdentityFacet(db, business.id, bola.id, facet).then(
+        () => null,
+        (error: unknown) => error,
+      );
+    } finally {
+      await ownerDb.execute(sql`DROP POLICY IF EXISTS g60_lookup_fails ON customer_identities`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_lookup_fails()`);
+      await closeOwner();
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(customersRepo.IdentityConflict);
+    expect((failure as Error).message).toMatch(/the lookup is unavailable/);
+    expect((failure as Error).message).not.toContain(facet.matchKey);
+    expect((failure as Error).message).not.toMatch(/select|params/i);
+  });
+
+  /* Owner review of #271: the holder of a taken facet is erased between
+   * the conflict and the lookup. The facet is free, so this is no conflict:
+   * the attachment is tried again and wins. */
+  it('attaches, never a false conflict, when the holder is erased mid-way', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000209');
+    const ada = await rememberCustomer(business.id, '08031111111', 'Ada Obi');
+    const bola = await rememberCustomer(business.id, '08032222222', 'Bola Ade');
+    const facet = nameFacet(business.id, 'Ada Obi');
+    await customersRepo.addIdentityFacet(db, business.id, ada.id, facet);
+
+    const { db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 1 });
+    let outcome: unknown;
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g60_erase_once`);
+      /* The first holder lookup erases the holder and does not see it, as an
+       * erasure committed between the two statements would leave it. */
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g60_erase_holder(k text) RETURNS boolean
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF nextval('g60_erase_once') = 1 THEN
+            DELETE FROM customer_identities WHERE match_key = k AND facet = 'name';
+            RETURN false;
+          END IF;
+          RETURN true;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE POLICY g60_erase_holder ON customer_identities AS RESTRICTIVE FOR SELECT
+          USING (match_key IS DISTINCT FROM ${sql.raw(`'${facet.matchKey}'`)} OR g60_erase_holder(match_key))`);
+      outcome = await customersRepo.addIdentityFacet(db, business.id, bola.id, facet).then(
+        (r) => r,
+        (error: unknown) => error,
+      );
+    } finally {
+      await ownerDb.execute(sql`DROP POLICY IF EXISTS g60_erase_holder ON customer_identities`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g60_erase_holder(text)`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g60_erase_once`);
+      await closeOwner();
+    }
+    expect(outcome).toBe('attached');
+    expect(await ownersOf(business.id, facet.matchKey)).toEqual([bola.id]);
+  });
+
+  it('keeps the database error code on a failure it surfaces, and nothing unsafe', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000210');
+    const facet = nameFacet(business.id, 'Ada Obi');
+    const missing = '00000000-0000-4000-8000-000000000000';
+    const failure = (await customersRepo.addIdentityFacet(db, business.id, missing, facet).then(
+      () => null,
+      (error: unknown) => error,
+    )) as Error & { code?: string };
+    expect(failure.code).toBe('23503');
+    expect(failure).not.toBeInstanceOf(customersRepo.IdentityConflict);
+    expect(JSON.stringify(failure)).not.toContain(facet.matchKey);
+    expect(JSON.stringify(failure)).not.toContain(facet.ciphertext);
+    expect(String((failure as { cause?: unknown }).cause ?? '')).toBe('');
+  });
+
+  it('cannot attach a facet to another business customer', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348030000206');
+    const bola = await seedBusiness('Bola Electronics', '+2348030000207');
+    const theirs = await rememberCustomer(ada.id, '08031111111', 'Ada Obi');
+    const facet = nameFacet(bola.id, 'Ada Obi');
+
+    const failure = await customersRepo.addIdentityFacet(db, bola.id, theirs.id, facet).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(customersRepo.IdentityConflict);
+    expect(await ownersOf(bola.id, facet.matchKey)).toEqual([]);
+    expect(await ownersOf(ada.id, facet.matchKey)).toEqual([]);
+  });
+});
+
+describe('the known-name lookup takes any number of keys (G-60 final review, round 4)', () => {
+  it('answers 70,000 keys in one call', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000211');
+    const keys = Array.from({ length: 70_000 }, (_, i) => `k${i}`);
+    await expect(customersRepo.namesByMatchKeys(db, business.id, keys)).resolves.toEqual([]);
+  });
+});
+
+/**
+ * Codex on #271: a confirmed link bringing a trusted name onto a phone
+ * customer, while a storefront checkout attaches its untrusted name to the
+ * same customer. Both must contend on ONE lock, so the customer ends with one
+ * name: the link's trusted name when the link commits first.
+ */
+describe('a link and a storefront name attach at once', () => {
+  it('leaves one name, the trusted one, when the link commits first', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000301');
+    const phone = '08035551234';
+    const survivor = await customersRepo.createCustomerWithIdentities(
+      db,
+      business.id,
+      generateCustomerToken(random),
+      [
+        {
+          facet: 'phone',
+          ciphertext: encryptFacet(phone, VAULT_KEY),
+          matchKey: matchKeyFor(business.id, 'phone', normaliseFacet('phone', phone), MATCH_KEY),
+        },
+      ],
+    );
+    const orphan = await customersRepo.createCustomerWithIdentities(
+      db,
+      business.id,
+      generateCustomerToken(random),
+      [
+        {
+          facet: 'name',
+          ciphertext: encryptFacet('Chidi Okafor', VAULT_KEY),
+          matchKey: matchKeyFor(
+            business.id,
+            'name',
+            normaliseFacet('name', 'Chidi Okafor'),
+            MATCH_KEY,
+          ),
+        },
+      ],
+    );
+
+    const { db: watcher, close: closeWatcher } = createDb(urls.owner, { max: 1 });
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let linked!: () => void;
+    const moved = new Promise<void>((r) => (linked = r));
+    try {
+      /* The link moves the trusted name, then holds its transaction open. */
+      const linking = withBusiness(db, business.id, async (tx) => {
+        const ok = await customersRepo.linkCustomers(tx, business.id, survivor.id, orphan.id);
+        linked();
+        await held;
+        return ok;
+      });
+      await moved;
+      /* The checkout starts while the link is uncommitted. */
+      const attaching = customersRepo.addIdentityFacet(
+        db,
+        business.id,
+        survivor.id,
+        { facet: 'name', ciphertext: encryptFacet('Chidi O.', VAULT_KEY), matchKey: null },
+        { unlessTheCustomerHasOne: true },
+      );
+      /* Wait until the checkout is blocked on a lock, then let the link commit. */
+      for (let i = 0; i < 100; i++) {
+        const [row] = [
+          ...(await watcher.execute<{ n: number }>(
+            sql`SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted`,
+          )),
+        ];
+        if (Number(row?.n) > 0) break;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      release();
+      expect(await linking).toBe(true);
+      expect(await attaching).toBe('kept-existing');
+    } finally {
+      release();
+      await closeWatcher();
+    }
+
+    const names = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ trusted: boolean }>(sql`
+        SELECT match_key IS NOT NULL AS trusted FROM customer_identities
+         WHERE business_id = ${business.id}::uuid AND customer_id = ${survivor.id}::uuid
+           AND facet = 'name'`),
+    );
+    expect([...names]).toEqual([{ trusted: true }]);
+  });
+});
+
+/**
+ * Codex on #271, the inverse: the survivor holds a trusted name and the
+ * orphan is a new phone customer that a storefront checkout names at the
+ * same moment. The link holds the advisory lock of BOTH customers, taken in
+ * one order (sorted ids), so the checkout waits for it, and two links over
+ * the same pair in opposite directions never deadlock.
+ */
+describe('a link and a checkout on the orphan, and opposite links', () => {
+  const nameOf = (businessId: string, value: string) => ({
+    facet: 'name' as const,
+    ciphertext: encryptFacet(value, VAULT_KEY),
+    matchKey: matchKeyFor(businessId, 'name', normaliseFacet('name', value), MATCH_KEY),
+  });
+  const phoneOf = (businessId: string, value: string) => ({
+    facet: 'phone' as const,
+    ciphertext: encryptFacet(value, VAULT_KEY),
+    matchKey: matchKeyFor(businessId, 'phone', normaliseFacet('phone', value), MATCH_KEY),
+  });
+  const mint = (
+    businessId: string,
+    facet: ReturnType<typeof nameOf> | ReturnType<typeof phoneOf>,
+  ) =>
+    customersRepo.createCustomerWithIdentities(db, businessId, generateCustomerToken(random), [
+      facet,
+    ]);
+
+  /** Hold a link's transaction open until released; resolves its result. */
+  function holdLink(businessId: string, survivorId: string, orphanId: string) {
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let linked!: () => void;
+    const done = new Promise<void>((r) => (linked = r));
+    const result = withBusiness(db, businessId, async (tx) => {
+      const ok = await customersRepo.linkCustomers(tx, businessId, survivorId, orphanId);
+      linked();
+      await held;
+      return ok;
+    });
+    return { result, done, release };
+  }
+
+  async function waitingAdvisory(watcher: Db): Promise<number> {
+    for (let i = 0; i < 100; i++) {
+      const [row] = [
+        ...(await watcher.execute<{ n: number }>(
+          sql`SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted AND locktype = 'advisory'`,
+        )),
+      ];
+      if (Number(row?.n) > 0) return Number(row?.n);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return 0;
+  }
+
+  it('makes a checkout naming the orphan wait for the link, leaving one name', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000401');
+    const survivor = await mint(business.id, nameOf(business.id, 'Chidi Okafor'));
+    const orphan = await mint(business.id, phoneOf(business.id, '08035551234'));
+    const { db: watcher, close: closeWatcher } = createDb(urls.owner, { max: 1 });
+    const link = holdLink(business.id, survivor.id, orphan.id);
+    try {
+      await link.done;
+      const attaching = customersRepo
+        .addIdentityFacet(
+          db,
+          business.id,
+          orphan.id,
+          { facet: 'name', ciphertext: encryptFacet('Chidi O.', VAULT_KEY), matchKey: null },
+          { unlessTheCustomerHasOne: true },
+        )
+        .then(
+          (outcome) => outcome,
+          () => 'refused' as const,
+        );
+      /* The checkout waits on the orphan's lock, which the link holds. */
+      expect(await waitingAdvisory(watcher)).toBeGreaterThan(0);
+      link.release();
+      expect(await link.result).toBe(true);
+      /* The orphan is gone, so the checkout cannot name it; its retry finds
+       * the survivor by phone, which already has a name. */
+      expect(await attaching).toBe('refused');
+    } finally {
+      link.release();
+      await closeWatcher();
+    }
+    const names = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ trusted: boolean }>(sql`
+        SELECT match_key IS NOT NULL AS trusted FROM customer_identities
+         WHERE business_id = ${business.id}::uuid AND facet = 'name'`),
+    );
+    expect([...names]).toEqual([{ trusted: true }]);
+    const phones = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ customer_id: string }>(sql`
+        SELECT customer_id FROM customer_identities
+         WHERE business_id = ${business.id}::uuid AND facet = 'phone'`),
+    );
+    expect([...phones].map((p) => p.customer_id)).toEqual([survivor.id]);
+  });
+
+  /* Codex on #271: between the question and the yes, a checkout gave the
+   * phone orphan an untrusted storefront name. The survivor's trusted name
+   * wins; the untrusted one is discarded, not a reason to refuse. */
+  it('discards the orphan untrusted name and keeps the survivor trusted one', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000403');
+    const survivor = await mint(business.id, nameOf(business.id, 'Chidi Okafor'));
+    const orphan = await customersRepo.createCustomerWithIdentities(
+      db,
+      business.id,
+      generateCustomerToken(random),
+      [
+        phoneOf(business.id, '08035551234'),
+        { facet: 'name', ciphertext: encryptFacet('Chidi O.', VAULT_KEY), matchKey: null },
+      ],
+    );
+
+    expect(
+      await withBusiness(db, business.id, (tx) =>
+        customersRepo.linkCustomers(tx, business.id, survivor.id, orphan.id),
+      ),
+    ).toBe(true);
+
+    const facets = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ facet: string; trusted: boolean; customer_id: string }>(sql`
+        SELECT facet, match_key IS NOT NULL AS trusted, customer_id FROM customer_identities
+         WHERE business_id = ${business.id}::uuid ORDER BY facet`),
+    );
+    expect([...facets]).toEqual([
+      { facet: 'name', trusted: true, customer_id: survivor.id },
+      { facet: 'phone', trusted: true, customer_id: survivor.id },
+    ]);
+  });
+
+  it('still refuses when both records hold a trusted name', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000404');
+    const survivor = await mint(business.id, nameOf(business.id, 'Chidi Okafor'));
+    const orphan = await mint(business.id, nameOf(business.id, 'Emeka Obi'));
+    expect(
+      await withBusiness(db, business.id, (tx) =>
+        customersRepo.linkCustomers(tx, business.id, survivor.id, orphan.id),
+      ),
+    ).toBe(false);
+  });
+
+  it('runs two opposite links over one pair one after the other, without deadlock', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000402');
+    const one = await mint(business.id, phoneOf(business.id, '08035550001'));
+    const two = await mint(business.id, phoneOf(business.id, '08035550002'));
+    const { db: watcher, close: closeWatcher } = createDb(urls.owner, { max: 1 });
+    const first = holdLink(business.id, one.id, two.id);
+    try {
+      await first.done;
+      const second = withBusiness(db, business.id, (tx) =>
+        customersRepo.linkCustomers(tx, business.id, two.id, one.id),
+      );
+      expect(await waitingAdvisory(watcher)).toBeGreaterThan(0);
+      first.release();
+      expect(await first.result).toBe(true);
+      /* The second finds its survivor already absorbed, and refuses. */
+      expect(await second).toBe(false);
+    } finally {
+      first.release();
+      await closeWatcher();
+    }
+    const customers = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ id: string }>(
+        sql`SELECT id FROM customers WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    expect([...customers].map((c) => c.id)).toEqual([one.id]);
+  });
+});

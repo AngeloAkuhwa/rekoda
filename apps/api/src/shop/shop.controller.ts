@@ -25,6 +25,7 @@ import {
   Get,
   HttpCode,
   Inject,
+  Logger,
   NotFoundException,
   Param,
   Post,
@@ -88,6 +89,9 @@ function isDuplicateOnOrders(error: unknown): boolean {
     pg?.code === '23505' && (pg.constraint_name ?? pg.constraint ?? '').includes('orders_external')
   );
 }
+
+/** No identity, amount or key in any line it writes. */
+const shopLog = new Logger('ShopController');
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -323,7 +327,14 @@ export class PublicShopController {
         'DOCUMENT_GENERATION',
         await meterAllowance(this.config, own, businessId, plan, 'DOCUMENT_GENERATION'),
       ),
-    );
+    ).catch(async (error: unknown) => {
+      /* The order unit is already paid; a meter that fails now must not keep
+       * it (G-60). The failure itself surfaces. */
+      await withBusiness(this.db, businessId, (own) =>
+        usageRepo.refundUnit(own, businessId, period, 'CATALOGUE_ORDERS'),
+      ).catch(() => shopLog.error('a storefront refund failed; a unit stays spent'));
+      throw error;
+    });
     if (!documentGranted) {
       await withBusiness(this.db, businessId, (own) =>
         usageRepo.refundUnit(own, businessId, period, 'CATALOGUE_ORDERS'),
@@ -331,29 +342,50 @@ export class PublicShopController {
       return { outcome: 'closed' };
     }
 
+    /* Each unit on its own: a refund that fails too (the same outage)
+     * neither stops the other. A refund that fails THROWS: no terminal answer
+     * ("closed", "bad_phone", "items_changed") is given while a refund it owes
+     * has failed (G-60). Where a failure is already being surfaced, that one
+     * is rethrown instead (`refundQuietly`). */
+    const refunded = new Set<string>();
     const refundBoth = async () => {
-      await withBusiness(this.db, businessId, (own) =>
-        usageRepo.refundUnit(own, businessId, period, 'CATALOGUE_ORDERS'),
+      /* Each unit at most once, however many paths reach here. */
+      const refunds = await Promise.allSettled(
+        (['CATALOGUE_ORDERS', 'DOCUMENT_GENERATION'] as const)
+          .filter((unit) => !refunded.has(unit))
+          .map(async (unit) => {
+            await withBusiness(this.db, businessId, (own) =>
+              usageRepo.refundUnit(own, businessId, period, unit),
+            );
+            refunded.add(unit);
+          }),
       );
-      await withBusiness(this.db, businessId, (own) =>
-        usageRepo.refundUnit(own, businessId, period, 'DOCUMENT_GENERATION'),
-      );
+      if (refunds.some((r) => r.status === 'rejected')) {
+        shopLog.error('a storefront refund failed; a unit stays spent');
+        throw new Error('a storefront refund failed');
+      }
     };
+    const refundQuietly = () => refundBoth().catch(() => undefined);
 
     /* Only now — with the gates cleared and the units paid — does the
-     * customer's identity enter the vault. A refused phone refunds both. */
-    const customer = await this.gateway.resolveStorefrontCustomer(
-      businessId,
-      parsed.data.customerName,
-      parsed.data.customerPhone,
-    );
+     * customer's identity enter the vault. A refused phone refunds both, and
+     * so does a vault failure, which then surfaces (G-60). */
+    const customer = await this.gateway
+      .resolveStorefrontCustomer(businessId, parsed.data.customerName, parsed.data.customerPhone)
+      .catch(async (error: unknown) => {
+        await refundQuietly();
+        throw error;
+      });
     if (!customer) {
       await refundBoth();
       return { outcome: 'bad_phone' };
     }
 
+    /* Set inside the order transaction, acted on only after it commits, so a
+     * commit that fails afterwards refunds once, in the catch (G-60). */
+    let lapsed = false;
     try {
-      return await withBusiness(this.db, businessId, async (tx) => {
+      const answer = await withBusiness(this.db, businessId, async (tx) => {
         const wanted = parsed.data.items;
         const sellable = await catalogueRepo.sellableByIds(
           tx,
@@ -408,7 +440,10 @@ export class PublicShopController {
           );
           if (run.outcome === 'not_entitled') {
             /* Pre-gated above, so reaching this means the plan changed mid
-             * request. The shop reads as closed, which is the truth. */
+             * request. The shop reads as closed, which is the truth, and the
+             * two units it paid go back once this commits: nothing was
+             * booked (G-60). */
+            lapsed = true;
             return { outcome: 'closed' as const };
           }
           if (run.outcome !== 'done') {
@@ -434,12 +469,23 @@ export class PublicShopController {
           displayName: shop.displayName,
         };
       });
+      if (!lapsed) return answer;
     } catch (error) {
-      await refundBoth();
-      if (error instanceof CartChanged) return { outcome: 'items_changed' };
-      if (isDuplicateOnOrders(error)) return { outcome: 'duplicate' };
+      if (error instanceof CartChanged) {
+        await refundBoth();
+        return { outcome: 'items_changed' };
+      }
+      if (isDuplicateOnOrders(error)) {
+        await refundBoth();
+        return { outcome: 'duplicate' };
+      }
+      await refundQuietly();
       throw error;
     }
+    /* Lapsed mid-checkout: the order transaction committed nothing, so the
+     * units go back now, outside it, once. */
+    await refundBoth();
+    return { outcome: 'closed' };
   }
 
   @Get(':slug')
