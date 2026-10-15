@@ -261,6 +261,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   reminderNothingToChase: [replies.reminderNothingToChase('INV-2026-000041')],
   voiceUnavailable: [replies.voiceUnavailable()],
   voiceTooLong: [replies.voiceTooLong(120), replies.voiceTooLong(90), replies.voiceTooLong(60)],
+  messageTooLong: [replies.messageTooLong()],
   voiceUnreadable: [replies.voiceUnreadable()],
   whichPeriod: [replies.whichPeriod('sales'), replies.whichPeriod('spending')],
   previewBehindQuestion: [replies.previewBehindQuestion()],

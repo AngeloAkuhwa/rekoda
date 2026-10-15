@@ -1380,6 +1380,17 @@ export function voiceTooLong(maxSeconds: number): Reply {
 }
 
 /**
+ * A message too dense to check for customer names before a model reads it
+ * (G-60). Nothing in it is read, so the merchant is told how to get it read.
+ */
+export function messageTooLong(): Reply {
+  return reply(
+    'That message is more than I can read safely at once.\n\nPlease send it ' +
+      'again in shorter parts and I will record every one of them.',
+  );
+}
+
+/**
  * The audio arrived and could not be read.
  *
  * Distinct from `voiceUnavailable`, which is the transcriber being down. This

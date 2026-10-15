@@ -409,6 +409,19 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       return;
     }
 
+    /* The known-name pass could not finish (G-60, Codex on #271): an
+     * unfinished pass could miss a stored name, so no model reads it. */
+    if (tokenised?.unread) {
+      await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
+      await deps.replySender.send(tx, {
+        businessId,
+        to: inbound.from,
+        reply: replies.messageTooLong(),
+      });
+      await events.markProcessed(tx, eventId, null, businessId);
+      return;
+    }
+
     /**
      * THE CLASSIFIER GATE (docs/ai-model-strategy.md §1, AI hardening
      * item 1): a cheap read, only where it avoids expensive ones, which

@@ -65,7 +65,23 @@ export interface GatewayTokenised extends TokenisedMessage {
    * `tokens`: never logged, stored or sent to a model.
    */
   readonly facets: ReadonlyMap<string, readonly TypedFacet[]>;
+  /**
+   * The known-name pass could not finish (KNOWN_NAME_CANDIDATE_LIMIT), so
+   * `text` is UNREAD_MESSAGE and nothing the merchant typed is handed on.
+   */
+  readonly unread: boolean;
 }
+
+/**
+ * The most distinct name candidates one message may raise (Codex on #271).
+ * A long, varied 4 KB merchant message raises about 15,000; punctuation
+ * crafted to differ around every word raises six times that. Past the
+ * limit the pass stops, and a message it did not finish is never read.
+ */
+export const KNOWN_NAME_CANDIDATE_LIMIT = 40_000;
+
+/** What stands for a message the known-name pass could not finish. */
+export const UNREAD_MESSAGE = '[message too long to read]';
 
 /**
  * The token table one message carries to its reply: what each token reads
@@ -220,6 +236,7 @@ export class PrivacyGateway {
     /* Each distinct candidate is hashed once per message, however many
      * places it stands (Codex on #271: bounded work for a crafted message). */
     const keysOf = new Map<string, string[]>();
+    let unread = false;
     const consider = (start: number, end: number) => {
       if (spans.has(`${start}:${end}`)) return;
       spans.add(`${start}:${end}`);
@@ -235,6 +252,11 @@ export class PrivacyGateway {
       const asTyped = out.slice(start, end).trim().replace(/\s+/g, ' ');
       let forms = keysOf.get(asTyped);
       if (!forms) {
+        /* Fail closed: an unfinished pass could miss a stored name. */
+        if (keysOf.size >= KNOWN_NAME_CANDIDATE_LIMIT) {
+          unread = true;
+          return;
+        }
         forms = this.nameKeys(businessId, asTyped);
         keysOf.set(asTyped, forms);
       }
@@ -243,7 +265,7 @@ export class PrivacyGateway {
         keys.add(matchKey);
       }
     };
-    for (const segment of openSegments(out, [...tokens.keys(), ...typed.keys()])) {
+    scan: for (const segment of openSegments(out, [...tokens.keys(), ...typed.keys()])) {
       const words = [...out.slice(segment.start, segment.end).matchAll(NAME_WORD)].map((m) => {
         const start = segment.start + (m.index ?? 0);
         const end = start + m[0].length;
@@ -310,11 +332,23 @@ export class PrivacyGateway {
               for (const e of edges(end, 1)) {
                 if (s.reach + run + e.reach > CUSTOMER_NAME_MAX_CHARS) break;
                 consider(s.at, e.at);
+                if (unread) break scan;
               }
             }
           }
         }
       }
+    }
+
+    if (unread) {
+      return {
+        text: UNREAD_MESSAGE,
+        tokens: new Map(),
+        link: null,
+        facets: new Map(),
+        customers: [],
+        unread: true,
+      };
     }
 
     const byKey = new Map<string, { token: string; customerId: string }>();
@@ -355,7 +389,14 @@ export class PrivacyGateway {
     }
 
     for (const [token, facets] of typed) tokens.set(token, displayOf(facets));
-    return { text: out, tokens, link: proposeLink(seen), facets: typed, customers: seen };
+    return {
+      text: out,
+      tokens,
+      link: proposeLink(seen),
+      facets: typed,
+      customers: seen,
+      unread: false,
+    };
   }
 
   /**

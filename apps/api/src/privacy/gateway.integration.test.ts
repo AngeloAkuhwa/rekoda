@@ -14,7 +14,7 @@ import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing
 import { decryptFacet, encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
 import { rehydrate } from '@rekoda/core/privacy';
 import { CUSTOMER_NAME_MAX_CHARS } from '@rekoda/contracts';
-import { PrivacyGateway } from './gateway.service.js';
+import { KNOWN_NAME_CANDIDATE_LIMIT, PrivacyGateway, UNREAD_MESSAGE } from './gateway.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
 
 let urls: Urls;
@@ -949,5 +949,44 @@ describe('the known-name pass under a crafted message', () => {
     } finally {
       hashed.mockRestore();
     }
+  });
+
+  /* Codex on #271: different punctuation either side of every word defeats
+   * the dedupe (about 91,600 distinct candidates in 4 KB). The pass stops at
+   * a fixed count, and a message it could not finish is never handed on. */
+  const PUNCTUATION = '!"#$%&()*+,./:;<=>?@[\\]^_`{|}~';
+  const run = (k: number) =>
+    Array.from({ length: 39 }, (_, i) => PUNCTUATION[(i * 7 + k * 13 + i * k) % 31]).join('');
+
+  it('stops at a fixed count and hands on nothing it could not read', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    await gateway.resolveMention(businessId, 'Ada Obi');
+    const text = `Ada Obi ${Array.from({ length: 48 }, (_, k) => `${run(k)}a${run(k + 100)} `).join('')}`;
+    const hashed = vi.spyOn(gateway as unknown as { nameKeys: () => string[] }, 'nameKeys');
+    try {
+      const tokenised = await gateway.tokenise(businessId, text);
+      expect(hashed.mock.calls.length).toBeLessThanOrEqual(KNOWN_NAME_CANDIDATE_LIMIT);
+      expect(tokenised.unread).toBe(true);
+      expect(tokenised.text).toBe(UNREAD_MESSAGE);
+      expect(tokenised.text).not.toContain('Ada');
+      expect(tokenised.link).toBeNull();
+    } finally {
+      hashed.mockRestore();
+    }
+  });
+
+  it('reads a long, varied merchant message well inside the count', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { token } = await gateway.resolveMention(businessId, 'Ada Obi');
+    const words =
+      'chidi bought sold paid bags shoes wigs cash transfer balance friday lekki owes'.split(' ');
+    const marks = ['', '', '', ',', '.', '!', '?', '...', '!!', ')', ';', ':'];
+    let text = 'Ada Obi paid. ';
+    for (let i = 0; text.length < 4_000; i++) {
+      text += `${i % 5 === 0 ? '(' : ''}${words[(i * 7) % words.length]}${i}${marks[(i * 5) % marks.length]} `;
+    }
+    const tokenised = await gateway.tokenise(businessId, text);
+    expect(tokenised.unread).toBe(false);
+    expect(tokenised.text.startsWith(`${token} paid.`)).toBe(true);
   });
 });

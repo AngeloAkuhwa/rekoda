@@ -5494,6 +5494,27 @@ describe('a storefront buyer named later in Chat', () => {
     expect((await ledger(business.id)).customers).toBe(2);
   });
 
+  /* Codex on #271: a message the known-name pass could not finish reaches
+   * no model, and the merchant is asked to send it in parts. */
+  it('sends no model a message too crafted to read, and asks for shorter parts', async () => {
+    const business = await seedMerchant();
+    await deps.gateway.resolveMention(business.id, 'Chidi Okafor');
+    const marks = '!"#$%&()*+,./:;<=>?@[\\]^_`{|}~';
+    const run = (k: number) =>
+      Array.from({ length: 39 }, (_, i) => marks[(i * 7 + k * 13 + i * k) % 31]).join('');
+    const crafted = Array.from({ length: 48 }, (_, k) => `${run(k)}a${run(k + 100)}`).join(' ');
+    stubTransport.replyWith(SALE_TO_CHIDI);
+
+    await post(
+      messagePayload('2348031234567', 'wamid.SF9', `Chidi Okafor bought 3 wigs ${crafted}`),
+    );
+    await drain();
+
+    expect(stubTransport.requests).toHaveLength(0);
+    expect(stubSender.lastText).toContain('shorter parts');
+    expect(await invoiceCount(business.id)).toBe(0);
+  });
+
   it('keeps them apart when the merchant says no', async () => {
     const business = await seedMerchant();
     await deps.gateway.resolveStorefrontCustomer(business.id, 'Chidi Okafor', PHONE);
