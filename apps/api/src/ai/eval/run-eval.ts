@@ -149,12 +149,12 @@ async function usageOf(db: Db, businessId: string): Promise<UsageSummary> {
   };
 }
 
-function gitSha(): string {
-  if (process.env['GIT_SHA']) return process.env['GIT_SHA'];
+/** The checkout's commit, or the one an image was built from (REKODA_COMMIT). */
+function gitSha(config: ApiConfig): string {
   try {
     return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   } catch {
-    return 'unknown';
+    return config.commit;
   }
 }
 
@@ -210,7 +210,7 @@ async function main(): Promise<number> {
     const report: EvalReport = buildEvalReport({
       mode: args.mode,
       timestamp: new Date().toISOString(),
-      gitSha: gitSha(),
+      gitSha: gitSha(config),
       dataset: plan.dataset,
       configuration: plan.configuration,
       metrics: scoreEval(EVAL_CASES, results),
