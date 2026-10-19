@@ -185,6 +185,51 @@ describe('the integrity check catches a broken dataset (G-07)', () => {
     ).toContain('blank: a blank product stem');
   });
 
+  it('payments pin their invoice, purchases their supplier, sales and payments their customer (confirmation review on #273)', () => {
+    const errorsFor = (id: string, intent: string, checks: Record<string, unknown>) =>
+      validateDataset(
+        withCase({
+          ...first,
+          id,
+          input: 'sold 3 wigs',
+          expect: { kind: 'command', intent, checks } as EvalCase['expect'],
+        }),
+      );
+    expect(
+      errorsFor('pay', 'RecordPayment', {
+        amount: 1,
+        relativeAmount: null,
+        paymentMethod: 'cash',
+        noCustomer: true,
+      }),
+    ).toContain('pay: a payment pins no documentRef');
+    expect(
+      errorsFor('buy', 'RecordPurchase', {
+        amount: 1,
+        quantity: null,
+        reportedPayment: null,
+        paymentMethod: null,
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        'buy: a purchase pins no supplier',
+        'buy: a purchase pins no supplierReference',
+      ]),
+    );
+    expect(
+      errorsFor('who', 'RecordSale', {
+        product: 'wig',
+        quantity: 3,
+        unitPrice: 1_000,
+        unpaid: true,
+        paymentMethod: 'unknown',
+      }),
+    ).toContain('who: a sale pins no customer');
+    expect(errorsFor('owes', 'Query', { topic: 'customer_balance' })).toContain(
+      'owes: a balance question pins no customer',
+    );
+  });
+
   it('a token the gateway could never mint (Codex on #273)', () => {
     /* Production tokens are three Crockford base32 characters: no L, no two. */
     expect(

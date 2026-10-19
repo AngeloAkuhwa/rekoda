@@ -69,9 +69,12 @@ export interface GatewayTokenised extends TokenisedMessage {
   /**
    * Why nothing the merchant typed is handed on, or null when the message
    * was read. `too_long`: the known-name pass could not finish
-   * (KNOWN_NAME_CANDIDATE_LIMIT). `protected_detail`: the finished text still
-   * holds a phone, email or account number, which only appears once a long
-   * name became a short token (G-07). Either way `text` is UNREAD_MESSAGE.
+   * (KNOWN_NAME_CANDIDATE_LIMIT). `protected_detail`: the finished text,
+   * read with its tokens opaque, still holds a phone, email or account
+   * number: one beside a long name that became a short token, or a second
+   * account number a first one's token now puts within reach of its keyword
+   * ("account 0123456789 or 0987654321") (G-07). Either way `text` is
+   * UNREAD_MESSAGE, and nothing of it is stored or sent.
    */
   readonly unread: UnreadReason | null;
 }
@@ -92,7 +95,7 @@ const CUSTOMER_TOKEN_SUFFIX = 3;
 /** What stands for a message the gateway would not hand on, by reason. */
 export const UNREAD_MESSAGE: Readonly<Record<UnreadReason, string>> = {
   too_long: '[message too long to read]',
-  protected_detail: '[message not read: it held a protected detail]',
+  protected_detail: '[message withheld: it held a protected detail]',
 };
 
 /** A message the gateway will not hand on: no text, no tokens, no link. */

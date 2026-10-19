@@ -5548,7 +5548,7 @@ describe('a storefront buyer named later in Chat', () => {
       ),
     );
     expect([...stored].map((r) => r.body)).toEqual([
-      '[message not read: it held a protected detail]',
+      '[message withheld: it held a protected detail]',
     ]);
   });
 

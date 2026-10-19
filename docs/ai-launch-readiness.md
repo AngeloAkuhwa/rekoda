@@ -51,8 +51,9 @@ The runner builds its transport with `createModelTransport`, the function the AP
 module uses, so it measures the provider production calls (configured OpenAI is
 evaluated on OpenAI; there is no fallback). It gives its throwaway eval tenant room for
 every case (`AI_DAILY_CALLS_PER_BUSINESS` raised for that tenant only); the global
-ceiling is unchanged, and a case it refuses is invalid. Each case costs provider money
-(77 interpreter calls plus escalations).
+ceiling is unchanged, and a case it refuses is invalid. Each case costs provider money: up to
+two calls a typed case (interpreter, escalation) and four a document case (classifier,
+interpreter, escalation, verifier).
 
 **What a case can be.** The model's behaviour is evidence: `command`, `clarification`
 (a real Unclear), `review` (two readers disagreed) and `invalid_response` (the answer

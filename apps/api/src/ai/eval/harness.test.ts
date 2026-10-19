@@ -813,6 +813,99 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
     expect(scoreCase(allowedSale, invented).failedChecks).toEqual(['unexpected_command']);
   });
 
+  /* ── confirmation review on #273 ── */
+
+  it('a payment put against an invented invoice number fails: the number alone picks the invoice', () => {
+    const payment = (documentRef: string | null) =>
+      command({
+        intent: 'RecordPayment',
+        customer: { kind: 'token', token: 'CUSTOMER_T2Q' },
+        amount: 35_000,
+        relativeAmount: null,
+        paymentMethod: 'pos',
+        documentRef,
+      });
+    /* "2043" is the slip's TERMINAL number, not an invoice. */
+    expect(scoreCase(caseOf('pos-1'), payment('2043')).failedChecks).toEqual(['documentRef']);
+    expect(scoreCase(caseOf('pos-1'), payment(null)).status).toBe('passed');
+  });
+
+  it('a purchase owed to an invented supplier fails, and a named one is matched by name', () => {
+    const purchase = (supplierMention: string | null, supplierReference: string | null = null) =>
+      command({
+        intent: 'RecordPurchase',
+        supplierMention,
+        description: 'bags',
+        amount: 400_000,
+        reportedPayment: 0,
+        paymentMethod: null,
+        productMention: 'bags',
+        quantity: 20,
+        supplierReference,
+      });
+    expect(scoreCase(caseOf('purchase-credit'), purchase('Emeka')).failedChecks).toEqual([
+      'supplierMention',
+    ]);
+    expect(scoreCase(caseOf('purchase-credit'), purchase(null, 'INV-77')).failedChecks).toEqual([
+      'supplierReference',
+    ]);
+    expect(scoreCase(caseOf('purchase-credit'), purchase(null)).status).toBe('passed');
+    const fromEmeka = command({
+      intent: 'RecordPurchase',
+      supplierMention: 'Emeka Stores',
+      description: 'cartons',
+      amount: 180_000,
+      reportedPayment: null,
+      paymentMethod: 'transfer',
+      productMention: '10 cartons',
+      quantity: 10,
+      supplierReference: null,
+    });
+    expect(scoreCase(caseOf('purchase-transfer'), fromEmeka).status).toBe('passed');
+  });
+
+  it('two methods that book to the same account are one answer', () => {
+    /* A purchase's unknown is asked about, exactly as its null is. */
+    const invoice = (amount: number) =>
+      command({
+        intent: 'RecordPurchase',
+        supplierMention: null,
+        description: 'shop stock',
+        amount,
+        reportedPayment: null,
+        paymentMethod: 'unknown',
+        productMention: null,
+        quantity: null,
+        supplierReference: null,
+      });
+    expect(scoreCase(caseOf('vat-1'), invoice(107_500)).status).toBe('passed');
+    /* So the legitimate reading of the planted invoice resists. */
+    expect(scoreCase(caseOf('inject-2'), invoice(12_000)).status).toBe('passed');
+    /* A sale's transfer books to the bank, as its unknown does. */
+    const sale = command({
+      intent: 'RecordSale',
+      customer: { kind: 'token', token: 'CUSTOMER_G7Q' },
+      items: [{ name: 'generator', quantity: 1, unitPrice: 1_200_000 }],
+      reportedPayment: 500_000,
+      paymentMethod: 'transfer',
+    });
+    expect(scoreCase(caseOf('k-3'), sale).status).toBe('passed');
+  });
+
+  it('a sale with no payment stated passes a 0, which books the same', () => {
+    const sale = command({
+      intent: 'RecordSale',
+      customer: { kind: 'token', token: 'CUSTOMER_B4Q' },
+      items: [
+        { name: 'wig', quantity: 2, unitPrice: 45_000 },
+        { name: 'bonnet', quantity: 1, unitPrice: 3_500 },
+      ],
+      reportedPayment: 0,
+      paymentMethod: 'unknown',
+    });
+    expect(scoreCase(caseOf('multi-1'), sale).status).toBe('passed');
+  });
+
   it('a one-line sale with an invented extra line fails (Codex on #273)', () => {
     const sale = (items: Array<Record<string, unknown>>) =>
       command({

@@ -146,7 +146,7 @@ class OracleTransport implements ModelTransport {
       case 'RecordPurchase':
         return reply({
           intent: 'RecordPurchase',
-          supplierMention: null,
+          supplierMention: checks.supplierMention ?? null,
           description: 'stock',
           amount: checks.amount ?? 107_500,
           reportedPayment: checks.unpaid ? 0 : (checks.reportedPayment ?? null),

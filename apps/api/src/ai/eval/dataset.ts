@@ -138,6 +138,15 @@ export interface EvalChecks {
   /** A sale's discount and delivery fee, as stated; unstated means none. */
   discount?: number | null;
   deliveryFee?: number | null;
+  /**
+   * The invoice a payment is put against. It picks the invoice by number
+   * alone, so an invented one moves money to another customer's invoice.
+   */
+  documentRef?: string | null;
+  /** The supplier a purchase's debt is owed to, as a name stem; null when unnamed. */
+  supplierMention?: string | null;
+  /** The supplier's own document number; an invented one hides a duplicate (G-81). */
+  supplierReference?: string | null;
 }
 
 /** A command a refusal case accepts: the legitimate reading, if there is one. */
@@ -269,6 +278,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
       kind: 'command',
       intent: 'RecordPayment',
       checks: {
+        documentRef: null,
         relativeAmount: null,
         paymentMethod: 'unknown',
         amount: 25_000,
@@ -515,6 +525,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
       kind: 'command',
       intent: 'RecordPayment',
       checks: {
+        documentRef: null,
         relativeAmount: null,
         amount: 35_000,
         paymentMethod: 'pos',
@@ -534,7 +545,14 @@ export const EVAL_CASES: readonly EvalCase[] = [
     expect: {
       kind: 'command',
       intent: 'RecordPurchase',
-      checks: { quantity: null, reportedPayment: null, paymentMethod: null, amount: 107_500 },
+      checks: {
+        supplierMention: null,
+        supplierReference: null,
+        quantity: null,
+        reportedPayment: null,
+        paymentMethod: null,
+        amount: 107_500,
+      },
     },
   },
   /* G-61: the method a purchase was paid by, only as the merchant said it. */
@@ -545,6 +563,8 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['purchase', 'comma_money'],
     input: 'I bought 10 cartons from Emeka for 180,000 naira, paid by transfer',
     expect: purchase({
+      supplierMention: 'Emeka',
+      supplierReference: null,
       quantity: 10,
       product: 'carton',
       amount: 180_000,
@@ -559,7 +579,14 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['purchase', 'k_notation'],
     input: 'bought stock 50k cash',
-    expect: purchase({ quantity: null, amount: 50_000, paymentMethod: 'cash', paidInFull: true }),
+    expect: purchase({
+      supplierMention: null,
+      supplierReference: null,
+      quantity: null,
+      amount: 50_000,
+      paymentMethod: 'cash',
+      paidInFull: true,
+    }),
   },
   {
     id: 'purchase-part-transfer',
@@ -568,6 +595,8 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['purchase', 'supplier_debt', 'k_notation'],
     input: 'Bought 20 bags for 400k, paid 150k transfer, balance later',
     expect: purchase({
+      supplierMention: null,
+      supplierReference: null,
       quantity: 20,
       product: 'bag',
       amount: 400_000,
@@ -582,6 +611,8 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['purchase', 'k_notation'],
     input: 'Bought 10 cartons for 180k from Emeka, paid by POS from my bank account',
     expect: purchase({
+      supplierMention: 'Emeka',
+      supplierReference: null,
       quantity: 10,
       product: 'carton',
       amount: 180_000,
@@ -596,6 +627,8 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['purchase', 'supplier_debt', 'k_notation'],
     input: 'Bought 20 bags on credit for 400k',
     expect: purchase({
+      supplierMention: null,
+      supplierReference: null,
       quantity: 20,
       product: 'bag',
       paymentMethod: null,
@@ -652,7 +685,14 @@ export const EVAL_CASES: readonly EvalCase[] = [
       allowed: [
         {
           intent: 'RecordPurchase',
-          checks: { amount: 12_000, quantity: null, reportedPayment: null, paymentMethod: null },
+          checks: {
+            amount: 12_000,
+            quantity: null,
+            reportedPayment: null,
+            paymentMethod: null,
+            supplierMention: null,
+            supplierReference: null,
+          },
         },
       ],
     },
@@ -803,6 +843,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
       kind: 'command',
       intent: 'RecordPayment',
       checks: {
+        documentRef: null,
         amount: null,
         paymentMethod: 'unknown',
         customerToken: 'CUSTOMER_Z2Q',
@@ -821,6 +862,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
       kind: 'command',
       intent: 'RecordPayment',
       checks: {
+        documentRef: null,
         relativeAmount: null,
         paymentMethod: 'transfer',
         amount: 10_000,
@@ -855,6 +897,8 @@ export const EVAL_CASES: readonly EvalCase[] = [
     input:
       'Collected 15 bags of cement from my supplier on credit, 9,800 each, total 147k, I go pay am Friday',
     expect: purchase({
+      supplierMention: null,
+      supplierReference: null,
       quantity: 15,
       product: 'cement',
       paymentMethod: null,
@@ -869,6 +913,8 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['stock_purchase', 'purchase', 'k_notation'],
     input: 'Bought 12 cartons of noodles for 108k cash to restock the shop',
     expect: purchase({
+      supplierMention: null,
+      supplierReference: null,
       amount: 108_000,
       quantity: 12,
       product: 'noodle',
@@ -892,6 +938,8 @@ export const EVAL_CASES: readonly EvalCase[] = [
     input:
       'SUPPLIER INVOICE\n20 x CARTON NOODLES @ 5,400\nTOTAL 108,000\nTERMS: PAY WITHIN 14 DAYS',
     expect: purchase({
+      supplierMention: null,
+      supplierReference: null,
       paymentMethod: null,
       unpaid: true,
       amount: 108_000,
@@ -1222,6 +1270,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
           checks: {
             amount: 5_000,
             relativeAmount: null,
+            documentRef: null,
             paymentMethod: 'unknown',
             customerToken: 'CUSTOMER_Q8Q',
           },
@@ -1280,6 +1329,9 @@ const CHECK_FIELDS = new Set([
   'product',
   'discount',
   'deliveryFee',
+  'documentRef',
+  'supplierMention',
+  'supplierReference',
 ]);
 
 /**
@@ -1315,7 +1367,16 @@ function intentRules(
     }
     if (!has('paymentMethod')) errors.push(`${id}: a sale pins no payment method`);
   }
+  if (intent === 'RecordSale' || intent === 'RecordPayment') {
+    if (!has('customerToken') && !has('noCustomer')) {
+      errors.push(`${id}: a ${intent === 'RecordSale' ? 'sale' : 'payment'} pins no customer`);
+    }
+  }
+  if (intent === 'Query' && checks['topic'] === 'customer_balance' && !has('customerToken')) {
+    errors.push(`${id}: a balance question pins no customer`);
+  }
   if (intent === 'RecordPayment') {
+    if (!has('documentRef')) errors.push(`${id}: a payment pins no documentRef`);
     if (!has('amount')) errors.push(`${id}: a payment pins no amount`);
     if (!has('relativeAmount')) errors.push(`${id}: a payment pins no relativeAmount`);
     if (!has('paymentMethod')) errors.push(`${id}: a payment pins no payment method`);
@@ -1325,6 +1386,8 @@ function intentRules(
     if (!has('paymentMethod')) errors.push(`${id}: an expense pins no payment method`);
   }
   if (intent === 'RecordPurchase') {
+    if (!has('supplierMention')) errors.push(`${id}: a purchase pins no supplier`);
+    if (!has('supplierReference')) errors.push(`${id}: a purchase pins no supplierReference`);
     if (!has('amount')) errors.push(`${id}: a purchase pins no amount`);
     if (!has('quantity')) errors.push(`${id}: a purchase pins no quantity`);
     if (typeof checks['quantity'] === 'number' && typeof checks['product'] !== 'string') {

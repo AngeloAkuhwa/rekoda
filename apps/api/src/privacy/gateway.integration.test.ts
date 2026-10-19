@@ -1059,6 +1059,16 @@ describe('text the name pass leaves holding a protected detail (G-07)', () => {
     expect(tokenised.customers).toHaveLength(2);
   });
 
+  /* A second account number a first one's token puts within reach of its
+   * keyword is withheld too, with no name in the message (confirmation
+   * review on #273): before, it reached the model raw. */
+  it("withholds a second account number the first one's token brings within reach", async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const tokenised = await gateway.tokenise(businessId, 'account 0123456789 or 0987654321');
+    expect(tokenised.unread).toBe('protected_detail');
+    expect(tokenised.text).not.toContain('0987654321');
+  });
+
   it('reads an account number the structural pass already found', async () => {
     const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
     const tokenised = await gateway.tokenise(businessId, 'send to account 0123456789 now');

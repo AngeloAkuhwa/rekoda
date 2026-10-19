@@ -3,9 +3,11 @@
  * No provider is called here: the report is pure, and the transport is
  * only constructed, never sent.
  */
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { loadConfig, type ApiConfig } from '../../config.js';
 import { AnthropicTransport } from '../anthropic.transport.js';
 import { OpenAiTransport } from '../openai.transport.js';
@@ -21,7 +23,7 @@ import {
   type UsageSummary,
 } from './report.js';
 import { EVAL_CASES } from './dataset.js';
-import { checkoutRefusal, evalConfig, parseEvalArgs } from './run-eval.js';
+import { buildIsStale, checkoutRefusal, evalConfig, parseEvalArgs } from './run-eval.js';
 
 function configWith(env: Record<string, string>): ApiConfig {
   const saved = { ...process.env };
@@ -269,7 +271,7 @@ describe('the checkout a run is attributed to (G-07, Codex on #273)', () => {
 
   it('refuses a launch-gate run whose build is older than its commit (final review)', () => {
     /* Built at A, checked out at B: the report would name code that did not run. */
-    expect(checkoutRefusal('gate', { ...clean, staleBuild: true })).toContain('rebuild');
+    expect(checkoutRefusal('gate', { ...clean, staleBuild: true })).toContain('pnpm turbo build');
   });
 
   it('refuses a launch-gate run no commit identifies (final review)', () => {
@@ -298,6 +300,35 @@ describe('final review on #273: what a run may claim', () => {
     expect(exitCodeFor(report('measure', { metrics: metrics({ invalid: 3 }) }))).toBe(1);
     expect(exitCodeFor(report('measure', { usage: { ...USAGE, failedCalls: 1 } }))).toBe(1);
     expect(exitCodeFor(report('measure'))).toBe(0);
+  });
+});
+
+describe('whether the build is the source it claims (confirmation review on #273)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rekoda-build-'));
+  const write = (path: string, at: number) => {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), 'x');
+    utimesSync(join(root, path), at / 1000, at / 1000);
+  };
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it('is fresh when every package was built after its newest source', () => {
+    write('apps/api/src/a.ts', 1_000_000);
+    write('apps/api/dist/a.js', 2_000_000);
+    write('packages/core/src/b.ts', 1_000_000);
+    write('packages/core/dist/b.js', 2_000_000);
+    expect(buildIsStale(root, ['apps/api', 'packages/core'])).toBe(false);
+  });
+
+  it('is stale when a dependency package changed after it was built, though the api was rebuilt', () => {
+    write('packages/core/src/c.ts', 3_000_000);
+    write('apps/api/dist/a.js', 4_000_000);
+    expect(buildIsStale(root, ['apps/api', 'packages/core'])).toBe(true);
+  });
+
+  it('is stale when a package was never built', () => {
+    write('packages/shared/src/d.ts', 1_000_000);
+    expect(buildIsStale(root, ['packages/shared'])).toBe(true);
   });
 });
 

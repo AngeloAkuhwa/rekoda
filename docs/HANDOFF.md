@@ -12,7 +12,7 @@
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Current date**            | 19 October 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | **Current `main` SHA**      | `c5b2c8a` (15 Oct 2026, "fix: one customer token, one deterministic display; tokens are opaque; facet conflicts are typed (G-60) (#271)"); before it `9752971` (#270, G-57), `072db70` (#269, G-97), `c499d15` (#268, G-95), `8b59d26` (#267, Build 9), `e539439` (#266, G-85), `f2a155a` (#265, G-80), `f7d7119` (#264, docs), `3d462c1` (#263, G-89), `88b577c` (#262, G-81), `29dc934` (#261, Build 8), `f5ef123` (#259, Build 7), `3612fcf` (#260, Build 6), `f5fb1ce` (#258, G-23), `2abb8a1` (#256, G-49), `6df1b91` (#255, G-61), `ce4755a` (#254, G-77) and earlier |
-| **Open branches**           | G-07 (`fix/g07-ai-launch-evaluation`, off `c5b2c8a`, PR #273), the only issue in progress. G-60 (`c5b2c8a`, #271), G-57 (`9752971`), G-97 (`072db70`), G-95 (`c499d15`), Build 9 (`8b59d26`), G-80 (`f2a155a`) and G-85 (`e539439`) merged; the old G-80 WIP stays local as `backup/g80-wip-c9f2059` (never pushed)                                                                                                                                                                                                                                                         |
+| **Open branches**           | G-07 (`fix/g07-ai-launch-evaluation`, off `c5b2c8a`, PR #273: CODE COMPLETE, awaiting the owner's merge), the only issue in progress. G-60 (`c5b2c8a`, #271), G-57 (`9752971`), G-97 (`072db70`), G-95 (`c499d15`), Build 9 (`8b59d26`), G-80 (`f2a155a`) and G-85 (`e539439`) merged; the old G-80 WIP stays local as `backup/g80-wip-c9f2059` (never pushed)                                                                                                                                                                                                              |
 | **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 160 migrations on `main` (0000 to 0159); deployed to staging (automatic after CI on main since #249); never to production (the production stack boots on a clean CI runner since G-01); the Meta WhatsApp transport has been live-exercised on staging (real webhook ingress, outbound text and media); production Meta App Review and templates remain open; payment-provider live verification remains pending                                                                         |
 | **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                                                                                                       |
@@ -73,26 +73,26 @@ purchase), for the owner to revisit.
 **Status board (8 Oct 2026). Acceptance and engineering are separate lanes; each build
 keeps its own status, and none is accepted because a related one passed.**
 
-| Build                               | PR (merge)       | Status                                          |
-| ----------------------------------- | ---------------- | ----------------------------------------------- |
-| G-48 receipt for a paid sale        | #252 (`b9c9562`) | STAGING ACCEPTED                                |
-| G-49 merchant overpayment           | #253, #256       | STAGING ACCEPTED                                |
-| G-77 public API sale identity       | #254 (`ce4755a`) | STAGING ACCEPTED                                |
-| G-61 purchase funding account       | #255 (`6df1b91`) | MERGED, staging acceptance pending              |
-| G-23 draft expiry                   | #258 (`f5fb1ce`) | MERGED, staging acceptance pending              |
-| Build 6 conversational continuation | #260 (`3612fcf`) | MERGED, staging acceptance pending              |
-| G-68 / G-24 routing, STOP/START     | #259 (`f5ef123`) | MERGED, staging acceptance pending              |
-| G-65 Chat entitlement on commands   | #261 (`29dc934`) | MERGED, staging acceptance pending              |
-| G-81 Chat purchase identity         | #262 (`88b577c`) | MERGED, staging acceptance pending              |
-| G-89 dashboard PO receive vs Chat   | #263 (`3d462c1`) | MERGED, DEPLOYED TO STAGING, acceptance pending |
-| G-80 natural Nigerian opt-outs      | #265 (`f2a155a`) | MERGED, DEPLOYED TO STAGING, acceptance pending |
-| G-85 marks on short answers         | #266 (`e539439`) | MERGED, staging acceptance pending              |
-| Build 9 command-bus enforcement     | #267 (`8b59d26`) | MERGED, staging acceptance pending              |
-| G-95 reverse released bank lines    | #268 (`c499d15`) | MERGED, DEPLOYED TO STAGING, acceptance pending |
-| G-97 forgotten statement day        | #269 (`072db70`) | MERGED, DEPLOYED TO STAGING, acceptance pending |
-| G-57 view-only AI authorisation     | #270 (`9752971`) | MERGED, staging acceptance pending              |
-| G-60 privacy-gateway identity       | #271 (`c5b2c8a`) | MERGED, DEPLOYED TO STAGING, acceptance pending |
-| G-07 AI launch evaluation harness   | #273 (open)      | IN DEVELOPMENT                                  |
+| Build                               | PR (merge)       | Status                                           |
+| ----------------------------------- | ---------------- | ------------------------------------------------ |
+| G-48 receipt for a paid sale        | #252 (`b9c9562`) | STAGING ACCEPTED                                 |
+| G-49 merchant overpayment           | #253, #256       | STAGING ACCEPTED                                 |
+| G-77 public API sale identity       | #254 (`ce4755a`) | STAGING ACCEPTED                                 |
+| G-61 purchase funding account       | #255 (`6df1b91`) | MERGED, staging acceptance pending               |
+| G-23 draft expiry                   | #258 (`f5fb1ce`) | MERGED, staging acceptance pending               |
+| Build 6 conversational continuation | #260 (`3612fcf`) | MERGED, staging acceptance pending               |
+| G-68 / G-24 routing, STOP/START     | #259 (`f5ef123`) | MERGED, staging acceptance pending               |
+| G-65 Chat entitlement on commands   | #261 (`29dc934`) | MERGED, staging acceptance pending               |
+| G-81 Chat purchase identity         | #262 (`88b577c`) | MERGED, staging acceptance pending               |
+| G-89 dashboard PO receive vs Chat   | #263 (`3d462c1`) | MERGED, DEPLOYED TO STAGING, acceptance pending  |
+| G-80 natural Nigerian opt-outs      | #265 (`f2a155a`) | MERGED, DEPLOYED TO STAGING, acceptance pending  |
+| G-85 marks on short answers         | #266 (`e539439`) | MERGED, staging acceptance pending               |
+| Build 9 command-bus enforcement     | #267 (`8b59d26`) | MERGED, staging acceptance pending               |
+| G-95 reverse released bank lines    | #268 (`c499d15`) | MERGED, DEPLOYED TO STAGING, acceptance pending  |
+| G-97 forgotten statement day        | #269 (`072db70`) | MERGED, DEPLOYED TO STAGING, acceptance pending  |
+| G-57 view-only AI authorisation     | #270 (`9752971`) | MERGED, staging acceptance pending               |
+| G-60 privacy-gateway identity       | #271 (`c5b2c8a`) | MERGED, DEPLOYED TO STAGING, acceptance pending  |
+| G-07 AI launch evaluation harness   | #273 (open)      | CODE COMPLETE, awaiting merge; live eval pending |
 
 **Staging acceptance queue (the owner, in this order; none accepted, and CI is not acceptance):** G-61, G-23, Build 6, G-68 / G-24,
 G-65, G-81, G-89, G-80, G-85, Build 9, G-95, G-97, G-57, G-60. G-07 joins it (as the owner-run live AI
@@ -109,7 +109,7 @@ and are not retested.
 **Launch-closeout engineering order (owner, 19 Oct 2026; supersedes the 8 Oct order below for
 everything after G-60; changed only by a verified new financial, privacy or authorization blocker):**
 
-1. **G-07**, AI launch evaluation harness (IN DEVELOPMENT, PR #273, `fix/g07-ai-launch-evaluation`). Builds and
+1. **G-07**, AI launch evaluation harness (CODE COMPLETE, PR #273 awaiting the owner's merge; LIVE EVAL / ACCEPTANCE PENDING). Builds and
    proves the harness; the paid live evaluation is NOT run in the PR (owner-run, in the batched
    acceptance campaign, after G-59).
 2. **G-59**, model-family pricing correctness (`modelFamily()` matches by substring).

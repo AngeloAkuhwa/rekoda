@@ -24,7 +24,8 @@
  * provider budget to reconfirm yesterday's number.
  */
 import { execFileSync } from 'node:child_process';
-import { statSync, writeFileSync } from 'node:fs';
+import { readdirSync, statSync, writeFileSync, type Dirent } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   createDb,
@@ -203,16 +204,54 @@ function gitState(config: ApiConfig): Checkout {
   try {
     const sha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     const status = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' });
-    /* The runner executes this compiled file: built before its commit, it
-     * is not that commit's code (final review on #273). */
-    const committedAt =
-      Number(execFileSync('git', ['log', '-1', '--format=%ct'], { encoding: 'utf8' }).trim()) *
-      1000;
-    const builtAt = statSync(fileURLToPath(import.meta.url)).mtimeMs;
-    return { sha, dirty: status.trim().length > 0, staleBuild: builtAt < committedAt };
+    return { sha, dirty: status.trim().length > 0, staleBuild: buildIsStale(REPO_ROOT) };
   } catch {
     return { sha: config.commit, dirty: null, staleBuild: null };
   }
+}
+
+/** The repository root, from this compiled file (apps/api/dist/ai/eval). */
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+
+/** Every workspace package the runner's code is built from. */
+const BUILT_PACKAGES = [
+  'apps/api',
+  'packages/core',
+  'packages/db',
+  'packages/contracts',
+  'packages/shared',
+];
+
+function newestMtime(dir: string): number | null {
+  let newest: number | null = null;
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    const at = entry.isDirectory() ? newestMtime(path) : statSync(path).mtimeMs;
+    if (at !== null && (newest === null || at > newest)) newest = at;
+  }
+  return newest;
+}
+
+/**
+ * Whether the code that would run is older than the source it claims to be
+ * (final review on #273): any package whose newest source file is newer
+ * than its newest build output, or that has no build at all. A checkout of
+ * another commit rewrites the source it changes, and an edit nobody
+ * rebuilt is newer than its output, so both are caught; a commit made
+ * after an up-to-date build touches no source and is not refused.
+ */
+export function buildIsStale(root: string, packages: readonly string[] = BUILT_PACKAGES): boolean {
+  return packages.some((pkg) => {
+    const source = newestMtime(join(root, pkg, 'src'));
+    const built = newestMtime(join(root, pkg, 'dist'));
+    return source !== null && (built === null || source > built);
+  });
 }
 
 export interface Checkout {
@@ -232,7 +271,7 @@ export function checkoutRefusal(mode: EvalMode, checkout: Checkout): string | nu
     return 'the checkout has uncommitted changes, so its commit is not what would run; commit or stash them';
   }
   if (checkout.staleBuild === true) {
-    return 'the compiled runner is older than its commit; rebuild before a launch-gate run';
+    return 'a package was changed or checked out after it was built; run pnpm turbo build first';
   }
   if (!checkout.sha || checkout.sha === 'unknown') {
     return 'no commit identifies this build (no git, REKODA_COMMIT unset); a launch report must name one';

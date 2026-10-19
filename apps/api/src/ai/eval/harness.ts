@@ -200,7 +200,12 @@ function scoreCommand(evalCase: EvalCase, command: Record<string, unknown>): Eva
     return answered(evalCase, 'command', obeyed.length === 0, obeyed);
   }
 
-  const checks = [...scoreChecks(expect, command), ...unstatedAdjustments(expect, command)];
+  /* A record of the wrong kind is wrong whatever its fields say: none of
+   * them earns an observation (confirmation review on #273). */
+  const rightIntent = command['intent'] === expect.intent;
+  const checks = [...scoreChecks(expect, command), ...unstatedAdjustments(expect, command)].map(
+    (check) => (rightIntent ? check : { ...check, ok: false }),
+  );
   const failed = [
     ...(command['intent'] === expect.intent ? [] : ['intent']),
     ...checks.filter((c) => !c.ok).map((c) => c.field),
@@ -281,6 +286,21 @@ export function namesStem(name: string, stem: string): boolean {
 }
 
 /**
+ * The account a payment method books to (final review on #273): a sale or
+ * a payment is cash only when it says cash and the bank otherwise; an
+ * expense is the bank only when it says transfer (`gateExpense`); a
+ * purchase is cash or the bank when it says so, and asked about otherwise
+ * (`gatePurchase`), which a null and an `unknown` alike mean.
+ */
+function bookedAccount(intent: string, method: unknown): 'cash' | 'bank' | 'asked' {
+  if (intent === 'RecordExpense') return method === 'transfer' ? 'bank' : 'cash';
+  if (intent === 'RecordPurchase') {
+    return method === 'cash' ? 'cash' : method === 'transfer' ? 'bank' : 'asked';
+  }
+  return method === 'cash' ? 'cash' : 'bank';
+}
+
+/**
  * A sale's discount and delivery fee must be what the merchant stated, and
  * nothing when they stated none (Codex on #273): an invented ₦2,000 discount
  * with ₦20,000 paid would otherwise read as a ₦22,000 sale paid in full.
@@ -318,6 +338,16 @@ function checkHolds(
   /* A sale carries quantity and price per line; a purchase carries one
    * quantity of its own. The check reads whichever the command has. */
   const items = command['items'];
+  if (field === 'paymentMethod') {
+    /* By the account the money lands in, as the runtime books it (final
+     * review on #273): two words that book alike are one answer. */
+    const intent = String(command['intent']);
+    return bookedAccount(intent, command[field]) === bookedAccount(intent, wanted);
+  }
+  if (field === 'supplierMention' && typeof wanted === 'string') {
+    const said = command[field];
+    return typeof said === 'string' && namesStem(said, wanted);
+  }
   if (field === 'customerToken') {
     const customer = command['customer'] as { token?: string } | null | undefined;
     return customer?.token === wanted;
@@ -402,7 +432,12 @@ function checkHolds(
   /* Null pins that the merchant did not say: an absent field is the same. */
   if (wanted === null) {
     const value = command[field];
-    const zeroIsNone = field === 'discount' || field === 'deliveryFee';
+    /* 0 books as none for a sale's adjustments and its payment
+     * (`saleToDraft`, `computeMoney`), never for a purchase's payment. */
+    const zeroIsNone =
+      field === 'discount' ||
+      field === 'deliveryFee' ||
+      (field === 'reportedPayment' && command['intent'] === 'RecordSale');
     return value === null || value === undefined || (zeroIsNone && value === 0);
   }
   return command[field] === wanted;
