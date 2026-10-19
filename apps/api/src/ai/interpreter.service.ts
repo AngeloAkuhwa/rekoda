@@ -53,8 +53,12 @@ export type Interpretation =
   | { outcome: 'unusable'; reason: string }
   /** A ceiling refused before anything was spent. */
   | { outcome: 'refused'; refusedBy: 'business' | 'platform' }
-  /** The provider could not be reached. Nothing was billed; the slot is back. */
-  | { outcome: 'unavailable'; reason: string }
+  /**
+   * No usable reply came back: the provider could not be reached, or the
+   * transport itself failed (G-07). The slot is back either way; `failure`
+   * keeps the two apart for whoever reads the run.
+   */
+  | { outcome: 'unavailable'; reason: string; failure: UnavailableFailure }
   /**
    * Two independent readers disagreed on a high-value document (item 9).
    * Neither reading is chosen, no third model is asked, and nothing
@@ -63,11 +67,14 @@ export type Interpretation =
    */
   | { outcome: 'disagreement'; fields: string[] };
 
+/** Why no usable reply came back from a reserved call. */
+export type UnavailableFailure = 'provider_unreachable' | 'transport_error';
+
 /** One reserved, recorded model call — or the reason it did not happen. */
 type ModelCall =
   | { kind: 'ok'; reply: ModelReply }
   | { kind: 'refused'; refusedBy: 'business' | 'platform' }
-  | { kind: 'unavailable'; reason: string };
+  | { kind: 'unavailable'; reason: string; failure: UnavailableFailure };
 
 /**
  * Why the escalation model was asked. On the cost row, because "what does
@@ -133,7 +140,9 @@ export class Interpreter {
       purpose: 'interpret_message',
     });
     if (primary.kind === 'refused') return { outcome: 'refused', refusedBy: primary.refusedBy };
-    if (primary.kind === 'unavailable') return { outcome: 'unavailable', reason: primary.reason };
+    if (primary.kind === 'unavailable') {
+      return { outcome: 'unavailable', reason: primary.reason, failure: primary.failure };
+    }
 
     const first = this.parseCommandReply(primary.reply);
 
@@ -336,9 +345,23 @@ export class Interpreter {
          * Zero tokens with `priced: false` says "this happened and we cannot
          * price it", which is a row somebody can reconcile. */
         await this.recordUnpricedCall(businessId, request, error.message);
-        return { kind: 'unavailable', reason: error.message };
+        return { kind: 'unavailable', reason: error.message, failure: 'provider_unreachable' };
       }
-      throw error;
+      /* Any other fault in the transport (a reply unlike the one the SDK
+       * promised, a bug in an adapter) is still a call that produced nothing
+       * usable (G-07). Rethrown, it kept the merchant's slot for good and
+       * left no row, though the provider may have billed us. Same handling
+       * as unreachable, named for what it was; the name only, since an
+       * error's message is not a place we vouch for. */
+      const name = error instanceof Error ? error.name : 'unknown';
+      this.log.error(`${request.role} transport failed: ${name}`);
+      await quotaRepo.releaseAiCall(this.db, businessId);
+      await this.recordUnpricedCall(businessId, request, `transport error: ${name}`);
+      return {
+        kind: 'unavailable',
+        reason: `transport error: ${name}`,
+        failure: 'transport_error',
+      };
     }
 
     await this.recordUsage(businessId, request, reply);

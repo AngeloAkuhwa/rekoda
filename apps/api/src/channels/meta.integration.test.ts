@@ -5515,6 +5515,43 @@ describe('a storefront buyer named later in Chat', () => {
     expect(await invoiceCount(business.id)).toBe(0);
   });
 
+  /* G-07: text the interpreter refuses for raw protected fields (here an
+   * account number that only reads as one once a long name became a short
+   * token) is answered, and the message unit it took goes back. */
+  it('answers a message the interpreter refuses as raw, and gives its unit back', async () => {
+    const business = await seedMerchant();
+    const { token } = await deps.gateway.resolveMention(business.id, 'Adaeze Obiageli Okonkwo');
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`UPDATE customers SET token = 'CUSTOMER_QQQ' WHERE token = ${token}`),
+    );
+    stubTransport.replyWith(SALE_TO_CHIDI);
+
+    await post(
+      messagePayload(
+        '2348031234567',
+        'wamid.RAW1',
+        'send to Adaeze Obiageli Okonkwo 0123456789 for the wigs',
+      ),
+    );
+    await drain();
+
+    expect(stubTransport.requests).toHaveLength(0);
+    expect(stubSender.lastText).toContain('could not read that safely');
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
+    );
+    expect(rows.find((r) => r.unit === 'AI_ACTIONS')?.used ?? 0).toBe(0);
+    /* Nothing of it is kept: the history holds the placeholder. */
+    const stored = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ body: string }>(
+        sql`SELECT body FROM conversation_messages WHERE provider_message_id = 'wamid.RAW1'`,
+      ),
+    );
+    expect([...stored].map((r) => r.body)).toEqual([
+      '[message not read: it held a protected detail]',
+    ]);
+  });
+
   it('keeps them apart when the merchant says no', async () => {
     const business = await seedMerchant();
     await deps.gateway.resolveStorefrontCustomer(business.id, 'Chidi Okafor', PHONE);

@@ -16,8 +16,15 @@ import { createDb, identity, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../../config.js';
 import { Interpreter } from '../interpreter.service.js';
-import type { ModelReply, ModelRequest, ModelTransport } from '../transport.js';
+import {
+  ProviderUnreachable,
+  type ModelReply,
+  type ModelRequest,
+  type ModelTransport,
+} from '../transport.js';
 import { EVAL_CASES } from './dataset.js';
+import { RECOMMENDED_PROFILE, evaluateLaunchGate } from './gate.js';
+import { evalConfig } from './run-eval.js';
 import { runEvalCase, scoreEval, type EvalCaseResult } from './harness.js';
 
 let urls: Urls;
@@ -36,7 +43,7 @@ beforeAll(async () => {
   process.env['REKODA_API_SECRET'] = randomBytes(24).toString('hex');
   process.env['VAULT_KEY'] = randomBytes(32).toString('hex');
   process.env['MATCH_KEY'] = randomBytes(32).toString('hex');
-  config = loadConfig();
+  config = evalConfig(loadConfig());
 
   await truncateAll(urls);
   const user = await identity.upsertUserByPhone(db, '+2348080000009');
@@ -91,7 +98,7 @@ class OracleTransport implements ModelTransport {
           ],
           statedTotal: checks.statedTotal ?? null,
           reportedPayment: checks.reportedPayment ?? null,
-          paymentMethod: 'unknown',
+          paymentMethod: checks.paymentMethod ?? 'unknown',
           discount: null,
           deliveryFee: null,
           dueDescription: null,
@@ -109,7 +116,7 @@ class OracleTransport implements ModelTransport {
           intent: 'RecordPayment',
           customer,
           amount: checks.amount ?? null,
-          relativeAmount: null,
+          relativeAmount: checks.relativeAmount ?? null,
           documentRef: null,
           paymentMethod: 'unknown',
         });
@@ -121,14 +128,14 @@ class OracleTransport implements ModelTransport {
           amount: checks.amount ?? 107_500,
           reportedPayment: checks.reportedPayment ?? null,
           ...(checks.paymentMethod ? { paymentMethod: checks.paymentMethod } : {}),
-          productMention: null,
-          quantity: null,
+          productMention: checks.quantity ? 'stock' : null,
+          quantity: checks.quantity ?? null,
         });
       case 'Query':
         return reply({
           intent: 'Query',
           topic: checks.topic ?? 'sales_summary',
-          customer: null,
+          customer: checks.customerToken ? customer : null,
           period: checks.period ?? null,
           periodText: checks.periodText ?? null,
           format: 'chat',
@@ -151,20 +158,32 @@ describe('the dataset through the real interpreter', () => {
     /* No case may die on the way IN: a dataset input that trips the
      * privacy fail-close or the schema border is a broken fixture, and a
      * broken fixture makes every live score a lie. */
-    expect(results.filter((r) => r.outcome === 'error')).toEqual([]);
+    expect(results.filter((r) => r.status !== 'passed')).toEqual([]);
 
     const metrics = scoreEval(EVAL_CASES, results);
     expect(metrics.datasetSize).toBe(EVAL_CASES.length);
-    expect(metrics.acceptedAnswerAccuracy).toBe(1);
-    expect(metrics.intentExactMatch).toBe(1);
-    expect(metrics.amountExactMatch).toBe(1);
-    expect(metrics.quantityExactMatch).toBe(1);
-    expect(metrics.customerTokenMatch).toBe(1);
-    expect(metrics.abstainedOnAmbiguous).toBe(1);
-    expect(metrics.injectionResisted).toBe(1);
+    expect(metrics.invalid).toBe(0);
+    for (const metric of [
+      metrics.acceptedAnswerAccuracy,
+      metrics.intentExactMatch,
+      metrics.amountExactMatch,
+      metrics.quantityExactMatch,
+      metrics.customerTokenMatch,
+      metrics.abstainedOnAmbiguous,
+      metrics.injectionResisted,
+    ]) {
+      /* Measured on real evidence, and perfect. */
+      expect(metric.status).toBe('MEASURED');
+      expect(metric.value).toBe(1);
+      expect(metric.observations).toBeGreaterThan(0);
+    }
     for (const [category, bucket] of Object.entries(metrics.byCategory)) {
       expect(bucket.passed, category).toBe(bucket.total);
     }
+    expect(
+      evaluateLaunchGate(metrics, RECOMMENDED_PROFILE, { invalidCases: 0, datasetErrors: [] })
+        .overall,
+    ).toBe('PASS');
   });
 
   it('a guessing model is caught: ambiguity answered with a command fails the gate', async () => {
@@ -199,7 +218,29 @@ describe('the dataset through the real interpreter', () => {
     }
 
     const metrics = scoreEval(ambiguous, results);
-    expect(metrics.abstainedOnAmbiguous).toBe(0);
-    expect(metrics.acceptedAnswerAccuracy).toBe(0);
+    expect(metrics.abstainedOnAmbiguous).toMatchObject({ status: 'MEASURED', value: 0 });
+    expect(metrics.acceptedAnswerAccuracy.value).toBe(0);
+  });
+
+  it('a provider outage proves nothing: every case invalid, no gate passes (G-07)', async () => {
+    const down: ModelTransport = {
+      send: () => Promise.reject(new ProviderUnreachable('anthropic 503')),
+    };
+    const interpreter = new Interpreter(db, config, down);
+
+    const results: EvalCaseResult[] = [];
+    for (const evalCase of EVAL_CASES) {
+      results.push(await runEvalCase(interpreter, businessId, evalCase));
+    }
+
+    expect(results.every((r) => r.status === 'invalid')).toBe(true);
+    const metrics = scoreEval(EVAL_CASES, results);
+    expect(metrics.abstainedOnAmbiguous.status).toBe('NOT_MEASURED');
+    expect(metrics.injectionResisted.status).toBe('NOT_MEASURED');
+    const verdict = evaluateLaunchGate(metrics, RECOMMENDED_PROFILE, {
+      invalidCases: metrics.invalid,
+      datasetErrors: [],
+    });
+    expect(verdict.overall).toBe('NOT_MEASURED');
   });
 });

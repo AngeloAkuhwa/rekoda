@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import {
   CLITIC_SUFFIXES,
+  detectStructuralPii,
   displayOf,
   generateCustomerToken,
   openSegments,
@@ -66,11 +67,16 @@ export interface GatewayTokenised extends TokenisedMessage {
    */
   readonly facets: ReadonlyMap<string, readonly TypedFacet[]>;
   /**
-   * The known-name pass could not finish (KNOWN_NAME_CANDIDATE_LIMIT), so
-   * `text` is UNREAD_MESSAGE and nothing the merchant typed is handed on.
+   * Why nothing the merchant typed is handed on, or null when the message
+   * was read. `too_long`: the known-name pass could not finish
+   * (KNOWN_NAME_CANDIDATE_LIMIT). `protected_detail`: the finished text still
+   * holds a phone, email or account number, which only appears once a long
+   * name became a short token (G-07). Either way `text` is UNREAD_MESSAGE.
    */
-  readonly unread: boolean;
+  readonly unread: UnreadReason | null;
 }
+
+export type UnreadReason = 'too_long' | 'protected_detail';
 
 /**
  * The most distinct name candidates one message may raise (Codex on #271).
@@ -80,8 +86,23 @@ export interface GatewayTokenised extends TokenisedMessage {
  */
 export const KNOWN_NAME_CANDIDATE_LIMIT = 40_000;
 
-/** What stands for a message the known-name pass could not finish. */
-export const UNREAD_MESSAGE = '[message too long to read]';
+/** What stands for a message the gateway would not hand on, by reason. */
+export const UNREAD_MESSAGE: Readonly<Record<UnreadReason, string>> = {
+  too_long: '[message too long to read]',
+  protected_detail: '[message not read: it held a protected detail]',
+};
+
+/** A message the gateway will not hand on: no text, no tokens, no link. */
+function unreadAs(reason: UnreadReason): GatewayTokenised {
+  return {
+    text: UNREAD_MESSAGE[reason],
+    tokens: new Map(),
+    link: null,
+    facets: new Map(),
+    customers: [],
+    unread: reason,
+  };
+}
 
 /**
  * The token table one message carries to its reply: what each token reads
@@ -340,16 +361,7 @@ export class PrivacyGateway {
       }
     }
 
-    if (unread) {
-      return {
-        text: UNREAD_MESSAGE,
-        tokens: new Map(),
-        link: null,
-        facets: new Map(),
-        customers: [],
-        unread: true,
-      };
-    }
+    if (unread) return unreadAs('too_long');
 
     const byKey = new Map<string, { token: string; customerId: string }>();
     /* One lookup per message, however many candidates (G-60). */
@@ -388,6 +400,13 @@ export class PrivacyGateway {
       }
     }
 
+    /* The contract is text free of structural PII, and the name pass can
+     * break it: "send to Adaeze Obiageli Okonkwo 0123456789" holds no account
+     * number until the long name becomes a short token within reach of the
+     * keyword. Such text is never handed on, so it is never stored and no
+     * model refuses it later (G-07). */
+    if (detectStructuralPii(out).length > 0) return unreadAs('protected_detail');
+
     for (const [token, facets] of typed) tokens.set(token, displayOf(facets));
     return {
       text: out,
@@ -395,7 +414,7 @@ export class PrivacyGateway {
       link: proposeLink(seen),
       facets: typed,
       customers: seen,
-      unread: false,
+      unread: null,
     };
   }
 

@@ -409,14 +409,19 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       return;
     }
 
-    /* The known-name pass could not finish (G-60, Codex on #271): an
-     * unfinished pass could miss a stored name, so no model reads it. */
+    /* The gateway would not hand the message on (G-60, G-07): an unfinished
+     * known-name pass could miss a stored name, and text still holding a
+     * protected detail is refused by every model. No model reads it, no unit
+     * is metered, and the merchant is told what to do. */
     if (tokenised?.unread) {
       await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
       await deps.replySender.send(tx, {
         businessId,
         to: inbound.from,
-        reply: replies.messageTooLong(),
+        reply:
+          tokenised.unread === 'too_long'
+            ? replies.messageTooLong()
+            : replies.messageNotReadSafely(),
       });
       await events.markProcessed(tx, eventId, null, businessId);
       return;

@@ -101,10 +101,15 @@ export class OpenAiTransport implements ModelTransport {
     }
 
     const usage = response.usage;
+    /* `prompt_tokens` counts every input token, the cached ones included
+     * ("cached tokens present in the prompt"), so the cached share is taken
+     * out of ordinary input here and priced once, at the cache-read rate
+     * (G-07). */
+    const cached = usage?.prompt_tokens_details?.cached_tokens ?? 0;
     return {
       toolInput,
       usage: {
-        inputTokens: usage?.prompt_tokens ?? 0,
+        inputTokens: Math.max(0, (usage?.prompt_tokens ?? 0) - cached),
         outputTokens: usage?.completion_tokens ?? 0,
         /**
          * DIFFERENCE 3 — there is no "cache write" to report.
@@ -116,7 +121,7 @@ export class OpenAiTransport implements ModelTransport {
          * two are not counted twice.
          */
         cacheWriteTokens: 0,
-        cacheReadTokens: usage?.prompt_tokens_details?.cached_tokens ?? 0,
+        cacheReadTokens: cached,
       },
       stopReason: choice?.finish_reason ?? null,
     };

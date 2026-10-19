@@ -260,6 +260,30 @@ describe('the spend ceiling in front of it', () => {
     expect(usage.calls).toBe(1);
     expect(usage.providerCostMicros).toBe(0);
   });
+
+  /* G-07: any other fault in the transport (a reply shaped unlike the SDK
+   * promised, a bug in the adapter) is still a call that produced nothing
+   * usable. The slot goes back, the attempt is recorded unpriced, and the
+   * outcome says it was the transport, not the provider being down. */
+  it('hands the slot back and records the attempt when the transport itself fails', async () => {
+    const businessId = await seedBusiness();
+    const interpreter = new Interpreter(
+      db,
+      config,
+      StubTransport.failing(
+        new TypeError("Cannot read properties of undefined (reading 'message')"),
+      ),
+    );
+
+    const result = await interpreter.interpret(businessId, 'CUSTOMER_7K2 bought wigs');
+    expect(result).toMatchObject({ outcome: 'unavailable', failure: 'transport_error' });
+
+    const spent = await withBusiness(db, businessId, (tx) => quotaRepo.callsToday(tx, businessId));
+    expect(spent).toBe(0);
+    const usage = await usageRows(businessId);
+    expect(usage.calls).toBe(1);
+    expect(usage.providerCostMicros).toBe(0);
+  });
 });
 
 describe('costs stay inside the tenant', () => {

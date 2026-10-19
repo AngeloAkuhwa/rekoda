@@ -227,6 +227,24 @@ describe('the OpenAI transport', () => {
     expect((await transport().send(REQUEST)).toolInput).toBeNull();
   });
 
+  /* G-07: OpenAI's `prompt_tokens` INCLUDES the cached tokens
+   * (`prompt_tokens_details.cached_tokens`, "cached tokens present in the
+   * prompt"). Reported as both input and cache read, they were priced twice. */
+  it('prices each input token once: cached tokens are not also ordinary input', async () => {
+    respond = json({
+      ...ANSWER,
+      usage: {
+        prompt_tokens: 2_006,
+        completion_tokens: 300,
+        prompt_tokens_details: { cached_tokens: 1_920 },
+      },
+    });
+    const { usage } = await transport().send(REQUEST);
+    expect(usage.inputTokens).toBe(86);
+    expect(usage.cacheReadTokens).toBe(1_920);
+    expect(usage.inputTokens + (usage.cacheReadTokens ?? 0)).toBe(2_006);
+  });
+
   it('raises ProviderUnreachable on a provider error', async () => {
     respond = json({ error: { message: 'boom' } }, 500);
     await expect(transport().send(REQUEST)).rejects.toBeInstanceOf(ProviderUnreachable);

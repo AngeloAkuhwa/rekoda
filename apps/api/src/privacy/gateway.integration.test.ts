@@ -966,8 +966,8 @@ describe('the known-name pass under a crafted message', () => {
     try {
       const tokenised = await gateway.tokenise(businessId, text);
       expect(hashed.mock.calls.length).toBeLessThanOrEqual(KNOWN_NAME_CANDIDATE_LIMIT);
-      expect(tokenised.unread).toBe(true);
-      expect(tokenised.text).toBe(UNREAD_MESSAGE);
+      expect(tokenised.unread).toBe('too_long');
+      expect(tokenised.text).toBe(UNREAD_MESSAGE.too_long);
       expect(tokenised.text).not.toContain('Ada');
       expect(tokenised.link).toBeNull();
     } finally {
@@ -986,7 +986,33 @@ describe('the known-name pass under a crafted message', () => {
       text += `${i % 5 === 0 ? '(' : ''}${words[(i * 7) % words.length]}${i}${marks[(i * 5) % marks.length]} `;
     }
     const tokenised = await gateway.tokenise(businessId, text);
-    expect(tokenised.unread).toBe(false);
+    expect(tokenised.unread).toBeNull();
     expect(tokenised.text.startsWith(`${token} paid.`)).toBe(true);
+  });
+});
+
+describe('text the name pass leaves holding a protected detail (G-07)', () => {
+  it('is never handed on: the account number only appears once the name is a token', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { token } = await gateway.resolveMention(businessId, 'Adaeze Obiageli Okonkwo');
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(sql`UPDATE customers SET token = 'CUSTOMER_QQQ' WHERE token = ${token}`),
+    );
+
+    const tokenised = await gateway.tokenise(
+      businessId,
+      'send to Adaeze Obiageli Okonkwo 0123456789 for the wigs',
+    );
+    expect(tokenised.unread).toBe('protected_detail');
+    expect(tokenised.text).toBe(UNREAD_MESSAGE.protected_detail);
+    expect(tokenised.text).not.toContain('0123456789');
+    expect(tokenised.tokens.size).toBe(0);
+  });
+
+  it('reads an account number the structural pass already found', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const tokenised = await gateway.tokenise(businessId, 'send to account 0123456789 now');
+    expect(tokenised.unread).toBeNull();
+    expect(tokenised.text).not.toContain('0123456789');
   });
 });
