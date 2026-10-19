@@ -20,6 +20,7 @@ import {
   renderEvalReport,
   type UsageSummary,
 } from './report.js';
+import { EVAL_CASES } from './dataset.js';
 import { checkoutRefusal, evalConfig, parseEvalArgs } from './run-eval.js';
 
 function configWith(env: Record<string, string>): ApiConfig {
@@ -256,12 +257,47 @@ describe('the evaluation report (G-07)', () => {
 });
 
 describe('the checkout a run is attributed to (G-07, Codex on #273)', () => {
+  const clean = { sha: 'abc123', dirty: false, staleBuild: false };
+
   it('refuses a launch-gate run from a dirty checkout, and only that', () => {
-    expect(checkoutRefusal('gate', true)).toContain('uncommitted changes');
-    expect(checkoutRefusal('gate', false)).toBeNull();
+    expect(checkoutRefusal('gate', { ...clean, dirty: true })).toContain('uncommitted changes');
+    expect(checkoutRefusal('gate', clean)).toBeNull();
     /* An image has no git: its built commit (REKODA_COMMIT) is what runs. */
-    expect(checkoutRefusal('gate', null)).toBeNull();
-    expect(checkoutRefusal('measure', true)).toBeNull();
+    expect(checkoutRefusal('gate', { sha: 'b81ef90', dirty: null, staleBuild: null })).toBeNull();
+    expect(checkoutRefusal('measure', { ...clean, dirty: true })).toBeNull();
+  });
+
+  it('refuses a launch-gate run whose build is older than its commit (final review)', () => {
+    /* Built at A, checked out at B: the report would name code that did not run. */
+    expect(checkoutRefusal('gate', { ...clean, staleBuild: true })).toContain('rebuild');
+  });
+
+  it('refuses a launch-gate run no commit identifies (final review)', () => {
+    expect(checkoutRefusal('gate', { sha: 'unknown', dirty: null, staleBuild: null })).toContain(
+      'no commit identifies this build',
+    );
+  });
+});
+
+describe('final review on #273: what a run may claim', () => {
+  it('counts a resisted injection as no checked draft in the cost per correct draft', () => {
+    const resisted = {
+      caseId: 'i',
+      category: 'adversarial_injection' as const,
+      outcome: 'command' as const,
+      status: 'passed' as const,
+      failedChecks: [],
+      checks: [],
+      intent: 'RecordExpense',
+      expected: 'refusal' as const,
+    };
+    expect(report('measure', { results: [resisted] }).costPerCorrectAcceptedDraftMicros).toBeNull();
+  });
+
+  it('a measurement whose cases did not run, or whose calls failed, exits non-zero', () => {
+    expect(exitCodeFor(report('measure', { metrics: metrics({ invalid: 3 }) }))).toBe(1);
+    expect(exitCodeFor(report('measure', { usage: { ...USAGE, failedCalls: 1 } }))).toBe(1);
+    expect(exitCodeFor(report('measure'))).toBe(0);
   });
 });
 
@@ -280,8 +316,16 @@ describe('the runner arguments (G-07)', () => {
 describe('the evaluation configuration (G-07)', () => {
   it('gives the eval tenant room for every case and leaves the global ceiling alone', () => {
     const config = configWith(OPENAI);
-    const run = evalConfig(config, 77);
-    expect(run.aiCallsPerBusinessPerDay).toBe(231);
+    /* A page can make four calls (classifier, interpreter, escalation,
+     * verifier); typed text two (final review). */
+    const documents = EVAL_CASES.filter((c) => c.source === 'document_text').length;
+    const run = evalConfig(config, EVAL_CASES);
+    expect(run.aiCallsPerBusinessPerDay).toBe(
+      Math.max(
+        config.aiCallsPerBusinessPerDay,
+        documents * 4 + (EVAL_CASES.length - documents) * 2,
+      ),
+    );
     expect(run.aiCallsGlobalPerDay).toBe(config.aiCallsGlobalPerDay);
     expect(run.aiProvider).toBe(config.aiProvider);
     expect(run.aiModelDefault).toBe(config.aiModelDefault);

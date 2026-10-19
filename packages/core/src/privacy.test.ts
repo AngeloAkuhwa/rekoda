@@ -11,6 +11,7 @@ import {
   PRIVACY_POLICY_VERSION,
   detectStructuralPii,
   detectStructuralPiiAroundTokens,
+  redactStructuralPiiAroundTokens,
   displayOf,
   fitRehydrated,
   generateCustomerToken,
@@ -399,5 +400,32 @@ describe('the privacy policy version (G-07, Codex on #273)', () => {
   it('names the rule refusing text that still holds structural PII once names are tokens', () => {
     /* Telemetry before and after the refusal rule must not claim one policy. */
     expect(PRIVACY_POLICY_VERSION).toBe('tokenise-v2');
+  });
+});
+
+describe('masking never swallows a real number (final review on #273)', () => {
+  it('keeps digits a merchant typed after a counter-shaped prefix visible', () => {
+    expect(
+      detectStructuralPiiAroundTokens('send to CUSTOMER_KAP PHONE_0123456789').map((s) => s.kind),
+    ).toEqual(['account']);
+    expect(detectStructuralPiiAroundTokens('PHONE_08031234567').map((s) => s.kind)).toEqual([
+      'phone',
+    ]);
+    expect(detectStructuralPiiAroundTokens('ACCOUNT_2348031234567').map((s) => s.kind)).toEqual([
+      'phone',
+    ]);
+  });
+
+  it('still reads a real counter token as opaque', () => {
+    expect(detectStructuralPiiAroundTokens('send to ACCOUNT_1 now')).toEqual([]);
+  });
+
+  it('redacts, for storage, what reads as PII only once a name is a token', () => {
+    expect(
+      redactStructuralPiiAroundTokens('send to CUSTOMER_K7P 0123456789 for the wigs', [
+        'CUSTOMER_K7P',
+      ]),
+    ).toBe('send to CUSTOMER_K7P [account] for the wigs');
+    expect(redactStructuralPiiAroundTokens('nothing here')).toBe('nothing here');
   });
 });

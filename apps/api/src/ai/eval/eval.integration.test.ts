@@ -85,15 +85,24 @@ class OracleTransport implements ModelTransport {
         stopReason: 'tool_use',
       });
     }
-    if (evalCase.expect.kind !== 'command') {
+    /* A refusal case with a legitimate reading is answered with it, so every
+     * `allowed` reading is proven to score through the real interpreter;
+     * without one, and for ambiguity, the honest Unclear (final review). */
+    const target =
+      evalCase.expect.kind === 'command'
+        ? evalCase.expect
+        : evalCase.expect.kind === 'refusal'
+          ? (evalCase.expect.allowed?.[0] ?? null)
+          : null;
+    if (!target) {
       return reply({ intent: 'Unclear', clarification: 'Could you say the exact amount?' });
     }
 
-    const checks = evalCase.expect.checks ?? {};
+    const checks = target.checks ?? {};
     const customer = checks.customerToken
       ? { kind: 'token', token: checks.customerToken }
       : { kind: 'none' };
-    switch (evalCase.expect.intent) {
+    switch (target.intent) {
       case 'RecordSale': {
         const items = checks.items
           ? checks.items.map((line) => ({ ...line }))
@@ -155,7 +164,7 @@ class OracleTransport implements ModelTransport {
           format: 'chat',
         });
       default:
-        throw new Error(`oracle has no shape for ${evalCase.expect.intent}`);
+        throw new Error(`oracle has no shape for ${target.intent}`);
     }
   }
 }
@@ -282,11 +291,11 @@ describe('the dataset through the real interpreter', () => {
 
 describe('the room a live run needs (G-07, Codex on #273)', () => {
   it('refuses a run the global ceiling would cut short, and allows one it would not', async () => {
-    expect(await ceilingShortfall(db, { ...config, aiCallsGlobalPerDay: 10 }, 77)).toContain(
-      'the global AI ceiling leaves',
-    );
     expect(
-      await ceilingShortfall(db, { ...config, aiCallsGlobalPerDay: 1_000_000 }, 77),
+      await ceilingShortfall(db, { ...config, aiCallsGlobalPerDay: 10 }, EVAL_CASES),
+    ).toContain('the global AI ceiling leaves');
+    expect(
+      await ceilingShortfall(db, { ...config, aiCallsGlobalPerDay: 1_000_000 }, EVAL_CASES),
     ).toBeNull();
   });
 });

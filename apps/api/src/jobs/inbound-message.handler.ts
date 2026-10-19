@@ -103,7 +103,11 @@ import type {
 import type { ReplySender } from '../replies/reply.service.js';
 import type { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
-import { redactForLog, replaceOutsideTokens } from '@rekoda/core/privacy';
+import {
+  redactForLog,
+  redactStructuralPiiAroundTokens,
+  replaceOutsideTokens,
+} from '@rekoda/core/privacy';
 import { describeFailure, JobDeferred, type JobContext, type JobHandler } from './runner.js';
 import { TranscriptionUnavailable, type SpeechToText, type Transcript } from '../ai/stt.js';
 import type { AudioMetadataProbe } from '../ai/audio-duration.js';
@@ -424,7 +428,9 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         reply:
           tokenised.unread === 'too_long'
             ? replies.messageTooLong()
-            : replies.messageNotReadSafely(),
+            : read
+              ? replies.documentNotReadSafely()
+              : replies.messageNotReadSafely(),
       });
       await events.markProcessed(tx, eventId, null, businessId);
       return;
@@ -4883,7 +4889,13 @@ async function interpretedReply(
      * conversation history must not hold a customer's real name, and "we
      * only learned it was a name a moment ago" is not an exemption. */
     /* However it was spaced, and never inside a token (G-60). */
-    const scrubbed = replaceOutsideTokens(safeText, mention, named.token, tokens.displays.keys());
+    /* And what then reads as PII is not stored either (final review on
+     * #273): "send to <new name> 0123456789" held no account number until
+     * the name became a short token within reach of "send to". */
+    const scrubbed = redactStructuralPiiAroundTokens(
+      replaceOutsideTokens(safeText, mention, named.token, tokens.displays.keys()),
+      tokens.displays.keys(),
+    );
     if (scrubbed !== safeText) {
       await conversationsRepo.setInboundBody(tx, businessId, conversationMessageId, scrubbed);
     }

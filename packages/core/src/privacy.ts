@@ -220,14 +220,58 @@ export function detectStructuralPiiAroundTokens(
   text: string,
   tokens: Iterable<string> = [],
 ): PiiSpan[] {
+  return detectStructuralPii(maskTokens(text, tokens));
+}
+
+/**
+ * The shapes a token can take when nobody issued it here: a customer token,
+ * or a per-message counter the pipeline numbers from 1 (PHONE_1, ACCOUNT_2).
+ * Bounded so a merchant who types "PHONE_08031234567" keeps the number
+ * visible: masking a counter shape must never swallow a real figure
+ * (final review on #273).
+ */
+const MASKABLE_SHAPE = /CUSTOMER_[0-9A-Z]{3}|(?:PHONE|EMAIL|ACCOUNT)_\d{1,3}(?!\d)/g;
+
+/** `text` with each token, and each bounded token shape, read as letters of its length. */
+function maskTokens(text: string, tokens: Iterable<string>): string {
+  const spans: Array<{ start: number; end: number }> = [];
+  for (const token of tokens) {
+    for (let at = text.indexOf(token); at !== -1; at = text.indexOf(token, at + token.length)) {
+      spans.push({ start: at, end: at + token.length });
+    }
+  }
+  for (const m of text.matchAll(MASKABLE_SHAPE)) {
+    spans.push({ start: m.index, end: m.index + m[0].length });
+  }
+  spans.sort((a, b) => a.start - b.start);
   let masked = '';
   let cursor = 0;
-  for (const span of protectedSpans(text, tokens)) {
+  for (const span of spans) {
     if (span.start < cursor) continue;
     masked += text.slice(cursor, span.start) + 'X'.repeat(span.end - span.start);
     cursor = span.end;
   }
-  return detectStructuralPii(masked + text.slice(cursor));
+  return masked + text.slice(cursor);
+}
+
+/**
+ * `text` with every structural span that only reads as one around its
+ * tokens replaced by its kind ("[account]"), for storage (final review on
+ * #273): a name the model resolved becomes a short token after the message
+ * was stored, and the account number beside it then reads as one. Masking
+ * keeps every length, so the spans found map exactly onto `text`.
+ */
+export function redactStructuralPiiAroundTokens(
+  text: string,
+  tokens: Iterable<string> = [],
+): string {
+  let out = '';
+  let cursor = 0;
+  for (const span of detectStructuralPiiAroundTokens(text, tokens)) {
+    out += `${text.slice(cursor, span.start)}[${span.kind}]`;
+    cursor = span.end;
+  }
+  return out + text.slice(cursor);
 }
 
 /** The stretches of `text` between its tokens, which alone may hold a name. */

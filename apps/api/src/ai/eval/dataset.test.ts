@@ -132,6 +132,59 @@ describe('the integrity check catches a broken dataset (G-07)', () => {
     ).toContain('window: a named window pins no periodText');
   });
 
+  it('every intent pins the fields that would corrupt the books (final review on #273)', () => {
+    const errorsFor = (id: string, intent: string, checks: Record<string, unknown>) =>
+      validateDataset(
+        withCase({
+          ...first,
+          id,
+          input: 'sold 3 wigs',
+          expect: { kind: 'command', intent, checks } as EvalCase['expect'],
+        }),
+      );
+    expect(
+      errorsFor('sale', 'RecordSale', { product: 'wig', quantity: 3, unitPrice: 1_000 }),
+    ).toEqual(
+      expect.arrayContaining([
+        'sale: a sale pins no payment state',
+        'sale: a sale pins no payment method',
+      ]),
+    );
+    expect(errorsFor('lines', 'RecordSale', { items: [], quantity: 1 })).toContain(
+      'lines: a sale pins both items and quantity',
+    );
+    expect(errorsFor('pay', 'RecordPayment', { paymentMethod: 'cash' })).toEqual(
+      expect.arrayContaining([
+        'pay: a payment pins no amount',
+        'pay: a payment pins no relativeAmount',
+      ]),
+    );
+    expect(errorsFor('stock', 'RecordPurchase', { amount: 1, paymentMethod: null })).toContain(
+      'stock: a purchase pins no quantity',
+    );
+    expect(
+      errorsFor('count', 'RecordPurchase', {
+        amount: 1,
+        quantity: 5,
+        paymentMethod: null,
+        reportedPayment: null,
+      }),
+    ).toContain('count: a purchase counts stock it does not name');
+    expect(errorsFor('typo', 'RecordSael', {})).toContain('typo: unknown intent RecordSael');
+    expect(errorsFor('field', 'Query', { periodTxt: null })).toContain(
+      'field: unknown check periodTxt',
+    );
+    expect(
+      errorsFor('blank', 'RecordPurchase', {
+        amount: 1,
+        quantity: 2,
+        product: ' ',
+        paymentMethod: null,
+        reportedPayment: null,
+      }),
+    ).toContain('blank: a blank product stem');
+  });
+
   it('a token the gateway could never mint (Codex on #273)', () => {
     /* Production tokens are three Crockford base32 characters: no L, no two. */
     expect(

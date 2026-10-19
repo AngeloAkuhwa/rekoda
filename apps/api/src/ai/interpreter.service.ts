@@ -377,7 +377,10 @@ export class Interpreter {
      * escalation or verifier whose answer is unusable falls back to the
      * primary's outcome, and an evaluation must still see that it failed. */
     const schemaValid =
-      request.toolName === TOOL_NAME ? this.parseCommandReply(reply).outcome === 'command' : null;
+      request.toolName === TOOL_NAME
+        ? reply.toolInput !== null &&
+          parseBusinessCommand((reply.toolInput as { command?: unknown }).command).ok
+        : null;
     await this.recordUsage(businessId, request, reply, schemaValid);
     return { kind: 'ok', reply };
   }

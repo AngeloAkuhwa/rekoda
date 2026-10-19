@@ -5552,6 +5552,35 @@ describe('a storefront buyer named later in Chat', () => {
     ]);
   });
 
+  /* Final review on #273: a NEW name the model resolves becomes a short
+   * token in the stored body, which puts the account number beside it in
+   * reach of "send to": the stored history keeps it out. */
+  it('stores no account number that the mention scrub brings within reach', async () => {
+    const business = await seedMerchant();
+    stubTransport.replyWith({
+      ...SALE_TO_CHIDI,
+      customer: { kind: 'mention', mention: 'Adaeze Obiageli Okonkwo' },
+    });
+
+    await post(
+      messagePayload(
+        '2348031234567',
+        'wamid.RAW2',
+        'Adaeze Obiageli Okonkwo bought 3 wigs for 150k, send to Adaeze Obiageli Okonkwo 0123456789',
+      ),
+    );
+    await drain();
+
+    const stored = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ body: string }>(
+        sql`SELECT body FROM conversation_messages WHERE provider_message_id = 'wamid.RAW2'`,
+      ),
+    );
+    const body = [...stored][0]?.body ?? '';
+    expect(body).not.toContain('Adaeze');
+    expect(body).not.toContain('0123456789');
+  });
+
   it('keeps them apart when the merchant says no', async () => {
     const business = await seedMerchant();
     await deps.gateway.resolveStorefrontCustomer(business.id, 'Chidi Okafor', PHONE);
@@ -5843,7 +5872,8 @@ describe('a receipt photo', () => {
 
     expect(stubOcr.calls).toHaveLength(1);
     expect(stubTransport.requests).toHaveLength(0);
-    expect(stubSender.lastText).toContain('could not read that safely');
+    /* A page cannot be resent without the number: type it instead. */
+    expect(stubSender.lastText).toContain('type what it says instead');
     expect(await readsUsed(business.id)).toBe(0);
   });
 

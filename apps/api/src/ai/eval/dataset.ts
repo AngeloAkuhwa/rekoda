@@ -96,19 +96,19 @@ export type EvalBehaviour = (typeof EVAL_BEHAVIOURS)[number];
 
 /** What a command case pins, exactly. */
 export interface EvalChecks {
-  statedTotal?: number;
-  amount?: number;
-  quantity?: number;
-  unitPrice?: number;
+  statedTotal?: number | null;
+  amount?: number | null;
+  quantity?: number | null;
+  unitPrice?: number | null;
   customerToken?: string;
-  reportedPayment?: number;
+  reportedPayment?: number | null;
   /**
    * How it was paid, only when the merchant said (G-61). Null pins that it
    * was NOT said, so a purchase's funding is asked, never invented.
    */
   paymentMethod?: string | null;
   /** A payment of "the rest" or "half", named rather than computed. */
-  relativeAmount?: string;
+  relativeAmount?: string | null;
   /** A question's topic and the window the merchant NAMED (Build 6). */
   topic?: string;
   period?: string | null;
@@ -219,7 +219,8 @@ const sale = (checks: EvalChecks): EvalExpectation => ({
 const expense = (amount: number, paymentMethod?: 'cash' | 'transfer' | 'pos'): EvalExpectation => ({
   kind: 'command',
   intent: 'RecordExpense',
-  checks: paymentMethod ? { amount, paymentMethod } : { amount },
+  /* Always pinned: a model inventing "transfer" moves the cost to the bank. */
+  checks: { amount, paymentMethod: paymentMethod ?? 'unknown' },
 });
 const ask: EvalExpectation = { kind: 'clarification' };
 const query = (checks: EvalChecks): EvalExpectation => ({
@@ -267,7 +268,12 @@ export const EVAL_CASES: readonly EvalCase[] = [
     expect: {
       kind: 'command',
       intent: 'RecordPayment',
-      checks: { amount: 25_000, customerToken: 'CUSTOMER_B2Q' },
+      checks: {
+        relativeAmount: null,
+        paymentMethod: 'unknown',
+        amount: 25_000,
+        customerToken: 'CUSTOMER_B2Q',
+      },
     },
   },
 
@@ -279,6 +285,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['credit_sale', 'k_notation', 'customer_token'],
     input: 'CUSTOMER_C3Q don buy 2 bag of rice 45k each, e never pay',
     expect: sale({
+      paymentMethod: 'unknown',
       product: 'rice',
       quantity: 2,
       unitPrice: 45_000,
@@ -298,7 +305,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     id: 'pidgin-3',
     category: 'pidgin',
     source: 'typed',
-    covers: ['ambiguous_amount'],
+    covers: [],
     input: 'abeg wetin remain for shop',
     expect: ask,
   },
@@ -311,6 +318,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['credit_sale', 'k_notation', 'customer_token'],
     input: 'CUSTOMER_D4Q collected one carton of indomie, 11k, she go pay on Friday',
     expect: sale({
+      paymentMethod: 'unknown',
       product: 'indomie',
       quantity: 1,
       unitPrice: 11_000,
@@ -365,6 +373,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['partial_payment', 'k_notation'],
     input: 'CUSTOMER_G7Q bought generator 1.2m, paid 500k',
     expect: sale({
+      paymentMethod: 'unknown',
       quantity: 1,
       product: 'generator',
       unitPrice: 1_200_000,
@@ -377,6 +386,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
   {
     id: 'currency-1',
     category: 'currency',
+    register: 'standard_english',
     source: 'typed',
     covers: ['ambiguous_amount'],
     input: 'CUSTOMER_H8Q paid $200 for the shoes',
@@ -400,6 +410,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     input:
       'em so CUSTOMER_J9Q came this morning she took uh three wigs fifty thousand each she has paid one hundred thousand',
     expect: sale({
+      paymentMethod: 'unknown',
       product: 'wig',
       quantity: 3,
       unitPrice: 50_000,
@@ -432,6 +443,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['partial_payment', 'spoken_amount'],
     input: 'CUSTOMER_K1Q bort tree wigs feefty tousand each she pay one hundred tousand',
     expect: sale({
+      paymentMethod: 'unknown',
       product: 'wig',
       quantity: 3,
       unitPrice: 50_000,
@@ -478,9 +490,10 @@ export const EVAL_CASES: readonly EvalCase[] = [
     id: 'hand-1',
     category: 'handwritten_total',
     source: 'document_text',
-    covers: ['credit_sale', 'comma_money'],
-    input: 'bags of cement x 10 @ 9,500\ntotal 95,000\nbal 40,000',
+    covers: ['partial_payment', 'comma_money'],
+    input: 'my sales book\nbags of cement x 10 @ 9,500\ntotal 95,000\nbal 40,000',
     expect: sale({
+      paymentMethod: 'unknown',
       reportedPayment: 55_000,
       product: 'cement',
       quantity: 10,
@@ -501,7 +514,12 @@ export const EVAL_CASES: readonly EvalCase[] = [
     expect: {
       kind: 'command',
       intent: 'RecordPayment',
-      checks: { amount: 35_000, paymentMethod: 'pos', customerToken: 'CUSTOMER_T2Q' },
+      checks: {
+        relativeAmount: null,
+        amount: 35_000,
+        paymentMethod: 'pos',
+        customerToken: 'CUSTOMER_T2Q',
+      },
     },
   },
 
@@ -516,7 +534,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     expect: {
       kind: 'command',
       intent: 'RecordPurchase',
-      checks: { paymentMethod: null, amount: 107_500 },
+      checks: { quantity: null, reportedPayment: null, paymentMethod: null, amount: 107_500 },
     },
   },
   /* G-61: the method a purchase was paid by, only as the merchant said it. */
@@ -526,16 +544,22 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['purchase', 'comma_money'],
     input: 'I bought 10 cartons from Emeka for 180,000 naira, paid by transfer',
-    expect: purchase({ amount: 180_000, paymentMethod: 'transfer', paidInFull: true }),
+    expect: purchase({
+      quantity: 10,
+      product: 'carton',
+      amount: 180_000,
+      paymentMethod: 'transfer',
+      paidInFull: true,
+    }),
   },
   {
     id: 'purchase-cash',
-    category: 'pidgin',
+    category: 'purchase_and_supplier',
     register: 'nigerian_english',
     source: 'typed',
     covers: ['purchase', 'k_notation'],
     input: 'bought stock 50k cash',
-    expect: purchase({ amount: 50_000, paymentMethod: 'cash', paidInFull: true }),
+    expect: purchase({ quantity: null, amount: 50_000, paymentMethod: 'cash', paidInFull: true }),
   },
   {
     id: 'purchase-part-transfer',
@@ -543,7 +567,13 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['purchase', 'supplier_debt', 'k_notation'],
     input: 'Bought 20 bags for 400k, paid 150k transfer, balance later',
-    expect: purchase({ amount: 400_000, reportedPayment: 150_000, paymentMethod: 'transfer' }),
+    expect: purchase({
+      quantity: 20,
+      product: 'bag',
+      amount: 400_000,
+      reportedPayment: 150_000,
+      paymentMethod: 'transfer',
+    }),
   },
   {
     id: 'purchase-pos-bank',
@@ -551,7 +581,13 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['purchase', 'k_notation'],
     input: 'Bought 10 cartons for 180k from Emeka, paid by POS from my bank account',
-    expect: purchase({ amount: 180_000, paymentMethod: 'transfer', paidInFull: true }),
+    expect: purchase({
+      quantity: 10,
+      product: 'carton',
+      amount: 180_000,
+      paymentMethod: 'transfer',
+      paidInFull: true,
+    }),
   },
   {
     id: 'purchase-credit',
@@ -559,7 +595,13 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['purchase', 'supplier_debt', 'k_notation'],
     input: 'Bought 20 bags on credit for 400k',
-    expect: purchase({ paymentMethod: null, amount: 400_000, reportedPayment: 0 }),
+    expect: purchase({
+      quantity: 20,
+      product: 'bag',
+      paymentMethod: null,
+      amount: 400_000,
+      reportedPayment: 0,
+    }),
   },
 
   /* ── corrections and reversals ──────────────────────────────────────── */
@@ -592,7 +634,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
       kind: 'refusal',
       forbiddenNumbers: [900_000_000_000],
       /* The receipt itself is a ₦4,500 spend. */
-      allowed: [{ intent: 'RecordExpense', checks: { amount: 4_500 } }],
+      allowed: [{ intent: 'RecordExpense', checks: { amount: 4_500, paymentMethod: 'unknown' } }],
     },
   },
   {
@@ -607,7 +649,12 @@ export const EVAL_CASES: readonly EvalCase[] = [
       forbiddenNumbers: [5_000_000],
       forbiddenIntents: ['RecordPayment'],
       /* A ₦12,000 supplier invoice, nothing more. */
-      allowed: [{ intent: 'RecordPurchase', checks: { amount: 12_000 } }],
+      allowed: [
+        {
+          intent: 'RecordPurchase',
+          checks: { amount: 12_000, quantity: null, reportedPayment: null, paymentMethod: null },
+        },
+      ],
     },
   },
 
@@ -723,6 +770,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     input:
       'CUSTOMER_X9Q took 3 cartons of milk on credit, 14,000 per carton, she will pay at month end',
     expect: sale({
+      paymentMethod: 'unknown',
       product: 'milk',
       quantity: 3,
       unitPrice: 14_000,
@@ -737,6 +785,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['partial_payment', 'k_notation', 'customer_token'],
     input: 'CUSTOMER_Y1Q bought the 65k standing fan, she paid 40k now, balance next week',
     expect: sale({
+      paymentMethod: 'unknown',
       quantity: 1,
       product: 'fan',
       unitPrice: 65_000,
@@ -753,7 +802,12 @@ export const EVAL_CASES: readonly EvalCase[] = [
     expect: {
       kind: 'command',
       intent: 'RecordPayment',
-      checks: { customerToken: 'CUSTOMER_Z2Q', relativeAmount: 'remainder' },
+      checks: {
+        amount: null,
+        paymentMethod: 'unknown',
+        customerToken: 'CUSTOMER_Z2Q',
+        relativeAmount: 'remainder',
+      },
     },
   },
   {
@@ -766,7 +820,12 @@ export const EVAL_CASES: readonly EvalCase[] = [
     expect: {
       kind: 'command',
       intent: 'RecordPayment',
-      checks: { paymentMethod: 'transfer', amount: 10_000, customerToken: 'CUSTOMER_F8Q' },
+      checks: {
+        relativeAmount: null,
+        paymentMethod: 'transfer',
+        amount: 10_000,
+        customerToken: 'CUSTOMER_F8Q',
+      },
     },
   },
   {
@@ -865,6 +924,8 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['multiple_items', 'k_notation', 'comma_money', 'customer_token'],
     input: 'CUSTOMER_B4Q bought 2 wigs at 45k each and one bonnet for 3,500',
     expect: sale({
+      reportedPayment: null,
+      paymentMethod: 'unknown',
       items: [
         { quantity: 2, unitPrice: 45_000, name: 'wig' },
         { quantity: 1, unitPrice: 3_500, name: 'bonnet' },
@@ -915,6 +976,8 @@ export const EVAL_CASES: readonly EvalCase[] = [
     /* Three at 12k is 36k: the stated 40k is reported as said, never fixed. */
     input: 'Sold 3 pairs of slippers at 12k each to CUSTOMER_C5Q, total 40k',
     expect: sale({
+      reportedPayment: null,
+      paymentMethod: 'unknown',
       product: 'slipper',
       quantity: 3,
       unitPrice: 12_000,
@@ -926,9 +989,10 @@ export const EVAL_CASES: readonly EvalCase[] = [
     id: 'mismatch-2',
     category: 'confirmation_sensitive',
     source: 'typed',
-    covers: ['confirmation_sensitive', 'partial_payment', 'k_notation'],
+    covers: ['confirmation_sensitive', 'k_notation'],
     input: 'Sold the 120k freezer, customer paid 150k, I go give am change later',
     expect: sale({
+      paymentMethod: 'unknown',
       quantity: 1,
       product: 'freezer',
       unitPrice: 120_000,
@@ -978,6 +1042,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     input:
       'ehen CUSTOMER_P2Q carry two bags of beans one hundred and ten thousand each she go pay next month',
     expect: sale({
+      paymentMethod: 'unknown',
       product: 'bean',
       quantity: 2,
       unitPrice: 110_000,
@@ -1061,11 +1126,19 @@ export const EVAL_CASES: readonly EvalCase[] = [
   {
     id: 'tokens-1',
     category: 'customer_tokens',
+    register: 'code_switching',
     source: 'typed',
     covers: ['multiple_customer_tokens', 'customer_token', 'k_notation'],
     /* Two people named; one bought. The sale is hers, not the friend's. */
     input: 'Sold 2 wigs at 30k each to CUSTOMER_T4Q. CUSTOMER_M5Q na im bring am come shop.',
-    expect: sale({ product: 'wig', quantity: 2, unitPrice: 30_000, customerToken: 'CUSTOMER_T4Q' }),
+    expect: sale({
+      reportedPayment: null,
+      paymentMethod: 'unknown',
+      product: 'wig',
+      quantity: 2,
+      unitPrice: 30_000,
+      customerToken: 'CUSTOMER_T4Q',
+    }),
   },
   {
     id: 'tokens-2',
@@ -1116,7 +1189,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     expect: {
       kind: 'refusal',
       forbiddenNumbers: [1_850_000],
-      allowed: [{ intent: 'RecordExpense', checks: { amount: 18_500 } }],
+      allowed: [{ intent: 'RecordExpense', checks: { amount: 18_500, paymentMethod: 'unknown' } }],
     },
   },
   {
@@ -1129,7 +1202,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     expect: {
       kind: 'refusal',
       forbiddenNumbers: [5_000_000],
-      allowed: [{ intent: 'RecordExpense', checks: { amount: 12_000 } }],
+      allowed: [{ intent: 'RecordExpense', checks: { amount: 12_000, paymentMethod: 'unknown' } }],
     },
   },
   {
@@ -1144,7 +1217,15 @@ export const EVAL_CASES: readonly EvalCase[] = [
       forbiddenNumbers: [500_000],
       /* The real ₦5k from the customer who paid it, never the swapped one. */
       allowed: [
-        { intent: 'RecordPayment', checks: { amount: 5_000, customerToken: 'CUSTOMER_Q8Q' } },
+        {
+          intent: 'RecordPayment',
+          checks: {
+            amount: 5_000,
+            relativeAmount: null,
+            paymentMethod: 'unknown',
+            customerToken: 'CUSTOMER_Q8Q',
+          },
+        },
       ],
     },
   },
@@ -1167,6 +1248,99 @@ const SOURCES = new Set(['typed', 'voice_transcript', 'document_text']);
 const TOKEN = /^CUSTOMER_[0-9A-HJKMNP-TV-Z]{3}$/;
 const NUMERIC_CHECKS = ['statedTotal', 'amount', 'quantity', 'unitPrice', 'reportedPayment'];
 
+/** Every intent a case may name: the contract's, nothing misspelled. */
+const INTENTS = new Set([
+  'RecordSale',
+  'RecordPayment',
+  'RecordExpense',
+  'RecordPurchase',
+  'RecordOrder',
+  'AdjustInventory',
+  'Query',
+  'Unclear',
+]);
+
+/** Every check the harness scores. A misspelled one would check nothing. */
+const CHECK_FIELDS = new Set([
+  'statedTotal',
+  'amount',
+  'quantity',
+  'unitPrice',
+  'customerToken',
+  'reportedPayment',
+  'paymentMethod',
+  'relativeAmount',
+  'topic',
+  'period',
+  'periodText',
+  'paidInFull',
+  'unpaid',
+  'items',
+  'noCustomer',
+  'product',
+  'discount',
+  'deliveryFee',
+]);
+
+/**
+ * What every command of an intent must pin, so no case can pass a model
+ * that corrupts the books through a field it left open (final review on
+ * #273). Null is a pin: "the merchant did not say".
+ */
+function intentRules(
+  id: string,
+  intent: string | undefined,
+  checks: Record<string, unknown>,
+): string[] {
+  const errors: string[] = [];
+  const has = (field: string) => field in checks;
+  if (intent !== undefined && !INTENTS.has(intent)) errors.push(`${id}: unknown intent ${intent}`);
+  for (const field of Object.keys(checks)) {
+    if (!CHECK_FIELDS.has(field)) errors.push(`${id}: unknown check ${field}`);
+  }
+  if (intent === 'RecordSale') {
+    /* The line: every line listed, or the one line's product, quantity and price. */
+    if (has('items')) {
+      for (const scalar of ['quantity', 'unitPrice', 'product']) {
+        if (has(scalar)) errors.push(`${id}: a sale pins both items and ${scalar}`);
+      }
+    } else {
+      if (typeof checks['product'] !== 'string')
+        errors.push(`${id}: a one-line sale names no product`);
+      if (!has('quantity')) errors.push(`${id}: a one-line sale pins no quantity`);
+      if (!has('unitPrice')) errors.push(`${id}: a one-line sale pins no unit price`);
+    }
+    if (!has('reportedPayment') && !has('paidInFull') && !has('unpaid')) {
+      errors.push(`${id}: a sale pins no payment state`);
+    }
+    if (!has('paymentMethod')) errors.push(`${id}: a sale pins no payment method`);
+  }
+  if (intent === 'RecordPayment') {
+    if (!has('amount')) errors.push(`${id}: a payment pins no amount`);
+    if (!has('relativeAmount')) errors.push(`${id}: a payment pins no relativeAmount`);
+    if (!has('paymentMethod')) errors.push(`${id}: a payment pins no payment method`);
+  }
+  if (intent === 'RecordExpense') {
+    if (!has('amount')) errors.push(`${id}: an expense pins no amount`);
+    if (!has('paymentMethod')) errors.push(`${id}: an expense pins no payment method`);
+  }
+  if (intent === 'RecordPurchase') {
+    if (!has('amount')) errors.push(`${id}: a purchase pins no amount`);
+    if (!has('quantity')) errors.push(`${id}: a purchase pins no quantity`);
+    if (typeof checks['quantity'] === 'number' && typeof checks['product'] !== 'string') {
+      errors.push(`${id}: a purchase counts stock it does not name`);
+    }
+    if (!has('paidInFull') && !has('unpaid') && !has('reportedPayment')) {
+      errors.push(`${id}: a purchase pins no payment state`);
+    }
+    if (!has('paymentMethod')) errors.push(`${id}: a purchase pins no payment method`);
+  }
+  if (typeof checks['product'] === 'string' && !checks['product'].trim()) {
+    errors.push(`${id}: a blank product stem`);
+  }
+  return errors;
+}
+
 /** What is wrong with one set of checks, one line each. */
 function checkErrors(
   id: string,
@@ -1178,7 +1352,12 @@ function checkErrors(
   const checks = (raw ?? {}) as Record<string, unknown>;
   for (const field of NUMERIC_CHECKS) {
     const value = checks[field];
-    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value))) {
+    /* Null is a pin too: the merchant did not say. */
+    if (
+      value !== undefined &&
+      value !== null &&
+      (typeof value !== 'number' || !Number.isFinite(value))
+    ) {
       errors.push(`${id}: ${field} is not a number`);
     }
   }
@@ -1198,16 +1377,7 @@ function checkErrors(
     errors.push(`${id}: items is not a list of quantity, unit price and name`);
   }
   if (checks['paidInFull'] && checks['unpaid']) errors.push(`${id}: paid in full and unpaid`);
-  if (
-    intent === 'RecordSale' &&
-    (checks['quantity'] !== undefined || checks['unitPrice'] !== undefined)
-  ) {
-    /* A one-line sale pins its whole line: what, how many, at what price. */
-    if (typeof checks['product'] !== 'string')
-      errors.push(`${id}: a one-line sale names no product`);
-    if (checks['quantity'] === undefined) errors.push(`${id}: a one-line sale pins no quantity`);
-    if (checks['unitPrice'] === undefined) errors.push(`${id}: a one-line sale pins no unit price`);
-  }
+  errors.push(...intentRules(id, intent, checks));
   if (
     intent === 'Query' &&
     ['today', 'week', 'month'].includes(String(checks['period'])) &&

@@ -24,9 +24,17 @@
  * provider budget to reconfirm yesterday's number.
  */
 import { execFileSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
-import { createDb, identity, quotaRepo, sql, withBusiness, type Db } from '@rekoda/db';
+import { statSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import {
+  createDb,
+  identity,
+  isEntrypoint,
+  quotaRepo,
+  sql,
+  withBusiness,
+  type Db,
+} from '@rekoda/db';
 import { loadConfig, type ApiConfig } from '../../config.js';
 import { Interpreter } from '../interpreter.service.js';
 import {
@@ -40,6 +48,7 @@ import {
   EVAL_DATASET_VERSION,
   datasetFingerprint,
   validateDataset,
+  type EvalCase,
 } from './dataset.js';
 import { runEvalCase, scoreEval, type EvalCaseResult } from './harness.js';
 import {
@@ -72,8 +81,14 @@ export function parseEvalArgs(argv: readonly string[]): EvalArgs {
   return { mode, plan, json };
 }
 
-/** The most provider calls one case can make: interpreter, escalation, verifier. */
-const CALLS_PER_CASE = 3;
+/**
+ * The most provider calls one case can make: a page is classified, then
+ * interpreted, escalated and verified; typed text is interpreted and
+ * escalated (final review on #273).
+ */
+function callsFor(cases: readonly EvalCase[]): number {
+  return cases.reduce((sum, c) => sum + (c.source === 'document_text' ? 4 : 2), 0);
+}
 
 /**
  * The configuration an evaluation runs: production's, with one change. The
@@ -83,10 +98,10 @@ const CALLS_PER_CASE = 3;
  * room for every case; the GLOBAL ceiling stays as configured, and a case
  * it refuses is invalid, so the run cannot pass (G-07).
  */
-export function evalConfig(config: ApiConfig, cases: number = EVAL_CASES.length): ApiConfig {
+export function evalConfig(config: ApiConfig, cases: readonly EvalCase[] = EVAL_CASES): ApiConfig {
   return {
     ...config,
-    aiCallsPerBusinessPerDay: Math.max(config.aiCallsPerBusinessPerDay, cases * CALLS_PER_CASE),
+    aiCallsPerBusinessPerDay: Math.max(config.aiCallsPerBusinessPerDay, callsFor(cases)),
   };
 }
 
@@ -99,13 +114,13 @@ export function evalConfig(config: ApiConfig, cases: number = EVAL_CASES.length)
 export async function ceilingShortfall(
   db: Db,
   config: ApiConfig,
-  cases: number = EVAL_CASES.length,
+  cases: readonly EvalCase[] = EVAL_CASES,
 ): Promise<string | null> {
   const rows = await db.execute<{ calls: number }>(sql`
     SELECT coalesce(sum(calls), 0)::int AS calls FROM ai_global_counters
      WHERE day = ${quotaRepo.lagosDay(new Date())}::date`);
   const used = Number([...rows][0]?.calls ?? 0);
-  const needed = cases * CALLS_PER_CASE;
+  const needed = callsFor(cases);
   const room = config.aiCallsGlobalPerDay - used;
   return room >= needed
     ? null
@@ -184,14 +199,26 @@ export async function usageOf(db: Db, businessId: string): Promise<UsageSummary>
  * checkout's SHA names code that did not run; outside git (an image) the
  * built commit (REKODA_COMMIT) is what ran, and cleanliness is unknown.
  */
-function gitState(config: ApiConfig): { sha: string; dirty: boolean | null } {
+function gitState(config: ApiConfig): Checkout {
   try {
     const sha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     const status = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' });
-    return { sha, dirty: status.trim().length > 0 };
+    /* The runner executes this compiled file: built before its commit, it
+     * is not that commit's code (final review on #273). */
+    const committedAt =
+      Number(execFileSync('git', ['log', '-1', '--format=%ct'], { encoding: 'utf8' }).trim()) *
+      1000;
+    const builtAt = statSync(fileURLToPath(import.meta.url)).mtimeMs;
+    return { sha, dirty: status.trim().length > 0, staleBuild: builtAt < committedAt };
   } catch {
-    return { sha: config.commit, dirty: null };
+    return { sha: config.commit, dirty: null, staleBuild: null };
   }
+}
+
+export interface Checkout {
+  readonly sha: string;
+  readonly dirty: boolean | null;
+  readonly staleBuild: boolean | null;
 }
 
 /**
@@ -199,10 +226,18 @@ function gitState(config: ApiConfig): { sha: string; dirty: boolean | null } {
  * launch-gate run from a dirty checkout is refused; a measurement says so
  * in its SHA.
  */
-export function checkoutRefusal(mode: EvalMode, dirty: boolean | null): string | null {
-  return mode === 'gate' && dirty === true
-    ? 'the checkout has uncommitted changes, so its commit is not what would run; commit or stash them'
-    : null;
+export function checkoutRefusal(mode: EvalMode, checkout: Checkout): string | null {
+  if (mode !== 'gate') return null;
+  if (checkout.dirty === true) {
+    return 'the checkout has uncommitted changes, so its commit is not what would run; commit or stash them';
+  }
+  if (checkout.staleBuild === true) {
+    return 'the compiled runner is older than its commit; rebuild before a launch-gate run';
+  }
+  if (!checkout.sha || checkout.sha === 'unknown') {
+    return 'no commit identifies this build (no git, REKODA_COMMIT unset); a launch report must name one';
+  }
+  return null;
 }
 
 async function main(): Promise<number> {
@@ -226,7 +261,7 @@ async function main(): Promise<number> {
   }
 
   const checkout = gitState(config);
-  const refused = checkoutRefusal(args.mode, checkout.dirty);
+  const refused = checkoutRefusal(args.mode, checkout);
   if (refused) {
     console.error(`launch gate refused, nothing run: ${refused}`);
     return 1;
@@ -285,7 +320,10 @@ async function main(): Promise<number> {
 }
 
 /* Run only as the entry point: tests import the pieces above. */
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+/* The shared check: Node names the main module by its real path, and a
+ * plain comparison with argv[1] misses a run through a symlink, exiting 0
+ * with nothing run (final review on #273). */
+if (isEntrypoint(import.meta.url, process.argv[1])) {
   main().then(
     (code) => {
       process.exitCode = code;

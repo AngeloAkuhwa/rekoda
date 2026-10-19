@@ -140,8 +140,13 @@ export function buildEvalReport(input: {
   }
 
   /* Drafts only: a Query answers and drafts nothing (Codex on #273). */
+  /* A refusal case that resisted is not a checked draft (final review on #273). */
   const correct = input.results.filter(
-    (r) => r.outcome === 'command' && r.status === 'passed' && r.intent !== 'Query',
+    (r) =>
+      r.outcome === 'command' &&
+      r.status === 'passed' &&
+      r.intent !== 'Query' &&
+      (r.expected === undefined || r.expected === 'command'),
   ).length;
 
   return {
@@ -165,12 +170,18 @@ export function buildEvalReport(input: {
 
 /**
  * Zero only for a gate run that PASSED against an owner-approved profile,
- * or a measurement run over a valid dataset. Everything else is non-zero,
+ * or a measurement run over a valid dataset in which every case ran and no
+ * provider call failed. Everything else is non-zero,
  * so no script can mistake a printed number for a launch pass.
  */
 export function exitCodeFor(report: EvalReport): number {
   if (report.dataset.errors.length > 0) return 1;
-  if (report.mode === 'measure') return 0;
+  /* A measurement whose cases did not run, or whose calls failed, measured
+   * nothing it can stand behind: no script may read it as a good run
+   * (final review on #273). */
+  if (report.mode === 'measure') {
+    return report.metrics.invalid > 0 || report.usage.failedCalls > 0 ? 1 : 0;
+  }
   return report.launch === 'PASS' && report.verdict?.profile.approval === 'OWNER_APPROVED' ? 0 : 1;
 }
 

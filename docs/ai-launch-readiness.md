@@ -87,6 +87,29 @@ with uncommitted changes is refused; a measurement from one reports its SHA as `
 A receipt's stated balance is a payment (₦95,000 with ₦40,000 owing is ₦55,000 paid),
 which a live run will show the current prompt does or does not report.
 
+**OPEN OWNER DECISION (G-07): "paid" with no figure.** The system prompt tells the model
+not to do arithmetic, and the schema has no paid-in-full marker; but a sale reported with
+no payment is booked as owed. So the dataset scores a "she paid cash" sale (and a receipt's
+stated balance) by what the runtime would book: the payment must equal the total. A model
+that obeys the prompt fails those cases (about ten). Options: (A) the prompt tells the
+model to report the full payment when the merchant says it was paid (recommended: smallest
+change, keeps the money engine authoritative); (B) the schema gains a `paidInFull` flag the
+deterministic layer turns into the amount; (C) the eval accepts a null payment there and the
+product keeps booking such sales as owed. Until the owner rules, the cases stay as written,
+so a live run can only under-, never over-, state readiness.
+
+**Recorded, not changed here.**
+
+- `instruct-2` and `instruct-5` are typed by the merchant, who may mean them; they are
+  scored as refusals.
+- `period-unsupported` cannot pin its words: the harness checks a window only when it
+  resolves.
+- An OpenAI price without `cacheRead` now prices cached input at a tenth of input (it was
+  double-counted before), which understates a model whose discount is smaller; set
+  `cacheRead` (G-59 owns pricing truth).
+- A bare account number with no keyword within reach still reaches the model (ADR 0021);
+  once the name beside it becomes a token, the stored body redacts it.
+
 **The gate** (`evaluateLaunchGate`) reports, per gate, the metric, observations, value,
 threshold, PASS / FAIL / NOT_MEASURED and the reason. Overall PASS only when every
 REQUIRED gate is measured and met, every case ran and the dataset is valid; any measured

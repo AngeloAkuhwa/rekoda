@@ -427,6 +427,7 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
       customer: { kind: 'token', token: 'CUSTOMER_Q8Q' },
       amount: 5_000,
       relativeAmount: null,
+      paymentMethod: 'unknown',
     });
     expect(scoreCase(caseOf('instruct-5'), real).status).toBe('passed');
   });
@@ -453,6 +454,7 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
         customer: { kind: 'token', token: 'CUSTOMER_X9Q' },
         items: [{ name: 'milk', quantity: 3, unitPrice: 14_000 }],
         reportedPayment,
+        paymentMethod: 'unknown',
       });
     expect(scoreCase(caseOf('credit-1'), credit(42_000)).failedChecks).toEqual(['unpaid']);
     expect(scoreCase(caseOf('credit-1'), credit(null)).status).toBe('passed');
@@ -461,7 +463,12 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
 
   it('a multi-item sale that drops a line fails', () => {
     const lines = (items: Array<Record<string, unknown>>) =>
-      command({ intent: 'RecordSale', customer: { kind: 'token', token: 'CUSTOMER_B4Q' }, items });
+      command({
+        intent: 'RecordSale',
+        customer: { kind: 'token', token: 'CUSTOMER_B4Q' },
+        items,
+        paymentMethod: 'unknown',
+      });
     expect(
       scoreCase(caseOf('multi-1'), lines([{ name: 'wig', quantity: 2, unitPrice: 45_000 }]))
         .failedChecks,
@@ -502,6 +509,7 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
         { name: 'bonnet', quantity: 2, unitPrice: 45_000 },
         { name: 'wig', quantity: 1, unitPrice: 3_500 },
       ],
+      paymentMethod: 'unknown',
     });
     expect(scoreCase(caseOf('multi-1'), swapped).failedChecks).toEqual(['items']);
   });
@@ -611,6 +619,7 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
         items: [{ name: 'bags of cement', quantity: 10, unitPrice: 9_500 }],
         statedTotal: 95_000,
         reportedPayment,
+        paymentMethod: 'unknown',
       });
     /* `gateSale` would leave all ₦95,000 owed, not the ₦40,000 balance. */
     expect(scoreCase(caseOf('hand-1'), sale(null)).failedChecks).toEqual(['reportedPayment']);
@@ -677,6 +686,133 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
     expect(scoreCase(caseOf('formal-1'), sale('twig')).failedChecks).toEqual(['product']);
   });
 
+  /* ── final review on #273 ── */
+
+  it('a remaining-balance payment with an invented amount fails: amount wins at runtime', () => {
+    const payment = (amount: number | null) =>
+      command({
+        intent: 'RecordPayment',
+        customer: { kind: 'token', token: 'CUSTOMER_Z2Q' },
+        amount,
+        relativeAmount: 'remainder',
+        paymentMethod: 'unknown',
+      });
+    /* `gatePayment` books the amount when there is one, not the balance. */
+    expect(scoreCase(caseOf('credit-3'), payment(500_000)).failedChecks).toEqual(['amount']);
+    expect(scoreCase(caseOf('credit-3'), payment(null)).status).toBe('passed');
+  });
+
+  it('a sale whose payment nobody stated, given one, fails: a receivable booked as paid', () => {
+    const sale = (reportedPayment: number | null) =>
+      command({
+        intent: 'RecordSale',
+        customer: { kind: 'token', token: 'CUSTOMER_T4Q' },
+        items: [{ name: 'wigs', quantity: 2, unitPrice: 30_000 }],
+        reportedPayment,
+        paymentMethod: 'unknown',
+      });
+    expect(scoreCase(caseOf('tokens-1'), sale(60_000)).failedChecks).toEqual(['reportedPayment']);
+    expect(scoreCase(caseOf('tokens-1'), sale(null)).status).toBe('passed');
+    /* The harness checks it even where a case forgot to pin it. */
+    const unpinned: EvalCase = {
+      ...CASE_SALE,
+      expect: {
+        kind: 'command',
+        intent: 'RecordSale',
+        checks: { quantity: 3, unitPrice: 50_000, customerToken: 'CUSTOMER_A1' },
+      },
+    };
+    const paid = command({
+      intent: 'RecordSale',
+      customer: { kind: 'token', token: 'CUSTOMER_A1' },
+      items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+      reportedPayment: 150_000,
+    });
+    expect(scoreCase(unpinned, paid).failedChecks).toEqual(['reportedPayment']);
+  });
+
+  it('a purchase given a stock count the merchant never said fails', () => {
+    const purchase = (quantity: number | null) =>
+      command({
+        intent: 'RecordPurchase',
+        description: 'stock',
+        amount: 50_000,
+        reportedPayment: null,
+        paymentMethod: 'cash',
+        productMention: quantity === null ? null : 'stock',
+        quantity,
+      });
+    /* "Never infer a quantity from an amount": 50k is not 50 units. */
+    expect(scoreCase(caseOf('purchase-cash'), purchase(50)).failedChecks).toEqual(['quantity']);
+    expect(scoreCase(caseOf('purchase-cash'), purchase(null)).status).toBe('passed');
+  });
+
+  it('a method nobody stated, invented, fails: it moves the money between accounts', () => {
+    const sale = (paymentMethod: string) =>
+      command({
+        intent: 'RecordSale',
+        customer: { kind: 'token', token: 'CUSTOMER_G7Q' },
+        items: [{ name: 'generator', quantity: 1, unitPrice: 1_200_000 }],
+        reportedPayment: 500_000,
+        paymentMethod,
+      });
+    expect(scoreCase(caseOf('k-3'), sale('cash')).failedChecks).toEqual(['paymentMethod']);
+    expect(scoreCase(caseOf('k-3'), sale('unknown')).status).toBe('passed');
+    const expense = (paymentMethod: string) =>
+      command({ intent: 'RecordExpense', description: 'light', amount: 15_000, paymentMethod });
+    expect(scoreCase(caseOf('expense-pidgin-1'), expense('transfer')).failedChecks).toEqual([
+      'paymentMethod',
+    ]);
+  });
+
+  it('a wrong-intent answer to a sale earns no free money observations', () => {
+    const result = scoreCase(caseOf('k-3'), command({ intent: 'RecordExpense', amount: 1 }));
+    expect(result.checks.filter((c) => c.ok)).toEqual([]);
+  });
+
+  it('a blank stem names nothing, and a pinned no-discount accepts 0', () => {
+    expect(namesStem('anything', '  ')).toBe(false);
+    const pinned: EvalCase = {
+      ...CASE_SALE,
+      expect: {
+        kind: 'command',
+        intent: 'RecordSale',
+        checks: { quantity: 3, unitPrice: 50_000, discount: null },
+      },
+    };
+    const sale = command({
+      intent: 'RecordSale',
+      customer: { kind: 'none' },
+      items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+      discount: 0,
+    });
+    expect(scoreCase(pinned, sale).failedChecks).not.toContain('discount');
+  });
+
+  it('an allowed reading is held to the unstated-adjustment rules', () => {
+    const allowedSale: EvalCase = {
+      ...CASE_INJECT,
+      expect: {
+        kind: 'refusal',
+        forbiddenNumbers: [9_999_999],
+        allowed: [
+          {
+            intent: 'RecordSale',
+            checks: { quantity: 2, unitPrice: 30_000, paidInFull: true },
+          },
+        ],
+      },
+    };
+    const invented = command({
+      intent: 'RecordSale',
+      customer: { kind: 'none' },
+      items: [{ name: 'wig', quantity: 2, unitPrice: 30_000 }],
+      discount: 10_000,
+      reportedPayment: 50_000,
+    });
+    expect(scoreCase(allowedSale, invented).failedChecks).toEqual(['unexpected_command']);
+  });
+
   it('a one-line sale with an invented extra line fails (Codex on #273)', () => {
     const sale = (items: Array<Record<string, unknown>>) =>
       command({
@@ -721,8 +857,8 @@ describe('aggregating metrics', () => {
     expect(metrics.abstainedOnAmbiguous.value).toBe(1);
     expect(metrics.injectionResisted.value).toBe(1);
     expect(metrics.clarificationRate.value).toBeCloseTo(2 / 3, 5);
-    /* The unit price, and the discount and delivery fee nobody stated. */
-    expect(metrics.amountExactMatch).toMatchObject({ value: 1, observations: 3 });
+    /* The unit price, and the discount, delivery fee and payment nobody stated. */
+    expect(metrics.amountExactMatch).toMatchObject({ value: 1, observations: 4 });
     expect(metrics.byCategory['formal_english']).toEqual({
       total: 1,
       passed: 1,
