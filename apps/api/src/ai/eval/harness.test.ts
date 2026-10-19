@@ -1139,6 +1139,90 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
     });
   });
 
+  /* ── Codex on ab20cf1 ── */
+
+  it('a window the runtime cannot read stays one, never a named month', () => {
+    const ask = (periodText: string | null) =>
+      command({
+        intent: 'Query',
+        topic: 'sales_summary',
+        customer: null,
+        period: 'custom',
+        periodText,
+        format: 'chat',
+      });
+    expect(scoreCase(caseOf('period-unsupported'), ask('last month')).failedChecks).toEqual([
+      'periodText',
+    ]);
+    expect(scoreCase(caseOf('period-unsupported'), ask(null)).failedChecks).toEqual(['periodText']);
+    expect(scoreCase(caseOf('period-unsupported'), ask('first week of last quarter')).status).toBe(
+      'passed',
+    );
+  });
+
+  it('a stated discount and delivery fee are booked as stated', () => {
+    const sold = (discount: number | null, deliveryFee: number | null, paid: number) =>
+      command({
+        intent: 'RecordSale',
+        customer: { kind: 'token', token: 'CUSTOMER_D7Q' },
+        items: [{ name: 'rice', quantity: 2, unitPrice: 72_000 }],
+        statedTotal: null,
+        reportedPayment: paid,
+        paymentMethod: 'cash',
+        discount,
+        deliveryFee,
+        dueDescription: null,
+      });
+    expect(scoreCase(caseOf('discount-1'), sold(null, null, 144_000)).status).toBe('failed');
+    expect(scoreCase(caseOf('discount-1'), sold(4_000, null, 140_000)).status).toBe('passed');
+    const fan = (deliveryFee: number | null, paid: number) =>
+      command({
+        intent: 'RecordSale',
+        customer: { kind: 'token', token: 'CUSTOMER_E8Q' },
+        items: [{ name: 'standing fan', quantity: 1, unitPrice: 65_000 }],
+        statedTotal: null,
+        reportedPayment: paid,
+        paymentMethod: 'transfer',
+        discount: null,
+        deliveryFee,
+        dueDescription: null,
+      });
+    expect(scoreCase(caseOf('delivery-1'), fan(null, 65_000)).failedChecks).toEqual([
+      'deliveryFee',
+    ]);
+    expect(scoreCase(caseOf('delivery-1'), fan(3_000, 68_000)).status).toBe('passed');
+  });
+
+  it('a report asked for as a file is sent as that file', () => {
+    const report = (format: string | null) =>
+      command({
+        intent: 'Query',
+        topic: 'report_request',
+        customer: null,
+        period: 'custom',
+        periodText: 'last month',
+        format,
+      });
+    expect(scoreCase(caseOf('query-report'), report('chat')).failedChecks).toEqual(['format']);
+    expect(scoreCase(caseOf('query-report'), report(null)).failedChecks).toEqual(['format']);
+    expect(scoreCase(caseOf('query-report'), report('pdf')).status).toBe('passed');
+  });
+
+  it('half a balance is half, never the whole of it', () => {
+    const paid = (relativeAmount: string | null) =>
+      command({
+        intent: 'RecordPayment',
+        customer: { kind: 'token', token: 'CUSTOMER_H3Q' },
+        amount: null,
+        relativeAmount,
+        documentRef: null,
+        paymentMethod: 'unknown',
+      });
+    expect(scoreCase(caseOf('half-1'), paid('remainder')).failedChecks).toEqual(['relativeAmount']);
+    expect(scoreCase(caseOf('half-1'), paid(null)).failedChecks).toEqual(['relativeAmount']);
+    expect(scoreCase(caseOf('half-1'), paid('half')).status).toBe('passed');
+  });
+
   /* ── Codex on dfda62e ── */
 
   it('a forwarded order keeps the delivery the customer asked for', () => {

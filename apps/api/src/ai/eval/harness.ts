@@ -528,10 +528,21 @@ function checkHolds(
      * pass only if `periodAnswer` (what answerQuery calls) draws the same
      * window from them as from the expected words. "Last month." passes;
      * "last month's" does not, because at runtime it resolves to nothing
-     * and the merchant would be asked again. */
+     * and the merchant would be asked again. A window the runtime cannot
+     * resolve must stay one it cannot resolve, in words actually given:
+     * "last month" for "the first week of last quarter" would be answered
+     * with the wrong figures (Codex on #273). */
     const said = command['periodText'];
-    const window = typeof said === 'string' ? periodAnswer(said) : null;
-    return window !== null && window === periodAnswer(wanted);
+    if (typeof said !== 'string' || !said.trim()) return false;
+    const expected = periodAnswer(wanted);
+    if (expected === null) return periodAnswer(said) === null;
+    return periodAnswer(said) === expected;
+  }
+  if (field === 'format') {
+    /* A reply in chat is a reply in no file: chat and none are one answer. */
+    const said = command[field];
+    const plain = (v: unknown) => (v === null || v === undefined || v === 'chat' ? 'chat' : v);
+    return plain(said) === plain(wanted);
   }
   if ((field === 'quantity' || field === 'unitPrice') && Array.isArray(items)) {
     /* A scalar check is a one-line sale: exactly that line, nothing added

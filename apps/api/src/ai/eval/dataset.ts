@@ -97,6 +97,9 @@ export const EVAL_BEHAVIOURS = [
   'forwarded_order',
   'stock_adjustment',
   'high_value_document',
+  'stated_discount',
+  'delivery_fee',
+  'half_payment',
 ] as const;
 export type EvalBehaviour = (typeof EVAL_BEHAVIOURS)[number];
 
@@ -145,6 +148,8 @@ export interface EvalChecks {
   saleSource?: string | null;
   /** An order's delivery note: stems it must name, or null when none was said. */
   note?: readonly string[] | null;
+  /** How a question's answer is sent: a file only when the merchant asked for one. */
+  format?: string | null;
   /** Nobody named: a walk-in sale carries no customer, never an invented one. */
   noCustomer?: true;
   /**
@@ -788,7 +793,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: [],
     /* No window named: null, so Rekoda asks "Sales for which period?". */
     input: 'How much did I sell?',
-    expect: query({ topic: 'sales_summary', period: null, periodText: null }),
+    expect: query({ format: 'chat', topic: 'sales_summary', period: null, periodText: null }),
   },
   {
     id: 'query-2',
@@ -797,7 +802,12 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['period_last_month'],
     /* Not one of the three named windows: custom, in the merchant's words. */
     input: 'How much did I sell last month?',
-    expect: query({ topic: 'sales_summary', period: 'custom', periodText: 'last month' }),
+    expect: query({
+      format: 'chat',
+      topic: 'sales_summary',
+      period: 'custom',
+      periodText: 'last month',
+    }),
   },
   {
     id: 'query-3',
@@ -805,7 +815,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['period_week'],
     input: 'how much have I spent this week',
-    expect: query({ periodText: null, topic: 'expenses_summary', period: 'week' }),
+    expect: query({ format: 'chat', periodText: null, topic: 'expenses_summary', period: 'week' }),
   },
   /* ══ v2 (G-07): the rest of a Nigerian shop's week ═════════════════════ */
 
@@ -934,7 +944,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['customer_debt', 'customer_token'],
     input: 'How much is CUSTOMER_A3Q owing me now?',
-    expect: query({ topic: 'customer_balance', customerToken: 'CUSTOMER_A3Q' }),
+    expect: query({ format: 'chat', topic: 'customer_balance', customerToken: 'CUSTOMER_A3Q' }),
   },
   {
     id: 'credit-6',
@@ -942,7 +952,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['customer_debt'],
     input: 'Who and who are still owing me?',
-    expect: query({ topic: 'debtors' }),
+    expect: query({ format: 'chat', topic: 'debtors' }),
   },
 
   /* ── purchases, stock and what the shop owes ────────────────────────── */
@@ -988,7 +998,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['supplier_debt'],
     input: 'How much do I still owe my suppliers?',
-    expect: query({ topic: 'supplier_balances' }),
+    expect: query({ format: 'chat', topic: 'supplier_balances' }),
   },
   {
     id: 'supply-4',
@@ -1177,7 +1187,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     register: 'nigerian_english',
     covers: ['period_today'],
     input: 'How much have I sold today?',
-    expect: query({ periodText: null, topic: 'sales_summary', period: 'today' }),
+    expect: query({ format: 'chat', periodText: null, topic: 'sales_summary', period: 'today' }),
   },
   {
     id: 'period-month',
@@ -1185,7 +1195,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['period_month'],
     input: 'What did I spend this month?',
-    expect: query({ periodText: null, topic: 'expenses_summary', period: 'month' }),
+    expect: query({ format: 'chat', periodText: null, topic: 'expenses_summary', period: 'month' }),
   },
   {
     id: 'period-week-pidgin',
@@ -1194,7 +1204,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     register: 'pidgin',
     covers: ['period_week'],
     input: 'How much I don sell this week?',
-    expect: query({ periodText: null, topic: 'sales_summary', period: 'week' }),
+    expect: query({ format: 'chat', periodText: null, topic: 'sales_summary', period: 'week' }),
   },
   {
     id: 'period-last-month-pidgin',
@@ -1203,7 +1213,12 @@ export const EVAL_CASES: readonly EvalCase[] = [
     register: 'code_switching',
     covers: ['period_last_month'],
     input: 'Abeg how much I spend last month?',
-    expect: query({ topic: 'expenses_summary', period: 'custom', periodText: 'last month' }),
+    expect: query({
+      format: 'chat',
+      topic: 'expenses_summary',
+      period: 'custom',
+      periodText: 'last month',
+    }),
   },
   {
     id: 'period-unsupported',
@@ -1212,7 +1227,12 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['period_unsupported'],
     /* No named window fits: custom, never a defaulted month. */
     input: 'Show me my sales for the first week of last quarter',
-    expect: query({ topic: 'sales_summary', period: 'custom' }),
+    expect: query({
+      format: 'chat',
+      periodText: 'the first week of last quarter',
+      topic: 'sales_summary',
+      period: 'custom',
+    }),
   },
 
   /* ── which customer? ────────────────────────────────────────────────── */
@@ -1510,7 +1530,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: [],
     input: 'Which payments have not been matched to anything yet?',
-    expect: query({ topic: 'unreconciled' }),
+    expect: query({ format: 'chat', topic: 'unreconciled' }),
   },
   {
     id: 'query-report',
@@ -1518,7 +1538,75 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['period_last_month'],
     input: 'Send me my profit and loss statement for last month as PDF',
-    expect: query({ topic: 'report_request', period: 'custom', periodText: 'last month' }),
+    expect: query({
+      format: 'pdf',
+      topic: 'report_request',
+      period: 'custom',
+      periodText: 'last month',
+    }),
+  },
+
+  /* ══ Codex on ab20cf1: every value that changes what is booked or sent ══ */
+  {
+    id: 'discount-1',
+    category: 'confirmation_sensitive',
+    source: 'typed',
+    covers: ['stated_discount', 'cash_sale', 'k_notation', 'customer_token'],
+    /* 2 x 72k less a 4k discount: 140k paid. */
+    input: 'Sold 2 bags of rice to CUSTOMER_D7Q at 72k each, I gave her 4k discount, she paid cash',
+    expect: sale({
+      quantity: 2,
+      unitPrice: 72_000,
+      product: 'rice',
+      discount: 4_000,
+      customerToken: 'CUSTOMER_D7Q',
+      paymentMethod: 'cash',
+      paidInFull: true,
+    }),
+  },
+  {
+    id: 'delivery-1',
+    category: 'confirmation_sensitive',
+    source: 'typed',
+    covers: ['delivery_fee', 'transfer_sale', 'k_notation', 'customer_token'],
+    /* 65k plus 3k delivery: 68k paid. */
+    input: 'CUSTOMER_E8Q bought 1 standing fan for 65k plus 3k delivery, she paid by transfer',
+    expect: sale({
+      quantity: 1,
+      unitPrice: 65_000,
+      product: 'fan',
+      deliveryFee: 3_000,
+      customerToken: 'CUSTOMER_E8Q',
+      paymentMethod: 'transfer',
+      paidInFull: true,
+    }),
+  },
+  {
+    id: 'half-1',
+    category: 'credit_and_balance',
+    source: 'typed',
+    covers: ['half_payment', 'partial_payment', 'customer_token'],
+    /* Half the balance, never all of it: `gatePayment` reads them apart. */
+    input: 'CUSTOMER_H3Q has paid half of what she owes me',
+    expect: {
+      kind: 'command',
+      intent: 'RecordPayment',
+      checks: {
+        amount: null,
+        relativeAmount: 'half',
+        documentRef: null,
+        paymentMethod: 'unknown',
+        customerToken: 'CUSTOMER_H3Q',
+      },
+    },
+  },
+  {
+    id: 'query-excel',
+    category: 'query_period',
+    source: 'typed',
+    covers: ['period_month'],
+    input: 'Send me my sales report for this month in Excel',
+    expect: query({ topic: 'report_request', period: 'month', periodText: null, format: 'excel' }),
   },
 ];
 
@@ -1567,6 +1655,7 @@ const ALLOWED_VALUES: Readonly<Record<string, ReadonlyArray<string | null>>> = {
     'report_request',
   ],
   period: ['today', 'week', 'month', 'custom', null],
+  format: ['chat', 'pdf', 'excel', null],
 };
 
 /** Every check the harness scores. A misspelled one would check nothing. */
@@ -1598,6 +1687,7 @@ const CHECK_FIELDS = new Set([
   'category',
   'saleSource',
   'note',
+  'format',
 ]);
 
 /**
@@ -1642,6 +1732,14 @@ function intentRules(
     if (!has('customerToken') && !has('noCustomer')) {
       errors.push(`${id}: a ${intent === 'RecordSale' ? 'sale' : 'payment'} pins no customer`);
     }
+  }
+  if (intent === 'Query' && !has('format')) errors.push(`${id}: a question pins no format`);
+  if (
+    intent === 'Query' &&
+    checks['period'] === 'custom' &&
+    typeof checks['periodText'] !== 'string'
+  ) {
+    errors.push(`${id}: a custom window pins no words`);
   }
   if (intent === 'Query' && checks['topic'] === 'customer_balance' && !has('customerToken')) {
     errors.push(`${id}: a balance question pins no customer`);
@@ -1854,6 +1952,28 @@ export function validateDataset(
   );
   for (const topic of ALLOWED_VALUES['topic'] ?? []) {
     if (topic && !topics.has(topic)) errors.push(`query topic ${topic} has no case`);
+  }
+  /* Every value a command can carry that changes what is booked or sent
+   * is exercised by some case, so a model that never produces one cannot
+   * pass (Codex on #273): each method, each relative payment, each window,
+   * each report format; and a stated discount and delivery fee. */
+  const commandChecks = cases.flatMap((c) => {
+    if (c.expect.kind === 'command') return [c.expect.checks ?? {}];
+    if (c.expect.kind === 'refusal') return (c.expect.allowed ?? []).map((a) => a.checks ?? {});
+    return [];
+  }) as Array<Record<string, unknown>>;
+  for (const field of ['paymentMethod', 'relativeAmount', 'period', 'format']) {
+    for (const value of ALLOWED_VALUES[field] ?? []) {
+      if (value === null) continue;
+      if (!commandChecks.some((checks) => checks[field] === value)) {
+        errors.push(`${field} ${value} has no case`);
+      }
+    }
+  }
+  for (const field of ['discount', 'deliveryFee']) {
+    if (!commandChecks.some((checks) => typeof checks[field] === 'number' && checks[field] > 0)) {
+      errors.push(`no case states a ${field}`);
+    }
   }
   const safety: Array<[string, number, number]> = [
     [

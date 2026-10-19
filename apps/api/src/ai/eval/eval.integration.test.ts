@@ -114,7 +114,10 @@ class OracleTransport implements ModelTransport {
                 unitPrice: checks.unitPrice ?? checks.statedTotal ?? 1_000,
               },
             ];
-        const total = items.reduce((sum, line) => sum + line.quantity * (line.unitPrice ?? 0), 0);
+        const total =
+          items.reduce((sum, line) => sum + line.quantity * (line.unitPrice ?? 0), 0) -
+          (checks.discount ?? 0) +
+          (checks.deliveryFee ?? 0);
         return reply({
           intent: 'RecordSale',
           customer,
@@ -122,8 +125,8 @@ class OracleTransport implements ModelTransport {
           statedTotal: checks.statedTotal ?? null,
           reportedPayment: checks.paidInFull ? total : (checks.reportedPayment ?? null),
           paymentMethod: checks.paymentMethod ?? 'unknown',
-          discount: null,
-          deliveryFee: null,
+          discount: checks.discount ?? null,
+          deliveryFee: checks.deliveryFee ?? null,
           dueDescription: checks.dueDescription ?? null,
         });
       }
@@ -164,7 +167,7 @@ class OracleTransport implements ModelTransport {
           customer: checks.customerToken ? customer : null,
           period: checks.period ?? null,
           periodText: checks.periodText ?? null,
-          format: 'chat',
+          format: checks.format ?? 'chat',
         });
       case 'RecordOrder':
         return reply({

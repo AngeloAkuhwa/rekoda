@@ -326,6 +326,24 @@ describe('the integrity check catches a broken dataset (G-07)', () => {
     ).toContain('junk: a junk case that is not a page');
   });
 
+  it('every value that changes what is booked or sent is exercised (Codex on ab20cf1)', () => {
+    const without = (pick: (c: EvalCase) => boolean) =>
+      validateDataset(EVAL_CASES.filter((c) => !pick(c)));
+    expect(without((c) => c.id === 'discount-1')).toContain('no case states a discount');
+    expect(without((c) => c.id === 'delivery-1')).toContain('no case states a deliveryFee');
+    expect(without((c) => c.id === 'half-1')).toContain('relativeAmount half has no case');
+    expect(without((c) => c.id === 'query-excel')).toContain('format excel has no case');
+    expect(without((c) => c.id === 'query-report')).toContain('format pdf has no case');
+    const unpinned = EVAL_CASES.map((c) =>
+      c.id === 'period-unsupported' && c.expect.kind === 'command'
+        ? { ...c, expect: { ...c.expect, checks: { topic: 'sales_summary', period: 'custom' } } }
+        : c,
+    );
+    const errors = validateDataset(unpinned);
+    expect(errors).toContain('period-unsupported: a question pins no format');
+    expect(errors).toContain('period-unsupported: a custom window pins no words');
+  });
+
   it('stated references and every query topic are covered (Codex on dfda62e)', () => {
     const without = (pick: (c: EvalCase) => boolean) =>
       validateDataset(EVAL_CASES.filter((c) => !pick(c)));
@@ -338,7 +356,7 @@ describe('the integrity check catches a broken dataset (G-07)', () => {
     expect(without((c) => c.id === 'query-unreconciled')).toContain(
       'query topic unreconciled has no case',
     );
-    expect(without((c) => c.id === 'query-report')).toContain(
+    expect(without((c) => c.id === 'query-report' || c.id === 'query-excel')).toContain(
       'query topic report_request has no case',
     );
   });

@@ -3,7 +3,7 @@
 Status: **HARNESS: CODE COMPLETE on the G-07 branch (not yet merged). LIVE MODEL
 EVALUATION: PENDING OWNER-RUN ACCEPTANCE** (in the batched acceptance campaign, after
 G-59). No live score exists; none is invented here.
-Dataset: `apps/api/src/ai/eval/dataset.ts`, version 2 (84 cases; the fingerprint is
+Dataset: `apps/api/src/ai/eval/dataset.ts`, version 2 (92 cases; the fingerprint is
 printed by every run and by `--plan`).
 Harness: `apps/api/src/ai/eval/harness.ts`; launch gate `gate.ts`; report `report.ts`;
 live runner `run-eval.ts`; provider selection `apps/api/src/ai/transport-factory.ts`.
