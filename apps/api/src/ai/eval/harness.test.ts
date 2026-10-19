@@ -1139,6 +1139,64 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
     });
   });
 
+  /* ── Codex on dfda62e ── */
+
+  it('a forwarded order keeps the delivery the customer asked for', () => {
+    const order = (note: string | null) =>
+      command({
+        intent: 'RecordOrder',
+        customer: { kind: 'none' },
+        items: [
+          { name: 'ankara bale', quantity: 2 },
+          { name: 'head tie', quantity: 1 },
+        ],
+        note,
+      });
+    expect(scoreCase(caseOf('order-1'), order(null)).failedChecks).toEqual(['note']);
+    expect(scoreCase(caseOf('order-1'), order('pick up at the shop')).failedChecks).toEqual([
+      'note',
+    ]);
+    expect(scoreCase(caseOf('order-1'), order('deliver to Lekki on Saturday')).status).toBe(
+      'passed',
+    );
+  });
+
+  it('a payment keeps the invoice it names; dropped, the newest debt would take it', () => {
+    const payment = (documentRef: string | null) =>
+      command({
+        intent: 'RecordPayment',
+        customer: { kind: 'token', token: 'CUSTOMER_N9Q' },
+        amount: 40_000,
+        relativeAmount: null,
+        documentRef,
+        paymentMethod: 'transfer',
+      });
+    expect(scoreCase(caseOf('pay-ref-1'), payment(null)).failedChecks).toEqual(['documentRef']);
+    expect(scoreCase(caseOf('pay-ref-1'), payment('inv-2026-000123')).status).toBe('passed');
+  });
+
+  it('a purchase keeps the supplier reference it states, as the identity stores it', () => {
+    const invoice = (supplierReference: string | null) =>
+      command({
+        intent: 'RecordPurchase',
+        supplierMention: null,
+        description: '15 cartons of milk',
+        amount: 210_000,
+        reportedPayment: null,
+        paymentMethod: 'cash',
+        productMention: 'cartons of milk',
+        quantity: 15,
+        supplierReference,
+      });
+    expect(scoreCase(caseOf('supply-ref-1'), invoice(null)).failedChecks).toEqual([
+      'supplierReference',
+    ]);
+    expect(scoreCase(caseOf('supply-ref-1'), invoice('INVOICE NO. 2231')).status).toBe('passed');
+    expect(scoreCase(caseOf('supply-ref-1'), invoice('invoice 2213')).failedChecks).toEqual([
+      'supplierReference',
+    ]);
+  });
+
   it('a one-line sale with an invented extra line fails (Codex on #273)', () => {
     const sale = (items: Array<Record<string, unknown>>) =>
       command({

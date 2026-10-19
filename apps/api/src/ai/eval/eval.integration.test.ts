@@ -142,7 +142,7 @@ class OracleTransport implements ModelTransport {
           customer,
           amount: checks.amount ?? null,
           relativeAmount: checks.relativeAmount ?? null,
-          documentRef: null,
+          documentRef: checks.documentRef ?? null,
           paymentMethod: checks.paymentMethod ?? 'unknown',
         });
       case 'RecordPurchase':
@@ -155,6 +155,7 @@ class OracleTransport implements ModelTransport {
           ...(checks.paymentMethod ? { paymentMethod: checks.paymentMethod } : {}),
           productMention: checks.product ?? (checks.quantity ? 'stock' : null),
           quantity: checks.quantity ?? null,
+          supplierReference: checks.supplierReference ?? null,
         });
       case 'Query':
         return reply({
@@ -170,7 +171,7 @@ class OracleTransport implements ModelTransport {
           intent: 'RecordOrder',
           customer,
           items: (checks.items ?? []).map((line) => ({ name: line.name, quantity: line.quantity })),
-          note: null,
+          note: checks.note?.[0] ?? null,
         });
       case 'AdjustInventory':
         return reply({

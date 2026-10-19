@@ -19,7 +19,12 @@
  *   - A metric with no evidence is NOT_MEASURED. It is never 1.0, and a
  *     required one never contributes to a launch PASS (gate.ts).
  */
-import { categoriseExpense, periodAnswer, resolveDueDate } from '@rekoda/core';
+import {
+  categoriseExpense,
+  periodAnswer,
+  resolveDueDate,
+  storedPurchaseReference,
+} from '@rekoda/core';
 
 /**
  * The instants due-date words are resolved at when two are compared: every
@@ -409,6 +414,27 @@ function checkHolds(
      * words, across the instants, so "month end" and "end of the month"
      * are one answer and "Friday" for "month end" is not. */
     return dueKey(command[field]) === dueKey(wanted);
+  }
+  if (field === 'documentRef' && typeof wanted === 'string') {
+    /* As `openInvoiceForPayment` matches it: the number, any case (Codex on
+     * #273). Dropping a stated invoice puts the money on the newest debt. */
+    const said = command[field];
+    return typeof said === 'string' && said.trim().toUpperCase() === wanted.trim().toUpperCase();
+  }
+  if (field === 'supplierReference' && typeof wanted === 'string') {
+    /* As the purchase identity keeps it: kind and digits as written. */
+    const kept = storedPurchaseReference(command[field]);
+    return kept !== null && kept === storedPurchaseReference(wanted);
+  }
+  if (field === 'note') {
+    /* What the customer said about delivery, for the order preview: one of
+     * the stems, or nothing when they said nothing. */
+    const said = command[field];
+    if (wanted === null) return said === null || said === undefined || said === '';
+    return (
+      typeof said === 'string' &&
+      (wanted as readonly string[]).some((stem) => namesStem(said, stem))
+    );
   }
   if (field === 'category') {
     /* As `recordExpense` books it: a valid returned category wins over the

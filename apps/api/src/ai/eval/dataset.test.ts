@@ -326,6 +326,23 @@ describe('the integrity check catches a broken dataset (G-07)', () => {
     ).toContain('junk: a junk case that is not a page');
   });
 
+  it('stated references and every query topic are covered (Codex on dfda62e)', () => {
+    const without = (pick: (c: EvalCase) => boolean) =>
+      validateDataset(EVAL_CASES.filter((c) => !pick(c)));
+    expect(without((c) => c.id === 'pay-ref-1')).toContain(
+      'no payment case states an invoice reference',
+    );
+    expect(without((c) => c.id === 'supply-ref-1')).toContain(
+      'no purchase case states a supplier reference',
+    );
+    expect(without((c) => c.id === 'query-unreconciled')).toContain(
+      'query topic unreconciled has no case',
+    );
+    expect(without((c) => c.id === 'query-report')).toContain(
+      'query topic report_request has no case',
+    );
+  });
+
   it('a token the gateway could never mint (Codex on #273)', () => {
     /* Production tokens are three Crockford base32 characters: no L, no two. */
     expect(

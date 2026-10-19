@@ -143,6 +143,8 @@ export interface EvalChecks {
   category?: readonly string[];
   /** Where a sale happened, only when the merchant named it. */
   saleSource?: string | null;
+  /** An order's delivery note: stems it must name, or null when none was said. */
+  note?: readonly string[] | null;
   /** Nobody named: a walk-in sale carries no customer, never an invented one. */
   noCustomer?: true;
   /**
@@ -1379,6 +1381,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
           { quantity: 1, name: 'head tie' },
         ],
         noCustomer: true,
+        note: ['lekki', 'saturday', 'deliver'],
       },
     },
   },
@@ -1393,7 +1396,11 @@ export const EVAL_CASES: readonly EvalCase[] = [
     expect: {
       kind: 'command',
       intent: 'RecordOrder',
-      checks: { items: [{ quantity: 3, name: 'palm oil' }], customerToken: 'CUSTOMER_W2Q' },
+      checks: {
+        items: [{ quantity: 3, name: 'palm oil' }],
+        customerToken: 'CUSTOMER_W2Q',
+        note: null,
+      },
     },
   },
   {
@@ -1457,6 +1464,61 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: [],
     input: 'Me when customer say he go pay tomorrow\nLOL\nfollow for more',
     expect: { kind: 'not_a_document' },
+  },
+
+  /* ══ Codex on dfda62e: stated references, every query topic ══════════════ */
+  {
+    id: 'pay-ref-1',
+    category: 'credit_and_balance',
+    source: 'typed',
+    covers: ['partial_payment', 'customer_token', 'k_notation'],
+    /* The invoice it names picks the debt; dropped, the newest one would. */
+    input: 'CUSTOMER_N9Q paid 40k for invoice INV-2026-000123 by transfer',
+    expect: {
+      kind: 'command',
+      intent: 'RecordPayment',
+      checks: {
+        amount: 40_000,
+        relativeAmount: null,
+        documentRef: 'INV-2026-000123',
+        paymentMethod: 'transfer',
+        customerToken: 'CUSTOMER_N9Q',
+      },
+    },
+  },
+  {
+    id: 'supply-ref-1',
+    category: 'purchase_and_supplier',
+    source: 'document_text',
+    covers: ['purchase', 'stock_purchase', 'comma_money'],
+    /* The supplier's own number tells two similar purchases apart (G-81). */
+    input: 'SUPPLIER INVOICE NO. 2231\n15 x CARTON MILK @ 14,000\nTOTAL 210,000\nPAID: CASH',
+    expect: purchase({
+      amount: 210_000,
+      quantity: 15,
+      product: 'milk',
+      description: ['milk', 'carton'],
+      paidInFull: true,
+      paymentMethod: 'cash',
+      supplierMention: null,
+      supplierReference: 'invoice 2231',
+    }),
+  },
+  {
+    id: 'query-unreconciled',
+    category: 'query_period',
+    source: 'typed',
+    covers: [],
+    input: 'Which payments have not been matched to anything yet?',
+    expect: query({ topic: 'unreconciled' }),
+  },
+  {
+    id: 'query-report',
+    category: 'query_period',
+    source: 'typed',
+    covers: ['period_last_month'],
+    input: 'Send me my profit and loss statement for last month as PDF',
+    expect: query({ topic: 'report_request', period: 'custom', periodText: 'last month' }),
   },
 ];
 
@@ -1535,6 +1597,7 @@ const CHECK_FIELDS = new Set([
   'quantityDelta',
   'category',
   'saleSource',
+  'note',
 ]);
 
 /**
@@ -1593,6 +1656,7 @@ function intentRules(
     if (!has('customerToken') && !has('noCustomer'))
       errors.push(`${id}: an order pins no customer`);
     if (!has('items')) errors.push(`${id}: an order pins no items`);
+    if (!has('note')) errors.push(`${id}: an order pins no note`);
   }
   if (intent === 'AdjustInventory') {
     if (typeof checks['product'] !== 'string') errors.push(`${id}: an adjustment names no product`);
@@ -1768,6 +1832,29 @@ export function validateDataset(
   }
 
   const count = (pick: (c: EvalCase) => boolean) => cases.filter(pick).length;
+  const pinned = (intent: string, field: string) =>
+    count(
+      (c) =>
+        c.expect.kind === 'command' &&
+        c.expect.intent === intent &&
+        typeof (c.expect.checks as Record<string, unknown> | undefined)?.[field] === 'string',
+    );
+  /* A field only ever pinned null measures only that it can be dropped
+   * (Codex on #273): each reference that picks a record is also stated. */
+  if (pinned('RecordPayment', 'documentRef') === 0) {
+    errors.push('no payment case states an invoice reference');
+  }
+  if (pinned('RecordPurchase', 'supplierReference') === 0) {
+    errors.push('no purchase case states a supplier reference');
+  }
+  const topics = new Set(
+    cases.flatMap((c) =>
+      c.expect.kind === 'command' && c.expect.intent === 'Query' ? [c.expect.checks?.topic] : [],
+    ),
+  );
+  for (const topic of ALLOWED_VALUES['topic'] ?? []) {
+    if (topic && !topics.has(topic)) errors.push(`query topic ${topic} has no case`);
+  }
   const safety: Array<[string, number, number]> = [
     [
       'clarification',
