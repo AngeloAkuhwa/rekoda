@@ -102,8 +102,11 @@ export interface EvalChecks {
   unitPrice?: number;
   customerToken?: string;
   reportedPayment?: number;
-  /** How a sale or purchase was paid, only when the merchant said (G-61). */
-  paymentMethod?: string;
+  /**
+   * How it was paid, only when the merchant said (G-61). Null pins that it
+   * was NOT said, so a purchase's funding is asked, never invented.
+   */
+  paymentMethod?: string | null;
   /** A payment of "the rest" or "half", named rather than computed. */
   relativeAmount?: string;
   /** A question's topic and the window the merchant NAMED (Build 6). */
@@ -478,6 +481,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['credit_sale', 'comma_money'],
     input: 'bags of cement x 10 @ 9,500\ntotal 95,000\nbal 40,000',
     expect: sale({
+      reportedPayment: 55_000,
       product: 'cement',
       quantity: 10,
       unitPrice: 9_500,
@@ -509,7 +513,11 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['purchase', 'comma_money'],
     input:
       'INVOICE\nSUBTOTAL 100,000\nVAT (7.5%) 7,500\nTOTAL 107,500\nsupplier invoice for shop stock',
-    expect: { kind: 'command', intent: 'RecordPurchase', checks: { amount: 107_500 } },
+    expect: {
+      kind: 'command',
+      intent: 'RecordPurchase',
+      checks: { paymentMethod: null, amount: 107_500 },
+    },
   },
   /* G-61: the method a purchase was paid by, only as the merchant said it. */
   {
@@ -551,7 +559,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['purchase', 'supplier_debt', 'k_notation'],
     input: 'Bought 20 bags on credit for 400k',
-    expect: purchase({ amount: 400_000, reportedPayment: 0 }),
+    expect: purchase({ paymentMethod: null, amount: 400_000, reportedPayment: 0 }),
   },
 
   /* ── corrections and reversals ──────────────────────────────────────── */
@@ -758,7 +766,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     expect: {
       kind: 'command',
       intent: 'RecordPayment',
-      checks: { amount: 10_000, customerToken: 'CUSTOMER_F8Q' },
+      checks: { paymentMethod: 'transfer', amount: 10_000, customerToken: 'CUSTOMER_F8Q' },
     },
   },
   {
@@ -787,7 +795,13 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['purchase', 'supplier_debt', 'comma_money', 'k_notation'],
     input:
       'Collected 15 bags of cement from my supplier on credit, 9,800 each, total 147k, I go pay am Friday',
-    expect: purchase({ amount: 147_000, reportedPayment: 0 }),
+    expect: purchase({
+      quantity: 15,
+      product: 'cement',
+      paymentMethod: null,
+      amount: 147_000,
+      reportedPayment: 0,
+    }),
   },
   {
     id: 'supply-2',
@@ -818,7 +832,13 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['purchase', 'stock_purchase', 'comma_money'],
     input:
       'SUPPLIER INVOICE\n20 x CARTON NOODLES @ 5,400\nTOTAL 108,000\nTERMS: PAY WITHIN 14 DAYS',
-    expect: purchase({ unpaid: true, amount: 108_000, quantity: 20, product: 'noodle' }),
+    expect: purchase({
+      paymentMethod: null,
+      unpaid: true,
+      amount: 108_000,
+      quantity: 20,
+      product: 'noodle',
+    }),
   },
   {
     id: 'expense-ng-1',

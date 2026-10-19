@@ -412,8 +412,11 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     /* The gateway would not hand the message on (G-60, G-07): an unfinished
      * known-name pass could miss a stored name, and text still holding a
      * protected detail is refused by every model. No model reads it, no unit
-     * is metered, and the merchant is told what to do. */
+     * is metered, and the merchant is told what to do. A photo's page or a
+     * voice note's seconds, taken when it was read, go back: nothing was
+     * recorded from it (Codex on #273). The provider-spend reservation stays. */
     if (tokenised?.unread) {
+      await releaseHeldUnits(deps, businessId, eventId, usagePeriod(event.receivedAt));
       await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
       await deps.replySender.send(tx, {
         businessId,

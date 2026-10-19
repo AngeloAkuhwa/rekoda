@@ -20,7 +20,7 @@ import {
   renderEvalReport,
   type UsageSummary,
 } from './report.js';
-import { evalConfig, parseEvalArgs } from './run-eval.js';
+import { checkoutRefusal, evalConfig, parseEvalArgs } from './run-eval.js';
 
 function configWith(env: Record<string, string>): ApiConfig {
   const saved = { ...process.env };
@@ -92,6 +92,8 @@ const USAGE: UsageSummary = {
   interpreterCalls: 80,
   escalationCalls: 8,
   failedCalls: 0,
+  unusableSecondaryCalls: 0,
+  classifierCalls: 0,
   unpricedCalls: 0,
   inputTokens: 120_000,
   outputTokens: 9_000,
@@ -110,6 +112,7 @@ function metrics(overrides: Partial<EvalMetrics> = {}): EvalMetrics {
       command: 8,
       clarification: 2,
       review: 0,
+      rejected_document: 0,
       invalid_response: 0,
       quota_refused: 0,
       provider_unavailable: 0,
@@ -249,6 +252,16 @@ describe('the evaluation report (G-07)', () => {
 
   it('has no cost per correct draft when nothing correct was accepted', () => {
     expect(report('measure', { results: [] }).costPerCorrectAcceptedDraftMicros).toBeNull();
+  });
+});
+
+describe('the checkout a run is attributed to (G-07, Codex on #273)', () => {
+  it('refuses a launch-gate run from a dirty checkout, and only that', () => {
+    expect(checkoutRefusal('gate', true)).toContain('uncommitted changes');
+    expect(checkoutRefusal('gate', false)).toBeNull();
+    /* An image has no git: its built commit (REKODA_COMMIT) is what runs. */
+    expect(checkoutRefusal('gate', null)).toBeNull();
+    expect(checkoutRefusal('measure', true)).toBeNull();
   });
 });
 

@@ -34,6 +34,8 @@ export type EvalOutcome =
   | 'clarification'
   /** Two independent readers disagreed and the merchant was asked (item 9). */
   | 'review'
+  /** The classifier called the page junk, so production never interpreted it. */
+  | 'rejected_document'
   /** The model answered, and its answer did not survive the schema. */
   | 'invalid_response'
   /** A daily ceiling refused the call before it was made. */
@@ -131,6 +133,17 @@ export async function runEvalCase(
   businessId: string,
   evalCase: EvalCase,
 ): Promise<EvalCaseResult> {
+  /* A page goes to the classifier first, as production sends it (Codex on
+   * #273): a confident `junk` is answered "not a business document" and never
+   * interpreted, so a classifier that rejects receipts fails their cases. */
+  if (evalCase.source === 'document_text') {
+    try {
+      const kind = await interpreter.classifyDocument(businessId, evalCase.input);
+      if (kind === 'junk') return abstention(evalCase, 'rejected_document');
+    } catch (error) {
+      return invalid(evalCase, 'harness_error', error instanceof Error ? error.name : 'unknown');
+    }
+  }
   let interpretation: Interpretation;
   try {
     interpretation = await interpreter.interpret(businessId, evalCase.input, {
@@ -227,7 +240,10 @@ function answered(
 }
 
 /** A question instead of an answer: safe where one was owed, a miss elsewhere. */
-function abstention(evalCase: EvalCase, outcome: 'clarification' | 'review'): EvalCaseResult {
+function abstention(
+  evalCase: EvalCase,
+  outcome: 'clarification' | 'review' | 'rejected_document',
+): EvalCaseResult {
   const safe = evalCase.expect.kind !== 'command';
   return answered(evalCase, outcome, safe, safe ? [] : ['asked_instead_of_answering']);
 }
@@ -242,6 +258,19 @@ function scoreChecks(
     results.push({ field, ok: checkHolds(field, wanted, command) });
   }
   return results;
+}
+
+/**
+ * Whether `name` names the product `stem`: the stem starts a word ("wigs",
+ * "human hair wig"), never sits inside one ("twig" is not a wig; Codex on
+ * #273). Any case; a stem of several words matches them in order.
+ */
+export function namesStem(name: string, stem: string): boolean {
+  const escaped = stem
+    .trim()
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/\s+/g, '\\s+');
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}`, 'iu').test(name);
 }
 
 /**
@@ -310,11 +339,7 @@ function checkHolds(
         ? (items as Array<Record<string, unknown>>)[0]!['name']
         : null
       : command['productMention'];
-    return (
-      typeof product === 'string' &&
-      typeof wanted === 'string' &&
-      product.toLowerCase().includes(wanted.toLowerCase())
-    );
+    return typeof product === 'string' && typeof wanted === 'string' && namesStem(product, wanted);
   }
   if (field === 'items') {
     /* Every line, none lost and none added, in any order. */
@@ -328,12 +353,12 @@ function checkHolds(
     return lines.every((line) => {
       /* The product too: a wig's price on the bonnet line is a wrong line
        * (Codex on #273). */
-      const named = typeof line['name'] === 'string' ? line['name'].toLowerCase() : '';
+      const named = typeof line['name'] === 'string' ? line['name'] : '';
       const at = wantedLines.findIndex(
         (w) =>
           w.quantity === line['quantity'] &&
           w.unitPrice === line['unitPrice'] &&
-          named.includes(w.name.toLowerCase()),
+          namesStem(named, w.name),
       );
       if (at === -1) return false;
       wantedLines.splice(at, 1);
@@ -356,6 +381,8 @@ function checkHolds(
     const lines = items as Array<Record<string, unknown>>;
     return lines.length === 1 && lines[0]![field] === wanted;
   }
+  /* Null pins that the merchant did not say: an absent field is the same. */
+  if (wanted === null) return command[field] === null || command[field] === undefined;
   return command[field] === wanted;
 }
 
@@ -503,6 +530,7 @@ export function scoreEval(
       'command',
       'clarification',
       'review',
+      'rejected_document',
       'invalid_response',
       'quota_refused',
       'provider_unavailable',

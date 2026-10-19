@@ -373,7 +373,12 @@ export class Interpreter {
       };
     }
 
-    await this.recordUsage(businessId, request, reply);
+    /* Whether a command answer survived the schema, on its row (G-07): an
+     * escalation or verifier whose answer is unusable falls back to the
+     * primary's outcome, and an evaluation must still see that it failed. */
+    const schemaValid =
+      request.toolName === TOOL_NAME ? this.parseCommandReply(reply).outcome === 'command' : null;
+    await this.recordUsage(businessId, request, reply, schemaValid);
     return { kind: 'ok', reply };
   }
 
@@ -410,6 +415,7 @@ export class Interpreter {
       extraMeta?: Record<string, unknown>;
     },
     reply: ModelReply,
+    schemaValid: boolean | null = null,
   ): Promise<void> {
     const cost = costOfCall(request.model, reply.usage, this.config.planningFxNairaPerUsd);
     if (!cost.priced) {
@@ -442,6 +448,7 @@ export class Interpreter {
           policyVersion: PRIVACY_POLICY_VERSION,
           priced: cost.priced,
           stopReason: reply.stopReason,
+          ...(schemaValid === null ? {} : { schemaValid }),
           ...reply.usage,
           ...(request.extraMeta ?? {}),
         },

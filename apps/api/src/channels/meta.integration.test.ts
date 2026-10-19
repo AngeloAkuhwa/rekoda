@@ -5824,6 +5824,29 @@ describe('a receipt photo', () => {
     expect(await readsUsed(business.id)).toBe(0);
   });
 
+  /* G-07, Codex on #273: a page the gateway refuses was read and is never
+   * recorded, so its document unit goes back. */
+  it('gives the page back when its text holds a protected detail', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const { token } = await deps.gateway.resolveMention(business.id, 'Adaeze Obiageli Okonkwo');
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`UPDATE customers SET token = 'CUSTOMER_X1A' WHERE token = ${token}`),
+    );
+    arrangePhoto();
+    stubOcr.answerWith({
+      text: 'send to Adaeze Obiageli Okonkwo 0123456789 for the wigs',
+      confidence: 0.9,
+    });
+
+    await post(photoPayload('2348031234567', 'wamid.P23'));
+    await drain();
+
+    expect(stubOcr.calls).toHaveLength(1);
+    expect(stubTransport.requests).toHaveLength(0);
+    expect(stubSender.lastText).toContain('could not read that safely');
+    expect(await readsUsed(business.id)).toBe(0);
+  });
+
   it('takes the SAME path a typed sentence takes, gates included', async () => {
     await seedMerchant('+2348031234567');
     arrangePhoto();

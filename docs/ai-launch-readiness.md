@@ -78,6 +78,15 @@ a line, or loses a delivery. A "she paid cash" sale left with no payment is book
 owed at runtime, so a live run will show whether the current prompt reports the full
 payment there; if it does not, that is a finding for the owner, not a harness fault.
 
+**Documents are classified first**, as production classifies them: a confident `junk`
+is never interpreted, so a classifier that rejects receipts fails their cases. Any
+failed provider call, and any escalation or verifier answer that failed the schema
+(recorded as `schemaValid` on its usage row), blocks a PASS, because the case falls
+back to the primary's answer and would otherwise score. A gate-mode run from a checkout
+with uncommitted changes is refused; a measurement from one reports its SHA as `-dirty`.
+A receipt's stated balance is a payment (₦95,000 with ₦40,000 owing is ₦55,000 paid),
+which a live run will show the current prompt does or does not report.
+
 **The gate** (`evaluateLaunchGate`) reports, per gate, the metric, observations, value,
 threshold, PASS / FAIL / NOT_MEASURED and the reason. Overall PASS only when every
 REQUIRED gate is measured and met, every case ran and the dataset is valid; any measured

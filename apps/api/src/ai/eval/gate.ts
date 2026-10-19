@@ -96,6 +96,12 @@ export interface RunEvidence {
    * on #273).
    */
   readonly failedCalls?: number;
+  /**
+   * Escalation or verifier answers that failed the schema. Each falls back
+   * to the primary's outcome, so its case still scores; the model behind it
+   * never answered (Codex on #273).
+   */
+  readonly unusableSecondaryCalls?: number;
 }
 
 function judge(threshold: GateThreshold, metric: Metric): GateReport {
@@ -137,6 +143,12 @@ export function evaluateLaunchGate(
   if ((evidence.failedCalls ?? 0) > 0) {
     reasons.push(
       `${evidence.failedCalls} provider call(s) failed during the run: the evidence is incomplete`,
+    );
+  }
+  if ((evidence.unusableSecondaryCalls ?? 0) > 0) {
+    reasons.push(
+      `${evidence.unusableSecondaryCalls} escalation or verifier answer(s) failed the schema: ` +
+        'the evidence is incomplete',
     );
   }
   for (const error of evidence.datasetErrors) reasons.push(`dataset invalid: ${error}`);

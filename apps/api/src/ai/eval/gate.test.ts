@@ -25,6 +25,7 @@ function metricsWith(overrides: Partial<EvalMetrics> = {}): EvalMetrics {
       command: 80,
       clarification: 20,
       review: 0,
+      rejected_document: 0,
       invalid_response: 0,
       quota_refused: 0,
       provider_unavailable: 0,
@@ -101,6 +102,16 @@ describe('the launch gate', () => {
     expect(verdict.reasons).toEqual([
       '2 provider call(s) failed during the run: the evidence is incomplete',
     ]);
+  });
+
+  it('is never PASS when an escalation or verifier answer failed the schema (Codex on #273)', () => {
+    const verdict = evaluateLaunchGate(metricsWith(), RECOMMENDED_PROFILE, {
+      invalidCases: 0,
+      datasetErrors: [],
+      unusableSecondaryCalls: 1,
+    });
+    expect(verdict.overall).toBe('NOT_MEASURED');
+    expect(verdict.reasons[0]).toContain('escalation or verifier answer(s) failed the schema');
   });
 
   it('is never PASS on an invalid dataset', () => {

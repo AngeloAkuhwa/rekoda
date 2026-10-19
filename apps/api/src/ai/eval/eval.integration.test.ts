@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createDb, identity, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../../config.js';
+import { CLASSIFIER_TOOL_NAME } from '../classifier.js';
 import { Interpreter } from '../interpreter.service.js';
 import {
   ProviderUnreachable,
@@ -76,6 +77,14 @@ class OracleTransport implements ModelTransport {
         stopReason: 'tool_use',
       });
 
+    /* Every page is classified first, as production does: a real document. */
+    if (request.toolName === CLASSIFIER_TOOL_NAME) {
+      return Promise.resolve({
+        toolInput: { type: 'receipt' },
+        usage: { inputTokens: 300, outputTokens: 5 },
+        stopReason: 'tool_use',
+      });
+    }
     if (evalCase.expect.kind !== 'command') {
       return reply({ intent: 'Unclear', clarification: 'Could you say the exact amount?' });
     }

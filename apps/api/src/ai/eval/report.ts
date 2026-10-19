@@ -37,6 +37,10 @@ export interface UsageSummary {
   readonly escalationCalls: number;
   /** Attempts that produced nothing usable (recorded unpriced). */
   readonly failedCalls: number;
+  /** Escalation or verifier answers that failed the schema. */
+  readonly unusableSecondaryCalls: number;
+  /** Classifier calls: every document case is classified first, as in production. */
+  readonly classifierCalls: number;
   /** Calls recorded with no price for their model: cost is understated. */
   readonly unpricedCalls: number;
   readonly inputTokens: number;
@@ -118,6 +122,7 @@ export function buildEvalReport(input: {
     invalidCases: metrics.invalid,
     datasetErrors: input.dataset.errors,
     failedCalls: usage.failedCalls,
+    unusableSecondaryCalls: usage.unusableSecondaryCalls,
   };
   const verdict = chosen.profile ? evaluateLaunchGate(metrics, chosen.profile, evidence) : null;
 
@@ -213,7 +218,8 @@ export function renderEvalReport(report: EvalReport): string {
     `escalation rate            ${rate(report.escalationRate)} (informational)`,
     '',
     `provider calls     ${report.usage.providerCalls} (interpreter ${report.usage.interpreterCalls}, ` +
-      `escalation ${report.usage.escalationCalls}, failed ${report.usage.failedCalls}, ` +
+      `escalation ${report.usage.escalationCalls}, classifier ${report.usage.classifierCalls}, ` +
+      `failed ${report.usage.failedCalls}, unusable secondary ${report.usage.unusableSecondaryCalls}, ` +
       `unpriced ${report.usage.unpricedCalls})`,
     `tokens             input ${report.usage.inputTokens}, output ${report.usage.outputTokens}, ` +
       `cache read ${report.usage.cacheReadTokens}, cache write ${report.usage.cacheWriteTokens}`,

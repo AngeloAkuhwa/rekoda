@@ -133,7 +133,9 @@ export async function usageOf(db: Db, businessId: string): Promise<UsageSummary>
       calls: number;
       interpreter: number;
       escalation: number;
+      classifier: number;
       failed: number;
+      unusable_secondary: number;
       unpriced: number;
       input: number;
       output: number;
@@ -144,7 +146,10 @@ export async function usageOf(db: Db, businessId: string): Promise<UsageSummary>
       SELECT count(*)::int AS calls,
              count(*) FILTER (WHERE meta->>'role' = 'interpreter')::int AS interpreter,
              count(*) FILTER (WHERE meta->>'role' = 'escalation')::int AS escalation,
+             count(*) FILTER (WHERE meta->>'role' = 'classifier')::int AS classifier,
              count(*) FILTER (WHERE usage_type = 'llm_failed')::int AS failed,
+             count(*) FILTER (WHERE meta->>'role' IN ('escalation', 'vision_verifier')
+                                AND meta->>'schemaValid' = 'false')::int AS unusable_secondary,
              -- Every row with no price, failed attempts included: the
              -- provider may have billed them, so the cost is understated.
              count(*) FILTER (WHERE meta->>'priced' = 'false')::int AS unpriced,
@@ -162,7 +167,9 @@ export async function usageOf(db: Db, businessId: string): Promise<UsageSummary>
     providerCalls: n(row?.calls),
     interpreterCalls: n(row?.interpreter),
     escalationCalls: n(row?.escalation),
+    classifierCalls: n(row?.classifier),
     failedCalls: n(row?.failed),
+    unusableSecondaryCalls: n(row?.unusable_secondary),
     unpricedCalls: n(row?.unpriced),
     inputTokens: n(row?.input),
     outputTokens: n(row?.output),
@@ -172,13 +179,30 @@ export async function usageOf(db: Db, businessId: string): Promise<UsageSummary>
   };
 }
 
-/** The checkout's commit, or the one an image was built from (REKODA_COMMIT). */
-function gitSha(config: ApiConfig): string {
+/**
+ * The commit that ran, and whether the checkout matched it. A dirty
+ * checkout's SHA names code that did not run; outside git (an image) the
+ * built commit (REKODA_COMMIT) is what ran, and cleanliness is unknown.
+ */
+function gitState(config: ApiConfig): { sha: string; dirty: boolean | null } {
   try {
-    return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const status = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' });
+    return { sha, dirty: status.trim().length > 0 };
   } catch {
-    return config.commit;
+    return { sha: config.commit, dirty: null };
   }
+}
+
+/**
+ * Why a run cannot be attributed to its commit, or null (Codex on #273). A
+ * launch-gate run from a dirty checkout is refused; a measurement says so
+ * in its SHA.
+ */
+export function checkoutRefusal(mode: EvalMode, dirty: boolean | null): string | null {
+  return mode === 'gate' && dirty === true
+    ? 'the checkout has uncommitted changes, so its commit is not what would run; commit or stash them'
+    : null;
 }
 
 async function main(): Promise<number> {
@@ -198,6 +222,13 @@ async function main(): Promise<number> {
   }
   if (args.mode === 'gate' && !plan.profile.profile) {
     console.error(`launch gate refused, nothing run: ${plan.profile.reason}`);
+    return 1;
+  }
+
+  const checkout = gitState(config);
+  const refused = checkoutRefusal(args.mode, checkout.dirty);
+  if (refused) {
+    console.error(`launch gate refused, nothing run: ${refused}`);
     return 1;
   }
 
@@ -238,7 +269,7 @@ async function main(): Promise<number> {
     const report: EvalReport = buildEvalReport({
       mode: args.mode,
       timestamp: new Date().toISOString(),
-      gitSha: gitSha(config),
+      gitSha: checkout.dirty ? `${checkout.sha}-dirty` : checkout.sha,
       dataset: plan.dataset,
       configuration: plan.configuration,
       metrics: scoreEval(EVAL_CASES, results),

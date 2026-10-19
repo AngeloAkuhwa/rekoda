@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Interpretation, Interpreter } from '../interpreter.service.js';
 import { EVAL_CASES, type EvalCase } from './dataset.js';
-import { financialFigures, runEvalCase, scoreCase, scoreEval } from './harness.js';
+import { financialFigures, namesStem, runEvalCase, scoreCase, scoreEval } from './harness.js';
 
 const CASE_SALE: EvalCase = {
   id: 'sale',
@@ -230,6 +230,33 @@ describe('a case that did not run (G-07)', () => {
   it('is invalid when a ceiling refused the call', () => {
     const result = scoreCase(CASE_INJECT, { outcome: 'refused', refusedBy: 'platform' });
     expect(result).toMatchObject({ status: 'invalid', outcome: 'quota_refused' });
+  });
+
+  it('classifies a page first, as production does, and a junk call fails a real document (Codex on #273)', async () => {
+    const calls: string[] = [];
+    const junk = {
+      classifyDocument: () => {
+        calls.push('classify');
+        return Promise.resolve('junk');
+      },
+      interpret: () => {
+        calls.push('interpret');
+        return Promise.resolve(UNCLEAR);
+      },
+    } as unknown as Interpreter;
+    const receipt: EvalCase = { ...CASE_SALE, source: 'document_text' };
+    expect(await runEvalCase(junk, 'b', receipt)).toMatchObject({
+      outcome: 'rejected_document',
+      status: 'failed',
+    });
+    /* Never interpreted, as production would not interpret it. */
+    expect(calls).toEqual(['classify']);
+    /* A planted page rejected is a page nothing was recorded from. */
+    expect((await runEvalCase(junk, 'b', CASE_INJECT)).status).toBe('passed');
+    /* Typed text is never classified. */
+    calls.length = 0;
+    await runEvalCase(junk, 'b', CASE_AMBIG);
+    expect(calls).toEqual(['interpret']);
   });
 
   it('is invalid when the interpreter threw', async () => {
@@ -574,6 +601,80 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
       'periodText',
     ]);
     expect(scoreCase(caseOf('period-today'), query(null)).status).toBe('passed');
+  });
+
+  it('a balance on a receipt is a payment: the rest paid (Codex on #273)', () => {
+    const sale = (reportedPayment: number | null) =>
+      command({
+        intent: 'RecordSale',
+        customer: { kind: 'none' },
+        items: [{ name: 'bags of cement', quantity: 10, unitPrice: 9_500 }],
+        statedTotal: 95_000,
+        reportedPayment,
+      });
+    /* `gateSale` would leave all ₦95,000 owed, not the ₦40,000 balance. */
+    expect(scoreCase(caseOf('hand-1'), sale(null)).failedChecks).toEqual(['reportedPayment']);
+    expect(scoreCase(caseOf('hand-1'), sale(55_000)).status).toBe('passed');
+  });
+
+  it('a purchase whose funding was never stated is left unstated, so it is asked (Codex on #273)', () => {
+    const invoice = (paymentMethod: string | null) =>
+      command({
+        intent: 'RecordPurchase',
+        description: 'shop stock',
+        amount: 107_500,
+        reportedPayment: null,
+        paymentMethod,
+        productMention: null,
+        quantity: null,
+      });
+    expect(scoreCase(caseOf('vat-1'), invoice('cash')).failedChecks).toEqual(['paymentMethod']);
+    expect(scoreCase(caseOf('vat-1'), invoice(null)).status).toBe('passed');
+  });
+
+  it('a Pidgin "don send" pays by transfer (Codex on #273)', () => {
+    const payment = (paymentMethod: string) =>
+      command({
+        intent: 'RecordPayment',
+        customer: { kind: 'token', token: 'CUSTOMER_F8Q' },
+        amount: 10_000,
+        relativeAmount: null,
+        paymentMethod,
+      });
+    expect(scoreCase(caseOf('credit-4'), payment('cash')).failedChecks).toEqual(['paymentMethod']);
+    expect(scoreCase(caseOf('credit-4'), payment('transfer')).status).toBe('passed');
+  });
+
+  it('cement collected on credit books its 15 bags (Codex on #273)', () => {
+    const purchase = (productMention: string | null, quantity: number | null) =>
+      command({
+        intent: 'RecordPurchase',
+        description: 'cement',
+        amount: 147_000,
+        reportedPayment: 0,
+        paymentMethod: null,
+        productMention,
+        quantity,
+      });
+    expect(scoreCase(caseOf('supply-1'), purchase(null, null)).status).toBe('failed');
+    expect(scoreCase(caseOf('supply-1'), purchase('bags of cement', 15)).status).toBe('passed');
+  });
+
+  it('a product stem matches at the start of a word, never inside one (Codex on #273)', () => {
+    expect(namesStem('twig', 'wig')).toBe(false);
+    expect(namesStem('wigs', 'wig')).toBe(true);
+    expect(namesStem('Human hair WIG', 'wig')).toBe(true);
+    expect(namesStem('silk head tie', 'head tie')).toBe(true);
+    expect(namesStem('header', 'head tie')).toBe(false);
+    const sale = (name: string) =>
+      command({
+        intent: 'RecordSale',
+        customer: { kind: 'token', token: 'CUSTOMER_A1Q' },
+        items: [{ name, quantity: 3, unitPrice: 50_000 }],
+        reportedPayment: 100_000,
+        paymentMethod: 'transfer',
+      });
+    expect(scoreCase(caseOf('formal-1'), sale('twig')).failedChecks).toEqual(['product']);
   });
 
   it('a one-line sale with an invented extra line fails (Codex on #273)', () => {

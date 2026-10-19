@@ -309,6 +309,39 @@ describe('the spend ceiling in front of it', () => {
   });
 });
 
+describe('whether an answer survived the schema, on its row (G-07, Codex on #273)', () => {
+  it('records schemaValid for a command answer, so a failed escalation is visible', async () => {
+    const businessId = await seedBusiness();
+    /* The primary is Unclear; the escalation answers garbage and is dropped. */
+    const transport = new StubTransport([
+      {
+        toolInput: { command: { intent: 'Unclear', clarification: 'Which one?' } },
+        usage: { inputTokens: 100, outputTokens: 10 },
+        stopReason: 'tool_use',
+      },
+      {
+        toolInput: { command: { intent: 'RecordSale' } },
+        usage: { inputTokens: 100, outputTokens: 10 },
+        stopReason: 'tool_use',
+      },
+    ]);
+    const result = await new Interpreter(db, config, transport).interpret(
+      businessId,
+      'CUSTOMER_7K2 bought wigs',
+    );
+    expect(result.outcome).toBe('command');
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ role: string; valid: string | null }>(sql`
+        SELECT meta->>'role' AS role, meta->>'schemaValid' AS valid
+          FROM usage_events ORDER BY created_at`),
+    );
+    expect([...rows].map((r) => [r.role, r.valid])).toEqual([
+      ['interpreter', 'true'],
+      ['escalation', 'false'],
+    ]);
+  });
+});
+
 describe('costs stay inside the tenant', () => {
   it('does not show one business another`s AI spend', async () => {
     const ada = await seedBusiness('Ada Fashion', '+2348080000001');
