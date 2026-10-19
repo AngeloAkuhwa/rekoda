@@ -55,6 +55,11 @@ export interface EvalReport {
   readonly label: string;
   readonly timestamp: string;
   readonly gitSha: string;
+  /**
+   * The hash of every compiled file that could run, as verified against the
+   * build's manifest: the identity of the code measured (build-stamp.ts).
+   */
+  readonly buildFingerprint: string;
   readonly dataset: {
     readonly version: number;
     readonly size: number;
@@ -109,6 +114,7 @@ export function buildEvalReport(input: {
   mode: EvalMode;
   timestamp: string;
   gitSha: string;
+  buildFingerprint?: string;
   dataset: EvalReport['dataset'];
   configuration: AiConfigurationSummary;
   metrics: EvalMetrics;
@@ -154,6 +160,7 @@ export function buildEvalReport(input: {
     label: mode === 'measure' ? MEASUREMENT_ONLY : 'LAUNCH GATE',
     timestamp: input.timestamp,
     gitSha: input.gitSha,
+    buildFingerprint: input.buildFingerprint ?? 'unknown',
     dataset: input.dataset,
     configuration: input.configuration,
     promptFingerprint: promptFingerprint(),
@@ -198,6 +205,7 @@ export function renderEvalReport(report: EvalReport): string {
     `== Rekoda AI evaluation: ${report.label} ==`,
     `timestamp          ${report.timestamp}`,
     `git sha            ${report.gitSha}`,
+    `build              ${report.buildFingerprint}`,
     `dataset            v${report.dataset.version}, ${report.dataset.size} cases, ${report.dataset.fingerprint}`,
     ...report.dataset.errors.map((e) => `DATASET ERROR      ${e}`),
     `provider           ${c.provider}${c.baseUrlHost ? ` via ${c.baseUrlHost}` : ''}`,

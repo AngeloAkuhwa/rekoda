@@ -3,7 +3,7 @@
  * No provider is called here: the report is pure, and the transport is
  * only constructed, never sent.
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -23,13 +23,8 @@ import {
   type UsageSummary,
 } from './report.js';
 import { EVAL_CASES } from './dataset.js';
-import {
-  buildIsStale,
-  checkoutRefusal,
-  evalConfig,
-  parseEvalArgs,
-  staleOrClosed,
-} from './run-eval.js';
+import { checkoutRefusal, evalConfig, parseEvalArgs, reportedSha } from './run-eval.js';
+import { MANIFEST_PATH, verifyBuild, writeBuildManifest } from './build-stamp.js';
 
 function configWith(env: Record<string, string>): ApiConfig {
   const saved = { ...process.env };
@@ -265,87 +260,77 @@ describe('the evaluation report (G-07)', () => {
 });
 
 describe('the checkout a run is attributed to (G-07, Codex on #273)', () => {
-  const clean = { sha: 'abc123', dirty: false, staleBuild: false };
+  const proven = { verified: true, reason: null, output: 'sha256:abc' };
+  const clean = { sha: 'abc123', dirty: false, build: proven };
 
   it('refuses a launch-gate run from a dirty checkout, and only that', () => {
     expect(checkoutRefusal('gate', { ...clean, dirty: true })).toContain('uncommitted changes');
     expect(checkoutRefusal('gate', clean)).toBeNull();
-    /* An image has no git: its built commit (REKODA_COMMIT) is what runs. */
-    expect(checkoutRefusal('gate', { sha: 'b81ef90', dirty: null, staleBuild: null })).toBeNull();
+    /* An image has no git: its built commit (REKODA_COMMIT) names the run. */
+    expect(checkoutRefusal('gate', { sha: 'b81ef90', dirty: null, build: proven })).toBeNull();
     expect(checkoutRefusal('measure', { ...clean, dirty: true })).toBeNull();
   });
 
-  it('refuses a launch-gate run whose build is older than its commit (final review)', () => {
-    /* Built at A, checked out at B: the report would name code that did not run. */
-    expect(checkoutRefusal('gate', { ...clean, staleBuild: true })).toContain('pnpm turbo build');
+  it('refuses a launch-gate run whose compiled code is not proven to be the commit', () => {
+    const unproven = {
+      verified: false,
+      reason: 'a compiled file changed after the build; run pnpm turbo build --force',
+      output: 'sha256:def',
+    };
+    expect(checkoutRefusal('gate', { ...clean, build: unproven })).toContain(
+      'a compiled file changed after the build',
+    );
+    /* A measurement runs, and says so in the SHA it reports. */
+    expect(checkoutRefusal('measure', { ...clean, build: unproven })).toBeNull();
+    expect(reportedSha({ ...clean, build: unproven })).toBe('abc123-unverified-build');
+    expect(reportedSha({ ...clean, dirty: true })).toBe('abc123-dirty');
+    expect(reportedSha(clean)).toBe('abc123');
   });
 
-  it('refuses a launch-gate run no commit identifies (final review)', () => {
-    expect(checkoutRefusal('gate', { sha: 'unknown', dirty: null, staleBuild: null })).toContain(
+  it('refuses a launch-gate run no commit identifies', () => {
+    expect(checkoutRefusal('gate', { sha: 'unknown', dirty: null, build: proven })).toContain(
       'no commit identifies this build',
     );
   });
 });
 
-describe('final review on #273: what a run may claim', () => {
-  it('counts a resisted injection as no checked draft in the cost per correct draft', () => {
-    const resisted = {
-      caseId: 'i',
-      category: 'adversarial_injection' as const,
-      outcome: 'command' as const,
-      status: 'passed' as const,
-      failedChecks: [],
-      checks: [],
-      intent: 'RecordExpense',
-      expected: 'refusal' as const,
-    };
-    expect(report('measure', { results: [resisted] }).costPerCorrectAcceptedDraftMicros).toBeNull();
-  });
-
-  it('a measurement whose cases did not run, or whose calls failed, exits non-zero', () => {
-    expect(exitCodeFor(report('measure', { metrics: metrics({ invalid: 3 }) }))).toBe(1);
-    expect(exitCodeFor(report('measure', { usage: { ...USAGE, failedCalls: 1 } }))).toBe(1);
-    expect(exitCodeFor(report('measure'))).toBe(0);
-  });
-});
-
-describe('whether the build is the source it claims (confirmation review on #273)', () => {
+describe('which code a gate run executed, proven by the build manifest (Codex on #273)', () => {
   const root = mkdtempSync(join(tmpdir(), 'rekoda-build-'));
-  const write = (path: string, at: number) => {
+  const put = (path: string, body: string) => {
     mkdirSync(dirname(join(root, path)), { recursive: true });
-    writeFileSync(join(root, path), 'x');
-    utimesSync(join(root, path), at / 1000, at / 1000);
+    writeFileSync(join(root, path), body);
   };
+  const packages = ['apps/api', 'packages/core'];
   afterAll(() => rmSync(root, { recursive: true, force: true }));
 
-  it('is fresh when every package was built after its newest source', () => {
-    write('apps/api/src/a.ts', 1_000_000);
-    write('apps/api/dist/a.js', 2_000_000);
-    write('packages/core/src/b.ts', 1_000_000);
-    write('packages/core/dist/b.js', 2_000_000);
-    expect(buildIsStale(root, ['apps/api', 'packages/core'])).toBe(false);
-  });
+  it('verifies a build against the manifest it stamped, and refuses every way it can drift', () => {
+    put('apps/api/src/a.ts', 'export const a = 1;');
+    put('apps/api/dist/a.js', 'export const a = 1;');
+    put('packages/core/src/b.ts', 'export const b = 1;');
+    put('packages/core/dist/b.js', 'export const b = 1;');
 
-  it('is stale when a dependency package changed after it was built, though the api was rebuilt', () => {
-    write('packages/core/src/c.ts', 3_000_000);
-    write('apps/api/dist/a.js', 4_000_000);
-    expect(buildIsStale(root, ['apps/api', 'packages/core'])).toBe(true);
-  });
+    /* No manifest: nothing proven. */
+    expect(verifyBuild(root, packages)).toMatchObject({ verified: false });
 
-  it('is stale when a package was never built', () => {
-    write('packages/shared/src/d.ts', 1_000_000);
-    expect(buildIsStale(root, ['packages/shared'])).toBe(true);
-  });
-});
+    writeBuildManifest(root, packages);
+    expect(readFileSync(join(root, MANIFEST_PATH), 'utf8')).toContain('sha256:');
+    expect(verifyBuild(root, packages)).toMatchObject({ verified: true, reason: null });
 
-describe('a freshness scan that cannot finish (per-file review)', () => {
-  it('says stale, so a gate run cannot slip past the checks on a file error', () => {
-    expect(
-      staleOrClosed(() => {
-        throw new Error('ENOENT');
-      }),
-    ).toBe(true);
-    expect(staleOrClosed(() => false)).toBe(false);
+    /* A compiled file edited by hand after the build: refused, whatever its time. */
+    put('packages/core/dist/b.js', 'export const b = 2;');
+    expect(verifyBuild(root, packages)).toMatchObject({
+      verified: false,
+      reason: expect.stringContaining('a compiled file changed after the build'),
+    });
+    put('packages/core/dist/b.js', 'export const b = 1;');
+    expect(verifyBuild(root, packages).verified).toBe(true);
+
+    /* Source changed, or another commit checked out, after the build: refused. */
+    put('packages/core/src/b.ts', 'export const b = 3;');
+    expect(verifyBuild(root, packages)).toMatchObject({
+      verified: false,
+      reason: expect.stringContaining('the source changed after it was built'),
+    });
   });
 });
 

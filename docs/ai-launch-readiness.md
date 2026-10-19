@@ -55,6 +55,13 @@ ceiling is unchanged, and a case it refuses is invalid. Each case costs provider
 two calls a typed case (interpreter, escalation) and four a document case (classifier,
 interpreter, escalation, verifier).
 
+**Which code ran is proven, not assumed.** The api build ends by stamping
+`apps/api/dist/build-manifest.json`: a hash of every source file and every compiled file of
+the five workspace packages. A gate-mode run re-hashes both and refuses if either differs (a
+compiled file edited after the build, or source changed or checked out since), and refuses a
+dirty checkout; the report carries the compiled code's hash as `build`. Build with
+`pnpm turbo build --force` immediately before a signed run. Timestamps are not used.
+
 **What a case can be.** The model's behaviour is evidence: `command`, `clarification`
 (a real Unclear), `review` (two readers disagreed) and `invalid_response` (the answer
 failed the schema, which counts against the model). A case that did not run is INVALID

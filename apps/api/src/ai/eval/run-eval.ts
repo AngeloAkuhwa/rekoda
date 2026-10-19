@@ -24,9 +24,7 @@
  * provider budget to reconfirm yesterday's number.
  */
 import { execFileSync } from 'node:child_process';
-import { readdirSync, statSync, writeFileSync, type Dirent } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { writeFileSync } from 'node:fs';
 import {
   createDb,
   identity,
@@ -51,6 +49,7 @@ import {
   validateDataset,
   type EvalCase,
 } from './dataset.js';
+import { REPO_ROOT, verifyBuild, type BuildVerdict } from './build-stamp.js';
 import { runEvalCase, scoreEval, type EvalCaseResult } from './harness.js';
 import {
   buildEvalReport,
@@ -196,99 +195,56 @@ export async function usageOf(db: Db, businessId: string): Promise<UsageSummary>
 }
 
 /**
- * The commit that ran, and whether the checkout matched it. A dirty
- * checkout's SHA names code that did not run; outside git (an image) the
- * built commit (REKODA_COMMIT) is what ran, and cleanliness is unknown.
+ * The commit that ran, whether the checkout matched it, and whether the
+ * compiled code is the code that commit builds to (verified against the
+ * manifest the build stamped; build-stamp.ts). Outside git (an image) the
+ * built commit (REKODA_COMMIT) names the run, and cleanliness is unknown.
  */
 function gitState(config: ApiConfig): Checkout {
+  const build = verifyBuild(REPO_ROOT);
   try {
     const sha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     const status = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' });
-    /* A scan that cannot finish says stale: a gate run must not slip past
-     * the dirty and stale checks on a file error (final review on #273). */
-    const staleBuild = staleOrClosed(() => buildIsStale(REPO_ROOT));
-    return { sha, dirty: status.trim().length > 0, staleBuild };
+    return { sha, dirty: status.trim().length > 0, build };
   } catch {
-    return { sha: config.commit, dirty: null, staleBuild: null };
-  }
-}
-
-/** The repository root, from this compiled file (apps/api/dist/ai/eval). */
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
-
-/** Every workspace package the runner's code is built from. */
-const BUILT_PACKAGES = [
-  'apps/api',
-  'packages/core',
-  'packages/db',
-  'packages/contracts',
-  'packages/shared',
-];
-
-function newestMtime(dir: string): number | null {
-  let newest: number | null = null;
-  let entries: Dirent[];
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-  for (const entry of entries) {
-    const path = join(dir, entry.name);
-    const at = entry.isDirectory() ? newestMtime(path) : statSync(path).mtimeMs;
-    if (at !== null && (newest === null || at > newest)) newest = at;
-  }
-  return newest;
-}
-
-/**
- * Whether the code that would run is older than the source it claims to be
- * (final review on #273): any package whose newest source file is newer
- * than its newest build output, or that has no build at all. A checkout of
- * another commit rewrites the source it changes, and an edit nobody
- * rebuilt is newer than its output, so both are caught; a commit made
- * after an up-to-date build touches no source and is not refused.
- */
-export function buildIsStale(root: string, packages: readonly string[] = BUILT_PACKAGES): boolean {
-  return packages.some((pkg) => {
-    const source = newestMtime(join(root, pkg, 'src'));
-    const built = newestMtime(join(root, pkg, 'dist'));
-    return source !== null && (built === null || source > built);
-  });
-}
-
-/** A freshness scan's answer, or stale when the scan cannot finish. */
-export function staleOrClosed(scan: () => boolean): boolean {
-  try {
-    return scan();
-  } catch {
-    return true;
+    return { sha: config.commit, dirty: null, build };
   }
 }
 
 export interface Checkout {
   readonly sha: string;
   readonly dirty: boolean | null;
-  readonly staleBuild: boolean | null;
+  /** The compiled code checked against its build manifest. */
+  readonly build: BuildVerdict;
 }
 
 /**
  * Why a run cannot be attributed to its commit, or null (Codex on #273). A
- * launch-gate run from a dirty checkout is refused; a measurement says so
- * in its SHA.
+ * launch-gate run is refused from a dirty checkout, from a build whose
+ * source or compiled files no longer match what the build stamped, or with
+ * no commit to name; a measurement says so in its SHA instead.
  */
 export function checkoutRefusal(mode: EvalMode, checkout: Checkout): string | null {
   if (mode !== 'gate') return null;
   if (checkout.dirty === true) {
     return 'the checkout has uncommitted changes, so its commit is not what would run; commit or stash them';
   }
-  if (checkout.staleBuild === true) {
-    return 'a package was changed or checked out after it was built; run pnpm turbo build first';
+  if (!checkout.build.verified) {
+    return `the compiled code is not proven to be this commit's: ${checkout.build.reason}`;
   }
   if (!checkout.sha || checkout.sha === 'unknown') {
     return 'no commit identifies this build (no git, REKODA_COMMIT unset); a launch report must name one';
   }
   return null;
+}
+
+/** The SHA a report names: marked when the checkout or the build is not that commit's. */
+export function reportedSha(checkout: Checkout): string {
+  return (
+    checkout.sha +
+    (checkout.dirty ? '-dirty' : '') +
+    (checkout.build.verified ? '' : '-unverified-build')
+  );
 }
 
 async function main(): Promise<number> {
@@ -355,7 +311,8 @@ async function main(): Promise<number> {
     const report: EvalReport = buildEvalReport({
       mode: args.mode,
       timestamp: new Date().toISOString(),
-      gitSha: checkout.dirty ? `${checkout.sha}-dirty` : checkout.sha,
+      gitSha: reportedSha(checkout),
+      buildFingerprint: checkout.build.output,
       dataset: plan.dataset,
       configuration: plan.configuration,
       metrics: scoreEval(EVAL_CASES, results),

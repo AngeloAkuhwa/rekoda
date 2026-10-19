@@ -266,6 +266,23 @@ describe('the integrity check catches a broken dataset (G-07)', () => {
     ).toContain('action: unknown forbidden intent RecordPaymnet');
   });
 
+  it('an expense must say what it is for (Codex on 30cb408)', () => {
+    expect(
+      validateDataset(
+        withCase({
+          ...first,
+          id: 'spend',
+          input: 'fuel 5k',
+          expect: {
+            kind: 'command',
+            intent: 'RecordExpense',
+            checks: { amount: 5_000, paymentMethod: 'unknown' },
+          },
+        }),
+      ),
+    ).toContain('spend: an expense pins no description');
+  });
+
   it('a token the gateway could never mint (Codex on #273)', () => {
     /* Production tokens are three Crockford base32 characters: no L, no two. */
     expect(

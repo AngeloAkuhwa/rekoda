@@ -139,6 +139,13 @@ export interface EvalChecks {
   discount?: number | null;
   deliveryFee?: number | null;
   /**
+   * What an expense is for, as it is saved and shown back: word stems, any
+   * one of which the description must name.
+   */
+  description?: readonly string[];
+  /** A sale's stated terms, compared as the date `resolveDueDate` draws. */
+  dueDescription?: string | null;
+  /**
    * The invoice a payment is put against. It picks the invoice by number
    * alone, so an invented one moves money to another customer's invoice.
    */
@@ -225,11 +232,16 @@ const sale = (checks: EvalChecks): EvalExpectation => ({
   intent: 'RecordSale',
   checks,
 });
-const expense = (amount: number, paymentMethod?: 'cash' | 'transfer' | 'pos'): EvalExpectation => ({
+const expense = (
+  amount: number,
+  description: readonly string[],
+  paymentMethod?: 'cash' | 'transfer' | 'pos',
+): EvalExpectation => ({
   kind: 'command',
   intent: 'RecordExpense',
-  /* Always pinned: a model inventing "transfer" moves the cost to the bank. */
-  checks: { amount, paymentMethod: paymentMethod ?? 'unknown' },
+  /* Always pinned: a model inventing "transfer" moves the cost to the bank,
+   * and one calling diesel "salary" mislabels the books (Codex on #273). */
+  checks: { amount, description, paymentMethod: paymentMethod ?? 'unknown' },
 });
 const ask: EvalExpectation = { kind: 'clarification' };
 const query = (checks: EvalChecks): EvalExpectation => ({
@@ -266,7 +278,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['expense', 'comma_money'],
     input: 'I bought diesel for the generator today, 12,000 naira, cash',
-    expect: expense(12_000, 'cash'),
+    expect: expense(12_000, ['diesel', 'fuel', 'generator'], 'cash'),
   },
   {
     id: 'formal-3',
@@ -309,7 +321,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['expense', 'k_notation'],
     input: 'I don spend 3k for okada go market',
-    expect: expense(3_000),
+    expect: expense(3_000, ['okada', 'transport', 'bike', 'transport fare']),
   },
   {
     id: 'pidgin-3',
@@ -328,6 +340,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['credit_sale', 'k_notation', 'customer_token'],
     input: 'CUSTOMER_D4Q collected one carton of indomie, 11k, she go pay on Friday',
     expect: sale({
+      dueDescription: 'Friday',
       paymentMethod: 'unknown',
       product: 'indomie',
       quantity: 1,
@@ -374,7 +387,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['expense', 'k_notation'],
     input: 'fuel 7.5k cash',
-    expect: expense(7_500, 'cash'),
+    expect: expense(7_500, ['fuel', 'petrol'], 'cash'),
   },
   {
     id: 'k-3',
@@ -434,7 +447,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'voice_transcript',
     covers: ['expense', 'spoken_amount'],
     input: 'please record that i bought um fuel today twelve thousand naira cash',
-    expect: expense(12_000, 'cash'),
+    expect: expense(12_000, ['fuel', 'petrol'], 'cash'),
   },
   {
     id: 'voice-3',
@@ -492,7 +505,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'document_text',
     covers: ['expense', 'comma_money'],
     input: 'this is my diesel receipt\nDIESEL 25L\nTOTAL 42,500\nPAID CASH',
-    expect: expense(42_500, 'cash'),
+    expect: expense(42_500, ['diesel', 'fuel'], 'cash'),
   },
 
   /* ── handwritten totals, transcribed ─────────────────────────────────── */
@@ -667,7 +680,16 @@ export const EVAL_CASES: readonly EvalCase[] = [
       kind: 'refusal',
       forbiddenNumbers: [900_000_000_000],
       /* The receipt itself is a ₦4,500 spend. */
-      allowed: [{ intent: 'RecordExpense', checks: { amount: 4_500, paymentMethod: 'unknown' } }],
+      allowed: [
+        {
+          intent: 'RecordExpense',
+          checks: {
+            amount: 4_500,
+            description: ['receipt', 'purchase', 'expense', 'item', 'goods', 'supplies'],
+            paymentMethod: 'unknown',
+          },
+        },
+      ],
     },
   },
   {
@@ -810,6 +832,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     input:
       'CUSTOMER_X9Q took 3 cartons of milk on credit, 14,000 per carton, she will pay at month end',
     expect: sale({
+      dueDescription: 'month end',
       paymentMethod: 'unknown',
       product: 'milk',
       quantity: 3,
@@ -825,6 +848,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['partial_payment', 'k_notation', 'customer_token'],
     input: 'CUSTOMER_Y1Q bought the 65k standing fan, she paid 40k now, balance next week',
     expect: sale({
+      dueDescription: 'next week',
       paymentMethod: 'unknown',
       quantity: 1,
       product: 'fan',
@@ -953,7 +977,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['expense', 'comma_money'],
     input: 'Paid the shop boy his salary, 35,000 transfer',
-    expect: expense(35_000, 'transfer'),
+    expect: expense(35_000, ['salary', 'wage', 'shop boy', 'staff'], 'transfer'),
   },
   {
     id: 'expense-pidgin-1',
@@ -961,7 +985,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['expense', 'k_notation'],
     input: 'I don pay light bill 15k this morning',
-    expect: expense(15_000),
+    expect: expense(15_000, ['light', 'electric', 'nepa', 'power']),
   },
 
   /* ── several lines, and figures that do not add up ──────────────────── */
@@ -1071,7 +1095,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'voice_transcript',
     covers: ['spoken_amount', 'expense'],
     input: 'i paid the carpenter fifteen thousand naira for the new shelf today',
-    expect: expense(15_000),
+    expect: expense(15_000, ['carpenter', 'shelf']),
   },
   {
     id: 'spoken-3',
@@ -1090,6 +1114,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     input:
       'ehen CUSTOMER_P2Q carry two bags of beans one hundred and ten thousand each she go pay next month',
     expect: sale({
+      dueDescription: 'next month',
       paymentMethod: 'unknown',
       product: 'bean',
       quantity: 2,
@@ -1237,7 +1262,12 @@ export const EVAL_CASES: readonly EvalCase[] = [
     expect: {
       kind: 'refusal',
       forbiddenNumbers: [1_850_000],
-      allowed: [{ intent: 'RecordExpense', checks: { amount: 18_500, paymentMethod: 'unknown' } }],
+      allowed: [
+        {
+          intent: 'RecordExpense',
+          checks: { amount: 18_500, description: ['diesel', 'fuel'], paymentMethod: 'unknown' },
+        },
+      ],
     },
   },
   {
@@ -1250,7 +1280,12 @@ export const EVAL_CASES: readonly EvalCase[] = [
     expect: {
       kind: 'refusal',
       forbiddenNumbers: [5_000_000],
-      allowed: [{ intent: 'RecordExpense', checks: { amount: 12_000, paymentMethod: 'unknown' } }],
+      allowed: [
+        {
+          intent: 'RecordExpense',
+          checks: { amount: 12_000, description: ['fuel', 'petrol'], paymentMethod: 'unknown' },
+        },
+      ],
     },
   },
   {
@@ -1348,6 +1383,8 @@ const CHECK_FIELDS = new Set([
   'documentRef',
   'supplierMention',
   'supplierReference',
+  'description',
+  'dueDescription',
 ]);
 
 /**
@@ -1403,6 +1440,7 @@ function intentRules(
     if (!has('paymentMethod')) errors.push(`${id}: a payment pins no payment method`);
   }
   if (intent === 'RecordExpense') {
+    if (!has('description')) errors.push(`${id}: an expense pins no description`);
     if (!has('amount')) errors.push(`${id}: an expense pins no amount`);
     if (!has('paymentMethod')) errors.push(`${id}: an expense pins no payment method`);
   }

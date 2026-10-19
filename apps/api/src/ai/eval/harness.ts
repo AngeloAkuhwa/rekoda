@@ -19,7 +19,10 @@
  *   - A metric with no evidence is NOT_MEASURED. It is never 1.0, and a
  *     required one never contributes to a launch PASS (gate.ts).
  */
-import { periodAnswer } from '@rekoda/core';
+import { periodAnswer, resolveDueDate } from '@rekoda/core';
+
+/** The instant due-date words are resolved at when two are compared. */
+const DUE_DATE_INSTANT = new Date(Date.UTC(2026, 9, 14, 9));
 import type { Interpretation, Interpreter } from '../interpreter.service.js';
 import type { EvalCase, EvalCategory, EvalChecks, EvalExpectation } from './dataset.js';
 
@@ -61,6 +64,13 @@ export type CaseStatus = 'passed' | 'failed' | 'invalid';
 export interface CheckResult {
   readonly field: keyof EvalChecks;
   readonly ok: boolean;
+  /**
+   * A check the case did not pin but every sale is held to (an unstated
+   * discount, total, payment or due date is none). It decides the case and
+   * stays out of the field metrics, which count what was asked: easy
+   * implicit passes must not dilute a real miss (Codex on #273).
+   */
+  readonly implicit?: boolean;
 }
 
 export interface EvalCaseResult {
@@ -314,9 +324,14 @@ function unstatedAdjustments(
   /* A payment nobody stated is none, like a discount (final review on
    * #273): an invented one books a receivable as paid cash. */
   const paymentStated = 'reportedPayment' in checks || 'paidInFull' in checks || 'unpaid' in checks;
+  /* A total or a due date nobody stated is none too (Codex on #273): an
+   * invented total within the arithmetic tolerance is booked, and an
+   * invented term dates the invoice. */
   const fields: Array<keyof EvalChecks> = [
     'discount',
     'deliveryFee',
+    'statedTotal',
+    'dueDescription',
     ...(paymentStated ? [] : (['reportedPayment'] as const)),
   ];
   return fields
@@ -325,8 +340,8 @@ function unstatedAdjustments(
       const value = command[field];
       /* Only a sale answer can hold them: a wrong-intent answer earns no
        * free money observations (final review on #273). */
-      const none = value === null || value === undefined || value === 0;
-      return { field, ok: command['intent'] === 'RecordSale' && none };
+      const none = value === null || value === undefined || value === 0 || value === '';
+      return { field, ok: command['intent'] === 'RecordSale' && none, implicit: true };
     });
 }
 
@@ -350,6 +365,23 @@ function checkHolds(
       (intent === 'RecordPurchase' && paid === 0);
     if (nothingPaid) return true;
     return bookedAccount(intent, command[field]) === bookedAccount(intent, wanted);
+  }
+  if (field === 'dueDescription') {
+    /* As `confirmSale` reads it: the date `resolveDueDate` draws from the
+     * words, at one fixed instant, so "month end" and "end of the month"
+     * are one answer and "Friday" for "month end" is not. */
+    const said = command[field];
+    const at = (phrase: unknown) =>
+      resolveDueDate(typeof phrase === 'string' ? phrase : null, DUE_DATE_INSTANT)?.getTime() ??
+      null;
+    return at(said) === at(wanted);
+  }
+  if (field === 'description') {
+    /* What an expense is for, as it is saved and shown back: one of the
+     * stems the fixture accepts (Codex on #273). */
+    const said = command[field];
+    const stems = Array.isArray(wanted) ? (wanted as string[]) : [String(wanted)];
+    return typeof said === 'string' && stems.some((stem) => namesStem(said, stem));
   }
   if (field === 'supplierMention' && typeof wanted === 'string') {
     const said = command[field];
@@ -610,7 +642,9 @@ export function scoreEval(
   const expecting = (kind: EvalExpectation['kind']) =>
     ran.filter(({ evalCase }) => evalCase.expect.kind === kind);
   const checksWhere = (pick: (field: keyof EvalChecks) => boolean): Metric => {
-    const checks = ran.flatMap(({ result }) => result.checks.filter((c) => pick(c.field)));
+    const checks = ran.flatMap(({ result }) =>
+      result.checks.filter((c) => !c.implicit && pick(c.field)),
+    );
     return metricOf(checks.filter((c) => c.ok).length, checks.length);
   };
   const passedOf = (rows: typeof ran): Metric =>
@@ -642,7 +676,9 @@ export function scoreEval(
     ),
     amountExactMatch: checksWhere((field) => MONEY_CHECKS.has(field)),
     quantityExactMatch: checksWhere(
-      (field) => field === 'quantity' || field === 'items' || field === 'product',
+      /* Counts, not names: a right product name never dilutes a wrong
+       * quantity (Codex on #273). The name still decides its case. */
+      (field) => field === 'quantity' || field === 'items',
     ),
     customerTokenMatch: checksWhere((field) => field === 'customerToken' || field === 'noCustomer'),
     abstainedOnAmbiguous: passedOf(expecting('clarification')),

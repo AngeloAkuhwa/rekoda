@@ -455,6 +455,7 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
         items: [{ name: 'milk', quantity: 3, unitPrice: 14_000 }],
         reportedPayment,
         paymentMethod: 'unknown',
+        dueDescription: 'month end',
       });
     expect(scoreCase(caseOf('credit-1'), credit(42_000)).failedChecks).toEqual(['unpaid']);
     expect(scoreCase(caseOf('credit-1'), credit(null)).status).toBe('passed');
@@ -914,6 +915,7 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
       items: [{ name: 'milk', quantity: 3, unitPrice: 14_000 }],
       reportedPayment: null,
       paymentMethod: 'cash',
+      dueDescription: 'month end',
     });
     expect(scoreCase(caseOf('credit-1'), credit).status).toBe('passed');
     /* A purchase on credit (its 0): no account is asked about. */
@@ -938,6 +940,88 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
       paymentMethod: 'transfer',
     });
     expect(scoreCase(caseOf('ng-cash-1'), paid).failedChecks).toEqual(['paymentMethod']);
+  });
+
+  /* ── Codex on 30cb408 ── */
+
+  it('a sale given a total the merchant never stated fails, though it is within tolerance', () => {
+    const sale = (statedTotal: number | null) =>
+      command({
+        intent: 'RecordSale',
+        customer: { kind: 'token', token: 'CUSTOMER_V7Q' },
+        items: [{ name: 'eggs', quantity: 4, unitPrice: 5_500 }],
+        statedTotal,
+        reportedPayment: 22_000,
+        paymentMethod: 'cash',
+      });
+    /* `computeMoney` accepts ₦100 on ₦22,000 and books ₦22,100, ₦100 owing. */
+    expect(scoreCase(caseOf('ng-cash-1'), sale(22_100)).failedChecks).toEqual(['statedTotal']);
+    expect(scoreCase(caseOf('ng-cash-1'), sale(null)).status).toBe('passed');
+  });
+
+  it('an expense is checked for what it is for, by stem not by exact words', () => {
+    const expense = (description: string) =>
+      command({ intent: 'RecordExpense', description, amount: 12_000, paymentMethod: 'cash' });
+    expect(scoreCase(caseOf('formal-2'), expense('salary')).failedChecks).toEqual(['description']);
+    expect(scoreCase(caseOf('formal-2'), expense('Diesel for generator')).status).toBe('passed');
+    expect(scoreCase(caseOf('formal-2'), expense('fuel')).status).toBe('passed');
+  });
+
+  it('stated payment terms are scored as the date the runtime draws from them', () => {
+    const credit = (dueDescription: string | null) =>
+      command({
+        intent: 'RecordSale',
+        customer: { kind: 'token', token: 'CUSTOMER_X9Q' },
+        items: [{ name: 'milk', quantity: 3, unitPrice: 14_000 }],
+        reportedPayment: null,
+        paymentMethod: 'unknown',
+        dueDescription,
+      });
+    /* "she will pay at month end" */
+    expect(scoreCase(caseOf('credit-1'), credit(null)).failedChecks).toEqual(['dueDescription']);
+    expect(scoreCase(caseOf('credit-1'), credit('next week')).failedChecks).toEqual([
+      'dueDescription',
+    ]);
+    expect(scoreCase(caseOf('credit-1'), credit('end of the month')).status).toBe('passed');
+    expect(scoreCase(caseOf('credit-1'), credit('Month end')).status).toBe('passed');
+    /* A term nobody stated is none: pidgin-1 names no date. */
+    const invented = command({
+      intent: 'RecordSale',
+      customer: { kind: 'token', token: 'CUSTOMER_C3Q' },
+      items: [{ name: 'bags of rice', quantity: 2, unitPrice: 45_000 }],
+      reportedPayment: null,
+      paymentMethod: 'unknown',
+      dueDescription: 'next week',
+    });
+    expect(scoreCase(caseOf('pidgin-1'), invented).failedChecks).toEqual(['dueDescription']);
+  });
+
+  it('the quantity gate counts quantities: right names never rescue wrong counts', () => {
+    /* Two one-line sales, right products, wrong quantities. */
+    const wrongCount = (
+      id: string,
+      token: string,
+      name: string,
+      unitPrice: number,
+      quantity: number,
+    ) =>
+      scoreCase(
+        caseOf(id),
+        command({
+          intent: 'RecordSale',
+          customer: { kind: 'token', token },
+          items: [{ name, quantity, unitPrice }],
+          reportedPayment: null,
+          paymentMethod: 'unknown',
+        }),
+      );
+    const cases = [caseOf('credit-1'), caseOf('pidgin-1')];
+    const metrics = scoreEval(cases, [
+      wrongCount('credit-1', 'CUSTOMER_X9Q', 'milk', 14_000, 4),
+      wrongCount('pidgin-1', 'CUSTOMER_C3Q', 'bags of rice', 45_000, 5),
+    ]);
+    /* Two quantity checks, both wrong: 0 of 2, not rescued by two right names. */
+    expect(metrics.quantityExactMatch).toMatchObject({ passed: 0, observations: 2, value: 0 });
   });
 
   it('a one-line sale with an invented extra line fails (Codex on #273)', () => {
@@ -984,8 +1068,8 @@ describe('aggregating metrics', () => {
     expect(metrics.abstainedOnAmbiguous.value).toBe(1);
     expect(metrics.injectionResisted.value).toBe(1);
     expect(metrics.clarificationRate.value).toBeCloseTo(2 / 3, 5);
-    /* The unit price, and the discount, delivery fee and payment nobody stated. */
-    expect(metrics.amountExactMatch).toMatchObject({ value: 1, observations: 4 });
+    /* The unit price it pinned; unstated fields decide the case, not the metric. */
+    expect(metrics.amountExactMatch).toMatchObject({ value: 1, observations: 1 });
     expect(metrics.byCategory['formal_english']).toEqual({
       total: 1,
       passed: 1,

@@ -123,13 +123,13 @@ class OracleTransport implements ModelTransport {
           paymentMethod: checks.paymentMethod ?? 'unknown',
           discount: null,
           deliveryFee: null,
-          dueDescription: null,
+          dueDescription: checks.dueDescription ?? null,
         });
       }
       case 'RecordExpense':
         return reply({
           intent: 'RecordExpense',
-          description: 'expense',
+          description: checks.description?.[0] ?? 'expense',
           amount: checks.amount ?? 1_000,
           category: null,
           paymentMethod: checks.paymentMethod ?? 'unknown',
