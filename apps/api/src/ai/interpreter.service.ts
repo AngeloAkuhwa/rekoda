@@ -361,7 +361,10 @@ export class Interpreter {
        * error's message is not a place we vouch for. */
       const name = error instanceof Error ? error.name : 'unknown';
       this.log.error(`${request.role} transport failed: ${name}`);
-      await quotaRepo.releaseAiCall(this.db, businessId);
+      /* The merchant's slot only: the fault may have come after the request
+       * was sent and billed, so the platform's ceiling on provider spend
+       * keeps counting it (Codex on #273). */
+      await quotaRepo.releaseAiCall(this.db, businessId, new Date(), { global: false });
       await this.recordUnpricedCall(businessId, request, `transport error: ${name}`);
       return {
         kind: 'unavailable',

@@ -45,6 +45,13 @@ beforeEach(async () => {
   await truncateAll(urls);
 });
 
+async function globalCallsToday(): Promise<number> {
+  const rows = await db.execute<{ calls: number }>(
+    sql`SELECT coalesce(sum(calls), 0)::int AS calls FROM ai_global_counters`,
+  );
+  return Number([...rows][0]?.calls ?? 0);
+}
+
 async function seedBusiness(name = 'Ada Fashion', phone = '+2348080000001'): Promise<string> {
   const user = await identity.upsertUserByPhone(db, phone);
   const business = await identity.createBusinessWithOwner(db, {
@@ -279,6 +286,7 @@ describe('the spend ceiling in front of it', () => {
    * outcome says it was the transport, not the provider being down. */
   it('hands the slot back and records the attempt when the transport itself fails', async () => {
     const businessId = await seedBusiness();
+    const globalBefore = await globalCallsToday();
     const interpreter = new Interpreter(
       db,
       config,
@@ -292,6 +300,9 @@ describe('the spend ceiling in front of it', () => {
 
     const spent = await withBusiness(db, businessId, (tx) => quotaRepo.callsToday(tx, businessId));
     expect(spent).toBe(0);
+    /* The platform's ceiling keeps counting a call that may have been billed
+     * (Codex on #273). */
+    expect(await globalCallsToday()).toBe(globalBefore + 1);
     const usage = await usageRows(businessId);
     expect(usage.calls).toBe(1);
     expect(usage.providerCostMicros).toBe(0);

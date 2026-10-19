@@ -85,24 +85,29 @@ class OracleTransport implements ModelTransport {
       ? { kind: 'token', token: checks.customerToken }
       : { kind: 'none' };
     switch (evalCase.expect.intent) {
-      case 'RecordSale':
+      case 'RecordSale': {
+        const items = checks.items
+          ? checks.items.map((line, i) => ({ name: `item ${i + 1}`, ...line }))
+          : [
+              {
+                name: 'item',
+                quantity: checks.quantity ?? 1,
+                unitPrice: checks.unitPrice ?? checks.statedTotal ?? 1_000,
+              },
+            ];
+        const total = items.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0);
         return reply({
           intent: 'RecordSale',
           customer,
-          items: [
-            {
-              name: 'item',
-              quantity: checks.quantity ?? 1,
-              unitPrice: checks.unitPrice ?? checks.statedTotal ?? 1_000,
-            },
-          ],
+          items,
           statedTotal: checks.statedTotal ?? null,
-          reportedPayment: checks.reportedPayment ?? null,
+          reportedPayment: checks.paidInFull ? total : (checks.reportedPayment ?? null),
           paymentMethod: checks.paymentMethod ?? 'unknown',
           discount: null,
           deliveryFee: null,
           dueDescription: null,
         });
+      }
       case 'RecordExpense':
         return reply({
           intent: 'RecordExpense',

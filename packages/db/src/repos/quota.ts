@@ -118,6 +118,13 @@ export async function releaseAiCall(
   db: Db,
   businessId: string,
   at: Date = new Date(),
+  /**
+   * False keeps the platform's reservation while the merchant's slot goes
+   * back (G-07): a call that may have been billed still counts against the
+   * hard daily ceiling on provider spend, even when the merchant got
+   * nothing from it.
+   */
+  opts: { global?: boolean } = {},
 ): Promise<void> {
   const day = lagosDay(at);
   await withBusiness(db, businessId, async (tx) => {
@@ -125,6 +132,7 @@ export async function releaseAiCall(
       UPDATE ai_quota_counters SET calls = GREATEST(0, calls - 1)
       WHERE business_id = ${businessId}::uuid AND day = ${day}::date
     `);
+    if (opts.global === false) return;
     await tx.execute(sql`
       UPDATE ai_global_counters SET calls = GREATEST(0, calls - 1) WHERE day = ${day}::date
     `);
