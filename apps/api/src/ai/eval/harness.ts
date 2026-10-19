@@ -529,9 +529,10 @@ function checkHolds(
      * window from them as from the expected words. "Last month." passes;
      * "last month's" does not, because at runtime it resolves to nothing
      * and the merchant would be asked again. A window the runtime cannot
-     * resolve must stay one it cannot resolve, in words actually given:
-     * "last month" for "the first week of last quarter" would be answered
-     * with the wrong figures (Codex on #273). */
+     * resolve must stay one it cannot resolve: "last month" for "the first
+     * week of last quarter" would be answered with the wrong figures (Codex
+     * on #273). Any non-empty words that resolve to nothing pass, because
+     * the runtime then asks for the period whatever the words were. */
     const said = command['periodText'];
     if (typeof said !== 'string' || !said.trim()) return false;
     const expected = periodAnswer(wanted);
@@ -539,7 +540,8 @@ function checkHolds(
     return periodAnswer(said) === expected;
   }
   if (field === 'format') {
-    /* A reply in chat is a reply in no file: chat and none are one answer. */
+    /* Contract fidelity, not a booking: chat and none are one answer, and
+     * a file is pinned only where the merchant asked for one. */
     const said = command[field];
     const plain = (v: unknown) => (v === null || v === undefined || v === 'chat' ? 'chat' : v);
     return plain(said) === plain(wanted);

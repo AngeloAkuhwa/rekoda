@@ -148,7 +148,9 @@ export interface EvalChecks {
   saleSource?: string | null;
   /** An order's delivery note: stems it must name, or null when none was said. */
   note?: readonly string[] | null;
-  /** How a question's answer is sent: a file only when the merchant asked for one. */
+  /** The file the merchant asked for, or chat. Contract fidelity: today every
+   * report request gets the same reply (`answerQuery`), so this scores the
+   * reading, not a difference in what is sent. */
   format?: string | null;
   /** Nobody named: a walk-in sale carries no customer, never an invented one. */
   noCustomer?: true;
@@ -1953,10 +1955,11 @@ export function validateDataset(
   for (const topic of ALLOWED_VALUES['topic'] ?? []) {
     if (topic && !topics.has(topic)) errors.push(`query topic ${topic} has no case`);
   }
-  /* Every value a command can carry that changes what is booked or sent
-   * is exercised by some case, so a model that never produces one cannot
-   * pass (Codex on #273): each method, each relative payment, each window,
-   * each report format; and a stated discount and delivery fee. */
+  /* Every value a command can carry is exercised by some case, so a model
+   * that never produces one cannot pass (Codex on #273): each method, each
+   * relative payment and each window, which change what is booked or
+   * answered; each report format, which records what was asked for; and
+   * a stated discount and delivery fee. */
   const commandChecks = cases.flatMap((c) => {
     if (c.expect.kind === 'command') return [c.expect.checks ?? {}];
     if (c.expect.kind === 'refusal') return (c.expect.allowed ?? []).map((a) => a.checks ?? {});
