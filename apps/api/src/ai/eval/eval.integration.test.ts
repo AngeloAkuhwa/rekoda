@@ -114,7 +114,7 @@ class OracleTransport implements ModelTransport {
           description: 'expense',
           amount: checks.amount ?? 1_000,
           category: null,
-          paymentMethod: 'unknown',
+          paymentMethod: checks.paymentMethod ?? 'unknown',
         });
       case 'RecordPayment':
         return reply({
@@ -123,7 +123,7 @@ class OracleTransport implements ModelTransport {
           amount: checks.amount ?? null,
           relativeAmount: checks.relativeAmount ?? null,
           documentRef: null,
-          paymentMethod: 'unknown',
+          paymentMethod: checks.paymentMethod ?? 'unknown',
         });
       case 'RecordPurchase':
         return reply({
@@ -133,7 +133,7 @@ class OracleTransport implements ModelTransport {
           amount: checks.amount ?? 107_500,
           reportedPayment: checks.reportedPayment ?? null,
           ...(checks.paymentMethod ? { paymentMethod: checks.paymentMethod } : {}),
-          productMention: checks.quantity ? 'stock' : null,
+          productMention: checks.product ?? (checks.quantity ? 'stock' : null),
           quantity: checks.quantity ?? null,
         });
       case 'Query':

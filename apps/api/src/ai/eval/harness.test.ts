@@ -461,8 +461,40 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
         productMention,
         quantity: 12,
       });
-    expect(scoreCase(caseOf('supply-2'), purchase(null)).failedChecks).toEqual(['hasProduct']);
+    expect(scoreCase(caseOf('supply-2'), purchase(null)).failedChecks).toEqual(['product']);
     expect(scoreCase(caseOf('supply-2'), purchase('cartons of noodles')).status).toBe('passed');
+    /* The wrong product books the delivery under it (Codex on #273). */
+    expect(scoreCase(caseOf('supply-2'), purchase('cement')).failedChecks).toEqual(['product']);
+  });
+
+  it('a one-line sale with an invented extra line fails (Codex on #273)', () => {
+    const sale = (items: Array<Record<string, unknown>>) =>
+      command({
+        intent: 'RecordSale',
+        customer: { kind: 'token', token: 'CUSTOMER_A1' },
+        items,
+        reportedPayment: 100_000,
+        paymentMethod: 'transfer',
+      });
+    const wigs = { name: 'wig', quantity: 3, unitPrice: 50_000 };
+    expect(scoreCase(caseOf('formal-1'), sale([wigs])).status).toBe('passed');
+    expect(
+      scoreCase(
+        caseOf('formal-1'),
+        sale([wigs, { name: 'gold', quantity: 1, unitPrice: 1_000_000 }]),
+      ).failedChecks,
+    ).toEqual(['quantity', 'unitPrice']);
+  });
+
+  it('an expense paid by transfer recorded as anything else fails (Codex on #273)', () => {
+    const salary = (paymentMethod: string) =>
+      command({ intent: 'RecordExpense', description: 'salary', amount: 35_000, paymentMethod });
+    expect(scoreCase(caseOf('expense-ng-1'), salary('transfer')).status).toBe('passed');
+    /* `gateExpense` books anything but transfer against cash. */
+    expect(scoreCase(caseOf('expense-ng-1'), salary('unknown')).failedChecks).toEqual([
+      'paymentMethod',
+    ]);
+    expect(scoreCase(caseOf('expense-ng-1'), salary('cash')).status).toBe('failed');
   });
 });
 

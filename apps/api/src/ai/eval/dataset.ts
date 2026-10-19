@@ -121,8 +121,11 @@ export interface EvalChecks {
   unpaid?: true;
   /** Every line, exactly: as many lines, each quantity and unit price, any order. */
   items?: ReadonlyArray<{ quantity: number; unitPrice: number }>;
-  /** A purchase names the stock its quantity counts, which is what books the delivery. */
-  hasProduct?: true;
+  /**
+   * The stock a purchase's quantity counts, which is what books the
+   * delivery: the returned product must name this (a word stem, any case).
+   */
+  product?: string;
 }
 
 /** A command a refusal case accepts: the legitimate reading, if there is one. */
@@ -201,10 +204,10 @@ const sale = (checks: EvalChecks): EvalExpectation => ({
   intent: 'RecordSale',
   checks,
 });
-const expense = (amount: number): EvalExpectation => ({
+const expense = (amount: number, paymentMethod?: 'cash' | 'transfer' | 'pos'): EvalExpectation => ({
   kind: 'command',
   intent: 'RecordExpense',
-  checks: { amount },
+  checks: paymentMethod ? { amount, paymentMethod } : { amount },
 });
 const ask: EvalExpectation = { kind: 'clarification' };
 const query = (checks: EvalChecks): EvalExpectation => ({
@@ -240,7 +243,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['expense', 'comma_money'],
     input: 'I bought diesel for the generator today, 12,000 naira, cash',
-    expect: expense(12_000),
+    expect: expense(12_000, 'cash'),
   },
   {
     id: 'formal-3',
@@ -248,7 +251,11 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['partial_payment', 'comma_money', 'customer_token'],
     input: 'CUSTOMER_B2 paid 25,000 towards her outstanding balance',
-    expect: { kind: 'command', intent: 'RecordPayment', checks: { customerToken: 'CUSTOMER_B2' } },
+    expect: {
+      kind: 'command',
+      intent: 'RecordPayment',
+      checks: { amount: 25_000, customerToken: 'CUSTOMER_B2' },
+    },
   },
 
   /* ── Nigerian Pidgin ────────────────────────────────────────────────── */
@@ -308,7 +315,13 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['transfer_sale', 'partial_payment', 'k_notation'],
     input: 'sold 3 wigs 50k each to CUSTOMER_F6, she paid 100k transfer',
-    expect: sale({ quantity: 3, unitPrice: 50_000, reportedPayment: 100_000 }),
+    expect: sale({
+      quantity: 3,
+      unitPrice: 50_000,
+      reportedPayment: 100_000,
+      paymentMethod: 'transfer',
+      customerToken: 'CUSTOMER_F6',
+    }),
   },
   {
     id: 'k-2',
@@ -316,7 +329,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['expense', 'k_notation'],
     input: 'fuel 7.5k cash',
-    expect: expense(7_500),
+    expect: expense(7_500, 'cash'),
   },
   {
     id: 'k-3',
@@ -324,7 +337,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['partial_payment', 'k_notation'],
     input: 'CUSTOMER_G7 bought generator 1.2m, paid 500k',
-    expect: sale({ unitPrice: 1_200_000, reportedPayment: 500_000 }),
+    expect: sale({ unitPrice: 1_200_000, reportedPayment: 500_000, customerToken: 'CUSTOMER_G7' }),
   },
 
   /* ── currency: the books are naira; anything else must ask ──────────── */
@@ -353,7 +366,12 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['partial_payment', 'spoken_amount'],
     input:
       'em so CUSTOMER_J9 came this morning she took uh three wigs fifty thousand each she has paid one hundred thousand',
-    expect: sale({ quantity: 3, unitPrice: 50_000, reportedPayment: 100_000 }),
+    expect: sale({
+      quantity: 3,
+      unitPrice: 50_000,
+      reportedPayment: 100_000,
+      customerToken: 'CUSTOMER_J9',
+    }),
   },
   {
     id: 'voice-2',
@@ -361,7 +379,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'voice_transcript',
     covers: ['expense', 'spoken_amount'],
     input: 'please record that i bought um fuel today twelve thousand naira cash',
-    expect: expense(12_000),
+    expect: expense(12_000, 'cash'),
   },
   {
     id: 'voice-3',
@@ -379,7 +397,12 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'voice_transcript',
     covers: ['partial_payment', 'spoken_amount'],
     input: 'CUSTOMER_K1 bort tree wigs feefty tousand each she pay one hundred tousand',
-    expect: sale({ quantity: 3, unitPrice: 50_000, reportedPayment: 100_000 }),
+    expect: sale({
+      quantity: 3,
+      unitPrice: 50_000,
+      reportedPayment: 100_000,
+      customerToken: 'CUSTOMER_K1',
+    }),
   },
   {
     id: 'accent-2',
@@ -387,7 +410,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'voice_transcript',
     covers: ['transfer_sale', 'spoken_amount'],
     input: 'i sold di generator for sefen hundred an feefty tousand naira transfer don enter',
-    expect: sale({ unitPrice: 750_000 }),
+    expect: sale({ unitPrice: 750_000, paymentMethod: 'transfer', paidInFull: true }),
   },
 
   /* ── blurry receipt: extraction came back damaged ────────────────────── */
@@ -405,7 +428,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'document_text',
     covers: ['expense', 'comma_money'],
     input: 'this is my diesel receipt\nDIESEL 25L\nTOTAL 42,500\nPAID CASH',
-    expect: expense(42_500),
+    expect: expense(42_500, 'cash'),
   },
 
   /* ── handwritten totals, transcribed ─────────────────────────────────── */
@@ -426,7 +449,11 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['customer_token'],
     input:
       'POS PAYMENT\nAPPROVED\nAMOUNT NGN 35,000.00\nTERMINAL 2043\nCARD ****\nthis is payment from CUSTOMER_L2',
-    expect: { kind: 'command', intent: 'RecordPayment', checks: { customerToken: 'CUSTOMER_L2' } },
+    expect: {
+      kind: 'command',
+      intent: 'RecordPayment',
+      checks: { amount: 35_000, paymentMethod: 'pos', customerToken: 'CUSTOMER_L2' },
+    },
   },
 
   /* ── VAT documents ──────────────────────────────────────────────────── */
@@ -437,7 +464,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['purchase', 'comma_money'],
     input:
       'INVOICE\nSUBTOTAL 100,000\nVAT (7.5%) 7,500\nTOTAL 107,500\nsupplier invoice for shop stock',
-    expect: { kind: 'command', intent: 'RecordPurchase', checks: {} },
+    expect: { kind: 'command', intent: 'RecordPurchase', checks: { amount: 107_500 } },
   },
   /* G-61: the method a purchase was paid by, only as the merchant said it. */
   {
@@ -701,7 +728,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['stock_purchase', 'purchase', 'k_notation'],
     input: 'Bought 12 cartons of noodles for 108k cash to restock the shop',
-    expect: purchase({ amount: 108_000, quantity: 12, hasProduct: true, paymentMethod: 'cash' }),
+    expect: purchase({ amount: 108_000, quantity: 12, product: 'noodle', paymentMethod: 'cash' }),
   },
   {
     id: 'supply-3',
@@ -718,7 +745,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['purchase', 'stock_purchase', 'comma_money'],
     input:
       'SUPPLIER INVOICE\n20 x CARTON NOODLES @ 5,400\nTOTAL 108,000\nTERMS: PAY WITHIN 14 DAYS',
-    expect: purchase({ amount: 108_000, quantity: 20, hasProduct: true }),
+    expect: purchase({ amount: 108_000, quantity: 20, product: 'noodle' }),
   },
   {
     id: 'expense-ng-1',
@@ -726,7 +753,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['expense', 'comma_money'],
     input: 'Paid the shop boy his salary, 35,000 transfer',
-    expect: expense(35_000),
+    expect: expense(35_000, 'transfer'),
   },
   {
     id: 'expense-pidgin-1',

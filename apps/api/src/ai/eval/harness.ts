@@ -255,9 +255,15 @@ function checkHolds(
     return typeof payment === 'number' && net !== null && sameFigure(payment, net);
   }
   if (field === 'unpaid') return payment === null || payment === undefined || payment === 0;
-  if (field === 'hasProduct') {
+  if (field === 'product') {
+    /* The stock named, not merely some stock: "cement" for the noodles
+     * invoice books the delivery under the wrong product (Codex on #273). */
     const product = command['productMention'];
-    return typeof product === 'string' && product.trim().length > 0;
+    return (
+      typeof product === 'string' &&
+      typeof wanted === 'string' &&
+      product.toLowerCase().includes(wanted.toLowerCase())
+    );
   }
   if (field === 'items') {
     /* Every line, none lost and none added, in any order. */
@@ -289,7 +295,10 @@ function checkHolds(
    * quantity of its own. The check reads whichever the command has. */
   const items = command['items'];
   if ((field === 'quantity' || field === 'unitPrice') && Array.isArray(items)) {
-    return (items as Array<Record<string, unknown>>).some((item) => item[field] === wanted);
+    /* A scalar check is a one-line sale: exactly that line, nothing added
+     * beside it (Codex on #273). A case with several lines pins `items`. */
+    const lines = items as Array<Record<string, unknown>>;
+    return lines.length === 1 && lines[0]![field] === wanted;
   }
   return command[field] === wanted;
 }
@@ -481,7 +490,7 @@ export function scoreEval(
     ),
     amountExactMatch: checksWhere((field) => MONEY_CHECKS.has(field)),
     quantityExactMatch: checksWhere(
-      (field) => field === 'quantity' || field === 'items' || field === 'hasProduct',
+      (field) => field === 'quantity' || field === 'items' || field === 'product',
     ),
     customerTokenMatch: checksWhere((field) => field === 'customerToken'),
     abstainedOnAmbiguous: passedOf(expecting('clarification')),
