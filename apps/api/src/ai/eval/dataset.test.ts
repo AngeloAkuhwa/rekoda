@@ -105,6 +105,33 @@ describe('the integrity check catches a broken dataset (G-07)', () => {
     ).toContain('ghost: expected customer token is not in the input');
   });
 
+  it('a one-line sale that does not pin its whole line, or a named window its words (Codex on #273)', () => {
+    const errors = validateDataset(
+      withCase({
+        ...first,
+        id: 'loose',
+        input: 'sold 3 wigs 50k each',
+        expect: { kind: 'command', intent: 'RecordSale', checks: { unitPrice: 50_000 } },
+      }),
+    );
+    expect(errors).toContain('loose: a one-line sale names no product');
+    expect(errors).toContain('loose: a one-line sale pins no quantity');
+    expect(
+      validateDataset(
+        withCase({
+          ...first,
+          id: 'window',
+          input: 'how much did I sell today',
+          expect: {
+            kind: 'command',
+            intent: 'Query',
+            checks: { topic: 'sales_summary', period: 'today' },
+          },
+        }),
+      ),
+    ).toContain('window: a named window pins no periodText');
+  });
+
   it('a token the gateway could never mint (Codex on #273)', () => {
     /* Production tokens are three Crockford base32 characters: no L, no two. */
     expect(

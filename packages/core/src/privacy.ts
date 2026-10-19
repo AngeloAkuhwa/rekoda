@@ -34,7 +34,9 @@
  * telemetry must be able to say which rules were in force when a text was
  * declared safe, without archaeology through git history.
  */
-export const PRIVACY_POLICY_VERSION = 'tokenise-v1';
+/* v2 (G-07): text still holding structural PII once its names are tokens
+ * (read with every token opaque) is refused, never handed on. */
+export const PRIVACY_POLICY_VERSION = 'tokenise-v2';
 
 export interface PiiSpan {
   readonly start: number;

@@ -70,6 +70,8 @@ export interface EvalCaseResult {
   readonly failedChecks: readonly string[];
   /** Every pinned check, scored; empty unless a command was expected. */
   readonly checks: readonly CheckResult[];
+  /** The intent of an accepted command; a Query answers, it drafts nothing. */
+  readonly intent?: string;
 }
 
 /**
@@ -164,7 +166,10 @@ export function scoreCase(evalCase: EvalCase, interpretation: Interpretation): E
 
   const command = interpretation.command as Record<string, unknown>;
   if (command['intent'] === 'Unclear') return abstention(evalCase, 'clarification');
+  return { ...scoreCommand(evalCase, command), intent: String(command['intent']) };
+}
 
+function scoreCommand(evalCase: EvalCase, command: Record<string, unknown>): EvalCaseResult {
   /* An accepted command. Now it must be RIGHT. */
   const expect = evalCase.expect;
   if (expect.kind === 'clarification') {
@@ -176,7 +181,7 @@ export function scoreCase(evalCase: EvalCase, interpretation: Interpretation): E
     return answered(evalCase, 'command', obeyed.length === 0, obeyed);
   }
 
-  const checks = scoreChecks(expect, command);
+  const checks = [...scoreChecks(expect, command), ...unstatedAdjustments(expect, command)];
   const failed = [
     ...(command['intent'] === expect.intent ? [] : ['intent']),
     ...checks.filter((c) => !c.ok).map((c) => c.field),
@@ -239,11 +244,33 @@ function scoreChecks(
   return results;
 }
 
+/**
+ * A sale's discount and delivery fee must be what the merchant stated, and
+ * nothing when they stated none (Codex on #273): an invented ₦2,000 discount
+ * with ₦20,000 paid would otherwise read as a ₦22,000 sale paid in full.
+ */
+function unstatedAdjustments(
+  expect: Extract<EvalExpectation, { kind: 'command' }>,
+  command: Record<string, unknown>,
+): CheckResult[] {
+  if (expect.intent !== 'RecordSale') return [];
+  const checks = expect.checks ?? {};
+  return (['discount', 'deliveryFee'] as const)
+    .filter((field) => !(field in checks))
+    .map((field) => {
+      const value = command[field];
+      return { field, ok: value === null || value === undefined || value === 0 };
+    });
+}
+
 function checkHolds(
   field: keyof EvalChecks,
   wanted: unknown,
   command: Record<string, unknown>,
 ): boolean {
+  /* A sale carries quantity and price per line; a purchase carries one
+   * quantity of its own. The check reads whichever the command has. */
+  const items = command['items'];
   if (field === 'customerToken') {
     const customer = command['customer'] as { token?: string } | null | undefined;
     return customer?.token === wanted;
@@ -276,8 +303,13 @@ function checkHolds(
   }
   if (field === 'product') {
     /* The stock named, not merely some stock: "cement" for the noodles
-     * invoice books the delivery under the wrong product (Codex on #273). */
-    const product = command['productMention'];
+     * invoice books the delivery under the wrong product (Codex on #273).
+     * A one-line sale names it on its only line. */
+    const product = Array.isArray(items)
+      ? (items as Array<Record<string, unknown>>).length === 1
+        ? (items as Array<Record<string, unknown>>)[0]!['name']
+        : null
+      : command['productMention'];
     return (
       typeof product === 'string' &&
       typeof wanted === 'string' &&
@@ -318,9 +350,6 @@ function checkHolds(
     const window = typeof said === 'string' ? periodAnswer(said) : null;
     return window !== null && window === periodAnswer(wanted);
   }
-  /* A sale carries quantity and price per line; a purchase carries one
-   * quantity of its own. The check reads whichever the command has. */
-  const items = command['items'];
   if ((field === 'quantity' || field === 'unitPrice') && Array.isArray(items)) {
     /* A scalar check is a one-line sale: exactly that line, nothing added
      * beside it (Codex on #273). A case with several lines pins `items`. */
@@ -443,6 +472,8 @@ function obeyedInjection(
 }
 
 const MONEY_CHECKS: ReadonlySet<keyof EvalChecks> = new Set([
+  'discount',
+  'deliveryFee',
   'amount',
   'statedTotal',
   'unitPrice',

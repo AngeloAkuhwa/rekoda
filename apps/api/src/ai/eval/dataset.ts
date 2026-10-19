@@ -128,10 +128,13 @@ export interface EvalChecks {
   /** Nobody named: a walk-in sale carries no customer, never an invented one. */
   noCustomer?: true;
   /**
-   * The stock a purchase's quantity counts, which is what books the
-   * delivery: the returned product must name this (a word stem, any case).
+   * The product, as a word stem any case: a purchase's `productMention`
+   * (what books the delivery), or a one-line sale's only line.
    */
   product?: string;
+  /** A sale's discount and delivery fee, as stated; unstated means none. */
+  discount?: number | null;
+  deliveryFee?: number | null;
 }
 
 /** A command a refusal case accepts: the legitimate reading, if there is one. */
@@ -236,6 +239,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['transfer_sale', 'partial_payment', 'comma_money', 'customer_token'],
     input: 'CUSTOMER_A1Q purchased 3 wigs at 50,000 naira each, paid 100,000 by transfer',
     expect: sale({
+      product: 'wig',
       quantity: 3,
       unitPrice: 50_000,
       reportedPayment: 100_000,
@@ -271,7 +275,13 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['credit_sale', 'k_notation', 'customer_token'],
     input: 'CUSTOMER_C3Q don buy 2 bag of rice 45k each, e never pay',
-    expect: sale({ quantity: 2, unitPrice: 45_000, customerToken: 'CUSTOMER_C3Q', unpaid: true }),
+    expect: sale({
+      product: 'rice',
+      quantity: 2,
+      unitPrice: 45_000,
+      customerToken: 'CUSTOMER_C3Q',
+      unpaid: true,
+    }),
   },
   {
     id: 'pidgin-2',
@@ -297,7 +307,13 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['credit_sale', 'k_notation', 'customer_token'],
     input: 'CUSTOMER_D4Q collected one carton of indomie, 11k, she go pay on Friday',
-    expect: sale({ quantity: 1, unitPrice: 11_000, customerToken: 'CUSTOMER_D4Q', unpaid: true }),
+    expect: sale({
+      product: 'indomie',
+      quantity: 1,
+      unitPrice: 11_000,
+      customerToken: 'CUSTOMER_D4Q',
+      unpaid: true,
+    }),
   },
   {
     id: 'switch-2',
@@ -306,6 +322,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['cash_sale', 'k_notation', 'customer_token'],
     input: 'Sold 5 yards of ankara to CUSTOMER_E5Q today, na 8k per yard, paid am full cash',
     expect: sale({
+      product: 'ankara',
       quantity: 5,
       unitPrice: 8_000,
       customerToken: 'CUSTOMER_E5Q',
@@ -322,6 +339,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['transfer_sale', 'partial_payment', 'k_notation'],
     input: 'sold 3 wigs 50k each to CUSTOMER_F6Q, she paid 100k transfer',
     expect: sale({
+      product: 'wig',
       quantity: 3,
       unitPrice: 50_000,
       reportedPayment: 100_000,
@@ -343,7 +361,13 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['partial_payment', 'k_notation'],
     input: 'CUSTOMER_G7Q bought generator 1.2m, paid 500k',
-    expect: sale({ unitPrice: 1_200_000, reportedPayment: 500_000, customerToken: 'CUSTOMER_G7Q' }),
+    expect: sale({
+      quantity: 1,
+      product: 'generator',
+      unitPrice: 1_200_000,
+      reportedPayment: 500_000,
+      customerToken: 'CUSTOMER_G7Q',
+    }),
   },
 
   /* ── currency: the books are naira; anything else must ask ──────────── */
@@ -373,6 +397,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     input:
       'em so CUSTOMER_J9Q came this morning she took uh three wigs fifty thousand each she has paid one hundred thousand',
     expect: sale({
+      product: 'wig',
       quantity: 3,
       unitPrice: 50_000,
       reportedPayment: 100_000,
@@ -404,6 +429,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['partial_payment', 'spoken_amount'],
     input: 'CUSTOMER_K1Q bort tree wigs feefty tousand each she pay one hundred tousand',
     expect: sale({
+      product: 'wig',
       quantity: 3,
       unitPrice: 50_000,
       reportedPayment: 100_000,
@@ -417,6 +443,8 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['transfer_sale', 'spoken_amount'],
     input: 'i sold di generator for sefen hundred an feefty tousand naira transfer don enter',
     expect: sale({
+      quantity: 1,
+      product: 'generator',
       unitPrice: 750_000,
       paymentMethod: 'transfer',
       paidInFull: true,
@@ -449,7 +477,13 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'document_text',
     covers: ['credit_sale', 'comma_money'],
     input: 'bags of cement x 10 @ 9,500\ntotal 95,000\nbal 40,000',
-    expect: sale({ quantity: 10, unitPrice: 9_500, statedTotal: 95_000, noCustomer: true }),
+    expect: sale({
+      product: 'cement',
+      quantity: 10,
+      unitPrice: 9_500,
+      statedTotal: 95_000,
+      noCustomer: true,
+    }),
   },
 
   /* ── POS slips ──────────────────────────────────────────────────────── */
@@ -620,7 +654,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['period_week'],
     input: 'how much have I spent this week',
-    expect: query({ topic: 'expenses_summary', period: 'week' }),
+    expect: query({ periodText: null, topic: 'expenses_summary', period: 'week' }),
   },
   /* ══ v2 (G-07): the rest of a Nigerian shop's week ═════════════════════ */
 
@@ -632,6 +666,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['cash_sale', 'comma_money', 'customer_token'],
     input: 'Sold 4 crates of eggs to CUSTOMER_V7Q at 5,500 each, she paid cash',
     expect: sale({
+      product: 'egg',
       quantity: 4,
       unitPrice: 5_500,
       customerToken: 'CUSTOMER_V7Q',
@@ -647,6 +682,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     input:
       'CUSTOMER_W8Q bought 2 bags of rice at 72,000 each, she has done transfer for everything',
     expect: sale({
+      product: 'rice',
       quantity: 2,
       unitPrice: 72_000,
       customerToken: 'CUSTOMER_W8Q',
@@ -661,6 +697,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['cash_sale', 'k_notation'],
     input: 'Walk-in customer bought one bottle of hair cream, 6.5k cash',
     expect: sale({
+      product: 'cream',
       quantity: 1,
       unitPrice: 6_500,
       paymentMethod: 'cash',
@@ -677,7 +714,13 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['credit_sale', 'comma_money', 'customer_token'],
     input:
       'CUSTOMER_X9Q took 3 cartons of milk on credit, 14,000 per carton, she will pay at month end',
-    expect: sale({ quantity: 3, unitPrice: 14_000, customerToken: 'CUSTOMER_X9Q', unpaid: true }),
+    expect: sale({
+      product: 'milk',
+      quantity: 3,
+      unitPrice: 14_000,
+      customerToken: 'CUSTOMER_X9Q',
+      unpaid: true,
+    }),
   },
   {
     id: 'credit-2',
@@ -685,7 +728,13 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['partial_payment', 'k_notation', 'customer_token'],
     input: 'CUSTOMER_Y1Q bought the 65k standing fan, she paid 40k now, balance next week',
-    expect: sale({ unitPrice: 65_000, reportedPayment: 40_000, customerToken: 'CUSTOMER_Y1Q' }),
+    expect: sale({
+      quantity: 1,
+      product: 'fan',
+      unitPrice: 65_000,
+      reportedPayment: 40_000,
+      customerToken: 'CUSTOMER_Y1Q',
+    }),
   },
   {
     id: 'credit-3',
@@ -769,7 +818,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['purchase', 'stock_purchase', 'comma_money'],
     input:
       'SUPPLIER INVOICE\n20 x CARTON NOODLES @ 5,400\nTOTAL 108,000\nTERMS: PAY WITHIN 14 DAYS',
-    expect: purchase({ amount: 108_000, quantity: 20, product: 'noodle' }),
+    expect: purchase({ unpaid: true, amount: 108_000, quantity: 20, product: 'noodle' }),
   },
   {
     id: 'expense-ng-1',
@@ -846,6 +895,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     /* Three at 12k is 36k: the stated 40k is reported as said, never fixed. */
     input: 'Sold 3 pairs of slippers at 12k each to CUSTOMER_C5Q, total 40k',
     expect: sale({
+      product: 'slipper',
       quantity: 3,
       unitPrice: 12_000,
       statedTotal: 40_000,
@@ -858,7 +908,13 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['confirmation_sensitive', 'partial_payment', 'k_notation'],
     input: 'Sold the 120k freezer, customer paid 150k, I go give am change later',
-    expect: sale({ unitPrice: 120_000, reportedPayment: 150_000, noCustomer: true }),
+    expect: sale({
+      quantity: 1,
+      product: 'freezer',
+      unitPrice: 120_000,
+      reportedPayment: 150_000,
+      noCustomer: true,
+    }),
   },
 
   /* ── spoken amounts, as a transcriber writes them ───────────────────── */
@@ -869,6 +925,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['spoken_amount', 'cash_sale', 'customer_token'],
     input: 'CUSTOMER_N6Q bought four tubers of yam two thousand five hundred each she paid cash',
     expect: sale({
+      product: 'yam',
       quantity: 4,
       unitPrice: 2_500,
       customerToken: 'CUSTOMER_N6Q',
@@ -900,7 +957,13 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['spoken_amount', 'credit_sale', 'customer_token'],
     input:
       'ehen CUSTOMER_P2Q carry two bags of beans one hundred and ten thousand each she go pay next month',
-    expect: sale({ quantity: 2, unitPrice: 110_000, customerToken: 'CUSTOMER_P2Q', unpaid: true }),
+    expect: sale({
+      product: 'bean',
+      quantity: 2,
+      unitPrice: 110_000,
+      customerToken: 'CUSTOMER_P2Q',
+      unpaid: true,
+    }),
   },
   {
     id: 'spoken-5',
@@ -919,7 +982,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     register: 'nigerian_english',
     covers: ['period_today'],
     input: 'How much have I sold today?',
-    expect: query({ topic: 'sales_summary', period: 'today' }),
+    expect: query({ periodText: null, topic: 'sales_summary', period: 'today' }),
   },
   {
     id: 'period-month',
@@ -927,7 +990,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['period_month'],
     input: 'What did I spend this month?',
-    expect: query({ topic: 'expenses_summary', period: 'month' }),
+    expect: query({ periodText: null, topic: 'expenses_summary', period: 'month' }),
   },
   {
     id: 'period-week-pidgin',
@@ -936,7 +999,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     register: 'pidgin',
     covers: ['period_week'],
     input: 'How much I don sell this week?',
-    expect: query({ topic: 'sales_summary', period: 'week' }),
+    expect: query({ periodText: null, topic: 'sales_summary', period: 'week' }),
   },
   {
     id: 'period-last-month-pidgin',
@@ -982,7 +1045,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['multiple_customer_tokens', 'customer_token', 'k_notation'],
     /* Two people named; one bought. The sale is hers, not the friend's. */
     input: 'Sold 2 wigs at 30k each to CUSTOMER_T4Q. CUSTOMER_M5Q na im bring am come shop.',
-    expect: sale({ quantity: 2, unitPrice: 30_000, customerToken: 'CUSTOMER_T4Q' }),
+    expect: sale({ product: 'wig', quantity: 2, unitPrice: 30_000, customerToken: 'CUSTOMER_T4Q' }),
   },
   {
     id: 'tokens-2',
@@ -991,6 +1054,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['customer_token', 'transfer_sale', 'comma_money'],
     input: 'Abeg record: CUSTOMER_K3Q bought 1 phone pouch 4,500, she transferred it',
     expect: sale({
+      product: 'pouch',
       quantity: 1,
       unitPrice: 4_500,
       customerToken: 'CUSTOMER_K3Q',
@@ -1084,7 +1148,12 @@ const TOKEN = /^CUSTOMER_[0-9A-HJKMNP-TV-Z]{3}$/;
 const NUMERIC_CHECKS = ['statedTotal', 'amount', 'quantity', 'unitPrice', 'reportedPayment'];
 
 /** What is wrong with one set of checks, one line each. */
-function checkErrors(id: string, input: string, raw: EvalChecks | undefined): string[] {
+function checkErrors(
+  id: string,
+  input: string,
+  raw: EvalChecks | undefined,
+  intent?: string,
+): string[] {
   const errors: string[] = [];
   const checks = (raw ?? {}) as Record<string, unknown>;
   for (const field of NUMERIC_CHECKS) {
@@ -1109,6 +1178,23 @@ function checkErrors(id: string, input: string, raw: EvalChecks | undefined): st
     errors.push(`${id}: items is not a list of quantity, unit price and name`);
   }
   if (checks['paidInFull'] && checks['unpaid']) errors.push(`${id}: paid in full and unpaid`);
+  if (
+    intent === 'RecordSale' &&
+    (checks['quantity'] !== undefined || checks['unitPrice'] !== undefined)
+  ) {
+    /* A one-line sale pins its whole line: what, how many, at what price. */
+    if (typeof checks['product'] !== 'string')
+      errors.push(`${id}: a one-line sale names no product`);
+    if (checks['quantity'] === undefined) errors.push(`${id}: a one-line sale pins no quantity`);
+    if (checks['unitPrice'] === undefined) errors.push(`${id}: a one-line sale pins no unit price`);
+  }
+  if (
+    intent === 'Query' &&
+    ['today', 'week', 'month'].includes(String(checks['period'])) &&
+    !('periodText' in checks)
+  ) {
+    errors.push(`${id}: a named window pins no periodText`);
+  }
   if (checks['noCustomer'] && checks['customerToken']) {
     errors.push(`${id}: no customer and a customer token`);
   }
@@ -1169,7 +1255,7 @@ export function validateDataset(
     const expect = evalCase.expect;
     if (expect.kind === 'command') {
       if (!expect.intent) errors.push(`${id}: command expectation without an intent`);
-      errors.push(...checkErrors(id, evalCase.input, expect.checks));
+      errors.push(...checkErrors(id, evalCase.input, expect.checks, expect.intent));
     } else if (expect.kind === 'refusal') {
       const numbers = expect.forbiddenNumbers;
       const intents = expect.forbiddenIntents ?? [];
@@ -1182,7 +1268,7 @@ export function validateDataset(
       for (const allowed of expect.allowed ?? []) {
         if (!allowed.intent) errors.push(`${id}: allowed command without an intent`);
         if (intents.includes(allowed.intent)) errors.push(`${id}: allows a forbidden intent`);
-        errors.push(...checkErrors(id, evalCase.input, allowed.checks));
+        errors.push(...checkErrors(id, evalCase.input, allowed.checks, allowed.intent));
       }
     } else if (expect.kind !== 'clarification') {
       errors.push(`${id}: unknown expectation`);

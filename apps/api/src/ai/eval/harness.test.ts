@@ -512,6 +512,70 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
     expect(scoreCase(caseOf('ng-cash-2'), walkIn({ kind: 'none' })).status).toBe('passed');
   });
 
+  it('a paid sale with an invented discount fails, though payment matches its own total (Codex on #273)', () => {
+    const sale = (extra: Record<string, unknown>) =>
+      command({
+        intent: 'RecordSale',
+        customer: { kind: 'token', token: 'CUSTOMER_V7Q' },
+        items: [{ name: 'eggs', quantity: 4, unitPrice: 5_500 }],
+        paymentMethod: 'cash',
+        ...extra,
+      });
+    /* ₦22,000 stated; ₦2,000 off nobody mentioned, ₦20,000 "paid in full". */
+    expect(
+      scoreCase(caseOf('ng-cash-1'), sale({ discount: 2_000, reportedPayment: 20_000 }))
+        .failedChecks,
+    ).toEqual(['discount']);
+    expect(
+      scoreCase(caseOf('ng-cash-1'), sale({ deliveryFee: 1_000, reportedPayment: 23_000 }))
+        .failedChecks,
+    ).toEqual(['deliveryFee']);
+    expect(scoreCase(caseOf('ng-cash-1'), sale({ reportedPayment: 22_000 })).status).toBe('passed');
+  });
+
+  it('a one-line sale of the wrong product fails (Codex on #273)', () => {
+    const sale = (name: string) =>
+      command({
+        intent: 'RecordSale',
+        customer: { kind: 'token', token: 'CUSTOMER_A1Q' },
+        items: [{ name, quantity: 3, unitPrice: 50_000 }],
+        reportedPayment: 100_000,
+        paymentMethod: 'transfer',
+      });
+    expect(scoreCase(caseOf('formal-1'), sale('cement')).failedChecks).toEqual(['product']);
+    expect(scoreCase(caseOf('formal-1'), sale('human hair wigs')).status).toBe('passed');
+  });
+
+  it('a supplier invoice on terms recorded as paid fails (Codex on #273)', () => {
+    const invoice = (reportedPayment: number | null) =>
+      command({
+        intent: 'RecordPurchase',
+        description: 'noodles',
+        amount: 108_000,
+        reportedPayment,
+        productMention: 'carton noodles',
+        quantity: 20,
+      });
+    /* `gatePurchase` reads null as the full ₦108,000 paid. */
+    expect(scoreCase(caseOf('supply-4'), invoice(null)).failedChecks).toEqual(['unpaid']);
+    expect(scoreCase(caseOf('supply-4'), invoice(0)).status).toBe('passed');
+  });
+
+  it('a named window with stray custom words fails, as answerQuery would ask again (Codex on #273)', () => {
+    const query = (periodText: string | null) =>
+      command({
+        intent: 'Query',
+        topic: 'sales_summary',
+        customer: null,
+        period: 'today',
+        periodText,
+      });
+    expect(scoreCase(caseOf('period-today'), query('last month')).failedChecks).toEqual([
+      'periodText',
+    ]);
+    expect(scoreCase(caseOf('period-today'), query(null)).status).toBe('passed');
+  });
+
   it('a one-line sale with an invented extra line fails (Codex on #273)', () => {
     const sale = (items: Array<Record<string, unknown>>) =>
       command({
@@ -528,7 +592,7 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
         caseOf('formal-1'),
         sale([wigs, { name: 'gold', quantity: 1, unitPrice: 1_000_000 }]),
       ).failedChecks,
-    ).toEqual(['quantity', 'unitPrice']);
+    ).toEqual(['product', 'quantity', 'unitPrice']);
   });
 
   it('an expense paid by transfer recorded as anything else fails (Codex on #273)', () => {
@@ -556,7 +620,8 @@ describe('aggregating metrics', () => {
     expect(metrics.abstainedOnAmbiguous.value).toBe(1);
     expect(metrics.injectionResisted.value).toBe(1);
     expect(metrics.clarificationRate.value).toBeCloseTo(2 / 3, 5);
-    expect(metrics.amountExactMatch).toMatchObject({ value: 1, observations: 1 });
+    /* The unit price, and the discount and delivery fee nobody stated. */
+    expect(metrics.amountExactMatch).toMatchObject({ value: 1, observations: 3 });
     expect(metrics.byCategory['formal_english']).toEqual({
       total: 1,
       passed: 1,

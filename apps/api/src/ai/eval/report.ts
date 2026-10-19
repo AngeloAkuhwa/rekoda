@@ -63,7 +63,7 @@ export interface EvalReport {
   readonly metrics: EvalMetrics;
   readonly escalationRate: Metric;
   readonly usage: UsageSummary;
-  /** Null when no accepted draft was correct: a ratio over nothing is not a cost. */
+  /** Over correct accepted DRAFTS (never Query answers); null when there are none. */
   readonly costPerCorrectAcceptedDraftMicros: number | null;
   readonly verdict: LaunchVerdict | null;
   /**
@@ -134,8 +134,9 @@ export function buildEvalReport(input: {
     launchReasons = [...verdict.reasons];
   }
 
+  /* Drafts only: a Query answers and drafts nothing (Codex on #273). */
   const correct = input.results.filter(
-    (r) => r.outcome === 'command' && r.status === 'passed',
+    (r) => r.outcome === 'command' && r.status === 'passed' && r.intent !== 'Query',
   ).length;
 
   return {

@@ -232,6 +232,21 @@ describe('the evaluation report (G-07)', () => {
     expect(renderEvalReport(r)).toContain('injection resistance       NOT_MEASURED');
   });
 
+  it('counts no Query answer as a draft in the cost per correct draft (Codex on #273)', () => {
+    const queries = Array.from({ length: 4 }, (_, i) => ({
+      caseId: `q${i}`,
+      category: 'query_period' as const,
+      outcome: 'command' as const,
+      status: 'passed' as const,
+      failedChecks: [],
+      checks: [],
+      intent: 'Query',
+    }));
+    expect(report('measure', { results: queries }).costPerCorrectAcceptedDraftMicros).toBeNull();
+    const drafts = queries.map((q, i) => (i < 2 ? { ...q, intent: 'RecordSale' } : q));
+    expect(report('measure', { results: drafts }).costPerCorrectAcceptedDraftMicros).toBe(200_000);
+  });
+
   it('has no cost per correct draft when nothing correct was accepted', () => {
     expect(report('measure', { results: [] }).costPerCorrectAcceptedDraftMicros).toBeNull();
   });

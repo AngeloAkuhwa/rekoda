@@ -8,6 +8,7 @@ import {
   VaultError,
 } from './vault.js';
 import {
+  PRIVACY_POLICY_VERSION,
   detectStructuralPii,
   detectStructuralPiiAroundTokens,
   displayOf,
@@ -391,5 +392,12 @@ describe('structural PII around tokens (G-07, Codex on #273)', () => {
         'PENDINGTOKEN0X',
       ]).map((s) => s.kind),
     ).toEqual(['phone']);
+  });
+});
+
+describe('the privacy policy version (G-07, Codex on #273)', () => {
+  it('names the rule refusing text that still holds structural PII once names are tokens', () => {
+    /* Telemetry before and after the refusal rule must not claim one policy. */
+    expect(PRIVACY_POLICY_VERSION).toBe('tokenise-v2');
   });
 });

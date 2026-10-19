@@ -90,7 +90,7 @@ class OracleTransport implements ModelTransport {
           ? checks.items.map((line) => ({ ...line }))
           : [
               {
-                name: 'item',
+                name: checks.product ?? 'item',
                 quantity: checks.quantity ?? 1,
                 unitPrice: checks.unitPrice ?? checks.statedTotal ?? 1_000,
               },
@@ -131,7 +131,7 @@ class OracleTransport implements ModelTransport {
           supplierMention: null,
           description: 'stock',
           amount: checks.amount ?? 107_500,
-          reportedPayment: checks.reportedPayment ?? null,
+          reportedPayment: checks.unpaid ? 0 : (checks.reportedPayment ?? null),
           ...(checks.paymentMethod ? { paymentMethod: checks.paymentMethod } : {}),
           productMention: checks.product ?? (checks.quantity ? 'stock' : null),
           quantity: checks.quantity ?? null,
