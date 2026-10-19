@@ -24,7 +24,7 @@ import {
 } from '../transport.js';
 import { EVAL_CASES } from './dataset.js';
 import { RECOMMENDED_PROFILE, evaluateLaunchGate } from './gate.js';
-import { evalConfig } from './run-eval.js';
+import { evalConfig, usageOf } from './run-eval.js';
 import { runEvalCase, scoreEval, type EvalCaseResult } from './harness.js';
 
 let urls: Urls;
@@ -242,5 +242,26 @@ describe('the dataset through the real interpreter', () => {
       datasetErrors: [],
     });
     expect(verdict.overall).toBe('NOT_MEASURED');
+  });
+
+  /* Codex on #273: failed attempts are recorded unpriced, and the report
+   * must say the cost is understated rather than show it complete. */
+  it('counts failed provider attempts as unpriced in the run report', async () => {
+    const user = await identity.upsertUserByPhone(db, '+2348080000010');
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Eval Usage Shop',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    const down: ModelTransport = {
+      send: () => Promise.reject(new ProviderUnreachable('anthropic 503')),
+    };
+    const interpreter = new Interpreter(db, config, down);
+    for (const evalCase of EVAL_CASES.slice(0, 3)) {
+      await runEvalCase(interpreter, business.id, evalCase);
+    }
+    const usage = await usageOf(db, business.id);
+    expect(usage.failedCalls).toBe(3);
+    expect(usage.unpricedCalls).toBe(3);
   });
 });

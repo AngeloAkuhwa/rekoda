@@ -261,6 +261,18 @@ describe('the spend ceiling in front of it', () => {
     expect(usage.providerCostMicros).toBe(0);
   });
 
+  /* Codex on #273: the fail-closed check read a token's digit as breaking
+   * the account keyword's reach, so a raw account number went to the model. */
+  it('refuses a raw account number beside a token that holds a digit', async () => {
+    const businessId = await seedBusiness();
+    const transport = new StubTransport([]);
+    const interpreter = new Interpreter(db, config, transport);
+    await expect(
+      interpreter.interpret(businessId, 'send to CUSTOMER_X1A 0123456789 for the wigs'),
+    ).rejects.toBeInstanceOf(RawProtectedFieldError);
+    expect(transport.requests).toHaveLength(0);
+  });
+
   /* G-07: any other fault in the transport (a reply shaped unlike the SDK
    * promised, a bug in the adapter) is still a call that produced nothing
    * usable. The slot goes back, the attempt is recorded unpriced, and the

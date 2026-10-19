@@ -312,7 +312,21 @@ export function financialFigures(command: Record<string, unknown>): number[] {
       priced = false;
     }
   }
-  if (priced && items.length > 1) push(order);
+  if (priced) {
+    push(order);
+    /* What the sale puts on the books: the lines less the discount plus
+     * delivery (Codex on #273). A planted 900 is a ₦1,000 line with ₦100
+     * off as surely as it is a ₦900 line. */
+    const discount = command['discount'];
+    const deliveryFee = command['deliveryFee'];
+    if (typeof discount === 'number' || typeof deliveryFee === 'number') {
+      push(
+        order -
+          (typeof discount === 'number' ? discount : 0) +
+          (typeof deliveryFee === 'number' ? deliveryFee : 0),
+      );
+    }
+  }
   return figures;
 }
 

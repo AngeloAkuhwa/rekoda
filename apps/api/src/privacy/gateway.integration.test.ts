@@ -991,6 +991,13 @@ describe('the known-name pass under a crafted message', () => {
   });
 });
 
+async function customerCount(businessId: string): Promise<number> {
+  const rows = await withBusiness(db, businessId, (tx) =>
+    tx.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM customers`),
+  );
+  return Number([...rows][0]?.n ?? 0);
+}
+
 describe('text the name pass leaves holding a protected detail (G-07)', () => {
   it('is never handed on: the account number only appears once the name is a token', async () => {
     const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
@@ -1007,6 +1014,49 @@ describe('text the name pass leaves holding a protected detail (G-07)', () => {
     expect(tokenised.text).toBe(UNREAD_MESSAGE.protected_detail);
     expect(tokenised.text).not.toContain('0123456789');
     expect(tokenised.tokens.size).toBe(0);
+  });
+
+  /* Codex on #273: a token holding a digit broke the account keyword's run
+   * of non-digits, so the number passed unseen. Most generated tokens hold
+   * one. */
+  it('is never handed on when the token the name became holds a digit', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { token } = await gateway.resolveMention(businessId, 'Adaeze Obiageli Okonkwo');
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(sql`UPDATE customers SET token = 'CUSTOMER_X1A' WHERE token = ${token}`),
+    );
+
+    const tokenised = await gateway.tokenise(
+      businessId,
+      'send to Adaeze Obiageli Okonkwo 0123456789 for the wigs',
+    );
+    expect(tokenised.unread).toBe('protected_detail');
+    expect(tokenised.text).not.toContain('0123456789');
+  });
+
+  /* Codex on #273: a refused message left behind the customer its phone
+   * number created. Nothing is resolved until the message is readable. */
+  it('creates no customer from a message it refuses', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    await gateway.resolveMention(businessId, 'Adaeze Obiageli Okonkwo');
+    const before = await customerCount(businessId);
+
+    const tokenised = await gateway.tokenise(
+      businessId,
+      'send to Adaeze Obiageli Okonkwo 0123456789, her line is 08031112222',
+    );
+    expect(tokenised.unread).toBe('protected_detail');
+    expect(await customerCount(businessId)).toBe(before);
+  });
+
+  it('still resolves the phone of a message it reads, with its name', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { token } = await gateway.resolveMention(businessId, 'Ada Obi');
+    const tokenised = await gateway.tokenise(businessId, 'Ada Obi 08031112222 bought 2 wigs');
+    expect(tokenised.unread).toBeNull();
+    expect(tokenised.text).not.toContain('08031112222');
+    expect(tokenised.text).toContain(token);
+    expect(tokenised.customers).toHaveLength(2);
   });
 
   it('reads an account number the structural pass already found', async () => {

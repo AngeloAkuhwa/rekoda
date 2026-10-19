@@ -6,7 +6,11 @@ import {
   divergentFields,
   type AiModelRole,
 } from '@rekoda/core';
-import { PRIVACY_POLICY_VERSION, detectStructuralPii, redactForLog } from '@rekoda/core/privacy';
+import {
+  PRIVACY_POLICY_VERSION,
+  detectStructuralPiiAroundTokens,
+  redactForLog,
+} from '@rekoda/core/privacy';
 import {
   businessCommandToolSchema,
   parseBusinessCommand,
@@ -281,7 +285,9 @@ export class Interpreter {
    * an error a human sees — not a quiet redaction that sends the model a
    * sentence nobody wrote. */
   private refuseRawPii(safeText: string): void {
-    const rawSpans = detectStructuralPii(safeText);
+    /* Tokens read as opaque letters, as the gateway reads them (G-07): a
+     * token's digits are never PII, and must not hide or make it either. */
+    const rawSpans = detectStructuralPiiAroundTokens(safeText);
     if (rawSpans.length > 0) {
       throw new RawProtectedFieldError([...new Set(rawSpans.map((span) => span.kind))]);
     }

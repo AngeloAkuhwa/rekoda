@@ -9,6 +9,7 @@ import {
 } from './vault.js';
 import {
   detectStructuralPii,
+  detectStructuralPiiAroundTokens,
   displayOf,
   fitRehydrated,
   generateCustomerToken,
@@ -367,5 +368,28 @@ describe('the stored-message scrub takes what the gateway takes (G-60 final revi
     ['Mary-Ann paid', 'Ann', 'Mary-Ann paid'],
   ])('scrubs %j for %j', (text, name, expected) => {
     expect(replaceOutsideTokens(text, name, 'T', [])).toBe(expected);
+  });
+});
+
+describe('structural PII around tokens (G-07, Codex on #273)', () => {
+  it('sees an account number whose keyword reaches it across a token holding a digit', () => {
+    /* Read raw, the "1" in the token ends the keyword's run of non-digits. */
+    expect(detectStructuralPii('send to CUSTOMER_X1A 0123456789')).toEqual([]);
+    expect(
+      detectStructuralPiiAroundTokens('send to CUSTOMER_X1A 0123456789').map((s) => s.kind),
+    ).toEqual(['account']);
+  });
+
+  it('makes no phone of a token glued to a figure', () => {
+    expect(detectStructuralPii('CUSTOMER_AB08031234567').map((s) => s.kind)).toEqual(['phone']);
+    expect(detectStructuralPiiAroundTokens('CUSTOMER_AB08031234567')).toEqual([]);
+  });
+
+  it('masks the tokens it is given, whatever their shape, and still finds what is real', () => {
+    expect(
+      detectStructuralPiiAroundTokens('PENDINGTOKEN0X 0123456789 and 08031234567', [
+        'PENDINGTOKEN0X',
+      ]).map((s) => s.kind),
+    ).toEqual(['phone']);
   });
 });

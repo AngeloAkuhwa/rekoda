@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import {
   CLITIC_SUFFIXES,
-  detectStructuralPii,
+  detectStructuralPiiAroundTokens,
   displayOf,
   generateCustomerToken,
   openSegments,
@@ -85,6 +85,9 @@ export type UnreadReason = 'too_long' | 'protected_detail';
  * limit the pass stops, and a message it did not finish is never read.
  */
 export const KNOWN_NAME_CANDIDATE_LIMIT = 40_000;
+
+/** A customer token's characters after `CUSTOMER_` (generateCustomerToken's default). */
+const CUSTOMER_TOKEN_SUFFIX = 3;
 
 /** What stands for a message the gateway would not hand on, by reason. */
 export const UNREAD_MESSAGE: Readonly<Record<UnreadReason, string>> = {
@@ -224,12 +227,11 @@ export class PrivacyGateway {
       typed.set(token, list);
     };
 
-    for (const item of pending) {
-      const resolved = await this.customerTokenFor(businessId, item.kind, item.value);
-      out = out.split(item.placeholder).join(resolved.token);
-      note(resolved.token, item.kind, item.value);
-      if (!seen.some((c) => c.customerId === resolved.customerId)) seen.push(resolved);
-    }
+    /* Phones and emails are resolved to customers only once the message is
+     * known to be readable (below): resolving one can create a customer and
+     * vault its identity, and a message the gateway refuses must leave
+     * nothing behind (G-07, Codex on #273). Until then each stands as its
+     * placeholder, as opaque to the name pass as the token it becomes. */
 
     /**
      * The known-name pass. Structure finds phones and emails; it cannot find
@@ -286,7 +288,7 @@ export class PrivacyGateway {
         keys.add(matchKey);
       }
     };
-    scan: for (const segment of openSegments(out, [...tokens.keys(), ...typed.keys()])) {
+    scan: for (const segment of openSegments(out, [...tokens.keys(), ...placeholders])) {
       const words = [...out.slice(segment.start, segment.end).matchAll(NAME_WORD)].map((m) => {
         const start = segment.start + (m.index ?? 0);
         const end = start + m[0].length;
@@ -388,24 +390,43 @@ export class PrivacyGateway {
       });
     }
 
-    for (const c of [...claimed].sort((a, b) => a.start - b.start)) {
-      note(c.token, 'name', out.slice(c.start, c.end));
-    }
+    const names = [...claimed]
+      .sort((a, b) => a.start - b.start)
+      .map((c) => ({ ...c, typed: out.slice(c.start, c.end) }));
     /* Rewrite right to left so an earlier span's offsets survive a later
      * substitution that changes the string's length. */
     for (const c of [...claimed].sort((a, b) => b.start - a.start)) {
       out = out.slice(0, c.start) + c.token + out.slice(c.end);
-      if (!seen.some((s) => s.customerId === c.customerId)) {
-        seen.push({ token: c.token, customerId: c.customerId, facet: 'name', created: false });
-      }
     }
 
     /* The contract is text free of structural PII, and the name pass can
      * break it: "send to Adaeze Obiageli Okonkwo 0123456789" holds no account
      * number until the long name becomes a short token within reach of the
      * keyword. Such text is never handed on, so it is never stored and no
-     * model refuses it later (G-07). */
-    if (detectStructuralPii(out).length > 0) return unreadAs('protected_detail');
+     * model refuses it later (G-07). Read with every token as opaque
+     * letters, each placeholder at the length of the token it becomes: a
+     * token's digits neither hide the number ("CUSTOMER_X1A") nor make one
+     * (Codex on #273). */
+    const probe = out
+      .split(/PENDINGTOKEN\d+X/)
+      .join(`CUSTOMER_${'X'.repeat(CUSTOMER_TOKEN_SUFFIX)}`);
+    const nameTokens = names.map((c) => c.token);
+    if (detectStructuralPiiAroundTokens(probe, [...tokens.keys(), ...nameTokens]).length > 0) {
+      return unreadAs('protected_detail');
+    }
+
+    for (const item of pending) {
+      const resolved = await this.customerTokenFor(businessId, item.kind, item.value);
+      out = out.split(item.placeholder).join(resolved.token);
+      note(resolved.token, item.kind, item.value);
+      if (!seen.some((c) => c.customerId === resolved.customerId)) seen.push(resolved);
+    }
+    for (const c of names) {
+      note(c.token, 'name', c.typed);
+      if (!seen.some((s) => s.customerId === c.customerId)) {
+        seen.push({ token: c.token, customerId: c.customerId, facet: 'name', created: false });
+      }
+    }
 
     for (const [token, facets] of typed) tokens.set(token, displayOf(facets));
     return {

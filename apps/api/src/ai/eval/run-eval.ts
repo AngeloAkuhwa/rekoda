@@ -105,7 +105,7 @@ export function planEvalRun(config: ApiConfig, mode: EvalMode) {
 }
 
 /** The run's provider calls and tokens, from the usage rows it wrote. */
-async function usageOf(db: Db, businessId: string): Promise<UsageSummary> {
+export async function usageOf(db: Db, businessId: string): Promise<UsageSummary> {
   const rows = await withBusiness(db, businessId, (tx) =>
     tx.execute<{
       calls: number;
@@ -123,8 +123,9 @@ async function usageOf(db: Db, businessId: string): Promise<UsageSummary> {
              count(*) FILTER (WHERE meta->>'role' = 'interpreter')::int AS interpreter,
              count(*) FILTER (WHERE meta->>'role' = 'escalation')::int AS escalation,
              count(*) FILTER (WHERE usage_type = 'llm_failed')::int AS failed,
-             count(*) FILTER (WHERE usage_type = 'llm_call' AND meta->>'priced' = 'false')::int
-               AS unpriced,
+             -- Every row with no price, failed attempts included: the
+             -- provider may have billed them, so the cost is understated.
+             count(*) FILTER (WHERE meta->>'priced' = 'false')::int AS unpriced,
              coalesce(sum((meta->>'inputTokens')::bigint), 0)::bigint AS input,
              coalesce(sum((meta->>'outputTokens')::bigint), 0)::bigint AS output,
              coalesce(sum((meta->>'cacheReadTokens')::bigint), 0)::bigint AS cache_read,

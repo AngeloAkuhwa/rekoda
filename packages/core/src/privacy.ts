@@ -207,6 +207,27 @@ export function protectedSpans(
   return [...exact, ...shaped].sort((a, b) => a.start - b.start);
 }
 
+/**
+ * Structural PII in tokenised text, with every token read as opaque letters
+ * of its own length (G-07). A token's digits are not the merchant's: inside
+ * `CUSTOMER_X1A` they would break the run of non-digits an account number's
+ * keyword reaches across, hiding the number, and beside a figure they could
+ * make a phone that nobody typed.
+ */
+export function detectStructuralPiiAroundTokens(
+  text: string,
+  tokens: Iterable<string> = [],
+): PiiSpan[] {
+  let masked = '';
+  let cursor = 0;
+  for (const span of protectedSpans(text, tokens)) {
+    if (span.start < cursor) continue;
+    masked += text.slice(cursor, span.start) + 'X'.repeat(span.end - span.start);
+    cursor = span.end;
+  }
+  return detectStructuralPii(masked + text.slice(cursor));
+}
+
 /** The stretches of `text` between its tokens, which alone may hold a name. */
 export function openSegments(
   text: string,
