@@ -114,6 +114,17 @@ describe('the launch gate', () => {
     expect(verdict.reasons[0]).toContain('escalation or verifier answer(s) failed the schema');
   });
 
+  it('FAILS when a required gate failed, even with other evidence missing (per-file review)', () => {
+    /* A measured failure is definitive: missing evidence elsewhere never
+     * softens it to NOT_MEASURED. */
+    const verdict = evaluateLaunchGate(
+      metricsWith({ amountExactMatch: measured(0.9), injectionResisted: none }),
+      RECOMMENDED_PROFILE,
+      { invalidCases: 2, datasetErrors: [], failedCalls: 1 },
+    );
+    expect(verdict.overall).toBe('FAIL');
+  });
+
   it('is never PASS on an invalid dataset', () => {
     const verdict = evaluateLaunchGate(metricsWith(), RECOMMENDED_PROFILE, {
       invalidCases: 0,

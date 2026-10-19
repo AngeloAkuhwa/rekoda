@@ -230,6 +230,42 @@ describe('the integrity check catches a broken dataset (G-07)', () => {
     );
   });
 
+  it('a pinned value the contract does not allow, or a forbidden intent nobody has (per-file review)', () => {
+    const typo = validateDataset(
+      withCase({
+        ...first,
+        id: 'typo',
+        input: 'sold 3 wigs',
+        expect: {
+          kind: 'command',
+          intent: 'RecordPayment',
+          checks: {
+            amount: 1,
+            relativeAmount: 'rest',
+            paymentMethod: 'Cash',
+            documentRef: null,
+            noCustomer: true,
+          },
+        },
+      }),
+    );
+    expect(typo).toEqual(
+      expect.arrayContaining([
+        'typo: paymentMethod Cash is not a value the contract allows',
+        'typo: relativeAmount rest is not a value the contract allows',
+      ]),
+    );
+    expect(
+      validateDataset(
+        withCase({
+          ...first,
+          id: 'action',
+          expect: { kind: 'refusal', forbiddenNumbers: [5], forbiddenIntents: ['RecordPaymnet'] },
+        }),
+      ),
+    ).toContain('action: unknown forbidden intent RecordPaymnet');
+  });
+
   it('a token the gateway could never mint (Codex on #273)', () => {
     /* Production tokens are three Crockford base32 characters: no L, no two. */
     expect(

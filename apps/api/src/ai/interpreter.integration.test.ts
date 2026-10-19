@@ -280,6 +280,25 @@ describe('the spend ceiling in front of it', () => {
     expect(transport.requests).toHaveLength(0);
   });
 
+  /* Per-file review on #273: a figure glued to a customer shape nobody
+   * issued is seen; the same text with that token issued is not refused. */
+  it('reads an issued token exactly, and a shape nobody issued without swallowing a phone', async () => {
+    const businessId = await seedBusiness();
+    const refusing = new StubTransport([]);
+    await expect(
+      new Interpreter(db, config, refusing).interpret(businessId, 'call CUSTOMER_08031234567'),
+    ).rejects.toBeInstanceOf(RawProtectedFieldError);
+    expect(refusing.requests).toHaveLength(0);
+
+    const issued = StubTransport.answering({ intent: 'Unclear', clarification: 'Which one?' });
+    const result = await new Interpreter(db, config, issued).interpret(
+      businessId,
+      'CUSTOMER_AB08031234567 bought wigs',
+      { tokens: ['CUSTOMER_AB0'] },
+    );
+    expect(result.outcome).toBe('command');
+  });
+
   /* G-07: any other fault in the transport (a reply shaped unlike the SDK
    * promised, a bug in the adapter) is still a call that produced nothing
    * usable. The slot goes back, the attempt is recorded unpriced, and the

@@ -1309,6 +1309,22 @@ const INTENTS = new Set([
   'Unclear',
 ]);
 
+/** The values the contract allows for the checks that name one. */
+const ALLOWED_VALUES: Readonly<Record<string, ReadonlyArray<string | null>>> = {
+  paymentMethod: ['cash', 'transfer', 'pos', 'unknown', null],
+  relativeAmount: ['half', 'remainder', null],
+  topic: [
+    'debtors',
+    'customer_balance',
+    'supplier_balances',
+    'sales_summary',
+    'expenses_summary',
+    'unreconciled',
+    'report_request',
+  ],
+  period: ['today', 'week', 'month', 'custom', null],
+};
+
 /** Every check the harness scores. A misspelled one would check nothing. */
 const CHECK_FIELDS = new Set([
   'statedTotal',
@@ -1349,6 +1365,11 @@ function intentRules(
   if (intent !== undefined && !INTENTS.has(intent)) errors.push(`${id}: unknown intent ${intent}`);
   for (const field of Object.keys(checks)) {
     if (!CHECK_FIELDS.has(field)) errors.push(`${id}: unknown check ${field}`);
+    /* A misspelled value ("Cash") would pin an account nobody books to. */
+    const allowed = ALLOWED_VALUES[field];
+    if (allowed && !allowed.includes(checks[field] as string | null)) {
+      errors.push(`${id}: ${field} ${String(checks[field])} is not a value the contract allows`);
+    }
   }
   if (intent === 'RecordSale') {
     /* The line: every line listed, or the one line's product, quantity and price. */
@@ -1517,6 +1538,9 @@ export function validateDataset(
       }
       if (numbers.some((n) => !Number.isFinite(n) || n <= 0)) {
         errors.push(`${id}: forbidden figure is not a positive number`);
+      }
+      for (const intent of intents) {
+        if (!INTENTS.has(intent)) errors.push(`${id}: unknown forbidden intent ${intent}`);
       }
       for (const allowed of expect.allowed ?? []) {
         if (!allowed.intent) errors.push(`${id}: allowed command without an intent`);

@@ -128,9 +128,10 @@ export class Interpreter {
   async interpret(
     businessId: string,
     safeText: string,
-    opts?: { document?: boolean },
+    /** `tokens`: the ones this message was issued, read as opaque exactly. */
+    opts?: { document?: boolean; tokens?: readonly string[] },
   ): Promise<Interpretation> {
-    this.refuseRawPii(safeText);
+    this.refuseRawPii(safeText, opts?.tokens);
 
     const primary = await this.callModel(businessId, {
       model: this.config.aiModelDefault,
@@ -260,8 +261,12 @@ export class Interpreter {
    * only behaviour this method can change is SKIPPING a more expensive
    * call; it can never block a real document.
    */
-  async classifyDocument(businessId: string, safeText: string): Promise<DocumentClass> {
-    this.refuseRawPii(safeText);
+  async classifyDocument(
+    businessId: string,
+    safeText: string,
+    tokens?: readonly string[],
+  ): Promise<DocumentClass> {
+    this.refuseRawPii(safeText, tokens);
 
     const call = await this.callModel(businessId, {
       model: this.config.aiModelClassifier,
@@ -284,10 +289,12 @@ export class Interpreter {
    * means the gateway was bypassed or broken, and the only honest move is
    * an error a human sees — not a quiet redaction that sends the model a
    * sentence nobody wrote. */
-  private refuseRawPii(safeText: string): void {
+  private refuseRawPii(safeText: string, tokens: readonly string[] = []): void {
     /* Tokens read as opaque letters, as the gateway reads them (G-07): a
-     * token's digits are never PII, and must not hide or make it either. */
-    const rawSpans = detectStructuralPiiAroundTokens(safeText);
+     * token's digits are never PII, and must not hide or make it either.
+     * The issued ones exactly; anything else only by a bounded shape, so a
+     * figure glued to "CUSTOMER_" is still seen. */
+    const rawSpans = detectStructuralPiiAroundTokens(safeText, tokens);
     if (rawSpans.length > 0) {
       throw new RawProtectedFieldError([...new Set(rawSpans.map((span) => span.kind))]);
     }

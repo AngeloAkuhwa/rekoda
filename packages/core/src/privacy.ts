@@ -226,11 +226,13 @@ export function detectStructuralPiiAroundTokens(
 /**
  * The shapes a token can take when nobody issued it here: a customer token,
  * or a per-message counter the pipeline numbers from 1 (PHONE_1, ACCOUNT_2).
- * Bounded so a merchant who types "PHONE_08031234567" keeps the number
- * visible: masking a counter shape must never swallow a real figure
- * (final review on #273).
+ * Bounded so a merchant who types "PHONE_08031234567" or
+ * "CUSTOMER_08031234567" keeps the number visible: masking a shape must
+ * never swallow a real figure (final review on #273). A token this message
+ * was really issued is masked exactly, glued to a figure or not, when the
+ * caller passes it.
  */
-const MASKABLE_SHAPE = /CUSTOMER_[0-9A-Z]{3}|(?:PHONE|EMAIL|ACCOUNT)_\d{1,3}(?!\d)/g;
+const MASKABLE_SHAPE = /CUSTOMER_[0-9A-Z]{3}(?!\d)|(?:PHONE|EMAIL|ACCOUNT)_\d{1,3}(?!\d)/g;
 
 /** `text` with each token, and each bounded token shape, read as letters of its length. */
 function maskTokens(text: string, tokens: Iterable<string>): string {

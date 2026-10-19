@@ -342,6 +342,13 @@ function checkHolds(
     /* By the account the money lands in, as the runtime books it (final
      * review on #273): two words that book alike are one answer. */
     const intent = String(command['intent']);
+    /* Nothing paid moves through no account, whatever the method says: a
+     * sale with no payment, a purchase on credit (its 0). */
+    const paid = command['reportedPayment'];
+    const nothingPaid =
+      (intent === 'RecordSale' && (paid === null || paid === undefined || paid === 0)) ||
+      (intent === 'RecordPurchase' && paid === 0);
+    if (nothingPaid) return true;
     return bookedAccount(intent, command[field]) === bookedAccount(intent, wanted);
   }
   if (field === 'supplierMention' && typeof wanted === 'string') {

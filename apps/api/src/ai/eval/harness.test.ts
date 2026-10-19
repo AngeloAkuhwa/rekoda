@@ -906,6 +906,40 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
     expect(scoreCase(caseOf('multi-1'), sale).status).toBe('passed');
   });
 
+  it('the method of a record that books nothing paid touches no account (per-file review)', () => {
+    /* An unpaid sale: no cash or bank line whatever the method says. */
+    const credit = command({
+      intent: 'RecordSale',
+      customer: { kind: 'token', token: 'CUSTOMER_X9Q' },
+      items: [{ name: 'milk', quantity: 3, unitPrice: 14_000 }],
+      reportedPayment: null,
+      paymentMethod: 'cash',
+    });
+    expect(scoreCase(caseOf('credit-1'), credit).status).toBe('passed');
+    /* A purchase on credit (its 0): no account is asked about. */
+    const onCredit = command({
+      intent: 'RecordPurchase',
+      supplierMention: null,
+      description: 'cement',
+      amount: 147_000,
+      reportedPayment: 0,
+      paymentMethod: 'cash',
+      productMention: 'bags of cement',
+      quantity: 15,
+      supplierReference: null,
+    });
+    expect(scoreCase(caseOf('supply-1'), onCredit).status).toBe('passed');
+    /* Paid, the method still decides the account. */
+    const paid = command({
+      intent: 'RecordSale',
+      customer: { kind: 'token', token: 'CUSTOMER_V7Q' },
+      items: [{ name: 'eggs', quantity: 4, unitPrice: 5_500 }],
+      reportedPayment: 22_000,
+      paymentMethod: 'transfer',
+    });
+    expect(scoreCase(caseOf('ng-cash-1'), paid).failedChecks).toEqual(['paymentMethod']);
+  });
+
   it('a one-line sale with an invented extra line fails (Codex on #273)', () => {
     const sale = (items: Array<Record<string, unknown>>) =>
       command({

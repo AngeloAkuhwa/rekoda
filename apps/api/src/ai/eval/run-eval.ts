@@ -204,7 +204,10 @@ function gitState(config: ApiConfig): Checkout {
   try {
     const sha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     const status = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' });
-    return { sha, dirty: status.trim().length > 0, staleBuild: buildIsStale(REPO_ROOT) };
+    /* A scan that cannot finish says stale: a gate run must not slip past
+     * the dirty and stale checks on a file error (final review on #273). */
+    const staleBuild = staleOrClosed(() => buildIsStale(REPO_ROOT));
+    return { sha, dirty: status.trim().length > 0, staleBuild };
   } catch {
     return { sha: config.commit, dirty: null, staleBuild: null };
   }
@@ -252,6 +255,15 @@ export function buildIsStale(root: string, packages: readonly string[] = BUILT_P
     const built = newestMtime(join(root, pkg, 'dist'));
     return source !== null && (built === null || source > built);
   });
+}
+
+/** A freshness scan's answer, or stale when the scan cannot finish. */
+export function staleOrClosed(scan: () => boolean): boolean {
+  try {
+    return scan();
+  } catch {
+    return true;
+  }
 }
 
 export interface Checkout {

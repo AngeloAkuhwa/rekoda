@@ -23,7 +23,13 @@ import {
   type UsageSummary,
 } from './report.js';
 import { EVAL_CASES } from './dataset.js';
-import { buildIsStale, checkoutRefusal, evalConfig, parseEvalArgs } from './run-eval.js';
+import {
+  buildIsStale,
+  checkoutRefusal,
+  evalConfig,
+  parseEvalArgs,
+  staleOrClosed,
+} from './run-eval.js';
 
 function configWith(env: Record<string, string>): ApiConfig {
   const saved = { ...process.env };
@@ -329,6 +335,17 @@ describe('whether the build is the source it claims (confirmation review on #273
   it('is stale when a package was never built', () => {
     write('packages/shared/src/d.ts', 1_000_000);
     expect(buildIsStale(root, ['packages/shared'])).toBe(true);
+  });
+});
+
+describe('a freshness scan that cannot finish (per-file review)', () => {
+  it('says stale, so a gate run cannot slip past the checks on a file error', () => {
+    expect(
+      staleOrClosed(() => {
+        throw new Error('ENOENT');
+      }),
+    ).toBe(true);
+    expect(staleOrClosed(() => false)).toBe(false);
   });
 });
 

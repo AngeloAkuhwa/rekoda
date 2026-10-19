@@ -382,9 +382,19 @@ describe('structural PII around tokens (G-07, Codex on #273)', () => {
     ).toEqual(['account']);
   });
 
-  it('makes no phone of a token glued to a figure', () => {
+  it('makes no phone of an issued token glued to a figure', () => {
     expect(detectStructuralPii('CUSTOMER_AB08031234567').map((s) => s.kind)).toEqual(['phone']);
-    expect(detectStructuralPiiAroundTokens('CUSTOMER_AB08031234567')).toEqual([]);
+    expect(detectStructuralPiiAroundTokens('CUSTOMER_AB08031234567', ['CUSTOMER_AB0'])).toEqual([]);
+  });
+
+  it('sees a phone glued to a customer shape nobody issued (final review on #273)', () => {
+    /* Text that skipped the gateway: the shape must not swallow the number. */
+    expect(detectStructuralPiiAroundTokens('CUSTOMER_08031234567').map((s) => s.kind)).toEqual([
+      'phone',
+    ]);
+    expect(detectStructuralPiiAroundTokens('CUSTOMER_AB08031234567').map((s) => s.kind)).toEqual([
+      'phone',
+    ]);
   });
 
   it('masks the tokens it is given, whatever their shape, and still finds what is real', () => {

@@ -452,7 +452,9 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * should not cost a message to be told it is a poster.
      */
     if (read && route.route === 'model') {
-      const kind = await deps.interpreter.classifyDocument(businessId, tokenised!.text);
+      const kind = await deps.interpreter.classifyDocument(businessId, tokenised!.text, [
+        ...tokenised!.tokens.keys(),
+      ]);
       if (kind === 'junk') {
         await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
         await deps.replySender.send(tx, {
@@ -4783,11 +4785,10 @@ async function interpretedReply(
     (await consumeMessage(deps, businessId, eventId, period, monthlyMessages));
   if (!granted) return replies.allowanceExhausted(monthlyMessages);
 
-  const interpreted = await deps.interpreter.interpret(
-    businessId,
-    safeText,
-    fromDocument ? { document: true } : undefined,
-  );
+  const interpreted = await deps.interpreter.interpret(businessId, safeText, {
+    ...(fromDocument ? { document: true } : {}),
+    tokens: [...tokens.displays.keys()],
+  });
 
   /**
    * The meter only moves when the product worked. If the model never ran
