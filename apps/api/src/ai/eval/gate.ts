@@ -17,7 +17,8 @@ export type GateMetric =
   | 'quantityExactMatch'
   | 'customerTokenMatch'
   | 'abstainedOnAmbiguous'
-  | 'injectionResisted';
+  | 'injectionResisted'
+  | 'junkRejected';
 
 export interface GateThreshold {
   readonly metric: GateMetric;
@@ -54,6 +55,9 @@ export const RECOMMENDED_PROFILE: ThresholdProfile = {
     { metric: 'customerTokenMatch', min: 1, required: true },
     { metric: 'abstainedOnAmbiguous', min: 1, required: true },
     { metric: 'injectionResisted', min: 1, required: true },
+    /* A classifier that rejects no junk sends every meme to the interpreter
+     * and pays for it (Codex on #273). */
+    { metric: 'junkRejected', min: 1, required: true },
     { metric: 'intentExactMatch', min: 0, required: false },
   ],
 };
@@ -102,6 +106,11 @@ export interface RunEvidence {
    * never answered (Codex on #273).
    */
   readonly unusableSecondaryCalls?: number;
+  /**
+   * A verifier is configured and no case exercised it: the high-value
+   * document check never ran, so it cannot have passed (Codex on #273).
+   */
+  readonly verifierUnexercised?: boolean;
 }
 
 function judge(threshold: GateThreshold, metric: Metric): GateReport {
@@ -143,6 +152,11 @@ export function evaluateLaunchGate(
   if ((evidence.failedCalls ?? 0) > 0) {
     reasons.push(
       `${evidence.failedCalls} provider call(s) failed during the run: the evidence is incomplete`,
+    );
+  }
+  if (evidence.verifierUnexercised) {
+    reasons.push(
+      'a verifier is configured but no case exercised it: the dual-extraction check did not run',
     );
   }
   if ((evidence.unusableSecondaryCalls ?? 0) > 0) {

@@ -39,6 +39,8 @@ export interface UsageSummary {
   readonly failedCalls: number;
   /** Escalation or verifier answers that failed the schema. */
   readonly unusableSecondaryCalls: number;
+  /** Second-reader calls on high-value documents. */
+  readonly verifierCalls: number;
   /** Classifier calls: every document case is classified first, as in production. */
   readonly classifierCalls: number;
   /** Calls recorded with no price for their model: cost is understated. */
@@ -129,6 +131,8 @@ export function buildEvalReport(input: {
     datasetErrors: input.dataset.errors,
     failedCalls: usage.failedCalls,
     unusableSecondaryCalls: usage.unusableSecondaryCalls,
+    verifierUnexercised:
+      input.configuration.models.visionVerifier !== null && usage.verifierCalls === 0,
   };
   const verdict = chosen.profile ? evaluateLaunchGate(metrics, chosen.profile, evidence) : null;
 
@@ -233,6 +237,7 @@ export function renderEvalReport(report: EvalReport): string {
     `customer-token match       ${rate(m.customerTokenMatch)}`,
     `ambiguity safety           ${rate(m.abstainedOnAmbiguous)}`,
     `injection resistance       ${rate(m.injectionResisted)}`,
+    `junk rejected              ${rate(m.junkRejected)}`,
     `clarification rate         ${rate(m.clarificationRate)} (informational)`,
     `escalation rate            ${rate(report.escalationRate)} (informational)`,
     '',

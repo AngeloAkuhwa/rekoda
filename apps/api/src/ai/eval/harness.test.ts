@@ -760,7 +760,12 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
     expect(scoreCase(caseOf('k-3'), sale('cash')).failedChecks).toEqual(['paymentMethod']);
     expect(scoreCase(caseOf('k-3'), sale('unknown')).status).toBe('passed');
     const expense = (paymentMethod: string) =>
-      command({ intent: 'RecordExpense', description: 'light', amount: 15_000, paymentMethod });
+      command({
+        intent: 'RecordExpense',
+        description: 'light bill',
+        amount: 15_000,
+        paymentMethod,
+      });
     expect(scoreCase(caseOf('expense-pidgin-1'), expense('transfer')).failedChecks).toEqual([
       'paymentMethod',
     ]);
@@ -962,7 +967,11 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
   it('an expense is checked for what it is for, by stem not by exact words', () => {
     const expense = (description: string) =>
       command({ intent: 'RecordExpense', description, amount: 12_000, paymentMethod: 'cash' });
-    expect(scoreCase(caseOf('formal-2'), expense('salary')).failedChecks).toEqual(['description']);
+    /* Mislabelled twice: what it was for, and the category that follows. */
+    expect(scoreCase(caseOf('formal-2'), expense('salary')).failedChecks).toEqual([
+      'description',
+      'category',
+    ]);
     expect(scoreCase(caseOf('formal-2'), expense('Diesel for generator')).status).toBe('passed');
     expect(scoreCase(caseOf('formal-2'), expense('fuel')).status).toBe('passed');
   });
@@ -1022,6 +1031,112 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
     ]);
     /* Two quantity checks, both wrong: 0 of 2, not rescued by two right names. */
     expect(metrics.quantityExactMatch).toMatchObject({ passed: 0, observations: 2, value: 0 });
+  });
+
+  /* ── Codex on 4d26187 ── */
+
+  it('an invented sale channel fails a walk-in; an echoed line total and a vague term do not', () => {
+    const walkIn = (extra: Record<string, unknown>) =>
+      command({
+        intent: 'RecordSale',
+        customer: { kind: 'none' },
+        items: [{ name: 'hair cream', quantity: 1, unitPrice: 6_500 }],
+        reportedPayment: 6_500,
+        paymentMethod: 'cash',
+        ...extra,
+      });
+    expect(
+      scoreCase(caseOf('ng-cash-2'), walkIn({ saleSource: 'instagram' })).failedChecks,
+    ).toEqual(['saleSource']);
+    /* Books the same: the total the lines make, and a term with no date. */
+    expect(scoreCase(caseOf('ng-cash-2'), walkIn({ statedTotal: 6_500 })).status).toBe('passed');
+    expect(scoreCase(caseOf('ng-cash-2'), walkIn({ dueDescription: 'later' })).status).toBe(
+      'passed',
+    );
+  });
+
+  it('an expense is checked for the category it is booked under', () => {
+    const diesel = (category: string | null) =>
+      command({
+        intent: 'RecordExpense',
+        description: 'diesel for the generator',
+        amount: 12_000,
+        category,
+        paymentMethod: 'cash',
+      });
+    /* A valid returned category wins over the description at runtime. */
+    expect(scoreCase(caseOf('formal-2'), diesel('salaries')).failedChecks).toEqual(['category']);
+    expect(scoreCase(caseOf('formal-2'), diesel(null)).status).toBe('passed');
+    expect(scoreCase(caseOf('formal-2'), diesel('power')).status).toBe('passed');
+  });
+
+  it('a purchase is checked for what it is, not only the stock it counts', () => {
+    const noodles = (description: string) =>
+      command({
+        intent: 'RecordPurchase',
+        supplierMention: null,
+        description,
+        amount: 108_000,
+        reportedPayment: null,
+        paymentMethod: 'cash',
+        productMention: 'cartons of noodles',
+        quantity: 12,
+        supplierReference: null,
+      });
+    expect(scoreCase(caseOf('supply-2'), noodles('cement')).failedChecks).toEqual(['description']);
+    expect(scoreCase(caseOf('supply-2'), noodles('12 cartons of noodles')).status).toBe('passed');
+  });
+
+  it('a stated term is one answer only if it is on every day, not one Wednesday', () => {
+    const friday = (dueDescription: string) =>
+      command({
+        intent: 'RecordSale',
+        customer: { kind: 'token', token: 'CUSTOMER_D4Q' },
+        items: [{ name: 'carton of indomie', quantity: 1, unitPrice: 11_000 }],
+        reportedPayment: null,
+        paymentMethod: 'unknown',
+        dueDescription,
+      });
+    /* "2 days" is Friday only when today is Wednesday. */
+    expect(scoreCase(caseOf('switch-1'), friday('2 days')).failedChecks).toEqual([
+      'dueDescription',
+    ]);
+    expect(scoreCase(caseOf('switch-1'), friday('on Friday')).status).toBe('passed');
+  });
+
+  it('a forwarded order names counts, never a price, and an adjustment its signed count', () => {
+    const order = (items: Array<Record<string, unknown>>) =>
+      command({
+        intent: 'RecordOrder',
+        customer: { kind: 'token', token: 'CUSTOMER_W2Q' },
+        items,
+        note: null,
+      });
+    expect(scoreCase(caseOf('order-2'), order([{ name: 'palm oil', quantity: 3 }])).status).toBe(
+      'passed',
+    );
+    expect(
+      scoreCase(caseOf('order-2'), order([{ name: 'palm oil', quantity: 3, unitPrice: 5_000 }]))
+        .failedChecks,
+    ).toEqual(['items']);
+    const adjust = (quantityDelta: number) =>
+      command({ intent: 'AdjustInventory', productMention: 'cartons of noodles', quantityDelta });
+    expect(scoreCase(caseOf('adjust-1'), adjust(-3)).status).toBe('passed');
+    expect(scoreCase(caseOf('adjust-1'), adjust(3)).failedChecks).toEqual(['quantityDelta']);
+  });
+
+  it('a junk page passes only when the classifier rejected it', async () => {
+    const answering = (kind: string) =>
+      ({
+        classifyDocument: () => Promise.resolve(kind),
+        interpret: () => Promise.resolve(UNCLEAR),
+      }) as unknown as Interpreter;
+    expect((await runEvalCase(answering('junk'), 'b', caseOf('junk-1'))).status).toBe('passed');
+    /* Interpreted, even to a question, it was paid for. */
+    expect(await runEvalCase(answering('unsure'), 'b', caseOf('junk-1'))).toMatchObject({
+      status: 'failed',
+      failedChecks: ['not_rejected'],
+    });
   });
 
   it('a one-line sale with an invented extra line fails (Codex on #273)', () => {

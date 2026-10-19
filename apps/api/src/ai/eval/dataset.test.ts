@@ -283,6 +283,49 @@ describe('the integrity check catches a broken dataset (G-07)', () => {
     ).toContain('spend: an expense pins no description');
   });
 
+  it('expenses pin a category, purchases a description, orders and adjustments their lines (Codex on 4d26187)', () => {
+    const errorsFor = (id: string, intent: string, checks: Record<string, unknown>) =>
+      validateDataset(
+        withCase({
+          ...first,
+          id,
+          input: 'sold 3 wigs',
+          expect: { kind: 'command', intent, checks } as EvalCase['expect'],
+        }),
+      );
+    expect(
+      errorsFor('spend', 'RecordExpense', {
+        amount: 1,
+        description: ['fuel'],
+        paymentMethod: 'cash',
+      }),
+    ).toContain('spend: an expense pins no category');
+    expect(
+      errorsFor('buy', 'RecordPurchase', {
+        amount: 1,
+        quantity: null,
+        reportedPayment: null,
+        paymentMethod: null,
+        supplierMention: null,
+        supplierReference: null,
+      }),
+    ).toContain('buy: a purchase pins no description');
+    expect(errorsFor('order', 'RecordOrder', {})).toEqual(
+      expect.arrayContaining(['order: an order pins no customer', 'order: an order pins no items']),
+    );
+    expect(errorsFor('adjust', 'AdjustInventory', {})).toEqual(
+      expect.arrayContaining([
+        'adjust: an adjustment names no product',
+        'adjust: an adjustment pins no count',
+      ]),
+    );
+    expect(
+      validateDataset(
+        withCase({ ...first, id: 'junk', source: 'typed', expect: { kind: 'not_a_document' } }),
+      ),
+    ).toContain('junk: a junk case that is not a page');
+  });
+
   it('a token the gateway could never mint (Codex on #273)', () => {
     /* Production tokens are three Crockford base32 characters: no L, no two. */
     expect(

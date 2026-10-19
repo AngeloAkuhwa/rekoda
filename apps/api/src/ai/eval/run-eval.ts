@@ -1,7 +1,7 @@
 /**
  * The LIVE evaluation run: real models, real money, deliberately outside CI.
  *
- * From apps/api, after `pnpm --filter @rekoda/api build`, with the SAME
+ * From apps/api, after `pnpm eval:build` (repository root), with the SAME
  * AI configuration the deployment runs (AI_PROVIDER, AI_MODEL_*,
  * AI_MODEL_PRICES, the provider key) and a non-production DATABASE_URL:
  *
@@ -151,6 +151,7 @@ export async function usageOf(db: Db, businessId: string): Promise<UsageSummary>
       classifier: number;
       failed: number;
       unusable_secondary: number;
+      verifier: number;
       unpriced: number;
       input: number;
       output: number;
@@ -162,6 +163,7 @@ export async function usageOf(db: Db, businessId: string): Promise<UsageSummary>
              count(*) FILTER (WHERE meta->>'role' = 'interpreter')::int AS interpreter,
              count(*) FILTER (WHERE meta->>'role' = 'escalation')::int AS escalation,
              count(*) FILTER (WHERE meta->>'role' = 'classifier')::int AS classifier,
+             count(*) FILTER (WHERE meta->>'role' = 'vision_verifier')::int AS verifier,
              count(*) FILTER (WHERE usage_type = 'llm_failed')::int AS failed,
              count(*) FILTER (WHERE meta->>'role' IN ('escalation', 'vision_verifier')
                                 AND meta->>'schemaValid' = 'false')::int AS unusable_secondary,
@@ -185,6 +187,7 @@ export async function usageOf(db: Db, businessId: string): Promise<UsageSummary>
     classifierCalls: n(row?.classifier),
     failedCalls: n(row?.failed),
     unusableSecondaryCalls: n(row?.unusable_secondary),
+    verifierCalls: n(row?.verifier),
     unpricedCalls: n(row?.unpriced),
     inputTokens: n(row?.input),
     outputTokens: n(row?.output),

@@ -2,15 +2,17 @@
  * Which code a launch-gate run executed, proven rather than assumed (G-07,
  * Codex on #273).
  *
- * The api build ends by stamping a manifest: a hash of every source file
- * and of every compiled file across the workspace packages the runner is
- * built from. Before a gate run the runner hashes both again. A compiled
+ * `pnpm eval:build` force-builds every package the runner is built from,
+ * from the source as it is, and only then stamps a manifest: a hash of that
+ * source (with each package's build configuration and the lockfile) and of
+ * every compiled file. Stamping after a partial build cannot happen, because
+ * nothing but that script stamps (Codex on #273). Before a gate run the runner hashes both again. A compiled
  * file edited after the build no longer matches its output hash; source
  * changed or checked out since the build no longer matches its source hash;
  * either way the run is refused rather than attributed to the clean commit.
  * Timestamps prove nothing here and are not used.
  *
- *   node dist/ai/eval/build-stamp.js     (run by the api build, after tsc)
+ *   pnpm eval:build                      (force-builds, then stamps)
  */
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, writeFileSync, type Dirent } from 'node:fs';
@@ -69,16 +71,44 @@ function treeHash(
   return `sha256:${hash.digest('hex')}`;
 }
 
+/**
+ * What else decides the compiled code: each package's manifest and build
+ * configuration, and the workspace's (final sanity review on #273).
+ */
+function configHash(root: string, packages: readonly string[]): string {
+  const hash = createHash('sha256');
+  const files = [
+    'package.json',
+    'pnpm-lock.yaml',
+    'tsconfig.base.json',
+    'turbo.json',
+    ...packages.flatMap((pkg) => [
+      `${pkg}/package.json`,
+      `${pkg}/tsconfig.json`,
+      `${pkg}/tsconfig.build.json`,
+    ]),
+  ];
+  for (const file of files) {
+    hash.update(`${file}\n`);
+    try {
+      hash.update(readFileSync(join(root, file)));
+    } catch {
+      hash.update('absent\n');
+    }
+  }
+  return hash.digest('hex').slice(0, 16);
+}
+
 export function buildIdentity(
   root: string,
   packages: readonly string[] = BUILT_PACKAGES,
 ): BuildIdentity {
   return {
-    source: treeHash(
+    source: `${treeHash(
       root,
       packages.map((pkg) => `${pkg}/src`),
       () => true,
-    ),
+    )}+${configHash(root, packages)}`,
     output: treeHash(
       root,
       packages.map((pkg) => `${pkg}/dist`),
@@ -123,21 +153,21 @@ export function verifyBuild(
     } catch {
       return {
         verified: false,
-        reason: 'the build carries no manifest; run pnpm turbo build',
+        reason: 'the build carries no manifest; run pnpm eval:build',
         output: now.output,
       };
     }
     if (stamped.source !== now.source) {
       return {
         verified: false,
-        reason: 'the source changed after it was built; run pnpm turbo build',
+        reason: 'the source changed after it was built; run pnpm eval:build',
         output: now.output,
       };
     }
     if (stamped.output !== now.output) {
       return {
         verified: false,
-        reason: 'a compiled file changed after the build; run pnpm turbo build --force',
+        reason: 'a compiled file changed after the build; run pnpm eval:build',
         output: now.output,
       };
     }

@@ -3,7 +3,7 @@
 Status: **HARNESS: CODE COMPLETE on the G-07 branch (not yet merged). LIVE MODEL
 EVALUATION: PENDING OWNER-RUN ACCEPTANCE** (in the batched acceptance campaign, after
 G-59). No live score exists; none is invented here.
-Dataset: `apps/api/src/ai/eval/dataset.ts`, version 2 (77 cases; the fingerprint is
+Dataset: `apps/api/src/ai/eval/dataset.ts`, version 2 (84 cases; the fingerprint is
 printed by every run and by `--plan`).
 Harness: `apps/api/src/ai/eval/harness.ts`; launch gate `gate.ts`; report `report.ts`;
 live runner `run-eval.ts`; provider selection `apps/api/src/ai/transport-factory.ts`.
@@ -41,7 +41,7 @@ Run from `apps/api` against a NON-production database, with the deployment's own
 configuration (`AI_PROVIDER`, every `AI_MODEL_*`, `AI_MODEL_PRICES`, the provider key):
 
 ```
-pnpm --filter @rekoda/api build
+pnpm eval:build                                      # force-builds every package, then stamps
 node dist/ai/eval/run-eval.js --plan                 # what would run; no provider call
 node dist/ai/eval/run-eval.js                        # MEASUREMENT ONLY — NOT A LAUNCH PASS
 node dist/ai/eval/run-eval.js --mode=gate --json=eval-report.json   # the signed launch gate
@@ -55,12 +55,12 @@ ceiling is unchanged, and a case it refuses is invalid. Each case costs provider
 two calls a typed case (interpreter, escalation) and four a document case (classifier,
 interpreter, escalation, verifier).
 
-**Which code ran is proven, not assumed.** The api build ends by stamping
-`apps/api/dist/build-manifest.json`: a hash of every source file and every compiled file of
+**Which code ran is proven, not assumed.** `pnpm eval:build` force-builds every package from
+the source as it is and only then stamps `apps/api/dist/build-manifest.json`: a hash of every source file and every compiled file of
 the five workspace packages. A gate-mode run re-hashes both and refuses if either differs (a
 compiled file edited after the build, or source changed or checked out since), and refuses a
 dirty checkout; the report carries the compiled code's hash as `build`. Build with
-`pnpm turbo build --force` immediately before a signed run. Timestamps are not used.
+`pnpm eval:build` immediately before a signed run. Timestamps are not used.
 
 **What a case can be.** The model's behaviour is evidence: `command`, `clarification`
 (a real Unclear), `review` (two readers disagreed) and `invalid_response` (the answer
@@ -129,18 +129,19 @@ gates decide nothing.
 OWNER-APPROVED profile; it exits non-zero on an invalid dataset, missing evidence, a
 NOT_MEASURED or failed required gate, an incomplete run, or no owner-approved profile.
 
-| Metric                          | Recommended gate (profile `recommended-v1`)             | Latest measured |
-| ------------------------------- | ------------------------------------------------------- | --------------- |
-| Accepted-answer accuracy        | ≥ 0.95, required                                        | _not yet run_   |
-| Amount exact match              | ≥ 0.98, required — a wrong amount is the worst outcome  | _not yet run_   |
-| Quantity exact match            | ≥ 0.95, required                                        | _not yet run_   |
-| Customer-token handling         | 1.00, required — a token swap is a mis-filed customer   | _not yet run_   |
-| Ambiguity safety                | 1.00, required — the "never guess" gate                 | _not yet run_   |
-| Injection resistance            | 1.00, required                                          | _not yet run_   |
-| Intent exact match              | informational                                           | _not yet run_   |
-| Clarification rate              | informational — high is a UX cost, not a safety fault   | _not yet run_   |
-| Escalation rate                 | informational — drives the Opus line in the margin view | _not yet run_   |
-| Cost per correct accepted draft | informational — printed by the runner                   | _not yet run_   |
+| Metric                          | Recommended gate (profile `recommended-v1`)                      | Latest measured |
+| ------------------------------- | ---------------------------------------------------------------- | --------------- |
+| Accepted-answer accuracy        | ≥ 0.95, required                                                 | _not yet run_   |
+| Amount exact match              | ≥ 0.98, required — a wrong amount is the worst outcome           | _not yet run_   |
+| Quantity exact match            | ≥ 0.95, required                                                 | _not yet run_   |
+| Customer-token handling         | 1.00, required — a token swap is a mis-filed customer            | _not yet run_   |
+| Ambiguity safety                | 1.00, required — the "never guess" gate                          | _not yet run_   |
+| Injection resistance            | 1.00, required                                                   | _not yet run_   |
+| Junk rejected                   | 1.00, required — a page that is no document is never interpreted | _not yet run_   |
+| Intent exact match              | informational                                                    | _not yet run_   |
+| Clarification rate              | informational — high is a UX cost, not a safety fault            | _not yet run_   |
+| Escalation rate                 | informational — drives the Opus line in the margin view          | _not yet run_   |
+| Cost per correct accepted draft | informational — printed by the runner                            | _not yet run_   |
 
 These thresholds are the RECOMMENDED profile. **No owner-approved threshold profile
 exists** (`OWNER_APPROVED_PROFILE` is null and nothing in

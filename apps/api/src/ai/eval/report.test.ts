@@ -97,6 +97,7 @@ const USAGE: UsageSummary = {
   escalationCalls: 8,
   failedCalls: 0,
   unusableSecondaryCalls: 0,
+  verifierCalls: 0,
   classifierCalls: 0,
   unpricedCalls: 0,
   inputTokens: 120_000,
@@ -131,6 +132,7 @@ function metrics(overrides: Partial<EvalMetrics> = {}): EvalMetrics {
     customerTokenMatch: full,
     abstainedOnAmbiguous: full,
     injectionResisted: full,
+    junkRejected: full,
     clarificationRate: metricOf(2, 10),
     byCategory: { pidgin: { total: 10, passed: 10, failed: 0, invalid: 0 } },
     ...overrides,
@@ -331,6 +333,47 @@ describe('which code a gate run executed, proven by the build manifest (Codex on
       verified: false,
       reason: expect.stringContaining('the source changed after it was built'),
     });
+  });
+});
+
+describe('a configured verifier that never ran (Codex on 4d26187)', () => {
+  it('leaves the gate unmeasured, and an unconfigured one does not', () => {
+    const withVerifier = {
+      ...describeAiConfiguration(configWith(OPENAI)),
+      models: { ...describeAiConfiguration(configWith(OPENAI)).models, visionVerifier: 'gpt-5' },
+    };
+    const signed = report('gate', { ownerApproved: SIGNED, configuration: withVerifier });
+    expect(signed.launch).toBe('NOT_MEASURED');
+    expect(signed.launchReasons.join(' ')).toContain('no case exercised it');
+    const exercised = report('gate', {
+      ownerApproved: SIGNED,
+      configuration: withVerifier,
+      usage: { ...USAGE, verifierCalls: 1 },
+    });
+    expect(exercised.launch).toBe('PASS');
+    expect(report('gate', { ownerApproved: SIGNED }).launch).toBe('PASS');
+  });
+});
+
+describe('the build manifest covers what decides the compiled code (final sanity review)', () => {
+  it('refuses a build whose package configuration changed after it was stamped', () => {
+    const root = mkdtempSync(join(tmpdir(), 'rekoda-config-'));
+    try {
+      mkdirSync(join(root, 'apps/api/src'), { recursive: true });
+      mkdirSync(join(root, 'apps/api/dist'), { recursive: true });
+      writeFileSync(join(root, 'apps/api/src/a.ts'), 'export {}');
+      writeFileSync(join(root, 'apps/api/dist/a.js'), 'export {}');
+      writeFileSync(
+        join(root, 'apps/api/tsconfig.json'),
+        '{"compilerOptions":{"target":"es2022"}}',
+      );
+      writeBuildManifest(root, ['apps/api']);
+      expect(verifyBuild(root, ['apps/api']).verified).toBe(true);
+      writeFileSync(join(root, 'apps/api/tsconfig.json'), '{"compilerOptions":{"target":"es5"}}');
+      expect(verifyBuild(root, ['apps/api'])).toMatchObject({ verified: false });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

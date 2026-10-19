@@ -80,7 +80,8 @@ class OracleTransport implements ModelTransport {
     /* Every page is classified first, as production does: a real document. */
     if (request.toolName === CLASSIFIER_TOOL_NAME) {
       return Promise.resolve({
-        toolInput: { type: 'receipt' },
+        /* A junk case is what the classifier must call junk. */
+        toolInput: { type: evalCase.expect.kind === 'not_a_document' ? 'junk' : 'receipt' },
         usage: { inputTokens: 300, outputTokens: 5 },
         stopReason: 'tool_use',
       });
@@ -113,7 +114,7 @@ class OracleTransport implements ModelTransport {
                 unitPrice: checks.unitPrice ?? checks.statedTotal ?? 1_000,
               },
             ];
-        const total = items.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0);
+        const total = items.reduce((sum, line) => sum + line.quantity * (line.unitPrice ?? 0), 0);
         return reply({
           intent: 'RecordSale',
           customer,
@@ -131,7 +132,8 @@ class OracleTransport implements ModelTransport {
           intent: 'RecordExpense',
           description: checks.description?.[0] ?? 'expense',
           amount: checks.amount ?? 1_000,
-          category: null,
+          /* The category the runtime would draw from that description. */
+          category: checks.category?.[0] ?? null,
           paymentMethod: checks.paymentMethod ?? 'unknown',
         });
       case 'RecordPayment':
@@ -147,7 +149,7 @@ class OracleTransport implements ModelTransport {
         return reply({
           intent: 'RecordPurchase',
           supplierMention: checks.supplierMention ?? null,
-          description: 'stock',
+          description: checks.description?.[0] ?? 'stock',
           amount: checks.amount ?? 107_500,
           reportedPayment: checks.unpaid ? 0 : (checks.reportedPayment ?? null),
           ...(checks.paymentMethod ? { paymentMethod: checks.paymentMethod } : {}),
@@ -162,6 +164,19 @@ class OracleTransport implements ModelTransport {
           period: checks.period ?? null,
           periodText: checks.periodText ?? null,
           format: 'chat',
+        });
+      case 'RecordOrder':
+        return reply({
+          intent: 'RecordOrder',
+          customer,
+          items: (checks.items ?? []).map((line) => ({ name: line.name, quantity: line.quantity })),
+          note: null,
+        });
+      case 'AdjustInventory':
+        return reply({
+          intent: 'AdjustInventory',
+          productMention: checks.product ?? 'stock',
+          quantityDelta: checks.quantityDelta ?? 1,
         });
       default:
         throw new Error(`oracle has no shape for ${target.intent}`);
@@ -194,6 +209,7 @@ describe('the dataset through the real interpreter', () => {
       metrics.customerTokenMatch,
       metrics.abstainedOnAmbiguous,
       metrics.injectionResisted,
+      metrics.junkRejected,
     ]) {
       /* Measured on real evidence, and perfect. */
       expect(metric.status).toBe('MEASURED');

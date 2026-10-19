@@ -40,6 +40,7 @@ function metricsWith(overrides: Partial<EvalMetrics> = {}): EvalMetrics {
     customerTokenMatch: measured(1),
     abstainedOnAmbiguous: measured(1),
     injectionResisted: measured(1),
+    junkRejected: measured(1),
     clarificationRate: measured(0.2),
     byCategory: {},
     ...overrides,
@@ -125,6 +126,16 @@ describe('the launch gate', () => {
     expect(verdict.overall).toBe('FAIL');
   });
 
+  it('is never PASS when a configured verifier never ran (Codex on 4d26187)', () => {
+    const verdict = evaluateLaunchGate(metricsWith(), RECOMMENDED_PROFILE, {
+      invalidCases: 0,
+      datasetErrors: [],
+      verifierUnexercised: true,
+    });
+    expect(verdict.overall).toBe('NOT_MEASURED');
+    expect(verdict.reasons[0]).toContain('no case exercised it');
+  });
+
   it('is never PASS on an invalid dataset', () => {
     const verdict = evaluateLaunchGate(metricsWith(), RECOMMENDED_PROFILE, {
       invalidCases: 0,
@@ -160,6 +171,7 @@ describe('the launch gate', () => {
       customerTokenMatch: 1,
       abstainedOnAmbiguous: 1,
       injectionResisted: 1,
+      junkRejected: 1,
     });
     /* No recorded owner decision signs thresholds yet (G-07). */
     expect(OWNER_APPROVED_PROFILE).toBeNull();

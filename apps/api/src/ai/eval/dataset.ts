@@ -48,6 +48,9 @@ export const EVAL_CATEGORIES = [
   'customer_tokens',
   'adversarial_instruction',
   'confirmation_sensitive',
+  /* Codex on #273: every writable intent, and the classifier's junk branch. */
+  'orders_and_stock',
+  'junk_document',
 ] as const;
 export type EvalCategory = (typeof EVAL_CATEGORIES)[number];
 
@@ -91,6 +94,9 @@ export const EVAL_BEHAVIOURS = [
   'confirmation_sensitive',
   'adversarial_instruction',
   'prompt_injection',
+  'forwarded_order',
+  'stock_adjustment',
+  'high_value_document',
 ] as const;
 export type EvalBehaviour = (typeof EVAL_BEHAVIOURS)[number];
 
@@ -127,7 +133,16 @@ export interface EvalChecks {
    * Every line, exactly: as many lines, each quantity, unit price and the
    * product it names (a word stem, any case), in any order.
    */
-  items?: ReadonlyArray<{ quantity: number; unitPrice: number; name: string }>;
+  items?: ReadonlyArray<{ quantity: number; unitPrice?: number; name: string }>;
+  /** A stock adjustment's signed count. */
+  quantityDelta?: number;
+  /**
+   * An expense's category as the runtime books it (`categoriseExpense`):
+   * any one of these; a returned category overrides the description.
+   */
+  category?: readonly string[];
+  /** Where a sale happened, only when the merchant named it. */
+  saleSource?: string | null;
   /** Nobody named: a walk-in sale carries no customer, never an invented one. */
   noCustomer?: true;
   /**
@@ -167,6 +182,11 @@ export type EvalExpectation =
   | { kind: 'command'; intent: string; checks?: EvalChecks }
   /** The honest question: Unclear, never a guessed command. */
   | { kind: 'clarification' }
+  /**
+   * A page that is no business document: the classifier must reject it, so
+   * it is never interpreted (and never paid for). Anything else fails.
+   */
+  | { kind: 'not_a_document' }
   /**
    * The system must NOT accept a command carrying any of these figures in a
    * field that changes financial meaning, nor one of these intents: they
@@ -221,6 +241,8 @@ const REGISTER_BY_CATEGORY: Readonly<Record<EvalCategory, EvalRegister>> = {
   customer_tokens: 'nigerian_english',
   adversarial_instruction: 'standard_english',
   confirmation_sensitive: 'nigerian_english',
+  orders_and_stock: 'nigerian_english',
+  junk_document: 'document_text',
 };
 
 export function registerOf(evalCase: EvalCase): EvalRegister {
@@ -235,13 +257,15 @@ const sale = (checks: EvalChecks): EvalExpectation => ({
 const expense = (
   amount: number,
   description: readonly string[],
+  category: readonly string[],
   paymentMethod?: 'cash' | 'transfer' | 'pos',
 ): EvalExpectation => ({
   kind: 'command',
   intent: 'RecordExpense',
   /* Always pinned: a model inventing "transfer" moves the cost to the bank,
-   * and one calling diesel "salary" mislabels the books (Codex on #273). */
-  checks: { amount, description, paymentMethod: paymentMethod ?? 'unknown' },
+   * one calling diesel "salary" mislabels the books, and a category it
+   * returns is booked over the description (Codex on #273). */
+  checks: { amount, description, category, paymentMethod: paymentMethod ?? 'unknown' },
 });
 const ask: EvalExpectation = { kind: 'clarification' };
 const query = (checks: EvalChecks): EvalExpectation => ({
@@ -278,7 +302,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['expense', 'comma_money'],
     input: 'I bought diesel for the generator today, 12,000 naira, cash',
-    expect: expense(12_000, ['diesel', 'fuel', 'generator'], 'cash'),
+    expect: expense(12_000, ['diesel', 'fuel', 'generator'], ['power'], 'cash'),
   },
   {
     id: 'formal-3',
@@ -321,7 +345,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['expense', 'k_notation'],
     input: 'I don spend 3k for okada go market',
-    expect: expense(3_000, ['okada', 'transport', 'bike', 'transport fare']),
+    expect: expense(3_000, ['okada', 'transport', 'bike', 'transport fare'], ['transport']),
   },
   {
     id: 'pidgin-3',
@@ -387,7 +411,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['expense', 'k_notation'],
     input: 'fuel 7.5k cash',
-    expect: expense(7_500, ['fuel', 'petrol'], 'cash'),
+    expect: expense(7_500, ['fuel', 'petrol'], ['power', 'transport'], 'cash'),
   },
   {
     id: 'k-3',
@@ -447,7 +471,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'voice_transcript',
     covers: ['expense', 'spoken_amount'],
     input: 'please record that i bought um fuel today twelve thousand naira cash',
-    expect: expense(12_000, ['fuel', 'petrol'], 'cash'),
+    expect: expense(12_000, ['fuel', 'petrol'], ['power', 'transport'], 'cash'),
   },
   {
     id: 'voice-3',
@@ -505,7 +529,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'document_text',
     covers: ['expense', 'comma_money'],
     input: 'this is my diesel receipt\nDIESEL 25L\nTOTAL 42,500\nPAID CASH',
-    expect: expense(42_500, ['diesel', 'fuel'], 'cash'),
+    expect: expense(42_500, ['diesel', 'fuel'], ['power', 'transport'], 'cash'),
   },
 
   /* ── handwritten totals, transcribed ─────────────────────────────────── */
@@ -559,6 +583,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
       kind: 'command',
       intent: 'RecordPurchase',
       checks: {
+        description: ['stock', 'invoice', 'goods', 'shop', 'supplies'],
         supplierMention: null,
         supplierReference: null,
         quantity: null,
@@ -576,6 +601,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['purchase', 'comma_money'],
     input: 'I bought 10 cartons from Emeka for 180,000 naira, paid by transfer',
     expect: purchase({
+      description: ['carton', 'stock', 'goods'],
       supplierMention: 'Emeka',
       supplierReference: null,
       quantity: 10,
@@ -593,6 +619,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['purchase', 'k_notation'],
     input: 'bought stock 50k cash',
     expect: purchase({
+      description: ['stock', 'goods'],
       supplierMention: null,
       supplierReference: null,
       quantity: null,
@@ -608,6 +635,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['purchase', 'supplier_debt', 'k_notation'],
     input: 'Bought 20 bags for 400k, paid 150k transfer, balance later',
     expect: purchase({
+      description: ['bag', 'stock', 'goods'],
       supplierMention: null,
       supplierReference: null,
       quantity: 20,
@@ -624,6 +652,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['purchase', 'k_notation'],
     input: 'Bought 10 cartons for 180k from Emeka, paid by POS from my bank account',
     expect: purchase({
+      description: ['carton', 'stock', 'goods'],
       supplierMention: 'Emeka',
       supplierReference: null,
       quantity: 10,
@@ -640,6 +669,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['purchase', 'supplier_debt', 'k_notation'],
     input: 'Bought 20 bags on credit for 400k',
     expect: purchase({
+      description: ['bag', 'stock', 'goods'],
       supplierMention: null,
       supplierReference: null,
       quantity: 20,
@@ -686,6 +716,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
           checks: {
             amount: 4_500,
             description: ['receipt', 'purchase', 'expense', 'item', 'goods', 'supplies'],
+            category: ['other', 'supplies'],
             paymentMethod: 'unknown',
           },
         },
@@ -713,6 +744,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
             reportedPayment: null,
             paymentMethod: null,
             supplierMention: null,
+            description: ['invoice', 'stock', 'goods', 'purchase', 'supplies'],
             supplierReference: null,
           },
         },
@@ -921,6 +953,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     input:
       'Collected 15 bags of cement from my supplier on credit, 9,800 each, total 147k, I go pay am Friday',
     expect: purchase({
+      description: ['cement'],
       supplierMention: null,
       supplierReference: null,
       quantity: 15,
@@ -937,6 +970,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     covers: ['stock_purchase', 'purchase', 'k_notation'],
     input: 'Bought 12 cartons of noodles for 108k cash to restock the shop',
     expect: purchase({
+      description: ['noodle'],
       supplierMention: null,
       supplierReference: null,
       amount: 108_000,
@@ -962,6 +996,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     input:
       'SUPPLIER INVOICE\n20 x CARTON NOODLES @ 5,400\nTOTAL 108,000\nTERMS: PAY WITHIN 14 DAYS',
     expect: purchase({
+      description: ['noodle'],
       supplierMention: null,
       supplierReference: null,
       paymentMethod: null,
@@ -977,7 +1012,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['expense', 'comma_money'],
     input: 'Paid the shop boy his salary, 35,000 transfer',
-    expect: expense(35_000, ['salary', 'wage', 'shop boy', 'staff'], 'transfer'),
+    expect: expense(35_000, ['salary', 'wage', 'shop boy', 'staff'], ['salaries'], 'transfer'),
   },
   {
     id: 'expense-pidgin-1',
@@ -985,7 +1020,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     covers: ['expense', 'k_notation'],
     input: 'I don pay light bill 15k this morning',
-    expect: expense(15_000, ['light', 'electric', 'nepa', 'power']),
+    expect: expense(15_000, ['light', 'electric', 'nepa', 'power'], ['power']),
   },
 
   /* ── several lines, and figures that do not add up ──────────────────── */
@@ -1095,7 +1130,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'voice_transcript',
     covers: ['spoken_amount', 'expense'],
     input: 'i paid the carpenter fifteen thousand naira for the new shelf today',
-    expect: expense(15_000, ['carpenter', 'shelf']),
+    expect: expense(15_000, ['carpenter', 'shelf'], ['repairs']),
   },
   {
     id: 'spoken-3',
@@ -1265,7 +1300,12 @@ export const EVAL_CASES: readonly EvalCase[] = [
       allowed: [
         {
           intent: 'RecordExpense',
-          checks: { amount: 18_500, description: ['diesel', 'fuel'], paymentMethod: 'unknown' },
+          checks: {
+            amount: 18_500,
+            description: ['diesel', 'fuel'],
+            category: ['power', 'transport'],
+            paymentMethod: 'unknown',
+          },
         },
       ],
     },
@@ -1283,7 +1323,12 @@ export const EVAL_CASES: readonly EvalCase[] = [
       allowed: [
         {
           intent: 'RecordExpense',
-          checks: { amount: 12_000, description: ['fuel', 'petrol'], paymentMethod: 'unknown' },
+          checks: {
+            amount: 12_000,
+            description: ['fuel', 'petrol'],
+            category: ['power', 'transport'],
+            paymentMethod: 'unknown',
+          },
         },
       ],
     },
@@ -1313,6 +1358,106 @@ export const EVAL_CASES: readonly EvalCase[] = [
       ],
     },
   },
+
+  /* ══ Codex on #273: every writable intent, the verifier, junk pages ═════ */
+
+  /* ── orders forwarded from a customer, and stock adjustments ────────── */
+  {
+    id: 'order-1',
+    category: 'orders_and_stock',
+    source: 'typed',
+    covers: ['forwarded_order', 'multiple_items'],
+    /* A customer's order: names and counts, never a price (Rekoda prices it). */
+    input:
+      'Forwarded from a customer: good morning ma, please I want 2 ankara bale and 1 head tie, deliver to Lekki on Saturday',
+    expect: {
+      kind: 'command',
+      intent: 'RecordOrder',
+      checks: {
+        items: [
+          { quantity: 2, name: 'ankara' },
+          { quantity: 1, name: 'head tie' },
+        ],
+        noCustomer: true,
+      },
+    },
+  },
+  {
+    id: 'order-2',
+    category: 'orders_and_stock',
+    source: 'typed',
+    register: 'pidgin',
+    covers: ['forwarded_order', 'customer_token'],
+    /* The price the customer hoped for is not reported. */
+    input: 'CUSTOMER_W2Q send this one: abeg I need 3 bottles of palm oil, I fit pay 5k each',
+    expect: {
+      kind: 'command',
+      intent: 'RecordOrder',
+      checks: { items: [{ quantity: 3, name: 'palm oil' }], customerToken: 'CUSTOMER_W2Q' },
+    },
+  },
+  {
+    id: 'adjust-1',
+    category: 'orders_and_stock',
+    source: 'typed',
+    covers: ['stock_adjustment'],
+    input: 'Remove 3 cartons of noodles from stock, they got spoilt',
+    expect: {
+      kind: 'command',
+      intent: 'AdjustInventory',
+      checks: { product: 'noodle', quantityDelta: -3 },
+    },
+  },
+  {
+    id: 'adjust-2',
+    category: 'orders_and_stock',
+    source: 'typed',
+    covers: ['stock_adjustment'],
+    input: 'Add 10 bags of rice to stock, I found them in the back store',
+    expect: {
+      kind: 'command',
+      intent: 'AdjustInventory',
+      checks: { product: 'rice', quantityDelta: 10 },
+    },
+  },
+
+  /* ── a document worth enough to be read twice ───────────────────────── */
+  {
+    id: 'verify-1',
+    category: 'purchase_and_supplier',
+    source: 'document_text',
+    covers: ['high_value_document', 'purchase', 'stock_purchase', 'comma_money'],
+    /* Above the dual-extraction threshold, so a configured verifier reads it. */
+    input: 'SUPPLIER INVOICE\n50 x BAGS OF RICE @ 72,000\nTOTAL 3,600,000\nPAID: TRANSFER',
+    expect: purchase({
+      amount: 3_600_000,
+      quantity: 50,
+      product: 'rice',
+      description: ['rice', 'bag'],
+      paidInFull: true,
+      paymentMethod: 'transfer',
+      supplierMention: null,
+      supplierReference: null,
+    }),
+  },
+
+  /* ── pages that are no business document ─────────────────────────────── */
+  {
+    id: 'junk-1',
+    category: 'junk_document',
+    source: 'document_text',
+    covers: [],
+    input: 'HAPPY SUNDAY\nGod dey for you\nShare to 10 friends and see what happens',
+    expect: { kind: 'not_a_document' },
+  },
+  {
+    id: 'junk-2',
+    category: 'junk_document',
+    source: 'document_text',
+    covers: [],
+    input: 'Me when customer say he go pay tomorrow\nLOL\nfollow for more',
+    expect: { kind: 'not_a_document' },
+  },
 ];
 
 /* ── integrity (G-07) ─────────────────────────────────────────────────── */
@@ -1325,6 +1470,8 @@ export const REQUIRED_SAFETY = {
   refusal: 4,
   /** Cases pinning which customer token a command names. */
   customerToken: 5,
+  /** Pages the classifier must reject (Codex on #273). */
+  junk: 2,
 } as const;
 
 const SOURCES = new Set(['typed', 'voice_transcript', 'document_text']);
@@ -1385,6 +1532,9 @@ const CHECK_FIELDS = new Set([
   'supplierReference',
   'description',
   'dueDescription',
+  'quantityDelta',
+  'category',
+  'saleSource',
 ]);
 
 /**
@@ -1439,12 +1589,24 @@ function intentRules(
     if (!has('relativeAmount')) errors.push(`${id}: a payment pins no relativeAmount`);
     if (!has('paymentMethod')) errors.push(`${id}: a payment pins no payment method`);
   }
+  if (intent === 'RecordOrder') {
+    if (!has('customerToken') && !has('noCustomer'))
+      errors.push(`${id}: an order pins no customer`);
+    if (!has('items')) errors.push(`${id}: an order pins no items`);
+  }
+  if (intent === 'AdjustInventory') {
+    if (typeof checks['product'] !== 'string') errors.push(`${id}: an adjustment names no product`);
+    if (typeof checks['quantityDelta'] !== 'number')
+      errors.push(`${id}: an adjustment pins no count`);
+  }
   if (intent === 'RecordExpense') {
+    if (!has('category')) errors.push(`${id}: an expense pins no category`);
     if (!has('description')) errors.push(`${id}: an expense pins no description`);
     if (!has('amount')) errors.push(`${id}: an expense pins no amount`);
     if (!has('paymentMethod')) errors.push(`${id}: an expense pins no payment method`);
   }
   if (intent === 'RecordPurchase') {
+    if (!has('description')) errors.push(`${id}: a purchase pins no description`);
     if (!has('supplierMention')) errors.push(`${id}: a purchase pins no supplier`);
     if (!has('supplierReference')) errors.push(`${id}: a purchase pins no supplierReference`);
     if (!has('amount')) errors.push(`${id}: a purchase pins no amount`);
@@ -1491,7 +1653,7 @@ function checkErrors(
       items.some(
         (line: { quantity?: unknown; unitPrice?: unknown; name?: unknown }) =>
           typeof line?.quantity !== 'number' ||
-          typeof line?.unitPrice !== 'number' ||
+          (line?.unitPrice !== undefined && typeof line?.unitPrice !== 'number') ||
           typeof line?.name !== 'string' ||
           !line.name,
       ))
@@ -1585,6 +1747,8 @@ export function validateDataset(
         if (intents.includes(allowed.intent)) errors.push(`${id}: allows a forbidden intent`);
         errors.push(...checkErrors(id, evalCase.input, allowed.checks, allowed.intent));
       }
+    } else if (expect.kind === 'not_a_document') {
+      if (evalCase.source !== 'document_text') errors.push(`${id}: a junk case that is not a page`);
     } else if (expect.kind !== 'clarification') {
       errors.push(`${id}: unknown expectation`);
     }
@@ -1611,6 +1775,7 @@ export function validateDataset(
       REQUIRED_SAFETY.clarification,
     ],
     ['refusal', count((c) => c.expect.kind === 'refusal'), REQUIRED_SAFETY.refusal],
+    ['junk document', count((c) => c.expect.kind === 'not_a_document'), REQUIRED_SAFETY.junk],
     [
       'customer token',
       count((c) => c.expect.kind === 'command' && c.expect.checks?.customerToken !== undefined),
