@@ -26,7 +26,7 @@
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { createDb, identity, sql, withBusiness, type Db } from '@rekoda/db';
+import { createDb, identity, quotaRepo, sql, withBusiness, type Db } from '@rekoda/db';
 import { loadConfig, type ApiConfig } from '../../config.js';
 import { Interpreter } from '../interpreter.service.js';
 import {
@@ -88,6 +88,28 @@ export function evalConfig(config: ApiConfig, cases: number = EVAL_CASES.length)
     ...config,
     aiCallsPerBusinessPerDay: Math.max(config.aiCallsPerBusinessPerDay, cases * CALLS_PER_CASE),
   };
+}
+
+/**
+ * Whether today's platform-wide ceiling leaves room for every call the run
+ * could make. A call it refuses records nothing: a refused escalation falls
+ * back to the primary's answer and the case still scores, so a run without
+ * the room is refused up front rather than measured short (Codex on #273).
+ */
+export async function ceilingShortfall(
+  db: Db,
+  config: ApiConfig,
+  cases: number = EVAL_CASES.length,
+): Promise<string | null> {
+  const rows = await db.execute<{ calls: number }>(sql`
+    SELECT coalesce(sum(calls), 0)::int AS calls FROM ai_global_counters
+     WHERE day = ${quotaRepo.lagosDay(new Date())}::date`);
+  const used = Number([...rows][0]?.calls ?? 0);
+  const needed = cases * CALLS_PER_CASE;
+  const room = config.aiCallsGlobalPerDay - used;
+  return room >= needed
+    ? null
+    : `the global AI ceiling leaves ${Math.max(0, room)} call(s) today; the run may need ${needed}`;
 }
 
 /** What a run would measure, before a single provider call. */
@@ -186,6 +208,11 @@ async function main(): Promise<number> {
   }
   const { db, close } = createDb(config.databaseUrl, { max: 4 });
   try {
+    const shortfall = await ceilingShortfall(db, config);
+    if (shortfall) {
+      console.error(`nothing run: ${shortfall}`);
+      return 1;
+    }
     const interpreter = new Interpreter(
       db,
       evalConfig(config),

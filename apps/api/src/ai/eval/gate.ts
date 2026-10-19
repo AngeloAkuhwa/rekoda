@@ -89,6 +89,13 @@ export interface RunEvidence {
   readonly invalidCases: number;
   /** What the dataset integrity check found; empty for a valid dataset. */
   readonly datasetErrors: readonly string[];
+  /**
+   * Provider calls that failed during the run, however the case ended. An
+   * escalation that could not run falls back to the primary's answer, so
+   * the case still scores; its evidence is incomplete all the same (Codex
+   * on #273).
+   */
+  readonly failedCalls?: number;
 }
 
 function judge(threshold: GateThreshold, metric: Metric): GateReport {
@@ -126,6 +133,11 @@ export function evaluateLaunchGate(
   if (required.length === 0) reasons.push('the profile requires nothing');
   if (evidence.invalidCases > 0) {
     reasons.push(`${evidence.invalidCases} case(s) did not run: the run is incomplete`);
+  }
+  if ((evidence.failedCalls ?? 0) > 0) {
+    reasons.push(
+      `${evidence.failedCalls} provider call(s) failed during the run: the evidence is incomplete`,
+    );
   }
   for (const error of evidence.datasetErrors) reasons.push(`dataset invalid: ${error}`);
 

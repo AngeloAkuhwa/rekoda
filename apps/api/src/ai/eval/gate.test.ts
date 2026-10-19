@@ -90,6 +90,19 @@ describe('the launch gate', () => {
     expect(verdict.reasons).toEqual(['3 case(s) did not run: the run is incomplete']);
   });
 
+  it('is never PASS when a provider call failed, even inside a case that scored (Codex on #273)', () => {
+    /* An escalation that could not run falls back to the primary's answer. */
+    const verdict = evaluateLaunchGate(metricsWith(), RECOMMENDED_PROFILE, {
+      invalidCases: 0,
+      datasetErrors: [],
+      failedCalls: 2,
+    });
+    expect(verdict.overall).toBe('NOT_MEASURED');
+    expect(verdict.reasons).toEqual([
+      '2 provider call(s) failed during the run: the evidence is incomplete',
+    ]);
+  });
+
   it('is never PASS on an invalid dataset', () => {
     const verdict = evaluateLaunchGate(metricsWith(), RECOMMENDED_PROFILE, {
       invalidCases: 0,

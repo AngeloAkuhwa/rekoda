@@ -91,7 +91,7 @@ const USAGE: UsageSummary = {
   providerCalls: 90,
   interpreterCalls: 80,
   escalationCalls: 8,
-  failedCalls: 2,
+  failedCalls: 0,
   unpricedCalls: 0,
   inputTokens: 120_000,
   outputTokens: 9_000,
@@ -257,5 +257,13 @@ describe('the evaluation configuration (G-07)', () => {
     expect(run.aiCallsGlobalPerDay).toBe(config.aiCallsGlobalPerDay);
     expect(run.aiProvider).toBe(config.aiProvider);
     expect(run.aiModelDefault).toBe(config.aiModelDefault);
+  });
+});
+
+describe('a run with a failed provider call (G-07, Codex on #273)', () => {
+  it('cannot pass the gate even when every case scored', () => {
+    const r = report('gate', { ownerApproved: SIGNED, usage: { ...USAGE, failedCalls: 1 } });
+    expect(r.launch).toBe('NOT_MEASURED');
+    expect(exitCodeFor(r)).toBe(1);
   });
 });

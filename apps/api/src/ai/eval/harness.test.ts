@@ -13,11 +13,11 @@ const CASE_SALE: EvalCase = {
   category: 'formal_english',
   source: 'typed',
   covers: ['customer_token'],
-  input: 'CUSTOMER_A1 bought 3 wigs 50k each',
+  input: 'CUSTOMER_A1Q bought 3 wigs 50k each',
   expect: {
     kind: 'command',
     intent: 'RecordSale',
-    checks: { quantity: 3, unitPrice: 50_000, customerToken: 'CUSTOMER_A1' },
+    checks: { quantity: 3, unitPrice: 50_000, customerToken: 'CUSTOMER_A1Q' },
   },
 };
 const CASE_AMBIG: EvalCase = {
@@ -42,7 +42,7 @@ const command = (fields: Record<string, unknown>): Interpretation =>
 const UNCLEAR = command({ intent: 'Unclear', clarification: 'Which one?' });
 const RIGHT_SALE = command({
   intent: 'RecordSale',
-  customer: { kind: 'token', token: 'CUSTOMER_A1' },
+  customer: { kind: 'token', token: 'CUSTOMER_A1Q' },
   items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
 });
 
@@ -60,7 +60,7 @@ describe('scoring one case', () => {
       CASE_SALE,
       command({
         intent: 'RecordSale',
-        customer: { kind: 'token', token: 'CUSTOMER_A1' },
+        customer: { kind: 'token', token: 'CUSTOMER_A1Q' },
         // The classic misread: 45 wigs at 3,000 instead of 3 at 50,000.
         items: [{ name: 'wig', quantity: 45, unitPrice: 3_000 }],
       }),
@@ -390,14 +390,14 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
     /* The injected customer swap, at the real amount. */
     const swapped = command({
       intent: 'RecordPayment',
-      customer: { kind: 'token', token: 'CUSTOMER_R9' },
+      customer: { kind: 'token', token: 'CUSTOMER_R9Q' },
       amount: 5_000,
       relativeAmount: null,
     });
     expect(scoreCase(caseOf('instruct-5'), swapped).failedChecks).toEqual(['unexpected_command']);
     const real = command({
       intent: 'RecordPayment',
-      customer: { kind: 'token', token: 'CUSTOMER_Q8' },
+      customer: { kind: 'token', token: 'CUSTOMER_Q8Q' },
       amount: 5_000,
       relativeAmount: null,
     });
@@ -408,7 +408,7 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
     const sale = (reportedPayment: number | null, paymentMethod = 'cash') =>
       command({
         intent: 'RecordSale',
-        customer: { kind: 'token', token: 'CUSTOMER_V7' },
+        customer: { kind: 'token', token: 'CUSTOMER_V7Q' },
         items: [{ name: 'eggs', quantity: 4, unitPrice: 5_500 }],
         statedTotal: null,
         reportedPayment,
@@ -423,7 +423,7 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
     const credit = (reportedPayment: number | null) =>
       command({
         intent: 'RecordSale',
-        customer: { kind: 'token', token: 'CUSTOMER_X9' },
+        customer: { kind: 'token', token: 'CUSTOMER_X9Q' },
         items: [{ name: 'milk', quantity: 3, unitPrice: 14_000 }],
         reportedPayment,
       });
@@ -434,7 +434,7 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
 
   it('a multi-item sale that drops a line fails', () => {
     const lines = (items: Array<Record<string, unknown>>) =>
-      command({ intent: 'RecordSale', customer: { kind: 'token', token: 'CUSTOMER_B4' }, items });
+      command({ intent: 'RecordSale', customer: { kind: 'token', token: 'CUSTOMER_B4Q' }, items });
     expect(
       scoreCase(caseOf('multi-1'), lines([{ name: 'wig', quantity: 2, unitPrice: 45_000 }]))
         .failedChecks,
@@ -467,11 +467,56 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
     expect(scoreCase(caseOf('supply-2'), purchase('cement')).failedChecks).toEqual(['product']);
   });
 
+  it('a multi-item sale with the products swapped between lines fails (Codex on #273)', () => {
+    const swapped = command({
+      intent: 'RecordSale',
+      customer: { kind: 'token', token: 'CUSTOMER_B4Q' },
+      items: [
+        { name: 'bonnet', quantity: 2, unitPrice: 45_000 },
+        { name: 'wig', quantity: 1, unitPrice: 3_500 },
+      ],
+    });
+    expect(scoreCase(caseOf('multi-1'), swapped).failedChecks).toEqual(['items']);
+  });
+
+  it('a paid purchase recorded as supplier debt fails (Codex on #273)', () => {
+    const purchase = (reportedPayment: number | null) =>
+      command({
+        intent: 'RecordPurchase',
+        description: 'noodles',
+        amount: 108_000,
+        reportedPayment,
+        paymentMethod: 'cash',
+        productMention: 'cartons of noodles',
+        quantity: 12,
+      });
+    /* `gatePurchase`: 0 is nothing paid, so ₦108,000 owed to the supplier. */
+    expect(scoreCase(caseOf('supply-2'), purchase(0)).failedChecks).toEqual(['paidInFull']);
+    /* There, null is paid in full; so is the full amount. */
+    expect(scoreCase(caseOf('supply-2'), purchase(null)).status).toBe('passed');
+    expect(scoreCase(caseOf('supply-2'), purchase(108_000)).status).toBe('passed');
+  });
+
+  it('a walk-in sale given an invented customer fails (Codex on #273)', () => {
+    const walkIn = (customer: Record<string, unknown>) =>
+      command({
+        intent: 'RecordSale',
+        customer,
+        items: [{ name: 'hair cream', quantity: 1, unitPrice: 6_500 }],
+        reportedPayment: 6_500,
+        paymentMethod: 'cash',
+      });
+    expect(
+      scoreCase(caseOf('ng-cash-2'), walkIn({ kind: 'token', token: 'CUSTOMER_7K2' })).failedChecks,
+    ).toEqual(['noCustomer']);
+    expect(scoreCase(caseOf('ng-cash-2'), walkIn({ kind: 'none' })).status).toBe('passed');
+  });
+
   it('a one-line sale with an invented extra line fails (Codex on #273)', () => {
     const sale = (items: Array<Record<string, unknown>>) =>
       command({
         intent: 'RecordSale',
-        customer: { kind: 'token', token: 'CUSTOMER_A1' },
+        customer: { kind: 'token', token: 'CUSTOMER_A1Q' },
         items,
         reportedPayment: 100_000,
         paymentMethod: 'transfer',
@@ -527,7 +572,7 @@ describe('aggregating metrics', () => {
         CASE_SALE,
         command({
           intent: 'RecordSale',
-          customer: { kind: 'token', token: 'CUSTOMER_A1' },
+          customer: { kind: 'token', token: 'CUSTOMER_A1Q' },
           items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
         }),
       ),

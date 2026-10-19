@@ -114,7 +114,11 @@ export function buildEvalReport(input: {
 }): EvalReport {
   const { mode, metrics, usage } = input;
   const chosen = profileFor(mode, input.ownerApproved ?? OWNER_APPROVED_PROFILE);
-  const evidence = { invalidCases: metrics.invalid, datasetErrors: input.dataset.errors };
+  const evidence = {
+    invalidCases: metrics.invalid,
+    datasetErrors: input.dataset.errors,
+    failedCalls: usage.failedCalls,
+  };
   const verdict = chosen.profile ? evaluateLaunchGate(metrics, chosen.profile, evidence) : null;
 
   let launch: EvalReport['launch'];

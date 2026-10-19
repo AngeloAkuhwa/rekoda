@@ -24,7 +24,7 @@ import {
 } from '../transport.js';
 import { EVAL_CASES } from './dataset.js';
 import { RECOMMENDED_PROFILE, evaluateLaunchGate } from './gate.js';
-import { evalConfig, usageOf } from './run-eval.js';
+import { ceilingShortfall, evalConfig, usageOf } from './run-eval.js';
 import { runEvalCase, scoreEval, type EvalCaseResult } from './harness.js';
 
 let urls: Urls;
@@ -87,7 +87,7 @@ class OracleTransport implements ModelTransport {
     switch (evalCase.expect.intent) {
       case 'RecordSale': {
         const items = checks.items
-          ? checks.items.map((line, i) => ({ name: `item ${i + 1}`, ...line }))
+          ? checks.items.map((line) => ({ ...line }))
           : [
               {
                 name: 'item',
@@ -268,5 +268,16 @@ describe('the dataset through the real interpreter', () => {
     const usage = await usageOf(db, business.id);
     expect(usage.failedCalls).toBe(3);
     expect(usage.unpricedCalls).toBe(3);
+  });
+});
+
+describe('the room a live run needs (G-07, Codex on #273)', () => {
+  it('refuses a run the global ceiling would cut short, and allows one it would not', async () => {
+    expect(await ceilingShortfall(db, { ...config, aiCallsGlobalPerDay: 10 }, 77)).toContain(
+      'the global AI ceiling leaves',
+    );
+    expect(
+      await ceilingShortfall(db, { ...config, aiCallsGlobalPerDay: 1_000_000 }, 77),
+    ).toBeNull();
   });
 });

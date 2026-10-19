@@ -98,11 +98,21 @@ describe('the integrity check catches a broken dataset (G-07)', () => {
           expect: {
             kind: 'command',
             intent: 'RecordSale',
-            checks: { customerToken: 'CUSTOMER_ZZ' },
+            checks: { customerToken: 'CUSTOMER_ZZQ' },
           },
         }),
       ),
     ).toContain('ghost: expected customer token is not in the input');
+  });
+
+  it('a token the gateway could never mint (Codex on #273)', () => {
+    /* Production tokens are three Crockford base32 characters: no L, no two. */
+    expect(
+      validateDataset(withCase({ ...first, id: 'short', input: 'CUSTOMER_A1 paid 5k' })),
+    ).toContain('short: malformed customer token');
+    expect(
+      validateDataset(withCase({ ...first, id: 'crockford', input: 'CUSTOMER_L2Q paid 5k' })),
+    ).toContain('crockford: malformed customer token');
   });
 
   it('a fixture leaking a raw phone number, named by kind and never repeated', () => {
