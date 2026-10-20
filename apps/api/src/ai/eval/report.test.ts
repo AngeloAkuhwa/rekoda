@@ -12,7 +12,11 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { loadConfig, type ApiConfig } from '../../config.js';
 import { AnthropicTransport } from '../anthropic.transport.js';
 import { OpenAiTransport } from '../openai.transport.js';
-import { createModelTransport, describeAiConfiguration } from '../transport-factory.js';
+import {
+  createModelTransport,
+  describeAiConfiguration,
+  pricesFingerprint,
+} from '../transport-factory.js';
 import { RECOMMENDED_PROFILE, type ThresholdProfile } from './gate.js';
 import { metricOf, type EvalMetrics } from './harness.js';
 import {
@@ -31,7 +35,10 @@ import {
   evalConfig,
   gitState,
   parseEvalArgs,
+  reportPathRefusal,
   reportedSha,
+  runCasesInRoom,
+  writeReportAtomically,
 } from './run-eval.js';
 import { MANIFEST_PATH, stampedCommit, verifyBuild, writeBuildManifest } from './build-stamp.js';
 
@@ -142,6 +149,7 @@ function metrics(overrides: Partial<EvalMetrics> = {}): EvalMetrics {
     amountExactMatch: full,
     quantityExactMatch: full,
     customerTokenMatch: full,
+    attributionMatch: full,
     abstainedOnAmbiguous: full,
     injectionResisted: full,
     junkRejected: full,
@@ -529,5 +537,90 @@ describe('a run outside git names the commit the build stamped (Codex on 482abd3
     expect(stampedCommit(repo, { REKODA_COMMIT: head })).toBeNull();
     const bare = mkdtempSync(join(tmpdir(), 'eval-nogit-'));
     expect(stampedCommit(bare, { REKODA_COMMIT: 'ccc' })).toBe('ccc');
+  });
+});
+
+describe('what a paid run keeps (Codex on 8895bb1)', () => {
+  it('refuses a report path it could not write before anything is paid for', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'eval-report-'));
+    expect(reportPathRefusal(null)).toBeNull();
+    expect(reportPathRefusal('')).toContain('names no file');
+    expect(reportPathRefusal(dir)).toContain('directory');
+    expect(reportPathRefusal(join(dir, 'missing', 'report.json'))).toContain('cannot be written');
+    expect(reportPathRefusal(join(dir, 'report.json'))).toBeNull();
+    writeReportAtomically(join(dir, 'report.json'), '{"ok":true}\n');
+    expect(readFileSync(join(dir, 'report.json'), 'utf8')).toBe('{"ok":true}\n');
+  });
+
+  it('names the price table its costs come from, and no secret', () => {
+    const prices = '{"gpt-5-mini":{"in":250000,"out":2000000}}';
+    const dearer = '{"gpt-5-mini":{"in":300000,"out":2000000}}';
+    const reordered = '{"gpt-5-mini":{"out":2000000,"in":250000}}';
+    expect(pricesFingerprint(prices)).not.toBe(pricesFingerprint(dearer));
+    expect(pricesFingerprint(prices)).toBe(pricesFingerprint(reordered));
+    expect(pricesFingerprint('not json')).toBe('unparseable');
+    const summary = describeAiConfiguration(configWith({ ...OPENAI, AI_MODEL_PRICES: prices }));
+    expect(summary.pricesFingerprint).toBe(pricesFingerprint(prices));
+  });
+});
+
+describe('cases across Lagos midnight (Codex on 8895bb1)', () => {
+  const cases = EVAL_CASES.slice(0, 3);
+  const passed = (c: (typeof cases)[number]) => ({
+    caseId: c.id,
+    category: c.category,
+    outcome: 'command' as const,
+    status: 'passed' as const,
+    failedChecks: [],
+    checks: [],
+  });
+  /* 22:59:59 UTC is 23:59:59 in Lagos. */
+  const beforeMidnight = new Date('2031-01-01T22:59:59Z');
+  const afterMidnight = new Date('2031-01-01T23:00:01Z');
+
+  it('holds the new day before any case runs on it, and voids the case that straddled', async () => {
+    let now = beforeMidnight;
+    const heldDays = new Set(['2031-01-01']);
+    const asked: number[] = [];
+    const room = {
+      holds: (at: Date) =>
+        heldDays.has(new Date(at.getTime() + 3_600_000).toISOString().slice(0, 10)),
+      holdDay: async (left: readonly unknown[], at: Date) => {
+        asked.push(left.length);
+        heldDays.add(new Date(at.getTime() + 3_600_000).toISOString().slice(0, 10));
+        return null;
+      },
+    };
+    const results = await runCasesInRoom(
+      cases,
+      room,
+      async (c) => {
+        const result = passed(c);
+        if (c.id === cases[0]!.id) now = afterMidnight;
+        return result;
+      },
+      () => now,
+    );
+    expect(results.map((r) => r.status)).toEqual(['invalid', 'passed', 'passed']);
+    expect(results[0]!.failedChecks).toEqual(['crossed_day_boundary']);
+    /* The new day was held for the two cases left, once. */
+    expect(asked).toEqual([2]);
+  });
+
+  it('runs nothing on a day whose room it could not hold', async () => {
+    const ran: string[] = [];
+    const results = await runCasesInRoom(
+      cases,
+      { holds: () => false, holdDay: async () => 'no room' },
+      async (c) => {
+        ran.push(c.id);
+        return passed(c);
+      },
+      () => afterMidnight,
+    );
+    expect(ran).toEqual([]);
+    expect(results.every((r) => r.status === 'invalid' && r.outcome === 'quota_refused')).toBe(
+      true,
+    );
   });
 });

@@ -217,6 +217,7 @@ describe('the dataset through the real interpreter', () => {
       metrics.amountExactMatch,
       metrics.quantityExactMatch,
       metrics.customerTokenMatch,
+      metrics.attributionMatch,
       metrics.abstainedOnAmbiguous,
       metrics.injectionResisted,
       metrics.junkRejected,
@@ -364,6 +365,7 @@ describe('the room a live run needs (G-07, Codex on #273)', () => {
       { ...config, aiCallsGlobalPerDay: limit },
       EVAL_CASES,
       at,
+      () => at,
     );
     if (typeof held === 'string') throw new Error(held);
     const perBusinessPerDay = 1_000_000;
@@ -389,5 +391,35 @@ describe('the room a live run needs (G-07, Codex on #273)', () => {
     }
     expect((await quotaRepo.reserveAiCall(db, businessId, run, at)).ok).toBe(false);
     await held.release();
+  });
+
+  it('raises the ceiling only on a day it holds, and holds the next day before spending it (Codex on 8895bb1)', async () => {
+    const dayA = dayOf(4);
+    const dayB = dayOf(5);
+    let now = dayA;
+    const limit = needed * 3;
+    const room = await reserveGlobalRoom(
+      db,
+      { ...config, aiCallsGlobalPerDay: limit },
+      EVAL_CASES,
+      dayA,
+      () => now,
+    );
+    if (typeof room === 'string') throw new Error(room);
+    expect(room.config.aiCallsGlobalPerDay).toBe(limit + needed);
+    /* After midnight nothing is held yet: no raise, so no unheld spending. */
+    now = dayB;
+    expect(room.holds(dayB)).toBe(false);
+    expect(room.config.aiCallsGlobalPerDay).toBe(limit);
+    expect(await room.holdDay(EVAL_CASES.slice(0, 10), dayB)).toBeNull();
+    const tenCases = EVAL_CASES.slice(0, 10).reduce(
+      (sum, c) => sum + (c.source === 'document_text' ? 4 : 2),
+      0,
+    );
+    expect(room.config.aiCallsGlobalPerDay).toBe(limit + tenCases);
+    expect(await counter(dayB)).toBe(tenCases);
+    await room.release();
+    expect(await counter(dayA)).toBe(0);
+    expect(await counter(dayB)).toBe(0);
   });
 });

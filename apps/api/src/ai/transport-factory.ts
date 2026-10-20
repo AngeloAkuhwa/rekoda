@@ -11,12 +11,14 @@
  * reachable, or it degrades honestly (`NoTransportConfigured`).
  */
 import { createHash } from 'node:crypto';
+import { MODEL_PRICES } from '@rekoda/core';
 import type { ApiConfig } from '../config.js';
 import { AnthropicTransport } from './anthropic.transport.js';
 import { OpenAiTransport } from './openai.transport.js';
 import {
   assertModelIsPriced,
   assertRolesArePriced,
+  parseModelPrices,
   registerRuntimeModelPrices,
 } from './model-prices.js';
 import { ProviderUnreachable, type ModelTransport } from './transport.js';
@@ -125,6 +127,13 @@ export interface AiConfigurationSummary {
   readonly baseUrlHost: string | null;
   /** Hash of the whole normalised endpoint (scheme, host, port, path), never the credentials. */
   readonly baseUrlFingerprint: string | null;
+  /**
+   * Hash of the price table the run's costs are computed from: the compiled
+   * list prices and AI_MODEL_PRICES as parsed, in canonical order. A change
+   * in either changes the reported cost, so it changes this (Codex on
+   * 8895bb1). 'unparseable' when AI_MODEL_PRICES does not parse.
+   */
+  readonly pricesFingerprint: string;
   readonly keyPresent: { readonly anthropic: boolean; readonly openai: boolean };
   /** Documents worth at least this many kobo get an independent second reading. */
   readonly dualExtractThresholdK: number;
@@ -136,6 +145,30 @@ export interface AiConfigurationSummary {
     readonly visionVerifier: string | null;
     readonly transcriber: string | null;
   };
+}
+
+/** Sorted keys at every level, so one table always hashes the same. */
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonical((value as Record<string, unknown>)[key])]),
+    );
+  }
+  return value;
+}
+
+export function pricesFingerprint(raw: string | null): string {
+  let runtime: unknown;
+  try {
+    runtime = parseModelPrices(raw ?? undefined);
+  } catch {
+    return 'unparseable';
+  }
+  const body = JSON.stringify(canonical({ compiled: MODEL_PRICES, runtime }));
+  return `sha256:${createHash('sha256').update(body).digest('hex').slice(0, 16)}`;
 }
 
 export function describeAiConfiguration(config: ApiConfig): AiConfigurationSummary {
@@ -155,6 +188,7 @@ export function describeAiConfiguration(config: ApiConfig): AiConfigurationSumma
     provider: config.aiProvider,
     baseUrlHost,
     baseUrlFingerprint,
+    pricesFingerprint: pricesFingerprint(config.aiModelPrices),
     keyPresent: {
       anthropic: Boolean(config.anthropicApiKey),
       openai: Boolean(config.openaiApiKey),

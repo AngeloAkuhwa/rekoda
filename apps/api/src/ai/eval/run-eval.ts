@@ -26,7 +26,8 @@
  * provider budget to reconfirm yesterday's number.
  */
 import { execFileSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import {
   createDb,
   identity,
@@ -53,7 +54,7 @@ import {
   type EvalCase,
 } from './dataset.js';
 import { REPO_ROOT, verifyBuild, type BuildVerdict } from './build-stamp.js';
-import { runEvalCase, scoreEval, type EvalCaseResult } from './harness.js';
+import { invalidCase, runEvalCase, scoreEval, type EvalCaseResult } from './harness.js';
 import {
   buildEvalReport,
   exitCodeFor,
@@ -85,6 +86,35 @@ export function parseEvalArgs(argv: readonly string[]): EvalArgs {
 }
 
 /**
+ * Why the report cannot be written where `--json` names, or null. Checked
+ * before any room is held or any provider is paid, so a paid run never ends
+ * without the report it was asked for (Codex on 8895bb1).
+ */
+export function reportPathRefusal(path: string | null): string | null {
+  if (path === null) return null;
+  if (path.trim() === '') return '--json names no file';
+  const target = resolve(path);
+  try {
+    if (statSync(target, { throwIfNoEntry: false })?.isDirectory()) {
+      return `--json names a directory (${target})`;
+    }
+    accessSync(dirname(target), constants.W_OK);
+    if (existsSync(target)) accessSync(target, constants.W_OK);
+  } catch {
+    return `the report cannot be written to ${target}`;
+  }
+  return null;
+}
+
+/** Whole or not at all: a reader never sees half a report. */
+export function writeReportAtomically(path: string, body: string): void {
+  const target = resolve(path);
+  const partial = `${target}.partial-${process.pid}`;
+  writeFileSync(partial, body);
+  renameSync(partial, target);
+}
+
+/**
  * The most provider calls one case can make: a page is classified, then
  * interpreted, escalated and verified; typed text is interpreted and
  * escalated (final review on #273).
@@ -108,11 +138,19 @@ export function evalConfig(config: ApiConfig, cases: readonly EvalCase[] = EVAL_
   };
 }
 
-/** Today's room a run holds on the platform-wide ceiling, until it gives it back. */
-export interface GlobalReservation {
-  /** The interpreter's configuration: its global ceiling raised by exactly what is held. */
+/** The room a run holds on the platform-wide ceiling, day by day, until it gives it back. */
+export interface GlobalRoom {
+  /**
+   * The interpreter's configuration. Its global ceiling is raised by what
+   * the run holds on the CURRENT Lagos day, and by nothing on a day it holds
+   * no room, so no call ever spends room that was not held for it.
+   */
   readonly config: ApiConfig;
-  /** Gives the room back; safe to call once the run is over, whatever happened. */
+  /** Whether the run holds room on the day of `at`. */
+  readonly holds: (at: Date) => boolean;
+  /** Holds room for `cases` on the day of `at`; a refusal when it does not fit. */
+  readonly holdDay: (cases: readonly EvalCase[], at: Date) => Promise<string | null>;
+  /** Gives every held day's room back; safe to call more than once. */
   readonly release: () => Promise<void>;
 }
 
@@ -125,43 +163,99 @@ export interface GlobalReservation {
  * shared counter and raising only this interpreter's ceiling by the same
  * `needed` means nobody else can take the run's room, the run cannot take
  * anyone else's beyond what it holds, and a second run that does not fit
- * is refused before a single call.
+ * is refused before a single call. The raise follows the day the room was
+ * held on (Codex on 8895bb1): after Lagos midnight the run must hold the
+ * new day's room before it spends any (`runCasesInRoom`).
  */
 export async function reserveGlobalRoom(
   db: Db,
   config: ApiConfig,
   cases: readonly EvalCase[] = EVAL_CASES,
   at: Date = new Date(),
-): Promise<GlobalReservation | string> {
-  const needed = callsFor(cases);
+  clock: () => Date = () => new Date(),
+): Promise<GlobalRoom | string> {
   const limit = config.aiCallsGlobalPerDay;
-  const day = quotaRepo.lagosDay(at);
-  const refusal = (room: number) =>
-    `the global AI ceiling leaves ${Math.max(0, room)} call(s) today; the run may need ${needed}`;
-  if (needed > limit) return refusal(limit);
-  const held = await db.execute<{ calls: number }>(sql`
-    INSERT INTO ai_global_counters (day, calls)
-    VALUES (${day}::date, ${needed})
-    ON CONFLICT (day) DO UPDATE
-      SET calls = ai_global_counters.calls + ${needed}
-      WHERE ai_global_counters.calls + ${needed} <= ${limit}
-    RETURNING calls`);
-  if ([...held].length === 0) {
+  const held = new Map<string, number>();
+
+  const holdDay = async (forCases: readonly EvalCase[], when: Date): Promise<string | null> => {
+    const day = quotaRepo.lagosDay(when);
+    if (held.has(day)) return null;
+    const needed = callsFor(forCases);
+    const refusal = (room: number) =>
+      `the global AI ceiling leaves ${Math.max(0, room)} call(s) on ${day}; the run may need ${needed}`;
+    if (needed > limit) return refusal(limit);
     const rows = await db.execute<{ calls: number }>(sql`
-      SELECT calls FROM ai_global_counters WHERE day = ${day}::date`);
-    return refusal(limit - Number([...rows][0]?.calls ?? 0));
-  }
-  let released = false;
+      INSERT INTO ai_global_counters (day, calls)
+      VALUES (${day}::date, ${needed})
+      ON CONFLICT (day) DO UPDATE
+        SET calls = ai_global_counters.calls + ${needed}
+        WHERE ai_global_counters.calls + ${needed} <= ${limit}
+      RETURNING calls`);
+    if ([...rows].length === 0) {
+      const now = await db.execute<{ calls: number }>(sql`
+        SELECT calls FROM ai_global_counters WHERE day = ${day}::date`);
+      return refusal(limit - Number([...now][0]?.calls ?? 0));
+    }
+    held.set(day, needed);
+    return null;
+  };
+
+  const first = await holdDay(cases, at);
+  if (first) return first;
+
+  const runConfig: ApiConfig = { ...config };
+  Object.defineProperty(runConfig, 'aiCallsGlobalPerDay', {
+    enumerable: true,
+    get: () => limit + (held.get(quotaRepo.lagosDay(clock())) ?? 0),
+  });
   return {
-    config: { ...config, aiCallsGlobalPerDay: limit + needed },
+    config: runConfig,
+    holds: (when) => held.has(quotaRepo.lagosDay(when)),
+    holdDay,
     release: async () => {
-      if (released) return;
-      released = true;
-      await db.execute(sql`
-        UPDATE ai_global_counters SET calls = greatest(0, calls - ${needed})
-         WHERE day = ${day}::date`);
+      const days = [...held.entries()];
+      held.clear();
+      for (const [day, needed] of days) {
+        await db.execute(sql`
+          UPDATE ai_global_counters SET calls = greatest(0, calls - ${needed})
+           WHERE day = ${day}::date`);
+      }
     },
   };
+}
+
+/**
+ * Runs the cases inside the room the run holds. Before each case the
+ * current day must be held; after Lagos midnight the run holds the new
+ * day's room for the cases left, and if that does not fit they did not
+ * run. A case that started on one day and finished on the next is invalid:
+ * a call it made after midnight may have been refused unheld, and a refused
+ * escalation leaves no trace in the answer (Codex on 8895bb1).
+ */
+export async function runCasesInRoom(
+  cases: readonly EvalCase[],
+  room: Pick<GlobalRoom, 'holds' | 'holdDay'>,
+  runCase: (evalCase: EvalCase) => Promise<EvalCaseResult>,
+  clock: () => Date = () => new Date(),
+  onResult: (result: EvalCaseResult) => void = () => {},
+): Promise<EvalCaseResult[]> {
+  const results: EvalCaseResult[] = [];
+  for (const [index, evalCase] of cases.entries()) {
+    const start = clock();
+    let result: EvalCaseResult;
+    const refused = room.holds(start) ? null : await room.holdDay(cases.slice(index), start);
+    if (refused) {
+      result = invalidCase(evalCase, 'quota_refused', 'day_room_refused');
+    } else {
+      result = await runCase(evalCase);
+      if (quotaRepo.lagosDay(clock()) !== quotaRepo.lagosDay(start)) {
+        result = invalidCase(evalCase, 'quota_refused', 'crossed_day_boundary');
+      }
+    }
+    results.push(result);
+    onResult(result);
+  }
+  return results;
 }
 
 /** What a run would measure, before a single provider call. */
@@ -370,6 +464,12 @@ async function main(): Promise<number> {
     return 1;
   }
 
+  const unwritable = reportPathRefusal(args.json);
+  if (unwritable) {
+    console.error(`nothing run: ${unwritable}`);
+    return 1;
+  }
+
   const transport = createModelTransport(config);
   if (transport instanceof NoTransportConfigured) {
     console.error(`no API key for the configured provider (${config.aiProvider}); nothing run`);
@@ -382,15 +482,15 @@ async function main(): Promise<number> {
   }
   const { db, close } = createDb(config.databaseUrl, { max: 4 });
   try {
-    const reservation = await reserveGlobalRoom(db, evalConfig(config));
-    if (typeof reservation === 'string') {
-      console.error(`nothing run: ${reservation}`);
+    const room = await reserveGlobalRoom(db, evalConfig(config));
+    if (typeof room === 'string') {
+      console.error(`nothing run: ${room}`);
       return 1;
     }
     try {
-      return await runReserved(db, reservation.config, transport, args, plan, checkout);
+      return await runReserved(db, room, transport, args, plan, checkout);
     } finally {
-      await reservation.release();
+      await room.release();
     }
   } finally {
     await close();
@@ -400,13 +500,18 @@ async function main(): Promise<number> {
 /** The run itself, inside the global room it holds. */
 async function runReserved(
   db: Db,
-  runConfig: ApiConfig,
+  room: GlobalRoom,
   transport: ModelTransport,
   args: ReturnType<typeof parseEvalArgs>,
   plan: ReturnType<typeof planEvalRun>,
   checkout: Checkout,
 ): Promise<number> {
-  const interpreter = new Interpreter(db, runConfig, transport, createVerifierTransport(runConfig));
+  const interpreter = new Interpreter(
+    db,
+    room.config,
+    transport,
+    createVerifierTransport(room.config),
+  );
 
   /* A throwaway tenant so eval usage rows never mix with a merchant's. */
   const user = await identity.upsertUserByPhone(db, '+2340000000001');
@@ -416,12 +521,14 @@ async function runReserved(
     ownerUserId: user.id,
   });
 
-  const results: EvalCaseResult[] = [];
-  for (const evalCase of EVAL_CASES) {
-    const result = await runEvalCase(interpreter, business.id, evalCase);
-    results.push(result);
-    console.log(`${result.status.padEnd(7)} ${result.caseId.padEnd(26)} ${result.outcome}`);
-  }
+  const results = await runCasesInRoom(
+    EVAL_CASES,
+    room,
+    (evalCase) => runEvalCase(interpreter, business.id, evalCase),
+    () => new Date(),
+    (result) =>
+      console.log(`${result.status.padEnd(7)} ${result.caseId.padEnd(26)} ${result.outcome}`),
+  );
 
   const report: EvalReport = buildEvalReport({
     mode: args.mode,
@@ -435,7 +542,7 @@ async function runReserved(
     usage: await usageOf(db, business.id),
   });
   console.log(`\n${renderEvalReport(report)}`);
-  if (args.json) writeFileSync(args.json, `${JSON.stringify(report, null, 2)}\n`);
+  if (args.json) writeReportAtomically(args.json, `${JSON.stringify(report, null, 2)}\n`);
   return exitCodeFor(report);
 }
 

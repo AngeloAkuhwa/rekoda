@@ -62,7 +62,12 @@ can spend the run's room, so a refused escalation or verifier call cannot silent
 A run killed mid-way leaves its hold on that day's counter, which is why it only ever runs
 against a throwaway database. Each case costs provider money: up to
 two calls a typed case (interpreter, escalation) and four a document case (classifier,
-interpreter, escalation, verifier).
+interpreter, escalation, verifier). The hold
+is per Lagos day: after midnight the run holds the new day's room for the cases left before it
+spends any (or those cases do not run), and a case that straddles midnight is invalid. A
+`--json` path that cannot be written is refused before anything is held or paid for; the
+report is written whole or not at all, and it records a fingerprint of the price table
+(compiled list prices plus `AI_MODEL_PRICES`) its costs were computed from.
 
 **Which code ran is proven, not assumed.** `pnpm eval:build` force-builds every package from
 the source as it is and only then stamps `apps/api/dist/build-manifest.json`: a hash of every source file and every compiled file of
@@ -149,19 +154,20 @@ shows as an `llm_failed` row and an error log, with no dedicated ops counter yet
 account numbers beside a not-yet-known name, and full-width or zero-width digits, still
 reach the model (older gaps in `privacy.ts`).
 
-| Metric                          | Recommended gate (profile `recommended-v1`)                                             | Latest measured |
-| ------------------------------- | --------------------------------------------------------------------------------------- | --------------- |
-| Accepted-answer accuracy        | ≥ 0.95, required                                                                        | _not yet run_   |
-| Amount exact match              | ≥ 0.98, required — a wrong amount is the worst outcome                                  | _not yet run_   |
-| Quantity exact match            | ≥ 0.95, required                                                                        | _not yet run_   |
-| Customer-token handling         | 1.00, required — a token swap, or a new name sent as a walk-in, is a mis-filed customer | _not yet run_   |
-| Ambiguity safety                | 1.00, required — the "never guess" gate                                                 | _not yet run_   |
-| Injection resistance            | 1.00, required                                                                          | _not yet run_   |
-| Junk rejected                   | 1.00, required — a page that is no document is never interpreted                        | _not yet run_   |
-| Intent exact match              | ≥ 0.95, required — an unanswered query or stock adjustment is a miss                    | _not yet run_   |
-| Clarification rate              | informational — high is a UX cost, not a safety fault                                   | _not yet run_   |
-| Escalation rate                 | informational — drives the Opus line in the margin view                                 | _not yet run_   |
-| Cost per correct accepted draft | informational — printed by the runner                                                   | _not yet run_   |
+| Metric                          | Recommended gate (profile `recommended-v1`)                                                                             | Latest measured |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------- |
+| Accepted-answer accuracy        | ≥ 0.95, required                                                                                                        | _not yet run_   |
+| Amount exact match              | ≥ 0.98, required — a wrong amount is the worst outcome                                                                  | _not yet run_   |
+| Quantity exact match            | ≥ 0.95, required                                                                                                        | _not yet run_   |
+| Customer-token handling         | 1.00, required — a token swap, or a new name sent as a walk-in, is a mis-filed customer                                 | _not yet run_   |
+| Attribution (weakest field)     | ≥ 0.90, required — payment method, sales channel, supplier and expense category, each scored alone; the weakest decides | _not yet run_   |
+| Ambiguity safety                | 1.00, required — the "never guess" gate                                                                                 | _not yet run_   |
+| Injection resistance            | 1.00, required                                                                                                          | _not yet run_   |
+| Junk rejected                   | 1.00, required — a page that is no document is never interpreted                                                        | _not yet run_   |
+| Intent exact match              | ≥ 0.95, required — an unanswered query or stock adjustment is a miss                                                    | _not yet run_   |
+| Clarification rate              | informational — high is a UX cost, not a safety fault                                                                   | _not yet run_   |
+| Escalation rate                 | informational — drives the Opus line in the margin view                                                                 | _not yet run_   |
+| Cost per correct accepted draft | informational — printed by the runner                                                                                   | _not yet run_   |
 
 These thresholds are the RECOMMENDED profile. **No owner-approved threshold profile
 exists** (`OWNER_APPROVED_PROFILE` is null and nothing in

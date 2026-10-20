@@ -1483,4 +1483,27 @@ describe('commands a model cannot skip and still pass (Codex on #273, af442ec)',
     expect(scoreCase(named, credit('Chidi')).status).toBe('passed');
     expect(scoreCase(named, credit(null)).failedChecks).toEqual(['supplierMention']);
   });
+
+  it('a sales channel always dropped fails attribution on its own (Codex on 8895bb1)', () => {
+    const channel = caseOf('channel-1');
+    const dropped = {
+      ...scoreCase(
+        channel,
+        command({
+          intent: 'RecordSale',
+          customer: { kind: 'none' },
+          items: [{ name: 'bag', quantity: 1, unitPrice: 25_000 }],
+          reportedPayment: 25_000,
+          paymentMethod: 'transfer',
+          saleSource: null,
+        }),
+      ),
+      caseId: 'channel-1',
+    };
+    expect(dropped.failedChecks).toEqual(['saleSource']);
+    const metrics = scoreEval([channel], [dropped]);
+    /* Payment method held on the same case, yet the weakest field decides. */
+    expect(dropped.checks.find((c) => c.field === 'paymentMethod')?.ok).toBe(true);
+    expect(metrics.attributionMatch).toMatchObject({ value: 0, passed: 0, observations: 1 });
+  });
 });

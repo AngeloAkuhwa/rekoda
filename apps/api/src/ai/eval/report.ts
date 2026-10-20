@@ -239,6 +239,7 @@ export function renderEvalReport(report: EvalReport): string {
     `amount exact match         ${rate(m.amountExactMatch)}`,
     `quantity exact match       ${rate(m.quantityExactMatch)}`,
     `customer-token match       ${rate(m.customerTokenMatch)}`,
+    `attribution (weakest)      ${rate(m.attributionMatch)}`,
     `ambiguity safety           ${rate(m.abstainedOnAmbiguous)}`,
     `injection resistance       ${rate(m.injectionResisted)}`,
     `junk rejected              ${rate(m.junkRejected)}`,
