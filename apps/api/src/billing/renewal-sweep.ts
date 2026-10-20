@@ -76,7 +76,12 @@ export async function sweepRenewals(
       if (plan === 'expired') {
         try {
           await withBusiness(deps.appDb, business.businessId, (tx) =>
-            subscriptionsRepo.expireSubscription(tx, business.businessId, 'system:renewal_sweep'),
+            subscriptionsRepo.expireSubscription(
+              tx,
+              business.businessId,
+              'system:renewal_sweep',
+              'cancelled',
+            ),
           );
           result.skipped += 1;
         } catch (error) {
