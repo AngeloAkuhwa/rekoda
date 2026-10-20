@@ -84,17 +84,15 @@ function isPositive(value: unknown): value is number {
 }
 
 /**
- * Register them, longest family first.
- *
- * `modelFamily` matches the first family whose name the model id CONTAINS, so
- * a shorter name that is a prefix of a longer one would swallow it: register
- * `gpt-5` before `gpt-5-mini` and every mini call is costed as a full one,
- * silently and in the expensive direction. Sorting by length descending makes
- * that structural rather than a property of key order in someone's env var.
+ * Register them. Each family matches only its whole id or a dated snapshot of
+ * it (`modelFamily`, G-59), so `gpt-5` and `gpt-5-mini` can never swallow one
+ * another, whatever order they are registered in. A tier that is not
+ * configured stays unpriced and refuses to boot; it is never costed as its
+ * parent.
  */
 export function registerRuntimeModelPrices(raw: string | undefined): void {
   const prices = parseModelPrices(raw);
-  for (const family of Object.keys(prices).sort((a, b) => b.length - a.length)) {
+  for (const family of Object.keys(prices)) {
     const price = prices[family]!;
     registerModelPrice(family, {
       inputMicrosPerMTok: price.in,

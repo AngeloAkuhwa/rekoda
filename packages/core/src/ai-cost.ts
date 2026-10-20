@@ -121,13 +121,39 @@ function priceFor(family: string): ModelPrice | undefined {
   return MODEL_PRICES[family] ?? runtimePrices.get(family);
 }
 
-/** The family a model id belongs to, or null if we do not price it. */
+/**
+ * A dated snapshot suffix: `-2025-08-07`, `-20250929` or `@20250929`. Never a
+ * word like `-mini` or `-latest`: a tier is a different price, and an alias
+ * moves between tiers and takes the price with it.
+ */
+const SNAPSHOT_SUFFIX = /^(?:[-@]\d{4}-\d{2}-\d{2}|[-@]\d{8})$/;
+
+/**
+ * The family a model id belongs to, or null if we do not price it (G-59).
+ *
+ * One id names one family or none; it is never the first family whose name
+ * the id happens to contain. That rule let key order and stray words choose a
+ * price: `gpt-5-mini` cost as `gpt-5` when only `gpt-5` was configured, and
+ * any id with "opus" anywhere in it cost as Opus.
+ *
+ * 1. A configured family matches the whole id, or the id plus a dated
+ *    snapshot suffix. Configuration names exact ids, so it wins.
+ * 2. A built-in Claude family matches when the id is a Claude id (a `claude`
+ *    word) and exactly one family appears in it as a whole word. Two
+ *    families is ambiguous, and ambiguous is unpriced.
+ */
 export function modelFamily(modelId: string): string | null {
   const id = modelId.toLowerCase();
-  for (const family of [...Object.keys(MODEL_PRICES), ...runtimePrices.keys()]) {
-    if (id.includes(family)) return family;
+  for (const family of runtimePrices.keys()) {
+    if (id === family || (id.startsWith(family) && SNAPSHOT_SUFFIX.test(id.slice(family.length)))) {
+      return family;
+    }
   }
-  return null;
+
+  const words = new Set(id.split(/[^a-z0-9]+/));
+  if (!words.has('claude')) return null;
+  const named = Object.keys(MODEL_PRICES).filter((family) => words.has(family));
+  return named.length === 1 ? named[0]! : null;
 }
 
 export interface CallCost {

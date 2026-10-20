@@ -117,6 +117,47 @@ describe('a model we have no price for', () => {
   });
 });
 
+/**
+ * G-59. A model id names ONE family or none. The old rule priced an id as the
+ * first family whose name it merely CONTAINED, so the answer depended on the
+ * table's key order and on words that happen to appear inside an id.
+ */
+describe('which family a model id belongs to (G-59)', () => {
+  it('reads every shipped Claude id, bare or dated, as its own family', () => {
+    expect(modelFamily('claude-sonnet-5')).toBe('sonnet');
+    expect(modelFamily('claude-haiku-4-5')).toBe('haiku');
+    expect(modelFamily('claude-opus-5')).toBe('opus');
+    expect(modelFamily('claude-opus-5-5')).toBe('opus');
+    expect(modelFamily('claude-fable-5-1')).toBe('fable');
+    expect(modelFamily('claude-sonnet-4-5-20250929')).toBe('sonnet');
+    expect(modelFamily('CLAUDE-HAIKU-4-5-20251001')).toBe('haiku');
+  });
+
+  it('does not price a non-Claude id as Claude because it contains a family word', () => {
+    for (const id of ['gpt-sonnet-mimic', 'opus-clip-v2', 'fabled-7b', 'haikus-lm', 'sonnets']) {
+      expect(modelFamily(id)).toBeNull();
+      expect(costOfCall(id, { inputTokens: 1_000_000, outputTokens: 0 }, FX).priced).toBe(false);
+    }
+  });
+
+  it('does not match a family word that is only part of a longer word', () => {
+    expect(modelFamily('claude-sonnetx-5')).toBeNull();
+    expect(modelFamily('claude-magnum-opus-5')).toBe('opus');
+    expect(modelFamily('claude-opusplus-5')).toBeNull();
+  });
+
+  it('refuses an id that names two families rather than letting key order choose', () => {
+    // Old rule: "sonnet" comes first in the table, so this cost as Sonnet.
+    expect(modelFamily('claude-opus-sonnet-distill')).toBeNull();
+    expect(modelFamily('claude-haiku-opus-5')).toBeNull();
+  });
+
+  it('refuses a Claude id that names no family it knows', () => {
+    expect(modelFamily('claude-instant-1')).toBeNull();
+    expect(modelFamily('claude')).toBeNull();
+  });
+});
+
 describe('the FX rate is recorded, not re-derived', () => {
   it('produces a different naira figure at a different rate', () => {
     const usage = { inputTokens: 1_000_000, outputTokens: 0 };

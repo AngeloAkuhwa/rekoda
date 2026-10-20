@@ -1,10 +1,9 @@
 /**
  * Model prices as configuration — the ones core deliberately does not ship.
  *
- * Two claims worth pinning. The ORDERING: `modelFamily` matches the first
- * family whose name the model id contains, so a registry that puts `gpt-5` in
- * before `gpt-5-mini` costs every mini call at the full tier and nothing
- * anywhere says so — a margin bug that reads as a margin. And the REFUSALS:
+ * Two claims worth pinning. The MATCHING: a family is its whole id or a dated
+ * snapshot of it, so `gpt-5` never costs a `gpt-5-mini` call at the full tier,
+ * whatever order they were registered in (G-59). And the REFUSALS:
  * every malformed price has to throw rather than be skipped, because a price
  * that was quietly dropped is exactly a silently free model.
  */
@@ -68,6 +67,59 @@ describe('configured families', () => {
       FX,
     );
     expect(cached.usdMicros).toBe(30_000);
+  });
+});
+
+/**
+ * G-59. A configured family is matched by the WHOLE id, or by the id plus a
+ * dated snapshot suffix, never by containment and never by a bare prefix: a
+ * deployment that configured only `gpt-5` and then runs `gpt-5-mini` has an
+ * unpriced model, not a mini priced at the full tier.
+ */
+describe('configured families match whole ids, not fragments (G-59)', () => {
+  registerRuntimeModelPrices(
+    JSON.stringify({
+      'gpt-5': { in: 1_250_000, out: 10_000_000 },
+      'acme-chat': { in: 700_000, out: 700_000 },
+    }),
+  );
+
+  it('prices the configured id and its dated snapshots', () => {
+    expect(modelFamily('gpt-5')).toBe('gpt-5');
+    expect(modelFamily('GPT-5')).toBe('gpt-5');
+    expect(modelFamily('gpt-5-2025-08-07')).toBe('gpt-5');
+    expect(modelFamily('gpt-5-20250807')).toBe('gpt-5');
+    expect(costOfCall('gpt-5-2025-08-07', usage, FX).usdMicros).toBe(1_250_000);
+  });
+
+  it('leaves a sibling tier unpriced instead of costing it as its parent', () => {
+    // Old rule: "gpt-5-mini" contains "gpt-5", so it cost $1.25 per MTok in.
+    for (const id of ['gpt-5-mini', 'gpt-5-nano', 'gpt-5-mini-2025-08-07', 'gpt-5.1', 'gpt-50']) {
+      expect(modelFamily(id)).toBeNull();
+      expect(costOfCall(id, usage, FX).priced).toBe(false);
+    }
+  });
+
+  it('does not match a configured family that only appears inside an id', () => {
+    for (const id of ['my-gpt-5', 'openrouter/gpt-5-fork', 'acme-chat-pro', 'xacme-chat']) {
+      expect(modelFamily(id)).toBeNull();
+    }
+    expect(() => assertModelIsPriced('gpt-5-mini', true)).toThrow(UnpricedModel);
+  });
+
+  it('does not take a moving alias as a snapshot', () => {
+    expect(modelFamily('gpt-5-latest')).toBeNull();
+    expect(modelFamily('acme-chat-preview')).toBeNull();
+  });
+
+  it('lets a configured exact id override the built-in Claude family', () => {
+    registerRuntimeModelPrices(
+      JSON.stringify({ 'claude-sonnet-4-5': { in: 3_000_000, out: 15_000_000 } }),
+    );
+    expect(modelFamily('claude-sonnet-4-5-20250929')).toBe('claude-sonnet-4-5');
+    expect(costOfCall('claude-sonnet-4-5-20250929', usage, FX).usdMicros).toBe(3_000_000);
+    // The shipped id is untouched by it.
+    expect(modelFamily('claude-sonnet-5')).toBe('sonnet');
   });
 });
 
