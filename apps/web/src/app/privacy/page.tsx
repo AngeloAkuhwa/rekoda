@@ -150,7 +150,10 @@ export default function PrivacyPage() {
                     <tr>
                       <td>A trial you never converted</td>
                       <td>{RETENTION.abandonedTrialDays} days after it ends</td>
-                      <td>Long enough to come back or export. Not forever.</td>
+                      <td>
+                        Long enough to come back or export. Not forever. A business that has ever
+                        held a paid Rekoda plan is not treated as an abandoned trial.
+                      </td>
                     </tr>
                     <tr>
                       <td>Payment screenshots customers send</td>

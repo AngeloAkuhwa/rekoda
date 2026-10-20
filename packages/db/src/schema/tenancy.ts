@@ -63,9 +63,13 @@ export const businesses = pgTable(
     planExpiresAt: timestamp('plan_expires_at', { withTimezone: true }),
     trialStartedAt: timestamp('trial_started_at', { withTimezone: true }).notNull().defaultNow(),
     /**
-     * When the business was first on a paid plan; never cleared (G-103,
-     * migration 0160). Retention reads it: a business that ever paid is
-     * never an abandoned trial, however its plan was set.
+     * When a paid-plan retention exemption was first established; never
+     * cleared (G-103, migration 0160, OWN-28). Set by every path that puts a
+     * business on a paid plan: a settled charge, or an authorised operator
+     * (who may be activating a paying merchant, granting complimentary
+     * access or correcting a mistake). It is NOT proof that money was
+     * collected. Retention reads it: a business that has ever held a paid
+     * plan is never an abandoned trial.
      */
     everPaidAt: timestamp('ever_paid_at', { withTimezone: true }),
     /** Start of the current paid cycle. The denominator when prorating. */

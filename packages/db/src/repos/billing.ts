@@ -50,8 +50,9 @@ export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
       .set({
         plan: change.plan,
         planExpiresAt: change.expiresAt,
-        /* A paid plan, however it was set, is a business that paid (G-103):
-         * retention must never read it as an abandoned trial later. */
+        /* A paid plan, however it was set (G-103, OWN-28): retention must
+         * never read this business as an abandoned trial later. This records
+         * an exemption, not that cash was collected. */
         ...(!UNPAID_PLANS.has(change.plan)
           ? { everPaidAt: sql`coalesce(${businesses.everPaidAt}, now())` }
           : {}),

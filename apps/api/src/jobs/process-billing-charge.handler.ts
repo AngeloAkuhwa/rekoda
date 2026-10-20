@@ -104,6 +104,7 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
           /* The attempt is over and the charge is closed. The obligation is
            * not: the cycle still ends when it ends, and the grace sweep is
            * already counting. A retry is a NEW charge. */
+          await subscriptionsRepo.lockBusiness(tx, businessId);
           await subscriptionsRepo.settleCharge(tx, {
             reference,
             status: 'failed',
@@ -146,12 +147,13 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
       when: new Date(),
       config: deps.config,
     });
-    await events.markProcessed(
-      tx,
-      eventId,
-      outcome === 'already_settled' ? 'already_settled' : null,
-      businessId,
-    );
+    if (outcome === 'business_gone') {
+      /* Retention deleted the business first. The provider took money for a
+       * tenant that no longer exists: left visible for an operator, never
+       * applied to anything. */
+      log.warn('a subscription payment arrived for a business retention had already deleted');
+    }
+    await events.markProcessed(tx, eventId, outcome === 'applied' ? null : outcome, businessId);
     if (outcome === 'applied') {
       log.log(`business ${businessId}: subscription charge ${charge.kind} applied`);
     }

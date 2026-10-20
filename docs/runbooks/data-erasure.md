@@ -118,8 +118,10 @@ not undoable by anybody.
 `RETENTION.abandonedTrialDays` ago, only after a notice was sent
 `RETENTION.noticeDays` before, and only when the business has never paid
 (`retention_delete_business` refuses anything with a paid or refunded
-charge, and anything with `businesses.ever_paid_at` set, which covers a paid
-plan the operator set by hand (G-103, migrations 0160 and 0161). A refusal,
+charge, and anything with `businesses.ever_paid_at` set. That records a paid-plan
+retention exemption (a settled charge, or any plan the operator set by hand,
+including a complimentary grant or a correction; OWN-28), not proof that cash
+was collected (G-103, migrations 0160 and 0161). A refusal,
 `-1`, is the system working, never an error to retry. Judging a deletion
 complaint: "no paid charge" does not make a deletion legitimate, check
 `ever_paid_at` and the `plan_changed` audit rows too).
