@@ -112,6 +112,17 @@ export function createVerifierTransport(config: ApiConfig): ModelTransport | nul
   }
   /* Idempotent re-registration: factory order is not guaranteed, and
    * the price check below needs the runtime table populated. */
+  /* The verifier always goes to OpenAI's own endpoint. A primary that is
+   * OpenAI there too would make the "independent" second reading the same
+   * vendor, same endpoint and same key: agreement that proves nothing
+   * (Codex on 734e488). Refused at boot, like a missing key. */
+  if (config.aiProvider === 'openai' && !config.aiBaseUrl) {
+    throw new Error(
+      'AI_MODEL_VISION_VERIFIER is set but the primary provider is OpenAI on its own ' +
+        'endpoint, so the verifier would not be independent. Unset the verifier, or run ' +
+        'the primary on another provider or endpoint (AI_PROVIDER, AI_BASE_URL).',
+    );
+  }
   registerRuntimeModelPrices(config.aiModelPrices ?? undefined);
   assertModelIsPriced(model, true);
   return new OpenAiTransport(config.openaiApiKey);

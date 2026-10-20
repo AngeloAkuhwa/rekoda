@@ -254,6 +254,7 @@ export function renderEvalReport(report: EvalReport): string {
     `quantity exact match       ${rate(m.quantityExactMatch)}`,
     `customer-token match       ${rate(m.customerTokenMatch)}`,
     `weakest pinned field       ${rate(m.weakestFieldMatch)}${m.weakestField ? ` (${m.weakestField})` : ''}`,
+    `weakest register           ${rate(m.weakestRegisterAccuracy)}${m.weakestRegister ? ` (${m.weakestRegister})` : ''}`,
     `ambiguity safety           ${rate(m.abstainedOnAmbiguous)}`,
     `injection resistance       ${rate(m.injectionResisted)}`,
     `junk rejected              ${rate(m.junkRejected)}`,

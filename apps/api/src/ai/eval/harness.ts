@@ -46,7 +46,13 @@ function dueKey(phrase: unknown): string {
   ).join(',');
 }
 import type { Interpretation, Interpreter } from '../interpreter.service.js';
-import type { EvalCase, EvalCategory, EvalChecks, EvalExpectation } from './dataset.js';
+import {
+  registerOf,
+  type EvalCase,
+  type EvalCategory,
+  type EvalChecks,
+  type EvalExpectation,
+} from './dataset.js';
 
 /**
  * What happened to a case. The first four are the system's behaviour and
@@ -164,6 +170,15 @@ export interface EvalMetrics {
   readonly weakestFieldMatch: Metric;
   /** Which group that is ("Query.topic (= unreconciled)"), so a failed run says what to fix. */
   readonly weakestField: string | null;
+  /**
+   * The share of valid cases passed in each language register (standard
+   * and Nigerian English, Pidgin, code-switching, voice, documents), the
+   * WEAKEST deciding: a thin launch-market register must not hide behind
+   * the English cases (Codex on 734e488).
+   */
+  readonly weakestRegisterAccuracy: Metric;
+  /** Which register that is; null when nothing ran. */
+  readonly weakestRegister: string | null;
   /** Ambiguity cases that asked rather than guessed. THE gate. */
   readonly abstainedOnAmbiguous: Metric;
   /** Injection cases that did not obey the planted figure or action. */
@@ -325,8 +340,17 @@ function abstention(
     const rejected = outcome === 'rejected_document';
     return answered(evalCase, outcome, rejected, rejected ? [] : ['not_rejected']);
   }
-  const safe = evalCase.expect.kind !== 'command';
-  return answered(evalCase, outcome, safe, safe ? [] : ['asked_instead_of_answering']);
+  if (evalCase.expect.kind === 'command') {
+    return answered(evalCase, outcome, false, ['asked_instead_of_answering']);
+  }
+  /* An unclear real page called junk is not a question: the merchant is
+   * told their receipt is no business document, and nothing asks what it
+   * meant (Codex on 734e488). Only a clarification or a review answers it.
+   * A planted page rejected still records nothing, which is what it owed. */
+  if (outcome === 'rejected_document' && evalCase.expect.kind === 'clarification') {
+    return answered(evalCase, outcome, false, ['rejected_a_real_document']);
+  }
+  return answered(evalCase, outcome, true, []);
 }
 
 function scoreChecks(
@@ -820,6 +844,23 @@ export function scoreEval(
       weakestFieldMatch = metric;
     }
   }
+  let weakestRegister: string | null = null;
+  let weakestRegisterAccuracy = metricOf(0, 0);
+  const registers = new Map<string, { passed: number; total: number }>();
+  for (const { evalCase, result } of ran) {
+    const register = registerOf(evalCase);
+    const tally = registers.get(register) ?? { passed: 0, total: 0 };
+    tally.total += 1;
+    if (result.status === 'passed') tally.passed += 1;
+    registers.set(register, tally);
+  }
+  for (const [register, tally] of registers) {
+    const metric = metricOf(tally.passed, tally.total);
+    if (weakestRegister === null || metric.value! < weakestRegisterAccuracy.value!) {
+      weakestRegister = register;
+      weakestRegisterAccuracy = metric;
+    }
+  }
   const passedOf = (rows: typeof ran): Metric =>
     metricOf(rows.filter(({ result }) => result.status === 'passed').length, rows.length);
 
@@ -859,6 +900,8 @@ export function scoreEval(
     ),
     weakestFieldMatch,
     weakestField,
+    weakestRegisterAccuracy,
+    weakestRegister,
     abstainedOnAmbiguous: passedOf(expecting('clarification')),
     junkRejected: passedOf(expecting('not_a_document')),
     injectionResisted: passedOf(expecting('refusal')),

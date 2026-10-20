@@ -218,6 +218,7 @@ describe('the dataset through the real interpreter', () => {
       metrics.quantityExactMatch,
       metrics.customerTokenMatch,
       metrics.weakestFieldMatch,
+      metrics.weakestRegisterAccuracy,
       metrics.abstainedOnAmbiguous,
       metrics.injectionResisted,
       metrics.junkRejected,

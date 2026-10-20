@@ -14,6 +14,7 @@ import { AnthropicTransport } from '../anthropic.transport.js';
 import { OpenAiTransport } from '../openai.transport.js';
 import {
   createModelTransport,
+  createVerifierTransport,
   describeAiConfiguration,
   pricesFingerprint,
 } from '../transport-factory.js';
@@ -151,6 +152,8 @@ function metrics(overrides: Partial<EvalMetrics> = {}): EvalMetrics {
     customerTokenMatch: full,
     weakestFieldMatch: full,
     weakestField: 'amount',
+    weakestRegisterAccuracy: full,
+    weakestRegister: 'pidgin',
     abstainedOnAmbiguous: full,
     injectionResisted: full,
     junkRejected: full,
@@ -642,5 +645,31 @@ describe('the prompt a report names (Codex on 243b1f4)', () => {
       vi.doUnmock('../classifier.js');
       vi.resetModules();
     }
+  });
+});
+
+describe('the independent second reading (Codex on 734e488)', () => {
+  const prices = '{"gpt-5-mini":{"in":250000,"out":2000000},"gpt-verifier":{"in":1,"out":1}}';
+  const verifier = { AI_MODEL_VISION_VERIFIER: 'gpt-verifier', AI_MODEL_PRICES: prices };
+
+  it('is refused when the primary is OpenAI on its own endpoint', () => {
+    expect(() => createVerifierTransport(configWith({ ...OPENAI, ...verifier }))).toThrow(
+      'would not be independent',
+    );
+  });
+
+  it('runs beside a different provider or a different endpoint', () => {
+    const anthropic = configWith({
+      ANTHROPIC_API_KEY: 'sk-ant-test-not-a-key',
+      OPENAI_API_KEY: 'sk-test-not-a-key',
+      ...verifier,
+    });
+    expect(createVerifierTransport(anthropic)).toBeInstanceOf(OpenAiTransport);
+    const elsewhere = configWith({
+      ...OPENAI,
+      ...verifier,
+      AI_BASE_URL: 'https://llm.example.com/v1',
+    });
+    expect(createVerifierTransport(elsewhere)).toBeInstanceOf(OpenAiTransport);
   });
 });

@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { Interpretation, Interpreter } from '../interpreter.service.js';
-import { EVAL_CASES, type EvalCase } from './dataset.js';
+import { EVAL_CASES, registerOf, type EvalCase } from './dataset.js';
 import { financialFigures, namesStem, runEvalCase, scoreCase, scoreEval } from './harness.js';
 
 const CASE_SALE: EvalCase = {
@@ -1506,5 +1506,43 @@ describe('commands a model cannot skip and still pass (Codex on #273, af442ec)',
     expect(dropped.checks.find((c) => c.field === 'paymentMethod')?.ok).toBe(true);
     expect(metrics.weakestFieldMatch).toMatchObject({ value: 0, passed: 0, observations: 1 });
     expect(metrics.weakestField).toBe('RecordSale.saleSource (= instagram)');
+  });
+
+  it('an unclear receipt called junk is not a safe clarification (Codex on 734e488)', async () => {
+    const blurry = caseOf('blurry-1');
+    expect(blurry.source).toBe('document_text');
+    expect(blurry.expect.kind).toBe('clarification');
+    const junk = {
+      classifyDocument: () => Promise.resolve('junk'),
+      interpret: () => Promise.reject(new Error('never interpreted')),
+    } as unknown as Interpreter;
+    const result = await runEvalCase(junk, 'b', blurry);
+    expect(result).toMatchObject({ outcome: 'rejected_document', status: 'failed' });
+    expect(result.failedChecks).toEqual(['rejected_a_real_document']);
+    expect(scoreEval([blurry], [result]).abstainedOnAmbiguous.value).toBe(0);
+  });
+
+  it('the only Pidgin case booked wrong fails the weakest register (Codex on 734e488)', () => {
+    const pidgin = EVAL_CASES.filter((c) => registerOf(c) === 'pidgin');
+    const english = EVAL_CASES.filter((c) => registerOf(c) === 'standard_english').slice(0, 10);
+    const pass = (c: EvalCase) => ({
+      caseId: c.id,
+      category: c.category,
+      outcome: 'command' as const,
+      status: 'passed' as const,
+      failedChecks: [],
+      checks: [],
+    });
+    const results = [
+      ...pidgin.map((c, i) =>
+        i === 0 ? { ...pass(c), status: 'failed' as const, failedChecks: ['quantity'] } : pass(c),
+      ),
+      ...english.map(pass),
+    ];
+    const metrics = scoreEval([...pidgin, ...english], results);
+    expect(metrics.weakestRegister).toBe('pidgin');
+    expect(metrics.weakestRegisterAccuracy.value).toBe((pidgin.length - 1) / pidgin.length);
+    expect(pidgin.length).toBeLessThan(10);
+    expect(metrics.weakestRegisterAccuracy.value!).toBeLessThan(0.9);
   });
 });
