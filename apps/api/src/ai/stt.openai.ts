@@ -1,5 +1,6 @@
 import OpenAI, { toFile } from 'openai';
 import { TranscriptionUnavailable, type SpeechToText, type Transcript } from './stt.js';
+import { OPENAI_DEFAULT_BASE_URL } from './openai.transport.js';
 
 /**
  * The transcriber (ADR 0032): OpenAI, the launch architecture's only one.
@@ -30,7 +31,9 @@ export class OpenAiSpeechToText implements SpeechToText {
       apiKey,
       timeout: timeoutMs,
       maxRetries: 0,
-      ...(baseUrl ? { baseURL: baseUrl } : {}),
+      /* Explicit, so the SDK never reads its base-URL variable from the
+       * process (final review on a98a294). */
+      baseURL: baseUrl || OPENAI_DEFAULT_BASE_URL,
     });
   }
 

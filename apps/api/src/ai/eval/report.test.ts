@@ -292,8 +292,12 @@ describe('the checkout a run is attributed to (G-07, Codex on #273)', () => {
   it('refuses a launch-gate run from a dirty checkout, and only that', () => {
     expect(checkoutRefusal('gate', { ...clean, dirty: true })).toContain('uncommitted changes');
     expect(checkoutRefusal('gate', clean)).toBeNull();
-    /* An image has no git: its built commit (REKODA_COMMIT) names the run. */
-    expect(checkoutRefusal('gate', { sha: 'b81ef90', dirty: null, build: proven })).toBeNull();
+    /* Outside git nothing proves the tree clean, and the commit the build
+     * stamped was only what REKODA_COMMIT asserted (final review on
+     * a98a294): a launch gate runs from a checkout git can vouch for. */
+    expect(checkoutRefusal('gate', { sha: 'b81ef90', dirty: null, build: proven })).toContain(
+      'cannot be proven clean',
+    );
     expect(checkoutRefusal('measure', { ...clean, dirty: true })).toBeNull();
   });
 
@@ -521,10 +525,21 @@ describe('a run outside git names the commit the build stamped (Codex on 482abd3
     );
   });
 
-  it('accepts the stamped commit', () => {
+  it('names the stamped commit, measures with it, and still refuses a gate', () => {
     const checkout = checkoutWithoutGit('aaaaaaa', built('aaaaaaa'));
     expect(checkout.sha).toBe('aaaaaaa');
-    expect(checkoutRefusal('gate', checkout)).toBeNull();
+    expect(checkoutRefusal('measure', checkout)).toBeNull();
+    expect(reportedSha(checkout)).toBe('aaaaaaa');
+    expect(checkoutRefusal('gate', checkout)).toContain('cannot be proven clean');
+  });
+
+  /* A measurement still runs, but never names an unproven commit unmarked
+   * (final review on a98a294). */
+  it("marks the SHA of a measurement whose commit is not the build's", () => {
+    expect(reportedSha(checkoutWithoutGit('bbbbbbb', built('aaaaaaa')))).toBe(
+      'bbbbbbb-unattributed',
+    );
+    expect(reportedSha(checkoutWithoutGit('aaaaaaa', built(null)))).toBe('aaaaaaa-unattributed');
   });
 
   it('stamps HEAD of a clean checkout, nothing for a dirty one, REKODA_COMMIT outside git', () => {

@@ -16,8 +16,10 @@
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { AnthropicTransport } from './anthropic.transport.js';
-import { OpenAiTransport } from './openai.transport.js';
+import { ANTHROPIC_DEFAULT_BASE_URL, AnthropicTransport } from './anthropic.transport.js';
+import { OPENAI_DEFAULT_BASE_URL, OpenAiTransport } from './openai.transport.js';
+import { VisionTextExtraction } from './ocr.vision.js';
+import { OpenAiSpeechToText } from './stt.openai.js';
 import { ProviderUnreachable, type ModelRequest } from './transport.js';
 
 let server: Server;
@@ -248,5 +250,48 @@ describe('the OpenAI transport', () => {
   it('raises ProviderUnreachable on a provider error', async () => {
     respond = json({ error: { message: 'boom' } }, 500);
     await expect(transport().send(REQUEST)).rejects.toBeInstanceOf(ProviderUnreachable);
+  });
+});
+
+/**
+ * With no AI_BASE_URL each SDK would read OPENAI_BASE_URL / ANTHROPIC_BASE_URL
+ * from the process, so an exported proxy variable would silently redirect the
+ * primary, or the "independent" OpenAI verifier, while the eval report named
+ * the provider's own endpoint (final review on a98a294). The endpoint is what
+ * Rekoda's configuration says, never what the environment happens to hold.
+ */
+describe('the endpoint a transport calls', () => {
+  const endpointOf = (transport: object): string =>
+    (transport as unknown as { client: { baseURL: string } }).client.baseURL;
+
+  it('ignores OPENAI_BASE_URL and ANTHROPIC_BASE_URL in the environment', () => {
+    const saved = {
+      openai: process.env.OPENAI_BASE_URL,
+      anthropic: process.env.ANTHROPIC_BASE_URL,
+    };
+    process.env.OPENAI_BASE_URL = 'https://proxy.example.test/v1';
+    process.env.ANTHROPIC_BASE_URL = 'https://proxy.example.test';
+    try {
+      expect(endpointOf(new OpenAiTransport('sk-test'))).toBe(OPENAI_DEFAULT_BASE_URL);
+      expect(endpointOf(new AnthropicTransport('sk-test'))).toBe(ANTHROPIC_DEFAULT_BASE_URL);
+      /* The transcriber and the photo reader carry a merchant's audio and
+       * images, so they are held to the same rule. */
+      expect(endpointOf(new OpenAiSpeechToText('sk-test', 'whisper-1'))).toBe(
+        OPENAI_DEFAULT_BASE_URL,
+      );
+      expect(endpointOf(new VisionTextExtraction('sk-test', 'claude-sonnet-5'))).toBe(
+        ANTHROPIC_DEFAULT_BASE_URL,
+      );
+      /* A configured endpoint is still the one used. */
+      expect(endpointOf(new OpenAiTransport('sk-test', 1_000, baseUrl))).toBe(baseUrl);
+    } finally {
+      for (const [name, value] of [
+        ['OPENAI_BASE_URL', saved.openai],
+        ['ANTHROPIC_BASE_URL', saved.anthropic],
+      ] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 });

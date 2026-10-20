@@ -6,6 +6,9 @@ import {
   type ModelTransport,
 } from './transport.js';
 
+/** OpenAI's own endpoint: what an unset AI_BASE_URL means, whatever the environment holds. */
+export const OPENAI_DEFAULT_BASE_URL = 'https://api.openai.com/v1';
+
 /**
  * OpenAI, behind the same port as Anthropic.
  *
@@ -38,7 +41,10 @@ export class OpenAiTransport implements ModelTransport {
       apiKey,
       timeout: timeoutMs,
       maxRetries: 0,
-      ...(baseUrl ? { baseURL: baseUrl } : {}),
+      /* Always explicit: left out, the SDK reads OPENAI_BASE_URL from the
+       * process, and an exported proxy variable would silently redirect the
+       * primary or the independent verifier (final review on a98a294). */
+      baseURL: baseUrl || OPENAI_DEFAULT_BASE_URL,
     });
   }
 

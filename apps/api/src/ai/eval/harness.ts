@@ -94,9 +94,10 @@ export interface CheckResult {
   readonly ok: boolean;
   /**
    * A check the case did not pin but every sale is held to (an unstated
-   * discount, total, payment or due date is none). It decides the case and
-   * stays out of the field metrics, which count what was asked: easy
-   * implicit passes must not dilute a real miss (Codex on #273).
+   * discount, total, payment or due date is none). It decides the case.
+   * Its passes stay out of the field metrics, which count what was asked:
+   * easy implicit passes must not dilute a real miss (Codex on #273). Its
+   * failures count, because an invented figure is a wrong one.
    */
   readonly implicit?: boolean;
 }
@@ -800,9 +801,13 @@ export function scoreEval(
   const accepted = ran.filter(({ result }) => result.outcome === 'command');
   const expecting = (kind: EvalExpectation['kind']) =>
     ran.filter(({ evalCase }) => evalCase.expect.kind === kind);
+  /* An implicit check that holds stays out (it would dilute a real miss);
+   * one that FAILS is a figure nobody stated, booked on the invoice, and
+   * counts against its metric (final review on a98a294): otherwise invented
+   * delivery fees pass the amount gate at 1.0. */
   const checksWhere = (pick: (field: keyof EvalChecks) => boolean): Metric => {
     const checks = ran.flatMap(({ result }) =>
-      result.checks.filter((c) => !c.implicit && pick(c.field)),
+      result.checks.filter((c) => (!c.implicit || !c.ok) && pick(c.field)),
     );
     return metricOf(checks.filter((c) => c.ok).length, checks.length);
   };

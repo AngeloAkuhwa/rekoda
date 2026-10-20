@@ -6,6 +6,9 @@ import {
   type ModelTransport,
 } from './transport.js';
 
+/** Anthropic's own endpoint: what an unset AI_BASE_URL means, whatever the environment holds. */
+export const ANTHROPIC_DEFAULT_BASE_URL = 'https://api.anthropic.com';
+
 /**
  * The real client.
  *
@@ -38,8 +41,9 @@ export class AnthropicTransport implements ModelTransport {
       maxRetries: 0,
       /* Injectable for the same reason the OpenAI client's is, and the
        * Paystack adapter's: the properties worth asserting here are about
-       * what goes over the wire. */
-      ...(baseUrl ? { baseURL: baseUrl } : {}),
+       * what goes over the wire. Always explicit: left out, the SDK reads
+       * ANTHROPIC_BASE_URL from the process (final review on a98a294). */
+      baseURL: baseUrl || ANTHROPIC_DEFAULT_BASE_URL,
     });
   }
 

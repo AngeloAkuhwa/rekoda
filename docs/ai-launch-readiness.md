@@ -105,7 +105,13 @@ is never interpreted, so a classifier that rejects receipts fails their cases. A
 failed provider call, and any escalation or verifier answer that failed the schema
 (recorded as `schemaValid` on its usage row), blocks a PASS, because the case falls
 back to the primary's answer and would otherwise score. A gate-mode run from a checkout
-with uncommitted changes is refused; a measurement from one reports its SHA as `-dirty`.
+with uncommitted changes, or from a tree git cannot vouch for (no git, or git failing),
+is refused; a measurement reports its SHA as `-dirty`, `-unverified-build` or
+`-unattributed` when the checkout, the build or the named commit is not proven. Every
+transport names its endpoint explicitly, so `OPENAI_BASE_URL` or `ANTHROPIC_BASE_URL`
+in the environment never redirects a call the report attributes to the provider's own
+endpoint. An invented discount, delivery fee, total or payment on a sale counts as a
+wrong amount (an unstated adjustment that is correctly absent adds no observation).
 A receipt's stated balance is a payment (₦95,000 with ₦40,000 owing is ₦55,000 paid),
 which a live run will show the current prompt does or does not report.
 
@@ -148,8 +154,8 @@ NOT_MEASURED or failed required gate, an incomplete run, or no owner-approved pr
 model only, so the verifier path (`verify-1`, secondary-call evidence) is first exercised
 by the live run; its risk is a false FAIL or NOT_MEASURED, never a false PASS. The
 `items` line check counts toward the money metric. A planted figure inside a free-text
-field is not scored. Outside git, gate mode needs `*/src`, the package manifests and
-`pnpm-lock.yaml` at run time (an image with only `dist` is refused). A transport fault
+field is not scored. Gate mode runs only from a clean git checkout; outside git a run is a
+measurement, with its SHA marked when the commit is not proven. A transport fault
 shows as an `llm_failed` row and an error log, with no dedicated ops counter yet. Raw
 account numbers beside a not-yet-known name, and full-width or zero-width digits, still
 reach the model (older gaps in `privacy.ts`).

@@ -332,7 +332,8 @@ export async function usageOf(db: Db, businessId: string): Promise<UsageSummary>
  * The commit that ran, whether the checkout matched it, and whether the
  * compiled code is the code that commit builds to (verified against the
  * manifest the build stamped; build-stamp.ts). Outside git (an image) the
- * built commit (REKODA_COMMIT) names the run, and cleanliness is unknown.
+ * built commit (REKODA_COMMIT) names the run, cleanliness is unknown, and
+ * gate mode refuses it (checkoutRefusal).
  */
 export function gitState(config: ApiConfig, root: string = REPO_ROOT): Checkout {
   const build = verifyBuild(REPO_ROOT);
@@ -407,9 +408,10 @@ export interface Checkout {
 
 /**
  * Why a run cannot be attributed to its commit, or null (Codex on #273). A
- * launch-gate run is refused from a dirty checkout, from a build whose
- * source or compiled files no longer match what the build stamped, or with
- * no commit to name; a measurement says so in its SHA instead.
+ * launch-gate run is refused from a dirty checkout or one git cannot vouch
+ * for, from a build whose source or compiled files no longer match what the
+ * build stamped, or with no commit to name; a measurement says so in its
+ * SHA instead.
  */
 export function checkoutRefusal(mode: EvalMode, checkout: Checkout): string | null {
   if (mode !== 'gate') return null;
@@ -425,6 +427,12 @@ export function checkoutRefusal(mode: EvalMode, checkout: Checkout): string | nu
   if (!checkout.sha || checkout.sha === 'unknown') {
     return 'no commit identifies this build (no git, REKODA_COMMIT unset); a launch report must name one';
   }
+  /* Outside git (or with git failing) nothing proves the tree clean, and the
+   * commit the build stamped was only what REKODA_COMMIT asserted (final
+   * review on a98a294). A measurement runs and says so; a gate does not. */
+  if (checkout.dirty !== false) {
+    return 'the checkout cannot be proven clean (git is absent or failed); run the launch gate from a git checkout';
+  }
   return null;
 }
 
@@ -433,7 +441,8 @@ export function reportedSha(checkout: Checkout): string {
   return (
     checkout.sha +
     (checkout.dirty ? '-dirty' : '') +
-    (checkout.build.verified ? '' : '-unverified-build')
+    (checkout.build.verified ? '' : '-unverified-build') +
+    (checkout.unattributed ? '-unattributed' : '')
   );
 }
 

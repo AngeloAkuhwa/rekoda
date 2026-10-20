@@ -1351,6 +1351,27 @@ describe('aggregating metrics', () => {
     });
   });
 
+  /* An invented fee or discount is a wrong amount on the invoice, whatever
+   * the case pinned (final review on a98a294): an unstated adjustment that
+   * HOLDS stays out of the money metric, but one that FAILS counts against
+   * it, or three invented delivery fees pass a 0.98 amount gate at 1.0. */
+  it('counts an invented fee or discount against the amount metric', () => {
+    const invented = (extra: Record<string, unknown>) =>
+      command({
+        intent: 'RecordSale',
+        customer: { kind: 'token', token: 'CUSTOMER_A1Q' },
+        items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+        ...extra,
+      });
+    const fee = scoreEval([CASE_SALE], [scoreCase(CASE_SALE, invented({ deliveryFee: 5_000 }))]);
+    expect(fee.amountExactMatch).toMatchObject({ value: 0.5, observations: 2 });
+    const discount = scoreEval([CASE_SALE], [scoreCase(CASE_SALE, invented({ discount: 2_000 }))]);
+    expect(discount.amountExactMatch).toMatchObject({ value: 0.5, observations: 2 });
+    /* A correct sale earns no extra observations from what it left out. */
+    const right = scoreEval([CASE_SALE], [scoreCase(CASE_SALE, RIGHT_SALE)]);
+    expect(right.amountExactMatch).toMatchObject({ value: 1, observations: 1 });
+  });
+
   it('a wrong accepted answer drags accuracy down and stays visible by category', () => {
     const cases = [CASE_SALE, CASE_AMBIG];
     const metrics = scoreEval(cases, [
