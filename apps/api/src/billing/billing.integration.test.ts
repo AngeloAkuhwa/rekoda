@@ -460,9 +460,10 @@ describe('the cycle a payment starts', () => {
       new Date('2026-06-03T09:00:00Z'),
       new Date('2026-07-03T09:00:00Z'),
     );
-    await withBusiness(db, businessId, (tx) =>
-      subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep'),
-    );
+    await withBusiness(db, businessId, async (tx) => {
+      await subscriptionsRepo.markRenewalFailed(tx, businessId, new Date('2026-07-03T09:00:00Z'));
+      await subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep', 'grace');
+    });
 
     // And came back on the 20th of August.
     const backOn = new Date('2026-08-20T10:00:00Z');

@@ -424,9 +424,12 @@ describe('stopping a lapsed subscription', () => {
         anchorDay: 1,
       }),
     );
+    await inTenant(businessId, (tx) =>
+      subscriptionsRepo.markRenewalFailed(tx, businessId, RENEWS_AT),
+    );
 
     const previous = await inTenant(businessId, (tx) =>
-      subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep'),
+      subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep', 'grace'),
     );
     expect(previous).toBe('complete');
 
@@ -448,11 +451,71 @@ describe('stopping a lapsed subscription', () => {
     expect(row?.source_type).toBe('system');
   });
 
+  /* G-106. The sweep reads, decides, then writes. A renewal paid, or a
+   * cancel undone, between its read and its write keeps the SAME plan, so
+   * re-checking only the plan name expired a merchant who had just paid. */
+  it('keeps the plan of a merchant whose renewal is paid between the grace read and the write', async () => {
+    const businessId = await seedBusiness();
+    await inTenant(businessId, async (tx) => {
+      await subscriptionsRepo.applyCycle(tx, businessId, {
+        plan: 'complete',
+        cycleStartedAt: CYCLE_START,
+        renewsAt: RENEWS_AT,
+        anchorDay: 1,
+      });
+      await subscriptionsRepo.markRenewalFailed(tx, businessId, RENEWS_AT);
+    });
+    // The sweep has read this business as out of grace. Now the renewal pays.
+    await inTenant(businessId, (tx) =>
+      subscriptionsRepo.applyCycle(tx, businessId, {
+        plan: 'complete',
+        cycleStartedAt: RENEWS_AT,
+        renewsAt: new Date('2026-10-01T00:00:00Z'),
+        anchorDay: 1,
+      }),
+    );
+
+    expect(
+      await inTenant(businessId, (tx) =>
+        subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep', 'grace'),
+      ),
+    ).toBeNull();
+    const sub = await inTenant(businessId, (tx) =>
+      subscriptionsRepo.subscriptionFor(tx, businessId),
+    );
+    expect(sub?.plan).toBe('complete');
+  });
+
+  it('keeps the plan of a merchant who undoes a cancel between the renewal read and the write', async () => {
+    const businessId = await seedBusiness();
+    await inTenant(businessId, async (tx) => {
+      await subscriptionsRepo.applyCycle(tx, businessId, {
+        plan: 'chat',
+        cycleStartedAt: CYCLE_START,
+        renewsAt: RENEWS_AT,
+        anchorDay: 1,
+      });
+      await subscriptionsRepo.schedulePlanChange(tx, businessId, 'expired');
+    });
+    // The sweep has read the cancel. Now the merchant undoes it.
+    await inTenant(businessId, (tx) => subscriptionsRepo.schedulePlanChange(tx, businessId, null));
+
+    expect(
+      await inTenant(businessId, (tx) =>
+        subscriptionsRepo.expireSubscription(tx, businessId, 'system:renewal_sweep', 'cancelled'),
+      ),
+    ).toBeNull();
+    const sub = await inTenant(businessId, (tx) =>
+      subscriptionsRepo.subscriptionFor(tx, businessId),
+    );
+    expect(sub?.plan).toBe('chat');
+  });
+
   it('does nothing to a trial, which ends rather than lapses', async () => {
     const businessId = await seedBusiness();
     expect(
       await inTenant(businessId, (tx) =>
-        subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep'),
+        subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep', 'grace'),
       ),
     ).toBeNull();
   });
@@ -468,11 +531,14 @@ describe('stopping a lapsed subscription', () => {
       }),
     );
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep'),
+      subscriptionsRepo.markRenewalFailed(tx, businessId, RENEWS_AT),
+    );
+    await inTenant(businessId, (tx) =>
+      subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep', 'grace'),
     );
     expect(
       await inTenant(businessId, (tx) =>
-        subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep'),
+        subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep', 'grace'),
       ),
     ).toBeNull();
   });

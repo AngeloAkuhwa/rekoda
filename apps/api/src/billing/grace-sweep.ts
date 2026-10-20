@@ -74,7 +74,7 @@ export async function sweepGracePeriods(
 
       if (state.state === 'expired') {
         const previous = await withBusiness(deps.appDb, row.businessId, (tx) =>
-          subscriptionsRepo.expireSubscription(tx, row.businessId, 'system:grace-sweep'),
+          subscriptionsRepo.expireSubscription(tx, row.businessId, 'system:grace-sweep', 'grace'),
         );
         if (previous) {
           result.expired += 1;

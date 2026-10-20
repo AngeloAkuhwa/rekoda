@@ -595,10 +595,23 @@ export async function releaseGraceReminder(
   `);
 }
 
+/**
+ * Why a subscription is being stopped (G-106). Each reason is a condition
+ * the write re-checks, because the plan name alone does not change when a
+ * renewal is paid or a cancel is undone.
+ *
+ * - `grace`: the renewal is still unpaid (`payment_failed_at` set). A paid
+ *   renewal clears it (`applyCycle`).
+ * - `cancelled`: the merchant still wants out (`pending_plan = 'expired'`).
+ *   Undoing the cancel clears it.
+ */
+export type ExpiryReason = 'grace' | 'cancelled';
+
 export async function expireSubscription(
   tx: TenantDb,
   businessId: string,
   actor: string,
+  reason: ExpiryReason,
 ): Promise<string | null> {
   const before = await tx.execute<{ plan: string }>(sql`
     SELECT plan FROM businesses WHERE id = ${businessId}::uuid
@@ -609,9 +622,11 @@ export async function expireSubscription(
   const updated = await tx.execute<{ id: string }>(sql`
     UPDATE businesses SET plan = 'expired', pending_plan = NULL, updated_at = now()
     WHERE id = ${businessId}::uuid AND plan = ${previous}
+      AND ${reason === 'grace' ? sql`payment_failed_at IS NOT NULL` : sql`pending_plan = 'expired'`}
     RETURNING id
   `);
-  /* Somebody paid between the read and the write. Their plan stands. */
+  /* Somebody paid, or undid the cancel, between the read and the write.
+   * Their plan stands. */
   if ([...updated].length !== 1) return null;
 
   await tx.execute(sql`
