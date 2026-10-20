@@ -45,7 +45,8 @@ const shape = (row: RawCandidate): RetentionCandidate => ({
 /**
  * How long a pending subscription checkout defers deletion. The SECURITY
  * DEFINER function in migration 0161 hardcodes the same 14 days; the boundary
- * test in retention.integration.test.ts fails if the two ever drift apart.
+ * test in retention.integration.test.ts fails if the two drift apart by a day
+ * or more.
  */
 const CHECKOUT_IN_FLIGHT_DAYS = 14;
 

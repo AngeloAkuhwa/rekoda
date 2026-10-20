@@ -195,14 +195,16 @@ describe('who is due', () => {
     /* The window is written twice, in the candidate queries and inside the
      * SECURITY DEFINER function. Pinning both sides of it makes a drift show
      * up here rather than as a sweep that picks a business the function then
-     * refuses on every run (or the reverse). */
+     * refuses on every run (or the reverse). The charges sit half a day
+     * either side of the boundary, so a drift of a day or more in either
+     * copy fails here. */
     it('holds the 14-day window in the queries and in the function alike', async () => {
       const inside = await abandonedTrial(400);
       await warn(inside, daysAgo(200));
-      await pendingCharge(inside, 'RKD-SUB-20260101-EDGE13', 13);
+      await pendingCharge(inside, 'RKD-SUB-20260101-EDGE13', 13.5);
       const outside = await abandonedTrial(400);
       await warn(outside, daysAgo(200));
-      await pendingCharge(outside, 'RKD-SUB-20260101-EDGE15', 15);
+      await pendingCharge(outside, 'RKD-SUB-20260101-EDGE15', 14.5);
 
       const due = await retentionRepo.dueForDeletion(workerDb, daysAgo(90), daysAgo(30));
       expect(due.map((row) => row.businessId)).toEqual([outside]);
