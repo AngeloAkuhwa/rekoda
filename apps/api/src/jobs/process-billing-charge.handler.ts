@@ -149,9 +149,13 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
     });
     if (outcome === 'business_gone') {
       /* Retention deleted the business first. The provider took money for a
-       * tenant that no longer exists: left visible for an operator, never
-       * applied to anything. */
-      log.warn('a subscription payment arrived for a business retention had already deleted');
+       * tenant that no longer exists, and nothing was applied. Retention also
+       * deleted the event and the charge, so the log line is the only trace an
+       * operator has: it carries the reference (an opaque id, not PII) so the
+       * payment can be found at the provider and refunded by hand. */
+      log.warn(
+        `subscription payment ${reference} arrived for a business retention had already deleted; nothing applied, reconcile at the provider`,
+      );
     }
     await events.markProcessed(tx, eventId, outcome === 'applied' ? null : outcome, businessId);
     if (outcome === 'applied') {
