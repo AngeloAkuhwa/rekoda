@@ -152,6 +152,12 @@ describe('which family a model id belongs to (G-59)', () => {
     expect(modelFamily('claude-haiku-opus-5')).toBeNull();
   });
 
+  it('refuses an id holding whitespace, which the provider would reject', () => {
+    expect(modelFamily('claude-sonnet-5\r')).toBeNull();
+    expect(modelFamily(' claude-haiku-4-5')).toBeNull();
+    expect(modelFamily('claude sonnet 5')).toBeNull();
+  });
+
   it('refuses a Claude id that names no family it knows', () => {
     expect(modelFamily('claude-instant-1')).toBeNull();
     expect(modelFamily('claude')).toBeNull();

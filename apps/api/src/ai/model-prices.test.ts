@@ -131,6 +131,11 @@ describe('configured families match whole ids, not fragments (G-59)', () => {
   it('leaves a configured id with stray whitespace unpriced, so boot refuses it', () => {
     expect(modelFamily(' gpt-5\r')).toBeNull();
     expect(() => assertModelIsPriced('gpt-5\r', true)).toThrow(UnpricedModel);
+    // A shipped Claude id too: Anthropic is the default provider.
+    for (const id of ['claude-sonnet-5\r', ' claude-haiku-4-5', 'claude-opus-5 ']) {
+      expect(modelFamily(id)).toBeNull();
+      expect(() => assertModelIsPriced(id, true)).toThrow(UnpricedModel);
+    }
   });
 
   it('lets a configured exact id override the built-in Claude family', () => {

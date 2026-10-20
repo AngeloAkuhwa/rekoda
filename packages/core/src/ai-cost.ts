@@ -142,8 +142,14 @@ const SNAPSHOT_SUFFIX = /^(?:[-@]\d{4}-\d{2}-\d{2}|[-@]\d{8})$/;
  * 2. A built-in Claude family matches when the id is a Claude id (a `claude`
  *    word) and exactly one family appears in it as a whole word. Two
  *    families is ambiguous, and ambiguous is unpriced.
+ * An id holding whitespace is never priced.
  */
 export function modelFamily(modelId: string): string | null {
+  /* No model id contains whitespace. One that does is a configuration
+   * mistake (a stray space or \r in an env file), and it is sent to the
+   * provider as written, so it is unpriced here and the boot check refuses
+   * it rather than every call failing later (CLAUDE.md invariant 8). */
+  if (/\s/.test(modelId)) return null;
   const id = modelId.toLowerCase();
   // The exact id first, so a configured snapshot never loses to its alias.
   if (runtimePrices.has(id)) return id;
