@@ -114,7 +114,7 @@ everything after G-60; changed only by a verified new financial, privacy or auth
    proves the harness; the paid live evaluation is NOT run in the PR (owner-run, in the batched
    acceptance campaign, after G-59).
 2. **G-59**, model-family pricing correctness (`modelFamily()` matches by substring). MERGED 20 Oct 2026 (#274, `5087f95`); staging acceptance pending.
-   2a. **Subscription / trial / billing lifecycle hardening** (owner, 20 Oct 2026, via the MVP autopilot routine): a full audit and certification of trial, plans, upgrades, downgrades, renewal, grace, packs and billing UI (G-62, G-69 and the renewal "payment did not go through" copy among the known items). The owner ruled the MVP free trial is **14 days**, superseding 30 (OWN-27; contradiction 14 in `REKODA_LAUNCH_READINESS.md` §15); not yet in the code, and lands with that build.
+   2a. **Subscription / trial / billing lifecycle hardening** (audit 20 Oct 2026 recorded as G-102 to G-110 and OD-25 to OD-27 in `REKODA_LAUNCH_READINESS.md`; G-103, a paying merchant's books deletable by retention, first) (owner, 20 Oct 2026, via the MVP autopilot routine): a full audit and certification of trial, plans, upgrades, downgrades, renewal, grace, packs and billing UI (G-62, G-69 and the renewal "payment did not go through" copy among the known items). The owner ruled the MVP free trial is **14 days**, superseding 30 (OWN-27; contradiction 14 in `REKODA_LAUNCH_READINESS.md` §15); not yet in the code, and lands with that build.
 3. **G-96**, storefront concurrent-submit metering / in-flight order race.
 4. **G-98**, a bank line from a closed accounting period must refuse cleanly (answers 500 today).
 5. **G-92(5)**, one real purchase can still be booked twice in the documented reference edge.
