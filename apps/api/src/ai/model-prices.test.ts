@@ -1,10 +1,9 @@
 /**
  * Model prices as configuration — the ones core deliberately does not ship.
  *
- * Two claims worth pinning. The ORDERING: `modelFamily` matches the first
- * family whose name the model id contains, so a registry that puts `gpt-5` in
- * before `gpt-5-mini` costs every mini call at the full tier and nothing
- * anywhere says so — a margin bug that reads as a margin. And the REFUSALS:
+ * Two claims worth pinning. The MATCHING: a family is its whole id or a dated
+ * snapshot of it, so `gpt-5` never costs a `gpt-5-mini` call at the full tier,
+ * whatever order they were registered in (G-59). And the REFUSALS:
  * every malformed price has to throw rather than be skipped, because a price
  * that was quietly dropped is exactly a silently free model.
  */
@@ -43,7 +42,7 @@ describe('configured families', () => {
     expect(modelFamily('test-tier-nano')).toBe('test-tier-nano');
     expect(modelFamily('test-tier')).toBe('test-tier');
 
-    // If ordering broke, all three would be 9_000_000.
+    // Each tier is its own exact id: under substring containment the parent would price all three at 9_000_000.
     expect(costOfCall('test-tier', usage, FX).usdMicros).toBe(9_000_000);
     expect(costOfCall('test-tier-mini', usage, FX).usdMicros).toBe(300_000);
     expect(costOfCall('test-tier-nano', usage, FX).usdMicros).toBe(50_000);
@@ -71,6 +70,85 @@ describe('configured families', () => {
   });
 });
 
+/**
+ * G-59. A configured family is matched by the WHOLE id, or by the id plus a
+ * dated snapshot suffix, never by containment and never by a bare prefix: a
+ * deployment that configured only `gpt-5` and then runs `gpt-5-mini` has an
+ * unpriced model, not a mini priced at the full tier.
+ */
+describe('configured families match whole ids, not fragments (G-59)', () => {
+  registerRuntimeModelPrices(
+    JSON.stringify({
+      'gpt-5': { in: 1_250_000, out: 10_000_000 },
+      'acme-chat': { in: 700_000, out: 700_000 },
+    }),
+  );
+
+  it('prices the configured id and its dated snapshots', () => {
+    expect(modelFamily('gpt-5')).toBe('gpt-5');
+    expect(modelFamily('GPT-5')).toBe('gpt-5');
+    expect(modelFamily('gpt-5-2025-08-07')).toBe('gpt-5');
+    expect(modelFamily('gpt-5-20250807')).toBe('gpt-5');
+    expect(costOfCall('gpt-5-2025-08-07', usage, FX).usdMicros).toBe(1_250_000);
+  });
+
+  it('leaves a sibling tier unpriced instead of costing it as its parent', () => {
+    // Old rule: "gpt-5-mini" contains "gpt-5", so it cost $1.25 per MTok in.
+    for (const id of ['gpt-5-mini', 'gpt-5-nano', 'gpt-5-mini-2025-08-07', 'gpt-5.1', 'gpt-50']) {
+      expect(modelFamily(id)).toBeNull();
+      expect(costOfCall(id, usage, FX).priced).toBe(false);
+    }
+  });
+
+  it('does not match a configured family that only appears inside an id', () => {
+    for (const id of ['my-gpt-5', 'openrouter/gpt-5-fork', 'acme-chat-pro', 'xacme-chat']) {
+      expect(modelFamily(id)).toBeNull();
+    }
+    expect(() => assertModelIsPriced('gpt-5-mini', true)).toThrow(UnpricedModel);
+  });
+
+  it('does not take a moving alias as a snapshot', () => {
+    expect(modelFamily('gpt-5-latest')).toBeNull();
+    expect(modelFamily('acme-chat-preview')).toBeNull();
+  });
+
+  it('prefers a configured exact id over a shorter family plus a snapshot suffix', () => {
+    // Registered alias first, snapshot second: insertion order must not decide.
+    registerRuntimeModelPrices(
+      JSON.stringify({
+        'order-test': { in: 1_000_000, out: 1_000_000 },
+        'order-test-2026-01-01': { in: 2_000_000, out: 2_000_000 },
+      }),
+    );
+    expect(modelFamily('order-test-2026-01-01')).toBe('order-test-2026-01-01');
+    expect(costOfCall('order-test-2026-01-01', usage, FX).usdMicros).toBe(2_000_000);
+    expect(modelFamily('order-test-2026-02-01')).toBe('order-test');
+  });
+
+  /* The id is sent to the provider as configured, so a stray space or \r
+   * from an edited env file must refuse to boot, never pass the price check
+   * and then fail every call (CLAUDE.md invariant 8). */
+  it('leaves a configured id with stray whitespace unpriced, so boot refuses it', () => {
+    expect(modelFamily(' gpt-5\r')).toBeNull();
+    expect(() => assertModelIsPriced('gpt-5\r', true)).toThrow(UnpricedModel);
+    // A shipped Claude id too: Anthropic is the default provider.
+    for (const id of ['claude-sonnet-5\r', ' claude-haiku-4-5', 'claude-opus-5 ']) {
+      expect(modelFamily(id)).toBeNull();
+      expect(() => assertModelIsPriced(id, true)).toThrow(UnpricedModel);
+    }
+  });
+
+  it('lets a configured exact id override the built-in Claude family', () => {
+    registerRuntimeModelPrices(
+      JSON.stringify({ 'claude-sonnet-4-5': { in: 3_000_000, out: 15_000_000 } }),
+    );
+    expect(modelFamily('claude-sonnet-4-5-20250929')).toBe('claude-sonnet-4-5');
+    expect(costOfCall('claude-sonnet-4-5-20250929', usage, FX).usdMicros).toBe(3_000_000);
+    // The shipped id is untouched by it.
+    expect(modelFamily('claude-sonnet-5')).toBe('sonnet');
+  });
+});
+
 describe('reading the configuration', () => {
   it('treats an absent or empty value as no extra prices', () => {
     expect(parseModelPrices(undefined)).toEqual({});
@@ -79,6 +157,13 @@ describe('reading the configuration', () => {
 
   it('refuses invalid JSON rather than starting with no prices', () => {
     expect(() => parseModelPrices('{not json')).toThrow(BadModelPrices);
+  });
+
+  it('refuses a key that is a built-in family name, which would be silently ignored', () => {
+    expect(() => parseModelPrices('{"sonnet":{"in":3000000,"out":15000000}}')).toThrow(
+      BadModelPrices,
+    );
+    expect(() => parseModelPrices('{"Opus":{"in":1,"out":1}}')).toThrow(BadModelPrices);
   });
 
   it('refuses a shape that is not an object keyed by family', () => {

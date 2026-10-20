@@ -1,7 +1,7 @@
 # AI launch readiness: the gates, and what enforces each one
 
-Status: **HARNESS: CODE COMPLETE on the G-07 branch (not yet merged). LIVE MODEL
-EVALUATION: PENDING OWNER-RUN ACCEPTANCE** (in the batched acceptance campaign, after
+Status: **HARNESS: MERGED (#273, `044eb40`, 20 Oct 2026), staging acceptance pending. LIVE
+MODEL EVALUATION: PENDING OWNER-RUN ACCEPTANCE** (in the batched acceptance campaign, after
 G-59). No live score exists; none is invented here.
 Dataset: `apps/api/src/ai/eval/dataset.ts`, version 2 (95 cases; the fingerprint is
 printed by every run and by `--plan`).

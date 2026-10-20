@@ -45,10 +45,10 @@ export interface ModelPrice {
 /**
  * Published list prices (pricing-model.md §"Unit costs").
  *
- * Keyed by model FAMILY rather than by exact id, because a family's price is
- * the stable thing: ids gain suffixes and tiers gain members, but every
- * `claude-haiku-*` bills at the haiku rate. Configuration names an exact id
- * (see config.ts) and this table costs whichever family it belongs to.
+ * Keyed by family name, but each family prices only the exact model its
+ * price was published for (`BUILT_IN_MODELS`, below) and that model's dated
+ * snapshots (G-59): another generation is another price, so it is unpriced
+ * until AI_MODEL_PRICES names it, never costed at a nearby family's rate.
  *
  * ALWAYS THE PERMANENT LIST RATE, never a promotional one. Introductory
  * pricing expires on a date nobody will remember, and a margin view that
@@ -118,16 +118,70 @@ export function registerModelPrice(family: string, price: ModelPrice): void {
 }
 
 function priceFor(family: string): ModelPrice | undefined {
-  return MODEL_PRICES[family] ?? runtimePrices.get(family);
+  // Own keys only: an inherited name (`constructor`) is not a price.
+  return Object.hasOwn(MODEL_PRICES, family) ? MODEL_PRICES[family] : runtimePrices.get(family);
 }
 
-/** The family a model id belongs to, or null if we do not price it. */
-export function modelFamily(modelId: string): string | null {
-  const id = modelId.toLowerCase();
-  for (const family of [...Object.keys(MODEL_PRICES), ...runtimePrices.keys()]) {
-    if (id.includes(family)) return family;
+/**
+ * The exact Claude model each compiled family price was published for (G-59).
+ * A price is one generation's list price, never a family's: Opus 4.1 lists at
+ * three times Opus 5, and Haiku 3 at a quarter of Haiku 4.5. So a built-in
+ * family prices its own id and that id's dated snapshots only; any other
+ * generation, alias or variant is unpriced until AI_MODEL_PRICES names it.
+ */
+const BUILT_IN_MODELS: Readonly<Record<string, string>> = {
+  'claude-sonnet-5': 'sonnet',
+  'claude-haiku-4-5': 'haiku',
+  'claude-opus-5': 'opus',
+  'claude-fable-5': 'fable',
+};
+
+/** The family `id` names exactly, or as one dated snapshot of it. */
+function exactOrSnapshot(id: string, names: Iterable<string>): string | null {
+  for (const name of names) {
+    if (id === name || (id.startsWith(name) && SNAPSHOT_SUFFIX.test(id.slice(name.length)))) {
+      return name;
+    }
   }
   return null;
+}
+
+/**
+ * A dated snapshot suffix: `-2025-08-07`, `-20250929` or `@20250929`. Never a
+ * word like `-mini` or `-latest`: a tier is a different price, and an alias
+ * moves between tiers and takes the price with it.
+ */
+const SNAPSHOT_SUFFIX = /^(?:[-@]\d{4}-\d{2}-\d{2}|[-@]\d{8})$/;
+
+/**
+ * The family a model id belongs to, or null if we do not price it (G-59).
+ *
+ * One id names one family or none; it is never the first family whose name
+ * the id happens to contain. That rule let key order and stray words choose a
+ * price: `gpt-5-mini` cost as `gpt-5` when only `gpt-5` was configured, and
+ * any id with "opus" anywhere in it cost as Opus.
+ *
+ * 1. A configured family matches the whole id, or the id plus a dated
+ *    snapshot suffix; an exact match beats a snapshot of a shorter one.
+ *    Configuration names exact ids, so it wins.
+ * 2. A built-in family matches the exact Claude id its price was published
+ *    for (`BUILT_IN_MODELS`), or a dated snapshot of it. Another generation
+ *    is another price, so it is unpriced, never a nearby family's.
+ * An id holding whitespace is never priced.
+ */
+export function modelFamily(modelId: string): string | null {
+  /* No model id contains whitespace. One that does is a configuration
+   * mistake (a stray space or \r in an env file), and it is sent to the
+   * provider as written, so it is unpriced here and the boot check refuses
+   * it rather than every call failing later (CLAUDE.md invariant 8). */
+  if (/\s/.test(modelId)) return null;
+  const id = modelId.toLowerCase();
+  // The exact id first, so a configured snapshot never loses to its alias.
+  if (runtimePrices.has(id)) return id;
+  const configured = exactOrSnapshot(id, runtimePrices.keys());
+  if (configured) return configured;
+  const builtIn = exactOrSnapshot(id, Object.keys(BUILT_IN_MODELS));
+  return builtIn ? BUILT_IN_MODELS[builtIn]! : null;
 }
 
 export interface CallCost {

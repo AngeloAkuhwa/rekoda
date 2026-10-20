@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import {
   hasTranscriptionPrice,
+  MODEL_PRICES,
   modelFamily,
   registerModelPrice,
   registerTranscriptionPrice,
@@ -27,7 +28,8 @@ import {
  * on a US host, Groq, Together, OpenRouter — because a provider we have never
  * heard of cannot have a price compiled into us.
  *
- * Format, micro-USD per million tokens, keyed by model FAMILY:
+ * Format, micro-USD per million tokens, keyed by EXACT model id (each key also
+ * prices that id's dated snapshots, G-59):
  *
  *   AI_MODEL_PRICES='{"gpt-5-mini":{"in":250000,"out":2000000,"cacheRead":25000}}'
  *
@@ -60,12 +62,19 @@ export function parseModelPrices(raw: string | undefined): Record<string, PriceI
     throw new BadModelPrices('AI_MODEL_PRICES is not valid JSON');
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new BadModelPrices('AI_MODEL_PRICES must be an object keyed by model family');
+    throw new BadModelPrices('AI_MODEL_PRICES must be an object keyed by model id');
   }
 
   const prices: Record<string, PriceInput> = {};
   for (const [family, value] of Object.entries(parsed as Record<string, unknown>)) {
     const price = value as Partial<PriceInput>;
+    /* A compiled family name is not a model id, and its compiled price
+     * would win anyway: refused rather than silently ignored (G-59). */
+    if (Object.hasOwn(MODEL_PRICES, family.toLowerCase())) {
+      throw new BadModelPrices(
+        `AI_MODEL_PRICES["${family}"] names a built-in family, not a model id; key the exact id`,
+      );
+    }
     if (!isPositive(price?.in) || !isPositive(price?.out)) {
       throw new BadModelPrices(`AI_MODEL_PRICES["${family}"] needs positive "in" and "out"`);
     }
@@ -84,17 +93,15 @@ function isPositive(value: unknown): value is number {
 }
 
 /**
- * Register them, longest family first.
- *
- * `modelFamily` matches the first family whose name the model id CONTAINS, so
- * a shorter name that is a prefix of a longer one would swallow it: register
- * `gpt-5` before `gpt-5-mini` and every mini call is costed as a full one,
- * silently and in the expensive direction. Sorting by length descending makes
- * that structural rather than a property of key order in someone's env var.
+ * Register them. Each family matches only its whole id or a dated snapshot of
+ * it (`modelFamily`, G-59), so `gpt-5` and `gpt-5-mini` can never swallow one
+ * another, whatever order they are registered in. A tier that is not
+ * configured stays unpriced and refuses to boot; it is never costed as its
+ * parent.
  */
 export function registerRuntimeModelPrices(raw: string | undefined): void {
   const prices = parseModelPrices(raw);
-  for (const family of Object.keys(prices).sort((a, b) => b.length - a.length)) {
+  for (const family of Object.keys(prices)) {
     const price = prices[family]!;
     registerModelPrice(family, {
       inputMicrosPerMTok: price.in,

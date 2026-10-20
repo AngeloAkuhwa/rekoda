@@ -14,6 +14,7 @@ import {
   costOfTranscription,
   hasTranscriptionPrice,
   modelFamily,
+  registerModelPrice,
   registerTranscriptionPrice,
 } from './ai-cost.js';
 import { usagePeriod } from './allowances.js';
@@ -111,9 +112,90 @@ describe('a model we have no price for', () => {
   });
 
   it('recognises a family inside a dated snapshot id', () => {
-    expect(modelFamily('claude-sonnet-4-5-20250929')).toBe('sonnet');
     expect(modelFamily('claude-haiku-4-5-20251001')).toBe('haiku');
     expect(modelFamily('gpt-4o')).toBeNull();
+  });
+});
+
+/**
+ * G-59. A model id names ONE family or none. The old rule priced an id as the
+ * first family whose name it merely CONTAINED, so the answer depended on the
+ * table's key order and on words that happen to appear inside an id.
+ */
+describe('which family a model id belongs to (G-59)', () => {
+  it('reads every priced Claude id, bare or dated, as its own family', () => {
+    expect(modelFamily('claude-sonnet-5')).toBe('sonnet');
+    expect(modelFamily('claude-haiku-4-5')).toBe('haiku');
+    expect(modelFamily('claude-opus-5')).toBe('opus');
+    expect(modelFamily('claude-fable-5')).toBe('fable');
+    expect(modelFamily('claude-sonnet-5-20260101')).toBe('sonnet');
+    expect(modelFamily('claude-opus-5@20260101')).toBe('opus');
+    expect(modelFamily('CLAUDE-HAIKU-4-5-20251001')).toBe('haiku');
+  });
+
+  /* A family's price is one generation's list price. Another generation is
+   * another price (Opus 4.1 lists at three times Opus 5), so it is unpriced
+   * and the boot check refuses it until AI_MODEL_PRICES names it exactly. */
+  it('never prices another generation, an alias or a variant at a built-in rate', () => {
+    for (const id of [
+      'claude-sonnet-4-5-20250929',
+      'claude-opus-4-1',
+      'claude-3-haiku-20240307',
+      'claude-3-5-sonnet-20241022',
+      'claude-opus-5-5',
+      'claude-sonnet-5-1',
+      'claude-fable-5-1',
+      'claude-sonnet-latest',
+      'claude-sonnet-5-latest',
+      'anthropic.claude-sonnet-5-v1:0',
+    ]) {
+      expect(modelFamily(id)).toBeNull();
+      expect(costOfCall(id, { inputTokens: 1_000_000, outputTokens: 0 }, FX).priced).toBe(false);
+    }
+  });
+
+  it('does not price a non-Claude id as Claude because it contains a family word', () => {
+    for (const id of ['gpt-sonnet-mimic', 'opus-clip-v2', 'fabled-7b', 'haikus-lm', 'sonnets']) {
+      expect(modelFamily(id)).toBeNull();
+      expect(costOfCall(id, { inputTokens: 1_000_000, outputTokens: 0 }, FX).priced).toBe(false);
+    }
+  });
+
+  it('does not match a family word that is only part of a longer id', () => {
+    expect(modelFamily('claude-sonnetx-5')).toBeNull();
+    expect(modelFamily('claude-magnum-opus-5')).toBeNull();
+    expect(modelFamily('claude-opusplus-5')).toBeNull();
+  });
+
+  it('refuses an id that names two families rather than letting key order choose', () => {
+    // Old rule: "sonnet" comes first in the table, so this cost as Sonnet.
+    expect(modelFamily('claude-opus-sonnet-distill')).toBeNull();
+    expect(modelFamily('claude-haiku-opus-5')).toBeNull();
+  });
+
+  it('refuses an id holding whitespace, which the provider would reject', () => {
+    expect(modelFamily('claude-sonnet-5\r')).toBeNull();
+    expect(modelFamily(' claude-haiku-4-5')).toBeNull();
+    expect(modelFamily('claude sonnet 5')).toBeNull();
+  });
+
+  it('never reads an Object.prototype name as a price', () => {
+    // A configured key `constructor` must price from what was registered, not
+    // from the inherited property of the compiled price table (NaN cost).
+    registerModelPrice('constructor', {
+      inputMicrosPerMTok: 1_000_000,
+      outputMicrosPerMTok: 2_000_000,
+      cacheWriteMicrosPerMTok: 0,
+      cacheReadMicrosPerMTok: 0,
+    });
+    const cost = costOfCall('constructor', { inputTokens: 1_000_000, outputTokens: 0 }, FX);
+    expect(cost.priced).toBe(true);
+    expect(cost.usdMicros).toBe(1_000_000);
+  });
+
+  it('refuses a Claude id that names no family it knows', () => {
+    expect(modelFamily('claude-instant-1')).toBeNull();
+    expect(modelFamily('claude')).toBeNull();
   });
 });
 
