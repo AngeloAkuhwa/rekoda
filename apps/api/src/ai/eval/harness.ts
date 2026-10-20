@@ -431,8 +431,9 @@ function unstatedAdjustments(
       /* What books the same is the same (final sanity review): a total that
        * echoes the lines, or a term that resolves to no date. */
       if (field === 'statedTotal' && typeof value === 'number') {
+        /* 0 books as none: `computeMoney` uses a stated total only above 0. */
         const net = netTotal(command);
-        none = net !== null && sameFigure(value, net);
+        none = value === 0 || (net !== null && sameFigure(value, net));
       }
       if (field === 'dueDescription' && typeof value === 'string') {
         none = dueKey(value) === dueKey(null);

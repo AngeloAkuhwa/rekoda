@@ -564,6 +564,23 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
     expect(scoreCase(caseOf('ng-cash-2'), walkIn({ kind: 'none' })).status).toBe('passed');
   });
 
+  /* `computeMoney` books a stated total of 0 exactly like none (it uses the
+   * stated total only when it is above 0), so 0 is not an invented total
+   * (final check on 897bce5). */
+  it('a stated total of 0 books like none and is not an invented total', () => {
+    const zero = command({
+      intent: 'RecordSale',
+      customer: { kind: 'none' },
+      items: [{ name: 'hair cream', quantity: 1, unitPrice: 6_500 }],
+      reportedPayment: 6_500,
+      paymentMethod: 'cash',
+      statedTotal: 0,
+    });
+    const result = scoreCase(caseOf('ng-cash-2'), zero);
+    expect(result.status).toBe('passed');
+    expect(scoreEval([caseOf('ng-cash-2')], [result]).amountExactMatch.value).toBe(1);
+  });
+
   it('a paid sale with an invented discount fails, though payment matches its own total (Codex on #273)', () => {
     const sale = (extra: Record<string, unknown>) =>
       command({
