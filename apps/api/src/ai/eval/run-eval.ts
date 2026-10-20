@@ -3,7 +3,9 @@
  *
  * From apps/api, after `pnpm eval:build` (repository root), with the SAME
  * AI configuration the deployment runs (AI_PROVIDER, AI_MODEL_*,
- * AI_MODEL_PRICES, the provider key) and a non-production DATABASE_URL:
+ * AI_MODEL_PRICES, the provider key) and a non-production DATABASE_URL,
+ * with REKODA_EVAL_DATABASE set to that database's name (refused otherwise,
+ * and always refused when NODE_ENV is production):
  *
  *   node dist/ai/eval/run-eval.js --plan            what would run; no calls
  *   node dist/ai/eval/run-eval.js                   measurement only
@@ -34,7 +36,7 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { loadConfig, type ApiConfig } from '../../config.js';
+import { isProductionEnv, loadConfig, type ApiConfig } from '../../config.js';
 import { Interpreter } from '../interpreter.service.js';
 import {
   NoTransportConfigured,
@@ -203,15 +205,40 @@ export async function usageOf(db: Db, businessId: string): Promise<UsageSummary>
  * manifest the build stamped; build-stamp.ts). Outside git (an image) the
  * built commit (REKODA_COMMIT) names the run, and cleanliness is unknown.
  */
-function gitState(config: ApiConfig): Checkout {
+export function gitState(config: ApiConfig, root: string = REPO_ROOT): Checkout {
   const build = verifyBuild(REPO_ROOT);
   try {
-    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-    const status = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' });
+    /* The tree the build fingerprint covers, wherever the runner was launched
+     * from (Codex on #273). */
+    const git = { encoding: 'utf8', cwd: root } as const;
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], git).trim();
+    const status = execFileSync('git', ['status', '--porcelain'], git);
     return { sha, dirty: status.trim().length > 0, build };
   } catch {
     return { sha: config.commit, dirty: null, build };
   }
+}
+
+/**
+ * Why this database may not be used, or null. The run writes a synthetic
+ * tenant and consumes the global AI ceiling, so it never runs in a
+ * production environment and needs the operator to name the database it
+ * is allowed to write to (Codex on #273).
+ */
+export function databaseRefusal(env: NodeJS.ProcessEnv, databaseUrl: string): string | null {
+  if (isProductionEnv(env)) {
+    return 'NODE_ENV is production; the evaluation writes to its database and never runs there';
+  }
+  let name: string;
+  try {
+    name = decodeURIComponent(new URL(databaseUrl).pathname.replace(/^\//, ''));
+  } catch {
+    return 'DATABASE_URL does not parse; nothing run';
+  }
+  if (!name || env.REKODA_EVAL_DATABASE !== name) {
+    return 'set REKODA_EVAL_DATABASE to the name of the non-production database this run may write to';
+  }
+  return null;
 }
 
 export interface Checkout {
@@ -280,6 +307,11 @@ async function main(): Promise<number> {
   const transport = createModelTransport(config);
   if (transport instanceof NoTransportConfigured) {
     console.error(`no API key for the configured provider (${config.aiProvider}); nothing run`);
+    return 1;
+  }
+  const unsafeDb = databaseRefusal(process.env, config.databaseUrl);
+  if (unsafeDb) {
+    console.error(`nothing run: ${unsafeDb}`);
     return 1;
   }
   const { db, close } = createDb(config.databaseUrl, { max: 4 });

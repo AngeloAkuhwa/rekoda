@@ -10,6 +10,7 @@
  * No fallback between providers: a configuration either names one that is
  * reachable, or it degrades honestly (`NoTransportConfigured`).
  */
+import { createHash } from 'node:crypto';
 import type { ApiConfig } from '../config.js';
 import { AnthropicTransport } from './anthropic.transport.js';
 import { OpenAiTransport } from './openai.transport.js';
@@ -122,6 +123,8 @@ export function createVerifierTransport(config: ApiConfig): ModelTransport | nul
 export interface AiConfigurationSummary {
   readonly provider: 'anthropic' | 'openai';
   readonly baseUrlHost: string | null;
+  /** Hash of the whole normalised endpoint (scheme, host, port, path), never the credentials. */
+  readonly baseUrlFingerprint: string | null;
   readonly keyPresent: { readonly anthropic: boolean; readonly openai: boolean };
   /** Documents worth at least this many kobo get an independent second reading. */
   readonly dualExtractThresholdK: number;
@@ -137,9 +140,13 @@ export interface AiConfigurationSummary {
 
 export function describeAiConfiguration(config: ApiConfig): AiConfigurationSummary {
   let baseUrlHost: string | null = null;
+  let baseUrlFingerprint: string | null = null;
   if (config.aiBaseUrl) {
     try {
-      baseUrlHost = new URL(config.aiBaseUrl).host;
+      const url = new URL(config.aiBaseUrl);
+      baseUrlHost = url.host;
+      const endpoint = `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`;
+      baseUrlFingerprint = `sha256:${createHash('sha256').update(endpoint).digest('hex').slice(0, 16)}`;
     } catch {
       baseUrlHost = 'unparseable';
     }
@@ -147,6 +154,7 @@ export function describeAiConfiguration(config: ApiConfig): AiConfigurationSumma
   return {
     provider: config.aiProvider,
     baseUrlHost,
+    baseUrlFingerprint,
     keyPresent: {
       anthropic: Boolean(config.anthropicApiKey),
       openai: Boolean(config.openaiApiKey),

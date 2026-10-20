@@ -38,7 +38,12 @@ silent accounting errors.
 ## Quality gates (measured live, recorded here)
 
 Run from `apps/api` against a NON-production database, with the deployment's own AI
-configuration (`AI_PROVIDER`, every `AI_MODEL_*`, `AI_MODEL_PRICES`, the provider key):
+configuration (`AI_PROVIDER`, every `AI_MODEL_*`, `AI_MODEL_PRICES`, the provider key). The
+run writes a synthetic tenant and uses the global AI ceiling, so it refuses `NODE_ENV=production`
+and refuses to connect unless `REKODA_EVAL_DATABASE` names the database in `DATABASE_URL`. Git
+identity is read from the repository the build was verified against, whatever the launch
+directory. The JSON report keeps every case (names and check fields, never values) and a
+fingerprint of the full model endpoint:
 
 ```
 pnpm eval:build                                      # force-builds every package, then stamps

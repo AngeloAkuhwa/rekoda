@@ -74,6 +74,8 @@ export interface EvalReport {
   readonly metrics: EvalMetrics;
   readonly escalationRate: Metric;
   readonly usage: UsageSummary;
+  /** Every case, by name: what failed and which checks held. Never a value. */
+  readonly results: readonly EvalCaseResult[];
   /** Over correct accepted DRAFTS (never Query answers); null when there are none. */
   readonly costPerCorrectAcceptedDraftMicros: number | null;
   readonly verdict: LaunchVerdict | null;
@@ -171,6 +173,7 @@ export function buildEvalReport(input: {
     metrics,
     escalationRate: metricOf(usage.escalationCalls, usage.interpreterCalls),
     usage,
+    results: input.results,
     costPerCorrectAcceptedDraftMicros:
       correct > 0 ? Math.round(usage.providerCostMicros / correct) : null,
     verdict,
@@ -212,7 +215,8 @@ export function renderEvalReport(report: EvalReport): string {
     `build              ${report.buildFingerprint}`,
     `dataset            v${report.dataset.version}, ${report.dataset.size} cases, ${report.dataset.fingerprint}`,
     ...report.dataset.errors.map((e) => `DATASET ERROR      ${e}`),
-    `provider           ${c.provider}${c.baseUrlHost ? ` via ${c.baseUrlHost}` : ''}`,
+    `provider           ${c.provider}${c.baseUrlHost ? ` via ${c.baseUrlHost}` : ''}` +
+      (c.baseUrlFingerprint ? ` (${c.baseUrlFingerprint})` : ''),
     `models             interpreter=${c.models.interpreter} classifier=${c.models.classifier} ` +
       `escalation=${c.models.escalation} vision=${c.models.vision} ` +
       `verifier=${c.models.visionVerifier ?? 'off'} transcriber=${c.models.transcriber ?? 'off'}`,
@@ -273,5 +277,14 @@ export function renderEvalReport(report: EvalReport): string {
     lines.push(`LAUNCH GATE: ${report.launch}`);
   }
   for (const reason of report.launchReasons) lines.push(`  - ${reason}`);
+  const notPassed = report.results.filter((r) => r.status !== 'passed');
+  if (notPassed.length > 0) {
+    lines.push('', 'cases that did not pass (names only, never values):');
+    for (const r of notPassed) {
+      lines.push(
+        `  ${r.status.padEnd(8)} ${r.caseId} [${r.outcome}] ${r.failedChecks.join(', ') || '-'}`,
+      );
+    }
+  }
   return lines.join('\n');
 }

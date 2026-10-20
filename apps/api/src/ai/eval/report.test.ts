@@ -3,6 +3,7 @@
  * No provider is called here: the report is pure, and the transport is
  * only constructed, never sent.
  */
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -23,7 +24,14 @@ import {
   type UsageSummary,
 } from './report.js';
 import { EVAL_CASES } from './dataset.js';
-import { checkoutRefusal, evalConfig, parseEvalArgs, reportedSha } from './run-eval.js';
+import {
+  checkoutRefusal,
+  databaseRefusal,
+  evalConfig,
+  gitState,
+  parseEvalArgs,
+  reportedSha,
+} from './run-eval.js';
 import { MANIFEST_PATH, verifyBuild, writeBuildManifest } from './build-stamp.js';
 
 function configWith(env: Record<string, string>): ApiConfig {
@@ -416,5 +424,67 @@ describe('a run with a failed provider call (G-07, Codex on #273)', () => {
     const r = report('gate', { ownerApproved: SIGNED, usage: { ...USAGE, failedCalls: 1 } });
     expect(r.launch).toBe('NOT_MEASURED');
     expect(exitCodeFor(r)).toBe(1);
+  });
+});
+
+describe('what a paid run may touch and record (G-07, Codex on #273)', () => {
+  it('refuses a production environment and an unnamed database before connecting', () => {
+    const url = 'postgres://eval@127.0.0.1:5432/rekoda_eval';
+    expect(
+      databaseRefusal({ NODE_ENV: 'production', REKODA_EVAL_DATABASE: 'rekoda_eval' }, url),
+    ).toContain('production');
+    expect(databaseRefusal({}, url)).toContain('REKODA_EVAL_DATABASE');
+    expect(databaseRefusal({ REKODA_EVAL_DATABASE: 'rekoda' }, url)).toContain(
+      'REKODA_EVAL_DATABASE',
+    );
+    expect(databaseRefusal({ REKODA_EVAL_DATABASE: 'rekoda_eval' }, url)).toBeNull();
+  });
+
+  it('reads git from the verified repository, not the launch directory', () => {
+    const other = mkdtempSync(join(tmpdir(), 'eval-git-'));
+    execFileSync('git', ['init', '-q'], { cwd: other });
+    execFileSync(
+      'git',
+      ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'x'],
+      { cwd: other },
+    );
+    const otherSha = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: other,
+      encoding: 'utf8',
+    }).trim();
+    const config = configWith(OPENAI);
+    expect(gitState(config, other).sha).toBe(otherSha);
+    expect(gitState(config).sha).not.toBe(otherSha);
+  });
+
+  it('tells two endpoints on one host apart, and keeps credentials out', () => {
+    const a = describeAiConfiguration(
+      configWith({ ...OPENAI, AI_BASE_URL: 'https://u:secret@llm.example.com/team-a/v1' }),
+    );
+    const b = describeAiConfiguration(
+      configWith({ ...OPENAI, AI_BASE_URL: 'https://llm.example.com/team-b/v1' }),
+    );
+    const a2 = describeAiConfiguration(
+      configWith({ ...OPENAI, AI_BASE_URL: 'https://llm.example.com/team-a/v1/' }),
+    );
+    expect(a.baseUrlHost).toBe(b.baseUrlHost);
+    expect(a.baseUrlFingerprint).not.toBe(b.baseUrlFingerprint);
+    expect(a.baseUrlFingerprint).toBe(a2.baseUrlFingerprint);
+    expect(JSON.stringify(a)).not.toContain('secret');
+  });
+
+  it('keeps every case in the durable report so a failed run is diagnosable', () => {
+    const failed = {
+      caseId: 'c-bad',
+      category: 'pidgin' as const,
+      outcome: 'command' as const,
+      status: 'failed' as const,
+      failedChecks: ['amount'],
+      checks: [],
+    };
+    const r = report('measure', { results: [failed] });
+    expect(r.results).toEqual([failed]);
+    expect(renderEvalReport(r)).toContain('c-bad');
+    expect(renderEvalReport(r)).toContain('amount');
   });
 });
