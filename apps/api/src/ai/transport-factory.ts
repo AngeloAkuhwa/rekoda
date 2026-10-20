@@ -192,7 +192,15 @@ export function describeAiConfiguration(config: ApiConfig): AiConfigurationSumma
     try {
       const url = new URL(config.aiBaseUrl);
       baseUrlHost = url.host;
-      const endpoint = `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`;
+      /* The SDK sends the query string with every request, so it is part
+       * of the endpoint; sorted, so parameter order is not (Codex on
+       * 0e3cea5). Hashed, so no value reaches the report. */
+      const query = new URLSearchParams(url.search);
+      query.sort();
+      const search = query.toString();
+      const endpoint =
+        `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}` +
+        (search ? `?${search}` : '');
       baseUrlFingerprint = `sha256:${createHash('sha256').update(endpoint).digest('hex').slice(0, 16)}`;
     } catch {
       baseUrlHost = 'unparseable';

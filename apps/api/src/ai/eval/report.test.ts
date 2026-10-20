@@ -490,6 +490,21 @@ describe('what a paid run may touch and record (G-07, Codex on #273)', () => {
     expect(JSON.stringify(a)).not.toContain('secret');
   });
 
+  /* The SDK sends the base URL's query string with every request, so two
+   * deployments behind one path are two endpoints; the order of the
+   * parameters is not (Codex on 0e3cea5). Values are hashed, never shown. */
+  it('tells endpoints apart by their query string, in any order', () => {
+    const of = (url: string) =>
+      describeAiConfiguration(configWith({ ...OPENAI, AI_BASE_URL: url }));
+    const a = of('https://models.example/v1?deployment=a&region=eu');
+    const b = of('https://models.example/v1?deployment=b&region=eu');
+    const aReordered = of('https://models.example/v1?region=eu&deployment=a');
+    expect(a.baseUrlFingerprint).not.toBe(b.baseUrlFingerprint);
+    expect(a.baseUrlFingerprint).toBe(aReordered.baseUrlFingerprint);
+    expect(a.baseUrlFingerprint).not.toBe(of('https://models.example/v1').baseUrlFingerprint);
+    expect(JSON.stringify(a)).not.toContain('deployment=a');
+  });
+
   it('keeps every case in the durable report so a failed run is diagnosable', () => {
     const failed = {
       caseId: 'c-bad',
