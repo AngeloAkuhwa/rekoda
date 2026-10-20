@@ -214,9 +214,12 @@ describe('who is due', () => {
     await appliedPayment;
 
     const deletion = retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90));
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    release();
-    await payment;
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    } finally {
+      release();
+      await payment;
+    }
 
     expect(await deletion).toBe(-1);
     const rows = await inTenant(businessId, (tx) =>
