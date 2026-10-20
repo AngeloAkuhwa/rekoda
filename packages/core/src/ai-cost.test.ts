@@ -111,7 +111,6 @@ describe('a model we have no price for', () => {
   });
 
   it('recognises a family inside a dated snapshot id', () => {
-    expect(modelFamily('claude-sonnet-4-5-20250929')).toBe('sonnet');
     expect(modelFamily('claude-haiku-4-5-20251001')).toBe('haiku');
     expect(modelFamily('gpt-4o')).toBeNull();
   });
@@ -123,14 +122,35 @@ describe('a model we have no price for', () => {
  * table's key order and on words that happen to appear inside an id.
  */
 describe('which family a model id belongs to (G-59)', () => {
-  it('reads every shipped Claude id, bare or dated, as its own family', () => {
+  it('reads every priced Claude id, bare or dated, as its own family', () => {
     expect(modelFamily('claude-sonnet-5')).toBe('sonnet');
     expect(modelFamily('claude-haiku-4-5')).toBe('haiku');
     expect(modelFamily('claude-opus-5')).toBe('opus');
-    expect(modelFamily('claude-opus-5-5')).toBe('opus');
-    expect(modelFamily('claude-fable-5-1')).toBe('fable');
-    expect(modelFamily('claude-sonnet-4-5-20250929')).toBe('sonnet');
+    expect(modelFamily('claude-fable-5')).toBe('fable');
+    expect(modelFamily('claude-sonnet-5-20260101')).toBe('sonnet');
+    expect(modelFamily('claude-opus-5@20260101')).toBe('opus');
     expect(modelFamily('CLAUDE-HAIKU-4-5-20251001')).toBe('haiku');
+  });
+
+  /* A family's price is one generation's list price. Another generation is
+   * another price (Opus 4.1 lists at three times Opus 5), so it is unpriced
+   * and the boot check refuses it until AI_MODEL_PRICES names it exactly. */
+  it('never prices another generation, an alias or a variant at a built-in rate', () => {
+    for (const id of [
+      'claude-sonnet-4-5-20250929',
+      'claude-opus-4-1',
+      'claude-3-haiku-20240307',
+      'claude-3-5-sonnet-20241022',
+      'claude-opus-5-5',
+      'claude-sonnet-5-1',
+      'claude-fable-5-1',
+      'claude-sonnet-latest',
+      'claude-sonnet-5-latest',
+      'anthropic.claude-sonnet-5-v1:0',
+    ]) {
+      expect(modelFamily(id)).toBeNull();
+      expect(costOfCall(id, { inputTokens: 1_000_000, outputTokens: 0 }, FX).priced).toBe(false);
+    }
   });
 
   it('does not price a non-Claude id as Claude because it contains a family word', () => {
@@ -140,9 +160,9 @@ describe('which family a model id belongs to (G-59)', () => {
     }
   });
 
-  it('does not match a family word that is only part of a longer word', () => {
+  it('does not match a family word that is only part of a longer id', () => {
     expect(modelFamily('claude-sonnetx-5')).toBeNull();
-    expect(modelFamily('claude-magnum-opus-5')).toBe('opus');
+    expect(modelFamily('claude-magnum-opus-5')).toBeNull();
     expect(modelFamily('claude-opusplus-5')).toBeNull();
   });
 

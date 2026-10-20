@@ -42,7 +42,7 @@ describe('configured families', () => {
     expect(modelFamily('test-tier-nano')).toBe('test-tier-nano');
     expect(modelFamily('test-tier')).toBe('test-tier');
 
-    // Under the old containment rule all three would cost 9_000_000.
+    // Registered parent first: under containment without the old length sort, all three would cost 9_000_000.
     expect(costOfCall('test-tier', usage, FX).usdMicros).toBe(9_000_000);
     expect(costOfCall('test-tier-mini', usage, FX).usdMicros).toBe(300_000);
     expect(costOfCall('test-tier-nano', usage, FX).usdMicros).toBe(50_000);
@@ -157,6 +157,13 @@ describe('reading the configuration', () => {
 
   it('refuses invalid JSON rather than starting with no prices', () => {
     expect(() => parseModelPrices('{not json')).toThrow(BadModelPrices);
+  });
+
+  it('refuses a key that is a built-in family name, which would be silently ignored', () => {
+    expect(() => parseModelPrices('{"sonnet":{"in":3000000,"out":15000000}}')).toThrow(
+      BadModelPrices,
+    );
+    expect(() => parseModelPrices('{"Opus":{"in":1,"out":1}}')).toThrow(BadModelPrices);
   });
 
   it('refuses a shape that is not an object keyed by family', () => {

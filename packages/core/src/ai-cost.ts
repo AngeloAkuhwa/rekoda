@@ -122,6 +122,30 @@ function priceFor(family: string): ModelPrice | undefined {
 }
 
 /**
+ * The exact Claude model each compiled family price was published for (G-59).
+ * A price is one generation's list price, never a family's: Opus 4.1 lists at
+ * three times Opus 5, and Haiku 3 at a quarter of Haiku 4.5. So a built-in
+ * family prices its own id and that id's dated snapshots only; any other
+ * generation, alias or variant is unpriced until AI_MODEL_PRICES names it.
+ */
+const BUILT_IN_MODELS: Readonly<Record<string, string>> = {
+  'claude-sonnet-5': 'sonnet',
+  'claude-haiku-4-5': 'haiku',
+  'claude-opus-5': 'opus',
+  'claude-fable-5': 'fable',
+};
+
+/** The family `id` names exactly, or as one dated snapshot of it. */
+function exactOrSnapshot(id: string, names: Iterable<string>): string | null {
+  for (const name of names) {
+    if (id === name || (id.startsWith(name) && SNAPSHOT_SUFFIX.test(id.slice(name.length)))) {
+      return name;
+    }
+  }
+  return null;
+}
+
+/**
  * A dated snapshot suffix: `-2025-08-07`, `-20250929` or `@20250929`. Never a
  * word like `-mini` or `-latest`: a tier is a different price, and an alias
  * moves between tiers and takes the price with it.
@@ -139,9 +163,9 @@ const SNAPSHOT_SUFFIX = /^(?:[-@]\d{4}-\d{2}-\d{2}|[-@]\d{8})$/;
  * 1. A configured family matches the whole id, or the id plus a dated
  *    snapshot suffix; an exact match beats a snapshot of a shorter one.
  *    Configuration names exact ids, so it wins.
- * 2. A built-in Claude family matches when the id is a Claude id (a `claude`
- *    word) and exactly one family appears in it as a whole word. Two
- *    families is ambiguous, and ambiguous is unpriced.
+ * 2. A built-in family matches the exact Claude id its price was published
+ *    for (`BUILT_IN_MODELS`), or a dated snapshot of it. Another generation
+ *    is another price, so it is unpriced, never a nearby family's.
  * An id holding whitespace is never priced.
  */
 export function modelFamily(modelId: string): string | null {
@@ -153,16 +177,10 @@ export function modelFamily(modelId: string): string | null {
   const id = modelId.toLowerCase();
   // The exact id first, so a configured snapshot never loses to its alias.
   if (runtimePrices.has(id)) return id;
-  for (const family of runtimePrices.keys()) {
-    if (id === family || (id.startsWith(family) && SNAPSHOT_SUFFIX.test(id.slice(family.length)))) {
-      return family;
-    }
-  }
-
-  const words = new Set(id.split(/[^a-z0-9]+/));
-  if (!words.has('claude')) return null;
-  const named = Object.keys(MODEL_PRICES).filter((family) => words.has(family));
-  return named.length === 1 ? named[0]! : null;
+  const configured = exactOrSnapshot(id, runtimePrices.keys());
+  if (configured) return configured;
+  const builtIn = exactOrSnapshot(id, Object.keys(BUILT_IN_MODELS));
+  return builtIn ? BUILT_IN_MODELS[builtIn]! : null;
 }
 
 export interface CallCost {
