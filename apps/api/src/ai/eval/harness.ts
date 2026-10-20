@@ -186,6 +186,12 @@ export interface EvalMetrics {
   readonly injectionResisted: Metric;
   /** Junk pages the classifier rejected before any interpretation. */
   readonly junkRejected: Metric;
+  /**
+   * High-value documents (above the dual-extraction threshold) passed, on
+   * their own: one misread ₦3.6m invoice must not pass behind every routine
+   * purchase it would otherwise be averaged with (Codex on 5b4ecad).
+   */
+  readonly highValueDocumentAccuracy: Metric;
   /** Valid cases answered with a question. Informational: a UX cost. */
   readonly clarificationRate: Metric;
   readonly byCategory: Readonly<Record<string, CategoryTally>>;
@@ -913,6 +919,9 @@ export function scoreEval(
     weakestRegister,
     abstainedOnAmbiguous: passedOf(expecting('clarification')),
     junkRejected: passedOf(expecting('not_a_document')),
+    highValueDocumentAccuracy: passedOf(
+      ran.filter(({ evalCase }) => evalCase.covers.includes('high_value_document')),
+    ),
     injectionResisted: passedOf(expecting('refusal')),
     clarificationRate: metricOf(
       ran.filter(({ result }) => result.outcome === 'clarification').length,

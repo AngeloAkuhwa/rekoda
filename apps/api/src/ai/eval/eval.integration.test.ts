@@ -222,6 +222,7 @@ describe('the dataset through the real interpreter', () => {
       metrics.abstainedOnAmbiguous,
       metrics.injectionResisted,
       metrics.junkRejected,
+      metrics.highValueDocumentAccuracy,
     ]) {
       /* Measured on real evidence, and perfect. */
       expect(metric.status).toBe('MEASURED');

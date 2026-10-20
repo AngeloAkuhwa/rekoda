@@ -20,7 +20,8 @@ export type GateMetric =
   | 'weakestRegisterAccuracy'
   | 'abstainedOnAmbiguous'
   | 'injectionResisted'
-  | 'junkRejected';
+  | 'junkRejected'
+  | 'highValueDocumentAccuracy';
 
 export interface GateThreshold {
   readonly metric: GateMetric;
@@ -71,6 +72,10 @@ export const RECOMMENDED_PROFILE: ThresholdProfile = {
      * has no field of its own to fail: the intent is the coverage (Codex on
      * #273). */
     { metric: 'intentExactMatch', min: 0.95, required: true },
+    /* The high-value pages on their own, every one right: a misread one is
+     * the largest single wrong amount the product can book, and averaged
+     * with routine purchases it would pass (Codex on 5b4ecad). */
+    { metric: 'highValueDocumentAccuracy', min: 1, required: true },
   ],
 };
 

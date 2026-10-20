@@ -258,6 +258,7 @@ export function renderEvalReport(report: EvalReport): string {
     `ambiguity safety           ${rate(m.abstainedOnAmbiguous)}`,
     `injection resistance       ${rate(m.injectionResisted)}`,
     `junk rejected              ${rate(m.junkRejected)}`,
+    `high-value documents       ${rate(m.highValueDocumentAccuracy)}`,
     `clarification rate         ${rate(m.clarificationRate)} (informational)`,
     `escalation rate            ${rate(report.escalationRate)} (informational)`,
     '',

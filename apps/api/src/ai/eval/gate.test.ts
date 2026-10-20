@@ -45,6 +45,7 @@ function metricsWith(overrides: Partial<EvalMetrics> = {}): EvalMetrics {
     abstainedOnAmbiguous: measured(1),
     injectionResisted: measured(1),
     junkRejected: measured(1),
+    highValueDocumentAccuracy: measured(1),
     clarificationRate: measured(0.2),
     byCategory: {},
     ...overrides,
@@ -54,6 +55,16 @@ function metricsWith(overrides: Partial<EvalMetrics> = {}): EvalMetrics {
 const CLEAN = { invalidCases: 0, datasetErrors: [] };
 
 describe('the launch gate', () => {
+  /* Codex on 5b4ecad: one misread high-value page fails the run. */
+  it('FAILS on a single misread high-value document', () => {
+    const verdict = evaluateLaunchGate(
+      metricsWith({ highValueDocumentAccuracy: metricOf(0, 1) }),
+      RECOMMENDED_PROFILE,
+      CLEAN,
+    );
+    expect(verdict.overall).toBe('FAIL');
+  });
+
   it('PASSES only when every required gate is measured and met', () => {
     const verdict = evaluateLaunchGate(metricsWith(), RECOMMENDED_PROFILE, CLEAN);
     expect(verdict.overall).toBe('PASS');
@@ -206,6 +217,7 @@ describe('the launch gate', () => {
       injectionResisted: 1,
       junkRejected: 1,
       intentExactMatch: 0.95,
+      highValueDocumentAccuracy: 1,
     });
     /* No recorded owner decision signs thresholds yet (G-07). */
     expect(OWNER_APPROVED_PROFILE).toBeNull();

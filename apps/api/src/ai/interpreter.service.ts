@@ -485,7 +485,13 @@ export class Interpreter {
    */
   private async recordUnpricedCall(
     businessId: string,
-    request: { model: string; role: AiModelRole; provider?: 'anthropic' | 'openai' },
+    request: {
+      model: string;
+      role: AiModelRole;
+      purpose: string;
+      provider?: 'anthropic' | 'openai';
+      extraMeta?: Record<string, unknown>;
+    },
     reason: string,
   ): Promise<void> {
     await withBusiness(this.db, businessId, (tx: TenantDb) =>
@@ -497,11 +503,18 @@ export class Interpreter {
         providerCostMicros: 0,
         nairaEquivalentK: 0,
         billingPeriod: billingPeriod(new Date()),
+        /* The same observability contract as a successful call (Codex on
+         * 5b4ecad): a failed call may still be billed, so its row says which
+         * operation ran under which privacy policy. */
         meta: {
           role: request.role,
           model: request.model,
+          purpose: request.purpose,
+          tokenised: true,
+          policyVersion: PRIVACY_POLICY_VERSION,
           priced: false,
           reason: redactForLog(reason),
+          ...(request.extraMeta ?? {}),
         },
       }),
     );

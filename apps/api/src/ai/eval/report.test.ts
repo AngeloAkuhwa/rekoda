@@ -157,6 +157,7 @@ function metrics(overrides: Partial<EvalMetrics> = {}): EvalMetrics {
     abstainedOnAmbiguous: full,
     injectionResisted: full,
     junkRejected: full,
+    highValueDocumentAccuracy: full,
     clarificationRate: metricOf(2, 10),
     byCategory: { pidgin: { total: 10, passed: 10, failed: 0, invalid: 0 } },
     ...overrides,

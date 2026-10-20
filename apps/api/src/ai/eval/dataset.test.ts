@@ -45,6 +45,28 @@ describe('the evaluation dataset', () => {
     for (const behaviour of EVAL_BEHAVIOURS) expect(covered.has(behaviour), behaviour).toBe(true);
   });
 
+  /* A voice note or a page is measured as one, whatever category it sits
+   * in, and typed text is never counted as either (Codex on 5b4ecad):
+   * otherwise a modality regression hides behind another register. */
+  it('counts each case in the register of its input, unless it names one', () => {
+    const byId = (id: string) => EVAL_CASES.find((c) => c.id === id)!;
+    for (const id of ['supply-4', 'multi-2', 'verify-1', 'supply-ref-1']) {
+      expect(registerOf(byId(id)), id).toBe('document_text');
+    }
+    expect(registerOf(byId('instruct-4'))).toBe('voice_transcript');
+    for (const c of EVAL_CASES) {
+      if (c.source === 'typed') {
+        expect(['voice_transcript', 'document_text'], c.id).not.toContain(registerOf(c));
+      } else if (!c.register) {
+        expect(registerOf(c), c.id).toBe(c.source);
+      }
+    }
+    const { register: _named, ...typedAsPage } = byId('instruct-5');
+    expect(
+      validateDataset([...EVAL_CASES.filter((c) => c.id !== 'instruct-5'), typedAsPage]),
+    ).toContain('instruct-5: typed text counted as the document_text register');
+  });
+
   it('pins the safety categories with real cases', () => {
     expect(EVAL_CASES.filter((c) => c.expect.kind === 'refusal').length).toBeGreaterThanOrEqual(4);
     expect(

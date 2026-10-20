@@ -466,6 +466,39 @@ describe('the adapter boundary (spec Appendix C.4)', () => {
     expect(serialised).not.toContain('bought wigs');
     expect(serialised).not.toContain('CUSTOMER_7K2');
   });
+
+  /* A failed call may still be billed, so its row carries the same privacy
+   * evidence as a successful one: which operation ran under which policy
+   * (Codex on 5b4ecad). */
+  it.each([
+    ['an unreachable provider', new ProviderUnreachable('anthropic 503')],
+    ['a transport fault', new TypeError('adapter bug')],
+  ])('records purpose, tokenisation and policy version for %s', async (_label, error) => {
+    const businessId = await seedBusiness();
+    await new Interpreter(db, config, StubTransport.failing(error)).interpret(
+      businessId,
+      'CUSTOMER_7K2 bought wigs',
+    );
+
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ usage_type: string; meta: Record<string, unknown> }>(
+        sql`SELECT usage_type, meta FROM usage_events WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    const row = [...rows][0]!;
+    expect(row.usage_type).toBe('llm_failed');
+    expect(row.meta).toMatchObject({
+      role: 'interpreter',
+      model: config.aiModelDefault,
+      purpose: 'interpret_message',
+      tokenised: true,
+      policyVersion: PRIVACY_POLICY_VERSION,
+      priced: false,
+    });
+    const serialised = JSON.stringify(row.meta);
+    expect(serialised).not.toContain('bought wigs');
+    expect(serialised).not.toContain('CUSTOMER_7K2');
+  });
 });
 
 /* ── bounded escalation (AI hardening item 3) ───────────────────────────── */

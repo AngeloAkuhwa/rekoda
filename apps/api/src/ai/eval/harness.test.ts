@@ -1407,6 +1407,30 @@ describe('aggregating metrics', () => {
     });
   });
 
+  /* The one high-value page is its own slice, so a misread ₦3.6m invoice
+   * cannot pass behind 71 other correct answers (Codex on 5b4ecad). */
+  it('measures the high-value documents on their own', () => {
+    const verify = EVAL_CASES.find((c) => c.id === 'verify-1')!;
+    const misread = scoreCase(
+      verify,
+      command({
+        intent: 'RecordPurchase',
+        amount: 360_000,
+        quantity: 50,
+        product: 'rice',
+        description: 'bags of rice',
+        paymentMethod: 'transfer',
+        reportedPayment: 360_000,
+      }),
+    );
+    const metrics = scoreEval([CASE_SALE, verify], [scoreCase(CASE_SALE, RIGHT_SALE), misread]);
+    expect(metrics.highValueDocumentAccuracy).toMatchObject({ value: 0, observations: 1 });
+    /* None in the run is no evidence, never a pass. */
+    expect(
+      scoreEval([CASE_SALE], [scoreCase(CASE_SALE, RIGHT_SALE)]).highValueDocumentAccuracy.status,
+    ).toBe('NOT_MEASURED');
+  });
+
   it('a wrong accepted answer drags accuracy down and stays visible by category', () => {
     const cases = [CASE_SALE, CASE_AMBIG];
     const metrics = scoreEval(cases, [
