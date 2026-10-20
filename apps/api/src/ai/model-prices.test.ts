@@ -125,9 +125,12 @@ describe('configured families match whole ids, not fragments (G-59)', () => {
     expect(modelFamily('order-test-2026-02-01')).toBe('order-test');
   });
 
-  it('ignores whitespace around a configured id, as from an edited env file', () => {
-    expect(modelFamily(' gpt-5\r')).toBe('gpt-5');
-    expect(modelFamily('gpt-5-2025-08-07 ')).toBe('gpt-5');
+  /* The id is sent to the provider as configured, so a stray space or \r
+   * from an edited env file must refuse to boot, never pass the price check
+   * and then fail every call (CLAUDE.md invariant 8). */
+  it('leaves a configured id with stray whitespace unpriced, so boot refuses it', () => {
+    expect(modelFamily(' gpt-5\r')).toBeNull();
+    expect(() => assertModelIsPriced('gpt-5\r', true)).toThrow(UnpricedModel);
   });
 
   it('lets a configured exact id override the built-in Claude family', () => {

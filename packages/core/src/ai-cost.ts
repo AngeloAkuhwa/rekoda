@@ -144,7 +144,7 @@ const SNAPSHOT_SUFFIX = /^(?:[-@]\d{4}-\d{2}-\d{2}|[-@]\d{8})$/;
  *    families is ambiguous, and ambiguous is unpriced.
  */
 export function modelFamily(modelId: string): string | null {
-  const id = modelId.trim().toLowerCase();
+  const id = modelId.toLowerCase();
   // The exact id first, so a configured snapshot never loses to its alias.
   if (runtimePrices.has(id)) return id;
   for (const family of runtimePrices.keys()) {
