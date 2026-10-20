@@ -14,6 +14,7 @@ import {
   costOfTranscription,
   hasTranscriptionPrice,
   modelFamily,
+  registerModelPrice,
   registerTranscriptionPrice,
 } from './ai-cost.js';
 import { usagePeriod } from './allowances.js';
@@ -176,6 +177,20 @@ describe('which family a model id belongs to (G-59)', () => {
     expect(modelFamily('claude-sonnet-5\r')).toBeNull();
     expect(modelFamily(' claude-haiku-4-5')).toBeNull();
     expect(modelFamily('claude sonnet 5')).toBeNull();
+  });
+
+  it('never reads an Object.prototype name as a price', () => {
+    // A configured key `constructor` must price from what was registered, not
+    // from the inherited property of the compiled price table (NaN cost).
+    registerModelPrice('constructor', {
+      inputMicrosPerMTok: 1_000_000,
+      outputMicrosPerMTok: 2_000_000,
+      cacheWriteMicrosPerMTok: 0,
+      cacheReadMicrosPerMTok: 0,
+    });
+    const cost = costOfCall('constructor', { inputTokens: 1_000_000, outputTokens: 0 }, FX);
+    expect(cost.priced).toBe(true);
+    expect(cost.usdMicros).toBe(1_000_000);
   });
 
   it('refuses a Claude id that names no family it knows', () => {

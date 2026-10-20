@@ -42,7 +42,7 @@ describe('configured families', () => {
     expect(modelFamily('test-tier-nano')).toBe('test-tier-nano');
     expect(modelFamily('test-tier')).toBe('test-tier');
 
-    // Registered parent first: under containment without the old length sort, all three would cost 9_000_000.
+    // Each tier is its own exact id: under substring containment the parent would price all three at 9_000_000.
     expect(costOfCall('test-tier', usage, FX).usdMicros).toBe(9_000_000);
     expect(costOfCall('test-tier-mini', usage, FX).usdMicros).toBe(300_000);
     expect(costOfCall('test-tier-nano', usage, FX).usdMicros).toBe(50_000);

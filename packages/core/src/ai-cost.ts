@@ -118,7 +118,8 @@ export function registerModelPrice(family: string, price: ModelPrice): void {
 }
 
 function priceFor(family: string): ModelPrice | undefined {
-  return MODEL_PRICES[family] ?? runtimePrices.get(family);
+  // Own keys only: an inherited name (`constructor`) is not a price.
+  return Object.hasOwn(MODEL_PRICES, family) ? MODEL_PRICES[family] : runtimePrices.get(family);
 }
 
 /**
