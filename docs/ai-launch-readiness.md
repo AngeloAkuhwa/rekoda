@@ -107,7 +107,10 @@ failed provider call, and any escalation or verifier answer that failed the sche
 back to the primary's answer and would otherwise score. A gate-mode run from a checkout
 with uncommitted changes, or from a tree git cannot vouch for (no git, or git failing),
 is refused; a measurement reports its SHA as `-dirty`, `-unverified-build` or
-`-unattributed` when the checkout, the build or the named commit is not proven. Every
+`-unattributed` when the checkout is dirty, the build does not match its manifest, or
+the named commit is not the one the build stamped. Outside git a measurement names the
+stamped commit unmarked: that commit is what `REKODA_COMMIT` asserted at build time,
+which is why only a git checkout can run the gate. Every
 transport names its endpoint explicitly, so `OPENAI_BASE_URL` or `ANTHROPIC_BASE_URL`
 in the environment never redirects a call the report attributes to the provider's own
 endpoint. An invented discount, delivery fee, total or payment on a sale counts as a

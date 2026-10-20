@@ -276,11 +276,14 @@ function scoreCommand(evalCase: EvalCase, command: Record<string, unknown>): Eva
   }
 
   /* A record of the wrong kind is wrong whatever its fields say: none of
-   * them earns an observation (confirmation review on #273). */
+   * them earns an observation (confirmation review on #273). It fails on
+   * intent; the unstated sale fields do not apply to it, so it is never
+   * scored as invented money (delta review on 7dfa674). */
   const rightIntent = command['intent'] === expect.intent;
-  const checks = [...scoreChecks(expect, command), ...unstatedAdjustments(expect, command)].map(
-    (check) => (rightIntent ? check : { ...check, ok: false }),
-  );
+  const checks = [
+    ...scoreChecks(expect, command),
+    ...(rightIntent ? unstatedAdjustments(expect, command) : []),
+  ].map((check) => (rightIntent ? check : { ...check, ok: false }));
   const failed = [
     ...(command['intent'] === expect.intent ? [] : ['intent']),
     ...checks.filter((c) => !c.ok).map((c) => c.field),

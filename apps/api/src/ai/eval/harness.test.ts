@@ -1372,6 +1372,24 @@ describe('aggregating metrics', () => {
     expect(right.amountExactMatch).toMatchObject({ value: 1, observations: 1 });
   });
 
+  /* A record of the wrong kind invented no sale figure: it fails on intent,
+   * and its money evidence is the pinned checks only, never the unstated
+   * ones it could not hold (delta review on 7dfa674). */
+  it('does not count a wrong-intent answer as invented money', () => {
+    const payment = command({
+      intent: 'RecordPayment',
+      customer: { kind: 'token', token: 'CUSTOMER_A1Q' },
+      amount: 150_000,
+    });
+    const result = scoreCase(CASE_SALE, payment);
+    expect(result.status).toBe('failed');
+    expect(result.failedChecks).toContain('intent');
+    expect(scoreEval([CASE_SALE], [result]).amountExactMatch).toMatchObject({
+      value: 0,
+      observations: 1,
+    });
+  });
+
   it('a wrong accepted answer drags accuracy down and stays visible by category', () => {
     const cases = [CASE_SALE, CASE_AMBIG];
     const metrics = scoreEval(cases, [
