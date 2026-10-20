@@ -124,6 +124,8 @@ export async function applyCycle(
       pending_plan = ${cycle.pendingPlan ?? null},
       payment_failed_at = NULL,
       last_grace_reminder_day = NULL,
+      -- G-103: a paid cycle is a business that paid; never cleared.
+      ever_paid_at = COALESCE(ever_paid_at, now()),
       updated_at = now()
     WHERE id = ${businessId}::uuid
   `);

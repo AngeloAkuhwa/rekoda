@@ -17,6 +17,9 @@ import { withBusiness } from '../client.js';
 import { businesses } from '../schema/tenancy.js';
 import { auditEvents } from '../schema/ops.js';
 
+/** The plans nobody paid for; every other plan is a paid one (G-103). */
+const UNPAID_PLANS = new Set(['trial', 'expired']);
+
 export interface PlanChange {
   businessId: string;
   plan: string;
@@ -44,7 +47,15 @@ export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
 
     await tx
       .update(businesses)
-      .set({ plan: change.plan, planExpiresAt: change.expiresAt })
+      .set({
+        plan: change.plan,
+        planExpiresAt: change.expiresAt,
+        /* A paid plan, however it was set, is a business that paid (G-103):
+         * retention must never read it as an abandoned trial later. */
+        ...(!UNPAID_PLANS.has(change.plan)
+          ? { everPaidAt: sql`coalesce(${businesses.everPaidAt}, now())` }
+          : {}),
+      })
       .where(eq(businesses.id, change.businessId));
 
     await tx.insert(auditEvents).values({

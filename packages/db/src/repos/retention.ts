@@ -51,7 +51,8 @@ const shape = (row: RawCandidate): RetentionCandidate => ({
  * between a merchant who paid us once and a sweep that deletes their records.
  */
 const NEVER_PAID = sql`
-  NOT EXISTS (
+  b.ever_paid_at IS NULL
+  AND NOT EXISTS (
     SELECT 1 FROM subscription_charges c
     WHERE c.business_id = b.id AND c.status IN ('paid', 'refunded'))
 `;
