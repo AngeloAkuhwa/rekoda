@@ -9,7 +9,7 @@
  * else is real: real PostgreSQL, real quota counters, real schema.
  */
 import { randomBytes } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDb, identity, quotaRepo, sql, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { Interpreter, RawProtectedFieldError } from './interpreter.service.js';
@@ -325,6 +325,54 @@ describe('the spend ceiling in front of it', () => {
     const usage = await usageRows(businessId);
     expect(usage.calls).toBe(1);
     expect(usage.providerCostMicros).toBe(0);
+  });
+});
+
+describe('a failed call that straddles Lagos midnight (Codex on 4d3b3fe)', () => {
+  /* 23:59:59.5 in Lagos, and two seconds later the next day. */
+  const before = new Date('2031-02-01T22:59:59.500Z');
+  const after = new Date('2031-02-01T23:00:01.500Z');
+  const businessCalls = async (businessId: string, day: string) => {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ calls: number }>(
+        sql`SELECT calls FROM ai_quota_counters WHERE business_id = ${businessId}::uuid AND day = ${day}::date`,
+      ),
+    );
+    return Number([...rows][0]?.calls ?? 0);
+  };
+
+  it.each([
+    ['a transport fault', new TypeError('adapter bug')],
+    ['an unreachable provider', new ProviderUnreachable('timeout')],
+  ])('gives the slot back to the day it was taken from: %s', async (_name, fault) => {
+    const businessId = await seedBusiness();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      /* Another call already spent on the new day: it must stay spent. */
+      vi.setSystemTime(after);
+      await quotaRepo.reserveAiCall(
+        db,
+        businessId,
+        { perBusinessPerDay: 100, globalPerDay: 1_000_000 },
+        after,
+      );
+      vi.setSystemTime(before);
+      const crossing = {
+        send: () => {
+          vi.setSystemTime(after);
+          return Promise.reject(fault);
+        },
+      };
+      const result = await new Interpreter(db, config, crossing).interpret(
+        businessId,
+        'CUSTOMER_7K2 bought wigs',
+      );
+      expect(result.outcome).toBe('unavailable');
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(await businessCalls(businessId, '2031-02-01')).toBe(0);
+    expect(await businessCalls(businessId, '2031-02-02')).toBe(1);
   });
 });
 

@@ -654,22 +654,25 @@ describe('the independent second reading (Codex on 734e488)', () => {
 
   it('is refused when the primary is OpenAI on its own endpoint', () => {
     expect(() => createVerifierTransport(configWith({ ...OPENAI, ...verifier }))).toThrow(
-      'would not be independent',
+      'cannot be an independent OpenAI reader',
     );
   });
 
-  it('runs beside a different provider or a different endpoint', () => {
+  it('is refused beside an OpenAI-compatible primary, whose key OpenAI would refuse (Codex on 4d3b3fe)', () => {
+    const elsewhere = configWith({
+      ...OPENAI,
+      ...verifier,
+      AI_BASE_URL: 'https://api.groq.example/openai/v1',
+    });
+    expect(() => createVerifierTransport(elsewhere)).toThrow('belongs to the primary');
+  });
+
+  it('runs beside an Anthropic primary', () => {
     const anthropic = configWith({
       ANTHROPIC_API_KEY: 'sk-ant-test-not-a-key',
       OPENAI_API_KEY: 'sk-test-not-a-key',
       ...verifier,
     });
     expect(createVerifierTransport(anthropic)).toBeInstanceOf(OpenAiTransport);
-    const elsewhere = configWith({
-      ...OPENAI,
-      ...verifier,
-      AI_BASE_URL: 'https://llm.example.com/v1',
-    });
-    expect(createVerifierTransport(elsewhere)).toBeInstanceOf(OpenAiTransport);
   });
 });

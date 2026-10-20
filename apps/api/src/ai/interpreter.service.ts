@@ -327,10 +327,19 @@ export class Interpreter {
       extraMeta?: Record<string, unknown>;
     },
   ): Promise<ModelCall> {
-    const reservation = await quotaRepo.reserveAiCall(this.db, businessId, {
-      perBusinessPerDay: this.config.aiCallsPerBusinessPerDay,
-      globalPerDay: this.config.aiCallsGlobalPerDay,
-    });
+    /* One instant for the reservation and any release of it: a call that
+     * straddles Lagos midnight gives its slot back to the day it took it
+     * from, never to the next day's counter (Codex on #273). */
+    const reservedAt = new Date();
+    const reservation = await quotaRepo.reserveAiCall(
+      this.db,
+      businessId,
+      {
+        perBusinessPerDay: this.config.aiCallsPerBusinessPerDay,
+        globalPerDay: this.config.aiCallsGlobalPerDay,
+      },
+      reservedAt,
+    );
     if (!reservation.ok) {
       this.log.warn(`${request.role} call refused by the ${reservation.refusedBy} ceiling`);
       return { kind: 'refused', refusedBy: reservation.refusedBy };
@@ -351,7 +360,7 @@ export class Interpreter {
       if (error instanceof ProviderUnreachable) {
         // The merchant keeps the slot: being unable to reach a provider must
         // not spend their daily allowance.
-        await quotaRepo.releaseAiCall(this.db, businessId);
+        await quotaRepo.releaseAiCall(this.db, businessId, reservedAt);
         /* But WE may still have been billed. A request that timed out after
          * the provider began generating is charged, and recording it as
          * nothing would put a real cost outside the margin view entirely.
@@ -371,7 +380,7 @@ export class Interpreter {
       /* The merchant's slot only: the fault may have come after the request
        * was sent and billed, so the platform's ceiling on provider spend
        * keeps counting it (Codex on #273). */
-      await quotaRepo.releaseAiCall(this.db, businessId, new Date(), { global: false });
+      await quotaRepo.releaseAiCall(this.db, businessId, reservedAt, { global: false });
       await this.recordUnpricedCall(businessId, request, `transport error: ${name}`);
       return {
         kind: 'unavailable',

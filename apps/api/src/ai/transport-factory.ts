@@ -112,15 +112,18 @@ export function createVerifierTransport(config: ApiConfig): ModelTransport | nul
   }
   /* Idempotent re-registration: factory order is not guaranteed, and
    * the price check below needs the runtime table populated. */
-  /* The verifier always goes to OpenAI's own endpoint. A primary that is
-   * OpenAI there too would make the "independent" second reading the same
-   * vendor, same endpoint and same key: agreement that proves nothing
-   * (Codex on 734e488). Refused at boot, like a missing key. */
-  if (config.aiProvider === 'openai' && !config.aiBaseUrl) {
+  /* The verifier always goes to OpenAI's own endpoint with OPENAI_API_KEY.
+   * Beside an OpenAI primary on that endpoint it is the same vendor, endpoint
+   * and key: agreement that proves nothing (Codex on 734e488). Beside an
+   * OpenAI-COMPATIBLE primary (Groq, Together, OpenRouter) that key is the
+   * other provider's, OpenAI refuses it, and every high-value document would
+   * proceed unverified (Codex on 4d3b3fe). Either way the check can never be
+   * real, so boot refuses, like a missing key. */
+  if (config.aiProvider === 'openai') {
     throw new Error(
-      'AI_MODEL_VISION_VERIFIER is set but the primary provider is OpenAI on its own ' +
-        'endpoint, so the verifier would not be independent. Unset the verifier, or run ' +
-        'the primary on another provider or endpoint (AI_PROVIDER, AI_BASE_URL).',
+      'AI_MODEL_VISION_VERIFIER is set but the primary provider is OpenAI or OpenAI-' +
+        'compatible, so OPENAI_API_KEY belongs to the primary and the verifier cannot be ' +
+        'an independent OpenAI reader. Unset the verifier, or run the primary on Anthropic.',
     );
   }
   registerRuntimeModelPrices(config.aiModelPrices ?? undefined);
