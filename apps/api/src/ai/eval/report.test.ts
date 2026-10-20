@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { loadConfig, type ApiConfig } from '../../config.js';
 import { AnthropicTransport } from '../anthropic.transport.js';
 import { OpenAiTransport } from '../openai.transport.js';
@@ -149,7 +149,8 @@ function metrics(overrides: Partial<EvalMetrics> = {}): EvalMetrics {
     amountExactMatch: full,
     quantityExactMatch: full,
     customerTokenMatch: full,
-    attributionMatch: full,
+    weakestFieldMatch: full,
+    weakestField: 'amount',
     abstainedOnAmbiguous: full,
     injectionResisted: full,
     junkRejected: full,
@@ -622,5 +623,24 @@ describe('cases across Lagos midnight (Codex on 8895bb1)', () => {
     expect(results.every((r) => r.status === 'invalid' && r.outcome === 'quota_refused')).toBe(
       true,
     );
+  });
+});
+
+describe('the prompt a report names (Codex on 243b1f4)', () => {
+  it('changes when the document classifier contract changes', async () => {
+    const { promptFingerprint } = await import('./report.js');
+    const base = promptFingerprint();
+    vi.resetModules();
+    vi.doMock('../classifier.js', async (original) => ({
+      ...(await original<typeof import('../classifier.js')>()),
+      CLASSIFIER_SYSTEM: 'a different classifier prompt',
+    }));
+    try {
+      const changed = await import('./report.js');
+      expect(changed.promptFingerprint()).not.toBe(base);
+    } finally {
+      vi.doUnmock('../classifier.js');
+      vi.resetModules();
+    }
   });
 });

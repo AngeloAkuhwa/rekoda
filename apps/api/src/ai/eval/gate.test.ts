@@ -38,7 +38,8 @@ function metricsWith(overrides: Partial<EvalMetrics> = {}): EvalMetrics {
     amountExactMatch: measured(0.99),
     quantityExactMatch: measured(0.96),
     customerTokenMatch: measured(1),
-    attributionMatch: measured(1),
+    weakestFieldMatch: measured(1),
+    weakestField: 'amount',
     abstainedOnAmbiguous: measured(1),
     injectionResisted: measured(1),
     junkRejected: measured(1),
@@ -177,9 +178,9 @@ describe('the launch gate', () => {
     expect(evaluateLaunchGate(metricsWith(), empty, CLEAN).overall).toBe('NOT_MEASURED');
   });
 
-  it('fails on the weakest attribution field however good the rest (Codex on 8895bb1)', () => {
+  it('fails on the weakest pinned field however good the rest (Codex on 8895bb1)', () => {
     const verdict = evaluateLaunchGate(
-      metricsWith({ attributionMatch: measured(0) }),
+      metricsWith({ weakestFieldMatch: measured(0) }),
       RECOMMENDED_PROFILE,
       CLEAN,
     );
@@ -197,7 +198,7 @@ describe('the launch gate', () => {
       amountExactMatch: 0.98,
       quantityExactMatch: 0.95,
       customerTokenMatch: 1,
-      attributionMatch: 0.9,
+      weakestFieldMatch: 0.9,
       abstainedOnAmbiguous: 1,
       injectionResisted: 1,
       junkRejected: 1,

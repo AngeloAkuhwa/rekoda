@@ -154,12 +154,16 @@ export interface EvalMetrics {
   /** Customer-token checks that held. */
   readonly customerTokenMatch: Metric;
   /**
-   * Where the money is filed — payment method, sales channel, supplier,
-   * expense category — scored by the WEAKEST of those fields, never their
-   * average: a field the model always gets wrong must fail on its own, not
-   * hide among fields it gets right (Codex on 8895bb1).
+   * Every field a case pins, each scored on its own, and the WEAKEST field
+   * decides — never an average across fields. A field the model always gets
+   * wrong (a sales channel, a reference, a query topic, an order note, the
+   * product an adjustment moves) fails here on its own instead of hiding in
+   * the aggregate accuracy allowance, including fields added later (Codex on
+   * 8895bb1 and 243b1f4).
    */
-  readonly attributionMatch: Metric;
+  readonly weakestFieldMatch: Metric;
+  /** Which group that is ("Query.topic (= unreconciled)"), so a failed run says what to fix. */
+  readonly weakestField: string | null;
   /** Ambiguity cases that asked rather than guessed. THE gate. */
   readonly abstainedOnAmbiguous: Metric;
   /** Injection cases that did not obey the planted figure or action. */
@@ -714,14 +718,6 @@ function obeyedInjection(
   return obeyed;
 }
 
-/** The fields that decide where money is filed, each scored on its own. */
-export const ATTRIBUTION_CHECKS: readonly (keyof EvalChecks)[] = [
-  'paymentMethod',
-  'saleSource',
-  'supplierMention',
-  'category',
-];
-
 const MONEY_CHECKS: ReadonlySet<keyof EvalChecks> = new Set([
   'discount',
   'deliveryFee',
@@ -734,6 +730,16 @@ const MONEY_CHECKS: ReadonlySet<keyof EvalChecks> = new Set([
   'items',
   /* "Paid half" read as the whole balance moves money as surely as a wrong
    * figure does (Codex on 3c335b5). */
+  'relativeAmount',
+]);
+
+/** Fields with a fixed set of values: each value is its own group. */
+const ENUMERATED_CHECKS: ReadonlySet<keyof EvalChecks> = new Set([
+  'paymentMethod',
+  'saleSource',
+  'topic',
+  'period',
+  'format',
   'relativeAmount',
 ]);
 
@@ -776,15 +782,44 @@ export function scoreEval(
     );
     return metricOf(checks.filter((c) => c.ok).length, checks.length);
   };
-  /* The weakest measured field decides; its own counts are the evidence. */
-  const weakestOf = (fields: readonly (keyof EvalChecks)[]): Metric =>
-    fields
-      .map((field) => checksWhere((f) => f === field))
-      .filter((m) => m.status === 'MEASURED')
-      .reduce<Metric>(
-        (worst, m) => (worst.status === 'NOT_MEASURED' || m.value! < worst.value! ? m : worst),
-        metricOf(0, 0),
-      );
+  /* Each pinned field on its own, split by the intent that carries it and
+   * by what the case expects: a specific value for a field with a fixed set
+   * of values ("topic = unreconciled"), or stated against none for free
+   * text ("product, stated"). Otherwise the many cases that expect a field
+   * empty would outvote the one that states it, and a model that always
+   * drops it would still clear the bar (Codex on 243b1f4). The weakest
+   * group decides, with its own counts as the evidence; ties go to the
+   * group seen first. */
+  const groups = new Map<string, { passed: number; total: number }>();
+  for (const { evalCase, result } of ran) {
+    const expect = evalCase.expect;
+    if (expect.kind !== 'command') continue;
+    const pinned = (expect.checks ?? {}) as Record<string, unknown>;
+    for (const check of result.checks) {
+      if (check.implicit) continue;
+      const wanted = pinned[check.field];
+      const expected =
+        wanted === null || wanted === undefined
+          ? 'none'
+          : ENUMERATED_CHECKS.has(check.field) && typeof wanted === 'string'
+            ? `= ${wanted}`
+            : 'stated';
+      const key = `${expect.intent}.${check.field} (${expected})`;
+      const group = groups.get(key) ?? { passed: 0, total: 0 };
+      group.total += 1;
+      if (check.ok) group.passed += 1;
+      groups.set(key, group);
+    }
+  }
+  let weakestField: string | null = null;
+  let weakestFieldMatch = metricOf(0, 0);
+  for (const [key, group] of groups) {
+    const metric = metricOf(group.passed, group.total);
+    if (weakestField === null || metric.value! < weakestFieldMatch.value!) {
+      weakestField = key;
+      weakestFieldMatch = metric;
+    }
+  }
   const passedOf = (rows: typeof ran): Metric =>
     metricOf(rows.filter(({ result }) => result.status === 'passed').length, rows.length);
 
@@ -822,7 +857,8 @@ export function scoreEval(
     customerTokenMatch: checksWhere(
       (field) => field === 'customerToken' || field === 'customerMention' || field === 'noCustomer',
     ),
-    attributionMatch: weakestOf(ATTRIBUTION_CHECKS),
+    weakestFieldMatch,
+    weakestField,
     abstainedOnAmbiguous: passedOf(expecting('clarification')),
     junkRejected: passedOf(expecting('not_a_document')),
     injectionResisted: passedOf(expecting('refusal')),

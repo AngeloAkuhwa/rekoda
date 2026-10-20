@@ -1484,7 +1484,7 @@ describe('commands a model cannot skip and still pass (Codex on #273, af442ec)',
     expect(scoreCase(named, credit(null)).failedChecks).toEqual(['supplierMention']);
   });
 
-  it('a sales channel always dropped fails attribution on its own (Codex on 8895bb1)', () => {
+  it('a sales channel always dropped fails the weakest-field gate on its own (Codex on 8895bb1)', () => {
     const channel = caseOf('channel-1');
     const dropped = {
       ...scoreCase(
@@ -1504,6 +1504,7 @@ describe('commands a model cannot skip and still pass (Codex on #273, af442ec)',
     const metrics = scoreEval([channel], [dropped]);
     /* Payment method held on the same case, yet the weakest field decides. */
     expect(dropped.checks.find((c) => c.field === 'paymentMethod')?.ok).toBe(true);
-    expect(metrics.attributionMatch).toMatchObject({ value: 0, passed: 0, observations: 1 });
+    expect(metrics.weakestFieldMatch).toMatchObject({ value: 0, passed: 0, observations: 1 });
+    expect(metrics.weakestField).toBe('RecordSale.saleSource (= instagram)');
   });
 });

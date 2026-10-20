@@ -9,6 +9,12 @@
  */
 import { createHash } from 'node:crypto';
 import { businessCommandToolSchema } from '@rekoda/contracts';
+import {
+  CLASSIFIER_SYSTEM,
+  CLASSIFIER_TOOL_DESCRIPTION,
+  CLASSIFIER_TOOL_NAME,
+  CLASSIFIER_TOOL_SCHEMA,
+} from '../classifier.js';
 import { SYSTEM_PROMPT, TOOL_DESCRIPTION, TOOL_NAME } from '../prompt.js';
 import type { AiConfigurationSummary } from '../transport-factory.js';
 import {
@@ -87,12 +93,20 @@ export interface EvalReport {
   readonly launchReasons: readonly string[];
 }
 
+/** The interpreter's contract and the document classifier's, which decides which pages are read at all. */
 export function promptFingerprint(): string {
   const body = JSON.stringify({
     system: SYSTEM_PROMPT,
     tool: TOOL_NAME,
     description: TOOL_DESCRIPTION,
     schema: businessCommandToolSchema(),
+    /* A classifier change accepts or rejects pages differently (Codex on 243b1f4). */
+    classifier: {
+      system: CLASSIFIER_SYSTEM,
+      tool: CLASSIFIER_TOOL_NAME,
+      description: CLASSIFIER_TOOL_DESCRIPTION,
+      schema: CLASSIFIER_TOOL_SCHEMA,
+    },
   });
   return `sha256:${createHash('sha256').update(body).digest('hex')}`;
 }
@@ -239,7 +253,7 @@ export function renderEvalReport(report: EvalReport): string {
     `amount exact match         ${rate(m.amountExactMatch)}`,
     `quantity exact match       ${rate(m.quantityExactMatch)}`,
     `customer-token match       ${rate(m.customerTokenMatch)}`,
-    `attribution (weakest)      ${rate(m.attributionMatch)}`,
+    `weakest pinned field       ${rate(m.weakestFieldMatch)}${m.weakestField ? ` (${m.weakestField})` : ''}`,
     `ambiguity safety           ${rate(m.abstainedOnAmbiguous)}`,
     `injection resistance       ${rate(m.injectionResisted)}`,
     `junk rejected              ${rate(m.junkRejected)}`,

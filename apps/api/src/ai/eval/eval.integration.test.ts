@@ -217,7 +217,7 @@ describe('the dataset through the real interpreter', () => {
       metrics.amountExactMatch,
       metrics.quantityExactMatch,
       metrics.customerTokenMatch,
-      metrics.attributionMatch,
+      metrics.weakestFieldMatch,
       metrics.abstainedOnAmbiguous,
       metrics.injectionResisted,
       metrics.junkRejected,
@@ -235,6 +235,61 @@ describe('the dataset through the real interpreter', () => {
         .overall,
     ).toBe('PASS');
   });
+
+  /* A model perfect everywhere but one field it always gets wrong. Each of
+   * these is pinned by only one or two cases, so it passed the aggregate
+   * accuracy allowance and every other gate (Codex on 8895bb1 and 243b1f4);
+   * the weakest-field gate must fail it through the real interpreter. */
+  const blindSpots: ReadonlyArray<[string, (command: Record<string, unknown>) => void]> = [
+    ['saleSource', (c) => c['intent'] === 'RecordSale' && (c['saleSource'] = null)],
+    ['documentRef', (c) => c['intent'] === 'RecordPayment' && (c['documentRef'] = null)],
+    [
+      'supplierReference',
+      (c) => c['intent'] === 'RecordPurchase' && (c['supplierReference'] = null),
+    ],
+    ['topic', (c) => c['topic'] === 'unreconciled' && (c['topic'] = 'sales_summary')],
+    ['note', (c) => c['intent'] === 'RecordOrder' && (c['note'] = null)],
+    ['product', (c) => c['intent'] === 'AdjustInventory' && (c['productMention'] = 'cement bags')],
+  ];
+  it.each(blindSpots)(
+    'a model always wrong on %s alone fails the recommended gate (Codex on #273)',
+    async (field, blind) => {
+      const oracle = new OracleTransport();
+      const blinded: ModelTransport = {
+        send: async (request) => {
+          const reply = await oracle.send(request);
+          const command = (reply.toolInput as { command?: Record<string, unknown> }).command;
+          if (command) blind(command);
+          return reply;
+        },
+      };
+      const user = await identity.upsertUserByPhone(db, '+2348080000011');
+      const business = await identity.createBusinessWithOwner(db, {
+        name: `Blind spot ${field}`,
+        businessType: null,
+        ownerUserId: user.id,
+      });
+      const roomy = {
+        ...config,
+        aiCallsPerBusinessPerDay: 1_000_000,
+        aiCallsGlobalPerDay: 10_000_000,
+      };
+      const interpreter = new Interpreter(db, roomy, blinded);
+      const results: EvalCaseResult[] = [];
+      for (const evalCase of EVAL_CASES) {
+        results.push(await runEvalCase(interpreter, business.id, evalCase));
+      }
+      const metrics = scoreEval(EVAL_CASES, results);
+      expect(metrics.invalid).toBe(0);
+      expect(metrics.weakestField).toContain(`.${field} (`);
+      const verdict = evaluateLaunchGate(metrics, RECOMMENDED_PROFILE, {
+        invalidCases: 0,
+        datasetErrors: [],
+      });
+      expect(verdict.overall).toBe('FAIL');
+      expect(verdict.gates.find((g) => g.metric === 'weakestFieldMatch')?.result).toBe('FAIL');
+    },
+  );
 
   it('a guessing model is caught: ambiguity answered with a command fails the gate', async () => {
     /* The anti-oracle: answers EVERYTHING with a confident sale. The
