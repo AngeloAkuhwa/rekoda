@@ -188,9 +188,10 @@ owner signs the numbers there and the profile is added to `gate.ts`. A model, pr
 dataset change resets the "latest measured" column; the prompt and dataset fingerprints
 in the report show which.
 
-**Timing.** Run the paid evaluation after G-59 merges: `modelFamily()` matches model ids
-by substring, so until G-59 the cost lines of the report (and the margin view) can price
-a configured model at another family's rate.
+**Timing.** G-59 merged on 20 Oct 2026 (#274): `modelFamily()` now prices a model id as
+one exact family or none, so the report's cost lines no longer price a configured model at
+another family's rate. Any model outside the four compiled ids needs an exact
+`AI_MODEL_PRICES` key, or the run refuses to start.
 
 ## What the harness deliberately does not do
 
