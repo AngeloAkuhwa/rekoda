@@ -299,6 +299,20 @@ export async function pendingCharge(
   return row ? { reference: row.reference, amountK: Number(row.amount_k) } : null;
 }
 
+/**
+ * Take the business row for the rest of the transaction.
+ *
+ * A settling payment calls this BEFORE it touches its charge. Retention
+ * deletion locks the business row and then deletes the business's charges, so
+ * a payment that locked the charge first could wait on the business while
+ * deletion waited on the charge, and Postgres would abort the payment. One
+ * order, business then charge, makes the deletion wait for the payment and
+ * re-judge the committed state (G-103).
+ */
+export async function lockBusiness(tx: TenantDb, businessId: string): Promise<void> {
+  await tx.execute(sql`SELECT 1 FROM businesses WHERE id = ${businessId}::uuid FOR UPDATE`);
+}
+
 export async function settleCharge(
   tx: TenantDb,
   settlement: {

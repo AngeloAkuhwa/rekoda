@@ -27,6 +27,7 @@ import {
   marginRepo,
   planCatalogueRepo,
   quotaRepo,
+  sql,
   subscriptionsRepo,
   usageRepo,
   withBusiness,
@@ -1037,5 +1038,60 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
 
     const refused = await confirmedBilling().buyPack(businessId, 'messages_100');
     expect(refused).toEqual({ state: 'unavailable', reason: 'not_available_on_plan' });
+  });
+});
+
+describe('the lock order of a settling payment (G-103)', () => {
+  /* Retention deletion locks the business row, then deletes its charges. A
+   * settling payment must therefore take the business row BEFORE it touches
+   * the charge, or the two can each hold what the other wants and Postgres
+   * aborts the payment. The probe is deterministic: while something else
+   * holds the business row, a payment that has already updated the charge
+   * has locked it, and one that locks the business first has not. */
+  it('takes the business row before it touches the charge', async () => {
+    const { businessId } = await onboard('+2348177100090');
+    const reference = 'sub_lockorder_1';
+    const when = new Date('2026-08-20T10:00:00Z');
+    await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.openCharge(tx, {
+        businessId,
+        kind: 'first_purchase',
+        plan: 'chat',
+        amountK: PLAN_PRICES_K.chat,
+        reference,
+        periodStart: when,
+        periodEnd: new Date(when.getTime() + 30 * 86_400_000),
+      }),
+    );
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let locked!: () => void;
+    const holding = new Promise<void>((resolve) => (locked = resolve));
+    const holder = withBusiness(db, businessId, async (tx) => {
+      await tx.execute(sql`SELECT 1 FROM businesses WHERE id = ${businessId}::uuid FOR UPDATE`);
+      locked();
+      await held;
+    });
+    await holding;
+
+    const payment = withBusiness(db, businessId, (tx) =>
+      applySettledCharge(tx, { businessId, reference, providerReference: 'ps_x', when, config }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    let probe: Error | null = null;
+    try {
+      await ownerDb.execute(sql`
+        SELECT 1 FROM subscription_charges WHERE reference = ${reference} FOR UPDATE NOWAIT
+      `);
+    } catch (e) {
+      probe = e as Error;
+    } finally {
+      release();
+      await holder;
+      await payment;
+    }
+    expect(probe, 'the payment touched the charge before it held the business').toBeNull();
   });
 });

@@ -376,6 +376,9 @@ export async function applySettledCharge(
     config: PlanTermsConfig;
   },
 ): Promise<'applied' | 'already_settled'> {
+  /* Business row first, then the charge: the order retention deletion uses,
+   * so a payment is never the victim of a deadlock with it (G-103). */
+  await subscriptionsRepo.lockBusiness(tx, input.businessId);
   const charge = await subscriptionsRepo.settleCharge(tx, {
     reference: input.reference,
     status: 'paid',
