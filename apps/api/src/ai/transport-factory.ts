@@ -139,7 +139,7 @@ export function createVerifierTransport(config: ApiConfig): ModelTransport | nul
 export interface AiConfigurationSummary {
   readonly provider: 'anthropic' | 'openai';
   readonly baseUrlHost: string | null;
-  /** Hash of the whole normalised endpoint (scheme, host, port, path), never the credentials. */
+  /** Hash of the whole normalised endpoint (scheme, host, port, path, sorted query), never the credentials. */
   readonly baseUrlFingerprint: string | null;
   /**
    * Hash of the price table the run's costs are computed from: the compiled

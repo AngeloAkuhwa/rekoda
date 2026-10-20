@@ -77,8 +77,9 @@ dirty checkout; the report carries the compiled code's hash as `build`. Build wi
 `pnpm eval:build` immediately before a signed run. Timestamps are not used.
 
 **What a case can be.** The model's behaviour is evidence: `command`, `clarification`
-(a real Unclear), `review` (two readers disagreed) and `invalid_response` (the answer
-failed the schema, which counts against the model). A case that did not run is INVALID
+(a real Unclear), `review` (two readers disagreed), `rejected_document` (a page read as
+no document) and `invalid_response` (the answer failed the schema, which counts against
+the model). A case that did not run is INVALID
 and evidence of nothing: `quota_refused`, `provider_unavailable`, `transport_error`,
 `harness_error`. An outage can never raise a safety score.
 
