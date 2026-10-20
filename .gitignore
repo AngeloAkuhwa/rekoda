@@ -72,3 +72,6 @@ Rekoda_Canonical_Development_Reference_Bundle.zip
 r0a-i-*.txt
 r0a-i-*.csv
 r0a-i-report*
+
+# AI launch evaluation report (run-eval --json)
+eval-report*.json

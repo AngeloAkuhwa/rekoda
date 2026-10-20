@@ -262,6 +262,8 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   voiceUnavailable: [replies.voiceUnavailable()],
   voiceTooLong: [replies.voiceTooLong(120), replies.voiceTooLong(90), replies.voiceTooLong(60)],
   messageTooLong: [replies.messageTooLong()],
+  messageNotReadSafely: [replies.messageNotReadSafely()],
+  documentNotReadSafely: [replies.documentNotReadSafely()],
   voiceUnreadable: [replies.voiceUnreadable()],
   whichPeriod: [replies.whichPeriod('sales'), replies.whichPeriod('spending')],
   previewBehindQuestion: [replies.previewBehindQuestion()],

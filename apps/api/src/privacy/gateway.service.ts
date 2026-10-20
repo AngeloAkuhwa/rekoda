@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import {
   CLITIC_SUFFIXES,
+  detectStructuralPiiAroundTokens,
   displayOf,
   generateCustomerToken,
   openSegments,
@@ -66,11 +67,19 @@ export interface GatewayTokenised extends TokenisedMessage {
    */
   readonly facets: ReadonlyMap<string, readonly TypedFacet[]>;
   /**
-   * The known-name pass could not finish (KNOWN_NAME_CANDIDATE_LIMIT), so
-   * `text` is UNREAD_MESSAGE and nothing the merchant typed is handed on.
+   * Why nothing the merchant typed is handed on, or null when the message
+   * was read. `too_long`: the known-name pass could not finish
+   * (KNOWN_NAME_CANDIDATE_LIMIT). `protected_detail`: the finished text,
+   * read with its tokens opaque, still holds a phone, email or account
+   * number: one beside a long name that became a short token, or a second
+   * account number a first one's token now puts within reach of its keyword
+   * ("account 0123456789 or 0987654321") (G-07). Either way `text` is
+   * UNREAD_MESSAGE, and nothing of it is stored or sent.
    */
-  readonly unread: boolean;
+  readonly unread: UnreadReason | null;
 }
+
+export type UnreadReason = 'too_long' | 'protected_detail';
 
 /**
  * The most distinct name candidates one message may raise (Codex on #271).
@@ -80,8 +89,26 @@ export interface GatewayTokenised extends TokenisedMessage {
  */
 export const KNOWN_NAME_CANDIDATE_LIMIT = 40_000;
 
-/** What stands for a message the known-name pass could not finish. */
-export const UNREAD_MESSAGE = '[message too long to read]';
+/** A customer token's characters after `CUSTOMER_` (generateCustomerToken's default). */
+const CUSTOMER_TOKEN_SUFFIX = 3;
+
+/** What stands for a message the gateway would not hand on, by reason. */
+export const UNREAD_MESSAGE: Readonly<Record<UnreadReason, string>> = {
+  too_long: '[message too long to read]',
+  protected_detail: '[message withheld: it held a protected detail]',
+};
+
+/** A message the gateway will not hand on: no text, no tokens, no link. */
+function unreadAs(reason: UnreadReason): GatewayTokenised {
+  return {
+    text: UNREAD_MESSAGE[reason],
+    tokens: new Map(),
+    link: null,
+    facets: new Map(),
+    customers: [],
+    unread: reason,
+  };
+}
 
 /**
  * The token table one message carries to its reply: what each token reads
@@ -203,12 +230,11 @@ export class PrivacyGateway {
       typed.set(token, list);
     };
 
-    for (const item of pending) {
-      const resolved = await this.customerTokenFor(businessId, item.kind, item.value);
-      out = out.split(item.placeholder).join(resolved.token);
-      note(resolved.token, item.kind, item.value);
-      if (!seen.some((c) => c.customerId === resolved.customerId)) seen.push(resolved);
-    }
+    /* Phones and emails are resolved to customers only once the message is
+     * known to be readable (below): resolving one can create a customer and
+     * vault its identity, and a message the gateway refuses must leave
+     * nothing behind (G-07, Codex on #273). Until then each stands as its
+     * placeholder, as opaque to the name pass as the token it becomes. */
 
     /**
      * The known-name pass. Structure finds phones and emails; it cannot find
@@ -265,7 +291,7 @@ export class PrivacyGateway {
         keys.add(matchKey);
       }
     };
-    scan: for (const segment of openSegments(out, [...tokens.keys(), ...typed.keys()])) {
+    scan: for (const segment of openSegments(out, [...tokens.keys(), ...placeholders])) {
       const words = [...out.slice(segment.start, segment.end).matchAll(NAME_WORD)].map((m) => {
         const start = segment.start + (m.index ?? 0);
         const end = start + m[0].length;
@@ -340,16 +366,7 @@ export class PrivacyGateway {
       }
     }
 
-    if (unread) {
-      return {
-        text: UNREAD_MESSAGE,
-        tokens: new Map(),
-        link: null,
-        facets: new Map(),
-        customers: [],
-        unread: true,
-      };
-    }
+    if (unread) return unreadAs('too_long');
 
     const byKey = new Map<string, { token: string; customerId: string }>();
     /* One lookup per message, however many candidates (G-60). */
@@ -376,13 +393,39 @@ export class PrivacyGateway {
       });
     }
 
-    for (const c of [...claimed].sort((a, b) => a.start - b.start)) {
-      note(c.token, 'name', out.slice(c.start, c.end));
-    }
+    const names = [...claimed]
+      .sort((a, b) => a.start - b.start)
+      .map((c) => ({ ...c, typed: out.slice(c.start, c.end) }));
     /* Rewrite right to left so an earlier span's offsets survive a later
      * substitution that changes the string's length. */
     for (const c of [...claimed].sort((a, b) => b.start - a.start)) {
       out = out.slice(0, c.start) + c.token + out.slice(c.end);
+    }
+
+    /* The contract is text free of structural PII, and the name pass can
+     * break it: "send to Adaeze Obiageli Okonkwo 0123456789" holds no account
+     * number until the long name becomes a short token within reach of the
+     * keyword. Such text is never handed on, so it is never stored and no
+     * model refuses it later (G-07). Read with every token as opaque
+     * letters, each placeholder at the length of the token it becomes: a
+     * token's digits neither hide the number ("CUSTOMER_X1A") nor make one
+     * (Codex on #273). */
+    const probe = out
+      .split(/PENDINGTOKEN\d+X/)
+      .join(`CUSTOMER_${'X'.repeat(CUSTOMER_TOKEN_SUFFIX)}`);
+    const nameTokens = names.map((c) => c.token);
+    if (detectStructuralPiiAroundTokens(probe, [...tokens.keys(), ...nameTokens]).length > 0) {
+      return unreadAs('protected_detail');
+    }
+
+    for (const item of pending) {
+      const resolved = await this.customerTokenFor(businessId, item.kind, item.value);
+      out = out.split(item.placeholder).join(resolved.token);
+      note(resolved.token, item.kind, item.value);
+      if (!seen.some((c) => c.customerId === resolved.customerId)) seen.push(resolved);
+    }
+    for (const c of names) {
+      note(c.token, 'name', c.typed);
       if (!seen.some((s) => s.customerId === c.customerId)) {
         seen.push({ token: c.token, customerId: c.customerId, facet: 'name', created: false });
       }
@@ -395,7 +438,7 @@ export class PrivacyGateway {
       link: proposeLink(seen),
       facets: typed,
       customers: seen,
-      unread: false,
+      unread: null,
     };
   }
 

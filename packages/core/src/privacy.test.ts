@@ -8,7 +8,10 @@ import {
   VaultError,
 } from './vault.js';
 import {
+  PRIVACY_POLICY_VERSION,
   detectStructuralPii,
+  detectStructuralPiiAroundTokens,
+  redactStructuralPiiAroundTokens,
   displayOf,
   fitRehydrated,
   generateCustomerToken,
@@ -367,5 +370,83 @@ describe('the stored-message scrub takes what the gateway takes (G-60 final revi
     ['Mary-Ann paid', 'Ann', 'Mary-Ann paid'],
   ])('scrubs %j for %j', (text, name, expected) => {
     expect(replaceOutsideTokens(text, name, 'T', [])).toBe(expected);
+  });
+});
+
+describe('structural PII around tokens (G-07, Codex on #273)', () => {
+  it('sees an account number whose keyword reaches it across a token holding a digit', () => {
+    /* Read raw, the "1" in the token ends the keyword's run of non-digits. */
+    expect(detectStructuralPii('send to CUSTOMER_X1A 0123456789')).toEqual([]);
+    expect(
+      detectStructuralPiiAroundTokens('send to CUSTOMER_X1A 0123456789').map((s) => s.kind),
+    ).toEqual(['account']);
+  });
+
+  it('masks the longer of two overlapping tokens whole (Codex on 482abd3)', () => {
+    /* ACCOUNT_1 is a prefix of ACCOUNT_10: masking only it left the 0, and
+     * that digit broke the keyword's reach to the raw account number. */
+    const issued = Array.from({ length: 10 }, (_, i) => `ACCOUNT_${i + 1}`);
+    expect(
+      detectStructuralPiiAroundTokens('account ACCOUNT_10 or 0987654321', issued).map(
+        (s) => s.kind,
+      ),
+    ).toEqual(['account']);
+  });
+
+  it('makes no phone of an issued token glued to a figure', () => {
+    expect(detectStructuralPii('CUSTOMER_AB08031234567').map((s) => s.kind)).toEqual(['phone']);
+    expect(detectStructuralPiiAroundTokens('CUSTOMER_AB08031234567', ['CUSTOMER_AB0'])).toEqual([]);
+  });
+
+  it('sees a phone glued to a customer shape nobody issued (final review on #273)', () => {
+    /* Text that skipped the gateway: the shape must not swallow the number. */
+    expect(detectStructuralPiiAroundTokens('CUSTOMER_08031234567').map((s) => s.kind)).toEqual([
+      'phone',
+    ]);
+    expect(detectStructuralPiiAroundTokens('CUSTOMER_AB08031234567').map((s) => s.kind)).toEqual([
+      'phone',
+    ]);
+  });
+
+  it('masks the tokens it is given, whatever their shape, and still finds what is real', () => {
+    expect(
+      detectStructuralPiiAroundTokens('PENDINGTOKEN0X 0123456789 and 08031234567', [
+        'PENDINGTOKEN0X',
+      ]).map((s) => s.kind),
+    ).toEqual(['phone']);
+  });
+});
+
+describe('the privacy policy version (G-07, Codex on #273)', () => {
+  it('names the rule refusing text that still holds structural PII once names are tokens', () => {
+    /* Telemetry before and after the refusal rule must not claim one policy. */
+    expect(PRIVACY_POLICY_VERSION).toBe('tokenise-v2');
+  });
+});
+
+describe('masking never swallows a real number (final review on #273)', () => {
+  it('keeps digits a merchant typed after a counter-shaped prefix visible', () => {
+    expect(
+      detectStructuralPiiAroundTokens('send to CUSTOMER_KAP PHONE_0123456789').map((s) => s.kind),
+    ).toEqual(['account']);
+    expect(detectStructuralPiiAroundTokens('PHONE_08031234567').map((s) => s.kind)).toEqual([
+      'phone',
+    ]);
+    expect(detectStructuralPiiAroundTokens('ACCOUNT_2348031234567').map((s) => s.kind)).toEqual([
+      'phone',
+    ]);
+  });
+
+  it('still reads a real counter token as opaque', () => {
+    expect(detectStructuralPiiAroundTokens('send to ACCOUNT_1 now')).toEqual([]);
+  });
+
+  it('redacts, for storage, what reads as PII only once a name is a token', () => {
+    expect(
+      redactStructuralPiiAroundTokens('send to CUSTOMER_K7P 0123456789 for the wigs', [
+        'CUSTOMER_K7P',
+      ]),
+    ).toBe('send to CUSTOMER_K7P [account] for the wigs');
+    expect(redactStructuralPiiAroundTokens('nothing here')).toBe('nothing here');
   });
 });

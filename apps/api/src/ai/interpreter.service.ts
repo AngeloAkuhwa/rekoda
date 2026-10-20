@@ -6,7 +6,11 @@ import {
   divergentFields,
   type AiModelRole,
 } from '@rekoda/core';
-import { PRIVACY_POLICY_VERSION, detectStructuralPii, redactForLog } from '@rekoda/core/privacy';
+import {
+  PRIVACY_POLICY_VERSION,
+  detectStructuralPiiAroundTokens,
+  redactForLog,
+} from '@rekoda/core/privacy';
 import {
   businessCommandToolSchema,
   parseBusinessCommand,
@@ -53,8 +57,12 @@ export type Interpretation =
   | { outcome: 'unusable'; reason: string }
   /** A ceiling refused before anything was spent. */
   | { outcome: 'refused'; refusedBy: 'business' | 'platform' }
-  /** The provider could not be reached. Nothing was billed; the slot is back. */
-  | { outcome: 'unavailable'; reason: string }
+  /**
+   * No usable reply came back: the provider could not be reached, or the
+   * transport itself failed (G-07). The slot is back either way; `failure`
+   * keeps the two apart for whoever reads the run.
+   */
+  | { outcome: 'unavailable'; reason: string; failure: UnavailableFailure }
   /**
    * Two independent readers disagreed on a high-value document (item 9).
    * Neither reading is chosen, no third model is asked, and nothing
@@ -63,11 +71,14 @@ export type Interpretation =
    */
   | { outcome: 'disagreement'; fields: string[] };
 
+/** Why no usable reply came back from a reserved call. */
+export type UnavailableFailure = 'provider_unreachable' | 'transport_error';
+
 /** One reserved, recorded model call — or the reason it did not happen. */
 type ModelCall =
   | { kind: 'ok'; reply: ModelReply }
   | { kind: 'refused'; refusedBy: 'business' | 'platform' }
-  | { kind: 'unavailable'; reason: string };
+  | { kind: 'unavailable'; reason: string; failure: UnavailableFailure };
 
 /**
  * Why the escalation model was asked. On the cost row, because "what does
@@ -117,9 +128,10 @@ export class Interpreter {
   async interpret(
     businessId: string,
     safeText: string,
-    opts?: { document?: boolean },
+    /** `tokens`: the ones this message was issued, read as opaque exactly. */
+    opts?: { document?: boolean; tokens?: readonly string[] },
   ): Promise<Interpretation> {
-    this.refuseRawPii(safeText);
+    this.refuseRawPii(safeText, opts?.tokens);
 
     const primary = await this.callModel(businessId, {
       model: this.config.aiModelDefault,
@@ -133,7 +145,9 @@ export class Interpreter {
       purpose: 'interpret_message',
     });
     if (primary.kind === 'refused') return { outcome: 'refused', refusedBy: primary.refusedBy };
-    if (primary.kind === 'unavailable') return { outcome: 'unavailable', reason: primary.reason };
+    if (primary.kind === 'unavailable') {
+      return { outcome: 'unavailable', reason: primary.reason, failure: primary.failure };
+    }
 
     const first = this.parseCommandReply(primary.reply);
 
@@ -247,8 +261,12 @@ export class Interpreter {
    * only behaviour this method can change is SKIPPING a more expensive
    * call; it can never block a real document.
    */
-  async classifyDocument(businessId: string, safeText: string): Promise<DocumentClass> {
-    this.refuseRawPii(safeText);
+  async classifyDocument(
+    businessId: string,
+    safeText: string,
+    tokens?: readonly string[],
+  ): Promise<DocumentClass> {
+    this.refuseRawPii(safeText, tokens);
 
     const call = await this.callModel(businessId, {
       model: this.config.aiModelClassifier,
@@ -271,8 +289,12 @@ export class Interpreter {
    * means the gateway was bypassed or broken, and the only honest move is
    * an error a human sees — not a quiet redaction that sends the model a
    * sentence nobody wrote. */
-  private refuseRawPii(safeText: string): void {
-    const rawSpans = detectStructuralPii(safeText);
+  private refuseRawPii(safeText: string, tokens: readonly string[] = []): void {
+    /* Tokens read as opaque letters, as the gateway reads them (G-07): a
+     * token's digits are never PII, and must not hide or make it either.
+     * The issued ones exactly; anything else only by a bounded shape, so a
+     * figure glued to "CUSTOMER_" is still seen. */
+    const rawSpans = detectStructuralPiiAroundTokens(safeText, tokens);
     if (rawSpans.length > 0) {
       throw new RawProtectedFieldError([...new Set(rawSpans.map((span) => span.kind))]);
     }
@@ -305,10 +327,19 @@ export class Interpreter {
       extraMeta?: Record<string, unknown>;
     },
   ): Promise<ModelCall> {
-    const reservation = await quotaRepo.reserveAiCall(this.db, businessId, {
-      perBusinessPerDay: this.config.aiCallsPerBusinessPerDay,
-      globalPerDay: this.config.aiCallsGlobalPerDay,
-    });
+    /* One instant for the reservation and any release of it: a call that
+     * straddles Lagos midnight gives its slot back to the day it took it
+     * from, never to the next day's counter (Codex on #273). */
+    const reservedAt = new Date();
+    const reservation = await quotaRepo.reserveAiCall(
+      this.db,
+      businessId,
+      {
+        perBusinessPerDay: this.config.aiCallsPerBusinessPerDay,
+        globalPerDay: this.config.aiCallsGlobalPerDay,
+      },
+      reservedAt,
+    );
     if (!reservation.ok) {
       this.log.warn(`${request.role} call refused by the ${reservation.refusedBy} ceiling`);
       return { kind: 'refused', refusedBy: reservation.refusedBy };
@@ -329,19 +360,44 @@ export class Interpreter {
       if (error instanceof ProviderUnreachable) {
         // The merchant keeps the slot: being unable to reach a provider must
         // not spend their daily allowance.
-        await quotaRepo.releaseAiCall(this.db, businessId);
+        await quotaRepo.releaseAiCall(this.db, businessId, reservedAt);
         /* But WE may still have been billed. A request that timed out after
          * the provider began generating is charged, and recording it as
          * nothing would put a real cost outside the margin view entirely.
          * Zero tokens with `priced: false` says "this happened and we cannot
          * price it", which is a row somebody can reconcile. */
         await this.recordUnpricedCall(businessId, request, error.message);
-        return { kind: 'unavailable', reason: error.message };
+        return { kind: 'unavailable', reason: error.message, failure: 'provider_unreachable' };
       }
-      throw error;
+      /* Any other fault in the transport (a reply unlike the one the SDK
+       * promised, a bug in an adapter) is still a call that produced nothing
+       * usable (G-07). Rethrown, it kept the merchant's slot for good and
+       * left no row, though the provider may have billed us. Same handling
+       * as unreachable, named for what it was; the name only, since an
+       * error's message is not a place we vouch for. */
+      const name = error instanceof Error ? error.name : 'unknown';
+      this.log.error(`${request.role} transport failed: ${name}`);
+      /* The merchant's slot only: the fault may have come after the request
+       * was sent and billed, so the platform's ceiling on provider spend
+       * keeps counting it (Codex on #273). */
+      await quotaRepo.releaseAiCall(this.db, businessId, reservedAt, { global: false });
+      await this.recordUnpricedCall(businessId, request, `transport error: ${name}`);
+      return {
+        kind: 'unavailable',
+        reason: `transport error: ${name}`,
+        failure: 'transport_error',
+      };
     }
 
-    await this.recordUsage(businessId, request, reply);
+    /* Whether a command answer survived the schema, on its row (G-07): an
+     * escalation or verifier whose answer is unusable falls back to the
+     * primary's outcome, and an evaluation must still see that it failed. */
+    const schemaValid =
+      request.toolName === TOOL_NAME
+        ? reply.toolInput !== null &&
+          parseBusinessCommand((reply.toolInput as { command?: unknown }).command).ok
+        : null;
+    await this.recordUsage(businessId, request, reply, schemaValid);
     return { kind: 'ok', reply };
   }
 
@@ -378,6 +434,7 @@ export class Interpreter {
       extraMeta?: Record<string, unknown>;
     },
     reply: ModelReply,
+    schemaValid: boolean | null = null,
   ): Promise<void> {
     const cost = costOfCall(request.model, reply.usage, this.config.planningFxNairaPerUsd);
     if (!cost.priced) {
@@ -410,6 +467,7 @@ export class Interpreter {
           policyVersion: PRIVACY_POLICY_VERSION,
           priced: cost.priced,
           stopReason: reply.stopReason,
+          ...(schemaValid === null ? {} : { schemaValid }),
           ...reply.usage,
           ...(request.extraMeta ?? {}),
         },
@@ -427,7 +485,13 @@ export class Interpreter {
    */
   private async recordUnpricedCall(
     businessId: string,
-    request: { model: string; role: AiModelRole; provider?: 'anthropic' | 'openai' },
+    request: {
+      model: string;
+      role: AiModelRole;
+      purpose: string;
+      provider?: 'anthropic' | 'openai';
+      extraMeta?: Record<string, unknown>;
+    },
     reason: string,
   ): Promise<void> {
     await withBusiness(this.db, businessId, (tx: TenantDb) =>
@@ -439,11 +503,18 @@ export class Interpreter {
         providerCostMicros: 0,
         nairaEquivalentK: 0,
         billingPeriod: billingPeriod(new Date()),
+        /* The same observability contract as a successful call (Codex on
+         * 5b4ecad): a failed call may still be billed, so its row says which
+         * operation ran under which privacy policy. */
         meta: {
           role: request.role,
           model: request.model,
+          purpose: request.purpose,
+          tokenised: true,
+          policyVersion: PRIVACY_POLICY_VERSION,
           priced: false,
           reason: redactForLog(reason),
+          ...(request.extraMeta ?? {}),
         },
       }),
     );

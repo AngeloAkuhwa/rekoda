@@ -9,7 +9,7 @@
  * else is real: real PostgreSQL, real quota counters, real schema.
  */
 import { randomBytes } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDb, identity, quotaRepo, sql, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { Interpreter, RawProtectedFieldError } from './interpreter.service.js';
@@ -44,6 +44,13 @@ afterAll(async () => {
 beforeEach(async () => {
   await truncateAll(urls);
 });
+
+async function globalCallsToday(): Promise<number> {
+  const rows = await db.execute<{ calls: number }>(
+    sql`SELECT coalesce(sum(calls), 0)::int AS calls FROM ai_global_counters`,
+  );
+  return Number([...rows][0]?.calls ?? 0);
+}
 
 async function seedBusiness(name = 'Ada Fashion', phone = '+2348080000001'): Promise<string> {
   const user = await identity.upsertUserByPhone(db, phone);
@@ -260,6 +267,146 @@ describe('the spend ceiling in front of it', () => {
     expect(usage.calls).toBe(1);
     expect(usage.providerCostMicros).toBe(0);
   });
+
+  /* Codex on #273: the fail-closed check read a token's digit as breaking
+   * the account keyword's reach, so a raw account number went to the model. */
+  it('refuses a raw account number beside a token that holds a digit', async () => {
+    const businessId = await seedBusiness();
+    const transport = new StubTransport([]);
+    const interpreter = new Interpreter(db, config, transport);
+    await expect(
+      interpreter.interpret(businessId, 'send to CUSTOMER_X1A 0123456789 for the wigs'),
+    ).rejects.toBeInstanceOf(RawProtectedFieldError);
+    expect(transport.requests).toHaveLength(0);
+  });
+
+  /* Per-file review on #273: a figure glued to a customer shape nobody
+   * issued is seen; the same text with that token issued is not refused. */
+  it('reads an issued token exactly, and a shape nobody issued without swallowing a phone', async () => {
+    const businessId = await seedBusiness();
+    const refusing = new StubTransport([]);
+    await expect(
+      new Interpreter(db, config, refusing).interpret(businessId, 'call CUSTOMER_08031234567'),
+    ).rejects.toBeInstanceOf(RawProtectedFieldError);
+    expect(refusing.requests).toHaveLength(0);
+
+    const issued = StubTransport.answering({ intent: 'Unclear', clarification: 'Which one?' });
+    const result = await new Interpreter(db, config, issued).interpret(
+      businessId,
+      'CUSTOMER_AB08031234567 bought wigs',
+      { tokens: ['CUSTOMER_AB0'] },
+    );
+    expect(result.outcome).toBe('command');
+  });
+
+  /* G-07: any other fault in the transport (a reply shaped unlike the SDK
+   * promised, a bug in the adapter) is still a call that produced nothing
+   * usable. The slot goes back, the attempt is recorded unpriced, and the
+   * outcome says it was the transport, not the provider being down. */
+  it('hands the slot back and records the attempt when the transport itself fails', async () => {
+    const businessId = await seedBusiness();
+    const globalBefore = await globalCallsToday();
+    const interpreter = new Interpreter(
+      db,
+      config,
+      StubTransport.failing(
+        new TypeError("Cannot read properties of undefined (reading 'message')"),
+      ),
+    );
+
+    const result = await interpreter.interpret(businessId, 'CUSTOMER_7K2 bought wigs');
+    expect(result).toMatchObject({ outcome: 'unavailable', failure: 'transport_error' });
+
+    const spent = await withBusiness(db, businessId, (tx) => quotaRepo.callsToday(tx, businessId));
+    expect(spent).toBe(0);
+    /* The platform's ceiling keeps counting a call that may have been billed
+     * (Codex on #273). */
+    expect(await globalCallsToday()).toBe(globalBefore + 1);
+    const usage = await usageRows(businessId);
+    expect(usage.calls).toBe(1);
+    expect(usage.providerCostMicros).toBe(0);
+  });
+});
+
+describe('a failed call that straddles Lagos midnight (Codex on 4d3b3fe)', () => {
+  /* 23:59:59.5 in Lagos, and two seconds later the next day. */
+  const before = new Date('2031-02-01T22:59:59.500Z');
+  const after = new Date('2031-02-01T23:00:01.500Z');
+  const businessCalls = async (businessId: string, day: string) => {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ calls: number }>(
+        sql`SELECT calls FROM ai_quota_counters WHERE business_id = ${businessId}::uuid AND day = ${day}::date`,
+      ),
+    );
+    return Number([...rows][0]?.calls ?? 0);
+  };
+
+  it.each([
+    ['a transport fault', new TypeError('adapter bug')],
+    ['an unreachable provider', new ProviderUnreachable('timeout')],
+  ])('gives the slot back to the day it was taken from: %s', async (_name, fault) => {
+    const businessId = await seedBusiness();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      /* Another call already spent on the new day: it must stay spent. */
+      vi.setSystemTime(after);
+      await quotaRepo.reserveAiCall(
+        db,
+        businessId,
+        { perBusinessPerDay: 100, globalPerDay: 1_000_000 },
+        after,
+      );
+      vi.setSystemTime(before);
+      const crossing = {
+        send: () => {
+          vi.setSystemTime(after);
+          return Promise.reject(fault);
+        },
+      };
+      const result = await new Interpreter(db, config, crossing).interpret(
+        businessId,
+        'CUSTOMER_7K2 bought wigs',
+      );
+      expect(result.outcome).toBe('unavailable');
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(await businessCalls(businessId, '2031-02-01')).toBe(0);
+    expect(await businessCalls(businessId, '2031-02-02')).toBe(1);
+  });
+});
+
+describe('whether an answer survived the schema, on its row (G-07, Codex on #273)', () => {
+  it('records schemaValid for a command answer, so a failed escalation is visible', async () => {
+    const businessId = await seedBusiness();
+    /* The primary is Unclear; the escalation answers garbage and is dropped. */
+    const transport = new StubTransport([
+      {
+        toolInput: { command: { intent: 'Unclear', clarification: 'Which one?' } },
+        usage: { inputTokens: 100, outputTokens: 10 },
+        stopReason: 'tool_use',
+      },
+      {
+        toolInput: { command: { intent: 'RecordSale' } },
+        usage: { inputTokens: 100, outputTokens: 10 },
+        stopReason: 'tool_use',
+      },
+    ]);
+    const result = await new Interpreter(db, config, transport).interpret(
+      businessId,
+      'CUSTOMER_7K2 bought wigs',
+    );
+    expect(result.outcome).toBe('command');
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ role: string; valid: string | null }>(sql`
+        SELECT meta->>'role' AS role, meta->>'schemaValid' AS valid
+          FROM usage_events ORDER BY created_at`),
+    );
+    expect([...rows].map((r) => [r.role, r.valid])).toEqual([
+      ['interpreter', 'true'],
+      ['escalation', 'false'],
+    ]);
+  });
 });
 
 describe('costs stay inside the tenant', () => {
@@ -315,6 +462,39 @@ describe('the adapter boundary (spec Appendix C.4)', () => {
     });
 
     /* The prompt, the completion and every protected field stay OUT. */
+    const serialised = JSON.stringify(row.meta);
+    expect(serialised).not.toContain('bought wigs');
+    expect(serialised).not.toContain('CUSTOMER_7K2');
+  });
+
+  /* A failed call may still be billed, so its row carries the same privacy
+   * evidence as a successful one: which operation ran under which policy
+   * (Codex on 5b4ecad). */
+  it.each([
+    ['an unreachable provider', new ProviderUnreachable('anthropic 503')],
+    ['a transport fault', new TypeError('adapter bug')],
+  ])('records purpose, tokenisation and policy version for %s', async (_label, error) => {
+    const businessId = await seedBusiness();
+    await new Interpreter(db, config, StubTransport.failing(error)).interpret(
+      businessId,
+      'CUSTOMER_7K2 bought wigs',
+    );
+
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ usage_type: string; meta: Record<string, unknown> }>(
+        sql`SELECT usage_type, meta FROM usage_events WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    const row = [...rows][0]!;
+    expect(row.usage_type).toBe('llm_failed');
+    expect(row.meta).toMatchObject({
+      role: 'interpreter',
+      model: config.aiModelDefault,
+      purpose: 'interpret_message',
+      tokenised: true,
+      policyVersion: PRIVACY_POLICY_VERSION,
+      priced: false,
+    });
     const serialised = JSON.stringify(row.meta);
     expect(serialised).not.toContain('bought wigs');
     expect(serialised).not.toContain('CUSTOMER_7K2');

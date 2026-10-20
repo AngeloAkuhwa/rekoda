@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { TextExtractionUnavailable, type ExtractedText, type TextExtraction } from './ocr.js';
+import { ANTHROPIC_DEFAULT_BASE_URL } from './anthropic.transport.js';
 
 /**
  * Hosted extraction: the vision model as the text reader (ADR 0027).
@@ -39,7 +40,9 @@ export class VisionTextExtraction implements TextExtraction {
       apiKey,
       timeout: timeoutMs,
       maxRetries: 0,
-      ...(baseUrl ? { baseURL: baseUrl } : {}),
+      /* Explicit, so the SDK never reads its base-URL variable from the
+       * process (final review on a98a294). */
+      baseURL: baseUrl || ANTHROPIC_DEFAULT_BASE_URL,
     });
   }
 

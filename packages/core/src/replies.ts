@@ -1391,6 +1391,30 @@ export function messageTooLong(): Reply {
 }
 
 /**
+ * A message that, once its customers were hidden, still held something that
+ * reads as a phone, email or account number (G-07). Nothing in it is read or
+ * recorded, so the merchant is told how to send it so it can be.
+ */
+export function messageNotReadSafely(): Reply {
+  return reply(
+    'I could not read that safely, so I have not recorded anything from it.\n\n' +
+      'Please send it again without the account or phone number.',
+  );
+}
+
+/**
+ * A photographed page that, once its customers were hidden, still held an
+ * account or phone number beside them (G-07). A page cannot be resent
+ * without it, so the merchant is asked to type it instead.
+ */
+export function documentNotReadSafely(): Reply {
+  return reply(
+    'I could not read that page safely, so I have not recorded anything from it.\n\n' +
+      'Please type what it says instead, without the account or phone number.',
+  );
+}
+
+/**
  * The audio arrived and could not be read.
  *
  * Distinct from `voiceUnavailable`, which is the transcriber being down. This

@@ -34,7 +34,9 @@
  * telemetry must be able to say which rules were in force when a text was
  * declared safe, without archaeology through git history.
  */
-export const PRIVACY_POLICY_VERSION = 'tokenise-v1';
+/* v2 (G-07): text still holding structural PII once its names are tokens
+ * (read with every token opaque) is refused, never handed on. */
+export const PRIVACY_POLICY_VERSION = 'tokenise-v2';
 
 export interface PiiSpan {
   readonly start: number;
@@ -205,6 +207,76 @@ export function protectedSpans(
     if (!exact.some((e) => span.start < e.end && e.start < span.end)) shaped.push(span);
   }
   return [...exact, ...shaped].sort((a, b) => a.start - b.start);
+}
+
+/**
+ * Structural PII in tokenised text, with every token read as opaque letters
+ * of its own length (G-07). A token's digits are not the merchant's: inside
+ * `CUSTOMER_X1A` they would break the run of non-digits an account number's
+ * keyword reaches across, hiding the number, and beside a figure they could
+ * make a phone that nobody typed.
+ */
+export function detectStructuralPiiAroundTokens(
+  text: string,
+  tokens: Iterable<string> = [],
+): PiiSpan[] {
+  return detectStructuralPii(maskTokens(text, tokens));
+}
+
+/**
+ * The shapes a token can take when nobody issued it here: a customer token,
+ * or a per-message counter the pipeline numbers from 1 (PHONE_1, ACCOUNT_2).
+ * Bounded so a merchant who types "PHONE_08031234567" or
+ * "CUSTOMER_08031234567" keeps the number visible: masking a shape must
+ * never swallow a real figure (final review on #273). A token this message
+ * was really issued is masked exactly, glued to a figure or not, when the
+ * caller passes it.
+ */
+const MASKABLE_SHAPE = /CUSTOMER_[0-9A-Z]{3}(?!\d)|(?:PHONE|EMAIL|ACCOUNT)_\d{1,3}(?!\d)/g;
+
+/** `text` with each token, and each bounded token shape, read as letters of its length. */
+function maskTokens(text: string, tokens: Iterable<string>): string {
+  const spans: Array<{ start: number; end: number }> = [];
+  for (const token of tokens) {
+    for (let at = text.indexOf(token); at !== -1; at = text.indexOf(token, at + token.length)) {
+      spans.push({ start: at, end: at + token.length });
+    }
+  }
+  for (const m of text.matchAll(MASKABLE_SHAPE)) {
+    spans.push({ start: m.index, end: m.index + m[0].length });
+  }
+  spans.sort((a, b) => a.start - b.start);
+  let masked = '';
+  let cursor = 0;
+  for (const span of spans) {
+    /* Overlapping spans are merged, never dropped: ACCOUNT_1 inside
+     * ACCOUNT_10 must not leave the 0 standing (Codex on #273). */
+    if (span.end <= cursor) continue;
+    const start = Math.max(span.start, cursor);
+    masked += text.slice(cursor, start) + 'X'.repeat(span.end - start);
+    cursor = span.end;
+  }
+  return masked + text.slice(cursor);
+}
+
+/**
+ * `text` with every structural span that only reads as one around its
+ * tokens replaced by its kind ("[account]"), for storage (final review on
+ * #273): a name the model resolved becomes a short token after the message
+ * was stored, and the account number beside it then reads as one. Masking
+ * keeps every length, so the spans found map exactly onto `text`.
+ */
+export function redactStructuralPiiAroundTokens(
+  text: string,
+  tokens: Iterable<string> = [],
+): string {
+  let out = '';
+  let cursor = 0;
+  for (const span of detectStructuralPiiAroundTokens(text, tokens)) {
+    out += `${text.slice(cursor, span.start)}[${span.kind}]`;
+    cursor = span.end;
+  }
+  return out + text.slice(cursor);
 }
 
 /** The stretches of `text` between its tokens, which alone may hold a name. */

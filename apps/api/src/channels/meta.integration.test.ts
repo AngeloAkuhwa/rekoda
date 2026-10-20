@@ -5515,6 +5515,72 @@ describe('a storefront buyer named later in Chat', () => {
     expect(await invoiceCount(business.id)).toBe(0);
   });
 
+  /* G-07: text the interpreter refuses for raw protected fields (here an
+   * account number that only reads as one once a long name became a short
+   * token) is answered, and the message unit it took goes back. */
+  it('answers a message the interpreter refuses as raw, and gives its unit back', async () => {
+    const business = await seedMerchant();
+    const { token } = await deps.gateway.resolveMention(business.id, 'Adaeze Obiageli Okonkwo');
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`UPDATE customers SET token = 'CUSTOMER_QQQ' WHERE token = ${token}`),
+    );
+    stubTransport.replyWith(SALE_TO_CHIDI);
+
+    await post(
+      messagePayload(
+        '2348031234567',
+        'wamid.RAW1',
+        'send to Adaeze Obiageli Okonkwo 0123456789 for the wigs',
+      ),
+    );
+    await drain();
+
+    expect(stubTransport.requests).toHaveLength(0);
+    expect(stubSender.lastText).toContain('could not read that safely');
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
+    );
+    expect(rows.find((r) => r.unit === 'AI_ACTIONS')?.used ?? 0).toBe(0);
+    /* Nothing of it is kept: the history holds the placeholder. */
+    const stored = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ body: string }>(
+        sql`SELECT body FROM conversation_messages WHERE provider_message_id = 'wamid.RAW1'`,
+      ),
+    );
+    expect([...stored].map((r) => r.body)).toEqual([
+      '[message withheld: it held a protected detail]',
+    ]);
+  });
+
+  /* Final review on #273: a NEW name the model resolves becomes a short
+   * token in the stored body, which puts the account number beside it in
+   * reach of "send to": the stored history keeps it out. */
+  it('stores no account number that the mention scrub brings within reach', async () => {
+    const business = await seedMerchant();
+    stubTransport.replyWith({
+      ...SALE_TO_CHIDI,
+      customer: { kind: 'mention', mention: 'Adaeze Obiageli Okonkwo' },
+    });
+
+    await post(
+      messagePayload(
+        '2348031234567',
+        'wamid.RAW2',
+        'Adaeze Obiageli Okonkwo bought 3 wigs for 150k, send to Adaeze Obiageli Okonkwo 0123456789',
+      ),
+    );
+    await drain();
+
+    const stored = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ body: string }>(
+        sql`SELECT body FROM conversation_messages WHERE provider_message_id = 'wamid.RAW2'`,
+      ),
+    );
+    const body = [...stored][0]?.body ?? '';
+    expect(body).not.toContain('Adaeze');
+    expect(body).not.toContain('0123456789');
+  });
+
   it('keeps them apart when the merchant says no', async () => {
     const business = await seedMerchant();
     await deps.gateway.resolveStorefrontCustomer(business.id, 'Chidi Okafor', PHONE);
@@ -5784,6 +5850,30 @@ describe('a receipt photo', () => {
     await drain();
 
     expect(stubOcr.calls).toHaveLength(1);
+    expect(await readsUsed(business.id)).toBe(0);
+  });
+
+  /* G-07, Codex on #273: a page the gateway refuses was read and is never
+   * recorded, so its document unit goes back. */
+  it('gives the page back when its text holds a protected detail', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const { token } = await deps.gateway.resolveMention(business.id, 'Adaeze Obiageli Okonkwo');
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`UPDATE customers SET token = 'CUSTOMER_X1A' WHERE token = ${token}`),
+    );
+    arrangePhoto();
+    stubOcr.answerWith({
+      text: 'send to Adaeze Obiageli Okonkwo 0123456789 for the wigs',
+      confidence: 0.9,
+    });
+
+    await post(photoPayload('2348031234567', 'wamid.P23'));
+    await drain();
+
+    expect(stubOcr.calls).toHaveLength(1);
+    expect(stubTransport.requests).toHaveLength(0);
+    /* A page cannot be resent without the number: type it instead. */
+    expect(stubSender.lastText).toContain('type what it says instead');
     expect(await readsUsed(business.id)).toBe(0);
   });
 
