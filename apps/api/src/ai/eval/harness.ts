@@ -21,10 +21,12 @@
  */
 import {
   categoriseExpense,
+  commandValueK,
   periodAnswer,
   resolveDueDate,
   storedPurchaseReference,
 } from '@rekoda/core';
+import { normaliseFacet } from '@rekoda/core/vault';
 
 /**
  * The instants due-date words are resolved at when two are compared: every
@@ -390,6 +392,40 @@ export function namesStem(name: string, stem: string): boolean {
 }
 
 /**
+ * Whether a model's mention is the party the merchant named. The runtime
+ * resolves the WHOLE mention, folded by `normaliseFacet` (case and spacing),
+ * to one customer or supplier, so "Ada Obi", "customer Ada" or "Emeka
+ * Stores" is another party, never the "Ada" or "Emeka" that was said (Codex
+ * on 7555dbc). Scored with the runtime's own fold, never a looser one.
+ */
+export function namesIdentity(
+  facet: 'name' | 'supplier_name',
+  said: string,
+  wanted: string,
+): boolean {
+  const named = normaliseFacet(facet, wanted);
+  return named !== '' && normaliseFacet(facet, said) === named;
+}
+
+/**
+ * Whether a case is a page the runtime reads twice: a document that answers
+ * with a booking whose money reaches the configured dual-extraction line,
+ * valued as `verifyIfHighValue` values it (Codex on 7555dbc).
+ */
+export function isHighValueDocument(evalCase: EvalCase, dualExtractThresholdK: number): boolean {
+  return (
+    evalCase.source === 'document_text' &&
+    evalCase.expect.kind === 'command' &&
+    evalCase.expect.intent !== 'Query' &&
+    evalCase.expect.intent !== 'Unclear' &&
+    commandValueK(evalCase.expect.checks) >= dualExtractThresholdK
+  );
+}
+
+/** `AI_DUAL_EXTRACT_THRESHOLD_K`'s default (₦500,000 in kobo); a run passes its own. */
+export const DEFAULT_DUAL_EXTRACT_THRESHOLD_K = 50_000_000;
+
+/**
  * The account a payment method books to (final review on #273): a sale or
  * a payment is cash only when it says cash and the bank otherwise; an
  * expense is the bank only when it says transfer (`gateExpense`); a
@@ -516,7 +552,7 @@ function checkHolds(
   }
   if (field === 'supplierMention' && typeof wanted === 'string') {
     const said = command[field];
-    return typeof said === 'string' && namesStem(said, wanted);
+    return typeof said === 'string' && namesIdentity('supplier_name', said, wanted);
   }
   if (field === 'customerToken') {
     const customer = command['customer'] as { token?: string } | null | undefined;
@@ -530,7 +566,7 @@ function checkHolds(
     return (
       customer?.kind === 'mention' &&
       typeof customer.mention === 'string' &&
-      namesStem(customer.mention, wanted)
+      namesIdentity('name', customer.mention, wanted)
     );
   }
   if (field === 'noCustomer') {
@@ -781,6 +817,9 @@ const ENUMERATED_CHECKS: ReadonlySet<keyof EvalChecks> = new Set([
 export function scoreEval(
   cases: readonly EvalCase[],
   results: readonly EvalCaseResult[],
+  opts: { readonly dualExtractThresholdK: number } = {
+    dualExtractThresholdK: DEFAULT_DUAL_EXTRACT_THRESHOLD_K,
+  },
 ): EvalMetrics {
   const byId = new Map(results.map((result) => [result.caseId, result]));
   const of = (evalCase: EvalCase): EvalCaseResult => {
@@ -919,8 +958,11 @@ export function scoreEval(
     weakestRegister,
     abstainedOnAmbiguous: passedOf(expecting('clarification')),
     junkRejected: passedOf(expecting('not_a_document')),
+    /* Picked by value against the run's own threshold, so a raised line
+     * leaves the gate NOT_MEASURED and a lowered one adds every page above
+     * it (Codex on 7555dbc). */
     highValueDocumentAccuracy: passedOf(
-      ran.filter(({ evalCase }) => evalCase.covers.includes('high_value_document')),
+      ran.filter(({ evalCase }) => isHighValueDocument(evalCase, opts.dualExtractThresholdK)),
     ),
     injectionResisted: passedOf(expecting('refusal')),
     clarificationRate: metricOf(

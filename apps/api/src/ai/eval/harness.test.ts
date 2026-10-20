@@ -891,7 +891,7 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
     expect(scoreCase(caseOf('purchase-credit'), purchase(null)).status).toBe('passed');
     const fromEmeka = command({
       intent: 'RecordPurchase',
-      supplierMention: 'Emeka Stores',
+      supplierMention: 'emeka',
       description: 'cartons',
       amount: 180_000,
       reportedPayment: null,
@@ -901,6 +901,21 @@ describe("the dataset's cases catch what they claim to cover (Codex on #273)", (
       supplierReference: null,
     });
     expect(scoreCase(caseOf('purchase-transfer'), fromEmeka).status).toBe('passed');
+    /* "Emeka Stores" is a second supplier to the runtime (Codex on 7555dbc). */
+    const fromEmekaStores = command({
+      intent: 'RecordPurchase',
+      supplierMention: 'Emeka Stores',
+      description: 'cartons',
+      amount: 180_000,
+      reportedPayment: null,
+      paymentMethod: 'transfer',
+      productMention: '10 cartons',
+      quantity: 10,
+      supplierReference: null,
+    });
+    expect(scoreCase(caseOf('purchase-transfer'), fromEmekaStores).failedChecks).toEqual([
+      'supplierMention',
+    ]);
   });
 
   it('two methods that book to the same account are one answer', () => {
@@ -1431,6 +1446,45 @@ describe('aggregating metrics', () => {
     ).toBe('NOT_MEASURED');
   });
 
+  /* The slice follows the configured dual-extraction threshold, the way
+   * `verifyIfHighValue` picks pages, not a tag (Codex on 7555dbc). */
+  it('picks the high-value documents by the configured threshold, not by a tag', () => {
+    const verify = EVAL_CASES.find((c) => c.id === 'verify-1')!;
+    const right = scoreCase(
+      verify,
+      command({
+        intent: 'RecordPurchase',
+        amount: 3_600_000,
+        quantity: 50,
+        productMention: 'rice',
+        supplierMention: null,
+        supplierReference: null,
+        description: 'bags of rice',
+        paymentMethod: 'transfer',
+        reportedPayment: 3_600_000,
+      }),
+    );
+    /* ₦3.6m is 360,000,000 kobo: at or above the line it is measured. */
+    expect(
+      scoreEval([verify], [right], { dualExtractThresholdK: 360_000_000 })
+        .highValueDocumentAccuracy,
+    ).toMatchObject({ value: 1, observations: 1 });
+    /* Raised above every page in the run: nothing exercised the policy, so
+     * the gate is NOT_MEASURED, never a pass on a page below the line. */
+    expect(
+      scoreEval([verify], [right], { dualExtractThresholdK: 360_000_001 }).highValueDocumentAccuracy
+        .status,
+    ).toBe('NOT_MEASURED');
+    /* Lowered: an untagged page above the new line joins the slice. */
+    const supply = EVAL_CASES.find((c) => c.id === 'supply-4')!;
+    expect(supply.covers).not.toContain('high_value_document');
+    const misreadSupply = scoreCase(supply, command({ intent: 'RecordPurchase', amount: 1 }));
+    expect(
+      scoreEval([verify, supply], [right, misreadSupply], { dualExtractThresholdK: 1 })
+        .highValueDocumentAccuracy,
+    ).toMatchObject({ value: 0.5, observations: 2 });
+  });
+
   it('a wrong accepted answer drags accuracy down and stays visible by category', () => {
     const cases = [CASE_SALE, CASE_AMBIG];
     const metrics = scoreEval(cases, [
@@ -1483,6 +1537,47 @@ describe('commands a model cannot skip and still pass (Codex on #273, af442ec)',
     expect(
       scoreCase(caseOf(id), named({ kind: 'mention', mention: 'Bola' })).failedChecks,
     ).toContain('customerMention');
+  });
+
+  /* The runtime resolves the WHOLE mention to a customer, so "Ada Obi" or
+   * "customer Ada" is a different identity from the "Ada" the merchant
+   * named (Codex on 7555dbc). */
+  it('a new name is the whole identity the merchant gave, not a word that starts it', () => {
+    const named = (mention: string) =>
+      command({
+        intent: 'RecordSale',
+        customer: { kind: 'mention', mention },
+        items: [{ name: 'rice', quantity: 2, unitPrice: 12_000 }],
+        reportedPayment: null,
+        paymentMethod: 'unknown',
+      });
+    const id = 'new-name-1';
+    for (const same of ['Ada', 'ada', ' Ada ']) {
+      expect(scoreCase(caseOf(id), named(same)).status).toBe('passed');
+    }
+    for (const other of ['Ada Obi', 'customer Ada', 'Adaeze', 'Mama Ada']) {
+      expect(scoreCase(caseOf(id), named(other)).failedChecks).toContain('customerMention');
+    }
+  });
+
+  it('a supplier is the whole name the merchant gave, too', () => {
+    const from = (supplierMention: string) =>
+      command({
+        intent: 'RecordPurchase',
+        amount: 180_000,
+        quantity: 10,
+        productMention: 'carton',
+        description: '10 cartons',
+        supplierMention,
+        supplierReference: null,
+        paymentMethod: 'transfer',
+        reportedPayment: null,
+      });
+    const id = 'purchase-transfer';
+    expect(scoreCase(caseOf(id), from('Emeka')).failedChecks).not.toContain('supplierMention');
+    for (const other of ['Emeka Ventures', 'Emekachi']) {
+      expect(scoreCase(caseOf(id), from(other)).failedChecks).toContain('supplierMention');
+    }
   });
 
   it('a stated sales channel must be kept, not dropped to null', () => {

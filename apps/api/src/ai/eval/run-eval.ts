@@ -546,7 +546,9 @@ async function runReserved(
     buildFingerprint: checkout.build.output,
     dataset: plan.dataset,
     configuration: plan.configuration,
-    metrics: scoreEval(EVAL_CASES, results),
+    metrics: scoreEval(EVAL_CASES, results, {
+      dualExtractThresholdK: plan.configuration.dualExtractThresholdK,
+    }),
     results,
     usage: await usageOf(db, business.id),
   });
