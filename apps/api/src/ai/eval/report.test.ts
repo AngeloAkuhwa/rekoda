@@ -26,13 +26,14 @@ import {
 import { EVAL_CASES } from './dataset.js';
 import {
   checkoutRefusal,
+  checkoutWithoutGit,
   databaseRefusal,
   evalConfig,
   gitState,
   parseEvalArgs,
   reportedSha,
 } from './run-eval.js';
-import { MANIFEST_PATH, verifyBuild, writeBuildManifest } from './build-stamp.js';
+import { MANIFEST_PATH, stampedCommit, verifyBuild, writeBuildManifest } from './build-stamp.js';
 
 function configWith(env: Record<string, string>): ApiConfig {
   const saved = { ...process.env };
@@ -486,5 +487,47 @@ describe('what a paid run may touch and record (G-07, Codex on #273)', () => {
     expect(r.results).toEqual([failed]);
     expect(renderEvalReport(r)).toContain('c-bad');
     expect(renderEvalReport(r)).toContain('amount');
+  });
+});
+
+describe('a run outside git names the commit the build stamped (Codex on 482abd3)', () => {
+  const built = (commit: string | null) => ({
+    verified: true,
+    reason: null,
+    output: 'sha256:o',
+    commit,
+  });
+
+  it('refuses a REKODA_COMMIT that is not the stamped commit', () => {
+    const checkout = checkoutWithoutGit('bbbbbbb', built('aaaaaaa'));
+    expect(checkoutRefusal('gate', checkout)).toContain('not the commit the build stamped');
+  });
+
+  it('refuses a build that stamped no commit', () => {
+    expect(checkoutRefusal('gate', checkoutWithoutGit('aaaaaaa', built(null)))).toContain(
+      'names no commit',
+    );
+  });
+
+  it('accepts the stamped commit', () => {
+    const checkout = checkoutWithoutGit('aaaaaaa', built('aaaaaaa'));
+    expect(checkout.sha).toBe('aaaaaaa');
+    expect(checkoutRefusal('gate', checkout)).toBeNull();
+  });
+
+  it('stamps HEAD of a clean checkout, nothing for a dirty one, REKODA_COMMIT outside git', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'eval-stamp-'));
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync(
+      'git',
+      ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'x'],
+      { cwd: repo },
+    );
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+    expect(stampedCommit(repo, {})).toBe(head);
+    writeFileSync(join(repo, 'dirty.txt'), 'x');
+    expect(stampedCommit(repo, { REKODA_COMMIT: head })).toBeNull();
+    const bare = mkdtempSync(join(tmpdir(), 'eval-nogit-'));
+    expect(stampedCommit(bare, { REKODA_COMMIT: 'ccc' })).toBe('ccc');
   });
 });

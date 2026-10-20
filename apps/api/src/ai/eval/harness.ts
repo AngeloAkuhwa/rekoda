@@ -772,8 +772,9 @@ export function scoreEval(
     amountExactMatch: checksWhere((field) => MONEY_CHECKS.has(field)),
     quantityExactMatch: checksWhere(
       /* Counts, not names: a right product name never dilutes a wrong
-       * quantity (Codex on #273). The name still decides its case. */
-      (field) => field === 'quantity' || field === 'items',
+       * quantity (Codex on #273). The name still decides its case. A stock
+       * adjustment's signed count is a quantity too (Codex on 482abd3). */
+      (field) => field === 'quantity' || field === 'items' || field === 'quantityDelta',
     ),
     customerTokenMatch: checksWhere(
       (field) => field === 'customerToken' || field === 'customerMention' || field === 'noCustomer',

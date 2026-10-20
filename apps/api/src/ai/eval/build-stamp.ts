@@ -14,6 +14,7 @@
  *
  *   pnpm eval:build                      (force-builds, then stamps)
  */
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, writeFileSync, type Dirent } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -117,14 +118,38 @@ export function buildIdentity(
   };
 }
 
+export interface BuildManifest extends BuildIdentity {
+  /**
+   * The commit the stamped source is: git HEAD of a clean checkout, or the
+   * REKODA_COMMIT the build was given outside git; null when neither names
+   * it (a dirty checkout names nothing). A run outside git must name this
+   * same commit (Codex on #273).
+   */
+  readonly commit: string | null;
+}
+
+/** The commit a build of `root` can be attributed to, or null. */
+export function stampedCommit(root: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  try {
+    const git = { encoding: 'utf8', cwd: root, stdio: 'pipe' } as const;
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], git).trim();
+    const dirty = execFileSync('git', ['status', '--porcelain'], git).trim().length > 0;
+    return dirty ? null : sha;
+  } catch {
+    const given = env.REKODA_COMMIT?.trim();
+    return given ? given : null;
+  }
+}
+
 /** Written by the build, once every package's output exists. */
 export function writeBuildManifest(
   root: string,
   packages: readonly string[] = BUILT_PACKAGES,
-): BuildIdentity {
-  const identity = buildIdentity(root, packages);
-  writeFileSync(join(root, MANIFEST_PATH), `${JSON.stringify(identity, null, 2)}\n`);
-  return identity;
+  commit: string | null = stampedCommit(root),
+): BuildManifest {
+  const manifest = { ...buildIdentity(root, packages), commit };
+  writeFileSync(join(root, MANIFEST_PATH), `${JSON.stringify(manifest, null, 2)}\n`);
+  return manifest;
 }
 
 export interface BuildVerdict {
@@ -134,6 +159,8 @@ export interface BuildVerdict {
   readonly reason: string | null;
   /** The compiled code's hash, reported as the run's identity. */
   readonly output: string;
+  /** The commit the build stamped, when it was verified and named one. */
+  readonly commit?: string | null;
 }
 
 /**
@@ -147,9 +174,9 @@ export function verifyBuild(
 ): BuildVerdict {
   try {
     const now = buildIdentity(root, packages);
-    let stamped: BuildIdentity;
+    let stamped: BuildManifest;
     try {
-      stamped = JSON.parse(readFileSync(join(root, MANIFEST_PATH), 'utf8')) as BuildIdentity;
+      stamped = JSON.parse(readFileSync(join(root, MANIFEST_PATH), 'utf8')) as BuildManifest;
     } catch {
       return {
         verified: false,
@@ -171,7 +198,7 @@ export function verifyBuild(
         output: now.output,
       };
     }
-    return { verified: true, reason: null, output: now.output };
+    return { verified: true, reason: null, output: now.output, commit: stamped.commit ?? null };
   } catch {
     return { verified: false, reason: 'the build could not be read to verify', output: 'unknown' };
   }

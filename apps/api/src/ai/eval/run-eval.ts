@@ -215,8 +215,34 @@ export function gitState(config: ApiConfig, root: string = REPO_ROOT): Checkout 
     const status = execFileSync('git', ['status', '--porcelain'], git);
     return { sha, dirty: status.trim().length > 0, build };
   } catch {
-    return { sha: config.commit, dirty: null, build };
+    return checkoutWithoutGit(config.commit, build);
   }
+}
+
+/**
+ * Outside git, the commit a run names must be the one the build stamped
+ * into its manifest: REKODA_COMMIT alone proves nothing about the source
+ * that was built (Codex on #273).
+ */
+export function checkoutWithoutGit(given: string, build: BuildVerdict): Checkout {
+  const stamped = build.commit ?? null;
+  if (!stamped) {
+    return {
+      sha: given,
+      dirty: null,
+      build,
+      unattributed: 'the build names no commit in its manifest; rebuild with pnpm eval:build',
+    };
+  }
+  if (given !== stamped) {
+    return {
+      sha: given,
+      dirty: null,
+      build,
+      unattributed: `REKODA_COMMIT (${given}) is not the commit the build stamped (${stamped})`,
+    };
+  }
+  return { sha: stamped, dirty: null, build };
 }
 
 /**
@@ -246,6 +272,8 @@ export interface Checkout {
   readonly dirty: boolean | null;
   /** The compiled code checked against its build manifest. */
   readonly build: BuildVerdict;
+  /** Outside git: why the named commit is not proven to be the build's. */
+  readonly unattributed?: string;
 }
 
 /**
@@ -261,6 +289,9 @@ export function checkoutRefusal(mode: EvalMode, checkout: Checkout): string | nu
   }
   if (!checkout.build.verified) {
     return `the compiled code is not proven to be this commit's: ${checkout.build.reason}`;
+  }
+  if (checkout.unattributed) {
+    return `the commit is not proven to be the build's: ${checkout.unattributed}`;
   }
   if (!checkout.sha || checkout.sha === 'unknown') {
     return 'no commit identifies this build (no git, REKODA_COMMIT unset); a launch report must name one';

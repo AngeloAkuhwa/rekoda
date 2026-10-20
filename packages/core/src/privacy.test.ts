@@ -382,6 +382,17 @@ describe('structural PII around tokens (G-07, Codex on #273)', () => {
     ).toEqual(['account']);
   });
 
+  it('masks the longer of two overlapping tokens whole (Codex on 482abd3)', () => {
+    /* ACCOUNT_1 is a prefix of ACCOUNT_10: masking only it left the 0, and
+     * that digit broke the keyword's reach to the raw account number. */
+    const issued = Array.from({ length: 10 }, (_, i) => `ACCOUNT_${i + 1}`);
+    expect(
+      detectStructuralPiiAroundTokens('account ACCOUNT_10 or 0987654321', issued).map(
+        (s) => s.kind,
+      ),
+    ).toEqual(['account']);
+  });
+
   it('makes no phone of an issued token glued to a figure', () => {
     expect(detectStructuralPii('CUSTOMER_AB08031234567').map((s) => s.kind)).toEqual(['phone']);
     expect(detectStructuralPiiAroundTokens('CUSTOMER_AB08031234567', ['CUSTOMER_AB0'])).toEqual([]);

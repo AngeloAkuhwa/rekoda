@@ -1414,4 +1414,19 @@ describe('commands a model cannot skip and still pass (Codex on #273, af442ec)',
     const metrics = scoreEval(cases, results);
     expect(metrics.intentExactMatch.value).toBe(0);
   });
+
+  it('a wrong stock-adjustment count fails the quantity metric (Codex on 482abd3)', () => {
+    const cases = [caseOf('adjust-1'), caseOf('adjust-2')];
+    const wrong = (product: string, quantityDelta: number) =>
+      command({ intent: 'AdjustInventory', productMention: product, quantityDelta });
+    const results = [
+      { ...scoreCase(cases[0]!, wrong('noodles', -30)), caseId: 'adjust-1' },
+      { ...scoreCase(cases[1]!, wrong('rice', 1)), caseId: 'adjust-2' },
+    ];
+    expect(results.map((r) => r.failedChecks)).toEqual([['quantityDelta'], ['quantityDelta']]);
+    expect(scoreEval(cases, results).quantityExactMatch).toMatchObject({
+      passed: 0,
+      observations: 2,
+    });
+  });
 });

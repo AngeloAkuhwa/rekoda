@@ -249,8 +249,11 @@ function maskTokens(text: string, tokens: Iterable<string>): string {
   let masked = '';
   let cursor = 0;
   for (const span of spans) {
-    if (span.start < cursor) continue;
-    masked += text.slice(cursor, span.start) + 'X'.repeat(span.end - span.start);
+    /* Overlapping spans are merged, never dropped: ACCOUNT_1 inside
+     * ACCOUNT_10 must not leave the 0 standing (Codex on #273). */
+    if (span.end <= cursor) continue;
+    const start = Math.max(span.start, cursor);
+    masked += text.slice(cursor, start) + 'X'.repeat(span.end - start);
     cursor = span.end;
   }
   return masked + text.slice(cursor);
