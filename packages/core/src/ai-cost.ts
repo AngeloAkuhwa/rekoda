@@ -45,10 +45,10 @@ export interface ModelPrice {
 /**
  * Published list prices (pricing-model.md §"Unit costs").
  *
- * Keyed by model FAMILY rather than by exact id, because a family's price is
- * the stable thing: ids gain suffixes and tiers gain members, but every
- * `claude-haiku-*` bills at the haiku rate. Configuration names an exact id
- * (see config.ts) and this table costs whichever family it belongs to.
+ * Keyed by family name, but each family prices only the exact model its
+ * price was published for (`BUILT_IN_MODELS`, below) and that model's dated
+ * snapshots (G-59): another generation is another price, so it is unpriced
+ * until AI_MODEL_PRICES names it, never costed at a nearby family's rate.
  *
  * ALWAYS THE PERMANENT LIST RATE, never a promotional one. Introductory
  * pricing expires on a date nobody will remember, and a margin view that
