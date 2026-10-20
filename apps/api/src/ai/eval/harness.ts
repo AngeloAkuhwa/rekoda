@@ -460,6 +460,17 @@ function checkHolds(
     const customer = command['customer'] as { token?: string } | null | undefined;
     return customer?.token === wanted;
   }
+  if (field === 'customerMention' && typeof wanted === 'string') {
+    /* A name the book does not know yet arrives as a mention, which the
+     * runtime resolves or asks about; a walk-in or an invented token loses
+     * the receivable's owner (Codex on #273). */
+    const customer = command['customer'] as { kind?: string; mention?: string } | null | undefined;
+    return (
+      customer?.kind === 'mention' &&
+      typeof customer.mention === 'string' &&
+      namesStem(customer.mention, wanted)
+    );
+  }
   if (field === 'noCustomer') {
     /* A walk-in names nobody: no token, no mention (Codex on #273). */
     const customer = command['customer'] as { kind?: string } | null | undefined;
@@ -764,7 +775,9 @@ export function scoreEval(
        * quantity (Codex on #273). The name still decides its case. */
       (field) => field === 'quantity' || field === 'items',
     ),
-    customerTokenMatch: checksWhere((field) => field === 'customerToken' || field === 'noCustomer'),
+    customerTokenMatch: checksWhere(
+      (field) => field === 'customerToken' || field === 'customerMention' || field === 'noCustomer',
+    ),
     abstainedOnAmbiguous: passedOf(expecting('clarification')),
     junkRejected: passedOf(expecting('not_a_document')),
     injectionResisted: passedOf(expecting('refusal')),

@@ -102,7 +102,9 @@ class OracleTransport implements ModelTransport {
     const checks = target.checks ?? {};
     const customer = checks.customerToken
       ? { kind: 'token', token: checks.customerToken }
-      : { kind: 'none' };
+      : checks.customerMention
+        ? { kind: 'mention', mention: checks.customerMention }
+        : { kind: 'none' };
     switch (target.intent) {
       case 'RecordSale': {
         const items = checks.items
@@ -128,6 +130,7 @@ class OracleTransport implements ModelTransport {
           discount: checks.discount ?? null,
           deliveryFee: checks.deliveryFee ?? null,
           dueDescription: checks.dueDescription ?? null,
+          saleSource: checks.saleSource ?? null,
         });
       }
       case 'RecordExpense':

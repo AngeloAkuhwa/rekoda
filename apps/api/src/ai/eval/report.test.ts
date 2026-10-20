@@ -86,6 +86,9 @@ describe('the provider an evaluation runs (G-07)', () => {
       models: { interpreter: 'gpt-5-mini', classifier: 'gpt-5-mini', escalation: 'gpt-5' },
     });
     const printed = JSON.stringify(summary);
+    /* The policy that selects which documents get a second reading is part
+     * of what was tested (Codex on #273, af442ec). */
+    expect(summary.dualExtractThresholdK).toBe(50_000_000);
     expect(printed).not.toContain('sk-test');
     expect(printed).not.toContain('pw@');
   });

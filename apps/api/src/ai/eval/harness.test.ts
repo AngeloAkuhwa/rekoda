@@ -1360,3 +1360,58 @@ describe('aggregating metrics', () => {
     });
   });
 });
+
+/* ── Codex on af442ec: coverage a model cannot skip ── */
+
+describe('commands a model cannot skip and still pass (Codex on #273, af442ec)', () => {
+  const caseOf = (id: string): EvalCase => {
+    const found = EVAL_CASES.find((c) => c.id === id);
+    if (!found) throw new Error(`no case ${id}`);
+    return found;
+  };
+
+  it('a brand-new name must come back as a mention, never a walk-in', () => {
+    const named = (customer: Record<string, unknown>) =>
+      command({
+        intent: 'RecordSale',
+        customer,
+        items: [{ name: 'rice', quantity: 2, unitPrice: 12_000 }],
+        reportedPayment: null,
+        paymentMethod: 'unknown',
+      });
+    const id = 'new-name-1';
+    expect(scoreCase(caseOf(id), named({ kind: 'mention', mention: 'Ada' })).status).toBe('passed');
+    expect(scoreCase(caseOf(id), named({ kind: 'none' })).failedChecks).toContain(
+      'customerMention',
+    );
+    expect(
+      scoreCase(caseOf(id), named({ kind: 'mention', mention: 'Bola' })).failedChecks,
+    ).toContain('customerMention');
+  });
+
+  it('a stated sales channel must be kept, not dropped to null', () => {
+    const channel = (saleSource: string | null) =>
+      command({
+        intent: 'RecordSale',
+        customer: { kind: 'none' },
+        items: [{ name: 'bag', quantity: 1, unitPrice: 25_000 }],
+        reportedPayment: 25_000,
+        paymentMethod: 'transfer',
+        saleSource,
+      });
+    expect(scoreCase(caseOf('channel-1'), channel('instagram')).status).toBe('passed');
+    expect(scoreCase(caseOf('channel-1'), channel(null)).failedChecks).toEqual(['saleSource']);
+  });
+
+  it('a model that answers Unclear to every query and stock adjustment is counted, not skipped', () => {
+    const cases = EVAL_CASES.filter(
+      (c) =>
+        c.expect.kind === 'command' &&
+        (c.expect.intent === 'Query' || c.expect.intent === 'AdjustInventory'),
+    );
+    expect(cases.length).toBeGreaterThan(0);
+    const results = cases.map((c) => ({ ...scoreCase(c, UNCLEAR), caseId: c.id }));
+    const metrics = scoreEval(cases, results);
+    expect(metrics.intentExactMatch.value).toBe(0);
+  });
+});

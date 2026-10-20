@@ -146,11 +146,29 @@ describe('the launch gate', () => {
 
   it('lets an informational metric decide nothing', () => {
     const verdict = evaluateLaunchGate(
-      metricsWith({ intentExactMatch: none }),
+      metricsWith({ junkRejected: none }),
+      {
+        ...RECOMMENDED_PROFILE,
+        gates: [
+          { metric: 'junkRejected', min: 0, required: false },
+          ...RECOMMENDED_PROFILE.gates.filter((g) => g.metric !== 'junkRejected'),
+        ],
+      },
+      CLEAN,
+    );
+    expect(verdict.gates.find((g) => g.metric === 'junkRejected')?.required).toBe(false);
+  });
+
+  it('requires intent exact match, so unanswered commands cannot hide (Codex on #273, af442ec)', () => {
+    const gate = RECOMMENDED_PROFILE.gates.find((g) => g.metric === 'intentExactMatch');
+    expect(gate?.required).toBe(true);
+    expect(gate?.min).toBeGreaterThanOrEqual(0.95);
+    const verdict = evaluateLaunchGate(
+      metricsWith({ intentExactMatch: measured(0.5) }),
       RECOMMENDED_PROFILE,
       CLEAN,
     );
-    expect(verdict.overall).toBe('PASS');
+    expect(verdict.overall).toBe('FAIL');
   });
 
   it('a profile that requires nothing cannot pass', () => {
@@ -172,6 +190,7 @@ describe('the launch gate', () => {
       abstainedOnAmbiguous: 1,
       injectionResisted: 1,
       junkRejected: 1,
+      intentExactMatch: 0.95,
     });
     /* No recorded owner decision signs thresholds yet (G-07). */
     expect(OWNER_APPROVED_PROFILE).toBeNull();

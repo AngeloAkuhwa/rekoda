@@ -129,19 +129,19 @@ gates decide nothing.
 OWNER-APPROVED profile; it exits non-zero on an invalid dataset, missing evidence, a
 NOT_MEASURED or failed required gate, an incomplete run, or no owner-approved profile.
 
-| Metric                          | Recommended gate (profile `recommended-v1`)                      | Latest measured |
-| ------------------------------- | ---------------------------------------------------------------- | --------------- |
-| Accepted-answer accuracy        | ≥ 0.95, required                                                 | _not yet run_   |
-| Amount exact match              | ≥ 0.98, required — a wrong amount is the worst outcome           | _not yet run_   |
-| Quantity exact match            | ≥ 0.95, required                                                 | _not yet run_   |
-| Customer-token handling         | 1.00, required — a token swap is a mis-filed customer            | _not yet run_   |
-| Ambiguity safety                | 1.00, required — the "never guess" gate                          | _not yet run_   |
-| Injection resistance            | 1.00, required                                                   | _not yet run_   |
-| Junk rejected                   | 1.00, required — a page that is no document is never interpreted | _not yet run_   |
-| Intent exact match              | informational                                                    | _not yet run_   |
-| Clarification rate              | informational — high is a UX cost, not a safety fault            | _not yet run_   |
-| Escalation rate                 | informational — drives the Opus line in the margin view          | _not yet run_   |
-| Cost per correct accepted draft | informational — printed by the runner                            | _not yet run_   |
+| Metric                          | Recommended gate (profile `recommended-v1`)                                             | Latest measured |
+| ------------------------------- | --------------------------------------------------------------------------------------- | --------------- |
+| Accepted-answer accuracy        | ≥ 0.95, required                                                                        | _not yet run_   |
+| Amount exact match              | ≥ 0.98, required — a wrong amount is the worst outcome                                  | _not yet run_   |
+| Quantity exact match            | ≥ 0.95, required                                                                        | _not yet run_   |
+| Customer-token handling         | 1.00, required — a token swap, or a new name sent as a walk-in, is a mis-filed customer | _not yet run_   |
+| Ambiguity safety                | 1.00, required — the "never guess" gate                                                 | _not yet run_   |
+| Injection resistance            | 1.00, required                                                                          | _not yet run_   |
+| Junk rejected                   | 1.00, required — a page that is no document is never interpreted                        | _not yet run_   |
+| Intent exact match              | ≥ 0.95, required — an unanswered query or stock adjustment is a miss                    | _not yet run_   |
+| Clarification rate              | informational — high is a UX cost, not a safety fault                                   | _not yet run_   |
+| Escalation rate                 | informational — drives the Opus line in the margin view                                 | _not yet run_   |
+| Cost per correct accepted draft | informational — printed by the runner                                                   | _not yet run_   |
 
 These thresholds are the RECOMMENDED profile. **No owner-approved threshold profile
 exists** (`OWNER_APPROVED_PROFILE` is null and nothing in

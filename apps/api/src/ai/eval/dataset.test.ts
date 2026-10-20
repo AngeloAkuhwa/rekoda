@@ -406,3 +406,23 @@ describe('the dataset fingerprint (G-07)', () => {
     expect(datasetFingerprint(reordered)).toBe(datasetFingerprint());
   });
 });
+
+describe('positive coverage the model cannot fake with nulls (Codex on #273, af442ec)', () => {
+  it('some case pins a new-name mention and some case pins a stated sale channel', () => {
+    const checks = EVAL_CASES.flatMap((c) =>
+      c.expect.kind === 'command' ? [c.expect.checks ?? {}] : [],
+    ) as Array<Record<string, unknown>>;
+    expect(checks.some((k) => typeof k['customerMention'] === 'string')).toBe(true);
+    expect(checks.some((k) => typeof k['saleSource'] === 'string')).toBe(true);
+  });
+
+  it('a dataset without them is invalid', () => {
+    const stripped = EVAL_CASES.filter((c) => c.id !== 'new-name-1' && c.id !== 'channel-1');
+    expect(validateDataset(stripped)).toEqual(
+      expect.arrayContaining([
+        'no case states a new customer name',
+        'no case states a sale channel',
+      ]),
+    );
+  });
+});

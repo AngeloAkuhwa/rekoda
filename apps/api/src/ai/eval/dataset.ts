@@ -110,6 +110,8 @@ export interface EvalChecks {
   quantity?: number | null;
   unitPrice?: number | null;
   customerToken?: string;
+  /** A name the merchant gave that is not a known customer yet: a stem of the mention. */
+  customerMention?: string;
   reportedPayment?: number | null;
   /**
    * How it was paid, only when the merchant said (G-61). Null pins that it
@@ -866,6 +868,37 @@ export const EVAL_CASES: readonly EvalCase[] = [
       paymentMethod: 'cash',
       paidInFull: true,
       noCustomer: true,
+    }),
+  },
+  {
+    id: 'channel-1',
+    category: 'nigerian_english',
+    source: 'typed',
+    covers: ['transfer_sale'],
+    input: 'Sold one handbag for 25k through Instagram, paid by transfer, walk-in buyer',
+    expect: sale({
+      product: 'bag',
+      quantity: 1,
+      unitPrice: 25_000,
+      paymentMethod: 'transfer',
+      paidInFull: true,
+      noCustomer: true,
+      saleSource: 'instagram',
+    }),
+  },
+  {
+    id: 'new-name-1',
+    category: 'credit_and_balance',
+    source: 'typed',
+    covers: ['credit_sale'],
+    input: 'Ada took 2 bags of rice on credit, 12,000 each',
+    expect: sale({
+      product: 'rice',
+      quantity: 2,
+      unitPrice: 12_000,
+      paymentMethod: 'unknown',
+      unpaid: true,
+      customerMention: 'Ada',
     }),
   },
 
@@ -1667,6 +1700,7 @@ const CHECK_FIELDS = new Set([
   'quantity',
   'unitPrice',
   'customerToken',
+  'customerMention',
   'reportedPayment',
   'paymentMethod',
   'relativeAmount',
@@ -1731,7 +1765,7 @@ function intentRules(
     if (!has('paymentMethod')) errors.push(`${id}: a sale pins no payment method`);
   }
   if (intent === 'RecordSale' || intent === 'RecordPayment') {
-    if (!has('customerToken') && !has('noCustomer')) {
+    if (!has('customerToken') && !has('customerMention') && !has('noCustomer')) {
       errors.push(`${id}: a ${intent === 'RecordSale' ? 'sale' : 'payment'} pins no customer`);
     }
   }
@@ -1753,7 +1787,7 @@ function intentRules(
     if (!has('paymentMethod')) errors.push(`${id}: a payment pins no payment method`);
   }
   if (intent === 'RecordOrder') {
-    if (!has('customerToken') && !has('noCustomer'))
+    if (!has('customerToken') && !has('customerMention') && !has('noCustomer'))
       errors.push(`${id}: an order pins no customer`);
     if (!has('items')) errors.push(`${id}: an order pins no items`);
     if (!has('note')) errors.push(`${id}: an order pins no note`);
@@ -1947,6 +1981,10 @@ export function validateDataset(
   if (pinned('RecordPurchase', 'supplierReference') === 0) {
     errors.push('no purchase case states a supplier reference');
   }
+  if (pinned('RecordSale', 'customerMention') === 0) {
+    errors.push('no case states a new customer name');
+  }
+  if (pinned('RecordSale', 'saleSource') === 0) errors.push('no case states a sale channel');
   const topics = new Set(
     cases.flatMap((c) =>
       c.expect.kind === 'command' && c.expect.intent === 'Query' ? [c.expect.checks?.topic] : [],

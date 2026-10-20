@@ -58,7 +58,10 @@ export const RECOMMENDED_PROFILE: ThresholdProfile = {
     /* A classifier that rejects no junk sends every meme to the interpreter
      * and pays for it (Codex on #273). */
     { metric: 'junkRejected', min: 1, required: true },
-    { metric: 'intentExactMatch', min: 0, required: false },
+    /* A model that answers Unclear to every question and stock adjustment
+     * has no field of its own to fail: the intent is the coverage (Codex on
+     * #273). */
+    { metric: 'intentExactMatch', min: 0.95, required: true },
   ],
 };
 

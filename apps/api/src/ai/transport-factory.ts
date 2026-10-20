@@ -123,6 +123,8 @@ export interface AiConfigurationSummary {
   readonly provider: 'anthropic' | 'openai';
   readonly baseUrlHost: string | null;
   readonly keyPresent: { readonly anthropic: boolean; readonly openai: boolean };
+  /** Documents worth at least this many kobo get an independent second reading. */
+  readonly dualExtractThresholdK: number;
   readonly models: {
     readonly interpreter: string;
     readonly classifier: string;
@@ -149,6 +151,7 @@ export function describeAiConfiguration(config: ApiConfig): AiConfigurationSumma
       anthropic: Boolean(config.anthropicApiKey),
       openai: Boolean(config.openaiApiKey),
     },
+    dualExtractThresholdK: config.aiDualExtractThresholdK,
     models: {
       interpreter: config.aiModelDefault,
       classifier: config.aiModelClassifier,
