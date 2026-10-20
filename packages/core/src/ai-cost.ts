@@ -137,13 +137,16 @@ const SNAPSHOT_SUFFIX = /^(?:[-@]\d{4}-\d{2}-\d{2}|[-@]\d{8})$/;
  * any id with "opus" anywhere in it cost as Opus.
  *
  * 1. A configured family matches the whole id, or the id plus a dated
- *    snapshot suffix. Configuration names exact ids, so it wins.
+ *    snapshot suffix; an exact match beats a snapshot of a shorter one.
+ *    Configuration names exact ids, so it wins.
  * 2. A built-in Claude family matches when the id is a Claude id (a `claude`
  *    word) and exactly one family appears in it as a whole word. Two
  *    families is ambiguous, and ambiguous is unpriced.
  */
 export function modelFamily(modelId: string): string | null {
-  const id = modelId.toLowerCase();
+  const id = modelId.trim().toLowerCase();
+  // The exact id first, so a configured snapshot never loses to its alias.
+  if (runtimePrices.has(id)) return id;
   for (const family of runtimePrices.keys()) {
     if (id === family || (id.startsWith(family) && SNAPSHOT_SUFFIX.test(id.slice(family.length)))) {
       return family;

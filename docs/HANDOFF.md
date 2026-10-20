@@ -73,30 +73,31 @@ purchase), for the owner to revisit.
 **Status board (8 Oct 2026). Acceptance and engineering are separate lanes; each build
 keeps its own status, and none is accepted because a related one passed.**
 
-| Build                               | PR (merge)       | Status                                           |
-| ----------------------------------- | ---------------- | ------------------------------------------------ |
-| G-48 receipt for a paid sale        | #252 (`b9c9562`) | STAGING ACCEPTED                                 |
-| G-49 merchant overpayment           | #253, #256       | STAGING ACCEPTED                                 |
-| G-77 public API sale identity       | #254 (`ce4755a`) | STAGING ACCEPTED                                 |
-| G-61 purchase funding account       | #255 (`6df1b91`) | MERGED, staging acceptance pending               |
-| G-23 draft expiry                   | #258 (`f5fb1ce`) | MERGED, staging acceptance pending               |
-| Build 6 conversational continuation | #260 (`3612fcf`) | MERGED, staging acceptance pending               |
-| G-68 / G-24 routing, STOP/START     | #259 (`f5ef123`) | MERGED, staging acceptance pending               |
-| G-65 Chat entitlement on commands   | #261 (`29dc934`) | MERGED, staging acceptance pending               |
-| G-81 Chat purchase identity         | #262 (`88b577c`) | MERGED, staging acceptance pending               |
-| G-89 dashboard PO receive vs Chat   | #263 (`3d462c1`) | MERGED, DEPLOYED TO STAGING, acceptance pending  |
-| G-80 natural Nigerian opt-outs      | #265 (`f2a155a`) | MERGED, DEPLOYED TO STAGING, acceptance pending  |
-| G-85 marks on short answers         | #266 (`e539439`) | MERGED, staging acceptance pending               |
-| Build 9 command-bus enforcement     | #267 (`8b59d26`) | MERGED, staging acceptance pending               |
-| G-95 reverse released bank lines    | #268 (`c499d15`) | MERGED, DEPLOYED TO STAGING, acceptance pending  |
-| G-97 forgotten statement day        | #269 (`072db70`) | MERGED, DEPLOYED TO STAGING, acceptance pending  |
-| G-57 view-only AI authorisation     | #270 (`9752971`) | MERGED, staging acceptance pending               |
-| G-60 privacy-gateway identity       | #271 (`c5b2c8a`) | MERGED, DEPLOYED TO STAGING, acceptance pending  |
-| G-07 AI launch evaluation harness   | #273 (open)      | CODE COMPLETE, awaiting merge; live eval pending |
+| Build                               | PR (merge)       | Status                                                      |
+| ----------------------------------- | ---------------- | ----------------------------------------------------------- |
+| G-48 receipt for a paid sale        | #252 (`b9c9562`) | STAGING ACCEPTED                                            |
+| G-49 merchant overpayment           | #253, #256       | STAGING ACCEPTED                                            |
+| G-77 public API sale identity       | #254 (`ce4755a`) | STAGING ACCEPTED                                            |
+| G-61 purchase funding account       | #255 (`6df1b91`) | MERGED, staging acceptance pending                          |
+| G-23 draft expiry                   | #258 (`f5fb1ce`) | MERGED, staging acceptance pending                          |
+| Build 6 conversational continuation | #260 (`3612fcf`) | MERGED, staging acceptance pending                          |
+| G-68 / G-24 routing, STOP/START     | #259 (`f5ef123`) | MERGED, staging acceptance pending                          |
+| G-65 Chat entitlement on commands   | #261 (`29dc934`) | MERGED, staging acceptance pending                          |
+| G-81 Chat purchase identity         | #262 (`88b577c`) | MERGED, staging acceptance pending                          |
+| G-89 dashboard PO receive vs Chat   | #263 (`3d462c1`) | MERGED, DEPLOYED TO STAGING, acceptance pending             |
+| G-80 natural Nigerian opt-outs      | #265 (`f2a155a`) | MERGED, DEPLOYED TO STAGING, acceptance pending             |
+| G-85 marks on short answers         | #266 (`e539439`) | MERGED, staging acceptance pending                          |
+| Build 9 command-bus enforcement     | #267 (`8b59d26`) | MERGED, staging acceptance pending                          |
+| G-95 reverse released bank lines    | #268 (`c499d15`) | MERGED, DEPLOYED TO STAGING, acceptance pending             |
+| G-97 forgotten statement day        | #269 (`072db70`) | MERGED, DEPLOYED TO STAGING, acceptance pending             |
+| G-57 view-only AI authorisation     | #270 (`9752971`) | MERGED, staging acceptance pending                          |
+| G-60 privacy-gateway identity       | #271 (`c5b2c8a`) | MERGED, DEPLOYED TO STAGING, acceptance pending             |
+| G-07 AI launch evaluation harness   | #273 (`044eb40`) | MERGED; live real-model eval and staging acceptance pending |
+| G-59 model-family pricing           | #274 (open)      | CODE COMPLETE, NOT merged                                   |
 
 **Staging acceptance queue (the owner, in this order; none accepted, and CI is not acceptance):** G-61, G-23, Build 6, G-68 / G-24,
-G-65, G-81, G-89, G-80, G-85, Build 9, G-95, G-97, G-57, G-60. G-07 joins it (as the owner-run live AI
-evaluation) when it merges. G-89, G-80 and G-85 may be tested first while they are fresh; that waives
+G-65, G-81, G-89, G-80, G-85, Build 9, G-95, G-97, G-57, G-60, G-07 with G-30 (merged 20 Oct 2026 as `044eb40`; G-07's acceptance is the
+owner-run live AI evaluation, after G-59). G-89, G-80 and G-85 may be tested first while they are fresh; that waives
 nothing earlier.
 
 **Acceptance is BATCHED (owner, 19 Oct 2026).** Physical staging acceptance is no longer run after each

@@ -42,7 +42,7 @@ describe('configured families', () => {
     expect(modelFamily('test-tier-nano')).toBe('test-tier-nano');
     expect(modelFamily('test-tier')).toBe('test-tier');
 
-    // If ordering broke, all three would be 9_000_000.
+    // Under the old containment rule all three would cost 9_000_000.
     expect(costOfCall('test-tier', usage, FX).usdMicros).toBe(9_000_000);
     expect(costOfCall('test-tier-mini', usage, FX).usdMicros).toBe(300_000);
     expect(costOfCall('test-tier-nano', usage, FX).usdMicros).toBe(50_000);
@@ -110,6 +110,24 @@ describe('configured families match whole ids, not fragments (G-59)', () => {
   it('does not take a moving alias as a snapshot', () => {
     expect(modelFamily('gpt-5-latest')).toBeNull();
     expect(modelFamily('acme-chat-preview')).toBeNull();
+  });
+
+  it('prefers a configured exact id over a shorter family plus a snapshot suffix', () => {
+    // Registered alias first, snapshot second: insertion order must not decide.
+    registerRuntimeModelPrices(
+      JSON.stringify({
+        'order-test': { in: 1_000_000, out: 1_000_000 },
+        'order-test-2026-01-01': { in: 2_000_000, out: 2_000_000 },
+      }),
+    );
+    expect(modelFamily('order-test-2026-01-01')).toBe('order-test-2026-01-01');
+    expect(costOfCall('order-test-2026-01-01', usage, FX).usdMicros).toBe(2_000_000);
+    expect(modelFamily('order-test-2026-02-01')).toBe('order-test');
+  });
+
+  it('ignores whitespace around a configured id, as from an edited env file', () => {
+    expect(modelFamily(' gpt-5\r')).toBe('gpt-5');
+    expect(modelFamily('gpt-5-2025-08-07 ')).toBe('gpt-5');
   });
 
   it('lets a configured exact id override the built-in Claude family', () => {
