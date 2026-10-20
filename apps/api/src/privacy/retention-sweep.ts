@@ -11,7 +11,8 @@
  *
  * Three things stop this reaching a merchant it must not:
  *
- *   1. Anyone who ever completed a subscription charge is excluded from every
+ *   1. Anyone who ever completed a subscription charge, or was ever put on a
+ *      paid plan (`ever_paid_at`, G-103), is excluded from every
  *      query, because their books are subject to the financial retention
  *      period instead.
  *   2. The warning must have been SENT. A send that failed leaves

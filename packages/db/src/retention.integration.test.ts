@@ -151,6 +151,82 @@ describe('who is due', () => {
     expect(await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90))).toBe(-1);
   });
 
+  /* G-103 post-merge review. "Never cleared" is the rule, and it has to hold
+   * on the paths an operator can actually take: back to trial, to expired,
+   * and onto a paid plan again. A reset such as
+   * `everPaidAt: paid ? now() : null` would pass every other test here. */
+  it('NEVER forgets a paid plan when the operator moves the business back to trial or expired', async () => {
+    const businessId = await abandonedTrial(400);
+    const everPaidAt = () =>
+      inTenant(businessId, async (tx) => {
+        const rows = await tx.execute<{ ever_paid_at: string | null }>(
+          sql`SELECT ever_paid_at FROM businesses WHERE id = ${businessId}::uuid`,
+        );
+        return [...rows][0]?.ever_paid_at ?? null;
+      });
+    const change = (plan: string, expiresAt: Date) =>
+      billingRepo.setPlan(appDb, { businessId, plan, expiresAt, actor: 'operator:test' });
+
+    await change('complete', daysAgo(380));
+    const first = await everPaidAt();
+    expect(first).not.toBeNull();
+
+    await change('trial', daysAgo(380));
+    expect(await everPaidAt()).toEqual(first);
+    await change('chat', daysAgo(380));
+    expect(await everPaidAt()).toEqual(first); // the first date stands
+    await change('expired', daysAgo(380));
+    expect(await everPaidAt()).toEqual(first);
+
+    expect(await retentionRepo.dueForNotice(workerDb, daysAgo(60))).toEqual([]);
+    await warn(businessId, daysAgo(200));
+    expect(await retentionRepo.dueForDeletion(workerDb, daysAgo(90), daysAgo(30))).toEqual([]);
+    expect(await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90))).toBe(-1);
+  });
+
+  /* G-103 post-merge review. The function decides "due" from a plain read.
+   * A payment that is applied but not yet committed when it looks used to be
+   * invisible to it, so a merchant who paid inside that window could be
+   * deleted. The function must wait for the row and judge the committed
+   * state. */
+  it('refuses a business that pays while the deletion is deciding', async () => {
+    const businessId = await abandonedTrial(400);
+    await warn(businessId, daysAgo(200));
+    expect(await retentionRepo.dueForDeletion(workerDb, daysAgo(90), daysAgo(30))).toHaveLength(1);
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let applied!: () => void;
+    const appliedPayment = new Promise<void>((resolve) => (applied = resolve));
+
+    // The payment path: plan and ever_paid_at change in one transaction that
+    // has not committed yet.
+    const payment = inTenant(businessId, async (tx) => {
+      await tx.execute(sql`
+        UPDATE businesses
+        SET plan = 'chat', plan_expires_at = now() + interval '30 days',
+            ever_paid_at = coalesce(ever_paid_at, now())
+        WHERE id = ${businessId}::uuid
+      `);
+      applied();
+      await held;
+    });
+    await appliedPayment;
+
+    const deletion = retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    release();
+    await payment;
+
+    expect(await deletion).toBe(-1);
+    const rows = await inTenant(businessId, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM businesses WHERE id = ${businessId}::uuid`,
+      ),
+    );
+    expect([...rows][0]?.n).toBe(1);
+  });
+
   it('warns once, so the notice period runs from the FIRST warning', async () => {
     const businessId = await abandonedTrial(120);
     const first = daysAgo(5);

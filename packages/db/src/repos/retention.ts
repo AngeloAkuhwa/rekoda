@@ -45,7 +45,8 @@ const shape = (row: RawCandidate): RetentionCandidate => ({
 /**
  * The predicate, written once.
  *
- * A business that ever completed a subscription charge is excluded from every
+ * A business that ever completed a subscription charge, or was ever put on a
+ * paid plan by any path (`ever_paid_at`, G-103), is excluded from every
  * query here. Their books are subject to the financial retention period, and
  * no abandoned-trial rule may reach them: this is the condition that stands
  * between a merchant who paid us once and a sweep that deletes their records.
