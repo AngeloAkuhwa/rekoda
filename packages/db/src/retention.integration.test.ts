@@ -38,17 +38,21 @@ let appDb: Db;
 let workerDb: Db;
 let closeApp: () => Promise<void>;
 let closeWorker: () => Promise<void>;
+let ownerDb: Db;
+let closeOwner: () => Promise<void>;
 
 beforeAll(async () => {
   urls = requireUrls();
   await migrate(urls);
   ({ db: appDb, close: closeApp } = createDb(urls.app, { max: 4 }));
   ({ db: workerDb, close: closeWorker } = createDb(urls.worker, { max: 4 }));
+  ({ db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 2 }));
 });
 
 afterAll(async () => {
   await closeApp?.();
   await closeWorker?.();
+  await closeOwner?.();
 });
 
 beforeEach(async () => {
@@ -151,6 +155,55 @@ describe('who is due', () => {
     expect(await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90))).toBe(-1);
   });
 
+  /* G-103 post-merge review. A merchant who answers the warning by opening
+   * checkout has not paid YET, so no charge is `paid` and `ever_paid_at` is
+   * unset. The sweep must not delete them in the minutes before the money
+   * lands, or while the billing job for it is still retrying. A checkout
+   * opened and left for weeks protects nobody: the exemption is bounded. */
+  describe('a checkout in flight', () => {
+    const pendingCharge = async (businessId: string, reference: string, ageDays: number) => {
+      await inTenant(businessId, async (tx) => {
+        await subscriptionsRepo.openCharge(tx, {
+          businessId,
+          kind: 'first_purchase',
+          plan: 'chat',
+          amountK: 990_000,
+          reference,
+          periodStart: daysAgo(ageDays),
+          periodEnd: daysAgo(ageDays - 30),
+        });
+        await tx.execute(sql`
+          UPDATE subscription_charges
+          SET created_at = ${daysAgo(ageDays).toISOString()}::timestamptz
+          WHERE reference = ${reference}
+        `);
+      });
+    };
+
+    it('is neither warned nor deleted while a recent charge is still pending', async () => {
+      const unwarned = await abandonedTrial(400);
+      await pendingCharge(unwarned, 'RKD-SUB-20260101-PEND01', 1);
+      expect(await retentionRepo.dueForNotice(workerDb, daysAgo(60))).toEqual([]);
+
+      const warned = await abandonedTrial(400);
+      await warn(warned, daysAgo(200));
+      await pendingCharge(warned, 'RKD-SUB-20260101-PEND02', 1);
+      expect(await retentionRepo.dueForDeletion(workerDb, daysAgo(90), daysAgo(30))).toEqual([]);
+      expect(await retentionRepo.deleteForRetention(workerDb, warned, daysAgo(90))).toBe(-1);
+    });
+
+    it('does not protect a business whose checkout was abandoned long ago', async () => {
+      const businessId = await abandonedTrial(400);
+      await warn(businessId, daysAgo(200));
+      await pendingCharge(businessId, 'RKD-SUB-20260101-PEND03', 30);
+      const due = await retentionRepo.dueForDeletion(workerDb, daysAgo(90), daysAgo(30));
+      expect(due.map((row) => row.businessId)).toEqual([businessId]);
+      expect(
+        await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90)),
+      ).toBeGreaterThan(0);
+    });
+  });
+
   /* G-103 post-merge review. "Never cleared" is the rule, and it has to hold
    * on the paths an operator can actually take: back to trial, to expired,
    * and onto a paid plan again. A reset such as
@@ -215,7 +268,16 @@ describe('who is due', () => {
 
     const deletion = retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90));
     try {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      // Wait until the deletion is actually parked behind the payment.
+      for (let waited = 0; ; waited += 25) {
+        const rows = await ownerDb.execute<{ n: number }>(sql`
+          SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE wait_event_type = 'Lock' AND datname = current_database()
+        `);
+        if (([...rows][0]?.n ?? 0) >= 1) break;
+        if (waited > 8_000) throw new Error('the deletion never waited on the payment');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
     } finally {
       release();
       await payment;

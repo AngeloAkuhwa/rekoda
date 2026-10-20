@@ -89,6 +89,13 @@ async function warnedTrialWithPendingCharge(): Promise<string> {
       periodStart: daysAgo(1),
       periodEnd: new Date(Date.now() + 29 * 86_400_000),
     });
+    // A checkout opened in the last 14 days defers deletion (migration 0161),
+    // which would end the race before it began. This one was abandoned weeks
+    // ago, so the business is genuinely due.
+    await tx.execute(sql`
+      UPDATE subscription_charges SET created_at = ${daysAgo(30).toISOString()}::timestamptz
+      WHERE reference = ${REFERENCE}
+    `);
   });
   return businessId;
 }
@@ -135,55 +142,62 @@ describe('a subscription payment racing the retention sweep', () => {
       FOR EACH STATEMENT EXECUTE FUNCTION test_race_barrier()
     `);
 
-    // The payment, exactly as the billing job runs it.
-    const payment = withBusiness(appDb, businessId, (tx) =>
-      applySettledCharge(tx, {
-        businessId,
-        reference: REFERENCE,
-        providerReference: 'ps_race',
-        when: new Date(),
-        config,
-      }),
-    ).then(
-      (value) => ({ ok: true as const, value }),
-      (error: unknown) => ({ ok: false as const, error }),
-    );
-    await until(async () => (await lockWaiters()) >= 1, 'the payment to reach the barrier');
+    // A failed wait must still open the barrier, or the parked payment and the
+    // holder outlive the test and hide the real failure behind a hung teardown.
+    try {
+      // The payment, exactly as the billing job runs it.
+      const payment = withBusiness(appDb, businessId, (tx) =>
+        applySettledCharge(tx, {
+          businessId,
+          reference: REFERENCE,
+          providerReference: 'ps_race',
+          when: new Date(),
+          config,
+        }),
+      ).then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      await until(async () => (await lockWaiters()) >= 1, 'the payment to reach the barrier');
 
-    // Retention starts while the payment is parked mid-settlement.
-    let retentionSettled = false;
-    const deletion = retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90)).then(
-      (value) => ({ ok: true as const, value }),
-      (error: unknown) => ({ ok: false as const, error }),
-    );
-    void deletion.then(() => (retentionSettled = true));
-    await until(
-      async () => retentionSettled || (await lockWaiters()) >= 2,
-      'retention to run into the payment',
-    );
+      // Retention starts while the payment is parked mid-settlement.
+      let retentionSettled = false;
+      const deletion = retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90)).then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      void deletion.then(() => (retentionSettled = true));
+      await until(
+        async () => retentionSettled || (await lockWaiters()) >= 2,
+        'retention to run into the payment',
+      );
 
-    release();
-    await holder;
-    const [paid, deleted] = await Promise.all([payment, deletion]);
+      release();
+      await holder;
+      const [paid, deleted] = await Promise.all([payment, deletion]);
 
-    expect(paid).toEqual({ ok: true, value: 'applied' });
-    expect(deleted).toEqual({ ok: true, value: -1 });
+      expect(paid).toEqual({ ok: true, value: 'applied' });
+      expect(deleted).toEqual({ ok: true, value: -1 });
 
-    const state = await withBusiness(appDb, businessId, async (tx) => {
-      const rows = await tx.execute<{
-        plan: string;
-        ever_paid_at: string | null;
-        charge_status: string | null;
-      }>(sql`
-        SELECT b.plan, b.ever_paid_at,
-               (SELECT c.status FROM subscription_charges c WHERE c.reference = ${REFERENCE}) AS charge_status
-        FROM businesses b WHERE b.id = ${businessId}::uuid
-      `);
-      return [...rows][0];
-    });
-    expect(state?.plan).toBe('chat');
-    expect(state?.ever_paid_at).not.toBeNull();
-    expect(state?.charge_status).toBe('paid');
+      const state = await withBusiness(appDb, businessId, async (tx) => {
+        const rows = await tx.execute<{
+          plan: string;
+          ever_paid_at: string | null;
+          charge_status: string | null;
+        }>(sql`
+          SELECT b.plan, b.ever_paid_at,
+                 (SELECT c.status FROM subscription_charges c WHERE c.reference = ${REFERENCE}) AS charge_status
+          FROM businesses b WHERE b.id = ${businessId}::uuid
+        `);
+        return [...rows][0];
+      });
+      expect(state?.plan).toBe('chat');
+      expect(state?.ever_paid_at).not.toBeNull();
+      expect(state?.charge_status).toBe('paid');
+    } finally {
+      release();
+      await holder;
+    }
   });
 
   it('answers a payment for a business retention already deleted without throwing', async () => {

@@ -1078,7 +1078,17 @@ describe('the lock order of a settling payment (G-103)', () => {
     const payment = withBusiness(db, businessId, (tx) =>
       applySettledCharge(tx, { businessId, reference, providerReference: 'ps_x', when, config }),
     );
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Wait until the payment is actually parked on the business row, not for
+    // a guessed interval that a loaded runner could outlast.
+    for (let waited = 0; ; waited += 25) {
+      const rows = await ownerDb.execute<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE wait_event_type = 'Lock' AND datname = current_database()
+      `);
+      if (([...rows][0]?.n ?? 0) >= 1) break;
+      if (waited > 8_000) throw new Error('the payment never waited on the business row');
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
 
     let probe: Error | null = null;
     try {
@@ -1090,8 +1100,9 @@ describe('the lock order of a settling payment (G-103)', () => {
     } finally {
       release();
       await holder;
-      await payment;
     }
     expect(probe, 'the payment touched the charge before it held the business').toBeNull();
+    // A payment that returned early (gone, already settled) would pass the probe for free.
+    expect(await payment).toBe('applied');
   });
 });

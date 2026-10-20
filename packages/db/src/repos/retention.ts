@@ -51,6 +51,22 @@ const shape = (row: RawCandidate): RetentionCandidate => ({
  * no abandoned-trial rule may reach them: this is the condition that stands
  * between a merchant who paid us once and a sweep that deletes their records.
  */
+/** How long a pending subscription checkout defers deletion (migration 0161). */
+const CHECKOUT_IN_FLIGHT_DAYS = 14;
+
+/**
+ * A checkout opened recently and not settled is a payment that may be on its
+ * way, or a billing job that is retrying: not an abandoned trial yet. Bounded,
+ * so a checkout left for weeks protects nobody. The SECURITY DEFINER function
+ * applies the same rule with the same 14 days.
+ */
+const NO_CHECKOUT_IN_FLIGHT = sql`
+  NOT EXISTS (
+    SELECT 1 FROM subscription_charges c
+    WHERE c.business_id = b.id AND c.status = 'pending'
+      AND c.created_at > now() - make_interval(days => ${CHECKOUT_IN_FLIGHT_DAYS}))
+`;
+
 const NEVER_PAID = sql`
   b.ever_paid_at IS NULL
   AND NOT EXISTS (
@@ -77,6 +93,7 @@ export async function dueForNotice(
       AND b.plan_expires_at <= ${cutoff.toISOString()}::timestamptz
       AND b.retention_notified_at IS NULL
       AND ${NEVER_PAID}
+      AND ${NO_CHECKOUT_IN_FLIGHT}
     ORDER BY b.plan_expires_at
     LIMIT ${limit}
   `);
@@ -107,6 +124,7 @@ export async function dueForDeletion(
       AND b.retention_notified_at IS NOT NULL
       AND b.retention_notified_at <= ${notifiedBefore.toISOString()}::timestamptz
       AND ${NEVER_PAID}
+      AND ${NO_CHECKOUT_IN_FLIGHT}
     ORDER BY b.retention_notified_at
     LIMIT ${limit}
   `);

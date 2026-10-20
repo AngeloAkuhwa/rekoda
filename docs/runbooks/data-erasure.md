@@ -116,15 +116,26 @@ not undoable by anybody.
 
 `sweepRetention` deletes businesses whose trial ended
 `RETENTION.abandonedTrialDays` ago, only after a notice was sent
-`RETENTION.noticeDays` before, and only when the business has never paid
-(`retention_delete_business` refuses anything with a paid or refunded
-charge, and anything with `businesses.ever_paid_at` set. That records a paid-plan
-retention exemption (a settled charge, or any plan the operator set by hand,
-including a complimentary grant or a correction; OWN-28), not proof that cash
-was collected (G-103, migrations 0160 and 0161). A refusal,
-`-1`, is the system working, never an error to retry. Judging a deletion
-complaint: "no paid charge" does not make a deletion legitimate, check
-`ever_paid_at` and the `plan_changed` audit rows too).
+`RETENTION.noticeDays` before, and only when the business has never held a
+paid plan and has no subscription checkout still pending from the last 14
+days. `retention_delete_business` refuses (returns `-1`) anything with a paid
+or refunded charge, anything with `businesses.ever_paid_at` set, and anything
+with a recent pending charge. `ever_paid_at` records a paid-plan retention
+exemption (a settled charge, or any plan the operator set by hand, including a
+complimentary grant or a correction; OWN-28), not proof that cash was
+collected (G-103, migrations 0160 and 0161). A refusal is the system working,
+never an error to retry.
+
+Judging a deletion complaint: the business row and its audit rows are gone
+after a deletion, and only `retention_deletions` survives, so "no paid charge"
+cannot be checked afterwards. Check `ever_paid_at` and the `plan_changed`
+audit rows on a business that was refused or is still due, never to justify a
+deletion after the fact. A subscription payment that reaches Rekoda for a
+business retention had already deleted is not applied to anything; the only
+trace is a warning in the API log carrying the charge reference and the
+business id, so match it against the Paystack transaction and
+`retention_deletions.business_id`.
+
 Deletions are receipted in `retention_deletions`, which survives the
 tenant. Nothing for an operator to do except read the receipts:
 

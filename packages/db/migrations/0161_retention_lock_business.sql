@@ -11,7 +11,16 @@
  * waits for a concurrent payment or plan change on the business, then
  * re-evaluates the committed row, where `plan` and `ever_paid_at` (set in
  * the same transaction by applyCycle / setPlan) now refuse it. Everything
- * else is as 0160. CREATE OR REPLACE; 0122 and 0160 stay history.
+ * Second change: a business with a subscription checkout still pending,
+ * opened in the last 14 days, is not due. A merchant who answers the warning
+ * by opening checkout has not paid YET, so no charge is `paid` and
+ * `ever_paid_at` is unset, and a payment job that is still retrying leaves
+ * its charge pending. Deleting them in that window loses a payment the
+ * provider has already taken. The exemption is bounded, so a checkout
+ * abandoned for weeks protects nobody. (A checkout opened in the same instant
+ * as the read is not seen by it; that payment then answers `business_gone`.)
+ *
+ * Everything else is as 0160. CREATE OR REPLACE; 0122 and 0160 stay history.
  */
 CREATE OR REPLACE FUNCTION retention_delete_business(
   target uuid,
@@ -41,6 +50,10 @@ BEGIN
     AND NOT EXISTS (
       SELECT 1 FROM public.subscription_charges c
       WHERE c.business_id = b.id AND c.status IN ('paid', 'refunded'))
+    AND NOT EXISTS (
+      SELECT 1 FROM public.subscription_charges c
+      WHERE c.business_id = b.id AND c.status = 'pending'
+        AND c.created_at > now() - interval '14 days')
   FOR UPDATE OF b;
 
   IF due IS NOT TRUE THEN
