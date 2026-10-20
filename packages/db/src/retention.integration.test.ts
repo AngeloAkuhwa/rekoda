@@ -192,6 +192,26 @@ describe('who is due', () => {
       expect(await retentionRepo.deleteForRetention(workerDb, warned, daysAgo(90))).toBe(-1);
     });
 
+    /* The window is written twice, in the candidate queries and inside the
+     * SECURITY DEFINER function. Pinning both sides of it makes a drift show
+     * up here rather than as a sweep that picks a business the function then
+     * refuses on every run (or the reverse). */
+    it('holds the 14-day window in the queries and in the function alike', async () => {
+      const inside = await abandonedTrial(400);
+      await warn(inside, daysAgo(200));
+      await pendingCharge(inside, 'RKD-SUB-20260101-EDGE13', 13);
+      const outside = await abandonedTrial(400);
+      await warn(outside, daysAgo(200));
+      await pendingCharge(outside, 'RKD-SUB-20260101-EDGE15', 15);
+
+      const due = await retentionRepo.dueForDeletion(workerDb, daysAgo(90), daysAgo(30));
+      expect(due.map((row) => row.businessId)).toEqual([outside]);
+      expect(await retentionRepo.deleteForRetention(workerDb, inside, daysAgo(90))).toBe(-1);
+      expect(
+        await retentionRepo.deleteForRetention(workerDb, outside, daysAgo(90)),
+      ).toBeGreaterThan(0);
+    });
+
     it('does not protect a business whose checkout was abandoned long ago', async () => {
       const businessId = await abandonedTrial(400);
       await warn(businessId, daysAgo(200));

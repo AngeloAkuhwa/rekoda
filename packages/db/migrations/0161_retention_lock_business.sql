@@ -7,11 +7,14 @@
  * merchant who paid inside the window could still be deleted (the deletes
  * below only waited for the payment's row locks, then carried on).
  *
- * The one change from 0160: the eligibility read is `FOR UPDATE OF b`. It
- * waits for a concurrent payment or plan change on the business, then
- * re-evaluates the committed row, where `plan` and `ever_paid_at` (set in
- * the same transaction by applyCycle / setPlan) now refuse it. Everything
- * Second change: a business with a subscription checkout still pending,
+ * Two changes from 0160.
+ *
+ * First: the eligibility read is `FOR UPDATE OF b`. It waits for a concurrent
+ * payment or plan change on the business, then re-evaluates the committed
+ * row, where `plan` and `ever_paid_at` (set in the same transaction by
+ * applyCycle / setPlan) now refuse it.
+ *
+ * Second: a business with a subscription checkout still pending,
  * opened in the last 14 days, is not due. A merchant who answers the warning
  * by opening checkout has not paid YET, so no charge is `paid` and
  * `ever_paid_at` is unset, and a payment job that is still retrying leaves

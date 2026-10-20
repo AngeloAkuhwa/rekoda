@@ -43,15 +43,10 @@ const shape = (row: RawCandidate): RetentionCandidate => ({
 });
 
 /**
- * The predicate, written once.
- *
- * A business that ever completed a subscription charge, or was ever put on a
- * paid plan by any path (`ever_paid_at`, G-103), is excluded from every
- * query here. Their books are subject to the financial retention period, and
- * no abandoned-trial rule may reach them: this is the condition that stands
- * between a merchant who paid us once and a sweep that deletes their records.
+ * How long a pending subscription checkout defers deletion. The SECURITY
+ * DEFINER function in migration 0161 hardcodes the same 14 days; the boundary
+ * test in retention.integration.test.ts fails if the two ever drift apart.
  */
-/** How long a pending subscription checkout defers deletion (migration 0161). */
 const CHECKOUT_IN_FLIGHT_DAYS = 14;
 
 /**
@@ -67,6 +62,15 @@ const NO_CHECKOUT_IN_FLIGHT = sql`
       AND c.created_at > now() - make_interval(days => ${CHECKOUT_IN_FLIGHT_DAYS}))
 `;
 
+/**
+ * The "has never held a paid plan" predicate, written once.
+ *
+ * A business that ever completed a subscription charge, or was ever put on a
+ * paid plan by any path (`ever_paid_at`, G-103), is excluded from every
+ * query here. Their books are subject to the financial retention period, and
+ * no abandoned-trial rule may reach them: this is the condition that stands
+ * between a merchant who paid us once and a sweep that deletes their records.
+ */
 const NEVER_PAID = sql`
   b.ever_paid_at IS NULL
   AND NOT EXISTS (

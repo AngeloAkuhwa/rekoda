@@ -1075,28 +1075,32 @@ describe('the lock order of a settling payment (G-103)', () => {
     });
     await holding;
 
-    const payment = withBusiness(db, businessId, (tx) =>
-      applySettledCharge(tx, { businessId, reference, providerReference: 'ps_x', when, config }),
-    );
-    // Wait until the payment is actually parked on the business row, not for
-    // a guessed interval that a loaded runner could outlast.
-    for (let waited = 0; ; waited += 25) {
-      const rows = await ownerDb.execute<{ n: number }>(sql`
-        SELECT count(*)::int AS n FROM pg_stat_activity
-        WHERE wait_event_type = 'Lock' AND datname = current_database()
-      `);
-      if (([...rows][0]?.n ?? 0) >= 1) break;
-      if (waited > 8_000) throw new Error('the payment never waited on the business row');
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-
+    // Whatever happens below, the holder must let go, or a failed wait would
+    // leave the business row locked and hang the next test's teardown.
+    let payment!: Promise<'applied' | 'already_settled' | 'business_gone'>;
     let probe: Error | null = null;
     try {
-      await ownerDb.execute(sql`
-        SELECT 1 FROM subscription_charges WHERE reference = ${reference} FOR UPDATE NOWAIT
-      `);
-    } catch (e) {
-      probe = e as Error;
+      payment = withBusiness(db, businessId, (tx) =>
+        applySettledCharge(tx, { businessId, reference, providerReference: 'ps_x', when, config }),
+      );
+      // Wait until the payment is actually parked on the business row, not for
+      // a guessed interval that a loaded runner could outlast.
+      for (let waited = 0; ; waited += 25) {
+        const rows = await ownerDb.execute<{ n: number }>(sql`
+          SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE wait_event_type = 'Lock' AND datname = current_database()
+        `);
+        if (([...rows][0]?.n ?? 0) >= 1) break;
+        if (waited > 8_000) throw new Error('the payment never waited on the business row');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      try {
+        await ownerDb.execute(sql`
+          SELECT 1 FROM subscription_charges WHERE reference = ${reference} FOR UPDATE NOWAIT
+        `);
+      } catch (e) {
+        probe = e as Error;
+      }
     } finally {
       release();
       await holder;

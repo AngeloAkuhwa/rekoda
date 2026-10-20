@@ -132,19 +132,19 @@ describe('a subscription payment racing the retention sweep', () => {
       holding();
       await gate;
     });
-    await held;
-    await ownerDb.execute(sql`
+    // A failed wait must still open the barrier, or the parked payment and the
+    // holder outlive the test and hide the real failure behind a hung teardown.
+    try {
+      await held;
+      await ownerDb.execute(sql`
       CREATE FUNCTION test_race_barrier() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN PERFORM pg_advisory_xact_lock(${sql.raw(String(BARRIER_KEY))}); RETURN NEW; END $$
     `);
-    await ownerDb.execute(sql`
+      await ownerDb.execute(sql`
       CREATE TRIGGER test_race_barrier AFTER UPDATE ON subscription_charges
       FOR EACH STATEMENT EXECUTE FUNCTION test_race_barrier()
     `);
 
-    // A failed wait must still open the barrier, or the parked payment and the
-    // holder outlive the test and hide the real failure behind a hung teardown.
-    try {
       // The payment, exactly as the billing job runs it.
       const payment = withBusiness(appDb, businessId, (tx) =>
         applySettledCharge(tx, {
