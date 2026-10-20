@@ -192,7 +192,10 @@ class OracleTransport implements ModelTransport {
 }
 
 describe('the dataset through the real interpreter', () => {
-  it('a perfect oracle scores perfectly, through every real gate', async () => {
+  /* The oracle runs the primary model only: no verifier transport is wired, so
+   * the verifier path (verify-1, verifierCalls, unusableSecondaryCalls) is NOT
+   * driven here and is first exercised by the owner's live run (review on #273). */
+  it('a perfect oracle scores perfectly on the primary model path', async () => {
     const interpreter = new Interpreter(db, config, new OracleTransport());
 
     const results: EvalCaseResult[] = [];

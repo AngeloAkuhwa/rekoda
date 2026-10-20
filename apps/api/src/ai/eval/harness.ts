@@ -191,7 +191,14 @@ export async function runEvalCase(
      * proves nothing either way, so it is invalid, never a safe pass. */
     return invalid(evalCase, 'harness_error', error instanceof Error ? error.name : 'unknown');
   }
-  return scoreCase(evalCase, interpretation);
+  try {
+    return scoreCase(evalCase, interpretation);
+  } catch (error) {
+    /* A scorer that throws on a shape it did not expect is the harness
+     * failing, not the model: the case is invalid, and the cases already paid
+     * for still reach the report (a thrown scorer used to abort the run). */
+    return invalid(evalCase, 'harness_error', error instanceof Error ? error.name : 'unknown');
+  }
 }
 
 /** Pure scoring, exported so tests can pin the arithmetic without a DB. */

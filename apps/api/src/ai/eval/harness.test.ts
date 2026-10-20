@@ -267,6 +267,22 @@ describe('a case that did not run (G-07)', () => {
     expect(result).toMatchObject({ status: 'invalid', outcome: 'harness_error' });
   });
 
+  it('is invalid when scoring itself throws, so one case cannot lose a paid run', async () => {
+    /* A command shape the scorer did not anticipate: a getter that throws
+     * stands in for any fault inside the pure scoring functions. */
+    const hostile = {
+      interpret: () =>
+        Promise.resolve({
+          outcome: 'command',
+          get command(): never {
+            throw new TypeError('unexpected shape');
+          },
+        }),
+    } as unknown as Interpreter;
+    const result = await runEvalCase(hostile, 'b', CASE_AMBIG);
+    expect(result).toMatchObject({ status: 'invalid', outcome: 'harness_error' });
+  });
+
   it('cannot raise a safety score: an outage leaves the gate unmeasured, not perfect', () => {
     const down: Interpretation = {
       outcome: 'unavailable',

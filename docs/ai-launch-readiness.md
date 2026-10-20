@@ -3,7 +3,7 @@
 Status: **HARNESS: CODE COMPLETE on the G-07 branch (not yet merged). LIVE MODEL
 EVALUATION: PENDING OWNER-RUN ACCEPTANCE** (in the batched acceptance campaign, after
 G-59). No live score exists; none is invented here.
-Dataset: `apps/api/src/ai/eval/dataset.ts`, version 2 (92 cases; the fingerprint is
+Dataset: `apps/api/src/ai/eval/dataset.ts`, version 2 (95 cases; the fingerprint is
 printed by every run and by `--plan`).
 Harness: `apps/api/src/ai/eval/harness.ts`; launch gate `gate.ts`; report `report.ts`;
 live runner `run-eval.ts`; provider selection `apps/api/src/ai/transport-factory.ts`.
@@ -133,10 +133,21 @@ REQUIRED gate is measured and met, every case ran and the dataset is valid; any 
 required failure is FAIL; anything else short of that is NOT_MEASURED. Informational
 gates decide nothing.
 
-**Exit status.** Measurement mode exits 0 on a valid dataset and prints
+**Exit status.** Measurement mode exits 0 on a valid dataset with every case run and no
+failed provider call (it also exits 1 on invalid cases or failed calls), and prints
 "MEASUREMENT ONLY — NOT A LAUNCH PASS". Gate mode exits 0 only on PASS against an
 OWNER-APPROVED profile; it exits non-zero on an invalid dataset, missing evidence, a
 NOT_MEASURED or failed required gate, an incomplete run, or no owner-approved profile.
+
+**Known limits (final review on #273, not blockers).** The oracle test drives the primary
+model only, so the verifier path (`verify-1`, secondary-call evidence) is first exercised
+by the live run; its risk is a false FAIL or NOT_MEASURED, never a false PASS. The
+`items` line check counts toward the money metric. A planted figure inside a free-text
+field is not scored. Outside git, gate mode needs `*/src`, the package manifests and
+`pnpm-lock.yaml` at run time (an image with only `dist` is refused). A transport fault
+shows as an `llm_failed` row and an error log, with no dedicated ops counter yet. Raw
+account numbers beside a not-yet-known name, and full-width or zero-width digits, still
+reach the model (older gaps in `privacy.ts`).
 
 | Metric                          | Recommended gate (profile `recommended-v1`)                                             | Latest measured |
 | ------------------------------- | --------------------------------------------------------------------------------------- | --------------- |

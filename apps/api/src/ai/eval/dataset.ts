@@ -17,7 +17,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { detectStructuralPii } from '@rekoda/core/privacy';
+import { detectStructuralPiiAroundTokens } from '@rekoda/core/privacy';
 
 export const EVAL_DATASET_VERSION = 2;
 
@@ -1932,7 +1932,7 @@ export function validateDataset(
     if (!evalCase.input.trim()) errors.push(`${id}: empty input`);
     /* Committed fixtures are what the interpreter sees AFTER the gateway.
      * Kinds only: a fixture's PII is not repeated in the report. */
-    const raw = detectStructuralPii(evalCase.input);
+    const raw = detectStructuralPiiAroundTokens(evalCase.input);
     if (raw.length > 0) {
       errors.push(
         `${id}: structural PII in input (${[...new Set(raw.map((r) => r.kind))].join(', ')})`,
