@@ -55,8 +55,12 @@ node dist/ai/eval/run-eval.js --mode=gate --json=eval-report.json   # the signed
 The runner builds its transport with `createModelTransport`, the function the API
 module uses, so it measures the provider production calls (configured OpenAI is
 evaluated on OpenAI; there is no fallback). It gives its throwaway eval tenant room for
-every case (`AI_DAILY_CALLS_PER_BUSINESS` raised for that tenant only); the global
-ceiling is unchanged, and a case it refuses is invalid. Each case costs provider money: up to
+every case (`AI_DAILY_CALLS_PER_BUSINESS` raised for that tenant only). On the shared global
+ceiling it holds every call it could make in one atomic step before the first case, and gives
+the room back when it ends: a second run that does not fit is refused up front, and nobody else
+can spend the run's room, so a refused escalation or verifier call cannot silently shorten it.
+A run killed mid-way leaves its hold on that day's counter, which is why it only ever runs
+against a throwaway database. Each case costs provider money: up to
 two calls a typed case (interpreter, escalation) and four a document case (classifier,
 interpreter, escalation, verifier).
 

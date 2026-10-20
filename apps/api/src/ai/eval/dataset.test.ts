@@ -332,6 +332,9 @@ describe('the integrity check catches a broken dataset (G-07)', () => {
     expect(without((c) => c.id === 'discount-1')).toContain('no case states a discount');
     expect(without((c) => c.id === 'delivery-1')).toContain('no case states a deliveryFee');
     expect(without((c) => c.id === 'half-1')).toContain('relativeAmount half has no case');
+    expect(without((c) => c.id === 'purchase-credit-named')).toContain(
+      'no credit purchase names its supplier',
+    );
     expect(without((c) => c.id === 'query-excel')).toContain('format excel has no case');
     expect(without((c) => c.id === 'query-report')).toContain('format pdf has no case');
     const unpinned = EVAL_CASES.map((c) =>

@@ -38,6 +38,7 @@ import {
 } from '@rekoda/db';
 import { isProductionEnv, loadConfig, type ApiConfig } from '../../config.js';
 import { Interpreter } from '../interpreter.service.js';
+import type { ModelTransport } from '../transport.js';
 import {
   NoTransportConfigured,
   createModelTransport,
@@ -97,8 +98,8 @@ function callsFor(cases: readonly EvalCase[]): number {
  * per-business daily ceiling is a merchant's allowance, not model
  * behaviour, and at its default (60) it refuses the dataset part way
  * through, leaving cases that did not run. The throwaway eval tenant gets
- * room for every case; the GLOBAL ceiling stays as configured, and a case
- * it refuses is invalid, so the run cannot pass (G-07).
+ * room for every case. The GLOBAL ceiling is shared, so the run holds its
+ * room on it up front (reserveGlobalRoom) rather than raising it (G-07).
  */
 export function evalConfig(config: ApiConfig, cases: readonly EvalCase[] = EVAL_CASES): ApiConfig {
   return {
@@ -107,26 +108,60 @@ export function evalConfig(config: ApiConfig, cases: readonly EvalCase[] = EVAL_
   };
 }
 
+/** Today's room a run holds on the platform-wide ceiling, until it gives it back. */
+export interface GlobalReservation {
+  /** The interpreter's configuration: its global ceiling raised by exactly what is held. */
+  readonly config: ApiConfig;
+  /** Gives the room back; safe to call once the run is over, whatever happened. */
+  readonly release: () => Promise<void>;
+}
+
 /**
- * Whether today's platform-wide ceiling leaves room for every call the run
- * could make. A call it refuses records nothing: a refused escalation falls
- * back to the primary's answer and the case still scores, so a run without
- * the room is refused up front rather than measured short (Codex on #273).
+ * Holds every call the run could make on today's platform-wide ceiling, in
+ * one atomic step, or refuses the run (Codex on #273). A snapshot is not
+ * enough: two runs could each see the room and then spend each other's,
+ * and a refused escalation or verifier call records nothing, so the case
+ * would still score on the primary's answer. Holding `needed` on the
+ * shared counter and raising only this interpreter's ceiling by the same
+ * `needed` means nobody else can take the run's room, the run cannot take
+ * anyone else's beyond what it holds, and a second run that does not fit
+ * is refused before a single call.
  */
-export async function ceilingShortfall(
+export async function reserveGlobalRoom(
   db: Db,
   config: ApiConfig,
   cases: readonly EvalCase[] = EVAL_CASES,
-): Promise<string | null> {
-  const rows = await db.execute<{ calls: number }>(sql`
-    SELECT coalesce(sum(calls), 0)::int AS calls FROM ai_global_counters
-     WHERE day = ${quotaRepo.lagosDay(new Date())}::date`);
-  const used = Number([...rows][0]?.calls ?? 0);
+  at: Date = new Date(),
+): Promise<GlobalReservation | string> {
   const needed = callsFor(cases);
-  const room = config.aiCallsGlobalPerDay - used;
-  return room >= needed
-    ? null
-    : `the global AI ceiling leaves ${Math.max(0, room)} call(s) today; the run may need ${needed}`;
+  const limit = config.aiCallsGlobalPerDay;
+  const day = quotaRepo.lagosDay(at);
+  const refusal = (room: number) =>
+    `the global AI ceiling leaves ${Math.max(0, room)} call(s) today; the run may need ${needed}`;
+  if (needed > limit) return refusal(limit);
+  const held = await db.execute<{ calls: number }>(sql`
+    INSERT INTO ai_global_counters (day, calls)
+    VALUES (${day}::date, ${needed})
+    ON CONFLICT (day) DO UPDATE
+      SET calls = ai_global_counters.calls + ${needed}
+      WHERE ai_global_counters.calls + ${needed} <= ${limit}
+    RETURNING calls`);
+  if ([...held].length === 0) {
+    const rows = await db.execute<{ calls: number }>(sql`
+      SELECT calls FROM ai_global_counters WHERE day = ${day}::date`);
+    return refusal(limit - Number([...rows][0]?.calls ?? 0));
+  }
+  let released = false;
+  return {
+    config: { ...config, aiCallsGlobalPerDay: limit + needed },
+    release: async () => {
+      if (released) return;
+      released = true;
+      await db.execute(sql`
+        UPDATE ai_global_counters SET calls = greatest(0, calls - ${needed})
+         WHERE day = ${day}::date`);
+    },
+  };
 }
 
 /** What a run would measure, before a single provider call. */
@@ -347,50 +382,61 @@ async function main(): Promise<number> {
   }
   const { db, close } = createDb(config.databaseUrl, { max: 4 });
   try {
-    const shortfall = await ceilingShortfall(db, config);
-    if (shortfall) {
-      console.error(`nothing run: ${shortfall}`);
+    const reservation = await reserveGlobalRoom(db, evalConfig(config));
+    if (typeof reservation === 'string') {
+      console.error(`nothing run: ${reservation}`);
       return 1;
     }
-    const interpreter = new Interpreter(
-      db,
-      evalConfig(config),
-      transport,
-      createVerifierTransport(config),
-    );
-
-    /* A throwaway tenant so eval usage rows never mix with a merchant's. */
-    const user = await identity.upsertUserByPhone(db, '+2340000000001');
-    const business = await identity.createBusinessWithOwner(db, {
-      name: `eval-run-v${EVAL_DATASET_VERSION}-${Date.now()}`,
-      businessType: null,
-      ownerUserId: user.id,
-    });
-
-    const results: EvalCaseResult[] = [];
-    for (const evalCase of EVAL_CASES) {
-      const result = await runEvalCase(interpreter, business.id, evalCase);
-      results.push(result);
-      console.log(`${result.status.padEnd(7)} ${result.caseId.padEnd(26)} ${result.outcome}`);
+    try {
+      return await runReserved(db, reservation.config, transport, args, plan, checkout);
+    } finally {
+      await reservation.release();
     }
-
-    const report: EvalReport = buildEvalReport({
-      mode: args.mode,
-      timestamp: new Date().toISOString(),
-      gitSha: reportedSha(checkout),
-      buildFingerprint: checkout.build.output,
-      dataset: plan.dataset,
-      configuration: plan.configuration,
-      metrics: scoreEval(EVAL_CASES, results),
-      results,
-      usage: await usageOf(db, business.id),
-    });
-    console.log(`\n${renderEvalReport(report)}`);
-    if (args.json) writeFileSync(args.json, `${JSON.stringify(report, null, 2)}\n`);
-    return exitCodeFor(report);
   } finally {
     await close();
   }
+}
+
+/** The run itself, inside the global room it holds. */
+async function runReserved(
+  db: Db,
+  runConfig: ApiConfig,
+  transport: ModelTransport,
+  args: ReturnType<typeof parseEvalArgs>,
+  plan: ReturnType<typeof planEvalRun>,
+  checkout: Checkout,
+): Promise<number> {
+  const interpreter = new Interpreter(db, runConfig, transport, createVerifierTransport(runConfig));
+
+  /* A throwaway tenant so eval usage rows never mix with a merchant's. */
+  const user = await identity.upsertUserByPhone(db, '+2340000000001');
+  const business = await identity.createBusinessWithOwner(db, {
+    name: `eval-run-v${EVAL_DATASET_VERSION}-${Date.now()}`,
+    businessType: null,
+    ownerUserId: user.id,
+  });
+
+  const results: EvalCaseResult[] = [];
+  for (const evalCase of EVAL_CASES) {
+    const result = await runEvalCase(interpreter, business.id, evalCase);
+    results.push(result);
+    console.log(`${result.status.padEnd(7)} ${result.caseId.padEnd(26)} ${result.outcome}`);
+  }
+
+  const report: EvalReport = buildEvalReport({
+    mode: args.mode,
+    timestamp: new Date().toISOString(),
+    gitSha: reportedSha(checkout),
+    buildFingerprint: checkout.build.output,
+    dataset: plan.dataset,
+    configuration: plan.configuration,
+    metrics: scoreEval(EVAL_CASES, results),
+    results,
+    usage: await usageOf(db, business.id),
+  });
+  console.log(`\n${renderEvalReport(report)}`);
+  if (args.json) writeFileSync(args.json, `${JSON.stringify(report, null, 2)}\n`);
+  return exitCodeFor(report);
 }
 
 /* Run only as the entry point: tests import the pieces above. */

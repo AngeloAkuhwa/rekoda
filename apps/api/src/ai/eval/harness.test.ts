@@ -1429,4 +1429,42 @@ describe('commands a model cannot skip and still pass (Codex on #273, af442ec)',
       observations: 2,
     });
   });
+
+  it('"paid half" read as the whole balance fails the money metric (Codex on 3c335b5)', () => {
+    const cases = [caseOf('half-1'), caseOf('credit-3')];
+    const payment = (token: string) =>
+      command({
+        intent: 'RecordPayment',
+        customer: { kind: 'token', token },
+        amount: null,
+        relativeAmount: 'remainder',
+        documentRef: null,
+        paymentMethod: 'unknown',
+      });
+    const results = [
+      { ...scoreCase(cases[0]!, payment('CUSTOMER_H3Q')), caseId: 'half-1' },
+      { ...scoreCase(cases[1]!, payment('CUSTOMER_Z2Q')), caseId: 'credit-3' },
+    ];
+    expect(results[0]!.failedChecks).toEqual(['relativeAmount']);
+    expect(results[1]!.status).toBe('passed');
+    expect(scoreEval(cases, results).amountExactMatch.value).toBeLessThan(1);
+  });
+
+  it('a credit purchase must keep the supplier it names (Codex on 3c335b5)', () => {
+    const credit = (supplierMention: string | null) =>
+      command({
+        intent: 'RecordPurchase',
+        description: 'cartons of indomie',
+        supplierMention,
+        supplierReference: null,
+        quantity: 12,
+        productMention: 'indomie',
+        paymentMethod: null,
+        amount: 96_000,
+        reportedPayment: 0,
+      });
+    const named = caseOf('purchase-credit-named');
+    expect(scoreCase(named, credit('Chidi')).status).toBe('passed');
+    expect(scoreCase(named, credit(null)).failedChecks).toEqual(['supplierMention']);
+  });
 });

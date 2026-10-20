@@ -12,7 +12,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createDb, identity, type Db } from '@rekoda/db';
+import { createDb, identity, quotaRepo, sql, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../../config.js';
 import { CLASSIFIER_TOOL_NAME } from '../classifier.js';
@@ -25,7 +25,7 @@ import {
 } from '../transport.js';
 import { EVAL_CASES } from './dataset.js';
 import { RECOMMENDED_PROFILE, evaluateLaunchGate } from './gate.js';
-import { ceilingShortfall, evalConfig, usageOf } from './run-eval.js';
+import { evalConfig, reserveGlobalRoom, usageOf } from './run-eval.js';
 import { runEvalCase, scoreEval, type EvalCaseResult } from './harness.js';
 
 let urls: Urls;
@@ -313,12 +313,78 @@ describe('the dataset through the real interpreter', () => {
 });
 
 describe('the room a live run needs (G-07, Codex on #273)', () => {
-  it('refuses a run the global ceiling would cut short, and allows one it would not', async () => {
+  /* Each test its own day, so no other test's calls share the counter. */
+  const dayOf = (n: number) => new Date(Date.UTC(2031, 0, n, 12));
+  const needed = EVAL_CASES.reduce((sum, c) => sum + (c.source === 'document_text' ? 4 : 2), 0);
+  const counter = async (at: Date) => {
+    const rows = await db.execute<{ calls: number }>(
+      sql`SELECT calls FROM ai_global_counters WHERE day = ${quotaRepo.lagosDay(at)}::date`,
+    );
+    return Number([...rows][0]?.calls ?? 0);
+  };
+
+  it('refuses a run the global ceiling would cut short, and holds the room of one it would not', async () => {
+    const at = dayOf(1);
     expect(
-      await ceilingShortfall(db, { ...config, aiCallsGlobalPerDay: 10 }, EVAL_CASES),
+      await reserveGlobalRoom(db, { ...config, aiCallsGlobalPerDay: 10 }, EVAL_CASES, at),
     ).toContain('the global AI ceiling leaves');
-    expect(
-      await ceilingShortfall(db, { ...config, aiCallsGlobalPerDay: 1_000_000 }, EVAL_CASES),
-    ).toBeNull();
+    const held = await reserveGlobalRoom(
+      db,
+      { ...config, aiCallsGlobalPerDay: 1_000_000 },
+      EVAL_CASES,
+      at,
+    );
+    if (typeof held === 'string') throw new Error(held);
+    expect(await counter(at)).toBe(needed);
+    await held.release();
+    await held.release();
+    expect(await counter(at)).toBe(0);
+  });
+
+  it('lets only one of two overlapping runs hold the room (Codex on 3c335b5)', async () => {
+    /* A snapshot let both see the room and then spend each other's. */
+    const at = dayOf(2);
+    const tight = { ...config, aiCallsGlobalPerDay: needed + needed / 2 };
+    const both = await Promise.all([
+      reserveGlobalRoom(db, tight, EVAL_CASES, at),
+      reserveGlobalRoom(db, tight, EVAL_CASES, at),
+    ]);
+    expect(both.filter((r) => typeof r !== 'string')).toHaveLength(1);
+    expect(both.filter((r) => typeof r === 'string')).toHaveLength(1);
+  });
+
+  it('keeps every call the run holds, however busy everyone else gets', async () => {
+    const at = dayOf(3);
+    const limit = needed * 3;
+    const held = await reserveGlobalRoom(
+      db,
+      { ...config, aiCallsGlobalPerDay: limit },
+      EVAL_CASES,
+      at,
+    );
+    if (typeof held === 'string') throw new Error(held);
+    const perBusinessPerDay = 1_000_000;
+    /* Everyone else spends until the platform refuses them. */
+    let others = 0;
+    while (
+      (
+        await quotaRepo.reserveAiCall(
+          db,
+          businessId,
+          { perBusinessPerDay, globalPerDay: limit },
+          at,
+        )
+      ).ok
+    ) {
+      others += 1;
+    }
+    expect(others).toBe(limit - needed);
+    /* The run still makes every call it held, and not one more. */
+    const run = { perBusinessPerDay, globalPerDay: held.config.aiCallsGlobalPerDay };
+    for (let i = 0; i < needed; i += 1) {
+      expect((await quotaRepo.reserveAiCall(db, businessId, run, at)).ok).toBe(true);
+    }
+    expect((await quotaRepo.reserveAiCall(db, businessId, run, at)).ok).toBe(false);
+    await held.release();
   });
 });

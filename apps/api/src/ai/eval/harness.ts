@@ -701,6 +701,9 @@ const MONEY_CHECKS: ReadonlySet<keyof EvalChecks> = new Set([
   'paidInFull',
   'unpaid',
   'items',
+  /* "Paid half" read as the whole balance moves money as surely as a wrong
+   * figure does (Codex on 3c335b5). */
+  'relativeAmount',
 ]);
 
 export function scoreEval(

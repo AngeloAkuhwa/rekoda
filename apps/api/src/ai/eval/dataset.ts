@@ -691,6 +691,24 @@ export const EVAL_CASES: readonly EvalCase[] = [
     }),
   },
 
+  {
+    id: 'purchase-credit-named',
+    category: 'purchase_and_supplier',
+    source: 'typed',
+    covers: ['purchase', 'supplier_debt', 'k_notation'],
+    input: 'Took 12 cartons of indomie from Chidi on credit, 96k, I go pay am next week',
+    expect: purchase({
+      description: ['carton', 'indomie', 'noodle', 'stock', 'goods'],
+      supplierMention: 'Chidi',
+      supplierReference: null,
+      quantity: 12,
+      product: 'indomie',
+      paymentMethod: null,
+      amount: 96_000,
+      reportedPayment: 0,
+    }),
+  },
+
   /* ── corrections and reversals ──────────────────────────────────────── */
   {
     id: 'correct-1',
@@ -1985,6 +2003,19 @@ export function validateDataset(
     errors.push('no case states a new customer name');
   }
   if (pinned('RecordSale', 'saleSource') === 0) errors.push('no case states a sale channel');
+  /* A model that keeps suppliers only on paid purchases would leave every
+   * payable unattributed (Codex on 3c335b5). */
+  if (
+    count(
+      (c) =>
+        c.expect.kind === 'command' &&
+        c.expect.intent === 'RecordPurchase' &&
+        c.expect.checks?.reportedPayment === 0 &&
+        typeof c.expect.checks?.supplierMention === 'string',
+    ) === 0
+  ) {
+    errors.push('no credit purchase names its supplier');
+  }
   const topics = new Set(
     cases.flatMap((c) =>
       c.expect.kind === 'command' && c.expect.intent === 'Query' ? [c.expect.checks?.topic] : [],
