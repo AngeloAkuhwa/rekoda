@@ -21,6 +21,7 @@ import { sql } from 'drizzle-orm';
 import { paymentReference } from '@rekoda/core';
 import { createDb, withBusiness, type Db, type TenantDb } from './client.js';
 import {
+  billingRepo,
   identity,
   issueRepo,
   paymentsHub,
@@ -121,6 +122,31 @@ describe('who is due', () => {
     // abandoned-trial rule may reach them.
     expect(await retentionRepo.dueForNotice(workerDb, daysAgo(60))).toEqual([]);
     await warn(businessId);
+    expect(await retentionRepo.dueForDeletion(workerDb, daysAgo(90), daysAgo(30))).toEqual([]);
+    expect(await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90))).toBe(-1);
+  });
+
+  /* G-103. A plan set by hand (the operator path the billing page sends
+   * merchants to) leaves no charge row. Once it lapses, the business must
+   * still never be read as an abandoned trial: deleting it deletes the books
+   * of a merchant who paid. */
+  it('NEVER touches a business moved onto a paid plan by hand, once it lapses', async () => {
+    const businessId = await abandonedTrial(400);
+    expect(
+      await billingRepo.setPlan(appDb, {
+        businessId,
+        plan: 'complete',
+        expiresAt: daysAgo(380),
+        actor: 'operator:test',
+      }),
+    ).toBe(true);
+    // The paid plan then lapsed (renewal unpaid, grace run out).
+    await inTenant(businessId, (tx) =>
+      tx.execute(sql`UPDATE businesses SET plan = 'expired' WHERE id = ${businessId}::uuid`),
+    );
+
+    expect(await retentionRepo.dueForNotice(workerDb, daysAgo(60))).toEqual([]);
+    await warn(businessId, daysAgo(200));
     expect(await retentionRepo.dueForDeletion(workerDb, daysAgo(90), daysAgo(30))).toEqual([]);
     expect(await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90))).toBe(-1);
   });

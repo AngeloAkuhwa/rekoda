@@ -62,6 +62,12 @@ export const businesses = pgTable(
      */
     planExpiresAt: timestamp('plan_expires_at', { withTimezone: true }),
     trialStartedAt: timestamp('trial_started_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * When the business was first on a paid plan; never cleared (G-103,
+     * migration 0160). Retention reads it: a business that ever paid is
+     * never an abandoned trial, however its plan was set.
+     */
+    everPaidAt: timestamp('ever_paid_at', { withTimezone: true }),
     /** Start of the current paid cycle. The denominator when prorating. */
     cycleStartedAt: timestamp('cycle_started_at', { withTimezone: true }),
     /** The day of the month renewals anchor to, so short months do not drift. */
