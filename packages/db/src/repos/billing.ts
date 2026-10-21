@@ -42,7 +42,12 @@ export interface PlanChange {
 export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
   return withBusiness(db, change.businessId, async (tx) => {
     const before = await tx
-      .select({ plan: businesses.plan, expiresAt: businesses.planExpiresAt })
+      .select({
+        plan: businesses.plan,
+        expiresAt: businesses.planExpiresAt,
+        pendingPlan: businesses.pendingPlan,
+        paymentFailedAt: businesses.paymentFailedAt,
+      })
       .from(businesses)
       .where(eq(businesses.id, change.businessId))
       .limit(1);
@@ -73,6 +78,9 @@ export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
       oldValue: {
         plan: previous.plan,
         expiresAt: previous.expiresAt ? previous.expiresAt.toISOString() : null,
+        /* What the move cleared, so an override stays traceable (G-62). */
+        pendingPlan: previous.pendingPlan,
+        paymentFailedAt: previous.paymentFailedAt ? previous.paymentFailedAt.toISOString() : null,
       } as never,
       newValue: {
         plan: change.plan,

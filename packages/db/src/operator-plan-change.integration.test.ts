@@ -133,6 +133,13 @@ describe('an operator move to a paid plan (G-62)', () => {
     expect(after.ever_paid_at).not.toBeNull();
   });
 
+  it('anchors to the Lagos day, not the UTC day', async () => {
+    const businessId = await troubledComplete();
+    // 23:30Z on the 31st is 00:30 on 1 February in Lagos.
+    await operator(businessId, 'chat', new Date('2027-01-31T23:30:00Z'));
+    expect((await row(businessId)).renewal_anchor_day).toBe(1);
+  });
+
   it('keeps the grandfathered version when the plan is unchanged', async () => {
     const businessId = await troubledComplete();
     const pinned = (await row(businessId)).plan_version_id;
@@ -154,6 +161,7 @@ describe('an operator move to a paid plan (G-62)', () => {
     expect(after.plan).toBe('integrate');
     expect(after.plan_expires_at).toBeNull();
     expect(after.renewal_anchor_day).toBeNull();
+    expect(new Date(after.cycle_started_at!).getTime()).toBeGreaterThan(Date.now() - 60_000);
     expect(after.version_plan).toBe('integrate');
     expect(after.pending_plan).toBeNull();
     expect(after.payment_failed_at).toBeNull();
@@ -165,6 +173,7 @@ describe('an operator move back to trial or expired (G-62, OWN-28)', () => {
     it(`${plan}: clears the paid-cycle state but never the paid history`, async () => {
       const businessId = await troubledComplete();
       const everPaid = (await row(businessId)).ever_paid_at;
+      const pinned = (await row(businessId)).plan_version_id;
       expect(everPaid).not.toBeNull();
 
       await operator(businessId, plan, new Date('2026-12-01T00:00:00Z'));
@@ -176,8 +185,8 @@ describe('an operator move back to trial or expired (G-62, OWN-28)', () => {
       expect(after.last_grace_reminder_day).toBeNull();
       expect(after.cycle_started_at).toBeNull();
       expect(after.renewal_anchor_day).toBeNull();
-      // No Complete terms pinned to a business on nothing.
-      expect(after.plan_version_id).toBeNull();
+      // The stale pin is ignored on every read and kept for the day it resumes.
+      expect(after.plan_version_id).toBe(pinned);
       // OWN-28: once paid, never an abandoned trial again.
       expect(after.ever_paid_at).toBe(everPaid);
     });
@@ -195,5 +204,14 @@ describe('the audit trail survives', () => {
       `),
     );
     expect([...events]).toEqual([{ actor: 'operator:test-g62', action: 'plan_changed' }]);
+    const old = await inTenant(businessId, (tx) =>
+      tx.execute<{ old_value: { pendingPlan: string | null; paymentFailedAt: string | null } }>(sql`
+        SELECT old_value FROM audit_events
+        WHERE business_id = ${businessId}::uuid AND action = 'plan_changed'
+      `),
+    );
+    // What the move cleared stays traceable.
+    expect([...old][0]!.old_value.pendingPlan).toBe('chat');
+    expect([...old][0]!.old_value.paymentFailedAt).not.toBeNull();
   });
 });

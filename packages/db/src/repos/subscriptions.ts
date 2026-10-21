@@ -113,7 +113,9 @@ export interface SubscriptionState {
   /**
    * A paid plan (a cycle or an operator arrangement) or not (trial, expired).
    * Paid pins the plan-version and records the retention exemption (G-103);
-   * unpaid floats the pin, because a business on nothing carries no terms.
+   * unpaid leaves the pin alone: every read checks it against the plan, so a
+   * stale pin is ignored, and keeping it keeps the grandfathering for the day
+   * the business resumes.
    */
   paid: boolean;
   /** Null for an unpaid plan: no paid cycle began. */
@@ -163,7 +165,7 @@ export async function writeSubscriptionState(
            ORDER BY version
            LIMIT 1))
       END`
-    : sql`NULL`;
+    : sql`plan_version_id`;
   await tx.execute(sql`
     UPDATE businesses SET
       plan = ${state.plan},
