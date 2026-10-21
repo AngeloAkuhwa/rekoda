@@ -617,6 +617,50 @@ describe('the operator plan endpoint', () => {
     expect([...trail].map((r) => r.actor)).toEqual(['operator:local:operator-secret']);
   });
 
+  /* G-62: the operator route was a second writer of `businesses.plan` that
+   * skipped `applyCycle`, so a scheduled downgrade, a grace clock and a stale
+   * catalogue pin all survived a plan the operator had just set. */
+  it('sets a paid plan through the one cycle writer, clearing stale billing bookkeeping (G-62)', async () => {
+    const businessId = await businessFor('08031234593');
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(sql`
+        UPDATE businesses SET pending_plan = 'chat', payment_failed_at = now(),
+          last_grace_reminder_day = 3
+        WHERE id = ${businessId}::uuid
+      `),
+    );
+    const expiresAt = new Date(Date.now() + 31 * 86_400_000);
+    const res = await change({ businessId, plan: 'complete', expiresAt: expiresAt.toISOString() });
+    expect(res.statusCode).toBe(200);
+
+    const [row] = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{
+        plan: string;
+        pending_plan: string | null;
+        payment_failed_at: Date | null;
+        last_grace_reminder_day: number | null;
+        cycle_started_at: Date | null;
+        renewal_anchor_day: number | null;
+        pinned_plan: string | null;
+        plan_expires_at: Date;
+      }>(sql`
+        SELECT b.plan, b.pending_plan, b.payment_failed_at, b.last_grace_reminder_day,
+               b.cycle_started_at, b.renewal_anchor_day, b.plan_expires_at,
+               pv.plan_id AS pinned_plan
+        FROM businesses b LEFT JOIN plan_versions pv ON pv.id = b.plan_version_id
+        WHERE b.id = ${businessId}::uuid
+      `),
+    );
+    expect(row!.plan).toBe('complete');
+    expect(row!.pending_plan).toBeNull();
+    expect(row!.payment_failed_at).toBeNull();
+    expect(row!.last_grace_reminder_day).toBeNull();
+    expect(row!.cycle_started_at).not.toBeNull();
+    expect(row!.renewal_anchor_day).not.toBeNull();
+    expect(row!.pinned_plan).toBe('complete');
+    expect(new Date(row!.plan_expires_at).getTime()).toBe(expiresAt.getTime());
+  });
+
   /* 401, not 403: the operator guard now separates the two questions it used
    * to answer with one status. No credential, or one it cannot verify, is a
    * failure of AUTHENTICATION. 403 is reserved for a caller the guard did

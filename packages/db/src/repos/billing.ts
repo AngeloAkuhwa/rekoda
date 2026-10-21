@@ -16,6 +16,7 @@ import type { Db, TenantDb } from '../client.js';
 import { withBusiness } from '../client.js';
 import { businesses } from '../schema/tenancy.js';
 import { auditEvents } from '../schema/ops.js';
+import { applyCycle } from './subscriptions.js';
 
 /** The plans nobody paid for; every other plan is a paid one (G-103). */
 const UNPAID_PLANS = new Set(['trial', 'expired']);
@@ -45,19 +46,37 @@ export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
     const previous = before[0];
     if (!previous) return false;
 
-    await tx
-      .update(businesses)
-      .set({
+    if (!UNPAID_PLANS.has(change.plan) && change.expiresAt) {
+      /* G-62: a paid plan with a renewal date is a cycle, and `applyCycle` is
+       * the one writer of a cycle. Writing `plan` directly left a scheduled
+       * downgrade, a grace clock and a stale catalogue pin behind. The anchor
+       * is the Lagos day of the date the operator named (UTC+1, no DST). */
+      await applyCycle(tx, change.businessId, {
         plan: change.plan,
-        planExpiresAt: change.expiresAt,
-        /* A paid plan, however it was set (G-103, OWN-28): retention must
-         * never read this business as an abandoned trial later. This records
-         * an exemption, not that cash was collected. */
-        ...(!UNPAID_PLANS.has(change.plan)
-          ? { everPaidAt: sql`coalesce(${businesses.everPaidAt}, now())` }
-          : {}),
-      })
-      .where(eq(businesses.id, change.businessId));
+        cycleStartedAt: new Date(),
+        renewsAt: change.expiresAt,
+        anchorDay: new Date(change.expiresAt.getTime() + 3_600_000).getUTCDate(),
+        pendingPlan: null,
+      });
+    } else {
+      /* No renewal date (trial, expired, or an open-ended grant): there is no
+       * cycle to apply, but the bookkeeping of the old plan must not survive
+       * it. A paid plan, however it was set (G-103, OWN-28), still records
+       * the retention exemption; that records an exemption, not cash. */
+      await tx
+        .update(businesses)
+        .set({
+          plan: change.plan,
+          planExpiresAt: change.expiresAt,
+          pendingPlan: null,
+          paymentFailedAt: null,
+          lastGraceReminderDay: null,
+          ...(!UNPAID_PLANS.has(change.plan)
+            ? { everPaidAt: sql`coalesce(${businesses.everPaidAt}, now())` }
+            : {}),
+        })
+        .where(eq(businesses.id, change.businessId));
+    }
 
     await tx.insert(auditEvents).values({
       businessId: change.businessId,
