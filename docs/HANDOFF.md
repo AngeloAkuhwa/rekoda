@@ -114,7 +114,7 @@ everything after G-60; changed only by a verified new financial, privacy or auth
    proves the harness; the paid live evaluation is NOT run in the PR (owner-run, in the batched
    acceptance campaign, after G-59).
 2. **G-59**, model-family pricing correctness (`modelFamily()` matches by substring). MERGED 20 Oct 2026 (#274, `5087f95`); staging acceptance pending.
-   2a. **Subscription / trial / billing lifecycle hardening** (audit 20 Oct 2026 recorded as G-102 to G-110 and OD-25 to OD-27 in `REKODA_LAUNCH_READINESS.md`; G-103, a paying merchant's books deletable by retention, first) (owner, 20 Oct 2026, via the MVP autopilot routine): a full audit and certification of trial, plans, upgrades, downgrades, renewal, grace, packs and billing UI (G-62, G-69 and the renewal "payment did not go through" copy among the known items). The owner ruled the MVP free trial is **14 days**, superseding 30 (OWN-27; contradiction 14 in `REKODA_LAUNCH_READINESS.md` §15); not yet in the code, and lands with that build.
+   2a. **Subscription / trial / billing lifecycle hardening** (audit 20 Oct 2026 recorded as G-102 to G-110 and OD-25 to OD-27 in `REKODA_LAUNCH_READINESS.md`; G-103, a paying merchant's books deletable by retention, first) (owner, 20 Oct 2026, via the MVP autopilot routine): a full audit and certification of trial, plans, upgrades, downgrades, renewal, grace, packs and billing UI (G-62, G-69 and the renewal "payment did not go through" copy among the known items). The owner ruled the MVP free trial is **14 days**, superseding 30 (OWN-27; contradiction 14 in `REKODA_LAUNCH_READINESS.md` §15); the constant, copy and a retired-claim guard are in PR #278 (open, 21 Oct 2026). Trials begun before it keep their stored date, so the lapse reply names no length.
 3. **G-96**, storefront concurrent-submit metering / in-flight order race.
 4. **G-98**, a bank line from a closed accounting period must refuse cleanly (answers 500 today).
 5. **G-92(5)**, one real purchase can still be booked twice in the documented reference edge.
@@ -664,7 +664,7 @@ real database in CI:
   are stored rather than deflated, so it pulls in no node built-in and stays
   importable anywhere core is.
 - **Commercial.** Exhaustible monthly allowances consumed atomically, a
-  30-day trial that actually expires, an operator plan endpoint, and cost
+  free trial (14 days since OWN-27; 30 before) that actually expires, an operator plan endpoint, and cost
   telemetry per provider call including the ones that time out.
 - **Operations.** A stranger messaging the number gets answered once,
   `GET /v1/ops/health` reports queue depth and webhook intake as numbers with

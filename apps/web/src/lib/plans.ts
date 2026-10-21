@@ -125,7 +125,7 @@ export const SHARED_ACROSS_PLANS = [
 
 export const TRIAL = {
   name: 'Free trial',
-  tagline: '30 days. No card needed.',
+  tagline: '14 days. No card needed.',
   includes: [
     '50 messages, enough to see it working',
     '25 documents',

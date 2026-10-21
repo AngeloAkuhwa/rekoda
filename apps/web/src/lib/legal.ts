@@ -45,6 +45,9 @@ export const LEGAL = {
  */
 export const POLICY_LAST_UPDATED = '29 August 2026';
 
+/** Terms changed on its own (the free trial became 14 days, OWN-27); the other pages did not. */
+export const TERMS_LAST_UPDATED = '21 October 2026';
+
 /** Retention that survives an erasure request, and the law that requires it. */
 export const FINANCIAL_RETENTION_YEARS = RETENTION.financialYears;
 

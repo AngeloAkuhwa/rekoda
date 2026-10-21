@@ -3878,7 +3878,7 @@ describe('the trial clock and the upgrade door', () => {
     return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
   }
 
-  /** Age the trial past its date, as thirty days would. */
+  /** Age the trial past its date, as the full trial length would. */
   async function expireTrial(businessId: string) {
     await billingRepo.setPlan(db, {
       businessId,
@@ -3895,7 +3895,7 @@ describe('the trial clock and the upgrade door', () => {
     await post(messagePayload('2348031234567', 'wamid.EXP1', 'Ada bought 3 wigs for 150k'));
     expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
 
-    expect(stubSender.lastText).toContain('30-day free trial has ended');
+    expect(stubSender.lastText).toContain('free trial has ended');
     expect(stubSender.lastText).toContain('Reply *upgrade*');
     // The gate runs before the model: an expired trial costs nothing.
     expect(stubTransport.requests).toHaveLength(0);

@@ -24,7 +24,7 @@ export default async function StartPage({
   const next = safeReturnPath(firstParam(params.next)) ?? undefined;
   /* "Not your number?" on /verify comes back here carrying what was typed,
    * so a mistake costs one edit rather than a blank field. The plan a
-   * pricing button named is echoed as a sentence: the 30-day trial is the
+   * pricing button named is echoed as a sentence: the 14-day trial is the
    * same either way, and pretending the click configured something would be
    * a lie with a reassuring shape. */
   return (

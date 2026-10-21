@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   PLAN_ALLOWANCES,
   SEATS_PER_PLAN,
+  TRIAL_DAYS,
   UNIT_KIND,
   UNIT_KINDS,
   UNIT_SCALE,
@@ -10,6 +11,7 @@ import {
   isConsumable,
   seatsFor,
   templateUnitFor,
+  trialExpiry,
   transcriptDurationsDisagree,
   unitsOfKind,
   usagePeriod,
@@ -287,5 +289,18 @@ describe('the transcription duration cross-check (AI hardening item 5)', () => {
     // At 10s the tolerance is 2: 12 agrees, 13 does not.
     expect(transcriptDurationsDisagree(10, 12)).toBe(false);
     expect(transcriptDurationsDisagree(10, 13)).toBe(true);
+  });
+});
+
+describe('the trial length (OWN-27: 14 days)', () => {
+  const start = new Date('2026-11-02T09:00:00Z');
+
+  it('is 14 days, ending exactly 14 x 24h after it started', () => {
+    expect(TRIAL_DAYS).toBe(14);
+    expect(trialExpiry(start).toISOString()).toBe('2026-11-16T09:00:00.000Z');
+  });
+
+  it('is not the retired month-long trial', () => {
+    expect(trialExpiry(start).getTime() - start.getTime()).not.toBe(30 * 86_400_000);
   });
 });

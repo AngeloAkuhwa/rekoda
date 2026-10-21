@@ -51,7 +51,7 @@ const FAQS = [
   {
     question: 'What does it cost?',
     answer:
-      'Plans start at ₦9,900 per month after a 30-day free trial that needs no card. Your payment provider’s processing fees are charged by them, not by Rekoda, and are always shown separately.',
+      'Plans start at ₦9,900 per month after a 14-day free trial that needs no card. Your payment provider’s processing fees are charged by them, not by Rekoda, and are always shown separately.',
   },
 ] as const;
 
@@ -69,7 +69,7 @@ export default function HomePage() {
           whether the money truly arrived.
         </p>
         <div className="rk-cta-row">
-          <Button href="/start">Start free for 30 days</Button>
+          <Button href="/start">Start free for 14 days</Button>
           <Button href="/pricing" variant="secondary">
             See pricing
           </Button>
@@ -202,11 +202,11 @@ export default function HomePage() {
       <section className="rk-section rk-container rk-closer">
         <h2>Start with one message</h2>
         <p>
-          Thirty days free, no card. If Rekoda is not keeping better books than you are today, walk
-          away and take your records with you.
+          Fourteen days free, no card. If Rekoda is not keeping better books than you are today,
+          walk away and take your records with you.
         </p>
         <div className="rk-cta-row">
-          <Button href="/start">Start free for 30 days</Button>
+          <Button href="/start">Start free for 14 days</Button>
         </div>
       </section>
     </>

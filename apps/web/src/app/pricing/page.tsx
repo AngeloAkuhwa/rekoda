@@ -7,7 +7,7 @@ import { PLANS, TRIAL } from '@/lib/plans';
 export const metadata: Metadata = {
   title: 'Pricing',
   description:
-    'Rekoda plans from ₦9,900/month. 30-day free trial, no card needed. Paystack processing fees are shown separately and always yours.',
+    'Rekoda plans from ₦9,900/month. 14-day free trial, no card needed. Paystack processing fees are shown separately and always yours.',
   alternates: { canonical: canonical('/pricing') },
 };
 

@@ -143,7 +143,7 @@ describe('the trial clock (docs/pricing-model.md)', () => {
   const planOf = (businessId: string, now?: Date) =>
     withBusiness(db, businessId, (tx) => usageRepo.planFor(tx, businessId, now));
 
-  it('gives a new business a 30-day trial, dated at creation', async () => {
+  it('gives a new business a 14-day trial, dated at creation', async () => {
     const businessId = await seedBusiness();
     const rows = await withBusiness(db, businessId, (tx) =>
       tx.execute<{ plan: string; plan_expires_at: string | null }>(
@@ -155,8 +155,8 @@ describe('the trial clock (docs/pricing-model.md)', () => {
     expect(row?.plan_expires_at).not.toBeNull();
 
     const days = (new Date(row!.plan_expires_at!).getTime() - Date.now()) / 86_400_000;
-    expect(days).toBeGreaterThan(29.9);
-    expect(days).toBeLessThan(30.1);
+    expect(days).toBeGreaterThan(13.9);
+    expect(days).toBeLessThan(14.1);
   });
 
   it('answers "expired" once the trial date passes, and "trial" before it', async () => {

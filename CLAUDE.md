@@ -95,7 +95,7 @@ session never starts a capability from zero.
   no runtime binding), bank statement matching and reconciliation tiers. Money is never held by Rekoda.
 - **Reporting:** dashboard, four statements (screen, PDF, Excel),
   registers, receivables/payables, portability export, audit trail.
-- **Commercial:** plans, 30-day trial, allowances and packs, subscriptions,
+- **Commercial:** plans, 14-day trial, allowances and packs, subscriptions,
   renewals, grace and read-only, usage metering, provider-cost telemetry,
   margin view.
 - **Operations:** in-schema job queue with worker role, sweeps, health and

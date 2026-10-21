@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { LegalPage } from '@/components/legal/LegalPage';
 import { Fact } from '@/components/legal/Fact';
-import { LEGAL } from '@/lib/legal';
+import { LEGAL, TERMS_LAST_UPDATED } from '@/lib/legal';
 import { canonical } from '@/lib/site';
 
 export const metadata: Metadata = {
@@ -15,6 +15,7 @@ export default function TermsPage() {
   return (
     <LegalPage
       title="Terms of service"
+      updated={TERMS_LAST_UPDATED}
       intro="The agreement between you and Rekoda. Written plainly, because a term you cannot understand is a term you cannot agree to."
       sections={[
         {
@@ -87,7 +88,7 @@ export default function TermsPage() {
           heading: 'Billing and cancellation',
           body: (
             <p>
-              The trial runs 30 days and needs no card. After that, plans are billed monthly in
+              The trial runs 14 days and needs no card. After that, plans are billed monthly in
               advance and you can cancel at any time, which stops the next charge and leaves your
               access running to the end of the period already paid for. Moving to a bigger plan
               mid-month costs only the days left in it; moving to a smaller one starts at your next
