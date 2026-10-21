@@ -4951,7 +4951,8 @@ async function interpretedReply(
   const existing = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
     asOf: receivedAt,
   });
-  const correcting = looksLikeCorrection(rawText, existing !== null);
+  /* G-78: words on a photograph are never a correction. */
+  const correcting = !fromDocument && looksLikeCorrection(rawText, existing !== null);
   if (correcting) {
     await conversationsRepo.supersedePendingDrafts(tx, businessId, { asOf: receivedAt });
   }
