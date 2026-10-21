@@ -992,7 +992,10 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
     if (answer.state !== 'payment_required') throw new Error('expected a payable pack');
     expect(answer.amountK).toBe(250_000);
 
-    /* The pack is resized and repriced before the webhook lands. */
+    /* The pack is resized and repriced before the webhook lands. A version
+     * effective at the very millisecond the charge opened is, correctly, the
+     * one in force for it, so leave a real gap or this test is a coin flip. */
+    await new Promise((resolve) => setTimeout(resolve, 25));
     await planCatalogueRepo.publishUsagePack(ownerDb, {
       packId: 'messages_100',
       label: '250 extra WhatsApp messages',
