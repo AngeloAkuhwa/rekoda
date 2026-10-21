@@ -258,7 +258,7 @@ describe('a subscription payment', () => {
     const businessId = await seedBusiness();
     const reference = await openSubscriptionCharge(businessId);
     provider.willVerify(reference, { amountK: CHAT_K + 100_000 });
-    await storeChargeSuccess(reference, CHAT_K + 100_000);
+    const eventId = await storeChargeSuccess(reference, CHAT_K + 100_000);
 
     await pump();
     await drainJobs();
@@ -266,6 +266,10 @@ describe('a subscription payment', () => {
     // The month IS paid for. Refunding the excess is a decision, not a rule.
     expect((await chargeOf(businessId, reference))?.status).toBe('paid');
     expect((await subscriptionOf(businessId))?.plan).toBe('chat');
+    /* G-107: the excess is neither lost nor silent. What the provider took is
+     * stored on the charge, and the event is flagged so a human decides. */
+    expect((await chargeOf(businessId, reference))?.paidAmountK).toBe(CHAT_K + 100_000);
+    expect((await events.eventStatus(workerDb, eventId))?.error).toBe('overpaid');
   });
 
   it('closes the charge when the provider says the attempt failed', async () => {

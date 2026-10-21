@@ -264,11 +264,22 @@ export class ReportsController {
    */
   private async takeExport(businessId: string): Promise<void> {
     const period = usagePeriod(new Date());
-    const granted = await withBusiness(this.db, businessId, async (tx) => {
+    const { granted, plan } = await withBusiness(this.db, businessId, async (tx) => {
       const plan = await usageRepo.planFor(tx, businessId);
       const allowance = await meterAllowance(this.config, tx, businessId, plan, 'REPORT_EXPORTS');
-      return usageRepo.consumeUnit(tx, businessId, period, 'REPORT_EXPORTS', allowance);
+      return {
+        plan,
+        granted: await usageRepo.consumeUnit(tx, businessId, period, 'REPORT_EXPORTS', allowance),
+      };
     });
+    if (!granted && plan === 'expired') {
+      /* G-107: a lapsed plan has no downloads to have used. Say what is true. */
+      throw new HttpException(
+        'Downloads are paused while your subscription is stopped. Your books are still here ' +
+          'to read, and Settings has a full data export that never counts against this.',
+        429,
+      );
+    }
     if (!granted) {
       throw new HttpException(
         "You have used this month's downloads. Your books are still here to read, " +

@@ -1024,6 +1024,24 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
     expect(counters.find((row) => row.unit === 'AI_ACTIONS')?.bonus).toBe(100);
   });
 
+  it('names the pack in the history instead of calling every pack an add-on (G-107)', async () => {
+    const { businessId } = await onboard('+2348177100065');
+    await putOnPlan(
+      businessId,
+      'chat',
+      new Date(Date.now() - 5 * 86_400_000),
+      new Date(Date.now() + 25 * 86_400_000),
+    );
+    const answer = await confirmedBilling().buyPack(businessId, 'messages_100');
+    if (answer.state !== 'payment_required') throw new Error('expected a payable pack');
+
+    const overview = await confirmedBilling().overview(businessId);
+
+    const charge = overview.charges.find((row) => row.reference === answer.reference);
+    expect(charge?.packLabel).toBe('100 extra WhatsApp messages');
+    expect(overview.charges.find((row) => row.kind !== 'add_on')?.packLabel ?? null).toBeNull();
+  });
+
   it('a pack is offered exactly where its unit is sold: Integrate is not sold Chat overage', async () => {
     const { businessId } = await onboard('+2348177100064');
     await putOnPlan(

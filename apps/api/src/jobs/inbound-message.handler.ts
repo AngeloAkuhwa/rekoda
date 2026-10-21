@@ -782,6 +782,25 @@ type RebuildOutcome = {
 };
 
 /** A recording somebody made with the microphone button, not an attached file. */
+/**
+ * The "all used" refusal, quoting what the merchant actually had this month:
+ * the plan allowance PLUS any pack they bought (G-107). The meter lets a
+ * counter reach `allowance + bonus`, so quoting the bare allowance told a
+ * merchant with a pack they had used fewer than they had.
+ */
+async function exhaustedReply(
+  db: Db,
+  businessId: string,
+  allowance: number,
+  unit: UsageUnit = 'AI_ACTIONS',
+): Promise<Reply> {
+  const bonus = await withBusiness(db, businessId, async (tx) => {
+    const rows = await usageRepo.usageFor(tx, businessId, usagePeriod(new Date()));
+    return rows.find((row) => row.unit === unit)?.bonus ?? 0;
+  });
+  return replies.allowanceExhausted(allowance + bonus, unit);
+}
+
 function isVoiceNote(inbound: { messageType: string; audioId: string | null }): boolean {
   return (inbound.messageType === 'audio' || inbound.messageType === 'voice') && !!inbound.audioId;
 }
@@ -1002,7 +1021,7 @@ async function readReceiptPhoto(
     await deps.replySender.send(tx, {
       businessId,
       to: inbound.from,
-      reply: replies.allowanceExhausted(allowance, 'DOCUMENTS_UNDERSTOOD'),
+      reply: await exhaustedReply(deps.db, businessId, allowance, 'DOCUMENTS_UNDERSTOOD'),
     });
     return null;
   }
@@ -1264,7 +1283,7 @@ async function transcribeVoiceNote(
     await deps.replySender.send(tx, {
       businessId,
       to: inbound.from,
-      reply: replies.allowanceExhausted(allowance, 'VOICE_MINUTES'),
+      reply: await exhaustedReply(deps.db, businessId, allowance, 'VOICE_MINUTES'),
     });
     return null;
   }
@@ -2441,7 +2460,7 @@ async function confirmPendingDraft(
       if (ok) await events.noteReservedUnit(own, businessId, eventId, 'DOCUMENT_GENERATION');
       return ok;
     });
-    if (!granted) return replies.allowanceExhausted(allowance, 'DOCUMENT_GENERATION');
+    if (!granted) return exhaustedReply(deps.db, businessId, allowance, 'DOCUMENT_GENERATION');
     documentTaken = true;
 
     /* An order costs its own unit ON TOP of the document, because automatic
@@ -2481,7 +2500,7 @@ async function confirmPendingDraft(
       });
       if (!orderGranted) {
         await refundReserved();
-        return replies.allowanceExhausted(orderAllowance, 'CATALOGUE_ORDERS');
+        return exhaustedReply(deps.db, businessId, orderAllowance, 'CATALOGUE_ORDERS');
       }
       orderTaken = true;
     }
@@ -4783,7 +4802,7 @@ async function interpretedReply(
   const granted =
     (retrying && (await holdsUnit(deps, businessId, eventId, 'AI_ACTIONS'))) ||
     (await consumeMessage(deps, businessId, eventId, period, monthlyMessages));
-  if (!granted) return replies.allowanceExhausted(monthlyMessages);
+  if (!granted) return exhaustedReply(deps.db, businessId, monthlyMessages, 'AI_ACTIONS');
 
   const interpreted = await deps.interpreter.interpret(businessId, safeText, {
     ...(fromDocument ? { document: true } : {}),

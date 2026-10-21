@@ -36,6 +36,8 @@ export const billingChargeView = z.object({
   kind: z.enum(['first_purchase', 'renewal', 'upgrade', 'add_on', 'seat']),
   plan: z.string().nullable(),
   packId: z.string().nullable(),
+  /** What the pack was called when it was bought (null for anything but a pack). */
+  packLabel: z.string().nullable(),
   amountK: kobo,
   status: billingChargeStatus,
   periodStart: isoDate.nullable(),

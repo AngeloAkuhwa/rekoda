@@ -364,6 +364,8 @@ export interface ChargeRow extends Record<string, unknown> {
   createdAt: Date;
   /** Paid (or pending) but its plan change was refused as stale (G-104): an operator reconciles it. */
   supersededAt: Date | null;
+  /** What the provider verified it took (G-107). Above `amountK` is an overpayment; null if unrecorded. */
+  paidAmountK: number | null;
 }
 
 interface RawCharge extends Record<string, unknown> {
@@ -380,6 +382,7 @@ interface RawCharge extends Record<string, unknown> {
   period_end: string | null;
   created_at: string;
   superseded_at: string | null;
+  paid_amount_k: string | number | null;
 }
 
 const shape = (row: RawCharge): ChargeRow => ({
@@ -396,6 +399,7 @@ const shape = (row: RawCharge): ChargeRow => ({
   periodEnd: at(row.period_end),
   createdAt: new Date(row.created_at),
   supersededAt: at(row.superseded_at),
+  paidAmountK: row.paid_amount_k === null ? null : Number(row.paid_amount_k),
 });
 
 /**
@@ -487,6 +491,8 @@ export async function settleCharge(
     status: Extract<ChargeStatus, 'paid' | 'failed'>;
     providerReference?: string | null;
     failureReason?: string | null;
+    /** The amount the provider verified it took, for a paid settlement (G-107). */
+    paidAmountK?: number | null;
     when: Date;
   },
 ): Promise<ChargeRow | null> {
@@ -496,6 +502,8 @@ export async function settleCharge(
       status = ${settlement.status},
       provider_reference = COALESCE(${settlement.providerReference ?? null}, provider_reference),
       failure_reason = ${settlement.failureReason ?? null},
+      paid_amount_k = CASE WHEN ${settlement.status} = 'paid'
+                           THEN ${settlement.paidAmountK ?? null}::bigint ELSE paid_amount_k END,
       paid_at = CASE WHEN ${settlement.status} = 'paid' THEN ${stamp}::timestamptz ELSE paid_at END,
       failed_at = CASE WHEN ${settlement.status} = 'failed' THEN ${stamp}::timestamptz ELSE failed_at END,
       updated_at = now()

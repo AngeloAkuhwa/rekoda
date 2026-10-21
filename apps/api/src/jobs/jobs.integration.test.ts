@@ -722,6 +722,32 @@ describe('the chat surface enforces roles', () => {
     expect(await seen(lapsed)).toEqual(ZERO);
   });
 
+  /* G-107: the refusal quotes what the merchant actually had, a bought pack
+   * included, not the bare plan allowance. */
+  it('quotes the plan allowance plus a bought pack when it refuses at the meter (G-107)', async () => {
+    const businessId = await seedBusiness('Pack Quote Ltd', '+2348140010047');
+    await memberOf(businessId, '+2348140010048', 'accountant');
+    const allowance = allowanceFor('trial', 'AI_ACTIONS');
+    const bought = 100;
+    await withBusiness(appDb, businessId, async (tx) => {
+      await usageRepo.creditBonus(tx, businessId, usagePeriod(new Date()), 'AI_ACTIONS', bought);
+      await usageRepo.consumeUnit(
+        tx,
+        businessId,
+        usagePeriod(new Date()),
+        'AI_ACTIONS',
+        allowance,
+        allowance + bought,
+      );
+    });
+    stubTransport.replyWith(A_SALES_QUESTION);
+
+    expect(
+      await saysOverChat(businessId, '+2348140010048', 'how much did we sell this month?'),
+    ).toBe(replies.allowanceExhausted(allowance + bought).text);
+    expect(stubTransport.requests).toHaveLength(0);
+  });
+
   /* K: an accountant's question with the allowance gone is refused at the
    * meter, before the model, and takes nothing more. */
   it('refuses an accountant question at an exhausted allowance before the model (G-57)', async () => {
