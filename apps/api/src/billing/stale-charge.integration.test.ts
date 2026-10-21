@@ -29,17 +29,21 @@ let appDb: Db;
 let closeApp: () => Promise<void>;
 let realWorkerDb: Db;
 let closeWorker: () => Promise<void>;
+let ownerDb: Db;
+let closeOwner: () => Promise<void>;
 
 beforeAll(async () => {
   urls = requireUrls();
   await migrate(urls);
   ({ db: appDb, close: closeApp } = createDb(urls.app, { max: 4 }));
   ({ db: realWorkerDb, close: closeWorker } = createDb(urls.worker, { max: 2 }));
+  ({ db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 2 }));
 });
 
 afterAll(async () => {
   await closeApp?.();
   await closeWorker?.();
+  await closeOwner?.();
 });
 
 beforeEach(async () => {
@@ -584,5 +588,46 @@ describe('a paid but unapplied charge is an operator exception (OD-30)', () => {
         (q) => q.reference === 'RKD-SUB-OPS-2',
       ),
     ).toBe(false);
+  });
+});
+
+describe('an upgrade paid after its cycle has ended never leaves the plan expiry in the past (OWN-29)', () => {
+  it('is paid, unapplied and says the cycle ended; the expiry and the grace clock are untouched', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'chat');
+    await open(businessId, 'upgrade', 'RKD-SUB-ENDED-1', 'complete');
+    // The renewal date passes, the sweep fails the renewal, and the merchant is in grace.
+    const ended = new Date(Date.now() - 2 * 86_400_000);
+    await ownerDb.execute(sql`
+      UPDATE businesses
+      SET plan_expires_at = ${ended.toISOString()}::timestamptz,
+          payment_failed_at = ${ended.toISOString()}::timestamptz,
+          plan_decided_at = ${new Date(Date.now() - 20 * 86_400_000).toISOString()}::timestamptz
+      WHERE id = ${businessId}::uuid
+    `);
+
+    const outcome = await settle(businessId, 'RKD-SUB-ENDED-1');
+
+    expect(outcome).toBe('superseded');
+    const sub = await subscription(businessId);
+    expect(sub?.plan).toBe('chat'); // not upgraded on a cycle that is over
+    expect(sub?.planExpiresAt?.toISOString()).toBe(ended.toISOString()); // still the truth
+    expect(sub?.paymentFailedAt).not.toBeNull(); // the grace clock was not cleared
+    expect((await chargeRow(businessId, 'RKD-SUB-ENDED-1'))?.status).toBe('paid');
+    const why = await withBusiness(appDb, businessId, async (tx) => {
+      const rows = await tx.execute<{ unapplied_reason: string | null }>(sql`
+        SELECT unapplied_reason FROM subscription_charges WHERE reference = 'RKD-SUB-ENDED-1'
+      `);
+      return [...rows][0]?.unapplied_reason;
+    });
+    expect(why).toBe('cycle_ended');
+  });
+
+  it('an upgrade inside a running cycle still applies', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'chat');
+    await open(businessId, 'upgrade', 'RKD-SUB-LIVE-1', 'complete');
+    expect(await settle(businessId, 'RKD-SUB-LIVE-1')).toBe('applied');
+    expect((await subscription(businessId))?.plan).toBe('complete');
   });
 });

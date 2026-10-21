@@ -440,6 +440,20 @@ export async function applySettledCharge(
     }
     const subscription = await subscriptionsRepo.subscriptionFor(tx, input.businessId);
 
+    /* An upgrade is priced against the REST of the cycle it was opened in. Paid
+     * after that cycle's renewal date it would leave `plan_expires_at` in the
+     * past and clear the grace clock, so the merchant would keep the higher plan
+     * with nothing ever renewing it (OWN-29). The payment stays recorded and
+     * goes to an operator; the plan does not move. */
+    if (
+      charge.kind === 'upgrade' &&
+      subscription?.planExpiresAt &&
+      subscription.planExpiresAt <= input.when
+    ) {
+      await subscriptionsRepo.markUnapplied(tx, input.reference, 'cycle_ended', input.when);
+      return 'superseded';
+    }
+
     /**
      * A first purchase resets the anchor to the day it was bought, and MUST.
      *
