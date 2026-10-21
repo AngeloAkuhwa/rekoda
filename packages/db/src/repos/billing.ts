@@ -45,12 +45,15 @@ export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
       .select({
         plan: businesses.plan,
         expiresAt: businesses.planExpiresAt,
+        cycleStartedAt: businesses.cycleStartedAt,
         pendingPlan: businesses.pendingPlan,
         paymentFailedAt: businesses.paymentFailedAt,
       })
       .from(businesses)
       .where(eq(businesses.id, change.businessId))
-      .limit(1);
+      .limit(1)
+      // The audit's old value is what the UPDATE below overwrites, so it is read under the row lock.
+      .for('update');
     const previous = before[0];
     if (!previous) return false;
 
@@ -59,12 +62,22 @@ export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
      * plan-version pin and the old cycle dates all go with the old plan.
      * The operator's `expiresAt` is kept exactly as given; with none there
      * is no dated cycle, so no cycle start and no anchor day is invented (a
-     * start that never advances would age every later upgrade's proration). */
+     * start that never advances would age every later upgrade's proration).
+     * Re-posting the same plan and expiry changes nothing about the cycle, so
+     * its start is kept: moving it forward would shrink the proration
+     * denominator and overcharge a later upgrade. */
     const paid = !UNPAID_PLANS.has(change.plan);
+    const sameCycle =
+      previous.plan === change.plan &&
+      previous.cycleStartedAt !== null &&
+      previous.expiresAt !== null &&
+      change.expiresAt !== null &&
+      previous.expiresAt.getTime() === change.expiresAt.getTime();
     await subscriptionsRepo.writeSubscriptionState(tx, change.businessId, {
       plan: change.plan,
       paid,
-      cycleStartedAt: paid && change.expiresAt ? new Date() : null,
+      cycleStartedAt:
+        paid && change.expiresAt ? (sameCycle ? previous.cycleStartedAt : new Date()) : null,
       planExpiresAt: change.expiresAt,
       anchorDay: paid && change.expiresAt ? lagosDayOfMonth(change.expiresAt) : null,
       pendingPlan: null,

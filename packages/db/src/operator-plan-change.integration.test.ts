@@ -15,21 +15,25 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db, type TenantDb } from './client.js';
-import { billingRepo, identity, subscriptionsRepo } from './index.js';
+import { billingRepo, identity, planCatalogueRepo, subscriptionsRepo } from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
 
 let urls: Urls;
 let appDb: Db;
 let closeApp: () => Promise<void>;
+let ownerDb: Db;
+let closeOwner: () => Promise<void>;
 
 beforeAll(async () => {
   urls = requireUrls();
   await migrate(urls);
   ({ db: appDb, close: closeApp } = createDb(urls.app, { max: 4 }));
+  ({ db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 2 }));
 });
 
 afterAll(async () => {
   await closeApp?.();
+  await closeOwner?.();
 });
 
 beforeEach(async () => {
@@ -105,6 +109,23 @@ async function troubledComplete(): Promise<string> {
   return businessId;
 }
 
+/**
+ * Publish a newer catalogue version of a plan, effective now. Grandfathering
+ * is only observable when more than one version exists: with a single version
+ * per plan a re-pin would select the very row the business already holds.
+ */
+async function publishNewerVersion(planId: string): Promise<string> {
+  return planCatalogueRepo.publishPlanVersion(ownerDb, {
+    planId,
+    name: `Rekoda ${planId}`,
+    seats: 1,
+    effectiveFrom: new Date(Date.now() - 60_000),
+    entitlements: ['REKODA_CHAT'],
+    allowances: { AI_ACTIONS: 300, VOICE_MINUTES: 60, DOCUMENT_GENERATION: 100 },
+    prices: [{ currency: 'NGN', billingInterval: 'monthly', amountMinor: 1_490_000 }],
+  });
+}
+
 const operator = (businessId: string, plan: string, expiresAt: Date | null) =>
   billingRepo.setPlan(appDb, { businessId, plan, expiresAt, actor: 'operator:test-g62' });
 
@@ -143,6 +164,9 @@ describe('an operator move to a paid plan (G-62)', () => {
   it('keeps the grandfathered version when the plan is unchanged', async () => {
     const businessId = await troubledComplete();
     const pinned = (await row(businessId)).plan_version_id;
+    // A newer Complete exists and is now current: a re-pin would choose it.
+    const v2 = await publishNewerVersion('complete');
+    expect(v2).not.toBe(pinned);
 
     await operator(businessId, 'complete', new Date('2027-02-01T00:00:00Z'));
 
@@ -150,6 +174,52 @@ describe('an operator move to a paid plan (G-62)', () => {
     expect(after.plan_version_id).toBe(pinned);
     expect(after.pending_plan).toBeNull();
     expect(after.payment_failed_at).toBeNull();
+  });
+
+  it("re-pins to the current version of the new plan, never keeping another plan's pin", async () => {
+    const businessId = await troubledComplete();
+    const chatV2 = await publishNewerVersion('chat');
+
+    await operator(businessId, 'chat', new Date('2027-01-15T10:00:00Z'));
+
+    const after = await row(businessId);
+    expect(after.version_plan).toBe('chat');
+    expect(after.plan_version_id).toBe(chatV2);
+  });
+
+  it('re-posting the same plan and expiry keeps the cycle start', async () => {
+    const businessId = await troubledComplete();
+    // Same plan, same renewal date as the cycle already running.
+    await operator(businessId, 'complete', RENEWS_AT);
+    const after = await row(businessId);
+    expect(new Date(after.cycle_started_at!).toISOString()).toBe(CYCLE_START.toISOString());
+    // The stale bookkeeping is still cleared.
+    expect(after.pending_plan).toBeNull();
+    expect(after.payment_failed_at).toBeNull();
+
+    // A repeat of an operator grant does not move its start either.
+    const renews = new Date('2027-01-15T10:00:00Z');
+    await operator(businessId, 'chat', renews);
+    const first = (await row(businessId)).cycle_started_at;
+    await operator(businessId, 'chat', renews);
+    expect((await row(businessId)).cycle_started_at).toBe(first);
+
+    // A different expiry is a new cycle: it starts now.
+    const before = Date.now();
+    await operator(businessId, 'chat', new Date('2027-03-15T10:00:00Z'));
+    const moved = new Date((await row(businessId)).cycle_started_at!).getTime();
+    expect(moved).toBeGreaterThanOrEqual(before - 1_000);
+  });
+
+  it('a paid move starts a fresh cycle when none existed (never-paid trial)', async () => {
+    const businessId = await seedBusiness();
+    const before = Date.now();
+    await operator(businessId, 'chat', new Date('2027-01-15T10:00:00Z'));
+    const after = await row(businessId);
+    expect(after.ever_paid_at).not.toBeNull();
+    const started = new Date(after.cycle_started_at!).getTime();
+    expect(started).toBeGreaterThanOrEqual(before - 1_000);
+    expect(started).toBeLessThanOrEqual(Date.now() + 1_000);
   });
 
   it('an open-ended paid plan has no renewal anchor and invents no renewal date', async () => {
@@ -176,6 +246,8 @@ describe('an operator move back to trial or expired (G-62, OWN-28)', () => {
       const everPaid = (await row(businessId)).ever_paid_at;
       const pinned = (await row(businessId)).plan_version_id;
       expect(everPaid).not.toBeNull();
+      // A newer Complete is current; the unpaid move must still not re-pin.
+      expect(await publishNewerVersion('complete')).not.toBe(pinned);
 
       await operator(businessId, plan, new Date('2026-12-01T00:00:00Z'));
 
@@ -186,7 +258,7 @@ describe('an operator move back to trial or expired (G-62, OWN-28)', () => {
       expect(after.last_grace_reminder_day).toBeNull();
       expect(after.cycle_started_at).toBeNull();
       expect(after.renewal_anchor_day).toBeNull();
-      // The stale pin is ignored on every read and kept for the day it resumes.
+      // The pin is kept for the day the plan resumes; reads ignore it while unpaid.
       expect(after.plan_version_id).toBe(pinned);
       // OWN-28: once paid, never an abandoned trial again.
       expect(after.ever_paid_at).toBe(everPaid);
