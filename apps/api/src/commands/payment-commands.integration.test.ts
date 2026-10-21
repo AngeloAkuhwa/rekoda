@@ -126,6 +126,7 @@ describe('RecordPayment through the bus', () => {
       payload: input,
       actor: 'system',
       ingress: 'CHAT' as const,
+      memberPhone: '+2348160000001',
       idempotencyKey: 'draft:draft-pay-1',
     };
 
@@ -183,6 +184,7 @@ describe('RecordPayment through the bus', () => {
       payload: late,
       actor: 'system',
       ingress: 'CHAT' as const,
+      memberPhone: '+2348160000001',
       idempotencyKey: 'draft:draft-pay-late',
     };
 

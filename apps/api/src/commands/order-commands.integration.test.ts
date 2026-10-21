@@ -180,6 +180,7 @@ describe('PlaceOrder through the bus', () => {
           payload: input,
           actor: 'system',
           ingress: 'CHAT',
+          memberPhone: '+2348160000001',
           idempotencyKey: 'draft:draft-ord-1',
         },
         () => placeOrderWork(tx, input),

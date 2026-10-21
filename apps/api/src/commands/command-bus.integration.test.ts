@@ -195,6 +195,64 @@ describe('the order the gates run in', () => {
   });
 });
 
+describe('the member behind a chat command (G-99)', () => {
+  async function member(businessId: string, phone: string, role: 'accountant' | 'delegate') {
+    await identity.inviteMember(db, businessId, phone, role, 3, 'user:test-owner');
+  }
+
+  async function runAs(businessId: string, memberPhone: string | undefined, ran: { n: number }) {
+    return withBusiness(db, businessId, (tx) =>
+      bus.run(
+        tx,
+        {
+          businessId,
+          command: 'RecordExpense',
+          payload: { amountK: 100 },
+          actor: 'system',
+          ingress: 'CHAT',
+          ...(memberPhone ? { memberPhone } : {}),
+        },
+        async () => {
+          ran.n += 1;
+          return { ok: true };
+        },
+      ),
+    );
+  }
+
+  it('refuses a view-only member before the work runs', async () => {
+    const businessId = await seedOn('chat');
+    await member(businessId, '+2348190099001', 'accountant');
+    const ran = { n: 0 };
+    const outcome = await runAs(businessId, '+2348190099001', ran);
+    expect(outcome).toEqual({ outcome: 'refused', reason: 'member_may_not_transact' });
+    expect(ran.n).toBe(0);
+  });
+
+  it('refuses a chat command that names no member, and a stranger', async () => {
+    const businessId = await seedOn('chat');
+    const ran = { n: 0 };
+    expect(await runAs(businessId, undefined, ran)).toEqual({
+      outcome: 'refused',
+      reason: 'member_may_not_transact',
+    });
+    expect(await runAs(businessId, '+2348190099777', ran)).toEqual({
+      outcome: 'refused',
+      reason: 'member_may_not_transact',
+    });
+    expect(ran.n).toBe(0);
+  });
+
+  it('runs the work for a delegate', async () => {
+    const businessId = await seedOn('chat');
+    await member(businessId, '+2348190099002', 'delegate');
+    const ran = { n: 0 };
+    const outcome = await runAs(businessId, '+2348190099002', ran);
+    expect(outcome.outcome).toBe('done');
+    expect(ran.n).toBe(1);
+  });
+});
+
 describe('a key the caller offered', () => {
   const envelope = (businessId: string, over: Record<string, unknown> = {}) => ({
     businessId,
