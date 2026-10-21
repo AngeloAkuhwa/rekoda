@@ -522,7 +522,12 @@ describe('a paid but unapplied charge is an operator exception (OD-30)', () => {
 
     expect(
       await withBusiness(appDb, businessId, (tx) =>
-        subscriptionsRepo.resolveUnapplied(tx, 'RKD-SUB-OPS-1', 'refunded at Paystack, recorded'),
+        subscriptionsRepo.resolveUnapplied(
+          tx,
+          'RKD-SUB-OPS-1',
+          'refunded at Paystack, recorded',
+          'operator:test-ops',
+        ),
       ),
     ).toBe(true);
     expect(
@@ -533,7 +538,7 @@ describe('a paid but unapplied charge is an operator exception (OD-30)', () => {
     // a second resolution changes nothing
     expect(
       await withBusiness(appDb, businessId, (tx) =>
-        subscriptionsRepo.resolveUnapplied(tx, 'RKD-SUB-OPS-1', 'again'),
+        subscriptionsRepo.resolveUnapplied(tx, 'RKD-SUB-OPS-1', 'again', 'operator:late'),
       ),
     ).toBe(false);
   });

@@ -561,6 +561,7 @@ export class OpsController {
   @OperatorScopes('ops:payment')
   @HttpCode(200)
   async resolveUnappliedCharge(
+    @Req() request: OperatorRequest,
     @Param('reference') reference: string,
     @Body() body: unknown,
   ): Promise<{ resolved: true }> {
@@ -574,7 +575,12 @@ export class OpsController {
     const businessId = await subscriptionsRepo.businessForCharge(this.workerDb, reference);
     if (!businessId) throw new NotFoundException('no such charge');
     const resolved = await withBusiness(this.db, businessId, (tx) =>
-      subscriptionsRepo.resolveUnapplied(tx, reference, input.data.resolution),
+      subscriptionsRepo.resolveUnapplied(
+        tx,
+        reference,
+        input.data.resolution,
+        `operator:${request.operator!.subject}`,
+      ),
     );
     if (!resolved) throw new ConflictException('that charge is not open');
     return { resolved: true as const };

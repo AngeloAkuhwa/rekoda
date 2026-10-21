@@ -56,6 +56,7 @@ export const subscriptionCharges = pgTable(
     unappliedReason: text('unapplied_reason'),
     unappliedResolvedAt: timestamp('unapplied_resolved_at', { withTimezone: true }),
     unappliedResolution: text('unapplied_resolution'),
+    unappliedResolvedBy: text('unapplied_resolved_by'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

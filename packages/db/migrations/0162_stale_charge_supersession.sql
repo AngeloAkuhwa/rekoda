@@ -24,6 +24,8 @@ ALTER TABLE subscription_charges ADD COLUMN unapplied_at timestamptz;
 ALTER TABLE subscription_charges ADD COLUMN unapplied_reason text;
 ALTER TABLE subscription_charges ADD COLUMN unapplied_resolved_at timestamptz;
 ALTER TABLE subscription_charges ADD COLUMN unapplied_resolution text;
+-- Who resolved it: the verified operator subject, as for an event exception.
+ALTER TABLE subscription_charges ADD COLUMN unapplied_resolved_by text;
 
 CREATE INDEX subscription_charges_unapplied_open_ix
   ON subscription_charges (unapplied_at)

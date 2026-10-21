@@ -633,10 +633,12 @@ export async function resolveUnapplied(
   tx: TenantDb,
   reference: string,
   resolution: string,
+  actor: string,
 ): Promise<boolean> {
   const rows = await tx.execute<{ id: string }>(sql`
     UPDATE subscription_charges
-    SET unapplied_resolved_at = now(), unapplied_resolution = ${resolution}, updated_at = now()
+    SET unapplied_resolved_at = now(), unapplied_resolution = ${resolution},
+        unapplied_resolved_by = ${actor}, updated_at = now()
     WHERE reference = ${reference} AND unapplied_at IS NOT NULL AND unapplied_resolved_at IS NULL
     RETURNING id
   `);

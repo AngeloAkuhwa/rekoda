@@ -17,6 +17,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { subscriptionReference } from '@rekoda/core';
 import {
+  billingRepo,
   createDb,
   events,
   identity,
@@ -317,6 +318,27 @@ describe('a subscription payment', () => {
     expect((await chargeOf(businessId, reference))?.status).toBe('paid');
     // A pack buys capacity, not a plan.
     expect((await subscriptionOf(businessId))?.plan).toBe('trial');
+  });
+
+  it('queues a superseded payment ONCE: on the charge queue, not also as a flagged event (G-104)', async () => {
+    const businessId = await seedBusiness();
+    const reference = await openSubscriptionCharge(businessId);
+    await billingRepo.setPlan(appDb, {
+      businessId,
+      plan: 'integrate',
+      expiresAt: new Date(Date.now() + 20 * 86_400_000),
+      actor: 'operator:test-g104',
+    }); // a newer decision than the charge
+    provider.willVerify(reference, { amountK: CHAT_K });
+    await storeChargeSuccess(reference);
+    await pump();
+    await drainJobs();
+
+    const unapplied = await subscriptionsRepo.unappliedCharges(workerDb, 50);
+    expect(unapplied.map((c) => c.reference)).toEqual([reference]);
+    const queue = await events.exceptionQueue(workerDb, 50);
+    expect(queue.flagged).toEqual([]);
+    expect((await subscriptionOf(businessId))?.plan).toBe('integrate');
   });
 
   it('does not apply the same payment twice when the webhook is redelivered', async () => {

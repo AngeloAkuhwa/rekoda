@@ -159,7 +159,14 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
       );
     }
     // For 'business_gone' this updates nothing: the event went with the tenant.
-    await events.markProcessed(tx, eventId, outcome === 'applied' ? null : outcome, businessId);
+    /* A superseded payment is already a work item on the CHARGE queue (OD-30);
+     * flagging its event too would queue the same payment twice. */
+    await events.markProcessed(
+      tx,
+      eventId,
+      outcome === 'applied' || outcome === 'superseded' ? null : outcome,
+      businessId,
+    );
     if (outcome === 'superseded') {
       log.warn(
         `subscription charge ${reference} was paid after a newer subscription decision for business ${businessId}; the payment is recorded, the plan change was refused, reconcile it`,

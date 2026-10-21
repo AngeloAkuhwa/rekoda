@@ -723,6 +723,13 @@ describe('the exception queue', () => {
       headers: { 'content-type': 'application/json', ...operator },
     });
     expect(done.statusCode).toBe(200);
+    // Who authorised the resolution is recorded, as it is for an event exception.
+    const who = await withBusiness(db, business.id, async (tx) => {
+      const rows = await tx.execute<{ by: string | null }>(sql`
+        SELECT unapplied_resolved_by AS by FROM subscription_charges WHERE reference = ${reference}`);
+      return [...rows][0]?.by;
+    });
+    expect(who).toMatch(/^operator:.+/);
     const again = await app.inject({
       method: 'POST',
       url: `/v1/ops/exceptions/charges/${reference}/resolve`,
