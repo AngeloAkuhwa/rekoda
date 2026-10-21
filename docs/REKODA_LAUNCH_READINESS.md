@@ -22,7 +22,7 @@ path (payment-provider live verification remains pending), no company facts on t
 has never been measured against a real model. G-06 (refund, reversal and chargeback webhooks absorbed) is CODE COMPLETE as of 11 September 2026 against provider fixtures and Paystack's published samples, and NOT LIVE PROVIDER VERIFIED: the live envelopes are still to be confirmed under G-05. Two financial defects stand between the books and real money: G-11 (VAT hardcoded to
 zero on three sale paths; OD-2 may record a deferral for a beta with no
 VAT-registered merchant) and G-22 (merchant processing fee estimated from the
-wrong rate card); Chat purchase duplicate protection is merged (G-81, #262; staging acceptance pending), with
+wrong rate card; fixed in PR #292, pending merge); Chat purchase duplicate protection is merged (G-81, #262; staging acceptance pending), with
 recorded residuals (G-92(5) books one real purchase twice under OD-23 D3 as ruled); G-89 (a
 dashboard PO receive compared with Chat bookings) is merged (#263; staging acceptance pending), NOT closed,
 and the system-wide invariant is not certified until it closes; G-87 (a resend the model reads as an
@@ -438,7 +438,7 @@ Status: **PASS** · **FAIL** · **NOT RUN** · **BLOCKED EXTERNALLY**. "Local 10
 
 ### GATE 12 — End-to-end merchant journeys
 
-NOT RUN as a full set; J2 passed on staging (26 Sep 2026, G-48), G-49's merchant overpayment (J9's overpayment step, J10's merchant variant) is staging accepted (reported by the owner), and J12 waits on G-53 reaching staging (fixed in PR #291, not merged or staged); J11's refund half passes against fixtures and its live half waits on the G-05 drill (G-06 is code complete, not live-verified). Definitions in §10.
+NOT RUN as a full set; J2 passed on staging (26 Sep 2026, G-48), G-49's merchant overpayment (J9's overpayment step, J10's merchant variant) is staging accepted (reported by the owner), and J12 waits on G-53 reaching staging (merged as #291, `187e7ca`; staging acceptance pending); J11's refund half passes against fixtures and its live half waits on the G-05 drill (G-06 is code complete, not live-verified). Definitions in §10.
 
 ## 10. End-to-end test journeys
 
@@ -577,7 +577,7 @@ and the keys are test-mode.
 
 - **Test data:** J5's 20 bags; storefront order for 3 bags at the catalogue price; then "stock".
 - **Expected:** server-priced order; on confirmation `inventory_movements` −3 reason `sale` in the same transaction as the invoice; COGS 60,000 posted at weighted average; "stock" answers 17 bags with no model call.
-- **Pass:** two simultaneous orders for the last unit: exactly one succeeds; the loser sees the out-of-stock message and the API log shows no 500. G-53 is fixed in PR #291 (an uncaught `InsufficientStock` is now `out_of_stock`); not merged or staged, so the concurrent case still needs its staging run.
+- **Pass:** two simultaneous orders for the last unit: exactly one succeeds; the loser sees the out-of-stock message and the API log shows no 500. G-53 is merged (#291, `187e7ca`; an uncaught `InsufficientStock` is now `out_of_stock`); staging acceptance pending, so the concurrent case still needs its staging run.
 
 ### J13 · Monthly statements, PDF and Excel
 

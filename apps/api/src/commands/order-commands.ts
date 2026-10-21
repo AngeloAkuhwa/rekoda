@@ -332,7 +332,8 @@ export async function validateCatalogueOrderWork(
 
   /* §19.1: the provider's expected fee, as an ESTIMATED record the moment
    * a figure exists to estimate from. Priced from the mechanism that collects:
-   * Pay-with-Transfer, Paystack's local rate, not the DVA rate (G-22). Merchant-borne — the customer's
+   * Pay-with-Transfer, Paystack's local rate, not the DVA rate (G-22).
+   * Merchant-borne — the customer's
    * total is untouched — and resolved to ACTUAL when the settlement says
    * what was really taken. No connection, no invented figure. */
   const connection = await paymentsHub.connectionFor(tx, input.businessId, 'paystack');
