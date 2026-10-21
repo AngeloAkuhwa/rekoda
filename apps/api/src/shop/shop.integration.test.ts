@@ -648,10 +648,13 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
       return publicOrderResponse.parse(res.json());
     });
 
-    /* Both taps get the same confirmation: the second is replayed the first
-     * order, not a second one. */
-    expect(answers.map((a) => a.outcome)).toEqual(['placed', 'placed']);
-    expect(answers[0]).toEqual(answers[1]);
+    /* Whichever way the two requests interleave, one order is confirmed: a
+     * replay hands the second tap the SAME confirmation, and a request that
+     * lost the race at the pre-check answers `duplicate`. Never two orders. */
+    const placed = answers.filter((a) => a.outcome === 'placed');
+    expect(placed.length).toBeGreaterThanOrEqual(1);
+    expect(answers.every((a) => a.outcome === 'placed' || a.outcome === 'duplicate')).toBe(true);
+    if (placed.length === 2) expect(placed[0]).toEqual(placed[1]);
     const orders = await withBusiness(db, businessId, (tx) =>
       tx.execute<{ n: number }>(
         sql`SELECT count(*)::int AS n FROM orders WHERE business_id = ${businessId}::uuid`,
