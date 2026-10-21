@@ -661,6 +661,34 @@ describe('the operator plan endpoint', () => {
     expect(new Date(row!.plan_expires_at).getTime()).toBe(expiresAt.getTime());
   });
 
+  it('keeps the cycle start and anchor of a paid cycle the operator corrects (G-62)', async () => {
+    const businessId = await businessFor('08031234594');
+    const started = new Date('2026-10-31T09:00:00.000Z');
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(sql`
+        UPDATE businesses SET plan = 'chat', cycle_started_at = ${started.toISOString()}::timestamptz,
+          renewal_anchor_day = 31, plan_expires_at = '2026-11-30T09:00:00Z'
+        WHERE id = ${businessId}::uuid
+      `),
+    );
+    /* A February expiry would re-derive an anchor of 28 and a start of now. */
+    const res = await change({
+      businessId,
+      plan: 'complete',
+      expiresAt: '2027-02-28T09:00:00.000Z',
+    });
+    expect(res.statusCode).toBe(200);
+
+    const [row] = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ cycle_started_at: Date; renewal_anchor_day: number }>(sql`
+        SELECT cycle_started_at, renewal_anchor_day FROM businesses
+        WHERE id = ${businessId}::uuid
+      `),
+    );
+    expect(new Date(row!.cycle_started_at).getTime()).toBe(started.getTime());
+    expect(row!.renewal_anchor_day).toBe(31);
+  });
+
   /* 401, not 403: the operator guard now separates the two questions it used
    * to answer with one status. No credential, or one it cannot verify, is a
    * failure of AUTHENTICATION. 403 is reserved for a caller the guard did

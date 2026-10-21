@@ -39,7 +39,12 @@ export interface PlanChange {
 export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
   return withBusiness(db, change.businessId, async (tx) => {
     const before = await tx
-      .select({ plan: businesses.plan, expiresAt: businesses.planExpiresAt })
+      .select({
+        plan: businesses.plan,
+        expiresAt: businesses.planExpiresAt,
+        cycleStartedAt: businesses.cycleStartedAt,
+        anchorDay: businesses.renewalAnchorDay,
+      })
       .from(businesses)
       .where(eq(businesses.id, change.businessId))
       .limit(1);
@@ -49,13 +54,22 @@ export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
     if (!UNPAID_PLANS.has(change.plan) && change.expiresAt) {
       /* G-62: a paid plan with a renewal date is a cycle, and `applyCycle` is
        * the one writer of a cycle. Writing `plan` directly left a scheduled
-       * downgrade, a grace clock and a stale catalogue pin behind. The anchor
-       * is the Lagos day of the date the operator named (UTC+1, no DST). */
+       * downgrade, a grace clock and a stale catalogue pin behind.
+       *
+       * An operator correcting a cycle that already exists KEEPS its start and
+       * anchor: the start is the denominator a later upgrade prorates against,
+       * and re-deriving the anchor from the new expiry would move a day-31
+       * cycle to the 28th. Only a business with no paid cycle gets a new one,
+       * anchored on the Lagos day (UTC+1, no DST) of the date named. */
+      const continuing =
+        !UNPAID_PLANS.has(previous.plan) && previous.cycleStartedAt && previous.anchorDay;
       await applyCycle(tx, change.businessId, {
         plan: change.plan,
-        cycleStartedAt: new Date(),
+        cycleStartedAt: continuing ? previous.cycleStartedAt! : new Date(),
         renewsAt: change.expiresAt,
-        anchorDay: new Date(change.expiresAt.getTime() + 3_600_000).getUTCDate(),
+        anchorDay: continuing
+          ? previous.anchorDay!
+          : new Date(change.expiresAt.getTime() + 3_600_000).getUTCDate(),
         pendingPlan: null,
       });
     } else {
