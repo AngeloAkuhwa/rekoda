@@ -1725,6 +1725,9 @@ export const classifyLineResponse = z.discriminatedUnion('outcome', [
     outcome: z.literal('refused'),
     reason: z.enum(['no_such_line', 'line_already_matched']),
   }),
+  /* The journal takes the line's own day and that month is closed (G-98):
+   * nothing was written and the line is still waiting. */
+  z.object({ outcome: z.literal('period_closed'), closedThrough: z.string() }),
 ]);
 
 export type ClassifyLineRequest = z.infer<typeof classifyLineRequest>;

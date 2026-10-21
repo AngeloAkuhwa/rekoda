@@ -1041,8 +1041,11 @@ describe('a catalogue cart becomes an order (spec §3.2; W3, PR-087)', () => {
     expect([...cogs][0]!.k).toBe('40000');
 
     /* §19.1: the provider's expected fee is a RECORD — estimated from the
-     * observed rate card (1% capped ₦300), merchant-borne, resolved to
-     * actual by settlement. 1% of 300,000 kobo = 3,000. */
+     * rate card of the mechanism actually used, merchant-borne, resolved to
+     * actual by settlement. The live mechanism is Pay-with-Transfer, which is
+     * Paystack's LOCAL rate (1.5% + ₦100, capped ₦2,000, the ₦100 waived under
+     * ₦2,500), not the DVA rate (G-22, ADR 0016). A ₦3,000 order clears the
+     * waiver: 1.5% of 300,000 kobo = 4,500, plus 10,000 flat = 14,500. */
     const charges = await withBusiness(db, businessId, (tx) =>
       tx.execute<{
         type: string;
@@ -1059,12 +1062,42 @@ describe('a catalogue cart becomes an order (spec §3.2; W3, PR-087)', () => {
     expect([...charges]).toEqual([
       {
         type: 'PAYMENT_PROCESSING',
-        amount_minor: '3000',
+        amount_minor: '14500',
         beneficiary: 'PROVIDER',
         economic_bearer: 'MERCHANT',
         actual_or_estimated: 'ESTIMATED',
       },
     ]);
+  });
+
+  /* G-22 / ADR 0016: the ADR's own worked example. A ₦105,000 order through
+   * Pay-with-Transfer is ₦1,675 (1.5% = ₦1,575, plus ₦100), not the ₦300 a DVA
+   * would cost. */
+  it('estimates the ADR 0016 example: a ₦105,000 order carries a ₦1,675 processing charge (G-22)', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002229', 'PN-FEE-1');
+    await withBusiness(db, businessId, (tx) =>
+      paymentsHub.upsertConnection(tx, { businessId, providerType: 'paystack' }),
+    );
+
+    expect(
+      (
+        await post(
+          orderPayload('2349097771129', 'wamid.FEE.1', 'PN-FEE-1', [
+            /* 70 × ₦1,500 = ₦105,000. */
+            { retailerId: wigId, quantity: 70, liedPriceK: 1 },
+          ]),
+        )
+      ).statusCode,
+    ).toBe(200);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    const charges = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ amount_minor: string }>(sql`
+        SELECT amount_minor::bigint AS amount_minor FROM payment_charges
+        WHERE business_id = ${businessId}::uuid AND type = 'PAYMENT_PROCESSING'
+      `),
+    );
+    expect([...charges].map((c) => c.amount_minor)).toEqual(['167500']);
   });
 
   it('a price moved between placement and validation refuses rather than re-quotes', async () => {

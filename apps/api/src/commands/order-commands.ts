@@ -331,7 +331,9 @@ export async function validateCatalogueOrderWork(
   }
 
   /* §19.1: the provider's expected fee, as an ESTIMATED record the moment
-   * a figure exists to estimate from. Merchant-borne — the customer's
+   * a figure exists to estimate from. Priced from the mechanism that collects:
+   * Pay-with-Transfer, Paystack's local rate, not the DVA rate (G-22).
+   * Merchant-borne — the customer's
    * total is untouched — and resolved to ACTUAL when the settlement says
    * what was really taken. No connection, no invented figure. */
   const connection = await paymentsHub.connectionFor(tx, input.businessId, 'paystack');
@@ -339,7 +341,7 @@ export async function validateCatalogueOrderWork(
     const card = await paymentsHub.costScheduleInForce(
       tx,
       'paystack',
-      'collection_transfer_dva',
+      'collection_transfer_pwt',
       lagosDay(new Date()),
     );
     if (card && card.basis === 'PERCENT_PLUS_FLAT') {

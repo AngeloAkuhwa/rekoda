@@ -412,6 +412,14 @@ export class BankController {
           reason: 'line_already_matched',
         });
       }
+      /* Thrown before the journal was written, and the transaction rolled
+       * back with it: the line is still unmatched and nothing moved (G-98). */
+      if (error instanceof closeRepo.PeriodClosed) {
+        return classifyLineResponse.parse({
+          outcome: 'period_closed',
+          closedThrough: error.closedThrough,
+        });
+      }
       throw error;
     }
   }

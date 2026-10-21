@@ -1156,6 +1156,13 @@
       "when": 1791806400000,
       "tag": "0164_charge_paid_amount",
       "breakpoints": true
+    },
+    {
+      "idx": 165,
+      "version": "7",
+      "when": 1791892800000,
+      "tag": "0165_paystack_pwt_cost_schedule",
+      "breakpoints": true
     }
   ]
 }

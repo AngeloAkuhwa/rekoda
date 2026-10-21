@@ -9,7 +9,11 @@
  * a memo.
  */
 import { periodLabel } from '@rekoda/core';
-import type { ForgetStatementDayResponse, UnmatchLineResponse } from '@rekoda/contracts';
+import type {
+  ClassifyLineResponse,
+  ForgetStatementDayResponse,
+  UnmatchLineResponse,
+} from '@rekoda/contracts';
 
 export function releaseMessage(outcome: UnmatchLineResponse): { done: string } | { error: string } {
   switch (outcome.outcome) {
@@ -54,5 +58,20 @@ export function forgetMessage(
   }
   return {
     done: `Removed ${lines} from that day, and Rekoda reversed ${n === 1 ? 'the classification entry' : `the ${n} classification entries`} created from ${outcome.removed === 1 ? 'that line' : n === 1 ? 'one of those lines' : 'those lines'}. Other entries in your books are unchanged. You can import the day again at any time.`,
+  };
+}
+
+/**
+ * What the bank page says when a line cannot be classified because the month it
+ * falls in is closed (G-98). The journal is dated on the line's own day, so
+ * unlike a release there is no "today" to fall back to.
+ */
+export function classifyClosedMessage(
+  outcome: Extract<ClassifyLineResponse, { outcome: 'period_closed' }>,
+): {
+  error: string;
+} {
+  return {
+    error: `Your books are closed through ${periodLabel(outcome.closedThrough)}, and this line falls in a closed month, so it cannot be classified. Nothing was changed.`,
   };
 }
