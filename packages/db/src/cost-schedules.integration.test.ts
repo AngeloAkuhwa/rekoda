@@ -52,6 +52,19 @@ describe('the seeded observations (§24, §29)', () => {
       '2026-08-27',
     );
     expect(transfer).toMatchObject({ percentPpm: 10_000, flatMinor: 0, capMinor: 30_000 });
+    /* G-22: Pay-with-Transfer is the LOCAL rate, a row of its own. */
+    const pwt = await paymentsHub.costScheduleInForce(
+      db,
+      'paystack',
+      'collection_transfer_pwt',
+      '2026-08-27',
+    );
+    expect(pwt).toMatchObject({
+      percentPpm: 15_000,
+      flatMinor: 10_000,
+      capMinor: 200_000,
+      waiveFlatUnderMinor: 250_000,
+    });
   });
 
   it('agrees with the in-code Meta card, category by category — the two cannot drift apart', async () => {
