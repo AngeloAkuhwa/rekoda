@@ -448,15 +448,11 @@ export class PublicShopController {
             lapsed = true;
             return { outcome: 'closed' as const };
           }
-          if (
-            run.outcome === 'key_reused' ||
-            run.outcome === 'in_progress' ||
-            (run.outcome === 'done' && run.replayed)
-          ) {
+          if (run.outcome === 'key_reused' || (run.outcome === 'done' && run.replayed)) {
             /* One form, one order. A concurrent twin passed the pre-check above
              * and took its own two units; the bus answered with the first
-             * request's order (or a payload that moved under it, or one still
-             * running). Nothing was booked HERE, so its units go back once this
+             * request's order (or a payload that moved under it). A claim row
+             * exists only once that order has committed. Nothing was booked HERE, so its units go back once this
              * commits, and the customer is told what a sequential resubmit is. */
             duplicate = true;
             return { outcome: 'duplicate' as const };

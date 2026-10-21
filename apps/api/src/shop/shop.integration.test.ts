@@ -641,16 +641,16 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
       clientRef: randomUUID(),
     };
 
-    const answers = await Promise.all([
-      order('ada-double', payload),
-      order('ada-double', payload),
-      order('ada-double', payload),
-    ]);
+    /* Five at once: the more that are in flight, the surer they overlap at the
+     * claim (the old code answered `placed` to every one of them). */
+    const answers = await Promise.all(
+      Array.from({ length: 5 }, () => order('ada-double', payload)),
+    );
 
     for (const answer of answers) expect(answer.statusCode).toBe(200);
     const outcomes = answers.map((a) => publicOrderResponse.parse(a.json()).outcome).sort();
     expect(outcomes.filter((o) => o === 'placed')).toHaveLength(1);
-    expect(outcomes.filter((o) => o === 'duplicate')).toHaveLength(2);
+    expect(outcomes.filter((o) => o === 'duplicate')).toHaveLength(4);
 
     const usage = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
