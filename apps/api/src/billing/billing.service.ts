@@ -133,17 +133,23 @@ export class BillingService {
           endsAt: held.endsAt?.toISOString() ?? null,
         })),
         chargesTotal: charges.count,
-        charges: chargeRows.map((charge) => ({
-          reference: charge.reference,
-          kind: charge.kind as BillingOverviewResponse['charges'][number]['kind'],
-          plan: charge.plan,
-          packId: charge.packId,
-          amountK: charge.amountK,
-          status: charge.status as BillingOverviewResponse['charges'][number]['status'],
-          periodStart: charge.periodStart?.toISOString() ?? null,
-          periodEnd: charge.periodEnd?.toISOString() ?? null,
-          createdAt: charge.createdAt.toISOString(),
-        })),
+        charges: await Promise.all(
+          chargeRows.map(async (charge) => ({
+            reference: charge.reference,
+            kind: charge.kind as BillingOverviewResponse['charges'][number]['kind'],
+            plan: charge.plan,
+            packId: charge.packId,
+            /* The version in force when it was bought, as settlement credits it. */
+            packLabel: charge.packId
+              ? ((await packOffer(this.config, tx, charge.packId, charge.createdAt))?.label ?? null)
+              : null,
+            amountK: charge.amountK,
+            status: charge.status as BillingOverviewResponse['charges'][number]['status'],
+            periodStart: charge.periodStart?.toISOString() ?? null,
+            periodEnd: charge.periodEnd?.toISOString() ?? null,
+            createdAt: charge.createdAt.toISOString(),
+          })),
+        ),
       };
     });
   }
@@ -438,6 +444,8 @@ export async function applySettledCharge(
     businessId: string;
     reference: string;
     providerReference: string;
+    /** What the provider verified it took; recorded so an overpayment's excess is visible (G-107). */
+    paidAmountK?: number;
     when: Date;
     config: PlanTermsConfig;
   },
@@ -448,6 +456,7 @@ export async function applySettledCharge(
     reference: input.reference,
     status: 'paid',
     providerReference: input.providerReference,
+    ...(input.paidAmountK !== undefined ? { paidAmountK: input.paidAmountK } : {}),
     when: input.when,
   });
   if (!charge) return 'already_settled';

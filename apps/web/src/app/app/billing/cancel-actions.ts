@@ -46,7 +46,7 @@ async function cancelSubscriptionActionUnguarded(
     return { done: `Already cancelled: your plan runs until ${day}, then stops.` };
   }
   return {
-    done: `Cancelled. You keep everything you paid for until ${day}, nothing more is charged, and your records stay readable and exportable afterwards. Changed your mind? Pick your current plan on the change table above.`,
+    done: `Cancelled. You keep everything you paid for until ${day}, nothing more is charged, and your records stay readable and exportable afterwards. Changed your mind? Use Keep my subscription above.`,
   };
 }
 

@@ -172,7 +172,13 @@ describe('a generated file costs a unit', () => {
     const shop = await signUp('+2348194000003', 'Lapsed Co');
     await onPlan(shop.businessId, 'expired');
 
-    expect((await get('/v1/reports/invoices.csv', shop.auth)).statusCode).toBe(429);
+    const refused = await get('/v1/reports/invoices.csv', shop.auth);
+    expect(refused.statusCode).toBe(429);
+    /* G-107: a lapsed plan has no downloads to have "used"; saying so is false. */
+    const said = (refused.json() as { message: string }).message;
+    expect(said).not.toContain("used this month's downloads");
+    expect(said).toContain('subscription');
+    expect(said).toContain('never counts against this');
     expect((await get('/v1/reports/statements.xlsx?period=2026-08', shop.auth)).statusCode).toBe(
       429,
     );

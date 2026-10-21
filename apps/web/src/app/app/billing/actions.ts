@@ -22,7 +22,11 @@ async function confirmPlanChangeUnguarded(formData: FormData): Promise<void> {
   revalidatePath('/app/billing');
 
   if (!answer) redirect('/app/billing?problem=plan');
-  if (answer.state === 'scheduled') redirect('/app/billing?done=scheduled');
+  if (answer.state === 'scheduled') {
+    /* "Stay on my plan" posts the CURRENT plan with `undo`: the server answers it
+     * as a scheduled no-change, which clears the pending change. */
+    redirect(`/app/billing?done=${formData.get('undo') ? 'undone' : 'scheduled'}`);
+  }
   if (answer.state === 'applied') redirect('/app/billing?done=applied');
   if (answer.state === 'payment_required') {
     redirect(`/app/billing?pay=${encodeURIComponent(answer.reference)}`);

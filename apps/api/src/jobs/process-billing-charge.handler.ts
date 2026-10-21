@@ -153,6 +153,7 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
       businessId,
       reference,
       providerReference: t.providerTransactionId,
+      paidAmountK: judgement.amountK,
       when: new Date(),
       config: deps.config,
     });
@@ -173,7 +174,13 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
     await events.markProcessed(
       tx,
       eventId,
-      outcome === 'applied' || outcome === 'superseded' ? null : outcome,
+      outcome === 'applied' || outcome === 'superseded'
+        ? /* An overpayment is accepted (the month IS paid for) but flagged: the
+           * excess is a refund decision for an operator (ADR 0024, G-107). */
+          judgement.reconciliation === 'overpaid' && outcome === 'applied'
+          ? 'overpaid'
+          : null
+        : outcome,
       businessId,
     );
     if (outcome === 'superseded') {

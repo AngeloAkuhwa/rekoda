@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { isOwner } from '@/lib/permissions';
 import { Money } from '@/components/ui/Money';
 import { PendingButton } from '@/components/ui/PendingButton';
+import { emptyMeterCopy, undoPendingLabel } from '@/lib/billing-copy';
 import { CancelForm } from './CancelForm';
 import { PLANS, PLAN_NAMES, SHARED_ACROSS_PLANS } from '@/lib/plans';
 import { capabilityWords, entitlementsForPlan, planSwitch } from '@rekoda/core';
@@ -149,6 +150,12 @@ export default async function BillingPage({
         </div>
       ) : null}
 
+      {params.done === 'undone' ? (
+        <div className="rk-attention-strip" role="status">
+          Done. Your plan carries on as it is, and the change you scheduled is cancelled.
+        </div>
+      ) : null}
+
       {params.done === 'applied' ? (
         <div className="rk-attention-strip" role="status">
           Done. Your new plan is on now. Nothing was charged and your renewal date has not changed.
@@ -184,16 +191,26 @@ export default async function BillingPage({
                 ? `Grace period ends ${lagosDate(overview.status.endsAt)}.`
                 : `Stopped ${lagosDate(overview.status.since)}.`}
         </p>
-        {overview.pendingPlan === 'expired' ? (
-          <p className="rk-fineprint">
-            Cancelled: your plan runs to the end of what you paid for, then stops without charging.
-            Changed your mind? Pick your current plan on the change table below and it carries on.
-          </p>
-        ) : overview.pendingPlan ? (
-          <p className="rk-fineprint">
-            Changing to {PLAN_NAMES[overview.pendingPlan] ?? overview.pendingPlan} at your next
-            renewal. You keep what you paid for until then.
-          </p>
+        {overview.pendingPlan ? (
+          <>
+            <p className="rk-fineprint">
+              {overview.pendingPlan === 'expired'
+                ? 'Cancelled: your plan runs to the end of what you paid for, then stops without charging.'
+                : `Changing to ${PLAN_NAMES[overview.pendingPlan] ?? overview.pendingPlan} at your next renewal. You keep what you paid for until then.`}
+            </p>
+            {isOwner(identity.role) ? (
+              <form action={confirmPlanChange}>
+                <input type="hidden" name="plan" value={overview.plan} />
+                <input type="hidden" name="undo" value="1" />
+                <PendingButton pendingLabel="Saving…">
+                  {undoPendingLabel(
+                    overview.pendingPlan,
+                    PLAN_NAMES[overview.plan] ?? overview.plan,
+                  )}
+                </PendingButton>
+              </form>
+            ) : null}
+          </>
         ) : null}
       </div>
 
@@ -202,7 +219,7 @@ export default async function BillingPage({
         <h2>This month</h2>
         {meters.length === 0 ? (
           <p className="rk-fineprint">
-            This plan includes nothing to meter right now. Nothing you do will be refused.
+            {emptyMeterCopy(overview.status.state, isOwner(identity.role))}
           </p>
         ) : (
           meters.map((meter) => {
@@ -472,7 +489,9 @@ export default async function BillingPage({
                   <tr key={charge.reference}>
                     <td>{lagosDate(charge.createdAt)}</td>
                     <td>
-                      {CHARGE_LABELS[charge.kind] ?? charge.kind}
+                      {charge.kind === 'add_on' && charge.packLabel
+                        ? charge.packLabel
+                        : (CHARGE_LABELS[charge.kind] ?? charge.kind)}
                       {charge.plan ? ` · ${PLAN_NAMES[charge.plan] ?? charge.plan}` : ''}
                     </td>
                     <td className="rk-mono">{charge.reference}</td>
