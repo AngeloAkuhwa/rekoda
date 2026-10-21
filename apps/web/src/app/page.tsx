@@ -202,8 +202,8 @@ export default function HomePage() {
       <section className="rk-section rk-container rk-closer">
         <h2>Start with one message</h2>
         <p>
-          Fourteen days free, no card. If Rekoda is not keeping better books than you are today, walk
-          away and take your records with you.
+          Fourteen days free, no card. If Rekoda is not keeping better books than you are today,
+          walk away and take your records with you.
         </p>
         <div className="rk-cta-row">
           <Button href="/start">Start free for 14 days</Button>
