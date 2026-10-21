@@ -542,6 +542,7 @@ export class OpsController {
         currentPlan: c.currentPlan,
         currentPendingPlan: c.currentPendingPlan,
         currentRenewsAt: c.currentRenewsAt?.toISOString() ?? null,
+        openChargeReference: c.openChargeReference,
         createdAt: c.unappliedAt.toISOString(),
         ageSeconds: Math.max(0, Math.floor((now.getTime() - c.unappliedAt.getTime()) / 1000)),
         resolveBy: unappliedChargeDueAt(c.unappliedAt).toISOString(),

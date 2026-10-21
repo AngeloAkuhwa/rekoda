@@ -437,3 +437,25 @@ describe('unappliedChargeDueAt (OD-30): end of the next business day, Lagos time
     expect(unappliedChargeOverdue(made, new Date('2026-10-22T23:00:00.000Z'))).toBe(true);
   });
 });
+
+describe('unappliedChargeDueAt: boundaries (OD-30)', () => {
+  const due = (iso: string) => unappliedChargeDueAt(new Date(iso)).toISOString();
+  it('crosses a month end: Saturday 31 October is due end of Monday 2 November', () => {
+    expect(due('2026-10-31T10:00:00Z')).toBe('2026-11-02T22:59:59.999Z');
+  });
+  it('the Lagos day boundary on a Friday: 22:59:59.999Z is still Friday, 23:00:00Z is Saturday', () => {
+    // Both land on the next business day, Monday, but only after a Lagos weekend check.
+    expect(due('2026-10-23T22:59:59.999Z')).toBe('2026-10-26T22:59:59.999Z');
+    expect(due('2026-10-23T23:00:00.000Z')).toBe('2026-10-26T22:59:59.999Z');
+  });
+  it('Thursday 22:59:59.999Z is due Friday; Thursday 23:00:00Z (already Friday in Lagos) is due Monday', () => {
+    expect(due('2026-10-22T22:59:59.999Z')).toBe('2026-10-23T22:59:59.999Z');
+    expect(due('2026-10-22T23:00:00.000Z')).toBe('2026-10-26T22:59:59.999Z');
+  });
+  it('is not overdue at the exact deadline instant, overdue one millisecond later', () => {
+    const created = new Date('2026-10-19T08:00:00Z');
+    const deadline = unappliedChargeDueAt(created);
+    expect(unappliedChargeOverdue(created, deadline)).toBe(false);
+    expect(unappliedChargeOverdue(created, new Date(deadline.getTime() + 1))).toBe(true);
+  });
+});

@@ -570,7 +570,7 @@ describe('grace expiry is a newer decision (OD-30)', () => {
     expect(queue.filter((q) => q.reference === 'RKD-SUB-GRACE-1')).toHaveLength(1);
   });
 
-  it('an expiry that loses to a concurrent payment stamps no decision and the payment stands', async () => {
+  it('an expiry that finds the payment already applied stamps no decision and the payment stands', async () => {
     const businessId = await seedBusiness();
     await inGrace(businessId);
     await open(businessId, 'renewal', 'RKD-SUB-GRACE-2', 'complete');
@@ -662,7 +662,9 @@ describe('an upgrade paid after its cycle has ended never leaves the plan expiry
     expect(sub?.plan).toBe('chat'); // not upgraded on a cycle that is over
     expect(sub?.planExpiresAt?.toISOString()).toBe(ended.toISOString()); // still the truth
     expect(sub?.paymentFailedAt).not.toBeNull(); // the grace clock was not cleared
-    expect((await chargeRow(businessId, 'RKD-SUB-ENDED-1'))?.status).toBe('paid');
+    const ended1 = await chargeRow(businessId, 'RKD-SUB-ENDED-1');
+    expect(ended1?.status).toBe('paid');
+    expect(ended1?.superseded_at).not.toBeNull(); // surfaced for the operator
     const why = await withBusiness(appDb, businessId, async (tx) => {
       const rows = await tx.execute<{ unapplied_reason: string | null }>(sql`
         SELECT unapplied_reason FROM subscription_charges WHERE reference = 'RKD-SUB-ENDED-1'
@@ -747,6 +749,62 @@ describe('a grace business whose renewal went stale is given a payable one (G-10
     expect(open).toHaveLength(1);
     expect(open[0]?.plan).toBe('complete');
     expect(await failedAt(businessId)).toBe(clock);
+  });
+
+  it('a business whose renewal FAILED and was then re-decided is not re-selected forever (no spin)', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'complete', new Date(Date.now() - 3_600_000));
+    expect((await sweep()).raised).toBe(1);
+    // The provider reports the attempt dead: the charge is closed `failed`, and it still holds the cycle.
+    await withBusiness(appDb, businessId, async (tx) => {
+      const rows = await tx.execute<{ reference: string }>(sql`
+        SELECT reference FROM subscription_charges
+        WHERE business_id = ${businessId}::uuid AND kind = 'renewal'`);
+      await subscriptionsRepo.settleCharge(tx, {
+        reference: [...rows][0]!.reference,
+        status: 'failed',
+        failureReason: 'abandoned',
+        when: new Date(),
+      });
+      await subscriptionsRepo.schedulePlanChange(tx, businessId, 'chat'); // a newer decision
+    });
+
+    // The failed row still holds the cycle, so a new renewal cannot be opened: do not pick it up.
+    expect(await subscriptionsRepo.dueForRenewal(realWorkerDb, new Date())).toHaveLength(0);
+    const again = await sweep();
+    expect(again).toEqual({ raised: 0, skipped: 0 });
+  });
+
+  it('an operator sees the replacement renewal the merchant is now being asked to pay', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'complete', new Date(Date.now() - 3_600_000));
+    expect((await sweep()).raised).toBe(1); // R1, a Complete renewal
+    const r1 = (await openRenewals(businessId))[0] as unknown as { plan: string } | undefined;
+    expect(r1?.plan).toBe('complete');
+    const ref1 = await withBusiness(appDb, businessId, async (tx) => {
+      const rows = await tx.execute<{ reference: string }>(sql`
+        SELECT reference FROM subscription_charges
+        WHERE business_id = ${businessId}::uuid AND kind = 'renewal'`);
+      return [...rows][0]!.reference;
+    });
+    await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.schedulePlanChange(tx, businessId, 'chat'),
+    ); // R1 is now stale
+    expect(await settle(businessId, ref1)).toBe('superseded'); // the merchant pays R1 anyway
+    expect((await sweep()).raised).toBe(1); // R2, for Chat
+
+    const queue = await subscriptionsRepo.unappliedCharges(realWorkerDb, 50);
+    expect(queue.map((c) => c.reference)).toEqual([ref1]);
+    const r2 = await withBusiness(appDb, businessId, async (tx) => {
+      const rows = await tx.execute<{ reference: string }>(sql`
+        SELECT reference FROM subscription_charges
+        WHERE business_id = ${businessId}::uuid AND kind = 'renewal'
+          AND status = 'pending' AND superseded_at IS NULL`);
+      return [...rows][0]?.reference;
+    });
+    // The operator can see the merchant has been asked to pay again, and which charge that is.
+    expect(r2).toBeDefined();
+    expect(queue[0]?.openChargeReference).toBe(r2);
   });
 
   it('does not raise a second renewal when a payable one already exists', async () => {

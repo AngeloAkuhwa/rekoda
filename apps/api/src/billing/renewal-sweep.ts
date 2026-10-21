@@ -59,10 +59,16 @@ export async function sweepRenewals(
    * set, so repeating until a short page drains everything due rather than
    * capping the hour at one bite. */
   const PAGE = 200;
+  /* A business is worked at most once per pass. One that cannot progress (its
+   * charge could not be opened) would otherwise be read again on every page and
+   * keep a full page from ever looking drained. */
+  const seen = new Set<string>();
   for (;;) {
     const before = result.raised + result.skipped;
-    const due = await subscriptionsRepo.dueForRenewal(deps.workerDb, now, PAGE);
+    const page = await subscriptionsRepo.dueForRenewal(deps.workerDb, now, PAGE);
+    const due = page.filter((business) => !seen.has(business.businessId));
     for (const business of due) {
+      seen.add(business.businessId);
       /* The plan the NEXT cycle is on: a scheduled downgrade takes effect here,
        * which is exactly what ADR 0024 promised the merchant. */
       const plan = business.nextPlan;
@@ -183,7 +189,7 @@ export async function sweepRenewals(
     }
     /* A short page means the set is drained; zero progress on a full page
      * means every row is erroring, and spinning on them helps nobody. */
-    if (due.length < PAGE || result.raised + result.skipped === before) break;
+    if (page.length < PAGE || due.length === 0 || result.raised + result.skipped === before) break;
   }
 
   return result;

@@ -300,6 +300,8 @@ export const opsUnappliedChargeView = z.object({
   currentPlan: z.string(),
   currentPendingPlan: z.string().nullable(),
   currentRenewsAt: z.string().nullable(),
+  /** The payable plan charge the merchant has open now: they may be paying twice. */
+  openChargeReference: z.string().nullable(),
   /** When the exception was created (the payment settled and was refused). */
   createdAt: z.string(),
   ageSeconds: z.number().int().nonnegative(),

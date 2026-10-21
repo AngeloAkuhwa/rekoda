@@ -601,6 +601,12 @@ export interface UnappliedChargeRow {
   currentPlan: string;
   currentPendingPlan: string | null;
   currentRenewsAt: Date | null;
+  /**
+   * The payable plan charge the merchant has open right now, if any. When a
+   * renewal is paid but unapplied, the sweep asks for the correct one, so the
+   * merchant may pay twice; an operator needs to see that to reconcile it.
+   */
+  openChargeReference: string | null;
 }
 
 /**
@@ -624,11 +630,16 @@ export async function unappliedCharges(db: Db, limit = 50): Promise<UnappliedCha
     current_plan: string;
     current_pending_plan: string | null;
     current_renews_at: string | null;
+    open_charge_reference: string | null;
   }>(sql`
     SELECT c.reference, c.business_id, c.kind, c.plan, c.pack_id, c.amount_k, c.paid_at,
            c.superseded_at, c.unapplied_at, c.unapplied_reason,
            b.plan AS current_plan, b.pending_plan AS current_pending_plan,
-           b.plan_expires_at AS current_renews_at
+           b.plan_expires_at AS current_renews_at,
+           (SELECT n.reference FROM subscription_charges n
+             WHERE n.business_id = c.business_id AND n.status = 'pending'
+               AND n.superseded_at IS NULL AND n.plan IS NOT NULL
+             ORDER BY n.created_at DESC LIMIT 1) AS open_charge_reference
     FROM subscription_charges c
     JOIN businesses b ON b.id = c.business_id
     WHERE c.unapplied_at IS NOT NULL AND c.unapplied_resolved_at IS NULL AND c.status = 'paid'
@@ -649,6 +660,7 @@ export async function unappliedCharges(db: Db, limit = 50): Promise<UnappliedCha
     currentPlan: r.current_plan,
     currentPendingPlan: r.current_pending_plan,
     currentRenewsAt: at(r.current_renews_at),
+    openChargeReference: r.open_charge_reference,
   }));
 }
 
@@ -808,7 +820,13 @@ const NO_PAYABLE_RENEWAL = sql`NOT EXISTS (
   WHERE c.business_id = businesses.id AND c.kind = 'renewal'
     AND c.period_start = businesses.plan_expires_at
     AND c.superseded_at IS NULL
-    AND (businesses.plan_decided_at IS NULL OR businesses.plan_decided_at <= c.created_at)
+    -- Anything still holding the cycle blocks a replacement, EXCEPT a pending
+    -- renewal opened before the latest decision: that one is retired under the
+    -- lock, which frees the slot. A failed or paid renewal is never retired, so
+    -- selecting its business would only fail to open a charge on every pass.
+    AND NOT (c.status = 'pending'
+             AND businesses.plan_decided_at IS NOT NULL
+             AND businesses.plan_decided_at > c.created_at)
 )`;
 
 /**
