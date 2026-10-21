@@ -16,9 +16,13 @@ import type { Db, TenantDb } from '../client.js';
 import { withBusiness } from '../client.js';
 import { businesses } from '../schema/tenancy.js';
 import { auditEvents } from '../schema/ops.js';
+import * as subscriptionsRepo from './subscriptions.js';
 
 /** The plans nobody paid for; every other plan is a paid one (G-103). */
 const UNPAID_PLANS = new Set(['trial', 'expired']);
+
+/** The day of the month in Lagos (UTC+1), which renewals anchor to. */
+const lagosDayOfMonth = (at: Date): number => new Date(at.getTime() + 3_600_000).getUTCDate();
 
 export interface PlanChange {
   businessId: string;
@@ -45,19 +49,20 @@ export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
     const previous = before[0];
     if (!previous) return false;
 
-    await tx
-      .update(businesses)
-      .set({
-        plan: change.plan,
-        planExpiresAt: change.expiresAt,
-        /* A paid plan, however it was set (G-103, OWN-28): retention must
-         * never read this business as an abandoned trial later. This records
-         * an exemption, not that cash was collected. */
-        ...(!UNPAID_PLANS.has(change.plan)
-          ? { everPaidAt: sql`coalesce(${businesses.everPaidAt}, now())` }
-          : {}),
-      })
-      .where(eq(businesses.id, change.businessId));
+    /* One writer for the whole subscription (G-62): a downgrade scheduled
+     * against the old plan, a failed renewal and its reminders, the old
+     * plan-version pin and the old cycle dates all go with the old plan.
+     * The operator's `expiresAt` is kept exactly as given; with none there
+     * is no dated cycle, so no anchor day is invented. */
+    const paid = !UNPAID_PLANS.has(change.plan);
+    await subscriptionsRepo.writeSubscriptionState(tx, change.businessId, {
+      plan: change.plan,
+      paid,
+      cycleStartedAt: paid ? new Date() : null,
+      planExpiresAt: change.expiresAt,
+      anchorDay: paid && change.expiresAt ? lagosDayOfMonth(change.expiresAt) : null,
+      pendingPlan: null,
+    });
 
     await tx.insert(auditEvents).values({
       businessId: change.businessId,
