@@ -66,7 +66,9 @@ const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
 const config = { planCatalogueReads: false };
 
 /** An abandoned trial, warned, with a pending first-purchase charge. */
-async function warnedTrialWithPendingCharge(): Promise<string> {
+async function warnedTrialWithPendingCharge(
+  kind: 'first_purchase' | 'add_on' = 'first_purchase',
+): Promise<string> {
   const user = await identity.upsertUserByPhone(appDb, '+2348170000001');
   const business = await identity.createBusinessWithOwner(appDb, {
     name: 'Ada Fashion',
@@ -82,8 +84,8 @@ async function warnedTrialWithPendingCharge(): Promise<string> {
     await retentionRepo.claimRetentionNotice(tx, businessId, daysAgo(200));
     await subscriptionsRepo.openCharge(tx, {
       businessId,
-      kind: 'first_purchase',
-      plan: 'chat',
+      kind,
+      ...(kind === 'first_purchase' ? { plan: 'chat' as const } : {}),
       amountK: 990_000,
       reference: REFERENCE,
       periodStart: daysAgo(1),
@@ -216,5 +218,42 @@ describe('a subscription payment racing the retention sweep', () => {
       }),
     );
     expect(outcome).toBe('business_gone');
+  });
+
+  it('refuses the deletion when a pack payment commits while retention waits on the lock', async () => {
+    // A pack settles without applyCycle, so it sets neither plan nor ever_paid_at:
+    // retention must see the committed PAID charge, not its pre-lock snapshot.
+    const businessId = await warnedTrialWithPendingCharge('add_on');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let parked!: () => void;
+    const settledUncommitted = new Promise<void>((resolve) => (parked = resolve));
+    const payment = withBusiness(appDb, businessId, async (tx) => {
+      const outcome = await applySettledCharge(tx, {
+        businessId,
+        reference: REFERENCE,
+        providerReference: 'ps_pack',
+        when: new Date(),
+        config,
+      });
+      parked();
+      await gate;
+      return outcome;
+    });
+    try {
+      await settledUncommitted;
+      const deletion = retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90));
+      await until(async () => (await lockWaiters()) >= 1, 'retention to wait on the payment');
+      release();
+      expect(await payment).toBe('applied');
+      expect(await deletion).toBe(-1);
+      const rows = await ownerDb.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM businesses WHERE id = ${businessId}::uuid`,
+      );
+      expect([...rows][0]?.n).toBe(1);
+    } finally {
+      release();
+      await payment.catch(() => undefined);
+    }
   });
 });

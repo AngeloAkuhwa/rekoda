@@ -50,14 +50,24 @@ BEGIN
     AND b.plan_expires_at <= cutoff
     AND b.retention_notified_at IS NOT NULL
     AND b.ever_paid_at IS NULL
-    AND NOT EXISTS (
-      SELECT 1 FROM public.subscription_charges c
-      WHERE c.business_id = b.id AND c.status IN ('paid', 'refunded'))
-    AND NOT EXISTS (
-      SELECT 1 FROM public.subscription_charges c
-      WHERE c.business_id = b.id AND c.status = 'pending'
-        AND c.created_at > now() - interval '14 days')
   FOR UPDATE OF b;
+
+  /* A SECOND statement, on purpose. After a lock wait Postgres re-checks only
+   * the locked row, so charge subqueries in the statement above would keep
+   * the snapshot from before the wait. A pack payment settles without
+   * applyCycle (no plan or ever_paid_at change), so the only trace of it is
+   * its charge row: read it only now that the lock is held and every payment
+   * that held the business row has committed. */
+  IF due IS TRUE THEN
+    SELECT NOT EXISTS (
+             SELECT 1 FROM public.subscription_charges c
+             WHERE c.business_id = target AND c.status IN ('paid', 'refunded'))
+       AND NOT EXISTS (
+             SELECT 1 FROM public.subscription_charges c
+             WHERE c.business_id = target AND c.status = 'pending'
+               AND c.created_at > now() - interval '14 days')
+    INTO due;
+  END IF;
 
   IF due IS NOT TRUE THEN
     RETURN -1;
