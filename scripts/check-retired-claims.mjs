@@ -119,7 +119,8 @@ const RETIRED = [
   {
     pattern:
       /\b(30|thirty)[- ]days?[- ](free|trial)|\b(trial|free)\b[^.\n]{0,25}\b(30|thirty) days\b/i,
-    unless: /\b(not|never|no longer|retired|instead of)\b|\.not\./i,
+    unless:
+      /\b(not|never|no longer|retired|instead of)\b[^\n]{0,40}\b(30|thirty)\b|\.not\.[^\n]{0,40}\b(30|thirty)\b/i,
     reason: 'the MVP free trial is 14 days (OWN-27); no surface may promise a 30-day trial',
   },
 ];
