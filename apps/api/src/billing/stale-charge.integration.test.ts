@@ -359,6 +359,38 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
     expect((await subscription(businessId))?.plan).toBe('complete');
   });
 
+  it('undoing a downgrade keeps an upgrade opened while it was pending: it was priced on the current plan', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'integrate');
+    const schedule = (plan: string | null) =>
+      withBusiness(appDb, businessId, (tx) =>
+        subscriptionsRepo.schedulePlanChange(tx, businessId, plan),
+      );
+    await schedule('chat');
+    await open(businessId, 'upgrade', 'RKD-SUB-STALE-UP', 'complete');
+    await schedule(null);
+
+    expect(await settle(businessId, 'RKD-SUB-STALE-UP')).toBe('applied');
+    expect((await subscription(businessId))?.plan).toBe('complete');
+  });
+
+  it('a downgrade already pending before the migration (no decision time) is still undoable cleanly', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'complete');
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(sql`
+        UPDATE businesses SET pending_plan = 'chat', plan_decided_at = NULL,
+          plan_decided_before_pending = NULL WHERE id = ${businessId}::uuid`),
+    );
+    await open(businessId, 'renewal', 'RKD-SUB-STALE-LEG', 'chat');
+    await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.schedulePlanChange(tx, businessId, null),
+    );
+
+    expect(await settle(businessId, 'RKD-SUB-STALE-LEG')).toBe('superseded');
+    expect((await subscription(businessId))?.plan).toBe('complete');
+  });
+
   it('decisions and charges are stamped at statement time, not transaction start', async () => {
     const businessId = await seedBusiness();
     await operator(businessId, 'complete');

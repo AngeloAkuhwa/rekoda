@@ -208,18 +208,20 @@ export async function schedulePlanChange(
    * leaves the subscription as it was, so the renewal already open still
    * renews. */
   if (plan === null) {
-    /* Undo. A plan charge opened WHILE the change was pending was priced for
-     * the pending plan (the sweep prices the next cycle's plan); restoring the
-     * old plan makes it wrong, so it is flagged stale. A charge for the plan the
-     * merchant is actually on stays valid, as does anything opened before. */
+    /* Undo. A RENEWAL opened WHILE the change was pending was priced for the
+     * pending plan (the sweep prices the next cycle's plan); restoring the old
+     * plan makes it wrong, so it is flagged stale. An upgrade opened meanwhile
+     * was priced on the current plan and stays valid, as does anything opened
+     * before. A change pending from before migration 0162 has no decision time:
+     * every such renewal counts. */
     await tx.execute(sql`
       UPDATE subscription_charges c SET superseded_at = clock_timestamp(), updated_at = now()
       FROM businesses b
       WHERE b.id = ${businessId}::uuid AND c.business_id = b.id
         AND b.pending_plan IS NOT NULL
         AND c.status = 'pending' AND c.superseded_at IS NULL
-        AND c.plan IS NOT NULL AND c.plan <> b.plan
-        AND c.created_at > b.plan_decided_at
+        AND c.kind = 'renewal' AND c.plan IS NOT NULL AND c.plan <> b.plan
+        AND c.created_at > COALESCE(b.plan_decided_at, '-infinity'::timestamptz)
     `);
     /* Put the decision time back to what it was before the change was
      * scheduled, so a charge opened before the cancellation is current again. */
@@ -242,8 +244,8 @@ export async function schedulePlanChange(
     WHERE b.id = ${businessId}::uuid AND c.business_id = b.id
       AND b.pending_plan IS NOT NULL AND b.pending_plan IS DISTINCT FROM ${plan}
       AND c.status = 'pending' AND c.superseded_at IS NULL
-      AND c.plan IS NOT NULL AND c.plan <> b.plan
-      AND c.created_at > b.plan_decided_at
+      AND c.kind = 'renewal' AND c.plan IS NOT NULL AND c.plan <> b.plan
+      AND c.created_at > COALESCE(b.plan_decided_at, '-infinity'::timestamptz)
   `);
   await tx.execute(sql`
     UPDATE businesses SET pending_plan = ${plan},
