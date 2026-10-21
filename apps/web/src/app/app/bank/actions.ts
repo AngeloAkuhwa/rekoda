@@ -13,7 +13,7 @@ import {
   viewOnlyRefusal,
 } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
-import { forgetMessage, releaseMessage } from '@/lib/bank-release';
+import { classifyClosedMessage, forgetMessage, releaseMessage } from '@/lib/bank-release';
 
 export interface StatementState {
   error?: string;
@@ -257,11 +257,7 @@ async function classifyLineActionUnguarded(
     };
   }
 
-  if (outcome.outcome === 'period_closed') {
-    return {
-      error: `That line falls in a month you have already closed (through ${outcome.closedThrough}), so it cannot be classified. Nothing was changed.`,
-    };
-  }
+  if (outcome.outcome === 'period_closed') return classifyClosedMessage(outcome);
 
   revalidatePath('/app/bank');
   return {
