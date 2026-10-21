@@ -23,13 +23,17 @@ export const billingStateView = z.discriminatedUnion('state', [
   z.object({ state: z.literal('trial'), endsAt: isoDate.nullable() }),
 ]);
 
+/** What a subscription charge can be; the one list the writer, the API and the page share. */
+export const billingChargeStatus = z.enum(['pending', 'paid', 'failed', 'refunded']);
+export type BillingChargeStatus = z.infer<typeof billingChargeStatus>;
+
 export const billingChargeView = z.object({
   reference: z.string(),
   kind: z.enum(['first_purchase', 'renewal', 'upgrade', 'add_on', 'seat']),
   plan: z.string().nullable(),
   packId: z.string().nullable(),
   amountK: kobo,
-  status: z.enum(['pending', 'paid', 'failed', 'refunded']),
+  status: billingChargeStatus,
   periodStart: isoDate.nullable(),
   periodEnd: isoDate.nullable(),
   createdAt: isoDate,

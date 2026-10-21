@@ -11,6 +11,7 @@ import { AppNav } from '../AppNav';
 import { SignOutButton } from '../SignOutButton';
 import { buyPack, confirmPlanChange } from './actions';
 import { heldBy } from '@/lib/capabilities';
+import { chargeStatusLabel } from '@/lib/charge-status';
 
 export const metadata: Metadata = {
   title: 'Billing',
@@ -46,17 +47,6 @@ const CHARGE_LABELS: Record<string, string> = {
   upgrade: 'Plan upgrade',
   add_on: 'Add-on pack',
   seat: 'Extra seat',
-};
-
-/* The status column was the one cell on this table printing the database's
- * own word: a merchant reconciling their bill read `succeeded` beside four
- * columns of plain language. */
-const CHARGE_STATUS: Record<string, string> = {
-  pending: 'Awaiting payment',
-  succeeded: 'Paid',
-  failed: 'Failed',
-  abandoned: 'Not completed',
-  refunded: 'Refunded',
 };
 
 /** Lagos, so a merchant reads the date they would write on a form. */
@@ -461,7 +451,7 @@ export default async function BillingPage({
                       {charge.plan ? ` · ${PLAN_NAMES[charge.plan] ?? charge.plan}` : ''}
                     </td>
                     <td className="rk-mono">{charge.reference}</td>
-                    <td>{CHARGE_STATUS[charge.status] ?? charge.status}</td>
+                    <td>{chargeStatusLabel(charge.status)}</td>
                     <td>
                       <Money kobo={charge.amountK} />
                     </td>
