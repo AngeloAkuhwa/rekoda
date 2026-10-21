@@ -106,6 +106,11 @@ export function CheckoutForm({
             `${displayName} changed their shop since you picked these items. Go back and build your order again.`,
           );
           return;
+        case 'out_of_stock':
+          setRefusal(
+            `${displayName} does not have enough of one of the items in your order. Go back, check the quantities and try again.`,
+          );
+          return;
         case 'bad_phone':
           setRefusal('That phone number does not look complete. Check it and try again.');
           return;

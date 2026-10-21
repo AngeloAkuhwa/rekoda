@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { forgetMessage, releaseMessage } from './bank-release';
+import { classifyClosedMessage, forgetMessage, releaseMessage } from './bank-release';
 
 describe('what the bank page says after a release (G-95)', () => {
   it('says a classification was reversed, not that its entry is back where it was', () => {
@@ -92,5 +92,14 @@ describe('what the bank page says after a day is forgotten (G-97)', () => {
   it('never claims a sale, payment or other entry was reversed or deleted', () => {
     const said = forgetMessage({ outcome: 'forgotten', removed: 3, reversedClassifications: 1 });
     expect('done' in said && said.done).not.toMatch(/sale|payment|deleted/i);
+  });
+});
+
+describe('what the bank page says when a line is in a closed month (G-98)', () => {
+  it('names the month as a merchant writes it and says nothing changed', () => {
+    const said = classifyClosedMessage({ outcome: 'period_closed', closedThrough: '2026-08' });
+    expect(said.error).toContain('August 2026');
+    expect(said.error).not.toContain('2026-08');
+    expect(said.error).toContain('Nothing was changed');
   });
 });

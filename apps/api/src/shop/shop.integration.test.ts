@@ -628,6 +628,93 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
     expect(usageAfter.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
   });
 
+  /* G-53: asking for more than the shelf holds (a lost race for the last unit
+   * is the same refusal) used to throw out of the order transaction and answer
+   * 500 "did not go through". It must say what is true, book nothing, spend
+   * nothing, and leave the shelf alone. */
+  it('answers out_of_stock for more than the shelf holds, and spends nothing (G-53)', async () => {
+    const { businessId, ids } = await openShop('+2348177400038', 'ada-shelf');
+
+    const clientRef = randomUUID();
+    const payload = {
+      items: [{ productId: ids['Ankara bale'], quantity: 11 }],
+      customerName: 'Chidi Okafor',
+      customerPhone: '0803 555 1234',
+      clientRef,
+    };
+    const answer = await order('ada-shelf', payload);
+
+    expect(answer.statusCode).toBe(200);
+    expect(publicOrderResponse.parse(answer.json())).toEqual({ outcome: 'out_of_stock' });
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+    const stock = await withBusiness(db, businessId, (tx) => stockRepo.stockList(tx, businessId));
+    expect(stock.rows.find((p) => p.name === 'Ankara bale')?.onHand).toBe(10);
+    const orders = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM orders WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect(Number([...orders][0]?.n)).toBe(0);
+
+    /* Restocked, the SAME form (same clientRef) goes through: the refusal left
+     * no claim behind to replay. */
+    await withBusiness(db, businessId, (tx) =>
+      stockRepo.recordMovement(tx, {
+        businessId,
+        productId: ids['Ankara bale']!,
+        delta: 5,
+        reason: 'adjustment',
+        sourceType: 'chat',
+        sourceId: 'restock-g53',
+      }),
+    );
+    const retried = await order('ada-shelf', payload);
+    expect(publicOrderResponse.parse(retried.json()).outcome).toBe('placed');
+  });
+
+  /* G-96: two submits of one form at the same instant both pass the
+   * sequential duplicate pre-check, so each used to spend an order unit and a
+   * document unit; the second was replayed the first order and its units were
+   * never given back. */
+  it('a double tap spends one order and one document, not two (G-96)', async () => {
+    const { businessId, ids } = await openShop('+2348177400039', 'ada-double');
+    const payload = {
+      items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+      customerName: 'Chidi Okafor',
+      customerPhone: '0803 555 1234',
+      clientRef: randomUUID(),
+    };
+
+    /* Five at once: the more that are in flight, the surer they overlap at the
+     * claim (the old code answered `placed` to every one of them). */
+    const answers = await Promise.all(
+      Array.from({ length: 5 }, () => order('ada-double', payload)),
+    );
+
+    for (const answer of answers) expect(answer.statusCode).toBe(200);
+    const outcomes = answers.map((a) => publicOrderResponse.parse(a.json()).outcome).sort();
+    expect(outcomes.filter((o) => o === 'placed')).toHaveLength(1);
+    expect(outcomes.filter((o) => o === 'duplicate')).toHaveLength(4);
+
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(1);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
+
+    /* One booked order, not just one `placed` answer. */
+    const booked = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM orders WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect(Number([...booked][0]?.n)).toBe(1);
+  });
+
   it('a de-listed item, a bad phone and a dead slug each get a sentence, and book nothing', async () => {
     const { businessId, ids } = await openShop('+2348177400031', 'ada-refusals');
 

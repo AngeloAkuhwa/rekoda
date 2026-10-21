@@ -13,7 +13,7 @@ import {
   viewOnlyRefusal,
 } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
-import { forgetMessage, releaseMessage } from '@/lib/bank-release';
+import { classifyClosedMessage, forgetMessage, releaseMessage } from '@/lib/bank-release';
 
 export interface StatementState {
   error?: string;
@@ -256,6 +256,8 @@ async function classifyLineActionUnguarded(
       error: CLASSIFY_REFUSED[outcome.reason] ?? 'That was refused. Nothing was changed.',
     };
   }
+
+  if (outcome.outcome === 'period_closed') return classifyClosedMessage(outcome);
 
   revalidatePath('/app/bank');
   return {

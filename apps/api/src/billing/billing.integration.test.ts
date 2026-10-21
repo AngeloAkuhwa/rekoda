@@ -992,7 +992,10 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
     if (answer.state !== 'payment_required') throw new Error('expected a payable pack');
     expect(answer.amountK).toBe(250_000);
 
-    /* The pack is resized and repriced before the webhook lands. */
+    /* The pack is resized and repriced before the webhook lands. A version
+     * effective at the very millisecond the charge opened is, correctly, the
+     * one in force for it, so leave a real gap or this test is a coin flip. */
+    await new Promise((resolve) => setTimeout(resolve, 25));
     await planCatalogueRepo.publishUsagePack(ownerDb, {
       packId: 'messages_100',
       label: '250 extra WhatsApp messages',
@@ -1019,6 +1022,24 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
     expect(counters.find((row) => row.unit === 'AI_ACTIONS')?.bonus).toBe(100);
+  });
+
+  it('names the pack in the history instead of calling every pack an add-on (G-107)', async () => {
+    const { businessId } = await onboard('+2348177100065');
+    await putOnPlan(
+      businessId,
+      'chat',
+      new Date(Date.now() - 5 * 86_400_000),
+      new Date(Date.now() + 25 * 86_400_000),
+    );
+    const answer = await confirmedBilling().buyPack(businessId, 'messages_100');
+    if (answer.state !== 'payment_required') throw new Error('expected a payable pack');
+
+    const overview = await confirmedBilling().overview(businessId);
+
+    const charge = overview.charges.find((row) => row.reference === answer.reference);
+    expect(charge?.packLabel).toBe('100 extra WhatsApp messages');
+    expect(overview.charges.find((row) => row.kind !== 'add_on')?.packLabel ?? null).toBeNull();
   });
 
   it('a pack is offered exactly where its unit is sold: Integrate is not sold Chat overage', async () => {

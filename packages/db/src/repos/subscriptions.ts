@@ -240,7 +240,7 @@ export async function schedulePlanChange(
       WHERE b.id = ${businessId}::uuid AND c.business_id = b.id
         AND b.pending_plan IS NOT NULL
         AND c.status = 'pending' AND c.superseded_at IS NOT NULL
-        AND c.unapplied_at IS NULL AND c.plan IS NOT NULL
+        AND c.unapplied_at IS NULL AND c.abandoned_at IS NULL AND c.plan IS NOT NULL
         AND b.plan_decided_at IS NOT NULL AND b.plan_decided_before_pending IS NOT NULL
         AND c.created_at >= b.plan_decided_before_pending AND c.created_at < b.plan_decided_at
         AND c.superseded_at >= b.plan_decided_at
@@ -364,6 +364,8 @@ export interface ChargeRow extends Record<string, unknown> {
   createdAt: Date;
   /** Paid (or pending) but its plan change was refused as stale (G-104): an operator reconciles it. */
   supersededAt: Date | null;
+  /** What the provider verified it took (G-107). Above `amountK` is an overpayment; null if unrecorded. */
+  paidAmountK: number | null;
 }
 
 interface RawCharge extends Record<string, unknown> {
@@ -380,6 +382,7 @@ interface RawCharge extends Record<string, unknown> {
   period_end: string | null;
   created_at: string;
   superseded_at: string | null;
+  paid_amount_k: string | number | null;
 }
 
 const shape = (row: RawCharge): ChargeRow => ({
@@ -396,6 +399,7 @@ const shape = (row: RawCharge): ChargeRow => ({
   periodEnd: at(row.period_end),
   createdAt: new Date(row.created_at),
   supersededAt: at(row.superseded_at),
+  paidAmountK: row.paid_amount_k === null ? null : Number(row.paid_amount_k),
 });
 
 /**
@@ -418,7 +422,7 @@ export async function pendingCharge(
   tx: TenantDb,
   businessId: string,
   match:
-    | { kind: 'first_purchase'; periodStart: Date }
+    | { kind: 'first_purchase'; periodStart: Date; plan: string }
     | { kind: 'upgrade'; plan: string }
     | { kind: 'add_on'; packId: string },
 ): Promise<{ reference: string; amountK: number } | null> {
@@ -431,7 +435,8 @@ export async function pendingCharge(
       AND kind = ${match.kind}
       ${
         match.kind === 'first_purchase'
-          ? sql`AND period_start = ${match.periodStart.toISOString()}::timestamptz`
+          ? sql`AND period_start = ${match.periodStart.toISOString()}::timestamptz
+                AND plan = ${match.plan}`
           : match.kind === 'upgrade'
             ? sql`AND plan = ${match.plan}`
             : sql`AND pack_id = ${match.packId}`
@@ -486,6 +491,8 @@ export async function settleCharge(
     status: Extract<ChargeStatus, 'paid' | 'failed'>;
     providerReference?: string | null;
     failureReason?: string | null;
+    /** The amount the provider verified it took, for a paid settlement (G-107). */
+    paidAmountK?: number | null;
     when: Date;
   },
 ): Promise<ChargeRow | null> {
@@ -495,6 +502,8 @@ export async function settleCharge(
       status = ${settlement.status},
       provider_reference = COALESCE(${settlement.providerReference ?? null}, provider_reference),
       failure_reason = ${settlement.failureReason ?? null},
+      paid_amount_k = CASE WHEN ${settlement.status} = 'paid'
+                           THEN ${settlement.paidAmountK ?? null}::bigint ELSE paid_amount_k END,
       paid_at = CASE WHEN ${settlement.status} = 'paid' THEN ${stamp}::timestamptz ELSE paid_at END,
       failed_at = CASE WHEN ${settlement.status} = 'failed' THEN ${stamp}::timestamptz ELSE failed_at END,
       updated_at = now()
@@ -522,13 +531,49 @@ export async function decidedSince(
   /* Compared in SQL at full microsecond precision: a JS Date would truncate
    * the charge's created_at to the millisecond. */
   const rows = await tx.execute<{ stale: boolean }>(sql`
-    SELECT (c.superseded_at IS NOT NULL
+    SELECT ((c.superseded_at IS NOT NULL AND c.abandoned_at IS NULL)
             OR (b.plan_decided_at IS NOT NULL AND b.plan_decided_at > c.created_at)) AS stale
     FROM businesses b
     JOIN subscription_charges c ON c.business_id = b.id AND c.reference = ${reference}
     WHERE b.id = ${businessId}::uuid
   `);
   return [...rows][0]?.stale === true;
+}
+
+/**
+ * The merchant chose a different way to pay (G-105): retire the still-pending
+ * charges they abandoned, so the one they just asked for is the only payable
+ * link and takes the slot the abandoned one held.
+ *
+ * - `first_purchase` for `plan` retires pending first purchases of the same
+ *   cycle for any OTHER plan (they share `subscription_charges_cycle_ux`).
+ * - `upgrade` retires a pending upgrade to the same plan priced before today's
+ *   state (used when the upgrade now costs nothing and is applied directly).
+ *
+ * An abandoned charge is retired but NOT stale (`abandoned_at`): paid later,
+ * it still buys its plan unless a newer decision exists by then, in which case
+ * the stale-charge rules (G-104) apply as to any other. Call with the business
+ * row locked.
+ */
+export async function retireAbandonedPending(
+  tx: TenantDb,
+  businessId: string,
+  match:
+    { kind: 'first_purchase'; periodStart: Date; plan: string } | { kind: 'upgrade'; plan: string },
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE subscription_charges
+    SET superseded_at = clock_timestamp(), abandoned_at = clock_timestamp(), updated_at = now()
+    WHERE business_id = ${businessId}::uuid
+      AND status = 'pending' AND superseded_at IS NULL
+      AND kind = ${match.kind}
+      ${
+        match.kind === 'first_purchase'
+          ? sql`AND period_start = ${match.periodStart.toISOString()}::timestamptz
+                AND plan IS DISTINCT FROM ${match.plan}`
+          : sql`AND plan = ${match.plan}`
+      }
+  `);
 }
 
 /**
@@ -831,6 +876,8 @@ const NO_PAYABLE_RENEWAL = sql`NOT EXISTS (
     -- renewal opened before the latest decision: that one is retired under the
     -- lock, which frees the slot. A failed or paid renewal is never retired, so
     -- selecting its business would only fail to open a charge on every pass.
+    -- (G-105 lets a FAILED renewal's cycle slot be reused by a new charge, but
+    -- nothing re-raises one yet: the sweep still leaves it to grace.)
     AND NOT (c.status = 'pending'
              AND businesses.plan_decided_at IS NOT NULL
              AND businesses.plan_decided_at > c.created_at)

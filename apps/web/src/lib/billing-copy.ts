@@ -1,0 +1,23 @@
+/**
+ * Billing sentences that must stay true (G-107). Kept out of the page so a test
+ * can pin them: each one was once false for a state the page can be in.
+ */
+
+/** Under "This month" when no unit has an allowance to meter. */
+export function emptyMeterCopy(
+  statusState: 'active' | 'trial' | 'grace' | 'expired',
+  isOwner: boolean,
+): string {
+  /* A stopped subscription sells zero of everything: it IS refused. Saying
+   * "nothing you do will be refused" there is the false sentence this replaced.
+   * The full data export lives on Settings, which only the owner sees. */
+  if (statusState !== 'expired') return 'This plan includes nothing to meter right now.';
+  return isOwner
+    ? 'Your subscription has stopped, so new records and downloads are paused. Your books stay readable, and Settings has a full data export.'
+    : 'Your subscription has stopped, so new records and downloads are paused. Your books stay readable, and the owner can download a full data export from Settings.';
+}
+
+/** The button that undoes a scheduled cancellation or downgrade. */
+export function undoPendingLabel(pendingPlan: string, currentPlanName: string): string {
+  return pendingPlan === 'expired' ? 'Keep my subscription' : `Stay on ${currentPlanName}`;
+}

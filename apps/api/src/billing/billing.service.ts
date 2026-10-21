@@ -133,17 +133,23 @@ export class BillingService {
           endsAt: held.endsAt?.toISOString() ?? null,
         })),
         chargesTotal: charges.count,
-        charges: chargeRows.map((charge) => ({
-          reference: charge.reference,
-          kind: charge.kind as BillingOverviewResponse['charges'][number]['kind'],
-          plan: charge.plan,
-          packId: charge.packId,
-          amountK: charge.amountK,
-          status: charge.status as BillingOverviewResponse['charges'][number]['status'],
-          periodStart: charge.periodStart?.toISOString() ?? null,
-          periodEnd: charge.periodEnd?.toISOString() ?? null,
-          createdAt: charge.createdAt.toISOString(),
-        })),
+        charges: await Promise.all(
+          chargeRows.map(async (charge) => ({
+            reference: charge.reference,
+            kind: charge.kind as BillingOverviewResponse['charges'][number]['kind'],
+            plan: charge.plan,
+            packId: charge.packId,
+            /* The version in force when it was bought, as settlement credits it. */
+            packLabel: charge.packId
+              ? ((await packOffer(this.config, tx, charge.packId, charge.createdAt))?.label ?? null)
+              : null,
+            amountK: charge.amountK,
+            status: charge.status as BillingOverviewResponse['charges'][number]['status'],
+            periodStart: charge.periodStart?.toISOString() ?? null,
+            periodEnd: charge.periodEnd?.toISOString() ?? null,
+            createdAt: charge.createdAt.toISOString(),
+          })),
+        ),
       };
     });
   }
@@ -253,6 +259,43 @@ export class BillingService {
         };
       }
 
+      /* An upgrade priced at nothing (G-105): under a day of the cycle left, or
+       * a difference too small to prorate. A cycle that has ended (grace) is not
+       * a free switch: the merchant has not paid for it. Within a live cycle the
+       * switch happens now, through the same settlement every paid charge uses,
+       * so the plan, the pins and the audit trail move exactly as they would
+       * for a payment. No provider is involved, so the §47 gate does not apply. */
+      if (charge.kind === 'upgrade' && charge.amountK === 0) {
+        if (!subscription?.planExpiresAt || subscription.planExpiresAt <= now) {
+          return { state: 'unavailable' as const, reason: 'cycle_ended' as const };
+        }
+        await subscriptionsRepo.retireStalePending(tx, businessId);
+        await subscriptionsRepo.retireAbandonedPending(tx, businessId, {
+          kind: 'upgrade',
+          plan: to,
+        });
+        const reference = subscriptionReference(now, randomBytes);
+        const free = await subscriptionsRepo.openCharge(tx, {
+          businessId,
+          kind: 'upgrade',
+          plan: to,
+          amountK: 0,
+          reference,
+          periodStart: subscription.cycleStartedAt ?? now,
+          periodEnd: charge.renewsAt,
+        });
+        if (!free) return { state: 'unavailable' as const, reason: 'no_cycle' as const };
+        await applySettledCharge(tx, {
+          businessId,
+          reference,
+          /* Unique per charge: (provider, provider_reference) is globally unique. */
+          providerReference: `no_charge:${reference}`,
+          when: now,
+          config: this.config,
+        });
+        return { state: 'applied' as const, plan: to };
+      }
+
       /* §47. Refused BEFORE a charge exists, so lifting the gate leaves
        * nothing behind to reconcile. */
       if (!this.config.paystackPlatformConfirmed) {
@@ -272,6 +315,16 @@ export class BillingService {
         charge.kind === 'first_purchase'
           ? startOfLagosDay(now)
           : (subscription?.cycleStartedAt ?? now);
+      if (charge.kind === 'first_purchase') {
+        /* The merchant picked a different plan the same day: the earlier link is
+         * abandoned, so the new plan gets its own charge instead of being handed
+         * the first plan's. */
+        await subscriptionsRepo.retireAbandonedPending(tx, businessId, {
+          kind: 'first_purchase',
+          periodStart,
+          plan: to,
+        });
+      }
       const reference = subscriptionReference(now, randomBytes);
       const opened = await subscriptionsRepo.openCharge(tx, {
         businessId,
@@ -287,7 +340,7 @@ export class BillingService {
           tx,
           businessId,
           charge.kind === 'first_purchase'
-            ? { kind: 'first_purchase', periodStart }
+            ? { kind: 'first_purchase', periodStart, plan: to }
             : { kind: 'upgrade', plan: to },
         );
         if (pending) {
@@ -391,6 +444,8 @@ export async function applySettledCharge(
     businessId: string;
     reference: string;
     providerReference: string;
+    /** What the provider verified it took; recorded so an overpayment's excess is visible (G-107). */
+    paidAmountK?: number;
     when: Date;
     config: PlanTermsConfig;
   },
@@ -401,6 +456,7 @@ export async function applySettledCharge(
     reference: input.reference,
     status: 'paid',
     providerReference: input.providerReference,
+    ...(input.paidAmountK !== undefined ? { paidAmountK: input.paidAmountK } : {}),
     when: input.when,
   });
   if (!charge) return 'already_settled';
