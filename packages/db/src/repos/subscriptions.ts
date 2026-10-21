@@ -226,7 +226,14 @@ export async function schedulePlanChange(
     /* A charge opened BEFORE the schedule but retired AFTER it (the merchant
      * asked for another paid plan while the change waited) was only stale
      * because of the schedule. The undo removes that reason, so it is current
-     * again, unless a fresh charge already took its slot. */
+     * again, unless a fresh charge already took its slot.
+     *
+     * `superseded_at >= plan_decided_at` is what keeps this to charges retired
+     * AFTER the schedule's own decision: a REPLACEMENT retires the first plan's
+     * renewals in a statement that runs BEFORE it stamps the new decision, so
+     * those are not revived (a renewal priced for an abandoned downgrade must
+     * stay retired). That depends on the statement order in the replacement
+     * branch below and is pinned by "undoing after a REPLACED downgrade ...". */
     await tx.execute(sql`
       UPDATE subscription_charges c SET superseded_at = NULL, updated_at = now()
       FROM businesses b

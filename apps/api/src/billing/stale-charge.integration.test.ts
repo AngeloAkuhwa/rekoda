@@ -427,6 +427,23 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
     expect((await subscription(businessId))?.plan).toBe('complete');
   });
 
+  it('undoing after a REPLACED downgrade does not revive a renewal opened for the first one', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'complete');
+    const schedule = (plan: string | null) =>
+      withBusiness(appDb, businessId, (tx) =>
+        subscriptionsRepo.schedulePlanChange(tx, businessId, plan),
+      );
+    await schedule('chat'); // the merchant asks to downgrade to Chat
+    await open(businessId, 'renewal', 'RKD-SUB-STALE-FIRST', 'chat'); // the sweep prices Chat
+    await schedule('integrate'); // ...then changes their mind to Integrate (retires the Chat renewal)
+    await schedule(null); // ...then keeps Complete
+
+    // The Chat renewal was priced for a downgrade the merchant abandoned twice over.
+    expect(await settle(businessId, 'RKD-SUB-STALE-FIRST')).toBe('superseded');
+    expect((await subscription(businessId))?.plan).toBe('complete');
+  });
+
   it('a downgrade already pending before the migration (no decision time) is still undoable cleanly', async () => {
     const businessId = await seedBusiness();
     await operator(businessId, 'complete');
