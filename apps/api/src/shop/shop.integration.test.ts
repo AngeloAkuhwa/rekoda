@@ -715,6 +715,53 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
     expect(Number([...booked][0]?.n)).toBe(1);
   });
 
+  /* G-53: two different customers reach for the LAST unit at the same instant.
+   * The shelf lock lets exactly one through; the other must hear out_of_stock
+   * (not a 500), the shelf must never go below zero, and only the winner may
+   * keep an order unit and a document unit. */
+  it('two customers racing for the last unit: one order, one out_of_stock, no oversell (G-53)', async () => {
+    const { businessId, ids } = await openShop('+2348177400041', 'ada-lastunit');
+    await withBusiness(db, businessId, (tx) =>
+      stockRepo.recordMovement(tx, {
+        businessId,
+        productId: ids['Ankara bale']!,
+        delta: -9,
+        reason: 'adjustment',
+        sourceType: 'chat',
+        sourceId: 'down-to-one-g53',
+      }),
+    );
+
+    const customer = (name: string, phone: string) => ({
+      items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+      customerName: name,
+      customerPhone: phone,
+      clientRef: randomUUID(),
+    });
+    const answers = await Promise.all([
+      order('ada-lastunit', customer('Chidi Okafor', '0803 555 1234')),
+      order('ada-lastunit', customer('Ngozi Eze', '0805 555 6789')),
+    ]);
+
+    for (const answer of answers) expect(answer.statusCode).toBe(200);
+    const outcomes = answers.map((a) => publicOrderResponse.parse(a.json()).outcome).sort();
+    expect(outcomes).toEqual(['out_of_stock', 'placed']);
+
+    const stock = await withBusiness(db, businessId, (tx) => stockRepo.stockList(tx, businessId));
+    expect(stock.rows.find((p) => p.name === 'Ankara bale')?.onHand).toBe(0);
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(1);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
+    const booked = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM orders WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect(Number([...booked][0]?.n)).toBe(1);
+  });
+
   it('a de-listed item, a bad phone and a dead slug each get a sentence, and book nothing', async () => {
     const { businessId, ids } = await openShop('+2348177400031', 'ada-refusals');
 
