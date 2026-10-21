@@ -1,7 +1,7 @@
 /**
  * An operator plan change leaves ONE coherent subscription (G-62).
  *
- * `POST /v1/auth/plan` used to write only plan, plan_expires_at and
+ * `POST /v1/businesses/plan` used to write only plan, plan_expires_at and
  * ever_paid_at. Everything a real paid cycle keeps beside them survived the
  * move: a downgrade scheduled for the old plan, a failed renewal and its
  * grace reminders, the plan-version pin of the OLD plan and the old cycle
