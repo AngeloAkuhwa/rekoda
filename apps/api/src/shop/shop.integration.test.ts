@@ -703,6 +703,45 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
     expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
   });
 
+  it('a resubmit the bus replays answers the first order and meters once (G-96)', async () => {
+    const { businessId, ids } = await openShop('+2348177400092', 'ada-replay');
+    const payload = {
+      items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+      customerName: 'Chidi Okafor',
+      customerPhone: '0803 555 1234',
+      clientRef: randomUUID(),
+    };
+    const first = publicOrderResponse.parse((await order('ada-replay', payload)).json());
+    expect(first.outcome).toBe('placed');
+
+    /* The deterministic form of the double tap: the second request passed the
+     * "already ordered" pre-check before the first committed (modelled by hiding
+     * the order's external ref) and finds the first's completed claim, with the
+     * same payload hash, so the bus replays it instead of running the work. */
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`UPDATE orders SET external_ref = NULL
+                                WHERE business_id = ${businessId}::uuid`);
+    } finally {
+      await close();
+    }
+    const res = await order('ada-replay', payload);
+
+    expect(res.statusCode).toBe(200);
+    expect(publicOrderResponse.parse(res.json())).toEqual(first);
+    const orders = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM orders WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect(Number([...orders][0]?.n)).toBe(1);
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(1);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
+  });
+
   it('a de-listed item, a bad phone and a dead slug each get a sentence, and book nothing', async () => {
     const { businessId, ids } = await openShop('+2348177400031', 'ada-refusals');
 
