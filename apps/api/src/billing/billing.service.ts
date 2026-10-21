@@ -430,7 +430,12 @@ export async function applySettledCharge(
      * it would overwrite that decision. The money stays recorded and the charge
      * is marked for an operator to reconcile; no refund is invented here. */
     if (await subscriptionsRepo.decidedSince(tx, input.businessId, input.reference)) {
-      await subscriptionsRepo.markSuperseded(tx, input.reference, input.when);
+      await subscriptionsRepo.markUnapplied(
+        tx,
+        input.reference,
+        'subscription_decided_after_charge',
+        input.when,
+      );
       return 'superseded';
     }
     const subscription = await subscriptionsRepo.subscriptionFor(tx, input.businessId);

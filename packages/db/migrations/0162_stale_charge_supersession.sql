@@ -16,6 +16,19 @@ ALTER TABLE businesses ADD COLUMN plan_decided_at timestamptz;
 ALTER TABLE businesses ADD COLUMN plan_decided_before_pending timestamptz;
 ALTER TABLE subscription_charges ADD COLUMN superseded_at timestamptz;
 
+-- OD-30 (OWN-29): a PAID charge whose plan change was refused stays `paid`, is
+-- UNAPPLIED, and waits in the operator exception queue until somebody resolves
+-- it (no automatic refund, no automatic credit). `unapplied_at` is when the
+-- payment settled and was refused; the SLA clock runs from it.
+ALTER TABLE subscription_charges ADD COLUMN unapplied_at timestamptz;
+ALTER TABLE subscription_charges ADD COLUMN unapplied_reason text;
+ALTER TABLE subscription_charges ADD COLUMN unapplied_resolved_at timestamptz;
+ALTER TABLE subscription_charges ADD COLUMN unapplied_resolution text;
+
+CREATE INDEX subscription_charges_unapplied_open_ix
+  ON subscription_charges (unapplied_at)
+  WHERE unapplied_at IS NOT NULL AND unapplied_resolved_at IS NULL;
+
 CREATE INDEX subscription_charges_superseded_ix
   ON subscription_charges (business_id, superseded_at)
   WHERE superseded_at IS NOT NULL;

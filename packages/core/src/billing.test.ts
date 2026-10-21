@@ -8,6 +8,8 @@ import {
   packsFor,
   planChangeCharge,
   planChangeKind,
+  unappliedChargeDueAt,
+  unappliedChargeOverdue,
 } from './billing.js';
 import { isConsumable } from './allowances.js';
 
@@ -410,5 +412,28 @@ describe('catalogue prices through planChangeCharge (BL2)', () => {
     });
     const withConstants = planChangeCharge({ from: 'chat', to: 'complete', ...cycle });
     expect(withData).toEqual(withConstants);
+  });
+});
+
+describe('unappliedChargeDueAt (OD-30): end of the next business day, Lagos time', () => {
+  const due = (iso: string) => unappliedChargeDueAt(new Date(iso)).toISOString();
+  it('a Monday exception is due end of Tuesday', () => {
+    expect(due('2026-10-19T09:00:00Z')).toBe('2026-10-20T22:59:59.999Z');
+  });
+  it('a Wednesday exception is due end of Thursday', () => {
+    expect(due('2026-10-21T13:20:00Z')).toBe('2026-10-22T22:59:59.999Z');
+  });
+  it('Friday, Saturday and Sunday exceptions are due end of Monday', () => {
+    expect(due('2026-10-23T10:00:00Z')).toBe('2026-10-26T22:59:59.999Z');
+    expect(due('2026-10-24T10:00:00Z')).toBe('2026-10-26T22:59:59.999Z');
+    expect(due('2026-10-25T10:00:00Z')).toBe('2026-10-26T22:59:59.999Z');
+  });
+  it('uses the Lagos calendar day: 23:30 UTC Thursday is already Friday in Lagos', () => {
+    expect(due('2026-10-22T23:30:00Z')).toBe('2026-10-26T22:59:59.999Z');
+  });
+  it('is overdue only after the deadline', () => {
+    const made = new Date('2026-10-21T13:20:00Z');
+    expect(unappliedChargeOverdue(made, new Date('2026-10-22T22:59:59.000Z'))).toBe(false);
+    expect(unappliedChargeOverdue(made, new Date('2026-10-22T23:00:00.000Z'))).toBe(true);
   });
 });

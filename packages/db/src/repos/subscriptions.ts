@@ -540,13 +540,107 @@ export async function dueForRenewalLocked(
   return row ? due(row) : null;
 }
 
-/** Mark a paid charge whose plan change was refused as stale. Money truth is untouched. */
-export async function markSuperseded(tx: TenantDb, reference: string, when: Date): Promise<void> {
+/**
+ * A PAID charge whose plan change was refused (OD-30): it stays `paid`, is
+ * flagged superseded and UNAPPLIED, and waits in the operator queue. Money
+ * truth is untouched. Idempotent: the first refusal keeps its time and reason.
+ */
+export async function markUnapplied(
+  tx: TenantDb,
+  reference: string,
+  reason: string,
+  when: Date,
+): Promise<void> {
+  const stamp = when.toISOString();
   await tx.execute(sql`
     UPDATE subscription_charges
-    SET superseded_at = ${when.toISOString()}::timestamptz, updated_at = now()
-    WHERE reference = ${reference} AND superseded_at IS NULL
+    SET superseded_at = COALESCE(superseded_at, ${stamp}::timestamptz),
+        unapplied_at = ${stamp}::timestamptz,
+        unapplied_reason = ${reason},
+        updated_at = now()
+    WHERE reference = ${reference} AND status = 'paid' AND unapplied_at IS NULL
   `);
+}
+
+export interface UnappliedChargeRow {
+  reference: string;
+  businessId: string;
+  kind: string;
+  plan: string | null;
+  packId: string | null;
+  amountK: number;
+  paidAt: Date | null;
+  supersededAt: Date | null;
+  unappliedAt: Date;
+  reason: string | null;
+  /** The business's plan and renewal state NOW, so an operator sees what the payment collided with. */
+  currentPlan: string;
+  currentPendingPlan: string | null;
+  currentRenewsAt: Date | null;
+}
+
+/**
+ * Paid-but-unapplied Rekoda charges still waiting for an operator (OD-30),
+ * oldest first. Cross-tenant by nature, so it takes the worker credential,
+ * like the event exception queue. A fully refunded charge has left the queue
+ * by its status; any other leaves only by an explicit resolution.
+ */
+export async function unappliedCharges(db: Db, limit = 50): Promise<UnappliedChargeRow[]> {
+  const rows = await db.execute<{
+    reference: string;
+    business_id: string;
+    kind: string;
+    plan: string | null;
+    pack_id: string | null;
+    amount_k: string | number;
+    paid_at: string | null;
+    superseded_at: string | null;
+    unapplied_at: string;
+    unapplied_reason: string | null;
+    current_plan: string;
+    current_pending_plan: string | null;
+    current_renews_at: string | null;
+  }>(sql`
+    SELECT c.reference, c.business_id, c.kind, c.plan, c.pack_id, c.amount_k, c.paid_at,
+           c.superseded_at, c.unapplied_at, c.unapplied_reason,
+           b.plan AS current_plan, b.pending_plan AS current_pending_plan,
+           b.plan_expires_at AS current_renews_at
+    FROM subscription_charges c
+    JOIN businesses b ON b.id = c.business_id
+    WHERE c.unapplied_at IS NOT NULL AND c.unapplied_resolved_at IS NULL AND c.status = 'paid'
+    ORDER BY c.unapplied_at, c.reference
+    LIMIT ${limit}
+  `);
+  return [...rows].map((r) => ({
+    reference: r.reference,
+    businessId: r.business_id,
+    kind: r.kind,
+    plan: r.plan,
+    packId: r.pack_id,
+    amountK: Number(r.amount_k),
+    paidAt: at(r.paid_at),
+    supersededAt: at(r.superseded_at),
+    unappliedAt: new Date(r.unapplied_at),
+    reason: r.unapplied_reason,
+    currentPlan: r.current_plan,
+    currentPendingPlan: r.current_pending_plan,
+    currentRenewsAt: at(r.current_renews_at),
+  }));
+}
+
+/** An operator's resolution of an unapplied charge. True when this call closed it. */
+export async function resolveUnapplied(
+  tx: TenantDb,
+  reference: string,
+  resolution: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE subscription_charges
+    SET unapplied_resolved_at = now(), unapplied_resolution = ${resolution}, updated_at = now()
+    WHERE reference = ${reference} AND unapplied_at IS NOT NULL AND unapplied_resolved_at IS NULL
+    RETURNING id
+  `);
+  return [...rows].length === 1;
 }
 
 /**
@@ -844,7 +938,9 @@ export async function expireSubscription(
   if (!previous || previous === 'trial' || previous === 'expired') return null;
 
   const updated = await tx.execute<{ id: string }>(sql`
-    UPDATE businesses SET plan = 'expired', pending_plan = NULL, updated_at = now()
+    UPDATE businesses
+    SET plan = 'expired', pending_plan = NULL, plan_decided_at = clock_timestamp(),
+        updated_at = now()
     WHERE id = ${businessId}::uuid AND plan = ${previous}
       AND ${reason === 'grace' ? sql`payment_failed_at IS NOT NULL` : sql`pending_plan = 'expired'`}
     RETURNING id

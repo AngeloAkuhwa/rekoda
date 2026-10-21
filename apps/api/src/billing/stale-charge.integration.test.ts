@@ -439,3 +439,113 @@ describe('a charge that is still current settles normally', () => {
     expect(await settle(businessId, 'RKD-PACK-STALE-1')).toBe('applied');
   });
 });
+
+/* OD-30 (OWN-29): grace expiry IS a newer subscription decision, and a paid but
+ * unapplied charge is a visible, resolvable operator exception. */
+describe('grace expiry is a newer decision (OD-30)', () => {
+  const inGrace = async (businessId: string) => {
+    await operator(businessId, 'complete', new Date(Date.now() - 8 * 86_400_000));
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(sql`UPDATE businesses SET payment_failed_at = now() - interval '8 days'
+                     WHERE id = ${businessId}::uuid`),
+    );
+  };
+  const expireGrace = (businessId: string) =>
+    withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep', 'grace'),
+    );
+  const decidedAt = (businessId: string) =>
+    withBusiness(appDb, businessId, async (tx) => {
+      const rows = await tx.execute<{ at: string | null }>(
+        sql`SELECT plan_decided_at AS at FROM businesses WHERE id = ${businessId}::uuid`,
+      );
+      return [...rows][0]?.at ?? null;
+    });
+
+  it('a renewal opened before grace expiry and paid after it is paid, unapplied, and the plan stays expired', async () => {
+    const businessId = await seedBusiness();
+    await inGrace(businessId);
+    await open(businessId, 'renewal', 'RKD-SUB-GRACE-1', 'complete');
+    const before = await subscription(businessId);
+
+    expect(await expireGrace(businessId)).toBe('complete');
+    expect(await settle(businessId, 'RKD-SUB-GRACE-1')).toBe('superseded');
+
+    const charge = await chargeRow(businessId, 'RKD-SUB-GRACE-1');
+    expect(charge?.status).toBe('paid');
+    expect(charge?.superseded_at).not.toBeNull();
+    const after = await subscription(businessId);
+    expect(after?.plan).toBe('expired');
+    expect(after?.planExpiresAt?.getTime()).toBe(before?.planExpiresAt?.getTime()); // no new cycle
+    expect(after?.paymentFailedAt).not.toBeNull(); // untouched by the stale renewal
+
+    // replay: exactly one refusal, one exception
+    expect(await settle(businessId, 'RKD-SUB-GRACE-1')).toBe('already_settled');
+    const queue = await subscriptionsRepo.unappliedCharges(realWorkerDb);
+    expect(queue.filter((q) => q.reference === 'RKD-SUB-GRACE-1')).toHaveLength(1);
+  });
+
+  it('an expiry that loses to a concurrent payment stamps no decision and the payment stands', async () => {
+    const businessId = await seedBusiness();
+    await inGrace(businessId);
+    await open(businessId, 'renewal', 'RKD-SUB-GRACE-2', 'complete');
+
+    expect(await settle(businessId, 'RKD-SUB-GRACE-2')).toBe('applied'); // paid first
+    const stamped = await decidedAt(businessId);
+    expect(await expireGrace(businessId)).toBeNull(); // the sweep lost
+    expect(await decidedAt(businessId)).toBe(stamped);
+    expect((await subscription(businessId))?.plan).toBe('complete');
+  });
+});
+
+describe('a paid but unapplied charge is an operator exception (OD-30)', () => {
+  it('lists the fields an operator needs, then leaves the queue only when resolved', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'complete');
+    await open(businessId, 'renewal', 'RKD-SUB-OPS-1', 'complete');
+    await operator(businessId, 'chat');
+    expect(await settle(businessId, 'RKD-SUB-OPS-1')).toBe('superseded');
+
+    const [row] = (await subscriptionsRepo.unappliedCharges(realWorkerDb)).filter(
+      (q) => q.reference === 'RKD-SUB-OPS-1',
+    );
+    expect(row).toMatchObject({
+      businessId,
+      kind: 'renewal',
+      plan: 'complete',
+      amountK: 990_000,
+      reason: 'subscription_decided_after_charge',
+      currentPlan: 'chat',
+    });
+    expect(row?.paidAt).not.toBeNull();
+    expect(row?.supersededAt).not.toBeNull();
+
+    expect(
+      await withBusiness(appDb, businessId, (tx) =>
+        subscriptionsRepo.resolveUnapplied(tx, 'RKD-SUB-OPS-1', 'refunded at Paystack, recorded'),
+      ),
+    ).toBe(true);
+    expect(
+      (await subscriptionsRepo.unappliedCharges(realWorkerDb)).some(
+        (q) => q.reference === 'RKD-SUB-OPS-1',
+      ),
+    ).toBe(false);
+    // a second resolution changes nothing
+    expect(
+      await withBusiness(appDb, businessId, (tx) =>
+        subscriptionsRepo.resolveUnapplied(tx, 'RKD-SUB-OPS-1', 'again'),
+      ),
+    ).toBe(false);
+  });
+
+  it('a current paid charge is never an exception', async () => {
+    const businessId = await seedBusiness();
+    await open(businessId, 'first_purchase', 'RKD-SUB-OPS-2', 'chat');
+    expect(await settle(businessId, 'RKD-SUB-OPS-2')).toBe('applied');
+    expect(
+      (await subscriptionsRepo.unappliedCharges(realWorkerDb)).some(
+        (q) => q.reference === 'RKD-SUB-OPS-2',
+      ),
+    ).toBe(false);
+  });
+});
