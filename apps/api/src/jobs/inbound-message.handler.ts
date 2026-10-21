@@ -1480,6 +1480,10 @@ async function deterministicReply(
     return answer;
   }
   if (intent.kind === 'deny' || intent.kind === 'cancel') {
+    /* G-79: the no and the cancel carry the yes's role rule. They supersede
+     * every pending draft, the owner's included, so a view-only member's no
+     * would otherwise cancel a preview they may not confirm. */
+    if (!(await mayTransact(tx, businessId, ctx.from))) return replies.viewOnlyRole();
     // A refusal after a preview discards the draft rather than leaving it to
     // be confirmed by an accidental "yes" ten minutes later.
     /* G-23: a preview whose window closed is expired, not cancelled. */
