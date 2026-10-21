@@ -98,6 +98,10 @@ export async function sweepRenewals(
           /* G-104: lock first, so an operator move cannot slip between pricing
            * this renewal and opening its charge. */
           await subscriptionsRepo.lockBusiness(tx, business.businessId);
+          /* A renewal left pending across an operator change on the same cycle
+           * would otherwise collide with the replacement on the cycle index and
+           * leave the merchant without a payable renewal. */
+          await subscriptionsRepo.retireStalePending(tx, business.businessId);
           /* ...and RE-READ under it: `business` came from a read taken before
            * the lock, and a move or cancellation may have committed since. */
           const fresh = await subscriptionsRepo.dueForRenewalLocked(tx, business.businessId, now);

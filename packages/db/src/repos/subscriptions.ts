@@ -200,6 +200,9 @@ export async function schedulePlanChange(
   businessId: string,
   plan: string | null,
 ): Promise<void> {
+  /* Business row first, then charge rows: the order settlement uses (G-104).
+   * Touching a charge first lets a concurrent settlement deadlock with this. */
+  await lockBusiness(tx, businessId);
   /* Scheduling a change is a decision (G-104): a plan charge opened before it
    * must not silently undo it. Clearing one is not: an undone cancellation
    * leaves the subscription as it was, so the renewal already open still

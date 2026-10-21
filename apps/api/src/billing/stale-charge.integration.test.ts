@@ -293,6 +293,54 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
     expect(second.reference).not.toBe(first.reference);
   });
 
+  it('a renewal pending across an operator change on the same expiry is retired and re-raised by the sweep', async () => {
+    const businessId = await seedBusiness();
+    const due = new Date(Date.now() - 3_600_000);
+    await operator(businessId, 'complete', due);
+    const sweep = () => sweepRenewals({ workerDb: realWorkerDb, appDb, config }, new Date());
+    expect((await sweep()).raised).toBe(1); // the renewal, and the grace clock
+
+    await operator(businessId, 'complete', due); // clears payment_failed_at, same cycle
+    const again = await sweep();
+
+    expect(again.raised).toBe(1); // a current payable renewal, not a collision with the stale one
+    const pending = await withBusiness(appDb, businessId, async (tx) => {
+      const rows = await tx.execute<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM subscription_charges
+        WHERE business_id = ${businessId}::uuid AND status = 'pending' AND superseded_at IS NULL`);
+      return [...rows][0]?.n;
+    });
+    expect(pending).toBe(1);
+  });
+
+  it('scheduling a change locks the business before the charge rows (no deadlock with a settlement)', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'complete');
+    const schedule = (plan: string | null) =>
+      withBusiness(appDb, businessId, (tx) =>
+        subscriptionsRepo.schedulePlanChange(tx, businessId, plan),
+      );
+    await schedule('chat');
+    await open(businessId, 'renewal', 'RKD-SUB-STALE-DL', 'chat');
+
+    let scheduling: Promise<void> | undefined;
+    const settling = withBusiness(appDb, businessId, async (tx) => {
+      await subscriptionsRepo.lockBusiness(tx, businessId); // the settlement's first move
+      scheduling = schedule('integrate'); // a replacement that flags the open renewal
+      await new Promise((r) => setTimeout(r, 400)); // let it reach its first statement
+      return applySettledCharge(tx, {
+        businessId,
+        reference: 'RKD-SUB-STALE-DL',
+        providerReference: 'ps_dl',
+        when: new Date(),
+        config,
+      });
+    });
+
+    await expect(settling).resolves.toBeDefined();
+    await expect(scheduling).resolves.toBeUndefined();
+  });
+
   it('decisions and charges are stamped at statement time, not transaction start', async () => {
     const businessId = await seedBusiness();
     await operator(businessId, 'complete');
