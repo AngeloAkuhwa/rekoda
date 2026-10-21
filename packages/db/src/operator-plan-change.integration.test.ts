@@ -16,7 +16,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db, type TenantDb } from './client.js';
 import { billingRepo, identity, planCatalogueRepo, subscriptionsRepo } from './index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
+import { migrate, requireUrls, resetPlanCatalogue, truncateAll, type Urls } from './testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -32,12 +32,15 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // The catalogue tables survive truncateAll; leave them as the migrations seeded them.
+  await resetPlanCatalogue(urls);
   await closeApp?.();
   await closeOwner?.();
 });
 
 beforeEach(async () => {
   await truncateAll(urls);
+  await resetPlanCatalogue(urls);
 });
 
 let phoneSeq = 0;
