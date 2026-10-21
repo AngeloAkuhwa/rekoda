@@ -218,7 +218,9 @@ export default async function BillingPage({
       <div className="rk-card">
         <h2>This month</h2>
         {meters.length === 0 ? (
-          <p className="rk-fineprint">{emptyMeterCopy(overview.status.state)}</p>
+          <p className="rk-fineprint">
+            {emptyMeterCopy(overview.status.state, isOwner(identity.role))}
+          </p>
         ) : (
           meters.map((meter) => {
             const ceiling = meter.allowance + meter.bonus;

@@ -4,12 +4,17 @@
  */
 
 /** Under "This month" when no unit has an allowance to meter. */
-export function emptyMeterCopy(statusState: 'active' | 'trial' | 'grace' | 'expired'): string {
+export function emptyMeterCopy(
+  statusState: 'active' | 'trial' | 'grace' | 'expired',
+  isOwner: boolean,
+): string {
   /* A stopped subscription sells zero of everything: it IS refused. Saying
-   * "nothing you do will be refused" there is the false sentence this replaced. */
-  return statusState === 'expired'
+   * "nothing you do will be refused" there is the false sentence this replaced.
+   * The full data export lives on Settings, which only the owner sees. */
+  if (statusState !== 'expired') return 'This plan includes nothing to meter right now.';
+  return isOwner
     ? 'Your subscription has stopped, so new records and downloads are paused. Your books stay readable, and Settings has a full data export.'
-    : 'This plan includes nothing to meter right now.';
+    : 'Your subscription has stopped, so new records and downloads are paused. Your books stay readable, and the owner can download a full data export from Settings.';
 }
 
 /** The button that undoes a scheduled cancellation or downgrade. */
