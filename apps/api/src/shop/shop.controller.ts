@@ -384,6 +384,8 @@ export class PublicShopController {
     /* Set inside the order transaction, acted on only after it commits, so a
      * commit that fails afterwards refunds once, in the catch (G-60). */
     let lapsed = false;
+    /* The same form submitted twice at once (G-96): this request booked nothing. */
+    let duplicate = false;
     try {
       const answer = await withBusiness(this.db, businessId, async (tx) => {
         const wanted = parsed.data.items;
@@ -446,6 +448,16 @@ export class PublicShopController {
             lapsed = true;
             return { outcome: 'closed' as const };
           }
+          if (run.outcome === 'key_reused' || (run.outcome === 'done' && run.replayed)) {
+            /* One form, one order. A concurrent twin passed the pre-check above
+             * and took its own two units; the bus answered with the first
+             * request's order (or a payload that moved under it). A claim row
+             * exists only once that order has committed. Nothing was booked
+             * HERE, so its units go back once this commits, and the customer
+             * is told what a sequential resubmit is. */
+            duplicate = true;
+            return { outcome: 'duplicate' as const };
+          }
           if (run.outcome !== 'done') {
             throw new Error(`PlaceOrder refused unexpectedly: ${run.outcome}`);
           }
@@ -469,6 +481,10 @@ export class PublicShopController {
           displayName: shop.displayName,
         };
       });
+      if (duplicate) {
+        await refundBoth();
+        return answer;
+      }
       if (!lapsed) return answer;
     } catch (error) {
       if (error instanceof CartChanged) {
