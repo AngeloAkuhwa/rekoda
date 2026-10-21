@@ -173,6 +173,49 @@ beforeEach(async () => {
   intentsProvider.reset();
 });
 
+/** A receipt photograph from `waId`, as Meta delivers it. */
+function photoPayload(
+  waId: string,
+  wamid: string,
+  opts: { mediaId?: string | null; caption?: string } = {},
+) {
+  const mediaId = opts.mediaId === undefined ? 'photo-1' : opts.mediaId;
+  return {
+    object: 'whatsapp_business_account',
+    entry: [
+      {
+        id: 'WABA',
+        changes: [
+          {
+            field: 'messages',
+            value: {
+              messaging_product: 'whatsapp',
+              metadata: { phone_number_id: 'PNID' },
+              messages: [
+                {
+                  id: wamid,
+                  from: waId,
+                  timestamp: '1700000000',
+                  type: 'image',
+                  ...(mediaId
+                    ? {
+                        image: {
+                          id: mediaId,
+                          mime_type: 'image/jpeg',
+                          ...(opts.caption ? { caption: opts.caption } : {}),
+                        },
+                      }
+                    : {}),
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function messagePayload(
   waId: string,
   wamid: string,
@@ -5745,48 +5788,6 @@ describe('a receipt photo', () => {
     paymentMethod: 'cash',
   };
 
-  function photoPayload(
-    waId: string,
-    wamid: string,
-    opts: { mediaId?: string | null; caption?: string } = {},
-  ) {
-    const mediaId = opts.mediaId === undefined ? 'photo-1' : opts.mediaId;
-    return {
-      object: 'whatsapp_business_account',
-      entry: [
-        {
-          id: 'WABA',
-          changes: [
-            {
-              field: 'messages',
-              value: {
-                messaging_product: 'whatsapp',
-                metadata: { phone_number_id: 'PNID' },
-                messages: [
-                  {
-                    id: wamid,
-                    from: waId,
-                    timestamp: '1700000000',
-                    type: 'image',
-                    ...(mediaId
-                      ? {
-                          image: {
-                            id: mediaId,
-                            mime_type: 'image/jpeg',
-                            ...(opts.caption ? { caption: opts.caption } : {}),
-                          },
-                        }
-                      : {}),
-                  },
-                ],
-              },
-            },
-          ],
-        },
-      ],
-    };
-  }
-
   async function seedMerchant(phone: string) {
     const user = await identity.upsertUserByPhone(db, phone);
     return identity.createBusinessWithOwner(db, {
@@ -5992,6 +5993,102 @@ describe('a receipt photo', () => {
       usageRepo.usageFor(tx, business.id, period),
     );
     expect(rows.find((r) => r.unit === 'DOCUMENTS_UNDERSTOOD')?.used).toBe(1);
+  });
+
+  /* G-78: what a photograph SAYS is document text, not something the
+   * merchant typed. A sign, a screenshot or a receipt that happens to read
+   * "STOP" or "YES" must neither opt the merchant out nor confirm the waiting
+   * preview: only a message the merchant typed (or spoke) is a command. */
+  it('a photograph that reads STOP does not opt the merchant out (G-78)', async () => {
+    await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'STOP', confidence: 0.99 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    await post(photoPayload('2348031234567', 'wamid.G78.STOP'));
+    await drain();
+
+    expect(await identity.optedOutAt(db, '+2348031234567')).toBeNull();
+    expect(stubSender.lastText).not.toBe(replies.optedOut().text);
+  });
+
+  it('a photograph that reads YES does not confirm the waiting preview (G-78)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+    await post(messagePayload('2348031234567', 'wamid.G78.SAY', 'paid 12000 cash for diesel'));
+    await drain();
+
+    const books = async () => {
+      const [row] = [
+        ...(await withBusiness(db, business.id, (tx) =>
+          tx.execute<{ expenses: number; postings: number }>(sql`
+            SELECT
+              (SELECT count(*)::int FROM expenses WHERE business_id = ${business.id}::uuid) AS expenses,
+              (SELECT count(*)::int FROM ledger_transactions WHERE business_id = ${business.id}::uuid) AS postings
+          `),
+        )),
+      ];
+      return row!;
+    };
+    expect(await books()).toEqual({ expenses: 0, postings: 0 });
+
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'YES', confidence: 0.99 });
+    await post(photoPayload('2348031234567', 'wamid.G78.YES'));
+    await drain();
+
+    /* Nothing was posted: a preview is confirmed by a typed yes only. */
+    expect(await books()).toEqual({ expenses: 0, postings: 0 });
+  });
+
+  /* G-78 (review): words on a photograph are not a correction either. A
+   * receipt that says "not returnable" must not silently drop the preview the
+   * merchant is about to confirm. */
+  it('a photograph whose text reads like a correction leaves the waiting preview alone (G-78)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+    await post(messagePayload('2348031234567', 'wamid.G78.C1', 'paid 12000 cash for diesel'));
+    await drain();
+
+    const states = async () =>
+      [
+        ...(await withBusiness(db, business.id, (tx) =>
+          tx.execute<{ state: string }>(sql`
+            SELECT state FROM command_drafts WHERE business_id = ${business.id}::uuid
+             ORDER BY insertion_seq`),
+        )),
+      ].map((r) => r.state);
+    expect(await states()).toEqual(['pending']);
+
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'Goods sold are not returnable. TOTAL 12,000', confidence: 0.9 });
+    await post(photoPayload('2348031234567', 'wamid.G78.C2'));
+    await drain();
+
+    expect((await states())[0]).toBe('pending');
+  });
+
+  it('a photograph that reads no leaves the waiting preview for a typed yes (G-78)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+    await post(messagePayload('2348031234567', 'wamid.G78.N1', 'paid 12000 cash for diesel'));
+    await drain();
+
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'no', confidence: 0.99 });
+    await post(photoPayload('2348031234567', 'wamid.G78.N2'));
+    await drain();
+
+    await post(messagePayload('2348031234567', 'wamid.G78.N3', 'yes'));
+    await drain();
+    const [row] = [
+      ...(await withBusiness(db, business.id, (tx) =>
+        tx.execute<{ n: number }>(
+          sql`SELECT count(*)::int AS n FROM expenses WHERE business_id = ${business.id}::uuid`,
+        ),
+      )),
+    ];
+    expect(row!.n).toBe(1);
   });
 
   it('puts the caption in front of the page, because it says what the page is for', async () => {
@@ -11919,6 +12016,27 @@ describe('Nigerian and Pidgin answers continue what was asked (G-68 Phase 2)', (
       });
       expect(open!.draft_id).not.toBeNull();
     }
+
+    /* G-78: "cash" or "bank" read off a photograph is not the merchant's
+     * answer. The photograph never rebuilds the purchase and, as a new thing
+     * they sent, retires the open question. */
+    it('a photograph reading "bank" does not answer the open question (G-78)', async () => {
+      const business = await seedMerchant();
+      await askFunding(business.id);
+
+      stubSender.media.set('photo-1', {
+        bytes: Buffer.from('JFIF-fake-photo'),
+        mimeType: 'image/jpeg',
+      });
+      stubOcr.answerWith({ text: 'bank', confidence: 0.99 });
+      stubTransport.replyWith({ intent: 'Unclear' });
+      await post(photoPayload(OWNER, 'wamid.G78.F2'));
+      await drain();
+
+      expect(stubSender.lastText).not.toContain('Paid in full by transfer');
+      expect(await written(business.id)).toEqual({ purchases: 0, postings: 0, arrivals: 0 });
+      expect((await continuations(business.id)).map((c) => c.state)).not.toContain('open');
+    });
 
     it.each([
       ['bank', 'transfer', 'BANK'],

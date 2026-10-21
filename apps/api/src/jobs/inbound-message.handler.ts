@@ -358,7 +358,11 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     }
 
     const text = spoken?.transcript.text ?? read?.text ?? inbound.text ?? '';
-    const route = routeMessage(text);
+    /* G-78: words read off a photograph are document text, never a command.
+     * A sign or a screenshot reading STOP or YES must not opt the merchant out
+     * or confirm the waiting preview, so a photograph skips the deterministic
+     * router and goes to the model path as an ordinary message. */
+    const route: Route = read ? { route: 'model', reason: 'unrecognised' } : routeMessage(text);
     const tokenised =
       route.route === 'deterministic' ? null : await deps.gateway.tokenise(businessId, text);
 
@@ -493,16 +497,23 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     /* Whether this message retired a question Rekoda had asked this member
      * (G-68): a "no" that drops nothing else must not say nothing waited. */
     const outcome: RebuildOutcome = { retiredQuestion: false };
-    const continued = actorId
-      ? await continueConversation(tx, businessId, actorId, {
-          text,
-          route,
-          messageId: message.id,
-          receivedAt: event.receivedAt,
-          from: inbound.from,
-          outcome,
-        })
-      : null;
+    /* G-78: a photograph does not answer a question Rekoda asked ("cash or
+     * bank?"), so it never reaches the continuation step; whatever was open for
+     * its sender is retired, as for any other new thing they send. */
+    if (actorId && read) {
+      await retireSenderContinuation(tx, businessId, inbound.from, event.receivedAt);
+    }
+    const continued =
+      actorId && !read
+        ? await continueConversation(tx, businessId, actorId, {
+            text,
+            route,
+            messageId: message.id,
+            receivedAt: event.receivedAt,
+            from: inbound.from,
+            outcome,
+          })
+        : null;
 
     const answer = continued
       ? continued
@@ -4940,7 +4951,8 @@ async function interpretedReply(
   const existing = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
     asOf: receivedAt,
   });
-  const correcting = looksLikeCorrection(rawText, existing !== null);
+  /* G-78: words on a photograph are never a correction. */
+  const correcting = !fromDocument && looksLikeCorrection(rawText, existing !== null);
   if (correcting) {
     await conversationsRepo.supersedePendingDrafts(tx, businessId, { asOf: receivedAt });
   }
