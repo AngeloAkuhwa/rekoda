@@ -46,6 +46,7 @@ export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
         plan: businesses.plan,
         expiresAt: businesses.planExpiresAt,
         cycleStartedAt: businesses.cycleStartedAt,
+        anchorDay: businesses.renewalAnchorDay,
         pendingPlan: businesses.pendingPlan,
         paymentFailedAt: businesses.paymentFailedAt,
       })
@@ -79,7 +80,12 @@ export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
       cycleStartedAt:
         paid && change.expiresAt ? (sameCycle ? previous.cycleStartedAt : new Date()) : null,
       planExpiresAt: change.expiresAt,
-      anchorDay: paid && change.expiresAt ? lagosDayOfMonth(change.expiresAt) : null,
+      anchorDay:
+        paid && change.expiresAt
+          ? sameCycle && previous.anchorDay !== null
+            ? previous.anchorDay // a short-month renewal's day is clamped; the anchor is the original day
+            : lagosDayOfMonth(change.expiresAt)
+          : null,
       pendingPlan: null,
     });
 

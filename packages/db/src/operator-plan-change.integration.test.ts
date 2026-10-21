@@ -214,6 +214,26 @@ describe('an operator move to a paid plan (G-62)', () => {
     expect(moved).toBeGreaterThanOrEqual(before - 1_000);
   });
 
+  it('re-posting a clamped short-month renewal keeps the cycle anchor day', async () => {
+    const businessId = await seedBusiness();
+    // Anchored to the 31st, so the January cycle renews on 28 February.
+    const renews = new Date('2027-02-28T00:00:00Z');
+    await inTenant(businessId, (tx) =>
+      subscriptionsRepo.applyCycle(tx, businessId, {
+        plan: 'complete',
+        cycleStartedAt: new Date('2027-01-31T00:00:00Z'),
+        renewsAt: renews,
+        anchorDay: 31,
+      }),
+    );
+
+    await operator(businessId, 'complete', renews);
+
+    const after = await row(businessId);
+    expect(after.renewal_anchor_day).toBe(31);
+    expect(new Date(after.cycle_started_at!).toISOString()).toBe('2027-01-31T00:00:00.000Z');
+  });
+
   it('a paid move starts a fresh cycle when none existed (never-paid trial)', async () => {
     const businessId = await seedBusiness();
     const before = Date.now();
