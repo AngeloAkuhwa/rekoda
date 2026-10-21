@@ -10,7 +10,8 @@
 > older document is corrected rather than left to be discovered.
 
 Two sections. The first is decisions that have been MADE and are enforced
-somewhere in the code, each row naming where. The second is the register of
+somewhere in the code (or, where a row says so, by a named open PR that has
+not merged yet), each row naming where. The second is the register of
 things that are OPEN, held by somebody outside this repository, with the
 question that has to be answered rather than the milestone it blocks.
 

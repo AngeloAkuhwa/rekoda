@@ -279,11 +279,45 @@ export const opsEventView = z.object({
   ageSeconds: z.number().int().nonnegative(),
 });
 
+/**
+ * A Rekoda subscription charge that was PAID but not applied (OD-30): the plan
+ * change was refused because a newer subscription decision existed. The money
+ * is real and the charge stays `paid`; an operator resolves it by the deadline.
+ */
+export const opsUnappliedChargeView = z.object({
+  reference: z.string(),
+  businessId: z.string(),
+  kind: z.string(),
+  /** The plan the payment was meant to buy; null for a pack. */
+  plan: z.string().nullable(),
+  packId: z.string().nullable(),
+  amountK: z.number().int().nonnegative(),
+  paidAt: z.string().nullable(),
+  supersededAt: z.string().nullable(),
+  /** Why it was refused, as a code (e.g. `subscription_decided_after_charge`). */
+  reason: z.string().nullable(),
+  /** The business's plan and renewal date now. */
+  currentPlan: z.string(),
+  currentPendingPlan: z.string().nullable(),
+  currentRenewsAt: z.string().nullable(),
+  /** The payable plan charge the merchant has open now: they may be paying twice. */
+  openChargeReference: z.string().nullable(),
+  /** When the exception was created (the payment settled and was refused). */
+  createdAt: z.string(),
+  ageSeconds: z.number().int().nonnegative(),
+  /** End of the next business day after `createdAt`, Lagos time. */
+  resolveBy: z.string(),
+  /** Past `resolveBy`: escalate. Never auto-resolved. */
+  overdue: z.boolean(),
+});
+
 export const opsExceptionsResponse = z.object({
   /** Stored, never processed, never attributed. Oldest first. */
   stuck: z.array(opsEventView),
   /** Flagged with a reason and not yet worked. Oldest first. */
   flagged: z.array(opsEventView),
+  /** Paid but unapplied subscription charges awaiting an operator (OD-30). Oldest first. */
+  unappliedCharges: z.array(opsUnappliedChargeView),
 });
 
 /**
@@ -299,5 +333,6 @@ export const opsResolveEventRequest = z.object({
 });
 
 export type OpsEventView = z.infer<typeof opsEventView>;
+export type OpsUnappliedChargeView = z.infer<typeof opsUnappliedChargeView>;
 export type OpsExceptionsResponse = z.infer<typeof opsExceptionsResponse>;
 export type OpsResolveEventRequest = z.infer<typeof opsResolveEventRequest>;

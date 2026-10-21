@@ -41,6 +41,22 @@ export const subscriptionCharges = pgTable(
     paidAt: timestamp('paid_at', { withTimezone: true }),
     failedAt: timestamp('failed_at', { withTimezone: true }),
     refundedAt: timestamp('refunded_at', { withTimezone: true }),
+    /**
+     * Paid, but its plan change was refused because a newer subscription
+     * decision existed when it settled (G-104). The money is real and the
+     * status stays `paid`; an operator reconciles it.
+     */
+    supersededAt: timestamp('superseded_at', { withTimezone: true }),
+    /**
+     * OD-30: when a PAID charge's plan change was refused, why, and how an
+     * operator resolved it. Open while `unappliedAt` is set and
+     * `unappliedResolvedAt` is null.
+     */
+    unappliedAt: timestamp('unapplied_at', { withTimezone: true }),
+    unappliedReason: text('unapplied_reason'),
+    unappliedResolvedAt: timestamp('unapplied_resolved_at', { withTimezone: true }),
+    unappliedResolution: text('unapplied_resolution'),
+    unappliedResolvedBy: text('unapplied_resolved_by'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

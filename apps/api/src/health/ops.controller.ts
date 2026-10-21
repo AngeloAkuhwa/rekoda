@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Body,
   Controller,
   Get,
@@ -34,6 +35,8 @@ import {
   margin,
   payingCount,
   STARTER_CAP_K,
+  unappliedChargeDueAt,
+  unappliedChargeOverdue,
   usagePeriod,
   type Margin,
 } from '@rekoda/core';
@@ -410,6 +413,7 @@ export class OpsController {
       amountK: number;
       status: string;
       createdAt: string;
+      supersededAt: string | null;
     }>;
     upgradeRequests: Array<{ fromPlan: string; at: string }>;
   }> {
@@ -435,6 +439,7 @@ export class OpsController {
           amountK: charge.amountK,
           status: charge.status,
           createdAt: charge.createdAt.toISOString(),
+          supersededAt: charge.supersededAt?.toISOString() ?? null,
         })),
         upgradeRequests: upgradeRequests.map((request) => ({
           fromPlan: request.fromPlan,
@@ -519,10 +524,67 @@ export class OpsController {
 
     const limit = Math.min(Math.max(Number(limitParam) || 50, 1), 200);
     const queue = await events.exceptionQueue(this.workerDb, limit);
+    const unapplied = await subscriptionsRepo.unappliedCharges(this.workerDb, limit);
+    const now = new Date();
     return opsExceptionsResponse.parse({
       stuck: queue.stuck.map(toEventView),
       flagged: queue.flagged.map(toEventView),
+      unappliedCharges: unapplied.map((c) => ({
+        reference: c.reference,
+        businessId: c.businessId,
+        kind: c.kind,
+        plan: c.plan,
+        packId: c.packId,
+        amountK: c.amountK,
+        paidAt: c.paidAt?.toISOString() ?? null,
+        supersededAt: c.supersededAt?.toISOString() ?? null,
+        reason: c.reason,
+        currentPlan: c.currentPlan,
+        currentPendingPlan: c.currentPendingPlan,
+        currentRenewsAt: c.currentRenewsAt?.toISOString() ?? null,
+        openChargeReference: c.openChargeReference,
+        createdAt: c.unappliedAt.toISOString(),
+        ageSeconds: Math.max(0, Math.floor((now.getTime() - c.unappliedAt.getTime()) / 1000)),
+        resolveBy: unappliedChargeDueAt(c.unappliedAt).toISOString(),
+        overdue: unappliedChargeOverdue(c.unappliedAt, now),
+      })),
     });
+  }
+
+  /**
+   * Resolve a paid but unapplied subscription charge (OD-30). The operator
+   * records what they did (a provider refund recorded through `refund`, a
+   * manual reactivation, a decision to keep it); nothing here moves money or
+   * applies the plan. Conditional on the charge still being open, so two
+   * operators produce one resolution.
+   */
+  @Post('exceptions/charges/:reference/resolve')
+  @OperatorScopes('ops:payment')
+  @HttpCode(200)
+  async resolveUnappliedCharge(
+    @Req() request: OperatorRequest,
+    @Param('reference') reference: string,
+    @Body() body: unknown,
+  ): Promise<{ resolved: true }> {
+    if (!this.workerDb) {
+      throw new ServiceUnavailableException('this process holds no worker credential');
+    }
+    const input = opsResolveEventRequest.safeParse(body);
+    if (!input.success) {
+      throw new BadRequestException('a resolution of at least 4 characters is required');
+    }
+    const businessId = await subscriptionsRepo.businessForCharge(this.workerDb, reference);
+    if (!businessId) throw new NotFoundException('no such charge');
+    const resolved = await withBusiness(this.db, businessId, (tx) =>
+      subscriptionsRepo.resolveUnapplied(
+        tx,
+        reference,
+        input.data.resolution,
+        `operator:${request.operator!.subject}`,
+      ),
+    );
+    if (!resolved) throw new ConflictException('that charge is not open');
+    return { resolved: true as const };
   }
 
   /**

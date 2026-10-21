@@ -627,7 +627,7 @@ describe('the exception queue', () => {
   it('is two empty lists on a quiet platform', async () => {
     const res = await exceptions('', operator);
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ stuck: [], flagged: [] });
+    expect(res.json()).toEqual({ stuck: [], flagged: [], unappliedCharges: [] });
   });
 
   it('shows what is waiting and what was flagged, and NEVER the payload', async () => {
@@ -661,10 +661,131 @@ describe('the exception queue', () => {
     expect(done.statusCode).toBe(200);
     expect(done.json()).toEqual({ resolved: true });
 
-    expect((await exceptions('', operator)).json()).toEqual({ stuck: [], flagged: [] });
+    expect((await exceptions('', operator)).json()).toEqual({
+      stuck: [],
+      flagged: [],
+      unappliedCharges: [],
+    });
 
     const healthNow = (await health(operator)).json() as { paystack: { flagged: number } };
     expect(healthNow.paystack.flagged).toBe(0);
+  });
+
+  it('shows a paid but unapplied subscription charge with what an operator needs, and works it (OD-30)', async () => {
+    const user = await identity.upsertUserByPhone(db, '+2348140009001');
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Stale Pay Ltd',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    const reference = 'RKD-SUB-20260821-ZZZZZZ';
+    await withBusiness(db, business.id, async (tx) => {
+      await subscriptionsRepo.openCharge(tx, {
+        businessId: business.id,
+        kind: 'first_purchase',
+        plan: 'chat',
+        amountK: 990_000,
+        reference,
+        periodStart: new Date(),
+        periodEnd: new Date(Date.now() + 30 * 86_400_000),
+      });
+      await subscriptionsRepo.settleCharge(tx, { reference, status: 'paid', when: new Date() });
+      await subscriptionsRepo.markUnapplied(
+        tx,
+        reference,
+        'subscription_decided_after_charge',
+        // Ten days ago is past the end of the next business day whatever weekday
+        // the suite runs on (three days ago was not, on a Monday).
+        new Date(Date.now() - 10 * 86_400_000),
+      );
+    });
+
+    const body = (await exceptions('', operator)).json() as {
+      unappliedCharges: Array<Record<string, unknown>>;
+    };
+    expect(body.unappliedCharges).toHaveLength(1);
+    // No open payable charge for this business: the field is present and null.
+    expect(body.unappliedCharges[0]?.openChargeReference).toBeNull();
+    expect(body.unappliedCharges[0]).toMatchObject({
+      reference,
+      businessId: business.id,
+      kind: 'first_purchase',
+      plan: 'chat',
+      amountK: 990_000,
+      reason: 'subscription_decided_after_charge',
+      currentPlan: 'trial',
+      overdue: true, // created ten days ago: past the end of the next business day
+    });
+    for (const field of [
+      'paidAt',
+      'supersededAt',
+      'createdAt',
+      'resolveBy',
+      'ageSeconds',
+      'openChargeReference',
+    ]) {
+      expect(body.unappliedCharges[0]).toHaveProperty(field);
+    }
+
+    const done = await app.inject({
+      method: 'POST',
+      url: `/v1/ops/exceptions/charges/${reference}/resolve`,
+      payload: { resolution: 'refunded at Paystack and recorded' },
+      headers: { 'content-type': 'application/json', ...operator },
+    });
+    expect(done.statusCode).toBe(200);
+    // Who authorised the resolution is recorded, as it is for an event exception.
+    const who = await withBusiness(db, business.id, async (tx) => {
+      const rows = await tx.execute<{ by: string | null }>(sql`
+        SELECT unapplied_resolved_by AS by FROM subscription_charges WHERE reference = ${reference}`);
+      return [...rows][0]?.by;
+    });
+    expect(who).toMatch(/^operator:.+/);
+    const again = await app.inject({
+      method: 'POST',
+      url: `/v1/ops/exceptions/charges/${reference}/resolve`,
+      payload: { resolution: 'late second operator' },
+      headers: { 'content-type': 'application/json', ...operator },
+    });
+    expect(again.statusCode).toBe(409);
+    expect(
+      ((await exceptions('', operator)).json() as { unappliedCharges: unknown[] }).unappliedCharges,
+    ).toEqual([]);
+  });
+
+  it('an exception created just now is inside its deadline, not overdue (OD-30)', async () => {
+    const user = await identity.upsertUserByPhone(db, '+2348140009002');
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Fresh Pay Ltd',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    const reference = 'RKD-SUB-20260821-YYYYYY';
+    await withBusiness(db, business.id, async (tx) => {
+      await subscriptionsRepo.openCharge(tx, {
+        businessId: business.id,
+        kind: 'first_purchase',
+        plan: 'chat',
+        amountK: 990_000,
+        reference,
+        periodStart: new Date(),
+        periodEnd: new Date(Date.now() + 30 * 86_400_000),
+      });
+      await subscriptionsRepo.settleCharge(tx, { reference, status: 'paid', when: new Date() });
+      await subscriptionsRepo.markUnapplied(
+        tx,
+        reference,
+        'subscription_decided_after_charge',
+        new Date(),
+      );
+    });
+
+    const body = (await exceptions('', operator)).json() as {
+      unappliedCharges: Array<{ overdue: boolean; resolveBy: string; createdAt: string }>;
+    };
+    expect(body.unappliedCharges).toHaveLength(1);
+    expect(body.unappliedCharges[0]?.overdue).toBe(false);
+    expect(new Date(body.unappliedCharges[0]!.resolveBy).getTime()).toBeGreaterThan(Date.now());
   });
 
   it('refuses a resolution with nothing said, and one already worked', async () => {

@@ -72,6 +72,14 @@ export const businesses = pgTable(
      * plan is never an abandoned trial.
      */
     everPaidAt: timestamp('ever_paid_at', { withTimezone: true }),
+    /**
+     * When the subscription was last DECIDED (migration 0162, G-104): an
+     * operator move, a settled plan charge, a scheduled plan change. A plan
+     * charge opened before this moment is stale and its plan change is refused.
+     */
+    planDecidedAt: timestamp('plan_decided_at', { withTimezone: true }),
+    /** `planDecidedAt` before a scheduled change, restored when that change is undone. */
+    planDecidedBeforePending: timestamp('plan_decided_before_pending', { withTimezone: true }),
     /** Start of the current paid cycle. The denominator when prorating. */
     cycleStartedAt: timestamp('cycle_started_at', { withTimezone: true }),
     /** The day of the month renewals anchor to, so short months do not drift. */

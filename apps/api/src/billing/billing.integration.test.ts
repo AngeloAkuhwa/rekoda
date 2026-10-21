@@ -1077,7 +1077,7 @@ describe('the lock order of a settling payment (G-103)', () => {
 
     // Whatever happens below, the holder must let go, or a failed wait would
     // leave the business row locked and hang the next test's teardown.
-    let payment!: Promise<'applied' | 'already_settled' | 'business_gone'>;
+    let payment!: Promise<Awaited<ReturnType<typeof applySettledCharge>>>;
     let probe: Error | null = null;
     try {
       payment = withBusiness(db, businessId, (tx) =>

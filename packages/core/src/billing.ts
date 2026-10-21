@@ -354,3 +354,27 @@ export function addOnReference(at: Date, random: RandomBytes): string {
  * must never touch it.
  */
 export const SUBSCRIPTION_REFERENCE_PATTERN = /^RKD-(SUB|PACK)-\d{8}-[0-9A-HJKMNP-TV-Z]{6}$/;
+
+/* ── a paid but unapplied subscription charge (OD-30 / OWN-29) ─────────────── */
+
+/**
+ * When an operator must have resolved an unapplied paid charge: the END of the
+ * NEXT BUSINESS DAY after the exception was created, in Lagos time (UTC+1, no
+ * daylight saving). Business days are Monday to Friday; no holiday calendar.
+ * Created on a Friday, Saturday or Sunday, the next business day is Monday.
+ */
+export function unappliedChargeDueAt(createdAt: Date): Date {
+  const LAGOS_MS = 3_600_000;
+  const DAY_MS = 86_400_000;
+  const local = new Date(createdAt.getTime() + LAGOS_MS);
+  let dayStart = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate());
+  do {
+    dayStart += DAY_MS;
+  } while ([0, 6].includes(new Date(dayStart).getUTCDay()));
+  // 23:59:59.999 Lagos on that day, as an instant.
+  return new Date(dayStart + DAY_MS - 1 - LAGOS_MS);
+}
+
+/** Past its resolution deadline: escalated in the operator surface, never auto-resolved. */
+export const unappliedChargeOverdue = (createdAt: Date, now: Date): boolean =>
+  now.getTime() > unappliedChargeDueAt(createdAt).getTime();

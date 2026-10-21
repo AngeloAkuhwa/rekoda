@@ -224,6 +224,10 @@ export class BillingService {
     now = new Date(),
   ): Promise<BillingPlanChangeResponse> {
     return withBusiness(this.db, businessId, async (tx) => {
+      /* G-104: lock the business row BEFORE reading the plan this charge is
+       * priced against, so a concurrent operator move either finished (and is
+       * read) or waits until this charge exists (and is then newer). */
+      await subscriptionsRepo.lockBusiness(tx, businessId);
       const from = await usageRepo.planFor(tx, businessId, now);
       const subscription = await subscriptionsRepo.subscriptionFor(tx, businessId);
       const renewsAt = subscription?.planExpiresAt ?? addMonth(now);
@@ -254,6 +258,11 @@ export class BillingService {
       if (!this.config.paystackPlatformConfirmed) {
         return { state: 'unavailable' as const, reason: 'awaiting_platform_confirmation' as const };
       }
+
+      /* Only now, on the path that opens a charge: a scheduled change or an undo
+       * (above) can revive a pending charge, so retiring earlier would flag a
+       * charge that an undo is about to make current again. */
+      await subscriptionsRepo.retireStalePending(tx, businessId);
 
       /* Day-truncated so the cycle unique index has something to hold: two
        * tabs confirming a first purchase used to mint two charges because
@@ -365,6 +374,8 @@ export class BillingService {
  * the plan moving, are both worse than the payment failing outright.
  *
  * `settleCharge` returning null is a replayed webhook, and nothing happens.
+ * `superseded` means the payment was recorded but its plan change was refused
+ * because the subscription had been decided again since the charge opened.
  *
  * The business row is locked FIRST, before any charge is written (see
  * `subscriptionsRepo.lockBusiness`): retention locks business then charges,
@@ -383,7 +394,7 @@ export async function applySettledCharge(
     when: Date;
     config: PlanTermsConfig;
   },
-): Promise<'applied' | 'already_settled' | 'business_gone'> {
+): Promise<'applied' | 'already_settled' | 'business_gone' | 'superseded'> {
   if (!(await subscriptionsRepo.lockBusiness(tx, input.businessId))) return 'business_gone';
 
   const charge = await subscriptionsRepo.settleCharge(tx, {
@@ -412,7 +423,36 @@ export async function applySettledCharge(
   }
 
   if (charge.plan) {
+    /* PAYMENT TRUTH is already written: the charge is `paid`. Whether it still
+     * BUYS anything is a separate question (G-104). A plan charge opened before
+     * a newer subscription decision (an operator move, another settled charge,
+     * a scheduled change) was priced against a state that is gone, and applying
+     * it would overwrite that decision. The money stays recorded and the charge
+     * is marked for an operator to reconcile; no refund is invented here. */
+    if (await subscriptionsRepo.decidedSince(tx, input.businessId, input.reference)) {
+      await subscriptionsRepo.markUnapplied(
+        tx,
+        input.reference,
+        'subscription_decided_after_charge',
+        input.when,
+      );
+      return 'superseded';
+    }
     const subscription = await subscriptionsRepo.subscriptionFor(tx, input.businessId);
+
+    /* An upgrade is priced against the REST of the cycle it was opened in. Paid
+     * after that cycle's renewal date it would leave `plan_expires_at` in the
+     * past and clear the grace clock, so the merchant would keep the higher plan
+     * with nothing ever renewing it (OWN-29). The payment stays recorded and
+     * goes to an operator; the plan does not move. */
+    if (
+      charge.kind === 'upgrade' &&
+      subscription?.planExpiresAt &&
+      subscription.planExpiresAt <= input.when
+    ) {
+      await subscriptionsRepo.markUnapplied(tx, input.reference, 'cycle_ended', input.when);
+      return 'superseded';
+    }
 
     /**
      * A first purchase resets the anchor to the day it was bought, and MUST.

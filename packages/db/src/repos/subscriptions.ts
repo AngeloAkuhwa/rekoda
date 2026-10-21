@@ -178,6 +178,11 @@ export async function writeSubscriptionState(
       last_grace_reminder_day = NULL,
       -- G-103: a paid plan establishes the retention exemption; never cleared.
       ever_paid_at = ${state.paid ? sql`COALESCE(ever_paid_at, now())` : sql`ever_paid_at`},
+      -- G-104: this IS a subscription decision; plan charges opened before it are stale.
+      -- clock_timestamp(), not now(): ordering must follow when the statement ran,
+      -- not when its transaction began.
+      plan_decided_at = clock_timestamp(),
+      plan_decided_before_pending = NULL,
       updated_at = now()
     WHERE id = ${businessId}::uuid
   `);
@@ -195,8 +200,89 @@ export async function schedulePlanChange(
   businessId: string,
   plan: string | null,
 ): Promise<void> {
+  /* Business row first, then charge rows: the order settlement uses (G-104).
+   * Touching a charge first lets a concurrent settlement deadlock with this. */
+  await lockBusiness(tx, businessId);
+  /* Scheduling a change is a decision (G-104): a plan charge opened before it
+   * must not silently undo it. Clearing one is not: an undone cancellation
+   * leaves the subscription as it was, so the renewal already open still
+   * renews. */
+  if (plan === null) {
+    /* Undo. A RENEWAL opened WHILE the change was pending was priced for the
+     * pending plan (the sweep prices the next cycle's plan); restoring the old
+     * plan makes it wrong, so it is flagged stale. An upgrade opened meanwhile
+     * was priced on the current plan and stays valid, as does anything opened
+     * before. A change pending from before migration 0162 has no decision time:
+     * every such renewal counts. */
+    await tx.execute(sql`
+      UPDATE subscription_charges c SET superseded_at = clock_timestamp(), updated_at = now()
+      FROM businesses b
+      WHERE b.id = ${businessId}::uuid AND c.business_id = b.id
+        AND b.pending_plan IS NOT NULL
+        AND c.status = 'pending' AND c.superseded_at IS NULL
+        AND c.kind = 'renewal' AND c.plan IS NOT NULL AND c.plan <> b.plan
+        AND c.created_at > COALESCE(b.plan_decided_at, '-infinity'::timestamptz)
+    `);
+    /* A charge opened BEFORE the schedule but retired AFTER it (the merchant
+     * asked for another paid plan while the change waited) was only stale
+     * because of the schedule. The undo removes that reason, so it is current
+     * again, unless a fresh charge already took its slot.
+     *
+     * `superseded_at >= plan_decided_at` is what keeps this to charges retired
+     * AFTER the schedule's own decision: a REPLACEMENT retires the first plan's
+     * renewals in a statement that runs BEFORE it stamps the new decision, so
+     * those are not revived (a renewal priced for an abandoned downgrade must
+     * stay retired). That depends on the statement order in the replacement
+     * branch below and is pinned by "undoing after a REPLACED downgrade ...". */
+    await tx.execute(sql`
+      UPDATE subscription_charges c SET superseded_at = NULL, updated_at = now()
+      FROM businesses b
+      WHERE b.id = ${businessId}::uuid AND c.business_id = b.id
+        AND b.pending_plan IS NOT NULL
+        AND c.status = 'pending' AND c.superseded_at IS NOT NULL
+        AND c.unapplied_at IS NULL AND c.plan IS NOT NULL
+        AND b.plan_decided_at IS NOT NULL AND b.plan_decided_before_pending IS NOT NULL
+        AND c.created_at >= b.plan_decided_before_pending AND c.created_at < b.plan_decided_at
+        AND c.superseded_at >= b.plan_decided_at
+        AND NOT EXISTS (
+          SELECT 1 FROM subscription_charges o
+          WHERE o.business_id = c.business_id AND o.id <> c.id
+            AND o.status = 'pending' AND o.superseded_at IS NULL
+            AND o.kind = c.kind
+            AND (CASE WHEN c.kind = 'upgrade' THEN o.plan = c.plan
+                      ELSE o.period_start IS NOT DISTINCT FROM c.period_start END))
+    `);
+    /* Put the decision time back to what it was before the change was
+     * scheduled, so a charge opened before the cancellation is current again. */
+    await tx.execute(sql`
+      UPDATE businesses SET pending_plan = NULL,
+        plan_decided_at = CASE WHEN pending_plan IS NULL
+          THEN plan_decided_at ELSE plan_decided_before_pending END,
+        plan_decided_before_pending = NULL,
+        updated_at = now()
+      WHERE id = ${businessId}::uuid
+    `);
+    return;
+  }
+  /* REPLACING a pending change with a different one is a new decision: a charge
+   * opened for the first pending plan in between is flagged stale now (an undo
+   * only looks at charges since the latest schedule). */
   await tx.execute(sql`
-    UPDATE businesses SET pending_plan = ${plan}, updated_at = now()
+    UPDATE subscription_charges c SET superseded_at = clock_timestamp(), updated_at = now()
+    FROM businesses b
+    WHERE b.id = ${businessId}::uuid AND c.business_id = b.id
+      AND b.pending_plan IS NOT NULL AND b.pending_plan IS DISTINCT FROM ${plan}
+      AND c.status = 'pending' AND c.superseded_at IS NULL
+      AND c.kind = 'renewal' AND c.plan IS NOT NULL AND c.plan <> b.plan
+      AND c.created_at > COALESCE(b.plan_decided_at, '-infinity'::timestamptz)
+  `);
+  await tx.execute(sql`
+    UPDATE businesses SET pending_plan = ${plan},
+      plan_decided_before_pending = CASE WHEN pending_plan IS NULL
+        THEN plan_decided_at ELSE plan_decided_before_pending END,
+      plan_decided_at = CASE WHEN pending_plan IS DISTINCT FROM ${plan}
+        THEN clock_timestamp() ELSE plan_decided_at END,
+      updated_at = now()
     WHERE id = ${businessId}::uuid
   `);
 }
@@ -249,13 +335,14 @@ export async function openCharge(tx: TenantDb, charge: NewCharge): Promise<strin
   const rows = await tx.execute<{ id: string }>(sql`
     INSERT INTO subscription_charges
       (business_id, kind, plan, pack_id, quantity, amount_k, provider,
-       reference, period_start, period_end)
+       reference, period_start, period_end, created_at)
     VALUES (
       ${charge.businessId}::uuid, ${charge.kind}, ${charge.plan ?? null},
       ${charge.packId ?? null}, ${charge.quantity ?? 1}, ${charge.amountK},
       ${charge.provider ?? 'paystack'}, ${charge.reference},
       ${charge.periodStart ? charge.periodStart.toISOString() : null}::timestamptz,
-      ${charge.periodEnd ? charge.periodEnd.toISOString() : null}::timestamptz)
+      ${charge.periodEnd ? charge.periodEnd.toISOString() : null}::timestamptz,
+      clock_timestamp())
     ON CONFLICT DO NOTHING
     RETURNING id
   `);
@@ -275,6 +362,8 @@ export interface ChargeRow extends Record<string, unknown> {
   periodStart: Date | null;
   periodEnd: Date | null;
   createdAt: Date;
+  /** Paid (or pending) but its plan change was refused as stale (G-104): an operator reconciles it. */
+  supersededAt: Date | null;
 }
 
 interface RawCharge extends Record<string, unknown> {
@@ -290,6 +379,7 @@ interface RawCharge extends Record<string, unknown> {
   period_start: string | null;
   period_end: string | null;
   created_at: string;
+  superseded_at: string | null;
 }
 
 const shape = (row: RawCharge): ChargeRow => ({
@@ -305,6 +395,7 @@ const shape = (row: RawCharge): ChargeRow => ({
   periodStart: at(row.period_start),
   periodEnd: at(row.period_end),
   createdAt: new Date(row.created_at),
+  supersededAt: at(row.superseded_at),
 });
 
 /**
@@ -336,6 +427,7 @@ export async function pendingCharge(
     FROM subscription_charges
     WHERE business_id = ${businessId}::uuid
       AND status = 'pending'
+      AND superseded_at IS NULL
       AND kind = ${match.kind}
       ${
         match.kind === 'first_purchase'
@@ -411,6 +503,189 @@ export async function settleCharge(
   `);
   const row = [...rows][0];
   return row ? shape(row) : null;
+}
+
+/**
+ * Was the subscription decided AFTER this charge was opened (G-104)?
+ *
+ * A plan charge is priced and promised against the subscription as it stood
+ * when it was opened. If an operator move, a settled charge or a scheduled
+ * change has been decided since, paying it must not apply its plan: the payment
+ * is real, the entitlement it was meant to buy is not. Call with the business
+ * row locked, so the answer cannot change under the caller.
+ */
+export async function decidedSince(
+  tx: TenantDb,
+  businessId: string,
+  reference: string,
+): Promise<boolean> {
+  /* Compared in SQL at full microsecond precision: a JS Date would truncate
+   * the charge's created_at to the millisecond. */
+  const rows = await tx.execute<{ stale: boolean }>(sql`
+    SELECT (c.superseded_at IS NOT NULL
+            OR (b.plan_decided_at IS NOT NULL AND b.plan_decided_at > c.created_at)) AS stale
+    FROM businesses b
+    JOIN subscription_charges c ON c.business_id = b.id AND c.reference = ${reference}
+    WHERE b.id = ${businessId}::uuid
+  `);
+  return [...rows][0]?.stale === true;
+}
+
+/**
+ * Flag every still-pending plan charge opened before the latest decision as
+ * stale (G-104), so it can no longer be handed out as a payment link and does
+ * not occupy the one-pending-upgrade slot. A late payment of one is still
+ * recorded (it stays `pending` until the provider settles it) and then refused
+ * its plan change at settlement. Call with the business row locked.
+ */
+export async function retireStalePending(tx: TenantDb, businessId: string): Promise<void> {
+  await tx.execute(sql`
+    UPDATE subscription_charges c SET superseded_at = clock_timestamp(), updated_at = now()
+    FROM businesses b
+    WHERE b.id = ${businessId}::uuid AND c.business_id = b.id
+      AND c.status = 'pending' AND c.superseded_at IS NULL AND c.plan IS NOT NULL
+      AND b.plan_decided_at IS NOT NULL AND c.created_at < b.plan_decided_at
+  `);
+}
+
+/**
+ * One business's renewal-due state, read under the caller's row lock (G-104).
+ * Null when it is no longer due (moved, cancelled, already in grace, paid).
+ */
+export async function dueForRenewalLocked(
+  tx: TenantDb,
+  businessId: string,
+  now: Date,
+): Promise<DueBusiness | null> {
+  const rows = await tx.execute<RawDue>(sql`
+    SELECT id, plan, pending_plan, plan_expires_at, cycle_started_at,
+           renewal_anchor_day, payment_failed_at
+    FROM businesses
+    WHERE id = ${businessId}::uuid
+      AND plan NOT IN ('trial', 'expired')
+      AND plan_expires_at IS NOT NULL
+      AND plan_expires_at <= ${now.toISOString()}::timestamptz
+      AND (payment_failed_at IS NULL OR ${NO_PAYABLE_RENEWAL})
+  `);
+  const row = [...rows][0];
+  return row ? due(row) : null;
+}
+
+/**
+ * A PAID charge whose plan change was refused (OD-30): it stays `paid`, is
+ * flagged superseded and UNAPPLIED, and waits in the operator queue. Money
+ * truth is untouched. Idempotent: the first refusal keeps its time and reason.
+ */
+export async function markUnapplied(
+  tx: TenantDb,
+  reference: string,
+  reason: string,
+  when: Date,
+): Promise<void> {
+  const stamp = when.toISOString();
+  await tx.execute(sql`
+    UPDATE subscription_charges
+    SET superseded_at = COALESCE(superseded_at, ${stamp}::timestamptz),
+        unapplied_at = ${stamp}::timestamptz,
+        unapplied_reason = ${reason},
+        updated_at = now()
+    WHERE reference = ${reference} AND status = 'paid' AND unapplied_at IS NULL
+  `);
+}
+
+export interface UnappliedChargeRow {
+  reference: string;
+  businessId: string;
+  kind: string;
+  plan: string | null;
+  packId: string | null;
+  amountK: number;
+  paidAt: Date | null;
+  supersededAt: Date | null;
+  unappliedAt: Date;
+  reason: string | null;
+  /** The business's plan and renewal state NOW, so an operator sees what the payment collided with. */
+  currentPlan: string;
+  currentPendingPlan: string | null;
+  currentRenewsAt: Date | null;
+  /**
+   * The payable plan charge the merchant has open right now, if any. When a
+   * renewal is paid but unapplied, the sweep asks for the correct one, so the
+   * merchant may pay twice; an operator needs to see that to reconcile it.
+   */
+  openChargeReference: string | null;
+}
+
+/**
+ * Paid-but-unapplied Rekoda charges still waiting for an operator (OD-30),
+ * oldest first. Cross-tenant by nature, so it takes the worker credential,
+ * like the event exception queue. A fully refunded charge has left the queue
+ * by its status; any other leaves only by an explicit resolution.
+ */
+export async function unappliedCharges(db: Db, limit = 50): Promise<UnappliedChargeRow[]> {
+  const rows = await db.execute<{
+    reference: string;
+    business_id: string;
+    kind: string;
+    plan: string | null;
+    pack_id: string | null;
+    amount_k: string | number;
+    paid_at: string | null;
+    superseded_at: string | null;
+    unapplied_at: string;
+    unapplied_reason: string | null;
+    current_plan: string;
+    current_pending_plan: string | null;
+    current_renews_at: string | null;
+    open_charge_reference: string | null;
+  }>(sql`
+    SELECT c.reference, c.business_id, c.kind, c.plan, c.pack_id, c.amount_k, c.paid_at,
+           c.superseded_at, c.unapplied_at, c.unapplied_reason,
+           b.plan AS current_plan, b.pending_plan AS current_pending_plan,
+           b.plan_expires_at AS current_renews_at,
+           (SELECT n.reference FROM subscription_charges n
+             WHERE n.business_id = c.business_id AND n.status = 'pending'
+               AND n.superseded_at IS NULL AND n.plan IS NOT NULL
+             ORDER BY n.created_at DESC LIMIT 1) AS open_charge_reference
+    FROM subscription_charges c
+    JOIN businesses b ON b.id = c.business_id
+    WHERE c.unapplied_at IS NOT NULL AND c.unapplied_resolved_at IS NULL AND c.status = 'paid'
+    ORDER BY c.unapplied_at, c.reference
+    LIMIT ${limit}
+  `);
+  return [...rows].map((r) => ({
+    reference: r.reference,
+    businessId: r.business_id,
+    kind: r.kind,
+    plan: r.plan,
+    packId: r.pack_id,
+    amountK: Number(r.amount_k),
+    paidAt: at(r.paid_at),
+    supersededAt: at(r.superseded_at),
+    unappliedAt: new Date(r.unapplied_at),
+    reason: r.unapplied_reason,
+    currentPlan: r.current_plan,
+    currentPendingPlan: r.current_pending_plan,
+    currentRenewsAt: at(r.current_renews_at),
+    openChargeReference: r.open_charge_reference,
+  }));
+}
+
+/** An operator's resolution of an unapplied charge. True when this call closed it. */
+export async function resolveUnapplied(
+  tx: TenantDb,
+  reference: string,
+  resolution: string,
+  actor: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE subscription_charges
+    SET unapplied_resolved_at = now(), unapplied_resolution = ${resolution},
+        unapplied_resolved_by = ${actor}, updated_at = now()
+    WHERE reference = ${reference} AND unapplied_at IS NOT NULL AND unapplied_resolved_at IS NULL
+    RETURNING id
+  `);
+  return [...rows].length === 1;
 }
 
 /**
@@ -540,6 +815,28 @@ const due = (row: RawDue): DueBusiness => ({
 });
 
 /**
+ * A business with no PAYABLE renewal for the cycle that just ended: every
+ * renewal opened for it is retired, or was opened before the latest decision
+ * and so would be refused. Such a business owes the sweep a fresh one even if
+ * its grace clock is already running (G-104), and the clock is never reset:
+ * the seven days still count from the renewal date, so toggling a downgrade
+ * cannot buy a merchant more grace.
+ */
+const NO_PAYABLE_RENEWAL = sql`NOT EXISTS (
+  SELECT 1 FROM subscription_charges c
+  WHERE c.business_id = businesses.id AND c.kind = 'renewal'
+    AND c.period_start = businesses.plan_expires_at
+    AND c.superseded_at IS NULL
+    -- Anything still holding the cycle blocks a replacement, EXCEPT a pending
+    -- renewal opened before the latest decision: that one is retired under the
+    -- lock, which frees the slot. A failed or paid renewal is never retired, so
+    -- selecting its business would only fail to open a charge on every pass.
+    AND NOT (c.status = 'pending'
+             AND businesses.plan_decided_at IS NOT NULL
+             AND businesses.plan_decided_at > c.created_at)
+)`;
+
+/**
  * Paid businesses whose cycle has ended and who are not already in grace.
  *
  * Cross-tenant, so it needs the `rekoda_worker` credential: the sweep does
@@ -559,7 +856,7 @@ export async function dueForRenewal(db: Db, now: Date, limit = 200): Promise<Due
     WHERE plan NOT IN ('trial', 'expired')
       AND plan_expires_at IS NOT NULL
       AND plan_expires_at <= ${now.toISOString()}::timestamptz
-      AND payment_failed_at IS NULL
+      AND (payment_failed_at IS NULL OR ${NO_PAYABLE_RENEWAL})
     ORDER BY plan_expires_at
     LIMIT ${limit}
   `);
@@ -708,7 +1005,9 @@ export async function expireSubscription(
   if (!previous || previous === 'trial' || previous === 'expired') return null;
 
   const updated = await tx.execute<{ id: string }>(sql`
-    UPDATE businesses SET plan = 'expired', pending_plan = NULL, updated_at = now()
+    UPDATE businesses
+    SET plan = 'expired', pending_plan = NULL, plan_decided_at = clock_timestamp(),
+        updated_at = now()
     WHERE id = ${businessId}::uuid AND plan = ${previous}
       AND ${reason === 'grace' ? sql`payment_failed_at IS NOT NULL` : sql`pending_plan = 'expired'`}
     RETURNING id
