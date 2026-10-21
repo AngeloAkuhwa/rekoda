@@ -851,6 +851,35 @@ describe('the chat surface enforces roles', () => {
     },
   );
 
+  /* G-79: the correction path (CG5) also supersedes the pending draft, so a
+   * view-only member's question that merely opens like a correction must not
+   * reach it. */
+  it('a view-only member`s question that opens like a correction leaves the owner`s preview (G-79)', async () => {
+    const businessId = await seedBusiness('Role Correction Ltd', '+2348140010061');
+    await memberOf(businessId, '+2348140010062', 'accountant');
+    stubTransport.replyWith(A_SALE);
+    await saysOverChat(businessId, '+2348140010061', 'sold rice 20k cash');
+    const pending = () =>
+      withBusiness(appDb, businessId, async (tx) => {
+        const [row] = await tx.execute<{ n: string }>(sql`
+          SELECT count(*) AS n FROM command_drafts
+          WHERE business_id = ${businessId}::uuid AND state = 'pending'`);
+        return Number(row!.n);
+      });
+    expect(await pending()).toBe(1);
+
+    stubTransport.replyWith(A_SALES_QUESTION);
+    await saysOverChat(businessId, '+2348140010062', 'no wait, how much did we sell this month?');
+    /* The owner's own draft, not a count: a question may store a draft of its
+     * own, which would hide a superseded sale behind a count of one. */
+    const [owners] = await withBusiness(appDb, businessId, (tx) =>
+      tx.execute<{ superseded: string }>(sql`
+        SELECT count(*) AS superseded FROM command_drafts
+        WHERE business_id = ${businessId}::uuid AND state = 'superseded'`),
+    );
+    expect(Number(owners!.superseded)).toBe(0);
+  });
+
   it('does not charge twice for a question whose reply failed once (G-57)', async () => {
     const businessId = await seedBusiness('Role Gate Retry Read Ltd', '+2348140010041');
     await memberOf(businessId, '+2348140010042', 'accountant');
