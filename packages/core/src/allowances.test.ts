@@ -300,7 +300,7 @@ describe('the trial length (OWN-27: 14 days)', () => {
     expect(trialExpiry(start).toISOString()).toBe('2026-11-16T09:00:00.000Z');
   });
 
-  it('is not the retired 30-day trial', () => {
+  it('is not the retired month-long trial', () => {
     expect(trialExpiry(start).getTime() - start.getTime()).not.toBe(30 * 86_400_000);
   });
 });

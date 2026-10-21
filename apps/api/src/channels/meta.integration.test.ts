@@ -3878,7 +3878,7 @@ describe('the trial clock and the upgrade door', () => {
     return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
   }
 
-  /** Age the trial past its date, as thirty days would. */
+  /** Age the trial past its date, as the full trial length would. */
   async function expireTrial(businessId: string) {
     await billingRepo.setPlan(db, {
       businessId,

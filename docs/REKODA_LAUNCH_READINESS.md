@@ -587,7 +587,7 @@ and the keys are test-mode.
 
 ### J15 · Trial to paid plan (staging)
 
-- **Test data:** a business on day 20 of trial; `POST /v1/billing/quote` then `/plan` for Chat; pay the Paystack charge.
+- **Test data:** a business on day 10 of its 14-day trial (before expiry; a business past day 14 is expired and exercises recovery, not this journey); `POST /v1/billing/quote` then `/plan` for Chat; pay the Paystack charge.
 - **Expected:** the plan changes only after the provider confirms (never on the merchant's say-so); `subscription_charges` settled; `billing.process` never touches the merchant's ledger; allowances reset to the plan's table.
 - **Pass:** a partial payment does not unlock; an overpayment unlocks and the excess is an operator decision.
 
@@ -727,4 +727,4 @@ Application-layer security is strong: tenancy by `withBusiness()` and six RLS in
 | 11  | Spec §12 revenue recognition "CORRECT" vs `recognise()` having zero callers                                                                                             | Built, unwired; `REKODA_CURRENT_STATE.md` §6; OD-3                                                                                                                                                             |
 | 12  | `docs/agents/CONTEXT-MAP.md` filing `repos/issue.ts` under Ops                                                                                                          | It is the document issuing engine; corrected in the current-state map                                                                                                                                          |
 | 13  | ADR 0018 (retire WABA catalogue order capture, 19 Aug 2026) vs spec §3.2 and PR-087 (W3) building exactly that path                                                     | Spec and code win; ADR 0018 marked superseded in part in its Status line, the ADR index and the manifest                                                                                                       |
-| 14  | `CLAUDE.md` §3, `TRIAL_DAYS = 30` and migration 0017 (a 30-day trial; the spec states no trial length) vs the owner's 20 Oct 2026 ruling of a 14-day MVP trial (OWN-27) | The owner ruling wins; IMPLEMENTED in code, copy and tests (21 Oct 2026, `fix/trial-14-days`); migration 0017 is history and is not rewritten; staging acceptance pending                                                                          |
+| 14  | `CLAUDE.md` §3, `TRIAL_DAYS = 30` and migration 0017 (a 30-day trial; the spec states no trial length) vs the owner's 20 Oct 2026 ruling of a 14-day MVP trial (OWN-27) | The owner ruling wins; IMPLEMENTED in code, copy and tests (21 Oct 2026, `fix/trial-14-days`); migration 0017 is history and is not rewritten; staging acceptance pending                                      |
