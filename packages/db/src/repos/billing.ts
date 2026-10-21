@@ -58,12 +58,13 @@ export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
      * against the old plan, a failed renewal and its reminders, the old
      * plan-version pin and the old cycle dates all go with the old plan.
      * The operator's `expiresAt` is kept exactly as given; with none there
-     * is no dated cycle, so no anchor day is invented. */
+     * is no dated cycle, so no cycle start and no anchor day is invented (a
+     * start that never advances would age every later upgrade's proration). */
     const paid = !UNPAID_PLANS.has(change.plan);
     await subscriptionsRepo.writeSubscriptionState(tx, change.businessId, {
       plan: change.plan,
       paid,
-      cycleStartedAt: paid ? new Date() : null,
+      cycleStartedAt: paid && change.expiresAt ? new Date() : null,
       planExpiresAt: change.expiresAt,
       anchorDay: paid && change.expiresAt ? lagosDayOfMonth(change.expiresAt) : null,
       pendingPlan: null,

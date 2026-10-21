@@ -161,7 +161,8 @@ describe('an operator move to a paid plan (G-62)', () => {
     expect(after.plan).toBe('integrate');
     expect(after.plan_expires_at).toBeNull();
     expect(after.renewal_anchor_day).toBeNull();
-    expect(new Date(after.cycle_started_at!).getTime()).toBeGreaterThan(Date.now() - 60_000);
+    // No dated cycle: a start that never advances would age the upgrade proration.
+    expect(after.cycle_started_at).toBeNull();
     expect(after.version_plan).toBe('integrate');
     expect(after.pending_plan).toBeNull();
     expect(after.payment_failed_at).toBeNull();
