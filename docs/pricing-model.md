@@ -221,7 +221,8 @@ which is exactly when someone needs it most.
 | Claude Opus 5              | $5/$25 per MTok         | ~₦20/call          | Escalation role only — rare by design                                                                                              |
 | Claude Fable 5             | $10/$50 per MTok        | ~₦40/call          | Build-time & evals, escalation flag only                                                                                           |
 | Paystack local card        | 1.5% + ₦100, cap ₦2,000 | merchant-borne     | Never absorbed into subscription                                                                                                   |
-| Paystack DVA/transfer      | 1%, cap ₦300            | merchant-borne     | Encourage "pay by transfer"                                                                                                        |
+| Paystack Pay-with-Transfer | 1.5% + ₦100, cap ₦2,000 | merchant-borne     | The live transfer mechanism: the local rate, ₦100 waived under ₦2,500 (ADR 0016)                                                   |
+| Paystack DVA (not used)    | 1%, cap ₦300            | merchant-borne     | Needs customer BVN validation; not Rekoda's mechanism. Do not quote this rate for transfers                                        |
 | Hosting (ADR 0006)         | Hetzner+CF+R2           | ~₦30–40k/mo shared | ~₦1,500/business at 25 businesses                                                                                                  |
 
 ## Commercial rules
