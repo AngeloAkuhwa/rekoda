@@ -377,8 +377,10 @@ describe('the sweeps', () => {
   it('stops sweeping a business once its renewal has failed', async () => {
     const businessId = await paidBusiness('Failed', new Date('2026-09-01T00:00:00Z'));
     // As the sweep leaves it: a renewal charge for the ended cycle AND the
-    // grace clock, in one step. (A failed clock with no payable renewal is
-    // picked up again, G-104; see stale-charge.integration.test.ts.)
+    // grace clock, in one step. This pins that a payable renewal for the cycle
+    // keeps the business out of the due set; re-selection of a grace business
+    // whose renewals went stale (and the failed-renewal no-spin case) is covered
+    // in stale-charge.integration.test.ts (G-104).
     await inTenant(businessId, async (tx) => {
       await subscriptionsRepo.openCharge(tx, {
         businessId,

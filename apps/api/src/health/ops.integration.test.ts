@@ -704,6 +704,8 @@ describe('the exception queue', () => {
       unappliedCharges: Array<Record<string, unknown>>;
     };
     expect(body.unappliedCharges).toHaveLength(1);
+    // No open payable charge for this business: the field is present and null.
+    expect(body.unappliedCharges[0]?.openChargeReference).toBeNull();
     expect(body.unappliedCharges[0]).toMatchObject({
       reference,
       businessId: business.id,
@@ -714,7 +716,14 @@ describe('the exception queue', () => {
       currentPlan: 'trial',
       overdue: true, // created ten days ago: past the end of the next business day
     });
-    for (const field of ['paidAt', 'supersededAt', 'createdAt', 'resolveBy', 'ageSeconds']) {
+    for (const field of [
+      'paidAt',
+      'supersededAt',
+      'createdAt',
+      'resolveBy',
+      'ageSeconds',
+      'openChargeReference',
+    ]) {
       expect(body.unappliedCharges[0]).toHaveProperty(field);
     }
 
