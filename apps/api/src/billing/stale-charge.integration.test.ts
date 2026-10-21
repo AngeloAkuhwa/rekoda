@@ -341,6 +341,24 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
     await expect(scheduling).resolves.toBeUndefined();
   });
 
+  it('undoing a cancellation through changePlan lets a renewal opened before it renew', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'complete');
+    await open(businessId, 'renewal', 'RKD-SUB-STALE-UI', 'complete');
+    await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.schedulePlanChange(tx, businessId, 'expired'),
+    );
+    const billing = new BillingService(
+      { planCatalogueReads: false, paystackPlatformConfirmed: true } as never,
+      appDb,
+    );
+    const answer = await billing.changePlan(businessId, 'complete'); // the UI's undo
+
+    expect(answer.state).toBe('scheduled');
+    expect(await settle(businessId, 'RKD-SUB-STALE-UI')).toBe('applied');
+    expect((await subscription(businessId))?.plan).toBe('complete');
+  });
+
   it('decisions and charges are stamped at statement time, not transaction start', async () => {
     const businessId = await seedBusiness();
     await operator(businessId, 'complete');

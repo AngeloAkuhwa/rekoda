@@ -228,7 +228,6 @@ export class BillingService {
        * priced against, so a concurrent operator move either finished (and is
        * read) or waits until this charge exists (and is then newer). */
       await subscriptionsRepo.lockBusiness(tx, businessId);
-      await subscriptionsRepo.retireStalePending(tx, businessId);
       const from = await usageRepo.planFor(tx, businessId, now);
       const subscription = await subscriptionsRepo.subscriptionFor(tx, businessId);
       const renewsAt = subscription?.planExpiresAt ?? addMonth(now);
@@ -259,6 +258,11 @@ export class BillingService {
       if (!this.config.paystackPlatformConfirmed) {
         return { state: 'unavailable' as const, reason: 'awaiting_platform_confirmation' as const };
       }
+
+      /* Only now, on the path that opens a charge: a scheduled change or an undo
+       * (above) can revive a pending charge, so retiring earlier would flag a
+       * charge that an undo is about to make current again. */
+      await subscriptionsRepo.retireStalePending(tx, businessId);
 
       /* Day-truncated so the cycle unique index has something to hold: two
        * tabs confirming a first purchase used to mint two charges because
