@@ -628,6 +628,37 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
     expect(usageAfter.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
   });
 
+  /* G-53: asking for more than the shelf holds (a lost race for the last unit
+   * is the same refusal) used to throw out of the order transaction and answer
+   * 500 "did not go through". It must say what is true, book nothing, spend
+   * nothing, and leave the shelf alone. */
+  it('answers out_of_stock for more than the shelf holds, and spends nothing (G-53)', async () => {
+    const { businessId, ids } = await openShop('+2348177400038', 'ada-shelf');
+
+    const answer = await order('ada-shelf', {
+      items: [{ productId: ids['Ankara bale'], quantity: 11 }],
+      customerName: 'Chidi Okafor',
+      customerPhone: '0803 555 1234',
+      clientRef: randomUUID(),
+    });
+
+    expect(answer.statusCode).toBe(200);
+    expect(publicOrderResponse.parse(answer.json())).toEqual({ outcome: 'out_of_stock' });
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+    const stock = await withBusiness(db, businessId, (tx) => stockRepo.stockList(tx, businessId));
+    expect(stock.rows.find((p) => p.name === 'Ankara bale')?.onHand).toBe(10);
+    const orders = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM orders WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect(Number([...orders][0]?.n)).toBe(0);
+  });
+
   /* G-96: two submits of one form at the same instant both pass the
    * sequential duplicate pre-check, so each used to spend an order unit and a
    * document unit; the second was replayed the first order and its units were
