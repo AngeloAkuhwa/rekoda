@@ -21,17 +21,20 @@ export function LegalPage({
   title,
   intro,
   sections,
+  updated = POLICY_LAST_UPDATED,
 }: {
   title: string;
   intro: ReactNode;
   sections: LegalSection[];
+  /** A page whose text changed on its own date shows that date, not the shared one. */
+  updated?: string;
 }) {
   return (
     <div className="rk-container rk-legal">
       <header className="rk-legal-head">
         <h1>{title}</h1>
         <p className="rk-lede">{intro}</p>
-        <p className="rk-legal-updated">Last updated {POLICY_LAST_UPDATED}</p>
+        <p className="rk-legal-updated">Last updated {updated}</p>
       </header>
 
       <div className="rk-legal-body">

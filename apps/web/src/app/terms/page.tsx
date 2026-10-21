@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { LegalPage } from '@/components/legal/LegalPage';
 import { Fact } from '@/components/legal/Fact';
-import { LEGAL } from '@/lib/legal';
+import { LEGAL, TERMS_LAST_UPDATED } from '@/lib/legal';
 import { canonical } from '@/lib/site';
 
 export const metadata: Metadata = {
@@ -15,6 +15,7 @@ export default function TermsPage() {
   return (
     <LegalPage
       title="Terms of service"
+      updated={TERMS_LAST_UPDATED}
       intro="The agreement between you and Rekoda. Written plainly, because a term you cannot understand is a term you cannot agree to."
       sections={[
         {
