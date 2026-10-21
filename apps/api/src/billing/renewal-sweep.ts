@@ -93,14 +93,18 @@ export async function sweepRenewals(
         continue;
       }
 
-      const anchorDay =
-        business.renewalAnchorDay ?? new Date(business.renewsAt.getTime() + 3_600_000).getUTCDate();
-
       try {
         const opened = await withBusiness(deps.appDb, business.businessId, async (tx) => {
           /* G-104: lock first, so an operator move cannot slip between pricing
            * this renewal and opening its charge. */
           await subscriptionsRepo.lockBusiness(tx, business.businessId);
+          /* ...and RE-READ under it: `business` came from a read taken before
+           * the lock, and a move or cancellation may have committed since. */
+          const fresh = await subscriptionsRepo.dueForRenewalLocked(tx, business.businessId, now);
+          if (!fresh || fresh.nextPlan === 'expired') return false;
+          const plan = fresh.nextPlan;
+          const anchorDay =
+            fresh.renewalAnchorDay ?? new Date(fresh.renewsAt.getTime() + 3_600_000).getUTCDate();
           /* The pinned version's price, which is the grandfathering promise
            * kept where it matters: a launch merchant renews at launch
            * pricing after a repricing, because their pin still points at
@@ -118,8 +122,8 @@ export async function sweepRenewals(
             /* The cycle this buys STARTS when the last one ended, not when the
              * sweep happened to run. A sweep an hour late must not sell the
              * merchant fifty-nine minutes less month. */
-            periodStart: business.renewsAt,
-            periodEnd: addMonth(business.renewsAt, anchorDay),
+            periodStart: fresh.renewsAt,
+            periodEnd: addMonth(fresh.renewsAt, anchorDay),
           });
           if (!id) return false;
 
@@ -140,7 +144,7 @@ export async function sweepRenewals(
            * The floor guarantees the dunning ladder gets at least five days.
            */
           const failedAt = new Date(
-            Math.max(business.renewsAt.getTime(), Date.now() - 2 * 86_400_000),
+            Math.max(fresh.renewsAt.getTime(), Date.now() - 2 * 86_400_000),
           );
           await subscriptionsRepo.markRenewalFailed(tx, business.businessId, failedAt);
           return true;
@@ -148,7 +152,7 @@ export async function sweepRenewals(
 
         if (opened) {
           result.raised += 1;
-          log.log(`business ${business.businessId}: renewal raised for ${plan}`);
+          log.log(`business ${business.businessId}: renewal raised`);
         } else {
           result.skipped += 1;
         }

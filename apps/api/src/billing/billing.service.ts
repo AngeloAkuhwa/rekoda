@@ -151,10 +151,6 @@ export class BillingService {
   /** What moving to `plan` costs today, and when it takes effect. */
   async quote(businessId: string, to: string, now = new Date()): Promise<BillingQuoteResponse> {
     return withBusiness(this.db, businessId, async (tx) => {
-      /* G-104: lock the business row BEFORE reading the plan this charge is
-       * priced against, so a concurrent operator move either finished (and is
-       * read) or waits until this charge exists (and is then newer). */
-      await subscriptionsRepo.lockBusiness(tx, businessId);
       const from = await usageRepo.planFor(tx, businessId, now);
       const subscription = await subscriptionsRepo.subscriptionFor(tx, businessId);
       const charge = planChangeCharge({
@@ -228,6 +224,11 @@ export class BillingService {
     now = new Date(),
   ): Promise<BillingPlanChangeResponse> {
     return withBusiness(this.db, businessId, async (tx) => {
+      /* G-104: lock the business row BEFORE reading the plan this charge is
+       * priced against, so a concurrent operator move either finished (and is
+       * read) or waits until this charge exists (and is then newer). */
+      await subscriptionsRepo.lockBusiness(tx, businessId);
+      await subscriptionsRepo.retireStalePending(tx, businessId);
       const from = await usageRepo.planFor(tx, businessId, now);
       const subscription = await subscriptionsRepo.subscriptionFor(tx, businessId);
       const renewsAt = subscription?.planExpiresAt ?? addMonth(now);

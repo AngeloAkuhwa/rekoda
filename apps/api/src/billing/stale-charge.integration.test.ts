@@ -21,20 +21,25 @@ import {
   type Db,
 } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
-import { applySettledCharge } from './billing.service.js';
+import { applySettledCharge, BillingService } from './billing.service.js';
+import { sweepRenewals } from './renewal-sweep.js';
 
 let urls: Urls;
 let appDb: Db;
 let closeApp: () => Promise<void>;
+let realWorkerDb: Db;
+let closeWorker: () => Promise<void>;
 
 beforeAll(async () => {
   urls = requireUrls();
   await migrate(urls);
   ({ db: appDb, close: closeApp } = createDb(urls.app, { max: 4 }));
+  ({ db: realWorkerDb, close: closeWorker } = createDb(urls.worker, { max: 2 }));
 });
 
 afterAll(async () => {
   await closeApp?.();
+  await closeWorker?.();
 });
 
 beforeEach(async () => {
@@ -170,6 +175,74 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
     );
 
     expect(await settle(businessId, 'RKD-SUB-STALE-4B')).toBe('applied');
+    expect((await subscription(businessId))?.plan).toBe('complete');
+  });
+
+  it('undoing a downgrade does not revive a charge opened for the downgrade while it was pending', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'complete');
+    await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.schedulePlanChange(tx, businessId, 'chat'),
+    );
+    await open(businessId, 'renewal', 'RKD-SUB-STALE-A', 'chat'); // the sweep prices the pending plan
+    await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.schedulePlanChange(tx, businessId, null),
+    );
+
+    expect(await settle(businessId, 'RKD-SUB-STALE-A')).toBe('superseded');
+    expect((await subscription(businessId))?.plan).toBe('complete');
+  });
+
+  it('a renewal sweep re-reads the subscription under the lock: a move after the due read opens nothing', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'complete', new Date(Date.now() - 3_600_000)); // due
+    let moved = false;
+    const workerDb = new Proxy(realWorkerDb, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (prop !== 'execute') return value;
+        return async (...args: unknown[]) => {
+          const result = await (value as (...a: unknown[]) => Promise<unknown>).apply(target, args);
+          if (!moved) {
+            moved = true; // the operator decides between the due read and the lock
+            await operator(businessId, 'chat');
+          }
+          return result;
+        };
+      },
+    }) as Db;
+
+    const swept = await sweepRenewals({ workerDb, appDb, config }, new Date());
+    expect(swept.raised).toBe(0);
+    expect(moved).toBe(true);
+
+    const charges = await withBusiness(appDb, businessId, async (tx) => {
+      const rows = await tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM subscription_charges WHERE business_id = ${businessId}::uuid`,
+      );
+      return [...rows][0]?.n;
+    });
+    expect(charges).toBe(0);
+    expect((await subscription(businessId))?.plan).toBe('chat');
+  });
+
+  it('a repeated upgrade request after a newer decision gets a fresh payable charge, not the stale one', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'chat');
+    const billing = new BillingService(
+      { planCatalogueReads: false, paystackPlatformConfirmed: true } as never,
+      appDb,
+    );
+    const first = await billing.changePlan(businessId, 'complete');
+    expect(first.state).toBe('payment_required');
+    await operator(businessId, 'integrate'); // a newer decision
+    const second = await billing.changePlan(businessId, 'complete');
+
+    expect(second.state).toBe('payment_required');
+    if (first.state !== 'payment_required' || second.state !== 'payment_required') return;
+    expect(second.reference).not.toBe(first.reference);
+    expect(await settle(businessId, first.reference)).toBe('superseded'); // late payment still recorded
+    expect(await settle(businessId, second.reference)).toBe('applied');
     expect((await subscription(businessId))?.plan).toBe('complete');
   });
 

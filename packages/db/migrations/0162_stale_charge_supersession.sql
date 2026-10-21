@@ -19,3 +19,10 @@ ALTER TABLE subscription_charges ADD COLUMN superseded_at timestamptz;
 CREATE INDEX subscription_charges_superseded_ix
   ON subscription_charges (business_id, superseded_at)
   WHERE superseded_at IS NOT NULL;
+
+-- A stale pending upgrade must not occupy the one-pending-upgrade slot: the
+-- merchant's next request opens a fresh charge priced against today's state.
+DROP INDEX IF EXISTS subscription_charges_pending_upgrade_ux;
+CREATE UNIQUE INDEX subscription_charges_pending_upgrade_ux
+  ON subscription_charges (business_id, plan)
+  WHERE kind = 'upgrade' AND status = 'pending' AND superseded_at IS NULL;
