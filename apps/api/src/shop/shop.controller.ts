@@ -384,6 +384,10 @@ export class PublicShopController {
     /* Set inside the order transaction, acted on only after it commits, so a
      * commit that fails afterwards refunds once, in the catch (G-60). */
     let lapsed = false;
+    /* The same form was submitted twice at once (G-96): the bus answered the
+     * second with the first order, or refused its payload as a reused key. Either
+     * way nothing new was booked, so the units this request metered go back. */
+    let resubmitted = false;
     try {
       const answer = await withBusiness(this.db, businessId, async (tx) => {
         const wanted = parsed.data.items;
@@ -446,9 +450,17 @@ export class PublicShopController {
             lapsed = true;
             return { outcome: 'closed' as const };
           }
+          if (run.outcome === 'key_reused' || run.outcome === 'in_progress') {
+            /* The same one-shot key with another payload (the merchant repriced
+             * a line while both were in flight), or the first still running:
+             * the form was already submitted. */
+            resubmitted = true;
+            return { outcome: 'duplicate' as const };
+          }
           if (run.outcome !== 'done') {
             throw new Error(`PlaceOrder refused unexpectedly: ${run.outcome}`);
           }
+          if (run.replayed) resubmitted = true;
           placed = run.result;
         } else {
           /* Not a rollback (OD-4, OWN-22): the legacy path was retired
@@ -469,6 +481,13 @@ export class PublicShopController {
           displayName: shop.displayName,
         };
       });
+      if (resubmitted) {
+        /* Refunded only now, after the transaction committed, so a commit that
+         * fails refunds once in the catch instead (G-60). The customer still
+         * gets the first order's confirmation, or `duplicate`. */
+        await refundBoth();
+        return answer;
+      }
       if (!lapsed) return answer;
     } catch (error) {
       if (error instanceof CartChanged) {

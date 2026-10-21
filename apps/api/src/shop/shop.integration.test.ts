@@ -628,6 +628,78 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
     expect(usageAfter.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
   });
 
+  /* G-96: a double tap fires two submits of one form at the same instant. Both
+   * pass the "already ordered" pre-check, so each meters its two units; the bus
+   * replays the first order to the second, and nothing refunded the second's
+   * units. One order must cost exactly one order unit and one document unit. */
+  it('two concurrent submits of one form book one order and meter one order and one document (G-96)', async () => {
+    const { businessId, ids } = await openShop('+2348177400090', 'ada-double-tap');
+    const payload = {
+      items: [{ productId: ids['Ankara bale'], quantity: 2 }],
+      customerName: 'Chidi Okafor',
+      customerPhone: '0803 555 1234',
+      clientRef: randomUUID(),
+    };
+
+    const answers = (
+      await Promise.all([order('ada-double-tap', payload), order('ada-double-tap', payload)])
+    ).map((res) => {
+      expect(res.statusCode).toBe(200);
+      return publicOrderResponse.parse(res.json());
+    });
+
+    /* Both taps get the same confirmation: the second is replayed the first
+     * order, not a second one. */
+    expect(answers.map((a) => a.outcome)).toEqual(['placed', 'placed']);
+    expect(answers[0]).toEqual(answers[1]);
+    const orders = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM orders WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect(Number([...orders][0]?.n)).toBe(1);
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(1);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
+  });
+
+  it('a resubmit whose server price changed answers duplicate, never a 500, and meters once (G-96)', async () => {
+    const { businessId, ids } = await openShop('+2348177400091', 'ada-price-race');
+    const payload = {
+      items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+      customerName: 'Chidi Okafor',
+      customerPhone: '0803 555 1234',
+      clientRef: randomUUID(),
+    };
+    const first = publicOrderResponse.parse((await order('ada-price-race', payload)).json());
+    expect(first.outcome).toBe('placed');
+
+    /* What a second in-flight request sees: it passed the "already ordered"
+     * pre-check before the first committed (modelled by hiding the order's
+     * external ref) and read a catalogue the merchant has since repriced, so its
+     * payload hashes differently under the same one-shot key. */
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`UPDATE orders SET external_ref = NULL
+                                WHERE business_id = ${businessId}::uuid`);
+      await ownerDb.execute(sql`UPDATE products SET unit_price_k = unit_price_k + 100
+                                WHERE business_id = ${businessId}::uuid`);
+    } finally {
+      await close();
+    }
+    const res = await order('ada-price-race', payload);
+
+    expect(res.statusCode).toBe(200);
+    expect(publicOrderResponse.parse(res.json())).toEqual({ outcome: 'duplicate' });
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(1);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
+  });
+
   it('a de-listed item, a bad phone and a dead slug each get a sentence, and book nothing', async () => {
     const { businessId, ids } = await openShop('+2348177400031', 'ada-refusals');
 
