@@ -5994,6 +5994,52 @@ describe('a receipt photo', () => {
     expect(rows.find((r) => r.unit === 'DOCUMENTS_UNDERSTOOD')?.used).toBe(1);
   });
 
+  /* G-78: what a photograph SAYS is document text, not something the
+   * merchant typed. A sign, a screenshot or a receipt that happens to read
+   * "STOP" or "YES" must neither opt the merchant out nor confirm the waiting
+   * preview: only a message the merchant typed (or spoke) is a command. */
+  it('a photograph that reads STOP does not opt the merchant out (G-78)', async () => {
+    await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'STOP', confidence: 0.99 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    await post(photoPayload('2348031234567', 'wamid.G78.STOP'));
+    await drain();
+
+    expect(await identity.optedOutAt(db, '+2348031234567')).toBeNull();
+    expect(stubSender.lastText).not.toBe(replies.optedOut().text);
+  });
+
+  it('a photograph that reads YES does not confirm the waiting preview (G-78)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+    await post(messagePayload('2348031234567', 'wamid.G78.SAY', 'paid 12000 cash for diesel'));
+    await drain();
+
+    const books = async () => {
+      const [row] = [
+        ...(await withBusiness(db, business.id, (tx) =>
+          tx.execute<{ expenses: number; postings: number }>(sql`
+            SELECT
+              (SELECT count(*)::int FROM expenses WHERE business_id = ${business.id}::uuid) AS expenses,
+              (SELECT count(*)::int FROM ledger_transactions WHERE business_id = ${business.id}::uuid) AS postings
+          `),
+        )),
+      ];
+      return row!;
+    };
+    expect(await books()).toEqual({ expenses: 0, postings: 0 });
+
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'YES', confidence: 0.99 });
+    await post(photoPayload('2348031234567', 'wamid.G78.YES'));
+    await drain();
+
+    /* Nothing was posted: a preview is confirmed by a typed yes only. */
+    expect(await books()).toEqual({ expenses: 0, postings: 0 });
+  });
+
   it('puts the caption in front of the page, because it says what the page is for', async () => {
     await seedMerchant('+2348031234567');
     arrangePhoto();
