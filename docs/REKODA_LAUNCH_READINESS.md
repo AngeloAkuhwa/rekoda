@@ -438,7 +438,7 @@ Status: **PASS** · **FAIL** · **NOT RUN** · **BLOCKED EXTERNALLY**. "Local 10
 
 ### GATE 12 — End-to-end merchant journeys
 
-NOT RUN as a full set; J2 passed on staging (26 Sep 2026, G-48), G-49's merchant overpayment (J9's overpayment step, J10's merchant variant) is staging accepted (reported by the owner), and J12 cannot pass until G-53 closes; J11's refund half passes against fixtures and its live half waits on the G-05 drill (G-06 is code complete, not live-verified). Definitions in §10.
+NOT RUN as a full set; J2 passed on staging (26 Sep 2026, G-48), G-49's merchant overpayment (J9's overpayment step, J10's merchant variant) is staging accepted (reported by the owner), and J12 waits on G-53 reaching staging (fixed in PR #291, not merged or staged); J11's refund half passes against fixtures and its live half waits on the G-05 drill (G-06 is code complete, not live-verified). Definitions in §10.
 
 ## 10. End-to-end test journeys
 
