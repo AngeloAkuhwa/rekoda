@@ -257,6 +257,12 @@ async function classifyLineActionUnguarded(
     };
   }
 
+  if (outcome.outcome === 'period_closed') {
+    return {
+      error: `That line falls in a month you have already closed (through ${outcome.closedThrough}), so it cannot be classified. Nothing was changed.`,
+    };
+  }
+
   revalidatePath('/app/bank');
   return {
     done: `Recorded as ${outcome.journalNumber} and matched to this line. Your books now say what you said it was.`,

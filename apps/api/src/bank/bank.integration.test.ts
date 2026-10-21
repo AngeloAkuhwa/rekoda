@@ -1083,6 +1083,28 @@ describe('releasing a classification (G-95)', () => {
     expect(await releaseAudits(businessId)).toEqual([]);
   });
 
+  /* G-98: a line dated in a CLOSED month cannot be classified (the journal
+   * takes the line's own day). It answered 500; it must answer what the
+   * journal form and the release answer, and write nothing. */
+  it('answers period_closed, not a 500, for a line dated in a closed month (G-98)', async () => {
+    const { businessId, auth, line } = await setUp('+2348177000220');
+    await withBusiness(db, businessId, (tx) =>
+      closeRepo.closeBooks(tx, { businessId, through: '2026-08', actor: 'user:test' }),
+    );
+
+    const answer = await post(
+      '/v1/bank/classify',
+      { lineId: line.id, classification: 'OWNER_CAPITAL' },
+      auth,
+    );
+
+    expect(answer.statusCode).toBe(200);
+    expect(answer.json()).toEqual({ outcome: 'period_closed', closedThrough: '2026-08' });
+    /* Nothing moved: no journal, and the line is still waiting to be explained. */
+    expect(await postings(businessId)).toEqual([]);
+    expect((await matchedTo(auth, line.id)) ?? null).toBeNull();
+  });
+
   /* L: the original sits in a closed month; the correction is today's. */
   it('reverses a classification from a closed month today, leaving the month alone', async () => {
     const { businessId, auth, line } = await setUp('+2348177000211');
