@@ -365,6 +365,8 @@ export class BillingService {
  * the plan moving, are both worse than the payment failing outright.
  *
  * `settleCharge` returning null is a replayed webhook, and nothing happens.
+ * `superseded` means the payment was recorded but its plan change was refused
+ * because the subscription had been decided again since the charge opened.
  *
  * The business row is locked FIRST, before any charge is written (see
  * `subscriptionsRepo.lockBusiness`): retention locks business then charges,
@@ -383,7 +385,7 @@ export async function applySettledCharge(
     when: Date;
     config: PlanTermsConfig;
   },
-): Promise<'applied' | 'already_settled' | 'business_gone'> {
+): Promise<'applied' | 'already_settled' | 'business_gone' | 'superseded'> {
   if (!(await subscriptionsRepo.lockBusiness(tx, input.businessId))) return 'business_gone';
 
   const charge = await subscriptionsRepo.settleCharge(tx, {
@@ -412,6 +414,16 @@ export async function applySettledCharge(
   }
 
   if (charge.plan) {
+    /* PAYMENT TRUTH is already written: the charge is `paid`. Whether it still
+     * BUYS anything is a separate question (G-104). A plan charge opened before
+     * a newer subscription decision (an operator move, another settled charge,
+     * a scheduled change) was priced against a state that is gone, and applying
+     * it would overwrite that decision. The money stays recorded and the charge
+     * is marked for an operator to reconcile; no refund is invented here. */
+    if (await subscriptionsRepo.decidedSince(tx, input.businessId, charge.createdAt)) {
+      await subscriptionsRepo.markSuperseded(tx, input.reference, input.when);
+      return 'superseded';
+    }
     const subscription = await subscriptionsRepo.subscriptionFor(tx, input.businessId);
 
     /**

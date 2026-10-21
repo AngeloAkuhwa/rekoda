@@ -178,6 +178,8 @@ export async function writeSubscriptionState(
       last_grace_reminder_day = NULL,
       -- G-103: a paid plan establishes the retention exemption; never cleared.
       ever_paid_at = ${state.paid ? sql`COALESCE(ever_paid_at, now())` : sql`ever_paid_at`},
+      -- G-104: this IS a subscription decision; plan charges opened before it are stale.
+      plan_decided_at = now(),
       updated_at = now()
     WHERE id = ${businessId}::uuid
   `);
@@ -195,8 +197,14 @@ export async function schedulePlanChange(
   businessId: string,
   plan: string | null,
 ): Promise<void> {
+  /* Scheduling a change is a decision (G-104): a plan charge opened before it
+   * must not silently undo it. Clearing one is not: an undone cancellation
+   * leaves the subscription as it was, so the renewal already open still
+   * renews. */
   await tx.execute(sql`
-    UPDATE businesses SET pending_plan = ${plan}, updated_at = now()
+    UPDATE businesses SET pending_plan = ${plan},
+      plan_decided_at = ${plan === null ? sql`plan_decided_at` : sql`now()`},
+      updated_at = now()
     WHERE id = ${businessId}::uuid
   `);
 }
@@ -411,6 +419,37 @@ export async function settleCharge(
   `);
   const row = [...rows][0];
   return row ? shape(row) : null;
+}
+
+/**
+ * Was the subscription decided AFTER this charge was opened (G-104)?
+ *
+ * A plan charge is priced and promised against the subscription as it stood
+ * when it was opened. If an operator move, a settled charge or a scheduled
+ * change has been decided since, paying it must not apply its plan: the payment
+ * is real, the entitlement it was meant to buy is not. Call with the business
+ * row locked, so the answer cannot change under the caller.
+ */
+export async function decidedSince(
+  tx: TenantDb,
+  businessId: string,
+  chargeCreatedAt: Date,
+): Promise<boolean> {
+  const rows = await tx.execute<{ stale: boolean }>(sql`
+    SELECT (plan_decided_at IS NOT NULL
+            AND plan_decided_at > ${chargeCreatedAt.toISOString()}::timestamptz) AS stale
+    FROM businesses WHERE id = ${businessId}::uuid
+  `);
+  return [...rows][0]?.stale === true;
+}
+
+/** Mark a paid charge whose plan change was refused as stale. Money truth is untouched. */
+export async function markSuperseded(tx: TenantDb, reference: string, when: Date): Promise<void> {
+  await tx.execute(sql`
+    UPDATE subscription_charges
+    SET superseded_at = ${when.toISOString()}::timestamptz, updated_at = now()
+    WHERE reference = ${reference} AND superseded_at IS NULL
+  `);
 }
 
 /**

@@ -160,6 +160,11 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
     }
     // For 'business_gone' this updates nothing: the event went with the tenant.
     await events.markProcessed(tx, eventId, outcome === 'applied' ? null : outcome, businessId);
+    if (outcome === 'superseded') {
+      log.warn(
+        `subscription charge ${reference} was paid after a newer subscription decision for business ${businessId}; the payment is recorded, the plan change was refused, reconcile it`,
+      );
+    }
     if (outcome === 'applied') {
       log.log(`business ${businessId}: subscription charge ${charge.kind} applied`);
     }
