@@ -23,13 +23,21 @@ export const billingStateView = z.discriminatedUnion('state', [
   z.object({ state: z.literal('trial'), endsAt: isoDate.nullable() }),
 ]);
 
+/**
+ * What a subscription charge can be, as the API and the page see it. It mirrors the
+ * database's `ChargeStatus` and the CHECK on `subscription_charges.status` (migration
+ * 0020); `charge-status-contract.test.ts` in the api fails to compile if they drift.
+ */
+export const billingChargeStatus = z.enum(['pending', 'paid', 'failed', 'refunded']);
+export type BillingChargeStatus = z.infer<typeof billingChargeStatus>;
+
 export const billingChargeView = z.object({
   reference: z.string(),
   kind: z.enum(['first_purchase', 'renewal', 'upgrade', 'add_on', 'seat']),
   plan: z.string().nullable(),
   packId: z.string().nullable(),
   amountK: kobo,
-  status: z.enum(['pending', 'paid', 'failed', 'refunded']),
+  status: billingChargeStatus,
   periodStart: isoDate.nullable(),
   periodEnd: isoDate.nullable(),
   createdAt: isoDate,
