@@ -410,6 +410,7 @@ export class OpsController {
       amountK: number;
       status: string;
       createdAt: string;
+      supersededAt: string | null;
     }>;
     upgradeRequests: Array<{ fromPlan: string; at: string }>;
   }> {
@@ -435,6 +436,7 @@ export class OpsController {
           amountK: charge.amountK,
           status: charge.status,
           createdAt: charge.createdAt.toISOString(),
+          supersededAt: charge.supersededAt?.toISOString() ?? null,
         })),
         upgradeRequests: upgradeRequests.map((request) => ({
           fromPlan: request.fromPlan,

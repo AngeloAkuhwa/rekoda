@@ -246,6 +246,53 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
     expect((await subscription(businessId))?.plan).toBe('complete');
   });
 
+  it('replacing a pending downgrade is a new decision: the charge for the first one is stale', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'complete');
+    const schedule = (plan: string | null) =>
+      withBusiness(appDb, businessId, (tx) =>
+        subscriptionsRepo.schedulePlanChange(tx, businessId, plan),
+      );
+    await schedule('chat');
+    await open(businessId, 'renewal', 'RKD-SUB-STALE-R', 'chat');
+    await schedule('integrate');
+
+    expect(await settle(businessId, 'RKD-SUB-STALE-R')).toBe('superseded');
+    expect((await subscription(businessId))?.pendingPlan).toBe('integrate');
+  });
+
+  it('a superseded charge is visible to an operator on the charge list', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'complete');
+    await open(businessId, 'renewal', 'RKD-SUB-STALE-V', 'complete');
+    await operator(businessId, 'chat');
+    await settle(businessId, 'RKD-SUB-STALE-V');
+
+    const charges = await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.chargesFor(tx, businessId),
+    );
+    const row = charges.rows.find((c) => c.reference === 'RKD-SUB-STALE-V');
+    expect(row?.status).toBe('paid');
+    expect(row?.supersededAt).toBeInstanceOf(Date);
+  });
+
+  it('a stale first purchase does not hold its cycle: the retry gets a fresh payable charge', async () => {
+    const businessId = await seedBusiness();
+    const billing = new BillingService(
+      { planCatalogueReads: false, paystackPlatformConfirmed: true } as never,
+      appDb,
+    );
+    const first = await billing.changePlan(businessId, 'chat');
+    expect(first.state).toBe('payment_required');
+    await operator(businessId, 'integrate'); // decided meanwhile
+    await operator(businessId, 'expired', null);
+    const second = await billing.changePlan(businessId, 'chat');
+
+    expect(second.state).toBe('payment_required');
+    if (first.state !== 'payment_required' || second.state !== 'payment_required') return;
+    expect(second.reference).not.toBe(first.reference);
+  });
+
   it('decisions and charges are stamped at statement time, not transaction start', async () => {
     const businessId = await seedBusiness();
     await operator(businessId, 'complete');

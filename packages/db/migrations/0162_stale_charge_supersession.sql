@@ -26,3 +26,10 @@ DROP INDEX IF EXISTS subscription_charges_pending_upgrade_ux;
 CREATE UNIQUE INDEX subscription_charges_pending_upgrade_ux
   ON subscription_charges (business_id, plan)
   WHERE kind = 'upgrade' AND status = 'pending' AND superseded_at IS NULL;
+
+-- Likewise a stale first purchase or renewal must not hold its cycle: the
+-- replacement for the same cycle is priced against today's state.
+DROP INDEX IF EXISTS subscription_charges_cycle_ux;
+CREATE UNIQUE INDEX subscription_charges_cycle_ux
+  ON subscription_charges (business_id, period_start)
+  WHERE kind IN ('first_purchase', 'renewal') AND superseded_at IS NULL;

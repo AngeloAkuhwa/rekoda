@@ -230,13 +230,24 @@ export async function schedulePlanChange(
     `);
     return;
   }
+  /* REPLACING a pending change with a different one is a new decision: a charge
+   * opened for the first pending plan in between is flagged stale now (an undo
+   * only looks at charges since the latest schedule). */
+  await tx.execute(sql`
+    UPDATE subscription_charges c SET superseded_at = clock_timestamp(), updated_at = now()
+    FROM businesses b
+    WHERE b.id = ${businessId}::uuid AND c.business_id = b.id
+      AND b.pending_plan IS NOT NULL AND b.pending_plan IS DISTINCT FROM ${plan}
+      AND c.status = 'pending' AND c.superseded_at IS NULL
+      AND c.plan IS NOT NULL AND c.plan <> b.plan
+      AND c.created_at > b.plan_decided_at
+  `);
   await tx.execute(sql`
     UPDATE businesses SET pending_plan = ${plan},
       plan_decided_before_pending = CASE WHEN pending_plan IS NULL
         THEN plan_decided_at ELSE plan_decided_before_pending END,
-      -- Re-scheduling while a change is already pending keeps the FIRST schedule's
-      -- time: it is the boundary an undo compares against.
-      plan_decided_at = CASE WHEN pending_plan IS NULL THEN clock_timestamp() ELSE plan_decided_at END,
+      plan_decided_at = CASE WHEN pending_plan IS DISTINCT FROM ${plan}
+        THEN clock_timestamp() ELSE plan_decided_at END,
       updated_at = now()
     WHERE id = ${businessId}::uuid
   `);
@@ -317,6 +328,8 @@ export interface ChargeRow extends Record<string, unknown> {
   periodStart: Date | null;
   periodEnd: Date | null;
   createdAt: Date;
+  /** Paid (or pending) but its plan change was refused as stale (G-104): an operator reconciles it. */
+  supersededAt: Date | null;
 }
 
 interface RawCharge extends Record<string, unknown> {
@@ -332,6 +345,7 @@ interface RawCharge extends Record<string, unknown> {
   period_start: string | null;
   period_end: string | null;
   created_at: string;
+  superseded_at: string | null;
 }
 
 const shape = (row: RawCharge): ChargeRow => ({
@@ -347,6 +361,7 @@ const shape = (row: RawCharge): ChargeRow => ({
   periodStart: at(row.period_start),
   periodEnd: at(row.period_end),
   createdAt: new Date(row.created_at),
+  supersededAt: at(row.superseded_at),
 });
 
 /**
