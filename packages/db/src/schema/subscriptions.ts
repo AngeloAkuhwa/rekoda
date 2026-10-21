@@ -57,6 +57,8 @@ export const subscriptionCharges = pgTable(
     unappliedResolvedAt: timestamp('unapplied_resolved_at', { withTimezone: true }),
     unappliedResolution: text('unapplied_resolution'),
     unappliedResolvedBy: text('unapplied_resolved_by'),
+    /** Retired because the merchant chose another plan, not because it went stale (migration 0163, G-105). */
+    abandonedAt: timestamp('abandoned_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

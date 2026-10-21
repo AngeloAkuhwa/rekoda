@@ -13,3 +13,9 @@ CREATE UNIQUE INDEX subscription_charges_cycle_ux
   WHERE kind IN ('first_purchase', 'renewal')
     AND superseded_at IS NULL
     AND status <> 'failed';
+
+-- A pending charge the merchant ABANDONED by asking for another plan the same
+-- day is retired (superseded) so only the new link is payable, but it is not
+-- stale: nothing newer was decided about the subscription. Paying it later
+-- still buys what it promised unless a newer decision exists by then.
+ALTER TABLE subscription_charges ADD COLUMN IF NOT EXISTS abandoned_at timestamptz;

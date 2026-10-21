@@ -240,7 +240,7 @@ export async function schedulePlanChange(
       WHERE b.id = ${businessId}::uuid AND c.business_id = b.id
         AND b.pending_plan IS NOT NULL
         AND c.status = 'pending' AND c.superseded_at IS NOT NULL
-        AND c.unapplied_at IS NULL AND c.plan IS NOT NULL
+        AND c.unapplied_at IS NULL AND c.abandoned_at IS NULL AND c.plan IS NOT NULL
         AND b.plan_decided_at IS NOT NULL AND b.plan_decided_before_pending IS NOT NULL
         AND c.created_at >= b.plan_decided_before_pending AND c.created_at < b.plan_decided_at
         AND c.superseded_at >= b.plan_decided_at
@@ -523,7 +523,7 @@ export async function decidedSince(
   /* Compared in SQL at full microsecond precision: a JS Date would truncate
    * the charge's created_at to the millisecond. */
   const rows = await tx.execute<{ stale: boolean }>(sql`
-    SELECT (c.superseded_at IS NOT NULL
+    SELECT ((c.superseded_at IS NOT NULL AND c.abandoned_at IS NULL)
             OR (b.plan_decided_at IS NOT NULL AND b.plan_decided_at > c.created_at)) AS stale
     FROM businesses b
     JOIN subscription_charges c ON c.business_id = b.id AND c.reference = ${reference}
@@ -542,8 +542,10 @@ export async function decidedSince(
  * - `upgrade` retires a pending upgrade to the same plan priced before today's
  *   state (used when the upgrade now costs nothing and is applied directly).
  *
- * A retired charge that is paid later is still recorded as paid; it then
- * follows the stale-charge rules (G-104). Call with the business row locked.
+ * An abandoned charge is retired but NOT stale (`abandoned_at`): paid later,
+ * it still buys its plan unless a newer decision exists by then, in which case
+ * the stale-charge rules (G-104) apply as to any other. Call with the business
+ * row locked.
  */
 export async function retireAbandonedPending(
   tx: TenantDb,
@@ -552,7 +554,8 @@ export async function retireAbandonedPending(
     { kind: 'first_purchase'; periodStart: Date; plan: string } | { kind: 'upgrade'; plan: string },
 ): Promise<void> {
   await tx.execute(sql`
-    UPDATE subscription_charges SET superseded_at = clock_timestamp(), updated_at = now()
+    UPDATE subscription_charges
+    SET superseded_at = clock_timestamp(), abandoned_at = clock_timestamp(), updated_at = now()
     WHERE business_id = ${businessId}::uuid
       AND status = 'pending' AND superseded_at IS NULL
       AND kind = ${match.kind}
@@ -865,6 +868,8 @@ const NO_PAYABLE_RENEWAL = sql`NOT EXISTS (
     -- renewal opened before the latest decision: that one is retired under the
     -- lock, which frees the slot. A failed or paid renewal is never retired, so
     -- selecting its business would only fail to open a charge on every pass.
+    -- (G-105 lets a FAILED renewal's cycle slot be reused by a new charge, but
+    -- nothing re-raises one yet: the sweep still leaves it to grace.)
     AND NOT (c.status = 'pending'
              AND businesses.plan_decided_at IS NOT NULL
              AND businesses.plan_decided_at > c.created_at)

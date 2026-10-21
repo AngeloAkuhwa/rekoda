@@ -118,6 +118,42 @@ describe('an upgrade that costs nothing', () => {
   });
 });
 
+describe('free upgrades repeat', () => {
+  it('two businesses can each switch free (the provider reference is unique per charge)', async () => {
+    const a = await seedBusiness();
+    const b = await seedBusiness();
+    await onPlan(a, 'chat', 10 * 3_600_000);
+    await onPlan(b, 'chat', 10 * 3_600_000);
+
+    expect(await billing().changePlan(a, 'complete')).toMatchObject({ state: 'applied' });
+    expect(await billing().changePlan(b, 'complete')).toMatchObject({ state: 'applied' });
+  });
+
+  it('a pending upgrade to the same plan is retired when the upgrade becomes free', async () => {
+    const businessId = await seedBusiness();
+    await onPlan(businessId, 'chat', 20 * DAY);
+    const paid = await billing().changePlan(businessId, 'complete');
+    if (paid.state !== 'payment_required') throw new Error('payable first');
+    // The cycle runs down to under a day: the same upgrade is now free.
+    await ownerDb.execute(sql`UPDATE businesses SET plan_expires_at = now() + interval '10 hours'`);
+
+    expect(await billing().changePlan(businessId, 'complete')).toMatchObject({ state: 'applied' });
+
+    const rows = await chargesOf(businessId);
+    expect(rows.find((c) => c.reference === paid.reference)?.superseded_at).not.toBeNull();
+  });
+
+  it('a cycle ending exactly now is refused, not switched for free', async () => {
+    const businessId = await seedBusiness();
+    await onPlan(businessId, 'chat', 60_000);
+    await ownerDb.execute(sql`UPDATE businesses SET plan_expires_at = now()`);
+
+    const answer = await billing().changePlan(businessId, 'complete');
+
+    expect(answer).toEqual({ state: 'unavailable', reason: 'cycle_ended' });
+  });
+});
+
 describe('a first purchase is retryable and plan-specific', () => {
   it('a different plan the same day gets its own charge, not the first plan’s', async () => {
     const businessId = await seedBusiness();
@@ -155,6 +191,52 @@ describe('a first purchase is retryable and plan-specific', () => {
     );
 
     expect((await subscription(businessId))?.plan).toBe('complete');
+  });
+
+  it('the abandoned link paid after the new one is recorded but buys nothing', async () => {
+    const businessId = await seedBusiness();
+    const first = await billing().changePlan(businessId, 'chat');
+    const second = await billing().changePlan(businessId, 'complete');
+    if (first.state !== 'payment_required' || second.state !== 'payment_required') {
+      throw new Error('both should be payable');
+    }
+    const pay = (reference: string) =>
+      withBusiness(appDb, businessId, (tx) =>
+        applySettledCharge(tx, {
+          businessId,
+          reference,
+          providerReference: `ps_${reference}`,
+          when: new Date(),
+          config,
+        }),
+      );
+
+    expect(await pay(second.reference)).toBe('applied');
+    expect(await pay(first.reference)).toBe('superseded');
+
+    expect((await subscription(businessId))?.plan).toBe('complete');
+    const rows = await chargesOf(businessId);
+    expect(rows.find((c) => c.reference === first.reference)?.status).toBe('paid');
+  });
+
+  it('an abandoned link paid on its own still buys its plan', async () => {
+    const businessId = await seedBusiness();
+    const first = await billing().changePlan(businessId, 'chat');
+    await billing().changePlan(businessId, 'complete');
+    if (first.state !== 'payment_required') throw new Error('payable');
+
+    const outcome = await withBusiness(appDb, businessId, (tx) =>
+      applySettledCharge(tx, {
+        businessId,
+        reference: first.reference,
+        providerReference: 'ps_first_only',
+        when: new Date(),
+        config,
+      }),
+    );
+
+    expect(outcome).toBe('applied');
+    expect((await subscription(businessId))?.plan).toBe('chat');
   });
 
   it('a failed first purchase can be retried', async () => {

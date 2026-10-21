@@ -282,7 +282,8 @@ export class BillingService {
         await applySettledCharge(tx, {
           businessId,
           reference,
-          providerReference: 'no_charge',
+          /* Unique per charge: (provider, provider_reference) is globally unique. */
+          providerReference: `no_charge:${reference}`,
           when: now,
           config: this.config,
         });

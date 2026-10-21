@@ -59,6 +59,11 @@ function lagosDate(iso: string): string {
   });
 }
 
+/** A cycle that has already ended: the server refuses a free upgrade there (G-105). */
+function cycleEnded(renewsAt: string): boolean {
+  return new Date(renewsAt).getTime() <= Date.now();
+}
+
 const PROBLEMS: Record<string, string> = {
   awaiting_platform_confirmation:
     'Card payments are not switched on yet. Nothing was charged. Message *upgrade* on WhatsApp and we will move you across by hand.',
@@ -277,6 +282,13 @@ export default async function BillingPage({
               Nothing to pay today. You keep {PLAN_NAMES[proposed.from] ?? proposed.from} until{' '}
               {lagosDate(proposed.renewsAt)}, and the new plan starts then.
             </p>
+          ) : proposed.kind === 'upgrade' &&
+            proposed.amountK === 0 &&
+            cycleEnded(proposed.renewsAt) ? (
+            <p>
+              Your paid period ended on {lagosDate(proposed.renewsAt)}, so there is nothing to
+              upgrade yet. Message *upgrade* on WhatsApp and we will sort out your renewal with you.
+            </p>
           ) : proposed.amountK === 0 ? (
             <p>Nothing to pay today. Your renewal date does not change.</p>
           ) : (
@@ -287,7 +299,12 @@ export default async function BillingPage({
                 : `. Renews ${lagosDate(proposed.renewsAt)}.`}
             </p>
           )}
-          {isOwner(identity.role) ? (
+          {isOwner(identity.role) &&
+          !(
+            proposed.kind === 'upgrade' &&
+            proposed.amountK === 0 &&
+            cycleEnded(proposed.renewsAt)
+          ) ? (
             <form action={confirmPlanChange}>
               <input type="hidden" name="plan" value={proposed.to} />
               <PendingButton pendingLabel="Confirming…">
