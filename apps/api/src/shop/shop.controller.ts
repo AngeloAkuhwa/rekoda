@@ -491,6 +491,13 @@ export class PublicShopController {
         await refundBoth();
         return { outcome: 'items_changed' };
       }
+      if (error instanceof stockRepo.InsufficientStock) {
+        /* The shelf moved under the cart, or two customers reached the last
+         * unit at once. The order transaction rolled back whole (invoice,
+         * order, claim), so nothing is booked; the two units go back (G-53). */
+        await refundBoth();
+        return { outcome: 'out_of_stock' };
+      }
       if (isDuplicateOnOrders(error)) {
         await refundBoth();
         return { outcome: 'duplicate' };
