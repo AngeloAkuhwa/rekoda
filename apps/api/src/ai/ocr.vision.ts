@@ -40,6 +40,9 @@ export class VisionTextExtraction implements TextExtraction {
       apiKey,
       timeout: timeoutMs,
       maxRetries: 0,
+      /* No OpenTelemetry spans from the SDK, and none the environment can turn
+       * on: a prompt or a photo is the merchant's data (invariant 4). */
+      openTelemetry: false,
       /* Explicit, so the SDK never reads its base-URL variable from the
        * process (final review on a98a294). */
       baseURL: baseUrl || ANTHROPIC_DEFAULT_BASE_URL,

@@ -39,6 +39,9 @@ export class AnthropicTransport implements ModelTransport {
       apiKey,
       timeout: timeoutMs,
       maxRetries: 0,
+      /* No OpenTelemetry spans from the SDK, and none the environment can turn
+       * on: a prompt or a photo is the merchant's data (invariant 4). */
+      openTelemetry: false,
       /* Injectable for the same reason the OpenAI client's is, and the
        * Paystack adapter's: the properties worth asserting here are about
        * what goes over the wire. Always explicit: left out, the SDK reads

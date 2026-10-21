@@ -295,3 +295,25 @@ describe('the endpoint a transport calls', () => {
     }
   });
 });
+
+describe('SDK telemetry', () => {
+  const tracesOf = (transport: object): { enabled: boolean } =>
+    (transport as unknown as { client: { openTelemetry: { traces: { enabled: boolean } } } }).client
+      .openTelemetry.traces;
+
+  /* The Anthropic SDK (0.134+) opens OpenTelemetry spans by default and can
+   * carry message content when a provider is registered. Prompts and photos
+   * are the merchant's data, so the clients opt out in code and no later APM
+   * setup or environment variable can switch them back on (invariant 4). */
+  it('keeps the Anthropic clients out of OpenTelemetry, whatever the environment says', () => {
+    const saved = process.env.ANTHROPIC_OPEN_TELEMETRY;
+    process.env.ANTHROPIC_OPEN_TELEMETRY = 'true';
+    try {
+      expect(tracesOf(new AnthropicTransport('sk-test')).enabled).toBe(false);
+      expect(tracesOf(new VisionTextExtraction('sk-test', 'claude-sonnet-5')).enabled).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_OPEN_TELEMETRY;
+      else process.env.ANTHROPIC_OPEN_TELEMETRY = saved;
+    }
+  });
+});
