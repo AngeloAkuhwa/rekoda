@@ -657,6 +657,14 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
     );
     expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(1);
     expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
+
+    /* One booked order, not just one `placed` answer. */
+    const booked = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM orders WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect(Number([...booked][0]?.n)).toBe(1);
   });
 
   it('a de-listed item, a bad phone and a dead slug each get a sentence, and book nothing', async () => {

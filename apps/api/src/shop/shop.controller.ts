@@ -452,8 +452,9 @@ export class PublicShopController {
             /* One form, one order. A concurrent twin passed the pre-check above
              * and took its own two units; the bus answered with the first
              * request's order (or a payload that moved under it). A claim row
-             * exists only once that order has committed. Nothing was booked HERE, so its units go back once this
-             * commits, and the customer is told what a sequential resubmit is. */
+             * exists only once that order has committed. Nothing was booked
+             * HERE, so its units go back once this commits, and the customer
+             * is told what a sequential resubmit is. */
             duplicate = true;
             return { outcome: 'duplicate' as const };
           }
