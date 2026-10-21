@@ -826,6 +826,31 @@ describe('the chat surface enforces roles', () => {
     expect(await seen(businessId)).toEqual(ZERO);
   });
 
+  /* G-79: the yes refuses a view-only member; the no and the cancel must too.
+   * Otherwise an accountant's "no" supersedes the owner's pending preview and
+   * the owner's later yes confirms nothing. */
+  it.each(['no', 'cancel'])(
+    'a view-only member`s "%s" leaves the owner`s pending preview alone (G-79)',
+    async (word) => {
+      const businessId = await seedBusiness(`Role Deny ${word} Ltd`, '+2348140010051');
+      const accountant = word === 'no' ? '+2348140010052' : '+2348140010053';
+      await memberOf(businessId, accountant, 'accountant');
+      stubTransport.replyWith(A_SALE);
+      await saysOverChat(businessId, '+2348140010051', 'sold rice 20k cash');
+      const pending = () =>
+        withBusiness(appDb, businessId, async (tx) => {
+          const [row] = await tx.execute<{ n: string }>(sql`
+            SELECT count(*) AS n FROM command_drafts
+            WHERE business_id = ${businessId}::uuid AND state = 'pending'`);
+          return Number(row!.n);
+        });
+      expect(await pending()).toBe(1);
+
+      expect(await saysOverChat(businessId, accountant, word)).toBe(replies.viewOnlyRole().text);
+      expect(await pending()).toBe(1);
+    },
+  );
+
   it('does not charge twice for a question whose reply failed once (G-57)', async () => {
     const businessId = await seedBusiness('Role Gate Retry Read Ltd', '+2348140010041');
     await memberOf(businessId, '+2348140010042', 'accountant');
