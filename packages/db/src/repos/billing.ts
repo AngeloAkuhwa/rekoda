@@ -16,9 +16,13 @@ import type { Db, TenantDb } from '../client.js';
 import { withBusiness } from '../client.js';
 import { businesses } from '../schema/tenancy.js';
 import { auditEvents } from '../schema/ops.js';
+import * as subscriptionsRepo from './subscriptions.js';
 
 /** The plans nobody paid for; every other plan is a paid one (G-103). */
 const UNPAID_PLANS = new Set(['trial', 'expired']);
+
+/** The day of the month in Lagos (UTC+1), which renewals anchor to. */
+const lagosDayOfMonth = (at: Date): number => new Date(at.getTime() + 3_600_000).getUTCDate();
 
 export interface PlanChange {
   businessId: string;
@@ -38,26 +42,52 @@ export interface PlanChange {
 export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
   return withBusiness(db, change.businessId, async (tx) => {
     const before = await tx
-      .select({ plan: businesses.plan, expiresAt: businesses.planExpiresAt })
+      .select({
+        plan: businesses.plan,
+        expiresAt: businesses.planExpiresAt,
+        cycleStartedAt: businesses.cycleStartedAt,
+        anchorDay: businesses.renewalAnchorDay,
+        pendingPlan: businesses.pendingPlan,
+        paymentFailedAt: businesses.paymentFailedAt,
+      })
       .from(businesses)
       .where(eq(businesses.id, change.businessId))
-      .limit(1);
+      .limit(1)
+      // The audit's old value is what the UPDATE below overwrites, so it is read under the row lock.
+      .for('update');
     const previous = before[0];
     if (!previous) return false;
 
-    await tx
-      .update(businesses)
-      .set({
-        plan: change.plan,
-        planExpiresAt: change.expiresAt,
-        /* A paid plan, however it was set (G-103, OWN-28): retention must
-         * never read this business as an abandoned trial later. This records
-         * an exemption, not that cash was collected. */
-        ...(!UNPAID_PLANS.has(change.plan)
-          ? { everPaidAt: sql`coalesce(${businesses.everPaidAt}, now())` }
-          : {}),
-      })
-      .where(eq(businesses.id, change.businessId));
+    /* One writer for the whole subscription (G-62): a downgrade scheduled
+     * against the old plan, a failed renewal and its reminders, the old
+     * plan-version pin and the old cycle dates all go with the old plan.
+     * The operator's `expiresAt` is kept exactly as given; with none there
+     * is no dated cycle, so no cycle start and no anchor day is invented (a
+     * start that never advances would age every later upgrade's proration).
+     * Re-posting the same plan and expiry changes nothing about the cycle, so
+     * its start is kept: moving it forward would shrink the proration
+     * denominator and overcharge a later upgrade. */
+    const paid = !UNPAID_PLANS.has(change.plan);
+    const sameCycle =
+      previous.plan === change.plan &&
+      previous.cycleStartedAt !== null &&
+      previous.expiresAt !== null &&
+      change.expiresAt !== null &&
+      previous.expiresAt.getTime() === change.expiresAt.getTime();
+    await subscriptionsRepo.writeSubscriptionState(tx, change.businessId, {
+      plan: change.plan,
+      paid,
+      cycleStartedAt:
+        paid && change.expiresAt ? (sameCycle ? previous.cycleStartedAt : new Date()) : null,
+      planExpiresAt: change.expiresAt,
+      anchorDay:
+        paid && change.expiresAt
+          ? sameCycle && previous.anchorDay !== null
+            ? previous.anchorDay // a short-month renewal's day is clamped; the anchor is the original day
+            : lagosDayOfMonth(change.expiresAt)
+          : null,
+      pendingPlan: null,
+    });
 
     await tx.insert(auditEvents).values({
       businessId: change.businessId,
@@ -68,6 +98,9 @@ export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
       oldValue: {
         plan: previous.plan,
         expiresAt: previous.expiresAt ? previous.expiresAt.toISOString() : null,
+        /* What the move cleared, so an override stays traceable (G-62). */
+        pendingPlan: previous.pendingPlan,
+        paymentFailedAt: previous.paymentFailedAt ? previous.paymentFailedAt.toISOString() : null,
       } as never,
       newValue: {
         plan: change.plan,

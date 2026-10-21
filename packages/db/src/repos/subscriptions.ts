@@ -97,35 +97,87 @@ export async function applyCycle(
     pendingPlan?: string | null;
   },
 ): Promise<void> {
-  const startStamp = cycle.cycleStartedAt.toISOString();
-  await tx.execute(sql`
-    UPDATE businesses SET
-      plan = ${cycle.plan},
-      plan_version_id = CASE
+  await writeSubscriptionState(tx, businessId, {
+    plan: cycle.plan,
+    paid: true,
+    cycleStartedAt: cycle.cycleStartedAt,
+    planExpiresAt: cycle.renewsAt,
+    anchorDay: cycle.anchorDay,
+    pendingPlan: cycle.pendingPlan ?? null,
+  });
+}
+
+/** What a business's subscription columns say, written as one fact. */
+export interface SubscriptionState {
+  plan: string;
+  /**
+   * A paid plan (a cycle or an operator arrangement) or not (trial, expired).
+   * Paid pins the plan-version and records the retention exemption (G-103);
+   * unpaid leaves the pin alone: every read checks it against the plan, so a
+   * stale pin is ignored, and keeping it keeps the grandfathering for the day
+   * the business resumes.
+   */
+  paid: boolean;
+  /** Null for an unpaid plan: no paid cycle began. */
+  cycleStartedAt: Date | null;
+  /** The renewal date, a trial's hard stop, or null for an open-ended arrangement. */
+  planExpiresAt: Date | null;
+  /** Null where there is no dated renewable cycle to anchor. */
+  anchorDay: number | null;
+  pendingPlan: string | null;
+}
+
+/**
+ * The one writer of a business's subscription state (G-62).
+ *
+ * A paid cycle and an operator plan change both land here, so they cannot
+ * disagree about what moving a business to a plan resets: the grace clock
+ * and its reminder claim, a downgrade scheduled against the old plan, and
+ * the plan-version pin (a pin that already belongs to the plan is KEPT,
+ * which is grandfathering; one that belongs to another plan never survives
+ * the move). `ever_paid_at` is only ever set here, never cleared (G-103).
+ */
+export async function writeSubscriptionState(
+  tx: TenantDb,
+  businessId: string,
+  state: SubscriptionState,
+): Promise<void> {
+  const startStamp = (state.cycleStartedAt ?? new Date()).toISOString();
+  const cycleStarted = state.cycleStartedAt ? sql`${startStamp}::timestamptz` : sql`NULL`;
+  const expires = state.planExpiresAt
+    ? sql`${state.planExpiresAt.toISOString()}::timestamptz`
+    : sql`NULL`;
+  const pin = state.paid
+    ? sql`CASE
         WHEN plan_version_id IS NOT NULL AND EXISTS (
           SELECT 1 FROM plan_versions pv
-          WHERE pv.id = plan_version_id AND pv.plan_id = ${cycle.plan})
+          WHERE pv.id = plan_version_id AND pv.plan_id = ${state.plan})
           THEN plan_version_id
         ELSE COALESCE(
           (SELECT id FROM plan_versions
-           WHERE plan_id = ${cycle.plan}
+           WHERE plan_id = ${state.plan}
              AND effective_from <= ${startStamp}::timestamptz
              AND (effective_to IS NULL OR effective_to > ${startStamp}::timestamptz)
            ORDER BY version DESC
            LIMIT 1),
           (SELECT id FROM plan_versions
-           WHERE plan_id = ${cycle.plan}
+           WHERE plan_id = ${state.plan}
            ORDER BY version
            LIMIT 1))
-      END,
-      plan_expires_at = ${cycle.renewsAt.toISOString()}::timestamptz,
-      cycle_started_at = ${startStamp}::timestamptz,
-      renewal_anchor_day = ${cycle.anchorDay},
-      pending_plan = ${cycle.pendingPlan ?? null},
+      END`
+    : sql`plan_version_id`;
+  await tx.execute(sql`
+    UPDATE businesses SET
+      plan = ${state.plan},
+      plan_version_id = ${pin},
+      plan_expires_at = ${expires},
+      cycle_started_at = ${cycleStarted},
+      renewal_anchor_day = ${state.anchorDay},
+      pending_plan = ${state.pendingPlan},
       payment_failed_at = NULL,
       last_grace_reminder_day = NULL,
-      -- G-103: a paid cycle establishes the retention exemption; never cleared.
-      ever_paid_at = COALESCE(ever_paid_at, now()),
+      -- G-103: a paid plan establishes the retention exemption; never cleared.
+      ever_paid_at = ${state.paid ? sql`COALESCE(ever_paid_at, now())` : sql`ever_paid_at`},
       updated_at = now()
     WHERE id = ${businessId}::uuid
   `);
