@@ -124,7 +124,7 @@ export async function applyCycle(
       pending_plan = ${cycle.pendingPlan ?? null},
       payment_failed_at = NULL,
       last_grace_reminder_day = NULL,
-      -- G-103: a paid cycle is a business that paid; never cleared.
+      -- G-103: a paid cycle establishes the retention exemption; never cleared.
       ever_paid_at = COALESCE(ever_paid_at, now()),
       updated_at = now()
     WHERE id = ${businessId}::uuid
@@ -297,6 +297,42 @@ export async function pendingCharge(
   `);
   const row = [...rows][0];
   return row ? { reference: row.reference, amountK: Number(row.amount_k) } : null;
+}
+
+/**
+ * Lock the business row. The first statement of every transaction that
+ * settles a subscription charge, before it writes any charge row.
+ *
+ * LOCK ORDER (G-103). Retention deletes a whole tenant, and it takes the
+ * business row first (`retention_delete_business` reads it FOR UPDATE) and
+ * the tenant's tables, `subscription_charges` among them, after. Settlement
+ * used to write the charge row and reach the business row only at
+ * `applyCycle`, the opposite order, so the two could each hold what the
+ * other wanted: a Postgres deadlock, with a paying merchant's transaction as
+ * one possible victim. Every settlement now takes the business row first, so
+ * both paths run business, then charge, and the later one simply waits.
+ *
+ * FOR NO KEY UPDATE is what `applyCycle`'s UPDATE takes anyway, so this moves
+ * an existing lock earlier rather than adding a stronger one. It conflicts
+ * with retention's FOR UPDATE, which is the point.
+ *
+ * Other paths that touch both tables, and why none inverts:
+ *   - openCharge inserts a new charge (invisible to retention's snapshot) and
+ *     markRenewalFailed then updates the business: no existing charge row is
+ *     held.
+ *   - expireSubscription, schedulePlanChange, the grace claims and operator
+ *     setPlan write the business first, and never a charge.
+ *   - refundCharge writes a paid charge, and a business with a paid or
+ *     refunded charge is never selected by retention, so it is never locked.
+ *
+ * Returns false when the business no longer exists (retention won the race
+ * and deleted it): the caller has nothing to settle against.
+ */
+export async function lockBusiness(tx: TenantDb, businessId: string): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    SELECT id FROM businesses WHERE id = ${businessId}::uuid FOR NO KEY UPDATE
+  `);
+  return [...rows].length === 1;
 }
 
 export async function settleCharge(

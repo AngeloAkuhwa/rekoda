@@ -27,6 +27,7 @@ import {
   marginRepo,
   planCatalogueRepo,
   quotaRepo,
+  sql,
   subscriptionsRepo,
   usageRepo,
   withBusiness,
@@ -1037,5 +1038,75 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
 
     const refused = await confirmedBilling().buyPack(businessId, 'messages_100');
     expect(refused).toEqual({ state: 'unavailable', reason: 'not_available_on_plan' });
+  });
+});
+
+describe('the lock order of a settling payment (G-103)', () => {
+  /* Retention deletion locks the business row, then deletes its charges. A
+   * settling payment must therefore take the business row BEFORE it touches
+   * the charge, or the two can each hold what the other wants and Postgres
+   * aborts the payment. The probe is deterministic: while something else
+   * holds the business row, a payment that has already updated the charge
+   * has locked it, and one that locks the business first has not. */
+  it('takes the business row before it touches the charge', async () => {
+    const { businessId } = await onboard('+2348177100090');
+    const reference = 'sub_lockorder_1';
+    const when = new Date('2026-08-20T10:00:00Z');
+    await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.openCharge(tx, {
+        businessId,
+        kind: 'first_purchase',
+        plan: 'chat',
+        amountK: PLAN_PRICES_K.chat,
+        reference,
+        periodStart: when,
+        periodEnd: new Date(when.getTime() + 30 * 86_400_000),
+      }),
+    );
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let locked!: () => void;
+    const holding = new Promise<void>((resolve) => (locked = resolve));
+    const holder = withBusiness(db, businessId, async (tx) => {
+      await tx.execute(sql`SELECT 1 FROM businesses WHERE id = ${businessId}::uuid FOR UPDATE`);
+      locked();
+      await held;
+    });
+    await holding;
+
+    // Whatever happens below, the holder must let go, or a failed wait would
+    // leave the business row locked and hang the next test's teardown.
+    let payment!: Promise<'applied' | 'already_settled' | 'business_gone'>;
+    let probe: Error | null = null;
+    try {
+      payment = withBusiness(db, businessId, (tx) =>
+        applySettledCharge(tx, { businessId, reference, providerReference: 'ps_x', when, config }),
+      );
+      // Wait until the payment is actually parked on the business row, not for
+      // a guessed interval that a loaded runner could outlast.
+      for (let waited = 0; ; waited += 25) {
+        const rows = await ownerDb.execute<{ n: number }>(sql`
+          SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE wait_event_type = 'Lock' AND datname = current_database()
+        `);
+        if (([...rows][0]?.n ?? 0) >= 1) break;
+        if (waited > 8_000) throw new Error('the payment never waited on the business row');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      try {
+        await ownerDb.execute(sql`
+          SELECT 1 FROM subscription_charges WHERE reference = ${reference} FOR UPDATE NOWAIT
+        `);
+      } catch (e) {
+        probe = e as Error;
+      }
+    } finally {
+      release();
+      await holder;
+    }
+    expect(probe, 'the payment touched the charge before it held the business').toBeNull();
+    // A payment that returned early (gone, already settled) would pass the probe for free.
+    expect(await payment).toBe('applied');
   });
 });

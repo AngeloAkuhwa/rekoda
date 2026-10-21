@@ -104,6 +104,7 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
           /* The attempt is over and the charge is closed. The obligation is
            * not: the cycle still ends when it ends, and the grace sweep is
            * already counting. A retry is a NEW charge. */
+          await subscriptionsRepo.lockBusiness(tx, businessId);
           await subscriptionsRepo.settleCharge(tx, {
             reference,
             status: 'failed',
@@ -146,12 +147,19 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
       when: new Date(),
       config: deps.config,
     });
-    await events.markProcessed(
-      tx,
-      eventId,
-      outcome === 'already_settled' ? 'already_settled' : null,
-      businessId,
-    );
+    if (outcome === 'business_gone') {
+      /* Retention deleted the business first, and with it this event, the job
+       * and the charge: there is no row left to mark. The provider took money
+       * for a tenant that no longer exists, and the only trace is this line,
+       * so it carries the two non-PII identifiers an operator needs to match
+       * the Paystack transaction (a tenant UUID and an RKD-SUB/RKD-PACK
+       * reference). Never applied to anything. */
+      log.warn(
+        `subscription payment ${reference} arrived for business ${businessId}, which retention had already deleted; reconcile it at the provider`,
+      );
+    }
+    // For 'business_gone' this updates nothing: the event went with the tenant.
+    await events.markProcessed(tx, eventId, outcome === 'applied' ? null : outcome, businessId);
     if (outcome === 'applied') {
       log.log(`business ${businessId}: subscription charge ${charge.kind} applied`);
     }

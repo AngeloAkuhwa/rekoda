@@ -365,6 +365,14 @@ export class BillingService {
  * the plan moving, are both worse than the payment failing outright.
  *
  * `settleCharge` returning null is a replayed webhook, and nothing happens.
+ *
+ * The business row is locked FIRST, before any charge is written (see
+ * `subscriptionsRepo.lockBusiness`): retention locks business then charges,
+ * and settlement used to lock them the other way round. `business_gone`
+ * means retention deleted the business before this payment could land; the
+ * money is the provider's and an operator's to reconcile (the caller logs the
+ * reference, since the event and charge rows went with the business), not
+ * something to apply to a tenant that no longer exists.
  */
 export async function applySettledCharge(
   tx: TenantDb,
@@ -375,7 +383,9 @@ export async function applySettledCharge(
     when: Date;
     config: PlanTermsConfig;
   },
-): Promise<'applied' | 'already_settled'> {
+): Promise<'applied' | 'already_settled' | 'business_gone'> {
+  if (!(await subscriptionsRepo.lockBusiness(tx, input.businessId))) return 'business_gone';
+
   const charge = await subscriptionsRepo.settleCharge(tx, {
     reference: input.reference,
     status: 'paid',
