@@ -407,6 +407,26 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
     expect((await subscription(businessId))?.plan).toBe('complete');
   });
 
+  it('undoing a cancellation revives a charge that a later upgrade request retired while it was pending', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'chat');
+    const schedule = (plan: string | null) =>
+      withBusiness(appDb, businessId, (tx) =>
+        subscriptionsRepo.schedulePlanChange(tx, businessId, plan),
+      );
+    await open(businessId, 'upgrade', 'RKD-SUB-STALE-REV', 'complete');
+    await schedule('expired');
+    /* The merchant asks for another paid plan while the cancellation waits:
+     * changePlan retires every plan charge older than the latest decision. */
+    await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.retireStalePending(tx, businessId),
+    );
+    await schedule(null);
+
+    expect(await settle(businessId, 'RKD-SUB-STALE-REV')).toBe('applied');
+    expect((await subscription(businessId))?.plan).toBe('complete');
+  });
+
   it('a downgrade already pending before the migration (no decision time) is still undoable cleanly', async () => {
     const businessId = await seedBusiness();
     await operator(businessId, 'complete');

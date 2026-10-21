@@ -223,6 +223,28 @@ export async function schedulePlanChange(
         AND c.kind = 'renewal' AND c.plan IS NOT NULL AND c.plan <> b.plan
         AND c.created_at > COALESCE(b.plan_decided_at, '-infinity'::timestamptz)
     `);
+    /* A charge opened BEFORE the schedule but retired AFTER it (the merchant
+     * asked for another paid plan while the change waited) was only stale
+     * because of the schedule. The undo removes that reason, so it is current
+     * again, unless a fresh charge already took its slot. */
+    await tx.execute(sql`
+      UPDATE subscription_charges c SET superseded_at = NULL, updated_at = now()
+      FROM businesses b
+      WHERE b.id = ${businessId}::uuid AND c.business_id = b.id
+        AND b.pending_plan IS NOT NULL
+        AND c.status = 'pending' AND c.superseded_at IS NOT NULL
+        AND c.unapplied_at IS NULL AND c.plan IS NOT NULL
+        AND b.plan_decided_at IS NOT NULL AND b.plan_decided_before_pending IS NOT NULL
+        AND c.created_at >= b.plan_decided_before_pending AND c.created_at < b.plan_decided_at
+        AND c.superseded_at >= b.plan_decided_at
+        AND NOT EXISTS (
+          SELECT 1 FROM subscription_charges o
+          WHERE o.business_id = c.business_id AND o.id <> c.id
+            AND o.status = 'pending' AND o.superseded_at IS NULL
+            AND o.kind = c.kind
+            AND (CASE WHEN c.kind = 'upgrade' THEN o.plan = c.plan
+                      ELSE o.period_start IS NOT DISTINCT FROM c.period_start END))
+    `);
     /* Put the decision time back to what it was before the change was
      * scheduled, so a charge opened before the cancellation is current again. */
     await tx.execute(sql`
