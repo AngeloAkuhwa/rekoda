@@ -144,13 +144,16 @@ export const billingPlanChangeRequest = z.object({
 /**
  * What happened when a merchant asked to change plan.
  *
- * `scheduled` costs nothing and waits for the renewal. `payment_required`
+ * `scheduled` costs nothing and waits for the renewal. `applied` costs
+ * nothing and has already happened. `payment_required`
  * has opened a charge that is not paid until a provider says so. `unavailable`
  * is the honest answer while production Paystack is gated (spec §47): no
  * charge is opened, so nothing has to be cleaned up when it lifts.
  */
 export const billingPlanChangeResponse = z.discriminatedUnion('state', [
   z.object({ state: z.literal('scheduled'), plan: z.string(), effectiveAt: isoDate }),
+  /** An upgrade that costs nothing today (under a day left) is switched at once. */
+  z.object({ state: z.literal('applied'), plan: z.string() }),
   z.object({
     state: z.literal('payment_required'),
     reference: z.string(),
@@ -159,7 +162,7 @@ export const billingPlanChangeResponse = z.discriminatedUnion('state', [
   }),
   z.object({
     state: z.literal('unavailable'),
-    reason: z.enum(['awaiting_platform_confirmation', 'no_cycle']),
+    reason: z.enum(['awaiting_platform_confirmation', 'no_cycle', 'cycle_ended']),
   }),
 ]);
 

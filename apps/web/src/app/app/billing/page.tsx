@@ -65,6 +65,8 @@ const PROBLEMS: Record<string, string> = {
   not_available_on_plan: 'That pack is not part of your plan. Nothing was charged.',
   unknown_pack: 'That pack does not exist. Nothing was charged.',
   no_cycle: 'That change did not go through. Nothing was charged.',
+  cycle_ended:
+    'Your paid period has ended, so there is nothing to upgrade yet. Nothing was charged. Message *upgrade* on WhatsApp and we will sort out your renewal with you.',
   plan: 'That change did not go through. Nothing was charged.',
   pack: 'That purchase did not go through. Nothing was charged.',
   view_only:
@@ -139,6 +141,12 @@ export default async function BillingPage({
       {params.done === 'scheduled' ? (
         <div className="rk-attention-strip" role="status">
           Saved. Your new plan starts at your next renewal, and nothing changes before then.
+        </div>
+      ) : null}
+
+      {params.done === 'applied' ? (
+        <div className="rk-attention-strip" role="status">
+          Done. Your new plan is on now. Nothing was charged and your renewal date has not changed.
         </div>
       ) : null}
 

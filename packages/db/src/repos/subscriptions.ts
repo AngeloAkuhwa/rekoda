@@ -418,7 +418,7 @@ export async function pendingCharge(
   tx: TenantDb,
   businessId: string,
   match:
-    | { kind: 'first_purchase'; periodStart: Date }
+    | { kind: 'first_purchase'; periodStart: Date; plan: string }
     | { kind: 'upgrade'; plan: string }
     | { kind: 'add_on'; packId: string },
 ): Promise<{ reference: string; amountK: number } | null> {
@@ -431,7 +431,8 @@ export async function pendingCharge(
       AND kind = ${match.kind}
       ${
         match.kind === 'first_purchase'
-          ? sql`AND period_start = ${match.periodStart.toISOString()}::timestamptz`
+          ? sql`AND period_start = ${match.periodStart.toISOString()}::timestamptz
+                AND plan = ${match.plan}`
           : match.kind === 'upgrade'
             ? sql`AND plan = ${match.plan}`
             : sql`AND pack_id = ${match.packId}`
@@ -529,6 +530,39 @@ export async function decidedSince(
     WHERE b.id = ${businessId}::uuid
   `);
   return [...rows][0]?.stale === true;
+}
+
+/**
+ * The merchant chose a different way to pay (G-105): retire the still-pending
+ * charges they abandoned, so the one they just asked for is the only payable
+ * link and takes the slot the abandoned one held.
+ *
+ * - `first_purchase` for `plan` retires pending first purchases of the same
+ *   cycle for any OTHER plan (they share `subscription_charges_cycle_ux`).
+ * - `upgrade` retires a pending upgrade to the same plan priced before today's
+ *   state (used when the upgrade now costs nothing and is applied directly).
+ *
+ * A retired charge that is paid later is still recorded as paid; it then
+ * follows the stale-charge rules (G-104). Call with the business row locked.
+ */
+export async function retireAbandonedPending(
+  tx: TenantDb,
+  businessId: string,
+  match:
+    { kind: 'first_purchase'; periodStart: Date; plan: string } | { kind: 'upgrade'; plan: string },
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE subscription_charges SET superseded_at = clock_timestamp(), updated_at = now()
+    WHERE business_id = ${businessId}::uuid
+      AND status = 'pending' AND superseded_at IS NULL
+      AND kind = ${match.kind}
+      ${
+        match.kind === 'first_purchase'
+          ? sql`AND period_start = ${match.periodStart.toISOString()}::timestamptz
+                AND plan IS DISTINCT FROM ${match.plan}`
+          : sql`AND plan = ${match.plan}`
+      }
+  `);
 }
 
 /**
