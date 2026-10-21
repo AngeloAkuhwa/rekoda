@@ -108,7 +108,7 @@ export function CheckoutForm({
           return;
         case 'out_of_stock':
           setRefusal(
-            `${displayName} does not have enough of something in your order left. Go back, check the quantities and try again.`,
+            `${displayName} does not have enough of one of the items in your order. Go back, check the quantities and try again.`,
           );
           return;
         case 'bad_phone':

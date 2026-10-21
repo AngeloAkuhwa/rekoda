@@ -635,12 +635,14 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
   it('answers out_of_stock for more than the shelf holds, and spends nothing (G-53)', async () => {
     const { businessId, ids } = await openShop('+2348177400038', 'ada-shelf');
 
-    const answer = await order('ada-shelf', {
+    const clientRef = randomUUID();
+    const payload = {
       items: [{ productId: ids['Ankara bale'], quantity: 11 }],
       customerName: 'Chidi Okafor',
       customerPhone: '0803 555 1234',
-      clientRef: randomUUID(),
-    });
+      clientRef,
+    };
+    const answer = await order('ada-shelf', payload);
 
     expect(answer.statusCode).toBe(200);
     expect(publicOrderResponse.parse(answer.json())).toEqual({ outcome: 'out_of_stock' });
@@ -657,6 +659,21 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
       ),
     );
     expect(Number([...orders][0]?.n)).toBe(0);
+
+    /* Restocked, the SAME form (same clientRef) goes through: the refusal left
+     * no claim behind to replay. */
+    await withBusiness(db, businessId, (tx) =>
+      stockRepo.recordMovement(tx, {
+        businessId,
+        productId: ids['Ankara bale']!,
+        delta: 5,
+        reason: 'adjustment',
+        sourceType: 'chat',
+        sourceId: 'restock-g53',
+      }),
+    );
+    const retried = await order('ada-shelf', payload);
+    expect(publicOrderResponse.parse(retried.json()).outcome).toBe('placed');
   });
 
   /* G-96: two submits of one form at the same instant both pass the

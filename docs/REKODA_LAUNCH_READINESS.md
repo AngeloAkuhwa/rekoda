@@ -577,7 +577,7 @@ and the keys are test-mode.
 
 - **Test data:** J5's 20 bags; storefront order for 3 bags at the catalogue price; then "stock".
 - **Expected:** server-priced order; on confirmation `inventory_movements` −3 reason `sale` in the same transaction as the invoice; COGS 60,000 posted at weighted average; "stock" answers 17 bags with no model call.
-- **Pass:** two simultaneous orders for the last unit: exactly one succeeds; the loser sees the out-of-stock message and the API log shows no 500. BLOCKED by G-53 until it closes: today the loser gets the generic "did not go through" message from an uncaught `InsufficientStock`.
+- **Pass:** two simultaneous orders for the last unit: exactly one succeeds; the loser sees the out-of-stock message and the API log shows no 500. G-53 is fixed in PR #291 (an uncaught `InsufficientStock` is now `out_of_stock`); not merged or staged, so the concurrent case still needs its staging run.
 
 ### J13 · Monthly statements, PDF and Excel
 
