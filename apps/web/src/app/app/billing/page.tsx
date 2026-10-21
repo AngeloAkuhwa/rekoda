@@ -59,12 +59,19 @@ function lagosDate(iso: string): string {
   });
 }
 
+/** A cycle that has already ended: the server refuses a free upgrade there (G-105). */
+function cycleEnded(renewsAt: string): boolean {
+  return new Date(renewsAt).getTime() <= Date.now();
+}
+
 const PROBLEMS: Record<string, string> = {
   awaiting_platform_confirmation:
     'Card payments are not switched on yet. Nothing was charged. Message *upgrade* on WhatsApp and we will move you across by hand.',
   not_available_on_plan: 'That pack is not part of your plan. Nothing was charged.',
   unknown_pack: 'That pack does not exist. Nothing was charged.',
   no_cycle: 'That change did not go through. Nothing was charged.',
+  cycle_ended:
+    'Your paid period has ended, so there is nothing to upgrade yet. Nothing was charged. Message *upgrade* on WhatsApp and we will sort out your renewal with you.',
   plan: 'That change did not go through. Nothing was charged.',
   pack: 'That purchase did not go through. Nothing was charged.',
   view_only:
@@ -139,6 +146,12 @@ export default async function BillingPage({
       {params.done === 'scheduled' ? (
         <div className="rk-attention-strip" role="status">
           Saved. Your new plan starts at your next renewal, and nothing changes before then.
+        </div>
+      ) : null}
+
+      {params.done === 'applied' ? (
+        <div className="rk-attention-strip" role="status">
+          Done. Your new plan is on now. Nothing was charged and your renewal date has not changed.
         </div>
       ) : null}
 
@@ -269,6 +282,13 @@ export default async function BillingPage({
               Nothing to pay today. You keep {PLAN_NAMES[proposed.from] ?? proposed.from} until{' '}
               {lagosDate(proposed.renewsAt)}, and the new plan starts then.
             </p>
+          ) : proposed.kind === 'upgrade' &&
+            proposed.amountK === 0 &&
+            cycleEnded(proposed.renewsAt) ? (
+            <p>
+              Your paid period ended on {lagosDate(proposed.renewsAt)}, so there is nothing to
+              upgrade yet. Message *upgrade* on WhatsApp and we will sort out your renewal with you.
+            </p>
           ) : proposed.amountK === 0 ? (
             <p>Nothing to pay today. Your renewal date does not change.</p>
           ) : (
@@ -279,7 +299,12 @@ export default async function BillingPage({
                 : `. Renews ${lagosDate(proposed.renewsAt)}.`}
             </p>
           )}
-          {isOwner(identity.role) ? (
+          {isOwner(identity.role) &&
+          !(
+            proposed.kind === 'upgrade' &&
+            proposed.amountK === 0 &&
+            cycleEnded(proposed.renewsAt)
+          ) ? (
             <form action={confirmPlanChange}>
               <input type="hidden" name="plan" value={proposed.to} />
               <PendingButton pendingLabel="Confirming…">
