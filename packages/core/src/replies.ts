@@ -288,7 +288,7 @@ function lapsedStillWorks(transacts: boolean): string {
 export type Lapse = 'trial' | 'plan';
 
 function lapsedOpening(lapse: Lapse): string {
-  return lapse === 'trial' ? 'Your 30-day free trial has ended' : 'Your Rekoda plan has ended';
+  return lapse === 'trial' ? 'Your 14-day free trial has ended' : 'Your Rekoda plan has ended';
 }
 
 /** A "yes" to a Chat preview after the plan lapsed (G-65): nothing was saved. */
@@ -559,7 +559,7 @@ const UNIT_WORDS: Record<UsageUnit, string> = {
 };
 
 /**
- * The 30-day trial is over.
+ * The 14-day trial is over.
  *
  * Not the same message as a used-up allowance, because it is not the same
  * event: the books are still theirs, still readable, still exportable, and
@@ -568,7 +568,7 @@ const UNIT_WORDS: Record<UsageUnit, string> = {
  */
 export function trialEnded(transacts = true): Reply {
   return reply(
-    'Your 30-day free trial has ended. Everything you recorded is still yours: ' +
+    'Your 14-day free trial has ended. Everything you recorded is still yours: ' +
       `${lapsedStillWorks(transacts)}\n\n` +
       'Reply *upgrade* to keep recording and we will set you up.',
   );

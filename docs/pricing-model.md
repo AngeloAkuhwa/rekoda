@@ -11,7 +11,7 @@ and card/billing spreads).
 
 ```
                   FREE TRIAL
-              ₦0 · 30 days · 5 document generations
+              ₦0 · 14 days · 5 document generations
                        │
           ┌────────────┴────────────┐
           ▼                         ▼
@@ -31,7 +31,7 @@ accountant's afternoon, not against an invoice template.
 
 ## What each plan includes
 
-### Free Trial — ₦0, 30 days from activation
+### Free Trial — ₦0, 14 days from activation
 
 > **Corrected 19 Aug 2026 — the original 5-document trial was self-defeating.**
 > The trial allowed **25 recorded transactions but only 5 documents**. Since a

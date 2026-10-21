@@ -32,7 +32,7 @@ export const softwareApplicationSchema = {
     '@type': 'Offer',
     priceCurrency: 'NGN',
     price: '9900',
-    description: 'From ₦9,900 per month after a 30-day free trial. No card needed to start.',
+    description: 'From ₦9,900 per month after a 14-day free trial. No card needed to start.',
   },
 };
 

@@ -34,7 +34,7 @@ export function StartForm({
       </p>
       {planWord ? (
         <p className="rk-fineprint">
-          You picked {planWord}. Your 30-day trial includes everything; choose your plan on the
+          You picked {planWord}. Your 14-day trial includes everything; choose your plan on the
           billing page when it ends.
         </p>
       ) : null}
