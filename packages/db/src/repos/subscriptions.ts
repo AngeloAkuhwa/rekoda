@@ -179,7 +179,10 @@ export async function writeSubscriptionState(
       -- G-103: a paid plan establishes the retention exemption; never cleared.
       ever_paid_at = ${state.paid ? sql`COALESCE(ever_paid_at, now())` : sql`ever_paid_at`},
       -- G-104: this IS a subscription decision; plan charges opened before it are stale.
-      plan_decided_at = now(),
+      -- clock_timestamp(), not now(): ordering must follow when the statement ran,
+      -- not when its transaction began.
+      plan_decided_at = clock_timestamp(),
+      plan_decided_before_pending = NULL,
       updated_at = now()
     WHERE id = ${businessId}::uuid
   `);
@@ -201,9 +204,24 @@ export async function schedulePlanChange(
    * must not silently undo it. Clearing one is not: an undone cancellation
    * leaves the subscription as it was, so the renewal already open still
    * renews. */
+  if (plan === null) {
+    /* Undo: put the decision time back to what it was before the change was
+     * scheduled, so a charge opened before the cancellation is current again. */
+    await tx.execute(sql`
+      UPDATE businesses SET pending_plan = NULL,
+        plan_decided_at = CASE WHEN pending_plan IS NULL
+          THEN plan_decided_at ELSE plan_decided_before_pending END,
+        plan_decided_before_pending = NULL,
+        updated_at = now()
+      WHERE id = ${businessId}::uuid
+    `);
+    return;
+  }
   await tx.execute(sql`
     UPDATE businesses SET pending_plan = ${plan},
-      plan_decided_at = ${plan === null ? sql`plan_decided_at` : sql`now()`},
+      plan_decided_before_pending = CASE WHEN pending_plan IS NULL
+        THEN plan_decided_at ELSE plan_decided_before_pending END,
+      plan_decided_at = clock_timestamp(),
       updated_at = now()
     WHERE id = ${businessId}::uuid
   `);
@@ -257,13 +275,14 @@ export async function openCharge(tx: TenantDb, charge: NewCharge): Promise<strin
   const rows = await tx.execute<{ id: string }>(sql`
     INSERT INTO subscription_charges
       (business_id, kind, plan, pack_id, quantity, amount_k, provider,
-       reference, period_start, period_end)
+       reference, period_start, period_end, created_at)
     VALUES (
       ${charge.businessId}::uuid, ${charge.kind}, ${charge.plan ?? null},
       ${charge.packId ?? null}, ${charge.quantity ?? 1}, ${charge.amountK},
       ${charge.provider ?? 'paystack'}, ${charge.reference},
       ${charge.periodStart ? charge.periodStart.toISOString() : null}::timestamptz,
-      ${charge.periodEnd ? charge.periodEnd.toISOString() : null}::timestamptz)
+      ${charge.periodEnd ? charge.periodEnd.toISOString() : null}::timestamptz,
+      clock_timestamp())
     ON CONFLICT DO NOTHING
     RETURNING id
   `);
@@ -433,12 +452,15 @@ export async function settleCharge(
 export async function decidedSince(
   tx: TenantDb,
   businessId: string,
-  chargeCreatedAt: Date,
+  reference: string,
 ): Promise<boolean> {
+  /* Compared in SQL at full microsecond precision: a JS Date would truncate
+   * the charge's created_at to the millisecond. */
   const rows = await tx.execute<{ stale: boolean }>(sql`
-    SELECT (plan_decided_at IS NOT NULL
-            AND plan_decided_at > ${chargeCreatedAt.toISOString()}::timestamptz) AS stale
-    FROM businesses WHERE id = ${businessId}::uuid
+    SELECT (b.plan_decided_at IS NOT NULL AND b.plan_decided_at > c.created_at) AS stale
+    FROM businesses b
+    JOIN subscription_charges c ON c.business_id = b.id AND c.reference = ${reference}
+    WHERE b.id = ${businessId}::uuid
   `);
   return [...rows][0]?.stale === true;
 }

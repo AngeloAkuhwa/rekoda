@@ -98,6 +98,9 @@ export async function sweepRenewals(
 
       try {
         const opened = await withBusiness(deps.appDb, business.businessId, async (tx) => {
+          /* G-104: lock first, so an operator move cannot slip between pricing
+           * this renewal and opening its charge. */
+          await subscriptionsRepo.lockBusiness(tx, business.businessId);
           /* The pinned version's price, which is the grandfathering promise
            * kept where it matters: a launch merchant renews at launch
            * pricing after a repricing, because their pin still points at

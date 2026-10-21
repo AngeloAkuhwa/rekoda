@@ -151,6 +151,10 @@ export class BillingService {
   /** What moving to `plan` costs today, and when it takes effect. */
   async quote(businessId: string, to: string, now = new Date()): Promise<BillingQuoteResponse> {
     return withBusiness(this.db, businessId, async (tx) => {
+      /* G-104: lock the business row BEFORE reading the plan this charge is
+       * priced against, so a concurrent operator move either finished (and is
+       * read) or waits until this charge exists (and is then newer). */
+      await subscriptionsRepo.lockBusiness(tx, businessId);
       const from = await usageRepo.planFor(tx, businessId, now);
       const subscription = await subscriptionsRepo.subscriptionFor(tx, businessId);
       const charge = planChangeCharge({
@@ -420,7 +424,7 @@ export async function applySettledCharge(
      * a scheduled change) was priced against a state that is gone, and applying
      * it would overwrite that decision. The money stays recorded and the charge
      * is marked for an operator to reconcile; no refund is invented here. */
-    if (await subscriptionsRepo.decidedSince(tx, input.businessId, charge.createdAt)) {
+    if (await subscriptionsRepo.decidedSince(tx, input.businessId, input.reference)) {
       await subscriptionsRepo.markSuperseded(tx, input.reference, input.when);
       return 'superseded';
     }

@@ -11,6 +11,9 @@
 -- Existing rows stay NULL: nothing is retroactively superseded.
 
 ALTER TABLE businesses ADD COLUMN plan_decided_at timestamptz;
+-- plan_decided_at as it stood before a scheduled change, so undoing that change
+-- (a cancelled cancellation) restores it: an undo is not a new decision.
+ALTER TABLE businesses ADD COLUMN plan_decided_before_pending timestamptz;
 ALTER TABLE subscription_charges ADD COLUMN superseded_at timestamptz;
 
 CREATE INDEX subscription_charges_superseded_ix

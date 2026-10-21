@@ -158,6 +158,46 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
     expect((await subscription(businessId))?.plan).toBe('complete');
   });
 
+  it('undoing a cancellation made AFTER a renewal opened lets that renewal renew', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'complete');
+    await open(businessId, 'renewal', 'RKD-SUB-STALE-4B', 'complete');
+    await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.schedulePlanChange(tx, businessId, 'expired'),
+    );
+    await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.schedulePlanChange(tx, businessId, null),
+    );
+
+    expect(await settle(businessId, 'RKD-SUB-STALE-4B')).toBe('applied');
+    expect((await subscription(businessId))?.plan).toBe('complete');
+  });
+
+  it('decisions and charges are stamped at statement time, not transaction start', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'complete');
+    const row = await withBusiness(appDb, businessId, async (tx) => {
+      await tx.execute(sql`SELECT pg_sleep(0.05)`);
+      await subscriptionsRepo.schedulePlanChange(tx, businessId, 'expired');
+      await subscriptionsRepo.openCharge(tx, {
+        businessId,
+        kind: 'renewal',
+        plan: 'complete',
+        amountK: 990_000,
+        reference: 'RKD-SUB-STALE-ORD',
+      });
+      const rows = await tx.execute<{ decided_late: boolean; charge_late: boolean }>(sql`
+        SELECT
+          (SELECT plan_decided_at > transaction_timestamp() FROM businesses
+            WHERE id = ${businessId}::uuid) AS decided_late,
+          (SELECT created_at > transaction_timestamp() FROM subscription_charges
+            WHERE reference = 'RKD-SUB-STALE-ORD') AS charge_late
+      `);
+      return [...rows][0];
+    });
+    expect(row).toEqual({ decided_late: true, charge_late: true });
+  });
+
   it('the second of two first purchases is superseded by the first', async () => {
     const businessId = await seedBusiness();
     await open(businessId, 'first_purchase', 'RKD-SUB-STALE-5A', 'chat');
