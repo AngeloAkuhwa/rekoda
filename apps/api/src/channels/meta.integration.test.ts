@@ -3895,7 +3895,7 @@ describe('the trial clock and the upgrade door', () => {
     await post(messagePayload('2348031234567', 'wamid.EXP1', 'Ada bought 3 wigs for 150k'));
     expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
 
-    expect(stubSender.lastText).toContain('14-day free trial has ended');
+    expect(stubSender.lastText).toContain('free trial has ended');
     expect(stubSender.lastText).toContain('Reply *upgrade*');
     // The gate runs before the model: an expired trial costs nothing.
     expect(stubTransport.requests).toHaveLength(0);

@@ -1058,3 +1058,23 @@ describe('the length cut keeps characters whole (G-60 final review)', () => {
     expect(cut.text).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
   });
 });
+
+describe('the trial-lapse copy names no trial length (OWN-27)', () => {
+  /* A trial begun before the 14-day ruling keeps its stored date, so a lapse
+     reply that says "14-day" (or "30-day") would be wrong for some merchant. */
+  const lapses = [
+    replies.trialEnded().text,
+    replies.trialEnded(false).text,
+    replies.notSavedPlanEnded('trial').text,
+    replies.helpWithoutChat('trial', { owner: true, transacts: true }).text,
+    replies.greetingWithoutChat('trial').text,
+  ];
+
+  it.each(lapses.map((text, i) => [i, text] as const))(
+    'reply %i says the trial ended, with no length',
+    (_i, text) => {
+      expect(text).toContain('Your free trial has ended');
+      expect(text).not.toMatch(/\b\d+[- ]day\b/i);
+    },
+  );
+});
