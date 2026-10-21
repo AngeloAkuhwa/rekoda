@@ -230,6 +230,35 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
     expect((await subscription(businessId))?.plan).toBe('chat');
   });
 
+  it('a cancellation that lands between the due read and the lock takes effect in the SAME pass', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'complete', new Date(Date.now() - 3_600_000)); // due
+    let cancelled = false;
+    const workerDb = new Proxy(realWorkerDb, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (prop !== 'execute') return value;
+        return async (...args: unknown[]) => {
+          const result = await (value as (...a: unknown[]) => Promise<unknown>).apply(target, args);
+          if (!cancelled) {
+            cancelled = true; // the merchant cancels after the sweep read it as due
+            await withBusiness(appDb, businessId, (tx) =>
+              subscriptionsRepo.schedulePlanChange(tx, businessId, 'expired'),
+            );
+          }
+          return result;
+        };
+      },
+    }) as Db;
+
+    const swept = await sweepRenewals({ workerDb, appDb, config }, new Date());
+
+    expect(cancelled).toBe(true);
+    expect(swept.raised).toBe(0); // no renewal is billed for a month they declined
+    // ...and the cancellation is applied now, not left for the next scheduled pass.
+    expect((await subscription(businessId))?.plan).toBe('expired');
+  });
+
   it('a repeated upgrade request after a newer decision gets a fresh payable charge, not the stale one', async () => {
     const businessId = await seedBusiness();
     await operator(businessId, 'chat');
@@ -630,4 +659,95 @@ describe('an upgrade paid after its cycle has ended never leaves the plan expiry
     expect(await settle(businessId, 'RKD-SUB-LIVE-1')).toBe('applied');
     expect((await subscription(businessId))?.plan).toBe('complete');
   });
+});
+
+/**
+ * One root cause behind two review findings: a decision that makes the open
+ * renewal stale while the merchant is ALREADY in grace left nothing payable
+ * (the sweep skips anyone whose grace clock is running), so the merchant lapsed
+ * after seven days despite acting. The sweep now raises the correct renewal for
+ * a grace business that has no payable one, and never touches the clock.
+ */
+describe('a grace business whose renewal went stale is given a payable one (G-104)', () => {
+  const sweep = () => sweepRenewals({ workerDb: realWorkerDb, appDb, config }, new Date());
+  const openRenewals = (businessId: string) =>
+    withBusiness(appDb, businessId, async (tx) => {
+      const rows = await tx.execute<{ plan: string; amount_k: string }>(sql`
+        SELECT plan, amount_k FROM subscription_charges
+        WHERE business_id = ${businessId}::uuid AND kind = 'renewal'
+          AND status = 'pending' AND superseded_at IS NULL`);
+      return [...rows];
+    });
+  const failedAt = (businessId: string) =>
+    withBusiness(appDb, businessId, async (tx) => {
+      const rows = await tx.execute<{ t: string }>(sql`
+        SELECT payment_failed_at AS t FROM businesses WHERE id = ${businessId}::uuid`);
+      return [...rows][0]?.t;
+    });
+
+  it('scheduling a downgrade in grace re-raises the renewal for the cheaper plan, grace clock untouched', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'complete', new Date(Date.now() - 3_600_000));
+    expect((await sweep()).raised).toBe(1); // Complete renewal, grace running
+    const clock = await failedAt(businessId);
+    const stale = await settleProbe(businessId);
+    expect(stale).toBe('payable'); // before the decision the link is good
+
+    await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.schedulePlanChange(tx, businessId, 'chat'),
+    );
+    const again = await sweep();
+
+    expect(again.raised).toBe(1);
+    const open = await openRenewals(businessId);
+    expect(open).toHaveLength(1);
+    expect(open[0]?.plan).toBe('chat'); // the plan the merchant now asked for
+    expect(await failedAt(businessId)).toBe(clock); // seven days still count from the renewal date
+  });
+
+  it('undoing a downgrade in grace re-raises the renewal for the current plan', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'complete', new Date(Date.now() + 3_600_000));
+    await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.schedulePlanChange(tx, businessId, 'chat'),
+    );
+    await ownerDb.execute(sql`
+      UPDATE businesses SET plan_expires_at = now() - interval '1 hour'
+      WHERE id = ${businessId}::uuid`);
+    expect((await sweep()).raised).toBe(1); // a CHAT renewal, grace running
+    expect((await openRenewals(businessId))[0]?.plan).toBe('chat');
+    const clock = await failedAt(businessId);
+
+    await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.schedulePlanChange(tx, businessId, null),
+    ); // the merchant keeps Complete
+    expect((await sweep()).raised).toBe(1);
+
+    const open = await openRenewals(businessId);
+    expect(open).toHaveLength(1);
+    expect(open[0]?.plan).toBe('complete');
+    expect(await failedAt(businessId)).toBe(clock);
+  });
+
+  it('does not raise a second renewal when a payable one already exists', async () => {
+    const businessId = await seedBusiness();
+    await operator(businessId, 'complete', new Date(Date.now() - 3_600_000));
+    expect((await sweep()).raised).toBe(1);
+    expect((await sweep()).raised).toBe(0);
+    expect(await openRenewals(businessId)).toHaveLength(1);
+  });
+
+  /** Whether the open renewal would still apply: payable until a newer decision. */
+  async function settleProbe(businessId: string): Promise<'payable' | 'stale'> {
+    return withBusiness(appDb, businessId, async (tx) => {
+      const rows = await tx.execute<{ reference: string }>(sql`
+        SELECT reference FROM subscription_charges
+        WHERE business_id = ${businessId}::uuid AND status = 'pending' AND kind = 'renewal'`);
+      const reference = [...rows][0]?.reference;
+      if (!reference) return 'stale';
+      return (await subscriptionsRepo.decidedSince(tx, businessId, reference))
+        ? 'stale'
+        : 'payable';
+    });
+  }
 });

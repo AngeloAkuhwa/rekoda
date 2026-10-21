@@ -536,7 +536,7 @@ export async function dueForRenewalLocked(
       AND plan NOT IN ('trial', 'expired')
       AND plan_expires_at IS NOT NULL
       AND plan_expires_at <= ${now.toISOString()}::timestamptz
-      AND payment_failed_at IS NULL
+      AND (payment_failed_at IS NULL OR ${NO_PAYABLE_RENEWAL})
   `);
   const row = [...rows][0];
   return row ? due(row) : null;
@@ -774,6 +774,22 @@ const due = (row: RawDue): DueBusiness => ({
 });
 
 /**
+ * A business with no PAYABLE renewal for the cycle that just ended: every
+ * renewal opened for it is retired, or was opened before the latest decision
+ * and so would be refused. Such a business owes the sweep a fresh one even if
+ * its grace clock is already running (G-104), and the clock is never reset:
+ * the seven days still count from the renewal date, so toggling a downgrade
+ * cannot buy a merchant more grace.
+ */
+const NO_PAYABLE_RENEWAL = sql`NOT EXISTS (
+  SELECT 1 FROM subscription_charges c
+  WHERE c.business_id = businesses.id AND c.kind = 'renewal'
+    AND c.period_start = businesses.plan_expires_at
+    AND c.superseded_at IS NULL
+    AND (businesses.plan_decided_at IS NULL OR businesses.plan_decided_at <= c.created_at)
+)`;
+
+/**
  * Paid businesses whose cycle has ended and who are not already in grace.
  *
  * Cross-tenant, so it needs the `rekoda_worker` credential: the sweep does
@@ -793,7 +809,7 @@ export async function dueForRenewal(db: Db, now: Date, limit = 200): Promise<Due
     WHERE plan NOT IN ('trial', 'expired')
       AND plan_expires_at IS NOT NULL
       AND plan_expires_at <= ${now.toISOString()}::timestamptz
-      AND payment_failed_at IS NULL
+      AND (payment_failed_at IS NULL OR ${NO_PAYABLE_RENEWAL})
     ORDER BY plan_expires_at
     LIMIT ${limit}
   `);

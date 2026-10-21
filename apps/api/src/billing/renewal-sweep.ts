@@ -105,7 +105,19 @@ export async function sweepRenewals(
           /* ...and RE-READ under it: `business` came from a read taken before
            * the lock, and a move or cancellation may have committed since. */
           const fresh = await subscriptionsRepo.dueForRenewalLocked(tx, business.businessId, now);
-          if (!fresh || fresh.nextPlan === 'expired') return false;
+          if (!fresh) return false;
+          if (fresh.nextPlan === 'expired') {
+            /* A cancellation that committed after the due read: apply it now, in
+             * this pass, rather than leave an already-cancelled paid plan active
+             * until the next scheduled sweep. */
+            await subscriptionsRepo.expireSubscription(
+              tx,
+              business.businessId,
+              'system:renewal_sweep',
+              'cancelled',
+            );
+            return false;
+          }
           const plan = fresh.nextPlan;
           const anchorDay =
             fresh.renewalAnchorDay ?? new Date(fresh.renewsAt.getTime() + 3_600_000).getUTCDate();

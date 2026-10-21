@@ -341,6 +341,29 @@ describe('a subscription payment', () => {
     expect((await subscriptionOf(businessId))?.plan).toBe('integrate');
   });
 
+  it('a REDELIVERED success for an already-unapplied payment is not queued a second time (G-104)', async () => {
+    const businessId = await seedBusiness();
+    const reference = await openSubscriptionCharge(businessId);
+    await billingRepo.setPlan(appDb, {
+      businessId,
+      plan: 'integrate',
+      expiresAt: new Date(Date.now() + 20 * 86_400_000),
+      actor: 'operator:test-g104',
+    });
+    provider.willVerify(reference, { amountK: CHAT_K });
+    await storeChargeSuccess(reference);
+    await pump();
+    await drainJobs();
+    expect((await subscriptionsRepo.unappliedCharges(workerDb, 50)).length).toBe(1);
+
+    await storeChargeSuccess(reference); // the provider delivers it again
+    await pump();
+    await drainJobs();
+
+    expect((await events.exceptionQueue(workerDb, 50)).flagged).toEqual([]);
+    expect((await subscriptionsRepo.unappliedCharges(workerDb, 50)).length).toBe(1);
+  });
+
   it('does not apply the same payment twice when the webhook is redelivered', async () => {
     const businessId = await seedBusiness();
     const reference = await openSubscriptionCharge(businessId);

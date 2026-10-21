@@ -80,7 +80,16 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
     }
 
     if (charge.status !== 'pending') {
-      await events.markProcessed(tx, eventId, `already_${charge.status}`, businessId);
+      /* A redelivery for a payment that is already recorded as paid but
+       * UNAPPLIED is the same work item as the charge on the operator queue;
+       * flagging the event too would queue it twice. */
+      const alreadyQueued = charge.status === 'paid' && charge.supersededAt !== null;
+      await events.markProcessed(
+        tx,
+        eventId,
+        alreadyQueued ? null : `already_${charge.status}`,
+        businessId,
+      );
       return;
     }
 
