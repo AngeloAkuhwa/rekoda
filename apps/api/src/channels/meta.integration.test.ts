@@ -16238,7 +16238,7 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
     it('P2: "same" sent inside the window but processed after it is answered, not closed', async () => {
       const business = await seedMerchant();
       await addDelegate(business.id);
-      await bookMilo(business.id, 'X1');
+      await bookMilo(business.id, 'BX1');
       await say('wamid.X1-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
       expect(stubSender.lastText).toContain(QUESTION);
       await answerSentInsideProcessedAfter(business.id, 'wamid.X1-same', 'same');
@@ -16250,7 +16250,7 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
     it('P2: "separate" sent inside the window but processed after it shows the fresh preview', async () => {
       const business = await seedMerchant();
       await addDelegate(business.id);
-      await bookMilo(business.id, 'X2');
+      await bookMilo(business.id, 'BX2');
       await say('wamid.X2-d', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
       expect(stubSender.lastText).toContain(QUESTION);
       await answerSentInsideProcessedAfter(business.id, 'wamid.X2-sep', 'separate');
@@ -16603,6 +16603,167 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       await reply('wamid.C9-no', 'no', DELEGATE);
       expect(stubSender.lastText).toContain(REASK);
       expect(stubSender.lastText).not.toMatch(/cancel/i);
+    });
+  });
+
+  describe('G-87 (OWN-31): one purchase read once as a purchase and once as an expense', () => {
+    const MILO_EXPENSE = {
+      intent: 'RecordExpense',
+      description: '10 cartons of Milo',
+      amount: 100_000,
+      category: 'supplies',
+      paymentMethod: 'cash',
+    };
+    const ACROSS = 'Is this the same one?';
+    const SEPARATE_EXPENSE = 'OK, this is a separate expense.';
+    const ALIGN_EXPENSE = JSON.stringify({ amount: 100_000 });
+
+    async function expenseStates(businessId: string): Promise<string[]> {
+      const rows = await withBusiness(db, businessId, (tx) =>
+        tx.execute<{ state: string }>(sql`
+          SELECT state FROM command_drafts
+           WHERE business_id = ${businessId}::uuid AND intent = 'RecordExpense'
+           ORDER BY insertion_seq`),
+      );
+      return [...rows].map((r) => r.state);
+    }
+
+    async function alignExpense(businessId: string) {
+      await withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`
+          UPDATE command_drafts SET command = command || ${ALIGN_EXPENSE}::jsonb
+           WHERE business_id = ${businessId}::uuid AND intent = 'RecordExpense'`),
+      );
+    }
+
+    it('a booked purchase sent again and read as an expense is asked about; "same" saves nothing more', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await bookMilo(business.id, 'BX1');
+      const before = await footprint(business.id);
+      await say('wamid.X1-exp', MILO_EXPENSE, 'Paid 100k for 10 cartons of Milo', DELEGATE);
+      /* RED before G-87: the expense was previewed and its yes booked a
+       * second financial truth for the one purchase. */
+      expect(stubSender.lastText).toContain('A stock purchase of');
+      expect(stubSender.lastText).toContain(ACROSS);
+      expect(await expenseStates(business.id)).toEqual(['held']);
+      await reply('wamid.X1-yes', 'yes', DELEGATE);
+      await reply('wamid.X1-same', 'same', DELEGATE);
+      expect(stubSender.lastText).toContain(SAME_DONE);
+      await reply('wamid.X1-yes-2', 'yes', DELEGATE);
+      const { units: _u, audit: _a, ...books } = await footprint(business.id);
+      const { units: _bu, audit: _ba, ...booksBefore } = before;
+      expect(books).toEqual(booksBefore);
+    });
+
+    it('"separate" shows the expense to check, and only a yes books it', async () => {
+      const business = await seedMerchant();
+      await bookMilo(business.id, 'BX2');
+      await say('wamid.X2-exp', MILO_EXPENSE, 'Paid 100k for 10 cartons of Milo');
+      expect(stubSender.lastText).toContain(ACROSS);
+      await reply('wamid.X2-sep', 'separate');
+      expect(stubSender.lastText).toContain(SEPARATE_EXPENSE);
+      expect(await purchases(business.id)).toBe(1);
+      await reply('wamid.X2-yes', 'yes');
+      expect(stubSender.lastText).toContain('expense');
+      expect(await purchases(business.id)).toBe(2);
+    });
+
+    it('a booked expense and then the same purchase as a stock purchase is asked about', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await say('wamid.X3-exp', MILO_EXPENSE, 'Paid 100k for 10 cartons of Milo');
+      await reply('wamid.X3-exp-yes', 'yes');
+      expect(await purchases(business.id)).toBe(1);
+      await say('wamid.X3-buy', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+      expect(stubSender.lastText).toContain('An expense of');
+      expect(stubSender.lastText).toContain(ACROSS);
+      await reply('wamid.X3-yes', 'yes', DELEGATE);
+      expect(await purchases(business.id)).toBe(1);
+    });
+
+    it("the member's own waiting purchase preview is asked about, never replaced by an expense", async () => {
+      const business = await seedMerchant();
+      await say('wamid.X4-buy', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      await say('wamid.X4-exp', MILO_EXPENSE, 'Paid 100k for 10 cartons of Milo');
+      expect(stubSender.lastText).toContain('A preview of a');
+      expect(stubSender.lastText).toContain(ACROSS);
+      expect(await purchaseStates(business.id)).toEqual(['pending']);
+      expect(await expenseStates(business.id)).toEqual(['held']);
+    });
+
+    it('two expenses of one total are never asked about: genuine operating expenses', async () => {
+      const business = await seedMerchant();
+      await say('wamid.X5-a', MILO_EXPENSE, 'Paid 100k for fuel');
+      await reply('wamid.X5-a-yes', 'yes');
+      await say('wamid.X5-b', MILO_EXPENSE, 'Paid 100k for fuel again');
+      expect(stubSender.lastText).not.toContain(ACROSS);
+      await reply('wamid.X5-b-yes', 'yes');
+      expect(await purchases(business.id)).toBe(2);
+    });
+
+    it('an expense of another total is never asked about', async () => {
+      const business = await seedMerchant();
+      await bookMilo(business.id, 'BX6');
+      await say('wamid.X6-exp', { ...MILO_EXPENSE, amount: 99_000 }, 'Paid 99k for fuel');
+      expect(stubSender.lastText).not.toContain(ACROSS);
+      await reply('wamid.X6-yes', 'yes');
+      expect(await purchases(business.id)).toBe(2);
+    });
+
+    it('a purchase preview and an expense preview of one total: the second yes is refused at the work', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      /* Built by hand (another total, then aligned): the chat flow asks
+       * before it would leave both waiting. */
+      await say('wamid.X7-buy', MILO, 'I bought 10 cartons of Milo for 100k cash');
+      await say(
+        'wamid.X7-exp',
+        { ...MILO_EXPENSE, amount: 100_001 },
+        'Paid 100,001 for 10 cartons of Milo',
+        DELEGATE,
+      );
+      await alignExpense(business.id);
+      /* OD-15: the newest preview, the delegate's expense, books first. */
+      await reply('wamid.X7-yes-1', 'yes');
+      expect(await purchases(business.id)).toBe(1);
+      const before = await footprint(business.id);
+      await reply('wamid.X7-yes-2', 'yes');
+      expect(stubSender.lastText).toContain(RACE);
+      expect(stubSender.lastText).toContain('An expense of');
+      expect(await footprint(business.id)).toEqual(before);
+      await reply('wamid.X7-same', 'same');
+      expect(stubSender.lastText).toContain(SAME_DONE);
+      expect(await purchases(business.id)).toBe(1);
+    });
+
+    it('an expense yes refused at the work leaves nothing behind, through the command bus too', async () => {
+      const config = deps.config as { commandRecordExpense: boolean };
+      const was = config.commandRecordExpense;
+      config.commandRecordExpense = true;
+      try {
+        const business = await seedMerchant();
+        await addDelegate(business.id);
+        await say(
+          'wamid.X8-exp',
+          { ...MILO_EXPENSE, amount: 100_001 },
+          'Paid 100,001 for 10 cartons of Milo',
+        );
+        await say('wamid.X8-buy', MILO, 'I bought 10 cartons of Milo for 100k cash', DELEGATE);
+        await alignExpense(business.id);
+        /* The delegate's purchase books first; the owner's expense yes is
+         * refused before its posting, and its bus claim rolled back. */
+        await reply('wamid.X8-yes-1', 'yes');
+        expect(await purchases(business.id)).toBe(1);
+        const before = await footprint(business.id);
+        await reply('wamid.X8-yes-2', 'yes');
+        expect(stubSender.lastText).toContain(RACE);
+        expect(stubSender.lastText).toContain('A stock purchase of');
+        expect(await footprint(business.id)).toEqual(before);
+        expect(await expenseStates(business.id)).toEqual(['held']);
+      } finally {
+        config.commandRecordExpense = was;
+      }
     });
   });
 });

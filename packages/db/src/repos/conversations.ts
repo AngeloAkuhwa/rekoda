@@ -1377,7 +1377,7 @@ export async function heldPurchaseDraft(
      WHERE business_id = ${businessId}::uuid
        AND id = ${draftId}::uuid
        AND state = 'held'
-       AND intent = 'RecordPurchase'
+       AND intent IN ('RecordPurchase', 'RecordExpense')
        /* A question past its window is no longer anything to answer (fresh
         * review of #262): later replies behave as if nothing were waiting. */
        AND expires_at > ${draftClock(options.now)}`);
@@ -1458,7 +1458,7 @@ export async function holdRefusedPurchase(
              FOR UPDATE) old
      WHERE d.id = old.id
        AND d.state = 'confirmed'
-       AND d.intent = 'RecordPurchase'
+       AND d.intent IN ('RecordPurchase', 'RecordExpense')
     RETURNING old.expires_at AS previous_expires_at`);
   const row = [...rows][0];
   return row ? { previousExpiresAt: new Date(row.previous_expires_at) } : null;
@@ -1648,7 +1648,7 @@ export async function undoSeparate(
        AND id = ${heldId}::uuid
        AND state = 'superseded'
        AND NOT withdrawn
-       AND intent = 'RecordPurchase'`);
+       AND intent IN ('RecordPurchase', 'RecordExpense')`);
 }
 
 /**
@@ -1801,7 +1801,7 @@ export async function identityQuestionState(
       FROM command_drafts d
      WHERE d.business_id = ${businessId}::uuid
        AND d.id = ${draftId}::uuid
-       AND d.intent = 'RecordPurchase'`);
+       AND d.intent IN ('RecordPurchase', 'RecordExpense')`);
   const row = [...rows][0];
   return row
     ? { state: row.state, expiresAt: new Date(row.expires_at), freshPreviewWaiting: row.fresh }

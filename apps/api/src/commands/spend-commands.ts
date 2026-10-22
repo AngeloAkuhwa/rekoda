@@ -34,6 +34,7 @@ export async function recordExpenseWork(
   tx: TenantDb,
   input: RecordExpenseCmdInput,
 ): Promise<RecordedExpense> {
+  await refuseBookedSpend(tx, input, 'expense');
   const recorded = await spendRepo.recordExpense(tx, input);
 
   /* The description stays OUT of the event: a merchant's sentence about
@@ -171,6 +172,22 @@ async function refuseBookedDuplicate(tx: TenantDb, input: RecordPurchaseCmdInput
     if (first) throw new PurchaseIdentityCollision([first, ...rest]);
     return;
   }
+  await refuseBookedSpend(tx, input, 'purchase');
+}
+
+/**
+ * The same net for a CHAT spend of either kind (G-81, G-87, OWN-31): a
+ * stock purchase is compared with every booked stock purchase and every
+ * booked Chat expense of its total, and an expense with every booked stock
+ * purchase (never another expense), under the one lock for the total, so a
+ * purchase confirmed as an expense and as a purchase on two connections is
+ * booked once. Other ingresses (the recurring sweep) are not compared.
+ */
+async function refuseBookedSpend(
+  tx: TenantDb,
+  input: { businessId: string; amountK: number; sourceType: string; sourceId: string },
+  kind: 'purchase' | 'expense',
+): Promise<void> {
   if (input.sourceType !== 'chat') return;
   await purchaseIdentityRepo.lockPurchaseTotal(tx, input.businessId, input.amountK);
   const drafted = await purchaseIdentityRepo.draftFacts(tx, input.businessId, input.sourceId);
@@ -184,6 +201,7 @@ async function refuseBookedDuplicate(tx: TenantDb, input: RecordPurchaseCmdInput
     {
       excludeDraftId: input.sourceId,
       bookedOnly: true,
+      withExpenses: true,
       ...(drafted ? { bookedSince: windowStart(drafted.at) } : {}),
     },
   );
@@ -191,8 +209,9 @@ async function refuseBookedDuplicate(tx: TenantDb, input: RecordPurchaseCmdInput
   /* No readable draft behind it: nothing can prove it separate, so it is
    * compared on its total alone, the conservative reading. */
   const self: PurchaseFacts = drafted
-    ? { ...drafted, amountK: input.amountK }
+    ? { ...drafted, kind, amountK: input.amountK }
     : {
+        kind,
         amountK: input.amountK,
         at: now,
         product: null,

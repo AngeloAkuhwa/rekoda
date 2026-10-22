@@ -1163,6 +1163,13 @@
       "when": 1791892800000,
       "tag": "0165_paystack_pwt_cost_schedule",
       "breakpoints": true
+    },
+    {
+      "idx": 166,
+      "version": "7",
+      "when": 1791979200000,
+      "tag": "0166_spend_identity",
+      "breakpoints": true
     }
   ]
 }
