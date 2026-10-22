@@ -46,6 +46,7 @@ import {
 import { bankRepo, closeRepo, withBusiness, type Db } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
+import { LivePlanGuard, NeedsLivePlan } from '../auth/live-plan.guard.js';
 import { DB } from '../db/db.module.js';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { BANK_FEED, type BankFeedPort } from './feed.port.js';
@@ -76,7 +77,7 @@ import { postJournalWork } from '../commands/ledger-commands.js';
 const STATEMENT_ROWS = 500;
 
 @Controller('v1/bank')
-@UseGuards(SessionGuard, RolesGuard)
+@UseGuards(SessionGuard, RolesGuard, LivePlanGuard)
 export class BankController {
   constructor(
     @Inject(DB) private readonly db: Db,
@@ -161,6 +162,7 @@ export class BankController {
    annotate the statement without moving money, so both roles may do it.
    Forgetting a day DELETES rows, and deletions are the owner's. */
   @Post('statement')
+  @NeedsLivePlan()
   @Roles('owner', 'accountant')
   @HttpCode(200)
   async importStatement(
@@ -220,6 +222,7 @@ export class BankController {
    * surface was built to catch.
    */
   @Post('reconcile')
+  @NeedsLivePlan()
   @Roles('owner', 'accountant')
   @HttpCode(200)
   async reconcile(@Req() request: AuthedRequest): Promise<ReconcileResponse> {
@@ -239,6 +242,7 @@ export class BankController {
    * over the charge inside a match.
    */
   @Post('match')
+  @NeedsLivePlan()
   @Roles('owner', 'accountant')
   @HttpCode(200)
   async match(@Req() request: AuthedRequest, @Body() body: unknown): Promise<MatchLineResponse> {
@@ -343,6 +347,7 @@ export class BankController {
    * journal existing without its line would be a silent judgement.
    */
   @Post('classify')
+  @NeedsLivePlan()
   @Roles('owner', 'accountant')
   @HttpCode(200)
   async classify(
@@ -477,6 +482,7 @@ export class BankController {
    * Rekoda never saw credentials. Re-linking after a lapse is the same call.
    */
   @Post('feed/connect')
+  @NeedsLivePlan()
   @Roles('owner')
   @HttpCode(200)
   async connectFeed(
@@ -525,6 +531,7 @@ export class BankController {
    * deliberate and free — see SYNC_OVERLAP_DAYS.
    */
   @Post('feed/sync')
+  @NeedsLivePlan()
   @Roles('owner', 'accountant')
   @HttpCode(200)
   async syncFeed(@Req() request: AuthedRequest): Promise<SyncBankFeedResponse> {

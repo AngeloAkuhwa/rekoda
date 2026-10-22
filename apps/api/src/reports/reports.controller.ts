@@ -180,6 +180,7 @@ import {
 } from '../commands/ledger-commands.js';
 import { voidReceiptWork, type VoidReceiptInput } from '../commands/sale-commands.js';
 import { AllMembers, Roles, RolesGuard } from '../auth/roles.guard.js';
+import { LivePlanGuard, NeedsLivePlan } from '../auth/live-plan.guard.js';
 import { DB } from '../db/db.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 
@@ -239,7 +240,7 @@ function isDuplicateClientRef(error: unknown): boolean {
 }
 
 @Controller('v1/reports')
-@UseGuards(SessionGuard, RolesGuard)
+@UseGuards(SessionGuard, RolesGuard, LivePlanGuard)
 export class ReportsController {
   constructor(
     @Inject(DB) private readonly db: Db,
@@ -910,6 +911,7 @@ export class ReportsController {
    * quotes never become the door around the privacy gateway.
    */
   @Post('quotes')
+  @NeedsLivePlan()
   @Roles('owner', 'delegate')
   @HttpCode(200)
   async createQuote(
@@ -982,6 +984,7 @@ export class ReportsController {
    * invoice the first click made.
    */
   @Post('quotes/convert')
+  @NeedsLivePlan()
   @Roles('owner', 'delegate')
   @HttpCode(200)
   async convertQuote(
@@ -1116,6 +1119,7 @@ export class ReportsController {
    * message carries the name, Rekoda carries the goods and the money.
    */
   @Post('purchase-orders')
+  @NeedsLivePlan()
   @Roles('owner', 'delegate')
   @HttpCode(200)
   async createPurchaseOrder(
@@ -1181,6 +1185,7 @@ export class ReportsController {
    * yes compares itself with this receive.
    */
   @Post('purchase-orders/receive')
+  @NeedsLivePlan()
   @Roles('owner', 'delegate')
   @HttpCode(200)
   async receivePurchaseOrder(
@@ -1563,6 +1568,7 @@ export class ReportsController {
    * deciding how long a freezer lasts would be a model computing money.
    */
   @Post('assets')
+  @NeedsLivePlan()
   @Roles('owner')
   @HttpCode(200)
   async recordAsset(
@@ -1711,6 +1717,7 @@ export class ReportsController {
    * refusal rather than a check this method is trusted to make.
    */
   @Post('opening-balances')
+  @NeedsLivePlan()
   @Roles('owner')
   @HttpCode(200)
   async openBooks(
@@ -1819,6 +1826,7 @@ export class ReportsController {
    * goods the business still has.
    */
   @Post('stock-count')
+  @NeedsLivePlan()
   @Roles('owner', 'delegate')
   @HttpCode(200)
   async countStock(
@@ -1864,6 +1872,7 @@ export class ReportsController {
    * the one property this product sells.
    */
   @Post('journal')
+  @NeedsLivePlan()
   @Roles('owner')
   @HttpCode(200)
   async recordJournal(
@@ -2070,6 +2079,7 @@ export class ReportsController {
    * a second time.
    */
   @Post('expenses/recurring')
+  @NeedsLivePlan()
   @Roles('owner')
   @HttpCode(200)
   async createRecurring(
