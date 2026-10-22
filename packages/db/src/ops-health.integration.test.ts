@@ -153,6 +153,24 @@ describe('queue health', () => {
     expect((await jobsRepo.queueHealth(workerDb)).oldestQueuedSeconds).toBe(0);
   });
 
+  it('tells a merchant-scoped credential nothing about other tenants (OWN-36)', async () => {
+    // The aggregate is only meaningful on the worker credential. On the
+    // application role, row-level security hides every job outside the pinned
+    // tenant, so the same query cannot be turned into a cross-tenant probe.
+    const ada = await seedBusiness('+2348030000007');
+    const chidi = await seedBusiness('+2348030000008');
+    await withBusiness(appDb, ada, (tx) =>
+      jobsRepo.enqueue(tx, { businessId: ada, kind: 'inbound.message' }),
+    );
+    await workerDb.execute(sql`UPDATE jobs SET state = 'dead'`);
+
+    expect((await jobsRepo.queueHealth(workerDb)).dead).toBe(1);
+    expect((await jobsRepo.queueHealth(appDb)).dead).toBe(0);
+    expect(
+      (await withBusiness(appDb, chidi, (tx) => jobsRepo.queueHealth(tx as unknown as Db))).dead,
+    ).toBe(0);
+  });
+
   it('is all zeros on an empty queue rather than throwing', async () => {
     expect(await jobsRepo.queueHealth(workerDb)).toEqual({
       dead: 0,

@@ -42,5 +42,6 @@ amendment so the reader is not misled.
 | [0032](0032-launch-media-architecture.md)                       | The launch media architecture: OpenAI STT + Claude vision, no sidecars          | Accepted (amends 0005, 0008, 0024, 0027)                                                                                           |
 | [0033](0033-multicurrency-is-a-dark-capability.md)              | Multicurrency and embedded FX are a dark capability; the launch is NGN-only     | Accepted                                                                                                                           |
 | [0034](0034-the-operator-plane-has-identities-not-a-secret.md)  | The operator plane has identities, not a shared secret                          | Accepted                                                                                                                           |
+| [0035](0035-operational-aggregate-monitoring.md)                | Operational aggregate monitoring is a narrow cross-tenant exception             | Accepted                                                                                                                           |
 
 Template: [0000-template.md](0000-template.md)

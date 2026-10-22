@@ -15,6 +15,7 @@ import {
   type OpsAlert,
   type OpsSnapshot,
 } from '@rekoda/core';
+import { redactForLog } from '@rekoda/core/privacy';
 import { events, jobsRepo, type Db } from '@rekoda/db';
 
 export const ALERT_COOLDOWN_MS = 30 * 60_000;
@@ -55,7 +56,12 @@ export class WebhookAlertSink implements AlertSink {
   }
 }
 
-/** Read the platform's numbers. Null parts mean this process cannot see them. */
+/**
+ * Read the platform's numbers. Null parts mean this process cannot see them.
+ *
+ * The only cross-tenant reads here are the two approved operational aggregates
+ * (OWN-36, ADR 0035): counts and ages, no identities, no payloads, read-only.
+ */
 export async function collectOpsSnapshot(workerDb: Db | null): Promise<OpsSnapshot> {
   if (!workerDb) return { queue: null, meta: null, paystack: null };
   const [queue, meta, paystack] = await Promise.all([
@@ -123,7 +129,7 @@ export async function runOpsAlertPass(
       const previous = state[alert.key];
       if (previous === undefined) delete next[alert.key];
       else next[alert.key] = previous;
-      deps.log.warn(`alert ${alert.key} not delivered: ${(error as Error).message}`);
+      deps.log.warn(`alert ${alert.key} not delivered: ${redactForLog((error as Error).message)}`);
     }
   }
   for (const key of plan.resolved) {
@@ -143,7 +149,9 @@ export async function runOpsAlertPass(
       /* Keep the key so the next pass finds it cleared again and retries the
        * notice; dropping it would leave the destination showing an open alert. */
       next[key] = state[key]!;
-      deps.log.warn(`recovery notice ${key} not delivered: ${(error as Error).message}`);
+      deps.log.warn(
+        `recovery notice ${key} not delivered: ${redactForLog((error as Error).message)}`,
+      );
     }
   }
   return { active, next };

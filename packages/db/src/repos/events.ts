@@ -480,6 +480,10 @@ export interface EventHealth {
  * The paystack pump has always marked events with WHY they went nowhere
  * ('unknown_reference', 'foreign_reference') and called those marks "the
  * admin exception queue" — a queue nothing could read until now.
+ *
+ * An approved operational-monitoring aggregate (OWN-36, ADR 0035): counts only,
+ * read-only. `provider` is a code literal ('meta', 'paystack'), never request
+ * input.
  */
 export async function eventHealth(db: Db, provider: string): Promise<EventHealth> {
   const rows = await db.execute<{

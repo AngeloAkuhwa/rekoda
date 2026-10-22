@@ -424,7 +424,9 @@ export interface QueueHealth {
 }
 
 /**
- * The queue, in four numbers (MASTER-PLAN §6.4).
+ * The queue, in a handful of numbers (MASTER-PLAN §6.4). An approved
+ * operational-monitoring aggregate (OWN-36, ADR 0035): counts and ages only,
+ * never a business id or payload, read-only.
  *
  * Cross-tenant by construction and therefore worker-credentialed: "is
  * anything stuck" is a question about the platform, not about a business.

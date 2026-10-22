@@ -114,8 +114,14 @@ session never starts a capability from zero.
    number is authoritative and no reply contains a figure the
    deterministic layer did not compute.
 3. **Tenant data is scoped by `businessId` in code and by Postgres RLS.**
-   `withBusiness()` is the only sanctioned path. The worker role reads
-   across tenants only to claim a job.
+   `withBusiness()` is the only sanctioned path. Cross-tenant access is
+   prohibited by default. A trusted worker may claim and coordinate jobs
+   under approved worker policies. Separately, designated internal
+   operational-monitoring functions may read only explicitly approved,
+   non-identifying aggregate queue, webhook and delivery-health metrics using
+   narrowly scoped service authorization (OWN-36, ADR 0035). This exception
+   does not grant general access to tenant-owned records, payloads or
+   merchant data.
 4. **Customer PII lives in the vault** and travels as tokens; rehydration
    happens only in the authorised output layer. Never log a message body,
    a customer name, or a token-to-identity mapping.

@@ -63,6 +63,7 @@ beforeAll(async () => {
   process.env['MATCH_KEY'] = randomBytes(32).toString('hex');
   process.env['REKODA_API_SECRET'] = SECRET;
   process.env['REKODA_OPERATOR_SECRET'] = OPERATOR_SECRET;
+  process.env['REKODA_REVEAL_OTP'] = '1';
   process.env['REKODA_RATE_LIMIT_MAX'] = '100000';
   delete process.env['NODE_ENV'];
 
@@ -934,5 +935,69 @@ describe('financial integrity probes', () => {
     expect(body.totals.undispatchedOutbox).toBe(1);
     expect(body.oldestUndispatchedMinutes).toBeGreaterThanOrEqual(89);
     expect(body.violations).toEqual([{ businessId, deadOutboxEvents: 1 }]);
+  });
+});
+
+/* Last in the file: signing a merchant in sends a sign-in code, which moves the
+ * process-wide `otpSends` counter that the quiet-platform test reads. */
+describe('the monitoring exception stays narrow (OWN-36, ADR 0035)', () => {
+  async function merchantSession(phone: string): Promise<Record<string, string>> {
+    const requested = (
+      await app.inject({ method: 'POST', url: '/v1/auth/otp/request', payload: { phone } })
+    ).json() as { devCode?: string };
+    const verified = (
+      await app.inject({
+        method: 'POST',
+        url: '/v1/auth/otp/verify',
+        payload: { phone, code: requested.devCode },
+      })
+    ).json() as { sessionToken?: string; setupToken?: string };
+    const setup = { 'x-rekoda-setup-token': verified.setupToken! };
+    const created = (
+      await app.inject({
+        method: 'POST',
+        url: '/v1/businesses',
+        payload: { name: 'Merchant Probe Ltd', businessType: null },
+        headers: setup,
+      })
+    ).json() as { sessionToken: string };
+    return { authorization: `Bearer ${created.sessionToken}` };
+  }
+
+  it('refuses a signed-in merchant: a merchant session is not operator authority', async () => {
+    const session = await merchantSession('+2348030000031');
+    // Sanity: the session is real and works on a merchant route.
+    expect(
+      (await app.inject({ method: 'GET', url: '/v1/auth/me', headers: session })).statusCode,
+    ).toBe(200);
+
+    const res = await health(session);
+
+    expect(res.statusCode).toBe(401);
+    expect(res.body).not.toContain('queue');
+  });
+
+  it('cannot be steered by query parameters: the aggregate names no business either way', async () => {
+    const user = await identity.upsertUserByPhone(db, '+2348030000032');
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Steered Stores',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    await withBusiness(db, business.id, (tx) =>
+      jobsRepo.enqueue(tx, { businessId: business.id, kind: 'inbound.message' }),
+    );
+
+    const plain = await health({ 'x-rekoda-operator-secret': OPERATOR_SECRET });
+    const steered = await app.inject({
+      method: 'GET',
+      url: `/v1/ops/health?businessId=${business.id}&provider=customer_identities&table=jobs`,
+      headers: { 'x-rekoda-operator-secret': OPERATOR_SECRET },
+    });
+
+    expect(steered.statusCode).toBe(200);
+    expect(steered.json()).toEqual(plain.json());
+    expect(steered.body).not.toContain(business.id);
+    expect(steered.body).not.toContain('Steered');
   });
 });

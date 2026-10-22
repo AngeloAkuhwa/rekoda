@@ -59,12 +59,13 @@ Last updated: 22 Oct 2026, `main` `75521f4`.
 
 ## Setup items outside the 41
 
-| Item                           | PR   | Status                                               | Notes                                                                                                                            |
-| ------------------------------ | ---- | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Design skills at project scope | #317 | PR OPEN, CodeRabbit re-review requested              | Impeccable copied by hand (installer blocked by sandbox network); hooks off                                                      |
-| G-10 documentation closeout    | #316 | PR OPEN, CodeRabbit approved, Integration CI pending | Docs only                                                                                                                        |
-| Sentry (staging first)         |      | BLOCKED: owner Sentry account and DSN                | Plan: API and worker, Next.js, release tags, `beforeSend` scrubber; production stays off                                         |
-| Semgrep rules                  |      | NOT STARTED                                          | Rekoda-specific rules only; registry packs add noise (844 raw, none a vulnerability); GCM tag-length pin is a small separate fix |
+| Item                                                | PR   | Status                                               | Notes                                                                                                                                                                   |
+| --------------------------------------------------- | ---- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Design skills at project scope                      | #317 | PR OPEN, CodeRabbit re-review requested              | Impeccable copied by hand (installer blocked by sandbox network); hooks off                                                                                             |
+| G-10 documentation closeout                         | #316 | PR OPEN, CodeRabbit approved, Integration CI pending | Docs only                                                                                                                                                               |
+| Sentry (staging first)                              |      | BLOCKED: owner Sentry account and DSN                | Plan: API and worker, Next.js, release tags, `beforeSend` scrubber; production stays off                                                                                |
+| Least-privilege monitoring role (ADR 0035 residual) |      | NOT STARTED                                          | A read-only monitoring role or `SECURITY DEFINER` aggregate functions so the alert pass stops using the broad worker credential; needs a migration and a new credential |
+| Semgrep rules                                       |      | NOT STARTED                                          | Rekoda-specific rules only; registry packs add noise (844 raw, none a vulnerability); GCM tag-length pin is a small separate fix                                        |
 
 ## External gates (no PR can close them)
 
