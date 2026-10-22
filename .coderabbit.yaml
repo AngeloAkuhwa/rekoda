@@ -89,7 +89,10 @@ reviews:
         mode: error
         instructions: |
           Read only the author's part of the PR description (ignore any block CodeRabbit generated).
-          A PR is DOCS-ONLY when every changed file ends in .md or is under docs/, and no changed file is docs/openapi.json (a CI-validated API contract). Otherwise it is a CODE PR.
+          A PR is DOCS-ONLY when every changed file ends in .md or is under docs/, and no changed file is docs/openapi.json
+          (a CI-validated API contract), docs/REKODA_CANONICAL_SPEC.md, docs/REKODA_OWNER_DECISIONS.md or an ADR under
+          docs/adr/ (binding documents). Otherwise it is a CODE PR. A change to an ADR whose Status is Accepted also
+          fails unless the description names the superseding ADR or the recorded OWN-* ruling that permits it.
           CODE PR: fail unless the description has a non-empty section for each of these, under any heading
           wording that clearly means it: (1) the problem solved; (2) the gap, issue or build identifier, or the
           words "none" with a reason; (3) the expected behaviour; (4) what code changed; (5) financial and
@@ -156,7 +159,8 @@ reviews:
           brought back to integer kobo with Math.floor, Math.round, Math.ceil or a money.ts helper) outside
           packages/core/src/money.ts;
           (b) the diff adds an UPDATE or DELETE on ledger_transactions or ledger_entries, or on a posted invoice,
-          receipt, payment or expense row, other than a spec-defined lifecycle transition;
+          receipt, payment, expense, purchase, supplier bill, credit note or stock movement row, other than a
+          spec-defined lifecycle transition;
           (c) the description's financial section does not name the affected invariant (for example balanced
           postings, one event one financial truth, idempotent retry, refund limit, entitlement granted once)
           and the test that covers it. A change in scope that moves no money and touches no financial table
@@ -181,8 +185,8 @@ reviews:
       - name: CI and deployment stay safe
         mode: error
         instructions: |
-          Applies when the diff changes .github/workflows/, Dockerfile, docker-compose*.yml, deploy/ or
-          scripts/deploy-*.sh. Fail if it: removes or renames a CI job or step that runs tests, typecheck, lint,
+          Applies when the diff changes .github/workflows/, Dockerfile, docker-compose*.yml, deploy/,
+          scripts/deploy-*.sh or scripts/check-deploy.mjs. Fail if it: removes or renames a CI job or step that runs tests, typecheck, lint,
           migrations or the secret scan; adds "|| true" or "continue-on-error" to such a step; adds a literal
           credential, token, private key or password; adds `docker compose down -v`, `docker system prune`,
           `docker image prune`, `rm -rf` of a data or volume path, or a database drop or restore; removes the
