@@ -10,7 +10,14 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { SENTINEL, folderHash, ignoredUnder, isIgnored } from './check-vendored-skills.mjs';
+import {
+  IMPECCABLE_HASH,
+  SENTINEL,
+  folderHash,
+  ignoredUnder,
+  isIgnored,
+  problemsIn,
+} from './check-vendored-skills.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const NEGATION = '!/.claude/skills/**/data/';
@@ -71,6 +78,29 @@ test('an ignored asset anywhere under .claude/skills is reported, not just the s
     assert.deepEqual(ignoredUnder(dir), [
       '.claude/skills/x/assets/hero.png is on disk but an ignore rule keeps it out of the commit',
     ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a skill folder with no recorded hash is reported', () => {
+  const dir = scratchRepo('');
+  try {
+    writeFileSync(join(dir, 'skills-lock.json'), JSON.stringify({ version: 1, skills: {} }));
+    writeFileSync(join(dir, '.claude/skills/SOURCES.md'), `Impeccable: ${IMPECCABLE_HASH}\n`);
+    mkdirSync(join(dir, '.claude/skills/newskill'), { recursive: true });
+    writeFileSync(join(dir, '.claude/skills/newskill/SKILL.md'), '# new\n');
+    mkdirSync(join(dir, '.claude/skills/_licenses'), { recursive: true });
+    writeFileSync(join(dir, '.claude/skills/_licenses/MIT.txt'), 'MIT\n');
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    const problems = problemsIn(dir);
+    assert.ok(
+      problems.includes(
+        '.claude/skills/newskill/ has no recorded hash in skills-lock.json or IMPECCABLE_HASH',
+      ),
+      problems.join('\n'),
+    );
+    assert.ok(!problems.some((p) => p.startsWith('.claude/skills/_licenses/')));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
