@@ -141,7 +141,9 @@ export class JobRunner {
      * stall window leaves room for two missed beats. */
     const heartbeat = setInterval(
       () => {
-        jobsRepo.touch(this.workerDb, job.id, claimedBy).catch((error: unknown) => {
+        withBusiness(this.appDb, job.businessId, (tx) =>
+          jobsRepo.touch(tx, job.id, claimedBy),
+        ).catch((error: unknown) => {
           this.log.warn(`job lease renewal failed: ${redactForLog(describeFailure(error))}`);
         });
       },
@@ -171,6 +173,14 @@ export class JobRunner {
           await jobsRepo.markDone(tx, job.id, claimedBy);
         });
       } catch (error) {
+        if (error instanceof jobsRepo.JobLeaseLost) {
+          /* Another claim owns the job and this attempt's transaction already
+           * rolled back, so nothing it wrote survives. Recording a failure here
+           * would be a no-op under the fence and a false "will retry" in the
+           * logs; it is simply discarded (G-10). */
+          this.log.warn(`job ${job.kind} ${job.id} lost its lease; attempt discarded`);
+          return true;
+        }
         if (error instanceof JobDeferred) {
           // Stepping aside, not failing: back in the queue, attempt refunded.
           await jobsRepo.deferClaimed(this.workerDb, job.id, error.delayMs, claimedBy);
@@ -216,11 +226,15 @@ export class JobRunner {
      * the moment that lane sat in a slow handler, and never ran at all while
      * the queue stayed busy. One timer per runner, so N lanes do not multiply
      * the sweeps. */
-    this.reclaimTimer = setInterval(() => {
+    const reclaimPass = (): void => {
       this.reclaim().catch((error: unknown) => {
         this.log.warn(`job reclaim failed: ${redactForLog(describeFailure(error))}`);
       });
-    }, this.stalledAfterMs);
+    };
+    /* Once at start too: a worker restarted more often than the stall window
+     * would otherwise never reclaim what its predecessor left behind. */
+    reclaimPass();
+    this.reclaimTimer = setInterval(reclaimPass, this.stalledAfterMs);
     this.reclaimTimer.unref();
     this.log.log(
       `job runner started as ${this.workerId}` +

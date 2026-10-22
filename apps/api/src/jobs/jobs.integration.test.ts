@@ -33,7 +33,7 @@ import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '@re
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { JobRunner } from './runner.js';
+import { JobDeferred, JobRunner } from './runner.js';
 import { buildRunner, type RunnerDeps } from './jobs.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
@@ -446,6 +446,32 @@ describe('an attempt that lost its job cannot commit (G-10)', () => {
     expect(await productsOf(ada)).toHaveLength(0);
     // ...and it did not clobber the new owner's claim.
     const [job] = await jobsOf(ada);
+    expect(job).toMatchObject({ state: 'running', attempts: 2 });
+  });
+});
+
+describe('a stale attempt cannot fail or defer the live claim either (G-10)', () => {
+  async function staleThen(failWith: () => unknown) {
+    const ada = await seedBusiness('Ada Fashion', '+2348050000001');
+    await enqueue(ada, 'test.stale');
+    const runner = new JobRunner(workerDb, appDb);
+    runner.register('test.stale', async () => {
+      await jobsRepo.reclaimStalled(workerDb, 0);
+      const taken = await jobsRepo.claimNext(workerDb, 'the-new-owner');
+      expect(taken?.kind).toBe('test.stale');
+      throw failWith();
+    });
+    expect(await runner.runOnce()).toBe(true);
+    return (await jobsOf(ada))[0];
+  }
+
+  it('a stale attempt that throws does not mark the live claim failed', async () => {
+    const job = await staleThen(() => new Error('the stale attempt blew up'));
+    expect(job).toMatchObject({ state: 'running', attempts: 2 });
+  });
+
+  it('a stale attempt that defers does not requeue the live claim', async () => {
+    const job = await staleThen(() => new JobDeferred(1_000));
     expect(job).toMatchObject({ state: 'running', attempts: 2 });
   });
 });

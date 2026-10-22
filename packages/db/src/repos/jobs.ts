@@ -313,10 +313,10 @@ export class JobLeaseLost extends Error {
  * `locked_by` and `state` so a job that already finished, failed or was
  * reclaimed is never resurrected.
  */
-export async function touch(db: Db, id: string, workerId: string): Promise<void> {
-  await db.execute(sql`
+export async function touch(tx: TenantDb, id: string, claimedBy: string): Promise<void> {
+  await tx.execute(sql`
     UPDATE jobs SET locked_at = now(), updated_at = now()
-    WHERE id = ${id}::uuid AND state = 'running' AND locked_by = ${workerId}
+    WHERE id = ${id}::uuid AND state = 'running' AND locked_by = ${claimedBy}
   `);
 }
 
