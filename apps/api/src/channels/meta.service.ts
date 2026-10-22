@@ -53,6 +53,8 @@ export class MetaIngressService {
        * (dev, simulator), where the Chat path below remains the law. */
     }
 
+    if (event.kind === 'status') return this.acceptStatus(event, payload);
+
     const businessId = await this.resolveBusiness(event.from);
 
     /**
@@ -63,7 +65,7 @@ export class MetaIngressService {
      * to nothing) with no job (so no handler ever opens it). A crash between
      * two statements in one transaction leaves nothing instead.
      */
-    if (businessId && event.kind !== 'status') {
+    if (businessId) {
       return withBusiness(this.db, businessId, async (tx) => {
         const recorded = await events.recordEvent(tx, {
           provider: 'meta',
@@ -88,8 +90,7 @@ export class MetaIngressService {
 
     const recorded = await events.recordEvent(this.db, {
       provider: 'meta',
-      eventType:
-        event.kind === 'status' ? `status.${event.status}` : `message.${event.messageType}`,
+      eventType: `message.${event.messageType}`,
       externalId: event.externalId,
       /**
        * Sealed, not stored raw.
@@ -116,6 +117,46 @@ export class MetaIngressService {
      * cannot be expressed. Both are durably stored; the reply layer picks up
      * the second when it exists. */
     return { isNew: true };
+  }
+
+  /**
+   * A delivery receipt (G-20). Which tenant it belongs to is decided by the
+   * NUMBER it was sent from, not by `recipient_id`: on a merchant's own WABA the
+   * recipient is that merchant's customer, who may themselves be a Rekoda
+   * merchant, and filing the receipt under them would show one tenant another's
+   * delivery failures. An unclaimed number is stored unattributed. Receipts
+   * are born processed, so they never read as a stuck queue; a `failed` one is
+   * counted on the ops health surface instead.
+   */
+  private async acceptStatus(event: InboundEvent, payload: unknown): Promise<{ isNew: boolean }> {
+    /* The recipient is only ever a tenant hint on Rekoda's OWN number, where
+     * the recipient IS the merchant. A missing or unclaimed phoneNumberId is
+     * stored unattributed, never resolved by the recipient. */
+    let businessId: string | null = null;
+    if (event.phoneNumberId) {
+      const routed = await this.routeMerchantWaba(event.phoneNumberId);
+      if (routed) businessId = routed.businessId;
+      else if (event.phoneNumberId === this.config.metaPhoneNumberId) {
+        businessId = await this.resolveBusiness(event.from);
+      }
+    }
+
+    const record = (q: Parameters<typeof events.recordEvent>[0]) =>
+      events.recordEvent(q, {
+        provider: 'meta',
+        eventType: `status.${event.status}`,
+        externalId: event.externalId,
+        payload: sealPayload(payload, this.config.vaultKey, 'meta', event.externalId),
+        businessId,
+        processed: true,
+      });
+    const recorded = businessId
+      ? await withBusiness(this.db, businessId, (tx) => record(tx))
+      : await record(this.db);
+    if (!recorded.isNew) {
+      this.log.debug(`ignored a duplicate Meta event ${redactForLog(event.externalId)}`);
+    }
+    return { isNew: recorded.isNew };
   }
 
   /**

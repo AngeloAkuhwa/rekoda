@@ -27,6 +27,20 @@ export class SecurityMetrics {
     this.rejected.set(provider, (this.rejected.get(provider) ?? 0) + 1);
   }
 
+  private otpSent = 0;
+  private otpFailed = 0;
+
+  /** Record one sign-in code send: delivered to the provider, or failed (G-12). */
+  otpSend(outcome: 'sent' | 'failed'): void {
+    if (outcome === 'sent') this.otpSent += 1;
+    else this.otpFailed += 1;
+  }
+
+  /** Sign-in code sends this process has attempted since it started. */
+  otpSends(): { sent: number; failed: number } {
+    return { sent: this.otpSent, failed: this.otpFailed };
+  }
+
   /** How many this process has rejected for `provider` since it started. */
   rejectedSignatures(provider: string): number {
     return this.rejected.get(provider) ?? 0;
