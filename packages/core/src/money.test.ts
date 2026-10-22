@@ -265,3 +265,6 @@ describe('computeMoneyFromKobo', () => {
     expect(block).toMatchObject({ totalK: 1_000_000, balanceDueK: 0, overpaymentK: 500_000 });
   });
 });
+
+// probe: a skipped test (must be refused)
+it.skip('probe', () => {});

@@ -17,3 +17,5 @@ VALUES
   ('paystack', 'PAYMENT_FEE', 'collection_transfer_pwt', 'paystack-ng-2026-08', '2026-08-16',
    'PERCENT_PLUS_FLAT', 15000, 10000, 200000, 250000, 'NGN',
    'Pay-with-Transfer is priced at the local rate: 1.5% + N100, capped N2,000, N100 waived below N2,500 (ADR 0016, G-22)');
+
+-- probe: an edit to an applied migration (must be refused)
