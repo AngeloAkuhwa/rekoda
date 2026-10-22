@@ -2200,6 +2200,6 @@ export function purchaseIdentityClosed(
   }
   return reply(
     'That question has closed, so nothing was saved. If it is a separate one, ' +
-      'send it again as a new message.',
+      'send it as a new message.',
   );
 }
