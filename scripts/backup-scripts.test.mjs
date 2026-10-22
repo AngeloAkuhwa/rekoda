@@ -140,7 +140,7 @@ test('a backup whose checksum cannot be published is never listed as the newest'
 
 test('two backups started in the same second never share an object name', () => {
   const t = env();
-  const a = spawnSync('bash', ['-c', `${join(ROOT, 'scripts/backup-db.sh')} & ${join(ROOT, 'scripts/backup-db.sh')} & wait`], {
+  const a = spawnSync('bash', ['-c', `S=${join(ROOT, 'scripts/backup-db.sh')}; $S & p=$!; $S & q=$!; wait $p; a=$?; wait $q; b=$?; [ $a -eq 0 ] && [ $b -eq 0 ]`], {
     env: t.env,
     encoding: 'utf8',
   });
