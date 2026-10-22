@@ -161,6 +161,28 @@ describe('a lapsed plan (G-44)', () => {
     }
   });
 
+  it('refuses a trial whose date has passed, though the plan is still stored as trial', async () => {
+    const { owner, businessId } = await ownerOf('0005');
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'trial',
+      expiresAt: new Date(Date.now() - 86_400_000),
+      actor: 'operator:g44',
+    });
+    for (const url of REFUSED_WHEN_LAPSED) {
+      const res = await post(url, {}, owner);
+      expect(res.statusCode, url).toBe(403);
+    }
+    // A trial still inside its 14 days is not lapsed.
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'trial',
+      expiresAt: new Date(Date.now() + 86_400_000),
+      actor: 'operator:g44',
+    });
+    expect((await post('/v1/reports/journal', {}, owner)).statusCode).toBe(400);
+  });
+
   it('opens again the moment a plan is bought', async () => {
     const { owner, businessId } = await ownerOf('0004');
     await lapse(businessId);
