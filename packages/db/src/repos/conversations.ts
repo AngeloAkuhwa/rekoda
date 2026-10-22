@@ -458,6 +458,13 @@ export interface OutboundMessageInput {
    * what is stored here is what the gateway produced.
    */
   body: string;
+  /**
+   * The inbound message this reply answers (G-20, migration 0169). Set where
+   * a merchant's preview is sent, so a delivery that fails after WhatsApp
+   * accepted it can be traced back to the draft it showed. Omitted for a
+   * reply with no request behind it.
+   */
+  replyToMessageId?: string;
 }
 
 /** Record a reply. Written BEFORE the send, so an undelivered reply is still known. */
@@ -478,6 +485,7 @@ export async function recordOutbound(
       direction: 'outbound',
       kind: message.kind,
       body: message.body,
+      replyToMessageId: message.replyToMessageId ?? null,
     })
     .returning({ id: conversationMessages.id });
 
@@ -719,6 +727,45 @@ export async function markDraftUnseen(
      WHERE business_id = ${businessId}::uuid
        AND conversation_message_id = ${conversationMessageId}::uuid
        AND previewed`);
+}
+
+/**
+ * A preview WhatsApp ACCEPTED and then failed to deliver (G-20).
+ *
+ * `markDraftUnseen` covers a send that failed outright. A delivery that fails
+ * after acceptance arrives later, as a `failed` status webhook naming only
+ * the outbound wamid. That wamid is this business's outbound reply
+ * (`provider_message_id`), whose `reply_to_message_id` names the inbound
+ * message; that message's drafts are what the preview showed. Each one still
+ * `pending` and `previewed` is marked unseen exactly as a failed send marks
+ * it: not previewed, so a lapsed "yes" is never told an unseen request
+ * expired, and its link question was not asked, so the proposal goes (G-60).
+ *
+ * Only `pending` drafts move: a confirmed or cancelled one was answered, so
+ * its preview was read, and an expired or superseded one is no longer the
+ * thing a "yes" executes. A wamid this business never sent, a reply that
+ * answered no request, or a reply whose request drafted nothing previewed
+ * changes nothing. Returns how many drafts moved.
+ */
+export async function markPreviewUndelivered(
+  tx: TenantDb,
+  businessId: string,
+  providerMessageId: string,
+): Promise<number> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE command_drafts d SET previewed = false, identity_link = NULL,
+           updated_at = clock_timestamp()
+      FROM conversation_messages o
+     WHERE o.business_id = ${businessId}::uuid
+       AND o.direction = 'outbound'
+       AND o.provider_message_id = ${providerMessageId}
+       AND o.reply_to_message_id IS NOT NULL
+       AND d.business_id = o.business_id
+       AND d.conversation_message_id = o.reply_to_message_id
+       AND d.state = 'pending'
+       AND d.previewed
+    RETURNING d.id`);
+  return [...rows].length;
 }
 
 /**

@@ -556,11 +556,18 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         reply: answer,
         // Only the model path can produce a reply that names a customer.
         ...(liveTokens ? { tokens: liveTokens.displays } : {}),
+        /* G-20: the reply records which message it answered, so a delivery
+         * that fails after acceptance finds this message's preview. */
+        inReplyTo: message.id,
       });
       /* G-23: "previewed" means WhatsApp accepted the preview for delivery.
        * A preview whose send failed (swallowed so the draft survives) was
        * not sent. A delivery that fails later, after acceptance, comes back
-       * as a status webhook nothing reads yet (G-20) and is not reflected. */
+       * as a `failed` status webhook (G-20): the `delivery.status` job then
+       * marks this message's pending preview unseen, as below. Only that:
+       * the continuations and re-asked holds undone below on a send-time
+       * failure are rebuilt from this job's in-memory `outcome`, which a
+       * webhook arriving later does not have. */
       /* A link question cut from a long preview was not asked: the
        * proposal goes, so a yes to what the merchant read never joins two
        * customers (G-60, Codex on #271). */

@@ -16,6 +16,13 @@ export interface SendReplyInput {
    * without touching a customer, which is most of them.
    */
   tokens?: ReadonlyMap<string, string>;
+  /**
+   * The inbound conversation message this reply answers (G-20). Recorded on
+   * the outbound row so a delivery that fails after WhatsApp accepted it can
+   * be traced back to the preview it carried. Omit for a reply with no
+   * request behind it.
+   */
+  inReplyTo?: string;
 }
 
 /**
@@ -94,6 +101,7 @@ export class ReplySender {
         channel: 'meta',
         kind: 'text',
         body: safe.text,
+        ...(input.inReplyTo ? { replyToMessageId: input.inReplyTo } : {}),
       },
       /* The thread identity, stated rather than assumed (Appendix F.2):
        * a reply to the merchant belongs on the merchant's thread. */

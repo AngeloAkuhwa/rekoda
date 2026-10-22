@@ -104,6 +104,14 @@ export const conversationMessages = pgTable(
     body: text('body'),
     /** Provider message id — the idempotency key for inbound delivery. */
     providerMessageId: text('provider_message_id'),
+    /**
+     * The inbound message this outbound reply answered (migration 0169,
+     * G-20), so a later `failed` delivery status for the reply's wamid finds
+     * the draft its preview showed. Null on inbound rows and on replies with
+     * no request behind them. The composite FK to `(business_id, id)` lives in
+     * the migration: a reply cannot answer another business's message.
+     */
+    replyToMessageId: uuid('reply_to_message_id'),
     createdAt: insertedAt('created_at'),
   },
   (t) => [

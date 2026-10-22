@@ -196,6 +196,13 @@ export interface InboundEvent {
     readonly title: string | null;
   } | null;
   readonly status: string | null;
+  /**
+   * For a delivery status only: OUR outbound message's wamid, the message the
+   * status is about (G-20). Null for an inbound message, whose own wamid is
+   * `externalId`. Stated rather than parsed back out of the status's
+   * `externalId`, which is a dedupe key and not an interface.
+   */
+  readonly outboundMessageId: string | null;
 }
 
 /**
@@ -256,6 +263,7 @@ export function extractInboundEvents(body: MetaWebhookBody): InboundEvent[] {
             : null,
           tappedReply: tappedReplyOf(message),
           status: null,
+          outboundMessageId: null,
         });
       }
 
@@ -275,6 +283,7 @@ export function extractInboundEvents(body: MetaWebhookBody): InboundEvent[] {
           order: null,
           tappedReply: null,
           status: status.status,
+          outboundMessageId: status.id,
         });
       }
     }
