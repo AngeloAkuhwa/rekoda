@@ -183,6 +183,22 @@ describe('the 0167 backfill uses persisted evidence only', () => {
     expect(await originOf(id)).toBe('operator');
   });
 
+  it('does not count an identical operator re-post as the operator creating the cycle', async () => {
+    const id = await seedBusiness();
+    await providerCycle(id);
+    await addCharge(id, '2020-01-01T00:00:00Z');
+    await billingRepo.setPlan(appDb, {
+      businessId: id,
+      plan: 'chat',
+      expiresAt: RENEWS,
+      actor: 'operator:test',
+    });
+    expect(await originOf(id)).toBe('provider');
+    await clear();
+    await backfill();
+    expect(await originOf(id)).toBe('provider');
+  });
+
   it('stays unknown with no evidence, and for an unpaid plan', async () => {
     const noEvidence = await seedBusiness();
     await ownerDb.execute(

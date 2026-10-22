@@ -18,9 +18,8 @@ ALTER TABLE businesses
 
 -- Conservative backfill from persisted evidence only. For a business on a paid
 -- plan, the most recent of (a) a settled charge for the CURRENT plan and (b) an
--- operator plan_changed row naming the current plan decides. An operator row
--- is written even when a re-post kept the cycle, so such a merchant is classed
--- operator and goes to support review: conservative by design (OWN-34). Anything else
+-- operator plan_changed row naming the current plan decides. An identical operator
+-- re-post (same plan and expiry) is not counted: it kept the cycle's origin. Anything else
 -- stays NULL (unknown) rather than being guessed from duration or expiry.
 UPDATE businesses b
 SET subscription_origin = ev.origin
@@ -48,6 +47,11 @@ FROM (
     WHERE ae.business_id = b2.id AND ae.action = 'plan_changed'
       AND ae.source_type = 'operator'
       AND ae.new_value ->> 'plan' = b2.plan
+      -- an identical re-post (same plan, same dated expiry) kept the cycle and its
+      -- origin (setPlan), so it is not evidence that an operator created it
+      AND NOT (ae.new_value ->> 'expiresAt' IS NOT NULL
+               AND ae.old_value ->> 'plan' IS NOT DISTINCT FROM ae.new_value ->> 'plan'
+               AND ae.old_value ->> 'expiresAt' IS NOT DISTINCT FROM ae.new_value ->> 'expiresAt')
   ) a ON true
   WHERE b2.plan NOT IN ('trial', 'expired')
 ) ev
