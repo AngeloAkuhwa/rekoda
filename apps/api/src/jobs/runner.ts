@@ -138,10 +138,13 @@ export class JobRunner {
 
     /* Renew the lease while the handler runs, so a long-running job is not
      * mistaken for one a crashed worker abandoned (G-10). A third of the
-     * stall window leaves room for two missed beats. */
+     * stall window leaves room for two missed beats. It runs on the worker
+     * pool, tenant-pinned: handlers hold application-pool connections, and a
+     * heartbeat queued behind them would stop beating exactly when handlers
+     * are busiest. */
     const heartbeat = setInterval(
       () => {
-        withBusiness(this.appDb, job.businessId, (tx) =>
+        withBusiness(this.workerDb, job.businessId, (tx) =>
           jobsRepo.touch(tx, job.id, claimedBy),
         ).catch((error: unknown) => {
           this.log.warn(`job lease renewal failed: ${redactForLog(describeFailure(error))}`);
@@ -197,6 +200,10 @@ export class JobRunner {
           undefined,
           claimedBy,
         );
+        if (outcome.state === 'lost') {
+          this.log.warn(`job ${job.kind} ${job.id} lost its lease; attempt discarded`);
+          return true;
+        }
         if (outcome.state === 'dead') {
           this.log.error(`job ${job.kind} exhausted ${job.maxAttempts} attempts: ${message}`);
         } else {

@@ -338,10 +338,10 @@ export async function markFailed(
   error: string,
   delayMs = backoffMs(job.attempts),
   claimedBy?: string,
-): Promise<{ state: 'pending' | 'dead' }> {
+): Promise<{ state: 'pending' | 'dead' | 'lost' }> {
   const exhausted = job.attempts >= job.maxAttempts;
   const state = exhausted ? 'dead' : 'pending';
-  await db.execute(sql`
+  const rows = await db.execute<{ id: string }>(sql`
     UPDATE jobs SET
       state      = ${state},
       run_at     = ${exhausted ? sql`run_at` : sql`now() + make_interval(secs => ${delayMs / 1000})`},
@@ -351,7 +351,11 @@ export async function markFailed(
       updated_at = now()
     WHERE id = ${job.id}::uuid
       AND (${claimedBy ?? null}::text IS NULL OR locked_by = ${claimedBy ?? null})
+    RETURNING id
   `);
+  /* A fenced update that matched nothing means another claim owns the job:
+   * report it rather than a retry or exhaustion that never happened. */
+  if (claimedBy !== undefined && [...rows].length === 0) return { state: 'lost' };
   return { state };
 }
 
