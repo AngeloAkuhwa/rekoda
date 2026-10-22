@@ -2065,7 +2065,8 @@ function identityQuestionText(
     const what = mixed ? 'purchases or expenses' : 'stock purchases';
     return (
       `${lead}I found ${named} ${what} of ${formatKobo(subject.amountK)} already saved or ` +
-      `waiting in the last 24 hours. Is this the same purchase?\n\n${IDENTITY_CHOICES_MANY}`
+      `waiting in the last 24 hours. Is this the same ${mixed ? 'one' : 'purchase'}?\n\n` +
+      IDENTITY_CHOICES_MANY
     );
   }
   if (acrossKinds(subject)) {
@@ -2103,9 +2104,16 @@ export function purchaseIdentityAtYes(subject: PurchaseIdentitySubject, now: Dat
  * A "yes", "na so", "no" or a doubtful answer to the identity question
  * (G-81): never an answer, and never a confirmation of an older preview.
  */
-export function purchaseIdentityReask(options: { readonly afterNo?: boolean } = {}): Reply {
+export function purchaseIdentityReask(
+  /** What the held spend is (G-87): an expense is never called a purchase. */
+  options: { readonly afterNo?: boolean; readonly kind?: 'purchase' | 'expense' } = {},
+): Reply {
+  const what =
+    options.kind === 'expense'
+      ? 'whether this expense is a new one'
+      : 'whether this is a second purchase';
   return reply(
-    'Please reply *same* or *separate*, so I know whether this is a second purchase. ' +
+    `Please reply *same* or *separate*, so I know ${what}. ` +
       'Nothing was saved.' +
       /* Never "cancel" here: it withdraws every waiting preview in the
        * business, another member's too (Codex review of 5bfe87e). "same"

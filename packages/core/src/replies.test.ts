@@ -1057,6 +1057,36 @@ describe('fresh review of #262: no reply invites a different command', () => {
   });
 });
 
+describe('a held expense is never called a purchase (G-87)', () => {
+  it('the re-ask names an expense as one', () => {
+    const text = replies.purchaseIdentityReask({ kind: 'expense' }).text;
+    expect(text).toContain('whether this expense is a new one');
+    expect(text).not.toContain('purchase');
+    expect(replies.purchaseIdentityReask().text).toContain('whether this is a second purchase');
+  });
+
+  it('a question naming purchases and expenses asks about the same one', () => {
+    const now = new Date('2026-10-02T12:00:00Z');
+    const subject = {
+      state: 'booked',
+      amountK: 10_000_000,
+      owner: 'you',
+      bookedAt: new Date('2026-10-02T09:42:00Z'),
+      billNumber: null,
+    } as const;
+    const mixed = replies.purchaseIdentityQuestion(subject, now, {
+      named: 2,
+      kinds: ['purchase', 'expense'],
+    }).text;
+    expect(mixed).toContain('Is this the same one?');
+    expect(mixed).not.toContain('the same purchase?');
+    expect(
+      replies.purchaseIdentityQuestion(subject, now, { named: 2, kinds: ['purchase', 'purchase'] })
+        .text,
+    ).toContain('Is this the same purchase?');
+  });
+});
+
 describe('purchaseIdentityReask after a no (Codex review of 5bfe87e)', () => {
   it('never offers cancel, which withdraws every waiting preview in the business', () => {
     const text = replies.purchaseIdentityReask({ afterNo: true }).text;

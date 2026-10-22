@@ -3693,7 +3693,10 @@ async function reaskPurchaseIdentity(
       expiresAt: held.expiresAt,
     });
   }
-  return replies.purchaseIdentityReask(options);
+  return replies.purchaseIdentityReask({
+    ...options,
+    kind: spendKindOf(held.command) ?? 'purchase',
+  });
 }
 
 /**
