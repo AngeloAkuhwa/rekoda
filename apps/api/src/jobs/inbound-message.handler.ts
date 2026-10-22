@@ -1711,6 +1711,7 @@ async function deterministicReply(
             confirmationId: confirmation.id,
             actor: 'system',
             ingress: 'CHAT',
+            memberPhone: ctx.from,
           },
           () => eraseDataWork(tx, { businessId, sourceType: 'chat' }),
         );
@@ -2568,7 +2569,7 @@ async function confirmPendingDraft(
   }
 
   if (command.intent === 'RecordExpense')
-    return confirmExpense(deps, tx, businessId, draft.id, command);
+    return confirmExpense(deps, tx, businessId, sender.from, draft.id, command);
   if (command.intent === 'RecordPurchase')
     return confirmPurchase(deps, tx, businessId, draft.id, command, sender);
   if (command.intent === 'EraseData') {
@@ -2580,17 +2581,33 @@ async function confirmPendingDraft(
     /* Refunds its own unit on every path that answers without issuing a
      * receipt: an invoice settled from under the merchant, or a payment we
      * could not place, must not cost them a document they never got. */
-    return confirmPayment(deps, tx, businessId, draft, command, refundReserved);
+    return confirmPayment(deps, tx, businessId, sender.from, draft, command, refundReserved);
   }
   if (command.intent === 'AdjustInventory') {
     /* No document, so the unit this confirmation reserved goes back. A stock
      * count produces nothing to send and must not cost the merchant one of
      * the documents they are allowed to generate. */
     await refundReserved();
-    return confirmStockChange(deps, tx, businessId, draft.id, command as never, receivedAt);
+    return confirmStockChange(
+      deps,
+      tx,
+      businessId,
+      sender.from,
+      draft.id,
+      command as never,
+      receivedAt,
+    );
   }
   if (command.intent === 'RecordOrder') {
-    return confirmOrder(deps, tx, businessId, draft.id, command as never, refundReserved);
+    return confirmOrder(
+      deps,
+      tx,
+      businessId,
+      sender.from,
+      draft.id,
+      command as never,
+      refundReserved,
+    );
   }
   if (command.intent !== 'RecordSale') {
     // Anything else is not actionable yet. The draft is claimed either way,
@@ -2662,6 +2679,7 @@ async function confirmPendingDraft(
         payload: input,
         actor: 'system',
         ingress: 'CHAT',
+        memberPhone: sender.from,
         /* The claimed draft: one draft, one yes, one sale. The claim above
          * already guarantees single execution; this key is the second net,
          * and it makes the replay answer the same reply. */
@@ -2718,6 +2736,8 @@ async function confirmOrder(
   deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
+  /** The member who said yes, for the bus's role check (G-99). */
+  memberPhone: string,
   draftId: string,
   command: StructuredBusinessCommand & { intent: 'RecordOrder' },
   refund: () => Promise<void>,
@@ -2775,6 +2795,7 @@ async function confirmOrder(
         payload: input,
         actor: 'system',
         ingress: 'CHAT',
+        memberPhone,
         idempotencyKey: `draft:${draftId}`,
       },
       () => placeOrderWork(tx, input),
@@ -2816,6 +2837,8 @@ async function confirmStockChange(
   deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
+  /** The member who said yes, for the bus's role check (G-99). */
+  memberPhone: string,
   draftId: string,
   command: StructuredBusinessCommand & { intent: 'AdjustInventory' },
   /**
@@ -2873,6 +2896,7 @@ async function confirmStockChange(
         now: receivedAt,
         actor: 'system',
         ingress: 'CHAT',
+        memberPhone,
         idempotencyKey: `draft:${draftId}`,
       },
       () => adjustInventoryWork(tx, input),
@@ -2901,6 +2925,8 @@ async function confirmExpense(
   deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
+  /** The member who said yes, for the bus's role check (G-99). */
+  memberPhone: string,
   draftId: string,
   command: Record<string, unknown>,
 ): Promise<Reply> {
@@ -2929,6 +2955,7 @@ async function confirmExpense(
         payload: input,
         actor: 'system',
         ingress: 'CHAT',
+        memberPhone,
         idempotencyKey: `draft:${draftId}`,
       },
       () => recordExpenseWork(tx, input),
@@ -3007,6 +3034,7 @@ async function confirmPurchase(
             payload: input,
             actor: 'system',
             ingress: 'CHAT',
+            memberPhone: sender.from,
             idempotencyKey: `draft:${draftId}`,
           },
           () => recordPurchaseWork(sp, input),
@@ -4487,6 +4515,8 @@ async function confirmPayment(
   deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
+  /** The member who said yes, for the bus's role check (G-99). */
+  memberPhone: string,
   draft: { id: string; messageKind: string | null; confirmationContext?: unknown },
   command: Record<string, unknown>,
   refundDocumentUnit: () => Promise<void>,
@@ -4577,6 +4607,7 @@ async function confirmPayment(
           payload: evidenceInput,
           actor: 'system',
           ingress: 'CHAT',
+          memberPhone,
           idempotencyKey: `evidence:${draft.id}`,
         },
         () => recordPaymentEvidenceWork(tx, evidenceInput),
@@ -4615,6 +4646,7 @@ async function confirmPayment(
         payload: input,
         actor: 'system',
         ingress: 'CHAT',
+        memberPhone,
         idempotencyKey: `draft:${draft.id}`,
       },
       () => recordPaymentWork(tx, input),

@@ -91,6 +91,7 @@ describe('RecordExpense through the bus', () => {
       payload: input,
       actor: 'system',
       ingress: 'CHAT' as const,
+      memberPhone: '+2348160000001',
       idempotencyKey: 'draft:draft-exp-1',
     };
 
@@ -187,6 +188,7 @@ describe('RecordPurchase through the bus', () => {
       payload: input,
       actor: 'system',
       ingress: 'CHAT' as const,
+      memberPhone: '+2348160000001',
       idempotencyKey: 'draft:draft-pur-1',
     };
 
@@ -271,6 +273,7 @@ describe('a part-paid transfer purchase, raced and failed (G-61)', () => {
             payload: input(businessId),
             actor: 'system',
             ingress: 'CHAT',
+            memberPhone: '+2348160000001',
             idempotencyKey: 'draft:draft-g61',
           },
           () => recordPurchaseWork(tx, input(businessId)),

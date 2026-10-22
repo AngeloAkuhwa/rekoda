@@ -26,10 +26,11 @@ Integrate and Complete acceptance; then the minimal Central Admin; then external
 production readiness. OWN-30 (VAT is a SaaS-scope decision, not a legal exemption; Rekoda's own
 subscription VAT needs professional review) is in `REKODA_OWNER_DECISIONS.md`; the G-11 code
 audit has NOT started. Main merges are serialized so cancel-in-progress CI does not cancel the push
-run the staging deploy needs. Compact state at writing: `main` `9890e74` (#298, G-78); PR #299
-(G-99, head `2fb56df`, seven checks green, review pending) open; staging release not re-measured
-here. Owner-held: off-box backup destination, G-09 branch protection, G-05 live Paystack, G-03 Meta,
-tax and legal review, G-87/G-92(5) purchase policy. Next safe step: finish #299, then G-02.
+run the staging deploy needs. Compact state at merge: `main` `e4b9b05` (#301, G-44; before it #299,
+G-99 and #298, G-78). OWN-31 (G-87), OWN-32 (G-92(5), revises OD-23 D3) and OWN-33 (G-115) were
+ruled on 22 Oct 2026 and are recorded in `REKODA_OWNER_DECISIONS.md`. Owner-held: off-box backup
+destination, G-09 branch protection, G-05 live Paystack, G-03 Meta, tax and legal review. Next safe
+step: G-87 with G-92(5), then G-115, then G-02.
 
 **G-81 (owner-prioritised interstitial, OD-23 / OWN-21): MERGED 7 Oct 2026 (#262,
 `88b577c`, migration 0158); staging acceptance pending.** A purchase that may be one
