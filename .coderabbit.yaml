@@ -91,8 +91,9 @@ reviews:
           Read only the author's part of the PR description (ignore any block CodeRabbit generated).
           A PR is DOCS-ONLY when every changed file ends in .md or is under docs/, and no changed file is docs/openapi.json
           (a CI-validated API contract), docs/REKODA_CANONICAL_SPEC.md, docs/REKODA_OWNER_DECISIONS.md or an ADR under
-          docs/adr/ (binding documents). Otherwise it is a CODE PR. A change to an ADR whose Status is Accepted also
-          fails unless the description names the superseding ADR or the recorded OWN-* ruling that permits it.
+          docs/adr/ (binding documents). Otherwise it is a CODE PR. A change to an ADR that was already Accepted on
+          the base branch (a newly added ADR is exempt) also fails unless the description names the superseding ADR
+          or the recorded OWN-* ruling that permits it.
           CODE PR: fail unless the description has a non-empty section for each of these, under any heading
           wording that clearly means it: (1) the problem solved; (2) the gap, issue or build identifier, or the
           words "none" with a reason; (3) the expected behaviour; (4) what code changed; (5) financial and
@@ -186,12 +187,12 @@ reviews:
         mode: error
         instructions: |
           Applies when the diff changes .github/workflows/, Dockerfile, docker-compose*.yml, deploy/,
-          scripts/deploy-*.sh or scripts/check-deploy.mjs. Fail if it: removes or renames a CI job or step that runs tests, typecheck, lint,
-          migrations or the secret scan; adds "|| true" or "continue-on-error" to such a step; adds a literal
+          scripts/deploy-*.sh or scripts/check-deploy.mjs. Fail if it: removes or renames a CI job or step that
+          runs tests, typecheck, lint, migrations or the secret scan; adds "|| true" or "continue-on-error" to such a step; adds a literal
           credential, token, private key or password; adds `docker compose down -v`, `docker system prune`,
           `docker image prune`, `rm -rf` of a data or volume path, or a database drop or restore; removes the
-          successful-push-to-main CI requirement or the exact-SHA check from deploy-staging.yml; or adds a
-          production deployment trigger. Pass otherwise.
+          successful-push-to-main CI requirement or the exact-SHA check from deploy-staging.yml; adds a
+          production deployment trigger; or removes or loosens a check in scripts/check-deploy.mjs. Pass otherwise.
       - name: Owner product and tax rulings hold
         mode: error
         instructions: |
