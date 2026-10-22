@@ -26,6 +26,14 @@ ALTER TABLE conversation_messages
   FOREIGN KEY (business_id, reply_to_message_id) REFERENCES conversation_messages (business_id, id) NOT VALID;
 ALTER TABLE conversation_messages VALIDATE CONSTRAINT conversation_messages_reply_to_business_fk;
 
+-- The referencing side of that FK. PostgreSQL indexes only the referenced
+-- side, so without this every delete of a conversation message (retention,
+-- erasure) would scan the table for replies naming it. Partial: almost every
+-- row is NULL here and never needs finding.
+CREATE INDEX conversation_messages_reply_to_ix
+  ON conversation_messages (business_id, reply_to_message_id)
+  WHERE reply_to_message_id IS NOT NULL;
+
 -- Only a reply answers something.
 ALTER TABLE conversation_messages
   ADD CONSTRAINT conversation_messages_reply_to_outbound_ck

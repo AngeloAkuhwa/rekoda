@@ -117,6 +117,11 @@ export const conversationMessages = pgTable(
   (t) => [
     uniqueIndex('messages_provider_ux').on(t.providerMessageId),
     index('messages_conversation_ix').on(t.conversationId),
+    /* 0169: the composite FK's referencing side, so deleting or erasing an
+     * inbound message finds the replies that name it without a scan. */
+    index('conversation_messages_reply_to_ix')
+      .on(t.businessId, t.replyToMessageId)
+      .where(sql`reply_to_message_id IS NOT NULL`),
   ],
 );
 
