@@ -17,6 +17,7 @@ import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { redactForLog } from '@rekoda/core/privacy';
 import { JobQueue, JobKind } from './queue.service.js';
 import { JobRunner, describeFailure } from './runner.js';
+import { scheduleSweep, type SweepSchedule } from './sweep-schedule.js';
 import { inboundMessageHandler, type InboundMessageDeps } from './inbound-message.handler.js';
 import { customerMessageHandler } from './customer-message.handler.js';
 import { renderDocumentHandler } from './render-document.handler.js';
@@ -228,30 +229,22 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private runner: JobRunner | null = null;
   private pumpTimer: NodeJS.Timeout | null = null;
   private pumping = false;
-  private sweepTimer: NodeJS.Timeout | null = null;
   private sweeping = false;
-  private transferTimer: NodeJS.Timeout | null = null;
   private sweepingTransfers = false;
-  private feedTimer: NodeJS.Timeout | null = null;
   private sweepingFeeds = false;
   private strangerTimer: NodeJS.Timeout | null = null;
   private greeting = false;
-  private graceTimer: NodeJS.Timeout | null = null;
   private sweepingGrace = false;
-  private renewalTimer: NodeJS.Timeout | null = null;
   private sweepingRenewals = false;
-  private recurringTimer: NodeJS.Timeout | null = null;
   private sweepingRecurring = false;
-  private depreciationTimer: NodeJS.Timeout | null = null;
   private sweepingDepreciation = false;
-  private retentionTimer: NodeJS.Timeout | null = null;
   private sweepingRetention = false;
   private outboxTimer: NodeJS.Timeout | null = null;
   private dispatchingOutbox = false;
   private webhookTimer: NodeJS.Timeout | null = null;
   private sendingWebhooks = false;
-  private catalogueTimer: NodeJS.Timeout | null = null;
   private syncingCatalogues = false;
+  private readonly sweepSchedules: SweepSchedule[] = [];
 
   constructor(
     @Inject(CONFIG) private readonly config: ApiConfig,
@@ -332,20 +325,24 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
      * without hammering GET /settlement. Same non-overlap guard, same
      * unref, same log discipline as the pump.
      */
-    this.sweepTimer = setInterval(() => {
-      if (this.sweeping) return;
-      this.sweeping = true;
-      this.exclusively('settlement', () =>
-        sweepSettlements({ workerDb, appDb: this.appDb, provider: this.paymentProvider }),
-      )
-        .catch((error: unknown) => {
-          this.log.warn(`settlement sweep failed: ${redactForLog(describeFailure(error))}`);
-        })
-        .finally(() => {
-          this.sweeping = false;
-        });
-    }, 600_000);
-    this.sweepTimer.unref();
+    this.sweepSchedules.push(
+      scheduleSweep({
+        intervalMs: 600_000,
+        run: () => {
+          if (this.sweeping) return;
+          this.sweeping = true;
+          this.exclusively('settlement', () =>
+            sweepSettlements({ workerDb, appDb: this.appDb, provider: this.paymentProvider }),
+          )
+            .catch((error: unknown) => {
+              this.log.warn(`settlement sweep failed: ${redactForLog(describeFailure(error))}`);
+            })
+            .finally(() => {
+              this.sweeping = false;
+            });
+        },
+      }),
+    );
 
     /**
      * The Pay-with-Transfer reconciliation poll (ADR 0019: never rely on
@@ -355,27 +352,31 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
      * Live transfer intents are rare and short-lived, so most passes read
      * one worker query and stop.
      */
-    this.transferTimer = setInterval(() => {
-      if (this.sweepingTransfers) return;
-      this.sweepingTransfers = true;
-      this.exclusively('merchant-transfers', () =>
-        sweepMerchantTransfers({
-          workerDb,
-          appDb: this.appDb,
-          connectionKey: this.config.connectionKey,
-          paystackBaseUrl: this.config.paystackBaseUrl,
-          commandBus: this.commandBus,
-          commandConfirmPayment: this.config.commandConfirmPayment,
-        }),
-      )
-        .catch((error: unknown) => {
-          this.log.warn(`transfer sweep failed: ${redactForLog(describeFailure(error))}`);
-        })
-        .finally(() => {
-          this.sweepingTransfers = false;
-        });
-    }, 120_000);
-    this.transferTimer.unref();
+    this.sweepSchedules.push(
+      scheduleSweep({
+        intervalMs: 120_000,
+        run: () => {
+          if (this.sweepingTransfers) return;
+          this.sweepingTransfers = true;
+          this.exclusively('merchant-transfers', () =>
+            sweepMerchantTransfers({
+              workerDb,
+              appDb: this.appDb,
+              connectionKey: this.config.connectionKey,
+              paystackBaseUrl: this.config.paystackBaseUrl,
+              commandBus: this.commandBus,
+              commandConfirmPayment: this.config.commandConfirmPayment,
+            }),
+          )
+            .catch((error: unknown) => {
+              this.log.warn(`transfer sweep failed: ${redactForLog(describeFailure(error))}`);
+            })
+            .finally(() => {
+              this.sweepingTransfers = false;
+            });
+        },
+      }),
+    );
 
     /**
      * The bank-feed pull, every thirty minutes. Banks post in minutes but
@@ -384,26 +385,30 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
      * "pull now" button stays for the merchant who cannot wait. Skipped
      * entirely on a deployment with no aggregator key.
      */
-    this.feedTimer = setInterval(() => {
-      if (this.sweepingFeeds) return;
-      this.sweepingFeeds = true;
-      this.exclusively('bank-feeds', () =>
-        sweepBankFeeds({
-          workerDb,
-          appDb: this.appDb,
-          feed: this.bankFeed,
-          commandBus: this.commandBus,
-          commandIngestFinancialTransaction: this.config.commandIngestFinancialTransaction,
-        }),
-      )
-        .catch((error: unknown) => {
-          this.log.warn(`bank feed sweep failed: ${redactForLog(describeFailure(error))}`);
-        })
-        .finally(() => {
-          this.sweepingFeeds = false;
-        });
-    }, 1_800_000);
-    this.feedTimer.unref();
+    this.sweepSchedules.push(
+      scheduleSweep({
+        intervalMs: 1_800_000,
+        run: () => {
+          if (this.sweepingFeeds) return;
+          this.sweepingFeeds = true;
+          this.exclusively('bank-feeds', () =>
+            sweepBankFeeds({
+              workerDb,
+              appDb: this.appDb,
+              feed: this.bankFeed,
+              commandBus: this.commandBus,
+              commandIngestFinancialTransaction: this.config.commandIngestFinancialTransaction,
+            }),
+          )
+            .catch((error: unknown) => {
+              this.log.warn(`bank feed sweep failed: ${redactForLog(describeFailure(error))}`);
+            })
+            .finally(() => {
+              this.sweepingFeeds = false;
+            });
+        },
+      }),
+    );
 
     /**
      * Answering strangers rides the same worker on a middle clock: fast
@@ -441,18 +446,24 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
      * merchant who changed a price in Rekoda went on selling at the old one
      * through Meta.
      */
-    this.catalogueTimer = setInterval(() => {
-      if (this.syncingCatalogues) return;
-      this.syncingCatalogues = true;
-      this.exclusively('catalogue', () => sweepCatalogues({ workerDb, sync: this.catalogueSync }))
-        .catch((error: unknown) => {
-          this.log.warn(`catalogue sweep failed: ${redactForLog(describeFailure(error))}`);
-        })
-        .finally(() => {
-          this.syncingCatalogues = false;
-        });
-    }, 3_600_000);
-    this.catalogueTimer.unref();
+    this.sweepSchedules.push(
+      scheduleSweep({
+        intervalMs: 3_600_000,
+        run: () => {
+          if (this.syncingCatalogues) return;
+          this.syncingCatalogues = true;
+          this.exclusively('catalogue', () =>
+            sweepCatalogues({ workerDb, sync: this.catalogueSync }),
+          )
+            .catch((error: unknown) => {
+              this.log.warn(`catalogue sweep failed: ${redactForLog(describeFailure(error))}`);
+            })
+            .finally(() => {
+              this.syncingCatalogues = false;
+            });
+        },
+      }),
+    );
 
     /**
      * Grace runs on the slowest clock of the four. Its unit is a DAY, so
@@ -460,75 +471,87 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
      * and a merchant whose card failed at 3am is reminded that morning
      * rather than the following one.
      */
-    this.graceTimer = setInterval(() => {
-      if (this.sweepingGrace) return;
-      this.sweepingGrace = true;
-      this.exclusively('grace', () =>
-        sweepGracePeriods({
-          workerDb,
-          appDb: this.appDb,
-          sender: this.sender,
-          fxNairaPerUsd: this.config.planningFxNairaPerUsd,
-        }),
-      )
-        .catch((error: unknown) => {
-          this.log.warn(`grace sweep failed: ${redactForLog(describeFailure(error))}`);
-        })
-        .finally(() => {
-          this.sweepingGrace = false;
-        });
-    }, 3_600_000);
-    this.graceTimer.unref();
+    this.sweepSchedules.push(
+      scheduleSweep({
+        intervalMs: 3_600_000,
+        run: () => {
+          if (this.sweepingGrace) return;
+          this.sweepingGrace = true;
+          this.exclusively('grace', () =>
+            sweepGracePeriods({
+              workerDb,
+              appDb: this.appDb,
+              sender: this.sender,
+              fxNairaPerUsd: this.config.planningFxNairaPerUsd,
+            }),
+          )
+            .catch((error: unknown) => {
+              this.log.warn(`grace sweep failed: ${redactForLog(describeFailure(error))}`);
+            })
+            .finally(() => {
+              this.sweepingGrace = false;
+            });
+        },
+      }),
+    );
 
     /**
      * Renewals ride the same hourly clock as grace, and for the same reason:
      * a cycle ends at a moment, and a merchant should not keep paid features
      * for most of a day after theirs did.
      */
-    this.renewalTimer = setInterval(() => {
-      if (this.sweepingRenewals) return;
-      this.sweepingRenewals = true;
-      this.exclusively('renewal', () =>
-        sweepRenewals({ workerDb, appDb: this.appDb, config: this.config }),
-      )
-        .catch((error: unknown) => {
-          this.log.warn(`renewal sweep failed: ${redactForLog(describeFailure(error))}`);
-        })
-        .finally(() => {
-          this.sweepingRenewals = false;
-        });
-    }, 3_600_000);
-    this.renewalTimer.unref();
+    this.sweepSchedules.push(
+      scheduleSweep({
+        intervalMs: 3_600_000,
+        run: () => {
+          if (this.sweepingRenewals) return;
+          this.sweepingRenewals = true;
+          this.exclusively('renewal', () =>
+            sweepRenewals({ workerDb, appDb: this.appDb, config: this.config }),
+          )
+            .catch((error: unknown) => {
+              this.log.warn(`renewal sweep failed: ${redactForLog(describeFailure(error))}`);
+            })
+            .finally(() => {
+              this.sweepingRenewals = false;
+            });
+        },
+      }),
+    );
 
     /**
      * Retention runs slowest of all, because its unit is a month. Six hours
      * is far more often than the answer can change and still means a record
      * never outlives its schedule by more than a fraction of a day.
      */
-    this.retentionTimer = setInterval(() => {
-      if (this.sweepingRetention) return;
-      this.sweepingRetention = true;
-      /* All three stages, in order, each surviving the others' failures.
-       * `runRetentionPass` owns that ordering and reports each stage's own
-       * error, so this reads as one scheduled pass rather than a chain in
-       * which the first failure silently cancels a promised deletion. */
-      this.exclusively('retention', () =>
-        runRetentionPass({
-          workerDb,
-          appDb: this.appDb,
-          sender: this.sender,
-          fxNairaPerUsd: this.config.planningFxNairaPerUsd,
-          storage: this.storage,
-        }),
-      )
-        .catch((error: unknown) => {
-          this.log.warn(`retention pass failed: ${redactForLog(describeFailure(error))}`);
-        })
-        .finally(() => {
-          this.sweepingRetention = false;
-        });
-    }, 21_600_000);
-    this.retentionTimer.unref();
+    this.sweepSchedules.push(
+      scheduleSweep({
+        intervalMs: 21_600_000,
+        run: () => {
+          if (this.sweepingRetention) return;
+          this.sweepingRetention = true;
+          /* All three stages, in order, each surviving the others' failures.
+           * `runRetentionPass` owns that ordering and reports each stage's own
+           * error, so this reads as one scheduled pass rather than a chain in
+           * which the first failure silently cancels a promised deletion. */
+          this.exclusively('retention', () =>
+            runRetentionPass({
+              workerDb,
+              appDb: this.appDb,
+              sender: this.sender,
+              fxNairaPerUsd: this.config.planningFxNairaPerUsd,
+              storage: this.storage,
+            }),
+          )
+            .catch((error: unknown) => {
+              this.log.warn(`retention pass failed: ${redactForLog(describeFailure(error))}`);
+            })
+            .finally(() => {
+              this.sweepingRetention = false;
+            });
+        },
+      }),
+    );
 
     /**
      * Repeating costs share the hourly clock with grace and renewals, and for
@@ -537,25 +560,29 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
      * Lagos day rather than whenever a nightly job happened to be scheduled,
      * so a merchant who opens the dashboard on the 1st sees their rent.
      */
-    this.recurringTimer = setInterval(() => {
-      if (this.sweepingRecurring) return;
-      this.sweepingRecurring = true;
-      this.exclusively('recurring', () =>
-        sweepRecurring({
-          workerDb,
-          appDb: this.appDb,
-          commandBus: this.commandBus,
-          commandRecordExpense: this.config.commandRecordExpense,
-        }),
-      )
-        .catch((error: unknown) => {
-          this.log.warn(`recurring sweep failed: ${redactForLog(describeFailure(error))}`);
-        })
-        .finally(() => {
-          this.sweepingRecurring = false;
-        });
-    }, 3_600_000);
-    this.recurringTimer.unref();
+    this.sweepSchedules.push(
+      scheduleSweep({
+        intervalMs: 3_600_000,
+        run: () => {
+          if (this.sweepingRecurring) return;
+          this.sweepingRecurring = true;
+          this.exclusively('recurring', () =>
+            sweepRecurring({
+              workerDb,
+              appDb: this.appDb,
+              commandBus: this.commandBus,
+              commandRecordExpense: this.config.commandRecordExpense,
+            }),
+          )
+            .catch((error: unknown) => {
+              this.log.warn(`recurring sweep failed: ${redactForLog(describeFailure(error))}`);
+            })
+            .finally(() => {
+              this.sweepingRecurring = false;
+            });
+        },
+      }),
+    );
 
     /**
      * Wear on the equipment, on the same hourly clock and for the same
@@ -566,18 +593,22 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
      * Without this the balance sheet would hold a generator at its full price
      * forever, which is a new misstatement in place of the old one.
      */
-    this.depreciationTimer = setInterval(() => {
-      if (this.sweepingDepreciation) return;
-      this.sweepingDepreciation = true;
-      this.exclusively('depreciation', () => sweepDepreciation({ workerDb, appDb: this.appDb }))
-        .catch((error: unknown) => {
-          this.log.warn(`depreciation sweep failed: ${redactForLog(describeFailure(error))}`);
-        })
-        .finally(() => {
-          this.sweepingDepreciation = false;
-        });
-    }, 3_600_000);
-    this.depreciationTimer.unref();
+    this.sweepSchedules.push(
+      scheduleSweep({
+        intervalMs: 3_600_000,
+        run: () => {
+          if (this.sweepingDepreciation) return;
+          this.sweepingDepreciation = true;
+          this.exclusively('depreciation', () => sweepDepreciation({ workerDb, appDb: this.appDb }))
+            .catch((error: unknown) => {
+              this.log.warn(`depreciation sweep failed: ${redactForLog(describeFailure(error))}`);
+            })
+            .finally(() => {
+              this.sweepingDepreciation = false;
+            });
+        },
+      }),
+    );
 
     /**
      * The outbox rides the pump's fast clock, because what it carries is a
@@ -652,18 +683,10 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
 
   async onApplicationShutdown(): Promise<void> {
     if (this.pumpTimer) clearInterval(this.pumpTimer);
-    if (this.graceTimer) clearInterval(this.graceTimer);
-    if (this.renewalTimer) clearInterval(this.renewalTimer);
-    if (this.recurringTimer) clearInterval(this.recurringTimer);
-    if (this.depreciationTimer) clearInterval(this.depreciationTimer);
-    if (this.retentionTimer) clearInterval(this.retentionTimer);
-    if (this.sweepTimer) clearInterval(this.sweepTimer);
-    if (this.transferTimer) clearInterval(this.transferTimer);
-    if (this.catalogueTimer) clearInterval(this.catalogueTimer);
-    if (this.feedTimer) clearInterval(this.feedTimer);
     if (this.strangerTimer) clearInterval(this.strangerTimer);
     if (this.outboxTimer) clearInterval(this.outboxTimer);
     if (this.webhookTimer) clearInterval(this.webhookTimer);
+    for (const schedule of this.sweepSchedules) schedule.stop();
     await this.runner?.stop();
   }
 }

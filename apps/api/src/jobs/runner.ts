@@ -195,20 +195,20 @@ export class JobRunner {
   }
 
   private async poll(reclaims = true): Promise<void> {
-    let sinceReclaim = 0;
+    let lastReclaimAt = Date.now();
     while (this.running) {
       try {
         // Drains what is due before sleeping, so a burst is not paced at one
         // job per idle interval.
         const worked = await this.runOnce();
-        if (!worked) {
-          sinceReclaim += this.idleMs;
-          if (reclaims && sinceReclaim >= this.stalledAfterMs) {
-            sinceReclaim = 0;
-            await this.reclaim();
-          }
-          await sleep(this.idleMs);
+        /* Wall-clock, not idle-clock (G-10): a counter that only advanced on
+         * empty polls meant a queue that never went idle never recovered the
+         * jobs a crashed worker had abandoned. */
+        if (reclaims && Date.now() - lastReclaimAt >= this.stalledAfterMs) {
+          lastReclaimAt = Date.now();
+          await this.reclaim();
         }
+        if (!worked) await sleep(this.idleMs);
       } catch (error) {
         /**
          * The loop outlives its errors. A failure here is the queue itself

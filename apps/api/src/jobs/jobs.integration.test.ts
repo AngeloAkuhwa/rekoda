@@ -353,6 +353,44 @@ describe('the polling loop', () => {
   });
 });
 
+describe('a busy queue still recovers abandoned jobs (G-10)', () => {
+  /**
+   * The reclaim clock used to advance only on empty polls, so a queue that
+   * never went idle never gave back the job a crashed worker had abandoned.
+   * Here the queue stays busy for over a second; the abandoned job must be
+   * recovered while that work is still running.
+   */
+  it('reclaims a stranded job while other jobs keep the runner busy', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348050000001');
+    await enqueue(ada, 'test.stranded');
+    const stranded = await jobsRepo.claimNext(workerDb, 'dead-worker');
+    expect(stranded?.kind).toBe('test.stranded');
+
+    const BUSY_JOBS = 40;
+    for (let i = 0; i < BUSY_JOBS; i += 1) await enqueue(ada, 'test.busy');
+
+    let busyDone = 0;
+    let busyDoneWhenRecovered: number | null = null;
+    const runner = new JobRunner(workerDb, appDb, { idleMs: 10, stalledAfterMs: 150 });
+    runner.register('test.busy', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      busyDone += 1;
+    });
+    runner.register('test.stranded', async () => {
+      busyDoneWhenRecovered = busyDone;
+    });
+
+    runner.start();
+    try {
+      await waitFor(() => busyDoneWhenRecovered !== null);
+    } finally {
+      await runner.stop();
+    }
+    expect(busyDoneWhenRecovered).not.toBeNull();
+    expect(busyDoneWhenRecovered!).toBeLessThan(BUSY_JOBS);
+  });
+});
+
 describe('the registry the application actually ships', () => {
   it('handles the inbound-message kind', async () => {
     const runner = buildRunner(workerDb, appDb, deps);
