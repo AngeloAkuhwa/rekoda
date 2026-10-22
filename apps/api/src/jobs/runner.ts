@@ -125,13 +125,17 @@ export class JobRunner {
 
     const handler = this.handlers.get(job.kind);
     if (!handler) {
-      await jobsRepo.markFailed(
+      const outcome = await jobsRepo.markFailed(
         this.workerDb,
         { ...job, attempts: job.maxAttempts },
         new UnknownJobKind(job.kind).message,
         undefined,
         claimedBy,
       );
+      if (outcome.state === 'lost') {
+        this.log.warn(`job ${job.kind} ${job.id} lost its lease; attempt discarded`);
+        return true;
+      }
       this.log.error(`no handler for job kind "${job.kind}" — marked dead`);
       return true;
     }
