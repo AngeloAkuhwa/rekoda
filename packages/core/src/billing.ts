@@ -160,6 +160,19 @@ export function addMonth(from: Date, anchorDay?: number): Date {
   return new Date(next.getTime() - 3_600_000);
 }
 
+/**
+ * Whether a cycle is the standard monthly one (OWN-33, G-115): 28 to 31 days,
+ * with an hour of slack either side for the Lagos offset. `planChangeCharge`
+ * prices the difference of MONTHLY prices over the cycle, so on a one-year or
+ * custom-length operator arrangement it would charge a fraction of one
+ * month's difference for a much longer span. No annual or custom-term price
+ * exists, so such a cycle is never prorated automatically.
+ */
+export function isStandardMonthlyCycle(cycleStart: Date, renewsAt: Date): boolean {
+  const span = renewsAt.getTime() - cycleStart.getTime();
+  return span >= 28 * DAY_MS - 3_600_000 && span <= 31 * DAY_MS + 3_600_000;
+}
+
 /** Whole days from `a` to `b`, never negative. */
 function wholeDaysBetween(a: Date, b: Date): number {
   return Math.max(0, Math.floor((b.getTime() - a.getTime()) / DAY_MS));

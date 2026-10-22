@@ -18,6 +18,7 @@ import {
   addOnReference,
   billingState,
   GRACE_DAYS,
+  isStandardMonthlyCycle,
   planChangeCharge,
   subscriptionReference,
   usagePeriod,
@@ -170,13 +171,19 @@ export class BillingService {
         now,
         pricesK: await this.changePricesK(tx, businessId, from, to, now),
       });
+      const supportReview =
+        charge.kind === 'upgrade' &&
+        !!subscription?.cycleStartedAt &&
+        !!subscription.planExpiresAt &&
+        !isStandardMonthlyCycle(subscription.cycleStartedAt, subscription.planExpiresAt);
       return {
         from,
         to,
         kind: charge.kind,
-        amountK: charge.amountK,
+        amountK: supportReview ? 0 : charge.amountK,
         effectiveFrom: charge.effectiveFrom,
         renewsAt: charge.renewsAt.toISOString(),
+        supportReview,
       };
     });
   }
@@ -257,6 +264,17 @@ export class BillingService {
           plan: to,
           effectiveAt: charge.renewsAt.toISOString(),
         };
+      }
+
+      /* OWN-33 (G-115): an operator arrangement that is not a standard monthly
+       * cycle is never prorated automatically. Nothing is opened or changed. */
+      if (
+        charge.kind === 'upgrade' &&
+        subscription?.cycleStartedAt &&
+        subscription.planExpiresAt &&
+        !isStandardMonthlyCycle(subscription.cycleStartedAt, subscription.planExpiresAt)
+      ) {
+        return { state: 'unavailable' as const, reason: 'support_review' as const };
       }
 
       /* An upgrade priced at nothing (G-105): under a day of the cycle left, or

@@ -68,6 +68,17 @@ async function seedBusiness(): Promise<string> {
 const operator = (businessId: string, plan: string, expiresAt: Date | null = renewsAt) =>
   billingRepo.setPlan(appDb, { businessId, plan, expiresAt, actor: 'operator:test-g104' });
 
+/** A standard monthly cycle ending at `renewsAt` (OWN-33: other spans are never prorated). */
+const standardCycle = (businessId: string, plan: string) =>
+  withBusiness(appDb, businessId, (tx) =>
+    subscriptionsRepo.applyCycle(tx, businessId, {
+      plan,
+      cycleStartedAt: new Date(renewsAt.getTime() - 30 * 86_400_000),
+      renewsAt,
+      anchorDay: renewsAt.getUTCDate(),
+    }),
+  );
+
 const open = (
   businessId: string,
   kind: 'first_purchase' | 'renewal' | 'upgrade' | 'add_on',
@@ -262,6 +273,7 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
   it('a repeated upgrade request after a newer decision gets a fresh payable charge, not the stale one', async () => {
     const businessId = await seedBusiness();
     await operator(businessId, 'chat');
+    await standardCycle(businessId, 'chat');
     const billing = new BillingService(
       { planCatalogueReads: false, paystackPlatformConfirmed: true } as never,
       appDb,
@@ -269,6 +281,7 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
     const first = await billing.changePlan(businessId, 'complete');
     expect(first.state).toBe('payment_required');
     await operator(businessId, 'integrate'); // a newer decision
+    await standardCycle(businessId, 'integrate');
     const second = await billing.changePlan(businessId, 'complete');
 
     expect(second.state).toBe('payment_required');

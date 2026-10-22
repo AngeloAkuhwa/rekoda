@@ -73,6 +73,8 @@ const PROBLEMS: Record<string, string> = {
   no_cycle: 'That change did not go through. Nothing was charged.',
   cycle_ended:
     'Your paid period has ended, so there is nothing to upgrade yet. Nothing was charged. Message *upgrade* on WhatsApp and we will sort out your renewal with you.',
+  support_review:
+    'Your plan runs on a custom arrangement, so we change it by hand rather than automatically. Nothing was charged and nothing was changed. Message *upgrade* on WhatsApp and we will sort it out with you.',
   plan: 'That change did not go through. Nothing was charged.',
   pack: 'That purchase did not go through. Nothing was charged.',
   view_only:
@@ -294,7 +296,13 @@ export default async function BillingPage({
               </div>
             );
           })()}
-          {proposed.kind === 'downgrade' ? (
+          {proposed.supportReview ? (
+            <p>
+              Your plan runs on a custom arrangement, so we make this change with you by hand.
+              Nothing is charged or changed here. Message *upgrade* on WhatsApp and we will take it
+              from there.
+            </p>
+          ) : proposed.kind === 'downgrade' ? (
             <p>
               Nothing to pay today. You keep {PLAN_NAMES[proposed.from] ?? proposed.from} until{' '}
               {lagosDate(proposed.renewsAt)}, and the new plan starts then.
@@ -317,6 +325,7 @@ export default async function BillingPage({
             </p>
           )}
           {isOwner(identity.role) &&
+          !proposed.supportReview &&
           !(
             proposed.kind === 'upgrade' &&
             proposed.amountK === 0 &&

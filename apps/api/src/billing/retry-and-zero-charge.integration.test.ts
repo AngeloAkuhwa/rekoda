@@ -68,6 +68,17 @@ async function onPlan(businessId: string, plan: string, msLeft: number): Promise
     expiresAt: new Date(Date.now() + msLeft),
     actor: 'operator:test-g105',
   });
+  /* A standard monthly cycle (OWN-33): an operator grant starts at the grant, so
+   * a short expiry would be a custom span that is never prorated automatically. */
+  const renewsAt = new Date(Date.now() + msLeft);
+  await withBusiness(appDb, businessId, (tx) =>
+    subscriptionsRepo.applyCycle(tx, businessId, {
+      plan,
+      cycleStartedAt: new Date(renewsAt.getTime() - 30 * DAY),
+      renewsAt,
+      anchorDay: renewsAt.getUTCDate(),
+    }),
+  );
 }
 
 const subscription = (businessId: string) =>
@@ -135,7 +146,11 @@ describe('free upgrades repeat', () => {
     const paid = await billing().changePlan(businessId, 'complete');
     if (paid.state !== 'payment_required') throw new Error('payable first');
     // The cycle runs down to under a day: the same upgrade is now free.
-    await ownerDb.execute(sql`UPDATE businesses SET plan_expires_at = now() + interval '10 hours'`);
+    await ownerDb.execute(sql`
+      UPDATE businesses
+      SET plan_expires_at = now() + interval '10 hours',
+          cycle_started_at = now() + interval '10 hours' - interval '30 days'
+    `);
 
     expect(await billing().changePlan(businessId, 'complete')).toMatchObject({ state: 'applied' });
 

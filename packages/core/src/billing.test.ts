@@ -4,6 +4,7 @@ import {
   addMonth,
   addOnPack,
   billingState,
+  isStandardMonthlyCycle,
   EXTRA_SEAT_PRICE_K,
   packsFor,
   planChangeCharge,
@@ -457,5 +458,21 @@ describe('unappliedChargeDueAt: boundaries (OD-30)', () => {
     const deadline = unappliedChargeDueAt(created);
     expect(unappliedChargeOverdue(created, deadline)).toBe(false);
     expect(unappliedChargeOverdue(created, new Date(deadline.getTime() + 1))).toBe(true);
+  });
+});
+
+describe('isStandardMonthlyCycle (OWN-33, G-115)', () => {
+  const start = new Date('2026-03-05T09:00:00Z');
+  it('accepts a calendar month of any length', () => {
+    expect(isStandardMonthlyCycle(start, addMonth(start))).toBe(true);
+    const feb = new Date('2026-02-01T09:00:00Z');
+    expect(isStandardMonthlyCycle(feb, addMonth(feb))).toBe(true); // 28 days
+    const jan = new Date('2026-01-31T09:00:00Z');
+    expect(isStandardMonthlyCycle(jan, addMonth(jan))).toBe(true);
+  });
+  it('refuses a one-year, a multi-month and a one-week arrangement', () => {
+    expect(isStandardMonthlyCycle(start, new Date('2027-03-05T09:00:00Z'))).toBe(false);
+    expect(isStandardMonthlyCycle(start, addMonth(addMonth(start)))).toBe(false);
+    expect(isStandardMonthlyCycle(start, new Date('2026-03-12T09:00:00Z'))).toBe(false);
   });
 });
