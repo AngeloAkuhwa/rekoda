@@ -376,11 +376,15 @@ describe('stalled jobs are reclaimed while the queue stays busy (G-10)', () => {
       // The runner's first reclaim pass is behind it once it is busy; only
       // a LATER pass can recover what a worker abandons from here on.
       await waitFor(() => busyRuns >= 5);
-      await enqueue(ada, 'test.stalled');
-      // A worker claimed it an hour ago and died.
-      await workerDb.execute(sql`
-        UPDATE jobs SET state = 'running', locked_at = now() - interval '1 hour', locked_by = 'dead-worker'
-         WHERE kind = 'test.stalled'`);
+      // A worker claimed it an hour ago and died. Inserted already running and
+      // aged, in one tenant-pinned statement, so the busy runner can never
+      // claim it as an ordinary pending job in between.
+      await withBusiness(workerDb, ada, (tx) =>
+        tx.execute(sql`
+          INSERT INTO jobs (business_id, kind, state, attempts, locked_at, locked_by)
+          VALUES (${ada}::uuid, 'test.stalled', 'running', 1,
+                  now() - interval '1 hour', 'dead-worker')`),
+      );
       await waitFor(() => ran.length === 1);
     } finally {
       await runner.stop();
