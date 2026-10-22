@@ -521,8 +521,8 @@ export async function applySettledCharge(
 
     /* OWN-34 (G-115): an upgrade charge opened before the origin rule existed
      * must not turn an operator-defined or unknown-origin cycle into a
-     * provider one by settling. The money stays recorded for an operator. */
-    if (charge.kind === 'upgrade' && subscription?.origin !== 'provider') {
+     * provider one by settling; it uses the same rule as quote and changePlan. The money stays recorded for an operator. */
+    if (charge.kind === 'upgrade' && (!subscription || isCustomCycle(subscription))) {
       await subscriptionsRepo.markUnapplied(tx, input.reference, 'support_review', input.when);
       return 'superseded';
     }

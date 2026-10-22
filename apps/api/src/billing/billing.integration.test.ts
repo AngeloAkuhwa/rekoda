@@ -483,6 +483,37 @@ describe('paying, and the gate in front of it', () => {
     expect(after?.origin).toBeNull();
   });
 
+  it('settlement applies the same rule as the quote: a provider cycle that is no longer a standard month is refused (OWN-34)', async () => {
+    const { businessId } = await onboard('+2348177100306');
+    const now = new Date();
+    await putOnPlan(
+      businessId,
+      'chat',
+      new Date(now.getTime() - 11 * 86_400_000),
+      new Date(now.getTime() + 19 * 86_400_000),
+    );
+    const answer = await confirmedBilling().changePlan(businessId, 'complete', now);
+    if (answer.state !== 'payment_required') throw new Error('expected a charge');
+    await ownerDb.execute(
+      sql`UPDATE businesses SET plan_expires_at = cycle_started_at + interval '365 days' WHERE id = ${businessId}::uuid`,
+    );
+
+    const result = await withBusiness(db, businessId, (tx) =>
+      applySettledCharge(tx, {
+        businessId,
+        reference: answer.reference,
+        providerReference: 'ps_nonstandard',
+        when: now,
+        config,
+      }),
+    );
+    expect(result).toBe('superseded');
+    const after = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.subscriptionFor(tx, businessId),
+    );
+    expect(after?.plan).toBe('chat');
+  });
+
   it('hands a double-clicked upgrade ONE reference, not two payable charges', async () => {
     const { businessId } = await onboard('+2348177100028');
     const now = new Date();

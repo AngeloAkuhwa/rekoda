@@ -384,8 +384,9 @@ export default async function BillingPage({
             </ul>
           </div>
           <p className="rk-fineprint">
-            Moving up starts now and you pay only for the days left in this month. Moving down
-            starts at your next renewal, so you keep what you already paid for.
+            On a standard monthly plan, moving up starts now and you pay only for the days left in
+            this month. If your plan was set up for you by hand, we make the change with you
+            instead. Moving down starts at your next renewal, so you keep what you already paid for.
           </p>
         </div>
       )}

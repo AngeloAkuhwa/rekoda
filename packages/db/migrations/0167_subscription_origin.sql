@@ -51,9 +51,13 @@ FROM (
       AND ae.new_value ->> 'plan' = b2.plan
       -- an identical re-post (same plan, same dated expiry) kept the cycle and its
       -- origin (setPlan), so it is not evidence that an operator created it
-      AND NOT (ae.new_value ->> 'expiresAt' IS NOT NULL
-               AND ae.old_value ->> 'plan' IS NOT DISTINCT FROM ae.new_value ->> 'plan'
-               AND ae.old_value ->> 'expiresAt' IS NOT DISTINCT FROM ae.new_value ->> 'expiresAt')
+      -- It still counts when the cycle started at that very moment: setPlan restarts the
+      -- cycle (cycle_started_at = now) unless the previous start proved it was the same
+      -- cycle, so a legacy row with no recorded start was re-created by the operator.
+      AND (NOT (ae.new_value ->> 'expiresAt' IS NOT NULL
+                AND ae.old_value ->> 'plan' IS NOT DISTINCT FROM ae.new_value ->> 'plan'
+                AND ae.old_value ->> 'expiresAt' IS NOT DISTINCT FROM ae.new_value ->> 'expiresAt')
+           OR abs(extract(epoch FROM (b2.cycle_started_at - ae.created_at))) < 60)
   ) a ON true
   WHERE b2.plan NOT IN ('trial', 'expired')
 ) ev

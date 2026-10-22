@@ -166,7 +166,7 @@ describe('the 0167 backfill uses persisted evidence only', () => {
     expect(await originOf(id)).toBe('operator');
   });
 
-  it('ignores a paid charge whose plan change was refused (superseded or unapplied)', async () => {
+  it('ignores a paid charge whose plan change was superseded', async () => {
     const id = await seedBusiness();
     await billingRepo.setPlan(appDb, {
       businessId: id,
@@ -176,8 +176,43 @@ describe('the 0167 backfill uses persisted evidence only', () => {
     });
     await addCharge(id, '2099-01-01T00:00:00Z');
     await ownerDb.execute(
-      sql`UPDATE subscription_charges SET superseded_at = now(), unapplied_at = now() WHERE business_id = ${id}::uuid`,
+      sql`UPDATE subscription_charges SET superseded_at = now() WHERE business_id = ${id}::uuid`,
     );
+    await clear();
+    await backfill();
+    expect(await originOf(id)).toBe('operator');
+  });
+
+  it('ignores a paid charge whose plan change was unapplied', async () => {
+    const id = await seedBusiness();
+    await billingRepo.setPlan(appDb, {
+      businessId: id,
+      plan: 'chat',
+      expiresAt: RENEWS,
+      actor: 'operator:test',
+    });
+    await addCharge(id, '2099-01-01T00:00:00Z');
+    await ownerDb.execute(
+      sql`UPDATE subscription_charges SET unapplied_at = now() WHERE business_id = ${id}::uuid`,
+    );
+    await clear();
+    await backfill();
+    expect(await originOf(id)).toBe('operator');
+  });
+
+  it('counts an identical operator re-post that restarted a cycle with no recorded start', async () => {
+    const id = await seedBusiness();
+    await providerCycle(id);
+    await addCharge(id, '2020-01-01T00:00:00Z');
+    await ownerDb.execute(
+      sql`UPDATE businesses SET cycle_started_at = NULL WHERE id = ${id}::uuid`,
+    );
+    await billingRepo.setPlan(appDb, {
+      businessId: id,
+      plan: 'chat',
+      expiresAt: RENEWS,
+      actor: 'operator:test',
+    });
     await clear();
     await backfill();
     expect(await originOf(id)).toBe('operator');
