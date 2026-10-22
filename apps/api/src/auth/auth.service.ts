@@ -140,7 +140,6 @@ export class AuthService {
        * the business number, so there is no service window to reply inside
        * and Meta rejects free-form text to it (131047). */
       await this.sender.sendAuthCode({ to: phone, code });
-      this.metrics?.otpSend('sent');
 
       /**
        * The most expensive message Rekoda sends, and the one its cost
@@ -163,6 +162,9 @@ export class AuthService {
         `sign-in code delivered as ${category}, ` +
           `${MESSAGE_COST_MICROS[category]} USD micros, unattributed until PlatformCostEvent`,
       );
+      /* Last in the try, so nothing after the provider accepted the send can
+       * also land it in the catch and count it twice. */
+      this.metrics?.otpSend('sent');
     } catch {
       this.metrics?.otpSend('failed');
       // The reason is logged without the code — the one string that must

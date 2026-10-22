@@ -17045,4 +17045,24 @@ describe('delivery statuses are read, not just stored (G-20)', () => {
     expect(attributed).toBe(0);
     expect((await events.eventHealth(db, 'meta')).deliveryFailures).toBe(2);
   });
+
+  it('attributes a status on Rekoda’s own number to the merchant it was sent to', async () => {
+    const user = await identity.upsertUserByPhone(db, '+2348030009201');
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Own Number Shop',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+
+    /* statusPayload's default number is the harness's configured own number. */
+    await post(statusPayload('2348030009201', 'wamid.OWN', 'failed'));
+
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM external_events
+             WHERE external_id = 'wamid.OWN:failed' AND business_id = ${business.id}::uuid`,
+      ),
+    );
+    expect([...rows][0]?.n).toBe(1);
+  });
 });
