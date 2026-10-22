@@ -49,8 +49,8 @@ ADR 0010 is NOT implemented; this is the nightly logical half only, RPO up to 24
 - **Install:** copy `deploy/systemd/rekoda-backup.{service,timer}` to `/etc/systemd/system/`, create
   `/etc/rekoda/backup.env` (root-only, mode 0600), then `systemctl daemon-reload` and
   `systemctl enable --now rekoda-backup.timer`. The checkout is expected at `/opt/rekoda`.
-- **`backup.env`:** `BACKUP_DEST`, `BACKUP_PASSPHRASE_FILE` (a file of at least 32 characters on its
-  first line, mode 0600, custody recorded off the host), optionally `BACKUP_S3_ENDPOINT` and the
+- **`backup.env`:** `BACKUP_DEST`, `BACKUP_PASSPHRASE_FILE` (a file whose first line is at least 32 bytes
+  long, mode 0600, custody recorded off the host), optionally `BACKUP_S3_ENDPOINT` and the
   `AWS_*` credentials for an `s3://` destination, `BACKUP_RETAIN_DAYS` (directory destinations only,
   default 30), `BACKUP_DUMP_CMD` (default: `pg_dump` inside the production compose postgres; a pipeline
   here runs with `pipefail`). For R2 or B2 also set `AWS_REQUEST_CHECKSUM_CALCULATION=when_required`,
@@ -61,7 +61,9 @@ ADR 0010 is NOT implemented; this is the nightly logical half only, RPO up to 24
   `pg_restore` and `psql` must be at least the server's major version (16).
 - **Tools:** bash, GNU coreutils (`sha256sum`, `stat -c`), `openssl` 1.1.1 or later (`-pbkdf2`, `-iter`),
   PostgreSQL client tools, `docker`, and the `aws` CLI for an `s3://` destination.
-- **`s3://` retention:** the script does not expire S3 objects. Set a bucket lifecycle rule that keeps at
+- **Retention:** a directory destination ages out objects older than `BACKUP_RETAIN_DAYS` only after a
+  new backup has been verified and published, so a failing run never deletes the last good backup (stale
+  `.pending` and `.part` debris is cleared up front so a full destination can recover). **`s3://` retention:** the script does not expire S3 objects. Set a bucket lifecycle rule that keeps at
   least one prior version, and check the newest object's date weekly: a failing nightly run does not stop
   the lifecycle clock, so a long outage can age out the last good backup.
 - **A drill needs data.** It fails on a restore with no ledger entries, since an empty archive proves
@@ -86,8 +88,15 @@ sha256sum rekoda-<stamp>-<pid>.dump.enc        # must equal the contents of the 
 openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
   -pass file:/path/to/passphrase-file \
   -in rekoda-<stamp>-<pid>.dump.enc -out restore.dump
+# The target must be an empty database on a server where these roles exist; without
+# them every GRANT and row-level-security policy that names one is skipped, and the
+# restore comes up with missing privileges and policies:
+psql "$SCRATCH_URL" -c "DO \$\$ DECLARE r text; BEGIN FOREACH r IN ARRAY ARRAY['rekoda_owner','rekoda_app','rekoda_worker','rekoda_provenance_owner','rekoda_operator'] LOOP IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('CREATE ROLE %I NOLOGIN', r); END IF; END LOOP; END \$\$;"
 pg_restore --no-owner -d "$SCRATCH_URL" restore.dump
 ```
+
+In an incident against the real server, restore into a new empty database, check the ledger, then
+switch the application over; do not restore over a database you may still need.
 
 ## Restore drill (monthly)
 
@@ -128,7 +137,7 @@ every journal balances per business (invariant 2), no paid invoice lost its
 money trail (invariant 3), and the business, its paid invoice and its
 receipt all crossed. The day the dump format, a role grant or an RLS policy
 stops surviving the round trip, that test fails in CI rather than at 2am
-against production. A green build is a passed run of that integration test only; it does not exercise `scripts/restore-drill.sh`, which has so far been run by hand against PostgreSQL 16 and not in CI.
+against production. A green build is a passed run of that integration test only; it does not exercise `scripts/restore-drill.sh`, which is not run end to end in CI. Throwaway runs against a local PostgreSQL 16 with a synthetic dump are described in PR #308 only; there is no dated drill-log entry and no off-box drill.
 
 ## Drill log
 

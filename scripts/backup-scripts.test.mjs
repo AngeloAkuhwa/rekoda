@@ -231,3 +231,18 @@ test('the drill creates every role the migrations grant to, and its container ne
   for (const r of roles) assert.ok(drill.includes(`'${r}'`), `restore-drill.sh does not create role ${r}`);
   assert.match(drill, /docker rm -fv /, 'removing the container must remove its anonymous data volume');
 });
+
+test('a failed run never deletes the last good backup, even one older than the retention window', () => {
+  const t = env({ BACKUP_RETAIN_DAYS: '1', BACKUP_DUMP_CMD: 'exit 3' });
+  const lastGood = join(t.dest, 'rekoda-20261001T000000Z-1.dump.enc');
+  const debris = join(t.dest, 'rekoda-20261001T000000Z-2.dump.enc.part');
+  for (const f of [lastGood, `${lastGood}.sha256`, debris]) writeFileSync(f, 'x');
+  const past = new Date(Date.now() - 3 * 864e5);
+  for (const f of [lastGood, `${lastGood}.sha256`, debris]) utimesSync(f, past, past);
+  const r = run('scripts/backup-db.sh', t.env);
+  assert.notEqual(r.status, 0);
+  const files = readdirSync(t.dest);
+  assert.ok(files.includes('rekoda-20261001T000000Z-1.dump.enc'), 'the only good backup was deleted by a failed run');
+  assert.ok(files.includes('rekoda-20261001T000000Z-1.dump.enc.sha256'));
+  assert.ok(!files.includes('rekoda-20261001T000000Z-2.dump.enc.part'), 'stale staging debris was not cleared');
+});

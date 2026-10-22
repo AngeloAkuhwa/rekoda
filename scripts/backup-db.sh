@@ -25,12 +25,13 @@ case "$RETAIN_DAYS" in '' | *[!0-9]* | 0) backup_die "BACKUP_RETAIN_DAYS must be
 umask 077
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-# Directory destinations: age out old objects and stale staging files BEFORE the
-# upload, so a full destination can recover instead of failing every night.
-# (s3:// uses a bucket lifecycle rule; keep at least one version, see the runbook.)
+# Directory destinations: clear stale staging debris (an interrupted upload, a full
+# disk) BEFORE the upload so a full destination can recover. Real backups are never
+# aged out here: retention runs only AFTER a new backup has been verified and
+# published, so a run that fails can never delete the last good backup.
 case "$BACKUP_DEST" in
   s3://*) ;;
-  *) find "$BACKUP_DEST/" -maxdepth 1 -type f -name 'rekoda-*.dump.enc*' -mtime "+$RETAIN_DAYS" -delete || true ;;
+  *) find "$BACKUP_DEST/" -maxdepth 1 -type f \( -name 'rekoda-*.pending' -o -name 'rekoda-*.part' \) -mtime +0 -delete || true ;;
 esac
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 NAME="rekoda-$STAMP-$$.dump.enc"
@@ -60,5 +61,12 @@ backup_get "$NAME.pending" "$WORK/readback"
 backup_put "$WORK/$NAME.sha256" "$NAME.sha256"
 backup_put "$WORK/$NAME" "$NAME"
 backup_delete "$NAME.pending" || true
+
+# Retention (directory destinations; s3:// uses a bucket lifecycle rule that keeps at
+# least one version, see the runbook). The new backup is published and verified above.
+case "$BACKUP_DEST" in
+  s3://*) ;;
+  *) find "$BACKUP_DEST/" -maxdepth 1 -type f -name 'rekoda-*.dump.enc*' -mtime "+$RETAIN_DAYS" -delete || true ;;
+esac
 
 echo "backup: ok $NAME $(stat -c %s "$WORK/$NAME") bytes"
