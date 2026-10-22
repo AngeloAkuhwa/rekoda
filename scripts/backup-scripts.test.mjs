@@ -240,7 +240,7 @@ test('a failed run never deletes the last good backup, even one older than the r
   const past = new Date(Date.now() - 3 * 864e5);
   for (const f of [lastGood, `${lastGood}.sha256`, debris]) utimesSync(f, past, past);
   const r = run('scripts/backup-db.sh', t.env);
-  assert.notEqual(r.status, 0);
+  assert.equal(r.status, 3, `expected the failure to be the dump's own exit code, got ${r.status}: ${r.stderr}`);
   const files = readdirSync(t.dest);
   assert.ok(files.includes('rekoda-20261001T000000Z-1.dump.enc'), 'the only good backup was deleted by a failed run');
   assert.ok(files.includes('rekoda-20261001T000000Z-1.dump.enc.sha256'));

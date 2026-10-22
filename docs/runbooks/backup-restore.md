@@ -63,7 +63,8 @@ ADR 0010 is NOT implemented; this is the nightly logical half only, RPO up to 24
   PostgreSQL client tools, `docker`, and the `aws` CLI for an `s3://` destination.
 - **Retention:** a directory destination ages out objects older than `BACKUP_RETAIN_DAYS` only after a
   new backup has been verified and published, so a failing run never deletes the last good backup (stale
-  `.pending` and `.part` debris is cleared up front so a full destination can recover). **`s3://` retention:** the script does not expire S3 objects. Set a bucket lifecycle rule that keeps at
+  `.pending` and `.part` debris is cleared up front, which frees space only if that debris is what fills
+  the destination; if it is full of real backups, the nightly run fails until someone frees space by hand). **`s3://` retention:** the script does not expire S3 objects. Set a bucket lifecycle rule that keeps at
   least one prior version, and check the newest object's date weekly: a failing nightly run does not stop
   the lifecycle clock, so a long outage can age out the last good backup.
 - **A drill needs data.** It fails on a restore with no ledger entries, since an empty archive proves
@@ -75,9 +76,10 @@ The `.sha256` detects corruption and a truncated copy. It is not authentication:
 integrity of its own, and anyone with write access to the destination can replace an object and its
 checksum together, or roll back to an older valid pair (the drill would still pass against it). The
 passphrase protects confidentiality, not freshness. Until the encryption is moved to an authenticated
-format, scope the backup credential to what the script needs (PutObject, GetObject and ListBucket, so it
-can read back what it staged; DeleteObject only for its own `.pending` staging objects, or leave those
-to a lifecycle rule), turn on bucket versioning or object lock so an overwrite or delete keeps a prior
+format, scope the credentials to what each script calls: the nightly backup needs PutObject and GetObject (it
+reads back what it staged) and DeleteObject only for its own `.pending` staging objects, or leave those
+to a lifecycle rule; the restore drill additionally needs ListBucket, since it finds the newest object
+by listing, turn on bucket versioning or object lock so an overwrite or delete keeps a prior
 version, and compare the newest object's date with today's. This is an open hardening item for G-02, not
 closed by this change.
 
@@ -86,16 +88,22 @@ closed by this change.
 Objects are named `rekoda-<UTC stamp>-<pid>.dump.enc` with a `.sha256` beside each.
 
 ```bash
-set -euo pipefail                              # stop at the first failure; do not continue past a bad restore
-sha256sum rekoda-<stamp>-<pid>.dump.enc        # must equal the contents of the .sha256 file
+# A subshell, so a failure stops the procedure without closing your SSH session.
+(
+set -euo pipefail
+OBJ=rekoda-<stamp>-<pid>.dump.enc
+# The .sha256 file holds a bare hash; refuse to go on if it does not match the object.
+[ "$(sha256sum "$OBJ" | cut -d' ' -f1)" = "$(cut -d' ' -f1 "$OBJ.sha256")" ] \
+  || { echo "checksum mismatch: do not use this object" >&2; exit 1; }
 openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
   -pass file:/path/to/passphrase-file \
-  -in rekoda-<stamp>-<pid>.dump.enc -out restore.dump
+  -in "$OBJ" -out restore.dump
 # The target must be an empty database on a server where these roles exist; without
 # them every GRANT and row-level-security policy that names one is skipped, and the
 # restore comes up with missing privileges and policies:
 psql "$SCRATCH_URL" -c "DO \$\$ DECLARE r text; BEGIN FOREACH r IN ARRAY ARRAY['rekoda_owner','rekoda_app','rekoda_worker','rekoda_provenance_owner','rekoda_operator'] LOOP IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('CREATE ROLE %I NOLOGIN', r); END IF; END LOOP; END \$\$;"
 pg_restore --no-owner -d "$SCRATCH_URL" restore.dump
+)
 ```
 
 In an incident against the real server, restore into a new empty database, check the ledger, then
