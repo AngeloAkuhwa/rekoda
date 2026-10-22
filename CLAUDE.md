@@ -249,7 +249,8 @@ Angelo is the author of record. Claude Code is the engineering tool he directs.
   by squash only, with the squash message written explicitly, so no trailer from a branch commit is
   carried into `main` (a rebase or merge commit would copy branch commits as they are).
 - PR descriptions fill every section of `.github/PULL_REQUEST_TEMPLATE.md`, in plain engineering
-  prose, with no generated footer.
+  prose, with no generated footer. Some PR-creation tools append one on create: re-read the body
+  after opening the PR and edit the footer out.
 - Prospective only. Merged and published history is never rewritten to remove attribution, and no
   force push is made just for that. Audit records, GitHub activity and any disclosure a platform or
   repository policy requires (for example the footer GitHub-integrated tools add to review comments)
