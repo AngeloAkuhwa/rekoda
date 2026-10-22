@@ -6,12 +6,14 @@ Drill cadence: monthly, and before any migration touching financial tables.
 ## What is backed up
 
 > **Honesty note (pre-launch).** The table below is the intended
-> PRODUCTION backup design. As of 29 August 2026 none of it is enabled or
-> evidenced: no B2 tooling, timer or configuration exists in this
-> repository, and no production server exists to run it. What exists and
-> runs today is the automated restore drill in CI (below). Enabling this
-> design is a launch task; when it happens, this note is replaced by the
-> evidence (timer unit, bucket name, first verified upload date).
+> PRODUCTION backup design. As of 22 October 2026 the nightly encrypted
+> dump and the restore drill exist as scripts and systemd units in this
+> repository (see "Backup scripts" below), but none of it is enabled or
+> evidenced: no destination, credentials or timer are configured and no
+> production server exists to run it. Continuous WAL archiving (ADR 0010,
+> OD-7) does not exist. What runs today is the automated restore drill in
+> CI (below). When the timer is enabled, this note is replaced by the
+> evidence (bucket name, first verified upload date, first off-box drill).
 
 | Data                                                    | Method (planned)                        | Frequency (planned) | Destination (planned)   |
 | ------------------------------------------------------- | --------------------------------------- | ------------------- | ----------------------- |
@@ -101,7 +103,7 @@ against production. A green build is a passed drill.
 
 ## Drill log
 
-| Date                                                        | Dump                      | Duration | Result | Operator            |
-| ----------------------------------------------------------- | ------------------------- | -------- | ------ | ------------------- |
-| Continuous                                                  | CI, per push (§32-shaped) | ~6s      | PASS   | recovery-drill test |
-| _(first off-box drill due before first paying merchant)_    |                           |          |        |                     |
+| Date                                                     | Dump                      | Duration | Result | Operator            |
+| -------------------------------------------------------- | ------------------------- | -------- | ------ | ------------------- |
+| Continuous                                               | CI, per push (§32-shaped) | ~6s      | PASS   | recovery-drill test |
+| _(first off-box drill due before first paying merchant)_ |                           |          |        |                     |
