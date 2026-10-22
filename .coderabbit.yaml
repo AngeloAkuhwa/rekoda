@@ -126,7 +126,8 @@ reviews:
           changed line in those files ADDS any of these tokens: .skip(, .only(, .skipIf(, .todo(, xit(,
           xdescribe(, xtest(, fixme(; or adds "continue-on-error: true" in a workflow; or changes a "test",
           "test:integration", "e2e", "lint" or "typecheck" script in a package.json to one that runs no
-          tests or checks, or narrows it to part of what it ran (for example "exit 0", "true" or an echo);
+          tests or checks (for example "exit 0", "true" or an echo), or narrows it to part of what it ran
+          unless another script that CI runs still covers the rest;
           or changes the run command of an existing workflow step that ran tests, lint, typecheck or a guard
           script to one that no longer does (for example "echo done"), or that
           runs only part of what it ran (a filter, a single package or file, a narrower pattern), whatever
