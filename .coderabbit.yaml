@@ -2,8 +2,8 @@
 #
 # CodeRabbit review configuration for Rekoda.
 #
-# CodeRabbit is one automated reviewer among several (Codex, and the
-# independent Claude review in CONTRIBUTING.md). With the request-changes
+# CodeRabbit is the primary automated PR reviewer (OWN-35); Codex is optional,
+# and the independent Claude review in CONTRIBUTING.md still runs. With the request-changes
 # workflow on, it requests changes when a review posts actionable inline
 # comments and approves a reviewed head once its threads are resolved and no
 # pre-merge check fails. That approval is an AI signal. It never replaces a

@@ -62,8 +62,9 @@ Evidence, then the gap each item leaves.
    both violations. The probe was closed unmerged.
 8. **Codex** is installed (`chatgpt-codex-connector[bot]`). It reviews on PR open, on ready-for-review,
    or on `@codex review`, and posts a summary comment naming the commit. Since 20 Oct 2026 it has
-   repeatedly reported "usage limits for code reviews". OWN-26 makes Codex quota never a merge
-   dependency.
+   repeatedly reported "usage limits for code reviews". It is optional and secondary to CodeRabbit
+   (OWN-35); a usage limit is recorded as `Codex: UNAVAILABLE — QUOTA` and, under OWN-26 and
+   OWN-35, Codex quota is never a merge dependency.
 9. **Merge queue.** GitHub documents merge queues for organization-owned repositories. This repository
    is owned by a user account, so a merge queue is not expected to be available (to be confirmed in
    Settings). Merges stay serial by procedure: merge, then main CI, then staging, then the next merge
