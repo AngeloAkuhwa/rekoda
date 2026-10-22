@@ -24,7 +24,24 @@ environment — so an exfiltrated backup alone exposes no customer identity.
 Corollary: **losing VAULT_KEY loses the vault.** The key custody procedure
 (who holds copies, where) is part of this runbook's checklist, not optional.
 
-## Backup (production procedure; to be installed at deploy, then verified weekly)
+## Backup scripts (G-02, CODE COMPLETE 22 Oct 2026; NOT enabled anywhere)
+
+`scripts/backup-db.sh` takes a `pg_dump -Fc`, encrypts it (AES-256, PBKDF2,
+passphrase from `BACKUP_PASSPHRASE_FILE`), writes a `.sha256`, uploads to
+`BACKUP_DEST` (a mounted off-box directory or `s3://bucket/prefix`, with
+`BACKUP_S3_ENDPOINT` for R2/B2), reads it back and compares the checksum. Any
+failure is a non-zero exit, so the systemd unit failing is the alert.
+`scripts/restore-drill.sh` fetches the newest object, verifies and decrypts it,
+restores into a scratch database (a throwaway container, or `DRILL_DATABASE_URL`
+whose name must contain `drill` or `scratch`) and exits non-zero unless every
+business's ledger balances; it prints the measured restore seconds and counts.
+Units: `deploy/systemd/rekoda-backup.{service,timer}` with
+`/etc/rekoda/backup.env` (root-only). Still needed from the owner: the off-box
+destination and credentials, the passphrase custody (lose it and the backups are
+unreadable), the first real drill logged below, and OD-7 (continuous WAL/PITR per
+ADR 0010 is NOT implemented; this is the nightly logical half only, RPO up to 24h).
+
+## Backup (original planned procedure, superseded by the scripts above)
 
 ```bash
 # On the server — to be installed as a systemd timer at first deploy.
@@ -86,4 +103,4 @@ against production. A green build is a passed drill.
 | Date                                                        | Dump                      | Duration | Result | Operator            |
 | ----------------------------------------------------------- | ------------------------- | -------- | ------ | ------------------- |
 | Continuous                                                  | CI, per push (§32-shaped) | ~6s      | PASS   | recovery-drill test |
-| _(first production drill due before first paying merchant)_ |                           |          |        |                     |
+| _(first off-box drill due before first paying merchant)_ |                           |          |        |                     |

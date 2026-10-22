@@ -1,0 +1,11 @@
+[Unit]
+Description=Rekoda encrypted database backup (G-02)
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/rekoda
+# BACKUP_DEST, BACKUP_PASSPHRASE_FILE and (for R2/B2) BACKUP_S3_ENDPOINT plus the
+# AWS_* credentials live in this root-only file, never in the repository.
+EnvironmentFile=/etc/rekoda/backup.env
+ExecStart=/opt/rekoda/scripts/backup-db.sh
