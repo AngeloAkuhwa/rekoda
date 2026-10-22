@@ -39,6 +39,7 @@ reviews:
   # unavailable bot must never deadlock a merge. Its blocking signal is the
   # request-changes review, which CodeRabbit clears itself and an admin can dismiss.
   review_progress: true
+  # Used only when review_progress is off; kept so a fallback still mirrors status.
   commit_status: true
   fail_commit_status: false
   poem: false
@@ -53,42 +54,124 @@ reviews:
     # `main` is the default branch and is always reviewed; named explicitly.
     base_branches:
       - '^main$'
-  # Only build output is excluded. Migrations, their journal and snapshots,
-  # and the lockfile are all reviewed (the lockfile with the narrow
-  # supply-chain instruction below).
+  # Only build output is excluded. Migrations, their journal and snapshots
+  # are reviewed. pnpm-lock.yaml is on CodeRabbit's DEFAULT ignore list; the
+  # exact default pattern without its "!" re-enables it without turning the
+  # filters into an allowlist (docs: configuration/path-instructions). It gets
+  # the narrow supply-chain instruction below.
   path_filters:
+    - '**/pnpm-lock.yaml'
     - '!**/dist/**'
     - '!**/node_modules/**'
     - '!**/.next/**'
     - '!**/.turbo/**'
     - '!**/coverage/**'
   pre_merge_checks:
+    # The PR author (the autopilot posts as the owner's account) can never
+    # ignore a failing check; only a requested reviewer can override one.
+    override_requested_reviewers_only: true
     title:
+      mode: error
+      requirements: >-
+        A Conventional Commit title: one of feat, fix, docs, chore, test, refactor, perf, ci or build, an
+        optional scope in brackets, then ": " and a specific description of the change in plain words (for
+        example "fix: a lapsed plan keeps the books readable (G-44)"). Fail a title that is vague or
+        meaningless ("update", "fixes", "wip", "changes", "misc", "address review") or that misdescribes the
+        diff, for example a fix: title on a PR that changes only documentation, or a docs: title on a PR
+        that changes code.
+    # CodeRabbit skips its built-in description check while the high-level
+    # summary is on; the section check below is the one that enforces.
+    description:
       mode: warning
-      requirements: 'A Conventional Commit title: feat:, fix:, docs:, chore:, test:, refactor:, perf: or ci:, with an optional scope.'
     custom_checks:
+      - name: PR description has the required sections
+        mode: error
+        instructions: |
+          Read only the author's part of the PR description (ignore any block CodeRabbit generated).
+          A PR is DOCS-ONLY when every changed file ends in .md or is under docs/. Otherwise it is a CODE PR.
+          CODE PR: fail unless the description has a non-empty section for each of these, under any heading
+          wording that clearly means it: (1) the problem solved; (2) the gap, issue or build identifier, or the
+          words "none" with a reason; (3) the expected behaviour; (4) what code changed; (5) financial and
+          security implications, or "none" with a reason; (6) test evidence naming the tests or suites run and
+          their result; (7) database migration impact, or "none"; (8) deployment impact and rollback
+          considerations; (9) whether an owner policy decision was needed, naming the OWN-* ruling if one was.
+          DOCS-ONLY PR: fail unless it states what changed, why, and how it was checked.
+          A ticked checklist box alone never satisfies a section. Pass when every required section is present.
       - name: Applied migrations are never edited
         mode: error
         instructions: |
           Fail if the PR modifies, renames or deletes any file matching packages/db/migrations/[0-9][0-9][0-9][0-9]_*.sql
-          that already exists on the base branch. Pass if the PR only ADDS new migration files, or touches no
-          migration. A new migration must be the next number in sequence and must add its entry to
-          packages/db/migrations/meta/_journal.json; fail if a new .sql migration is added without a matching
-          journal entry. This is the repository's existing rule (append-only migrations); it adds nothing new.
+          that already exists on the base branch. A newly added migration must be numbered one higher than the
+          highest number on the base branch, and packages/db/migrations/meta/_journal.json must gain exactly one
+          entry for it with the same tag; fail otherwise. Pass when the PR touches no migration.
       - name: A bug fix lands with a regression test
         mode: error
         instructions: |
-          Applies only when the PR title starts with "fix:" or "fix(". Fail if the PR adds or modifies no file
-          whose name ends in .test.ts, .test.tsx, .test.mjs, .integration.test.ts or .spec.ts. Pass otherwise,
-          and pass for any title that does not start with "fix". This is CLAUDE.md invariant 11 ("Every bug fix
-          lands with a regression test that fails before the fix").
-      - name: No test is skipped or disabled
+          Applies only when the PR title starts with "fix:" or "fix(". Pass if the PR adds or modifies a file
+          whose name ends in .test.ts, .test.tsx, .test.mjs or .spec.ts, or adds a case to
+          apps/api/src/ai/eval/dataset.ts. Also pass if the description names, by file path and test name, an
+          existing test or guard that failed before the fix and passes after it. Fail otherwise. A change that
+          only edits documentation is not a fix: its title must start with docs:. (CLAUDE.md invariant 11.)
+      - name: No test is skipped, focused or disabled
         mode: error
         instructions: |
-          Fail if the diff ADDS any of: it.skip(, describe.skip(, test.skip(, it.only(, describe.only(,
-          test.only(, xit(, xdescribe(, a `continue-on-error: true` on a test step in .github/workflows, or
-          removes a test file without a replacement that covers the same behaviour. Pass otherwise. This is
-          CLAUDE.md invariant 11 ("Never skip, disable or quarantine a failing test to get green").
+          Fail if a changed line ADDS any of these tokens: .skip(, .only(, .skipIf(, .todo(, xit(, xdescribe(,
+          xtest(, fixme(, or "continue-on-error: true" in a file under .github/workflows/. Pass otherwise.
+          (CLAUDE.md invariant 11: never skip, disable or quarantine a failing test to get green.)
+      - name: Test coverage is not quietly reduced
+        mode: warning
+        instructions: |
+          Warn if the PR deletes a test file, or deletes a test case, without the description explaining where
+          the same behaviour is now tested. Warn if an assertion is weakened (an exact equality replaced by a
+          looser matcher, an expected count lowered, a toThrow removed) without the description explaining why
+          the behaviour itself changed.
+      - name: Financial changes name invariant and test
+        mode: error
+        instructions: |
+          Applies when the diff changes any file under packages/core/src/ (ledger, money, payments,
+          reconciliation, billing, allowances, purchase-identity, costing, periods, statements), under
+          packages/db/src/repos/, under apps/api/src/{commands,spend,payments,bank,billing,reports}/, or a
+          migration. Fail if any of these is true:
+          (a) a financial amount is computed with floating point (parseFloat, toFixed, division without
+          Math.floor/Math.round to integer kobo) outside packages/core/src/money.ts;
+          (b) the diff adds an UPDATE or DELETE on ledger_transactions or ledger_entries, or on a posted invoice,
+          receipt, payment or expense row, other than a spec-defined lifecycle transition;
+          (c) the description's financial section does not name the affected invariant (for example balanced
+          postings, one event one financial truth, idempotent retry, refund limit, entitlement granted once)
+          and the test that covers it.
+          Pass otherwise. (CLAUDE.md invariants 1, 2, 6, 7.)
+      - name: Security boundaries hold
+        mode: error
+        instructions: |
+          Fail if the diff does any of:
+          (a) adds a query on a business-owned table outside withBusiness() in apps/api or packages/db/src/repos;
+          (b) adds a log, error message or trace attribute containing a message body, a customer or supplier
+          name, a phone number, a vault token mapping, a secret or a key;
+          (c) changes a webhook handler (Meta, Paystack, bank feeds) so that the payload is parsed or acted on
+          before the signature is verified, or removes the signature or idempotency check;
+          (d) adds an HTTP route or server action with no authentication guard, unless it is a documented public
+          route (webhooks, /health, the storefront /s/[slug], the public API with its key guard);
+          (e) lets a model output reach a financial write without zod validation and merchant confirmation.
+          Pass otherwise. (CLAUDE.md invariants 2, 3, 4, 5, 9.)
+      - name: CI and deployment stay safe
+        mode: error
+        instructions: |
+          Applies when the diff changes .github/workflows/, Dockerfile, docker-compose*.yml, deploy/ or
+          scripts/deploy-*.sh. Fail if it: removes or renames a CI job or step that runs tests, typecheck, lint,
+          migrations or the secret scan; adds "|| true" or "continue-on-error" to such a step; adds a literal
+          credential, token, private key or password; adds `docker compose down -v`, `docker system prune`,
+          `docker image prune`, `rm -rf` of a data or volume path, or a database drop or restore; removes the
+          successful-push-to-main CI requirement or the exact-SHA check from deploy-staging.yml; or adds a
+          production deployment trigger. Pass otherwise.
+      - name: Owner product and tax rulings hold
+        mode: error
+        instructions: |
+          Fail if the diff makes Rekoda add VAT or any tax to merchant sales automatically, collect or remit
+          merchant VAT, file tax, or treat a sale with no VAT charged as zero-rated or exempt (OWN-30); or if it
+          adds a pricing, allowance, trial-length or tax rule that does not appear in
+          docs/REKODA_OWNER_DECISIONS.md, docs/REKODA_CANONICAL_SPEC.md or docs/pricing-model.md. Pass otherwise.
+          Where the documents do not decide a question the PR needed, the description must say so and name the
+          open question; fail if the code silently picks an answer.
   path_instructions:
     - path: '**/*'
       instructions: |
@@ -135,9 +218,9 @@ reviews:
 
     - path: '{apps/api/src/billing/**,apps/api/src/jobs/process-billing-charge.handler.ts,packages/core/src/{billing,allowances,entitlements,gates}.ts,packages/db/src/repos/{subscriptions,billing,usage}.ts,apps/web/src/app/app/billing/**}'
       instructions: |
-        Subscriptions, renewals and entitlements (ADR 0024; spec §30; owner rulings OWN-26 to OWN-33, among
-        them OWN-27 the 14-day trial, OWN-29 stale charges, OWN-33 no automatic proration of non-standard
-        cycles).
+        Subscriptions, renewals and entitlements (ADR 0024; spec §30; owner rulings OWN-27 the 14-day trial,
+        OWN-28 retention of ever-paid businesses, OWN-29 stale charges and OWN-33 no automatic proration of
+        non-standard cycles).
         - A plan moves only after valid provider settlement or an authorised operator action, and every
           subscription state write goes through the one writer (writeSubscriptionState, G-62).
         - Look for a double grant of a pack or plan, units consumed twice, a charge applied after a newer
@@ -217,7 +300,8 @@ reviews:
           yet. Flag a change that claims a backup or restore works without a tested restore, that writes a
           backup unencrypted or to the same host, or that puts a backup credential in the repository.
         - CI is never weakened: no skipped check, no continue-on-error on a test step, no secret in a workflow.
-        - The deploy guard (scripts/check-deploy.mjs) and the caddy allowlist (G-76) must not be bypassed.
+        - The deploy guard (scripts/check-deploy.mjs) must not be bypassed, and no change may widen the gaps
+          G-76 tracks (caddy command, entrypoint, extends or extra mounts).
 
     - path: '{apps/api/src/config.ts,apps/api/src/main.ts,.env.example,packages/core/src/vault.ts,apps/api/src/payments/connections.service.ts,packages/db/src/schema/ops.ts}'
       instructions: |

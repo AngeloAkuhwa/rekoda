@@ -14,6 +14,7 @@ Planned (populated as the systems they describe land):
 | `key-rotation.md` — provider keys, vault key, session secrets                                                     | S1 ✅ (PR-107)                                               |
 | `data-erasure.md` — deletion requests end-to-end, three lanes                                                     | REM ✅ (PR-132)                                              |
 | `r0a-provenance.md` — run, review and approve the legacy provenance report                                        | R0A ✅ (PR-120), **gate OPEN**                               |
+| `pr-quality-pipeline.md` — review signals, merge gate, CI-to-staging sequence, branch rules                       | IN PROGRESS (#303)                                           |
 | `meta-submission.md` — WhatsApp/app review, exact URLs per field                                                  | M2 (owner, W0)                                               |
 | `integrate-onboarding.md` — concierge WABA/catalogue/Paystack setup                                               | M5                                                           |
 
