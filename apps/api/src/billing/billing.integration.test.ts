@@ -300,6 +300,132 @@ describe('paying, and the gate in front of it', () => {
     expect(charges.count).toBe(0);
   });
 
+  describe('an operator-defined arrangement is never prorated, whatever its length (OWN-33 Option B)', () => {
+    const DAY = 86_400_000;
+    const expectNoCharge = async (businessId: string) => {
+      const charges = await withBusiness(db, businessId, (tx) =>
+        subscriptionsRepo.chargesFor(tx, businessId),
+      );
+      expect(charges.count).toBe(0);
+    };
+
+    it.each([
+      ['a 30-day cycle', 30],
+      ['a custom 45-day cycle', 45],
+      ['an annual cycle', 365],
+    ])('sends %s granted by an operator to support review', async (_label, days) => {
+      const { businessId } = await onboard(`+23481771${String(2000 + days).padStart(5, '0')}`);
+      const now = new Date();
+      await billingRepo.setPlan(db, {
+        businessId,
+        plan: 'chat',
+        expiresAt: new Date(now.getTime() + days * DAY),
+        actor: 'operator:test-g115',
+      });
+      const before = await withBusiness(db, businessId, (tx) =>
+        subscriptionsRepo.subscriptionFor(tx, businessId),
+      );
+      expect(before?.origin).toBe('operator');
+
+      const billing = confirmedBilling();
+      const quote = await billing.quote(businessId, 'complete', now);
+      const answer = await billing.changePlan(businessId, 'complete', now);
+      // The preview and the execution agree.
+      expect(quote.supportReview).toBe(true);
+      expect(quote.amountK).toBe(0);
+      expect(answer).toEqual({ state: 'unavailable', reason: 'support_review' });
+
+      await expectNoCharge(businessId);
+      const after = await withBusiness(db, businessId, (tx) =>
+        subscriptionsRepo.subscriptionFor(tx, businessId),
+      );
+      expect(after).toEqual(before);
+    });
+
+    it('sends a paid cycle of unknown origin to support review, however standard it looks', async () => {
+      const { businessId } = await onboard('+2348177100301');
+      const now = new Date();
+      await putOnPlan(
+        businessId,
+        'chat',
+        new Date(now.getTime() - 11 * DAY),
+        new Date(now.getTime() + 19 * DAY),
+      );
+      await ownerDb.execute(
+        sql`UPDATE businesses SET subscription_origin = NULL WHERE id = ${businessId}::uuid`,
+      );
+      const billing = confirmedBilling();
+      expect((await billing.quote(businessId, 'complete', now)).supportReview).toBe(true);
+      expect(await billing.changePlan(businessId, 'complete', now)).toEqual({
+        state: 'unavailable',
+        reason: 'support_review',
+      });
+      await expectNoCharge(businessId);
+    });
+
+    it('still prorates a provider-bought standard monthly cycle, and quote and change agree', async () => {
+      const { businessId } = await onboard('+2348177100302');
+      const now = new Date();
+      await putOnPlan(
+        businessId,
+        'chat',
+        new Date(now.getTime() - 11 * DAY),
+        new Date(now.getTime() + 19 * DAY),
+      );
+      const billing = confirmedBilling();
+      const quote = await billing.quote(businessId, 'complete', now);
+      expect(quote.supportReview).toBe(false);
+      const answer = await billing.changePlan(businessId, 'complete', now);
+      expect(answer.state).toBe('payment_required');
+      if (answer.state !== 'payment_required') throw new Error('unreachable');
+      expect(answer.amountK).toBe(quote.amountK);
+    });
+
+    it('a provider payment, then an operator move, then a request: the operator move wins', async () => {
+      const { businessId } = await onboard('+2348177100303');
+      const now = new Date();
+      await putOnPlan(
+        businessId,
+        'chat',
+        new Date(now.getTime() - 11 * DAY),
+        new Date(now.getTime() + 19 * DAY),
+      );
+      await billingRepo.setPlan(db, {
+        businessId,
+        plan: 'chat',
+        expiresAt: new Date(now.getTime() + 30 * DAY),
+        actor: 'operator:test-g115',
+      });
+      expect(await confirmedBilling().changePlan(businessId, 'complete', now)).toEqual({
+        state: 'unavailable',
+        reason: 'support_review',
+      });
+    });
+
+    it('concurrent and repeated requests open no charge and cannot slip past the rule', async () => {
+      const { businessId } = await onboard('+2348177100304');
+      const now = new Date();
+      await billingRepo.setPlan(db, {
+        businessId,
+        plan: 'chat',
+        expiresAt: new Date(now.getTime() + 30 * DAY),
+        actor: 'operator:test-g115',
+      });
+      const billing = confirmedBilling();
+      const answers = await Promise.all(
+        Array.from({ length: 6 }, () => billing.changePlan(businessId, 'complete', now)),
+      );
+      for (const answer of answers) {
+        expect(answer).toEqual({ state: 'unavailable', reason: 'support_review' });
+      }
+      expect(await billing.changePlan(businessId, 'complete', now)).toEqual({
+        state: 'unavailable',
+        reason: 'support_review',
+      });
+      await expectNoCharge(businessId);
+    });
+  });
+
   it('unlocks the new plan when the provider confirms, keeping the renewal date', async () => {
     const { businessId, auth } = await onboard('+2348177100017');
     const now = new Date();

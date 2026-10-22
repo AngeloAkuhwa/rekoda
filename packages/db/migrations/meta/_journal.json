@@ -1170,6 +1170,13 @@
       "when": 1791979200000,
       "tag": "0166_spend_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 167,
+      "version": "7",
+      "when": 1792065600000,
+      "tag": "0167_subscription_origin",
+      "breakpoints": true
     }
   ]
 }

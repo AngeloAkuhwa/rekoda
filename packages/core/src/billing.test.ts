@@ -5,6 +5,7 @@ import {
   addOnPack,
   billingState,
   isStandardMonthlyCycle,
+  upgradeProrationEligibility,
   EXTRA_SEAT_PRICE_K,
   packsFor,
   planChangeCharge,
@@ -474,5 +475,34 @@ describe('isStandardMonthlyCycle (OWN-33, G-115)', () => {
     expect(isStandardMonthlyCycle(start, new Date('2027-03-05T09:00:00Z'))).toBe(false);
     expect(isStandardMonthlyCycle(start, addMonth(addMonth(start)))).toBe(false);
     expect(isStandardMonthlyCycle(start, new Date('2026-03-12T09:00:00Z'))).toBe(false);
+  });
+});
+
+describe('upgradeProrationEligibility (OWN-33, G-115 Option B)', () => {
+  const start = new Date('2026-09-01T00:00:00Z');
+  const month = new Date('2026-10-01T00:00:00Z');
+  const year = new Date('2027-09-01T00:00:00Z');
+
+  it('prorates only a provider-bought standard month', () => {
+    expect(
+      upgradeProrationEligibility({
+        origin: 'provider',
+        cycleStartedAt: start,
+        planExpiresAt: month,
+      }),
+    ).toBe('automatic');
+  });
+
+  it.each([
+    ['an operator 30-day cycle', 'operator', start, month],
+    ['an operator annual cycle', 'operator', start, year],
+    ['an unknown origin', null, start, month],
+    ['a provider cycle that is not a month', 'provider', start, year],
+    ['a provider cycle with no start', 'provider', null, month],
+    ['a provider cycle with no expiry', 'provider', start, null],
+  ] as const)('sends %s to support review', (_label, origin, cycleStartedAt, planExpiresAt) => {
+    expect(upgradeProrationEligibility({ origin, cycleStartedAt, planExpiresAt })).toBe(
+      'support_review',
+    );
   });
 });

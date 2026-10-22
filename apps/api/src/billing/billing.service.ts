@@ -18,7 +18,7 @@ import {
   addOnReference,
   billingState,
   GRACE_DAYS,
-  isStandardMonthlyCycle,
+  upgradeProrationEligibility,
   planChangeCharge,
   subscriptionReference,
   usagePeriod,
@@ -600,17 +600,17 @@ function statusOf(
 }
 
 /**
- * OWN-33 (G-115): a paid cycle that is not a standard month. An expiry with no
- * recorded cycle start, or no expiry at all, cannot be shown to be monthly, so
- * it is treated as custom rather than prorated over an invented span.
+ * OWN-33 (G-115): a subscription that cannot be shown to be a provider-bought
+ * standard month is never prorated automatically (`upgradeProrationEligibility`).
+ * No subscription row means a first purchase, which has no cycle to prorate.
  */
 function isCustomCycle(
-  subscription: { cycleStartedAt: Date | null; planExpiresAt: Date | null } | null,
+  subscription: {
+    origin: 'provider' | 'operator' | null;
+    cycleStartedAt: Date | null;
+    planExpiresAt: Date | null;
+  } | null,
 ): boolean {
   if (!subscription) return false;
-  /* An upgrade only exists for an already-paid plan, so no expiry at all is an
-   * open-ended operator arrangement: there is no month to prorate over. */
-  if (!subscription.planExpiresAt) return true;
-  if (!subscription.cycleStartedAt) return true;
-  return !isStandardMonthlyCycle(subscription.cycleStartedAt, subscription.planExpiresAt);
+  return upgradeProrationEligibility(subscription) === 'support_review';
 }
