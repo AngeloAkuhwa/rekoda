@@ -42,6 +42,20 @@ Licence texts: `_licenses/`.
   and must not see merchant data.
 - `ui-ux-pro-max` is an account-level skill and is untouched.
 
+## Verifying integrity
+
+`skills-lock.json` holds the hash the `skills` installer computes for each
+skill folder: SHA-256 over every file, sorted by relative path with
+`localeCompare`, feeding each path then its bytes (`computeSkillFolderHash` in
+`skills@1.7.4`). Reproduced on 22 Oct 2026 with that exact algorithm: all eight
+`skills-lock.json` entries match the committed folders, and each folder equals
+its pinned upstream folder byte for byte (`diff -r`). Impeccable, which the
+installer did not write, hashes to
+`fb28833d2d55b7de536436e9e6f2b56138ad713598092249272e503f2aa54fb6` by the same
+algorithm, identical to `plugin/skills/impeccable` at `69c34b7`. Re-run that
+comparison before accepting any change to a vendored file; never replace a lock
+value with one that cannot be reproduced.
+
 ## Updating
 
 Re-run the installer commands above (they rewrite `skills-lock.json`), diff the
