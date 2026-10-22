@@ -67,7 +67,9 @@ session never starts a capability from zero.
 
 - **Identity:** OTP over WhatsApp, setup grant, sessions, owner, accountant
   and delegate roles, operator plane with OIDC identities (`apps/api/src/auth/`).
-- **Tenancy:** `withBusiness()` is the only path to tenant data; RLS on
+- **Tenancy:** `withBusiness()` is the only path to tenant data, apart from the
+  approved non-identifying operational-monitoring aggregates (invariant 3,
+  OWN-36, ADR 0035); RLS on
   every business-owned table; three DB roles (owner, `rekoda_app`,
   `rekoda_worker`); an RLS exemption register enforced by tests.
 - **WhatsApp channel:** Meta Cloud API webhook (signature, verify token,
