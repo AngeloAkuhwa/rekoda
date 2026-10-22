@@ -123,12 +123,43 @@ describe('queue health', () => {
     expect(health.oldestPendingSeconds).toBe(0);
   });
 
+  it('shows a retry backlog that keeps being rescheduled even though nothing is due (G-63)', async () => {
+    // `oldestPendingSeconds` measures from run_at, so a job pushed back into
+    // the future on every failure reads as healthy forever. The age since it
+    // was queued does not reset.
+    const ada = await seedBusiness('+2348030000005');
+    await withBusiness(appDb, ada, (tx) =>
+      jobsRepo.enqueue(tx, { businessId: ada, kind: 'inbound.message', delayMs: 3_600_000 }),
+    );
+    await workerDb.execute(
+      sql`UPDATE jobs SET created_at = now() - interval '3 hours', updated_at = now()`,
+    );
+
+    const health = await jobsRepo.queueHealth(workerDb);
+
+    expect(health.oldestPendingSeconds).toBe(0);
+    expect(health.oldestQueuedSeconds).toBeGreaterThanOrEqual(3 * 3600);
+  });
+
+  it('does not count a running or finished job in the queued age', async () => {
+    const ada = await seedBusiness('+2348030000006');
+    await withBusiness(appDb, ada, (tx) =>
+      jobsRepo.enqueue(tx, { businessId: ada, kind: 'inbound.message' }),
+    );
+    await workerDb.execute(
+      sql`UPDATE jobs SET state = 'running', created_at = now() - interval '5 hours'`,
+    );
+
+    expect((await jobsRepo.queueHealth(workerDb)).oldestQueuedSeconds).toBe(0);
+  });
+
   it('is all zeros on an empty queue rather than throwing', async () => {
     expect(await jobsRepo.queueHealth(workerDb)).toEqual({
       dead: 0,
       pending: 0,
       running: 0,
       oldestPendingSeconds: 0,
+      oldestQueuedSeconds: 0,
     });
   });
 });

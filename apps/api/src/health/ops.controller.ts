@@ -31,6 +31,7 @@ import {
 import {
   estateCount,
   estateMargin,
+  evaluateOpsAlerts,
   GRADUATION_NUDGE_K,
   margin,
   payingCount,
@@ -39,6 +40,7 @@ import {
   unappliedChargeOverdue,
   usagePeriod,
   type Margin,
+  type OpsAlert,
 } from '@rekoda/core';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { SecurityMetrics } from '../channels/security-metrics.service.js';
@@ -117,6 +119,12 @@ export class OpsController {
     rejectedSignatures: { meta: number; paystack: number };
     /** Sign-in code sends this process attempted; a rising `failed` is a Meta outage or a bad token (G-12). */
     otpSends: { sent: number; failed: number };
+    /**
+     * What currently deserves a page, judged the same way the alert pass judges
+     * it (G-26). Empty when nothing is wrong, and also empty when this process
+     * has no worker credential, in which case `queue` is null too.
+     */
+    alerts: OpsAlert[];
   }> {
     const worker = this.workerDb;
     const [queue, meta, paystack] = await Promise.all([
@@ -133,6 +141,17 @@ export class OpsController {
         paystack: this.security.rejectedSignatures('paystack'),
       },
       otpSends: this.security.otpSends(),
+      alerts: evaluateOpsAlerts({
+        queue: queue && {
+          dead: queue.dead,
+          pending: queue.pending,
+          running: queue.running,
+          oldestDueSeconds: queue.oldestPendingSeconds,
+          oldestQueuedSeconds: queue.oldestQueuedSeconds,
+        },
+        meta,
+        paystack,
+      }),
     };
   }
 

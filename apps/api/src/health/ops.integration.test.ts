@@ -136,7 +136,13 @@ describe('what the operator health surface says', () => {
     const res = await health({ 'x-rekoda-operator-secret': OPERATOR_SECRET });
 
     expect(res.json()).toEqual({
-      queue: { dead: 0, pending: 0, running: 0, oldestPendingSeconds: 0 },
+      queue: {
+        dead: 0,
+        pending: 0,
+        running: 0,
+        oldestPendingSeconds: 0,
+        oldestQueuedSeconds: 0,
+      },
       meta: { unprocessed: 0, flagged: 0, badSignatures: 0, deliveryFailures: 0 },
       paystack: { unprocessed: 0, flagged: 0, badSignatures: 0, deliveryFailures: 0 },
       // The live rejected-signature counters (PR-108): zero on a quiet
@@ -144,7 +150,31 @@ describe('what the operator health surface says', () => {
       rejectedSignatures: { meta: 0, paystack: 0 },
       // Sign-in code sends this process attempted (G-12).
       otpSends: { sent: 0, failed: 0 },
+      // Nothing deserves a page on a quiet platform (G-26).
+      alerts: [],
     });
+  });
+
+  it('lists a dead job as a critical alert, with a number and no tenant (G-26)', async () => {
+    const user = await identity.upsertUserByPhone(db, '+2348030000009');
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Dead Letter Stores',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    await withBusiness(db, business.id, (tx) =>
+      jobsRepo.enqueue(tx, { businessId: business.id, kind: 'inbound.message' }),
+    );
+    await ownerDb.execute(sql`UPDATE jobs SET state = 'dead'`);
+
+    const raw = await health({ 'x-rekoda-operator-secret': OPERATOR_SECRET });
+    const body = raw.json();
+
+    expect(body.alerts).toEqual([
+      expect.objectContaining({ key: 'jobs.dead', severity: 'critical' }),
+    ]);
+    expect(raw.body).not.toContain('Dead Letter');
+    expect(raw.body).not.toContain(business.id);
   });
 
   it('counts a queued job even though this process claims none', async () => {

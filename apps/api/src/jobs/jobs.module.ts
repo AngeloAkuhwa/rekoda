@@ -18,6 +18,8 @@ import { redactForLog } from '@rekoda/core/privacy';
 import { JobQueue, JobKind } from './queue.service.js';
 import { JobRunner, describeFailure } from './runner.js';
 import { scheduleSweep, type SweepSchedule } from './sweep-schedule.js';
+import { WebhookAlertSink, collectOpsSnapshot, runOpsAlertPass } from '../health/ops-alerts.js';
+import type { AlertState } from '@rekoda/core';
 import { inboundMessageHandler, type InboundMessageDeps } from './inbound-message.handler.js';
 import { customerMessageHandler } from './customer-message.handler.js';
 import { renderDocumentHandler } from './render-document.handler.js';
@@ -239,6 +241,8 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private sweepingRecurring = false;
   private sweepingDepreciation = false;
   private sweepingRetention = false;
+  private alerting = false;
+  private alertState: AlertState = {};
   private outboxTimer: NodeJS.Timeout | null = null;
   private dispatchingOutbox = false;
   private webhookTimer: NodeJS.Timeout | null = null;
@@ -548,6 +552,43 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
             })
             .finally(() => {
               this.sweepingRetention = false;
+            });
+        },
+      }),
+    );
+
+    /**
+     * The alert pass (G-26): once a minute, look at the queue and the webhook
+     * backlogs and tell somebody when a number crosses a line. It needs the
+     * worker credential to see across tenants, which is why it lives here.
+     */
+    const alertSink = this.config.opsAlertWebhookUrl
+      ? new WebhookAlertSink(this.config.opsAlertWebhookUrl)
+      : null;
+    this.sweepSchedules.push(
+      scheduleSweep({
+        intervalMs: 60_000,
+        run: () => {
+          if (this.alerting) return;
+          this.alerting = true;
+          this.exclusively('ops-alerts', async () => {
+            const { next } = await runOpsAlertPass(
+              {
+                collect: () => collectOpsSnapshot(workerDb),
+                sink: alertSink,
+                log: this.log,
+                build: { release: this.config.release, commit: this.config.commit },
+                now: () => new Date(),
+              },
+              this.alertState,
+            );
+            this.alertState = next;
+          })
+            .catch((error: unknown) => {
+              this.log.warn(`alert pass failed: ${redactForLog(describeFailure(error))}`);
+            })
+            .finally(() => {
+              this.alerting = false;
             });
         },
       }),

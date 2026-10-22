@@ -411,8 +411,15 @@ export interface QueueHealth {
   dead: number;
   /** Waiting to run. A number that only grows means the worker is not. */
   pending: number;
-  /** Seconds the OLDEST waiting job has been waiting. The real alarm. */
+  /** Seconds the OLDEST job that is DUE has waited. The worker-not-keeping-up alarm. */
   oldestPendingSeconds: number;
+  /**
+   * Seconds since the oldest still-pending job was QUEUED, due or not (G-63).
+   * `oldestPendingSeconds` counts from `run_at`, which every retry pushes
+   * forward, so a backlog that keeps being rescheduled reads as healthy.
+   * `created_at` does not move.
+   */
+  oldestQueuedSeconds: number;
   running: number;
 }
 
@@ -431,13 +438,16 @@ export async function queueHealth(db: Db): Promise<QueueHealth> {
     pending: number;
     running: number;
     oldest_seconds: number | null;
+    oldest_queued_seconds: number | null;
   }>(sql`
     SELECT
       count(*) FILTER (WHERE state = 'dead')::int    AS dead,
       count(*) FILTER (WHERE state = 'pending')::int AS pending,
       count(*) FILTER (WHERE state = 'running')::int AS running,
       EXTRACT(EPOCH FROM (now() - min(run_at) FILTER (WHERE state = 'pending')))::int
-        AS oldest_seconds
+        AS oldest_seconds,
+      EXTRACT(EPOCH FROM (now() - min(created_at) FILTER (WHERE state = 'pending')))::int
+        AS oldest_queued_seconds
     FROM jobs
   `);
   const row = [...rows][0];
@@ -446,5 +456,6 @@ export async function queueHealth(db: Db): Promise<QueueHealth> {
     pending: row?.pending ?? 0,
     running: row?.running ?? 0,
     oldestPendingSeconds: Math.max(0, row?.oldest_seconds ?? 0),
+    oldestQueuedSeconds: Math.max(0, row?.oldest_queued_seconds ?? 0),
   };
 }
