@@ -272,7 +272,7 @@ financial correctness, CI or required approvals.
 
 Choose automatically; do not invoke all of them. Skip the whole section for
 backend-only work. The table rows are candidates, not requirements. Use at most
-two skills per slice, picked in the owner's order of precedence (Angelo, 22 Oct
+two skills per slice, picked following the owner's recommended selection (Angelo, 22 Oct
 2026): `impeccable` is the default for any UI work; add `design-taste-frontend`
 only for a public page or when visual direction is being set; add
 `emil-design-eng` only when the slice contains motion or interaction detail;
