@@ -10,8 +10,9 @@ import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, utime
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SECRET = 'PLAINTEXT-LEDGER-MARKER-9f3a';
 const DUMP = `printf 'PGDMP${SECRET}'`;
 
@@ -140,7 +141,10 @@ test('a backup whose checksum cannot be published is never listed as the newest'
 
 test('two backups started in the same second never share an object name', () => {
   const t = env();
-  const a = spawnSync('bash', ['-c', `S=${join(ROOT, 'scripts/backup-db.sh')}; $S & p=$!; $S & q=$!; wait $p; a=$?; wait $q; b=$?; [ $a -eq 0 ] && [ $b -eq 0 ]`], {
+  const a = spawnSync(
+    'bash',
+    ['-c', '"$1" & p=$!; "$1" & q=$!; wait "$p"; a=$?; wait "$q"; b=$?; [ "$a" -eq 0 ] && [ "$b" -eq 0 ]', 'backup-concurrency-test', join(ROOT, 'scripts/backup-db.sh')],
+    {
     env: t.env,
     encoding: 'utf8',
   });
