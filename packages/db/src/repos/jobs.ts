@@ -279,6 +279,24 @@ export async function markDone(tx: TenantDb, id: string): Promise<void> {
     .where(eq(jobs.id, id));
 }
 
+/**
+ * Renew a running job's lease (G-10).
+ *
+ * `reclaimStalled` treats `locked_at` as "this worker was last seen working on
+ * it". Without a renewal, a handler that legitimately runs longer than the
+ * stall window (a slow upload, a slow model call) looks identical to a
+ * crashed worker and is handed to a second worker while the first is still
+ * going. The runner calls this on a timer while a handler runs. Guarded by
+ * `locked_by` and `state` so a job that already finished, failed or was
+ * reclaimed is never resurrected.
+ */
+export async function touch(db: Db, id: string, workerId: string): Promise<void> {
+  await db.execute(sql`
+    UPDATE jobs SET locked_at = now(), updated_at = now()
+    WHERE id = ${id}::uuid AND state = 'running' AND locked_by = ${workerId}
+  `);
+}
+
 /** Exponential, capped. Attempt 1 waits ~2s, attempt 5 ~32s. */
 export function backoffMs(attempts: number, baseMs = 1_000, capMs = 300_000): number {
   return Math.min(capMs, baseMs * 2 ** Math.max(1, attempts));

@@ -391,6 +391,35 @@ describe('a busy queue still recovers abandoned jobs (G-10)', () => {
   });
 });
 
+describe('a long-running handler keeps its lease (G-10)', () => {
+  /**
+   * `reclaimStalled` hands a job to another worker once it has been untouched
+   * for the stall window. A handler that legitimately outlives that window
+   * (a slow upload) must not look like a crashed worker, or two workers run
+   * the same job. The runner renews the lease while the handler runs.
+   */
+  it('is not reclaimed while its handler is still running', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348050000001');
+    await enqueue(ada, 'test.slow');
+
+    let reclaimedMidRun: number | null = null;
+    let finished = false;
+    const runner = new JobRunner(workerDb, appDb, { idleMs: 10, stalledAfterMs: 150 });
+    runner.register('test.slow', async () => {
+      // Outlives the 150 ms stall window more than twice over.
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      reclaimedMidRun = await jobsRepo.reclaimStalled(workerDb, 150);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      finished = true;
+    });
+
+    expect(await runner.runOnce()).toBe(true);
+    expect(finished).toBe(true);
+    expect(reclaimedMidRun).toBe(0);
+    expect((await jobsOf(ada))[0]).toMatchObject({ state: 'done', attempts: 1 });
+  });
+});
+
 describe('the registry the application actually ships', () => {
   it('handles the inbound-message kind', async () => {
     const runner = buildRunner(workerDb, appDb, deps);

@@ -128,43 +128,61 @@ export class JobRunner {
       return true;
     }
 
-    try {
-      /**
-       * The handler's writes and the job's completion are one transaction.
-       *
-       * Split into two, a worker that dies in between leaves a job that
-       * already did its work looking claimable — and the second run would
-       * issue a second document, send a second WhatsApp message, or post a
-       * second set of ledger entries. Committing them together makes "did this
-       * job run?" a question the database answers.
-       */
-      await withBusiness(this.appDb, job.businessId, async (tx) => {
-        await handler({
-          tx,
-          jobId: job.id,
-          businessId: job.businessId,
-          payload: job.payload,
-          attempt: job.attempts,
-          maxAttempts: job.maxAttempts,
+    /* Renew the lease while the handler runs, so a long-running job is not
+     * mistaken for one a crashed worker abandoned (G-10). A third of the
+     * stall window leaves room for two missed beats. */
+    const heartbeat = setInterval(
+      () => {
+        jobsRepo.touch(this.workerDb, job.id, this.workerId).catch((error: unknown) => {
+          this.log.warn(`job lease renewal failed: ${redactForLog(describeFailure(error))}`);
         });
-        await jobsRepo.markDone(tx, job.id);
-      });
-    } catch (error) {
-      if (error instanceof JobDeferred) {
-        // Stepping aside, not failing: back in the queue, attempt refunded.
-        await jobsRepo.deferClaimed(this.workerDb, job.id, error.delayMs);
-        return true;
+      },
+      Math.max(10, Math.floor(this.stalledAfterMs / 3)),
+    );
+    heartbeat.unref();
+    try {
+      try {
+        /**
+         * The handler's writes and the job's completion are one transaction.
+         *
+         * Split into two, a worker that dies in between leaves a job that
+         * already did its work looking claimable — and the second run would
+         * issue a second document, send a second WhatsApp message, or post a
+         * second set of ledger entries. Committing them together makes "did this
+         * job run?" a question the database answers.
+         */
+        await withBusiness(this.appDb, job.businessId, async (tx) => {
+          await handler({
+            tx,
+            jobId: job.id,
+            businessId: job.businessId,
+            payload: job.payload,
+            attempt: job.attempts,
+            maxAttempts: job.maxAttempts,
+          });
+          await jobsRepo.markDone(tx, job.id);
+        });
+      } catch (error) {
+        if (error instanceof JobDeferred) {
+          // Stepping aside, not failing: back in the queue, attempt refunded.
+          await jobsRepo.deferClaimed(this.workerDb, job.id, error.delayMs);
+          return true;
+        }
+        // The transaction above rolled back, so nothing the handler wrote
+        // survives. Recording the failure therefore has to happen on a
+        // connection that is still usable — the worker's.
+        const message = redactForLog(describeFailure(error));
+        const outcome = await jobsRepo.markFailed(this.workerDb, job, message);
+        if (outcome.state === 'dead') {
+          this.log.error(`job ${job.kind} exhausted ${job.maxAttempts} attempts: ${message}`);
+        } else {
+          this.log.warn(
+            `job ${job.kind} failed on attempt ${job.attempts}, will retry: ${message}`,
+          );
+        }
       }
-      // The transaction above rolled back, so nothing the handler wrote
-      // survives. Recording the failure therefore has to happen on a
-      // connection that is still usable — the worker's.
-      const message = redactForLog(describeFailure(error));
-      const outcome = await jobsRepo.markFailed(this.workerDb, job, message);
-      if (outcome.state === 'dead') {
-        this.log.error(`job ${job.kind} exhausted ${job.maxAttempts} attempts: ${message}`);
-      } else {
-        this.log.warn(`job ${job.kind} failed on attempt ${job.attempts}, will retry: ${message}`);
-      }
+    } finally {
+      clearInterval(heartbeat);
     }
     return true;
   }
