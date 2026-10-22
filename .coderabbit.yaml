@@ -2,15 +2,22 @@
 #
 # CodeRabbit review configuration for Rekoda.
 #
-# CodeRabbit is one automated reviewer among several (Codex, the independent
-# Claude review in CONTRIBUTING.md). It never replaces a required human
-# approval, and it never approves on its own (`request_changes_workflow: false`).
+# CodeRabbit is one automated reviewer among several (Codex, and the
+# independent Claude review in CONTRIBUTING.md). With the request-changes
+# workflow on, it requests changes when a review posts actionable inline
+# comments and approves a reviewed head once its threads are resolved and no
+# pre-merge check fails. That approval is an AI signal. It never replaces a
+# required human approval, an owner ruling or a branch protection, and nothing
+# merges just because CodeRabbit approved
+# (docs/REKODA_MVP_AUTOPILOT_PLAYBOOK.md).
 #
 # The instructions below point reviewers at rules that ALREADY exist in the
-# repository. They add no product rule of their own. Where they and a document
-# disagree, the document wins, in the order CLAUDE.md §2 gives:
-# REKODA_CANONICAL_SPEC.md, REKODA_CURRENT_STATE.md, REKODA_LAUNCH_READINESS.md,
-# REKODA_USER_JOURNEYS.md, REKODA_OWNER_DECISIONS.md, then the accepted ADRs.
+# repository. They add no product, pricing, tax or legal rule of their own.
+# Where they and a document disagree, the document wins, in the order CLAUDE.md
+# §2 gives: REKODA_CANONICAL_SPEC.md (APPROVED, FROZEN), REKODA_CURRENT_STATE.md,
+# REKODA_LAUNCH_READINESS.md, REKODA_USER_JOURNEYS.md, REKODA_OWNER_DECISIONS.md
+# (the newest OWN-* ruling wins until the spec absorbs it), then the accepted
+# ADRs in docs/adr/.
 language: en-GB
 tone_instructions: >-
   Be direct and specific. Cite the file and line, the failure scenario, and the Rekoda rule or
@@ -19,10 +26,19 @@ inheritance: false
 
 reviews:
   profile: assertive
-  # Never auto-approve: a human approval stays the merge requirement.
-  request_changes_workflow: false
+  # Request changes on actionable findings; approve a reviewed head once they are resolved.
+  request_changes_workflow: true
+  # The PR author (the autopilot posts as the repository owner's account) cannot
+  # override CodeRabbit with `@coderabbitai approve` or `resolve` on their own PR.
+  allow_author_approval: false
   high_level_summary: true
   review_status: true
+  review_info: true
+  # Review progress is published as a GitHub check run. A review ERROR (outage,
+  # rate limit) does not fail it: the check is not a required status, and an
+  # unavailable bot must never deadlock a merge. Its blocking signal is the
+  # request-changes review, which CodeRabbit clears itself and an admin can dismiss.
+  review_progress: true
   commit_status: true
   fail_commit_status: false
   poem: false
@@ -34,129 +50,195 @@ reviews:
     auto_incremental_review: true
     auto_pause_after_reviewed_commits: 0
     drafts: false
-    # `main` is the default branch, which is always reviewed; this names it
-    # explicitly so the target is not left to the default.
+    # `main` is the default branch and is always reviewed; named explicitly.
     base_branches:
       - '^main$'
+  # Only build output is excluded. Migrations, their journal and snapshots,
+  # and the lockfile are all reviewed (the lockfile with the narrow
+  # supply-chain instruction below).
   path_filters:
     - '!**/dist/**'
     - '!**/node_modules/**'
     - '!**/.next/**'
-    - '!packages/db/migrations/meta/*_snapshot.json'
-    - '!pnpm-lock.yaml'
+    - '!**/.turbo/**'
+    - '!**/coverage/**'
+  pre_merge_checks:
+    title:
+      mode: warning
+      requirements: 'A Conventional Commit title: feat:, fix:, docs:, chore:, test:, refactor:, perf: or ci:, with an optional scope.'
+    custom_checks:
+      - name: Applied migrations are never edited
+        mode: error
+        instructions: |
+          Fail if the PR modifies, renames or deletes any file matching packages/db/migrations/[0-9][0-9][0-9][0-9]_*.sql
+          that already exists on the base branch. Pass if the PR only ADDS new migration files, or touches no
+          migration. A new migration must be the next number in sequence and must add its entry to
+          packages/db/migrations/meta/_journal.json; fail if a new .sql migration is added without a matching
+          journal entry. This is the repository's existing rule (append-only migrations); it adds nothing new.
+      - name: A bug fix lands with a regression test
+        mode: error
+        instructions: |
+          Applies only when the PR title starts with "fix:" or "fix(". Fail if the PR adds or modifies no file
+          whose name ends in .test.ts, .test.tsx, .test.mjs, .integration.test.ts or .spec.ts. Pass otherwise,
+          and pass for any title that does not start with "fix". This is CLAUDE.md invariant 11 ("Every bug fix
+          lands with a regression test that fails before the fix").
+      - name: No test is skipped or disabled
+        mode: error
+        instructions: |
+          Fail if the diff ADDS any of: it.skip(, describe.skip(, test.skip(, it.only(, describe.only(,
+          test.only(, xit(, xdescribe(, a `continue-on-error: true` on a test step in .github/workflows, or
+          removes a test file without a replacement that covers the same behaviour. Pass otherwise. This is
+          CLAUDE.md invariant 11 ("Never skip, disable or quarantine a failing test to get green").
   path_instructions:
     - path: '**/*'
       instructions: |
-        Rekoda's binding rules are CLAUDE.md §4 (the twelve invariants), docs/REKODA_CANONICAL_SPEC.md,
-        docs/REKODA_OWNER_DECISIONS.md (owner rulings; a later ruling wins until the spec absorbs it),
-        the accepted ADRs in docs/adr/ (check each Status line; superseded ADRs are history) and
-        docs/safety-review.md (the RED list). Judge the change against those. Do not invent product
-        behaviour: if the documents do not decide a question, say so and ask, rather than suggesting a rule.
-        Every bug fix must land with a regression test that fails before the fix (invariant 11); flag a fix
-        without one, and flag any skipped, disabled or weakened test.
+        Rekoda's binding rules are the twelve invariants in CLAUDE.md §4, docs/REKODA_CANONICAL_SPEC.md
+        (v1.6.6, APPROVED, FROZEN), the latest rulings in docs/REKODA_OWNER_DECISIONS.md, the accepted
+        ADRs in docs/adr/ (check each Status line; superseded ADRs are history) and the RED list in
+        docs/safety-review.md. Judge the change against those. Do not invent product, pricing, tax or legal
+        behaviour: VAT and tax scope is OWN-30 (a scope decision, not a legal exemption). If the documents
+        do not decide a question, say so and ask, rather than suggesting a rule.
+        Every bug fix lands with a regression test that fails before the fix (invariant 11).
+        Status claims in docs must stay distinct: CODE COMPLETE, MERGED, DEPLOYED TO STAGING, STAGING ACCEPTED
+        and LIVE PROVIDER VERIFIED are different states; flag a doc that collapses them.
 
-    - path: '{packages/core/src/{ledger,chart,money,periods,statements,recognition,costing,payments,reconciliation,bank-matching,purchase-identity}.ts,packages/db/src/repos/{journal,accounts,close,opening,reports,spend,purchase-identity,payments,stock}.ts,apps/api/src/{commands,spend,reports}/**}'
+    - path: '{packages/core/src/{ledger,chart,money,periods,statements,recognition,costing,payments,reconciliation,bank-matching,purchase-identity,billing,allowances}.ts,packages/db/src/repos/{journal,accounts,close,opening,reports,spend,purchase-identity,payments-hub,settle,settlements,merchant-overpayment,stock,stocktake,orders,subscriptions,usage}.ts,apps/api/src/{commands,spend,reports,payments,bank,billing}/**}'
       instructions: |
         Financial integrity (CLAUDE.md invariants 1, 2, 6, 7; spec §9 and §11).
         - Money is integer kobo end to end; flag any float, parseFloat, Number division or rounding on a
           financial value outside packages/core/src/money.ts.
-        - Ledger postings must balance or throw; posted truth is immutable and is corrected only by
-          reversing postings, credit notes or compensating events. Flag any UPDATE or DELETE of posted
-          ledger rows or a silently absorbed discrepancy.
-        - One real-world event must produce exactly one financial truth. Look for paths that can write a
-          second expense, payment, receipt, invoice or journal for one event: retries, double taps, two
-          members, two connections. The purchase-identity rules are OWN-21 as revised by OWN-31 (G-87)
-          and OWN-32 (G-92(5)) in docs/REKODA_OWNER_DECISIONS.md.
-        - Every double-clickable write carries a client idempotency key; a replay must change truth exactly
+        - Ledger postings balance or throw. Posted truth is immutable: corrections are reversing postings,
+          credit notes, voids or compensating events, never an UPDATE or DELETE of a posted row. A posting
+          into a closed accounting period must be refused truthfully, never a 500 (G-98).
+        - One real-world event must produce exactly one financial truth. Look for paths that write a second
+          expense, payment, receipt, invoice or journal for one event: retries, double taps, two members, two
+          connections. Purchase and expense identity follows OWN-21 as revised by OWN-31 (G-87) and OWN-32
+          (G-92(5)).
+        - Every double-clickable write carries a client idempotency key and a replay changes truth exactly
           once. Counts come from SQL, never rows.length.
         - No AI-produced number is authoritative: every figure in a reply or a posting is computed by
           @rekoda/core from validated input.
 
-    - path: '{apps/api/src/payments/**,apps/api/src/bank/**,packages/core/src/{payments,reconciliation,bank-matching}.ts}'
+    - path: '{apps/api/src/payments/**,apps/api/src/bank/**,apps/api/src/jobs/process-payment-event.handler.ts,packages/core/src/{payments,reconciliation,bank-matching}.ts}'
       instructions: |
-        Paystack and bank paths (CLAUDE.md invariants 5, 8, 10; ADR 0016; G-05/G-06 in
+        Paystack and bank paths (CLAUDE.md invariants 5, 8, 10; ADR 0003, 0014, 0016, 0019; G-05 and G-06 in
         docs/REKODA_LAUNCH_READINESS.md).
         - Webhooks: verify the signature over the RAW body, then idempotency, then process, in that order,
-          every time. A missing signature secret must reject every webhook. Flag any parse-before-verify.
+          every time. A missing signature secret rejects every webhook. Flag any parse-before-verify.
         - Payment truth comes from server-side verification with the provider, never from the client, a
-          redirect, or a screenshot (the RED list in docs/safety-review.md). Rekoda never holds, routes or
-          delays funds and never KYCs a merchant's customer.
-        - Refunds, reversals and disputes follow the existing event mapping (OD-9 / G-06); flag an
-          over-refund, an under-refund, or a refund that can be applied twice.
-        - Reconciliation must never silently absorb a difference between what should have happened and what
-          the provider or bank reports.
+          redirect or a screenshot (docs/safety-review.md). Rekoda never holds, routes or delays funds and
+          never KYCs a merchant's customer.
+        - Refunds, reversals and disputes follow the existing event mapping (OD-9, G-06): flag an over-refund,
+          an under-refund, or one that can apply twice.
+        - Reconciliation never silently absorbs a difference between expected and reported money.
+        - Provider fees come from the cost schedules (provider_cost_schedules is append-only, G-22).
 
-    - path: '{apps/api/src/billing/**,packages/core/src/{billing,allowances,entitlements,gates}.ts,packages/db/src/repos/{subscriptions,billing,usage}.ts,apps/web/src/app/app/billing/**}'
+    - path: '{apps/api/src/billing/**,apps/api/src/jobs/process-billing-charge.handler.ts,packages/core/src/{billing,allowances,entitlements,gates}.ts,packages/db/src/repos/{subscriptions,billing,usage}.ts,apps/web/src/app/app/billing/**}'
       instructions: |
-        Subscriptions, renewals and entitlements (ADR 0024; spec §30; owner rulings OWN-26 to OWN-33,
-        including OWN-27 the 14-day trial, OWN-29 stale charges and OWN-33 non-standard cycles).
-        - A plan moves only after valid provider settlement or an authorised operator action; every
+        Subscriptions, renewals and entitlements (ADR 0024; spec §30; owner rulings OWN-26 to OWN-33, among
+        them OWN-27 the 14-day trial, OWN-29 stale charges, OWN-33 no automatic proration of non-standard
+        cycles).
+        - A plan moves only after valid provider settlement or an authorised operator action, and every
           subscription state write goes through the one writer (writeSubscriptionState, G-62).
-        - Look for double grants of a pack or plan, units consumed twice, a charge applied after a newer
+        - Look for a double grant of a pack or plan, units consumed twice, a charge applied after a newer
           subscription decision (G-104), and renewal or proration arithmetic outside @rekoda/core.
-        - Rekoda's own subscription money must never enter a merchant's books.
-        - Copy must tell the truth: never "payment failed" when no payment was attempted; never imply that
-          records were deleted when they remain readable; no internal terms (entitlement, quota counter).
+        - Rekoda's own subscription money never enters a merchant's books.
+        - Copy tells the truth: never "payment failed" when no payment was attempted; never imply records
+          were deleted when they remain readable; no internal terms (entitlement, quota counter).
 
-    - path: '{apps/api/src/auth/**,apps/api/src/privacy/**,apps/api/src/api/**,apps/web/src/server/**,packages/core/src/{privacy,vault,retention}.ts,packages/db/src/client.ts}'
+    - path: '{apps/api/src/auth/**,apps/api/src/privacy/**,apps/api/src/api/**,apps/web/src/server/**,packages/core/src/{privacy,vault,retention,api-keys}.ts,packages/db/src/client.ts,packages/db/src/repos/identity.ts}'
       instructions: |
-        Tenant isolation, roles and PII (CLAUDE.md invariants 3, 4, 9).
+        Tenant isolation, roles and PII (CLAUDE.md invariants 3, 4, 9; ADR 0005, 0020, 0021, 0034).
         - Tenant data is reached only through withBusiness() and is scoped by businessId in code AND by
           Postgres RLS. Flag a query on business-owned data outside withBusiness(), or a worker-role read
           beyond claiming a job.
-        - Roles: owner, accountant, delegate and view-only members are enforced server-side, including on
-          the command bus (G-99); a forbidden action must never execute. Operator access is OIDC.
-        - Customer PII lives in the vault and travels as tokens; rehydration happens only in the
-          authorised output layer. Never log a message body, a customer or supplier name, a phone number,
-          or a token-to-identity mapping. Secrets never enter source, fixtures or logs.
+        - Roles are enforced server-side, the command bus included (G-99): a forbidden action never
+          executes. Operator access is OIDC identities, never a shared secret (ADR 0034).
+        - Customer PII lives in the vault and travels as tokens; rehydration happens only in the authorised
+          output layer. Never log a message body, a customer or supplier name, a phone number or a
+          token-to-identity mapping.
+        - Erasure is the two-ask flow with its retention rules (G-15, docs/runbooks/data-erasure.md): flag an
+          erasure that deletes posted financial truth, or one that misses vaulted copies.
 
-    - path: '{packages/db/migrations/**,packages/db/src/schema/**,packages/db/src/repos/**}'
+    - path: '{packages/db/migrations/**,packages/db/src/schema/**,packages/db/src/repos/**,packages/db/src/migrate.ts}'
       instructions: |
         PostgreSQL migrations, transactions and concurrent writes.
         - Migrations are append-only: never edit an applied migration; add the next number and its
-          meta/_journal.json entry. A business-owned table needs RLS and a tenant policy, or a written
-          entry in the exemption register enforced by packages/db/src/rls-invariants.integration.test.ts.
-        - Composite tenant foreign keys follow the 0132 to 0147 pattern.
+          meta/_journal.json entry. A new business-owned table needs RLS and a tenant policy, or an entry in
+          the exemption register enforced by packages/db/src/rls-invariants.integration.test.ts. Composite
+          tenant foreign keys follow the 0132 to 0147 pattern.
+        - A migration must be safe to apply before the new code serves traffic: no destructive change that
+          the running release still reads.
         - Concurrent writes: a check-then-write needs a lock, a conditional UPDATE ... WHERE state = ..., or
-          a unique constraint. Flag read-then-insert races, isolation assumptions, and timestamps compared
-          across the application and database clocks.
+          a unique constraint. Flag read-then-insert races and timestamps compared across the application and
+          database clocks.
         - postgres-js cannot bind a JS Date or an array into raw SQL; cast explicitly.
 
     - path: '{apps/api/src/ai/**,apps/api/src/jobs/inbound-message.handler.ts,apps/api/src/channels/**,apps/api/src/replies/**,packages/core/src/{router,assistant,ai-cost,gates,continuation,replies,messaging}.ts,packages/contracts/src/business-command.ts}'
       instructions: |
         Chat routing, AI safety and confirmation (CLAUDE.md invariants 2 and 4; conversation gates CG1 to
-        CG3 and CG5 in the spec; ADR 0032 for media).
-        - AI proposes, deterministic code disposes: the model returns a structured command validated by
-          zod; nothing posts until the merchant confirms the exact preview by database ordinal.
-        - PII is tokenised before any model call. Flag any raw name, phone or message body reaching a model,
-          a log or a trace span.
+        CG3 and CG5; ADR 0031, 0032).
+        - AI proposes, deterministic code disposes: the model returns a structured command validated by zod,
+          and nothing posts until the merchant confirms the exact preview by database ordinal.
+        - PII is tokenised before any model call. Flag a raw name, phone or message body reaching a model, a
+          log or a trace span.
         - Look for a yes that could confirm a different or stale preview, an expired draft that can still
           execute (G-23), words read off a photo treated as a command (G-78), and replies that state a figure
           the deterministic layer did not compute.
-        - WhatsApp: STOP/START, the 24-hour window and Meta template rules must hold.
+        - WhatsApp: verify the Meta signature first; STOP/START, the 24-hour window and template rules hold.
 
-    - path: '{apps/web/src/app/s/**,apps/web/src/app/app/**,apps/web/src/server/**,apps/web/src/middleware.ts,apps/web/next.config.*}'
+    - path: '{apps/web/src/app/s/**,apps/web/src/app/app/**,apps/web/src/server/**,apps/web/next.config.*}'
       instructions: |
         Next.js dashboard and hosted storefront /s/[slug].
-        - Server actions and route handlers must authenticate and authorise on the server; never trust a
+        - Server actions and route handlers authenticate and authorise on the server; never trust a
           client-supplied businessId, price, total or quantity. Checkout totals come from the API.
         - Storefront: simultaneous submits, last-unit stock races and metering are settled on the server
-          (G-53, G-96); a race must end in a controlled customer response, never a 500 or a double order.
+          (G-53, G-96); a race ends in a controlled customer response, never a 500 or a double order.
         - Keep the CSP and security headers; flag new inline scripts or external origins.
-        - UI claims follow docs/REKODA_DESIGN_SYSTEM.md: a screen may not claim what the data does not show.
+        - UI claims follow docs/REKODA_DESIGN_SYSTEM.md: a screen never claims what the data does not show.
 
-    - path: '{apps/api/src/jobs/**,apps/api/src/commands/outbox-dispatcher.ts,apps/api/src/health/**,Dockerfile,docker-compose.prod.yml,deploy/**,.github/workflows/**,packages/db/src/migrate*.ts}'
+    - path: '{apps/api/src/jobs/**,apps/api/src/commands/outbox-dispatcher.ts,apps/api/src/webhooks/**,packages/db/src/repos/{webhooks,outbox,jobs}.ts,apps/api/src/health/**}'
       instructions: |
-        Background jobs, retries, deployment and rollback (ADR 0022; G-01, G-02, G-10, G-18 in
-        docs/REKODA_LAUNCH_READINESS.md; docs/runbooks/).
-        - A job may run twice: its effect must be idempotent, and a crash between steps must not send,
-          bill or post twice. Look for send-before-claim and missing backoff.
-        - A bad config value must refuse to boot; a missing provider key must degrade honestly (invariant 8).
-        - Deployment changes must keep the image non-root, keep secrets out of layers, and leave a path to
-          roll back; a migration must be safe to run before the new code serves traffic.
-        - CI must never be weakened: no skipped checks, no continue-on-error on a test step, no secret in a
-          workflow file.
+        Background jobs, the outbox, retries and outbound webhooks (ADR 0022; G-10, G-18, G-36, G-39).
+        - A job may run twice: its effect must be idempotent, and a crash between steps must not send, bill
+          or post twice. Look for send-before-claim (G-36).
+        - The outbox: a transiently failing event must back off rather than die (G-18), and a dispatched
+          event is never re-delivered as new.
+        - Outbound public-API webhooks (apps/api/src/webhooks/): each delivery is signed, retried with a
+          bound, and carries no PII beyond what the contract in packages/contracts/src/webhooks-api.ts allows.
+        - Sweeps must tolerate restarts and overlapping runs.
 
+    - path: '{Dockerfile,docker-compose.prod.yml,docker-compose.dev.yml,deploy/**,scripts/**,.github/workflows/**,docs/runbooks/**}'
+      instructions: |
+        Deployment, backups and CI (G-01, G-02, G-08, G-09, G-43, G-76; ADR 0006, 0010;
+        docs/runbooks/deploy.md, backup-restore.md, key-rotation.md).
+        - Images stay non-root with no secret in a build argument or layer; a deploy keeps a path to roll back.
+        - Backups and restore: ADR 0010 (point-in-time recovery) is the target and G-02 tracks what is not built
+          yet. Flag a change that claims a backup or restore works without a tested restore, that writes a
+          backup unencrypted or to the same host, or that puts a backup credential in the repository.
+        - CI is never weakened: no skipped check, no continue-on-error on a test step, no secret in a workflow.
+        - The deploy guard (scripts/check-deploy.mjs) and the caddy allowlist (G-76) must not be bypassed.
+
+    - path: '{apps/api/src/config.ts,apps/api/src/main.ts,.env.example,packages/core/src/vault.ts,apps/api/src/payments/connections.service.ts,packages/db/src/schema/ops.ts}'
+      instructions: |
+        Configuration, secrets and encryption keys (CLAUDE.md invariants 8, 9; G-08, G-13, G-14;
+        docs/runbooks/key-rotation.md).
+        - Secrets are not interchangeable: REKODA_API_SECRET signs setup grants, VAULT_KEY seals, MATCH_KEY
+          derives match keys, CONNECTION_KEY wraps provider credentials, OTP_PEPPER peppers codes. Flag one
+          used for another's job, a key logged or returned, or a key with a default value.
+        - A bad config value refuses to boot; a missing provider key degrades the feature honestly.
+        - .env.example documents every variable the code reads (scripts/check-env-example.mjs).
+
+    - path: '{package.json,**/package.json,pnpm-lock.yaml,pnpm-workspace.yaml,.npmrc,.nvmrc}'
+      instructions: |
+        Dependencies and supply chain. Review ONLY for supply-chain risk, once per concern, never line by line:
+        - a new direct or transitive package, and why it is needed (the PR description should justify a new
+          dependency);
+        - a resolution or tarball URL outside registry.npmjs.org, a git or file dependency, or an integrity
+          hash that changes without a version change;
+        - a new install, preinstall or postinstall script, or a change to onlyBuiltDependencies;
+        - a major-version bump of a runtime dependency (NestJS, Next.js, drizzle, postgres, zod).
+        Do not comment on lockfile formatting or ordering. Lockfiles are regenerated with pnpm, never by hand.
   tools:
     gitleaks:
       enabled: true

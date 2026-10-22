@@ -574,6 +574,32 @@ Proceed.
 - **G-10:** sweeps must not starve indefinitely on restarts. Verify first-run behavior, durable last-execution markers, distributed leader/locks, catch-up after downtime, per-tenant sequencing and retention correctness. Avoid destructive catch-up storms; make it rate-limited and observable.
 - Monitor failed payments/webhooks, dead jobs, signature rejection, failed document deliveries, filesystem headroom, database and service health. Define minimal alert tests and operator response steps.
 
+## Automated review gate: CodeRabbit and Codex (repository note, 22 Oct 2026; owner-requested)
+
+_Recorded in the repository from the owner's instructions of 22 Oct 2026. It refines PHASE 9 steps 6 to 10 and does not weaken any rule above. `.coderabbit.yaml` holds the reviewer's configuration._
+
+How CodeRabbit behaves here (verified against its documentation and schema v2, 22 Oct 2026):
+
+- It reviews every PR to `main` automatically and again on every push (`auto_incremental_review`, never paused), with the `assertive` profile.
+- With `request_changes_workflow: true` it submits a **request-changes** review when a review posts actionable inline comments. It **approves** only when its latest review covers the current head, its required threads are resolved and no pre-merge check fails, and it re-checks the head immediately before approving. Approval stays pending while a review is missing, in progress, failed or rate-limited.
+- `allow_author_approval: false`: the PR author cannot override it with `@coderabbitai approve` or `@coderabbitai resolve`. The autopilot posts as the owner's account, so it can never self-approve through CodeRabbit.
+- Pre-merge checks in `error` mode hold its approval: applied migrations edited, a `fix:` PR with no test, a skipped or disabled test.
+- `fail_commit_status: false` and the CodeRabbit check are not required statuses. A CodeRabbit outage therefore never turns a check red or deadlocks a merge mechanically.
+- **Limitation:** `main` has no branch protection yet (G-09), so GitHub itself does not enforce CodeRabbit's change request or approval. This gate enforces it. An admin can always dismiss a stale bot review, so nothing here can deadlock permanently.
+- Whether a GitHub App's approval counts toward a required-approvals rule is not established here. It is never treated as one.
+
+For every PR, Claude:
+
+1. Opens a focused PR only after the local fast checks and the relevant tests pass.
+2. Waits for CodeRabbit's **completed** review of the **exact head SHA**: its review summary names the head, or its check run for that SHA is complete. A review of an earlier commit is not a review of this one.
+3. Obtains independent Codex review where configured. If Codex reports a usage limit, record `CODEX REVIEW PENDING — USAGE LIMIT` and request `@codex review` once per availability window, after the head is stable. Codex quota is never a merge dependency (OWN-26).
+4. Verifies every actionable finding against exact-head source. For a real defect: RED regression test, fix, GREEN, push, then reply on the thread with the fixing SHA and the test name, and resolve it. For a finding that does not hold: reply with the evidence and leave it to CodeRabbit (or the owner) to resolve. Never resolve an unfixed reproducible finding.
+5. After material fixes, lets the incremental review run. If CodeRabbit has not reviewed the new head within 30 minutes (paused, rate-limited), comments `@coderabbitai review` **once**. Never uses `@coderabbitai approve` or `@coderabbitai resolve` to clear a review.
+6. Confirms exact-head CI green, 0 unresolved actionable threads, no open CodeRabbit change request on the latest head, the Codex condition, a final independent Claude review with 0 BLOCKING and 0 IMPORTANT, and every required human approval and branch-protection rule.
+7. Merges only when the repository's rules and OWN-26 permit it. **A CodeRabbit approval is never a reason to merge on its own and never stands in for a required human approval**, an owner ruling or a financial policy decision.
+8. If CodeRabbit cannot complete a review of the head after the one re-request (outage, exhausted capacity), records `CODERABBIT REVIEW PENDING — UNAVAILABLE`. It does not merge a PR that touches money, auth, tenancy, privacy, migrations or deployment until CodeRabbit reviews it or the owner explicitly waives it for that PR, and moves to independent work meanwhile.
+9. Continues to the next approved launch task.
+
 ## Branch protection and CI/deploy flow (G-09, release gate)
 
 - Audit whether `main` branch protection/rulesets enforce PRs, review/required checks, stale approvals, restrict force-push and deletion, and signed/other required rules only if consistent with repo policy. **A local playbook saying “wait for review” is not a GitHub-enforced protection.**
