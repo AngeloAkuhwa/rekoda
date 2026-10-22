@@ -23,6 +23,10 @@ CONTAINER=""
 cleanup() { rm -rf "$WORK"; [ -z "$CONTAINER" ] || docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
+# The dump references the runtime roles in grants and policies; a scratch
+# server has none, so create them (no login, no privileges) before restoring.
+ROLES_SQL="DO \$\$ DECLARE r text; BEGIN FOREACH r IN ARRAY ARRAY['rekoda_owner','rekoda_app','rekoda_worker'] LOOP IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('CREATE ROLE %I NOLOGIN', r); END IF; END LOOP; END \$\$;"
+
 START=$(date +%s)
 OBJECT=$(backup_fetch_decrypt "${DRILL_OBJECT:-}" "$WORK/restore.dump")
 
@@ -33,7 +37,19 @@ if [ -n "${DRILL_DATABASE_URL:-}" ]; then
     *) backup_die "refusing DRILL_DATABASE_URL: database '$DB_NAME' is not named *drill* or *scratch*" ;;
   esac
   URL="$DRILL_DATABASE_URL"
-  psql "$URL" -v ON_ERROR_STOP=1 -qc 'DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;' >/dev/null
+  # The name check above reads the URL text; libpq may resolve a different
+  # database (dbname=, a keyword DSN, a URI with no path). So the database the
+  # server resolved is checked in the SAME session that drops the schema.
+  psql "$URL" -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL'
+DO $$ BEGIN
+  IF current_database() !~ '(drill|scratch)' THEN
+    RAISE EXCEPTION 'refusing to reset database %: not named *drill* or *scratch*', current_database();
+  END IF;
+END $$;
+DROP SCHEMA IF EXISTS public CASCADE;
+CREATE SCHEMA public;
+SQL
+  psql "$URL" -v ON_ERROR_STOP=1 -q -c "$ROLES_SQL" >/dev/null
   pg_restore --no-owner -d "$URL" "$WORK/restore.dump"
   PSQL=(psql "$URL" -v ON_ERROR_STOP=1 -At)
 else
@@ -44,6 +60,7 @@ else
     sleep 1
   done
   docker exec "$CONTAINER" pg_isready -h 127.0.0.1 -U postgres -d rekoda_drill >/dev/null || backup_die "scratch postgres did not start"
+  docker exec "$CONTAINER" psql -U postgres -d rekoda_drill -v ON_ERROR_STOP=1 -q -c "$ROLES_SQL" >/dev/null
   docker cp "$WORK/restore.dump" "$CONTAINER:/tmp/restore.dump"
   docker exec "$CONTAINER" pg_restore --no-owner -U postgres -d rekoda_drill /tmp/restore.dump
   PSQL=(docker exec -i "$CONTAINER" psql -U postgres -d rekoda_drill -v ON_ERROR_STOP=1 -At)

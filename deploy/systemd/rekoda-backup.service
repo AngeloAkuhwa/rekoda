@@ -4,6 +4,9 @@ After=docker.service
 
 [Service]
 Type=oneshot
+# A oneshot has no start timeout by default; a hung dump or upload would block every
+# later timer run. Size this to the largest expected backup.
+TimeoutStartSec=2h
 WorkingDirectory=/opt/rekoda
 # BACKUP_DEST, BACKUP_PASSPHRASE_FILE and (for R2/B2) BACKUP_S3_ENDPOINT plus the
 # AWS_* credentials live in this root-only file, never in the repository.

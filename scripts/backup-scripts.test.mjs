@@ -94,3 +94,27 @@ test('the drill refuses a database that is not named as scratch', () => {
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /refusing DRILL_DATABASE_URL/);
 });
+
+test('the passphrase length is the first line, which is all openssl reads', () => {
+  const t = env();
+  writeFileSync(t.pass, `short\n${'x'.repeat(60)}\n`);
+  assert.match(run('scripts/backup-db.sh', t.env).stderr, /at least 32 bytes/);
+  writeFileSync(t.pass, `${'x'.repeat(31)}\n`);
+  assert.match(run('scripts/backup-db.sh', t.env).stderr, /at least 32 bytes/);
+});
+
+test('a failed fetch leaves no temp copy of the encrypted dump behind', () => {
+  const t = env();
+  assert.equal(run('scripts/backup-db.sh', t.env).status, 0);
+  const obj = readdirSync(t.dest).find((f) => f.endsWith('.dump.enc'));
+  writeFileSync(join(t.dest, obj), 'tampered');
+  const tmp = mkdtempSync(join(tmpdir(), 'tmpd-'));
+  const sh = `. scripts/lib/backup-common.sh; backup_require_config; backup_fetch_decrypt '' "${tmp}/o"`;
+  const r = spawnSync('bash', ['-c', sh], { cwd: ROOT, env: { ...t.env, TMPDIR: tmp }, encoding: 'utf8' });
+  assert.notEqual(r.status, 0);
+  assert.deepEqual(readdirSync(tmp), [], 'temp files leaked on failure');
+});
+
+test('the service has a start timeout', () => {
+  assert.match(readFileSync(join(ROOT, 'deploy/systemd/rekoda-backup.service'), 'utf8'), /^TimeoutStartSec=/m);
+});

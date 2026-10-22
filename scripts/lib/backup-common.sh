@@ -11,7 +11,9 @@ backup_require_config() {
   [ -n "${BACKUP_DEST:-}" ] || backup_die "BACKUP_DEST is not set (a directory or s3://bucket/prefix)"
   [ -n "${BACKUP_PASSPHRASE_FILE:-}" ] || backup_die "BACKUP_PASSPHRASE_FILE is not set"
   [ -r "$BACKUP_PASSPHRASE_FILE" ] || backup_die "BACKUP_PASSPHRASE_FILE is not readable"
-  [ "$(wc -c <"$BACKUP_PASSPHRASE_FILE")" -ge 32 ] || backup_die "the passphrase must be at least 32 bytes"
+  # openssl reads only the first line of a -pass file, so measure that line.
+  [ "$(printf '%s' "$(head -n 1 "$BACKUP_PASSPHRASE_FILE" | tr -d '\r')" | wc -c)" -ge 32 ] \
+    || backup_die "the passphrase (first line of the file) must be at least 32 bytes"
   command -v openssl >/dev/null || backup_die "openssl is required"
   case "$BACKUP_DEST" in
     s3://*) command -v aws >/dev/null || backup_die "aws cli is required for an s3:// destination" ;;
@@ -55,14 +57,19 @@ backup_list() { # prints object names, oldest first
 # Fetch the newest object (or $1), check its checksum, decrypt to $2.
 # Prints the object name.
 backup_fetch_decrypt() { # [name] out-file
-  local name="${1:-}" out="$2" tmp
-  [ -n "$name" ] || name=$(backup_list | tail -n 1)
-  [ -n "$name" ] || backup_die "no backup found in $BACKUP_DEST"
-  tmp=$(mktemp -d); trap 'rm -rf "$tmp"' RETURN
-  backup_get "$name" "$tmp/obj" || backup_die "cannot fetch $name"
-  backup_get "$name.sha256" "$tmp/sum" || backup_die "cannot fetch the checksum of $name"
-  [ "$(backup_sha256 "$tmp/obj")" = "$(cut -d' ' -f1 "$tmp/sum")" ] || backup_die "checksum mismatch for $name"
-  backup_decrypt "$tmp/obj" "$out"
-  [ "$(head -c 5 "$out")" = "PGDMP" ] || backup_die "$name did not decrypt to a pg_dump custom archive"
-  echo "$name"
+  # A subshell with its own EXIT trap: the temp copy of the encrypted dump is
+  # removed on every path, including backup_die's exit, without touching the
+  # caller's traps.
+  (
+    local name="${1:-}" out="$2" tmp
+    tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+    [ -n "$name" ] || name=$(backup_list | tail -n 1)
+    [ -n "$name" ] || backup_die "no backup found in $BACKUP_DEST"
+    backup_get "$name" "$tmp/obj" || backup_die "cannot fetch $name"
+    backup_get "$name.sha256" "$tmp/sum" || backup_die "cannot fetch the checksum of $name"
+    [ "$(backup_sha256 "$tmp/obj")" = "$(cut -d' ' -f1 "$tmp/sum")" ] || backup_die "checksum mismatch for $name"
+    backup_decrypt "$tmp/obj" "$out"
+    [ "$(head -c 5 "$out")" = "PGDMP" ] || backup_die "$name did not decrypt to a pg_dump custom archive"
+    echo "$name"
+  )
 }

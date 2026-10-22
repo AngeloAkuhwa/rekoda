@@ -30,7 +30,8 @@ Corollary: **losing VAULT_KEY loses the vault.** The key custody procedure
 passphrase from `BACKUP_PASSPHRASE_FILE`), writes a `.sha256`, uploads to
 `BACKUP_DEST` (a mounted off-box directory or `s3://bucket/prefix`, with
 `BACKUP_S3_ENDPOINT` for R2/B2), reads it back and compares the checksum. Any
-failure is a non-zero exit, so the systemd unit failing is the alert.
+failure is a non-zero exit, so a failed systemd unit is the signal. No notifier consumes it yet
+(the alert work is G-12/G-20); until one does, check `systemctl status rekoda-backup` and the newest object's date weekly.
 `scripts/restore-drill.sh` fetches the newest object, verifies and decrypts it,
 restores into a scratch database (a throwaway container, or `DRILL_DATABASE_URL`
 whose name must contain `drill` or `scratch`) and exits non-zero unless every
@@ -103,4 +104,4 @@ against production. A green build is a passed drill.
 | Date                                                        | Dump                      | Duration | Result | Operator            |
 | ----------------------------------------------------------- | ------------------------- | -------- | ------ | ------------------- |
 | Continuous                                                  | CI, per push (§32-shaped) | ~6s      | PASS   | recovery-drill test |
-| _(first off-box drill due before first paying merchant)_ |                           |          |        |                     |
+| _(first off-box drill due before first paying merchant)_    |                           |          |        |                     |
