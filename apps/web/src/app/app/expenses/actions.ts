@@ -488,8 +488,22 @@ export interface PurchaseOrderFormState {
     options: { expenseId: string; text: string }[];
     expenseIds: string[];
     text: string;
+    /** What SAME and SEPARATE do, in words true for these matches (G-87). */
+    explain: string;
   };
 }
+
+const EXPLAIN_SAME_SEPARATE =
+  'Same purchase: the order is marked received and linked to the purchase you picked, and ' +
+  'nothing is recorded again. Separate purchase: the order is received as its own purchase.';
+
+/* G-87: SAME cannot link a stock order to a Chat EXPENSE (it put no stock on
+ * the shelf), so when any match is one the screen says what SAME does then. */
+const EXPLAIN_WITH_EXPENSE =
+  'Same purchase: if you pick a purchase, the order is marked received and linked to it, and ' +
+  'nothing is recorded again. If you pick one recorded as an expense, nothing is changed: cancel ' +
+  'this order instead of receiving it, so it is not recorded twice. Separate purchase: the order ' +
+  'is received as its own purchase.';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -522,11 +536,14 @@ function matchOptions(
     bookedAt: string;
     bookedBy: keyof typeof BOOKED_BY;
     billNumber: string | null;
+    kind: 'purchase' | 'expense';
   }[],
 ): { expenseId: string; text: string }[] {
   const texts = matches.map(
     (m) =>
-      `${BOOKED_BY[m.bookedBy]} recorded it on ${lagosMoment(m.bookedAt)}` +
+      `${BOOKED_BY[m.bookedBy]} recorded it` +
+      (m.kind === 'expense' ? ' as an expense' : '') +
+      ` on ${lagosMoment(m.bookedAt)}` +
       (m.billNumber ? `, bill ${m.billNumber}` : ''),
   );
   const alike = texts.some((t, i) => texts.indexOf(t) !== i);
@@ -642,6 +659,9 @@ async function receivePurchaseOrderActionUnguarded(
   }
   if (outcome.outcome === 'possible_duplicate') {
     const several = outcome.matches.length > 1;
+    const withExpense = outcome.matches.some((m) => m.kind === 'expense');
+    const allExpenses = outcome.matches.every((m) => m.kind === 'expense');
+    const what = allExpenses ? 'expenses' : withExpense ? 'purchases or expenses' : 'purchases';
     return {
       question: {
         poNumber: outcome.poNumber,
@@ -657,10 +677,11 @@ async function receivePurchaseOrderActionUnguarded(
           ...new Set([...outcome.matches.map((m) => m.expenseId), ...outcome.alreadySeparate]),
         ],
         text: several
-          ? `${outcome.matches.length} purchases of ${formatKobo(outcome.totalK)} are already recorded in Chat. ` +
+          ? `${outcome.matches.length} ${what} of ${formatKobo(outcome.totalK)} are already recorded in Chat. ` +
             `Is ${outcome.poNumber} one of them? Pick the one it is, or say it is a separate purchase.`
-          : `A ${formatKobo(outcome.totalK)} purchase is already recorded in Chat. ` +
+          : `A ${formatKobo(outcome.totalK)} ${withExpense ? 'expense' : 'purchase'} is already recorded in Chat. ` +
             `Is ${outcome.poNumber} that same purchase?`,
+        explain: withExpense ? EXPLAIN_WITH_EXPENSE : EXPLAIN_SAME_SEPARATE,
       },
     };
   }
@@ -682,6 +703,14 @@ async function receivePurchaseOrderActionUnguarded(
     revalidatePath('/app/expenses');
     return {
       error: `${outcome.poNumber} is already received against a different purchase. Nothing was changed. Check your purchases: if this order and the Chat purchase are the same, one of them may now be recorded twice.`,
+    };
+  }
+  if (outcome.outcome === 'same_as_expense') {
+    return {
+      error:
+        `That purchase was recorded in Chat as an expense, so ${outcome.poNumber} cannot be linked to it: ` +
+        'no stock was added for it. Nothing was changed. If it is the same purchase, cancel this order ' +
+        'instead of receiving it, so it is not recorded twice.',
     };
   }
   if (outcome.outcome === 'no_longer_matches') {

@@ -67,12 +67,14 @@ function cycleEnded(renewsAt: string): boolean {
 
 const PROBLEMS: Record<string, string> = {
   awaiting_platform_confirmation:
-    'Card payments are not switched on yet. Nothing was charged. Message *upgrade* on WhatsApp and we will move you across by hand.',
+    'Card payments are not switched on yet. Nothing was charged. Message upgrade on WhatsApp and we will move you across by hand.',
   not_available_on_plan: 'That pack is not part of your plan. Nothing was charged.',
   unknown_pack: 'That pack does not exist. Nothing was charged.',
   no_cycle: 'That change did not go through. Nothing was charged.',
   cycle_ended:
-    'Your paid period has ended, so there is nothing to upgrade yet. Nothing was charged. Message *upgrade* on WhatsApp and we will sort out your renewal with you.',
+    'Your paid period has ended, so there is nothing to upgrade yet. Nothing was charged. Message upgrade on WhatsApp and we will sort out your renewal with you.',
+  support_review:
+    'Your plan needs a quick check by our team, so we change it with you rather than automatically. Nothing was charged and nothing was changed. Message upgrade on WhatsApp and we will sort it out with you.',
   plan: 'That change did not go through. Nothing was charged.',
   pack: 'That purchase did not go through. Nothing was charged.',
   view_only:
@@ -126,15 +128,14 @@ export default async function BillingPage({
           {overview.status.daysLeft === 1
             ? ', one day from now.'
             : `, ${overview.status.daysLeft} days from now.`}{' '}
-          Message *upgrade* on WhatsApp and we will sort it out with you.
+          Message upgrade on WhatsApp and we will sort it out with you.
         </div>
       ) : null}
 
       {overview.status.state === 'expired' ? (
         <div className="rk-attention-strip" role="status">
           Your subscription stopped on {lagosDate(overview.status.since)}. Your books are still here
-          and you can still read and export everything. Message *upgrade* on WhatsApp to start
-          again.
+          and you can still read and export everything. Message upgrade on WhatsApp to start again.
         </div>
       ) : null}
 
@@ -294,7 +295,12 @@ export default async function BillingPage({
               </div>
             );
           })()}
-          {proposed.kind === 'downgrade' ? (
+          {proposed.supportReview ? (
+            <p>
+              Your plan needs a quick check by our team, so we make this change with you. Nothing is
+              charged or changed here. Message upgrade on WhatsApp and we will take it from there.
+            </p>
+          ) : proposed.kind === 'downgrade' ? (
             <p>
               Nothing to pay today. You keep {PLAN_NAMES[proposed.from] ?? proposed.from} until{' '}
               {lagosDate(proposed.renewsAt)}, and the new plan starts then.
@@ -304,7 +310,7 @@ export default async function BillingPage({
             cycleEnded(proposed.renewsAt) ? (
             <p>
               Your paid period ended on {lagosDate(proposed.renewsAt)}, so there is nothing to
-              upgrade yet. Message *upgrade* on WhatsApp and we will sort out your renewal with you.
+              upgrade yet. Message upgrade on WhatsApp and we will sort out your renewal with you.
             </p>
           ) : proposed.amountK === 0 ? (
             <p>Nothing to pay today. Your renewal date does not change.</p>
@@ -317,6 +323,7 @@ export default async function BillingPage({
             </p>
           )}
           {isOwner(identity.role) &&
+          !proposed.supportReview &&
           !(
             proposed.kind === 'upgrade' &&
             proposed.amountK === 0 &&
@@ -331,7 +338,7 @@ export default async function BillingPage({
                 Not now
               </a>
             </form>
-          ) : (
+          ) : proposed.supportReview ? null : (
             <p className="rk-fineprint">Plan changes are the owner&rsquo;s to confirm.</p>
           )}
         </div>
@@ -377,8 +384,9 @@ export default async function BillingPage({
             </ul>
           </div>
           <p className="rk-fineprint">
-            Moving up starts now and you pay only for the days left in this month. Moving down
-            starts at your next renewal, so you keep what you already paid for.
+            On a standard monthly plan, moving up starts now and you pay only for the days left in
+            this month. If your plan was set up for you by hand, we make the change with you
+            instead. Moving down starts at your next renewal, so you keep what you already paid for.
           </p>
         </div>
       )}

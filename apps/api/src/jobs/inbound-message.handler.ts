@@ -39,6 +39,8 @@ import {
   purchaseIdentityVerdict,
   purchaseMatches,
   purchaseTotalK,
+  spendKindOf,
+  spendTotalK,
   commandPurchaseReference,
   describePurchaseReference,
   ownerOf,
@@ -2569,7 +2571,7 @@ async function confirmPendingDraft(
   }
 
   if (command.intent === 'RecordExpense')
-    return confirmExpense(deps, tx, businessId, sender.from, draft.id, command);
+    return confirmExpense(deps, tx, businessId, draft.id, command, sender);
   if (command.intent === 'RecordPurchase')
     return confirmPurchase(deps, tx, businessId, draft.id, command, sender);
   if (command.intent === 'EraseData') {
@@ -2925,10 +2927,10 @@ async function confirmExpense(
   deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
-  /** The member who said yes, for the bus's role check (G-99). */
-  memberPhone: string,
   draftId: string,
   command: Record<string, unknown>,
+  /** The yes: who sent it (the bus's role check, G-99), and when (G-87). */
+  sender: { messageId: string; from: string; receivedAt: Date; outcome?: RebuildOutcome },
 ): Promise<Reply> {
   const gate = gateExpense(command as never);
   if (gate.gate !== 'CG2') return replies.arithmeticQuestion(gate.question);
@@ -2945,26 +2947,80 @@ async function confirmExpense(
   };
 
   /* The A1 rollout seam (spec §25): same work either way; the flag decides
-   * whether the bus's gates wrap the call. */
-  if (deps.config.commandRecordExpense) {
-    const run = await deps.commandBus.run(
-      tx,
-      {
-        businessId,
-        command: 'RecordExpense',
-        payload: input,
-        actor: 'system',
-        ingress: 'CHAT',
-        memberPhone,
-        idempotencyKey: `draft:${draftId}`,
-      },
-      () => recordExpenseWork(tx, input),
-    );
-    if (run.outcome !== 'done') return replies.notYet('Recording that expense');
-  } else {
-    await recordExpenseWork(tx, input);
+   * whether the bus's gates wrap the call. Inside a SAVEPOINT (G-87): the
+   * expense work refuses an expense that may be a stock purchase booked
+   * since this preview was shown, before its posting, and the savepoint
+   * takes back whatever the attempt wrote, as for a purchase (G-81). */
+  let done: boolean;
+  try {
+    done = await tx.transaction(async (sp) => {
+      if (deps.config.commandRecordExpense) {
+        const run = await deps.commandBus.run(
+          sp,
+          {
+            businessId,
+            command: 'RecordExpense',
+            payload: input,
+            actor: 'system',
+            ingress: 'CHAT',
+            memberPhone: sender.from,
+            idempotencyKey: `draft:${draftId}`,
+          },
+          () => recordExpenseWork(sp, input),
+        );
+        return run.outcome === 'done';
+      }
+      await recordExpenseWork(sp, input);
+      return true;
+    });
+  } catch (error) {
+    if (!(error instanceof PurchaseIdentityCollision)) throw error;
+    return askAtRefusedYes(tx, businessId, draftId, error, sender, 'expense');
   }
+  if (!done) return replies.notYet('Recording that expense');
   return replies.expenseSaved(gate.amountK, description);
+}
+
+/**
+ * A yes the spend work refused (G-81, G-87): a record of the same total
+ * that nothing proves separate was booked since the preview was shown. The
+ * claim this yes made is turned into a held question in the same
+ * transaction, so it never stands for something that was not booked, and
+ * the member who said yes is asked "same or separate".
+ */
+async function askAtRefusedYes(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  error: PurchaseIdentityCollision,
+  sender: { messageId: string; from: string; receivedAt: Date; outcome?: RebuildOutcome },
+  asking: 'purchase' | 'expense',
+): Promise<Reply> {
+  /* Asked now, on the database clock, naming the booking it matched. */
+  const refused = await conversationsRepo.holdRefusedPurchase(tx, businessId, draftId, [
+    error.match.self,
+  ]);
+  /* Remembered, so a question that never reaches the merchant puts the
+   * preview back as it was (fresh review of #262): the next yes is refused
+   * and asked again, never answered by an older preview behind it. */
+  if (sender.outcome && refused) {
+    sender.outcome.refusedHeld = { draftId, previousExpiresAt: refused.previousExpiresAt };
+  }
+  const actorId = await actorOf(tx, businessId, sender.from);
+  if (actorId) {
+    const held = await conversationsRepo.heldPurchaseDraft(tx, businessId, draftId);
+    await continuationsRepo.openContinuation(tx, {
+      businessId,
+      userId: actorId,
+      sourceMessageId: sender.messageId,
+      state: { kind: 'clarification', expects: 'purchase_identity', draftId },
+      ...(held ? { expiresAt: held.expiresAt } : {}),
+    });
+  }
+  return replies.purchaseIdentityAtYes(
+    identitySubject(error.match, actorId, asking),
+    sender.receivedAt,
+  );
 }
 
 /**
@@ -3045,31 +3101,7 @@ async function confirmPurchase(
     });
   } catch (error) {
     if (!(error instanceof PurchaseIdentityCollision)) throw error;
-    /* The claim this yes made is turned into a held question in the same
-     * transaction, so it never stands for a purchase that was not booked,
-     * and the member who said yes is asked "same or separate". */
-    /* Asked now, on the database clock, naming the booking it matched. */
-    const refused = await conversationsRepo.holdRefusedPurchase(tx, businessId, draftId, [
-      error.match.self,
-    ]);
-    /* Remembered, so a question that never reaches the merchant puts the
-     * preview back as it was (fresh review of #262): the next yes is refused
-     * and asked again, never answered by an older preview behind it. */
-    if (sender.outcome && refused) {
-      sender.outcome.refusedHeld = { draftId, previousExpiresAt: refused.previousExpiresAt };
-    }
-    const actorId = await actorOf(tx, businessId, sender.from);
-    if (actorId) {
-      const held = await conversationsRepo.heldPurchaseDraft(tx, businessId, draftId);
-      await continuationsRepo.openContinuation(tx, {
-        businessId,
-        userId: actorId,
-        sourceMessageId: sender.messageId,
-        state: { kind: 'clarification', expects: 'purchase_identity', draftId },
-        ...(held ? { expiresAt: held.expiresAt } : {}),
-      });
-    }
-    return replies.purchaseIdentityAtYes(identitySubject(error.match, actorId), sender.receivedAt);
+    return askAtRefusedYes(tx, businessId, draftId, error, sender, 'purchase');
   }
   if (!recorded) return replies.notYet('Recording that purchase');
 
@@ -3356,7 +3388,7 @@ async function answerFundingSource(
     shown = replies.purchaseIdentityQuestion(
       identitySubject(identity.ask, actorId),
       message.receivedAt,
-      { named: identity.asked.length },
+      { named: identity.asked.length, kinds: identity.asked.map((r) => r.kind ?? 'purchase') },
     );
     if (draft.isNew) {
       await conversationsRepo.nameHeldRecords(
@@ -3396,9 +3428,9 @@ async function answerFundingSource(
  * booked (G-81, OD-23)? The facts are read from SQL and decided in core
  * (`purchaseMatches`): the same total (integer kobo), a waiting preview or
  * a purchase booked in the last 24 hours, and nothing that PROVES them
- * separate (a different stated supplier reference, or two different
- * catalogue-linked products: owner ruling D3). Suppliers, quantity, raw
- * names and wording are never proof. Read-only; the caller decides what to
+ * separate (two different catalogue-linked products: owner ruling D3).
+ * Suppliers, quantity, raw names, wording and, since OWN-32 (G-92(5)),
+ * document references are never proof. Read-only; the caller decides what to
  * write. Null for a command that is not a readable purchase.
  *
  * Records are read by message ORDER, never by mixing the webhook's clock
@@ -3428,13 +3460,19 @@ async function purchaseIdentityCheck(
   inheritFrom: string | null;
   /** The sender's own drafts of this total whose preview never reached
    * them: replaced silently when this one is previewed (Codex review of
-   * 5bfe87e). */
+   * 5bfe87e). Purchases only. */
   unseen: readonly string[];
+  /** What the spend being checked is (G-87). */
+  kind: 'purchase' | 'expense';
 } | null> {
-  const amountK = purchaseTotalK(input.stored);
-  if (amountK === null) return null;
+  /* A stock purchase or an expense (G-87): compared across the two kinds,
+   * never expense with expense (core). */
+  const kind = spendKindOf(input.stored);
+  const amountK = spendTotalK(input.stored);
+  if (kind === null || amountK === null) return null;
   let facts = await purchaseIdentityRepo.newPurchaseFacts(tx, businessId, {
     messageId: input.messageId,
+    kind,
     amountK,
     /* Only the product that will actually arrive (Codex review of 7f173b6):
      * with no usable quantity nothing is delivered, so there is no product
@@ -3450,6 +3488,7 @@ async function purchaseIdentityCheck(
     asOf: input.receivedAt,
     excludeDraftId: input.excludeDraftId ?? null,
     messageId: input.messageId,
+    withExpenses: true,
   });
   /* Ordered by message, so no upper bound by clock (fresh review of #262). */
   const window = {
@@ -3459,6 +3498,7 @@ async function purchaseIdentityCheck(
   let verdict = purchaseIdentityVerdict(
     purchaseMatches(facts, records, input.receivedAt, window),
     input.actorId,
+    kind,
   );
   let inheritFrom: string | null = null;
   if (!input.separateFrom) {
@@ -3473,38 +3513,47 @@ async function purchaseIdentityCheck(
       verdict = purchaseIdentityVerdict(
         purchaseMatches(facts, records, input.receivedAt, window),
         input.actorId,
+        kind,
       );
     }
   }
   /* The sender's own undelivered drafts are compared exactly as any other
-   * record (references, products, a "separate" answer's line), and one is
+   * record (trusted products, a "separate" answer's line), and one is
    * replaced only when it is the SINGLE own draft that may be this purchase
    * and no waiting preview of theirs is being replaced already: two or more
-   * coexist only because something proved them separate (final-head review
-   * of ffb5404). Otherwise they are left as they are, and the purchase work
+   * coexist only because something set them apart, or were left from before
+   * OWN-32 (final-head review of ffb5404). Otherwise they are left as they are, and the purchase work
    * at the yes still refuses a second booking. */
-  const unseenRecords = input.actorId
-    ? await purchaseIdentityRepo.unseenOwnPurchaseDrafts(tx, businessId, amountK, {
-        actorId: input.actorId,
-        asOf: input.receivedAt,
-        messageId: input.messageId,
-        excludeDraftId: input.excludeDraftId ?? null,
-      })
-    : [];
+  const unseenRecords =
+    input.actorId && kind === 'purchase'
+      ? await purchaseIdentityRepo.unseenOwnPurchaseDrafts(tx, businessId, amountK, {
+          actorId: input.actorId,
+          asOf: input.receivedAt,
+          messageId: input.messageId,
+          excludeDraftId: input.excludeDraftId ?? null,
+        })
+      : [];
   const unseenMatches = purchaseMatches(facts, unseenRecords, input.receivedAt, window);
   const unseen =
     unseenMatches.length === 1 && verdict.replace.length === 0 ? [unseenMatches[0]!.id] : [];
-  return { ...verdict, inheritFrom, unseen };
+  return { ...verdict, inheritFrom, unseen, kind };
 }
 
 /** What the merchant is told about a matching record: never a name. */
-function identitySubject(record: PurchaseRecord, actorId: string | null) {
+function identitySubject(
+  record: PurchaseRecord,
+  actorId: string | null,
+  /** What the spend being asked about is (G-87). */
+  asking: 'purchase' | 'expense' = 'purchase',
+) {
   return {
     state: record.state,
     amountK: record.amountK,
     owner: ownerOf(record, actorId),
     bookedAt: record.bookedAt,
     billNumber: record.billNumber,
+    kind: record.kind ?? 'purchase',
+    asking,
   } as const;
 }
 
@@ -3644,7 +3693,10 @@ async function reaskPurchaseIdentity(
       expiresAt: held.expiresAt,
     });
   }
-  return replies.purchaseIdentityReask(options);
+  return replies.purchaseIdentityReask({
+    ...options,
+    kind: spendKindOf(held.command) ?? 'purchase',
+  });
 }
 
 /**
@@ -3692,7 +3744,9 @@ async function answerPurchaseIdentity(
     return identityClosedReply(tx, businessId);
   }
   const command = held.command as Record<string, unknown>;
-  const amountK = purchaseTotalK(command);
+  /* A held stock purchase or a held expense (G-87). */
+  const kind = spendKindOf(command) ?? 'purchase';
+  const amountK = spendTotalK(command);
 
   if (answer === 'same') {
     if (
@@ -3717,6 +3771,7 @@ async function answerPurchaseIdentity(
     const { records } = await purchaseIdentityRepo.purchaseRecords(tx, businessId, amountK, {
       asOf: message.receivedAt,
       excludeDraftId: heldId,
+      withExpenses: true,
     });
     const named = [
       ...held.askedAbout.draftIds.map((draftId) => ({ draftId, expenseId: null })),
@@ -3727,7 +3782,7 @@ async function answerPurchaseIdentity(
     /* "same" writes nothing, so it is answered on every plan (G-65); without
      * Chat its copy invites neither a yes nor a resend that would be refused. */
     return replies.samePurchase(
-      pointed ? identitySubject(pointed, actorId) : null,
+      pointed ? identitySubject(pointed, actorId, kind) : null,
       message.receivedAt,
       {
         withoutChat: (await withoutChat(tx, businessId)) !== null,
@@ -3744,7 +3799,7 @@ async function answerPurchaseIdentity(
   }
   /* The read-only gates (role, plan, Chat) ran in the caller BEFORE the
    * question was claimed, so a refusal leaves it open. */
-  const gate = gatePurchase(command as never);
+  const gate = kind === 'expense' ? gateExpense(command as never) : gatePurchase(command as never);
   if (gate.gate !== 'CG2') return replies.arithmeticQuestion(gate.question);
 
   const verdict = await purchaseIdentityCheck(tx, businessId, {
@@ -3776,9 +3831,13 @@ async function answerPurchaseIdentity(
       expiresAt: again.expiresAt,
     });
     return replies.purchaseIdentityQuestion(
-      identitySubject(verdict.ask, actorId),
+      identitySubject(verdict.ask, actorId, kind),
       message.receivedAt,
-      { named: verdict.asked.length, newSince: true },
+      {
+        named: verdict.asked.length,
+        newSince: true,
+        kinds: verdict.asked.map((r) => r.kind ?? 'purchase'),
+      },
     );
   }
   if (!(await conversationsRepo.releaseHeld(tx, businessId, heldId, { now: message.receivedAt }))) {
@@ -3787,7 +3846,7 @@ async function answerPurchaseIdentity(
   const draft = await conversationsRepo.recordDraft(tx, {
     businessId,
     conversationMessageId: message.messageId,
-    intent: 'RecordPurchase',
+    intent: kind === 'expense' ? 'RecordExpense' : 'RecordPurchase',
     command,
     model: null,
     previewed: true,
@@ -3799,7 +3858,7 @@ async function answerPurchaseIdentity(
   if (message.outcome) {
     message.outcome.separatedFrom = { heldId, expiresAt: held.expiresAt };
   }
-  let shown = replies.separatePurchase(replies.preview(gate.preview));
+  let shown = replies.separatePurchase(replies.preview(gate.preview), kind);
   if (draft.isNew) {
     shown = await replaceOwnPreviews(
       tx,
@@ -3826,8 +3885,8 @@ async function answerPurchaseIdentity(
  * What every NEW financial preview does once recorded (G-68, kept as Build 7
  * wrote it, and shared with the "separate" answer since G-81): the SAME
  * member's pending funding-answer rebuild of the same total is superseded
- * and the reply says so (a different total, or references that prove two
- * purchases since G-81, leaves it waiting, and the reply says that too); never across members, never for a rebuild with no
+ * and the reply says so (a different total leaves it waiting, and the reply
+ * says that too; references never set it apart since OWN-32); never across members, never for a rebuild with no
  * recorded requester. And every older retired purchase question is closed,
  * with every member's short answer to it, so nobody can rebuild it into a
  * second preview of the same purchase.
@@ -5025,7 +5084,8 @@ async function interpretedReply(
    * the G-61 funding source) is asked first; the comparison waits for the
    * purchase to be previewable. */
   const identity =
-    command.intent === 'RecordPurchase' && answered.previewed === true
+    (command.intent === 'RecordPurchase' || command.intent === 'RecordExpense') &&
+    answered.previewed === true
       ? await purchaseIdentityCheck(tx, businessId, {
           messageId: conversationMessageId,
           receivedAt,
@@ -5069,9 +5129,11 @@ async function interpretedReply(
      * expiring continuation naming the held draft. A sender with no
      * membership cannot reach a purchase at all (the role rule above); if
      * one ever did, nobody could answer, and nothing would be confirmable. */
-    shown = replies.purchaseIdentityQuestion(identitySubject(identity.ask, actorId), receivedAt, {
-      named: identity.asked.length,
-    });
+    shown = replies.purchaseIdentityQuestion(
+      identitySubject(identity.ask, actorId, identity.kind),
+      receivedAt,
+      { named: identity.asked.length, kinds: identity.asked.map((r) => r.kind ?? 'purchase') },
+    );
     if (draft.isNew) {
       /* Exactly what the question names, so "separate" excuses only those. */
       await conversationsRepo.nameHeldRecords(
@@ -5117,8 +5179,8 @@ async function interpretedReply(
    * purchase. And the SAME member's pending rebuilt preview of the same
    * TOTAL (integer kobo) is superseded, so their two yeses cannot book one
    * purchase twice, and the reply ALWAYS says so (final-head review); a
-   * different total, or references that prove two purchases (G-81), leaves
-   * it waiting, and the reply says that too. Never across members, and never for a rebuild with no recorded requester. */
+   * different total leaves it waiting, and the reply says that too
+   * (references never set it apart since OWN-32). Never across members, and never for a rebuild with no recorded requester. */
   if (answered.previewed === true && draft.isNew && !holding) {
     shown = await afterNewPreview(tx, businessId, draft.id, command, actorId, shown, outcome);
   }

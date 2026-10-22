@@ -4,6 +4,7 @@
 **Authority:** this playbook guides workflow, not an override of `CLAUDE.md`, owner decisions, canonical product requirements, repository protections or higher-priority access controls. When they disagree, diagnose and escalate substantive product/policy contradictions; never silently choose the less restrictive rule.
 **Owner priority update (22 October 2026):** Operational safety and recovery prerequisites come BEFORE the full Central Admin UI. Implement the minimum operator visibility needed for safety, then the admin experience. The launch gate register may contain unverified or stale statuses: remeasure every gap before coding.
 **Ruling note (22 October 2026, recorded in the repository, not part of the owner's v4 text):** G-87 and G-92(5) are NO LONGER policy-blocked: the owner ruled them as OWN-31 and OWN-32, and G-115 as OWN-33 (`REKODA_OWNER_DECISIONS.md`). Where this playbook says those items are policy-blocked or asks for a decision proposal, the rulings win; implement them.
+**Authorship note (22 Oct 2026, owner policy; recorded in the repository):** every commit and PR follows `CLAUDE.md` §7b: authored as Angelo Akuhwa, with no AI co-author trailer, session link or promotional signature, and an explicit squash message on merge.
 **Routine purpose:** make bounded, evidence-backed progress on each hourly run; do not promise background progress within a run. Continue on the next scheduled invocation using the handoff. Avoid repeating previously completed work.
 
 ## Immediate priority order (supersedes older ordering wherever they differ)
@@ -21,7 +22,7 @@
 
 1. **State first.** Fetch `main`, identify active branches/PRs, worktree changes, CI, reviews and staging release. Read the current task/handoff. Never trust yesterday's PR list, SHA or deployment status over live evidence.
 2. **One slice at a time.** Finish or safely park the active issue before opening another implementation branch. Parallel read-only review is fine. Never overwrite another developer's changes or run destructive cleanup against unknown work.
-3. **Own the full fix cycle.** For defects: RED reproduction, smallest correct fix, GREEN tests, full relevant regressions, independent review, Codex, exact-head CI, merge when permitted, verify main, update docs, move on.
+3. **Own the full fix cycle.** For defects: RED reproduction, smallest correct fix, GREEN tests, full relevant regressions, independent review, CodeRabbit (primary) and Codex (optional), exact-head CI, merge when permitted, verify main, update docs, move on.
 4. **Resolve engineering conflicts yourself when safe.** A rebase conflict, PR conflict, failing CI, formatter mismatch, flaky test, Codex comment, or integration defect is a task to investigate and resolve, not an automatic reason to stop. Follow the precise conflict playbook below. **Never** resolve a conflicting owner ruling or financial policy by guesswork.
 5. **Respect permissions.** User authorization to merge qualifying PRs is not a substitute for a required human approval, automated classifier, branch protection or deployment authorization. Do not bypass blocked commands by changing tools, endpoints, syntax, identity or protection settings.
 6. **Preserve payment truth.** Do not manufacture payment verification, double-book a sale, mutate settled history, silently refund, convert estimated fees into actuals, or weaken tenant boundaries. Use durable idempotency and tested database invariants.
@@ -29,6 +30,17 @@
 8. **Progress beats chatter.** Make concrete progress in the current authorized scope. If blocked on one item, record exact blocker and continue an independent item within scope; do not endlessly poll checks or ask for permissions already granted.
 9. **Stop on unsafe prerequisites.** Disk below the project's safe threshold, missing live credentials, ambiguous financial rules, unknown DB migration history, unhealthy deployed service or inaccessible reviews require investigation first, not forced progress.
 10. **Commit learning to the repo.** Update the canonical status/handoff and a concise `CLAUDE.md` reference when workflow rules change. Do not paste transient issue state into permanent rules.
+
+## Reviewer hierarchy (owner policy OWN-35, 22 October 2026)
+
+This section is the single statement of the review order; it supersedes any earlier wording that makes Codex the required or primary reviewer (those lines now mean "the reviewers named here").
+
+1. **CodeRabbit is the primary automated PR reviewer** on every substantive implementation PR. **Codex is optional and secondary.**
+2. For each PR: confirm CodeRabbit was triggered and reviewed the right PR and head; wait for the review to finish; read every actionable inline finding; validate each against the current code and the canonical documents; fix genuine bugs with a regression test; reply with concise technical evidence; push; request re-review with `@coderabbitai review` after a material change (not while a review is running); confirm the newest review covers the current head; resolve a thread only when it is fixed or carries a justified recorded disposition.
+3. Record CodeRabbit's actual decision (approved, changes requested, or advisory only). A summary or a "no actionable comments" note is NOT an approval and is never reported as one. An earlier approval does not survive a significant change. An unresolved CHANGES_REQUESTED review is investigated (replaced or dismissed under CodeRabbit's supported workflow) before the PR is eligible. A CodeRabbit outage is never treated as approval.
+4. **Codex usage limit:** record `Codex: UNAVAILABLE — QUOTA` (neither approved nor failed), continue the CodeRabbit workflow, run the final independent Claude review and all CI, and merge only if the owner decisions and repository rules allow. Never weaken a required status check because Codex is unavailable; report a genuinely blocked required check instead.
+5. The final read-only independent Claude review (financial correctness, subscription transitions, authorization and tenancy, concurrency and idempotency, regression-test completeness, migration safety, error and user messaging) runs after the last implementation change; its BLOCKING and IMPORTANT findings are fixed before merge.
+6. CodeRabbit approval never replaces CI, never bypasses a required human approval, and is never fabricated. Respect real branch protection.
 
 ## Merge conflicts, CI failures and review findings — mandatory resolution procedure
 
@@ -501,7 +513,7 @@ For every development item:
 4. Implement the smallest correct change.
 5. Run relevant integration tests, typecheck, lint and build.
 6. Open a focused PR.
-7. Run Codex and independent read-only reviews.
+7. Run the CodeRabbit review loop (primary) and, when available, Codex, then the independent read-only Claude review (see "Reviewer hierarchy").
 8. Address BLOCKING and IMPORTANT findings.
 9. Verify exact-head CI.
 10. Merge if all repository policies and review requirements allow it.

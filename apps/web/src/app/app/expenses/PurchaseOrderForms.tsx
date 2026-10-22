@@ -132,7 +132,7 @@ export function ReceivePurchaseOrderForm({ orders }: { orders: OpenPurchaseOrder
         <input type="hidden" name="expenseIds" value={q.expenseIds.join(',')} />
         <fieldset className="rk-form">
           <legend className="rk-fineprint">
-            {q.options.length > 1 ? 'Which one is it?' : 'The purchase in Chat'}
+            {q.options.length > 1 ? 'Which one is it?' : 'The record in Chat'}
           </legend>
           {q.options.map((option, i) => (
             <label key={option.expenseId} className="rk-fineprint">
@@ -146,10 +146,7 @@ export function ReceivePurchaseOrderForm({ orders }: { orders: OpenPurchaseOrder
             </label>
           ))}
         </fieldset>
-        <p className="rk-fineprint">
-          Same purchase: the order is marked received and linked to the purchase you picked, and
-          nothing is recorded again. Separate purchase: the order is received as its own purchase.
-        </p>
+        <p className="rk-fineprint">{q.explain}</p>
         <Button type="submit" name="answer" value="same" disabled={pending}>
           {pending ? 'Recording…' : 'Same purchase'}
         </Button>

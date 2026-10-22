@@ -160,6 +160,42 @@ export function addMonth(from: Date, anchorDay?: number): Date {
   return new Date(next.getTime() - 3_600_000);
 }
 
+/**
+ * Whether a cycle is the standard monthly one (OWN-33, G-115): 28 to 31 days,
+ * with an hour of slack either side for the Lagos offset. `planChangeCharge`
+ * prices the difference of MONTHLY prices over the cycle, so on a one-year or
+ * custom-length operator arrangement it would charge a fraction of one
+ * month's difference for a much longer span. No annual or custom-term price
+ * exists, so such a cycle is never prorated automatically.
+ */
+export function isStandardMonthlyCycle(cycleStart: Date, renewsAt: Date): boolean {
+  const span = renewsAt.getTime() - cycleStart.getTime();
+  return span >= 28 * DAY_MS - 3_600_000 && span <= 31 * DAY_MS + 3_600_000;
+}
+
+/**
+ * OWN-33 (G-115, owner ruling "Option B"): whether a priced upgrade may be
+ * prorated automatically. One rule for the quote and for the plan change, so a
+ * preview can never promise what execution refuses.
+ *
+ * Only a cycle PROVEN to have been bought through the provider's standard
+ * monthly flow prorates. An operator-defined cycle (whatever its length), a
+ * cycle of unknown origin, and a cycle whose dates are missing or not a
+ * standard month all go to support review. Origin is never inferred from
+ * duration, an expiry date or a paid-plan label.
+ */
+export function upgradeProrationEligibility(cycle: {
+  origin: 'provider' | 'operator' | null;
+  cycleStartedAt: Date | null;
+  planExpiresAt: Date | null;
+}): 'automatic' | 'support_review' {
+  if (cycle.origin !== 'provider') return 'support_review';
+  if (!cycle.cycleStartedAt || !cycle.planExpiresAt) return 'support_review';
+  return isStandardMonthlyCycle(cycle.cycleStartedAt, cycle.planExpiresAt)
+    ? 'automatic'
+    : 'support_review';
+}
+
 /** Whole days from `a` to `b`, never negative. */
 function wholeDaysBetween(a: Date, b: Date): number {
   return Math.max(0, Math.floor((b.getTime() - a.getTime()) / DAY_MS));

@@ -1344,7 +1344,9 @@ export class ReportsController {
       if (
         !(await purchaseIdentityRepo.linkableChatPurchase(tx, businessId, expenseId, po.totalK))
       ) {
-        return { outcome: 'no_longer_matches', poNumber };
+        return (await purchaseIdentityRepo.chatExpenseOfTotal(tx, businessId, expenseId, po.totalK))
+          ? { outcome: 'same_as_expense', poNumber, expenseId }
+          : { outcome: 'no_longer_matches', poNumber };
       }
       const linked = await ordersRepo.linkReceivedPurchaseOrder(tx, businessId, po.id, expenseId);
       if (linked === 'linked') return { outcome: 'linked', poNumber, expenseId };
@@ -2588,6 +2590,7 @@ function possibleDuplicate(
       bookedAt: (m.bookedAt ?? m.at).toISOString(),
       bookedBy: ownerOf(m, userId),
       billNumber: m.billNumber,
+      kind: m.kind ?? 'purchase',
     })),
     alreadySeparate: [...alreadySeparate],
   };

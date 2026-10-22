@@ -68,6 +68,17 @@ async function seedBusiness(): Promise<string> {
 const operator = (businessId: string, plan: string, expiresAt: Date | null = renewsAt) =>
   billingRepo.setPlan(appDb, { businessId, plan, expiresAt, actor: 'operator:test-g104' });
 
+/** A standard monthly cycle ending at `renewsAt` (OWN-33: other spans are never prorated). */
+const standardCycle = (businessId: string, plan: string) =>
+  withBusiness(appDb, businessId, (tx) =>
+    subscriptionsRepo.applyCycle(tx, businessId, {
+      plan,
+      cycleStartedAt: new Date(renewsAt.getTime() - 30 * 86_400_000),
+      renewsAt,
+      anchorDay: renewsAt.getUTCDate(),
+    }),
+  );
+
 const open = (
   businessId: string,
   kind: 'first_purchase' | 'renewal' | 'upgrade' | 'add_on',
@@ -262,6 +273,7 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
   it('a repeated upgrade request after a newer decision gets a fresh payable charge, not the stale one', async () => {
     const businessId = await seedBusiness();
     await operator(businessId, 'chat');
+    await standardCycle(businessId, 'chat');
     const billing = new BillingService(
       { planCatalogueReads: false, paystackPlatformConfirmed: true } as never,
       appDb,
@@ -269,6 +281,7 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
     const first = await billing.changePlan(businessId, 'complete');
     expect(first.state).toBe('payment_required');
     await operator(businessId, 'integrate'); // a newer decision
+    await standardCycle(businessId, 'integrate');
     const second = await billing.changePlan(businessId, 'complete');
 
     expect(second.state).toBe('payment_required');
@@ -394,7 +407,7 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
 
   it('undoing a downgrade keeps an upgrade opened while it was pending: it was priced on the current plan', async () => {
     const businessId = await seedBusiness();
-    await operator(businessId, 'integrate');
+    await standardCycle(businessId, 'integrate');
     const schedule = (plan: string | null) =>
       withBusiness(appDb, businessId, (tx) =>
         subscriptionsRepo.schedulePlanChange(tx, businessId, plan),
@@ -409,7 +422,7 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
 
   it('undoing a cancellation revives a charge that a later upgrade request retired while it was pending', async () => {
     const businessId = await seedBusiness();
-    await operator(businessId, 'chat');
+    await standardCycle(businessId, 'chat');
     const schedule = (plan: string | null) =>
       withBusiness(appDb, businessId, (tx) =>
         subscriptionsRepo.schedulePlanChange(tx, businessId, plan),
@@ -693,7 +706,7 @@ describe('an upgrade paid after its cycle has ended never leaves the plan expiry
 
   it('an upgrade inside a running cycle still applies', async () => {
     const businessId = await seedBusiness();
-    await operator(businessId, 'chat');
+    await standardCycle(businessId, 'chat');
     await open(businessId, 'upgrade', 'RKD-SUB-LIVE-1', 'complete');
     expect(await settle(businessId, 'RKD-SUB-LIVE-1')).toBe('applied');
     expect((await subscription(businessId))?.plan).toBe('complete');

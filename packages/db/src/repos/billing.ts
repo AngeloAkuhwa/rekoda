@@ -80,6 +80,9 @@ export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
       cycleStartedAt:
         paid && change.expiresAt ? (sameCycle ? previous.cycleStartedAt : new Date()) : null,
       planExpiresAt: change.expiresAt,
+      /* An operator-defined cycle is never provider-priced (OWN-33). Re-posting
+       * the identical cycle changes nothing commercially, so its origin stays. */
+      origin: !paid ? null : sameCycle ? 'keep' : 'operator',
       anchorDay:
         paid && change.expiresAt
           ? sameCycle && previous.anchorDay !== null

@@ -13,8 +13,11 @@
  *  D3  Two purchases of the same total (integer kobo) inside the window are
  *      PROVEN SEPARATE, with no question, only by a strong structured
  *      difference carried by BOTH sides. Refined by the owner on 2 Oct 2026:
- *      AN AUTO-CREATED ENTITY IS NOT A CONFIRMED IDENTITY.
- *        - Different explicit supplier document references prove it.
+ *      AN AUTO-CREATED ENTITY IS NOT A CONFIRMED IDENTITY. Revised on
+ *      22 Oct 2026 (OWN-32, G-92(5)):
+ *        - Different document references, even of the same kind, NEVER
+ *          prove it: a misread digit, or a supplier receipt and a POS slip
+ *          for one purchase, carry different numbers. They are asked about.
  *        - Different products prove it ONLY when both identities are
  *          trusted: linked to a stable catalogue id (`external_catalogue_id`).
  *          A product row made from chat never counts, however old.
@@ -32,6 +35,14 @@
  * "separate" excuses ONLY the records the question named (fresh review of
  * #262): a question names every record it may be about, and the answer is
  * about exactly those. A record it did not name is asked about.
+ *
+ * Across kinds (OWN-31, G-87): one real purchase must not become two
+ * financial truths because one message was read as a stock purchase and
+ * another as an expense. A purchase and an expense of the same total inside
+ * the window are compared exactly as two purchases are, and asked about,
+ * never merged and never replaced (D4's own-preview replacement is for one
+ * kind). Two EXPENSES are never compared: genuine operating expenses of one
+ * amount are common, and the ruling keeps them distinct.
  */
 import { nairaToKobo } from './money.js';
 
@@ -68,8 +79,15 @@ export interface ProductIdentity {
   readonly trusted: boolean;
 }
 
+/** A stock purchase (`RecordPurchase`) or an expense (`RecordExpense`). */
+export type SpendKind = 'purchase' | 'expense';
+
+const kindOf = (f: { readonly kind?: SpendKind }): SpendKind => f.kind ?? 'purchase';
+
 /** What one purchase carries that can tell it apart from another. */
 export interface PurchaseFacts {
+  /** Which it was recorded or drafted as (G-87); absent means a purchase. */
+  readonly kind?: SpendKind;
   /** The total in integer kobo. */
   readonly amountK: number;
   /** When the message that reported it reached Rekoda (or, for a booking
@@ -153,9 +171,9 @@ const kindOfWord = (token: string): ReferenceKind | undefined =>
  *    "receipt", "waybill", "PO", "ref", "No."), a "#", or upper-case
  *    letters written into the number ("EMK-0041"). Bare digits are in doubt.
  *  - The kind comes from the word ("invoice 2231" is an invoice); a "#", a
- *    generic word or a letter prefix is kind OTHER, which never proves two
- *    purchases separate, because its letters are never stored and so two
- *    prefixes cannot be told apart.
+ *    generic word or a letter prefix is kind OTHER, whose letters are never
+ *    stored. No reference of any kind proves two purchases separate since
+ *    OWN-32 (G-92(5)).
  *  - The number is ONE run of digits; two runs however joined
  *    ("INV 2231/2232", "EMK-00-41", "INV/2026/114") are in doubt.
  *  - Never a reference: an amount ("100k", "NGN150K", "125,000.00"), the
@@ -390,27 +408,49 @@ export function purchaseTotalK(command: unknown): number | null {
   return nairaToKobo(c['amount']);
 }
 
-/**
- * Do two NORMALISED references prove two purchases different? Only when both
- * name the SAME KIND of document (invoice with invoice, receipt with
- * receipt) with different numbers: an invoice and the receipt for one
- * purchase carry different numbers. A reference of kind OTHER never proves
- * it (fresh review of #262).
- */
-export function referencesProveSeparate(a: string | null, b: string | null): boolean {
-  if (!a || !b) return false;
-  const kindOf = (r: string) => r.slice(0, r.indexOf(':'));
-  return kindOf(a) === kindOf(b) && kindOf(a) !== 'OTHER' && a !== b;
+/** The kind a stored spend command is, or null for anything else (G-87). */
+export function spendKindOf(command: unknown): SpendKind | null {
+  const intent = (command as Record<string, unknown> | null)?.['intent'];
+  return intent === 'RecordPurchase' ? 'purchase' : intent === 'RecordExpense' ? 'expense' : null;
 }
 
 /**
- * D3 (refined): are these two purchases PROVEN to be different ones? Only a
- * different stated reference, or two different TRUSTED products.
+ * A stored RecordPurchase or RecordExpense command's total in kobo, or null
+ * (G-87): what the identity check compares across the two kinds.
+ */
+export function spendTotalK(command: unknown): number | null {
+  const kind = spendKindOf(command);
+  if (kind === 'purchase') return purchaseTotalK(command);
+  if (kind !== 'expense') return null;
+  const amount = (command as Record<string, unknown>)['amount'];
+  if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) return null;
+  return nairaToKobo(amount);
+}
+
+/**
+ * Whether two spends are ever compared (G-87, OWN-31): a purchase with a
+ * purchase (OWN-21) or with an expense, never an expense with an expense.
+ */
+export function comparedKinds(a: { readonly kind?: SpendKind }, b: { readonly kind?: SpendKind }) {
+  return kindOf(a) === 'purchase' || kindOf(b) === 'purchase';
+}
+
+/** Whether a record is of another kind than the spend it is compared with. */
+export function crossKind(a: { readonly kind?: SpendKind }, b: { readonly kind?: SpendKind }) {
+  return kindOf(a) !== kindOf(b);
+}
+
+/**
+ * D3 (revised by OWN-32): are these two purchases PROVEN to be different
+ * ones? Only two different TRUSTED products. References are never proof:
+ * different numbers of one kind were proof until 22 Oct 2026 (OWN-21 D3),
+ * and booked one purchase twice on a misread digit or two documents of one
+ * purchase (G-92(5)). They are still stored, shown and billed.
  */
 export function provenSeparate(a: PurchaseFacts, b: PurchaseFacts): boolean {
-  if (referencesProveSeparate(a.reference, b.reference)) return true;
-  if (a.product?.trusted && b.product?.trusted && a.product.id !== b.product.id) return true;
-  return false;
+  return (
+    a.product?.trusted === true && b.product?.trusted === true && a.product.id !== b.product.id
+  );
 }
 
 /**
@@ -459,6 +499,7 @@ export function purchaseMatches(
   const age = (r: PurchaseRecord) => (bookings.by === 'booking' ? when(r) : r.at.getTime());
   return records
     .filter((r) => r.amountK === next.amountK)
+    .filter((r) => comparedKinds(next, r))
     .filter((r) => {
       if (r.state === 'pending') return true;
       const t = age(r);
@@ -480,23 +521,29 @@ export function ownerOf(record: PurchaseRecord, actorId: string | null): RecordO
 /**
  * D4's split, for a new preview by `actorId`:
  *  - `replace`: the member's ONE own waiting preview this one replaces, as
- *    Build 7 replaces their own rebuild (never another member's, and never
- *    one Rekoda cannot attribute: a null requester is never "you");
+ *    Build 7 replaces their own rebuild (never another member's, never one
+ *    Rekoda cannot attribute: a null requester is never "you", and never one
+ *    of the other kind: a purchase and an expense are asked about, G-87);
  *  - `asked`: EVERY other match, which the question names (booked first);
  *    `ask` is the first, the one the question describes in full.
  */
 export function purchaseIdentityVerdict(
   matches: readonly PurchaseRecord[],
   actorId: string | null,
+  /** The new spend's kind (G-87); absent means a purchase. */
+  kind: SpendKind = 'purchase',
 ): {
   readonly replace: readonly PurchaseRecord[];
   readonly asked: readonly PurchaseRecord[];
   readonly ask: PurchaseRecord | null;
 } {
-  const own = matches.filter((m) => m.state === 'pending' && ownerOf(m, actorId) === 'you');
+  const own = matches.filter(
+    (m) => m.state === 'pending' && ownerOf(m, actorId) === 'you' && kindOf(m) === kind,
+  );
   /* One own waiting preview is replaced. Two or more coexist only because
-   * something proved them separate, so a resend that matches several is
-   * asked about, never allowed to replace them all (Codex review). */
+   * something set them apart (a "separate" answer, two trusted products) or
+   * were left from before OWN-32, so a resend that matches several is asked
+   * about, never allowed to replace them all (Codex review). */
   const replace = own.length === 1 ? own : [];
   const asked = matches.filter((m) => !replace.includes(m));
   return { replace, asked, ask: asked[0] ?? null };

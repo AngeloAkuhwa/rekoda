@@ -18,6 +18,7 @@ import {
   addOnReference,
   billingState,
   GRACE_DAYS,
+  upgradeProrationEligibility,
   planChangeCharge,
   subscriptionReference,
   usagePeriod,
@@ -170,13 +171,15 @@ export class BillingService {
         now,
         pricesK: await this.changePricesK(tx, businessId, from, to, now),
       });
+      const supportReview = charge.kind === 'upgrade' && isCustomCycle(subscription);
       return {
         from,
         to,
         kind: charge.kind,
-        amountK: charge.amountK,
+        amountK: supportReview ? 0 : charge.amountK,
         effectiveFrom: charge.effectiveFrom,
         renewsAt: charge.renewsAt.toISOString(),
+        supportReview,
       };
     });
   }
@@ -257,6 +260,12 @@ export class BillingService {
           plan: to,
           effectiveAt: charge.renewsAt.toISOString(),
         };
+      }
+
+      /* OWN-33 (G-115): an operator arrangement that is not a standard monthly
+       * cycle is never prorated automatically. Nothing is opened or changed. */
+      if (charge.kind === 'upgrade' && isCustomCycle(subscription)) {
+        return { state: 'unavailable' as const, reason: 'support_review' as const };
       }
 
       /* An upgrade priced at nothing (G-105): under a day of the cycle left, or
@@ -510,6 +519,14 @@ export async function applySettledCharge(
       return 'superseded';
     }
 
+    /* OWN-34 (G-115): an upgrade charge opened before the origin rule existed
+     * must not turn an operator-defined or unknown-origin cycle into a
+     * provider one by settling; it uses the same rule as quote and changePlan. The money stays recorded for an operator. */
+    if (charge.kind === 'upgrade' && (!subscription || isCustomCycle(subscription))) {
+      await subscriptionsRepo.markUnapplied(tx, input.reference, 'support_review', input.when);
+      return 'superseded';
+    }
+
     /**
      * A first purchase resets the anchor to the day it was bought, and MUST.
      *
@@ -588,4 +605,20 @@ function statusOf(
    * still work for the hour or so until it does, but telling a merchant they
    * are active would be reassuring them about something about to stop. */
   return { state: 'expired', since: state.since.toISOString() };
+}
+
+/**
+ * OWN-33 (G-115): a subscription that cannot be shown to be a provider-bought
+ * standard month is never prorated automatically (`upgradeProrationEligibility`).
+ * No subscription row means a first purchase, which has no cycle to prorate.
+ */
+function isCustomCycle(
+  subscription: {
+    origin: 'provider' | 'operator' | null;
+    cycleStartedAt: Date | null;
+    planExpiresAt: Date | null;
+  } | null,
+): boolean {
+  if (!subscription) return false;
+  return upgradeProrationEligibility(subscription) === 'support_review';
 }

@@ -15,6 +15,8 @@ import {
   purchaseIdentityVerdict,
   purchaseMatches,
   purchaseTotalK,
+  spendKindOf,
+  spendTotalK,
   sameRecord,
   storedPurchaseReference,
   commandPurchaseReference,
@@ -58,8 +60,10 @@ describe('what proves two purchases of one total separate (D3, refined)', () => 
     ).toBe(true);
   });
 
-  it('a different stated reference on both sides', () => {
-    expect(provenSeparate(facts({ reference: '41' }), record({ reference: '42' }))).toBe(true);
+  it('a different stated reference on both sides proves NOTHING since OWN-32 (G-92(5))', () => {
+    expect(provenSeparate(facts({ reference: 'INV:41' }), record({ reference: 'INV:42' }))).toBe(
+      false,
+    );
   });
 
   it('a field on one side only proves nothing', () => {
@@ -308,13 +312,13 @@ describe('fresh review of #262: one document number in two formats is one refere
     expect(normalisePurchaseReference(raw)).not.toBeNull();
   });
 
-  it('different numbers of the same kind still prove separate', () => {
+  it('different numbers of the same kind no longer prove separate (OWN-32)', () => {
     expect(
       provenSeparate(
         facts({ reference: normalisePurchaseReference('INV-0041') }),
         record({ reference: normalisePurchaseReference('INV-0042') }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 });
 
@@ -400,13 +404,13 @@ describe('fresh review of 75fd1c9: references by document kind, never letters', 
     ).toBe(false);
   });
 
-  it('I1: two invoices with different numbers do prove it', () => {
+  it('I1: two invoices with different numbers no longer prove it (OWN-32)', () => {
     expect(
       provenSeparate(
         facts({ reference: ref('invoice 2231') }),
         record({ reference: ref('INV-2232') }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('I1: a reference of unknown kind ("#", a letter prefix) never proves it', () => {
@@ -641,5 +645,84 @@ describe('Codex review of 5bfe87e: a reported part payment is never a reference'
   it('anything that is not a purchase command has no reference', () => {
     expect(commandPurchaseReference(null)).toBeNull();
     expect(commandPurchaseReference({ intent: 'RecordPurchase', amount: 100_000 })).toBeNull();
+  });
+});
+
+describe('G-92(5), OWN-32: different document references never prove two purchases separate', () => {
+  const ref = (raw: string) => normalisePurchaseReference(raw);
+
+  it('a misread digit on one invoice ("invoice 2231" typed, "INV 2281" read off the photo) is asked about', () => {
+    const booked = record({ reference: ref('INV 2281') });
+    expect(purchaseMatches(facts({ reference: ref('invoice 2231') }), [booked], NOW)).toEqual([
+      booked,
+    ]);
+  });
+
+  it('two different receipts of one purchase (supplier receipt and POS slip) are asked about', () => {
+    const booked = record({ reference: ref('receipt 0093') });
+    expect(purchaseMatches(facts({ reference: ref('Receipt No 4471') }), [booked], NOW)).toEqual([
+      booked,
+    ]);
+  });
+
+  it('a "separate" answer still sets the pair apart, so a real repeat purchase stays bookable', () => {
+    const booked = record({ reference: ref('INV 2281') });
+    const next = facts({ reference: ref('invoice 2231'), separateFrom: [booked.self] });
+    expect(purchaseMatches(next, [booked], NOW)).toEqual([]);
+  });
+
+  it('two different TRUSTED products still prove it (the rest of D3 stands)', () => {
+    expect(
+      provenSeparate(
+        facts({ product: trusted('milo'), reference: ref('INV 41') }),
+        record({ product: trusted('peak'), reference: ref('INV 42') }),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe('G-87, OWN-31: a purchase and an expense of one total are compared, two expenses never', () => {
+  const expense = { kind: 'expense' as const };
+
+  it('a booked stock purchase matches a new expense of the same total', () => {
+    const booked = record();
+    expect(purchaseMatches(facts(expense), [booked], NOW)).toEqual([booked]);
+  });
+
+  it('a booked expense matches a new stock purchase of the same total', () => {
+    const booked = record(expense);
+    expect(purchaseMatches(facts(), [booked], NOW)).toEqual([booked]);
+  });
+
+  it('two expenses of one total are never compared (genuine operating expenses stay distinct)', () => {
+    expect(purchaseMatches(facts(expense), [record(expense)], NOW)).toEqual([]);
+    const waiting = record({ ...expense, state: 'pending', bookedAt: null });
+    expect(purchaseMatches(facts(expense), [waiting], NOW)).toEqual([]);
+  });
+
+  it('a different total, or a "separate" answer naming it, is never asked about', () => {
+    const booked = record(expense);
+    expect(purchaseMatches(facts({ amountK: 1 }), [booked], NOW)).toEqual([]);
+    expect(purchaseMatches(facts({ separateFrom: [booked.self] }), [booked], NOW)).toEqual([]);
+  });
+
+  it("the member's own waiting preview of the OTHER kind is asked about, never replaced", () => {
+    const ownExpense = record({ ...expense, id: 'x', state: 'pending', bookedAt: null });
+    const verdict = purchaseIdentityVerdict([ownExpense], 'owner', 'purchase');
+    expect(verdict.replace).toEqual([]);
+    expect(verdict.ask).toBe(ownExpense);
+    const ownPurchase = record({ id: 'p', state: 'pending', bookedAt: null });
+    const forExpense = purchaseIdentityVerdict([ownPurchase], 'owner', 'expense');
+    expect(forExpense.replace).toEqual([]);
+    expect(forExpense.ask).toBe(ownPurchase);
+  });
+
+  it('spendTotalK reads both kinds; spendKindOf names them', () => {
+    expect(spendTotalK({ intent: 'RecordExpense', amount: 100_000 })).toBe(10_000_000);
+    expect(spendTotalK({ intent: 'RecordPurchase', amount: 100_000 })).toBe(10_000_000);
+    expect(spendTotalK({ intent: 'RecordSale', amount: 100_000 })).toBeNull();
+    expect(spendTotalK({ intent: 'RecordExpense', amount: 0 })).toBeNull();
+    expect(spendKindOf({ intent: 'RecordExpense' })).toBe('expense');
+    expect(spendKindOf({ intent: 'RecordPurchase' })).toBe('purchase');
   });
 });

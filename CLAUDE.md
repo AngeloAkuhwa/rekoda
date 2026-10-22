@@ -207,7 +207,10 @@ client idempotency key; numeric config is parsed fail-closed.
    Claude context that did not build it (read-only; given only the PR, the
    exact head SHA, the requirements, the diff, the canonical docs and the
    test evidence). Fix every valid BLOCKING or IMPORTANT finding and every
-   valid Codex thread; a new SHA gets a new review. Report READY FOR OWNER
+   valid CodeRabbit or Codex thread; a new SHA gets a new review.
+   **CodeRabbit is the primary AI PR reviewer; Codex is optional** (OWN-35;
+   `docs/REKODA_MVP_AUTOPILOT_PLAYBOOK.md`, "Reviewer hierarchy"). A Codex
+   quota limit is `UNAVAILABLE — QUOTA`, never approval. Report READY FOR OWNER
    MERGE only when CI is green on that exact SHA and no blocking finding or
    thread remains (`CONTRIBUTING.md`, "Independent review before merge").
 
@@ -231,6 +234,30 @@ At the start of each session: inspect current main, open PRs, running changes, a
 - Never add blanket 7.5% VAT, classify an uncharged transaction as zero-rated/exempt, or issue misleading tax disclosures. Maintain exact merchant-authorized amounts, verified payment truth and immutable historical evidence.
 - G-11: investigate hardcoded-zero fields and invoice labels, fix misleading presentation with regression tests; defer general tax calculation/filing integrations unless needed to meet applicable law or an explicitly approved MVP promise.
 - **Rekoda's own subscription/add-on VAT and any platform collection/withholding duties require professional Nigerian tax/legal review.** Owner intent does not establish an exemption. Preserve existing canonical accounting constraints and escalate genuine legal unknowns.
+
+## 7b. Commit authorship and attribution (owner policy, 22 Oct 2026)
+
+Angelo is the author of record. Claude Code is the engineering tool he directs.
+
+- Commit with the repository owner's verified identity: `Angelo Akuhwa <angeloakuhwa@gmail.com>`, the
+  identity GitHub records on every merge to `main`. Check `git config user.name` and
+  `git config user.email` before committing. Never set Claude, Anthropic or another tool as author or
+  committer, never invent an email, and never rewrite another contributor's authorship.
+- No AI co-author trailers (`Co-Authored-By: Claude ...`), no session links (`Claude-Session: ...`)
+  and no promotional signatures in commit messages or PR descriptions. `.claude/settings.json` turns
+  Claude Code's automatic attribution off (`attribution.commit` and `attribution.pr` empty,
+  `sessionUrl` false).
+- Commit messages are Conventional Commits that explain the engineering change (for example
+  `fix: prevent duplicate purchase postings`), with issue or gap references where helpful. Merge PRs
+  by squash only, with the squash message written explicitly, so no trailer from a branch commit is
+  carried into `main` (a rebase or merge commit would copy branch commits as they are).
+- PR descriptions fill every section of `.github/PULL_REQUEST_TEMPLATE.md`, in plain engineering
+  prose, with no generated footer. Some PR-creation tools append one on create: re-read the body
+  after opening the PR and edit the footer out.
+- Prospective only. Merged and published history is never rewritten to remove attribution, and no
+  force push is made just for that. Audit records, GitHub activity and any disclosure a platform or
+  repository policy requires (for example the footer GitHub-integrated tools add to review comments)
+  stay as they are.
 
 ## 8. Blocked?
 
