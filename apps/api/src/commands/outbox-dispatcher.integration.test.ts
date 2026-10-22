@@ -181,6 +181,26 @@ describe('delivery', () => {
     expect(attempts).toEqual([0, 1]);
   });
 
+  it('dates a failure to when it happened, not to the start of a slow pass', async () => {
+    const businessId = await seedBusiness();
+    const dispatcher = new OutboxDispatcher();
+    dispatcher.register('sale.recorded', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+      throw new Error('downstream is down');
+    });
+    await appendEvent(businessId, 'sale.recorded');
+
+    const startedAt = Date.now();
+    await dispatcher.runOnce(workerDb);
+
+    /* The handler ran ~1.2s, so the first failure's 2s backoff ends ~3.2s after
+     * the pass began. Dated to the start of the pass it would end at ~2s. */
+    const early = await outboxRepo.claimBatch(workerDb, 25, new Date(startedAt + 3_100));
+    expect(early).toHaveLength(0);
+    const due = await outboxRepo.claimBatch(workerDb, 25, new Date(startedAt + 6_000));
+    expect(due).toHaveLength(1);
+  });
+
   it('an event nobody handles fails and retries rather than vanishing', async () => {
     const businessId = await seedBusiness();
     const dispatcher = new OutboxDispatcher();
