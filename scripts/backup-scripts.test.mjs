@@ -119,7 +119,7 @@ test('a failed fetch leaves no temp copy of the encrypted dump behind', () => {
 
 test('the service has a start timeout and requires Docker, not merely follows it', () => {
   const unit = readFileSync(join(ROOT, 'deploy/systemd/rekoda-backup.service'), 'utf8');
-  assert.match(unit, /^TimeoutStartSec=/m);
+  assert.match(unit, /^TimeoutStartSec=2h$/m);
   assert.match(unit, /^Requires=docker\.service$/m);
 });
 
