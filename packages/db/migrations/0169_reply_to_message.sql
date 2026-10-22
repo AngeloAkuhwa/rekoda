@@ -29,4 +29,5 @@ ALTER TABLE conversation_messages VALIDATE CONSTRAINT conversation_messages_repl
 -- Only a reply answers something.
 ALTER TABLE conversation_messages
   ADD CONSTRAINT conversation_messages_reply_to_outbound_ck
-  CHECK (reply_to_message_id IS NULL OR direction = 'outbound');
+  CHECK (reply_to_message_id IS NULL OR direction = 'outbound') NOT VALID;
+ALTER TABLE conversation_messages VALIDATE CONSTRAINT conversation_messages_reply_to_outbound_ck;

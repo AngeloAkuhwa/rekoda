@@ -363,6 +363,21 @@ describe('queue order is a promise, not a hope (H7a)', () => {
     });
   });
 
+  it('keeps an older other-kind job ahead of this one across its retry backoff (G-20)', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    const failure = await enqueue(businessId, { kind: 'delivery.status' });
+    const yes = await enqueue(businessId);
+    if (!failure || !yes) throw new Error('both jobs should have enqueued');
+    // The receipt failed once and backed off: its run_at is now in the future.
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(sql`UPDATE jobs SET run_at = now() + interval '1 minute'
+                      WHERE id = ${failure.id}::uuid`),
+    );
+    await withBusiness(appDb, businessId, async (tx) => {
+      expect(await jobsRepo.hasEarlierLiveJob(tx, yes.id, ['delivery.status'])).toBe(true);
+    });
+  });
+
   it('ignores siblings of another kind and of another business', async () => {
     const ada = await seedBusiness('Ada Fashion', '+2348040000001');
     const bola = await seedBusiness('Bola Electronics', '+2348040000002');

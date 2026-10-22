@@ -745,7 +745,7 @@ export async function markDraftUnseen(
  * answered, so its preview was read, a superseded one is gone, and an expired
  * one still carries `previewed` into the "that request has expired" answer a
  * later "yes" gets, which would be false for a preview never received. A
- * draft is also left alone when any LATER reply to a request was sent (it may
+ * draft is also left alone when any LATER reply to a request was accepted by WhatsApp (it may
  * have shown the draft again, and one flag cannot say which reply carried
  * it): the conservative side is the old behaviour. A wamid this business never sent, a reply that
  * answered no request, or a reply whose request drafted nothing previewed
@@ -773,6 +773,7 @@ export async function markPreviewUndelivered(
               WHERE later.business_id = o.business_id
                 AND later.direction = 'outbound'
                 AND later.reply_to_message_id IS NOT NULL
+                AND later.provider_message_id IS NOT NULL
                 AND (later.created_at, later.id) > (o.created_at, o.id))
     RETURNING d.id`);
   return [...rows].length;
