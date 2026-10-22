@@ -129,18 +129,16 @@ export class MetaIngressService {
    * counted on the ops health surface instead.
    */
   private async acceptStatus(event: InboundEvent, payload: unknown): Promise<{ isNew: boolean }> {
+    /* The recipient is only ever a tenant hint on Rekoda's OWN number, where
+     * the recipient IS the merchant. A missing or unclaimed phoneNumberId is
+     * stored unattributed, never resolved by the recipient. */
     let businessId: string | null = null;
     if (event.phoneNumberId) {
       const routed = await this.routeMerchantWaba(event.phoneNumberId);
       if (routed) businessId = routed.businessId;
-      else if (
-        !this.config.metaPhoneNumberId ||
-        event.phoneNumberId === this.config.metaPhoneNumberId
-      ) {
+      else if (event.phoneNumberId === this.config.metaPhoneNumberId) {
         businessId = await this.resolveBusiness(event.from);
       }
-    } else {
-      businessId = await this.resolveBusiness(event.from);
     }
 
     const record = (q: Parameters<typeof events.recordEvent>[0]) =>

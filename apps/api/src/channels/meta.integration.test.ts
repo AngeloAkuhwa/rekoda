@@ -17020,4 +17020,29 @@ describe('delivery statuses are read, not just stored (G-20)', () => {
     expect(await countFor(owner)).toBe(1);
     expect(await countFor(otherBusiness.id)).toBe(0);
   });
+
+  it('leaves a status with a missing or unclaimed phoneNumberId unattributed', async () => {
+    /* A Rekoda merchant who is only the RECIPIENT of someone else's message. */
+    const user = await identity.upsertUserByPhone(db, '+2348030009101');
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Recipient Shop',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+
+    const noNumber = statusPayload('2348030009101', 'wamid.NONUM', 'failed');
+    delete (noNumber.entry[0]!.changes[0]!.value as { metadata?: unknown }).metadata;
+    await post(noNumber);
+    await post(statusOn('PN-UNCLAIMED', '2348030009101', 'wamid.UNCLAIMED', 'failed'));
+
+    const attributed = await withBusiness(db, business.id, async (tx) => {
+      const rows = await tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM external_events WHERE external_id LIKE 'wamid.%:failed'
+                 AND business_id = ${business.id}::uuid`,
+      );
+      return [...rows][0]?.n ?? 0;
+    });
+    expect(attributed).toBe(0);
+    expect((await events.eventHealth(db, 'meta')).deliveryFailures).toBe(2);
+  });
 });
