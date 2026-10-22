@@ -115,6 +115,8 @@ export class OpsController {
      * traffic. Per process, so poll every replica and alarm on any nonzero.
      */
     rejectedSignatures: { meta: number; paystack: number };
+    /** Sign-in code sends this process attempted; a rising `failed` is a Meta outage or a bad token (G-12). */
+    otpSends: { sent: number; failed: number };
   }> {
     const worker = this.workerDb;
     const [queue, meta, paystack] = await Promise.all([
@@ -130,6 +132,7 @@ export class OpsController {
         meta: this.security.rejectedSignatures('meta'),
         paystack: this.security.rejectedSignatures('paystack'),
       },
+      otpSends: this.security.otpSends(),
     };
   }
 

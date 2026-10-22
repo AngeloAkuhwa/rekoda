@@ -16954,3 +16954,70 @@ describe('the command bus is the default door, and 0 rolls back to the same trut
     expect(await claims(bus.id, 'RecordSale')).toHaveLength(0);
   });
 });
+
+describe('delivery statuses are read, not just stored (G-20)', () => {
+  async function seedMerchantWaba(phone: string, phoneNumberId: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    await withBusiness(db, business.id, (tx) =>
+      wabaRepo.connectWaba(tx, {
+        businessId: business.id,
+        wabaId: `waba-${phoneNumberId}`,
+        phoneNumberId,
+        accessTokenCipher: 'cipher-for-tests',
+        tokenTail: '4821',
+      }),
+    );
+    return business.id;
+  }
+
+  const statusOn = (phoneNumberId: string, recipientId: string, wamid: string, status: string) => {
+    const payload = statusPayload(recipientId, wamid, status);
+    payload.entry[0]!.changes[0]!.value.metadata.phone_number_id = phoneNumberId;
+    return payload;
+  };
+
+  it('counts a failed delivery on the ops health surface', async () => {
+    await post(statusPayload('2348031230001', 'wamid.F1', 'failed'));
+    await post(statusPayload('2348031230001', 'wamid.F1', 'delivered'));
+
+    const health = await events.eventHealth(db, 'meta');
+    expect(health.deliveryFailures).toBe(1);
+  });
+
+  it('does not leave receipts as an unprocessed backlog', async () => {
+    await post(statusPayload('2348031230002', 'wamid.F2', 'sent'));
+    await post(statusPayload('2348031230002', 'wamid.F2', 'failed'));
+
+    const health = await events.eventHealth(db, 'meta');
+    expect(health.unprocessed).toBe(0);
+  });
+
+  it('files a merchant-WABA status under the number’s owner, never the recipient', async () => {
+    const owner = await seedMerchantWaba('+2348030009001', 'PN-STATUS-A');
+    /* The CUSTOMER being messaged happens to be another Rekoda merchant. */
+    const other = await identity.upsertUserByPhone(db, '+2348030009002');
+    const otherBusiness = await identity.createBusinessWithOwner(db, {
+      name: 'Other Shop',
+      businessType: null,
+      ownerUserId: other.id,
+    });
+
+    await post(statusOn('PN-STATUS-A', '2348030009002', 'wamid.CROSS', 'failed'));
+
+    const countFor = (businessId: string) =>
+      withBusiness(db, businessId, async (tx) => {
+        const rows = await tx.execute<{ n: number }>(
+          sql`SELECT count(*)::int AS n FROM external_events
+               WHERE external_id = 'wamid.CROSS:failed'`,
+        );
+        return [...rows][0]?.n ?? 0;
+      });
+    expect(await countFor(owner)).toBe(1);
+    expect(await countFor(otherBusiness.id)).toBe(0);
+  });
+});

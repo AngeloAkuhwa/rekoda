@@ -207,7 +207,7 @@ describe('event health', () => {
 
     const health = await events.eventHealth(workerDb, 'meta');
 
-    expect(health).toEqual({ unprocessed: 0, flagged: 0, badSignatures: 0 });
+    expect(health).toEqual({ unprocessed: 0, flagged: 0, badSignatures: 0, deliveryFailures: 0 });
   });
 });
 

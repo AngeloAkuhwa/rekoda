@@ -33,6 +33,12 @@ export interface IncomingEvent {
   externalId: string;
   payload: unknown;
   businessId: string | null;
+  /**
+   * Born finished: a delivery receipt has nothing to understand, so leaving it
+   * `processed_at IS NULL` made every receipt a permanent "unprocessed" row and
+   * buried the real backlog signal (G-20).
+   */
+  processed?: boolean;
 }
 
 /**
@@ -87,6 +93,7 @@ export async function recordEvent(q: Queryable, event: IncomingEvent): Promise<R
       businessId: event.businessId,
       // Only signed events are ever persisted; see the note in the controller.
       signatureValid: 1,
+      ...(event.processed ? { processedAt: new Date() } : {}),
     })
     .onConflictDoNothing({
       target: [externalEvents.provider, externalEvents.externalId],
@@ -459,6 +466,12 @@ export interface EventHealth {
   flagged: number;
   /** Signature checks that failed. Should be zero; anything else is an attack or a key. */
   badSignatures: number;
+  /**
+   * Meta `status.failed` receipts in the last 24 hours: a template or message
+   * WhatsApp accepted and then could not deliver (G-20). A rising count is a
+   * revoked token, a template problem or a Meta outage.
+   */
+  deliveryFailures: number;
 }
 
 /**
@@ -469,13 +482,20 @@ export interface EventHealth {
  * admin exception queue" — a queue nothing could read until now.
  */
 export async function eventHealth(db: Db, provider: string): Promise<EventHealth> {
-  const rows = await db.execute<{ unprocessed: number; flagged: number; bad: number }>(sql`
+  const rows = await db.execute<{
+    unprocessed: number;
+    flagged: number;
+    bad: number;
+    failed: number;
+  }>(sql`
     SELECT
       count(*) FILTER (WHERE processed_at IS NULL)::int              AS unprocessed,
       count(*) FILTER (WHERE processed_at IS NOT NULL
                          AND error IS NOT NULL
                          AND resolved_at IS NULL)::int               AS flagged,
-      count(*) FILTER (WHERE signature_valid = 0)::int               AS bad
+      count(*) FILTER (WHERE signature_valid = 0)::int               AS bad,
+      count(*) FILTER (WHERE event_type = 'status.failed'
+                         AND created_at > now() - interval '24 hours')::int AS failed
     FROM external_events
     WHERE provider = ${provider}
   `);
@@ -484,6 +504,7 @@ export async function eventHealth(db: Db, provider: string): Promise<EventHealth
     unprocessed: row?.unprocessed ?? 0,
     flagged: row?.flagged ?? 0,
     badSignatures: row?.bad ?? 0,
+    deliveryFailures: row?.failed ?? 0,
   };
 }
 

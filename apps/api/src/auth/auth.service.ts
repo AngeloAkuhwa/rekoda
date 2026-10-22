@@ -9,7 +9,7 @@
  * `tenancy.integration.test.ts`.
  */
 import { randomBytes } from 'node:crypto';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import {
   hashSecret,
   issueOtp,
@@ -19,6 +19,7 @@ import {
   verifyOtp,
   type RandomSource,
 } from '@rekoda/core/identity';
+import { SecurityMetrics } from '../channels/security-metrics.service.js';
 import { authTemplateCategory, MESSAGE_COST_MICROS, replies } from '@rekoda/core';
 import { entitlementsRepo, identity, withBusiness, type Db } from '@rekoda/db';
 import type {
@@ -64,6 +65,7 @@ export class AuthService {
     @Inject(DB) private readonly db: Db,
     @Inject(CONFIG) private readonly config: ApiConfig,
     @Inject(MESSAGE_SENDER) private readonly sender: MessageSender,
+    @Optional() @Inject(SecurityMetrics) private readonly metrics?: SecurityMetrics,
   ) {}
 
   /**
@@ -138,6 +140,7 @@ export class AuthService {
        * the business number, so there is no service window to reply inside
        * and Meta rejects free-form text to it (131047). */
       await this.sender.sendAuthCode({ to: phone, code });
+      this.metrics?.otpSend('sent');
 
       /**
        * The most expensive message Rekoda sends, and the one its cost
@@ -161,6 +164,7 @@ export class AuthService {
           `${MESSAGE_COST_MICROS[category]} USD micros, unattributed until PlatformCostEvent`,
       );
     } catch {
+      this.metrics?.otpSend('failed');
       // The reason is logged without the code — the one string that must
       // never reach a log store beside the phone number it unlocks.
       this.log.warn(`OTP delivery failed for ${redact(phone)}; resend is the recovery path`);

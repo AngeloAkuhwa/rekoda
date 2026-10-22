@@ -19,6 +19,7 @@ import { HealthController } from '../health/health.controller.js';
 import { issueSetupToken } from './tokens.js';
 import { OTP_MAX_ATTEMPTS, normalisePhone } from '@rekoda/core/identity';
 import { StubSender } from '../channels/sender.stub.js';
+import { SecurityMetrics } from '../channels/security-metrics.service.js';
 
 const SECRET = 'test-secret-at-least-32-characters-long';
 /* The operator credential is deliberately NOT the session-signing secret:
@@ -521,7 +522,7 @@ describe('roles', () => {
 });
 
 describe('OTP delivery (the gate between the funnel and the product)', () => {
-  function serviceWith(sender: StubSender, revealOtp = false) {
+  function serviceWith(sender: StubSender, revealOtp = false, metrics = new SecurityMetrics()) {
     return new AuthService(
       db,
       {
@@ -530,8 +531,22 @@ describe('OTP delivery (the gate between the funnel and the product)', () => {
         revealOtp,
       } as never,
       sender,
+      metrics,
     );
   }
+
+  /** G-12: a Meta outage must be countable, not just a warning in a log. */
+  it('counts delivered and failed sign-in code sends for the ops health probe', async () => {
+    const metrics = new SecurityMetrics();
+    const sender = new StubSender();
+    const service = serviceWith(sender, false, metrics);
+
+    await service.requestOtp('+2348031239101');
+    sender.failWith(new Error('Meta 503'));
+    await service.requestOtp('+2348031239102');
+
+    expect(metrics.otpSends()).toEqual({ sent: 1, failed: 1 });
+  });
 
   it('sends the code to the requesting phone over the message channel', async () => {
     const sender = new StubSender();
