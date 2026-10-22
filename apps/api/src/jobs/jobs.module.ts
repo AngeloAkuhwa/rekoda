@@ -667,9 +667,15 @@ export class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
    * advisory lock, so running one on boot is safe on every replica.
    */
   private bootPass(run: () => void): void {
-    const timer = setTimeout(run, this.bootPassDelayMs);
-    timer.unref();
-    this.bootTimers.push(timer);
+    /* Twice, because the advisory lock is try-lock: every replica that loses
+     * the election resolves normally and its one-shot is spent, so a leader
+     * that dies mid-sweep would otherwise leave the sweep unrun until its
+     * full interval. The retry costs one cheap idempotent pass. */
+    for (const delay of [this.bootPassDelayMs, this.bootPassDelayMs * 10]) {
+      const timer = setTimeout(run, delay);
+      timer.unref();
+      this.bootTimers.push(timer);
+    }
   }
 
   /**

@@ -422,36 +422,26 @@ describe('the slow sweeps run once after boot (G-10)', () => {
       names.push(name);
     };
     lifecycle.onModuleInit();
+    const sweeps = [
+      'settlement',
+      'merchant-transfers',
+      'bank-feeds',
+      'catalogue',
+      'grace',
+      'renewal',
+      'retention',
+      'recurring',
+      'depreciation',
+    ];
+    const passes = (n: string) => names.filter((x) => x === n).length;
     try {
-      await waitFor(() =>
-        [
-          'settlement',
-          'merchant-transfers',
-          'bank-feeds',
-          'catalogue',
-          'grace',
-          'renewal',
-          'retention',
-          'recurring',
-          'depreciation',
-        ].every((n) => names.includes(n)),
-      );
+      // Twice each: the second pass is the retry for a replica that lost the
+      // advisory-lock election to a leader that then died mid-sweep.
+      await waitFor(() => sweeps.every((n) => passes(n) >= 2));
     } finally {
       await lifecycle.onApplicationShutdown();
     }
-    expect(names).toEqual(
-      expect.arrayContaining([
-        'settlement',
-        'merchant-transfers',
-        'bank-feeds',
-        'catalogue',
-        'grace',
-        'renewal',
-        'retention',
-        'recurring',
-        'depreciation',
-      ]),
-    );
+    for (const n of sweeps) expect(passes(n)).toBeGreaterThanOrEqual(2);
   });
 });
 
