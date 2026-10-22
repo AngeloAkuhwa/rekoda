@@ -228,12 +228,15 @@ describe('delivery', () => {
 
     const id = await appendEvent(businessId, 'type.nobody.ever.handles');
 
+    /* Each pass runs an hour after the last, past any backoff (G-18). */
+    const base = Date.now();
+    const hour = 3_600_000;
     for (let i = 0; i < 8; i += 1) {
-      const pass = await dispatcher.runOnce(workerDb);
+      const pass = await dispatcher.runOnce(workerDb, 25, new Date(base + i * hour));
       expect(pass.failed).toBe(1);
     }
     /* Attempt nine never happens: the event is dead, not eligible... */
-    const after = await dispatcher.runOnce(workerDb);
+    const after = await dispatcher.runOnce(workerDb, 25, new Date(base + 8 * hour));
     expect(after).toEqual({ delivered: 0, failed: 0 });
 
     /* ...and dead means VISIBLE, because a silent loss is the one outcome
