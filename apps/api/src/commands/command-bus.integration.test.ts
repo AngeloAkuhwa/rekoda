@@ -243,6 +243,47 @@ describe('the member behind a chat command (G-99)', () => {
     expect(ran.n).toBe(0);
   });
 
+  it('runs the work for the owner', async () => {
+    const businessId = await seedOn('chat');
+    const owner = await withBusiness(db, businessId, (tx) => identity.membersOf(tx, businessId));
+    const ownerPhone = owner.find((m) => m.role === 'owner')?.phone;
+    expect(ownerPhone).toBeTruthy();
+    const ran = { n: 0 };
+    const outcome = await runAs(businessId, ownerPhone as string, ran);
+    expect(outcome.outcome).toBe('done');
+    expect(ran.n).toBe(1);
+  });
+
+  it('refuses an unreadable number, and does so before the entitlement check', async () => {
+    const businessId = await seedOn('chat');
+    const ran = { n: 0 };
+    expect(await runAs(businessId, 'not-a-phone', ran)).toEqual({
+      outcome: 'refused',
+      reason: 'member_may_not_transact',
+    });
+    /* PlaceOrder needs Integrate, which this Chat plan lacks: a stranger is
+     * still told "refused", never "not entitled", so the role gate is first. */
+    const outcome = await withBusiness(db, businessId, (tx) =>
+      bus.run(
+        tx,
+        {
+          businessId,
+          command: 'PlaceOrder',
+          payload: { total: 1 },
+          actor: 'system',
+          ingress: 'CHAT',
+          memberPhone: '+2348190099555',
+        },
+        async () => {
+          ran.n += 1;
+          return { ok: true };
+        },
+      ),
+    );
+    expect(outcome).toEqual({ outcome: 'refused', reason: 'member_may_not_transact' });
+    expect(ran.n).toBe(0);
+  });
+
   it('runs the work for a delegate', async () => {
     const businessId = await seedOn('chat');
     await member(businessId, '+2348190099002', 'delegate');
