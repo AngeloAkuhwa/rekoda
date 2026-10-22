@@ -407,7 +407,7 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
 
   it('undoing a downgrade keeps an upgrade opened while it was pending: it was priced on the current plan', async () => {
     const businessId = await seedBusiness();
-    await operator(businessId, 'integrate');
+    await standardCycle(businessId, 'integrate');
     const schedule = (plan: string | null) =>
       withBusiness(appDb, businessId, (tx) =>
         subscriptionsRepo.schedulePlanChange(tx, businessId, plan),
@@ -422,7 +422,7 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
 
   it('undoing a cancellation revives a charge that a later upgrade request retired while it was pending', async () => {
     const businessId = await seedBusiness();
-    await operator(businessId, 'chat');
+    await standardCycle(businessId, 'chat');
     const schedule = (plan: string | null) =>
       withBusiness(appDb, businessId, (tx) =>
         subscriptionsRepo.schedulePlanChange(tx, businessId, plan),
@@ -706,7 +706,7 @@ describe('an upgrade paid after its cycle has ended never leaves the plan expiry
 
   it('an upgrade inside a running cycle still applies', async () => {
     const businessId = await seedBusiness();
-    await operator(businessId, 'chat');
+    await standardCycle(businessId, 'chat');
     await open(businessId, 'upgrade', 'RKD-SUB-LIVE-1', 'complete');
     expect(await settle(businessId, 'RKD-SUB-LIVE-1')).toBe('applied');
     expect((await subscription(businessId))?.plan).toBe('complete');

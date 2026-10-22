@@ -450,6 +450,39 @@ describe('paying, and the gate in front of it', () => {
     expect(overview.status).toEqual({ state: 'active', renewsAt: renewsAt.toISOString() });
   });
 
+  it('does not let a settling upgrade turn a non-provider cycle into a provider one (OWN-34)', async () => {
+    const { businessId } = await onboard('+2348177100305');
+    const now = new Date();
+    await putOnPlan(
+      businessId,
+      'chat',
+      new Date(now.getTime() - 11 * 86_400_000),
+      new Date(now.getTime() + 19 * 86_400_000),
+    );
+    const answer = await confirmedBilling().changePlan(businessId, 'complete', now);
+    if (answer.state !== 'payment_required') throw new Error('expected a charge');
+    // A charge opened before the origin rule existed, against a cycle whose origin is unknown.
+    await ownerDb.execute(
+      sql`UPDATE businesses SET subscription_origin = NULL WHERE id = ${businessId}::uuid`,
+    );
+
+    const result = await withBusiness(db, businessId, (tx) =>
+      applySettledCharge(tx, {
+        businessId,
+        reference: answer.reference,
+        providerReference: 'ps_old_upgrade',
+        when: now,
+        config,
+      }),
+    );
+    expect(result).toBe('superseded');
+    const after = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.subscriptionFor(tx, businessId),
+    );
+    expect(after?.plan).toBe('chat');
+    expect(after?.origin).toBeNull();
+  });
+
   it('hands a double-clicked upgrade ONE reference, not two payable charges', async () => {
     const { businessId } = await onboard('+2348177100028');
     const now = new Date();

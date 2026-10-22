@@ -18,7 +18,9 @@ ALTER TABLE businesses
 
 -- Conservative backfill from persisted evidence only. For a business on a paid
 -- plan, the most recent of (a) a settled charge for the CURRENT plan and (b) an
--- operator plan_changed row naming the current plan decides. Anything else
+-- operator plan_changed row naming the current plan decides. An operator row
+-- is written even when a re-post kept the cycle, so such a merchant is classed
+-- operator and goes to support review: conservative by design (OWN-34). Anything else
 -- stays NULL (unknown) rather than being guessed from duration or expiry.
 UPDATE businesses b
 SET subscription_origin = ev.origin
@@ -37,6 +39,8 @@ FROM (
     WHERE sc.business_id = b2.id AND sc.status = 'paid'
       AND sc.kind IN ('first_purchase', 'renewal', 'upgrade')
       AND sc.plan = b2.plan
+      -- a paid charge whose plan change was refused (G-104) never created this cycle
+      AND sc.superseded_at IS NULL AND sc.unapplied_at IS NULL
   ) c ON true
   LEFT JOIN LATERAL (
     SELECT max(ae.created_at) AS at

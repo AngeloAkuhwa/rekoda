@@ -166,6 +166,23 @@ describe('the 0167 backfill uses persisted evidence only', () => {
     expect(await originOf(id)).toBe('operator');
   });
 
+  it('ignores a paid charge whose plan change was refused (superseded or unapplied)', async () => {
+    const id = await seedBusiness();
+    await billingRepo.setPlan(appDb, {
+      businessId: id,
+      plan: 'chat',
+      expiresAt: RENEWS,
+      actor: 'operator:test',
+    });
+    await addCharge(id, '2099-01-01T00:00:00Z');
+    await ownerDb.execute(
+      sql`UPDATE subscription_charges SET superseded_at = now(), unapplied_at = now() WHERE business_id = ${id}::uuid`,
+    );
+    await clear();
+    await backfill();
+    expect(await originOf(id)).toBe('operator');
+  });
+
   it('stays unknown with no evidence, and for an unpaid plan', async () => {
     const noEvidence = await seedBusiness();
     await ownerDb.execute(

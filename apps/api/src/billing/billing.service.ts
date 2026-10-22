@@ -519,6 +519,14 @@ export async function applySettledCharge(
       return 'superseded';
     }
 
+    /* OWN-34 (G-115): an upgrade charge opened before the origin rule existed
+     * must not turn an operator-defined or unknown-origin cycle into a
+     * provider one by settling. The money stays recorded for an operator. */
+    if (charge.kind === 'upgrade' && subscription?.origin !== 'provider') {
+      await subscriptionsRepo.markUnapplied(tx, input.reference, 'support_review', input.when);
+      return 'superseded';
+    }
+
     /**
      * A first purchase resets the anchor to the day it was bought, and MUST.
      *
