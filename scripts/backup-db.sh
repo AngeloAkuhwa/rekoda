@@ -39,13 +39,16 @@ backup_encrypt "$WORK/dump" "$WORK/$NAME"
 rm -f "$WORK/dump"
 backup_sha256 "$WORK/$NAME" >"$WORK/$NAME.sha256"
 
-backup_put "$WORK/$NAME" "$NAME"
-backup_put "$WORK/$NAME.sha256" "$NAME.sha256"
-
-# Read it back: what is stored must be what was sent.
-backup_get "$NAME" "$WORK/readback"
+# Stage under a name backup_list never selects, read it back, and only then
+# publish: checksum first, the listed object last. A failure at any step leaves
+# the previous backup as the newest one, never a half-published object.
+backup_put "$WORK/$NAME" "$NAME.pending"
+backup_get "$NAME.pending" "$WORK/readback"
 [ "$(backup_sha256 "$WORK/readback")" = "$(cat "$WORK/$NAME.sha256")" ] \
   || backup_die "read-back checksum mismatch for $NAME; the backup is NOT trusted"
+backup_put "$WORK/$NAME.sha256" "$NAME.sha256"
+backup_put "$WORK/$NAME" "$NAME"
+backup_delete "$NAME.pending" || true
 
 case "$BACKUP_DEST" in
   s3://*) ;;

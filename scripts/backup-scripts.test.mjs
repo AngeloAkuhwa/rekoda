@@ -118,3 +118,22 @@ test('a failed fetch leaves no temp copy of the encrypted dump behind', () => {
 test('the service has a start timeout', () => {
   assert.match(readFileSync(join(ROOT, 'deploy/systemd/rekoda-backup.service'), 'utf8'), /^TimeoutStartSec=/m);
 });
+
+test('a backup whose checksum cannot be published is never listed as the newest', () => {
+  const t = env();
+  assert.equal(run('scripts/backup-db.sh', t.env).status, 0);
+  const good = readdirSync(t.dest).find((f) => f.endsWith('.dump.enc'));
+  // A cp that fails for the checksum upload, as a storage error after the object went up.
+  const bin = mkdtempSync(join(tmpdir(), 'bin-'));
+  writeFileSync(join(bin, 'cp'), '#!/bin/sh\ncase "$2" in *.sha256.part) exit 1;; esac\nexec /bin/cp "$@"\n', { mode: 0o755 });
+  const failed = spawnSync('bash', [join(ROOT, 'scripts/backup-db.sh')], {
+    env: { ...t.env, PATH: `${bin}:${process.env.PATH}` },
+    encoding: 'utf8',
+  });
+  assert.notEqual(failed.status, 0);
+  const listed = readdirSync(t.dest).filter((f) => /^rekoda-.*\.dump\.enc$/.test(f));
+  assert.deepEqual(listed, [good], 'a half-published backup became the newest listed object');
+  const out = join(t.dest, '..', 'o');
+  const sh = `. scripts/lib/backup-common.sh; backup_require_config; backup_fetch_decrypt '' "${out}"`;
+  assert.equal(spawnSync('bash', ['-c', sh], { cwd: ROOT, env: t.env, encoding: 'utf8' }).status, 0);
+});

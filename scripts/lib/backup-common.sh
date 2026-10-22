@@ -47,6 +47,12 @@ backup_get() { # remote-name local-file
     *) cp "$BACKUP_DEST/$1" "$2" ;;
   esac
 }
+backup_delete() { # remote-name
+  case "$BACKUP_DEST" in
+    s3://*) _backup_aws s3 rm --only-show-errors "${BACKUP_DEST%/}/$1" ;;
+    *) rm -f "$BACKUP_DEST/$1" ;;
+  esac
+}
 backup_list() { # prints object names, oldest first
   case "$BACKUP_DEST" in
     s3://*) _backup_aws s3 ls "${BACKUP_DEST%/}/" | awk '{print $4}' | grep -E '^rekoda-.*\.dump\.enc$' | sort || true ;;
