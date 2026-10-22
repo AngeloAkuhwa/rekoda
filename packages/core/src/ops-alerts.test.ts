@@ -116,6 +116,7 @@ describe('evaluateOpsAlerts (G-26)', () => {
       {
         queue: {
           dead: 4,
+          deadRecent: 4,
           pending: 9,
           running: 1,
           oldestDueSeconds: 999,
