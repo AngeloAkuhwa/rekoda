@@ -64,9 +64,12 @@ ADR 0010 is NOT implemented; this is the nightly logical half only, RPO up to 24
 - **Retention:** a directory destination ages out objects older than `BACKUP_RETAIN_DAYS` only after a
   new backup has been verified and published, so a failing run never deletes the last good backup (stale
   `.pending` and `.part` debris is cleared up front, which frees space only if that debris is what fills
-  the destination; if it is full of real backups, the nightly run fails until someone frees space by hand). **`s3://` retention:** the script does not expire S3 objects. Set a bucket lifecycle rule that keeps at
-  least one prior version, and check the newest object's date weekly: a failing nightly run does not stop
-  the lifecycle clock, so a long outage can age out the last good backup.
+  the destination; if it is full of real backups, the nightly run fails until someone frees space by hand). **`s3://` retention:** the script does not expire S3 objects, and a bucket lifecycle rule cannot
+  guarantee that a minimum number of backups survives: every backup has its own timestamped key, so
+  versioning does not keep an older one, and expiry keeps running while the nightly job fails. Before
+  enabling the timer, either set the expiry well beyond the longest outage you would tolerate without
+  noticing (with the weekly check of the newest object's date below), or leave expiry off until a
+  count-based prune exists. That prune is an open hardening item for G-02, not part of this change.
 - **A drill needs data.** It fails on a restore with no ledger entries, since an empty archive proves
   nothing; run it against a database that holds real or staging books.
 
@@ -113,7 +116,7 @@ switch the application over; do not restore over a database you may still need.
 
 1. Provision a scratch Postgres (local docker is fine).
 2. Pull the newest object from the destination, check its `.sha256` and decrypt it (see "Restore by hand").
-3. `pg_restore -d "$SCRATCH_URL" --no-owner rekoda-<date>.dump`
+3. `pg_restore -d "$SCRATCH_URL" --no-owner restore.dump` (the file written by the decrypt step)
 4. Run the integrity checks (`scripts/restore-drill.sh` does this):
    ```sql
    -- the ledger must balance, in total and per business
