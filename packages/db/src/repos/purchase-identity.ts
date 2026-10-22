@@ -5,7 +5,8 @@
  *
  * Nothing here stores or logs a fingerprint. Every fact is a column that
  * already exists: the stored command's total and reference (a document
- * kind from a closed set and its digits, never letters), the product row a
+ * kind from a closed set and its digits, never letters; read, but never
+ * proof of separate purchases since OWN-32), the product row a
  * name resolves to or a booking moved and whether it is catalogue-linked
  * (`external_catalogue_id`, the only trusted product identity, owner ruling
  * D3), the message's arrival, and the records a held question named.

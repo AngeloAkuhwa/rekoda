@@ -156,9 +156,9 @@ const kindOfWord = (token: string): ReferenceKind | undefined =>
  *    "receipt", "waybill", "PO", "ref", "No."), a "#", or upper-case
  *    letters written into the number ("EMK-0041"). Bare digits are in doubt.
  *  - The kind comes from the word ("invoice 2231" is an invoice); a "#", a
- *    generic word or a letter prefix is kind OTHER, which never proves two
- *    purchases separate, because its letters are never stored and so two
- *    prefixes cannot be told apart.
+ *    generic word or a letter prefix is kind OTHER, whose letters are never
+ *    stored. No reference of any kind proves two purchases separate since
+ *    OWN-32 (G-92(5)).
  *  - The number is ONE run of digits; two runs however joined
  *    ("INV 2231/2232", "EMK-00-41", "INV/2026/114") are in doubt.
  *  - Never a reference: an amount ("100k", "NGN150K", "125,000.00"), the
@@ -488,8 +488,9 @@ export function purchaseIdentityVerdict(
 } {
   const own = matches.filter((m) => m.state === 'pending' && ownerOf(m, actorId) === 'you');
   /* One own waiting preview is replaced. Two or more coexist only because
-   * something proved them separate, so a resend that matches several is
-   * asked about, never allowed to replace them all (Codex review). */
+   * something set them apart (a "separate" answer, two trusted products) or
+   * were left from before OWN-32, so a resend that matches several is asked
+   * about, never allowed to replace them all (Codex review). */
   const replace = own.length === 1 ? own : [];
   const asked = matches.filter((m) => !replace.includes(m));
   return { replace, asked, ask: asked[0] ?? null };

@@ -15022,6 +15022,43 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       expect(await footprint(business.id)).toEqual(before);
     });
 
+    it('with DIFFERENT references kept on both previews, the second yes is still refused (OWN-32)', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await say(
+        'wamid.F6r-o',
+        { ...MILO, supplierReference: 'invoice 0101' },
+        'Milo 100k, invoice 0101',
+      );
+      await say(
+        'wamid.F6r-d',
+        { ...MILO, amount: 100_001, reportedPayment: 100_001, supplierReference: 'invoice 0202' },
+        'Milo 100,001, invoice 0202',
+        DELEGATE,
+      );
+      /* Only the total is aligned: both references stay, as two previews left
+       * from before OWN-32 would carry them. */
+      await withBusiness(db, business.id, (tx) =>
+        tx.execute(sql`
+          UPDATE command_drafts SET command = command || ${ALIGN}::jsonb
+           WHERE business_id = ${business.id}::uuid`),
+      );
+      const refs = await withBusiness(db, business.id, (tx) =>
+        tx.execute<{ ref: string }>(sql`
+          SELECT command->>'supplierReference' AS ref FROM command_drafts
+           WHERE business_id = ${business.id}::uuid ORDER BY insertion_seq`),
+      );
+      expect([...refs].map((r) => r.ref)).toEqual(['INV:0101', 'INV:0202']);
+      await reply('wamid.F6r-yes-1', 'yes');
+      expect(await purchases(business.id)).toBe(1);
+      const before = await footprint(business.id);
+      /* RED before OWN-32: invoice 0101 and invoice 0202 proved two purchases,
+       * so this yes booked the second. */
+      await reply('wamid.F6r-yes-2', 'yes');
+      expect(stubSender.lastText).toContain(RACE);
+      expect(await footprint(business.id)).toEqual(before);
+    });
+
     it('through the command bus too: no idempotency record survives the refusal', async () => {
       const config = deps.config as { commandRecordPurchase: boolean };
       const was = config.commandRecordPurchase;
@@ -15151,7 +15188,6 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
         'Milo 100k invoice 2231',
       );
       await reply('wamid.F9m-a-yes', 'yes');
-      const before = await footprint(business.id);
       await say(
         'wamid.F9m-b',
         { ...MILO, supplierReference: 'INV 2281' },
@@ -15159,13 +15195,11 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
         DELEGATE,
       );
       expect(stubSender.lastText).toContain(QUESTION);
+      const before = await footprint(business.id);
       await reply('wamid.F9m-same', 'same', DELEGATE);
       expect(stubSender.lastText).toContain(SAME_DONE);
       await reply('wamid.F9m-yes', 'yes', DELEGATE);
-      /* Only the delegate's own message was metered: no financial truth. */
-      const { units: _u, audit: _a, ...books } = await footprint(business.id);
-      const { units: _bu, audit: _ba, ...booksBefore } = before;
-      expect(books).toEqual(booksBefore);
+      expect(await footprint(business.id)).toEqual(before);
     });
 
     it('the SAME reference is asked about', async () => {
@@ -16450,6 +16484,29 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       /* Each new draft replaces the one undelivered draft before it: the
        * references no longer set either apart. */
       expect(await purchaseStates(business.id)).toEqual(['superseded', 'superseded', 'pending']);
+    });
+
+    it('a funding-answer rebuild is replaced by a same-total preview with another reference (OWN-32)', async () => {
+      const business = await seedMerchant();
+      await say(
+        'wamid.L2-pos',
+        { ...POS_MILO, supplierReference: 'invoice 2231' },
+        'I bought 10 cartons of Milo for 100k, paid by POS, invoice 2231',
+      );
+      await reply('wamid.L2-bank', 'bank');
+      expect(stubSender.lastText).toContain('Paid in full by transfer');
+      /* RED before OWN-32: invoice 2281 proved this another purchase, so the
+       * rebuild stayed waiting beside it ("is still waiting"). */
+      await say(
+        'wamid.L2-typed',
+        { ...MILO, supplierReference: 'invoice 2281' },
+        'I bought 10 cartons of Milo for 100k cash, invoice 2281',
+      );
+      expect(stubSender.lastText).toContain('was replaced by this one');
+      expect((await purchaseStates(business.id)).filter((s) => s === 'pending')).toHaveLength(1);
+      await reply('wamid.L2-yes', 'yes');
+      await reply('wamid.L2-yes-2', 'yes');
+      expect(await purchases(business.id)).toBe(1);
     });
 
     it("another member's undelivered preview is never replaced by it", async () => {

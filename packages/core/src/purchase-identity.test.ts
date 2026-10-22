@@ -672,8 +672,8 @@ describe('G-92(5), OWN-32: different document references never prove two purchas
   it('two different TRUSTED products still prove it (the rest of D3 stands)', () => {
     expect(
       provenSeparate(
-        facts({ product: trusted('milo'), reference: ref('INV 1') }),
-        record({ product: trusted('peak'), reference: ref('INV 2') }),
+        facts({ product: trusted('milo'), reference: ref('INV 41') }),
+        record({ product: trusted('peak'), reference: ref('INV 42') }),
       ),
     ).toBe(true);
   });
