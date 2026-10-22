@@ -15,7 +15,10 @@
 export interface OpsSnapshot {
   /** Null when the process holds no worker credential: nothing can be judged. */
   queue: {
+    /** All dead jobs. Kept for diagnosis; nothing ever moves a job out of `dead`. */
     dead: number;
+    /** Jobs that died in the health window (24 hours): what an alert can act on. */
+    deadRecent: number;
     pending: number;
     running: number;
     /** Seconds the oldest job that is DUE now has waited unclaimed. */
@@ -23,8 +26,16 @@ export interface OpsSnapshot {
     /** Seconds since the oldest still-pending job was QUEUED, due or not (G-63). */
     oldestQueuedSeconds: number;
   } | null;
-  meta: { unprocessed: number; flagged: number; deliveryFailures: number } | null;
-  paystack: { unprocessed: number; flagged: number; deliveryFailures: number } | null;
+  meta: EventCounts | null;
+  paystack: EventCounts | null;
+}
+
+export interface EventCounts {
+  unprocessed: number;
+  /** Unprocessed and older than the processing grace period: actually stuck. */
+  unprocessedStale: number;
+  flagged: number;
+  deliveryFailures: number;
 }
 
 export interface OpsAlertThresholds {
@@ -32,7 +43,7 @@ export interface OpsAlertThresholds {
   overdueSeconds: number;
   /** A job queued for longer than this and still pending: a retry backlog. */
   backlogSeconds: number;
-  /** Stored but unprocessed provider events above this count. */
+  /** Provider events unprocessed for more than 10 minutes, above this count. */
   unprocessedEvents: number;
   /** WhatsApp `status.failed` receipts in the health window at or above this. */
   deliveryFailures: number;
@@ -62,11 +73,13 @@ export function evaluateOpsAlerts(
   const { queue, meta, paystack } = snapshot;
 
   if (queue) {
-    if (queue.dead > 0) {
+    /* On recent deaths only. Dead rows stay dead for diagnosis, so alerting on
+     * the total would page every cooldown for ever after the first one. */
+    if (queue.deadRecent > 0) {
       alerts.push({
         key: 'jobs.dead',
         severity: 'critical',
-        summary: `${queue.dead} background job(s) exhausted their retries and will not run again`,
+        summary: `${queue.deadRecent} background job(s) exhausted their retries in the last 24 hours and will not run again (${queue.dead} dead in total)`,
       });
     }
     if (queue.oldestDueSeconds > limits.overdueSeconds) {
@@ -95,11 +108,11 @@ export function evaluateOpsAlerts(
         summary: `${paystack.flagged} Paystack event(s) were flagged and need an operator`,
       });
     }
-    if (paystack.unprocessed > limits.unprocessedEvents) {
+    if (paystack.unprocessedStale > limits.unprocessedEvents) {
       alerts.push({
         key: 'webhooks.paystack.unprocessed',
         severity: 'critical',
-        summary: `${paystack.unprocessed} Paystack event(s) are stored but unprocessed (limit ${limits.unprocessedEvents})`,
+        summary: `${paystack.unprocessedStale} Paystack event(s) have waited more than 10 minutes unprocessed (limit ${limits.unprocessedEvents})`,
       });
     }
   }
@@ -112,11 +125,11 @@ export function evaluateOpsAlerts(
         summary: `${meta.flagged} Meta event(s) were flagged and need an operator`,
       });
     }
-    if (meta.unprocessed > limits.unprocessedEvents) {
+    if (meta.unprocessedStale > limits.unprocessedEvents) {
       alerts.push({
         key: 'webhooks.meta.unprocessed',
         severity: 'warning',
-        summary: `${meta.unprocessed} Meta event(s) are stored but unprocessed (limit ${limits.unprocessedEvents})`,
+        summary: `${meta.unprocessedStale} Meta event(s) have waited more than 10 minutes unprocessed (limit ${limits.unprocessedEvents})`,
       });
     }
     if (meta.deliveryFailures >= limits.deliveryFailures) {

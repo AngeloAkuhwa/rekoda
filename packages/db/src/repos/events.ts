@@ -457,6 +457,8 @@ export async function claimStrangerReply(
 export interface EventHealth {
   /** Stored, never processed. A backlog here means a sweep is not running. */
   unprocessed: number;
+  /** Unprocessed for more than 10 minutes: stuck rather than in flight (G-26). */
+  unprocessedStale: number;
   /**
    * Processed but marked with a reason, and not yet worked — the exception
    * queue (§35). OPEN ones only, so this count and `exceptionQueue` below
@@ -488,12 +490,15 @@ export interface EventHealth {
 export async function eventHealth(db: Db, provider: string): Promise<EventHealth> {
   const rows = await db.execute<{
     unprocessed: number;
+    unprocessed_stale: number;
     flagged: number;
     bad: number;
     failed: number;
   }>(sql`
     SELECT
       count(*) FILTER (WHERE processed_at IS NULL)::int              AS unprocessed,
+      count(*) FILTER (WHERE processed_at IS NULL
+                         AND created_at < now() - interval '10 minutes')::int AS unprocessed_stale,
       count(*) FILTER (WHERE processed_at IS NOT NULL
                          AND error IS NOT NULL
                          AND resolved_at IS NULL)::int               AS flagged,
@@ -506,6 +511,7 @@ export async function eventHealth(db: Db, provider: string): Promise<EventHealth
   const row = [...rows][0];
   return {
     unprocessed: row?.unprocessed ?? 0,
+    unprocessedStale: row?.unprocessed_stale ?? 0,
     flagged: row?.flagged ?? 0,
     badSignatures: row?.bad ?? 0,
     deliveryFailures: row?.failed ?? 0,

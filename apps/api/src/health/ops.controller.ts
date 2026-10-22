@@ -144,6 +144,7 @@ export class OpsController {
       alerts: evaluateOpsAlerts({
         queue: queue && {
           dead: queue.dead,
+          deadRecent: queue.deadRecent,
           pending: queue.pending,
           running: queue.running,
           oldestDueSeconds: queue.oldestPendingSeconds,

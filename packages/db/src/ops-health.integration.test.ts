@@ -171,9 +171,31 @@ describe('queue health', () => {
     ).toBe(0);
   });
 
+  it('counts only jobs that died in the last 24 hours as recent deaths (G-26 review)', async () => {
+    // Nothing moves a job out of `dead`, so an alert on the total would page
+    // for ever. The recent count is what the alert reads.
+    const ada = await seedBusiness('+2348030000041');
+    for (let i = 0; i < 2; i++) {
+      await withBusiness(appDb, ada, (tx) =>
+        jobsRepo.enqueue(tx, { businessId: ada, kind: 'inbound.message' }),
+      );
+    }
+    await workerDb.execute(sql`UPDATE jobs SET state = 'dead', updated_at = now()`);
+    await workerDb.execute(sql`
+      UPDATE jobs SET updated_at = now() - interval '3 days'
+      WHERE id = (SELECT id FROM jobs ORDER BY id LIMIT 1)
+    `);
+
+    const health = await jobsRepo.queueHealth(workerDb);
+
+    expect(health.dead).toBe(2);
+    expect(health.deadRecent).toBe(1);
+  });
+
   it('is all zeros on an empty queue rather than throwing', async () => {
     expect(await jobsRepo.queueHealth(workerDb)).toEqual({
       dead: 0,
+      deadRecent: 0,
       pending: 0,
       running: 0,
       oldestPendingSeconds: 0,
@@ -183,6 +205,34 @@ describe('queue health', () => {
 });
 
 describe('event health', () => {
+  it('counts an unprocessed event as stale only after 10 minutes (G-26 review)', async () => {
+    // A burst still being processed is not a backlog; an event that has sat
+    // unprocessed is.
+    await events.recordEvent(workerDb, {
+      provider: 'paystack',
+      eventType: 'charge.success',
+      externalId: 'evt.fresh',
+      payload: { sealed: true },
+      businessId: null,
+    });
+    await events.recordEvent(workerDb, {
+      provider: 'paystack',
+      eventType: 'charge.success',
+      externalId: 'evt.stale',
+      payload: { sealed: true },
+      businessId: null,
+    });
+    await workerDb.execute(sql`
+      UPDATE external_events SET created_at = now() - interval '11 minutes'
+      WHERE external_id = 'evt.stale'
+    `);
+
+    const paystack = await events.eventHealth(workerDb, 'paystack');
+
+    expect(paystack.unprocessed).toBe(2);
+    expect(paystack.unprocessedStale).toBe(1);
+  });
+
   it('separates unprocessed from flagged, per provider', async () => {
     const waiting = await events.recordEvent(workerDb, {
       provider: 'meta',
@@ -256,7 +306,13 @@ describe('event health', () => {
 
     const health = await events.eventHealth(workerDb, 'meta');
 
-    expect(health).toEqual({ unprocessed: 0, flagged: 0, badSignatures: 0, deliveryFailures: 0 });
+    expect(health).toEqual({
+      unprocessed: 0,
+      unprocessedStale: 0,
+      flagged: 0,
+      badSignatures: 0,
+      deliveryFailures: 0,
+    });
   });
 });
 

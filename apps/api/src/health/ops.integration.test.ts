@@ -139,13 +139,26 @@ describe('what the operator health surface says', () => {
     expect(res.json()).toEqual({
       queue: {
         dead: 0,
+        deadRecent: 0,
         pending: 0,
         running: 0,
         oldestPendingSeconds: 0,
         oldestQueuedSeconds: 0,
       },
-      meta: { unprocessed: 0, flagged: 0, badSignatures: 0, deliveryFailures: 0 },
-      paystack: { unprocessed: 0, flagged: 0, badSignatures: 0, deliveryFailures: 0 },
+      meta: {
+        unprocessed: 0,
+        unprocessedStale: 0,
+        flagged: 0,
+        badSignatures: 0,
+        deliveryFailures: 0,
+      },
+      paystack: {
+        unprocessed: 0,
+        unprocessedStale: 0,
+        flagged: 0,
+        badSignatures: 0,
+        deliveryFailures: 0,
+      },
       // The live rejected-signature counters (PR-108): zero on a quiet
       // platform, and the number that actually moves when someone probes.
       rejectedSignatures: { meta: 0, paystack: 0 },

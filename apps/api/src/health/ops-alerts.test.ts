@@ -8,11 +8,18 @@ import {
 } from './ops-alerts.js';
 
 const quiet: OpsSnapshot = {
-  queue: { dead: 0, pending: 0, running: 0, oldestDueSeconds: 0, oldestQueuedSeconds: 0 },
-  meta: { unprocessed: 0, flagged: 0, deliveryFailures: 0 },
-  paystack: { unprocessed: 0, flagged: 0, deliveryFailures: 0 },
+  queue: {
+    dead: 0,
+    deadRecent: 0,
+    pending: 0,
+    running: 0,
+    oldestDueSeconds: 0,
+    oldestQueuedSeconds: 0,
+  },
+  meta: { unprocessed: 0, unprocessedStale: 0, flagged: 0, deliveryFailures: 0 },
+  paystack: { unprocessed: 0, unprocessedStale: 0, flagged: 0, deliveryFailures: 0 },
 };
-const dead: OpsSnapshot = { ...quiet, queue: { ...quiet.queue!, dead: 2 } };
+const dead: OpsSnapshot = { ...quiet, queue: { ...quiet.queue!, dead: 2, deadRecent: 2 } };
 
 function harness(snapshot: () => OpsSnapshot, sink: AlertSink | null) {
   const lines: string[] = [];
@@ -175,6 +182,15 @@ describe('WebhookAlertSink', () => {
       key: 'jobs.dead',
       text: expect.stringContaining('[critical]'),
     });
+  });
+
+  it('gives up on a destination that never answers, so one hung webhook cannot stall the pass', async () => {
+    const hanging = ((_url: unknown, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+      })) as typeof fetch;
+    const sink = new WebhookAlertSink('https://hooks.example.com/x', hanging, 20);
+    await expect(sink.deliver(notice)).rejects.toThrow();
   });
 
   it('throws on a non-2xx answer so the pass retries', async () => {

@@ -72,6 +72,7 @@ export async function collectOpsSnapshot(workerDb: Db | null): Promise<OpsSnapsh
   return {
     queue: {
       dead: queue.dead,
+      deadRecent: queue.deadRecent,
       pending: queue.pending,
       running: queue.running,
       oldestDueSeconds: queue.oldestPendingSeconds,

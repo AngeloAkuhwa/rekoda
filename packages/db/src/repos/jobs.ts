@@ -407,8 +407,10 @@ export async function jobsForBusiness(tx: TenantDb, kind?: string): Promise<JobR
 }
 
 export interface QueueHealth {
-  /** Jobs that exhausted their retries. Nothing retries these again. */
+  /** Jobs that exhausted their retries. Nothing retries these again, and nothing moves them out of `dead`. */
   dead: number;
+  /** Jobs that died in the last 24 hours: what an alert can act on (G-26). */
+  deadRecent: number;
   /** Waiting to run. A number that only grows means the worker is not. */
   pending: number;
   /** Seconds the OLDEST job that is DUE has waited. The worker-not-keeping-up alarm. */
@@ -437,6 +439,7 @@ export interface QueueHealth {
 export async function queueHealth(db: Db): Promise<QueueHealth> {
   const rows = await db.execute<{
     dead: number;
+    dead_recent: number;
     pending: number;
     running: number;
     oldest_seconds: number | null;
@@ -444,6 +447,8 @@ export async function queueHealth(db: Db): Promise<QueueHealth> {
   }>(sql`
     SELECT
       count(*) FILTER (WHERE state = 'dead')::int    AS dead,
+      count(*) FILTER (WHERE state = 'dead'
+                         AND updated_at > now() - interval '24 hours')::int AS dead_recent,
       count(*) FILTER (WHERE state = 'pending')::int AS pending,
       count(*) FILTER (WHERE state = 'running')::int AS running,
       EXTRACT(EPOCH FROM (now() - min(run_at) FILTER (WHERE state = 'pending')))::int
@@ -455,6 +460,7 @@ export async function queueHealth(db: Db): Promise<QueueHealth> {
   const row = [...rows][0];
   return {
     dead: row?.dead ?? 0,
+    deadRecent: row?.dead_recent ?? 0,
     pending: row?.pending ?? 0,
     running: row?.running ?? 0,
     oldestPendingSeconds: Math.max(0, row?.oldest_seconds ?? 0),

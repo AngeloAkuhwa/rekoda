@@ -7,9 +7,16 @@ import {
 } from './ops-alerts.js';
 
 const healthy: OpsSnapshot = {
-  queue: { dead: 0, pending: 3, running: 1, oldestDueSeconds: 2, oldestQueuedSeconds: 5 },
-  meta: { unprocessed: 0, flagged: 0, deliveryFailures: 0 },
-  paystack: { unprocessed: 0, flagged: 0, deliveryFailures: 0 },
+  queue: {
+    dead: 0,
+    deadRecent: 0,
+    pending: 3,
+    running: 1,
+    oldestDueSeconds: 2,
+    oldestQueuedSeconds: 5,
+  },
+  meta: { unprocessed: 0, unprocessedStale: 0, flagged: 0, deliveryFailures: 0 },
+  paystack: { unprocessed: 0, unprocessedStale: 0, flagged: 0, deliveryFailures: 0 },
 };
 
 const keys = (snapshot: OpsSnapshot): string[] =>
@@ -24,12 +31,34 @@ describe('evaluateOpsAlerts (G-26)', () => {
     expect(keys({ queue: null, meta: null, paystack: null })).toEqual([]);
   });
 
-  it('pages on a dead job: nothing retries it again', () => {
+  it('pages on a job that died recently: nothing retries it again', () => {
     const alerts = evaluateOpsAlerts(
-      { ...healthy, queue: { ...healthy.queue!, dead: 1 } },
+      { ...healthy, queue: { ...healthy.queue!, dead: 1, deadRecent: 1 } },
       DEFAULT_OPS_ALERT_THRESHOLDS,
     );
     expect(alerts).toEqual([expect.objectContaining({ key: 'jobs.dead', severity: 'critical' })]);
+  });
+
+  it('does not page forever on old dead jobs: nothing ever clears the dead state', () => {
+    // Dead rows are kept for diagnosis and never leave `dead`. Alerting on the
+    // total would page every cooldown for ever after the first death.
+    expect(keys({ ...healthy, queue: { ...healthy.queue!, dead: 7, deadRecent: 0 } })).toEqual([]);
+  });
+
+  it('ignores a burst of webhooks still being processed; pages only on stale ones', () => {
+    const limit = DEFAULT_OPS_ALERT_THRESHOLDS.unprocessedEvents;
+    const fresh = {
+      ...healthy,
+      paystack: { ...healthy.paystack!, unprocessed: limit + 40, unprocessedStale: 0 },
+      meta: { ...healthy.meta!, unprocessed: limit + 40, unprocessedStale: 0 },
+    };
+    expect(keys(fresh)).toEqual([]);
+    expect(
+      keys({
+        ...healthy,
+        paystack: { ...healthy.paystack!, unprocessed: limit + 1, unprocessedStale: limit + 1 },
+      }),
+    ).toEqual(['webhooks.paystack.unprocessed']);
   });
 
   it('pages when due work is not being claimed (worker down or starved)', () => {
@@ -65,7 +94,10 @@ describe('evaluateOpsAlerts (G-26)', () => {
   it('warns on a flagged Meta event and on a pile of unprocessed events', () => {
     const limit = DEFAULT_OPS_ALERT_THRESHOLDS.unprocessedEvents;
     expect(
-      keys({ ...healthy, meta: { ...healthy.meta!, flagged: 1, unprocessed: limit + 1 } }),
+      keys({
+        ...healthy,
+        meta: { ...healthy.meta!, flagged: 1, unprocessed: limit + 1, unprocessedStale: limit + 1 },
+      }),
     ).toEqual(['webhooks.meta.flagged', 'webhooks.meta.unprocessed']);
   });
 
@@ -89,8 +121,8 @@ describe('evaluateOpsAlerts (G-26)', () => {
           oldestDueSeconds: 999,
           oldestQueuedSeconds: 9_999,
         },
-        meta: { unprocessed: 99, flagged: 3, deliveryFailures: 50 },
-        paystack: { unprocessed: 99, flagged: 3, deliveryFailures: 0 },
+        meta: { unprocessed: 99, unprocessedStale: 99, flagged: 3, deliveryFailures: 50 },
+        paystack: { unprocessed: 99, unprocessedStale: 99, flagged: 3, deliveryFailures: 0 },
       },
       DEFAULT_OPS_ALERT_THRESHOLDS,
     );
