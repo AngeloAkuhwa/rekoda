@@ -27,6 +27,8 @@ import {
   normalisePurchaseReference,
   purchaseArrival,
   purchaseTotalK,
+  spendKindOf,
+  spendTotalK,
   type ProductIdentity,
   type PurchaseFacts,
   type PurchaseRecord,
@@ -133,13 +135,14 @@ function draftsQuery(businessId: string, where: ReturnType<typeof sql>) {
          ORDER BY p.created_at
          LIMIT 1) p ON true
      WHERE d.business_id = ${businessId}::uuid
-       AND d.intent = 'RecordPurchase'
+       AND d.intent IN ('RecordPurchase', 'RecordExpense')
        AND ${where}`;
 }
 
 function factsOf(row: DraftRow, amountK: number): PurchaseFacts {
   const command = row.command as Record<string, unknown>;
   return {
+    kind: spendKindOf(command) ?? 'purchase',
     amountK,
     at: new Date(row.at),
     /* Only a product that arrives with a usable quantity is one (Codex
@@ -154,8 +157,8 @@ function factsOf(row: DraftRow, amountK: number): PurchaseFacts {
 }
 
 /**
- * The facts of one purchase draft, whatever its state, or null when the
- * draft is not a readable purchase of this business.
+ * The facts of one purchase or expense draft (G-87), whatever its state, or
+ * null when the draft is not a readable spend of this business.
  */
 export async function draftFacts(
   tx: TenantDb,
@@ -166,7 +169,7 @@ export async function draftFacts(
   const rows = await tx.execute<DraftRow>(draftsQuery(businessId, sql`d.id = ${draftId}::uuid`));
   const row = [...rows][0];
   if (!row) return null;
-  const amountK = purchaseTotalK(row.command);
+  const amountK = spendTotalK(row.command);
   if (amountK === null) return null;
   return { ...factsOf(row, amountK), requestedBy: row.requested_by };
 }
@@ -181,6 +184,8 @@ export async function newPurchaseFacts(
   businessId: string,
   input: {
     messageId: string;
+    /** A stock purchase or an expense (G-87); absent means a purchase. */
+    kind?: 'purchase' | 'expense';
     amountK: number;
     productMention: string | null;
     reference: unknown;
@@ -211,6 +216,7 @@ export async function newPurchaseFacts(
       ${declaredLineage(sql`${input.separateFrom ?? null}::uuid`, businessId, 'h')}`);
   const row = [...rows][0];
   return {
+    kind: input.kind ?? 'purchase',
     amountK: input.amountK,
     at: row?.at ? new Date(row.at) : new Date(),
     product: productOf(row?.product_id ?? null, row?.product_trusted ?? null),
@@ -250,6 +256,14 @@ export async function purchaseRecords(
     bookedSince?: Date;
     messageId?: string;
     /**
+     * Expenses too (G-87, OWN-31): pending expense drafts and recorded
+     * non-stock expenses booked in Chat, so a purchase read as an expense,
+     * or an expense read as a purchase, is compared across the two kinds.
+     * Core never compares two expenses. A purchase order receive asks about
+     * them too, but only ever links to stock purchases.
+     */
+    withExpenses?: boolean;
+    /**
      * Only purchases booked in CHAT that no purchase order was answered
      * SAME against (G-89): what a dashboard receive is compared with. Another
      * received order is its own document, never this one's duplicate, and a
@@ -286,7 +300,7 @@ export async function purchaseRecords(
       ),
     );
     for (const row of pending) {
-      const total = purchaseTotalK(row.command);
+      const total = options.withExpenses ? spendTotalK(row.command) : purchaseTotalK(row.command);
       if (total !== amountK) continue;
       records.push({
         ...factsOf(row, total),
@@ -319,8 +333,9 @@ export async function purchaseRecords(
     product_id: string | null;
     product_trusted: boolean | null;
     bill_number: string | null;
+    category: string | null;
   }>(sql`
-    SELECT e.id, d.id AS draft_id, e.created_at AS booked_at,
+    SELECT e.id, d.id AS draft_id, e.created_at AS booked_at, e.category,
            CASE WHEN m.id IS NULL THEN e.created_at ELSE ${arrivalOf(sql`m`)} END AS at,
            d.requested_by, d.command,
            sep.asked_about_drafts::text[] AS named_drafts,
@@ -350,7 +365,11 @@ export async function purchaseRecords(
       LEFT JOIN products p ON p.id = mv.product_id AND p.business_id = e.business_id
       LEFT JOIN bills b ON b.expense_id = e.id AND b.business_id = e.business_id
      WHERE e.business_id = ${businessId}::uuid
-       AND e.category = 'stock'
+       AND ${
+         options.withExpenses
+           ? sql`(e.category = 'stock' OR e.source_type = 'chat')`
+           : sql`e.category = 'stock'`
+       }
        AND e.status = 'recorded'
        AND e.amount_k = ${amountK}
        AND ${window}
@@ -369,6 +388,7 @@ export async function purchaseRecords(
   for (const row of booked) {
     const command = (row.command ?? {}) as Record<string, unknown>;
     records.push({
+      kind: row.category === 'stock' ? 'purchase' : 'expense',
       amountK,
       at: new Date(row.at),
       product: productOf(row.product_id, row.product_trusted),
@@ -416,6 +436,30 @@ export async function linkableChatPurchase(
   return [...rows].length === 1;
 }
 
+/**
+ * Whether `expenseId` is a recorded Chat EXPENSE (not a stock purchase) of
+ * exactly this total (G-87): the receive's SAME cannot link a stock order to
+ * it, because the expense put no stock on the shelf, so the caller says so
+ * and changes nothing.
+ */
+export async function chatExpenseOfTotal(
+  tx: TenantDb,
+  businessId: string,
+  expenseId: string,
+  amountK: number,
+): Promise<boolean> {
+  if (!UUID.test(expenseId)) return false;
+  const rows = await tx.execute<{ ok: number }>(sql`
+    SELECT 1 AS ok FROM expenses e
+     WHERE e.business_id = ${businessId}::uuid
+       AND e.id = ${expenseId}::uuid
+       AND e.source_type = 'chat'
+       AND e.category <> 'stock'
+       AND e.status = 'recorded'
+       AND e.amount_k = ${amountK}`);
+  return [...rows].length === 1;
+}
+
 async function clockOf(tx: TenantDb, asOf: Date | undefined): Promise<Date> {
   if (asOf) return asOf;
   const rows = await tx.execute<{ now: Date | string }>(sql`SELECT clock_timestamp() AS now`);
@@ -445,6 +489,7 @@ export async function unseenOwnPurchaseDrafts(
     draftsQuery(
       businessId,
       sql`d.state = 'pending' AND NOT d.previewed
+          AND d.intent = 'RecordPurchase'
           AND d.requested_by = ${options.actorId}::uuid
           AND d.expires_at > ${options.asOf.toISOString()}::timestamptz
           AND d.id IS DISTINCT FROM ${excludeUuid}::uuid

@@ -15,6 +15,8 @@ import {
   purchaseIdentityVerdict,
   purchaseMatches,
   purchaseTotalK,
+  spendKindOf,
+  spendTotalK,
   sameRecord,
   storedPurchaseReference,
   commandPurchaseReference,
@@ -676,5 +678,51 @@ describe('G-92(5), OWN-32: different document references never prove two purchas
         record({ product: trusted('peak'), reference: ref('INV 42') }),
       ),
     ).toBe(true);
+  });
+});
+
+describe('G-87, OWN-31: a purchase and an expense of one total are compared, two expenses never', () => {
+  const expense = { kind: 'expense' as const };
+
+  it('a booked stock purchase matches a new expense of the same total', () => {
+    const booked = record();
+    expect(purchaseMatches(facts(expense), [booked], NOW)).toEqual([booked]);
+  });
+
+  it('a booked expense matches a new stock purchase of the same total', () => {
+    const booked = record(expense);
+    expect(purchaseMatches(facts(), [booked], NOW)).toEqual([booked]);
+  });
+
+  it('two expenses of one total are never compared (genuine operating expenses stay distinct)', () => {
+    expect(purchaseMatches(facts(expense), [record(expense)], NOW)).toEqual([]);
+    const waiting = record({ ...expense, state: 'pending', bookedAt: null });
+    expect(purchaseMatches(facts(expense), [waiting], NOW)).toEqual([]);
+  });
+
+  it('a different total, or a "separate" answer naming it, is never asked about', () => {
+    const booked = record(expense);
+    expect(purchaseMatches(facts({ amountK: 1 }), [booked], NOW)).toEqual([]);
+    expect(purchaseMatches(facts({ separateFrom: [booked.self] }), [booked], NOW)).toEqual([]);
+  });
+
+  it("the member's own waiting preview of the OTHER kind is asked about, never replaced", () => {
+    const ownExpense = record({ ...expense, id: 'x', state: 'pending', bookedAt: null });
+    const verdict = purchaseIdentityVerdict([ownExpense], 'owner', 'purchase');
+    expect(verdict.replace).toEqual([]);
+    expect(verdict.ask).toBe(ownExpense);
+    const ownPurchase = record({ id: 'p', state: 'pending', bookedAt: null });
+    const forExpense = purchaseIdentityVerdict([ownPurchase], 'owner', 'expense');
+    expect(forExpense.replace).toEqual([]);
+    expect(forExpense.ask).toBe(ownPurchase);
+  });
+
+  it('spendTotalK reads both kinds; spendKindOf names them', () => {
+    expect(spendTotalK({ intent: 'RecordExpense', amount: 100_000 })).toBe(10_000_000);
+    expect(spendTotalK({ intent: 'RecordPurchase', amount: 100_000 })).toBe(10_000_000);
+    expect(spendTotalK({ intent: 'RecordSale', amount: 100_000 })).toBeNull();
+    expect(spendTotalK({ intent: 'RecordExpense', amount: 0 })).toBeNull();
+    expect(spendKindOf({ intent: 'RecordExpense' })).toBe('expense');
+    expect(spendKindOf({ intent: 'RecordPurchase' })).toBe('purchase');
   });
 });

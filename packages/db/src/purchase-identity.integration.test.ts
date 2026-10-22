@@ -186,7 +186,7 @@ describe('a held purchase (0158)', () => {
     expect(await stateOf(businessId, fresh.id)).toBe('superseded');
   });
 
-  it('"separate" may only name another purchase draft, never itself or a non-purchase', async () => {
+  it('"separate" may only name another draft from a spend draft, never itself or another intent (0166)', async () => {
     const { businessId } = await seedBusiness();
     const held = await draft(businessId, MILO, { held: true });
     await expect(
@@ -198,10 +198,23 @@ describe('a held purchase (0158)', () => {
     await expect(
       withBusiness(app, businessId, (tx) =>
         tx.execute(sql`
-          UPDATE command_drafts SET intent = 'RecordExpense', separate_from = ${held.id}::uuid
+          UPDATE command_drafts SET intent = 'RecordSale', separate_from = ${held.id}::uuid
            WHERE id = ${expense.id}::uuid`),
       ),
     ).rejects.toThrow();
+    /* G-87 (OWN-31): an expense draft may be a "separate" answer's preview. */
+    await expect(
+      withBusiness(app, businessId, (tx) =>
+        tx.execute(sql`
+          UPDATE command_drafts SET intent = 'RecordExpense', separate_from = ${held.id}::uuid
+           WHERE id = ${expense.id}::uuid`),
+      ),
+    ).resolves.toBeDefined();
+    await withBusiness(app, businessId, (tx) =>
+      tx.execute(sql`
+        UPDATE command_drafts SET intent = 'RecordPurchase', separate_from = NULL
+         WHERE id = ${expense.id}::uuid`),
+    );
     await expect(
       withBusiness(app, businessId, (tx) =>
         tx.execute(sql`

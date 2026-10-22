@@ -783,6 +783,8 @@ export const receivePurchaseOrderResponse = z.discriminatedUnion('outcome', [
           bookedBy: z.enum(['you', 'another_member', 'unknown']),
           /** The supplier bill it raised, when bought on credit. */
           billNumber: z.string().nullable(),
+          /** How Chat recorded it (G-87): a stock purchase, or an expense. */
+          kind: z.enum(['purchase', 'expense']),
         }),
       )
       .min(1),
@@ -812,6 +814,16 @@ export const receivePurchaseOrderResponse = z.discriminatedUnion('outcome', [
    * different total, or already linked to another order): nothing written.
    */
   z.object({ outcome: z.literal('no_longer_matches'), poNumber: z.string() }),
+  /**
+   * SAME naming a purchase Chat recorded as an EXPENSE (G-87, OWN-31): a
+   * stock order cannot be linked to it, because it put no stock on the
+   * shelf. Nothing written; the order stays open.
+   */
+  z.object({
+    outcome: z.literal('same_as_expense'),
+    poNumber: z.string(),
+    expenseId: z.string().uuid(),
+  }),
 ]);
 
 export const cancelPurchaseOrderRequest = z.object({

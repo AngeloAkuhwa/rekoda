@@ -1987,7 +1987,15 @@ export interface PurchaseIdentitySubject {
   readonly bookedAt: Date | null;
   /** The bill a purchase on credit raised, if any: a number both sides share. */
   readonly billNumber: string | null;
+  /** What the matching record is (G-87); absent means a stock purchase. */
+  readonly kind?: 'purchase' | 'expense';
+  /** What the spend being asked about is (G-87); absent means a purchase. */
+  readonly asking?: 'purchase' | 'expense';
 }
+
+/** A question across kinds (G-87): a purchase and an expense, either way. */
+const acrossKinds = (s: PurchaseIdentitySubject) =>
+  (s.kind ?? 'purchase') !== 'purchase' || (s.asking ?? 'purchase') !== 'purchase';
 
 /** "today at 10:42" or "yesterday at 22:15", Lagos time (UTC+1, no DST). */
 function lagosWhen(at: Date, now: Date): string {
@@ -2013,11 +2021,17 @@ function identityLead(subject: PurchaseIdentitySubject, now: Date): string {
           : '';
     const bill = subject.billNumber ? ` (bill ${subject.billNumber})` : '';
     const when = subject.bookedAt ? ` ${lagosWhen(subject.bookedAt, now)}` : '';
-    return `A stock purchase of ${amount} was already saved${when}${by}${bill}.`;
+    const what = subject.kind === 'expense' ? 'An expense' : 'A stock purchase';
+    return `${what} of ${amount} was already saved${when}${by}${bill}.`;
   }
   const from = subject.owner === 'another_member' ? ', from another member' : '';
-  return `A preview of a ${amount} stock purchase is already waiting for a yes${from}.`;
+  const what = subject.kind === 'expense' ? 'expense' : 'stock purchase';
+  return `A preview of a ${amount} ${what} is already waiting for a yes${from}.`;
 }
+
+const IDENTITY_CHOICES_ACROSS =
+  'Reply *same* if it is the same one, and nothing more will be saved.\n' +
+  'Reply *separate* if it is a different one, and I will show it to you to check first.';
 
 const IDENTITY_CHOICES =
   'Reply *same* if it is the same one, and nothing more will be saved.\n' +
@@ -2028,18 +2042,35 @@ const IDENTITY_CHOICES_MANY =
   'Reply *separate* if it is different from all of them, and I will show it to you to check first.';
 
 /** How the question opens: every record it names, never only one. */
+/**
+ * How many records the question names, whether something new came in since
+ * it was last asked, and what kind each named record is (G-87): a question
+ * naming a purchase and an expense never calls them all stock purchases.
+ */
+interface IdentityQuestionOptions {
+  readonly named?: number;
+  readonly newSince?: boolean;
+  readonly kinds?: readonly ('purchase' | 'expense')[];
+}
+
 function identityQuestionText(
   subject: PurchaseIdentitySubject,
   now: Date,
-  options: { readonly named?: number; readonly newSince?: boolean },
+  options: IdentityQuestionOptions,
 ): string {
   const named = options.named ?? 1;
   const lead = options.newSince ? 'Something new came in since I asked. ' : '';
   if (named > 1) {
+    const mixed = acrossKinds(subject) || (options.kinds ?? []).includes('expense');
+    const what = mixed ? 'purchases or expenses' : 'stock purchases';
     return (
-      `${lead}I found ${named} stock purchases of ${formatKobo(subject.amountK)} already saved or ` +
-      `waiting in the last 24 hours. Is this the same purchase?\n\n${IDENTITY_CHOICES_MANY}`
+      `${lead}I found ${named} ${what} of ${formatKobo(subject.amountK)} already saved or ` +
+      `waiting in the last 24 hours. Is this the same ${mixed ? 'one' : 'purchase'}?\n\n` +
+      IDENTITY_CHOICES_MANY
     );
+  }
+  if (acrossKinds(subject)) {
+    return `${lead}${identityLead(subject, now)} Is this the same one?\n\n${IDENTITY_CHOICES_ACROSS}`;
   }
   return `${lead}${identityLead(subject, now)} Is this the same purchase?\n\n${IDENTITY_CHOICES}`;
 }
@@ -2055,7 +2086,7 @@ function identityQuestionText(
 export function purchaseIdentityQuestion(
   subject: PurchaseIdentitySubject,
   now: Date,
-  options: { readonly named?: number; readonly newSince?: boolean } = {},
+  options: IdentityQuestionOptions = {},
 ): Reply {
   return reply(identityQuestionText(subject, now, options));
 }
@@ -2073,9 +2104,16 @@ export function purchaseIdentityAtYes(subject: PurchaseIdentitySubject, now: Dat
  * A "yes", "na so", "no" or a doubtful answer to the identity question
  * (G-81): never an answer, and never a confirmation of an older preview.
  */
-export function purchaseIdentityReask(options: { readonly afterNo?: boolean } = {}): Reply {
+export function purchaseIdentityReask(
+  /** What the held spend is (G-87): an expense is never called a purchase. */
+  options: { readonly afterNo?: boolean; readonly kind?: 'purchase' | 'expense' } = {},
+): Reply {
+  const what =
+    options.kind === 'expense'
+      ? 'whether this expense is a new one'
+      : 'whether this is a second purchase';
   return reply(
-    'Please reply *same* or *separate*, so I know whether this is a second purchase. ' +
+    `Please reply *same* or *separate*, so I know ${what}. ` +
       'Nothing was saved.' +
       /* Never "cancel" here: it withdraws every waiting preview in the
        * business, another member's too (Codex review of 5bfe87e). "same"
@@ -2091,7 +2129,7 @@ export function purchaseIdentityReask(options: { readonly afterNo?: boolean } = 
  */
 export function previewUnderQuestion(): Reply {
   return reply(
-    'Nothing was saved from your yes. That preview matches a purchase already saved, and ' +
+    'Nothing was saved from your yes. That preview matches a record already saved, and ' +
       'the member who said yes to it is being asked whether it is the same one.',
   );
 }
@@ -2120,9 +2158,18 @@ export function samePurchase(
   if (subject.state === 'booked') {
     const when = subject.bookedAt ? ` ${lagosWhen(subject.bookedAt, now)}` : '';
     const bill = subject.billNumber ? ` (bill ${subject.billNumber})` : '';
+    const what = subject.kind === 'expense' ? 'expense' : 'purchase';
     return reply(
-      `OK, nothing more was saved. The ${formatKobo(subject.amountK)} purchase saved` +
+      `OK, nothing more was saved. The ${formatKobo(subject.amountK)} ${what} saved` +
         `${when}${bill} stays as it is.`,
+    );
+  }
+  if (subject.kind === 'expense') {
+    return reply(
+      subject.owner === 'another_member'
+        ? 'OK, nothing more was saved. The preview another member sent of that expense is ' +
+            'still waiting for a yes.'
+        : 'OK, nothing more was saved. The preview of that expense is still waiting for a yes.',
     );
   }
   /* Never "only the member who sent it": any member may confirm a waiting
@@ -2137,8 +2184,8 @@ export function samePurchase(
 }
 
 /** "separate": a FRESH preview, which only a normal yes saves. */
-export function separatePurchase(preview: Reply): Reply {
-  return reply(`OK, this is a separate purchase.\n\n${preview.text}`);
+export function separatePurchase(preview: Reply, kind: 'purchase' | 'expense' = 'purchase'): Reply {
+  return reply(`OK, this is a separate ${kind}.\n\n${preview.text}`);
 }
 
 /** "same" or "separate" after the identity question closed (G-81). */
@@ -2152,7 +2199,7 @@ export function purchaseIdentityClosed(
     );
   }
   return reply(
-    'That question has closed, so nothing was saved. If it is a separate purchase, ' +
-      'send the purchase again as a new message.',
+    'That question has closed, so nothing was saved. If it is a separate one, ' +
+      'send it as a new message.',
   );
 }

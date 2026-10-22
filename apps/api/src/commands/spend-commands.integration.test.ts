@@ -480,6 +480,92 @@ describe('two chat purchases of one total, at the same moment (G-81)', () => {
     expect(await count(businessId, 'inventory_movements')).toBe(1);
   });
 
+  /* G-87 (OWN-31): one real purchase confirmed once as a stock purchase and
+   * once as an expense, at the same moment on two connections, books once. */
+  const expense = (businessId: string, sourceId: string): RecordExpenseCmdInput => ({
+    businessId,
+    description: '10 cartons of Milo',
+    category: 'supplies',
+    amountK: 10_000_000,
+    method: 'cash',
+    sourceType: 'chat',
+    sourceId,
+  });
+
+  it('a purchase and an expense of one total, on two connections, book ONE record (G-87)', async () => {
+    const businessId = await seedBusiness();
+    const pools = [createDb(urls.app, { max: 1 }), createDb(urls.app, { max: 1 })];
+    let raced: PromiseSettledResult<unknown>[];
+    try {
+      raced = await Promise.allSettled([
+        withBusiness(pools[0]!.db, businessId, (tx) =>
+          recordPurchaseWork(tx, purchase(businessId, '00000000-0000-4000-8000-0000000000c1')),
+        ),
+        withBusiness(pools[1]!.db, businessId, (tx) =>
+          recordExpenseWork(tx, expense(businessId, '00000000-0000-4000-8000-0000000000c2')),
+        ),
+      ]);
+    } finally {
+      await Promise.all(pools.map(({ close }) => close()));
+    }
+    expect(raced.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const refused = raced.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect(refused?.reason?.name).toBe('PurchaseIdentityCollision');
+    expect(await count(businessId, 'expenses')).toBe(1);
+    expect(await count(businessId, 'ledger_transactions')).toBe(1);
+  });
+
+  it('an expense after a booked purchase of its total is refused, and the reverse (G-87)', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(appDb, businessId, (tx) =>
+      recordPurchaseWork(tx, purchase(businessId, '00000000-0000-4000-8000-0000000000d1')),
+    );
+    await expect(
+      withBusiness(appDb, businessId, (tx) =>
+        recordExpenseWork(tx, expense(businessId, '00000000-0000-4000-8000-0000000000d2')),
+      ),
+    ).rejects.toMatchObject({ name: 'PurchaseIdentityCollision' });
+    const other = await seedBusiness();
+    await withBusiness(appDb, other, (tx) =>
+      recordExpenseWork(tx, expense(other, '00000000-0000-4000-8000-0000000000d3')),
+    );
+    await expect(
+      withBusiness(appDb, other, (tx) =>
+        recordPurchaseWork(tx, purchase(other, '00000000-0000-4000-8000-0000000000d4')),
+      ),
+    ).rejects.toMatchObject({ name: 'PurchaseIdentityCollision' });
+    expect(await count(businessId, 'expenses')).toBe(1);
+    expect(await count(other, 'expenses')).toBe(1);
+  });
+
+  it('two expenses of one total are genuine operating expenses: both book (G-87)', async () => {
+    const businessId = await seedBusiness();
+    const pools = [createDb(urls.app, { max: 1 }), createDb(urls.app, { max: 1 })];
+    try {
+      await Promise.all(
+        pools.map(({ db }, i) =>
+          withBusiness(db, businessId, (tx) =>
+            recordExpenseWork(tx, expense(businessId, `00000000-0000-4000-8000-0000000000e${i}`)),
+          ),
+        ),
+      );
+    } finally {
+      await Promise.all(pools.map(({ close }) => close()));
+    }
+    expect(await count(businessId, 'expenses')).toBe(2);
+  });
+
+  it('a recurring expense is never compared (G-87)', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(appDb, businessId, (tx) =>
+      recordPurchaseWork(tx, purchase(businessId, '00000000-0000-4000-8000-0000000000f1')),
+    );
+    await withBusiness(appDb, businessId, (tx) =>
+      recordExpenseWork(tx, { ...expense(businessId, 'rec-1'), sourceType: 'recurring' }),
+    );
+    expect(await count(businessId, 'expenses')).toBe(2);
+  });
+
   it('eight at once still book exactly one', async () => {
     const businessId = await seedBusiness();
     const raced = await settle(businessId, 8);
