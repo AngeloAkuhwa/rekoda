@@ -600,14 +600,17 @@ function statusOf(
 }
 
 /**
- * OWN-33 (G-115): a dated paid cycle that is not a standard month. A dated
- * expiry with no recorded cycle start cannot be shown to be monthly either, so
+ * OWN-33 (G-115): a paid cycle that is not a standard month. An expiry with no
+ * recorded cycle start, or no expiry at all, cannot be shown to be monthly, so
  * it is treated as custom rather than prorated over an invented span.
  */
 function isCustomCycle(
   subscription: { cycleStartedAt: Date | null; planExpiresAt: Date | null } | null,
 ): boolean {
-  if (!subscription?.planExpiresAt) return false;
+  if (!subscription) return false;
+  /* An upgrade only exists for an already-paid plan, so no expiry at all is an
+   * open-ended operator arrangement: there is no month to prorate over. */
+  if (!subscription.planExpiresAt) return true;
   if (!subscription.cycleStartedAt) return true;
   return !isStandardMonthlyCycle(subscription.cycleStartedAt, subscription.planExpiresAt);
 }

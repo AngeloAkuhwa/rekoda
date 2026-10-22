@@ -22,6 +22,7 @@ import {
   billingQuoteResponse,
 } from '@rekoda/contracts';
 import {
+  billingRepo,
   createDb,
   identity,
   marginRepo,
@@ -272,6 +273,26 @@ describe('paying, and the gate in front of it', () => {
     await ownerDb.execute(sql`UPDATE businesses SET cycle_started_at = NULL`);
 
     const answer = await confirmedBilling().changePlan(businessId, 'complete', now);
+    expect(answer).toEqual({ state: 'unavailable', reason: 'support_review' });
+    const charges = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.chargesFor(tx, businessId),
+    );
+    expect(charges.count).toBe(0);
+  });
+
+  it('treats an open-ended paid plan (no expiry) as custom, not prorated (OWN-33)', async () => {
+    const { businessId } = await onboard('+2348177100097');
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'chat',
+      expiresAt: null,
+      actor: 'operator:test-g115',
+    });
+
+    const billing = confirmedBilling();
+    const quote = await billing.quote(businessId, 'complete', new Date());
+    expect(quote.supportReview).toBe(true);
+    const answer = await billing.changePlan(businessId, 'complete', new Date());
     expect(answer).toEqual({ state: 'unavailable', reason: 'support_review' });
     const charges = await withBusiness(db, businessId, (tx) =>
       subscriptionsRepo.chargesFor(tx, businessId),
