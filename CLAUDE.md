@@ -13,7 +13,9 @@
 Claude Code is the engineering assistant on this repository. The workflow
 is deliberately simple: Angelo assigns a task, Claude reads the canonical
 docs and current state, Claude implements, normal CI runs, Angelo reviews,
-the PR merges. There is no planner agent, no reviewer agent, no signed
+the PR merges. (Exception: the MVP Autopilot routine, OWN-26, may merge the
+PRs it drives under the gates in `docs/REKODA_MVP_AUTOPILOT_PLAYBOOK.md`.)
+There is no planner agent, no reviewer agent, no signed
 evidence, no agent labels. (Do not confuse this with the **product's** AI:
 Rekoda the product calls Anthropic Claude to interpret merchants'
 messages. That is application code under `apps/api/src/ai/`, not this
@@ -41,17 +43,18 @@ explicit owner decision; determine the actual state; fix the document.
 Never resolve a conflict by picking the convenient one, and record any
 material contradiction in `docs/REKODA_LAUNCH_READINESS.md`.
 
-| #   | Document                               | Answers                                                                                        |
-| --- | -------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| 1   | `docs/REKODA_CANONICAL_SPEC.md`        | What Rekoda is supposed to do (APPROVED, FROZEN, v1.6.6). Product intent, required behaviour   |
-| 2   | `docs/REKODA_CURRENT_STATE.md`         | What actually exists in code today, capability by capability, with evidence                    |
-| 3   | `docs/REKODA_LAUNCH_READINESS.md`      | What prevents real users, the gates, the gaps, the test journeys, the staging plan             |
-| 4   | `docs/REKODA_USER_JOURNEYS.md`         | How a merchant and a customer experience each journey                                          |
-| 5   | `docs/REKODA_OWNER_DECISIONS.md`       | Owner rulings (later wins until the spec absorbs them) and the external go-live register       |
-| 6   | `docs/adr/`                            | Why technical decisions were made; check the Status line, superseded ADRs are history          |
-| 7   | `docs/REKODA_DESIGN_SYSTEM.md`         | What a screen may claim and which UI patterns exist (tokens: `design-system/rekoda/MASTER.md`) |
-| 8   | `docs/HANDOFF.md`                      | Session continuity: current SHA, last work, next actions. Operational memory, not spec         |
-| 9   | `docs/REKODA_END_TO_END_BUILD_PLAN.md` | BUILD HISTORY. The completed 132-PR plan and its amendment log. Never a to-do list             |
+| #   | Document                                | Answers                                                                                                                                                               |
+| --- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `docs/REKODA_CANONICAL_SPEC.md`         | What Rekoda is supposed to do (APPROVED, FROZEN, v1.6.6). Product intent, required behaviour                                                                          |
+| 2   | `docs/REKODA_CURRENT_STATE.md`          | What actually exists in code today, capability by capability, with evidence                                                                                           |
+| 3   | `docs/REKODA_LAUNCH_READINESS.md`       | What prevents real users, the gates, the gaps, the test journeys, the staging plan                                                                                    |
+| 4   | `docs/REKODA_USER_JOURNEYS.md`          | How a merchant and a customer experience each journey                                                                                                                 |
+| 5   | `docs/REKODA_OWNER_DECISIONS.md`        | Owner rulings (later wins until the spec absorbs them) and the external go-live register                                                                              |
+| 6   | `docs/adr/`                             | Why technical decisions were made; check the Status line, superseded ADRs are history                                                                                 |
+| 7   | `docs/REKODA_DESIGN_SYSTEM.md`          | What a screen may claim and which UI patterns exist (tokens: `design-system/rekoda/MASTER.md`)                                                                        |
+| 8   | `docs/HANDOFF.md`                       | Session continuity: current SHA, last work, next actions. Operational memory, not spec                                                                                |
+| 8a  | `docs/REKODA_MVP_AUTOPILOT_PLAYBOOK.md` | How the MVP Autopilot works: priority order, PR and merge-conflict procedure, CI/deploy sequencing, handoff, tax boundary. Workflow only; never overrides rows 1 to 5 |
+| 9   | `docs/REKODA_END_TO_END_BUILD_PLAN.md`  | BUILD HISTORY. The completed 132-PR plan and its amendment log. Never a to-do list                                                                                    |
 
 `docs/REKODA_REFERENCE_MANIFEST.md` lists every document with its status,
 authority and supersession. `docs/archive/` is history and never authority.
@@ -196,7 +199,9 @@ client idempotency key; numeric config is parsed fail-closed.
    and the top of `docs/HANDOFF.md` when durable project state changed.
 4. Open a PR from a `feat/`, `fix/`, `docs/` or `chore/` branch with a
    Conventional Commit title and the template filled. Never push to
-   `main`. Never bypass a check. Do not merge; Angelo does.
+   `main`. Never bypass a check. Merging is Angelo's, except for the MVP
+   Autopilot routine's own closeout PRs under OWN-26 and the playbook's merge
+   gates (exact-head CI green, protections and required reviews satisfied).
 5. Before calling it merge-ready, get an independent review from a fresh
    Claude context that did not build it (read-only; given only the PR, the
    exact head SHA, the requirements, the diff, the canonical docs and the
@@ -204,6 +209,27 @@ client idempotency key; numeric config is parsed fail-closed.
    valid Codex thread; a new SHA gets a new review. Report READY FOR OWNER
    MERGE only when CI is green on that exact SHA and no blocking finding or
    thread remains (`CONTRIBUTING.md`, "Independent review before merge").
+
+## 7a. MVP Autopilot persistent rules (playbook v4, 22 Oct 2026)
+
+For all Rekoda engineering work, read and follow `docs/REKODA_MVP_AUTOPILOT_PLAYBOOK.md` alongside the repository's canonical specifications, owner decisions, and security/deployment runbooks. The playbook governs the routine's implementation order, RED/GREEN tests, PR review, **safe semantic merge-conflict resolution**, CI triage, handoff, staging evidence and launch scope. If instructions conflict, do not silently change the owner's financial, privacy, or product decisions. Respect GitHub branch protection, independent review requirements, access-control classifiers and production-deployment approval.
+
+At the start of each session: inspect current main, open PRs, running changes, and the last handoff. Resume one work item at a time, resolve routine merge conflicts and failing tests rather than stopping for ordinary engineering decisions, verify exact-head CI and reviews before merging, then update docs and handoff. Distinguish merged code from staging acceptance. Never implement native WhatsApp Business catalogue checkout in MVP launch scope.
+
+### Operational launch-gate precedence (owner update 22 Oct 2026, v4)
+
+- Read `docs/REKODA_MVP_AUTOPILOT_PLAYBOOK.md` every run. The operational-safety launch slice (verified backups/off-box restore, alerts for OTP and WhatsApp failures, reliable outbox/sweeps, CI/deployment gates) precedes building the Central Admin UI.
+- Reverify G-02, G-03, G-05, G-09 through G-20, G-47, G-87, G-92(5), G-99 and G-116 from latest code and register. Historical statuses are not proof.
+- Serialize main merges when necessary to avoid cancelling push-triggered CI and breaking the staging deploy gate. Never treat cancelled CI as passed.
+- Escalate unruled financial identity, Rekoda subscription/platform VAT legal treatment, legal and off-box provider decisions; proceed on independent approved engineering.
+- Resolve merge conflicts, tests and review defects safely and proactively; no bypass of protections, no production deploy without explicit owner approval.
+
+### VAT / SaaS scope (owner ruling 22 Oct 2026, playbook v4)
+
+- Rekoda is merchant-facing software, **not** a merchant VAT collector/remitter, merchant of record by default, tax filing service or certified government e-invoicing provider. Hosted-storefront sales and merchant invoice/receipt amounts belong to each merchant's books, not Rekoda subscription revenue.
+- Never add blanket 7.5% VAT, classify an uncharged transaction as zero-rated/exempt, or issue misleading tax disclosures. Maintain exact merchant-authorized amounts, verified payment truth and immutable historical evidence.
+- G-11: investigate hardcoded-zero fields and invoice labels, fix misleading presentation with regression tests; defer general tax calculation/filing integrations unless needed to meet applicable law or an explicitly approved MVP promise.
+- **Rekoda's own subscription/add-on VAT and any platform collection/withholding duties require professional Nigerian tax/legal review.** Owner intent does not establish an exemption. Preserve existing canonical accounting constraints and escalate genuine legal unknowns.
 
 ## 8. Blocked?
 
