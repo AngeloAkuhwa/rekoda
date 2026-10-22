@@ -111,6 +111,7 @@ import {
   replaceOutsideTokens,
 } from '@rekoda/core/privacy';
 import { describeFailure, JobDeferred, type JobContext, type JobHandler } from './runner.js';
+import { JobKind } from './queue.service.js';
 import { TranscriptionUnavailable, type SpeechToText, type Transcript } from '../ai/stt.js';
 import type { AudioMetadataProbe } from '../ai/audio-duration.js';
 import { TextExtractionUnavailable, type ExtractionUsage, type TextExtraction } from '../ai/ocr.js';
@@ -238,9 +239,13 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * confirms silently drops a record. So, under the lock: if an older
      * inbound job for this business is still live, this one is jumping the
      * queue. Step back and let it go first; the runner re-queues without
-     * charging an attempt.
+     * charging an attempt. An older `delivery.status` job counts too (G-20):
+     * a failed receipt queued before this message must unsee its preview
+     * first, or a "yes" would confirm a draft the merchant never received.
      */
-    if (await jobsRepo.hasEarlierLiveJob(tx, jobId)) throw new JobDeferred();
+    if (await jobsRepo.hasEarlierLiveJob(tx, jobId, [JobKind.DeliveryStatus])) {
+      throw new JobDeferred();
+    }
 
     const event = await events.eventForBusiness(tx, eventId, businessId);
     if (!event) {

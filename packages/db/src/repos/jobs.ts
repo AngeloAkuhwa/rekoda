@@ -147,14 +147,26 @@ export async function serializeBusiness(
  * job is jumping the queue and should step back (see `deferClaimed`). Ordered
  * by the same (run_at, created_at) the claim query uses, with id as the
  * tiebreak.
+ *
+ * `alsoKinds` names other kinds whose older live jobs also count (G-20): an
+ * inbound "yes" must not overtake an already-queued `delivery.status` failure
+ * for a preview, or it would confirm a draft the merchant never saw.
  */
-export async function hasEarlierLiveJob(tx: TenantDb, jobId: string): Promise<boolean> {
+export async function hasEarlierLiveJob(
+  tx: TenantDb,
+  jobId: string,
+  alsoKinds: readonly string[] = [],
+): Promise<boolean> {
+  const kinds = sql.join(
+    alsoKinds.map((k) => sql`${k}`),
+    sql`, `,
+  );
   const rows = await tx.execute(sql`
     SELECT 1
     FROM jobs j, jobs me
     WHERE me.id = ${jobId}::uuid
       AND j.business_id = me.business_id
-      AND j.kind = me.kind
+      AND (j.kind = me.kind${alsoKinds.length > 0 ? sql` OR j.kind IN (${kinds})` : sql``})
       AND j.id <> me.id
       AND j.state IN ('pending', 'running')
       AND (j.run_at, j.created_at, j.id) < (me.run_at, me.created_at, me.id)

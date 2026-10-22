@@ -1911,6 +1911,81 @@ describe('inbound messages for one business never overlap across lanes', () => {
     );
     expect(expenses).toHaveLength(1);
   });
+
+  /**
+   * G-20 (Codex P1): a failed delivery receipt queued BEFORE the merchant's
+   * "yes" must unsee its preview first. The lock alone lets the later "yes"
+   * win it while the receipt's lane is between claim and lock, and confirm a
+   * draft the merchant never received. The inbound job must step back for an
+   * older live `delivery.status` job, not only for an older inbound one.
+   */
+  it('defers an inbound message while an older failed receipt is claimed elsewhere (G-20)', async () => {
+    const businessId = await seedBusiness('Stalled Receipt Ltd', '+2348140040003');
+    const waId = '2348140040003';
+    const body = {
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'WABA',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { display_phone_number: '15550002', phone_number_id: 'PNID' },
+                contacts: [{ profile: { name: 'X' }, wa_id: waId }],
+                messages: [
+                  {
+                    id: 'wamid.rcpt-yes',
+                    from: waId,
+                    timestamp: '1700000000',
+                    type: 'text',
+                    text: { body: 'yes' },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const yes = await recordPinned({
+      provider: 'meta',
+      eventType: 'message.text',
+      externalId: 'wamid.rcpt-yes',
+      payload: sealPayload(body, config.vaultKey, 'meta', 'wamid.rcpt-yes'),
+      businessId,
+    });
+    await arrivesAfterPreview(businessId, yes);
+    const receiptJob = await enqueue(businessId, 'delivery.status', {});
+    const yesJob = await enqueue(businessId, 'inbound.message', { eventId: storedEventId(yes) });
+    if (!receiptJob || !yesJob) throw new Error('both jobs should have enqueued');
+
+    // A lane claims the receipt — the older job — and stalls before the lock.
+    const stalled = await jobsRepo.claimNext(workerDb, 'stalled-lane');
+    expect(stalled?.id).toBe(receiptJob.id);
+
+    const runner = buildRunner(workerDb, appDb, deps, { idleMs: 20 });
+    runner.start();
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      let seenPending = false;
+      const watchUntil = Date.now() + 3_000;
+      while (Date.now() < watchUntil) {
+        const yesNow = (await jobsOf(businessId)).find((j) => j.id === yesJob.id);
+        expect(['pending', 'running']).toContain(yesNow?.state);
+        expect(yesNow?.attempts).toBe(0);
+        if (yesNow?.state === 'pending') {
+          seenPending = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(seenPending).toBe(true);
+    } finally {
+      await runner.stop();
+    }
+  });
 });
 
 describe('a quote becomes paper', () => {

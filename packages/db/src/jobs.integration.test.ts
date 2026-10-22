@@ -376,6 +376,24 @@ describe('queue order is a promise, not a hope (H7a)', () => {
     });
   });
 
+  it('counts an older live sibling of a named other kind, and only when asked (G-20)', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    const failure = await enqueue(businessId, { kind: 'delivery.status' });
+    const yes = await enqueue(businessId);
+    if (!failure || !yes) throw new Error('both jobs should have enqueued');
+
+    await withBusiness(appDb, businessId, async (tx) => {
+      // Default: same kind only, as before.
+      expect(await jobsRepo.hasEarlierLiveJob(tx, yes.id)).toBe(false);
+      // A later "yes" must wait for an already-queued failed receipt.
+      expect(await jobsRepo.hasEarlierLiveJob(tx, yes.id, ['delivery.status'])).toBe(true);
+      // The receipt waits for no inbound message: it is the older job.
+      expect(await jobsRepo.hasEarlierLiveJob(tx, failure.id, ['inbound.message'])).toBe(false);
+      await jobsRepo.markDone(tx, failure.id);
+      expect(await jobsRepo.hasEarlierLiveJob(tx, yes.id, ['delivery.status'])).toBe(false);
+    });
+  });
+
   it('deferClaimed re-queues without charging the attempt', async () => {
     const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
     await enqueue(businessId);
