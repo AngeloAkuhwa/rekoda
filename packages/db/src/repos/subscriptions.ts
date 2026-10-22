@@ -105,12 +105,6 @@ export async function applyCycle(
     anchorDay: number;
     /** The plan the NEXT renewal moves to. Null clears a scheduled downgrade. */
     pendingPlan?: string | null;
-    /**
-     * 'provider' (the default) for a cycle a settled charge created: a first
-     * purchase or a renewal. 'keep' for an upgrade, which continues the cycle
-     * it was bought on and so cannot change who created it (G-115).
-     */
-    origin?: 'provider' | 'keep';
   },
 ): Promise<void> {
   await writeSubscriptionState(tx, businessId, {
@@ -120,7 +114,7 @@ export async function applyCycle(
     planExpiresAt: cycle.renewsAt,
     anchorDay: cycle.anchorDay,
     pendingPlan: cycle.pendingPlan ?? null,
-    origin: cycle.origin ?? 'provider',
+    origin: 'provider',
   });
 }
 
