@@ -43,16 +43,20 @@ export class OutboxDispatcher {
    * Failures are per event — one poisoned payload must not dam the queue
    * behind it.
    */
-  async runOnce(worker: Db, batchSize = 25): Promise<{ delivered: number; failed: number }> {
+  async runOnce(
+    worker: Db,
+    batchSize = 25,
+    now = new Date(),
+  ): Promise<{ delivered: number; failed: number }> {
     await outboxRepo.reclaimStalled(worker);
-    const batch = await outboxRepo.claimBatch(worker, batchSize);
+    const batch = await outboxRepo.claimBatch(worker, batchSize, now);
     let delivered = 0;
     let failed = 0;
 
     for (const event of batch) {
       const handler = this.handlers.get(event.type);
       if (!handler) {
-        await outboxRepo.markFailed(worker, event.id, `no handler for ${event.type}`);
+        await outboxRepo.markFailed(worker, event.id, `no handler for ${event.type}`, now);
         failed += 1;
         continue;
       }
@@ -62,7 +66,7 @@ export class OutboxDispatcher {
         delivered += 1;
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        await outboxRepo.markFailed(worker, event.id, reason);
+        await outboxRepo.markFailed(worker, event.id, reason, now);
         this.log.warn(`outbox ${event.type} failed: ${redactForLog(reason)}`);
         failed += 1;
       }

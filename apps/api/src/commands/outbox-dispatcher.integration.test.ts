@@ -170,9 +170,11 @@ describe('delivery', () => {
     const failing = await dispatcher.runOnce(workerDb);
     expect(failing).toEqual({ delivered: 0, failed: 1 });
 
-    /* markFailed released the lease, so the very next pass may retry. */
+    /* G-18: the retry waits out its backoff. An immediate pass finds nothing;
+     * a pass after the delay collects the event. */
     healthy = true;
-    const recovered = await dispatcher.runOnce(workerDb);
+    expect(await dispatcher.runOnce(workerDb)).toEqual({ delivered: 0, failed: 0 });
+    const recovered = await dispatcher.runOnce(workerDb, 25, new Date(Date.now() + 60_000));
     expect(recovered).toEqual({ delivered: 1, failed: 0 });
     /* The retry carries the incremented attempt count: the handler can see
      * it is not the first try, which is what makes backoff decisions possible. */
@@ -195,7 +197,7 @@ describe('delivery', () => {
     newer.register('type.from.a.newer.deploy', async (event) => {
       seen.push(event.id);
     });
-    const collected = await newer.runOnce(workerDb);
+    const collected = await newer.runOnce(workerDb, 25, new Date(Date.now() + 60_000));
     expect(collected).toEqual({ delivered: 1, failed: 0 });
     expect(seen).toHaveLength(1);
   });
