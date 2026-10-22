@@ -386,7 +386,7 @@ describe('stalled jobs are reclaimed while the queue stays busy (G-10)', () => {
 });
 
 describe('the slow sweeps run once after boot (G-10)', () => {
-  it('fires grace, renewals, retention, recurring and depreciation without waiting an hour', async () => {
+  it('fires every sweep slower than a minute without waiting a full interval', async () => {
     const lifecycle = new JobRunnerLifecycle(
       { ...config, workerEnabled: true, workerConcurrency: 1 },
       appDb,
@@ -416,15 +416,33 @@ describe('the slow sweeps run once after boot (G-10)', () => {
     lifecycle.onModuleInit();
     try {
       await waitFor(() =>
-        ['grace', 'renewal', 'retention', 'recurring', 'depreciation'].every((n) =>
-          names.includes(n),
-        ),
+        [
+          'settlement',
+          'merchant-transfers',
+          'bank-feeds',
+          'catalogue',
+          'grace',
+          'renewal',
+          'retention',
+          'recurring',
+          'depreciation',
+        ].every((n) => names.includes(n)),
       );
     } finally {
       await lifecycle.onApplicationShutdown();
     }
     expect(names).toEqual(
-      expect.arrayContaining(['grace', 'renewal', 'retention', 'recurring', 'depreciation']),
+      expect.arrayContaining([
+        'settlement',
+        'merchant-transfers',
+        'bank-feeds',
+        'catalogue',
+        'grace',
+        'renewal',
+        'retention',
+        'recurring',
+        'depreciation',
+      ]),
     );
   });
 });

@@ -338,7 +338,7 @@ export class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
      * without hammering GET /settlement. Same non-overlap guard, same
      * unref, same log discipline as the pump.
      */
-    this.sweepTimer = setInterval(() => {
+    const runSettlement = (): void => {
       if (this.sweeping) return;
       this.sweeping = true;
       this.exclusively('settlement', () =>
@@ -350,8 +350,10 @@ export class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         .finally(() => {
           this.sweeping = false;
         });
-    }, 600_000);
+    };
+    this.sweepTimer = setInterval(runSettlement, 600_000);
     this.sweepTimer.unref();
+    this.bootPass(runSettlement);
 
     /**
      * The Pay-with-Transfer reconciliation poll (ADR 0019: never rely on
@@ -361,7 +363,7 @@ export class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
      * Live transfer intents are rare and short-lived, so most passes read
      * one worker query and stop.
      */
-    this.transferTimer = setInterval(() => {
+    const runTransfers = (): void => {
       if (this.sweepingTransfers) return;
       this.sweepingTransfers = true;
       this.exclusively('merchant-transfers', () =>
@@ -380,8 +382,10 @@ export class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         .finally(() => {
           this.sweepingTransfers = false;
         });
-    }, 120_000);
+    };
+    this.transferTimer = setInterval(runTransfers, 120_000);
     this.transferTimer.unref();
+    this.bootPass(runTransfers);
 
     /**
      * The bank-feed pull, every thirty minutes. Banks post in minutes but
@@ -390,7 +394,7 @@ export class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
      * "pull now" button stays for the merchant who cannot wait. Skipped
      * entirely on a deployment with no aggregator key.
      */
-    this.feedTimer = setInterval(() => {
+    const runBankFeeds = (): void => {
       if (this.sweepingFeeds) return;
       this.sweepingFeeds = true;
       this.exclusively('bank-feeds', () =>
@@ -408,8 +412,10 @@ export class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         .finally(() => {
           this.sweepingFeeds = false;
         });
-    }, 1_800_000);
+    };
+    this.feedTimer = setInterval(runBankFeeds, 1_800_000);
     this.feedTimer.unref();
+    this.bootPass(runBankFeeds);
 
     /**
      * Answering strangers rides the same worker on a middle clock: fast
@@ -447,7 +453,7 @@ export class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
      * merchant who changed a price in Rekoda went on selling at the old one
      * through Meta.
      */
-    this.catalogueTimer = setInterval(() => {
+    const runCatalogues = (): void => {
       if (this.syncingCatalogues) return;
       this.syncingCatalogues = true;
       this.exclusively('catalogue', () => sweepCatalogues({ workerDb, sync: this.catalogueSync }))
@@ -457,8 +463,10 @@ export class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         .finally(() => {
           this.syncingCatalogues = false;
         });
-    }, 3_600_000);
+    };
+    this.catalogueTimer = setInterval(runCatalogues, 3_600_000);
     this.catalogueTimer.unref();
+    this.bootPass(runCatalogues);
 
     /**
      * Grace runs on the slowest clock of the four. Its unit is a DAY, so
