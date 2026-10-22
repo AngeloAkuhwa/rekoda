@@ -88,6 +88,7 @@ export class JobRunner {
   private reclaimTimer: NodeJS.Timeout | null = null;
   private readonly concurrency: number;
   private running = false;
+  private reclaimInFlight: Promise<void> | null = null;
   private loops: Promise<void>[] = [];
 
   constructor(
@@ -125,18 +126,7 @@ export class JobRunner {
 
     const handler = this.handlers.get(job.kind);
     if (!handler) {
-      const outcome = await jobsRepo.markFailed(
-        this.workerDb,
-        { ...job, attempts: job.maxAttempts },
-        new UnknownJobKind(job.kind).message,
-        undefined,
-        claimedBy,
-      );
-      if (outcome.state === 'lost') {
-        this.log.warn(`job ${job.kind} ${job.id} lost its lease; attempt discarded`);
-        return true;
-      }
-      this.log.error(`no handler for job kind "${job.kind}" — marked dead`);
+      await this.retireUnknownKind(job, claimedBy);
       return true;
     }
 
@@ -222,6 +212,22 @@ export class JobRunner {
     return true;
   }
 
+  /** No handler will ever exist for this claim: dead at once, unless it was lost. */
+  private async retireUnknownKind(job: jobsRepo.ClaimedJob, claimedBy: string): Promise<void> {
+    const outcome = await jobsRepo.markFailed(
+      this.workerDb,
+      { ...job, attempts: job.maxAttempts },
+      new UnknownJobKind(job.kind).message,
+      undefined,
+      claimedBy,
+    );
+    if (outcome.state === 'lost') {
+      this.log.warn(`job ${job.kind} ${job.id} lost its lease; attempt discarded`);
+      return;
+    }
+    this.log.error(`no handler for job kind "${job.kind}" — marked dead`);
+  }
+
   /** Requeue jobs whose worker died mid-run. */
   async reclaim(): Promise<number> {
     const n = await jobsRepo.reclaimStalled(this.workerDb, this.stalledAfterMs);
@@ -238,9 +244,16 @@ export class JobRunner {
      * the queue stayed busy. One timer per runner, so N lanes do not multiply
      * the sweeps. */
     const reclaimPass = (): void => {
-      this.reclaim().catch((error: unknown) => {
-        this.log.warn(`job reclaim failed: ${redactForLog(describeFailure(error))}`);
-      });
+      if (!this.running || this.reclaimInFlight) return;
+      const pass = this.reclaim()
+        .then(() => undefined)
+        .catch((error: unknown) => {
+          this.log.warn(`job reclaim failed: ${redactForLog(describeFailure(error))}`);
+        })
+        .finally(() => {
+          if (this.reclaimInFlight === pass) this.reclaimInFlight = null;
+        });
+      this.reclaimInFlight = pass;
     };
     /* Once at start too: a worker restarted more often than the stall window
      * would otherwise never reclaim what its predecessor left behind. */
@@ -259,6 +272,7 @@ export class JobRunner {
     this.reclaimTimer = null;
     await Promise.all(this.loops);
     this.loops = [];
+    await this.reclaimInFlight;
   }
 
   private async poll(): Promise<void> {

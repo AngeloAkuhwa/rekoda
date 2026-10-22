@@ -30,6 +30,7 @@ import {
 import { allowanceFor, replies, usagePeriod } from '@rekoda/core';
 import { encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
 import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '@rekoda/db/testing';
+import { Logger } from '@nestjs/common';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -507,6 +508,54 @@ describe('reclaim does not depend on a free lane (G-10)', () => {
       await runner.stop();
     }
     expect(ran).toBe(true);
+  });
+
+  it('stop() waits for a reclaim pass that is still running', async () => {
+    const runner = new JobRunner(workerDb, appDb, { idleMs: 10, stalledAfterMs: 60_000 });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let finished = false;
+    vi.spyOn(runner, 'reclaim').mockImplementation(async () => {
+      await gate;
+      finished = true;
+      return 0;
+    });
+    runner.start();
+    let stopped = false;
+    const stopping = runner.stop().then(() => {
+      stopped = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(stopped).toBe(false);
+    release();
+    await stopping;
+    expect(finished).toBe(true);
+  });
+
+  it('an unknown-kind claim that was lost is discarded, not marked dead', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348050000001');
+    await enqueue(ada, 'test.no-handler');
+    const claimed = await jobsRepo.claimNext(workerDb, 'the-live-owner');
+    expect(claimed?.kind).toBe('test.no-handler');
+    const runner = new JobRunner(workerDb, appDb);
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    try {
+      // A stale attempt names a token that no longer owns the claim.
+      await (
+        runner as unknown as {
+          retireUnknownKind(job: unknown, claimedBy: string): Promise<void>;
+        }
+      ).retireUnknownKind(claimed, 'the-stale-attempt');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('lost its lease'));
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+    expect((await jobsOf(ada))[0]).toMatchObject({ state: 'running' });
   });
 
   it('requeues an abandoned job while the only lane sits in a slow handler', async () => {
