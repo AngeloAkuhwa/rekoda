@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { SENTINEL, folderHash, isIgnored } from './check-vendored-skills.mjs';
+import { SENTINEL, folderHash, ignoredUnder, isIgnored } from './check-vendored-skills.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const NEGATION = '!/.claude/skills/**/data/';
@@ -60,4 +60,18 @@ test('folderHash follows the installer: sorted by path, path then bytes', () => 
     folderHash([{ relativePath: 'a.md', content: Buffer.from('onE') }]),
   );
   assert.notEqual(folderHash([a, b]), folderHash([b]));
+});
+
+test('an ignored asset anywhere under .claude/skills is reported, not just the sentinel', () => {
+  const dir = scratchRepo('*.png\n');
+  try {
+    assert.deepEqual(ignoredUnder(dir), []);
+    mkdirSync(join(dir, '.claude/skills/x/assets'), { recursive: true });
+    writeFileSync(join(dir, '.claude/skills/x/assets/hero.png'), 'png');
+    assert.deepEqual(ignoredUnder(dir), [
+      '.claude/skills/x/assets/hero.png is on disk but an ignore rule keeps it out of the commit',
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

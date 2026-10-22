@@ -103,6 +103,9 @@ settled by these rules, which win over any vendored text:
    `DESIGN.md` and `.impeccable/` files that would compete with Rekoda's
    design documents, and `document` may describe components the code does not
    implement. Hooks stay off, and no binary is installed under `~/.impeccable`.
+   Its `live` and `generate` browser modes, including running
+   `scripts/live-browser.js` directly, are never pointed at a page that holds
+   real merchant data.
 6. **Taste's `scripts/assets.mjs`** (stock-image fetch) is never run on Rekoda
    work. `inspect.mjs` and `draw.mjs` start a local Chrome only when an agent
    runs them; point `inspect.mjs` only at a local or test-data build, never at

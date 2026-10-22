@@ -64,6 +64,22 @@ export function isIgnored(root, path) {
   }
 }
 
+/**
+ * Paths under SKILLS_DIR that an ignore rule matches: committed files the rules
+ * contradict, and files on disk the rules keep out of the commit (an asset a
+ * new or updated skill ships that `git add` would silently drop).
+ */
+export function ignoredUnder(root) {
+  const list = (flags) =>
+    git(root, ['ls-files', '-z', ...flags, '--exclude-standard', '--', SKILLS_DIR])
+      .split('\0')
+      .filter(Boolean);
+  return [
+    ...list(['-ci']).map((p) => `${p} is committed but matches an ignore rule`),
+    ...list(['-oi']).map((p) => `${p} is on disk but an ignore rule keeps it out of the commit`),
+  ];
+}
+
 export function problemsIn(root) {
   const problems = [];
   const lock = JSON.parse(readFileSync(join(root, 'skills-lock.json'), 'utf8'));
@@ -86,18 +102,25 @@ export function problemsIn(root) {
     problems.push(`SOURCES.md does not record the Impeccable hash ${IMPECCABLE_HASH}`);
   }
 
-  const ignoredTracked = git(root, [
-    'ls-files',
-    '-z',
-    '-ci',
-    '--exclude-standard',
-    '--',
-    SKILLS_DIR,
-  ])
-    .split('\0')
-    .filter(Boolean);
-  for (const p of ignoredTracked) problems.push(`${p} is committed but matches an ignore rule`);
+  for (const p of ignoredUnder(root)) problems.push(p);
   if (isIgnored(root, SENTINEL)) problems.push(`${SENTINEL} matches an ignore rule`);
+
+  // A skill folder with no recorded hash would never be compared at all.
+  const skillDirs = new Set(
+    git(root, ['ls-files', '-z', '-co', '--exclude-standard', '--', SKILLS_DIR])
+      .split('\0')
+      .filter(Boolean)
+      .map((p) => p.slice(SKILLS_DIR.length + 1).split('/'))
+      .filter((parts) => parts.length > 1)
+      .map((parts) => parts[0]),
+  );
+  for (const dir of skillDirs) {
+    if (dir !== '_licenses' && !(dir in expected)) {
+      problems.push(
+        `${SKILLS_DIR}/${dir}/ has no recorded hash in skills-lock.json or IMPECCABLE_HASH`,
+      );
+    }
+  }
 
   return problems;
 }
