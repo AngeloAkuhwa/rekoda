@@ -123,6 +123,7 @@ describe('RecordSale through the bus', () => {
       payload: input,
       actor: 'system',
       ingress: 'CHAT' as const,
+      memberPhone: '+2348160000001',
       idempotencyKey: 'draft:draft-sale-1',
     };
 
@@ -792,6 +793,7 @@ describe('G-48: a sale paid at issue ends in its receipt', () => {
       payload: input,
       actor: 'system',
       ingress: 'CHAT' as const,
+      memberPhone: '+2348160000001',
       idempotencyKey: 'draft:draft-g48',
     };
     const run = () =>
@@ -1128,6 +1130,7 @@ describe('G-49: a merchant overpayment is real money and customer credit', () =>
         payload: input,
         actor: 'system',
         ingress: 'CHAT' as const,
+        memberPhone: '+2348160000001',
         idempotencyKey: 'draft:draft-g49',
       };
       const run = () =>

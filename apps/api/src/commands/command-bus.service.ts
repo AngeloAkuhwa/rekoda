@@ -27,7 +27,8 @@
 import { Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import type { Ingress, RiskContext, RiskTier } from '@rekoda/core';
-import { entitlementsRepo, idempotencyRepo, type TenantDb } from '@rekoda/db';
+import { entitlementsRepo, identity, idempotencyRepo, type TenantDb } from '@rekoda/db';
+import { normalisePhone } from '@rekoda/core/identity';
 import { RiskPolicyService } from '../risk/risk-policy.service.js';
 import { COMMAND_ENTITLEMENT, type CommandName } from './command-registry.js';
 
@@ -38,6 +39,14 @@ export interface CommandEnvelope<T> {
   /** The authenticated actor. `system` and `webhook:*` are actors too. */
   actor: string;
   ingress: Ingress;
+  /**
+   * The member's phone, for a command that arrives over CHAT (G-99). Chat
+   * commands run as `system`, so the actor says nothing about WHO asked; the
+   * bus reads the member's role from this number and refuses anyone who may
+   * not change the books. Required on CHAT: a chat path that forgets it is
+   * refused, never allowed.
+   */
+  memberPhone?: string | null;
   /** Which refund, which period, which connection. */
   subject?: string | null;
   context?: RiskContext;
@@ -63,6 +72,8 @@ export type CommandOutcome<R> =
   | { readonly outcome: 'done'; readonly result: R; readonly replayed: boolean }
   | { readonly outcome: 'not_entitled'; readonly missing: string; readonly plan: string }
   | { readonly outcome: 'refused'; readonly reason: 'away_assistant_forbidden' }
+  /** A chat command whose sender is not an owner or delegate (G-99). */
+  | { readonly outcome: 'refused'; readonly reason: 'member_may_not_transact' }
   | { readonly outcome: 'confirm_first'; readonly tier: RiskTier }
   | { readonly outcome: 'confirmation_expired' }
   | { readonly outcome: 'confirmation_already_used' }
@@ -95,6 +106,15 @@ export class CommandBus {
     envelope: CommandEnvelope<T>,
     work: () => Promise<R>,
   ): Promise<CommandOutcome<R>> {
+    /* 0. WHO. A chat command carries no authenticated actor, so the member's
+     *    role is read here from the number that sent it. Owners and delegates
+     *    change the books; an accountant is view only (spec §35). Before the
+     *    entitlement so a refused member consumes nothing, and fail-closed: no
+     *    number, no membership or an unreadable number is a refusal. */
+    if (envelope.ingress === 'CHAT' && !(await mayTransact(tx, envelope))) {
+      return { outcome: 'refused', reason: 'member_may_not_transact' };
+    }
+
     /* 1. ENTITLEMENT. A capability the plan does not hold is refused before
      *    anything is taken, spent or written (spec §4.3 rules 1 and 2). */
     const needs = COMMAND_ENTITLEMENT[envelope.command];
@@ -151,6 +171,23 @@ export class CommandBus {
         return { outcome: 'done', result, replayed: false };
       }
     }
+  }
+}
+
+async function mayTransact(
+  tx: TenantDb,
+  envelope: { businessId: string; memberPhone?: string | null },
+): Promise<boolean> {
+  if (!envelope.memberPhone) return false;
+  try {
+    const role = await identity.roleOfPhone(
+      tx,
+      envelope.businessId,
+      normalisePhone(envelope.memberPhone),
+    );
+    return role === 'owner' || role === 'delegate';
+  } catch {
+    return false;
   }
 }
 
