@@ -100,9 +100,10 @@ reviews:
         mode: error
         instructions: |
           Fail if the PR modifies, renames or deletes any file matching packages/db/migrations/[0-9][0-9][0-9][0-9]_*.sql
-          that already exists on the base branch. A newly added migration must be numbered one higher than the
-          highest number on the base branch, and packages/db/migrations/meta/_journal.json must gain exactly one
-          entry for it with the same tag; fail otherwise. Pass when the PR touches no migration.
+          that already exists on the base branch. Newly added migrations must be numbered consecutively,
+          starting one higher than the highest number on the base branch, and
+          packages/db/migrations/meta/_journal.json must gain exactly one entry per added migration, each with
+          the same tag as its file; fail otherwise. Pass when the PR touches no migration.
       - name: A bug fix lands with a regression test
         mode: error
         instructions: |
@@ -144,7 +145,9 @@ reviews:
           receipt, payment or expense row, other than a spec-defined lifecycle transition;
           (c) the description's financial section does not name the affected invariant (for example balanced
           postings, one event one financial truth, idempotent retry, refund limit, entitlement granted once)
-          and the test that covers it.
+          and the test that covers it. A migration that touches no financial table (ledger, invoice, receipt,
+          payment, expense, purchase, bill, credit note, stock movement, subscription, allowance or usage) passes
+          (c) when the financial section says "none" with a reason.
           Pass otherwise. (CLAUDE.md invariants 1, 2, 6, 7.)
       - name: Security boundaries hold
         mode: error
