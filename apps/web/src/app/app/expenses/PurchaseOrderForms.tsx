@@ -132,7 +132,7 @@ export function ReceivePurchaseOrderForm({ orders }: { orders: OpenPurchaseOrder
         <input type="hidden" name="expenseIds" value={q.expenseIds.join(',')} />
         <fieldset className="rk-form">
           <legend className="rk-fineprint">
-            {q.options.length > 1 ? 'Which one is it?' : 'The purchase in Chat'}
+            {q.options.length > 1 ? 'Which one is it?' : 'The record in Chat'}
           </legend>
           {q.options.map((option, i) => (
             <label key={option.expenseId} className="rk-fineprint">

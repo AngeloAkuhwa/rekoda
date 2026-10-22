@@ -660,7 +660,8 @@ async function receivePurchaseOrderActionUnguarded(
   if (outcome.outcome === 'possible_duplicate') {
     const several = outcome.matches.length > 1;
     const withExpense = outcome.matches.some((m) => m.kind === 'expense');
-    const what = withExpense ? 'purchases or expenses' : 'purchases';
+    const allExpenses = outcome.matches.every((m) => m.kind === 'expense');
+    const what = allExpenses ? 'expenses' : withExpense ? 'purchases or expenses' : 'purchases';
     return {
       question: {
         poNumber: outcome.poNumber,

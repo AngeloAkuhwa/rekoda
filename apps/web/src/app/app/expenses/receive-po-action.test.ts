@@ -276,6 +276,28 @@ describe('a receive that may be a purchase already booked in Chat (G-89)', () =>
     );
   });
 
+  it('names several matches by what Chat recorded them as (G-87)', async () => {
+    const expense = (m: (typeof ASKED.matches)[number]) => ({ ...m, kind: 'expense' as const });
+    receive.mockResolvedValue({
+      ...ASKED,
+      matches: [expense(ASKED.matches[0]!), ASKED.matches[1]!],
+    });
+    const mixed = await receivePurchaseOrderAction(
+      {},
+      form({ poNumber: 'PO-2026-000001', paid: '' }),
+    );
+    expect(mixed.question?.text).toContain('2 purchases or expenses of ₦180,000');
+    expect(mixed.question?.explain).toContain('If you pick one recorded as an expense');
+
+    receive.mockResolvedValue({ ...ASKED, matches: ASKED.matches.map(expense) });
+    const expenses = await receivePurchaseOrderAction(
+      {},
+      form({ poNumber: 'PO-2026-000001', paid: '' }),
+    );
+    expect(expenses.question?.text).toContain('2 expenses of ₦180,000');
+    expect(expenses.question?.explain).toContain('If you pick one recorded as an expense');
+  });
+
   it('a purchase-only question explains SAME as a link (G-89 unchanged)', async () => {
     receive.mockResolvedValue(ASKED);
     const state = await receivePurchaseOrderAction(
