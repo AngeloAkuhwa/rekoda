@@ -103,7 +103,9 @@ reviews:
           that already exists on the base branch. Newly added migrations must be numbered consecutively,
           starting one higher than the highest number on the base branch, and
           packages/db/migrations/meta/_journal.json must gain exactly one entry per added migration, each with
-          the same tag as its file; fail otherwise. Pass when the PR touches no migration.
+          the same tag as its file; fail otherwise. Fail if any journal entry that exists on the base branch
+          is changed, reordered or removed: the journal is append-only too. Pass when the PR touches no
+          migration.
       - name: A bug fix lands with a regression test
         mode: error
         instructions: |
@@ -123,7 +125,9 @@ reviews:
           changed line in those files ADDS any of these tokens: .skip(, .only(, .skipIf(, .todo(, xit(,
           xdescribe(, xtest(, fixme(; or adds "continue-on-error: true" in a workflow; or changes a "test",
           "test:integration" or "test:e2e" script in a package.json to one that runs no tests (for example
-          "exit 0", "true" or an echo). Pass otherwise.
+          "exit 0", "true" or an echo); or changes the run command of an existing workflow step that ran tests,
+          lint, typecheck or a guard script to one that no longer does (for example "echo done"), whatever the
+          step is named. Pass otherwise.
           (CLAUDE.md invariant 11: never skip, disable or quarantine a failing test to get green.)
       - name: Test coverage is not quietly reduced
         mode: warning

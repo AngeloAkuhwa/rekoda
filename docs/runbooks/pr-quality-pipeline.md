@@ -104,8 +104,11 @@ until every check named in step 6 has run green on at least one PR and on one `m
    CodeRabbit or Codex check: an unavailable bot must not lock merges; the playbook escalates instead.
 7. Save the ruleset, then confirm on the next PR that the merge box lists every check in step 6.
 
-A required approval from someone other than the PR author is a human gate. The autopilot posts as the
-owner's account, so with one required approval GitHub will not let the author approve their own PR.
-That makes the owner's review of each closeout PR a real gate, and it changes the OWN-26 autonomous
-merge flow. That trade-off is the owner's to choose. Whether a GitHub App's approval (CodeRabbit)
+Decide who approves before step 4. GitHub never lets a PR's author approve it, and the autopilot opens
+every PR as the owner's account, so the owner cannot supply the required approval on those PRs. With one
+required approval, step 4 needs a second eligible reviewer (a collaborator with write access) to approve
+each PR. Without one, the rule blocks every autopilot merge: it does not turn the owner's review into the
+gate. Either name that reviewer before enabling step 4, or set required approvals to 0 and keep step 5
+and step 6, which do not depend on a second person. Either choice changes the OWN-26 autonomous merge flow,
+and the choice is the owner's. Whether a GitHub App's approval (CodeRabbit)
 satisfies a required-approvals rule is not established here, and Rekoda never relies on it.
