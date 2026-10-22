@@ -97,14 +97,17 @@ provider assumptions, missing edge cases, weak tests and documentation that
 promises behaviour the code does not implement, and reports each finding as
 BLOCKING, IMPORTANT or NON-BLOCKING. The builder fixes every valid BLOCKING
 and IMPORTANT finding; a fix that changes the SHA gets a fresh review of the
-new SHA. Codex review threads on the PR (Codex is the GitHub review app that
-comments on pull requests, not a pipeline or a gate) are fetched and
-answered the same way: valid findings fixed, invalid ones answered with code
-evidence. A PR is reported READY FOR OWNER MERGE only when CI is green on the
-exact head, the fresh review has no BLOCKING or IMPORTANT findings, valid
-Codex findings are fixed, no blocking thread is unresolved, and the docs
-match the code. This is a lightweight human-in-the-loop process: no bots,
-gates, labels or signed evidence. Angelo merges.
+new SHA. CodeRabbit is the primary AI reviewer and Codex is optional (OWN-35;
+`docs/REKODA_MVP_AUTOPILOT_PLAYBOOK.md`, "Reviewer hierarchy"). Their review
+threads are fetched and answered the same way: valid findings fixed, invalid
+ones answered with code evidence. A Codex usage limit is recorded as
+`Codex: UNAVAILABLE — QUOTA` and never blocks a merge. A PR is reported READY
+FOR OWNER MERGE only when CI is green on the exact head, CodeRabbit has
+completed a review of that exact head (or the owner has waived it for that
+PR), the fresh review has no BLOCKING or IMPORTANT findings, valid review
+findings are fixed, no review thread is unresolved, and the docs match the
+code. Angelo merges, except for the MVP Autopilot's own closeout PRs under
+OWN-26 and the playbook's merge gates.
 
 ## Tests
 

@@ -4,14 +4,40 @@
 
 ## Why
 
-<!-- Link the issue or the launch-readiness gap ID (docs/REKODA_LAUNCH_READINESS.md).
-     If this implements or changes a decision, link the ADR or owner ruling. -->
+<!-- The problem solved, and the gap or build ID (docs/REKODA_LAUNCH_READINESS.md), or "none" with a
+     reason. If this implements or changes a decision, link the ADR or owner ruling (OWN-*). -->
+
+## Expected behaviour
+
+<!-- What the system does after this change, in the merchant's or operator's terms. -->
+
+## What changed
+
+<!-- The code, schema and docs that changed, and where. -->
+
+## Financial and security implications
+
+<!-- Which invariants this touches (integer kobo, balanced postings, one event one financial truth,
+     idempotency, tenancy/RLS, roles, PII, webhook trust) and which test covers each; or "none" with a
+     reason. -->
 
 ## How verified
 
-<!-- What ran, what passed, what was skipped and why. Tests added/updated,
-     manual verification steps, screenshots for UI. For provider-touching
-     changes: sandbox/live evidence, or why contract tests suffice. -->
+<!-- Test evidence: the tests and suites that ran and their results. For a bug fix, the RED test that
+     failed before the fix and passes after it. What was skipped and why. Screenshots for UI. For
+     provider-touching changes: sandbox/live evidence, or why contract tests suffice. -->
+
+## Migration, deployment and rollback
+
+<!-- Database migration impact (or "none"); deployment impact; rollback considerations. A rollback
+     across a migration is done by hand (docs/runbooks/deploy.md). -->
+
+## Owner decision
+
+<!-- Was an owner policy decision needed? Name the OWN-* ruling, or say "none needed". If one is
+     needed and missing, say so here and do not guess. -->
+
+Documentation-only PRs fill every section; any section other than What, Why and How verified may say "none: documentation only". A PR that changes a binding document (the canonical spec, owner decisions, an ADR, `CLAUDE.md`, `CONTRIBUTING.md`, the autopilot playbook or this template) also names the owner decision or instruction, or the superseding ADR, that permits the change.
 
 ## Checklist
 
