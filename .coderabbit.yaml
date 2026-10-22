@@ -42,7 +42,7 @@ reviews:
     - '!**/dist/**'
     - '!**/node_modules/**'
     - '!**/.next/**'
-    - '!packages/db/migrations/meta/**'
+    - '!packages/db/migrations/meta/*_snapshot.json'
     - '!pnpm-lock.yaml'
   path_instructions:
     - path: '**/*'
