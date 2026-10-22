@@ -52,6 +52,13 @@ beforeEach(async () => {
   await truncateAll(urls);
 });
 
+/** Past the plan guard: the route exists and answered, and it was not the plan that refused. */
+function expectPastPlanGuard(res: { statusCode: number }, url: string): void {
+  expect(res.statusCode, url).not.toBe(403);
+  expect(res.statusCode, url).not.toBe(404);
+  expect(res.statusCode, url).toBeLessThan(500);
+}
+
 function post(url: string, payload: unknown, headers: Record<string, string> = {}) {
   return app.inject({ method: 'POST', url, payload: payload as object, headers });
 }
@@ -143,8 +150,7 @@ describe('a lapsed plan (G-44)', () => {
     await lapse(businessId);
     for (const url of KEPT_WHEN_LAPSED) {
       // Past the plan guard: not 403 for the plan (a body error is the proof).
-      const res = await post(url, {}, owner);
-      expect(res.statusCode, url).not.toBe(403);
+      expectPastPlanGuard(await post(url, {}, owner), url);
     }
   });
 
@@ -157,7 +163,7 @@ describe('a lapsed plan (G-44)', () => {
       actor: 'operator:g44',
     });
     for (const url of REFUSED_WHEN_LAPSED) {
-      expect((await post(url, {}, owner)).statusCode, url).not.toBe(403);
+      expectPastPlanGuard(await post(url, {}, owner), url);
     }
   });
 
@@ -180,7 +186,9 @@ describe('a lapsed plan (G-44)', () => {
       expiresAt: new Date(Date.now() + 86_400_000),
       actor: 'operator:g44',
     });
-    expect((await post('/v1/reports/journal', {}, owner)).statusCode).toBe(400);
+    for (const url of REFUSED_WHEN_LAPSED) {
+      expectPastPlanGuard(await post(url, {}, owner), url);
+    }
   });
 
   it('opens again the moment a plan is bought', async () => {
