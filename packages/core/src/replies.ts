@@ -2129,7 +2129,7 @@ export function purchaseIdentityReask(
  */
 export function previewUnderQuestion(): Reply {
   return reply(
-    'Nothing was saved from your yes. That preview matches a purchase already saved, and ' +
+    'Nothing was saved from your yes. That preview matches a record already saved, and ' +
       'the member who said yes to it is being asked whether it is the same one.',
   );
 }
@@ -2199,7 +2199,7 @@ export function purchaseIdentityClosed(
     );
   }
   return reply(
-    'That question has closed, so nothing was saved. If it is a separate purchase, ' +
-      'send the purchase again as a new message.',
+    'That question has closed, so nothing was saved. If it is a separate one, ' +
+      'send it again as a new message.',
   );
 }

@@ -259,8 +259,8 @@ export async function purchaseRecords(
      * Expenses too (G-87, OWN-31): pending expense drafts and recorded
      * non-stock expenses booked in Chat, so a purchase read as an expense,
      * or an expense read as a purchase, is compared across the two kinds.
-     * Core never compares two expenses. Off for a purchase order receive,
-     * which links to stock purchases only.
+     * Core never compares two expenses. A purchase order receive asks about
+     * them too, but only ever links to stock purchases.
      */
     withExpenses?: boolean;
     /**

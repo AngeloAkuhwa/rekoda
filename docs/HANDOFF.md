@@ -133,7 +133,7 @@ everything after G-60; changed only by a verified new financial, privacy or auth
 3. **G-96**, storefront concurrent-submit metering / in-flight order race.
 4. **G-98**, a bank line from a closed accounting period must refuse cleanly (answers 500 today).
 5. **G-92(5)**, one real purchase can still be booked twice in the documented reference edge.
-6. **G-87**, a purchase re-read as an expense can bypass purchase identity protection.
+6. **G-87**, a purchase re-read as an expense can bypass purchase identity protection (PR #306 open, not merged).
 7. **G-99**, command-bus member-role context / enforcement architecture.
 8. **G-53**, MERGED (#291, `187e7ca`; `out_of_stock`). The two-customer last-unit race now has an integration test (PR `test/g53-last-unit-race`: one `placed`, one `out_of_stock`, stock 0, one order, one order unit and one document unit; it fails with a 500 when the catch is removed). Staging acceptance is still pending.
 9. The documented Paystack order-fee pricing mismatch.
