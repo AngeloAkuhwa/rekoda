@@ -24,7 +24,7 @@ umask 077
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-NAME="rekoda-$STAMP.dump.enc"
+NAME="rekoda-$STAMP-$$.dump.enc"
 
 if [ -n "${BACKUP_DUMP_CMD:-}" ]; then
   bash -c "$BACKUP_DUMP_CMD" >"$WORK/dump"

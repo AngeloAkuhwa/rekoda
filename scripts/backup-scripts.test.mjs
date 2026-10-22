@@ -137,3 +137,14 @@ test('a backup whose checksum cannot be published is never listed as the newest'
   const sh = `. scripts/lib/backup-common.sh; backup_require_config; backup_fetch_decrypt '' "${out}"`;
   assert.equal(spawnSync('bash', ['-c', sh], { cwd: ROOT, env: t.env, encoding: 'utf8' }).status, 0);
 });
+
+test('two backups started in the same second never share an object name', () => {
+  const t = env();
+  const a = spawnSync('bash', ['-c', `${join(ROOT, 'scripts/backup-db.sh')} & ${join(ROOT, 'scripts/backup-db.sh')} & wait`], {
+    env: t.env,
+    encoding: 'utf8',
+  });
+  assert.equal(a.status, 0, a.stderr);
+  const objs = readdirSync(t.dest).filter((f) => /^rekoda-.*\.dump\.enc$/.test(f));
+  assert.equal(objs.length, 2, `expected two distinct objects, got ${objs.join(',')}`);
+});
