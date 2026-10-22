@@ -195,20 +195,20 @@ export class JobRunner {
   }
 
   private async poll(reclaims = true): Promise<void> {
-    let sinceReclaim = 0;
+    /* Wall-clock, not idle time: a queue that is never empty must still
+     * reclaim, or a job a dead worker was holding waits behind the backlog
+     * indefinitely. Zero makes the first pass after boot reclaim at once. */
+    let lastReclaimAt = 0;
     while (this.running) {
       try {
+        if (reclaims && Date.now() - lastReclaimAt >= this.stalledAfterMs) {
+          lastReclaimAt = Date.now();
+          await this.reclaim();
+        }
         // Drains what is due before sleeping, so a burst is not paced at one
         // job per idle interval.
         const worked = await this.runOnce();
-        if (!worked) {
-          sinceReclaim += this.idleMs;
-          if (reclaims && sinceReclaim >= this.stalledAfterMs) {
-            sinceReclaim = 0;
-            await this.reclaim();
-          }
-          await sleep(this.idleMs);
-        }
+        if (!worked) await sleep(this.idleMs);
       } catch (error) {
         /**
          * The loop outlives its errors. A failure here is the queue itself

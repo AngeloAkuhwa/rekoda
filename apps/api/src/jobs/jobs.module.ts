@@ -214,6 +214,9 @@ export function buildOutboxDispatcher(fanOut: OutboxFanOut = async () => {}): Ou
   return dispatcher;
 }
 
+/** Long enough for the runner and connections to settle, short enough that a restart loop still sweeps. */
+const BOOT_PASS_DELAY_MS = 30_000;
+
 /**
  * Starts the runner only when this process is meant to be a worker.
  *
@@ -223,7 +226,7 @@ export function buildOutboxDispatcher(fanOut: OutboxFanOut = async () => {}): Ou
  * in production they scale apart.
  */
 @Injectable()
-class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
+export class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private readonly log = new Logger(JobRunnerLifecycle.name);
   private runner: JobRunner | null = null;
   private pumpTimer: NodeJS.Timeout | null = null;
@@ -251,6 +254,9 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private webhookTimer: NodeJS.Timeout | null = null;
   private sendingWebhooks = false;
   private catalogueTimer: NodeJS.Timeout | null = null;
+  private readonly bootTimers: NodeJS.Timeout[] = [];
+  /** Overridable so a test need not wait the production delay. */
+  bootPassDelayMs = BOOT_PASS_DELAY_MS;
   private syncingCatalogues = false;
 
   constructor(
@@ -460,7 +466,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
      * and a merchant whose card failed at 3am is reminded that morning
      * rather than the following one.
      */
-    this.graceTimer = setInterval(() => {
+    const runGrace = (): void => {
       if (this.sweepingGrace) return;
       this.sweepingGrace = true;
       this.exclusively('grace', () =>
@@ -477,15 +483,17 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         .finally(() => {
           this.sweepingGrace = false;
         });
-    }, 3_600_000);
+    };
+    this.graceTimer = setInterval(runGrace, 3_600_000);
     this.graceTimer.unref();
+    this.bootPass(runGrace);
 
     /**
      * Renewals ride the same hourly clock as grace, and for the same reason:
      * a cycle ends at a moment, and a merchant should not keep paid features
      * for most of a day after theirs did.
      */
-    this.renewalTimer = setInterval(() => {
+    const runRenewal = (): void => {
       if (this.sweepingRenewals) return;
       this.sweepingRenewals = true;
       this.exclusively('renewal', () =>
@@ -497,15 +505,17 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         .finally(() => {
           this.sweepingRenewals = false;
         });
-    }, 3_600_000);
+    };
+    this.renewalTimer = setInterval(runRenewal, 3_600_000);
     this.renewalTimer.unref();
+    this.bootPass(runRenewal);
 
     /**
      * Retention runs slowest of all, because its unit is a month. Six hours
      * is far more often than the answer can change and still means a record
      * never outlives its schedule by more than a fraction of a day.
      */
-    this.retentionTimer = setInterval(() => {
+    const runRetention = (): void => {
       if (this.sweepingRetention) return;
       this.sweepingRetention = true;
       /* All three stages, in order, each surviving the others' failures.
@@ -527,8 +537,10 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         .finally(() => {
           this.sweepingRetention = false;
         });
-    }, 21_600_000);
+    };
+    this.retentionTimer = setInterval(runRetention, 21_600_000);
     this.retentionTimer.unref();
+    this.bootPass(runRetention);
 
     /**
      * Repeating costs share the hourly clock with grace and renewals, and for
@@ -537,7 +549,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
      * Lagos day rather than whenever a nightly job happened to be scheduled,
      * so a merchant who opens the dashboard on the 1st sees their rent.
      */
-    this.recurringTimer = setInterval(() => {
+    const runRecurring = (): void => {
       if (this.sweepingRecurring) return;
       this.sweepingRecurring = true;
       this.exclusively('recurring', () =>
@@ -554,8 +566,10 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         .finally(() => {
           this.sweepingRecurring = false;
         });
-    }, 3_600_000);
+    };
+    this.recurringTimer = setInterval(runRecurring, 3_600_000);
     this.recurringTimer.unref();
+    this.bootPass(runRecurring);
 
     /**
      * Wear on the equipment, on the same hourly clock and for the same
@@ -566,7 +580,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
      * Without this the balance sheet would hold a generator at its full price
      * forever, which is a new misstatement in place of the old one.
      */
-    this.depreciationTimer = setInterval(() => {
+    const runDepreciation = (): void => {
       if (this.sweepingDepreciation) return;
       this.sweepingDepreciation = true;
       this.exclusively('depreciation', () => sweepDepreciation({ workerDb, appDb: this.appDb }))
@@ -576,8 +590,10 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         .finally(() => {
           this.sweepingDepreciation = false;
         });
-    }, 3_600_000);
+    };
+    this.depreciationTimer = setInterval(runDepreciation, 3_600_000);
     this.depreciationTimer.unref();
+    this.bootPass(runDepreciation);
 
     /**
      * The outbox rides the pump's fast clock, because what it carries is a
@@ -634,6 +650,21 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   }
 
   /**
+   * A first pass shortly after boot for the sweeps whose interval is hours.
+   *
+   * A bare `setInterval` waits a full period before its first run, so a
+   * process restarted more often than that (every deploy, every crash loop)
+   * never reaches the sweep at all: retention, renewals and grace would
+   * simply not happen. Each of these sweeps is idempotent and behind the
+   * advisory lock, so running one on boot is safe on every replica.
+   */
+  private bootPass(run: () => void): void {
+    const timer = setTimeout(run, this.bootPassDelayMs);
+    timer.unref();
+    this.bootTimers.push(timer);
+  }
+
+  /**
    * One replica runs a given sweep at a time.
    *
    * Every timer below fires on every worker replica, and while the claims
@@ -651,6 +682,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   }
 
   async onApplicationShutdown(): Promise<void> {
+    for (const timer of this.bootTimers) clearTimeout(timer);
     if (this.pumpTimer) clearInterval(this.pumpTimer);
     if (this.graceTimer) clearInterval(this.graceTimer);
     if (this.renewalTimer) clearInterval(this.renewalTimer);

@@ -34,7 +34,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { JobRunner } from './runner.js';
-import { buildRunner, type RunnerDeps } from './jobs.module.js';
+import { buildRunner, JobRunnerLifecycle, type RunnerDeps } from './jobs.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
@@ -350,6 +350,82 @@ describe('the polling loop', () => {
     await enqueue(ada, 'test.polled');
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(done).toHaveLength(1);
+  });
+});
+
+describe('stalled jobs are reclaimed while the queue stays busy (G-10)', () => {
+  it('returns a dead worker`s job to the queue even when the queue is never empty', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348050000002');
+    const stalled = await enqueue(ada, 'test.stalled');
+    // A worker claimed it an hour ago and died.
+    await workerDb.execute(sql`
+      UPDATE jobs SET state = 'running', locked_at = now() - interval '1 hour', locked_by = 'dead-worker'
+       WHERE kind = 'test.stalled'`);
+    expect(stalled).toBeDefined();
+
+    const ran: string[] = [];
+    // A backlog that refills itself: the runner is never idle, which is the
+    // only moment the old loop ever looked for stalled work.
+    const runner = new JobRunner(workerDb, appDb, { idleMs: 20, stalledAfterMs: 200 });
+    runner.register('test.busy', async ({ businessId }) => {
+      await enqueue(businessId, 'test.busy');
+    });
+    runner.register('test.stalled', async ({ businessId }) => {
+      ran.push(businessId);
+    });
+    await enqueue(ada, 'test.busy');
+
+    runner.start();
+    try {
+      await waitFor(() => ran.length === 1);
+    } finally {
+      await runner.stop();
+    }
+    expect(ran).toEqual([ada]);
+  });
+});
+
+describe('the slow sweeps run once after boot (G-10)', () => {
+  it('fires grace, renewals, retention, recurring and depreciation without waiting an hour', async () => {
+    const lifecycle = new JobRunnerLifecycle(
+      { ...config, workerEnabled: true, workerConcurrency: 1 },
+      appDb,
+      workerDb,
+      null,
+      deps.gateway,
+      deps.interpreter,
+      deps.replySender,
+      deps.storage,
+      deps.sender,
+      deps.paymentProvider,
+      deps.paymentIntents,
+      {} as never,
+      deps.stt,
+      deps.ocr,
+      deps.audioProbe,
+      deps.commandBus,
+      {} as never,
+    );
+    lifecycle.bootPassDelayMs = 25;
+    const names: string[] = [];
+    (lifecycle as unknown as { exclusively: (n: string) => Promise<void> }).exclusively = async (
+      name: string,
+    ) => {
+      names.push(name);
+    };
+    lifecycle.onModuleInit();
+    try {
+      await waitFor(() =>
+        ['grace', 'renewal', 'retention', 'recurring', 'depreciation'].every((n) =>
+          names.includes(n),
+        ),
+      );
+    } finally {
+      await lifecycle.onApplicationShutdown();
+    }
+    expect(names).toEqual(
+      expect.arrayContaining(['grace', 'renewal', 'retention', 'recurring', 'depreciation']),
+    );
   });
 });
 
