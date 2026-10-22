@@ -116,8 +116,10 @@ test('a failed fetch leaves no temp copy of the encrypted dump behind', () => {
   assert.deepEqual(readdirSync(tmp), [], 'temp files leaked on failure');
 });
 
-test('the service has a start timeout', () => {
-  assert.match(readFileSync(join(ROOT, 'deploy/systemd/rekoda-backup.service'), 'utf8'), /^TimeoutStartSec=/m);
+test('the service has a start timeout and requires Docker, not merely follows it', () => {
+  const unit = readFileSync(join(ROOT, 'deploy/systemd/rekoda-backup.service'), 'utf8');
+  assert.match(unit, /^TimeoutStartSec=/m);
+  assert.match(unit, /^Requires=docker\.service$/m);
 });
 
 test('a backup whose checksum cannot be published is never listed as the newest', () => {

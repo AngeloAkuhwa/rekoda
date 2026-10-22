@@ -1,5 +1,6 @@
 [Unit]
 Description=Rekoda encrypted database backup (G-02)
+Requires=docker.service
 After=docker.service
 
 [Service]
