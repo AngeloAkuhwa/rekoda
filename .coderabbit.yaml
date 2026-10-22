@@ -1,0 +1,173 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# CodeRabbit review configuration for Rekoda.
+#
+# CodeRabbit is one automated reviewer among several (Codex, the independent
+# Claude review in CONTRIBUTING.md). It never replaces a required human
+# approval, and it never approves on its own (`request_changes_workflow: false`).
+#
+# The instructions below point reviewers at rules that ALREADY exist in the
+# repository. They add no product rule of their own. Where they and a document
+# disagree, the document wins, in the order CLAUDE.md §2 gives:
+# REKODA_CANONICAL_SPEC.md, REKODA_CURRENT_STATE.md, REKODA_LAUNCH_READINESS.md,
+# REKODA_USER_JOURNEYS.md, REKODA_OWNER_DECISIONS.md, then the accepted ADRs.
+language: en-GB
+tone_instructions: >-
+  Be direct and specific. Cite the file and line, the failure scenario, and the Rekoda rule or
+  document it breaks. Do not propose new product rules; flag a gap as a question for the owner.
+inheritance: false
+
+reviews:
+  profile: assertive
+  # Never auto-approve: a human approval stays the merge requirement.
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  commit_status: true
+  fail_commit_status: false
+  poem: false
+  in_progress_fortune: false
+  abort_on_close: true
+  auto_review:
+    enabled: true
+    # Review every push, to the final commit; never pause on a long PR.
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 0
+    drafts: false
+    # `main` is the default branch, which is always reviewed; this names it
+    # explicitly so the target is not left to the default.
+    base_branches:
+      - '^main$'
+  path_filters:
+    - '!**/dist/**'
+    - '!**/node_modules/**'
+    - '!**/.next/**'
+    - '!packages/db/migrations/meta/**'
+    - '!pnpm-lock.yaml'
+  path_instructions:
+    - path: '**/*'
+      instructions: |
+        Rekoda's binding rules are CLAUDE.md §4 (the twelve invariants), docs/REKODA_CANONICAL_SPEC.md,
+        docs/REKODA_OWNER_DECISIONS.md (owner rulings; a later ruling wins until the spec absorbs it),
+        the accepted ADRs in docs/adr/ (check each Status line; superseded ADRs are history) and
+        docs/safety-review.md (the RED list). Judge the change against those. Do not invent product
+        behaviour: if the documents do not decide a question, say so and ask, rather than suggesting a rule.
+        Every bug fix must land with a regression test that fails before the fix (invariant 11); flag a fix
+        without one, and flag any skipped, disabled or weakened test.
+
+    - path: '{packages/core/src/{ledger,chart,money,periods,statements,recognition,costing,payments,reconciliation,bank-matching,purchase-identity}.ts,packages/db/src/repos/{journal,accounts,close,opening,reports,spend,purchase-identity,payments,stock}.ts,apps/api/src/{commands,spend,reports}/**}'
+      instructions: |
+        Financial integrity (CLAUDE.md invariants 1, 2, 6, 7; spec §9 and §11).
+        - Money is integer kobo end to end; flag any float, parseFloat, Number division or rounding on a
+          financial value outside packages/core/src/money.ts.
+        - Ledger postings must balance or throw; posted truth is immutable and is corrected only by
+          reversing postings, credit notes or compensating events. Flag any UPDATE or DELETE of posted
+          ledger rows or a silently absorbed discrepancy.
+        - One real-world event must produce exactly one financial truth. Look for paths that can write a
+          second expense, payment, receipt, invoice or journal for one event: retries, double taps, two
+          members, two connections. The purchase-identity rules are OWN-21 as revised by OWN-31 (G-87)
+          and OWN-32 (G-92(5)) in docs/REKODA_OWNER_DECISIONS.md.
+        - Every double-clickable write carries a client idempotency key; a replay must change truth exactly
+          once. Counts come from SQL, never rows.length.
+        - No AI-produced number is authoritative: every figure in a reply or a posting is computed by
+          @rekoda/core from validated input.
+
+    - path: '{apps/api/src/payments/**,apps/api/src/bank/**,packages/core/src/{payments,reconciliation,bank-matching}.ts}'
+      instructions: |
+        Paystack and bank paths (CLAUDE.md invariants 5, 8, 10; ADR 0016; G-05/G-06 in
+        docs/REKODA_LAUNCH_READINESS.md).
+        - Webhooks: verify the signature over the RAW body, then idempotency, then process, in that order,
+          every time. A missing signature secret must reject every webhook. Flag any parse-before-verify.
+        - Payment truth comes from server-side verification with the provider, never from the client, a
+          redirect, or a screenshot (the RED list in docs/safety-review.md). Rekoda never holds, routes or
+          delays funds and never KYCs a merchant's customer.
+        - Refunds, reversals and disputes follow the existing event mapping (OD-9 / G-06); flag an
+          over-refund, an under-refund, or a refund that can be applied twice.
+        - Reconciliation must never silently absorb a difference between what should have happened and what
+          the provider or bank reports.
+
+    - path: '{apps/api/src/billing/**,packages/core/src/{billing,allowances,entitlements,gates}.ts,packages/db/src/repos/{subscriptions,billing,usage}.ts,apps/web/src/app/app/billing/**}'
+      instructions: |
+        Subscriptions, renewals and entitlements (ADR 0024; spec §30; owner rulings OWN-26 to OWN-33,
+        including OWN-27 the 14-day trial, OWN-29 stale charges and OWN-33 non-standard cycles).
+        - A plan moves only after valid provider settlement or an authorised operator action; every
+          subscription state write goes through the one writer (writeSubscriptionState, G-62).
+        - Look for double grants of a pack or plan, units consumed twice, a charge applied after a newer
+          subscription decision (G-104), and renewal or proration arithmetic outside @rekoda/core.
+        - Rekoda's own subscription money must never enter a merchant's books.
+        - Copy must tell the truth: never "payment failed" when no payment was attempted; never imply that
+          records were deleted when they remain readable; no internal terms (entitlement, quota counter).
+
+    - path: '{apps/api/src/auth/**,apps/api/src/privacy/**,apps/api/src/api/**,apps/web/src/server/**,packages/core/src/{privacy,vault,retention}.ts,packages/db/src/client.ts}'
+      instructions: |
+        Tenant isolation, roles and PII (CLAUDE.md invariants 3, 4, 9).
+        - Tenant data is reached only through withBusiness() and is scoped by businessId in code AND by
+          Postgres RLS. Flag a query on business-owned data outside withBusiness(), or a worker-role read
+          beyond claiming a job.
+        - Roles: owner, accountant, delegate and view-only members are enforced server-side, including on
+          the command bus (G-99); a forbidden action must never execute. Operator access is OIDC.
+        - Customer PII lives in the vault and travels as tokens; rehydration happens only in the
+          authorised output layer. Never log a message body, a customer or supplier name, a phone number,
+          or a token-to-identity mapping. Secrets never enter source, fixtures or logs.
+
+    - path: '{packages/db/migrations/**,packages/db/src/schema/**,packages/db/src/repos/**}'
+      instructions: |
+        PostgreSQL migrations, transactions and concurrent writes.
+        - Migrations are append-only: never edit an applied migration; add the next number and its
+          meta/_journal.json entry. A business-owned table needs RLS and a tenant policy, or a written
+          entry in the exemption register enforced by packages/db/src/rls-invariants.integration.test.ts.
+        - Composite tenant foreign keys follow the 0132 to 0147 pattern.
+        - Concurrent writes: a check-then-write needs a lock, a conditional UPDATE ... WHERE state = ..., or
+          a unique constraint. Flag read-then-insert races, isolation assumptions, and timestamps compared
+          across the application and database clocks.
+        - postgres-js cannot bind a JS Date or an array into raw SQL; cast explicitly.
+
+    - path: '{apps/api/src/ai/**,apps/api/src/jobs/inbound-message.handler.ts,apps/api/src/channels/**,apps/api/src/replies/**,packages/core/src/{router,assistant,ai-cost,gates,continuation,replies,messaging}.ts,packages/contracts/src/business-command.ts}'
+      instructions: |
+        Chat routing, AI safety and confirmation (CLAUDE.md invariants 2 and 4; conversation gates CG1 to
+        CG3 and CG5 in the spec; ADR 0032 for media).
+        - AI proposes, deterministic code disposes: the model returns a structured command validated by
+          zod; nothing posts until the merchant confirms the exact preview by database ordinal.
+        - PII is tokenised before any model call. Flag any raw name, phone or message body reaching a model,
+          a log or a trace span.
+        - Look for a yes that could confirm a different or stale preview, an expired draft that can still
+          execute (G-23), words read off a photo treated as a command (G-78), and replies that state a figure
+          the deterministic layer did not compute.
+        - WhatsApp: STOP/START, the 24-hour window and Meta template rules must hold.
+
+    - path: '{apps/web/src/app/s/**,apps/web/src/app/app/**,apps/web/src/server/**,apps/web/src/middleware.ts,apps/web/next.config.*}'
+      instructions: |
+        Next.js dashboard and hosted storefront /s/[slug].
+        - Server actions and route handlers must authenticate and authorise on the server; never trust a
+          client-supplied businessId, price, total or quantity. Checkout totals come from the API.
+        - Storefront: simultaneous submits, last-unit stock races and metering are settled on the server
+          (G-53, G-96); a race must end in a controlled customer response, never a 500 or a double order.
+        - Keep the CSP and security headers; flag new inline scripts or external origins.
+        - UI claims follow docs/REKODA_DESIGN_SYSTEM.md: a screen may not claim what the data does not show.
+
+    - path: '{apps/api/src/jobs/**,apps/api/src/commands/outbox-dispatcher.ts,apps/api/src/health/**,Dockerfile,docker-compose.prod.yml,deploy/**,.github/workflows/**,packages/db/src/migrate*.ts}'
+      instructions: |
+        Background jobs, retries, deployment and rollback (ADR 0022; G-01, G-02, G-10, G-18 in
+        docs/REKODA_LAUNCH_READINESS.md; docs/runbooks/).
+        - A job may run twice: its effect must be idempotent, and a crash between steps must not send,
+          bill or post twice. Look for send-before-claim and missing backoff.
+        - A bad config value must refuse to boot; a missing provider key must degrade honestly (invariant 8).
+        - Deployment changes must keep the image non-root, keep secrets out of layers, and leave a path to
+          roll back; a migration must be safe to run before the new code serves traffic.
+        - CI must never be weakened: no skipped checks, no continue-on-error on a test step, no secret in a
+          workflow file.
+
+  tools:
+    gitleaks:
+      enabled: true
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - 'CLAUDE.md'
+      - 'docs/REKODA_OWNER_DECISIONS.md'
+      - 'docs/safety-review.md'
