@@ -164,8 +164,9 @@ export const RecordPurchase = z.object({
   /**
    * The supplier's own invoice, receipt or document number, only when the
    * merchant or the photographed document states one ("receipt EMK-0041").
-   * Two purchases of the same total with DIFFERENT references are two
-   * purchases (G-81, OD-23 D3). Optional, because almost no purchase states
+   * A reference is stored, shown and written onto the bill, but it never
+   * proves two purchases separate (G-92(5), OWN-32): only two different
+   * trusted products or the merchant's "separate" answer do. Optional, because almost no purchase states
    * one and drafts written before G-81 carry none. Never a name: core keeps
    * it only when it is certainly ONE document number (an explicit marker,
    * no amount, date, phone number or second number) and stores only its

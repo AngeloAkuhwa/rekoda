@@ -43,9 +43,8 @@ Chat bookings, SAME links the PO to the Chat purchase, SEPARATE receives it) is
 merged (#263 as `3d462c1`, migration 0159) and deployed to staging (`staging-3d462c1`), staging acceptance pending, NOT closed
 and required pre-public-launch, so the system-wide invariant is not certified until G-89 closes. G-88 (purchases carry no `posting_purpose`)
 recorded, not fixed. G-90 (purchase-identity copy issues) and G-92 (reference parser and held-question
-residuals) recorded, not fixed. G-92(5) books one real purchase twice with no
-model error under OD-23 D3 as ruled (two different same-kind documents for one
-purchase), for the owner to revisit.
+residuals) recorded, not fixed. G-92(5) (history: under OD-23 D3 it booked one real purchase twice with no
+model error) was ruled by OWN-32 on 22 Oct 2026 and is fixed in PR #302 (references never prove separate).
 
 **Build 1 (G-48) accepted (26 Sep 2026):**
 
