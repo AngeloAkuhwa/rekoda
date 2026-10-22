@@ -407,17 +407,28 @@ export async function jobsForBusiness(tx: TenantDb, kind?: string): Promise<JobR
 }
 
 export interface QueueHealth {
-  /** Jobs that exhausted their retries. Nothing retries these again. */
+  /** Jobs that exhausted their retries. Nothing retries these again, and nothing moves them out of `dead`. */
   dead: number;
+  /** Jobs that died in the last 24 hours: what an alert can act on (G-26). */
+  deadRecent: number;
   /** Waiting to run. A number that only grows means the worker is not. */
   pending: number;
-  /** Seconds the OLDEST waiting job has been waiting. The real alarm. */
+  /** Seconds the OLDEST job that is DUE has waited. The worker-not-keeping-up alarm. */
   oldestPendingSeconds: number;
+  /**
+   * Seconds since the oldest still-pending job was QUEUED, due or not (G-63).
+   * `oldestPendingSeconds` counts from `run_at`, which every retry pushes
+   * forward, so a backlog that keeps being rescheduled reads as healthy.
+   * `created_at` does not move.
+   */
+  oldestQueuedSeconds: number;
   running: number;
 }
 
 /**
- * The queue, in four numbers (MASTER-PLAN §6.4).
+ * The queue, in a handful of numbers (MASTER-PLAN §6.4). An approved
+ * operational-monitoring aggregate (OWN-36, ADR 0035): counts and ages only,
+ * never a business id or payload, read-only.
  *
  * Cross-tenant by construction and therefore worker-credentialed: "is
  * anything stuck" is a question about the platform, not about a business.
@@ -428,23 +439,31 @@ export interface QueueHealth {
 export async function queueHealth(db: Db): Promise<QueueHealth> {
   const rows = await db.execute<{
     dead: number;
+    dead_recent: number;
     pending: number;
     running: number;
     oldest_seconds: number | null;
+    oldest_queued_seconds: number | null;
   }>(sql`
     SELECT
       count(*) FILTER (WHERE state = 'dead')::int    AS dead,
+      count(*) FILTER (WHERE state = 'dead'
+                         AND updated_at > now() - interval '24 hours')::int AS dead_recent,
       count(*) FILTER (WHERE state = 'pending')::int AS pending,
       count(*) FILTER (WHERE state = 'running')::int AS running,
       EXTRACT(EPOCH FROM (now() - min(run_at) FILTER (WHERE state = 'pending')))::int
-        AS oldest_seconds
+        AS oldest_seconds,
+      EXTRACT(EPOCH FROM (now() - min(created_at) FILTER (WHERE state = 'pending')))::int
+        AS oldest_queued_seconds
     FROM jobs
   `);
   const row = [...rows][0];
   return {
     dead: row?.dead ?? 0,
+    deadRecent: row?.dead_recent ?? 0,
     pending: row?.pending ?? 0,
     running: row?.running ?? 0,
     oldestPendingSeconds: Math.max(0, row?.oldest_seconds ?? 0),
+    oldestQueuedSeconds: Math.max(0, row?.oldest_queued_seconds ?? 0),
   };
 }
