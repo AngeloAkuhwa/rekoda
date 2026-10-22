@@ -296,7 +296,9 @@ money-summing examples apply to mock-ups only. Read "Using these files safely"
 in `.claude/skills/SOURCES.md` before using Taste or Impeccable.
 
 No coordination package is installed (decision recorded in the playbook).
-Impeccable's hooks are not installed. Motion is subtle and honours
+Impeccable's hooks are not installed, and its `scripts/impeccable` launcher is
+never run (it downloads and executes a binary); use its "Launcher unavailable"
+path and read the design-system files directly. Motion is subtle and honours
 `prefers-reduced-motion`; no new animation library without an owner ruling.
 
 Visual QA is mandatory for a significant UI change: run the app against test

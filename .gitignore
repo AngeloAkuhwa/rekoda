@@ -24,6 +24,8 @@ secrets/
 
 # data & runtime artifacts
 data/
+# ...except data shipped inside a vendored skill (.claude/skills/SOURCES.md)
+!/.claude/skills/**/data/
 *.db
 *.db-wal
 *.db-shm
