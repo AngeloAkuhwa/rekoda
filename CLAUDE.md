@@ -244,11 +244,12 @@ Angelo is the author of record. Claude Code is the engineering tool he directs.
   and no promotional signatures in commit messages or PR descriptions. `.claude/settings.json` turns
   Claude Code's automatic attribution off (`attribution.commit` and `attribution.pr` empty,
   `sessionUrl` false).
-- Commit messages are Conventional Commits that explain the engineering change (`fix: prevent
-duplicate purchase postings`), with issue or gap references where helpful. When squash-merging,
-  write the squash message explicitly so no trailer from a branch commit is carried into `main`.
-- PR descriptions follow `.github/PULL_REQUEST_TEMPLATE.md`: problem, implementation, test evidence,
-  security and financial impact, migration, deployment and rollback, and references.
+- Commit messages are Conventional Commits that explain the engineering change (for example
+  `fix: prevent duplicate purchase postings`), with issue or gap references where helpful. Merge PRs
+  by squash only, with the squash message written explicitly, so no trailer from a branch commit is
+  carried into `main` (a rebase or merge commit would copy branch commits as they are).
+- PR descriptions fill every section of `.github/PULL_REQUEST_TEMPLATE.md`, in plain engineering
+  prose, with no generated footer.
 - Prospective only. Merged and published history is never rewritten to remove attribution, and no
   force push is made just for that. Audit records, GitHub activity and any disclosure a platform or
   repository policy requires (for example the footer GitHub-integrated tools add to review comments)
