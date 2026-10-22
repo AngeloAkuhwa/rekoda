@@ -271,7 +271,15 @@ product behaviour, tax policy or financial rules, and never outranks security,
 financial correctness, CI or required approvals.
 
 Choose automatically; do not invoke all of them. Skip the whole section for
-backend-only work.
+backend-only work. The table rows are candidates, not requirements. Use at most
+two skills per slice, picked in the owner's order of precedence (Angelo, 22 Oct
+2026): `impeccable` is the default for any UI work; add `design-taste-frontend`
+only for a public page or when visual direction is being set; add
+`emil-design-eng` only when the slice contains motion or interaction detail;
+`ui-ux-pro-max` is a reference lookup and does not count toward the two. A
+public animated page therefore gets `impeccable` plus `design-taste-frontend`,
+and the motion decisions are made with `emil-design-eng`'s judgement only if
+that slice is mainly about motion.
 
 | Task                                                                                                                                 | Skill                                                                                              |
 | ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
