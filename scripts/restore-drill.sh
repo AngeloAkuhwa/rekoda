@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Restore drill (G-02, ADR 0010): fetch the newest off-box backup, decrypt it,
 # restore it into a SCRATCH database, and prove the books still tie. Reports the
-# object, the wall-clock restore time (the measured RTO) and row counts.
+# object, the wall-clock restore time (a floor on the real RTO) and row counts.
 #
 #   BACKUP_DEST, BACKUP_PASSPHRASE_FILE, BACKUP_S3_ENDPOINT   as scripts/backup-db.sh
 #   DRILL_DATABASE_URL  superuser URL of a scratch PostgreSQL server. Its database
@@ -20,12 +20,12 @@ backup_require_config
 umask 077
 WORK=$(mktemp -d)
 CONTAINER=""
-cleanup() { rm -rf "$WORK"; [ -z "$CONTAINER" ] || docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
+cleanup() { rm -rf "$WORK"; [ -z "$CONTAINER" ] || docker rm -fv "$CONTAINER" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 # The dump references the runtime roles in grants and policies; a scratch
 # server has none, so create them (no login, no privileges) before restoring.
-ROLES_SQL="DO \$\$ DECLARE r text; BEGIN FOREACH r IN ARRAY ARRAY['rekoda_owner','rekoda_app','rekoda_worker'] LOOP IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('CREATE ROLE %I NOLOGIN', r); END IF; END LOOP; END \$\$;"
+ROLES_SQL="DO \$\$ DECLARE r text; BEGIN FOREACH r IN ARRAY ARRAY['rekoda_owner','rekoda_app','rekoda_worker','rekoda_provenance_owner','rekoda_operator'] LOOP IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('CREATE ROLE %I NOLOGIN', r); END IF; END LOOP; END \$\$;"
 
 START=$(date +%s)
 OBJECT=$(backup_fetch_decrypt "${DRILL_OBJECT:-}" "$WORK/restore.dump")
@@ -34,7 +34,9 @@ if [ -n "${DRILL_DATABASE_URL:-}" ]; then
   DB_NAME=$(printf '%s' "$DRILL_DATABASE_URL" | sed -E 's|^[^?]*/([^/?]+)(\?.*)?$|\1|')
   case "$DB_NAME" in
     *drill* | *scratch*) ;;
-    *) backup_die "refusing DRILL_DATABASE_URL: database '$DB_NAME' is not named *drill* or *scratch*" ;;
+    # Never echo the URL or the parsed text: a keyword DSN or a path-less URL
+    # parses to the whole string, password included.
+    *) backup_die "refusing DRILL_DATABASE_URL: its database name is not *drill* or *scratch*" ;;
   esac
   URL="$DRILL_DATABASE_URL"
   # The name check above reads the URL text; libpq may resolve a different
@@ -45,6 +47,11 @@ DO $$ BEGIN
   IF current_database() !~ '(drill|scratch)' THEN
     RAISE EXCEPTION 'refusing to reset database %: not named *drill* or *scratch*', current_database();
   END IF;
+END $$;
+DO $$ DECLARE s text; BEGIN
+  FOR s IN SELECT nspname FROM pg_namespace
+           WHERE nspname <> 'public' AND nspname NOT LIKE 'pg\_%' AND nspname <> 'information_schema'
+  LOOP EXECUTE format('DROP SCHEMA %I CASCADE', s); END LOOP;
 END $$;
 DROP SCHEMA IF EXISTS public CASCADE;
 CREATE SCHEMA public;
@@ -72,6 +79,7 @@ BUSINESSES=$("${PSQL[@]}" -c 'SELECT count(*) FROM businesses;')
 ENTRIES=$("${PSQL[@]}" -c 'SELECT count(*) FROM ledger_entries;')
 INVOICES=$("${PSQL[@]}" -c 'SELECT count(*) FROM invoices;')
 
+[ "$ENTRIES" -gt 0 ] || backup_die "DRILL FAILED: the restored database holds no ledger entries (an empty or data-less archive proves nothing)"
 echo "restore-drill: object=$OBJECT restore_seconds=$((END - START)) businesses=$BUSINESSES ledger_entries=$ENTRIES invoices=$INVOICES unbalanced_businesses=$DRIFT"
 [ "$DRIFT" = "0" ] || backup_die "DRILL FAILED: $DRIFT business(es) whose ledger does not balance"
 echo "restore-drill: PASS"

@@ -37,35 +37,64 @@ failure is a non-zero exit, so a failed systemd unit is the signal. No notifier 
 `scripts/restore-drill.sh` fetches the newest object, verifies and decrypts it,
 restores into a scratch database (a throwaway container, or `DRILL_DATABASE_URL`
 whose name must contain `drill` or `scratch`) and exits non-zero unless every
-business's ledger balances; it prints the measured restore seconds and counts.
+business's ledger balances; it prints the restore time (a floor on the real recovery time) and counts.
 Units: `deploy/systemd/rekoda-backup.{service,timer}` with
 `/etc/rekoda/backup.env` (root-only). Still needed from the owner: the off-box
 destination and credentials, the passphrase custody (lose it and the backups are
 unreadable), the first real drill logged below, and OD-7 (continuous WAL/PITR per
 ADR 0010 is NOT implemented; this is the nightly logical half only, RPO up to 24h).
 
-## Backup (original planned procedure, superseded by the scripts above)
+### Operator prerequisites
+
+- **Install:** copy `deploy/systemd/rekoda-backup.{service,timer}` to `/etc/systemd/system/`, create
+  `/etc/rekoda/backup.env` (root-only, mode 0600), then `systemctl daemon-reload` and
+  `systemctl enable --now rekoda-backup.timer`. The checkout is expected at `/opt/rekoda`.
+- **`backup.env`:** `BACKUP_DEST`, `BACKUP_PASSPHRASE_FILE` (a file of at least 32 characters on its
+  first line, mode 0600, custody recorded off the host), optionally `BACKUP_S3_ENDPOINT` and the
+  `AWS_*` credentials for an `s3://` destination, `BACKUP_RETAIN_DAYS` (directory destinations only,
+  default 30), `BACKUP_DUMP_CMD` (default: `pg_dump` inside the production compose postgres; a pipeline
+  here runs with `pipefail`). For R2 or B2 also set `AWS_REQUEST_CHECKSUM_CALCULATION=when_required`,
+  which newer aws CLI versions otherwise reject.
+- **Drill variables:** `DRILL_DATABASE_URL` (a superuser URL of a scratch server whose database name
+  contains `drill` or `scratch`; unset uses a throwaway `postgres:16-alpine` container, removed with its
+  data volume) and `DRILL_OBJECT` (a specific object instead of the newest). In URL mode the host's
+  `pg_restore` and `psql` must be at least the server's major version (16).
+- **Tools:** bash, GNU coreutils (`sha256sum`, `stat -c`), `openssl` 1.1.1 or later (`-pbkdf2`, `-iter`),
+  PostgreSQL client tools, `docker`, and the `aws` CLI for an `s3://` destination.
+- **`s3://` retention:** the script does not expire S3 objects. Set a bucket lifecycle rule that keeps at
+  least one prior version, and check the newest object's date weekly: a failing nightly run does not stop
+  the lifecycle clock, so a long outage can age out the last good backup.
+- **A drill needs data.** It fails on a restore with no ledger entries, since an empty archive proves
+  nothing; run it against a database that holds real or staging books.
+
+### What the checksum does and does not give you
+
+The `.sha256` detects corruption and a truncated copy. It is not authentication: AES-CBC carries no
+integrity of its own, and anyone with write access to the destination can replace an object and its
+checksum together, or roll back to an older valid pair (the drill would still pass against it). The
+passphrase protects confidentiality, not freshness. Until the encryption is moved to an authenticated
+format, give the backup credential write-only access (no delete), turn on bucket versioning or object
+lock, and compare the newest object's date with today's. This is an open hardening item for G-02, not
+closed by this change.
+
+### Restore by hand (no scripts)
+
+Objects are named `rekoda-<UTC stamp>-<pid>.dump.enc` with a `.sha256` beside each.
 
 ```bash
-# On the server — to be installed as a systemd timer at first deploy.
-# NOT YET SHIPPED: no timer unit or compose service exists in the repo;
-# writing and enabling it is part of the launch deploy checklist.
-pg_dump "$DATABASE_URL" -Fc -f /backups/rekoda-$(date +%F).dump
-openssl enc -aes-256-cbc -pbkdf2 -salt \
-  -in /backups/rekoda-$(date +%F).dump \
-  -out /backups/rekoda-$(date +%F).dump.enc -pass env:BACKUP_PASSPHRASE
-b2 upload-file rekoda-backups /backups/rekoda-$(date +%F).dump.enc db/rekoda-$(date +%F).dump.enc
+sha256sum rekoda-<stamp>-<pid>.dump.enc        # must equal the contents of the .sha256 file
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
+  -pass file:/path/to/passphrase-file \
+  -in rekoda-<stamp>-<pid>.dump.enc -out restore.dump
+pg_restore --no-owner -d "$SCRATCH_URL" restore.dump
 ```
-
-Weekly verification: confirm the newest B2 object exists and its size is
-within 20% of the previous week's.
 
 ## Restore drill (monthly)
 
 1. Provision a scratch Postgres (local docker is fine).
-2. Pull the newest dump from B2; decrypt with `BACKUP_PASSPHRASE`.
+2. Pull the newest object from the destination, check its `.sha256` and decrypt it (see "Restore by hand").
 3. `pg_restore -d "$SCRATCH_URL" --no-owner rekoda-<date>.dump`
-4. Run the integrity checks:
+4. Run the integrity checks (`scripts/restore-drill.sh` does this):
    ```sql
    -- the ledger must balance, in total and per business
    SELECT business_id, SUM(debit_k) - SUM(credit_k) AS drift
@@ -99,7 +128,7 @@ every journal balances per business (invariant 2), no paid invoice lost its
 money trail (invariant 3), and the business, its paid invoice and its
 receipt all crossed. The day the dump format, a role grant or an RLS policy
 stops surviving the round trip, that test fails in CI rather than at 2am
-against production. A green build is a passed drill.
+against production. A green build is a passed run of that integration test only; it does not exercise `scripts/restore-drill.sh`, which has so far been run by hand against PostgreSQL 16 and not in CI.
 
 ## Drill log
 

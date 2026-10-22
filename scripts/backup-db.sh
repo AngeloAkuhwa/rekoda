@@ -12,22 +12,31 @@
 #                           bucket lifecycle rule instead.
 #
 # Fails closed: a missing setting, an empty or non-archive dump, or an upload that
-# does not read back with the same checksum is a non-zero exit (the timer's failure
-# is the alert). The passphrase and the dump never appear in an argument or a log.
+# does not read back with the same checksum is a non-zero exit (a failed unit; no
+# notifier consumes it yet, see the runbook). The passphrase and the dump never appear in an argument or a log.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # shellcheck source=lib/backup-common.sh
 . scripts/lib/backup-common.sh
 
 backup_require_config
+RETAIN_DAYS="${BACKUP_RETAIN_DAYS:-30}"
+case "$RETAIN_DAYS" in '' | *[!0-9]* | 0) backup_die "BACKUP_RETAIN_DAYS must be a positive whole number of days" ;; esac
 umask 077
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
+# Directory destinations: age out old objects and stale staging files BEFORE the
+# upload, so a full destination can recover instead of failing every night.
+# (s3:// uses a bucket lifecycle rule; keep at least one version, see the runbook.)
+case "$BACKUP_DEST" in
+  s3://*) ;;
+  *) find "$BACKUP_DEST/" -maxdepth 1 -type f -name 'rekoda-*.dump.enc*' -mtime "+$RETAIN_DAYS" -delete || true ;;
+esac
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 NAME="rekoda-$STAMP-$$.dump.enc"
 
 if [ -n "${BACKUP_DUMP_CMD:-}" ]; then
-  bash -c "$BACKUP_DUMP_CMD" >"$WORK/dump"
+  bash -o pipefail -c "$BACKUP_DUMP_CMD" >"$WORK/dump"
 else
   docker compose -f docker-compose.prod.yml exec -T postgres \
     pg_dump -U rekoda_owner -d rekoda -Fc >"$WORK/dump"
@@ -42,6 +51,8 @@ backup_sha256 "$WORK/$NAME" >"$WORK/$NAME.sha256"
 # Stage under a name backup_list never selects, read it back, and only then
 # publish: checksum first, the listed object last. A failure at any step leaves
 # the previous backup as the newest one, never a half-published object.
+# A staged object that never gets published is removed, success or failure.
+trap 'rm -rf "$WORK"; backup_delete "$NAME.pending" >/dev/null 2>&1 || true' EXIT
 backup_put "$WORK/$NAME" "$NAME.pending"
 backup_get "$NAME.pending" "$WORK/readback"
 [ "$(backup_sha256 "$WORK/readback")" = "$(cat "$WORK/$NAME.sha256")" ] \
@@ -50,10 +61,4 @@ backup_put "$WORK/$NAME.sha256" "$NAME.sha256"
 backup_put "$WORK/$NAME" "$NAME"
 backup_delete "$NAME.pending" || true
 
-case "$BACKUP_DEST" in
-  s3://*) ;;
-  *)
-    find "$BACKUP_DEST" -maxdepth 1 -name 'rekoda-*.dump.enc*' -mtime "+${BACKUP_RETAIN_DAYS:-30}" -delete
-    ;;
-esac
 echo "backup: ok $NAME $(stat -c %s "$WORK/$NAME") bytes"

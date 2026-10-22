@@ -88,7 +88,9 @@ jobs:
       - name: Backup scripts keep their contract
         if: steps.ws.outputs.present == 'true'
         run: |
-          bash -n scripts/backup-db.sh scripts/restore-drill.sh scripts/lib/backup-common.sh
+          bash -n scripts/backup-db.sh
+          bash -n scripts/restore-drill.sh
+          bash -n scripts/lib/backup-common.sh
           node --test scripts/backup-scripts.test.mjs
       # Staging deploys itself after this workflow passes on main
       # (deploy-staging.yml running scripts/deploy-staging.sh on the host).

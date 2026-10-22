@@ -38,7 +38,7 @@ backup_sha256() { sha256sum "$1" | cut -d' ' -f1; }
 backup_put() { # local-file remote-name
   case "$BACKUP_DEST" in
     s3://*) _backup_aws s3 cp --only-show-errors "$1" "${BACKUP_DEST%/}/$2" ;;
-    *) cp "$1" "$BACKUP_DEST/$2.part" && mv "$BACKUP_DEST/$2.part" "$BACKUP_DEST/$2" ;;
+    *) cp "$1" "$BACKUP_DEST/$2.part" && mv "$BACKUP_DEST/$2.part" "$BACKUP_DEST/$2" || { rm -f "$BACKUP_DEST/$2.part"; return 1; } ;;
   esac
 }
 backup_get() { # remote-name local-file

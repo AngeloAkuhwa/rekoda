@@ -154,3 +154,72 @@ test('two backups started in the same second never share an object name', () => 
   const objs = readdirSync(t.dest).filter((f) => /^rekoda-.*\.dump\.enc$/.test(f));
   assert.equal(objs.length, 2, `expected two distinct objects, got ${objs.join(',')}`);
 });
+
+test('a failing first stage of a dump pipeline is never published as a backup', () => {
+  const t = env({ BACKUP_DUMP_CMD: 'printf PGDMPtruncated; false | cat' });
+  const r = run('scripts/backup-db.sh', t.env);
+  assert.notEqual(r.status, 0, 'a truncated dump was reported as a good backup');
+  assert.deepEqual(readdirSync(t.dest), []);
+});
+
+test('a refused drill URL never echoes the URL, which may hold a password', () => {
+  const t = env();
+  assert.equal(run('scripts/backup-db.sh', t.env).status, 0);
+  for (const url of ['host=h user=u password=sekrit dbname=rekoda', 'postgres://u:sekrit@host', 'postgres://u:sekrit@host/rekoda']) {
+    const r = run('scripts/restore-drill.sh', { ...t.env, DRILL_DATABASE_URL: url });
+    assert.notEqual(r.status, 0);
+    assert.ok(!(r.stdout + r.stderr).includes('sekrit'), `password echoed for ${url}`);
+  }
+});
+
+test('retention keeps in-window and unrelated files and refuses a bad window', () => {
+  const t = env({ BACKUP_RETAIN_DAYS: '30' });
+  const old = join(t.dest, 'rekoda-20200101T000000Z-1.dump.enc');
+  const recent = join(t.dest, 'rekoda-20261001T000000Z-1.dump.enc');
+  const other = join(t.dest, 'notes.txt');
+  for (const f of [old, recent, other]) writeFileSync(f, 'x');
+  const past = new Date(Date.now() - 90 * 864e5);
+  utimesSync(old, past, past);
+  const tenDays = new Date(Date.now() - 10 * 864e5);
+  utimesSync(recent, tenDays, tenDays);
+  utimesSync(other, past, past);
+  assert.equal(run('scripts/backup-db.sh', t.env).status, 0);
+  const files = readdirSync(t.dest);
+  assert.ok(!files.includes('rekoda-20200101T000000Z-1.dump.enc'), 'old backup kept');
+  assert.ok(files.includes('rekoda-20261001T000000Z-1.dump.enc'), 'in-window backup deleted');
+  assert.ok(files.includes('notes.txt'), 'unrelated file deleted');
+  for (const bad of ['0', 'abc', '-1', '']) {
+    const r = run('scripts/backup-db.sh', { ...t.env, BACKUP_RETAIN_DAYS: bad === '' ? ' ' : bad });
+    assert.notEqual(r.status, 0, `BACKUP_RETAIN_DAYS=${JSON.stringify(bad)} accepted`);
+  }
+});
+
+test('a read-back that does not match is refused, leaves no new backup, and cleans its staging file', () => {
+  const t = env();
+  assert.equal(run('scripts/backup-db.sh', t.env).status, 0);
+  const good = readdirSync(t.dest).filter((f) => /^rekoda-.*\.dump\.enc$/.test(f));
+  const bin = mkdtempSync(join(tmpdir(), 'bin-'));
+  writeFileSync(join(bin, 'cp'), '#!/bin/sh\ncase "$2" in */readback) echo corrupt > "$2"; exit 0;; esac\nexec /bin/cp "$@"\n', { mode: 0o755 });
+  const r = spawnSync('bash', [join(ROOT, 'scripts/backup-db.sh')], {
+    env: { ...t.env, PATH: `${bin}:${process.env.PATH}` },
+    encoding: 'utf8',
+  });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /read-back checksum mismatch/);
+  assert.deepEqual(readdirSync(t.dest).filter((f) => /^rekoda-.*\.dump\.enc$/.test(f)), good);
+  assert.deepEqual(readdirSync(t.dest).filter((f) => f.endsWith('.pending') || f.endsWith('.part')), [], 'staging file left behind');
+});
+
+test('the drill creates every role the migrations grant to, and its container never leaks a data volume', () => {
+  const drill = readFileSync(join(ROOT, 'scripts/restore-drill.sh'), 'utf8');
+  const dir = join(ROOT, 'packages/db/migrations');
+  const roles = new Set();
+  for (const f of readdirSync(dir).filter((n) => n.endsWith('.sql'))) {
+    const sql = readFileSync(join(dir, f), 'utf8');
+    for (const m of sql.matchAll(/\b(?:TO|FROM)\s+"?(rekoda_[a-z_]+)"?/gi)) roles.add(m[1].toLowerCase());
+  }
+  roles.delete('rekoda_private');
+  assert.ok(roles.size >= 4, `expected the migrations to name roles, got ${[...roles]}`);
+  for (const r of roles) assert.ok(drill.includes(`'${r}'`), `restore-drill.sh does not create role ${r}`);
+  assert.match(drill, /docker rm -fv /, 'removing the container must remove its anonymous data volume');
+});
