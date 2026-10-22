@@ -19,6 +19,7 @@
     "boundaries": "node scripts/check-boundaries.mjs",
     "env:check": "node --test scripts/check-env-example.test.mjs && node scripts/check-env-example.mjs",
     "deploy:check": "node --test scripts/check-deploy.test.mjs && node scripts/check-deploy.mjs",
+    "skills:check": "node --test scripts/check-vendored-skills.test.mjs && node scripts/check-vendored-skills.mjs",
     "eval:build": "turbo run build --force --filter=@rekoda/api... && node apps/api/dist/ai/eval/build-stamp.js",
     "test:integration": "pnpm --filter @rekoda/db test:integration && pnpm --filter @rekoda/api test:integration",
     "e2e": "pnpm --filter @rekoda/web e2e",

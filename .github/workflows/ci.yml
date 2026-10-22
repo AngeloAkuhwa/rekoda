@@ -83,6 +83,12 @@ jobs:
       - name: Deployment files keep their shape
         if: steps.ws.outputs.present == 'true'
         run: node --test scripts/check-deploy.test.mjs && node scripts/check-deploy.mjs
+      # The vendored design skills (.claude/skills, SOURCES.md) stay what was
+      # reviewed: each folder hashes to its recorded value and no ignore rule
+      # drops part of one, as `data/` once did to Impeccable's font index.
+      - name: Vendored skills match their recorded hashes
+        if: steps.ws.outputs.present == 'true'
+        run: node --test scripts/check-vendored-skills.test.mjs && node scripts/check-vendored-skills.mjs
       # The backup and restore-drill scripts (G-02): encrypted, checksummed,
       # fail-closed, scratch-only restore.
       - name: Backup scripts keep their contract

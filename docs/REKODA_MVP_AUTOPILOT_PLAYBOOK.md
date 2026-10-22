@@ -605,8 +605,8 @@ installed. The selection table in `CLAUDE.md` §7c is the lightweight policy ins
    fix.
 6. Skill updates are dependency changes: re-run the installer (or, for the
    hand-copied Impeccable, the manual procedure in `.claude/skills/SOURCES.md`),
-   diff, review, merge by PR. Impeccable hooks stay off and its launcher is never
-   run without an owner ruling.
+   diff, review, merge by PR; `node scripts/check-vendored-skills.mjs` must pass.
+   Impeccable hooks stay off, and its launcher is never run.
 
 ## Operational safety launch gate: G-02 backups and restoration (P0)
 
