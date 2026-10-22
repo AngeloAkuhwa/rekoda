@@ -340,7 +340,7 @@ export default async function BillingPage({
                 Not now
               </a>
             </form>
-          ) : (
+          ) : proposed.supportReview ? null : (
             <p className="rk-fineprint">Plan changes are the owner&rsquo;s to confirm.</p>
           )}
         </div>

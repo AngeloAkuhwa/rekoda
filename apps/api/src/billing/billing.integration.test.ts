@@ -260,6 +260,25 @@ describe('paying, and the gate in front of it', () => {
     expect(after).toEqual(before);
   });
 
+  it('treats a dated plan with no recorded cycle start as custom, not prorated (OWN-33)', async () => {
+    const { businessId } = await onboard('+2348177100098');
+    const now = new Date();
+    await putOnPlan(
+      businessId,
+      'chat',
+      new Date(now.getTime() - 10 * 86_400_000),
+      new Date(now.getTime() + 300 * 86_400_000),
+    );
+    await ownerDb.execute(sql`UPDATE businesses SET cycle_started_at = NULL`);
+
+    const answer = await confirmedBilling().changePlan(businessId, 'complete', now);
+    expect(answer).toEqual({ state: 'unavailable', reason: 'support_review' });
+    const charges = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.chargesFor(tx, businessId),
+    );
+    expect(charges.count).toBe(0);
+  });
+
   it('unlocks the new plan when the provider confirms, keeping the renewal date', async () => {
     const { businessId, auth } = await onboard('+2348177100017');
     const now = new Date();

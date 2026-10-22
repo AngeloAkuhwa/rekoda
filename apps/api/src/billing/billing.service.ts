@@ -171,11 +171,7 @@ export class BillingService {
         now,
         pricesK: await this.changePricesK(tx, businessId, from, to, now),
       });
-      const supportReview =
-        charge.kind === 'upgrade' &&
-        !!subscription?.cycleStartedAt &&
-        !!subscription.planExpiresAt &&
-        !isStandardMonthlyCycle(subscription.cycleStartedAt, subscription.planExpiresAt);
+      const supportReview = charge.kind === 'upgrade' && isCustomCycle(subscription);
       return {
         from,
         to,
@@ -268,12 +264,7 @@ export class BillingService {
 
       /* OWN-33 (G-115): an operator arrangement that is not a standard monthly
        * cycle is never prorated automatically. Nothing is opened or changed. */
-      if (
-        charge.kind === 'upgrade' &&
-        subscription?.cycleStartedAt &&
-        subscription.planExpiresAt &&
-        !isStandardMonthlyCycle(subscription.cycleStartedAt, subscription.planExpiresAt)
-      ) {
+      if (charge.kind === 'upgrade' && isCustomCycle(subscription)) {
         return { state: 'unavailable' as const, reason: 'support_review' as const };
       }
 
@@ -606,4 +597,17 @@ function statusOf(
    * still work for the hour or so until it does, but telling a merchant they
    * are active would be reassuring them about something about to stop. */
   return { state: 'expired', since: state.since.toISOString() };
+}
+
+/**
+ * OWN-33 (G-115): a dated paid cycle that is not a standard month. A dated
+ * expiry with no recorded cycle start cannot be shown to be monthly either, so
+ * it is treated as custom rather than prorated over an invented span.
+ */
+function isCustomCycle(
+  subscription: { cycleStartedAt: Date | null; planExpiresAt: Date | null } | null,
+): boolean {
+  if (!subscription?.planExpiresAt) return false;
+  if (!subscription.cycleStartedAt) return true;
+  return !isStandardMonthlyCycle(subscription.cycleStartedAt, subscription.planExpiresAt);
 }
