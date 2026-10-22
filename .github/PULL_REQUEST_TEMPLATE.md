@@ -37,7 +37,7 @@
 <!-- Was an owner policy decision needed? Name the OWN-* ruling, or say "none needed". If one is
      needed and missing, say so here and do not guess. -->
 
-Documentation-only PRs fill every section; any section other than What, Why and How verified may say "none: documentation only".
+Documentation-only PRs fill every section; any section other than What, Why and How verified may say "none: documentation only". A PR that changes a binding document (the canonical spec, owner decisions, an ADR, `CLAUDE.md`, `CONTRIBUTING.md`, the autopilot playbook or this template) also names the owner decision or instruction, or the superseding ADR, that permits the change.
 
 ## Checklist
 

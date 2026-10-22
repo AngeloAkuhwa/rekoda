@@ -89,9 +89,12 @@ reviews:
         mode: error
         instructions: |
           Read only the author's part of the PR description (ignore any block CodeRabbit generated).
-          A PR is DOCS-ONLY when every changed file ends in .md or is under docs/, and no changed file is docs/openapi.json
-          (a CI-validated API contract), docs/REKODA_CANONICAL_SPEC.md, docs/REKODA_OWNER_DECISIONS.md or an ADR under
-          docs/adr/ (binding documents). Otherwise it is a CODE PR. A change to an ADR that was already Accepted on
+          A PR is DOCS-ONLY when every changed file ends in .md or is under docs/, and no changed file is
+          docs/openapi.json (a CI-validated API contract) or a binding document: docs/REKODA_CANONICAL_SPEC.md,
+          docs/REKODA_OWNER_DECISIONS.md, an ADR under docs/adr/, CLAUDE.md, CONTRIBUTING.md,
+          docs/REKODA_MVP_AUTOPILOT_PLAYBOOK.md or .github/PULL_REQUEST_TEMPLATE.md. Otherwise it is a CODE PR; for
+          a PR that changes only documents, section (4) may say which documents changed and "none: documentation
+          only" is acceptable for sections (5), (7) and (8). A change to an ADR that was already Accepted on
           the base branch (a newly added ADR is exempt) also fails unless the description names the superseding ADR
           or the recorded OWN-* ruling that permits it.
           CODE PR: fail unless the description has a non-empty section for each of these, under any heading
