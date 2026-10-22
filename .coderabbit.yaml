@@ -125,7 +125,7 @@ reviews:
           package.json files. Never this configuration file or a .md file, which may name the tokens. Fail if a
           changed line in those files ADDS any of these tokens: .skip(, .only(, .skipIf(, .todo(, xit(,
           xdescribe(, xtest(, fixme(; or adds "continue-on-error: true" in a workflow; or changes a "test",
-          "test:integration" or "test:e2e" script in a package.json to one that runs no tests (for example
+          "test:integration" or "e2e" script in a package.json to one that runs no tests (for example
           "exit 0", "true" or an echo); or changes the run command of an existing workflow step that ran tests,
           lint, typecheck or a guard script to one that no longer does (for example "echo done"), or that
           runs only part of what it ran (a filter, a single package or file, a narrower pattern), whatever
@@ -142,19 +142,23 @@ reviews:
       - name: Financial changes name invariant and test
         mode: error
         instructions: |
-          Applies when the diff changes any file under packages/core/src/ (ledger, money, payments,
-          reconciliation, billing, allowances, purchase-identity, costing, periods, statements), under
-          packages/db/src/repos/, under apps/api/src/{commands,spend,payments,bank,billing,reports}/, or a
-          migration. Fail if any of these is true:
-          (a) a financial amount is computed with floating point (parseFloat, toFixed, division without
-          Math.floor/Math.round to integer kobo) outside packages/core/src/money.ts;
+          Applies only when the diff changes financial code: a packages/core/src/ module among ledger, chart,
+          money, payments, reconciliation, bank-matching, billing, allowances, entitlements, purchase-identity,
+          costing, periods, recognition or statements; a packages/db/src/repos/ module that reads or writes
+          ledger, invoice, receipt, payment, expense, purchase, bill, credit note, stock, subscription,
+          allowance or usage rows; apps/api/src/{commands,spend,payments,bank,billing,reports}/; or a migration.
+          Fail if any of these is true:
+          (a) a financial amount is computed with floating point (parseFloat, toFixed, or a division not
+          brought back to integer kobo with Math.floor, Math.round, Math.ceil or a money.ts helper) outside
+          packages/core/src/money.ts;
           (b) the diff adds an UPDATE or DELETE on ledger_transactions or ledger_entries, or on a posted invoice,
           receipt, payment or expense row, other than a spec-defined lifecycle transition;
           (c) the description's financial section does not name the affected invariant (for example balanced
           postings, one event one financial truth, idempotent retry, refund limit, entitlement granted once)
-          and the test that covers it. A migration that touches no financial table (ledger, invoice, receipt,
-          payment, expense, purchase, bill, credit note, stock movement, subscription, allowance or usage) passes
-          (c) when the financial section says "none" with a reason.
+          and the test that covers it. A change in scope that moves no money and touches no financial table
+          (ledger, invoice, receipt, payment, expense, purchase, bill, credit note, stock movement,
+          subscription, allowance or usage), such as copy, auth or a non-financial column, passes (c) when the
+          financial section says "none" with a reason.
           Pass otherwise. (CLAUDE.md invariants 1, 2, 6, 7.)
       - name: Security boundaries hold
         mode: error
@@ -166,7 +170,8 @@ reviews:
           (c) changes a webhook handler (Meta, Paystack, bank feeds) so that the payload is parsed or acted on
           before the signature is verified, or removes the signature or idempotency check;
           (d) adds an HTTP route or server action with no authentication guard, unless it is a documented public
-          route (webhooks, /health, the storefront /s/[slug], the public API with its key guard);
+          route, for example the webhooks, /health, the OTP sign-in endpoints under v1/auth, the storefront
+          /s/[slug] and its v1/shop and v1/shops APIs, the marketing and legal pages, and the public API with its key guard;
           (e) lets a model output reach a financial write without zod validation and merchant confirmation.
           Pass otherwise. (CLAUDE.md invariants 2, 3, 4, 5, 9.)
       - name: CI and deployment stay safe
@@ -338,7 +343,7 @@ reviews:
     - path: '{package.json,**/package.json,pnpm-lock.yaml,pnpm-workspace.yaml,.npmrc,.nvmrc}'
       instructions: |
         Dependencies, supply chain and test scripts. Review once per concern, never line by line, for:
-        - a "test", "test:integration", "test:e2e", "lint" or "typecheck" script replaced by something that
+        - a "test", "test:integration", "e2e", "lint" or "typecheck" script replaced by something that
           runs nothing, or narrowed so it no longer runs a suite it ran before;
         - a new direct or transitive package, and why it is needed (the PR description should justify a new
           dependency);

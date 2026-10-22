@@ -37,7 +37,7 @@
 <!-- Was an owner policy decision needed? Name the OWN-* ruling, or say "none needed". If one is
      needed and missing, say so here and do not guess. -->
 
-Documentation-only PRs may answer What, Why and How verified only.
+Documentation-only PRs fill every section; any section other than What, Why and How verified may say "none: documentation only".
 
 ## Checklist
 

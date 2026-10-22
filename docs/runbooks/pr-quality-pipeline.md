@@ -79,7 +79,7 @@ Evidence, then the gap each item leaves.
 | 2        | `rekoda-pr-quality-gate`: a deterministic GitHub Actions job that verifies the exact head from the GitHub API  | PLANNED |
 | 3        | Separate PR CI from `main` release validation, so a `main` run is never cancelled; serial merge-to-staging     | PLANNED |
 | 4        | Staging smoke tests, a deployment report (SHA, migrations, disk, health) and the recovery protections          | PLANNED |
-| 5        | Documentation and autopilot integration: CLAUDE.md, readiness, handoff                                         | PLANNED |
+| 5        | Documentation and autopilot integration: CLAUDE.md, CONTRIBUTING.md, readiness, handoff                        | PLANNED |
 
 Production deployment is not part of any slice. It needs the owner's explicit approval and a release
 evidence report (playbook "Final go/no-go evidence").
