@@ -75,3 +75,6 @@ r0a-i-report*
 
 # AI launch evaluation report (run-eval --json)
 eval-report*.json
+
+# design-skill inspector output (.claude/skills/design-taste-frontend/scripts/inspect.mjs)
+.taste-skill/

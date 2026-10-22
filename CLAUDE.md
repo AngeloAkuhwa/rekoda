@@ -282,6 +282,11 @@ backend-only work.
 | Central Admin Console, billing/trial/checkout, onboarding screens                                                                    | `impeccable` plus `ui-ux-pro-max`; add taste or motion only if the screen is public or animated    |
 | Stress-testing a finished screen for edge cases                                                                                      | `break-ui`                                                                                         |
 
+On a real Rekoda screen every figure is computed by `@rekoda/core` from
+integer kobo and shown in naira; the skills' sample prices, rates and
+money-summing examples apply to mock-ups only. Read "Using these files safely"
+in `.claude/skills/SOURCES.md` before using Taste or Impeccable.
+
 No coordination package is installed (decision recorded in the playbook).
 Impeccable's hooks are not installed. Motion is subtle and honours
 `prefers-reduced-motion`; no new animation library without an owner ruling.
