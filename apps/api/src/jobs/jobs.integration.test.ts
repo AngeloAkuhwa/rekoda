@@ -477,6 +477,36 @@ describe('a stale attempt cannot fail or defer the live claim either (G-10)', ()
 });
 
 describe('reclaim does not depend on a free lane (G-10)', () => {
+  /**
+   * A worker restarted more often than the stall window would otherwise never
+   * reclaim what its predecessor abandoned. The stall window here is a minute,
+   * the abandoned claim an hour old: only the pass at start can recover it
+   * within the test's timeout.
+   */
+  it('reclaims a long-abandoned job at start, not a stall window later', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348050000001');
+    await enqueue(ada, 'test.long-abandoned');
+    const claimed = await jobsRepo.claimNext(workerDb, 'dead-worker');
+    expect(claimed?.kind).toBe('test.long-abandoned');
+    await workerDb.execute(
+      sql`UPDATE jobs SET locked_at = now() - interval '1 hour' WHERE state = 'running'`,
+    );
+
+    let ran = false;
+    const runner = new JobRunner(workerDb, appDb, { idleMs: 10, stalledAfterMs: 60_000 });
+    runner.register('test.long-abandoned', async () => {
+      ran = true;
+    });
+
+    runner.start();
+    try {
+      await waitFor(() => ran);
+    } finally {
+      await runner.stop();
+    }
+    expect(ran).toBe(true);
+  });
+
   it('requeues an abandoned job while the only lane sits in a slow handler', async () => {
     const ada = await seedBusiness('Ada Fashion', '+2348050000001');
     await enqueue(ada, 'test.abandoned');
