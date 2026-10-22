@@ -356,18 +356,14 @@ describe('the polling loop', () => {
 describe('stalled jobs are reclaimed while the queue stays busy (G-10)', () => {
   it('returns a dead worker`s job to the queue even when the queue is never empty', async () => {
     const ada = await seedBusiness('Ada Fashion', '+2348050000002');
-    const stalled = await enqueue(ada, 'test.stalled');
-    // A worker claimed it an hour ago and died.
-    await workerDb.execute(sql`
-      UPDATE jobs SET state = 'running', locked_at = now() - interval '1 hour', locked_by = 'dead-worker'
-       WHERE kind = 'test.stalled'`);
-    expect(stalled).toBeDefined();
 
+    let busyRuns = 0;
     const ran: string[] = [];
     // A backlog that refills itself: the runner is never idle, which is the
     // only moment the old loop ever looked for stalled work.
     const runner = new JobRunner(workerDb, appDb, { idleMs: 20, stalledAfterMs: 200 });
     runner.register('test.busy', async ({ businessId }) => {
+      busyRuns += 1;
       await enqueue(businessId, 'test.busy');
     });
     runner.register('test.stalled', async ({ businessId }) => {
@@ -377,6 +373,14 @@ describe('stalled jobs are reclaimed while the queue stays busy (G-10)', () => {
 
     runner.start();
     try {
+      // The runner's first reclaim pass is behind it once it is busy; only
+      // a LATER pass can recover what a worker abandons from here on.
+      await waitFor(() => busyRuns >= 5);
+      await enqueue(ada, 'test.stalled');
+      // A worker claimed it an hour ago and died.
+      await workerDb.execute(sql`
+        UPDATE jobs SET state = 'running', locked_at = now() - interval '1 hour', locked_by = 'dead-worker'
+         WHERE kind = 'test.stalled'`);
       await waitFor(() => ran.length === 1);
     } finally {
       await runner.stop();
