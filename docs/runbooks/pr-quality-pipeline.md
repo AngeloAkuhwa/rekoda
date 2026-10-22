@@ -53,7 +53,7 @@ Evidence, then the gap each item leaves.
    the host and Cloudflare. It never prunes images or volumes. Gaps: there is no post-deploy smoke of
    authentication, tenancy, the storefront or webhook rejection, and no disk-space check or
    structured deployment report (PR 4).
-7. **CodeRabbit** is installed and active. It reviews every PR, and its run shows the configuration
+7. **CodeRabbit** is installed and active. It reviews every PR to `main`, and its run shows the configuration
    source and profile. `.coderabbit.yaml` (this PR) moves it to the repository configuration, the
    assertive profile, the request-changes workflow and pre-merge checks. Its checks are evaluated by
    a model, so they are review signals, not a deterministic gate. Probe #304 (22 Oct 2026, head `aadf770`: a

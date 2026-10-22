@@ -89,7 +89,7 @@ reviews:
         mode: error
         instructions: |
           Read only the author's part of the PR description (ignore any block CodeRabbit generated).
-          A PR is DOCS-ONLY when every changed file ends in .md or is under docs/. Otherwise it is a CODE PR.
+          A PR is DOCS-ONLY when every changed file ends in .md or is under docs/, and no changed file is docs/openapi.json (a CI-validated API contract). Otherwise it is a CODE PR.
           CODE PR: fail unless the description has a non-empty section for each of these, under any heading
           wording that clearly means it: (1) the problem solved; (2) the gap, issue or build identifier, or the
           words "none" with a reason; (3) the expected behaviour; (4) what code changed; (5) financial and
