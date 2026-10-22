@@ -558,6 +558,9 @@ export async function applySettledCharge(
       renewsAt,
       anchorDay,
       pendingPlan: null,
+      /* An upgrade continues the cycle it was bought on: it cannot make an
+       * operator or unknown cycle a provider one (G-115, OWN-34). */
+      origin: charge.kind === 'upgrade' ? 'keep' : 'provider',
     });
   }
   return 'applied';

@@ -37,6 +37,9 @@ FROM (
     WHERE sc.business_id = b2.id AND sc.status = 'paid'
       AND sc.kind IN ('first_purchase', 'renewal', 'upgrade')
       AND sc.plan = b2.plan
+      -- A paid charge that was superseded or left unapplied (0162) never
+      -- changed the cycle, so it is not evidence of who created it.
+      AND sc.unapplied_at IS NULL AND sc.superseded_at IS NULL
   ) c ON true
   LEFT JOIN LATERAL (
     SELECT max(ae.created_at) AS at

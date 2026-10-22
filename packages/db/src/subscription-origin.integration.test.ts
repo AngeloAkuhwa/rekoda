@@ -127,6 +127,28 @@ describe('the state writer records who created the cycle', () => {
   });
 });
 
+describe('an upgrade settlement continues the cycle it was bought on', () => {
+  it('does not turn an operator cycle into a provider cycle', async () => {
+    const id = await seedBusiness();
+    await billingRepo.setPlan(appDb, {
+      businessId: id,
+      plan: 'chat',
+      expiresAt: RENEWS,
+      actor: 'operator:test',
+    });
+    await withBusiness(appDb, id, (tx) =>
+      subscriptionsRepo.applyCycle(tx, id, {
+        plan: 'integrate',
+        cycleStartedAt: START,
+        renewsAt: RENEWS,
+        anchorDay: 1,
+        origin: 'keep',
+      }),
+    );
+    expect(await originOf(id)).toBe('operator');
+  });
+});
+
 describe('the 0167 backfill uses persisted evidence only', () => {
   const backfill = () => {
     const file = readFileSync(
@@ -161,6 +183,25 @@ describe('the 0167 backfill uses persisted evidence only', () => {
       expiresAt: RENEWS,
       actor: 'operator:test',
     });
+    await clear();
+    await backfill();
+    expect(await originOf(id)).toBe('operator');
+  });
+
+  it('a paid charge that never changed the cycle is not evidence of a provider cycle', async () => {
+    const id = await seedBusiness();
+    await billingRepo.setPlan(appDb, {
+      businessId: id,
+      plan: 'chat',
+      expiresAt: RENEWS,
+      actor: 'operator:test',
+    });
+    /* Paid AFTER the operator move, but unapplied: the money arrived and the
+     * plan change did not happen, so the current cycle is still the operator's. */
+    await addCharge(id, '2099-01-01T00:00:00Z');
+    await ownerDb.execute(
+      sql`UPDATE subscription_charges SET unapplied_at = now() WHERE business_id = ${id}::uuid`,
+    );
     await clear();
     await backfill();
     expect(await originOf(id)).toBe('operator');
