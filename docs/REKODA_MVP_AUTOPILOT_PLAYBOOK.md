@@ -3,6 +3,7 @@
 **Applies to:** every scheduled Rekoda MVP Autopilot run, interactive Claude Code session, implementation PR and handoff.
 **Authority:** this playbook guides workflow, not an override of `CLAUDE.md`, owner decisions, canonical product requirements, repository protections or higher-priority access controls. When they disagree, diagnose and escalate substantive product/policy contradictions; never silently choose the less restrictive rule.
 **Owner priority update (22 October 2026):** Operational safety and recovery prerequisites come BEFORE the full Central Admin UI. Implement the minimum operator visibility needed for safety, then the admin experience. The launch gate register may contain unverified or stale statuses: remeasure every gap before coding.
+**Ruling note (22 October 2026, recorded in the repository, not part of the owner's v4 text):** G-87 and G-92(5) are NO LONGER policy-blocked: the owner ruled them as OWN-31 and OWN-32, and G-115 as OWN-33 (`REKODA_OWNER_DECISIONS.md`). Where this playbook says those items are policy-blocked or asks for a decision proposal, the rulings win; implement them.
 **Routine purpose:** make bounded, evidence-backed progress on each hourly run; do not promise background progress within a run. Continue on the next scheduled invocation using the handoff. Avoid repeating previously completed work.
 
 ## Immediate priority order (supersedes older ordering wherever they differ)
@@ -169,6 +170,8 @@ Fail closed when role context is missing or invalid.
 Use focused regression tests.
 
 ### G-87 and G-92(5): Purchase identity
+
+_Ruled 22 Oct 2026 (OWN-31, OWN-32): implement the rulings; the owner text below is kept as written._
 
 These are currently policy-blocked.
 

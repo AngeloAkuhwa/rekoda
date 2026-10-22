@@ -201,7 +201,8 @@ client idempotency key; numeric config is parsed fail-closed.
    Conventional Commit title and the template filled. Never push to
    `main`. Never bypass a check. Merging is Angelo's, except for the MVP
    Autopilot routine's own closeout PRs under OWN-26 and the playbook's merge
-   gates (exact-head CI green, protections and required reviews satisfied).
+   gates (exact-head CI green, 0 unresolved threads, no known BLOCKING or
+   IMPORTANT finding, protections and required reviews satisfied).
 5. Before calling it merge-ready, get an independent review from a fresh
    Claude context that did not build it (read-only; given only the PR, the
    exact head SHA, the requirements, the diff, the canonical docs and the
