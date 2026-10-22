@@ -488,8 +488,10 @@ describe('reclaim does not depend on a free lane (G-10)', () => {
     await enqueue(ada, 'test.long-abandoned');
     const claimed = await jobsRepo.claimNext(workerDb, 'dead-worker');
     expect(claimed?.kind).toBe('test.long-abandoned');
-    await workerDb.execute(
-      sql`UPDATE jobs SET locked_at = now() - interval '1 hour' WHERE state = 'running'`,
+    await withBusiness(appDb, ada, (tx) =>
+      tx.execute(
+        sql`UPDATE jobs SET locked_at = now() - interval '1 hour' WHERE id = ${claimed!.id}::uuid`,
+      ),
     );
 
     let ran = false;
