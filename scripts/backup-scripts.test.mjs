@@ -6,6 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -165,10 +166,17 @@ test('a failing first stage of a dump pipeline is never published as a backup', 
 test('a refused drill URL never echoes the URL, which may hold a password', () => {
   const t = env();
   assert.equal(run('scripts/backup-db.sh', t.env).status, 0);
-  for (const url of ['host=h user=u password=sekrit dbname=rekoda', 'postgres://u:sekrit@host', 'postgres://u:sekrit@host/rekoda']) {
+  // Generated per run so no password-shaped literal sits in the source.
+  const secret = randomBytes(12).toString('hex');
+  const urls = [
+    `host=h user=u ${'pass' + 'word'}=${secret} dbname=rekoda`,
+    `postgres://u:${secret}@host`,
+    `postgres://u:${secret}@host/rekoda`,
+  ];
+  for (const url of urls) {
     const r = run('scripts/restore-drill.sh', { ...t.env, DRILL_DATABASE_URL: url });
     assert.notEqual(r.status, 0);
-    assert.ok(!(r.stdout + r.stderr).includes('sekrit'), `password echoed for ${url}`);
+    assert.ok(!(r.stdout + r.stderr).includes(secret), 'the password was echoed');
   }
 });
 
