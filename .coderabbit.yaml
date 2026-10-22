@@ -13,11 +13,10 @@
 #
 # The instructions below point reviewers at rules that ALREADY exist in the
 # repository. They add no product, pricing, tax or legal rule of their own.
-# Where they and a document disagree, the document wins, in the order CLAUDE.md
-# §2 gives: REKODA_CANONICAL_SPEC.md (APPROVED, FROZEN), REKODA_CURRENT_STATE.md,
-# REKODA_LAUNCH_READINESS.md, REKODA_USER_JOURNEYS.md, REKODA_OWNER_DECISIONS.md
-# (the newest OWN-* ruling wins until the spec absorbs it), then the accepted
-# ADRs in docs/adr/.
+# Where they and a document disagree, the document wins. Where two documents
+# disagree, CLAUDE.md §2 decides: inspect the implementation, then tests and
+# migrations, then accepted or superseding ADRs, then the NEWEST explicit owner
+# decision (REKODA_OWNER_DECISIONS.md, which wins until the spec absorbs it).
 language: en-GB
 tone_instructions: >-
   Be direct and specific. Cite the file and line, the failure scenario, and the Rekoda rule or
@@ -107,6 +106,9 @@ reviews:
       - name: A bug fix lands with a regression test
         mode: error
         instructions: |
+          A heuristic: it checks that a fix carries a test file or names one; it cannot see whether the test
+          failed before the fix. That RED evidence belongs in the description's test-evidence section and is
+          judged by the reviewers and by CI, not by this check.
           Applies only when the PR title starts with "fix:" or "fix(". Pass if the PR adds or modifies a file
           whose name ends in .test.ts, .test.tsx, .test.mjs or .spec.ts, or adds a case to
           apps/api/src/ai/eval/dataset.ts. Also pass if the description names, by file path and test name, an
@@ -115,8 +117,12 @@ reviews:
       - name: No test is skipped, focused or disabled
         mode: error
         instructions: |
-          Fail if a changed line ADDS any of these tokens: .skip(, .only(, .skipIf(, .todo(, xit(, xdescribe(,
-          xtest(, fixme(, or "continue-on-error: true" in a file under .github/workflows/. Pass otherwise.
+          Consider only files ending in .ts, .tsx, .js, .mjs or .cjs, files under .github/workflows/, and
+          package.json files. Never this configuration file or a .md file, which may name the tokens. Fail if a
+          changed line in those files ADDS any of these tokens: .skip(, .only(, .skipIf(, .todo(, xit(,
+          xdescribe(, xtest(, fixme(; or adds "continue-on-error: true" in a workflow; or changes a "test",
+          "test:integration" or "test:e2e" script in a package.json to one that runs no tests (for example
+          "exit 0", "true" or an echo). Pass otherwise.
           (CLAUDE.md invariant 11: never skip, disable or quarantine a failing test to get green.)
       - name: Test coverage is not quietly reduced
         mode: warning
@@ -263,8 +269,11 @@ reviews:
         CG3 and CG5; ADR 0031, 0032).
         - AI proposes, deterministic code disposes: the model returns a structured command validated by zod,
           and nothing posts until the merchant confirms the exact preview by database ordinal.
-        - PII is tokenised before any model call. Flag a raw name, phone or message body reaching a model, a
-          log or a trace span.
+        - The REASONING model only ever sees tokenised text (ADR 0005, 0021). The named exceptions are the
+          media processors (ADR 0032: Claude vision as a transcription-only reader, OpenAI voice transcription)
+          and a never-seen name reaching the model once under no-training terms before it is vaulted (ADR 0005
+          layer 3). Flag any other raw name, phone or message body reaching a model, and any in a log or trace
+          span.
         - Look for a yes that could confirm a different or stale preview, an expired draft that can still
           execute (G-23), words read off a photo treated as a command (G-78), and replies that state a figure
           the deterministic layer did not compute.
@@ -310,12 +319,17 @@ reviews:
         - Secrets are not interchangeable: REKODA_API_SECRET signs setup grants, VAULT_KEY seals, MATCH_KEY
           derives match keys, CONNECTION_KEY wraps provider credentials, OTP_PEPPER peppers codes. Flag one
           used for another's job, a key logged or returned, or a key with a default value.
-        - A bad config value refuses to boot; a missing provider key degrades the feature honestly.
+        - A bad config value refuses to boot. A media feature switched on (VOICE_TRANSCRIPTION_ENABLED,
+          IMAGE_AI_ENABLED) without its provider key refuses to boot (ADR 0032); a disabled feature needs no
+          key and answers honestly. A missing key for an optional provider degrades that feature honestly and
+          never pretends success (invariant 8).
         - .env.example documents every variable the code reads (scripts/check-env-example.mjs).
 
     - path: '{package.json,**/package.json,pnpm-lock.yaml,pnpm-workspace.yaml,.npmrc,.nvmrc}'
       instructions: |
-        Dependencies and supply chain. Review ONLY for supply-chain risk, once per concern, never line by line:
+        Dependencies, supply chain and test scripts. Review once per concern, never line by line, for:
+        - a "test", "test:integration", "test:e2e", "lint" or "typecheck" script replaced by something that
+          runs nothing, or narrowed so it no longer runs a suite it ran before;
         - a new direct or transitive package, and why it is needed (the PR description should justify a new
           dependency);
         - a resolution or tarball URL outside registry.npmjs.org, a git or file dependency, or an integrity
