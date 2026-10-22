@@ -119,7 +119,9 @@ export class PurchaseIdentityCollision extends Error {
 /**
  * The Chat purchases a dashboard purchase order receive of `amountK` may be
  * (G-89), under the SAME policy as a chat yes (OD-23 / OWN-21): booked in
- * the 24 hours before now, never proven separate. A purchase order carries
+ * the 24 hours before now, never proven separate. A Chat EXPENSE of the
+ * total is asked about too (G-87, OWN-31): one purchase read as an expense
+ * in Chat and then received here must not book twice. A purchase order carries
  * no reference and no trusted product, so only the merchant's own SEPARATE
  * (`separateFrom`) sets one apart. Takes the identity lock for the total,
  * so a chat yes and this receive of one total never both read before the
@@ -138,6 +140,7 @@ export async function purchaseOrderMatches(
   const { now, records } = await purchaseIdentityRepo.purchaseRecords(tx, businessId, amountK, {
     bookedOnly: true,
     chatOnly: true,
+    withExpenses: true,
   });
   if (records.length === 0) return [];
   const self: PurchaseFacts = {

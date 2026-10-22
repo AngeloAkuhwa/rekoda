@@ -3388,7 +3388,7 @@ async function answerFundingSource(
     shown = replies.purchaseIdentityQuestion(
       identitySubject(identity.ask, actorId),
       message.receivedAt,
-      { named: identity.asked.length },
+      { named: identity.asked.length, kinds: identity.asked.map((r) => r.kind ?? 'purchase') },
     );
     if (draft.isNew) {
       await conversationsRepo.nameHeldRecords(
@@ -3830,7 +3830,11 @@ async function answerPurchaseIdentity(
     return replies.purchaseIdentityQuestion(
       identitySubject(verdict.ask, actorId, kind),
       message.receivedAt,
-      { named: verdict.asked.length, newSince: true },
+      {
+        named: verdict.asked.length,
+        newSince: true,
+        kinds: verdict.asked.map((r) => r.kind ?? 'purchase'),
+      },
     );
   }
   if (!(await conversationsRepo.releaseHeld(tx, businessId, heldId, { now: message.receivedAt }))) {
@@ -5125,7 +5129,7 @@ async function interpretedReply(
     shown = replies.purchaseIdentityQuestion(
       identitySubject(identity.ask, actorId, identity.kind),
       receivedAt,
-      { named: identity.asked.length },
+      { named: identity.asked.length, kinds: identity.asked.map((r) => r.kind ?? 'purchase') },
     );
     if (draft.isNew) {
       /* Exactly what the question names, so "separate" excuses only those. */

@@ -92,12 +92,14 @@ describe('a receive that may be a purchase already booked in Chat (G-89)', () =>
         bookedAt: '2026-10-07T13:05:00.000Z',
         bookedBy: 'another_member' as const,
         billNumber: null as string | null,
+        kind: 'purchase' as 'purchase' | 'expense',
       },
       {
         expenseId: OTHER,
         bookedAt: '2026-10-07T09:30:00.000Z',
         bookedBy: 'you' as const,
         billNumber: 'BILL-2026-000004' as string | null,
+        kind: 'purchase' as 'purchase' | 'expense',
       },
     ],
     alreadySeparate: [] as string[],
@@ -238,10 +240,31 @@ describe('a receive that may be a purchase already booked in Chat (G-89)', () =>
       'PO-2026-000001 is already received against a different purchase. Nothing was changed. Check your purchases: if this order and the Chat purchase are the same, one of them may now be recorded twice.',
     );
 
+    receive.mockResolvedValue({
+      outcome: 'same_as_expense',
+      poNumber: 'PO-2026-000001',
+      expenseId: EXPENSE,
+    });
+    expect((await receivePurchaseOrderAction({}, answer)).error).toBe(
+      'That purchase was recorded in Chat as an expense, so PO-2026-000001 cannot be linked to it: no stock was added for it. Nothing was changed. If it is the same purchase, cancel this order instead of receiving it, so it is not recorded twice.',
+    );
+
     receive.mockResolvedValue({ outcome: 'no_longer_matches', poNumber: 'PO-2026-000001' });
     expect((await receivePurchaseOrderAction({}, answer)).error).toBe(
       'That Chat purchase can no longer be linked to this order: it was voided, changed or linked to another order. Nothing was changed. Check your purchases before marking this order received.',
     );
+  });
+
+  it('names a match Chat recorded as an expense (G-87)', async () => {
+    receive.mockResolvedValue({
+      ...ASKED,
+      matches: [{ ...ASKED.matches[0]!, kind: 'expense' as const }],
+    });
+    const state = await receivePurchaseOrderAction(
+      {},
+      form({ poNumber: 'PO-2026-000001', paid: '' }),
+    );
+    expect(state.question?.options[0]?.text).toContain('recorded it as an expense on');
   });
 
   it('going back from the question records nothing and calls nothing', async () => {
@@ -297,8 +320,20 @@ describe('a receive that may be a purchase already booked in Chat (G-89)', () =>
     receive.mockResolvedValue({
       ...ASKED,
       matches: [
-        { expenseId: EXPENSE, bookedAt: at, bookedBy: 'you' as const, billNumber: null },
-        { expenseId: OTHER, bookedAt: at, bookedBy: 'you' as const, billNumber: null },
+        {
+          expenseId: EXPENSE,
+          bookedAt: at,
+          bookedBy: 'you' as const,
+          billNumber: null,
+          kind: 'purchase' as const,
+        },
+        {
+          expenseId: OTHER,
+          bookedAt: at,
+          bookedBy: 'you' as const,
+          billNumber: null,
+          kind: 'purchase' as const,
+        },
       ],
     });
     const state = await receivePurchaseOrderAction(

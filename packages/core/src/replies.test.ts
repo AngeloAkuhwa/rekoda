@@ -956,6 +956,20 @@ describe('the purchase identity question (G-81, OD-23)', () => {
     );
   });
 
+  it('a question naming a purchase AND an expense never calls them all stock purchases (G-87)', () => {
+    const text = replies.purchaseIdentityQuestion(booked('you'), now, {
+      named: 2,
+      kinds: ['purchase', 'expense'],
+    }).text;
+    expect(text).toContain('I found 2 purchases or expenses of ₦100,000');
+    expect(
+      replies.purchaseIdentityQuestion(booked('you'), now, {
+        named: 2,
+        kinds: ['purchase', 'purchase'],
+      }).text,
+    ).toContain('I found 2 stock purchases of ₦100,000');
+  });
+
   it('names the member as "you" only for their own record, and nobody when it cannot say', () => {
     expect(replies.purchaseIdentityQuestion(booked('you'), now).text).toContain(', sent by you.');
     const unknown = replies.purchaseIdentityQuestion(booked('unknown'), now).text;

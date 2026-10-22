@@ -436,6 +436,30 @@ export async function linkableChatPurchase(
   return [...rows].length === 1;
 }
 
+/**
+ * Whether `expenseId` is a recorded Chat EXPENSE (not a stock purchase) of
+ * exactly this total (G-87): the receive's SAME cannot link a stock order to
+ * it, because the expense put no stock on the shelf, so the caller says so
+ * and changes nothing.
+ */
+export async function chatExpenseOfTotal(
+  tx: TenantDb,
+  businessId: string,
+  expenseId: string,
+  amountK: number,
+): Promise<boolean> {
+  if (!UUID.test(expenseId)) return false;
+  const rows = await tx.execute<{ ok: number }>(sql`
+    SELECT 1 AS ok FROM expenses e
+     WHERE e.business_id = ${businessId}::uuid
+       AND e.id = ${expenseId}::uuid
+       AND e.source_type = 'chat'
+       AND e.category <> 'stock'
+       AND e.status = 'recorded'
+       AND e.amount_k = ${amountK}`);
+  return [...rows].length === 1;
+}
+
 async function clockOf(tx: TenantDb, asOf: Date | undefined): Promise<Date> {
   if (asOf) return asOf;
   const rows = await tx.execute<{ now: Date | string }>(sql`SELECT clock_timestamp() AS now`);

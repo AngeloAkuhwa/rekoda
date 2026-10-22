@@ -522,11 +522,14 @@ function matchOptions(
     bookedAt: string;
     bookedBy: keyof typeof BOOKED_BY;
     billNumber: string | null;
+    kind: 'purchase' | 'expense';
   }[],
 ): { expenseId: string; text: string }[] {
   const texts = matches.map(
     (m) =>
-      `${BOOKED_BY[m.bookedBy]} recorded it on ${lagosMoment(m.bookedAt)}` +
+      `${BOOKED_BY[m.bookedBy]} recorded it` +
+      (m.kind === 'expense' ? ' as an expense' : '') +
+      ` on ${lagosMoment(m.bookedAt)}` +
       (m.billNumber ? `, bill ${m.billNumber}` : ''),
   );
   const alike = texts.some((t, i) => texts.indexOf(t) !== i);
@@ -682,6 +685,14 @@ async function receivePurchaseOrderActionUnguarded(
     revalidatePath('/app/expenses');
     return {
       error: `${outcome.poNumber} is already received against a different purchase. Nothing was changed. Check your purchases: if this order and the Chat purchase are the same, one of them may now be recorded twice.`,
+    };
+  }
+  if (outcome.outcome === 'same_as_expense') {
+    return {
+      error:
+        `That purchase was recorded in Chat as an expense, so ${outcome.poNumber} cannot be linked to it: ` +
+        'no stock was added for it. Nothing was changed. If it is the same purchase, cancel this order ' +
+        'instead of receiving it, so it is not recorded twice.',
     };
   }
   if (outcome.outcome === 'no_longer_matches') {

@@ -2042,15 +2042,27 @@ const IDENTITY_CHOICES_MANY =
   'Reply *separate* if it is different from all of them, and I will show it to you to check first.';
 
 /** How the question opens: every record it names, never only one. */
+/**
+ * How many records the question names, whether something new came in since
+ * it was last asked, and what kind each named record is (G-87): a question
+ * naming a purchase and an expense never calls them all stock purchases.
+ */
+interface IdentityQuestionOptions {
+  readonly named?: number;
+  readonly newSince?: boolean;
+  readonly kinds?: readonly ('purchase' | 'expense')[];
+}
+
 function identityQuestionText(
   subject: PurchaseIdentitySubject,
   now: Date,
-  options: { readonly named?: number; readonly newSince?: boolean },
+  options: IdentityQuestionOptions,
 ): string {
   const named = options.named ?? 1;
   const lead = options.newSince ? 'Something new came in since I asked. ' : '';
   if (named > 1) {
-    const what = acrossKinds(subject) ? 'purchases or expenses' : 'stock purchases';
+    const mixed = acrossKinds(subject) || (options.kinds ?? []).includes('expense');
+    const what = mixed ? 'purchases or expenses' : 'stock purchases';
     return (
       `${lead}I found ${named} ${what} of ${formatKobo(subject.amountK)} already saved or ` +
       `waiting in the last 24 hours. Is this the same purchase?\n\n${IDENTITY_CHOICES_MANY}`
@@ -2073,7 +2085,7 @@ function identityQuestionText(
 export function purchaseIdentityQuestion(
   subject: PurchaseIdentitySubject,
   now: Date,
-  options: { readonly named?: number; readonly newSince?: boolean } = {},
+  options: IdentityQuestionOptions = {},
 ): Reply {
   return reply(identityQuestionText(subject, now, options));
 }
