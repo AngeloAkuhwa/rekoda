@@ -68,7 +68,7 @@ ADR 0010 is NOT implemented; this is the nightly logical half only, RPO up to 24
   guarantee that a minimum number of backups survives: every backup has its own timestamped key, so
   versioning does not keep an older one, and expiry keeps running while the nightly job fails. Before
   enabling the timer, either set the expiry well beyond the longest outage you would tolerate without
-  noticing (with the weekly check of the newest object's date below), or leave expiry off until a
+  noticing (with the weekly check of the newest object's date described above), or leave expiry off until a
   count-based prune exists. That prune is an open hardening item for G-02, not part of this change.
 - **A drill needs data.** It fails on a restore with no ledger entries, since an empty archive proves
   nothing; run it against a database that holds real or staging books.
