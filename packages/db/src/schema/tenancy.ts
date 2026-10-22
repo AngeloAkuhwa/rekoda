@@ -73,6 +73,13 @@ export const businesses = pgTable(
      */
     everPaidAt: timestamp('ever_paid_at', { withTimezone: true }),
     /**
+     * Who created the current paid cycle (migration 0167, G-115, OWN-33):
+     * 'provider' (a settled provider charge), 'operator' (an authorised
+     * operator) or null (unknown / unpaid). Only 'provider' may be prorated
+     * automatically. Written with the cycle by the one state writer.
+     */
+    subscriptionOrigin: text('subscription_origin'),
+    /**
      * When the subscription was last DECIDED (migration 0162, G-104): an
      * operator move, a settled plan charge, a scheduled plan change. A plan
      * charge opened before this moment is stale and its plan change is refused.

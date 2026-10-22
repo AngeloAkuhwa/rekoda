@@ -207,7 +207,10 @@ client idempotency key; numeric config is parsed fail-closed.
    Claude context that did not build it (read-only; given only the PR, the
    exact head SHA, the requirements, the diff, the canonical docs and the
    test evidence). Fix every valid BLOCKING or IMPORTANT finding and every
-   valid Codex thread; a new SHA gets a new review. Report READY FOR OWNER
+   valid CodeRabbit or Codex thread; a new SHA gets a new review.
+   **CodeRabbit is the primary AI PR reviewer; Codex is optional** (OWN-35;
+   `docs/REKODA_MVP_AUTOPILOT_PLAYBOOK.md`, "Reviewer hierarchy"). A Codex
+   quota limit is `UNAVAILABLE — QUOTA`, never approval. Report READY FOR OWNER
    MERGE only when CI is green on that exact SHA and no blocking finding or
    thread remains (`CONTRIBUTING.md`, "Independent review before merge").
 

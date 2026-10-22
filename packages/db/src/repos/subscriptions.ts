@@ -29,7 +29,12 @@ export interface Subscription {
   paymentFailedAt: Date | null;
   /** A downgrade waiting for the next renewal. */
   pendingPlan: string | null;
+  /** Who created the current paid cycle; null is unknown (G-115, OWN-33). */
+  origin: SubscriptionOrigin | null;
 }
+
+/** Who created a paid cycle: a settled provider charge or an operator. */
+export type SubscriptionOrigin = 'provider' | 'operator';
 
 interface SubscriptionRow extends Record<string, unknown> {
   plan: string;
@@ -38,6 +43,7 @@ interface SubscriptionRow extends Record<string, unknown> {
   renewal_anchor_day: number | null;
   payment_failed_at: string | null;
   pending_plan: string | null;
+  subscription_origin: string | null;
 }
 
 const at = (value: string | null): Date | null => (value ? new Date(value) : null);
@@ -48,7 +54,7 @@ export async function subscriptionFor(
 ): Promise<Subscription | null> {
   const rows = await tx.execute<SubscriptionRow>(sql`
     SELECT plan, plan_expires_at, cycle_started_at, renewal_anchor_day,
-           payment_failed_at, pending_plan
+           payment_failed_at, pending_plan, subscription_origin
     FROM businesses WHERE id = ${businessId}::uuid
   `);
   const row = [...rows][0];
@@ -60,6 +66,10 @@ export async function subscriptionFor(
     renewalAnchorDay: row.renewal_anchor_day,
     paymentFailedAt: at(row.payment_failed_at),
     pendingPlan: row.pending_plan,
+    origin:
+      row.subscription_origin === 'provider' || row.subscription_origin === 'operator'
+        ? row.subscription_origin
+        : null,
   };
 }
 
@@ -104,6 +114,7 @@ export async function applyCycle(
     planExpiresAt: cycle.renewsAt,
     anchorDay: cycle.anchorDay,
     pendingPlan: cycle.pendingPlan ?? null,
+    origin: 'provider',
   });
 }
 
@@ -125,6 +136,11 @@ export interface SubscriptionState {
   /** Null where there is no dated renewable cycle to anchor. */
   anchorDay: number | null;
   pendingPlan: string | null;
+  /**
+   * Who created this cycle (G-115). Null for an unpaid plan, or to keep the
+   * origin the row already has when nothing about the cycle changed.
+   */
+  origin: SubscriptionOrigin | null | 'keep';
 }
 
 /**
@@ -174,6 +190,9 @@ export async function writeSubscriptionState(
       cycle_started_at = ${cycleStarted},
       renewal_anchor_day = ${state.anchorDay},
       pending_plan = ${state.pendingPlan},
+      subscription_origin = ${
+        state.origin === 'keep' ? sql`subscription_origin` : sql`${state.origin}`
+      },
       payment_failed_at = NULL,
       last_grace_reminder_day = NULL,
       -- G-103: a paid plan establishes the retention exemption; never cleared.

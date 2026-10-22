@@ -131,6 +131,8 @@ export const billingQuoteResponse = z.object({
   amountK: kobo,
   effectiveFrom: z.enum(['now', 'next_renewal']),
   renewsAt: isoDate,
+  /** OWN-33: a non-standard cycle is never prorated automatically; support handles it. */
+  supportReview: z.boolean().default(false),
 });
 
 /** Buying an add-on pack. The id is validated against the price list server side. */
@@ -164,7 +166,7 @@ export const billingPlanChangeResponse = z.discriminatedUnion('state', [
   }),
   z.object({
     state: z.literal('unavailable'),
-    reason: z.enum(['awaiting_platform_confirmation', 'no_cycle', 'cycle_ended']),
+    reason: z.enum(['awaiting_platform_confirmation', 'no_cycle', 'cycle_ended', 'support_review']),
   }),
 ]);
 
