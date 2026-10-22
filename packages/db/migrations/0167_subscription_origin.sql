@@ -36,7 +36,9 @@ FROM (
     SELECT max(coalesce(sc.paid_at, sc.created_at)) AS at
     FROM subscription_charges sc
     WHERE sc.business_id = b2.id AND sc.status = 'paid'
-      AND sc.kind IN ('first_purchase', 'renewal', 'upgrade')
+      -- an upgrade never creates a cycle (it keeps the dates and the origin), so it is
+      -- not evidence of who created one; before OWN-34 it could settle on an operator cycle
+      AND sc.kind IN ('first_purchase', 'renewal')
       AND sc.plan = b2.plan
       -- a paid charge whose plan change was refused (G-104) never created this cycle
       AND sc.superseded_at IS NULL AND sc.unapplied_at IS NULL
