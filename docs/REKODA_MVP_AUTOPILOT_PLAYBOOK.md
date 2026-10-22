@@ -567,6 +567,45 @@ Escalate only unresolved product-policy decisions, external credentials, mandato
 
 Proceed.
 
+## Design skill selection and visual QA (owner direction, 22 October 2026)
+
+**Installed (project scope, committed):** `.claude/skills/` holds Emil
+Kowalski's design-engineering skills (seven of them), Taste (`design-taste-frontend`)
+and Impeccable. Provenance, licences, pinned commits and what was deliberately
+left out are in `.claude/skills/SOURCES.md`. `ui-ux-pro-max` is an account-level
+skill and is unchanged. A scheduled cloud run clones the repository, so Claude
+Code reads these from the standard project path `.claude/skills/`; no new routine
+and no routine edit is needed. Confirm on the first run after merge by checking
+that the skills appear in that run's skill list; if they do not, record it in the
+handoff.
+
+**Coordination layer: intentionally omitted.** `jaimejunr/claude-code-frontend-skills`
+re-bundles the same upstreams (including `ui-ux-pro-max`) at older pinned commits
+behind its own marketplace sync, which would duplicate and conflict with what is
+installed. The selection table in `CLAUDE.md` §7c is the lightweight policy instead.
+
+**Rules for the run:**
+
+1. Evaluate the skills whenever the slice touches a user-facing screen,
+   component, form, dialog, navigation, animation, accessibility, the Central
+   Admin Console, onboarding, storefront or checkout, or billing/trial screens.
+   Pick the one or two that fit (table in `CLAUDE.md` §7c); never all.
+2. Rekoda's design system and brand decide. A skill's recommendation never
+   changes prices, trial promises, tax wording, confirmation steps or any
+   financial behaviour; those need an owner ruling.
+3. Design work never displaces the priority order: do not start a visual
+   redesign while a critical backend or financial defect is open. One slice at a
+   time.
+4. Significant UI changes need browser evidence in the PR (desktop and mobile
+   screenshots or a written description of what was inspected, the states
+   checked, the Playwright specs run). Test data only. Do not claim visual
+   verification that did not happen.
+5. CodeRabbit remains the primary reviewer. Treat a design-related functional
+   defect it raises like any other finding; request re-review after a material
+   fix.
+6. Skill updates are dependency changes: re-run the installer, diff, review,
+   merge by PR. Impeccable hooks stay off without an owner ruling.
+
 ## Operational safety launch gate: G-02 backups and restoration (P0)
 
 **Register claim, unverified until audited:** no backup script, WAL archiving or full restore drill. Verify actual code, Hetzner server, retention destinations and deployment architecture first.

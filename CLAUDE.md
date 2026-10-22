@@ -259,6 +259,41 @@ Angelo is the author of record. Claude Code is the engineering tool he directs.
   repository policy requires (for example the footer GitHub-integrated tools add to review comments)
   stay as they are.
 
+## 7c. Design skills and visual QA (owner direction, 22 Oct 2026)
+
+Third-party design skills are committed under `.claude/skills/` (provenance,
+licences, exclusions and update rule: `.claude/skills/SOURCES.md`; hashes:
+`skills-lock.json`). They are supporting tools. **Rekoda's identity is
+authoritative:** `docs/REKODA_DESIGN_SYSTEM.md` and
+`design-system/rekoda/MASTER.md` (the approved deep-green direction, type,
+tokens) win over any skill's default aesthetic. A skill never invents pricing,
+product behaviour, tax policy or financial rules, and never outranks security,
+financial correctness, CI or required approvals.
+
+Choose automatically; do not invoke all of them. Skip the whole section for
+backend-only work.
+
+| Task                                                                                                                                 | Skill                                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| Any new or changed screen, component, form, dialog, navigation, accessibility or responsive work, and the final polish/critique pass | `impeccable` (general quality framework)                                                           |
+| Public pages (landing, pricing, storefront) or setting visual direction                                                              | `design-taste-frontend`, within Rekoda's tokens and brand                                          |
+| Transitions, micro-interactions, motion review                                                                                       | `emil-design-eng` for judgement; `animate`, `review-animations`, `animation-performance` as needed |
+| Systematic reference: patterns, charts, a11y and UX guidelines                                                                       | `ui-ux-pro-max` (account skill, if present)                                                        |
+| Central Admin Console, billing/trial/checkout, onboarding screens                                                                    | `impeccable` plus `ui-ux-pro-max`; add taste or motion only if the screen is public or animated    |
+| Stress-testing a finished screen for edge cases                                                                                      | `break-ui`                                                                                         |
+
+No coordination package is installed (decision recorded in the playbook).
+Impeccable's hooks are not installed. Motion is subtle and honours
+`prefers-reduced-motion`; no new animation library without an owner ruling.
+
+Visual QA is mandatory for a significant UI change: run the app against test
+data (never production merchant data), open the affected pages in a real
+browser at desktop and mobile widths, exercise the primary interaction, check
+loading, empty, success, error, pending and (where relevant) exhausted-quota,
+expired-trial and payment-failed states, keyboard and focus, run the affected
+Playwright specs, and compare with the design system. Say exactly what was and
+was not verified; if no browser verification happened, do not claim it.
+
 ## 8. Blocked?
 
 - **Decision-level ambiguity** (two defensible readings with different
