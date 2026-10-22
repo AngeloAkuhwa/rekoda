@@ -56,7 +56,10 @@ Evidence, then the gap each item leaves.
 7. **CodeRabbit** is installed and active. It reviews every PR, and its run shows the configuration
    source and profile. `.coderabbit.yaml` (this PR) moves it to the repository configuration, the
    assertive profile, the request-changes workflow and pre-merge checks. Its checks are evaluated by
-   a model, so they are review signals, not a deterministic gate.
+   a model, so they are review signals, not a deterministic gate. Probe #304 (22 Oct 2026, head `aadf770`: a
+   non-conventional title, an edit to applied migration 0165, an added `it.skip`) proved they fire
+   with this configuration: "Pre-merge checks failed: 5 errors", and a request-changes review naming
+   both violations. The probe was closed unmerged.
 8. **Codex** is installed (`chatgpt-codex-connector[bot]`). It reviews on PR open, on ready-for-review,
    or on `@codex review`, and posts a summary comment naming the commit. Since 20 Oct 2026 it has
    repeatedly reported "usage limits for code reviews". OWN-26 makes Codex quota never a merge
@@ -83,25 +86,23 @@ evidence report (playbook "Final go/no-go evidence").
 
 ## Branch rules (owner action, after PR 2 proves its check)
 
-A required check that has never been emitted locks every merge, so turn these on only after the named
-checks have run green on at least one PR and one `main` push. Settings → Rules → Rulesets → New branch
-ruleset:
+Prerequisite: a required check that has never been emitted locks every merge. Do not start these steps
+until every check named in step 6 has run green on at least one PR and on one `main` push.
 
-- **Target:** the default branch (`main`). **Enforcement:** Active. **Bypass list:** empty. If an
-  emergency bypass is wanted, add only the repository admin role, "for pull requests only".
-- **Restrict deletions:** on. **Block force pushes:** on.
-- **Require a pull request before merging:** on.
-  - Required approvals: 1.
-  - Dismiss stale approvals when new commits are pushed: on.
-  - Require approval of the most recent reviewable push: on.
-  - Require conversation resolution before merging: on.
-- **Require status checks to pass:** on, with "Require branches to be up to date" on. The checks are
-  the CI job names exactly as GitHub shows them: `Secret scan (gitleaks)`,
-  `Typecheck · lint · test · build`, `Deployment (Docker)`, `Migrations (foreign owner)`,
-  `Integration (PostgreSQL)`, `End-to-end (Playwright)`, plus `rekoda-pr-quality-gate` once PR 2 has
-  proven it.
-- Do not require the CodeRabbit or Codex check. An unavailable bot must not lock merges; the playbook
-  escalates instead.
+1. Open Settings → Rules → Rulesets → New ruleset → New branch ruleset.
+2. Set **Target** to the default branch (`main`) and **Enforcement** to Active. Leave the **Bypass list**
+   empty. If an emergency bypass is wanted, add only the repository admin role, "for pull requests only".
+3. Turn on **Restrict deletions** and **Block force pushes**.
+4. Turn on **Require a pull request before merging**, with required approvals 1, "Dismiss stale
+   approvals when new commits are pushed" on, and "Require approval of the most recent reviewable push"
+   on.
+5. Turn on **Require conversation resolution before merging**.
+6. Turn on **Require status checks to pass** with "Require branches to be up to date" on. Add the CI job
+   names exactly as GitHub shows them: `Secret scan (gitleaks)`, `Typecheck · lint · test · build`,
+   `Deployment (Docker)`, `Migrations (foreign owner)`, `Integration (PostgreSQL)`,
+   `End-to-end (Playwright)`, and `rekoda-pr-quality-gate` once PR 2 has proven it. Do not add the
+   CodeRabbit or Codex check: an unavailable bot must not lock merges; the playbook escalates instead.
+7. Save the ruleset, then confirm on the next PR that the merge box lists every check in step 6.
 
 A required approval from someone other than the PR author is a human gate. The autopilot posts as the
 owner's account, so with one required approval GitHub will not let the author approve their own PR.
