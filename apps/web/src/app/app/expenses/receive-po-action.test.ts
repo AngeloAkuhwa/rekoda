@@ -128,6 +128,9 @@ describe('a receive that may be a purchase already booked in Chat (G-89)', () =>
       text:
         '2 purchases of ₦180,000 are already recorded in Chat. ' +
         'Is PO-2026-000001 one of them? Pick the one it is, or say it is a separate purchase.',
+      explain:
+        'Same purchase: the order is marked received and linked to the purchase you picked, and ' +
+        'nothing is recorded again. Separate purchase: the order is received as its own purchase.',
     });
   });
 
@@ -265,6 +268,25 @@ describe('a receive that may be a purchase already booked in Chat (G-89)', () =>
       form({ poNumber: 'PO-2026-000001', paid: '' }),
     );
     expect(state.question?.options[0]?.text).toContain('recorded it as an expense on');
+    expect(state.question?.text).toBe(
+      'A ₦180,000 expense is already recorded in Chat. Is PO-2026-000001 that same purchase?',
+    );
+    expect(state.question?.explain).toContain(
+      'If you pick one recorded as an expense, nothing is changed',
+    );
+  });
+
+  it('a purchase-only question explains SAME as a link (G-89 unchanged)', async () => {
+    receive.mockResolvedValue(ASKED);
+    const state = await receivePurchaseOrderAction(
+      {},
+      form({ poNumber: 'PO-2026-000001', paid: '' }),
+    );
+    expect(state.question?.text).toContain('2 purchases of ₦180,000');
+    expect(state.question?.explain).toBe(
+      'Same purchase: the order is marked received and linked to the purchase you picked, and ' +
+        'nothing is recorded again. Separate purchase: the order is received as its own purchase.',
+    );
   });
 
   it('going back from the question records nothing and calls nothing', async () => {

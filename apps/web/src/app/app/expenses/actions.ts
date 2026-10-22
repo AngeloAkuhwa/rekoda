@@ -488,8 +488,22 @@ export interface PurchaseOrderFormState {
     options: { expenseId: string; text: string }[];
     expenseIds: string[];
     text: string;
+    /** What SAME and SEPARATE do, in words true for these matches (G-87). */
+    explain: string;
   };
 }
+
+const EXPLAIN_SAME_SEPARATE =
+  'Same purchase: the order is marked received and linked to the purchase you picked, and ' +
+  'nothing is recorded again. Separate purchase: the order is received as its own purchase.';
+
+/* G-87: SAME cannot link a stock order to a Chat EXPENSE (it put no stock on
+ * the shelf), so when any match is one the screen says what SAME does then. */
+const EXPLAIN_WITH_EXPENSE =
+  'Same purchase: if you pick a purchase, the order is marked received and linked to it, and ' +
+  'nothing is recorded again. If you pick one recorded as an expense, nothing is changed: cancel ' +
+  'this order instead of receiving it, so it is not recorded twice. Separate purchase: the order ' +
+  'is received as its own purchase.';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -645,6 +659,8 @@ async function receivePurchaseOrderActionUnguarded(
   }
   if (outcome.outcome === 'possible_duplicate') {
     const several = outcome.matches.length > 1;
+    const withExpense = outcome.matches.some((m) => m.kind === 'expense');
+    const what = withExpense ? 'purchases or expenses' : 'purchases';
     return {
       question: {
         poNumber: outcome.poNumber,
@@ -660,10 +676,11 @@ async function receivePurchaseOrderActionUnguarded(
           ...new Set([...outcome.matches.map((m) => m.expenseId), ...outcome.alreadySeparate]),
         ],
         text: several
-          ? `${outcome.matches.length} purchases of ${formatKobo(outcome.totalK)} are already recorded in Chat. ` +
+          ? `${outcome.matches.length} ${what} of ${formatKobo(outcome.totalK)} are already recorded in Chat. ` +
             `Is ${outcome.poNumber} one of them? Pick the one it is, or say it is a separate purchase.`
-          : `A ${formatKobo(outcome.totalK)} purchase is already recorded in Chat. ` +
+          : `A ${formatKobo(outcome.totalK)} ${withExpense ? 'expense' : 'purchase'} is already recorded in Chat. ` +
             `Is ${outcome.poNumber} that same purchase?`,
+        explain: withExpense ? EXPLAIN_WITH_EXPENSE : EXPLAIN_SAME_SEPARATE,
       },
     };
   }

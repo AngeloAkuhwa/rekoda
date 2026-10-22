@@ -146,10 +146,7 @@ export function ReceivePurchaseOrderForm({ orders }: { orders: OpenPurchaseOrder
             </label>
           ))}
         </fieldset>
-        <p className="rk-fineprint">
-          Same purchase: the order is marked received and linked to the purchase you picked, and
-          nothing is recorded again. Separate purchase: the order is received as its own purchase.
-        </p>
+        <p className="rk-fineprint">{q.explain}</p>
         <Button type="submit" name="answer" value="same" disabled={pending}>
           {pending ? 'Recording…' : 'Same purchase'}
         </Button>
