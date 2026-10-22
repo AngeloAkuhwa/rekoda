@@ -57,8 +57,10 @@ reviews:
   # are reviewed. pnpm-lock.yaml is on CodeRabbit's DEFAULT ignore list; the
   # exact default pattern without its "!" re-enables it without turning the
   # filters into an allowlist (docs: configuration/path-instructions). It gets
-  # the narrow supply-chain instruction below.
+  # the narrow supply-chain instruction below. '**/*' states the full scope
+  # explicitly, so the list reads the same under either interpretation.
   path_filters:
+    - '**/*'
     - '**/pnpm-lock.yaml'
     - '!**/dist/**'
     - '!**/node_modules/**'
