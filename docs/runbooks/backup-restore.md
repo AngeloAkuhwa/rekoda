@@ -75,8 +75,10 @@ The `.sha256` detects corruption and a truncated copy. It is not authentication:
 integrity of its own, and anyone with write access to the destination can replace an object and its
 checksum together, or roll back to an older valid pair (the drill would still pass against it). The
 passphrase protects confidentiality, not freshness. Until the encryption is moved to an authenticated
-format, give the backup credential write-only access (no delete), turn on bucket versioning or object
-lock, and compare the newest object's date with today's. This is an open hardening item for G-02, not
+format, scope the backup credential to what the script needs (PutObject, GetObject and ListBucket, so it
+can read back what it staged; DeleteObject only for its own `.pending` staging objects, or leave those
+to a lifecycle rule), turn on bucket versioning or object lock so an overwrite or delete keeps a prior
+version, and compare the newest object's date with today's. This is an open hardening item for G-02, not
 closed by this change.
 
 ### Restore by hand (no scripts)
@@ -84,6 +86,7 @@ closed by this change.
 Objects are named `rekoda-<UTC stamp>-<pid>.dump.enc` with a `.sha256` beside each.
 
 ```bash
+set -euo pipefail                              # stop at the first failure; do not continue past a bad restore
 sha256sum rekoda-<stamp>-<pid>.dump.enc        # must equal the contents of the .sha256 file
 openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
   -pass file:/path/to/passphrase-file \
