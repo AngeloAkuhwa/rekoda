@@ -394,6 +394,65 @@ describe('queue order is a promise, not a hope (H7a)', () => {
     });
   });
 
+  /* The receipt job defers whenever the conversation lock is busy, and a
+   * deferral moves its run_at past a "yes" that arrived after it. Across
+   * kinds the order is ARRIVAL, so it is still the older job. */
+  it('a deferred receipt is still ahead of a yes that arrived after it (G-20)', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    const receipt = await enqueue(businessId, { kind: 'delivery.status' });
+    const yes = await enqueue(businessId);
+    if (!receipt || !yes) throw new Error('both jobs should have enqueued');
+
+    const claimed = await jobsRepo.claimNext(workerDb, 'lane-a');
+    expect(claimed?.id).toBe(receipt.id);
+    await jobsRepo.deferClaimed(workerDb, receipt.id, 5_000);
+    await withBusiness(appDb, businessId, async (tx) => {
+      expect(await jobsRepo.hasEarlierLiveJob(tx, yes.id, ['delivery.status'])).toBe(true);
+      // And it still never waits for the yes.
+      expect(await jobsRepo.hasEarlierLiveJob(tx, receipt.id)).toBe(false);
+    });
+  });
+
+  it('same-kind order is still queue order: a deferred sibling is not ahead', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    const first = await enqueue(businessId);
+    const second = await enqueue(businessId);
+    if (!first || !second) throw new Error('both jobs should have enqueued');
+    await jobsRepo.claimNext(workerDb, 'lane-a');
+    await jobsRepo.deferClaimed(workerDb, first.id, 5_000);
+    await withBusiness(appDb, businessId, async (tx) => {
+      expect(await jobsRepo.hasEarlierLiveJob(tx, second.id, ['delivery.status'])).toBe(false);
+      expect(await jobsRepo.hasEarlierLiveJob(tx, first.id, ['delivery.status'])).toBe(true);
+    });
+  });
+
+  it('trySerializeBusiness takes the lock serializeBusiness takes, without waiting', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let locked!: () => void;
+    const isLocked = new Promise<void>((resolve) => (locked = resolve));
+    const holder = withBusiness(appDb, businessId, async (tx) => {
+      await jobsRepo.serializeBusiness(tx, businessId, 'inbound');
+      locked();
+      await held;
+    });
+    await isLocked;
+    try {
+      await withBusiness(appDb, businessId, async (tx) => {
+        expect(await jobsRepo.trySerializeBusiness(tx, businessId, 'inbound')).toBe(false);
+        // Another scope is another lock.
+        expect(await jobsRepo.trySerializeBusiness(tx, businessId, 'other')).toBe(true);
+      });
+    } finally {
+      release();
+      await holder;
+    }
+    await withBusiness(appDb, businessId, async (tx) => {
+      expect(await jobsRepo.trySerializeBusiness(tx, businessId, 'inbound')).toBe(true);
+    });
+  });
+
   it('deferClaimed re-queues without charging the attempt', async () => {
     const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
     await enqueue(businessId);

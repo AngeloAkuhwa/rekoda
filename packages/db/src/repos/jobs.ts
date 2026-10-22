@@ -136,6 +136,26 @@ export async function serializeBusiness(
 }
 
 /**
+ * The lock `serializeBusiness` takes, if it is free right now; false, without
+ * waiting, if another transaction holds it.
+ *
+ * Same key as `serializeBusiness`, so the two exclude each other. For a job
+ * that must run after the holder but must not park a concurrency lane behind
+ * it (the `delivery.status` job, G-20): not acquired, it defers and comes
+ * back, and the lane is free for other businesses meanwhile.
+ */
+export async function trySerializeBusiness(
+  tx: TenantDb,
+  businessId: string,
+  scope: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ acquired: boolean }>(
+    sql`SELECT pg_try_advisory_xact_lock(${LOCK_CLASS.business}, hashtext(${`${businessId}:${scope}`})) AS acquired`,
+  );
+  return [...rows][0]?.acquired === true;
+}
+
+/**
  * Is an older live job of the same kind still ahead of this one?
  *
  * The advisory lock above guarantees exclusion, not order: between claiming a
@@ -150,7 +170,12 @@ export async function serializeBusiness(
  *
  * `alsoKinds` names other kinds whose older live jobs also count (G-20): an
  * inbound "yes" must not overtake an already-queued `delivery.status` failure
- * for a preview, or it would confirm a draft the merchant never saw.
+ * for a preview, or it would confirm a draft the merchant never saw. Those
+ * are ordered by ARRIVAL, (created_at, id), not queue order: the receipt job
+ * defers whenever the conversation lock is busy, and each deferral (or a
+ * failed attempt's backoff) moves its run_at past a "yes" that arrived
+ * after it. The wait is one-way: the kinds named do not wait back unless
+ * they ask.
  */
 export async function hasEarlierLiveJob(
   tx: TenantDb,
@@ -166,10 +191,18 @@ export async function hasEarlierLiveJob(
     FROM jobs j, jobs me
     WHERE me.id = ${jobId}::uuid
       AND j.business_id = me.business_id
-      AND (j.kind = me.kind${alsoKinds.length > 0 ? sql` OR j.kind IN (${kinds})` : sql``})
       AND j.id <> me.id
       AND j.state IN ('pending', 'running')
-      AND (j.run_at, j.created_at, j.id) < (me.run_at, me.created_at, me.id)
+      AND (
+        (j.kind = me.kind
+         AND (j.run_at, j.created_at, j.id) < (me.run_at, me.created_at, me.id))
+        ${
+          alsoKinds.length > 0
+            ? sql`OR (j.kind <> me.kind AND j.kind IN (${kinds})
+                      AND (j.created_at, j.id) < (me.created_at, me.id))`
+            : sql``
+        }
+      )
     LIMIT 1
   `);
   return [...rows].length > 0;
