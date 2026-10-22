@@ -323,11 +323,13 @@ describe('rebuiltPurchaseFate (G-68, final-head review)', () => {
       replace: false,
     });
   });
-  it('the same total with references that prove two purchases stays waiting (Codex review of 50f030f)', () => {
+  it('the same total replaces whatever references either states (OWN-32, G-92(5))', () => {
     const a = { ...pos, supplierReference: 'INV:0101' };
+    /* Different numbers of one kind are no proof since OWN-32: replaced, and
+     * the reply says so, as for any other own preview of the same total. */
     expect(rebuiltPurchaseFate(a, { ...pos, supplierReference: 'invoice 0202' })).toEqual({
       totalK: 18_000_000,
-      replace: false,
+      replace: true,
     });
     /* Same number, another kind, or kind OTHER: never proof, so replaced. */
     expect(rebuiltPurchaseFate(a, { ...pos, supplierReference: 'invoice 0101' })?.replace).toBe(
