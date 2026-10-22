@@ -105,3 +105,43 @@ test('a skill folder with no recorded hash is reported', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a skill folder that no longer hashes to its recorded value is reported', () => {
+  const dir = scratchRepo('');
+  try {
+    writeFileSync(join(dir, 'skills-lock.json'), JSON.stringify({ version: 1, skills: {} }));
+    writeFileSync(join(dir, '.claude/skills/SOURCES.md'), `Impeccable: ${IMPECCABLE_HASH}\n`);
+    mkdirSync(join(dir, '.claude/skills/impeccable'), { recursive: true });
+    writeFileSync(join(dir, '.claude/skills/impeccable/SKILL.md'), '# edited\n');
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    const problems = problemsIn(dir);
+    assert.ok(
+      problems.some(
+        (p) => p.startsWith('impeccable: hashes to ') && p.endsWith(`expected ${IMPECCABLE_HASH}`),
+      ),
+      problems.join('\n'),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a committed skill file that matches an ignore rule is reported', () => {
+  const dir = scratchRepo('*.png\n');
+  const ignored = '.claude/skills/x/assets/hero.png';
+  try {
+    writeFileSync(join(dir, 'skills-lock.json'), JSON.stringify({ version: 1, skills: {} }));
+    writeFileSync(join(dir, '.claude/skills/SOURCES.md'), `Impeccable: ${IMPECCABLE_HASH}\n`);
+    mkdirSync(join(dir, dirname(ignored)), { recursive: true });
+    writeFileSync(join(dir, ignored), 'png');
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    execFileSync('git', ['add', '-f', '--', ignored], { cwd: dir });
+    const problems = problemsIn(dir);
+    assert.ok(
+      problems.includes(`${ignored} is committed but matches an ignore rule`),
+      problems.join('\n'),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
