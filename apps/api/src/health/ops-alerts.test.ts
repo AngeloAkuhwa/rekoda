@@ -88,6 +88,54 @@ describe('runOpsAlertPass (G-26)', () => {
     expect(sent.map((n) => n.kind)).toEqual(['alert', 'resolved']);
   });
 
+  it('still sends the recovery notice when a re-send failed and the condition then cleared', async () => {
+    // The alert was shown at T0. The re-send after the cooldown fails. The
+    // condition clears before the next pass. The destination still shows an
+    // open alert, so it must be told it cleared.
+    let snapshot = dead;
+    let up = true;
+    const sent: AlertNotice[] = [];
+    const h = harness(() => snapshot, {
+      deliver: async (n) => {
+        if (!up) throw new Error('alert destination answered 503');
+        sent.push(n);
+      },
+    });
+    const first = await runOpsAlertPass(h.deps, {});
+    up = false;
+    h.tick(61_000);
+    const failedResend = await runOpsAlertPass(h.deps, first.next);
+    expect(failedResend.next).toEqual(first.next);
+    up = true;
+    snapshot = quiet;
+    h.tick(1_000);
+    await runOpsAlertPass(h.deps, failedResend.next);
+    expect(sent.map((n) => n.kind)).toEqual(['alert', 'resolved']);
+  });
+
+  it('retries a recovery notice that failed to deliver, until it lands', async () => {
+    let snapshot = dead;
+    let up = true;
+    const sent: AlertNotice[] = [];
+    const h = harness(() => snapshot, {
+      deliver: async (n) => {
+        if (!up) throw new Error('alert destination answered 503');
+        sent.push(n);
+      },
+    });
+    const first = await runOpsAlertPass(h.deps, {});
+    snapshot = quiet;
+    up = false;
+    h.tick(1_000);
+    const failedRecovery = await runOpsAlertPass(h.deps, first.next);
+    expect(Object.keys(failedRecovery.next)).toEqual(['jobs.dead']);
+    up = true;
+    h.tick(1_000);
+    const retried = await runOpsAlertPass(h.deps, failedRecovery.next);
+    expect(sent.map((n) => n.kind)).toEqual(['alert', 'resolved']);
+    expect(retried.next).toEqual({});
+  });
+
   it('judges nothing, and says nothing, without the worker credential', async () => {
     const h = harness(() => ({ queue: null, meta: null, paystack: null }), {
       deliver: async () => {

@@ -88,7 +88,7 @@ export interface AlertPassDeps {
 /**
  * One pass. `state` is the caller's memory of what it already announced, so a
  * condition that stays true is sent once per cooldown rather than every pass.
- * A delivery that fails is NOT recorded as sent: it is retried on the next pass.
+ * A delivery that fails leaves the state as the destination last saw it, so it is retried on the next pass and a recovery is never lost.
  */
 export async function runOpsAlertPass(
   deps: AlertPassDeps,
@@ -117,7 +117,12 @@ export async function runOpsAlertPass(
         at,
       });
     } catch (error) {
-      delete next[alert.key];
+      /* Back to what the destination last saw: a brand-new alert is forgotten
+       * (retry as new), a re-send keeps its old time so that a later recovery
+       * is still announced for an alert the destination is showing. */
+      const previous = state[alert.key];
+      if (previous === undefined) delete next[alert.key];
+      else next[alert.key] = previous;
       deps.log.warn(`alert ${alert.key} not delivered: ${(error as Error).message}`);
     }
   }
@@ -135,6 +140,9 @@ export async function runOpsAlertPass(
         at,
       });
     } catch (error) {
+      /* Keep the key so the next pass finds it cleared again and retries the
+       * notice; dropping it would leave the destination showing an open alert. */
+      next[key] = state[key]!;
       deps.log.warn(`recovery notice ${key} not delivered: ${(error as Error).message}`);
     }
   }
