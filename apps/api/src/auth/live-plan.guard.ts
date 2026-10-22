@@ -2,6 +2,8 @@ import { ForbiddenException, Injectable, SetMetadata, UnauthorizedException } fr
 import type { CanActivate, ExecutionContext } from '@nestjs/common';
 import { Inject } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { usageRepo, withBusiness, type Db } from '@rekoda/db';
+import { DB } from '../db/db.module.js';
 import type { AuthedRequest } from './session.guard.js';
 
 export const LIVE_PLAN_KEY = 'rekoda:needs-live-plan';
@@ -17,14 +19,20 @@ export const LIVE_PLAN_KEY = 'rekoda:needs-live-plan';
 export const NeedsLivePlan = () => SetMetadata(LIVE_PLAN_KEY, true);
 
 /**
- * List after `SessionGuard`, which resolves the plan the gate judges against.
- * `expired` is the one value a lapsed trial and a lapsed paid plan share.
+ * List after `SessionGuard`. The session carries the STORED plan, and a trial
+ * that ran out is still stored as `trial`, so the plan is read again here with
+ * the trial clock applied (`usageRepo.planFor`), the same answer Chat, billing
+ * and the shop judge against. `expired` is what a lapsed trial and a lapsed
+ * paid plan share.
  */
 @Injectable()
 export class LivePlanGuard implements CanActivate {
-  constructor(@Inject(Reflector) private readonly reflector: Reflector) {}
+  constructor(
+    @Inject(Reflector) private readonly reflector: Reflector,
+    @Inject(DB) private readonly db: Db,
+  ) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const needed = this.reflector.getAllAndOverride<boolean | undefined>(LIVE_PLAN_KEY, [
       context.getHandler(),
       context.getClass(),
@@ -35,7 +43,10 @@ export class LivePlanGuard implements CanActivate {
     // A mis-ordered guard list becomes a 401, never an open door.
     if (!auth) throw new UnauthorizedException('no session');
 
-    if (auth.plan === 'expired') {
+    const plan = await withBusiness(this.db, auth.businessId, (tx) =>
+      usageRepo.planFor(tx, auth.businessId),
+    );
+    if (plan === 'expired') {
       throw new ForbiddenException(
         'Your plan has ended, so Rekoda cannot record anything new. Your records are safe ' +
           'and still here to read, collect on and export. Choose a plan to carry on recording.',
