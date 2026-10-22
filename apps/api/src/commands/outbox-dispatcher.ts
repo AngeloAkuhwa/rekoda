@@ -43,16 +43,24 @@ export class OutboxDispatcher {
    * Failures are per event — one poisoned payload must not dam the queue
    * behind it.
    */
-  async runOnce(worker: Db, batchSize = 25): Promise<{ delivered: number; failed: number }> {
+  async runOnce(
+    worker: Db,
+    batchSize = 25,
+    now?: Date,
+  ): Promise<{ delivered: number; failed: number }> {
+    /* An injected `now` pins the clock for tests. In production each stamp is
+     * read when it is needed, so a slow handler does not date its own failure
+     * to the start of the pass and shorten the backoff. */
+    const clock = () => now ?? new Date();
     await outboxRepo.reclaimStalled(worker);
-    const batch = await outboxRepo.claimBatch(worker, batchSize);
+    const batch = await outboxRepo.claimBatch(worker, batchSize, clock());
     let delivered = 0;
     let failed = 0;
 
     for (const event of batch) {
       const handler = this.handlers.get(event.type);
       if (!handler) {
-        await outboxRepo.markFailed(worker, event.id, `no handler for ${event.type}`);
+        await outboxRepo.markFailed(worker, event.id, `no handler for ${event.type}`, clock());
         failed += 1;
         continue;
       }
@@ -62,7 +70,7 @@ export class OutboxDispatcher {
         delivered += 1;
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        await outboxRepo.markFailed(worker, event.id, reason);
+        await outboxRepo.markFailed(worker, event.id, reason, clock());
         this.log.warn(`outbox ${event.type} failed: ${redactForLog(reason)}`);
         failed += 1;
       }

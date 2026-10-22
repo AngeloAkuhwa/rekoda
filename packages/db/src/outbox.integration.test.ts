@@ -91,7 +91,8 @@ describe('dispatching', () => {
     await outboxRepo.markDispatched(worker, batch[0]!.id);
     await outboxRepo.markFailed(worker, batch[1]!.id, 'downstream refused');
     /* Third stays leased; a fresh claim sees only the released failure. */
-    const again = await outboxRepo.claimBatch(worker);
+    const later = new Date(Date.now() + 60_000);
+    const again = await outboxRepo.claimBatch(worker, 25, later);
     expect(again.map((event) => event.type)).toEqual(['Second']);
     expect(again[0]?.attempts).toBe(1);
   });
@@ -123,16 +124,63 @@ describe('dispatching', () => {
       outboxRepo.append(tx, { businessId, type: 'Poisoned' }),
     );
     for (let i = 0; i < 8; i += 1) {
-      const [event] = await outboxRepo.claimBatch(worker);
+      const [event] = await outboxRepo.claimBatch(worker, 25, new Date(Date.now() + 3_600_000));
       expect(event).toBeDefined();
       await outboxRepo.markFailed(worker, event!.id, `attempt ${i + 1} refused`);
     }
-    expect(await outboxRepo.claimBatch(worker)).toHaveLength(0);
+    expect(await outboxRepo.claimBatch(worker, 25, new Date(Date.now() + 7_200_000))).toHaveLength(
+      0,
+    );
 
     const dead = await outboxRepo.deadEvents(worker);
     expect(dead).toHaveLength(1);
     expect(dead[0]?.type).toBe('Poisoned');
     expect(dead[0]?.attempts).toBe(8);
+  });
+
+  /**
+   * G-18. A failed event used to be claimable on the very next pass, so eight
+   * attempts burned in seconds. It now waits 2^attempts seconds (capped at
+   * 300), measured from the failure, and is never claimable before then.
+   */
+  it('keeps a failed event out of the queue until its backoff elapses', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(app, businessId, (tx) =>
+      outboxRepo.append(tx, { businessId, type: 'Flaky' }),
+    );
+    const t0 = new Date('2026-10-22T10:00:00.000Z');
+    const [first] = await outboxRepo.claimBatch(worker, 25, t0);
+    await outboxRepo.markFailed(worker, first!.id, 'blip', t0);
+
+    expect(await outboxRepo.claimBatch(worker, 25, t0)).toHaveLength(0);
+    expect(await outboxRepo.claimBatch(worker, 25, new Date(t0.getTime() + 1_999))).toHaveLength(0);
+    const [second] = await outboxRepo.claimBatch(worker, 25, new Date(t0.getTime() + 2_000));
+    expect(second?.attempts).toBe(1);
+
+    /* The second failure waits 4s, the third 8s: the delay doubles. */
+    const t1 = new Date(t0.getTime() + 2_000);
+    await outboxRepo.markFailed(worker, second!.id, 'blip', t1);
+    expect(await outboxRepo.claimBatch(worker, 25, new Date(t1.getTime() + 3_999))).toHaveLength(0);
+    const [third] = await outboxRepo.claimBatch(worker, 25, new Date(t1.getTime() + 4_000));
+    expect(third?.attempts).toBe(2);
+  });
+
+  it('doubles the delay with each attempt: the seventh failure waits 128 seconds', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(app, businessId, (tx) =>
+      outboxRepo.append(tx, { businessId, type: 'Flaky' }),
+    );
+    const t0 = new Date('2026-10-22T10:00:00.000Z');
+    const [event] = await outboxRepo.claimBatch(worker, 25, t0);
+    await worker.execute(sql`UPDATE outbox_events SET attempts = 6 WHERE id = ${event!.id}::uuid`);
+    await outboxRepo.markFailed(worker, event!.id, 'blip', t0);
+    /* attempts was 6, so this failure is the 7th: 2^7 = 128s. */
+    expect(await outboxRepo.claimBatch(worker, 25, new Date(t0.getTime() + 127_000))).toHaveLength(
+      0,
+    );
+    expect(await outboxRepo.claimBatch(worker, 25, new Date(t0.getTime() + 128_000))).toHaveLength(
+      1,
+    );
   });
 
   it("returns a crashed dispatcher's leases to the table", async () => {

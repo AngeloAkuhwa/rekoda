@@ -170,13 +170,35 @@ describe('delivery', () => {
     const failing = await dispatcher.runOnce(workerDb);
     expect(failing).toEqual({ delivered: 0, failed: 1 });
 
-    /* markFailed released the lease, so the very next pass may retry. */
+    /* G-18: the retry waits out its backoff. An immediate pass finds nothing;
+     * a pass after the delay collects the event. */
     healthy = true;
-    const recovered = await dispatcher.runOnce(workerDb);
+    expect(await dispatcher.runOnce(workerDb)).toEqual({ delivered: 0, failed: 0 });
+    const recovered = await dispatcher.runOnce(workerDb, 25, new Date(Date.now() + 60_000));
     expect(recovered).toEqual({ delivered: 1, failed: 0 });
     /* The retry carries the incremented attempt count: the handler can see
      * it is not the first try, which is what makes backoff decisions possible. */
     expect(attempts).toEqual([0, 1]);
+  });
+
+  it('dates a failure to when it happened, not to the start of a slow pass', async () => {
+    const businessId = await seedBusiness();
+    const dispatcher = new OutboxDispatcher();
+    dispatcher.register('sale.recorded', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+      throw new Error('downstream is down');
+    });
+    await appendEvent(businessId, 'sale.recorded');
+
+    const startedAt = Date.now();
+    await dispatcher.runOnce(workerDb);
+
+    /* The handler ran ~1.2s, so the first failure's 2s backoff ends ~3.2s after
+     * the pass began. Dated to the start of the pass it would end at ~2s. */
+    const early = await outboxRepo.claimBatch(workerDb, 25, new Date(startedAt + 3_100));
+    expect(early).toHaveLength(0);
+    const due = await outboxRepo.claimBatch(workerDb, 25, new Date(startedAt + 6_000));
+    expect(due).toHaveLength(1);
   });
 
   it('an event nobody handles fails and retries rather than vanishing', async () => {
@@ -195,7 +217,7 @@ describe('delivery', () => {
     newer.register('type.from.a.newer.deploy', async (event) => {
       seen.push(event.id);
     });
-    const collected = await newer.runOnce(workerDb);
+    const collected = await newer.runOnce(workerDb, 25, new Date(Date.now() + 60_000));
     expect(collected).toEqual({ delivered: 1, failed: 0 });
     expect(seen).toHaveLength(1);
   });
@@ -206,12 +228,15 @@ describe('delivery', () => {
 
     const id = await appendEvent(businessId, 'type.nobody.ever.handles');
 
+    /* Each pass runs an hour after the last, past any backoff (G-18). */
+    const base = Date.now();
+    const hour = 3_600_000;
     for (let i = 0; i < 8; i += 1) {
-      const pass = await dispatcher.runOnce(workerDb);
+      const pass = await dispatcher.runOnce(workerDb, 25, new Date(base + i * hour));
       expect(pass.failed).toBe(1);
     }
     /* Attempt nine never happens: the event is dead, not eligible... */
-    const after = await dispatcher.runOnce(workerDb);
+    const after = await dispatcher.runOnce(workerDb, 25, new Date(base + 8 * hour));
     expect(after).toEqual({ delivered: 0, failed: 0 });
 
     /* ...and dead means VISIBLE, because a silent loss is the one outcome

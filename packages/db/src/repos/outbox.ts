@@ -69,6 +69,7 @@ export async function claimBatch(
       WHERE dispatched_at IS NULL
         AND attempts < max_attempts
         AND locked_at IS NULL
+        AND (next_attempt_at IS NULL OR next_attempt_at <= ${now.toISOString()}::timestamptz)
       ORDER BY occurred_at
       LIMIT ${limit}
       FOR UPDATE SKIP LOCKED
@@ -96,14 +97,25 @@ export async function markDispatched(worker: Db, id: string, now = new Date()): 
 }
 
 /**
- * Failed. Attempts move up, the lease releases, and once attempts reach the
- * ceiling the event stops being claimable — dead, but on the table, because
- * a poisoned event is evidence and the alternative is a delivery loop.
+ * Failed. Attempts move up, the lease releases, and the event waits out an
+ * exponential backoff (`next_attempt_at`) before it is claimable again, so a
+ * transient outage is outlasted rather than burned through. Once attempts
+ * reach the ceiling the event stops being claimable — dead, but on the table,
+ * because a poisoned event is evidence and the alternative is a delivery loop.
  */
-export async function markFailed(worker: Db, id: string, error: string): Promise<void> {
+export async function markFailed(
+  worker: Db,
+  id: string,
+  error: string,
+  now = new Date(),
+): Promise<void> {
+  /* `attempts` on the right-hand side is the value before this failure, so the
+   * delay is 2^(new attempts) seconds, capped at 300: 2s, 4s, ... 256s. */
   await worker.execute(sql`
     UPDATE outbox_events
-    SET attempts = attempts + 1, locked_at = NULL, last_error = ${error.slice(0, 500)}
+    SET attempts = attempts + 1, locked_at = NULL, last_error = ${error.slice(0, 500)},
+        next_attempt_at = ${now.toISOString()}::timestamptz
+          + make_interval(secs => LEAST(300, power(2, GREATEST(1, attempts + 1))))
     WHERE id = ${id}::uuid AND dispatched_at IS NULL
   `);
 }
