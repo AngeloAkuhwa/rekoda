@@ -129,7 +129,8 @@ reviews:
           "exit 0", "true" or an echo); or changes the run command of an existing workflow step that ran tests,
           lint, typecheck or a guard script to one that no longer does (for example "echo done"), or that
           runs only part of what it ran (a filter, a single package or file, a narrower pattern), whatever
-          the step is named. Pass otherwise.
+          the step is named, unless other steps in the same workflow together still run everything it ran
+          (a suite split across steps or jobs keeps its coverage). Pass otherwise.
           (CLAUDE.md invariant 11: never skip, disable or quarantine a failing test to get green.)
       - name: Test coverage is not quietly reduced
         mode: warning
