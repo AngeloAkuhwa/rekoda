@@ -126,8 +126,9 @@ reviews:
           changed line in those files ADDS any of these tokens: .skip(, .only(, .skipIf(, .todo(, xit(,
           xdescribe(, xtest(, fixme(; or adds "continue-on-error: true" in a workflow; or changes a "test",
           "test:integration", "e2e", "lint" or "typecheck" script in a package.json to one that runs no
-          tests or checks (for example "exit 0", "true" or an echo); or changes the run command of an existing workflow step that ran tests,
-          lint, typecheck or a guard script to one that no longer does (for example "echo done"), or that
+          tests or checks, or narrows it to part of what it ran (for example "exit 0", "true" or an echo);
+          or changes the run command of an existing workflow step that ran tests, lint, typecheck or a guard
+          script to one that no longer does (for example "echo done"), or that
           runs only part of what it ran (a filter, a single package or file, a narrower pattern), whatever
           the step is named, unless other steps in the same workflow together still run everything it ran
           (a suite split across steps or jobs keeps its coverage). Pass otherwise.
@@ -209,9 +210,10 @@ reviews:
     - path: '{packages/core/src/{ledger,chart,money,periods,statements,recognition,costing,payments,reconciliation,bank-matching,purchase-identity,billing,allowances}.ts,packages/db/src/repos/{journal,accounts,close,opening,reports,spend,purchase-identity,payments-hub,settle,settlements,merchant-overpayment,stock,stocktake,orders,subscriptions,usage}.ts,apps/api/src/{commands,spend,reports,payments,bank,billing}/**}'
       instructions: |
         Financial integrity (CLAUDE.md invariants 1, 2, 6, 7; spec §9 and §11).
-        - Money is integer kobo end to end; flag any float or parseFloat on a financial value, and any division
-          of one that is not brought straight back to integer kobo with a deliberate rounding direction
-          (Math.floor, Math.round, Math.ceil or a money.ts helper) that the code or description justifies.
+        - Money is integer kobo end to end; outside packages/core/src/money.ts, flag any float or parseFloat on
+          a financial value, and any division of one that is not brought straight back to integer kobo with a
+          deliberate rounding direction (Math.floor, Math.round, Math.ceil or a money.ts helper) that the code
+          or description justifies.
         - Ledger postings balance or throw. Posted truth is immutable: corrections are reversing postings,
           credit notes, voids or compensating events, never an UPDATE or DELETE of a posted row. A posting
           into a closed accounting period must be refused truthfully, never a 500 (G-98).
