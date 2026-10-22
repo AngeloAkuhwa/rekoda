@@ -242,6 +242,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private sweepingDepreciation = false;
   private sweepingRetention = false;
   private alerting = false;
+  /** In memory: dedupe holds for one worker replica and resets on restart (G-26 row in launch readiness). */
   private alertState: AlertState = {};
   private outboxTimer: NodeJS.Timeout | null = null;
   private dispatchingOutbox = false;
