@@ -104,8 +104,9 @@ reviews:
           starting one higher than the highest number on the base branch, and
           packages/db/migrations/meta/_journal.json must gain exactly one entry per added migration, each with
           the same tag as its file; fail otherwise. Fail if any journal entry that exists on the base branch
-          is changed, reordered or removed: the journal is append-only too. Pass when the PR touches no
-          migration.
+          is changed, reordered or removed: the journal is append-only too. Fail if the journal gains an
+          entry with no added migration file of that tag. Pass when the PR touches neither a migration file
+          nor the journal.
       - name: A bug fix lands with a regression test
         mode: error
         instructions: |
@@ -126,8 +127,9 @@ reviews:
           xdescribe(, xtest(, fixme(; or adds "continue-on-error: true" in a workflow; or changes a "test",
           "test:integration" or "test:e2e" script in a package.json to one that runs no tests (for example
           "exit 0", "true" or an echo); or changes the run command of an existing workflow step that ran tests,
-          lint, typecheck or a guard script to one that no longer does (for example "echo done"), whatever the
-          step is named. Pass otherwise.
+          lint, typecheck or a guard script to one that no longer does (for example "echo done"), or that
+          runs only part of what it ran (a filter, a single package or file, a narrower pattern), whatever
+          the step is named. Pass otherwise.
           (CLAUDE.md invariant 11: never skip, disable or quarantine a failing test to get green.)
       - name: Test coverage is not quietly reduced
         mode: warning
