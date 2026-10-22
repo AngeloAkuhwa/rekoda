@@ -163,6 +163,20 @@ describe('failure and retry', () => {
     expect(await jobsRepo.claimNext(workerDb, 'worker')).toBeNull();
   });
 
+  it('reports a fenced failure that updates no job as lost (G-10)', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    await enqueue(businessId);
+    const job = await jobsRepo.claimNext(workerDb, 'the-live-claim');
+
+    // A stale attempt names a claim that no longer holds the job.
+    const outcome = await jobsRepo.markFailed(workerDb, job!, 'late failure', 0, 'a-stale-claim');
+    expect(outcome.state).toBe('lost');
+
+    // The live claim is untouched.
+    const rows = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
+    expect(rows[0]).toMatchObject({ state: 'running', attempts: 1 });
+  });
+
   it('gives up after maxAttempts and keeps the reason', async () => {
     const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
     await enqueue(businessId, { maxAttempts: 2 });

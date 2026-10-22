@@ -14,6 +14,7 @@
  * application role under a tenant pin, so a handler is exactly as constrained
  * as a request.
  */
+import { randomUUID } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import { jobsRepo, withBusiness, type Db, type TenantDb } from '@rekoda/db';
 import { redactForLog } from '@rekoda/core/privacy';
@@ -84,8 +85,10 @@ export class JobRunner {
   private readonly idleMs: number;
   private readonly stalledAfterMs: number;
   private readonly workerId: string;
+  private reclaimTimer: NodeJS.Timeout | null = null;
   private readonly concurrency: number;
   private running = false;
+  private reclaimInFlight: Promise<void> | null = null;
   private loops: Promise<void>[] = [];
 
   constructor(
@@ -114,59 +117,115 @@ export class JobRunner {
    * polling loop tested through timers is a test of the timers.
    */
   async runOnce(): Promise<boolean> {
-    const job = await jobsRepo.claimNext(this.workerDb, this.workerId);
+    /* One token per claim, not per process: every lane shares `workerId`, and a
+     * reclaimed job claimed again must be told apart from the attempt that
+     * lost it (G-10). The lease heartbeat and the completion both name it. */
+    const claimedBy = `${this.workerId}:${randomUUID()}`;
+    const job = await jobsRepo.claimNext(this.workerDb, claimedBy);
     if (!job) return false;
 
     const handler = this.handlers.get(job.kind);
     if (!handler) {
-      await jobsRepo.markFailed(
-        this.workerDb,
-        { ...job, attempts: job.maxAttempts },
-        new UnknownJobKind(job.kind).message,
-      );
-      this.log.error(`no handler for job kind "${job.kind}" — marked dead`);
+      await this.retireUnknownKind(job, claimedBy);
       return true;
     }
 
-    try {
-      /**
-       * The handler's writes and the job's completion are one transaction.
-       *
-       * Split into two, a worker that dies in between leaves a job that
-       * already did its work looking claimable — and the second run would
-       * issue a second document, send a second WhatsApp message, or post a
-       * second set of ledger entries. Committing them together makes "did this
-       * job run?" a question the database answers.
-       */
-      await withBusiness(this.appDb, job.businessId, async (tx) => {
-        await handler({
-          tx,
-          jobId: job.id,
-          businessId: job.businessId,
-          payload: job.payload,
-          attempt: job.attempts,
-          maxAttempts: job.maxAttempts,
+    /* Renew the lease while the handler runs, so a long-running job is not
+     * mistaken for one a crashed worker abandoned (G-10). A third of the
+     * stall window leaves room for two missed beats. It runs on the worker
+     * pool, tenant-pinned: handlers hold application-pool connections, and a
+     * heartbeat queued behind them would stop beating exactly when handlers
+     * are busiest. */
+    const heartbeat = setInterval(
+      () => {
+        withBusiness(this.workerDb, job.businessId, (tx) =>
+          jobsRepo.touch(tx, job.id, claimedBy),
+        ).catch((error: unknown) => {
+          this.log.warn(`job lease renewal failed: ${redactForLog(describeFailure(error))}`);
         });
-        await jobsRepo.markDone(tx, job.id);
-      });
-    } catch (error) {
-      if (error instanceof JobDeferred) {
-        // Stepping aside, not failing: back in the queue, attempt refunded.
-        await jobsRepo.deferClaimed(this.workerDb, job.id, error.delayMs);
-        return true;
+      },
+      Math.max(10, Math.floor(this.stalledAfterMs / 3)),
+    );
+    heartbeat.unref();
+    try {
+      try {
+        /**
+         * The handler's writes and the job's completion are one transaction.
+         *
+         * Split into two, a worker that dies in between leaves a job that
+         * already did its work looking claimable — and the second run would
+         * issue a second document, send a second WhatsApp message, or post a
+         * second set of ledger entries. Committing them together makes "did this
+         * job run?" a question the database answers.
+         */
+        await withBusiness(this.appDb, job.businessId, async (tx) => {
+          await handler({
+            tx,
+            jobId: job.id,
+            businessId: job.businessId,
+            payload: job.payload,
+            attempt: job.attempts,
+            maxAttempts: job.maxAttempts,
+          });
+          await jobsRepo.markDone(tx, job.id, claimedBy);
+        });
+      } catch (error) {
+        if (error instanceof jobsRepo.JobLeaseLost) {
+          /* Another claim owns the job and this attempt's transaction already
+           * rolled back, so nothing it wrote survives. Recording a failure here
+           * would be a no-op under the fence and a false "will retry" in the
+           * logs; it is simply discarded (G-10). */
+          this.log.warn(`job ${job.kind} ${job.id} lost its lease; attempt discarded`);
+          return true;
+        }
+        if (error instanceof JobDeferred) {
+          // Stepping aside, not failing: back in the queue, attempt refunded.
+          await jobsRepo.deferClaimed(this.workerDb, job.id, error.delayMs, claimedBy);
+          return true;
+        }
+        // The transaction above rolled back, so nothing the handler wrote
+        // survives. Recording the failure therefore has to happen on a
+        // connection that is still usable — the worker's.
+        const message = redactForLog(describeFailure(error));
+        const outcome = await jobsRepo.markFailed(
+          this.workerDb,
+          job,
+          message,
+          undefined,
+          claimedBy,
+        );
+        if (outcome.state === 'lost') {
+          this.log.warn(`job ${job.kind} ${job.id} lost its lease; attempt discarded`);
+          return true;
+        }
+        if (outcome.state === 'dead') {
+          this.log.error(`job ${job.kind} exhausted ${job.maxAttempts} attempts: ${message}`);
+        } else {
+          this.log.warn(
+            `job ${job.kind} failed on attempt ${job.attempts}, will retry: ${message}`,
+          );
+        }
       }
-      // The transaction above rolled back, so nothing the handler wrote
-      // survives. Recording the failure therefore has to happen on a
-      // connection that is still usable — the worker's.
-      const message = redactForLog(describeFailure(error));
-      const outcome = await jobsRepo.markFailed(this.workerDb, job, message);
-      if (outcome.state === 'dead') {
-        this.log.error(`job ${job.kind} exhausted ${job.maxAttempts} attempts: ${message}`);
-      } else {
-        this.log.warn(`job ${job.kind} failed on attempt ${job.attempts}, will retry: ${message}`);
-      }
+    } finally {
+      clearInterval(heartbeat);
     }
     return true;
+  }
+
+  /** No handler will ever exist for this claim: dead at once, unless it was lost. */
+  private async retireUnknownKind(job: jobsRepo.ClaimedJob, claimedBy: string): Promise<void> {
+    const outcome = await jobsRepo.markFailed(
+      this.workerDb,
+      { ...job, attempts: job.maxAttempts },
+      new UnknownJobKind(job.kind).message,
+      undefined,
+      claimedBy,
+    );
+    if (outcome.state === 'lost') {
+      this.log.warn(`job ${job.kind} ${job.id} lost its lease; attempt discarded`);
+      return;
+    }
+    this.log.error(`no handler for job kind "${job.kind}" — marked dead`);
   }
 
   /** Requeue jobs whose worker died mid-run. */
@@ -179,9 +238,28 @@ export class JobRunner {
   start(): void {
     if (this.running) return;
     this.running = true;
-    /* Loop 0 is the only one that reclaims stalled jobs, so N loops do not
-     * multiply the reclaim sweeps. */
-    this.loops = Array.from({ length: this.concurrency }, (_, i) => this.poll(i === 0));
+    this.loops = Array.from({ length: this.concurrency }, () => this.poll());
+    /* Reclaim has its own clock (G-10). Hung off a processing lane, it stopped
+     * the moment that lane sat in a slow handler, and never ran at all while
+     * the queue stayed busy. One timer per runner, so N lanes do not multiply
+     * the sweeps. */
+    const reclaimPass = (): void => {
+      if (!this.running || this.reclaimInFlight) return;
+      const pass = this.reclaim()
+        .then(() => undefined)
+        .catch((error: unknown) => {
+          this.log.warn(`job reclaim failed: ${redactForLog(describeFailure(error))}`);
+        })
+        .finally(() => {
+          if (this.reclaimInFlight === pass) this.reclaimInFlight = null;
+        });
+      this.reclaimInFlight = pass;
+    };
+    /* Once at start too: a worker restarted more often than the stall window
+     * would otherwise never reclaim what its predecessor left behind. */
+    reclaimPass();
+    this.reclaimTimer = setInterval(reclaimPass, this.stalledAfterMs);
+    this.reclaimTimer.unref();
     this.log.log(
       `job runner started as ${this.workerId}` +
         (this.concurrency > 1 ? ` with ${this.concurrency} lanes` : ''),
@@ -190,25 +268,20 @@ export class JobRunner {
 
   async stop(): Promise<void> {
     this.running = false;
+    if (this.reclaimTimer) clearInterval(this.reclaimTimer);
+    this.reclaimTimer = null;
     await Promise.all(this.loops);
     this.loops = [];
+    await this.reclaimInFlight;
   }
 
-  private async poll(reclaims = true): Promise<void> {
-    let sinceReclaim = 0;
+  private async poll(): Promise<void> {
     while (this.running) {
       try {
         // Drains what is due before sleeping, so a burst is not paced at one
         // job per idle interval.
         const worked = await this.runOnce();
-        if (!worked) {
-          sinceReclaim += this.idleMs;
-          if (reclaims && sinceReclaim >= this.stalledAfterMs) {
-            sinceReclaim = 0;
-            await this.reclaim();
-          }
-          await sleep(this.idleMs);
-        }
+        if (!worked) await sleep(this.idleMs);
       } catch (error) {
         /**
          * The loop outlives its errors. A failure here is the queue itself
