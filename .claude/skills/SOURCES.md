@@ -109,5 +109,10 @@ settled by these rules, which win over any vendored text:
 6. **Taste's `scripts/assets.mjs`** (stock-image fetch) is never run on Rekoda
    work. `inspect.mjs` and `draw.mjs` start a local Chrome only when an agent
    runs them; point `inspect.mjs` only at a local or test-data build, never at
-   a page holding real merchant data. The `.taste-skill/` output directory is
-   git-ignored.
+   a page holding real merchant data. For a local file its preview server
+   serves the current working directory when the file is inside it, otherwise
+   the file's own directory (`inspect.mjs:49`), and the page's scripts can
+   read anything served: copy the built page into a directory of its own and
+   run the inspector from there, never from the repository root or anywhere
+   that holds `.env` files or credentials. The `.taste-skill/` output
+   directory is git-ignored.
