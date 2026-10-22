@@ -35,6 +35,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildRunner, type RunnerDeps } from '../jobs/jobs.module.js';
+import { deliveryStatusHandler } from '../jobs/delivery-status.handler.js';
 import {
   billingRepo,
   customersRepo,
@@ -10036,6 +10037,116 @@ describe('a preview has a time limit (G-23)', () => {
     await drain();
     expect(await previewFlags(ada.id)).toEqual([{ previewed: true, linked: false }]);
     expect(await previewFlags(bisi.id)).toEqual([{ previewed: false, linked: false }]);
+  });
+
+  const jobsOf = async (businessId: string) => {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ id: string; kind: string; state: string; attempts: number }>(sql`
+        SELECT id, kind, state, attempts FROM jobs
+         WHERE business_id = ${businessId}::uuid ORDER BY created_at, id`),
+    );
+    return [...rows];
+  };
+  const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  /** A promise that settles, or says it did not within `ms`. */
+  const within = <T>(ms: number, work: Promise<T>) =>
+    Promise.race([
+      work,
+      pause(ms).then(() => {
+        throw new Error(`still waiting after ${ms} ms`);
+      }),
+    ]);
+
+  /* Independent review N1 and N3: the receipt can arrive while the inbound
+   * job that sent the preview has not committed (its reply row invisible).
+   * The receipt job then steps back rather than block a lane on the lock,
+   * and once the sender commits it finds the preview. */
+  it('a receipt processed before the preview job commits steps back, then finds it (G-20)', async () => {
+    const business = await seedMerchant();
+    const wamid = 'wamid.G20-uncommitted-out';
+    await withBusiness(db, business.id, async (tx) => {
+      /* What the inbound job holds until it commits. */
+      await jobsRepo.serializeBusiness(tx, business.id, 'inbound');
+      const message = await conversationsRepo.recordInbound(tx, {
+        businessId: business.id,
+        channel: 'meta',
+        kind: 'text',
+        body: 'bought fuel 20k cash',
+        providerMessageId: 'wamid.G20-uncommitted-in',
+      });
+      await conversationsRepo.recordDraft(tx, {
+        businessId: business.id,
+        conversationMessageId: message.id,
+        intent: 'RecordExpense',
+        command: AN_EXPENSE,
+        model: null,
+        previewed: true,
+      });
+      const reply = await conversationsRepo.recordOutbound(tx, {
+        businessId: business.id,
+        channel: 'meta',
+        kind: 'text',
+        body: 'Please check this before I save it',
+        replyToMessageId: message.id,
+      });
+      await conversationsRepo.markOutboundSent(tx, reply.id, wamid);
+
+      /* WhatsApp's failure beats the commit. */
+      await receipt('2348031234567', wamid, 'failed');
+      const runner = buildRunner(workerDb, db, deps);
+      expect(await within(3_000, runner.runOnce())).toBe(true);
+      expect(await jobsOf(business.id)).toMatchObject([
+        { kind: 'delivery.status', state: 'pending', attempts: 0 },
+      ]);
+    });
+    expect(await previewFlags(business.id)).toEqual([{ previewed: true, linked: false }]);
+
+    await pause(600);
+    await drain();
+    expect(await previewFlags(business.id)).toEqual([{ previewed: false, linked: false }]);
+    expect(await jobsOf(business.id)).toMatchObject([{ kind: 'delivery.status', state: 'done' }]);
+  });
+
+  /* Independent review N2: a receipt job that cannot finish must not leave
+   * its event unprocessed forever (a stale-backlog alert nobody can clear,
+   * absent from the exception queue). On its last attempt the failure is
+   * recorded on the event instead, where the exception queue shows it. */
+  it('a receipt that cannot be applied lands on the exception queue on its last attempt (G-20)', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G20-dies', AN_EXPENSE, 'bought fuel 20k cash');
+    const wamid = lastWamid();
+    await receipt('2348031234567', wamid, 'failed');
+    const claimed = await jobsRepo.claimNext(workerDb, 'lane-dies');
+    expect(claimed?.kind).toBe('delivery.status');
+    const failing = deliveryStatusHandler({
+      markPreviewUndelivered: () => Promise.reject(new Error('database went away')),
+    });
+    const run = (attempt: number) => (tx: Parameters<typeof failing>[0]['tx']) =>
+      failing({
+        tx,
+        jobId: claimed!.id,
+        businessId: business.id,
+        payload: claimed!.payload,
+        attempt,
+        maxAttempts: 5,
+      });
+
+    /* Before the last attempt: an ordinary failure, retried by the runner. */
+    await expect(withBusiness(db, business.id, run(1))).rejects.toThrow('database went away');
+    /* The last: recorded, not thrown. */
+    await withBusiness(db, business.id, run(5));
+    const event = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ processed: boolean; error: string | null }>(sql`
+        SELECT processed_at IS NOT NULL AS processed, error FROM external_events
+         WHERE external_id = ${`${wamid}:failed`}`),
+    );
+    expect([...event]).toEqual([
+      { processed: true, error: 'delivery status not applied: database went away' },
+    ]);
+    const queue = await events.exceptionQueue(workerDb);
+    expect(queue.flagged.map((e) => e.eventType)).toContain('status.failed');
+    /* The draft is as it was: nothing half-applied. */
+    expect(await previewFlags(business.id)).toEqual([{ previewed: true, linked: false }]);
   });
 
   it('a preview re-sent after its job rolled back is pointed at, never confirmed by the earlier yes', async () => {
