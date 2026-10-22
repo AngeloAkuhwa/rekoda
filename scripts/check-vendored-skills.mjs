@@ -15,8 +15,9 @@
  *
  * The hash is the `skills@1.7.4` installer's: SHA-256 over the folder's
  * files sorted by relative path (`localeCompare`), feeding each path and then
- * its bytes, skipping `.git` and `node_modules`. Only tracked files count, so
- * the check proves what is committed, not what happens to be on disk.
+ * its bytes, skipping `.git` and `node_modules`. The hashes cover tracked files
+ * only, so they prove what is committed; the ignore check also looks at files on
+ * disk, which is what `git add` would silently drop.
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -115,7 +116,7 @@ export function problemsIn(root) {
       .map((parts) => parts[0]),
   );
   for (const dir of skillDirs) {
-    if (dir !== '_licenses' && !(dir in expected)) {
+    if (dir !== '_licenses' && !Object.hasOwn(expected, dir)) {
       problems.push(
         `${SKILLS_DIR}/${dir}/ has no recorded hash in skills-lock.json or IMPECCABLE_HASH`,
       );
