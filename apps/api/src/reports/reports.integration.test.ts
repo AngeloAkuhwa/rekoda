@@ -3759,7 +3759,11 @@ describe('purchase orders, and what receiving one does', () => {
     let seq = 0;
 
     /** A chat purchase preview of the PO's total, waiting for a yes. */
-    async function chatPreview(businessId: string, reference: string | null = null) {
+    async function chatPreview(
+      businessId: string,
+      reference: string | null = null,
+      separateFrom: string | null = null,
+    ) {
       seq += 1;
       return withBusiness(db, businessId, async (tx) => {
         const message = await conversationsRepo.recordInbound(tx, {
@@ -3786,9 +3790,47 @@ describe('purchase orders, and what receiving one does', () => {
           },
           model: null,
           previewed: true,
+          separateFrom,
         });
         return draft.id;
       });
+    }
+
+    /**
+     * A second genuine Chat purchase of the same total, as the merchant's
+     * "separate" answer leaves it: a held question naming `others`, and a
+     * fresh preview declared separate from exactly those. Since OWN-32
+     * (G-92(5)) a different reference no longer sets two purchases apart.
+     */
+    async function chatBookedSeparate(businessId: string, others: readonly string[]) {
+      const heldId = await withBusiness(db, businessId, async (tx) => {
+        seq += 1;
+        const message = await conversationsRepo.recordInbound(tx, {
+          businessId,
+          channel: 'meta',
+          kind: 'text',
+          body: 'a purchase',
+          providerMessageId: `wamid.g89-${businessId}-${seq}`,
+        });
+        const held = await conversationsRepo.recordDraft(tx, {
+          businessId,
+          conversationMessageId: message.id,
+          intent: 'RecordPurchase',
+          command: { intent: 'RecordPurchase', amount: PO_TOTAL_K / 100 },
+          model: null,
+          previewed: false,
+          held: true,
+        });
+        await conversationsRepo.nameHeldRecords(
+          tx,
+          businessId,
+          held.id,
+          others.map((expenseId) => ({ draftId: null, expenseId })),
+        );
+        return held.id;
+      });
+      const draftId = await chatPreview(businessId, null, heldId);
+      return (await chatYes(db, businessId, draftId)).expenseId;
     }
 
     /** The yes on a chat preview: the purchase work, exactly as chat runs it. */
@@ -3969,10 +4011,10 @@ describe('purchase orders, and what receiving one does', () => {
 
     it('SAME naming a different purchase than the PO is linked to fails safe', async () => {
       const { auth, businessId } = await onboard('+2348177000502');
-      /* Two genuine Chat purchases of one total, proven separate by their
-       * different invoice numbers: the PO, with no reference, may be either. */
+      /* Two genuine Chat purchases of one total, the second declared separate
+       * by the merchant: the PO, with no reference, may be either. */
       const first = await chatBooked(businessId, 'invoice 1001');
-      const second = await chatBooked(businessId, 'invoice 1002');
+      const second = await chatBookedSeparate(businessId, [first]);
       const poNumber = await openPo(auth);
 
       const asked = await receive(auth, { poNumber, paidK: 0 });
@@ -4068,7 +4110,7 @@ describe('purchase orders, and what receiving one does', () => {
         matches: [{ expenseId: first }],
       });
 
-      const second = await chatBooked(businessId, 'invoice 5502');
+      const second = await chatBookedSeparate(businessId, [first]);
       expect(await receive(auth, { poNumber, paidK: 0, separateFrom: [first] })).toMatchObject({
         outcome: 'possible_duplicate',
         matches: [{ expenseId: second }],

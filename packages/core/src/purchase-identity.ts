@@ -13,8 +13,11 @@
  *  D3  Two purchases of the same total (integer kobo) inside the window are
  *      PROVEN SEPARATE, with no question, only by a strong structured
  *      difference carried by BOTH sides. Refined by the owner on 2 Oct 2026:
- *      AN AUTO-CREATED ENTITY IS NOT A CONFIRMED IDENTITY.
- *        - Different explicit supplier document references prove it.
+ *      AN AUTO-CREATED ENTITY IS NOT A CONFIRMED IDENTITY. Revised on
+ *      22 Oct 2026 (OWN-32, G-92(5)):
+ *        - Different document references, even of the same kind, NEVER
+ *          prove it: a misread digit, or a supplier receipt and a POS slip
+ *          for one purchase, carry different numbers. They are asked about.
  *        - Different products prove it ONLY when both identities are
  *          trusted: linked to a stable catalogue id (`external_catalogue_id`).
  *          A product row made from chat never counts, however old.
@@ -153,9 +156,9 @@ const kindOfWord = (token: string): ReferenceKind | undefined =>
  *    "receipt", "waybill", "PO", "ref", "No."), a "#", or upper-case
  *    letters written into the number ("EMK-0041"). Bare digits are in doubt.
  *  - The kind comes from the word ("invoice 2231" is an invoice); a "#", a
- *    generic word or a letter prefix is kind OTHER, which never proves two
- *    purchases separate, because its letters are never stored and so two
- *    prefixes cannot be told apart.
+ *    generic word or a letter prefix is kind OTHER, whose letters are never
+ *    stored. No reference of any kind proves two purchases separate since
+ *    OWN-32 (G-92(5)).
  *  - The number is ONE run of digits; two runs however joined
  *    ("INV 2231/2232", "EMK-00-41", "INV/2026/114") are in doubt.
  *  - Never a reference: an amount ("100k", "NGN150K", "125,000.00"), the
@@ -391,26 +394,16 @@ export function purchaseTotalK(command: unknown): number | null {
 }
 
 /**
- * Do two NORMALISED references prove two purchases different? Only when both
- * name the SAME KIND of document (invoice with invoice, receipt with
- * receipt) with different numbers: an invoice and the receipt for one
- * purchase carry different numbers. A reference of kind OTHER never proves
- * it (fresh review of #262).
- */
-export function referencesProveSeparate(a: string | null, b: string | null): boolean {
-  if (!a || !b) return false;
-  const kindOf = (r: string) => r.slice(0, r.indexOf(':'));
-  return kindOf(a) === kindOf(b) && kindOf(a) !== 'OTHER' && a !== b;
-}
-
-/**
- * D3 (refined): are these two purchases PROVEN to be different ones? Only a
- * different stated reference, or two different TRUSTED products.
+ * D3 (revised by OWN-32): are these two purchases PROVEN to be different
+ * ones? Only two different TRUSTED products. References are never proof:
+ * different numbers of one kind were proof until 22 Oct 2026 (OWN-21 D3),
+ * and booked one purchase twice on a misread digit or two documents of one
+ * purchase (G-92(5)). They are still stored, shown and billed.
  */
 export function provenSeparate(a: PurchaseFacts, b: PurchaseFacts): boolean {
-  if (referencesProveSeparate(a.reference, b.reference)) return true;
-  if (a.product?.trusted && b.product?.trusted && a.product.id !== b.product.id) return true;
-  return false;
+  return (
+    a.product?.trusted === true && b.product?.trusted === true && a.product.id !== b.product.id
+  );
 }
 
 /**
@@ -495,8 +488,9 @@ export function purchaseIdentityVerdict(
 } {
   const own = matches.filter((m) => m.state === 'pending' && ownerOf(m, actorId) === 'you');
   /* One own waiting preview is replaced. Two or more coexist only because
-   * something proved them separate, so a resend that matches several is
-   * asked about, never allowed to replace them all (Codex review). */
+   * something set them apart (a "separate" answer, two trusted products) or
+   * were left from before OWN-32, so a resend that matches several is asked
+   * about, never allowed to replace them all (Codex review). */
   const replace = own.length === 1 ? own : [];
   const asked = matches.filter((m) => !replace.includes(m));
   return { replace, asked, ask: asked[0] ?? null };

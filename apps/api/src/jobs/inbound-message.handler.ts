@@ -3396,9 +3396,9 @@ async function answerFundingSource(
  * booked (G-81, OD-23)? The facts are read from SQL and decided in core
  * (`purchaseMatches`): the same total (integer kobo), a waiting preview or
  * a purchase booked in the last 24 hours, and nothing that PROVES them
- * separate (a different stated supplier reference, or two different
- * catalogue-linked products: owner ruling D3). Suppliers, quantity, raw
- * names and wording are never proof. Read-only; the caller decides what to
+ * separate (two different catalogue-linked products: owner ruling D3).
+ * Suppliers, quantity, raw names, wording and, since OWN-32 (G-92(5)),
+ * document references are never proof. Read-only; the caller decides what to
  * write. Null for a command that is not a readable purchase.
  *
  * Records are read by message ORDER, never by mixing the webhook's clock
@@ -3477,11 +3477,11 @@ async function purchaseIdentityCheck(
     }
   }
   /* The sender's own undelivered drafts are compared exactly as any other
-   * record (references, products, a "separate" answer's line), and one is
+   * record (trusted products, a "separate" answer's line), and one is
    * replaced only when it is the SINGLE own draft that may be this purchase
    * and no waiting preview of theirs is being replaced already: two or more
-   * coexist only because something proved them separate (final-head review
-   * of ffb5404). Otherwise they are left as they are, and the purchase work
+   * coexist only because something set them apart, or were left from before
+   * OWN-32 (final-head review of ffb5404). Otherwise they are left as they are, and the purchase work
    * at the yes still refuses a second booking. */
   const unseenRecords = input.actorId
     ? await purchaseIdentityRepo.unseenOwnPurchaseDrafts(tx, businessId, amountK, {
@@ -3826,8 +3826,8 @@ async function answerPurchaseIdentity(
  * What every NEW financial preview does once recorded (G-68, kept as Build 7
  * wrote it, and shared with the "separate" answer since G-81): the SAME
  * member's pending funding-answer rebuild of the same total is superseded
- * and the reply says so (a different total, or references that prove two
- * purchases since G-81, leaves it waiting, and the reply says that too); never across members, never for a rebuild with no
+ * and the reply says so (a different total leaves it waiting, and the reply
+ * says that too; references never set it apart since OWN-32); never across members, never for a rebuild with no
  * recorded requester. And every older retired purchase question is closed,
  * with every member's short answer to it, so nobody can rebuild it into a
  * second preview of the same purchase.
@@ -5117,8 +5117,8 @@ async function interpretedReply(
    * purchase. And the SAME member's pending rebuilt preview of the same
    * TOTAL (integer kobo) is superseded, so their two yeses cannot book one
    * purchase twice, and the reply ALWAYS says so (final-head review); a
-   * different total, or references that prove two purchases (G-81), leaves
-   * it waiting, and the reply says that too. Never across members, and never for a rebuild with no recorded requester. */
+   * different total leaves it waiting, and the reply says that too
+   * (references never set it apart since OWN-32). Never across members, and never for a rebuild with no recorded requester. */
   if (answered.previewed === true && draft.isNew && !holding) {
     shown = await afterNewPreview(tx, businessId, draft.id, command, actorId, shown, outcome);
   }
