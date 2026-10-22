@@ -172,7 +172,12 @@ export async function hasEarlierLiveJob(tx: TenantDb, jobId: string): Promise<bo
  * The claim already incremented `attempts`, so this hands the increment back.
  * The short delay keeps the retry from racing the very job it deferred to.
  */
-export async function deferClaimed(db: Db, jobId: string, delayMs = 500): Promise<void> {
+export async function deferClaimed(
+  db: Db,
+  jobId: string,
+  delayMs = 500,
+  claimedBy?: string,
+): Promise<void> {
   await db.execute(sql`
     UPDATE jobs SET
       state      = 'pending',
@@ -182,6 +187,7 @@ export async function deferClaimed(db: Db, jobId: string, delayMs = 500): Promis
       locked_by  = NULL,
       updated_at = now()
     WHERE id = ${jobId}::uuid AND state = 'running'
+      AND (${claimedBy ?? null}::text IS NULL OR locked_by = ${claimedBy ?? null})
   `);
 }
 
@@ -272,11 +278,28 @@ export async function claimNext(db: Db, workerId: string): Promise<ClaimedJob | 
  * together. A worker that dies between "wrote the ledger entries" and "marked
  * it done" would otherwise re-run the handler on a job that already succeeded.
  */
-export async function markDone(tx: TenantDb, id: string): Promise<void> {
-  await tx
+export async function markDone(tx: TenantDb, id: string, claimedBy?: string): Promise<void> {
+  const rows = await tx
     .update(jobs)
     .set({ state: 'done', lockedAt: null, lockedBy: null, updatedAt: new Date() })
-    .where(eq(jobs.id, id));
+    .where(
+      claimedBy === undefined
+        ? eq(jobs.id, id)
+        : and(eq(jobs.id, id), eq(jobs.state, 'running'), eq(jobs.lockedBy, claimedBy)),
+    )
+    .returning({ id: jobs.id });
+  /* Fenced completion (G-10): when the caller names its claim and the row is
+   * no longer held under it (reclaimed and claimed again while this attempt
+   * was still running), committing would let two attempts both finish their
+   * effects. Throwing rolls the handler's transaction back with it. */
+  if (claimedBy !== undefined && rows.length === 0) throw new JobLeaseLost(id);
+}
+
+/** This attempt no longer owns the job; its work must not commit. */
+export class JobLeaseLost extends Error {
+  constructor(readonly jobId: string) {
+    super(`job ${jobId} was reclaimed while this attempt was still running`);
+  }
 }
 
 /**
@@ -314,6 +337,7 @@ export async function markFailed(
   job: Pick<ClaimedJob, 'id' | 'attempts' | 'maxAttempts'>,
   error: string,
   delayMs = backoffMs(job.attempts),
+  claimedBy?: string,
 ): Promise<{ state: 'pending' | 'dead' }> {
   const exhausted = job.attempts >= job.maxAttempts;
   const state = exhausted ? 'dead' : 'pending';
@@ -326,6 +350,7 @@ export async function markFailed(
       last_error = ${error},
       updated_at = now()
     WHERE id = ${job.id}::uuid
+      AND (${claimedBy ?? null}::text IS NULL OR locked_by = ${claimedBy ?? null})
   `);
   return { state };
 }

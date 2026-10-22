@@ -420,6 +420,71 @@ describe('a long-running handler keeps its lease (G-10)', () => {
   });
 });
 
+describe('an attempt that lost its job cannot commit (G-10)', () => {
+  /**
+   * A job reclaimed and claimed again while its first attempt is still
+   * running has two live attempts. Only the one holding the claim may finish:
+   * the other's completion fails, its transaction rolls back with every write
+   * the handler made, and the live attempt's state is left alone.
+   */
+  it('rolls back a stale attempt and leaves the new claim intact', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348050000001');
+    await enqueue(ada, 'test.stale');
+
+    const runner = new JobRunner(workerDb, appDb);
+    runner.register('test.stale', async ({ tx, businessId }) => {
+      await tx.insert(schema.products).values({ businessId, name: 'duplicate', unitPriceK: 1 });
+      // While this attempt runs, the job is reclaimed and taken by someone else.
+      await jobsRepo.reclaimStalled(workerDb, 0);
+      const taken = await jobsRepo.claimNext(workerDb, 'the-new-owner');
+      expect(taken?.kind).toBe('test.stale');
+    });
+
+    expect(await runner.runOnce()).toBe(true);
+
+    // The stale attempt's write did not commit...
+    expect(await productsOf(ada)).toHaveLength(0);
+    // ...and it did not clobber the new owner's claim.
+    const [job] = await jobsOf(ada);
+    expect(job).toMatchObject({ state: 'running', attempts: 2 });
+  });
+});
+
+describe('reclaim does not depend on a free lane (G-10)', () => {
+  it('requeues an abandoned job while the only lane sits in a slow handler', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348050000001');
+    await enqueue(ada, 'test.abandoned');
+    const abandoned = await jobsRepo.claimNext(workerDb, 'dead-worker');
+    expect(abandoned?.kind).toBe('test.abandoned');
+    await enqueue(ada, 'test.hang');
+
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const runner = new JobRunner(workerDb, appDb, { idleMs: 10, stalledAfterMs: 150 });
+    runner.register('test.hang', async () => {
+      await gate;
+    });
+    runner.register('test.abandoned', async () => {});
+
+    runner.start();
+    try {
+      const deadline = Date.now() + 5_000;
+      for (;;) {
+        const rows = await jobsOf(ada);
+        const row = rows.find((j) => j.kind === 'test.abandoned');
+        if (row && row.state !== 'running') break;
+        if (Date.now() > deadline) throw new Error('abandoned job was never requeued');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    } finally {
+      release();
+      await runner.stop();
+    }
+  });
+});
+
 describe('the registry the application actually ships', () => {
   it('handles the inbound-message kind', async () => {
     const runner = buildRunner(workerDb, appDb, deps);

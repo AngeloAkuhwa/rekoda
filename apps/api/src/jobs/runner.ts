@@ -14,6 +14,7 @@
  * application role under a tenant pin, so a handler is exactly as constrained
  * as a request.
  */
+import { randomUUID } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import { jobsRepo, withBusiness, type Db, type TenantDb } from '@rekoda/db';
 import { redactForLog } from '@rekoda/core/privacy';
@@ -84,6 +85,7 @@ export class JobRunner {
   private readonly idleMs: number;
   private readonly stalledAfterMs: number;
   private readonly workerId: string;
+  private reclaimTimer: NodeJS.Timeout | null = null;
   private readonly concurrency: number;
   private running = false;
   private loops: Promise<void>[] = [];
@@ -114,7 +116,11 @@ export class JobRunner {
    * polling loop tested through timers is a test of the timers.
    */
   async runOnce(): Promise<boolean> {
-    const job = await jobsRepo.claimNext(this.workerDb, this.workerId);
+    /* One token per claim, not per process: every lane shares `workerId`, and a
+     * reclaimed job claimed again must be told apart from the attempt that
+     * lost it (G-10). The lease heartbeat and the completion both name it. */
+    const claimedBy = `${this.workerId}:${randomUUID()}`;
+    const job = await jobsRepo.claimNext(this.workerDb, claimedBy);
     if (!job) return false;
 
     const handler = this.handlers.get(job.kind);
@@ -123,6 +129,8 @@ export class JobRunner {
         this.workerDb,
         { ...job, attempts: job.maxAttempts },
         new UnknownJobKind(job.kind).message,
+        undefined,
+        claimedBy,
       );
       this.log.error(`no handler for job kind "${job.kind}" — marked dead`);
       return true;
@@ -133,7 +141,7 @@ export class JobRunner {
      * stall window leaves room for two missed beats. */
     const heartbeat = setInterval(
       () => {
-        jobsRepo.touch(this.workerDb, job.id, this.workerId).catch((error: unknown) => {
+        jobsRepo.touch(this.workerDb, job.id, claimedBy).catch((error: unknown) => {
           this.log.warn(`job lease renewal failed: ${redactForLog(describeFailure(error))}`);
         });
       },
@@ -160,19 +168,25 @@ export class JobRunner {
             attempt: job.attempts,
             maxAttempts: job.maxAttempts,
           });
-          await jobsRepo.markDone(tx, job.id);
+          await jobsRepo.markDone(tx, job.id, claimedBy);
         });
       } catch (error) {
         if (error instanceof JobDeferred) {
           // Stepping aside, not failing: back in the queue, attempt refunded.
-          await jobsRepo.deferClaimed(this.workerDb, job.id, error.delayMs);
+          await jobsRepo.deferClaimed(this.workerDb, job.id, error.delayMs, claimedBy);
           return true;
         }
         // The transaction above rolled back, so nothing the handler wrote
         // survives. Recording the failure therefore has to happen on a
         // connection that is still usable — the worker's.
         const message = redactForLog(describeFailure(error));
-        const outcome = await jobsRepo.markFailed(this.workerDb, job, message);
+        const outcome = await jobsRepo.markFailed(
+          this.workerDb,
+          job,
+          message,
+          undefined,
+          claimedBy,
+        );
         if (outcome.state === 'dead') {
           this.log.error(`job ${job.kind} exhausted ${job.maxAttempts} attempts: ${message}`);
         } else {
@@ -197,9 +211,17 @@ export class JobRunner {
   start(): void {
     if (this.running) return;
     this.running = true;
-    /* Loop 0 is the only one that reclaims stalled jobs, so N loops do not
-     * multiply the reclaim sweeps. */
-    this.loops = Array.from({ length: this.concurrency }, (_, i) => this.poll(i === 0));
+    this.loops = Array.from({ length: this.concurrency }, () => this.poll());
+    /* Reclaim has its own clock (G-10). Hung off a processing lane, it stopped
+     * the moment that lane sat in a slow handler, and never ran at all while
+     * the queue stayed busy. One timer per runner, so N lanes do not multiply
+     * the sweeps. */
+    this.reclaimTimer = setInterval(() => {
+      this.reclaim().catch((error: unknown) => {
+        this.log.warn(`job reclaim failed: ${redactForLog(describeFailure(error))}`);
+      });
+    }, this.stalledAfterMs);
+    this.reclaimTimer.unref();
     this.log.log(
       `job runner started as ${this.workerId}` +
         (this.concurrency > 1 ? ` with ${this.concurrency} lanes` : ''),
@@ -208,24 +230,18 @@ export class JobRunner {
 
   async stop(): Promise<void> {
     this.running = false;
+    if (this.reclaimTimer) clearInterval(this.reclaimTimer);
+    this.reclaimTimer = null;
     await Promise.all(this.loops);
     this.loops = [];
   }
 
-  private async poll(reclaims = true): Promise<void> {
-    let lastReclaimAt = Date.now();
+  private async poll(): Promise<void> {
     while (this.running) {
       try {
         // Drains what is due before sleeping, so a burst is not paced at one
         // job per idle interval.
         const worked = await this.runOnce();
-        /* Wall-clock, not idle-clock (G-10): a counter that only advanced on
-         * empty polls meant a queue that never went idle never recovered the
-         * jobs a crashed worker had abandoned. */
-        if (reclaims && Date.now() - lastReclaimAt >= this.stalledAfterMs) {
-          lastReclaimAt = Date.now();
-          await this.reclaim();
-        }
         if (!worked) await sleep(this.idleMs);
       } catch (error) {
         /**
