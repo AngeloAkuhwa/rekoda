@@ -461,11 +461,25 @@ export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
   /* ---- The workflow. ---- */
   let wf;
   let ciName;
+  let ciConcurrency;
   try {
     wf = parse(workflow);
-    ciName = parse(ci)?.name;
+    const ciWorkflow = parse(ci);
+    ciName = ciWorkflow?.name;
+    ciConcurrency = ciWorkflow?.concurrency;
   } catch (error) {
     return [...problems, `a workflow does not parse: ${error.message}`];
+  }
+  // CI on main is the evidence a deploy needs, so a later merge must not cancel it.
+  if (
+    typeof ciConcurrency?.['cancel-in-progress'] !== 'string' ||
+    !/^\$\{\{\s*github\.ref\s*!=\s*'refs\/heads\/main'\s*\}\}$/.test(
+      ciConcurrency['cancel-in-progress'],
+    )
+  ) {
+    problems.push(
+      `${FILES.ci} must never cancel a run on main (cancel-in-progress: \${{ github.ref != 'refs/heads/main' }}): a cancelled push run is no evidence for a staging deploy`,
+    );
   }
   const on = wf?.on ?? {};
   if (!isDeepStrictEqual(Object.keys(on).sort(), ['workflow_dispatch', 'workflow_run'])) {
