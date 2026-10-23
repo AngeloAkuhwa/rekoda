@@ -147,55 +147,6 @@ describe('a preview that failed after WhatsApp accepted it (G-20)', () => {
     expect((await flags(businessId, sent.draftId))?.previewed).toBe(false);
   });
 
-  it('leaves a draft that a later, separate preview reply showed again (G-20)', async () => {
-    const businessId = await seedBusiness();
-    const first = await previewed(businessId);
-    // The same draft is shown again by a later reply to a later message.
-    await withBusiness(app, businessId, async (tx) => {
-      const again = await conversationsRepo.recordInbound(tx, {
-        businessId,
-        channel: 'meta',
-        kind: 'text',
-        body: 'make it 25k',
-        providerMessageId: 'wamid.in-later',
-      });
-      const reply = await conversationsRepo.recordOutbound(tx, {
-        businessId,
-        channel: 'meta',
-        kind: 'text',
-        body: 'Please check this again',
-        replyToMessageId: again.id,
-      });
-      await conversationsRepo.markOutboundSent(tx, reply.id, 'wamid.out-later');
-    });
-    expect(await undelivered(businessId, first.wamid)).toBe(0);
-    expect((await flags(businessId, first.draftId))?.previewed).toBe(true);
-  });
-
-  it('is not shielded by a later reply that was never sent (G-20)', async () => {
-    const businessId = await seedBusiness();
-    const first = await previewed(businessId);
-    // A later reply whose send failed outright: recorded, never accepted.
-    await withBusiness(app, businessId, async (tx) => {
-      const again = await conversationsRepo.recordInbound(tx, {
-        businessId,
-        channel: 'meta',
-        kind: 'text',
-        body: 'make it 25k',
-        providerMessageId: 'wamid.in-unsent',
-      });
-      await conversationsRepo.recordOutbound(tx, {
-        businessId,
-        channel: 'meta',
-        kind: 'text',
-        body: 'never left',
-        replyToMessageId: again.id,
-      });
-    });
-    expect(await undelivered(businessId, first.wamid)).toBe(1);
-    expect((await flags(businessId, first.draftId))?.previewed).toBe(false);
-  });
-
   it('changes nothing for a reply that answered no request, or a wamid it never sent', async () => {
     const businessId = await seedBusiness();
     const unlinked = await previewed(businessId, { linked: false });

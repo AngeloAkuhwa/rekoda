@@ -1965,23 +1965,41 @@ describe('inbound messages for one business never overlap across lanes', () => {
     const stalled = await jobsRepo.claimNext(workerDb, 'stalled-lane');
     expect(stalled?.id).toBe(receiptJob.id);
 
+    const runAtOf = async () => {
+      const rows = await withBusiness(appDb, businessId, (tx) =>
+        tx.execute<{ run_at: Date; state: string; attempts: number }>(
+          sql`SELECT run_at, state, attempts FROM jobs WHERE id = ${yesJob.id}::uuid`,
+        ),
+      );
+      return [...rows][0]!;
+    };
+    const before = new Date((await runAtOf()).run_at).getTime();
+
     const runner = buildRunner(workerDb, appDb, deps, { idleMs: 20 });
     runner.start();
     try {
       await new Promise((resolve) => setTimeout(resolve, 700));
-      let seenPending = false;
-      const watchUntil = Date.now() + 3_000;
+      /* Evidence of the deferral itself, not of a job nobody claimed: the
+       * runner claims the "yes", steps back, and `deferClaimed` pushes its
+       * `run_at` forward and hands the attempt back. A job never claimed would
+       * keep its enqueue-time `run_at`. */
+      let deferred = false;
+      const watchUntil = Date.now() + 5_000;
       while (Date.now() < watchUntil) {
-        const yesNow = (await jobsOf(businessId)).find((j) => j.id === yesJob.id);
-        expect(['pending', 'running']).toContain(yesNow?.state);
-        expect(yesNow?.attempts).toBe(0);
-        if (yesNow?.state === 'pending') {
-          seenPending = true;
+        const now = await runAtOf();
+        expect(['pending', 'running']).toContain(now.state);
+        expect(now.attempts).toBeLessThanOrEqual(1);
+        if (
+          now.state === 'pending' &&
+          now.attempts === 0 &&
+          new Date(now.run_at).getTime() > before
+        ) {
+          deferred = true;
           break;
         }
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
-      expect(seenPending).toBe(true);
+      expect(deferred).toBe(true);
     } finally {
       await runner.stop();
     }
