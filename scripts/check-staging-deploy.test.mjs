@@ -582,3 +582,19 @@ test('the runbook forgetting the automation', () => {
   };
   expectProblem(problems(edit), /must document \.github\/workflows\/deploy-staging\.yml/);
 });
+
+/* ---- CI on main is never cancelled ---- */
+
+test('CI cancelling its own run on main', () => {
+  const edit = edited(
+    'ci',
+    "cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}",
+    'cancel-in-progress: true',
+  );
+  expectProblem(problems(edit), /never cancel a run on main/);
+});
+
+test('CI sharing one concurrency group across refs', () => {
+  const edit = edited('ci', 'group: ci-${{ github.ref }}', 'group: ci');
+  expectProblem(problems(edit), /per-ref group/);
+});

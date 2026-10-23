@@ -36,12 +36,15 @@ Evidence, then the gap each item leaves.
 
    The GitGuardian app also checks each push.
 
-3. **CI concurrency.** `group: ci-${{ github.ref }}` with `cancel-in-progress: true` applies to pushes
-   to `main` too. Two merges in quick succession cancel the first commit's `main` run. That commit then
-   never gets the successful push run that `deploy-staging.yml` requires. Staging still converges on the
-   newer commit, but the cancelled commit has no CI provenance of its own, and a failure on the newer
-   run blocks staging entirely. Gap: PR CI and `main` release validation share one cancellation policy
-   (PR 3).
+3. **CI concurrency.** `group: ci-${{ github.ref }}` with
+   `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}`: a superseded pull-request run is
+   cancelled, a run on `main` never is, because `deploy-staging.yml` requires a successful push run
+   for the exact commit. At most one newer `main` run waits behind a running one and GitHub drops
+   older waiting runs. If the newer run then fails, the replaced commit has no successful CI run for an
+   automatic staging deploy, so merges must stay serial (below). `scripts/check-staging-deploy.mjs`
+   fails if the group stops being per-ref or `main` can be cancelled. Merges are still taken one at a
+   time (one `main` CI run and its staging deploy finish before the next merge), so the staging deploy
+   always has a commit with its own successful run.
 4. **Dependency scanning.** Dependabot opens weekly update PRs for npm and Actions. There is no
    vulnerability gate (`pnpm audit` or equivalent) in CI (G-42).
 5. **Static security analysis.** There is no CodeQL or equivalent SAST job.
@@ -78,7 +81,7 @@ Evidence, then the gap each item leaves.
 | -------- | -------------------------------------------------------------------------------------------------------------- | ------- |
 | 1 (#303) | CodeRabbit configuration, pre-merge checks, request-changes workflow, PR template, this runbook, playbook gate | OPEN    |
 | 2        | `rekoda-pr-quality-gate`: a deterministic GitHub Actions job that verifies the exact head from the GitHub API  | PLANNED |
-| 3        | Separate PR CI from `main` release validation, so a `main` run is never cancelled; serial merge-to-staging     | PLANNED |
+| 3        | A `main` run is never cancelled (concurrency policy and guard); serial merge-to-staging stays a practice       | PR OPEN |
 | 4        | Staging smoke tests, a deployment report (SHA, migrations, disk, health) and the recovery protections          | PLANNED |
 | 5        | Documentation and autopilot integration: CLAUDE.md, CONTRIBUTING.md, readiness, handoff                        | PLANNED |
 
