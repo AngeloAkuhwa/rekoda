@@ -217,6 +217,40 @@ export async function recordInbound(
   return { id: row.id, isNew: false };
 }
 
+/**
+ * When the merchant last wrote to Rekoda's number (G-67).
+ *
+ * The 24-hour service window is opened by the RECIPIENT's message, so a
+ * proactive send to the owner asks this before choosing free-form or
+ * template. Read from the merchant thread only: a customer thread is the
+ * merchant's own WABA, whose window is `wabaRepo.serviceWindowOpen`.
+ *
+ * Messages carry no sender phone, so a delegate's message counts the same as
+ * the owner's. That can only make the window look open when the owner's is
+ * not, which the sender's own rejection (131047) then corrects.
+ */
+export async function lastMerchantInboundAt(
+  tx: TenantDb,
+  businessId: string,
+  channel: Channel = 'meta',
+): Promise<Date | null> {
+  const rows = await tx
+    .select({ at: sql<Date>`max(${conversationMessages.createdAt})` })
+    .from(conversationMessages)
+    .innerJoin(conversations, eq(conversations.id, conversationMessages.conversationId))
+    .where(
+      and(
+        eq(conversationMessages.businessId, businessId),
+        eq(conversationMessages.direction, 'inbound'),
+        eq(conversations.businessId, businessId),
+        eq(conversations.channel, channel),
+        eq(conversations.conversationKind, 'MERCHANT'),
+      ),
+    );
+  const at = rows[0]?.at;
+  return at ? new Date(at) : null;
+}
+
 export interface StoredMessage {
   id: string;
   direction: string;

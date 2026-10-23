@@ -14,6 +14,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   billingRepo,
+  conversationsRepo,
   customersRepo,
   createDb,
   events as eventsRepo,
@@ -41,6 +42,7 @@ import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
 import { ProviderUnreachable } from '../ai/transport.js';
 import { StubSender } from '../channels/sender.stub.js';
+import { SendFailed } from '../channels/sender.js';
 import { StubTextExtraction } from '../ai/ocr.stub.js';
 import { StubSpeechToText } from '../ai/stt.stub.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
@@ -2006,6 +2008,163 @@ describe('inbound messages for one business never overlap across lanes', () => {
   });
 });
 
+/**
+ * The owner last wrote to the business number `hoursAgo` hours ago (G-67): a
+ * recorded inbound message with its timestamp moved back, because the 24-hour
+ * service window is measured from it.
+ */
+let windowSeq = 0;
+async function ownerWroteHoursAgo(businessId: string, hoursAgo: number): Promise<void> {
+  windowSeq += 1;
+  await withBusiness(appDb, businessId, async (tx) => {
+    const message = await conversationsRepo.recordInbound(tx, {
+      businessId,
+      channel: 'meta',
+      kind: 'text',
+      body: 'hello',
+      providerMessageId: `wamid.window-${windowSeq}`,
+    });
+    await tx.execute(
+      sql`UPDATE conversation_messages SET created_at = now() - make_interval(hours => ${hoursAgo}) WHERE id = ${message.id}`,
+    );
+  });
+}
+
+/** A rendered quote, ready for its `document.deliver` job. */
+async function renderedQuote(businessId: string) {
+  const quote = await withBusiness(appDb, businessId, (tx) =>
+    ordersRepo.createQuote(tx, {
+      businessId,
+      customerId: null,
+      lines: [
+        {
+          productId: null,
+          name: 'Ankara bale',
+          quantity: 2,
+          unitPriceK: 850_000,
+          lineTotalK: 1_700_000,
+        },
+      ],
+      totalK: 1_700_000,
+      validUntil: '2026-09-30',
+      clientRef: null,
+      sourceId: 'test',
+    }),
+  );
+  await enqueue(businessId, 'document.render', {
+    quoteId: quote.id,
+    customerToken: 'CUSTOMER_7K2',
+  });
+  const runner = buildRunner(workerDb, appDb, deps);
+  expect(await runner.runOnce()).toBe(true); // render
+  return { quote, runner };
+}
+
+async function deliveryJob(businessId: string) {
+  return withBusiness(appDb, businessId, async (tx) => {
+    const [job] = await tx.execute<{ state: string; attempts: number }>(sql`
+      SELECT state, attempts FROM jobs
+       WHERE business_id = ${businessId}::uuid AND kind = 'document.deliver'
+       ORDER BY created_at DESC LIMIT 1`);
+    return job;
+  });
+}
+
+describe('a document sent outside the 24-hour service window (G-67)', () => {
+  beforeEach(() => stubSender.reset());
+
+  it('sends the PDF while the owner wrote within the last 24 hours', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348177000601');
+    await ownerWroteHoursAgo(businessId, 23);
+    const { quote, runner } = await renderedQuote(businessId);
+    expect(await runner.runOnce()).toBe(true); // deliver
+    expect(stubSender.documents.map((d) => d.filename)).toEqual([`${quote.orderNumber}.pdf`]);
+    expect(stubSender.documentNotices).toHaveLength(0);
+    expect(await deliveryJob(businessId)).toMatchObject({ state: 'done' });
+  });
+
+  it('sends the template notice instead of the PDF when the owner last wrote 25 hours ago', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348177000602');
+    await ownerWroteHoursAgo(businessId, 25);
+    const { quote, runner } = await renderedQuote(businessId);
+    expect(await runner.runOnce()).toBe(true); // deliver
+    expect(stubSender.documents).toHaveLength(0);
+    expect(stubSender.documentNotices).toEqual([
+      { to: '+2348177000602', documentLabel: 'quote', reference: quote.orderNumber },
+    ]);
+    /* Finished, not failed: the owner has been told, and "resend" delivers it. */
+    expect(await deliveryJob(businessId)).toMatchObject({ state: 'done', attempts: 1 });
+    /* It is the conversation history, and a utility template Rekoda pays for. */
+    const [recorded] = await withBusiness(appDb, businessId, (tx) =>
+      tx.execute<{ body: string; sent: number }>(sql`
+        SELECT body, (SELECT count(*) FROM usage_events
+                       WHERE business_id = ${businessId}::uuid AND usage_type = 'UTILITY_TEMPLATE')::int AS sent
+          FROM conversation_messages
+         WHERE business_id = ${businessId}::uuid AND direction = 'outbound'`),
+    );
+    expect(recorded?.body).toContain(quote.orderNumber);
+    expect(recorded?.body).toMatch(/resend/i);
+    expect(recorded?.sent).toBe(1);
+  });
+
+  it('treats an owner who never wrote as outside the window', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348177000603');
+    const { runner } = await renderedQuote(businessId);
+    expect(await runner.runOnce()).toBe(true);
+    expect(stubSender.documents).toHaveLength(0);
+    expect(stubSender.documentNotices).toHaveLength(1);
+  });
+
+  it('falls back to the notice when Meta rejects a send the clock thought was open (131047)', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348177000604');
+    await ownerWroteHoursAgo(businessId, 1);
+    stubSender.failDocumentsWith(new SendFailed('outside the window', 131047));
+    const { runner } = await renderedQuote(businessId);
+    expect(await runner.runOnce()).toBe(true);
+    expect(stubSender.documents).toHaveLength(0);
+    expect(stubSender.documentNotices).toHaveLength(1);
+    expect(await deliveryJob(businessId)).toMatchObject({ state: 'done' });
+  });
+
+  it('keeps retrying any other send failure inside the window, with no notice', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348177000605');
+    await ownerWroteHoursAgo(businessId, 1);
+    stubSender.failDocumentsWith(new SendFailed('meta outage'));
+    const { runner } = await renderedQuote(businessId);
+    expect(await runner.runOnce()).toBe(true);
+    expect(stubSender.documentNotices).toHaveLength(0);
+    expect(await deliveryJob(businessId)).toMatchObject({ state: 'pending', attempts: 1 });
+  });
+
+  it('stays retryable, and visible, when the notice itself cannot be sent', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348177000606');
+    await ownerWroteHoursAgo(businessId, 30);
+    stubSender.failWith(new SendFailed('no document template configured'));
+    const { runner } = await renderedQuote(businessId);
+    expect(await runner.runOnce()).toBe(true);
+    expect(stubSender.documents).toHaveLength(0);
+    expect(await deliveryJob(businessId)).toMatchObject({ state: 'pending', attempts: 1 });
+  });
+
+  it('delivers the PDF to an owner who replied resend, even past 24 hours since their earlier message', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348177000607');
+    await ownerWroteHoursAgo(businessId, 40);
+    const { runner } = await renderedQuote(businessId);
+    expect(await runner.runOnce()).toBe(true); // notice, window closed
+    expect(stubSender.documentNotices).toHaveLength(1);
+    await ownerWroteHoursAgo(businessId, 0); // "resend" opens a fresh window
+    const [doc] = await withBusiness(appDb, businessId, (tx) =>
+      issueRepo.documentsFor(tx, businessId),
+    );
+    await enqueue(businessId, 'document.deliver', {
+      documentId: doc!.id,
+      requestedByMerchant: true,
+    });
+    expect(await runner.runOnce()).toBe(true);
+    expect(stubSender.documents).toHaveLength(1);
+  });
+});
+
 describe('a quote becomes paper', () => {
   beforeEach(() => stubSender.reset());
 
@@ -2035,6 +2194,8 @@ describe('a quote becomes paper', () => {
         sourceId: 'test',
       }),
     );
+    /* The merchant asked for this quote a moment ago, so the window is open. */
+    await ownerWroteHoursAgo(businessId, 0);
     /* The payload the controller enqueues: the id, and the label the PDF
      * prints — a token, never a name, exactly like the invoice's snapshot. */
     await enqueue(businessId, 'document.render', {

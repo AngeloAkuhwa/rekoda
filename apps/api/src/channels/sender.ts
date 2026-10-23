@@ -96,6 +96,26 @@ export interface OutboundRetentionNotice {
 }
 
 /**
+ * "Your document is ready", sent as a UTILITY TEMPLATE (G-67).
+ *
+ * A receipt or invoice is delivered to the owner the moment it exists, which
+ * may be days after they last wrote to the business number - a customer pays
+ * overnight, a webhook arrives on Saturday. Outside the 24-hour window Meta
+ * rejects the free-form PDF (131047), so the owner is told a document is
+ * waiting and replies "resend" to open a window and receive it.
+ *
+ * Two parameters, in order: what it is ("receipt", "invoice") and its
+ * reference number. Nothing about the customer or the amount - a template
+ * is approved by its text and carries no figure the deterministic layer did
+ * not compute.
+ */
+export interface OutboundDocumentNotice {
+  to: string;
+  documentLabel: string;
+  reference: string;
+}
+
+/**
  * A merchant's own template, sent on the MERCHANT'S OWN WABA (spec §24;
  * PR-060). Unlike every other send in this port, the credential travels
  * with the call: Rekoda's token sends on Rekoda's number, and a merchant's
@@ -177,9 +197,29 @@ export interface MessageSender {
    * enough to carry both messages is one they refuse as free-form.
    */
   sendRetentionNotice(notice: OutboundRetentionNotice): Promise<SendResult>;
+  /**
+   * A document is waiting (G-67). Its own template for the reason the two
+   * above are: Meta approves by text, and a document is the one message a
+   * merchant did not ask for at the moment it was sent.
+   */
+  sendDocumentNotice(notice: OutboundDocumentNotice): Promise<SendResult>;
 }
 
 /** The send failed. The reply is lost; the merchant's record is not. */
 export class SendFailed extends Error {
   override readonly name = 'SendFailed';
+
+  /**
+   * Meta's numeric error code when it gave one, never its message (which can
+   * echo the request). 131047 is "outside the 24-hour window" (G-67).
+   */
+  constructor(
+    message: string,
+    readonly providerCode: number | null = null,
+  ) {
+    super(message);
+  }
 }
+
+/** Meta error 131047: a free-form message to a recipient whose window is closed. */
+export const OUTSIDE_SERVICE_WINDOW = 131047;
