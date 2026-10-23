@@ -284,7 +284,8 @@ export type ValidateCatalogueOrderResult =
  * Validation is also where the figures become records: the provider's
  * expected fee lands as an ESTIMATED PaymentCharge (§19.1 — every line a
  * record, never arithmetic in a controller; merchant-borne, so the
- * customer's total is untouched, resolved to ACTUAL by settlement), and
+ * customer's total is untouched; it STAYS ESTIMATED, because a settlement
+ * reports one fee for the whole payout, not one per order — G-116), and
  * the invoice is issued exactly as the storefront's validated cart is —
  * revenue and receivable now, goods committed and costed now, paper and
  * payable link enqueued. VAT on the checkout stays at zero pending the
@@ -334,8 +335,12 @@ export async function validateCatalogueOrderWork(
    * a figure exists to estimate from. Priced from the mechanism that collects:
    * Pay-with-Transfer, Paystack's local rate, not the DVA rate (G-22).
    * Merchant-borne — the customer's
-   * total is untouched — and resolved to ACTUAL when the settlement says
-   * what was really taken. No connection, no invented figure. */
+   * total is untouched. It stays ESTIMATED: nothing resolves it to ACTUAL,
+   * because a settlement states one fee for the whole payout and attributing
+   * that to a single order would be an allocation, which §20 forbids for
+   * authoritative data (G-116, an open owner decision). The books take the
+   * real fee from the settlement's own components, not from this row.
+   * No connection, no invented figure. */
   const connection = await paymentsHub.connectionFor(tx, input.businessId, 'paystack');
   if (connection) {
     const card = await paymentsHub.costScheduleInForce(
