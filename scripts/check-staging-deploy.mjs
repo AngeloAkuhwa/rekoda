@@ -347,6 +347,56 @@ function schemaProblems(lines) {
   return problems;
 }
 
+/**
+ * An interrupted run. A cancelled run closes the SSH session, so the script
+ * must exit on HUP, INT and TERM (so its EXIT trap restores a prepared
+ * checkout); SIGKILL cannot be trapped, so the script also leaves a marker in
+ * .git, written before the checkout changes, and the next run reconciles it
+ * before the rollback baseline is judged (recover_interrupted).
+ */
+const INTERRUPT_REQUIRES = [
+  [/^trap 'exit 129' HUP$/, 'exits on SIGHUP so its EXIT trap runs'],
+  [/^trap 'exit 130' INT$/, 'exits on SIGINT so its EXIT trap runs'],
+  [/^trap 'exit 143' TERM$/, 'exits on SIGTERM so its EXIT trap runs'],
+  [/^STATE=\.git\/rekoda-deploy-staging\.state$/, 'keeps its interruption marker in .git'],
+  [/^recover_interrupted$/, 'reconciles a marker left by a killed run'],
+  [/^\s*mv -f "\$STATE\.tmp" "\$STATE"$/, 'writes its marker by atomic rename'],
+];
+
+function interruptProblems(lines) {
+  const problems = [];
+  for (const [pattern, what] of INTERRUPT_REQUIRES) {
+    if (!lines.some((line) => pattern.test(line))) {
+      problems.push(`${FILES.script} no longer ${what} (interrupted deploys)`);
+    }
+  }
+  const at = (text) => lines.indexOf(text);
+  const prepared = at('PHASE=prepared');
+  const checkout = lines.findIndex((line) =>
+    /^git -c advice\.detachedHead=false checkout -q --detach "\$SHA"$/.test(line),
+  );
+  const markPrepared = at('write_state prepared');
+  if (markPrepared < 0 || markPrepared < prepared || (checkout >= 0 && markPrepared > checkout)) {
+    problems.push(
+      `${FILES.script} must write its prepared marker after PHASE=prepared and before the checkout changes`,
+    );
+  }
+  const live = at('PHASE=live');
+  const markLive = at('write_state live');
+  if (markLive < 0 || markLive < live || markLive > live + 1) {
+    problems.push(`${FILES.script} must write its live marker as the live phase begins`);
+  }
+  const recover = at('recover_interrupted');
+  const baseline = lines.findIndex((line) => BASELINE_CALL.test(line));
+  const prev = at('PREV_SHA=$(git rev-parse HEAD)');
+  if (recover >= 0 && (recover < prev || (baseline >= 0 && recover > baseline))) {
+    problems.push(
+      `${FILES.script} must reconcile an interrupted run after it knows PREV_SHA and before it judges the rollback baseline`,
+    );
+  }
+  return problems;
+}
+
 export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
   const problems = [];
 
@@ -457,6 +507,7 @@ export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
   problems.push(...strayProblems(lines, dockerignore));
   problems.push(...schemaProblems(lines));
   problems.push(...newerOnlyProblems(lines));
+  problems.push(...interruptProblems(lines));
 
   /* ---- The workflow. ---- */
   let wf;

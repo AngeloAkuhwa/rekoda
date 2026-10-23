@@ -66,14 +66,41 @@ PREV_SHA=
 PREV_RELEASE=
 # The exit status meaning "skipped, nothing changed"; no failure may use it.
 SKIPPED=75
+# A marker from a run killed after migrate or `up` began: the stack may be
+# part-way to its release, so this run must finish a deploy, never skip.
+LIVE_MARKER=false
 RELEASE=
+
+# What a run leaves behind if it is killed where no trap can run (SIGKILL, a
+# runner torn down): the phase it reached and the baseline it started from.
+# It lives in .git, so it is never part of the checkout or an image.
+STATE=.git/rekoda-deploy-staging.state
+# Written to a temporary file and renamed over the marker, so a kill mid-write
+# leaves the previous complete marker (or none), never a truncated one.
+write_state() {
+  # An earlier run's live marker outranks this run's prepared one: the stack may
+  # still be part-way to that release, and only a deploy that runs to the end
+  # clears it.
+  [ "$LIVE_MARKER" = true ] && [ "$1" = prepared ] && return 0
+  printf 'phase=%s\nprev_sha=%s\nprev_release=%s\nsha=%s\nrelease=%s\n' \
+    "$1" "$PREV_SHA" "$PREV_RELEASE" "$SHA" "$RELEASE" >"$STATE.tmp"
+  mv -f "$STATE.tmp" "$STATE"
+}
+state_value() { sed -n "s/^$1=//p" "$STATE"; }
 
 restore_prepared() {
   # Nothing live changed, so put the checkout and REKODA_RELEASE back to what
-  # the running containers are, leaving the host exactly as it was.
+  # the running containers are, leaving the host exactly as it was. The marker
+  # goes only once both are back; a failed restore keeps it.
   printf 'restoring the checkout to %s and REKODA_RELEASE to %s\n' "$PREV_SHA" "$PREV_RELEASE" >&2
-  git -c advice.detachedHead=false checkout -q "$PREV_SHA" || true
-  sed -i "s/^REKODA_RELEASE=.*/REKODA_RELEASE=${PREV_RELEASE}/" .env || true
+  if git -c advice.detachedHead=false checkout -q "$PREV_SHA" &&
+    sed -i "s/^REKODA_RELEASE=.*/REKODA_RELEASE=${PREV_RELEASE}/" .env &&
+    [ "$(git rev-parse HEAD)" = "$PREV_SHA" ] &&
+    [ "$(sed -n 's/^REKODA_RELEASE=//p' .env)" = "$PREV_RELEASE" ]; then
+    [ "$LIVE_MARKER" = true ] || rm -f "$STATE"
+  else
+    printf 'the restore did not complete; recover by hand as the runbook'"'"'s "An interrupted staging deploy" says\n' >&2
+  fi
 }
 
 on_exit() {
@@ -100,6 +127,13 @@ on_exit() {
   [ "$status" -ne "$SKIPPED" ] || exit 1
 }
 trap on_exit EXIT
+# A hang-up, interrupt or terminate (a cancelled run closes the SSH session)
+# exits, so on_exit runs and restores a prepared checkout. bash runs the trap
+# when the foreground command (a build) returns. SIGKILL cannot be trapped:
+# the state marker and recover_interrupted cover that.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 trap 'printf "failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
 NEWER_ONLY=false
@@ -146,6 +180,56 @@ stray=$(git -c core.quotePath=false ls-files --others --directory --no-empty-dir
   fail "the checkout holds paths no commit has, which the image build would include; move them out of $REKODA_DIR first: $(head -n 20 <<<"$stray" | tr '\n' ' ')"
 PREV_SHA=$(git rev-parse HEAD)
 
+# A run killed where no trap could run leaves a marker. Before the baseline is
+# judged, tell the three cases apart; the baseline check below still decides
+# whether this run may go on.
+#   no marker                nothing to do
+#   prepared, host unchanged since: nothing live had changed, so put back the
+#       checkout and .env of the run's baseline, but only if /health still
+#       proves that baseline is what runs
+#   prepared, already back at the baseline (restored by hand): drop the marker
+#   live (migrate or `up` had begun): restore nothing; the baseline check
+#       below refuses unless the checkout, .env and the running release all
+#       agree, and the marker stays until a deploy runs to the end (a
+#       --newer-only run may not skip past it)
+recover_interrupted() {
+  [ -f "$STATE" ] || return 0
+  local phase s_prev_sha s_prev_rel s_sha s_rel health
+  phase=$(state_value phase)
+  s_prev_sha=$(state_value prev_sha)
+  s_prev_rel=$(state_value prev_release)
+  s_sha=$(state_value sha)
+  s_rel=$(state_value release)
+  [[ "$s_prev_sha" =~ ^[0-9a-f]{40}$ && "$s_sha" =~ ^[0-9a-f]{40}$ &&
+    "$s_prev_rel" =~ ^[A-Za-z0-9._-]+$ && "$s_rel" =~ ^[A-Za-z0-9._-]+$ ]] ||
+    fail "$REKODA_DIR/$STATE is unreadable; reconcile by hand as the runbook's \"An interrupted staging deploy\" says"
+  if [ "$phase" = live ]; then
+    LIVE_MARKER=true
+    return 0
+  fi
+  [ "$phase" = prepared ] || fail "$REKODA_DIR/$STATE names an unknown phase; reconcile by hand"
+  if [ "$PREV_SHA" = "$s_prev_sha" ] && [ "$PREV_RELEASE" = "$s_prev_rel" ]; then
+    rm -f "$STATE"
+    return 0
+  fi
+  if [ "$PREV_SHA" != "$s_sha" ] || [ "$PREV_RELEASE" != "$s_rel" ]; then
+    fail "an interrupted deploy of $s_sha left $STATE, but the checkout ($PREV_SHA) and REKODA_RELEASE ($PREV_RELEASE) are neither its baseline nor what it prepared; reconcile by hand"
+  fi
+  health=$(curl -fsS --max-time 10 --retry 2 --retry-delay 5 "$API_URL/health") ||
+    fail "$API_URL/health did not answer, so the interrupted deploy's baseline cannot be confirmed"
+  jq -e --arg pr "$s_prev_rel" --arg ps "$s_prev_sha" \
+    '.commit as $c | .status == "ok" and .database == "up" and .release == $pr
+     and ($c | type) == "string" and ($c | length) >= 7 and ($ps | startswith($c))' \
+    <<<"$health" >/dev/null ||
+    fail "an interrupted deploy of $s_sha left the checkout prepared, but $API_URL/health does not report a healthy $s_prev_rel at $s_prev_sha; not restoring, reconcile by hand"
+  printf 'a deploy of %s was interrupted before anything live changed; restoring its baseline %s at %s\n' "$s_sha" "$s_prev_rel" "$s_prev_sha"
+  PREV_SHA=$s_prev_sha
+  PREV_RELEASE=$s_prev_rel
+  restore_prepared
+  [ ! -f "$STATE" ] || fail 'the interrupted deploy could not be restored; reconcile by hand'
+}
+recover_interrupted
+
 # PREV_SHA and PREV_RELEASE are the rollback this run prints if it fails, so
 # prove staging is running them now, rather than assume the checkout and .env
 # agree with the containers. /health holds only public deployment metadata.
@@ -162,6 +246,12 @@ step 'fetch and verify the commit'
 git fetch --prune origin
 git cat-file -e "${SHA}^{commit}" 2>/dev/null || fail "commit $SHA is not in origin"
 git merge-base --is-ancestor "$SHA" origin/main || fail "commit $SHA is not on origin/main"
+
+# An interrupted live phase is finished by a deploy, never skipped: /health may
+# already name the target while worker, web or Caddy are still on the old one.
+if [ "$LIVE_MARKER" = true ] && [ "$NEWER_ONLY" = true ] && [ "$SHA" != "$PREV_SHA" ] && git merge-base --is-ancestor "$SHA" "$PREV_SHA"; then
+  fail "an earlier deploy was killed after migrate or up began, so the stack may be part-way to its release; start the manual Deploy staging workflow (without --newer-only) to finish it"
+fi
 
 # After CI, only forward. The running commit is proved above, and the lock
 # holds it there until this run ends.
@@ -204,6 +294,7 @@ printf 'deploying %s as %s (previously %s at %s)\n' "$SHA" "$RELEASE" "$PREV_REL
 
 step 'check out the commit and name the release'
 PHASE=prepared
+write_state prepared
 git -c advice.detachedHead=false checkout -q --detach "$SHA"
 [ "$(git rev-parse HEAD)" = "$SHA" ] || fail 'the checkout is not at the requested commit'
 sed -i "s/^REKODA_RELEASE=.*/REKODA_RELEASE=${RELEASE}/" .env
@@ -215,6 +306,7 @@ dc build --build-arg REKODA_COMMIT="$SHORT"
 
 step 'migrate (expand-only, as the owner)'
 PHASE=live
+write_state live
 dc run --rm -T migrate
 
 step 'start the new release'
@@ -248,6 +340,7 @@ jq -e --argjson m "$MIGRATIONS" '.migrations >= $m' <<<"$health" >/dev/null ||
 
 step 'running containers'
 dc ps
+rm -f "$STATE"
 PHASE=done
 printf '\nstaging is %s (%s)\n' "$RELEASE" "$SHA"
 exit 0
