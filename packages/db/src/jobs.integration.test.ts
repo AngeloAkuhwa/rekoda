@@ -378,6 +378,22 @@ describe('queue order is a promise, not a hope (H7a)', () => {
     });
   });
 
+  it('keeps an older same-kind job ahead of this one after it was deferred (G-20)', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    const first = await enqueue(businessId);
+    const second = await enqueue(businessId);
+    if (!first || !second) throw new Error('both jobs should have enqueued');
+    // The first message stepped back behind a failed receipt: deferClaimed
+    // pushed its run_at forward. It is still the older message.
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(sql`UPDATE jobs SET run_at = now() + interval '1 minute'
+                      WHERE id = ${first.id}::uuid`),
+    );
+    await withBusiness(appDb, businessId, async (tx) => {
+      expect(await jobsRepo.hasEarlierLiveJob(tx, second.id)).toBe(true);
+    });
+  });
+
   it('ignores siblings of another kind and of another business', async () => {
     const ada = await seedBusiness('Ada Fashion', '+2348040000001');
     const bola = await seedBusiness('Bola Electronics', '+2348040000002');

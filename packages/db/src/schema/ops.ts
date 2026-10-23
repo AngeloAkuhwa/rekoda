@@ -117,6 +117,9 @@ export const conversationMessages = pgTable(
   (t) => [
     uniqueIndex('messages_provider_ux').on(t.providerMessageId),
     index('messages_conversation_ix').on(t.conversationId),
+    index('messages_reply_to_business_ix')
+      .on(t.businessId, t.replyToMessageId)
+      .where(sql`${t.replyToMessageId} IS NOT NULL`),
   ],
 );
 
