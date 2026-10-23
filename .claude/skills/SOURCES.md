@@ -52,7 +52,11 @@ skill folder: SHA-256 over every file, sorted by relative path with
 its pinned upstream folder byte for byte (`diff -r`). Impeccable, which the
 installer did not write, hashes to
 `fb28833d2d55b7de536436e9e6f2b56138ad713598092249272e503f2aa54fb6` by the same
-algorithm, identical to `plugin/skills/impeccable` at `69c34b7`. Re-run that
+algorithm, identical to `plugin/skills/impeccable` at `69c34b7`. Those
+22 Oct measurements predate the OWN-38 patches (23 Oct 2026): the six Emil
+Kowalski skills still equal upstream, while `design-taste-frontend` and
+`impeccable` now match their `rekodaPatches` `patchedFolderHash` (upstream hash
+kept beside it); see "Patches to vendored files". Re-run that
 comparison before accepting any change to a vendored file; never replace a lock
 value with one that cannot be reproduced. CI runs the comparison as
 `scripts/check-vendored-skills.mjs` (`pnpm skills:check`), which also fails if
@@ -122,7 +126,12 @@ settled by these rules, which win over any vendored text:
    money) are rules for layout mock-ups. A real Rekoda screen renders values
    computed by `@rekoda/core` from integer kobo, shown in naira. A skill never
    supplies Rekoda pricing, plan limits, VAT, tax or e-invoicing copy; those come
-   from the canonical documents and owner rulings (OWN-30).
+   from the canonical documents and owner rulings (OWN-30). No skill prompt,
+   reference image, screenshot or generated asset (including Impeccable's
+   `visualize` directions and any embedded metadata) may contain real merchant
+   or customer data: use synthetic or redacted data. Using live data with a
+   design skill needs an explicit owner ruling naming the processor and how the
+   data is handled.
 2. **Rekoda's design system outranks the inspector.** If `inspect.mjs` fails a
    device that `docs/REKODA_DESIGN_SYSTEM.md` or
    `design-system/rekoda/MASTER.md` approves, the design system wins. Pass

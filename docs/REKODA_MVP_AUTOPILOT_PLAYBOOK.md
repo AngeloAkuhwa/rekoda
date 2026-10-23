@@ -589,7 +589,10 @@ installed. The selection table in `CLAUDE.md` §7c is the lightweight policy ins
 1. Evaluate the skills whenever the slice touches a user-facing screen,
    component, form, dialog, navigation, animation, accessibility, the Central
    Admin Console, onboarding, storefront or checkout, or billing/trial screens.
-   Pick the one or two that fit (table in `CLAUDE.md` §7c); never all.
+   Pick the one or two that fit (table in `CLAUDE.md` §7c); never all. Every
+   listed skill counts toward the two, the motion skills included
+   (`emil-design-eng`, `animate`, `review-animations`, `animation-performance`);
+   only `ui-ux-pro-max`, a reference lookup, does not.
 2. Rekoda's design system and brand decide. A skill's recommendation never
    changes prices, trial promises, tax wording, confirmation steps or any
    financial behaviour; those need an owner ruling.

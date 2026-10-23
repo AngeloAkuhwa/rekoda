@@ -289,14 +289,14 @@ public animated page therefore gets `impeccable` plus `design-taste-frontend`,
 and the motion decisions are made with `emil-design-eng`'s judgement only if
 that slice is mainly about motion.
 
-| Task                                                                                                                                 | Skill                                                                                              |
-| ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
-| Any new or changed screen, component, form, dialog, navigation, accessibility or responsive work, and the final polish/critique pass | `impeccable` (general quality framework)                                                           |
-| Public pages (landing, pricing, storefront) or setting visual direction                                                              | `design-taste-frontend`, within Rekoda's tokens and brand                                          |
-| Transitions, micro-interactions, motion review                                                                                       | `emil-design-eng` for judgement; `animate`, `review-animations`, `animation-performance` as needed |
-| Systematic reference: patterns, charts, a11y and UX guidelines                                                                       | `ui-ux-pro-max` (account skill, if present)                                                        |
-| Central Admin Console, billing/trial/checkout, onboarding screens                                                                    | `impeccable` plus `ui-ux-pro-max`; add taste or motion only if the screen is public or animated    |
-| Stress-testing a finished screen for edge cases                                                                                      | `break-ui`                                                                                         |
+| Task                                                                                                                                 | Skill                                                                                                            |
+| ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| Any new or changed screen, component, form, dialog, navigation, accessibility or responsive work, and the final polish/critique pass | `impeccable` (general quality framework)                                                                         |
+| Public pages (landing, pricing, storefront) or setting visual direction                                                              | `design-taste-frontend`, within Rekoda's tokens and brand                                                        |
+| Transitions, micro-interactions, motion review                                                                                       | `emil-design-eng`, or one of `animate`, `review-animations`, `animation-performance`; each counts toward the two |
+| Systematic reference: patterns, charts, a11y and UX guidelines                                                                       | `ui-ux-pro-max` (account skill, if present)                                                                      |
+| Central Admin Console, billing/trial/checkout, onboarding screens                                                                    | `impeccable` plus `ui-ux-pro-max`; add taste or motion only if the screen is public or animated                  |
+| Stress-testing a finished screen for edge cases                                                                                      | `break-ui`                                                                                                       |
 
 On a real Rekoda screen every figure is computed by `@rekoda/core` from
 integer kobo and shown in naira; the skills' sample prices, rates and
