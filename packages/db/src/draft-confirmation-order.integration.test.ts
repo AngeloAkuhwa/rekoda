@@ -85,7 +85,6 @@ async function recordOneDraft(businessId: string, note: string): Promise<string>
       intent: 'RecordSale',
       command: { kind: 'RecordSale', note },
       model: null,
-      // A draft only a delivered preview can confirm (G-20): claimDraft refuses the rest.
       previewed: true,
     });
     return draft.id;
