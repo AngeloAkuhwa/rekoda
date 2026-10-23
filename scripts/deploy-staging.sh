@@ -78,6 +78,10 @@ STATE=.git/rekoda-deploy-staging.state
 # Written to a temporary file and renamed over the marker, so a kill mid-write
 # leaves the previous complete marker (or none), never a truncated one.
 write_state() {
+  # An earlier run's live marker outranks this run's prepared one: the stack may
+  # still be part-way to that release, and only a deploy that runs to the end
+  # clears it.
+  [ "$LIVE_MARKER" = true ] && [ "$1" = prepared ] && return 0
   printf 'phase=%s\nprev_sha=%s\nprev_release=%s\nsha=%s\nrelease=%s\n' \
     "$1" "$PREV_SHA" "$PREV_RELEASE" "$SHA" "$RELEASE" >"$STATE.tmp"
   mv -f "$STATE.tmp" "$STATE"
@@ -93,7 +97,7 @@ restore_prepared() {
     sed -i "s/^REKODA_RELEASE=.*/REKODA_RELEASE=${PREV_RELEASE}/" .env &&
     [ "$(git rev-parse HEAD)" = "$PREV_SHA" ] &&
     [ "$(sed -n 's/^REKODA_RELEASE=//p' .env)" = "$PREV_RELEASE" ]; then
-    rm -f "$STATE"
+    [ "$LIVE_MARKER" = true ] || rm -f "$STATE"
   else
     printf 'the restore did not complete; recover by hand as the runbook'"'"'s "An interrupted staging deploy" says\n' >&2
   fi

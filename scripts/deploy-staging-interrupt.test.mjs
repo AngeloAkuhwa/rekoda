@@ -56,6 +56,7 @@ function host({ buildSeconds = 0 } = {}) {
   };
   const prev = commit(1);
   const next = commit(2);
+  const third = commit(3);
   sh(root, `git clone -q ${origin} ${dir}`);
   sh(dir, `git checkout -q --detach ${prev}`);
   writeFileSync(
@@ -82,7 +83,7 @@ function host({ buildSeconds = 0 } = {}) {
   bin(
     'docker',
     `case "$*" in
-  *build*) sleep ${buildSeconds} ;;
+  *build*) [ -e "${fake}/fail-build" ] && exit 1; sleep ${buildSeconds} ;;
   *" up "*) cp "${fake}/next-health.json" "${fake}/health.json" ;;
   *network\\ inspect*) echo '172.30.10.1 false' ;;
 esac
@@ -114,7 +115,7 @@ exit 0`,
       `phase=${phase}\nprev_sha=${prev}\nprev_release=staging-${prev.slice(0, 7)}\nsha=${next}\nrelease=staging-${next.slice(0, 7)}\n`,
     );
   };
-  return { dir, fake, script, env, prev, next, read, run, killedWhilePrepared };
+  return { dir, fake, script, env, prev, next, third, read, run, killedWhilePrepared };
 }
 
 test('a deploy runs end to end and leaves no marker', () => {
@@ -221,6 +222,19 @@ test('a live-phase marker is cleared only once a deploy runs to the end', () => 
   const r = h.run(h.next);
   assert.equal(r.status, 0, r.stderr + r.stdout);
   assert.equal(h.read.marker(), false);
+});
+
+test('a forward deploy that fails before going live keeps an earlier live-phase marker', () => {
+  const h = host();
+  h.killedWhilePrepared('live');
+  writeFileSync(join(h.fake, 'health.json'), readFileSync(join(h.fake, 'next-health.json')));
+  writeFileSync(join(h.fake, 'fail-build'), '');
+  const r = h.run(h.third);
+  assert.notEqual(r.status, 0);
+  assert.equal(h.read.head(), h.next, 'the checkout goes back to the half-rolled-out release');
+  assert.equal(h.read.marker(), true, 'the half-finished live deploy must stay on record');
+  const state = readFileSync(join(h.dir, '.git/rekoda-deploy-staging.state'), 'utf8');
+  assert.match(state, /^phase=live$/m);
 });
 
 test('the marker is written whole: a leftover temporary file never counts', () => {
