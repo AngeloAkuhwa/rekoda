@@ -15,7 +15,7 @@
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { MetaSender } from './meta.sender.js';
+import { MetaSender, NoSenderConfigured } from './meta.sender.js';
 import { SendFailed } from './sender.js';
 
 interface Recorded {
@@ -376,5 +376,129 @@ describe('fetching media a merchant sent', () => {
     };
     await expect(sender().fetchMedia('MID8')).rejects.toThrow(/no url/);
     expect(requests).toHaveLength(1);
+  });
+});
+
+/**
+ * G-58. The two methods that carry a MERCHANT's decrypted token had no
+ * wire-level test, and the unconfigured sender named the wrong variable.
+ */
+describe("a send on a merchant's own WABA", () => {
+  const merchant = { phoneNumberId: 'MERCHANT-PNID', accessToken: 'MERCHANT-TOKEN-xyz' };
+
+  it("sendTemplate posts to the MERCHANT number under the MERCHANT token, not Rekoda's", async () => {
+    const result = await sender().sendTemplate({
+      to: '2348031234567',
+      ...merchant,
+      name: 'order_update',
+      language: 'en',
+      parameters: ['INV-1', 'NGN 5,000'],
+    });
+    expect(result.providerMessageId).toBe('wamid.SENT1');
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.url).toBe('/v21.0/MERCHANT-PNID/messages');
+    expect(requests[0]!.authorization).toBe('Bearer MERCHANT-TOKEN-xyz');
+    expect(requests[0]!.authorization).not.toContain('TOKEN123');
+    expect(bodyOf()).toMatchObject({
+      messaging_product: 'whatsapp',
+      to: '2348031234567',
+      type: 'template',
+      template: {
+        name: 'order_update',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: 'INV-1' },
+              { type: 'text', text: 'NGN 5,000' },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  it('sendTemplate sends no components when there are no parameters', async () => {
+    await sender().sendTemplate({
+      to: '2348031234567',
+      ...merchant,
+      name: 'hello',
+      language: 'en',
+      parameters: [],
+    });
+    expect((bodyOf().template as Record<string, unknown>)['components']).toBeUndefined();
+  });
+
+  it('sendOnConnection posts a free-form text, previews off, under the MERCHANT token', async () => {
+    const result = await sender().sendOnConnection({
+      to: '2348031234567',
+      ...merchant,
+      text: 'Your order ships today https://example.com',
+    });
+    expect(result.providerMessageId).toBe('wamid.SENT1');
+    expect(requests[0]!.url).toBe('/v21.0/MERCHANT-PNID/messages');
+    expect(requests[0]!.authorization).toBe('Bearer MERCHANT-TOKEN-xyz');
+    expect(bodyOf()).toMatchObject({
+      type: 'text',
+      to: '2348031234567',
+      text: { preview_url: false, body: 'Your order ships today https://example.com' },
+    });
+  });
+
+  it.each(['sendTemplate', 'sendOnConnection'] as const)(
+    '%s never repeats the merchant token or the message in its failure',
+    async (method) => {
+      respond = (_req, res) => {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'MERCHANT-TOKEN-xyz Ada Okafor', code: 190 } }));
+      };
+      const call =
+        method === 'sendTemplate'
+          ? sender().sendTemplate({
+              to: '1',
+              ...merchant,
+              name: 'n',
+              language: 'en',
+              parameters: ['Ada Okafor'],
+            })
+          : sender().sendOnConnection({ to: '1', ...merchant, text: 'Ada Okafor' });
+      const error = await call.catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(SendFailed);
+      expect((error as SendFailed).message).not.toMatch(/MERCHANT-TOKEN|Ada Okafor/);
+      expect((error as SendFailed).providerCode).toBe(190);
+    },
+  );
+});
+
+describe('the unconfigured sender names what is missing (G-58)', () => {
+  it('names the phone number id when only the token is set', async () => {
+    await expect(new NoSenderConfigured(['META_PHONE_NUMBER_ID']).send()).rejects.toThrow(
+      'META_PHONE_NUMBER_ID is not set',
+    );
+  });
+
+  it('names both when both are missing, and says which is which', async () => {
+    const sender = new NoSenderConfigured(['META_ACCESS_TOKEN', 'META_PHONE_NUMBER_ID']);
+    await expect(sender.sendDocument()).rejects.toThrow(
+      'META_ACCESS_TOKEN and META_PHONE_NUMBER_ID are not set',
+    );
+  });
+
+  it('every method refuses with the same named reason', async () => {
+    const sender = new NoSenderConfigured(['META_PHONE_NUMBER_ID']);
+    for (const call of [
+      sender.send(),
+      sender.sendAuthCode(),
+      sender.fetchMedia(),
+      sender.sendDocument(),
+      sender.sendTemplate(),
+      sender.sendOnConnection(),
+      sender.sendBillingNotice(),
+      sender.sendRetentionNotice(),
+      sender.sendDocumentNotice(),
+    ]) {
+      await expect(call).rejects.toThrow('META_PHONE_NUMBER_ID is not set');
+    }
   });
 });
