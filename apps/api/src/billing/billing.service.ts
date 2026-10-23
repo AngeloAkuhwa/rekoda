@@ -145,6 +145,7 @@ export class BillingService {
               ? ((await packOffer(this.config, tx, charge.packId, charge.createdAt))?.label ?? null)
               : null,
             amountK: charge.amountK,
+            refundedAmountK: charge.refundedAmountK,
             status: charge.status as BillingOverviewResponse['charges'][number]['status'],
             periodStart: charge.periodStart?.toISOString() ?? null,
             periodEnd: charge.periodEnd?.toISOString() ?? null,

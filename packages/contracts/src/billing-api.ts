@@ -39,6 +39,8 @@ export const billingChargeView = z.object({
   /** What the pack was called when it was bought (null for anything but a pack). */
   packLabel: z.string().nullable(),
   amountK: kobo,
+  /** Part of the charge already returned. The status stays `paid` until all of it is (G-111). */
+  refundedAmountK: kobo,
   status: billingChargeStatus,
   periodStart: isoDate.nullable(),
   periodEnd: isoDate.nullable(),

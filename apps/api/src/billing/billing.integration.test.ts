@@ -1303,6 +1303,40 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
     expect(overview.charges.find((row) => row.kind !== 'add_on')?.packLabel ?? null).toBeNull();
   });
 
+  it('shows what a partial refund gave back, so the row does not read as the full amount net (G-111)', async () => {
+    const { businessId } = await onboard('+2348177100066');
+    await putOnPlan(
+      businessId,
+      'chat',
+      new Date(Date.now() - 5 * 86_400_000),
+      new Date(Date.now() + 25 * 86_400_000),
+    );
+    const answer = await confirmedBilling().buyPack(businessId, 'messages_100');
+    if (answer.state !== 'payment_required') throw new Error('expected a payable pack');
+    await withBusiness(db, businessId, (tx) =>
+      applySettledCharge(tx, {
+        businessId,
+        reference: answer.reference,
+        providerReference: 'ps_refund_1',
+        when: new Date(),
+        config,
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.refundCharge(tx, answer.reference, 100_000, new Date()),
+    );
+
+    const overview = await confirmedBilling().overview(businessId);
+    const charge = overview.charges.find((row) => row.reference === answer.reference);
+
+    // Still paid: only part came back. The amount that did is on the row.
+    expect(charge?.status).toBe('paid');
+    expect(charge?.refundedAmountK).toBe(100_000);
+    expect(
+      overview.charges.find((row) => row.reference !== answer.reference)?.refundedAmountK ?? 0,
+    ).toBe(0);
+  });
+
   it('a pack is offered exactly where its unit is sold: Integrate is not sold Chat overage', async () => {
     const { businessId } = await onboard('+2348177100064');
     await putOnPlan(

@@ -376,6 +376,14 @@ export class BusinessController {
     }
 
     const { businessId, plan, expiresAt } = parsed.data;
+    /* A paid plan that is already past its date would raise a renewal at the
+     * next sweep and carry a cycle start after its own expiry, so a later
+     * self-service upgrade would prorate to nothing (G-114). Refused rather
+     * than clamped: the operator asked for a date that cannot be true. Marking
+     * a plan lapsed is `expired`, which takes any date. */
+    if (expiresAt && !UNPAID_PLANS.has(plan) && new Date(expiresAt).getTime() <= Date.now()) {
+      throw new BadRequestException('a paid plan needs an expiry in the future');
+    }
     const changed = await billingRepo.setPlan(this.db, {
       businessId,
       plan,
@@ -388,6 +396,9 @@ export class BusinessController {
     return { plan };
   }
 }
+
+/** The plans nobody paid for; every other plan carries a paid cycle (G-114). */
+const UNPAID_PLANS = new Set(['trial', 'expired']);
 
 /** A member as the wire sees one. Phone included: it is the only handle an
  * owner has for a person they invited, and it is their own team. */

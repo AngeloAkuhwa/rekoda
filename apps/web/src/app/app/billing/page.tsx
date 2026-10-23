@@ -2,7 +2,12 @@ import type { Metadata } from 'next';
 import { isOwner } from '@/lib/permissions';
 import { Money } from '@/components/ui/Money';
 import { PendingButton } from '@/components/ui/PendingButton';
-import { emptyMeterCopy, undoPendingLabel } from '@/lib/billing-copy';
+import {
+  emptyMeterCopy,
+  graceStripCopy,
+  partlyRefunded,
+  undoPendingLabel,
+} from '@/lib/billing-copy';
 import { CancelForm } from './CancelForm';
 import { PLANS, PLAN_NAMES, SHARED_ACROSS_PLANS } from '@/lib/plans';
 import { capabilityWords, entitlementsForPlan, planSwitch } from '@rekoda/core';
@@ -123,12 +128,7 @@ export default async function BillingPage({
 
       {overview.status.state === 'grace' ? (
         <div className="rk-attention-strip" role="status">
-          A payment did not go through. Everything keeps working until{' '}
-          {lagosDate(overview.status.endsAt)}
-          {overview.status.daysLeft === 1
-            ? ', one day from now.'
-            : `, ${overview.status.daysLeft} days from now.`}{' '}
-          Message upgrade on WhatsApp and we will sort it out with you.
+          {graceStripCopy(lagosDate(overview.status.endsAt), overview.status.daysLeft)}
         </div>
       ) : null}
 
@@ -506,6 +506,12 @@ export default async function BillingPage({
                     <td>{chargeStatusLabel(charge.status)}</td>
                     <td>
                       <Money kobo={charge.amountK} />
+                      {partlyRefunded(charge.refundedAmountK, charge.status) ? (
+                        <span className="rk-fineprint">
+                          {' '}
+                          (<Money kobo={charge.refundedAmountK} /> refunded)
+                        </span>
+                      ) : null}
                     </td>
                   </tr>
                 ))}

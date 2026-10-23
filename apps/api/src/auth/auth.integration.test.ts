@@ -632,6 +632,34 @@ describe('the operator plan endpoint', () => {
     expect([...trail].map((r) => r.actor)).toEqual(['operator:local:operator-secret']);
   });
 
+  it('refuses a paid plan whose expiry is already past, and changes nothing (G-114)', async () => {
+    const businessId = await businessFor('08031234595');
+    const res = await change({
+      businessId,
+      plan: 'chat',
+      expiresAt: new Date(Date.now() - 86_400_000).toISOString(),
+    });
+
+    /* Accepted, the next sweep would raise a renewal at once and the cycle
+     * start of "now" would sit after the expiry, so a later self-service
+     * upgrade prorated to nothing. */
+    expect(res.statusCode).toBe(400);
+    const plan = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ plan: string }>(sql`SELECT plan FROM businesses WHERE id = ${businessId}::uuid`),
+    );
+    expect([...plan][0]?.plan).toBe('trial');
+  });
+
+  it('still lets an operator mark a plan lapsed with a past date', async () => {
+    const businessId = await businessFor('08031234596');
+    const res = await change({
+      businessId,
+      plan: 'expired',
+      expiresAt: new Date(Date.now() - 86_400_000).toISOString(),
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
   /* 401, not 403: the operator guard now separates the two questions it used
    * to answer with one status. No credential, or one it cannot verify, is a
    * failure of AUTHENTICATION. 403 is reserved for a caller the guard did
