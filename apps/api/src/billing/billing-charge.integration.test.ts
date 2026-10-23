@@ -473,11 +473,12 @@ describe('a top-up pack', () => {
     });
 
   /** Deliver one success for `reference` and run it all the way through. */
-  const deliver = async (reference: string, amountK: number): Promise<void> => {
+  const deliver = async (reference: string, amountK: number): Promise<string> => {
     provider.willVerify(reference, { amountK });
-    await storeChargeSuccess(reference, amountK);
+    const eventId = await storeChargeSuccess(reference, amountK);
     await pump();
     await drainJobs();
+    return eventId;
   };
 
   it('credits the units it sells to this month, through the webhook and the job', async () => {
@@ -526,10 +527,12 @@ describe('a top-up pack', () => {
     const businessId = await seedBusiness();
     const reference = await openPack(businessId);
 
-    await deliver(reference, Math.floor(PACK_K / 2));
+    const eventId = await deliver(reference, Math.floor(PACK_K / 2));
 
     expect((await chargeOf(businessId, reference))?.status).toBe('pending');
     expect(await bonusOf(businessId)).toBe(0);
+    // The handler ran and refused it; pending and zero alone also hold if it never ran.
+    expect((await events.eventStatus(workerDb, eventId))?.error).toBe('underpaid');
   });
 
   it('believes the verify call, not a webhook that claims the full price', async () => {
@@ -537,12 +540,13 @@ describe('a top-up pack', () => {
     const reference = await openPack(businessId);
 
     provider.willVerify(reference, { amountK: 100 }); // what the provider really took
-    await storeChargeSuccess(reference, PACK_K); // what the webhook body says
+    const eventId = await storeChargeSuccess(reference, PACK_K); // what the webhook body says
     await pump();
     await drainJobs();
 
     expect((await chargeOf(businessId, reference))?.status).toBe('pending');
     expect(await bonusOf(businessId)).toBe(0);
+    expect((await events.eventStatus(workerDb, eventId))?.error).toBe('underpaid');
   });
 
   it('credits once for an overpayment and leaves the excess to a human', async () => {
