@@ -14,7 +14,15 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { conversationsRepo, createDb, identity, withBusiness, type Db } from './index.js';
+import {
+  continuationsRepo,
+  conversationsRepo,
+  createDb,
+  identity,
+  jobsRepo,
+  withBusiness,
+  type Db,
+} from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
 
 let urls: Urls;
@@ -107,10 +115,24 @@ async function flags(businessId: string, draftId: string) {
   return [...rows][0];
 }
 
-const undelivered = (businessId: string, wamid: string) =>
-  withBusiness(app, businessId, (tx) =>
-    conversationsRepo.markPreviewUndelivered(tx, businessId, wamid),
+const undelivered = async (businessId: string, wamid: string) =>
+  (
+    await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.markPreviewUndelivered(tx, businessId, wamid),
+    )
+  ).drafts;
+
+async function draftRow(businessId: string, draftId: string) {
+  const rows = await withBusiness(app, businessId, (tx) =>
+    tx.execute<{ state: string; reason: string | null }>(sql`
+      SELECT state, retired_reason AS reason FROM command_drafts
+       WHERE business_id = ${businessId}::uuid AND id = ${draftId}::uuid`),
   );
+  return [...rows][0];
+}
+
+const claim = (businessId: string, draftId: string, options = {}) =>
+  withBusiness(app, businessId, (tx) => conversationsRepo.claimDraft(tx, draftId, options));
 
 describe('a preview that failed after WhatsApp accepted it (G-20)', () => {
   it('is no longer previewed, and its link question was not asked', async () => {
@@ -184,5 +206,156 @@ describe('a preview that failed after WhatsApp accepted it (G-20)', () => {
         }),
       ),
     ).rejects.toMatchObject({ cause: { code: '23503' } });
+  });
+});
+
+describe('an unseen preview can never be confirmed (G-20, owner ruling)', () => {
+  it('a late failure retires the pending draft with an auditable reason', async () => {
+    const businessId = await seedBusiness();
+    const sent = await previewed(businessId);
+    expect(await undelivered(businessId, sent.wamid)).toBe(1);
+    expect(await draftRow(businessId, sent.draftId)).toEqual({
+      state: 'superseded',
+      reason: 'preview_not_delivered',
+    });
+    expect(await claim(businessId, sent.draftId)).toEqual({ outcome: 'not_pending' });
+    /* A duplicate receipt changes nothing. */
+    expect(await undelivered(businessId, sent.wamid)).toBe(0);
+  });
+
+  it('a send that failed outright leaves it pending but unconfirmable', async () => {
+    const businessId = await seedBusiness();
+    const sent = await previewed(businessId);
+    await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.markDraftUnseen(tx, businessId, sent.messageId),
+    );
+    expect((await draftRow(businessId, sent.draftId))?.state).toBe('pending');
+    expect(await claim(businessId, sent.draftId)).toEqual({ outcome: 'unseen' });
+    expect((await draftRow(businessId, sent.draftId))?.state).toBe('pending');
+  });
+
+  it('an expired draft stays expired but is no longer previewed', async () => {
+    const businessId = await seedBusiness();
+    const sent = await previewed(businessId);
+    await withBusiness(app, businessId, (tx) =>
+      tx.execute(sql`UPDATE command_drafts SET state = 'expired'
+                      WHERE business_id = ${businessId}::uuid AND id = ${sent.draftId}::uuid`),
+    );
+    await undelivered(businessId, sent.wamid);
+    expect(await draftRow(businessId, sent.draftId)).toEqual({ state: 'expired', reason: null });
+  });
+
+  it('the claim itself refuses a pending draft that was never previewed', async () => {
+    const businessId = await seedBusiness();
+    const sent = await previewed(businessId);
+    await withBusiness(app, businessId, (tx) =>
+      tx.execute(sql`UPDATE command_drafts SET previewed = false
+                      WHERE business_id = ${businessId}::uuid AND id = ${sent.draftId}::uuid`),
+    );
+    expect(await claim(businessId, sent.draftId)).toEqual({ outcome: 'unseen' });
+    expect((await draftRow(businessId, sent.draftId))?.state).toBe('pending');
+  });
+
+  it('a draft that was previewed is still claimed', async () => {
+    const businessId = await seedBusiness();
+    const sent = await previewed(businessId);
+    expect(await claim(businessId, sent.draftId)).toEqual({ outcome: 'claimed' });
+  });
+
+  it('a draft that is no financial preview (an erasure ask) is still claimed', async () => {
+    const businessId = await seedBusiness();
+    const sent = await previewed(businessId);
+    await withBusiness(app, businessId, (tx) =>
+      tx.execute(sql`UPDATE command_drafts SET previewed = false, intent = 'EraseData'
+                      WHERE business_id = ${businessId}::uuid AND id = ${sent.draftId}::uuid`),
+    );
+    expect(await claim(businessId, sent.draftId)).toEqual({
+      outcome: 'claimed',
+    });
+  });
+
+  it('a late failure retires only the continuation that reply opened', async () => {
+    const businessId = await seedBusiness();
+    const owner = await withBusiness(app, businessId, async (tx) => {
+      const rows = await tx.execute<{ user_id: string }>(
+        sql`SELECT user_id FROM memberships WHERE business_id = ${businessId}::uuid LIMIT 1`,
+      );
+      return [...rows][0]!.user_id;
+    });
+    const asked = await previewed(businessId, { linked: true });
+    const other = await previewed(businessId, { linked: true });
+    const open = (sourceMessageId: string, expects = 'period') =>
+      withBusiness(app, businessId, (tx) =>
+        continuationsRepo.openContinuation(tx, {
+          businessId,
+          userId: owner,
+          sourceMessageId,
+          state: { kind: 'clarification', expects: expects as 'period', topic: 'sales_summary' },
+        }),
+      );
+    const mine = await open(asked.messageId);
+    const states = async () =>
+      (
+        await withBusiness(app, businessId, (tx) =>
+          tx.execute<{ id: string; state: string }>(
+            sql`SELECT id, state FROM conversation_continuations WHERE business_id = ${businessId}::uuid`,
+          ),
+        )
+      ).map((r) => r.state);
+    expect(await states()).toEqual(['open']);
+    const result = await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.markPreviewUndelivered(tx, businessId, other.wamid),
+    );
+    expect(result.continuations).toBe(0);
+    expect(await states()).toEqual(['open']);
+    const failed = await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.markPreviewUndelivered(tx, businessId, asked.wamid),
+    );
+    expect(failed.continuations).toBe(1);
+    expect(mine?.isNew).toBe(true);
+    expect(await states()).toEqual(['superseded']);
+    const again = await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.markPreviewUndelivered(tx, businessId, asked.wamid),
+    );
+    expect(again).toEqual({ drafts: 0, continuations: 0 });
+  });
+});
+
+describe('a receipt job that died still unsees its preview (G-20)', () => {
+  it('reconciles from the dead job, once', async () => {
+    const businessId = await seedBusiness();
+    const sent = await previewed(businessId);
+    const event = await withBusiness(app, businessId, (tx) =>
+      tx.execute<{ id: string }>(sql`
+        INSERT INTO external_events (provider, event_type, external_id, payload, business_id, signature_valid)
+        VALUES ('meta', 'status.failed', ${`st-${sent.wamid}`}, '{}'::jsonb, ${businessId}::uuid, 1)
+        RETURNING id`),
+    );
+    const eventId = [...event][0]!.id;
+    await withBusiness(app, businessId, async (tx) => {
+      const job = await jobsRepo.enqueue(tx, {
+        businessId,
+        kind: 'delivery.status',
+        payload: { eventId, outboundMessageId: sent.wamid },
+        singletonKey: eventId,
+        maxAttempts: 12,
+      });
+      await tx.execute(
+        sql`UPDATE jobs SET state = 'dead', attempts = 12 WHERE id = ${job!.id}::uuid`,
+      );
+    });
+
+    const first = await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.reconcileDeadReceipts(tx, businessId),
+    );
+    expect(first).toBe(1);
+    expect(await draftRow(businessId, sent.draftId)).toEqual({
+      state: 'superseded',
+      reason: 'preview_not_delivered',
+    });
+    const second = await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.reconcileDeadReceipts(tx, businessId),
+    );
+    expect(second).toBe(0);
   });
 });

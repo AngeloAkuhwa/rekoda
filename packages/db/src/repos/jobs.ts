@@ -145,15 +145,13 @@ export async function serializeBusiness(
  * nothing and drops a record. So a handler that needs order calls this AFTER
  * taking the lock: an older sibling still `pending` or `running` means this
  * job is jumping the queue and should step back (see `deferClaimed`). Ordered
- * by the same (run_at, created_at) the claim query uses, with id as the
- * tiebreak.
+ * by ARRIVAL, (created_at, id), never by `run_at`: a deferral or a retry
+ * backoff moves `run_at`, and an earlier message that stepped back must not
+ * look newer than the one behind it (G-20).
  *
  * `alsoKinds` names other kinds whose older live jobs also count (G-20): an
  * inbound "yes" must not overtake an already-queued `delivery.status` failure
- * for a preview, or it would confirm a draft the merchant never saw. Other
- * kinds are ordered by arrival (`created_at`), not `run_at`: a receipt that
- * failed once backs its `run_at` off, and must still stay ahead of a later
- * message.
+ * for a preview, or it would confirm a draft the merchant never saw.
  */
 export async function hasEarlierLiveJob(
   tx: TenantDb,
@@ -172,7 +170,7 @@ export async function hasEarlierLiveJob(
       AND j.id <> me.id
       AND j.state IN ('pending', 'running')
       AND (
-        (j.kind = me.kind AND (j.run_at, j.created_at, j.id) < (me.run_at, me.created_at, me.id))
+        (j.kind = me.kind AND (j.created_at, j.id) < (me.created_at, me.id))
         ${
           alsoKinds.length > 0
             ? sql`OR (j.kind IN (${kinds}) AND (j.created_at, j.id) < (me.created_at, me.id))`

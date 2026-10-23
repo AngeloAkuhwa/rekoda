@@ -409,6 +409,25 @@ describe('queue order is a promise, not a hope (H7a)', () => {
     });
   });
 
+  it('keeps same-kind arrival order after an earlier job was deferred (G-20)', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    const first = await enqueue(businessId);
+    const second = await enqueue(businessId);
+    if (!first || !second) throw new Error('both jobs should have enqueued');
+    const claimed = await jobsRepo.claimNext(workerDb, 'lane-a');
+    if (!claimed) throw new Error('claim should have won');
+    expect(claimed.id).toBe(first.id);
+    // The earlier message steps back; its run_at moves later than the second's.
+    await jobsRepo.deferClaimed(workerDb, first.id, 60_000);
+
+    await withBusiness(appDb, businessId, async (tx) => {
+      // The later message must still see the earlier one ahead of it ...
+      expect(await jobsRepo.hasEarlierLiveJob(tx, second.id)).toBe(true);
+      // ... and the earlier one never waits on the later one.
+      expect(await jobsRepo.hasEarlierLiveJob(tx, first.id)).toBe(false);
+    });
+  });
+
   it('deferClaimed re-queues without charging the attempt', async () => {
     const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
     await enqueue(businessId);

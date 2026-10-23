@@ -9726,19 +9726,20 @@ describe('a preview has a time limit (G-23)', () => {
     owner.execute(sql`
       UPDATE jobs SET run_at = now() WHERE business_id = ${businessId}::uuid AND state <> 'done'`);
 
-  it('a retried yes overtaken by a newer request confirms what it was sent for, never the newer preview', async () => {
+  it('a newer request waits behind a retried yes: the yes confirms what it was sent for, then the newer preview stands (G-20 order)', async () => {
     const business = await seedMerchant();
     await say('wamid.G23-ot1', A_SALE, 'sold Ada 3 wigs for 300k');
 
     await withFirstInvoiceFailing(async (owner) => {
       await post(messagePayload('2348031234567', 'wamid.G23-ot1-yes', 'yes'));
       await buildRunner(workerDb, db, deps).runOnce();
-      /* Hold the retry back until the test releases it, so the newer message
-       * is handled first however slow the runner is. */
+      /* The yes is waiting to be retried, held back until the test releases it. */
       await holdRetries(owner, business.id);
       expect((await footprint(business.id)).invoices).toBe(0);
 
-      /* A newer request is previewed while the yes waits to be retried. */
+      /* A newer request arrives while the yes waits. Messages are handled in
+       * ARRIVAL order, whatever a retry did to the yes's schedule, so it is
+       * not previewed first. */
       await say(
         'wamid.G23-ot2',
         {
@@ -9749,18 +9750,21 @@ describe('a preview has a time limit (G-23)', () => {
         },
         'sold Bayo 2 shoes',
       );
-      expect(stubSender.lastText).toContain('Total: ₦50,000');
+      expect(stubSender.sent.map((m) => m.text).join('\n')).not.toContain('Total: ₦50,000');
+      expect(await states(business.id)).toEqual(['pending']);
+
       await runRetriesNow(owner, business.id);
       await drain();
     });
 
-    /* The yes confirmed the 300k sale it answered, once; the shoes, which
-     * did not exist when it was sent, are still only a preview. */
+    /* The yes confirmed the 300k sale it answered, once, and only then was the
+     * shoes request previewed: it is still only a preview. */
     const invoices = await withBusiness(db, business.id, (tx) =>
       reportsRepo.invoicesFor(tx, business.id, 10),
     );
     expect(invoices.rows.map((i) => i.totalK)).toEqual([30_000_000]);
     expect(await states(business.id)).toEqual(['confirmed', 'pending']);
+    expect(stubSender.lastText).toContain('Total: ₦50,000');
     expect((await used(business.id)).documents).toBe(1);
   });
 
@@ -9776,15 +9780,12 @@ describe('a preview has a time limit (G-23)', () => {
       await holdRetries(owner, business.id);
       expect((await used(business.id)).documents).toBe(1);
 
-      /* The window closes just after the yes arrived, and a later request
-       * (handled before the retry) closes it for good. */
+      /* The window closes for good while the retry waits (what a sweep on a
+       * later interaction does). */
       await owner.execute(sql`
-        UPDATE command_drafts SET expires_at = (
-          SELECT created_at + interval '1 millisecond' FROM external_events
-           WHERE business_id = ${business.id}::uuid ORDER BY created_at DESC LIMIT 1)
+        UPDATE command_drafts SET state = 'expired'
          WHERE business_id = ${business.id}::uuid`);
-      await say('wamid.G23-cl2', AN_EXPENSE, 'bought fuel 20k cash');
-      expect(await states(business.id)).toEqual(['expired', 'pending']);
+      expect(await states(business.id)).toEqual(['expired']);
 
       await runRetriesNow(owner, business.id);
       await drain();
@@ -9989,6 +9990,141 @@ describe('a preview has a time limit (G-23)', () => {
     expect((await footprint(business.id)).expenses).toBe(0);
   });
 
+  const draftStates = async (businessId: string) => [
+    ...(await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ state: string; reason: string | null }>(sql`
+          SELECT state, retired_reason AS reason FROM command_drafts
+           WHERE business_id = ${businessId}::uuid ORDER BY insertion_seq`),
+    )),
+  ];
+
+  it('a "yes" right after a late delivery failure posts neither a sale nor an expense (G-20, owner ruling)', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G20-nb-sale', A_SALE, 'sold Ada 3 wigs for 300k');
+    const saleWamid = lastWamid();
+    await receipt('2348031234567', saleWamid, 'failed');
+    await drain();
+    expect(await draftStates(business.id)).toEqual([
+      { state: 'superseded', reason: 'preview_not_delivered' },
+    ]);
+    await plain('wamid.G20-nb-sale-yes', 'yes');
+    expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
+    expect(await footprint(business.id)).toMatchObject({ invoices: 0, postings: 0 });
+
+    await say('wamid.G20-nb-exp', AN_EXPENSE, 'bought fuel 20k cash');
+    await receipt('2348031234567', lastWamid(), 'failed');
+    await drain();
+    await plain('wamid.G20-nb-exp-yes', 'yes');
+    expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
+    expect(await footprint(business.id)).toMatchObject({ expenses: 0, postings: 0 });
+    expect((await used(business.id)).documents).toBe(0);
+  });
+
+  it('a "yes" after a preview whose send failed outright posts nothing (G-20, owner ruling)', async () => {
+    const business = await seedMerchant();
+    stubSender.failWith();
+    await say('wamid.G20-st-sale', A_SALE, 'sold Ada 3 wigs for 300k');
+    await plain('wamid.G20-st-sale-yes', 'yes');
+    expect(await footprint(business.id)).toMatchObject({ invoices: 0, postings: 0 });
+    stubSender.failWith();
+    await say('wamid.G20-st-exp', AN_EXPENSE, 'bought fuel 20k cash');
+    await plain('wamid.G20-st-exp-yes', 'yes');
+    expect(await footprint(business.id)).toMatchObject({ expenses: 0, postings: 0 });
+    expect((await used(business.id)).documents).toBe(0);
+  });
+
+  it('a retry needs a NEW preview and a fresh yes after a failed one (G-20)', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G20-rt-1', AN_EXPENSE, 'bought fuel 20k cash');
+    await receipt('2348031234567', lastWamid(), 'failed');
+    await drain();
+    await plain('wamid.G20-rt-1-yes', 'yes');
+    expect((await footprint(business.id)).expenses).toBe(0);
+
+    await say('wamid.G20-rt-2', AN_EXPENSE, 'bought fuel 20k cash');
+    expect(stubSender.lastText).toContain('Expense: fuel for generator');
+    await plain('wamid.G20-rt-2-yes', 'yes');
+    expect((await footprint(business.id)).expenses).toBe(1);
+  });
+
+  const receiptProcessed = async (businessId: string) =>
+    [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<{ processed: boolean }>(sql`
+          SELECT processed_at IS NOT NULL AS processed FROM external_events
+           WHERE business_id = ${businessId}::uuid AND event_type = 'status.failed'`),
+      )),
+    ].map((r) => r.processed);
+
+  it('a receipt job that died after every lock attempt still blocks the yes, and is applied once (G-20)', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G20-dead', AN_EXPENSE, 'bought fuel 20k cash');
+    const wamid = lastWamid();
+    await receipt('2348031234567', wamid, 'failed');
+    /* All 12 attempts spent on lock timeouts: the job is dead, the receipt
+     * never applied, the draft still previewed. */
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`
+        UPDATE jobs SET state = 'dead', attempts = max_attempts, last_error = 'lock timeout'
+         WHERE business_id = ${business.id}::uuid AND kind = 'delivery.status'`);
+    } finally {
+      await close();
+    }
+    expect(await previewFlags(business.id)).toEqual([{ previewed: true, linked: false }]);
+    expect(await receiptProcessed(business.id)).toEqual([false]);
+
+    await plain('wamid.G20-dead-yes', 'yes');
+    expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
+    expect((await footprint(business.id)).expenses).toBe(0);
+    expect(await draftStates(business.id)).toEqual([
+      { state: 'superseded', reason: 'preview_not_delivered' },
+    ]);
+    /* Applied exactly once: the receipt is now processed. */
+    expect(await receiptProcessed(business.id)).toEqual([true]);
+    await plain('wamid.G20-dead-yes-2', 'yes');
+    expect((await footprint(business.id)).expenses).toBe(0);
+    /* And the dead job stays visible to operational monitoring. */
+    expect((await jobsRepo.queueHealth(workerDb)).deadRecent).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a late failure closes the question that reply asked, and nothing else (G-20)', async () => {
+    const business = await seedMerchant();
+    const SPEND = {
+      intent: 'Query',
+      topic: 'expenses_summary',
+      customer: null,
+      period: null,
+      periodText: null,
+      format: 'chat',
+    };
+    const open = async () =>
+      [
+        ...(await withBusiness(db, business.id, (tx) =>
+          tx.execute<{ expects: string | null }>(sql`
+            SELECT expects FROM conversation_continuations
+             WHERE business_id = ${business.id}::uuid AND state = 'open'`),
+        )),
+      ].map((r) => r.expects);
+    await say('wamid.G20-co-q', SPEND, 'how much did I spend?');
+    expect(stubSender.lastText).toContain('which period');
+    const asked = lastWamid();
+    expect(await open()).toEqual(['period']);
+
+    /* An unrelated failed receipt leaves it. */
+    await receipt('2348031234567', 'wamid.never-ours', 'failed');
+    await drain();
+    expect(await open()).toEqual(['period']);
+
+    await receipt('2348031234567', asked, 'failed');
+    await drain();
+    expect(await open()).toEqual([]);
+    /* A duplicate changes nothing. */
+    await receipt('2348031234567', asked, 'failed');
+    await drain();
+    expect(await open()).toEqual([]);
+  });
+
   it('a delivered or read receipt leaves a preview "previewed" (G-20)', async () => {
     const business = await seedMerchant();
     await say('wamid.G20-ok', AN_EXPENSE, 'bought fuel 20k cash');
@@ -10147,7 +10283,7 @@ describe('a preview has a time limit (G-23)', () => {
     expect([...claimed].map((r) => r.claimed)).toEqual([true]);
   });
 
-  it('a retried yes whose draft a correction superseded while it waited gives the unit back', async () => {
+  it('a correction sent while a yes waits for its retry is handled after it, and previews once (G-20 order)', async () => {
     const business = await seedMerchant();
     await say('wamid.G23-sup1', A_SALE, 'sold Ada 3 wigs for 300k');
 
@@ -10157,7 +10293,8 @@ describe('a preview has a time limit (G-23)', () => {
       expect((await used(business.id)).documents).toBe(1);
       await holdRetries(owner, business.id);
 
-      /* The merchant corrects it before the retry runs. */
+      /* The merchant corrects it before the retry runs. Arrival order: the
+       * correction waits, so it cannot supersede what the yes confirms. */
       await say(
         'wamid.G23-sup2',
         {
@@ -10167,21 +10304,17 @@ describe('a preview has a time limit (G-23)', () => {
         },
         'sorry, 4 wigs not 3',
       );
-      expect(await states(business.id)).toEqual(['superseded', 'pending']);
+      expect(await states(business.id)).toEqual(['pending']);
 
       await runRetriesNow(owner, business.id);
       await drain();
     });
 
-    /* Nothing issued for that yes, and the unit its first attempt took is back. */
-    expect((await footprint(business.id)).invoices).toBe(0);
-    expect((await used(business.id)).documents).toBe(0);
-    expect(stubSender.lastText).toBe(replies.previewAwaitingYes().text);
-
-    /* The corrected preview is confirmed by the next yes, charged once. */
-    await plain('wamid.G23-sup2-yes', 'yes');
+    /* The yes issued the 300k sale it answered, once; the correction then
+     * arrived and is previewed as a new request. */
     expect((await footprint(business.id)).invoices).toBe(1);
     expect((await used(business.id)).documents).toBe(1);
+    expect(await states(business.id)).toEqual(['confirmed', 'pending']);
   });
 
   it('a yes queued behind a correction, retried, refunds nothing it never reserved', async () => {
@@ -16526,11 +16659,13 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       stubSender.failWith();
       await say('wamid.U6-again', MILO, 'I bought 10 cartons of Milo for 100k cash');
       /* The resend reached nobody, so what it replaced comes back and the
-       * resend is withdrawn: still one confirmable draft. */
+       * resend is withdrawn: one draft remains, and the merchant was shown
+       * neither, so no "yes" books it (G-20, owner ruling). */
       expect(await purchaseStates(business.id)).toEqual(['pending', 'superseded']);
       await reply('wamid.U6-yes-1', 'yes');
       await reply('wamid.U6-yes-2', 'yes');
-      expect(await purchases(business.id)).toBe(1);
+      expect(await purchases(business.id)).toBe(0);
+      expect(await purchaseStates(business.id)).toEqual(['pending', 'superseded']);
     });
 
     it('a purchase held back for an arithmetic question is no undelivered copy (final-head review of 77e9da8)', async () => {

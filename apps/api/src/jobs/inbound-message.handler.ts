@@ -247,6 +247,12 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       throw new JobDeferred();
     }
 
+    /* A failed-receipt job that exhausted its retries is dead and will never
+     * run; apply it here, under the lock and before any "yes" is read, so the
+     * preview it names is never left confirmable (G-20). */
+    const reconciled = await conversationsRepo.reconcileDeadReceipts(tx, businessId);
+    if (reconciled > 0) log.warn(`applied ${reconciled} failed-preview receipt(s) from dead jobs`);
+
     const event = await events.eventForBusiness(tx, eventId, businessId);
     if (!event) {
       // Attributed to a different tenant, or truncated between enqueue and
@@ -2546,6 +2552,9 @@ async function confirmPendingDraft(
      * rapid confirmations must cost one document, which is how many the
      * merchant ends up with, and an expired one costs nothing at all. */
     await refundReserved();
+    /* A preview that never reached the merchant is not something a "yes"
+     * confirms (G-20): nothing executes, and they are told to ask again. */
+    if (claim.outcome === 'unseen') return replies.nothingToConfirm();
     /* The other "yes" won and is issuing the invoice; or the window closed. */
     return claim.outcome === 'expired'
       ? (expiredAnswer(command, draft.previewed === true, 'yes') ?? replies.nothingToConfirm())

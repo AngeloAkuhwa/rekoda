@@ -21,11 +21,15 @@ import type { JobContext, JobHandler } from './runner.js';
  * not ours to wait for (a reply rolled back, a customer-facing message, a
  * notice): marked processed, never retried.
  *
- * Covers `previewed` and the link proposal only. A send that fails at send
- * time also undoes the continuations and re-asked holds that reply opened,
- * from the inbound job's in-memory outcome; a webhook arriving later cannot
- * rebuild that outcome, so those stay as the merchant was believed to have
- * seen them.
+ * It also closes the continuation (a "Which period?" question) the reply
+ * opened, found through the same reply-to link. Re-asked identity holds a
+ * send-time failure restores depend on the inbound job's in-memory outcome,
+ * which a later webhook does not have.
+ *
+ * If this job exhausts its retries it is dead and this never runs; the
+ * inbound handler then applies the dead receipt itself, under the same lock,
+ * before it reads any "yes" (`reconcileDeadReceipts`), and `claimDraft` still
+ * refuses a draft that is not previewed.
  */
 export function deliveryStatusHandler(): JobHandler {
   const log = new Logger('DeliveryStatusJob');
@@ -44,7 +48,12 @@ export function deliveryStatusHandler(): JobHandler {
     await jobsRepo.serializeBusiness(tx, businessId, 'inbound');
 
     const moved = await conversationsRepo.markPreviewUndelivered(tx, businessId, outboundMessageId);
-    if (moved > 0) log.log(`a preview failed after acceptance: ${moved} draft(s) marked unseen`);
+    if (moved.drafts > 0 || moved.continuations > 0) {
+      log.log(
+        `a preview failed after acceptance: ${moved.drafts} draft(s) retired, ` +
+          `${moved.continuations} question(s) closed`,
+      );
+    }
     await events.markProcessed(tx, eventId, null, businessId);
   };
 }

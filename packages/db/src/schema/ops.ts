@@ -446,6 +446,12 @@ export const commandDrafts = pgTable(
      */
     state: text('state').notNull().default('pending'),
     /**
+     * Why a draft was retired for a reason other than the merchant's own
+     * answer (migration 0170, G-20): `preview_not_delivered` when its preview
+     * never reached the merchant. Null otherwise.
+     */
+    retiredReason: text('retired_reason'),
+    /**
      * The ordering AUTHORITY for drafts (migration 0149). `pendingDraft`
      * decides what a merchant's "yes" executes, and that decision must not
      * ride on clock resolution or on the lexical order of random uuids.
