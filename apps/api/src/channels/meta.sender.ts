@@ -67,8 +67,8 @@ export class MetaSender implements MessageSender {
    * "Your document is ready", as a utility template (G-67).
    *
    * Refuses loudly when none is configured. The document job catches nothing
-   * here: it stays failed and retries, so the PDF still reaches the owner the
-   * moment they write to the number, and the dead job is visible meanwhile.
+   * here: it is retried a few times and then dies visibly instead of dropping
+   * the document silently, and the owner can still say "resend" at any time.
    */
   async sendDocumentNotice(notice: OutboundDocumentNotice): Promise<SendResult> {
     if (!this.documentTemplate) {

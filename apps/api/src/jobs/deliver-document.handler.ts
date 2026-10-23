@@ -142,12 +142,16 @@ export function deliverDocumentHandler(deps: DeliverDocumentDeps): JobHandler {
       new Date(),
     );
 
-    if (windowOpen) {
+    /* A resend the owner just asked for is attempted whatever the clock says:
+     * their message is what reopens the window, and a notice asking them to
+     * reply "resend" again would only send them round in a circle. */
+    if (windowOpen || requested) {
       try {
         await sendPdf();
         return;
       } catch (error) {
-        if (!(error instanceof SendFailed && error.providerCode === OUTSIDE_SERVICE_WINDOW)) {
+        const closed = error instanceof SendFailed && error.providerCode === OUTSIDE_SERVICE_WINDOW;
+        if (!closed || requested) {
           if (error instanceof SendFailed) {
             /**
              * Rethrown, unlike a failed text reply.
@@ -172,8 +176,8 @@ export function deliverDocumentHandler(deps: DeliverDocumentDeps): JobHandler {
      * overrides STOP for the one delivery they asked for).
      *
      * An unconfigured or failing template THROWS, like a failed PDF: the job
-     * stays retryable, so the document still arrives the moment the owner
-     * writes, and a dead job is visible rather than a silent drop.
+     * is retried a few times and then dies VISIBLY rather than dropping
+     * silently, and the owner can still say "resend" at any time.
      */
     try {
       const result = await deps.sender.sendDocumentNotice({

@@ -2146,6 +2146,41 @@ describe('a document sent outside the 24-hour service window (G-67)', () => {
     expect(await deliveryJob(businessId)).toMatchObject({ state: 'pending', attempts: 1 });
   });
 
+  it('attempts a resend the owner asked for even when the clock says the window is closed', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348177000608');
+    const { runner } = await renderedQuote(businessId);
+    expect(await runner.runOnce()).toBe(true); // the automatic delivery: a notice
+    stubSender.reset();
+    const [doc] = await withBusiness(appDb, businessId, (tx) =>
+      issueRepo.documentsFor(tx, businessId),
+    );
+    await enqueue(businessId, 'document.deliver', {
+      documentId: doc!.id,
+      requestedByMerchant: true,
+    });
+    expect(await runner.runOnce()).toBe(true);
+    expect(stubSender.documents).toHaveLength(1);
+    expect(stubSender.documentNotices).toHaveLength(0);
+  });
+
+  it('never answers a requested resend with another notice when Meta still says closed', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348177000609');
+    const { runner } = await renderedQuote(businessId);
+    expect(await runner.runOnce()).toBe(true); // the automatic delivery: a notice
+    stubSender.reset();
+    const [doc] = await withBusiness(appDb, businessId, (tx) =>
+      issueRepo.documentsFor(tx, businessId),
+    );
+    stubSender.failDocumentsWith(new SendFailed('outside the window', 131047));
+    await enqueue(businessId, 'document.deliver', {
+      documentId: doc!.id,
+      requestedByMerchant: true,
+    });
+    expect(await runner.runOnce()).toBe(true);
+    expect(stubSender.documentNotices).toHaveLength(0);
+    expect(await deliveryJob(businessId)).toMatchObject({ state: 'pending', attempts: 1 });
+  });
+
   it('delivers the PDF to an owner who replied resend, even past 24 hours since their earlier message', async () => {
     const businessId = await seedBusiness('Ada Fashion', '+2348177000607');
     await ownerWroteHoursAgo(businessId, 40);
