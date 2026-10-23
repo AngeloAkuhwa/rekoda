@@ -15,7 +15,7 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { subscriptionReference } from '@rekoda/core';
+import { subscriptionReference, usagePeriod } from '@rekoda/core';
 import {
   billingRepo,
   createDb,
@@ -24,6 +24,7 @@ import {
   issueRepo,
   settleRepo,
   subscriptionsRepo,
+  usageRepo,
   withBusiness,
   type Db,
 } from '@rekoda/db';
@@ -38,6 +39,7 @@ import { StubSpeechToText } from '../ai/stt.stub.js';
 import { LocalStorage } from '../documents/r2.storage.js';
 import { ReplySender } from '../replies/reply.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
+import { applySettledCharge } from './billing.service.js';
 import { sealPayload } from '../privacy/payload-vault.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
 import { pumpPaystackEvents } from '../payments/paystack-pump.js';
@@ -127,7 +129,12 @@ const CHAT_K = 990_000;
 /** A pending first-purchase charge, as the billing endpoint would open one. */
 async function openSubscriptionCharge(
   businessId: string,
-  opts: { amountK?: number; kind?: 'first_purchase' | 'add_on'; packId?: string } = {},
+  opts: {
+    amountK?: number;
+    kind?: 'first_purchase' | 'add_on';
+    packId?: string;
+    quantity?: number;
+  } = {},
 ): Promise<string> {
   const reference = subscriptionReference(new Date(), (n) => randomBytes(n));
   const now = new Date();
@@ -137,6 +144,7 @@ async function openSubscriptionCharge(
       kind: opts.kind ?? 'first_purchase',
       plan: opts.kind === 'add_on' ? null : 'chat',
       packId: opts.packId ?? null,
+      ...(opts.quantity !== undefined ? { quantity: opts.quantity } : {}),
       amountK: opts.amountK ?? CHAT_K,
       reference,
       periodStart: opts.kind === 'add_on' ? null : now,
@@ -420,5 +428,163 @@ describe('a subscription payment', () => {
       subscriptionsRepo.chargesFor(tx, businessId),
     );
     expect(charges).toEqual({ rows: [], count: 0 });
+  });
+});
+
+/**
+ * A top-up pack is granted exactly once.
+ *
+ * The pack test above proves a settled pack leaves the plan alone; it never
+ * looked at the meter. This is the matrix for the thing the merchant paid
+ * for: the bought units land on this month's counter once, however the
+ * payment arrives, and not at all unless the provider verified the full price.
+ */
+describe('a top-up pack', () => {
+  const PACK_K = 250_000;
+  const PACK_UNITS = 100; // messages_100
+
+  const bonusOf = async (businessId: string, unit = 'AI_ACTIONS'): Promise<number> => {
+    const rows = await withBusiness(appDb, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    return rows.find((row) => row.unit === unit)?.bonus ?? 0;
+  };
+
+  const openPack = (businessId: string, opts: { quantity?: number; amountK?: number } = {}) =>
+    openSubscriptionCharge(businessId, {
+      kind: 'add_on',
+      packId: 'messages_100',
+      amountK: opts.amountK ?? PACK_K,
+      ...(opts.quantity !== undefined ? { quantity: opts.quantity } : {}),
+    });
+
+  /** Deliver one success for `reference` and run it all the way through. */
+  const deliver = async (reference: string, amountK: number): Promise<void> => {
+    provider.willVerify(reference, { amountK });
+    await storeChargeSuccess(reference, amountK);
+    await pump();
+    await drainJobs();
+  };
+
+  it('credits the units it sells to this month, through the webhook and the job', async () => {
+    const businessId = await seedBusiness();
+    const reference = await openPack(businessId);
+
+    await deliver(reference, PACK_K);
+
+    expect((await chargeOf(businessId, reference))?.status).toBe('paid');
+    expect(await bonusOf(businessId)).toBe(PACK_UNITS);
+  });
+
+  it('credits nothing more when the same payment is delivered again', async () => {
+    const businessId = await seedBusiness();
+    const reference = await openPack(businessId);
+
+    await deliver(reference, PACK_K);
+    await deliver(reference, PACK_K); // a second delivery, a different transaction id
+    await deliver(reference, PACK_K);
+
+    expect(await bonusOf(businessId)).toBe(PACK_UNITS);
+  });
+
+  it('credits once when two settlements of one reference race', async () => {
+    const businessId = await seedBusiness();
+    const reference = await openPack(businessId);
+    const settle = () =>
+      withBusiness(appDb, businessId, (tx) =>
+        applySettledCharge(tx, {
+          businessId,
+          reference,
+          providerReference: 'ps_race',
+          paidAmountK: PACK_K,
+          when: new Date(),
+          config,
+        }),
+      );
+
+    const answers = await Promise.all([settle(), settle()]);
+
+    expect([...answers].sort()).toEqual(['already_settled', 'applied']);
+    expect(await bonusOf(businessId)).toBe(PACK_UNITS);
+  });
+
+  it('credits nothing for part of its price, and leaves the charge payable', async () => {
+    const businessId = await seedBusiness();
+    const reference = await openPack(businessId);
+
+    await deliver(reference, PACK_K / 2);
+
+    expect((await chargeOf(businessId, reference))?.status).toBe('pending');
+    expect(await bonusOf(businessId)).toBe(0);
+  });
+
+  it('believes the verify call, not a webhook that claims the full price', async () => {
+    const businessId = await seedBusiness();
+    const reference = await openPack(businessId);
+
+    provider.willVerify(reference, { amountK: 100 }); // what the provider really took
+    await storeChargeSuccess(reference, PACK_K); // what the webhook body says
+    await pump();
+    await drainJobs();
+
+    expect((await chargeOf(businessId, reference))?.status).toBe('pending');
+    expect(await bonusOf(businessId)).toBe(0);
+  });
+
+  it('credits once for an overpayment and leaves the excess to a human', async () => {
+    const businessId = await seedBusiness();
+    const reference = await openPack(businessId);
+
+    await deliver(reference, PACK_K * 2);
+
+    expect((await chargeOf(businessId, reference))?.status).toBe('paid');
+    expect(await bonusOf(businessId)).toBe(PACK_UNITS);
+  });
+
+  it('credits nothing when the provider says the attempt failed', async () => {
+    const businessId = await seedBusiness();
+    const reference = await openPack(businessId);
+
+    provider.willVerify(reference, {
+      succeeded: false,
+      providerStatus: 'failed',
+      amountK: PACK_K,
+    });
+    await storeChargeSuccess(reference, PACK_K);
+    await pump();
+    await drainJobs();
+
+    expect((await chargeOf(businessId, reference))?.status).toBe('failed');
+    expect(await bonusOf(businessId)).toBe(0);
+  });
+
+  it('credits quantity times the pack when several are bought in one charge', async () => {
+    const businessId = await seedBusiness();
+    const reference = await openPack(businessId, { quantity: 3, amountK: PACK_K * 3 });
+
+    await deliver(reference, PACK_K * 3);
+
+    expect(await bonusOf(businessId)).toBe(PACK_UNITS * 3);
+  });
+
+  it('credits each separate purchase once, so two charges are two grants', async () => {
+    const businessId = await seedBusiness();
+    const first = await openPack(businessId);
+    await deliver(first, PACK_K);
+    const second = await openPack(businessId);
+    await deliver(second, PACK_K);
+
+    expect(await bonusOf(businessId)).toBe(PACK_UNITS * 2);
+  });
+
+  it('credits the business that paid, never another', async () => {
+    const payer = await seedBusiness();
+    const bystander = await seedBusiness();
+    const reference = await openPack(payer);
+
+    await deliver(reference, PACK_K);
+
+    expect(await bonusOf(payer)).toBe(PACK_UNITS);
+    expect(await bonusOf(bystander)).toBe(0);
   });
 });
