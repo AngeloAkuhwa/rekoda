@@ -70,7 +70,21 @@ const lastInbound = async (businessId: string) =>
 describe('lastMerchantInboundAt', () => {
   it("returns the database's own time, so the window is judged on one clock", async () => {
     const business = await seedBusiness();
-    await inboundAt(business, new Date(Date.now() - 60_000));
+    seq += 1;
+    /* Stamped with the DATABASE clock too, so the test is independent of any
+     * skew between this host and PostgreSQL. */
+    await withBusiness(app, business, async (tx) => {
+      const message = await conversationsRepo.recordInbound(tx, {
+        businessId: business,
+        channel: 'meta',
+        kind: 'text',
+        body: 'hello',
+        providerMessageId: `wamid.win-${seq}`,
+      });
+      await tx.execute(
+        sql`UPDATE conversation_messages SET created_at = now() - interval '60 seconds' WHERE id = ${message.id}`,
+      );
+    });
     const { at, now } = await withBusiness(app, business, (tx) =>
       conversationsRepo.lastMerchantInboundAt(tx, business),
     );
