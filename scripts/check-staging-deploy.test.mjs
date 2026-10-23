@@ -624,3 +624,8 @@ test('an interrupted run reconciled only after the baseline is judged', () => {
     /reconcile an interrupted run .* before it judges the rollback baseline/,
   );
 });
+
+test('the marker written in place, where a kill leaves it truncated', () => {
+  const edit = edited('script', '  mv -f "$STATE.tmp" "$STATE"\n', '');
+  expectProblem(problems(edit), /writes its marker by atomic rename/);
+});

@@ -328,22 +328,25 @@ What the script does for you:
   exits, its EXIT trap runs, and a prepared checkout is restored. bash runs the
   trap when the foreground command (a build) returns.
 - **SIGKILL or a torn-down runner** cannot run a trap. The script writes
-  `.git/rekoda-deploy-staging.state` (phase, baseline, target) before the
-  checkout changes. The next run reads it before judging the baseline:
+  `.git/rekoda-deploy-staging.state` (phase, baseline, target, by atomic
+  rename) before the checkout changes. The next run reads it before judging the baseline:
   - `prepared`, checkout and `.env` still exactly what that run prepared, and
     `/health` healthy at the run's baseline: it restores the baseline and
     carries on.
   - `prepared`, but anything else (checkout or `.env` edited, `/health`
     elsewhere): it refuses and changes nothing.
   - `live` (migrate or `up` had begun): it restores nothing. The baseline check
-    is the reconciliation: checkout, `.env` and `/health` must all agree, or the
-    run refuses.
+    must pass (checkout, `.env` and `/health` all agree) or the run refuses. The
+    marker stays until a deploy runs to the end, and an automatic `--newer-only`
+    run refuses to skip past it, because `/health` can name the target while
+    worker, web or Caddy are still on the old release. Finish it with the manual
+    "Deploy staging" workflow.
 
 A host stopped by an older script has no marker. Recover it by hand, from
 `/opt/rekoda` as the deploy user, only if **every** check agrees:
 
 1. Evidence first: `git rev-parse HEAD`, `git status --porcelain
-   --untracked-files=no`, `sed -n 's/^REKODA_RELEASE=//p' .env`, `dc ps -a`,
+--untracked-files=no`, `sed -n 's/^REKODA_RELEASE=//p' .env`, `dc ps -a`,
    `curl -fsS https://<staging api host>/health`.
 2. Stop if the checkout has tracked modifications, `/health` is not
    `status ok`, `database up`, or `/health` answers from another stack, or the

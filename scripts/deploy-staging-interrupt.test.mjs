@@ -204,12 +204,30 @@ test('a live-phase marker restores nothing: the baseline check refuses a disagre
   assert.equal(h.read.marker(), true);
 });
 
-test('a live-phase marker is cleared once checkout, .env and /health agree', () => {
+test('a live-phase marker is not skipped past, even when checkout, .env and /health agree', () => {
   const h = host();
   h.killedWhilePrepared('live');
   writeFileSync(join(h.fake, 'health.json'), readFileSync(join(h.fake, 'next-health.json')));
   const r = h.run('--newer-only', h.prev);
-  assert.equal(r.status, 75, r.stderr + r.stdout);
+  assert.equal(r.status, 1, r.stderr + r.stdout);
+  assert.match(r.stderr, /killed after migrate or up began/);
+  assert.equal(h.read.marker(), true);
+});
+
+test('a live-phase marker is cleared only once a deploy runs to the end', () => {
+  const h = host();
+  h.killedWhilePrepared('live');
+  writeFileSync(join(h.fake, 'health.json'), readFileSync(join(h.fake, 'next-health.json')));
+  const r = h.run(h.next);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.equal(h.read.marker(), false);
+});
+
+test('the marker is written whole: a leftover temporary file never counts', () => {
+  const h = host();
+  writeFileSync(join(h.dir, '.git/rekoda-deploy-staging.state.tmp'), 'phase=pre');
+  const r = h.run(h.next);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
   assert.equal(h.read.marker(), false);
 });
 
