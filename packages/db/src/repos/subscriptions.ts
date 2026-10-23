@@ -385,6 +385,8 @@ export interface ChargeRow extends Record<string, unknown> {
   supersededAt: Date | null;
   /** What the provider verified it took (G-107). Above `amountK` is an overpayment; null if unrecorded. */
   paidAmountK: number | null;
+  /** How much of `amountK` has been returned; the status is `refunded` only when all of it has (G-111). */
+  refundedAmountK: number;
 }
 
 interface RawCharge extends Record<string, unknown> {
@@ -402,6 +404,7 @@ interface RawCharge extends Record<string, unknown> {
   created_at: string;
   superseded_at: string | null;
   paid_amount_k: string | number | null;
+  refunded_amount_k: string | number | null;
 }
 
 const shape = (row: RawCharge): ChargeRow => ({
@@ -419,6 +422,7 @@ const shape = (row: RawCharge): ChargeRow => ({
   createdAt: new Date(row.created_at),
   supersededAt: at(row.superseded_at),
   paidAmountK: row.paid_amount_k === null ? null : Number(row.paid_amount_k),
+  refundedAmountK: Number(row.refunded_amount_k ?? 0),
 });
 
 /**
