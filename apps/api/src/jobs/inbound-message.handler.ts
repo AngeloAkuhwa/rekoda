@@ -111,6 +111,7 @@ import {
   replaceOutsideTokens,
 } from '@rekoda/core/privacy';
 import { describeFailure, JobDeferred, type JobContext, type JobHandler } from './runner.js';
+import { JobKind } from './queue.service.js';
 import { TranscriptionUnavailable, type SpeechToText, type Transcript } from '../ai/stt.js';
 import type { AudioMetadataProbe } from '../ai/audio-duration.js';
 import { TextExtractionUnavailable, type ExtractionUsage, type TextExtraction } from '../ai/ocr.js';
@@ -238,9 +239,19 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * confirms silently drops a record. So, under the lock: if an older
      * inbound job for this business is still live, this one is jumping the
      * queue. Step back and let it go first; the runner re-queues without
-     * charging an attempt.
+     * charging an attempt. An older `delivery.status` job counts too (G-20):
+     * a failed receipt queued before this message must unsee its preview
+     * first, or a "yes" would confirm a draft the merchant never received.
      */
-    if (await jobsRepo.hasEarlierLiveJob(tx, jobId)) throw new JobDeferred();
+    if (await jobsRepo.hasEarlierLiveJob(tx, jobId, [JobKind.DeliveryStatus])) {
+      throw new JobDeferred();
+    }
+
+    /* A failed-receipt job that exhausted its retries is dead and will never
+     * run; apply it here, under the lock and before any "yes" is read, so the
+     * preview it names is never left confirmable (G-20). */
+    const reconciled = await conversationsRepo.reconcileDeadReceipts(tx, businessId);
+    if (reconciled > 0) log.warn(`applied ${reconciled} failed-preview receipt(s) from dead jobs`);
 
     const event = await events.eventForBusiness(tx, eventId, businessId);
     if (!event) {
@@ -556,11 +567,18 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         reply: answer,
         // Only the model path can produce a reply that names a customer.
         ...(liveTokens ? { tokens: liveTokens.displays } : {}),
+        /* G-20: the reply records which message it answered, so a delivery
+         * that fails after acceptance finds this message's preview. */
+        inReplyTo: message.id,
       });
       /* G-23: "previewed" means WhatsApp accepted the preview for delivery.
        * A preview whose send failed (swallowed so the draft survives) was
        * not sent. A delivery that fails later, after acceptance, comes back
-       * as a status webhook nothing reads yet (G-20) and is not reflected. */
+       * as a `failed` status webhook (G-20): the `delivery.status` job then
+       * marks this message's pending preview unseen, as below. Only that:
+       * the continuations and re-asked holds undone below on a send-time
+       * failure are rebuilt from this job's in-memory `outcome`, which a
+       * webhook arriving later does not have. */
       /* A link question cut from a long preview was not asked: the
        * proposal goes, so a yes to what the merchant read never joins two
        * customers (G-60, Codex on #271). */
@@ -2534,6 +2552,9 @@ async function confirmPendingDraft(
      * rapid confirmations must cost one document, which is how many the
      * merchant ends up with, and an expired one costs nothing at all. */
     await refundReserved();
+    /* A preview that never reached the merchant is not something a "yes"
+     * confirms (G-20): nothing executes, and they are told to ask again. */
+    if (claim.outcome === 'unseen') return replies.nothingToConfirm();
     /* The other "yes" won and is issuing the invoice; or the window closed. */
     return claim.outcome === 'expired'
       ? (expiredAnswer(command, draft.previewed === true, 'yes') ?? replies.nothingToConfirm())

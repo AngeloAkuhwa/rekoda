@@ -63,6 +63,7 @@ export class StubSender implements MessageSender {
     this.connectionTexts.length = 0;
     this.media.clear();
     this.failNext = null;
+    this.omitIdNext = false;
     this.failDocuments = null;
   }
 
@@ -76,6 +77,13 @@ export class StubSender implements MessageSender {
     return this.documents[this.documents.length - 1] ?? null;
   }
 
+  /** The next text send is accepted but Meta's response names no message id. */
+  omitNextMessageId(): void {
+    this.omitIdNext = true;
+  }
+
+  private omitIdNext = false;
+
   send(message: OutboundMessage): Promise<SendResult> {
     if (this.failNext) {
       const error = this.failNext;
@@ -83,6 +91,10 @@ export class StubSender implements MessageSender {
       return Promise.reject(error);
     }
     this.sent.push(message);
+    if (this.omitIdNext) {
+      this.omitIdNext = false;
+      return Promise.resolve({ providerMessageId: null });
+    }
     return Promise.resolve({ providerMessageId: `wamid.STUB${this.sent.length}` });
   }
 

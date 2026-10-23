@@ -26,6 +26,7 @@ import { renderDocumentHandler } from './render-document.handler.js';
 import { deliverDocumentHandler } from './deliver-document.handler.js';
 import { paymentLinkHandler } from './payment-link.handler.js';
 import { graduationNudgeHandler } from './graduation-nudge.handler.js';
+import { deliveryStatusHandler } from './delivery-status.handler.js';
 import { processPaymentEventHandler } from './process-payment-event.handler.js';
 import { processBillingChargeHandler } from './process-billing-charge.handler.js';
 import { PaymentsModule } from '../payments/payments.module.js';
@@ -153,6 +154,7 @@ export function buildRunner(
     JobKind.GraduationNudge,
     graduationNudgeHandler({ replySender: deps.replySender, db: appDb }),
   );
+  runner.register(JobKind.DeliveryStatus, deliveryStatusHandler());
   return runner;
 }
 

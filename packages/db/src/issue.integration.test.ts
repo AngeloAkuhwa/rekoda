@@ -314,6 +314,7 @@ describe('CG3 — two rapid "yes" produce exactly one document', () => {
         intent: 'RecordSale',
         command: { intent: 'RecordSale' },
         model: 'test',
+        previewed: true,
       }),
     );
     return draft.id;

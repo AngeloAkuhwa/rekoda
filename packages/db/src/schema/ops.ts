@@ -104,11 +104,22 @@ export const conversationMessages = pgTable(
     body: text('body'),
     /** Provider message id — the idempotency key for inbound delivery. */
     providerMessageId: text('provider_message_id'),
+    /**
+     * The inbound message this outbound reply answered (migration 0169,
+     * G-20), so a later `failed` delivery status for the reply's wamid finds
+     * the draft its preview showed. Null on inbound rows and on replies with
+     * no request behind them. The composite FK to `(business_id, id)` lives in
+     * the migration: a reply cannot answer another business's message.
+     */
+    replyToMessageId: uuid('reply_to_message_id'),
     createdAt: insertedAt('created_at'),
   },
   (t) => [
     uniqueIndex('messages_provider_ux').on(t.providerMessageId),
     index('messages_conversation_ix').on(t.conversationId),
+    index('messages_reply_to_business_ix')
+      .on(t.businessId, t.replyToMessageId)
+      .where(sql`${t.replyToMessageId} IS NOT NULL`),
   ],
 );
 
@@ -438,6 +449,12 @@ export const commandDrafts = pgTable(
      */
     state: text('state').notNull().default('pending'),
     /**
+     * Why a draft was retired for a reason other than the merchant's own
+     * answer (migration 0170, G-20): `preview_not_delivered` when its preview
+     * never reached the merchant. Null otherwise.
+     */
+    retiredReason: text('retired_reason'),
+    /**
      * The ordering AUTHORITY for drafts (migration 0149). `pendingDraft`
      * decides what a merchant's "yes" executes, and that decision must not
      * ride on clock resolution or on the lexical order of random uuids.
@@ -464,9 +481,10 @@ export const commandDrafts = pgTable(
      * Whether a preview a "yes" confirms was SENT, accepted by WhatsApp
      * (migration 0153, G-23), rather than a question stored with the same
      * financial intent, or a preview whose send failed. Decides whether an
-     * expired draft is answered "that request has expired". An asynchronous
-     * delivery failure after acceptance is not reflected (status webhooks are
-     * unread, G-20).
+     * expired draft is answered "that request has expired", and whether
+     * `claimDraft` will confirm it. An asynchronous delivery failure after
+     * acceptance clears it through the `delivery.status` job
+     * (`markPreviewUndelivered`, G-20), for `pending` and `expired` drafts.
      */
     previewed: boolean('previewed').notNull().default(false),
     /**

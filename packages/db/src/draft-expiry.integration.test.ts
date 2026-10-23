@@ -99,6 +99,7 @@ async function draftAt(
       intent: 'RecordSale',
       command: { intent: 'RecordSale', note },
       model: null,
+      previewed: true,
       ...(now ? { now } : {}),
     });
     return { ...draft, messageId: message.id };

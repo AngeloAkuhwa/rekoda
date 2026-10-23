@@ -36,7 +36,8 @@ export interface IncomingEvent {
   /**
    * Born finished: a delivery receipt has nothing to understand, so leaving it
    * `processed_at IS NULL` made every receipt a permanent "unprocessed" row and
-   * buried the real backlog signal (G-20).
+   * buried the real backlog signal (G-20). A `failed` receipt for a tenant's
+   * outbound message is the exception: it is queued, and its job marks it.
    */
   processed?: boolean;
 }

@@ -146,18 +146,39 @@ export async function serializeBusiness(
  * taking the lock: an older sibling still `pending` or `running` means this
  * job is jumping the queue and should step back (see `deferClaimed`). Ordered
  * by the same (run_at, created_at) the claim query uses, with id as the
- * tiebreak.
+ * tiebreak, for a sibling that has been tried (`attempts > 0`: running, or
+ * backing off after a failure, which a newer request may deliberately pass).
+ * A sibling never tried (`attempts = 0`) is ordered by arrival (`created_at`,
+ * id): the only thing that moved its `run_at` is `deferClaimed`, which
+ * refunds the attempt, and a message that stepped back behind a failed
+ * receipt must still count as older than one that arrived after it (G-20).
+ *
+ * `alsoKinds` names other kinds whose older live jobs also count, by arrival:
+ * an inbound "yes" must not overtake an already-queued `delivery.status`
+ * failure for a preview, even one backing off after a failed attempt.
  */
-export async function hasEarlierLiveJob(tx: TenantDb, jobId: string): Promise<boolean> {
+export async function hasEarlierLiveJob(
+  tx: TenantDb,
+  jobId: string,
+  alsoKinds: readonly string[] = [],
+): Promise<boolean> {
+  const kinds = sql.join(
+    alsoKinds.map((k) => sql`${k}`),
+    sql`, `,
+  );
   const rows = await tx.execute(sql`
     SELECT 1
     FROM jobs j, jobs me
     WHERE me.id = ${jobId}::uuid
       AND j.business_id = me.business_id
-      AND j.kind = me.kind
       AND j.id <> me.id
       AND j.state IN ('pending', 'running')
-      AND (j.run_at, j.created_at, j.id) < (me.run_at, me.created_at, me.id)
+      AND (
+        (j.kind = me.kind AND j.attempts > 0
+           AND (j.run_at, j.created_at, j.id) < (me.run_at, me.created_at, me.id))
+        OR ((j.kind = me.kind AND j.attempts = 0${alsoKinds.length > 0 ? sql` OR j.kind IN (${kinds})` : sql``})
+           AND (j.created_at, j.id) < (me.created_at, me.id))
+      )
     LIMIT 1
   `);
   return [...rows].length > 0;

@@ -458,6 +458,13 @@ export interface OutboundMessageInput {
    * what is stored here is what the gateway produced.
    */
   body: string;
+  /**
+   * The inbound message this reply answers (G-20, migration 0169). Set where
+   * a merchant's preview is sent, so a delivery that fails after WhatsApp
+   * accepted it can be traced back to the draft it showed. Omitted for a
+   * reply with no request behind it.
+   */
+  replyToMessageId?: string;
 }
 
 /** Record a reply. Written BEFORE the send, so an undelivered reply is still known. */
@@ -478,6 +485,7 @@ export async function recordOutbound(
       direction: 'outbound',
       kind: message.kind,
       body: message.body,
+      replyToMessageId: message.replyToMessageId ?? null,
     })
     .returning({ id: conversationMessages.id });
 
@@ -619,7 +627,12 @@ export type DraftClaim =
   /** The window had closed: nothing may execute, and the merchant is told. */
   | { readonly outcome: 'expired' }
   /** Confirmed by another "yes", corrected, cancelled or retired. */
-  | { readonly outcome: 'not_pending' };
+  | { readonly outcome: 'not_pending' }
+  /**
+   * Pending but never successfully presented to the merchant (G-20, owner
+   * ruling): nothing may execute on a "yes" to a preview they did not get.
+   */
+  | { readonly outcome: 'unseen' };
 
 /**
  * CG3 — claim a draft for issuing, exactly once, and only inside its window.
@@ -628,6 +641,11 @@ export type DraftClaim =
  * become two jobs on two connections; both read the draft, both decide to
  * issue, and the merchant's customer receives two invoices with two numbers
  * for one sale. On WhatsApp a double-tap is not an edge case, it is Tuesday.
+ *
+ * G-20 (owner ruling): the same UPDATE carries `previewed`, the last
+ * independent check that a FINANCIAL draft is only ever confirmed after its
+ * preview was presented. A question (Query, Unclear) and a parked erasure ask
+ * are never previews, and a yes to them executes nothing financial.
  *
  * G-23: the same UPDATE carries `expires_at > now`, so the age check is part
  * of the claim itself, never a read that a later write trusts. A draft that
@@ -650,8 +668,17 @@ export async function claimDraft(
     UPDATE command_drafts SET state = 'confirmed', updated_at = clock_timestamp()
      WHERE id = ${draftId}::uuid AND state = 'pending' AND expires_at > ${now}
        AND created_at <= ${now}
+       AND (previewed OR (intent IN ('Query', 'Unclear', 'EraseData')
+                          AND command->>'intent' IN ('Query', 'Unclear', 'EraseData')))
     RETURNING id`);
   if ([...claimed].length === 1) return { outcome: 'claimed' };
+
+  const unseen = await tx.execute<{ id: string }>(sql`
+    SELECT id FROM command_drafts
+     WHERE id = ${draftId}::uuid AND state = 'pending' AND expires_at > ${now}
+       AND NOT previewed AND NOT (intent IN ('Query', 'Unclear', 'EraseData')
+                                AND command->>'intent' IN ('Query', 'Unclear', 'EraseData'))`);
+  if ([...unseen].length === 1) return { outcome: 'unseen' };
 
   const expired = await tx.execute<{ id: string }>(sql`
     UPDATE command_drafts SET state = 'expired', updated_at = clock_timestamp()
@@ -713,12 +740,113 @@ export async function markDraftUnseen(
   businessId: string,
   conversationMessageId: string,
 ): Promise<void> {
+  /* The draft stays `pending` here on purpose: the send-time failure paths
+   * above this call restore, replace and withdraw drafts by state. It is not
+   * confirmable all the same (G-20, owner ruling): `claimDraft` refuses a
+   * financial draft that is not previewed. A preview whose failure arrives
+   * LATER is retired instead (`markPreviewUndelivered`). */
   await tx.execute(sql`
     UPDATE command_drafts SET previewed = false, identity_link = NULL,
            updated_at = clock_timestamp()
      WHERE business_id = ${businessId}::uuid
        AND conversation_message_id = ${conversationMessageId}::uuid
        AND previewed`);
+}
+
+/**
+ * A preview WhatsApp ACCEPTED and then failed to deliver (G-20).
+ *
+ * `markDraftUnseen` covers a send that failed outright. A delivery that fails
+ * after acceptance arrives later, as a `failed` status webhook naming only
+ * the outbound wamid. That wamid is this business's outbound reply
+ * (`provider_message_id`), whose `reply_to_message_id` names the inbound
+ * message; that message's drafts are what the preview showed. Each one still
+ * `pending` or `expired` and `previewed` is marked unseen exactly as a failed send marks
+ * it: not previewed, so a lapsed "yes" is never told an unseen request
+ * expired, and its link question was not asked, so the proposal goes (G-60).
+ *
+ * Only `pending` and `expired` drafts move: a confirmed or cancelled one was
+ * answered, so its preview was read, a superseded one is gone, and an expired
+ * one still carries `previewed` into the "that request has expired" answer a
+ * later "yes" gets, which would be false for a preview never received. A
+ * preview is only ever shown once, by the reply to the message that drafted it
+ * (a correction supersedes with a new draft; "I sent you a preview a moment
+ * ago" does not re-display one), so the link from reply to drafting message is
+ * the whole mapping. A wamid this business never sent, a reply that answered no
+ * request, or a reply whose request drafted nothing previewed
+ * changes nothing. Returns how many drafts moved.
+ */
+export async function markPreviewUndelivered(
+  tx: TenantDb,
+  businessId: string,
+  providerMessageId: string,
+): Promise<{ drafts: number; continuations: number }> {
+  const rows = await tx.execute<{ drafts: string; continuations: string }>(sql`
+    WITH reply AS (
+      SELECT reply_to_message_id AS request_id
+        FROM conversation_messages
+       WHERE business_id = ${businessId}::uuid
+         AND direction = 'outbound'
+         AND provider_message_id = ${providerMessageId}
+         AND reply_to_message_id IS NOT NULL
+    ), drafts AS (
+      UPDATE command_drafts d SET previewed = false, identity_link = NULL,
+             state = CASE WHEN d.state = 'pending' THEN 'superseded' ELSE d.state END,
+             retired_reason = CASE WHEN d.state = 'pending' THEN 'preview_not_delivered'
+                                   ELSE d.retired_reason END,
+             updated_at = clock_timestamp()
+        FROM reply
+       WHERE d.business_id = ${businessId}::uuid
+         AND d.conversation_message_id = reply.request_id
+         AND d.state IN ('pending', 'expired')
+         AND d.previewed
+      RETURNING d.id
+    ), continuations AS (
+      UPDATE conversation_continuations c
+         SET state = 'superseded', updated_at = clock_timestamp()
+        FROM reply
+       WHERE c.business_id = ${businessId}::uuid
+         AND c.source_message_id = reply.request_id
+         AND c.state = 'open'
+      RETURNING c.id
+    )
+    SELECT (SELECT count(*) FROM drafts)::text AS drafts,
+           (SELECT count(*) FROM continuations)::text AS continuations`);
+  const row = [...rows][0];
+  return { drafts: Number(row?.drafts ?? 0), continuations: Number(row?.continuations ?? 0) };
+}
+
+/**
+ * A `delivery.status` job that exhausted its retries is dead, and nothing
+ * else would ever apply its receipt: the preview it names would stay
+ * confirmable (G-20). Called under the business's inbound lock before any
+ * "yes" is read, this applies every such dead receipt exactly once (its event
+ * is then marked processed, which is also what takes it out of the next
+ * call) and returns how many receipts it applied.
+ */
+export async function reconcileDeadReceipts(tx: TenantDb, businessId: string): Promise<number> {
+  const dead = await tx.execute<{ event_id: string; wamid: string }>(sql`
+    SELECT j.payload->>'eventId' AS event_id, j.payload->>'outboundMessageId' AS wamid
+      FROM jobs j
+      JOIN external_events e ON e.id = CASE
+             WHEN j.payload->>'eventId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+             THEN (j.payload->>'eventId')::uuid END
+     WHERE j.business_id = ${businessId}::uuid
+       AND j.kind = 'delivery.status'
+       AND j.state = 'dead'
+       AND e.processed_at IS NULL
+       AND j.payload->>'outboundMessageId' IS NOT NULL`);
+  let applied = 0;
+  for (const receipt of [...dead]) {
+    await markPreviewUndelivered(tx, businessId, receipt.wamid);
+    await tx.execute(sql`
+      UPDATE external_events SET processed_at = now(),
+             error = 'applied after the receipt job died'
+       WHERE id = ${receipt.event_id}::uuid AND business_id = ${businessId}::uuid
+         AND processed_at IS NULL`);
+    applied += 1;
+  }
+  return applied;
 }
 
 /**
