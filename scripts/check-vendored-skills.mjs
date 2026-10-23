@@ -95,6 +95,12 @@ export function problemsIn(root) {
       problems.push(`${skill}: no tracked files under ${SKILLS_DIR}/${skill}/`);
       continue;
     }
+    // The installer hash concatenates path and bytes, so a renamed entrypoint
+    // could collide; every skill must still ship its SKILL.md.
+    if (!files.some((f) => f.relativePath === 'SKILL.md')) {
+      problems.push(`${skill}: missing tracked SKILL.md`);
+      continue;
+    }
     const got = folderHash(files);
     if (got !== want) problems.push(`${skill}: hashes to ${got}, expected ${want}`);
   }

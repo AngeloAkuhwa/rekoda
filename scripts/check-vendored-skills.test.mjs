@@ -145,3 +145,18 @@ test('a committed skill file that matches an ignore rule is reported', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a skill folder without its SKILL.md entrypoint is reported', () => {
+  const dir = scratchRepo('');
+  try {
+    writeFileSync(join(dir, 'skills-lock.json'), JSON.stringify({ version: 1, skills: {} }));
+    writeFileSync(join(dir, '.claude/skills/SOURCES.md'), `Impeccable: ${IMPECCABLE_HASH}\n`);
+    mkdirSync(join(dir, '.claude/skills/impeccable'), { recursive: true });
+    writeFileSync(join(dir, '.claude/skills/impeccable/SKILL.m'), 'd# renamed\n');
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    const problems = problemsIn(dir);
+    assert.ok(problems.includes('impeccable: missing tracked SKILL.md'), problems.join('\n'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
