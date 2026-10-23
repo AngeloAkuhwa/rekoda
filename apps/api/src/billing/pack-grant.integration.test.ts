@@ -212,7 +212,8 @@ async function openPack(businessId: string): Promise<string> {
 async function payPack(businessId: string, reference: string, amountK = PACK_K): Promise<void> {
   provider.willVerify(reference, { amountK });
   await storeChargeSuccess(reference, amountK);
-  await pump();
+  // The event must reach the billing handler, or a refusal below proves nothing.
+  expect(await pump()).toBe(1);
   await drainJobs();
 }
 
@@ -240,7 +241,7 @@ describe('a top-up pack payment', () => {
     const reference = await openPack(businessId);
     provider.willVerify(reference, { succeeded: false, providerStatus: 'failed', amountK: PACK_K });
     await storeChargeSuccess(reference);
-    await pump();
+    expect(await pump()).toBe(1);
     await drainJobs();
 
     expect((await chargeOf(businessId, reference))?.status).toBe('failed');
@@ -256,7 +257,7 @@ describe('a top-up pack payment', () => {
       amountK: PACK_K,
     });
     await storeChargeSuccess(reference);
-    await pump();
+    expect(await pump()).toBe(1);
     await drainJobs();
 
     expect((await chargeOf(businessId, reference))?.status).toBe('pending');
@@ -268,7 +269,7 @@ describe('a top-up pack payment', () => {
     const reference = await openPack(businessId);
     provider.willVerify(reference, { amountK: PACK_K / 10 });
     await storeChargeSuccess(reference, PACK_K);
-    await pump();
+    expect(await pump()).toBe(1);
     await drainJobs();
 
     expect(await bonusOf(businessId)).toBe(0);
@@ -311,14 +312,15 @@ describe('a top-up pack payment', () => {
     expect(await bonusOf(businessId)).toBe(PACK_UNITS);
   });
 
-  it('does not grant a second time when the same stored event is processed again', async () => {
+  it('does not grant a second time when the pump and queue run again over the same stored event', async () => {
     const businessId = await seedBusiness();
     const reference = await openPack(businessId);
     provider.willVerify(reference, { amountK: PACK_K });
     await storeChargeSuccess(reference);
-    await pump();
+    expect(await pump()).toBe(1);
     await drainJobs();
-    // Nothing new is stored; the pump and the queue are run again regardless.
+    /* Nothing new is stored. This is queue deduplication; the handler itself
+     * being replayed is the redelivered-webhook case above. */
     await pump();
     await drainJobs();
 
