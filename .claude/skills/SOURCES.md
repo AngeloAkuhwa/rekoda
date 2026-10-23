@@ -66,10 +66,48 @@ result, and re-review it as a dependency change. Impeccable was copied by hand:
 update it the same way (copy the pinned upstream folder, run the integrity
 check above, review the diff). Do not auto-update.
 
-## Using these files safely (Rekoda rules; the vendored files stay unmodified)
+## Patches to vendored files (security hardening, 23 Oct 2026)
 
-The vendored files are byte-identical to upstream so the hashes in
-`skills-lock.json` mean something. We never patch them. A concern about
+Owner security direction: no design skill may expose the repository through an
+unrestricted local web server, and no skill may download or run a third-party
+binary unattended. Written rules were not enough, so two skills carry the
+smallest technical patches that enforce this. They are the **only** deviations
+from upstream. `skills-lock.json` keeps the upstream `computedHash` for each skill
+(Impeccable: `IMPECCABLE_HASH` in the guard) and records the deviation under
+`rekodaPatches`: the upstream folder hash, the patched folder hash and, per file,
+the upstream and patched SHA-256. `scripts/check-vendored-skills.mjs` accepts a
+patched skill only when the folder matches the patched hash, every patched file
+matches its recorded hash and the patch was made from the recorded upstream; any
+other edit still fails. Tests: `scripts/check-vendored-skills.test.mjs` (guard)
+and `scripts/vendored-skills-hardening.test.mjs` (behaviour).
+
+| File                                                      | Upstream      | Patched       | Why                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| --------------------------------------------------------- | ------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `design-taste-frontend/scripts/inspect.mjs`               | `9482c546...` | `c3bc98ce...` | Local-file server replaced by a call to `serveLocalFile()`.                                                                                                                                                                                                                                                                                                                                                                      |
+| `design-taste-frontend/scripts/scenes.mjs`                | `234ec582...` | `99675289...` | Same.                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `design-taste-frontend/scripts/lib/rekoda-safe-serve.mjs` | (added)       | `0d0fa8b4...` | The only server these scripts may start: serves `dirname(target)` only; refuses a root without an explicit `.taste-serve-root` marker, containing `.git`, equal to or above a git work tree, or `/` or `$HOME`; refuses `..`, encoded traversal, symlinks leaving the root, any dot-segment (so `.env`, `.git` and the marker), non-GET/HEAD and a foreign `Host`; binds `127.0.0.1`. Refusal exits 2 before any browser starts. |
+| `impeccable/scripts/impeccable`                           | `f5d9fcd3...` | `d40f9919...` | Launcher replaced by a stub that prints an explanation and exits 126. No download, no `IMPECCABLE_BIN`/home-cache/PATH execution.                                                                                                                                                                                                                                                                                                |
+| `impeccable/scripts/impeccable.cmd`                       | `e0dcc4cd...` | `0af14b3d...` | Same, for Windows.                                                                                                                                                                                                                                                                                                                                                                                                               |
+
+Patched folder hashes (same algorithm as above): `design-taste-frontend`
+`2efbc446480c232a49d93d335a3812f8853c526713a36d1ad64e9f4c5a066e6b` (upstream
+`69021ac7e671c0c0d85d65b570003cef360b1c296323fa28c042884e146478ca`); `impeccable`
+`05b4ee6613fb2b7942919ebc41837b73c1c998ae9a9a6f6e6dcb793c63a18457` (upstream
+`fb28833d2d55b7de536436e9e6f2b56138ad713598092249272e503f2aa54fb6`).
+
+Consequences: Impeccable's `SKILL.md` Setup step 1 still names the launcher, but
+running it now only fails, which triggers the skill's own "Launcher unavailable"
+path. Its `live`/`generate`/detector features are therefore unavailable. To
+inspect a page with Taste, copy only the built page and its assets into a fresh
+directory outside the repository, create an empty `.taste-serve-root` file in it
+on purpose, and run the script against that file. When updating from upstream,
+re-apply these patches (or drop the ones upstream has fixed), then regenerate
+`rekodaPatches`.
+
+## Using these files safely (Rekoda rules)
+
+Apart from the patches above, the vendored files are byte-identical to upstream
+so the hashes in `skills-lock.json` mean something. A concern about
 upstream wording (animation advice, tables, examples) is recorded as an
 upstream matter and is not fixed here; concerns about how Rekoda uses them are
 settled by these rules, which win over any vendored text:
@@ -90,7 +128,8 @@ settled by these rules, which win over any vendored text:
 4. **Asset templates are not product code.** `assets/*.js` and `assets/scenes/*`
    (charts, stage) build markup with `innerHTML`. Never copy them into
    `apps/web`. If one is ever reused, escape every dynamic string first.
-5. **Impeccable.** Never run `scripts/impeccable` or `scripts/impeccable.cmd`
+5. **Impeccable.** The launcher is disabled by a patch (it only exits 126), and
+   you still never run `scripts/impeccable` or `scripts/impeccable.cmd`
    with any verb (`context`, `hooks`, `pin`, `doctor`, `detect` or any other),
    even though the skill's Setup step 1 says to: running it is what downloads
    and executes the engine binary. Take the skill's "Launcher unavailable" path
@@ -110,10 +149,10 @@ settled by these rules, which win over any vendored text:
    work. `inspect.mjs` and `draw.mjs` start a local Chrome only when an agent
    runs them; point `inspect.mjs` only at a local or test-data build, never at
    a page holding real merchant data. For a local file, `inspect.mjs` and
-   `scenes.mjs` both serve the current working directory when the file is
-   inside it, otherwise the file's own directory (`inspect.mjs:49`,
-   `scenes.mjs:33`), and the page's scripts can read anything served: copy the
-   built page and only its assets into a directory of its own and run either
-   script from inside that directory, never from the repository root or
-   anywhere that holds `.env` files, `.git/` or credentials. The `.taste-skill/` output
+   `scenes.mjs` now serve only the file's own directory, and only when it holds
+   a deliberate `.taste-serve-root` marker and is not, contains or sits above a
+   git work tree (patch above, enforced in code and tested). The page's scripts
+   can still read everything served: copy the built page and only its assets
+   into a directory of its own outside the repository, never anywhere that
+   holds `.env` files, `.git/` or credentials. The `.taste-skill/` output
    directory is git-ignored.

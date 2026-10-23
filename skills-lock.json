@@ -49,5 +49,44 @@
       "skillPath": "skills/review-animations/SKILL.md",
       "computedHash": "b4e5f0f4fe3e2743c85bf7354108f48a0b9d502cb20ef5c4a9c195da91f93736"
     }
+  },
+  "rekodaPatches": {
+    "design-taste-frontend": {
+      "upstreamFolderHash": "69021ac7e671c0c0d85d65b570003cef360b1c296323fa28c042884e146478ca",
+      "patchedFolderHash": "2efbc446480c232a49d93d335a3812f8853c526713a36d1ad64e9f4c5a066e6b",
+      "files": [
+        {
+          "path": "scripts/inspect.mjs",
+          "upstreamSha256": "9482c546288d4d5c738a915905959e99394551ec27bc202ed443af12a02bd1f7",
+          "patchedSha256": "c3bc98ce660566bbf0dea60c82b58ef30a55de69e87e6f24276dc5ca5d0cacdd"
+        },
+        {
+          "path": "scripts/scenes.mjs",
+          "upstreamSha256": "234ec582e2b841457c33033feeeba8535f9ac285495a74d08dc533a1566c90d5",
+          "patchedSha256": "996752892f29fdd8f798a8c4f81c8d35d3efe23aae1221d544206ce06c1dddc7"
+        },
+        {
+          "path": "scripts/lib/rekoda-safe-serve.mjs",
+          "upstreamSha256": null,
+          "patchedSha256": "0d0fa8b429f77dd71b3b5481c0d1be12e9f51533c5ad1862ae3a114f3e70d387"
+        }
+      ]
+    },
+    "impeccable": {
+      "upstreamFolderHash": "fb28833d2d55b7de536436e9e6f2b56138ad713598092249272e503f2aa54fb6",
+      "patchedFolderHash": "05b4ee6613fb2b7942919ebc41837b73c1c998ae9a9a6f6e6dcb793c63a18457",
+      "files": [
+        {
+          "path": "scripts/impeccable",
+          "upstreamSha256": "f5d9fcd37559ed6af782306f71b7688ad1ec5e1a4f8ae1ef4d3168f42523b1b1",
+          "patchedSha256": "e82ff32e528d4d200c342df478f6a4e2554ede011d06b3b5616eb3a2fcff3f25"
+        },
+        {
+          "path": "scripts/impeccable.cmd",
+          "upstreamSha256": "e0dcc4cd739c8a6ac9e8ce637c216cf8bd4ddae36a8bac458345bdb5a5d7e252",
+          "patchedSha256": "0af14b3d12f9f93dc5d1966e82bd5d67c815e5f2e88675dfbb22d14dd8c70f0d"
+        }
+      ]
+    }
   }
 }

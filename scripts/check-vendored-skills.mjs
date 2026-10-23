@@ -15,7 +15,9 @@
  *
  * The hash is the `skills@1.7.4` installer's: SHA-256 over the folder's
  * files sorted by relative path (`localeCompare`), feeding each path and then
- * its bytes, skipping `.git` and `node_modules`. The hashes cover tracked files
+ * its bytes, skipping `.git` and `node_modules`. Documented Rekoda patches
+ * (`skills-lock.json` `rekodaPatches`) are the only deviations accepted, each with
+ * the upstream and patched hash of every file it touches. The hashes cover tracked files
  * only, so they prove what is committed; the ignore check also looks at files on
  * disk, which is what `git add` would silently drop.
  */
@@ -81,13 +83,49 @@ export function ignoredUnder(root) {
   ];
 }
 
+export function fileSha256(content) {
+  return createHash('sha256').update(content).digest('hex');
+}
+
 export function problemsIn(root) {
   const problems = [];
   const lock = JSON.parse(readFileSync(join(root, 'skills-lock.json'), 'utf8'));
-  const expected = Object.fromEntries(
+  const upstream = Object.fromEntries(
     Object.entries(lock.skills).map(([k, v]) => [k, v.computedHash]),
   );
-  expected.impeccable = IMPECCABLE_HASH;
+  upstream.impeccable = IMPECCABLE_HASH;
+  // Documented Rekoda patches (SOURCES.md, "Patches to vendored files"). A patched skill is
+  // compared with its recorded patched folder hash, so any other edit still fails; the
+  // upstream hash it was patched from must still be the one recorded above, and every
+  // patched file must hash to exactly what was reviewed.
+  const patches = lock.rekodaPatches ?? {};
+  const expected = { ...upstream };
+  for (const [skill, patch] of Object.entries(patches)) {
+    if (!Object.hasOwn(upstream, skill)) {
+      problems.push(`${skill}: patch recorded for a skill with no upstream hash`);
+      continue;
+    }
+    if (patch.upstreamFolderHash !== upstream[skill]) {
+      problems.push(
+        `${skill}: patch was made from ${patch.upstreamFolderHash}, not the recorded upstream ${upstream[skill]}`,
+      );
+    }
+    expected[skill] = patch.patchedFolderHash;
+    for (const f of patch.files ?? []) {
+      let got;
+      try {
+        got = fileSha256(readFileSync(join(root, SKILLS_DIR, skill, f.path)));
+      } catch {
+        problems.push(`${skill}: patched file ${f.path} is missing`);
+        continue;
+      }
+      if (got !== f.patchedSha256) {
+        problems.push(
+          `${skill}: patched file ${f.path} hashes to ${got}, expected ${f.patchedSha256}`,
+        );
+      }
+    }
+  }
 
   for (const [skill, want] of Object.entries(expected)) {
     const files = trackedFiles(root, skill);
@@ -107,6 +145,19 @@ export function problemsIn(root) {
 
   if (!readFileSync(join(root, SKILLS_DIR, 'SOURCES.md'), 'utf8').includes(IMPECCABLE_HASH)) {
     problems.push(`SOURCES.md does not record the Impeccable hash ${IMPECCABLE_HASH}`);
+  }
+  const sources = readFileSync(join(root, SKILLS_DIR, 'SOURCES.md'), 'utf8');
+  for (const [skill, patch] of Object.entries(patches)) {
+    if (!sources.includes(patch.patchedFolderHash)) {
+      problems.push(
+        `SOURCES.md does not record the patched hash of ${skill} (${patch.patchedFolderHash})`,
+      );
+    }
+    for (const f of patch.files ?? []) {
+      if (!sources.includes(`${skill}/${f.path}`)) {
+        problems.push(`SOURCES.md does not document the patch to ${skill}/${f.path}`);
+      }
+    }
   }
 
   for (const p of ignoredUnder(root)) problems.push(p);

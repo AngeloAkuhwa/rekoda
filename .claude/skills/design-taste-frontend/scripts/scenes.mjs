@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, statSync, createReadStream } from 'node:fs';
 import { resolve, join, dirname, extname, sep, relative } from 'node:path';
 import { createServer } from 'node:http';
 import { Browser, sleep } from './lib/cdp.mjs';
+import { serveLocalFile } from './lib/rekoda-safe-serve.mjs';
 
 const args = process.argv.slice(2);
 const flag = (k, d) => { const i = args.indexOf('--' + k); if (i === -1) return d; const v = args[i + 1]; args.splice(i, 2); return v; };
@@ -26,23 +27,8 @@ if (!target || target.startsWith('--')) { console.error('usage: node scenes.mjs 
 // A local file is served from 127.0.0.1 (the working directory when the file is inside it, else the
 // file's folder), so relative assets and CDN scripts behave as they will when the page is hosted.
 let url = target, server = null;
-if (!/^https?:\/\//.test(target)) {
-  const file = resolve(target);
-  if (!existsSync(file)) { console.error('No such file: ' + file); process.exit(2); }
-  const cwd = resolve('.');
-  const root = file.startsWith(cwd + sep) ? cwd : dirname(file);
-  const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.avif': 'image/avif', '.gif': 'image/gif', '.mp4': 'video/mp4', '.webm': 'video/webm', '.woff': 'font/woff', '.woff2': 'font/woff2' };
-  server = createServer((req, res) => {
-    try {
-      let f = resolve(join(root, decodeURIComponent(new URL(req.url, 'http://x').pathname)));
-      if (f !== root && !f.startsWith(root + sep)) { res.writeHead(403); return res.end(); }
-      if (statSync(f).isDirectory()) f = join(f, 'index.html');
-      res.writeHead(200, { 'content-type': MIME[extname(f).toLowerCase()] || 'application/octet-stream', 'cache-control': 'no-store' });
-      createReadStream(f).pipe(res);
-    } catch { res.writeHead(404); res.end('not found'); }
-  });
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  url = `http://127.0.0.1:${server.address().port}/${relative(root, file).split(sep).map(encodeURIComponent).join('/')}`;
+if (!/^https?:\/\//.test(target)) { // REKODA PATCH: see lib/rekoda-safe-serve.mjs
+  ({ server, url } = await serveLocalFile(target));
 }
 mkdirSync(outDir, { recursive: true });
 const browser = await Browser.launch();

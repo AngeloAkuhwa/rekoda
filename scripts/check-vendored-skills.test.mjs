@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import {
   IMPECCABLE_HASH,
   SENTINEL,
+  fileSha256,
   folderHash,
   ignoredUnder,
   isIgnored,
@@ -156,6 +157,83 @@ test('a skill folder without its SKILL.md entrypoint is reported', () => {
     execFileSync('git', ['add', '-A'], { cwd: dir });
     const problems = problemsIn(dir);
     assert.ok(problems.includes('impeccable: missing tracked SKILL.md'), problems.join('\n'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function patchedFixture(patchOverrides = {}) {
+  const dir = scratchRepo('');
+  mkdirSync(join(dir, '.claude/skills/impeccable/scripts'), { recursive: true });
+  const skill = Buffer.from('# skill\n');
+  const patched = Buffer.from('patched launcher\n');
+  writeFileSync(join(dir, '.claude/skills/impeccable/SKILL.md'), skill);
+  writeFileSync(join(dir, '.claude/skills/impeccable/scripts/impeccable'), patched);
+  const patchedFolderHash = folderHash([
+    { relativePath: 'SKILL.md', content: skill },
+    { relativePath: 'scripts/impeccable', content: patched },
+    // scratchRepo() also writes the sentinel data file under the skill
+    { relativePath: 'scripts/data/font-index-failures.json', content: Buffer.from('[]') },
+  ]);
+  const patch = {
+    upstreamFolderHash: IMPECCABLE_HASH,
+    patchedFolderHash,
+    files: [
+      {
+        path: 'scripts/impeccable',
+        upstreamSha256: 'u'.repeat(64),
+        patchedSha256: fileSha256(patched),
+      },
+    ],
+    ...patchOverrides,
+  };
+  writeFileSync(
+    join(dir, 'skills-lock.json'),
+    JSON.stringify({ version: 1, skills: {}, rekodaPatches: { impeccable: patch } }),
+  );
+  writeFileSync(
+    join(dir, '.claude/skills/SOURCES.md'),
+    `${IMPECCABLE_HASH} ${patchedFolderHash} impeccable/scripts/impeccable\n`,
+  );
+  execFileSync('git', ['add', '-A'], { cwd: dir });
+  return dir;
+}
+
+test('a documented patch is accepted when folder and file hashes match', () => {
+  const dir = patchedFixture();
+  try {
+    assert.deepEqual(problemsIn(dir), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('editing a patched file again, or any other file in a patched skill, is still reported', () => {
+  const dir = patchedFixture();
+  try {
+    writeFileSync(join(dir, '.claude/skills/impeccable/scripts/impeccable'), 'download and run\n');
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    let problems = problemsIn(dir);
+    assert.ok(problems.some((p) => p.includes('patched file scripts/impeccable hashes to')));
+    assert.ok(problems.some((p) => p.startsWith('impeccable: hashes to ')));
+    writeFileSync(join(dir, '.claude/skills/impeccable/SKILL.md'), '# other\n');
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    problems = problemsIn(dir);
+    assert.ok(problems.some((p) => p.startsWith('impeccable: hashes to ')));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a patch not made from the recorded upstream, or not documented in SOURCES.md, is reported', () => {
+  const dir = patchedFixture({ upstreamFolderHash: 'f'.repeat(64) });
+  try {
+    assert.ok(problemsIn(dir).some((p) => p.includes('not the recorded upstream')));
+    writeFileSync(join(dir, '.claude/skills/SOURCES.md'), `${IMPECCABLE_HASH}\n`);
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    const problems = problemsIn(dir);
+    assert.ok(problems.some((p) => p.includes('does not record the patched hash')));
+    assert.ok(problems.some((p) => p.includes('does not document the patch to')));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
