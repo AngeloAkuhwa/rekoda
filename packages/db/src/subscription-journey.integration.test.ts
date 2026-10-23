@@ -16,6 +16,7 @@
  * with an injected clock, so no payment provider is involved.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { sql } from 'drizzle-orm';
 import { allowanceFor, addMonth, usagePeriod } from '@rekoda/core';
 import { createDb, withBusiness, type Db } from './client.js';
 import { identity, subscriptionsRepo, usageRepo } from './index.js';
@@ -88,14 +89,20 @@ describe('one merchant, trial to reactivation', () => {
   it('keeps plan, entitlement, renewal date and meter coherent at every step', async () => {
     const businessId = await seedBusiness();
 
-    // Trial: the trial allowance, and it is the smallest of the paid ladder.
-    const now = new Date();
-    expect(await planAt(businessId, now)).toBe('trial');
+    // Trial: the trial allowance. Every date below is derived from this business's own
+    // trial window, so the first purchase really is mid-trial whenever the test runs.
+    const trialEnd = await inTenant(businessId, async (tx) => {
+      const rows = await tx.execute<{ plan_expires_at: string }>(
+        sql`SELECT plan_expires_at FROM businesses WHERE id = ${businessId}::uuid`,
+      );
+      return new Date([...rows][0]!.plan_expires_at);
+    });
+    const start = new Date(trialEnd.getTime() - 9 * 86_400_000); // Day 5 of 14
+    const anchor = new Date(start.getTime() + 3_600_000).getUTCDate(); // Lagos day of month
+    expect(await planAt(businessId, start)).toBe('trial');
     expect(allowanceFor('trial', DOCS)).toBeGreaterThan(0);
 
     // First paid plan, mid-trial: Chat, with a cycle of its own.
-    const start = new Date('2026-11-02T09:00:00Z');
-    const anchor = 2;
     await payCycle(businessId, 'chat', start, anchor);
     const chat = await subOf(businessId);
     expect(chat?.plan).toBe('chat');
@@ -117,7 +124,7 @@ describe('one merchant, trial to reactivation', () => {
     expect(allowanceFor('complete', DOCS)).toBeGreaterThan(allowanceFor('chat', DOCS));
 
     // Use the meter this month, then schedule a downgrade: nothing moves yet.
-    const midCycle = new Date('2026-11-10T09:00:00Z');
+    const midCycle = new Date(start.getTime() + 8 * 86_400_000);
     expect(await generate(businessId, midCycle)).toBe(true);
     await inTenant(businessId, (tx) =>
       subscriptionsRepo.schedulePlanChange(tx, businessId, 'integrate'),
@@ -148,7 +155,15 @@ describe('one merchant, trial to reactivation', () => {
     expect(renewed?.planExpiresAt?.toISOString()).toBe(addMonth(renewsAt, anchor).toISOString());
 
     // A new billing month is a fresh meter: this month's use does not follow the merchant.
-    const nextMonth = new Date(renewsAt.getTime() + 86_400_000);
+    // The meter follows the Lagos calendar month, not the billing cycle, so step into the next one
+    // (and past the renewal, so the merchant is on the downgraded plan).
+    const lagosMid = new Date(midCycle.getTime() + 3_600_000);
+    const nextCalendarMonth = new Date(
+      Date.UTC(lagosMid.getUTCFullYear(), lagosMid.getUTCMonth() + 1, 1),
+    );
+    const nextMonth = new Date(
+      Math.max(renewsAt.getTime() + 86_400_000, nextCalendarMonth.getTime()),
+    );
     expect(usagePeriod(nextMonth)).not.toBe(usagePeriod(midCycle));
     const used = await inTenant(businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(nextMonth)),
@@ -156,18 +171,32 @@ describe('one merchant, trial to reactivation', () => {
     expect(used.find((r) => r.unit === DOCS)?.used ?? 0).toBe(0);
     expect(await generate(businessId, nextMonth)).toBe(true);
 
-    // Cancel: the stop is scheduled, the plan stays until the cycle ends, then the sweep expires it.
+    // Cancel: the stop is scheduled, but the paid cycle runs to its end first.
+    const cycleEnd = addMonth(renewsAt, anchor);
     await inTenant(businessId, (tx) =>
       subscriptionsRepo.schedulePlanChange(tx, businessId, 'expired'),
     );
     expect((await subOf(businessId))?.plan).toBe('integrate');
+    expect(await planAt(businessId, nextMonth)).toBe('integrate');
+    expect(await generate(businessId, nextMonth)).toBe(true);
+    expect(
+      (await subscriptionsRepo.dueForRenewal(worker, nextMonth)).filter(
+        (d) => d.businessId === businessId,
+      ),
+    ).toHaveLength(0);
+
+    // At the cycle's end the sweep finds it, naming the stop, and expires it.
+    const [ending] = (await subscriptionsRepo.dueForRenewal(worker, cycleEnd)).filter(
+      (d) => d.businessId === businessId,
+    );
+    expect(ending?.nextPlan).toBe('expired');
     const stopped = await inTenant(businessId, (tx) =>
       subscriptionsRepo.expireSubscription(tx, businessId, 'test', 'cancelled'),
     );
     expect(stopped).toBe('integrate');
 
     // Expired: no allowance, and the trial does not come back however long it has been.
-    const later = new Date(renewsAt.getTime() + 90 * 86_400_000);
+    const later = new Date(cycleEnd.getTime() + 90 * 86_400_000);
     expect(await planAt(businessId, later)).toBe('expired');
     expect(await generate(businessId, later)).toBe(false);
 
