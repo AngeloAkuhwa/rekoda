@@ -93,6 +93,19 @@ describe('lastMerchantInboundAt', () => {
     expect(now.getTime() - at!.getTime()).toBeLessThan(120_000);
   });
 
+  it('does not read a message committed after the transaction began as newer than now', async () => {
+    const business = await seedBusiness();
+    const result = await withBusiness(app, business, async (tx) => {
+      await tx.execute(sql`SELECT 1`);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      /* The owner writes on another connection while this job is mid-flight. */
+      await inboundAt(business, new Date());
+      return conversationsRepo.lastMerchantInboundAt(tx, business);
+    });
+    expect(result.at).not.toBeNull();
+    expect(result.at!.getTime()).toBeLessThanOrEqual(result.now.getTime());
+  });
+
   it('is null for a merchant who has never written', async () => {
     const business = await seedBusiness();
     expect(await lastInbound(business)).toBeNull();

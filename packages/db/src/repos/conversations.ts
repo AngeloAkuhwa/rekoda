@@ -227,8 +227,10 @@ export async function recordInbound(
  * merchant's own WABA, whose window is `wabaRepo.serviceWindowOpen`.
  *
  * `at` is stamped by the database clock, so the comparison uses the database
- * clock too (`now`, the transaction's time): an application host whose clock
- * runs behind would otherwise read a fresh message as one from the future.
+ * clock too (`now`, `clock_timestamp()` rather than `now()`: the latter is the
+ * transaction's START time, so a message committed after the job began would
+ * read as newer than "now" and close the window). An application host whose
+ * clock runs behind would otherwise read a fresh message as one from the future.
  *
  * Messages carry no sender phone, so a delegate's message counts the same as
  * the owner's. That can only make the window look open when the owner's is
@@ -242,7 +244,7 @@ export async function lastMerchantInboundAt(
   const rows = await tx
     .select({
       at: sql<Date | null>`max(${conversationMessages.createdAt})`,
-      now: sql<Date>`now()`,
+      now: sql<Date>`clock_timestamp()`,
     })
     .from(conversationMessages)
     .innerJoin(conversations, eq(conversations.id, conversationMessages.conversationId))
