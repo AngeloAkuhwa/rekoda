@@ -491,4 +491,3 @@ async function providerCodeOf(response: Response): Promise<number | null> {
     return null;
   }
 }
-
