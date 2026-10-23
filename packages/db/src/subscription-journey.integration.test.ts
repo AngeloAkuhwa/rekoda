@@ -240,9 +240,11 @@ describe('month-end cycles, pinned to fixed dates', () => {
     await payCycle(businessId, 'chat', start, 31);
     const january = await subOf(businessId);
     expect(january?.planExpiresAt?.toISOString()).toBe('2026-02-28T09:00:00.000Z');
+    // The anchor the next renewal uses is the one that was stored, not a literal.
+    expect(january?.renewalAnchorDay).toBe(31);
 
     const february = new Date('2026-02-28T09:00:00Z');
-    await payCycle(businessId, 'chat', february, 31);
+    await payCycle(businessId, 'chat', february, january!.renewalAnchorDay!);
     expect((await subOf(businessId))?.planExpiresAt?.toISOString()).toBe(
       '2026-03-31T09:00:00.000Z',
     );
