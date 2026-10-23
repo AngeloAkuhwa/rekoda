@@ -11,7 +11,8 @@
  *   trial -> first paid plan -> mid-cycle upgrade -> scheduled downgrade
  *   -> renewal onto the downgrade -> cancel -> expiry -> reactivation
  *
- * It uses the same repo calls the settlement and sweep paths use
+ * Each step reads the plan, and the month lengths are pinned absolutely (and at month
+ * ends with fixed dates), not only through `addMonth`. It uses the same repo calls the settlement and sweep paths use
  * (`applyCycle`, `schedulePlanChange`, `dueForRenewal`, `expireSubscription`),
  * with an injected clock, so no payment provider is involved.
  */
@@ -82,6 +83,13 @@ async function payCycle(businessId: string, plan: string, start: Date, anchorDay
   );
 }
 
+/** A billing month is 28 to 31 days (an hour of slack for the Lagos offset): pinned absolutely, not through addMonth. */
+const expectOneMonth = (from: Date | null | undefined, to: Date | null | undefined) => {
+  const days = ((to?.getTime() ?? NaN) - (from?.getTime() ?? NaN)) / 86_400_000;
+  expect(days).toBeGreaterThanOrEqual(28 - 1 / 24);
+  expect(days).toBeLessThanOrEqual(31 + 1 / 24);
+};
+
 const subOf = (businessId: string) =>
   inTenant(businessId, (tx) => subscriptionsRepo.subscriptionFor(tx, businessId));
 
@@ -107,6 +115,7 @@ describe('one merchant, trial to reactivation', () => {
     const chat = await subOf(businessId);
     expect(chat?.plan).toBe('chat');
     expect(chat?.planExpiresAt?.toISOString()).toBe(addMonth(start, anchor).toISOString());
+    expectOneMonth(start, chat?.planExpiresAt);
     expect(await planAt(businessId, start)).toBe('chat');
 
     // Mid-cycle upgrade to Complete: the new plan's allowance, the SAME renewal date.
@@ -121,16 +130,24 @@ describe('one merchant, trial to reactivation', () => {
     const complete = await subOf(businessId);
     expect(complete?.plan).toBe('complete');
     expect(complete?.planExpiresAt?.toISOString()).toBe(addMonth(start, anchor).toISOString());
+    expect(complete?.cycleStartedAt?.toISOString()).toBe(start.toISOString());
+    expect(complete?.renewalAnchorDay).toBe(anchor);
+    expect(await planAt(businessId, start)).toBe('complete');
     expect(allowanceFor('complete', DOCS)).toBeGreaterThan(allowanceFor('chat', DOCS));
 
     // Use the meter this month, then schedule a downgrade: nothing moves yet.
     const midCycle = new Date(start.getTime() + 8 * 86_400_000);
     expect(await generate(businessId, midCycle)).toBe(true);
+    const spent = await inTenant(businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(midCycle)),
+    );
+    expect(spent.find((r) => r.unit === DOCS)?.used).toBe(1);
     await inTenant(businessId, (tx) =>
       subscriptionsRepo.schedulePlanChange(tx, businessId, 'integrate'),
     );
     const parked = await subOf(businessId);
     expect(parked?.plan).toBe('complete');
+    expect(await planAt(businessId, midCycle)).toBe('complete');
     expect(parked?.pendingPlan).toBe('integrate');
     expect(parked?.planExpiresAt?.toISOString()).toBe(addMonth(start, anchor).toISOString());
 
@@ -153,6 +170,8 @@ describe('one merchant, trial to reactivation', () => {
     expect(renewed?.plan).toBe('integrate');
     expect(renewed?.pendingPlan).toBeNull();
     expect(renewed?.planExpiresAt?.toISOString()).toBe(addMonth(renewsAt, anchor).toISOString());
+    expectOneMonth(renewsAt, renewed?.planExpiresAt);
+    expect(await planAt(businessId, renewsAt)).toBe('integrate');
 
     // A new billing month is a fresh meter: this month's use does not follow the merchant.
     // The meter follows the Lagos calendar month, not the billing cycle, so step into the next one
@@ -201,13 +220,31 @@ describe('one merchant, trial to reactivation', () => {
     expect(await generate(businessId, later)).toBe(false);
 
     // Reactivation: paying again buys a plan and a full cycle from the day paid, and the meter works.
-    await payCycle(businessId, 'chat', later, 1);
+    const laterAnchor = new Date(later.getTime() + 3_600_000).getUTCDate();
+    await payCycle(businessId, 'chat', later, laterAnchor);
     const back = await subOf(businessId);
     expect(back?.plan).toBe('chat');
     expect(back?.pendingPlan).toBeNull();
     expect(back?.cycleStartedAt?.toISOString()).toBe(later.toISOString());
-    expect(back?.planExpiresAt?.getTime()).toBeGreaterThan(later.getTime());
+    expect(back?.planExpiresAt?.toISOString()).toBe(addMonth(later, laterAnchor).toISOString());
+    expectOneMonth(later, back?.planExpiresAt); // a full month from the day paid, not a stub
     expect(await planAt(businessId, later)).toBe('chat');
     expect(await generate(businessId, later)).toBe(true);
+  });
+});
+
+describe('month-end cycles, pinned to fixed dates', () => {
+  it('a 31st anchor renews on 28 February, then returns to the 31st', async () => {
+    const businessId = await seedBusiness();
+    const start = new Date('2026-01-31T09:00:00Z');
+    await payCycle(businessId, 'chat', start, 31);
+    const january = await subOf(businessId);
+    expect(january?.planExpiresAt?.toISOString()).toBe('2026-02-28T09:00:00.000Z');
+
+    const february = new Date('2026-02-28T09:00:00Z');
+    await payCycle(businessId, 'chat', february, 31);
+    expect((await subOf(businessId))?.planExpiresAt?.toISOString()).toBe(
+      '2026-03-31T09:00:00.000Z',
+    );
   });
 });
