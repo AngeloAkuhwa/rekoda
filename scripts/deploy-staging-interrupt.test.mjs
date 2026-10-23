@@ -232,6 +232,7 @@ test('a forward deploy that fails before going live keeps an earlier live-phase 
   const r = h.run(h.third);
   assert.notEqual(r.status, 0);
   assert.equal(h.read.head(), h.next, 'the checkout goes back to the half-rolled-out release');
+  assert.equal(h.read.release(), `staging-${h.next.slice(0, 7)}`);
   assert.equal(h.read.marker(), true, 'the half-finished live deploy must stay on record');
   const state = readFileSync(join(h.dir, '.git/rekoda-deploy-staging.state'), 'utf8');
   assert.match(state, /^phase=live$/m);
