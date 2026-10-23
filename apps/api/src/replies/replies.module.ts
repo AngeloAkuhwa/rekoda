@@ -5,6 +5,14 @@ import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
 import type { MessageSender } from '../channels/sender.js';
 import { ReplySender } from './reply.service.js';
 
+/** The sender settings that are blank, by their variable names (G-58). */
+export function missingSenderSettings(config: ApiConfig): string[] {
+  const missing: string[] = [];
+  if (!config.metaAccessToken) missing.push('META_ACCESS_TOKEN');
+  if (!config.metaPhoneNumberId) missing.push('META_PHONE_NUMBER_ID');
+  return missing;
+}
+
 /**
  * Sending is optional in the same way the model is: without credentials the
  * product records everything and delivers nothing, rather than refusing to
@@ -32,7 +40,7 @@ import { ReplySender } from './reply.service.js';
               config.metaDocumentTemplate,
               config.metaDocumentTemplateLocale,
             )
-          : new NoSenderConfigured(),
+          : new NoSenderConfigured(missingSenderSettings(config)),
     },
     ReplySender,
   ],

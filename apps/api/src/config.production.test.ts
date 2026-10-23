@@ -197,10 +197,46 @@ describe('R2_ACCOUNT_ID', () => {
   );
 
   it('accepts a Cloudflare account id, or nothing', () => {
-    expect(
-      loadConfig({ ...PROD, R2_ACCOUNT_ID: '0123456789abcdef0123456789abcdef' }).r2AccountId,
-    ).toBe('0123456789abcdef0123456789abcdef');
+    expect(loadConfig({ ...PROD, ...R2_FULL }).r2AccountId).toBe(R2_FULL['R2_ACCOUNT_ID']);
     expect(loadConfig({ ...PROD, R2_ACCOUNT_ID: '' }).r2AccountId).toBe('');
+  });
+});
+
+/**
+ * G-40. A half-set R2 configuration used to boot, then fail at the first
+ * document: no key and no bucket looks the same as "no storage wanted" to the
+ * module's `if (account && key && secret)` test, so a typo in one variable
+ * silently turned storage off (or pointed it at an empty bucket). Boot is the
+ * place to say which variable is missing.
+ */
+const R2_FULL = {
+  R2_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+  R2_ACCESS_KEY_ID: 'AKIAEXAMPLE',
+  R2_SECRET_ACCESS_KEY: 'secret-example',
+  R2_BUCKET: 'rekoda-documents',
+} as NodeJS.ProcessEnv;
+
+describe('a partial R2 configuration', () => {
+  it.each(['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET'])(
+    'refuses to boot without %s, naming it',
+    (missing) => {
+      const env = { ...PROD, ...R2_FULL, [missing]: '' } as NodeJS.ProcessEnv;
+      expect(() => loadConfig(env)).toThrow(new RegExp(missing));
+      expect(() => loadConfig({ ...DEV, ...R2_FULL, [missing]: '' })).toThrow(new RegExp(missing));
+    },
+  );
+
+  it('names every missing variable at once', () => {
+    expect(() => loadConfig({ ...PROD, R2_ACCESS_KEY_ID: 'AKIAEXAMPLE' })).toThrow(
+      /R2_ACCOUNT_ID.*R2_SECRET_ACCESS_KEY.*R2_BUCKET|R2_ACCOUNT_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET/,
+    );
+  });
+
+  it('boots with all four, or with none of the three credentials', () => {
+    expect(loadConfig({ ...PROD, ...R2_FULL }).r2Bucket).toBe('rekoda-documents');
+    expect(loadConfig(PROD).r2AccountId).toBe('');
+    /* A bucket name on its own is the .env.example default, not an intent. */
+    expect(() => loadConfig({ ...PROD, R2_BUCKET: 'rekoda-documents' })).not.toThrow();
   });
 });
 

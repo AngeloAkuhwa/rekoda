@@ -715,6 +715,44 @@ function r2AccountId(env: NodeJS.ProcessEnv): string {
 }
 
 /**
+ * R2 is configured as a unit or not at all (G-40).
+ *
+ * Any one credential set means R2 was wanted, so all four values must be there.
+ * A half-set configuration used to boot and fail at the first document (or, with
+ * the account id missing, quietly turn storage off), which looks like an outage
+ * long after the typo that caused it. A bucket name alone is the
+ * `.env.example` default and is not read as intent.
+ */
+function r2Settings(env: NodeJS.ProcessEnv): {
+  accountId: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  bucket: string;
+} {
+  const accountId = r2AccountId(env);
+  const accessKeyId = env['R2_ACCESS_KEY_ID']?.trim() ?? '';
+  const secretAccessKey = env['R2_SECRET_ACCESS_KEY']?.trim() ?? '';
+  const bucket = env['R2_BUCKET']?.trim() ?? '';
+  if (accountId || accessKeyId || secretAccessKey) {
+    const missing = [
+      ['R2_ACCOUNT_ID', accountId],
+      ['R2_ACCESS_KEY_ID', accessKeyId],
+      ['R2_SECRET_ACCESS_KEY', secretAccessKey],
+      ['R2_BUCKET', bucket],
+    ]
+      .filter(([, value]) => !value)
+      .map(([name]) => name);
+    if (missing.length > 0) {
+      throw new ConfigError(
+        `R2 is partly configured: ${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not set. ` +
+          'Set all four R2 values, or none of R2_ACCOUNT_ID, R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY.',
+      );
+    }
+  }
+  return { accountId, accessKeyId, secretAccessKey, bucket };
+}
+
+/**
  * The voice length limit, which now gates a capability rather than merely
  * describing one.
  *
@@ -1086,6 +1124,7 @@ function flag(value: string | undefined): boolean {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const isProduction = isProductionEnv(env);
+  const r2 = r2Settings(env);
 
   const revealOtp = env['REKODA_REVEAL_OTP'] === '1';
   if (revealOtp && isProduction) {
@@ -1323,10 +1362,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     metaServiceReplyCostMicros: nonNegativeInteger(env, 'META_SERVICE_REPLY_COST_MICROS', 0),
     metaWabaRegisteredInNigeria: env['META_WABA_REGISTERED_IN_NIGERIA'] !== 'false',
     planCatalogueReads: env['REKODA_PLAN_CATALOGUE_READS'] !== '0',
-    r2AccountId: r2AccountId(env),
-    r2AccessKeyId: env['R2_ACCESS_KEY_ID'] ?? '',
-    r2SecretAccessKey: env['R2_SECRET_ACCESS_KEY'] ?? '',
-    r2Bucket: env['R2_BUCKET'] ?? '',
+    r2AccountId: r2.accountId,
+    r2AccessKeyId: r2.accessKeyId,
+    r2SecretAccessKey: r2.secretAccessKey,
+    r2Bucket: r2.bucket,
     localStorageRoot: localStorageRoot(env, isProduction),
   };
 }
