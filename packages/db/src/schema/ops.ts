@@ -481,9 +481,10 @@ export const commandDrafts = pgTable(
      * Whether a preview a "yes" confirms was SENT, accepted by WhatsApp
      * (migration 0153, G-23), rather than a question stored with the same
      * financial intent, or a preview whose send failed. Decides whether an
-     * expired draft is answered "that request has expired". An asynchronous
-     * delivery failure after acceptance is not reflected (status webhooks are
-     * unread, G-20).
+     * expired draft is answered "that request has expired", and whether
+     * `claimDraft` will confirm it. An asynchronous delivery failure after
+     * acceptance clears it through the `delivery.status` job
+     * (`markPreviewUndelivered`, G-20), for `pending` and `expired` drafts.
      */
     previewed: boolean('previewed').notNull().default(false),
     /**

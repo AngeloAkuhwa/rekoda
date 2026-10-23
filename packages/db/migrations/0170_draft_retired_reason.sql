@@ -1,9 +1,11 @@
 -- G-20 (owner ruling): a merchant must never confirm a financial draft whose
--- preview was not presented to them. A draft whose preview WhatsApp failed to
--- deliver (a send that failed outright, or a `failed` status webhook after
--- acceptance) is retired, as `superseded`, and this column records why, so
--- the retirement is auditable rather than indistinguishable from a merchant's
--- own "no" or a correction.
+-- preview was not presented to them. A `pending` draft whose preview WhatsApp
+-- accepted and later reported as `failed` (a status webhook) is retired, as
+-- `superseded`, and this column records why, so the retirement is auditable
+-- rather than indistinguishable from a merchant's own "no" or a correction. A
+-- send that failed outright leaves the draft `pending` with `previewed = false`
+-- (no reason is recorded); `claimDraft` refuses it. An `expired` draft keeps its
+-- state and gets no reason either; only its `previewed` flag is cleared.
 --
 -- NULL on every row that was never retired for this reason, which is every
 -- existing row. Additive, nullable, no default; covered by the table-level
