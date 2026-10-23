@@ -85,6 +85,7 @@ async function recordOneDraft(businessId: string, note: string): Promise<string>
       intent: 'RecordSale',
       command: { kind: 'RecordSale', note },
       model: null,
+      previewed: true,
     });
     return draft.id;
   });

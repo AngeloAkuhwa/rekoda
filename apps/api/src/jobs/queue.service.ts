@@ -44,6 +44,14 @@ export const JobKind = {
    * that booked real money.
    */
   GraduationNudge: 'graduation.nudge',
+  /**
+   * WhatsApp reported that one of OUR outbound messages failed to deliver
+   * after it had accepted the send (G-20). A job rather than work inside the
+   * webhook request, because the reply it is about may have been sent by an
+   * inbound job that has not committed yet: the handler waits for that job's
+   * conversation lock before it looks.
+   */
+  DeliveryStatus: 'delivery.status',
 } as const;
 
 export type JobKindName = (typeof JobKind)[keyof typeof JobKind];
