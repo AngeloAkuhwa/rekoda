@@ -11,6 +11,7 @@ import { MAX_IMAGE_BYTES } from '@rekoda/core';
 import { publicApi } from '@rekoda/contracts';
 import { CONFIG, loadConfig, trustedProxies, type ApiConfig } from './config.js';
 import { clientAddress, rateLimitKey } from './client-address.js';
+import { isRateLimitExempt } from './rate-limit-exempt.js';
 
 /**
  * The most a webhook body may be, in bytes.
@@ -204,10 +205,7 @@ export async function createApp(): Promise<NestFastifyApplication> {
      * few hundred active merchants — and a webhook Meta sees fail repeatedly
      * is a webhook Meta disables. Both routes verify an HMAC signature
      * before doing anything, which is a stronger gate than any counter. */
-    allowList: (request) =>
-      request.url === '/health' ||
-      request.url === '/webhooks/meta' ||
-      request.url === '/webhooks/paystack',
+    allowList: (request) => isRateLimitExempt(request.url),
     /* The visitor, not the hop: Caddy's X-Forwarded-For entry on a direct
      * call, the web tier's X-Rekoda-Client-IP when web calls for a visitor
      * (and only when the peer IS the web tier), IPv6 by its /64 (G-71). */

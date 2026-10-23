@@ -42,7 +42,7 @@ export async function GET(
   if (!file) return new NextResponse('Not found', { status: 404 });
 
   const token = await readSessionToken();
-  if (!token) return NextResponse.redirect(new URL('/start', process.env.REKODA_WEB_URL));
+  if (!token) return signInRedirect();
 
   /* One parameter travels, and only if it looks like a month. Forwarding the
    * caller's query string wholesale would let anything they typed reach the
@@ -85,4 +85,29 @@ export async function GET(
       'cache-control': 'no-store',
     },
   });
+}
+
+/**
+ * Send a signed-out visitor to sign in (G-56).
+ *
+ * The target was always built with `new URL('/start', REKODA_WEB_URL)`, and
+ * that variable is optional: unset or malformed, `new URL` threw and a visitor
+ * who was merely signed out met a 500. It still wins when it is a usable web
+ * origin. Otherwise the redirect is relative, which a browser resolves against
+ * the address it asked for (the public one behind any proxy, whereas
+ * `request.url` here can be the internal host), so no setting is needed.
+ */
+function signInRedirect(): Response {
+  const configured = process.env.REKODA_WEB_URL;
+  if (configured) {
+    try {
+      const target = new URL('/start', configured);
+      if (target.protocol === 'https:' || target.protocol === 'http:') {
+        return NextResponse.redirect(target);
+      }
+    } catch {
+      /* Not a URL: fall through to the relative redirect. */
+    }
+  }
+  return new NextResponse(null, { status: 307, headers: { location: '/start' } });
 }
