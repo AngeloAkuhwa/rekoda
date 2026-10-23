@@ -628,4 +628,19 @@ test('an interrupted run reconciled only after the baseline is judged', () => {
 test('the marker written in place, where a kill leaves it truncated', () => {
   const edit = edited('script', '  mv -f "$STATE.tmp" "$STATE"\n', '');
   expectProblem(problems(edit), /writes its marker by atomic rename/);
+
+/* ---- CI on main is never cancelled ---- */
+
+test('CI cancelling its own run on main', () => {
+  const edit = edited(
+    'ci',
+    "cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}",
+    'cancel-in-progress: true',
+  );
+  expectProblem(problems(edit), /never cancel a run on main/);
+});
+
+test('CI sharing one concurrency group across refs', () => {
+  const edit = edited('ci', 'group: ci-${{ github.ref }}', 'group: ci');
+  expectProblem(problems(edit), /per-ref group/);
 });

@@ -25,8 +25,8 @@ alerts, G-18 outbox backoff, G-10 sweeps, CI and deploy stability); then Chat, h
 Integrate and Complete acceptance; then the minimal Central Admin; then external gates and
 production readiness. OWN-30 (VAT is a SaaS-scope decision, not a legal exemption; Rekoda's own
 subscription VAT needs professional review) is in `REKODA_OWNER_DECISIONS.md`; the G-11 code
-audit has NOT started. Main merges are serialized so cancel-in-progress CI does not cancel the push
-run the staging deploy needs. Compact state at merge: `main` `e4b9b05` (#301, G-44; before it #299,
+audit has NOT started. Main merges are serialized so each push run the staging deploy needs finishes
+and deploys before the next merge (CI no longer cancels a `main` run once #331 is merged). Compact state at merge: `main` `e4b9b05` (#301, G-44; before it #299,
 G-99 and #298, G-78). OWN-31 (G-87), OWN-32 (G-92(5), revises OD-23 D3) and OWN-33 (G-115) were
 ruled on 22 Oct 2026 and are recorded in `REKODA_OWNER_DECISIONS.md`. Owner-held: off-box backup
 destination, G-09 branch protection, G-05 live Paystack, G-03 Meta, tax and legal review. Next safe

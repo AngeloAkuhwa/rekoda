@@ -8,9 +8,16 @@ on:
 permissions:
   contents: read
 
+# A newer push to a pull request cancels its superseded run. A run on main is
+# never cancelled: staging deploys only a commit whose push run on main
+# succeeded (deploy-staging.yml), so a second merge must not cancel the first
+# merge's run. At most one newer run waits behind it and GitHub drops older
+# waiting ones. This workflow does not make merges serial: taking one merge at a
+# time (docs/runbooks/pr-quality-pipeline.md) is an operating procedure.
+# scripts/check-staging-deploy.mjs keeps the cancellation rule.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # Secrets never enter this repository. Scans the FULL history every run.
