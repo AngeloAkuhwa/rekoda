@@ -226,7 +226,6 @@ export async function writeSubscriptionState(
         state.billingInterval ?? (state.origin === 'keep' ? sql`billing_interval` : 'monthly')
       },
       pending_billing_interval = ${state.keepPendingInterval ? sql`pending_billing_interval` : null},
-      interval_decided_at = ${state.keepPendingInterval ? sql`interval_decided_at` : null},
       subscription_origin = ${
         state.origin === 'keep' ? sql`subscription_origin` : sql`${state.origin}`
       },
@@ -313,11 +312,7 @@ export async function schedulePlanChange(
     await tx.execute(sql`
       UPDATE businesses SET pending_plan = NULL,
         plan_decided_at = CASE WHEN pending_plan IS NULL
-          THEN plan_decided_at
-          -- An interval switch chosen while the change waited is a LATER decision (G-110): a
-          -- renewal opened before it was priced on the other interval, so the undo must not
-          -- roll back past it. GREATEST ignores a NULL (no interval decision).
-          ELSE GREATEST(plan_decided_before_pending, interval_decided_at) END,
+          THEN plan_decided_at ELSE plan_decided_before_pending END,
         plan_decided_before_pending = NULL,
         updated_at = now()
       WHERE id = ${businessId}::uuid
@@ -355,9 +350,16 @@ export async function schedulePlanChange(
  * shortened and a month is never stretched, and no credit or refund is invented
  * (the owner authorised none). Null undoes a pending switch.
  *
- * Both directions are a subscription DECISION (G-104): a renewal opened before it
- * was priced on the other interval, so it is flagged stale and the sweep raises a
- * replacement. The business row is locked first, as every settlement does.
+ * It is NOT a plan decision, so `plan_decided_at` is left alone: an open UPGRADE is
+ * priced on the cycle it lands in and is unaffected, and bumping the decision time
+ * would have made it stale and stranded the payment. Only an open RENEWAL is priced
+ * on the interval, so a renewal charge priced on the interval this switch moves away
+ * from is WITHDRAWN (superseded and abandoned, G-105): it is no longer handed out as
+ * payable, the sweep raises a replacement at the right price, and a merchant who still
+ * pays the old link gets exactly what it was priced for (an abandoned charge is not
+ * stale). Abandoned also keeps it out of the undo's revival of stale charges.
+ *
+ * The business row is locked first, as every settlement does.
  */
 export async function scheduleIntervalChange(
   tx: TenantDb,
@@ -366,13 +368,16 @@ export async function scheduleIntervalChange(
 ): Promise<void> {
   await lockBusiness(tx, businessId);
   await tx.execute(sql`
-    UPDATE businesses SET pending_billing_interval = ${interval},
-      plan_decided_at = CASE WHEN pending_billing_interval IS DISTINCT FROM ${interval}
-        THEN clock_timestamp() ELSE plan_decided_at END,
-      interval_decided_at = CASE WHEN pending_billing_interval IS DISTINCT FROM ${interval}
-        THEN clock_timestamp() ELSE interval_decided_at END,
-      updated_at = now()
+    UPDATE businesses SET pending_billing_interval = ${interval}, updated_at = now()
     WHERE id = ${businessId}::uuid
+  `);
+  await tx.execute(sql`
+    UPDATE subscription_charges c
+    SET superseded_at = clock_timestamp(), abandoned_at = clock_timestamp(), updated_at = now()
+    FROM businesses b
+    WHERE b.id = ${businessId}::uuid AND c.business_id = b.id
+      AND c.kind = 'renewal' AND c.status = 'pending' AND c.superseded_at IS NULL
+      AND c.billing_interval IS DISTINCT FROM COALESCE(b.pending_billing_interval, b.billing_interval)
   `);
 }
 
@@ -1060,6 +1065,7 @@ export async function inGrace(
   >(sql`
     SELECT b.id, b.plan, b.pending_plan, b.plan_expires_at, b.cycle_started_at,
            b.renewal_anchor_day, b.payment_failed_at, b.last_grace_reminder_day,
+           b.billing_interval, b.pending_billing_interval,
            u.phone AS owner_phone, u.opted_out_at
     FROM businesses b
     JOIN users u ON u.id = b.owner_user_id

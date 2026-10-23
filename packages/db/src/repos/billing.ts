@@ -90,6 +90,7 @@ export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
             : lagosDayOfMonth(change.expiresAt)
           : null,
       pendingPlan: null,
+      keepPendingInterval: sameCycle,
     });
 
     await tx.insert(auditEvents).values({

@@ -83,8 +83,6 @@ export const businesses = pgTable(
     billingInterval: text('billing_interval').notNull().default('monthly'),
     /** A switch of interval waiting for the next renewal; null when none (migration 0171). */
     pendingBillingInterval: text('pending_billing_interval'),
-    /** When the interval switch last changed; an undo of a plan change never restores past it (migration 0171). */
-    intervalDecidedAt: timestamp('interval_decided_at', { withTimezone: true }),
     /**
      * When the subscription was last DECIDED (migration 0162, G-104): an
      * operator move, a settled plan charge, a scheduled plan change. A plan

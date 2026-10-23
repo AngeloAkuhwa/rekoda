@@ -6,9 +6,6 @@
 --   businesses.pending_billing_interval  a switch waiting for the next renewal
 --                                        (NULL: none). Like a scheduled downgrade,
 --                                        a switch never discards service already paid for.
---   businesses.interval_decided_at       when the interval switch last changed (NULL: never). Undoing a
---                                        scheduled plan change restores the decision time from before it,
---                                        and must not roll back past this one (G-104).
 --   subscription_charges.billing_interval the interval a charge was opened for, so
 --                                        the cycle it buys is fixed when it is opened
 -- Every existing row was bought, or arranged by an operator, as a month: 'monthly'
@@ -18,8 +15,7 @@ ALTER TABLE businesses
   ADD COLUMN billing_interval text NOT NULL DEFAULT 'monthly'
     CHECK (billing_interval IN ('monthly', 'annual')),
   ADD COLUMN pending_billing_interval text
-    CHECK (pending_billing_interval IN ('monthly', 'annual')),
-  ADD COLUMN interval_decided_at timestamptz;
+    CHECK (pending_billing_interval IN ('monthly', 'annual'));
 
 ALTER TABLE subscription_charges
   ADD COLUMN billing_interval text NOT NULL DEFAULT 'monthly'
