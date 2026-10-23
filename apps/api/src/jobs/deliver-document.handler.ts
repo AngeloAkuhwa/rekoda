@@ -1,6 +1,12 @@
 import { Logger } from '@nestjs/common';
 import { redactForLog } from '@rekoda/core/privacy';
-import { billingPeriod, messageCostK, replies } from '@rekoda/core';
+import {
+  billingPeriod,
+  MESSAGE_COST_MICROS,
+  messageCostK,
+  replies,
+  serviceWindowOpen,
+} from '@rekoda/core';
 import {
   conversationsRepo,
   identity,
@@ -10,7 +16,7 @@ import {
   type Db,
   type TenantDb,
 } from '@rekoda/db';
-import { SendFailed, type MessageSender } from '../channels/sender.js';
+import { OUTSIDE_SERVICE_WINDOW, SendFailed, type MessageSender } from '../channels/sender.js';
 import type { ApiConfig } from '../config.js';
 import type { DocumentStorage } from '../documents/storage.js';
 import type { JobContext, JobHandler } from './runner.js';
@@ -81,7 +87,7 @@ export function deliverDocumentHandler(deps: DeliverDocumentDeps): JobHandler {
     const filename = `${stored.refNumber ?? 'document'}.pdf`;
     const caption = await captionFor(tx, businessId, stored.kind, stored.refNumber);
 
-    try {
+    const sendPdf = async (): Promise<void> => {
       const result = await deps.sender.sendDocument({
         to,
         bytes,
@@ -122,17 +128,83 @@ export function deliverDocumentHandler(deps: DeliverDocumentDeps): JobHandler {
         meta: { window: 'service', kind: 'media', documentKind: stored.kind },
       });
       log.debug(`delivered ${filename}`);
+    };
+
+    /**
+     * G-67: a free-form PDF is only deliverable inside the 24 hours after the
+     * owner last wrote to this number; Meta rejects it outside (131047) and
+     * the job would die with the owner none the wiser. Ask first. Messages
+     * carry no sender phone, so a delegate's message can make the window look
+     * open - Meta's own rejection is then the second check.
+     */
+    const inbound = await conversationsRepo.lastMerchantInboundAt(tx, businessId);
+    const windowOpen = serviceWindowOpen(inbound.at, inbound.now);
+
+    /* A resend the owner just asked for is attempted whatever the clock says:
+     * their message is what reopens the window, and a notice asking them to
+     * reply "resend" again would only send them round in a circle. */
+    if (windowOpen || requested) {
+      try {
+        await sendPdf();
+        return;
+      } catch (error) {
+        const closed = error instanceof SendFailed && error.providerCode === OUTSIDE_SERVICE_WINDOW;
+        if (!closed || requested) {
+          if (error instanceof SendFailed) {
+            /**
+             * Rethrown, unlike a failed text reply.
+             *
+             * A reply that does not arrive is a sentence the merchant misses. A
+             * document that does not arrive is the thing they asked for, and the
+             * PDF already exists in storage - so a retry is cheap, correct, and
+             * the only way they ever get it.
+             */
+            log.warn(`document not delivered, will retry: ${redactForLog(error.message)}`);
+          }
+          throw error;
+        }
+        log.log('document.deliver: Meta reports the service window closed; sending the notice');
+      }
+    }
+
+    /**
+     * Outside the window the only message Meta accepts is an approved
+     * template. It tells the owner a document is waiting; their reply opens a
+     * window and "resend" delivers the PDF inside it (the resend path already
+     * overrides STOP for the one delivery they asked for).
+     *
+     * An unconfigured or failing template THROWS, like a failed PDF: the job
+     * is retried a few times and then dies VISIBLY rather than dropping
+     * silently, and the owner can still say "resend" at any time.
+     */
+    const label = documentLabelOf(stored.kind);
+    /* One reference for the template and for the history row, so what the owner
+     * was sent and what the thread shows cannot differ. */
+    const reference = stored.refNumber ?? 'n/a';
+    try {
+      const result = await deps.sender.sendDocumentNotice({ to, documentLabel: label, reference });
+      const recorded = await conversationsRepo.recordOutbound(tx, {
+        businessId,
+        channel: 'meta',
+        kind: 'text',
+        body: `${label} ${reference} is ready; reply RESEND to receive it`,
+      });
+      await conversationsRepo.markOutboundSent(tx, recorded.id, result.providerMessageId);
+      const costMicros = MESSAGE_COST_MICROS.UTILITY_TEMPLATE;
+      await quotaRepo.recordUsage(tx, {
+        businessId,
+        provider: 'meta',
+        usageType: 'UTILITY_TEMPLATE',
+        quantity: 1,
+        providerCostMicros: costMicros,
+        nairaEquivalentK: messageCostK(costMicros, deps.config.planningFxNairaPerUsd),
+        billingPeriod: billingPeriod(new Date()),
+        meta: { template: 'document', documentKind: stored.kind },
+      });
+      log.log(`document ${reference} not sent: window closed, owner notified`);
     } catch (error) {
       if (error instanceof SendFailed) {
-        /**
-         * Rethrown, unlike a failed text reply.
-         *
-         * A reply that does not arrive is a sentence the merchant misses. A
-         * document that does not arrive is the thing they asked for, and the
-         * PDF already exists in storage — so a retry is cheap, correct, and
-         * the only way they ever get it.
-         */
-        log.warn(`document not delivered, will retry: ${redactForLog(error.message)}`);
+        log.warn(`document notice not delivered, will retry: ${redactForLog(error.message)}`);
       }
       throw error;
     }
@@ -170,4 +242,18 @@ async function captionFor(
     }
   }
   return replies.documentSent(refNumber ?? 'Your document').text;
+}
+
+/** What the owner is told is waiting. Never the customer, never an amount. */
+function documentLabelOf(kind: string): string {
+  switch (kind) {
+    case 'receipt_pdf':
+      return 'receipt';
+    case 'invoice_pdf':
+      return 'invoice';
+    case 'quote_pdf':
+      return 'quote';
+    default:
+      return 'document';
+  }
 }

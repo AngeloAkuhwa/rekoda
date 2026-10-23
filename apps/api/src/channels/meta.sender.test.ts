@@ -65,7 +65,12 @@ beforeEach(() => {
 });
 
 const sender = (
-  opts: { otp?: string | null; billing?: string | null; retention?: string | null } = {},
+  opts: {
+    otp?: string | null;
+    billing?: string | null;
+    retention?: string | null;
+    document?: string | null;
+  } = {},
 ) =>
   new MetaSender(
     'TOKEN123',
@@ -77,6 +82,8 @@ const sender = (
     opts.billing === undefined ? 'rekoda_billing' : opts.billing,
     'en',
     opts.retention === undefined ? 'rekoda_retention' : opts.retention,
+    'en',
+    opts.document === undefined ? 'rekoda_document' : opts.document,
     'en',
     baseUrl,
   );
@@ -125,6 +132,32 @@ describe('the wire', () => {
       res.end(JSON.stringify({ error: { message: 'bad', code: 131047 } }));
     };
     await expect(sender().send({ to: '234803', text: 'hi' })).rejects.toBeInstanceOf(SendFailed);
+  });
+
+  /* G-67: the window rejection is told apart by Meta's number, and only the
+   * number is kept - the body can echo a rehydrated message. */
+  it("keeps Meta's numeric error code and never its message", async () => {
+    respond = (_req, res) => {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'Ada Okafor secret', code: 131047 } }));
+    };
+    const error = await sender()
+      .send({ to: '234803', text: 'hi' })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SendFailed);
+    expect((error as SendFailed).providerCode).toBe(131047);
+    expect((error as SendFailed).message).not.toMatch(/Ada Okafor|secret/);
+  });
+
+  it('has no code for a failure that is not in the documented shape', async () => {
+    respond = (_req, res) => {
+      res.writeHead(502, { 'content-type': 'text/html' });
+      res.end('<html>bad gateway</html>');
+    };
+    const error = await sender()
+      .send({ to: '234803', text: 'hi' })
+      .catch((e: unknown) => e);
+    expect((error as SendFailed).providerCode).toBeNull();
   });
 });
 
@@ -206,7 +239,39 @@ describe('the utility templates', () => {
     });
   });
 
+  it('puts what the document is and its reference in the body, in order (G-67)', async () => {
+    await sender().sendDocumentNotice({
+      to: '2348031234567',
+      documentLabel: 'receipt',
+      reference: 'RCT-2026-000002',
+    });
+
+    expect(bodyOf()).toMatchObject({
+      type: 'template',
+      to: '2348031234567',
+      template: {
+        name: 'rekoda_document',
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: 'receipt' },
+              { type: 'text', text: 'RCT-2026-000002' },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
   it('refuses each one when unconfigured, and sends nothing', async () => {
+    await expect(
+      sender({ document: null }).sendDocumentNotice({
+        to: '1',
+        documentLabel: 'receipt',
+        reference: 'x',
+      }),
+    ).rejects.toThrow(/META_DOCUMENT_TEMPLATE/);
     await expect(
       sender({ billing: null }).sendBillingNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
     ).rejects.toThrow(/META_BILLING_TEMPLATE/);

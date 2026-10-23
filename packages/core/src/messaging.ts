@@ -142,3 +142,21 @@ export function authTemplateCategory(wabaRegisteredInNigeria: boolean): MessageC
 export function messageCostK(micros: number, nairaPerUsd: number): number {
   return Math.round((micros * nairaPerUsd) / 10_000);
 }
+
+/** Meta's service window: how long after a recipient's last message a free-form reply may be sent. */
+export const SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * May a free-form (non-template) message go to this recipient now?
+ *
+ * Only inside the 24 hours after THEY last wrote to the sending number; Meta
+ * rejects a business-initiated free-form send outside it (error 131047), so a
+ * proactive send must ask first and fall back to an approved template when
+ * the answer is no (G-67). Closed for a recipient who never wrote, and for a
+ * timestamp in the future: a skewed clock must not be read as an open window.
+ */
+export function serviceWindowOpen(lastInboundAt: Date | null, now: Date): boolean {
+  if (!lastInboundAt) return false;
+  const age = now.getTime() - lastInboundAt.getTime();
+  return age >= 0 && age < SERVICE_WINDOW_MS;
+}

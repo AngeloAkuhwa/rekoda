@@ -15,6 +15,7 @@ import {
   authTemplateCategory,
   costRatio,
   messageCostK,
+  serviceWindowOpen,
 } from './messaging.js';
 import { USAGE_UNITS } from './allowances.js';
 
@@ -99,5 +100,37 @@ describe('what an outbound message costs', () => {
     const overcharge = costRatio(authTemplateCategory(false), authTemplateCategory(true));
     expect(overcharge).not.toBeNull();
     expect(overcharge!).toBeGreaterThan(5);
+  });
+});
+
+/**
+ * G-67. A business-initiated free-form message is only deliverable inside the
+ * 24 hours after the recipient last wrote to the number; Meta rejects it
+ * outside (131047). The rule is pure so every sender asks it the same way.
+ */
+describe('the 24-hour service window', () => {
+  const now = new Date('2026-10-23T12:00:00.000Z');
+  const ago = (ms: number) => new Date(now.getTime() - ms);
+  const HOUR = 60 * 60 * 1000;
+
+  it('is open for a message received a minute ago', () => {
+    expect(serviceWindowOpen(ago(60_000), now)).toBe(true);
+  });
+
+  it('is open one millisecond before 24 hours and closed at exactly 24 hours', () => {
+    expect(serviceWindowOpen(ago(24 * HOUR - 1), now)).toBe(true);
+    expect(serviceWindowOpen(ago(24 * HOUR), now)).toBe(false);
+  });
+
+  it('is closed after 24 hours', () => {
+    expect(serviceWindowOpen(ago(25 * HOUR), now)).toBe(false);
+  });
+
+  it('is closed when the recipient has never written', () => {
+    expect(serviceWindowOpen(null, now)).toBe(false);
+  });
+
+  it('is closed for a timestamp in the future, which a skewed clock could produce', () => {
+    expect(serviceWindowOpen(new Date(now.getTime() + HOUR), now)).toBe(false);
   });
 });

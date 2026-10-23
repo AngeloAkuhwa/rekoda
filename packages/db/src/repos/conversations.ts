@@ -217,6 +217,50 @@ export async function recordInbound(
   return { id: row.id, isNew: false };
 }
 
+/**
+ * When the merchant last wrote to Rekoda's number (G-67), and what time the
+ * DATABASE thinks it is.
+ *
+ * The 24-hour service window is opened by the RECIPIENT's message, so a
+ * proactive send to the owner asks this before choosing free-form or
+ * template. Read from the merchant thread only: a customer thread is the
+ * merchant's own WABA, whose window is `wabaRepo.serviceWindowOpen`.
+ *
+ * `at` is stamped by the database clock, so the comparison uses the database
+ * clock too (`now`, `clock_timestamp()` rather than `now()`: the latter is the
+ * transaction's START time, so a message committed after the job began would
+ * read as newer than "now" and close the window). An application host whose
+ * clock runs behind would otherwise read a fresh message as one from the future.
+ *
+ * Messages carry no sender phone, so a delegate's message counts the same as
+ * the owner's. That can only make the window look open when the owner's is
+ * not, which the sender's own rejection (131047) then corrects.
+ */
+export async function lastMerchantInboundAt(
+  tx: TenantDb,
+  businessId: string,
+  channel: Channel = 'meta',
+): Promise<{ at: Date | null; now: Date }> {
+  const rows = await tx
+    .select({
+      at: sql<Date | null>`max(${conversationMessages.createdAt})`,
+      now: sql<Date>`clock_timestamp()`,
+    })
+    .from(conversationMessages)
+    .innerJoin(conversations, eq(conversations.id, conversationMessages.conversationId))
+    .where(
+      and(
+        eq(conversationMessages.businessId, businessId),
+        eq(conversationMessages.direction, 'inbound'),
+        eq(conversations.businessId, businessId),
+        eq(conversations.channel, channel),
+        eq(conversations.conversationKind, 'MERCHANT'),
+      ),
+    );
+  const row = rows[0];
+  return { at: row?.at ? new Date(row.at) : null, now: row ? new Date(row.now) : new Date() };
+}
+
 export interface StoredMessage {
   id: string;
   direction: string;

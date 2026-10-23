@@ -5,6 +5,7 @@ import {
   type OutboundAuthCode,
   type OutboundBillingNotice,
   type OutboundDocument,
+  type OutboundDocumentNotice,
   type OutboundRetentionNotice,
   type OutboundTemplate,
   type OutboundConnectionText,
@@ -30,6 +31,8 @@ export class StubSender implements MessageSender {
   readonly billingNotices: OutboundBillingNotice[] = [];
   /** Retention warnings, kept apart from billing ones for the same reason. */
   readonly retentionNotices: OutboundRetentionNotice[] = [];
+  /** "Your document is ready" templates (G-67), apart from the documents themselves. */
+  readonly documentNotices: OutboundDocumentNotice[] = [];
   /** Merchant-WABA template sends (PR-060), with the credential they carried. */
   readonly templates: OutboundTemplate[] = [];
   /** In-window free-form sends on a merchant WABA (PR-061). */
@@ -59,6 +62,7 @@ export class StubSender implements MessageSender {
     this.authCodes.length = 0;
     this.billingNotices.length = 0;
     this.retentionNotices.length = 0;
+    this.documentNotices.length = 0;
     this.templates.length = 0;
     this.connectionTexts.length = 0;
     this.media.clear();
@@ -125,6 +129,16 @@ export class StubSender implements MessageSender {
     }
     this.billingNotices.push(notice);
     return Promise.resolve({ providerMessageId: `wamid.BILL${this.billingNotices.length}` });
+  }
+
+  sendDocumentNotice(notice: OutboundDocumentNotice): Promise<SendResult> {
+    if (this.failNext) {
+      const error = this.failNext;
+      this.failNext = null;
+      return Promise.reject(error);
+    }
+    this.documentNotices.push(notice);
+    return Promise.resolve({ providerMessageId: `wamid.DOC${this.documentNotices.length}` });
   }
 
   sendRetentionNotice(notice: OutboundRetentionNotice): Promise<SendResult> {
