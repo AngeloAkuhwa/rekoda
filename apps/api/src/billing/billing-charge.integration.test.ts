@@ -523,6 +523,21 @@ describe('a top-up pack', () => {
     expect(await bonusOf(businessId)).toBe(PACK_UNITS);
   });
 
+  it('credits once when two events for one reference are worked by concurrent job runners', async () => {
+    const businessId = await seedBusiness();
+    const reference = await openPack(businessId);
+
+    provider.willVerify(reference, { amountK: PACK_K });
+    // Two distinct provider events for the same reference, as a retried charge produces.
+    await storeChargeSuccess(reference, PACK_K);
+    await storeChargeSuccess(reference, PACK_K);
+    await pump();
+    await Promise.all([drainJobs(), drainJobs()]);
+
+    expect((await chargeOf(businessId, reference))?.status).toBe('paid');
+    expect(await bonusOf(businessId)).toBe(PACK_UNITS);
+  });
+
   it('credits nothing for part of its price, and leaves the charge payable', async () => {
     const businessId = await seedBusiness();
     const reference = await openPack(businessId);
