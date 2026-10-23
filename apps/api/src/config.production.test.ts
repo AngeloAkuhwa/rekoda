@@ -221,14 +221,15 @@ describe('a partial R2 configuration', () => {
     'refuses to boot without %s, naming it',
     (missing) => {
       const env = { ...PROD, ...R2_FULL, [missing]: '' } as NodeJS.ProcessEnv;
-      expect(() => loadConfig(env)).toThrow(new RegExp(missing));
-      expect(() => loadConfig({ ...DEV, ...R2_FULL, [missing]: '' })).toThrow(new RegExp(missing));
+      const message = `R2 is partly configured: ${missing} is not set.`;
+      expect(() => loadConfig(env)).toThrow(message);
+      expect(() => loadConfig({ ...DEV, ...R2_FULL, [missing]: '' })).toThrow(message);
     },
   );
 
   it('names every missing variable at once', () => {
     expect(() => loadConfig({ ...PROD, R2_ACCESS_KEY_ID: 'AKIAEXAMPLE' })).toThrow(
-      /R2_ACCOUNT_ID.*R2_SECRET_ACCESS_KEY.*R2_BUCKET|R2_ACCOUNT_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET/,
+      'R2 is partly configured: R2_ACCOUNT_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET are not set.',
     );
   });
 
