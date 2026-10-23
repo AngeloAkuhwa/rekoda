@@ -342,8 +342,11 @@ What the script does for you:
     worker, web or Caddy are still on the old release. Finish it with the manual
     "Deploy staging" workflow.
 
-A host stopped by an older script has no marker. Recover it by hand, from
-`/opt/rekoda` as the deploy user, only if **every** check agrees:
+A host stopped by an older script has no marker. A `live` marker also needs the
+steps below when the run died before `up` switched the API, so `/health` still
+names the marker's `prev_release` while the checkout and `.env` name the
+target; the script and the manual workflow both refuse that host. Recover it by
+hand, from `/opt/rekoda` as the deploy user, only if **every** check agrees:
 
 1. Evidence first: `git rev-parse HEAD`, `git status --porcelain
 --untracked-files=no`, `sed -n 's/^REKODA_RELEASE=//p' .env`, `dc ps -a`,
@@ -352,15 +355,18 @@ A host stopped by an older script has no marker. Recover it by hand, from
    `status ok`, `database up`, or `/health` answers from another stack, or the
    migration count `/health` reports exceeds the target's journal.
 3. The application services must run the running release's images: `api`,
-   `worker` (and the one-offs `migrate`, `edge-check`) use
-   `rekoda-app:<release>`, `web` uses `rekoda-web:<release>`
-   (`docker inspect -f '{{.Config.Image}}' <container>`). `caddy` and
-   `postgres` are pinned third-party images and are **not** expected to carry
-   the release tag.
+   `worker` use `rekoda-app:<release>`, `web` uses `rekoda-web:<release>`
+   (`docker inspect -f '{{.Config.Image}}' <container>`). `migrate` and
+   `edge-check` are one-offs run with `--rm`, so no container remains to
+   inspect. `caddy` and `postgres` are pinned third-party images and are
+   **not** expected to carry the release tag.
 4. If, and only if, those images are all the release `/health` reports:
    `git checkout <running sha>` and
    `sed -i 's/^REKODA_RELEASE=.*/REKODA_RELEASE=<running release>/' .env`.
-   No `down -v`, no prune, no `reset --hard`, no migration rollback.
+   No `down -v`, no prune, no `reset --hard`, no migration rollback. Migrations
+   are expand-only, so a migrate that ran before the kill stays and the running
+   release works against it. For a `live` marker, then remove
+   `.git/rekoda-deploy-staging.state`.
 5. Re-run step 1; checkout, `.env` and `/health` must now agree. Then start the
    manual "Deploy staging" workflow from `main` (blank `sha` deploys its tip).
 
