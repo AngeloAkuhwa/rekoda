@@ -314,6 +314,53 @@ runs against the newer schema. A migration that must itself be reverted is a
 restore from backup, and **there is no backup mechanism yet** (G-02 in
 `docs/REKODA_LAUNCH_READINESS.md`; `backup-restore.md` describes the plan).
 
+## An interrupted staging deploy
+
+`scripts/deploy-staging.sh` changes the checkout and the `REKODA_RELEASE` line
+of `.env` **before** it builds, so a run stopped there leaves them naming a
+release that is not running. The next run refuses with `STAGING DEPLOY REFUSED:
+... not a healthy <release> at <sha> as this checkout and .env say`. That
+refusal is correct; do not edit the preflight or overwrite `.env` to get past it.
+
+What the script does for you:
+
+- **HUP, INT, TERM** (a cancelled workflow closes the SSH session): the script
+  exits, its EXIT trap runs, and a prepared checkout is restored. bash runs the
+  trap when the foreground command (a build) returns.
+- **SIGKILL or a torn-down runner** cannot run a trap. The script writes
+  `.git/rekoda-deploy-staging.state` (phase, baseline, target) before the
+  checkout changes. The next run reads it before judging the baseline:
+  - `prepared`, checkout and `.env` still exactly what that run prepared, and
+    `/health` healthy at the run's baseline: it restores the baseline and
+    carries on.
+  - `prepared`, but anything else (checkout or `.env` edited, `/health`
+    elsewhere): it refuses and changes nothing.
+  - `live` (migrate or `up` had begun): it restores nothing. The baseline check
+    is the reconciliation: checkout, `.env` and `/health` must all agree, or the
+    run refuses.
+
+A host stopped by an older script has no marker. Recover it by hand, from
+`/opt/rekoda` as the deploy user, only if **every** check agrees:
+
+1. Evidence first: `git rev-parse HEAD`, `git status --porcelain
+   --untracked-files=no`, `sed -n 's/^REKODA_RELEASE=//p' .env`, `dc ps -a`,
+   `curl -fsS https://<staging api host>/health`.
+2. Stop if the checkout has tracked modifications, `/health` is not
+   `status ok`, `database up`, or `/health` answers from another stack, or the
+   migration count `/health` reports exceeds the target's journal.
+3. The application services must run the running release's images: `api`,
+   `worker` (and the one-offs `migrate`, `edge-check`) use
+   `rekoda-app:<release>`, `web` uses `rekoda-web:<release>`
+   (`docker inspect -f '{{.Config.Image}}' <container>`). `caddy` and
+   `postgres` are pinned third-party images and are **not** expected to carry
+   the release tag.
+4. If, and only if, those images are all the release `/health` reports:
+   `git checkout <running sha>` and
+   `sed -i 's/^REKODA_RELEASE=.*/REKODA_RELEASE=<running release>/' .env`.
+   No `down -v`, no prune, no `reset --hard`, no migration rollback.
+5. Re-run step 1; checkout, `.env` and `/health` must now agree. Then start the
+   manual "Deploy staging" workflow from `main` (blank `sha` deploys its tip).
+
 ## Roll back one write command (OD-4)
 
 Every write runs through the command bus by default (OWN-22). Do not set any

@@ -108,7 +108,7 @@ jobs:
         if: steps.ws.outputs.present == 'true'
         run: |
           bash -n scripts/deploy-staging.sh
-          node --test scripts/check-staging-deploy.test.mjs && node scripts/check-staging-deploy.mjs
+          node --test scripts/check-staging-deploy.test.mjs scripts/deploy-staging-interrupt.test.mjs && node scripts/check-staging-deploy.mjs
       # One Node version, and an LTS. `.nvmrc` is the source of truth; this
       # checks engines, every @types/node, AND the version actually running,
       # because a project can be consistent in four files and still be tested
