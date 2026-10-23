@@ -1322,6 +1322,12 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
         config,
       }),
     );
+    // Before any refund the same charge reports nothing returned.
+    const before = await confirmedBilling().overview(businessId);
+    expect(before.charges.find((row) => row.reference === answer.reference)?.refundedAmountK).toBe(
+      0,
+    );
+
     await withBusiness(db, businessId, (tx) =>
       subscriptionsRepo.refundCharge(tx, answer.reference, 100_000, new Date()),
     );
@@ -1332,9 +1338,6 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
     // Still paid: only part came back. The amount that did is on the row.
     expect(charge?.status).toBe('paid');
     expect(charge?.refundedAmountK).toBe(100_000);
-    expect(
-      overview.charges.find((row) => row.reference !== answer.reference)?.refundedAmountK ?? 0,
-    ).toBe(0);
   });
 
   it('a pack is offered exactly where its unit is sold: Integrate is not sold Chat overage', async () => {
