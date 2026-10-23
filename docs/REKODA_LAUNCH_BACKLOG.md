@@ -11,7 +11,7 @@
 Priority: **A** = needed before consolidated staging acceptance; **B** = before
 private beta or production; **C** = after launch.
 
-Baseline: `main` `75521f4` (22 Oct 2026). This register is updated in the PR
+Baseline: `main` `50fc6ba` (23 Oct 2026). This register is updated in the PR
 that changes a row; a row says MERGED only once its PR is on `main`.
 
 | #   | Gap(s)                 | Description                                                                                                        | Pri | Status                    | PR               | Merge SHA | Staging / acceptance       | External or owner dependency                     | Next action                                                               |
