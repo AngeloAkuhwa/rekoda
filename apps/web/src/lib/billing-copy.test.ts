@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { graceStripCopy, emptyMeterCopy, partlyRefunded, undoPendingLabel } from './billing-copy';
+import {
+  chargeIntervalSuffix,
+  emptyMeterCopy,
+  firstPurchaseTerm,
+  graceStripCopy,
+  partlyRefunded,
+  pendingIntervalCopy,
+  perInterval,
+  switchIntervalOffer,
+  undoIntervalLabel,
+  undoPendingLabel,
+} from './billing-copy';
 
 describe('billing copy that used to be false (G-107)', () => {
   it('never tells a stopped subscription that nothing will be refused', () => {
@@ -60,5 +71,43 @@ describe('a partly refunded charge (G-111)', () => {
 
   it('adds nothing to a fully refunded row, whose status already says so', () => {
     expect(partlyRefunded(250_000, 'refunded')).toBe(false);
+  });
+});
+
+describe('yearly billing copy (OWN-40)', () => {
+  it('names the unit of a price', () => {
+    expect(perInterval('monthly')).toBe('a month');
+    expect(perInterval('annual')).toBe('a year');
+  });
+
+  it('a switch never claims money moves now: the paid month or year is kept', () => {
+    for (const pending of ['monthly', 'annual'] as const) {
+      const copy = pendingIntervalCopy(pending);
+      expect(copy).toMatch(/next renewal/);
+      expect(copy).toMatch(/nothing is (refunded or )?charged now/i);
+    }
+    expect(pendingIntervalCopy('monthly')).toMatch(/keep the year you paid for/);
+  });
+
+  it('states the saving as ten months for twelve, and invents no urgency', () => {
+    const offer = switchIntervalOffer('monthly');
+    expect(offer).toMatch(/twelve months of service for the price of ten/);
+    expect(offer).not.toMatch(/hurry|limited|today only|last chance|expires/i);
+    expect(switchIntervalOffer('annual')).toMatch(/after the year you paid for/);
+  });
+
+  it('the undo and the confirmation say what is kept and what is bought', () => {
+    expect(undoIntervalLabel('annual')).toBe('Stay on yearly billing');
+    expect(undoIntervalLabel('monthly')).toBe('Stay on monthly billing');
+    expect(firstPurchaseTerm('annual')).toBe('twelve months of service');
+    expect(firstPurchaseTerm('monthly')).toBe('one month of service');
+  });
+
+  it('marks only yearly plan charges in the history', () => {
+    expect(chargeIntervalSuffix('first_purchase', 'annual')).toBe(' · Yearly');
+    expect(chargeIntervalSuffix('renewal', 'annual')).toBe(' · Yearly');
+    expect(chargeIntervalSuffix('renewal', 'monthly')).toBe('');
+    expect(chargeIntervalSuffix('add_on', 'annual')).toBe('');
+    expect(chargeIntervalSuffix('upgrade', 'annual')).toBe('');
   });
 });

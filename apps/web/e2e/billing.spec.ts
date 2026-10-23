@@ -87,3 +87,37 @@ test('backing out of a plan change leaves the merchant where they were', async (
   await expect(page).toHaveURL(/\/app\/billing$/);
   await expect(page.getByRole('heading', { name: 'Change plan' })).toBeVisible();
 });
+
+test('a new merchant can see yearly prices and a yearly quote before paying', async ({ page }) => {
+  await onboard(page, freshPhone());
+  await page.goto('/app/billing');
+
+  // Monthly is the default view; the yearly view is one click away and says what it saves.
+  await page.getByRole('link', { name: 'Yearly (two months free)' }).click();
+  await expect(page).toHaveURL(/\/app\/billing\?interval=annual$/);
+  await expect(page.getByRole('columnheader', { name: 'A year' })).toBeVisible();
+  await expect(page.getByRole('row', { name: /Rekoda Chat/ })).toContainText('₦99,000');
+
+  await page
+    .getByRole('row', { name: /Rekoda Chat/ })
+    .getByRole('link')
+    .click();
+  await expect(page).toHaveURL(/\/app\/billing\?to=chat&interval=annual$/);
+  // Ten months' price, and the page says plainly what it buys.
+  await expect(
+    page.getByText('₦99,000 today for twelve months of service', { exact: false }),
+  ).toBeVisible();
+
+  // Card payments are still gated (spec §47): nothing is charged, and the merchant is told.
+  await page.getByRole('button', { name: 'Confirm and pay' }).click();
+  await expect(page).toHaveURL(/problem=awaiting_platform_confirmation/);
+  await expect(page.getByText('Nothing was charged', { exact: false })).toBeVisible();
+});
+
+test('a trial merchant is not offered a billing frequency switch they cannot use', async ({
+  page,
+}) => {
+  await onboard(page, freshPhone());
+  await page.goto('/app/billing');
+  await expect(page.getByRole('heading', { name: 'Billing frequency' })).toHaveCount(0);
+});

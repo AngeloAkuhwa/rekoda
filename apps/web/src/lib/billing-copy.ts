@@ -47,3 +47,49 @@ export function partlyRefunded(
 ): boolean {
   return refundedAmountK > 0 && status !== 'refunded';
 }
+
+/** How a price is read: per month or per year (OWN-40). */
+export type Interval = 'monthly' | 'annual';
+
+/** "a month" / "a year", for a price line. */
+export function perInterval(interval: Interval): string {
+  return interval === 'annual' ? 'a year' : 'a month';
+}
+
+/**
+ * The line under "Billing frequency" while a switch waits for the renewal.
+ * Nothing is charged or refunded by the switch itself: the merchant keeps the
+ * month or the year they already paid for.
+ */
+export function pendingIntervalCopy(pending: Interval): string {
+  return pending === 'annual'
+    ? 'Switching to yearly billing at your next renewal. You keep your current monthly plan until then, and nothing is charged now.'
+    : 'Switching to monthly billing at your next renewal. You keep the year you paid for until then, and nothing is refunded or charged now.';
+}
+
+/** The button that undoes a scheduled interval switch. */
+export function undoIntervalLabel(current: Interval): string {
+  return current === 'annual' ? 'Stay on yearly billing' : 'Stay on monthly billing';
+}
+
+/**
+ * The offer to switch, with the saving stated plainly and no countdown.
+ * Yearly is ten months' price for twelve months of service.
+ */
+export function switchIntervalOffer(current: Interval): string {
+  return current === 'monthly'
+    ? 'Pay once a year and get two months free: twelve months of service for the price of ten. It starts at your next renewal.'
+    : 'Go back to paying month by month. It starts at your next renewal, after the year you paid for.';
+}
+
+/** What a first purchase buys, in words, for the confirmation step. */
+export function firstPurchaseTerm(interval: Interval): string {
+  return interval === 'annual' ? 'twelve months of service' : 'one month of service';
+}
+
+/** The suffix on a billing-history row: only yearly plan charges need saying. */
+export function chargeIntervalSuffix(kind: string, interval: Interval): string {
+  return interval === 'annual' && (kind === 'first_purchase' || kind === 'renewal')
+    ? ' · Yearly'
+    : '';
+}
