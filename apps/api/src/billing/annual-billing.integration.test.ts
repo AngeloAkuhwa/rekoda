@@ -610,6 +610,28 @@ describe('review of #340: three ways a year could be mispriced or misapplied', (
     expect(live[0]?.amountK).toBe(CHAT_ANNUAL);
   });
 
+  it('undoing a downgrade after the sweep replaced the renewal and a switch to yearly keeps the monthly link retired', async () => {
+    const { businessId } = await onboard();
+    await putOnPlan(businessId, 'complete', 'monthly', new Date(Date.now() - 35 * DAY));
+    await sweepRenewals({ workerDb, appDb: db, config });
+    const [first] = await chargesOf(businessId);
+
+    await billing().changePlan(businessId, 'chat'); // schedule a downgrade
+    await sweepRenewals({ workerDb, appDb: db, config }); // replaces the first renewal
+    await billing().switchInterval(businessId, 'annual');
+    await billing().changePlan(businessId, 'complete'); // undo the downgrade
+
+    const rows = await chargesOf(businessId);
+    expect(rows.find((c) => c.reference === first!.reference)?.supersededAt).not.toBeNull();
+    expect((await subOf(businessId))?.pendingBillingInterval).toBe('annual');
+    await sweepRenewals({ workerDb, appDb: db, config });
+    const live = (await chargesOf(businessId)).filter(
+      (c) => c.status === 'pending' && c.supersededAt === null && c.kind === 'renewal',
+    );
+    expect(live).toHaveLength(1);
+    expect(live[0]?.billingInterval).toBe('annual');
+  });
+
   it('a switch never strands an open upgrade payment: the upgrade still applies and the switch survives', async () => {
     const { businessId } = await onboard();
     await putOnPlan(businessId, 'chat', 'monthly', new Date(Date.now() - 10 * DAY));

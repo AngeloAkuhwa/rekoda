@@ -287,7 +287,8 @@ export async function schedulePlanChange(
      * AFTER the schedule's own decision: a REPLACEMENT retires the first plan's
      * renewals in a statement that runs BEFORE it stamps the new decision, so
      * those are not revived (a renewal priced for an abandoned downgrade must
-     * stay retired). That depends on the statement order in the replacement
+     * stay retired). A renewal priced on an interval other than the one now
+     * in force (a yearly switch chosen meanwhile) is never revived either. That depends on the statement order in the replacement
      * branch below and is pinned by "undoing after a REPLACED downgrade ...". */
     await tx.execute(sql`
       UPDATE subscription_charges c SET superseded_at = NULL, updated_at = now()
@@ -299,6 +300,8 @@ export async function schedulePlanChange(
         AND b.plan_decided_at IS NOT NULL AND b.plan_decided_before_pending IS NOT NULL
         AND c.created_at >= b.plan_decided_before_pending AND c.created_at < b.plan_decided_at
         AND c.superseded_at >= b.plan_decided_at
+        AND (c.kind <> 'renewal'
+          OR c.billing_interval IS NOT DISTINCT FROM COALESCE(b.pending_billing_interval, b.billing_interval))
         AND NOT EXISTS (
           SELECT 1 FROM subscription_charges o
           WHERE o.business_id = c.business_id AND o.id <> c.id
