@@ -39,7 +39,7 @@ import { StubSpeechToText } from '../ai/stt.stub.js';
 import { LocalStorage } from '../documents/r2.storage.js';
 import { ReplySender } from '../replies/reply.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
-import { applySettledCharge } from './billing.service.js';
+import { applySettledCharge, BillingService } from './billing.service.js';
 import { sealPayload } from '../privacy/payload-vault.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
 import { pumpPaystackEvents } from '../payments/paystack-pump.js';
@@ -559,6 +559,34 @@ describe('a top-up pack', () => {
     // What the provider took is recorded and the event is flagged for a human.
     expect((await chargeOf(businessId, reference))?.paidAmountK).toBe(PACK_K * 2);
     expect((await events.eventStatus(workerDb, eventId))?.error).toBe('overpaid');
+  });
+
+  it('grants a pack bought through buyPack once, however often its payment is delivered', async () => {
+    const businessId = await seedBusiness();
+    const now = new Date();
+    await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.applyCycle(tx, businessId, {
+        plan: 'chat',
+        cycleStartedAt: now,
+        renewsAt: new Date(now.getTime() + 30 * 86_400_000),
+        anchorDay: now.getUTCDate(),
+      }),
+    );
+
+    // The production purchase path mints the reference; the webhook, pump and
+    // job must recognise and settle exactly that.
+    const bought = await new BillingService(
+      { ...config, paystackPlatformConfirmed: true },
+      appDb,
+    ).buyPack(businessId, 'messages_100');
+    if (bought.state !== 'payment_required') throw new Error('expected a payable pack charge');
+    expect(bought.amountK).toBe(PACK_K);
+
+    await deliver(bought.reference, bought.amountK);
+    await deliver(bought.reference, bought.amountK);
+
+    expect((await chargeOf(businessId, bought.reference))?.status).toBe('paid');
+    expect(await bonusOf(businessId)).toBe(PACK_UNITS);
   });
 
   it('credits nothing when the provider says the attempt failed', async () => {
