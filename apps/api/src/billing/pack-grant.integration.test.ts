@@ -209,12 +209,13 @@ async function openPack(businessId: string): Promise<string> {
   });
 }
 
-async function payPack(businessId: string, reference: string, amountK = PACK_K): Promise<void> {
+async function payPack(businessId: string, reference: string, amountK = PACK_K): Promise<string> {
   provider.willVerify(reference, { amountK });
-  await storeChargeSuccess(reference, amountK);
+  const eventId = await storeChargeSuccess(reference, amountK);
   // The event must reach the billing handler, or a refusal below proves nothing.
   expect(await pump()).toBe(1);
   await drainJobs();
+  return eventId;
 }
 
 describe('a top-up pack payment', () => {
@@ -230,7 +231,11 @@ describe('a top-up pack payment', () => {
     const businessId = await seedBusiness();
     const reference = await openPack(businessId);
 
-    await payPack(businessId, reference, PACK_K - 1);
+    const eventId = await payPack(businessId, reference, PACK_K - 1);
+
+    /* The handler ran and refused: a job that threw would leave the same pending
+     * charge and zero bonus, so the event's own outcome is what proves it. */
+    expect((await events.eventStatus(workerDb, eventId))?.error).toBe('underpaid');
 
     expect((await chargeOf(businessId, reference))?.status).toBe('pending');
     expect(await bonusOf(businessId)).toBe(0);
@@ -240,10 +245,11 @@ describe('a top-up pack payment', () => {
     const businessId = await seedBusiness();
     const reference = await openPack(businessId);
     provider.willVerify(reference, { succeeded: false, providerStatus: 'failed', amountK: PACK_K });
-    await storeChargeSuccess(reference);
+    const eventId = await storeChargeSuccess(reference);
     expect(await pump()).toBe(1);
     await drainJobs();
 
+    expect((await events.eventStatus(workerDb, eventId))?.error).toBe('provider_failed');
     expect((await chargeOf(businessId, reference))?.status).toBe('failed');
     expect(await bonusOf(businessId)).toBe(0);
   });
@@ -268,9 +274,12 @@ describe('a top-up pack payment', () => {
     const businessId = await seedBusiness();
     const reference = await openPack(businessId);
     provider.willVerify(reference, { amountK: PACK_K / 10 });
-    await storeChargeSuccess(reference, PACK_K);
+    const eventId = await storeChargeSuccess(reference, PACK_K);
     expect(await pump()).toBe(1);
     await drainJobs();
+
+    expect((await events.eventStatus(workerDb, eventId))?.error).toBe('underpaid');
+    expect((await chargeOf(businessId, reference))?.status).toBe('pending');
 
     expect(await bonusOf(businessId)).toBe(0);
   });
