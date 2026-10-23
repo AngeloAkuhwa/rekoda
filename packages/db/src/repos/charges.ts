@@ -77,13 +77,13 @@ export async function chargesForOrder(tx: TenantDb, businessId: string, orderId:
  * with the resolution — the provider's real fee replaces the schedule's
  * guess — and resolves exactly once.
  *
- * NOTHING CALLS THIS IN PRODUCTION YET (G-116). A settlement reports its
- * processing fee for the whole payout, which can cover many payments and
- * many orders, so naming one order's charge as that fee would be an
- * allocation, not a provider-stated figure (§20). The function and its tests
- * stand for the day the owner rules how a per-order actual may be known;
- * until then an order's PAYMENT_PROCESSING charge stays ESTIMATED, and the
- * ledger recognises the real fee from the settlement components.
+ * NOTHING CALLS THIS IN PRODUCTION YET (G-116), although §19.1 requires the
+ * resolution: an order's PAYMENT_PROCESSING charge stays ESTIMATED. The
+ * figure exists (a verified payment carries the provider's stated fee,
+ * `payments.provider_fee_k`); what is open, and an owner decision, is when
+ * the charge resolves (at booking or at payout) and how an order paid in
+ * parts resolves exactly once. Meanwhile the ledger recognises the real fee
+ * from the settlement components.
  */
 export async function resolveChargeActual(
   tx: TenantDb,
