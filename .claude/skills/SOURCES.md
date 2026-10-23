@@ -161,4 +161,10 @@ settled by these rules, which win over any vendored text:
    served: copy the built page and only its assets into a fresh temporary
    directory of its own, never anywhere that
    holds `.env` files, `.git/` or credentials. The `.taste-skill/` output
-   directory is git-ignored.
+   directory is git-ignored. Known limits of the guard, which this rule
+   covers: the root is checked once, when the server starts, so nothing may be
+   copied or cloned into it while the script runs; a hard link into the
+   repository cannot be detected, so never hard-link files into the root (copy
+   them); and on Windows the checks were reviewed but not run, and a short
+   (8.3) path name can differ from the long name, which makes the guard refuse
+   rather than serve.
