@@ -14,7 +14,7 @@
  * no ledger line.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { subscriptionReference, usagePeriod } from '@rekoda/core';
 import {
   billingRepo,
@@ -444,24 +444,24 @@ describe('a top-up pack', () => {
   const PACK_UNITS = 100; // messages_100
 
   /**
-   * The bonus on the meter, summed over the Lagos months around now. A payment
-   * is credited to the month it is processed in, so a run that straddles a
-   * month boundary must not read the other month's empty counter. Each test
-   * starts from an empty estate, so the sum is this test's grants only.
+   * `Date` is pinned to mid-month for this suite (timers keep running), so a
+   * payment is credited to, and read back from, one known Lagos month and a
+   * run near a month boundary cannot straddle two.
    */
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-15T12:00:00Z') });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** The bonus on the meter for the pinned month. */
   const bonusOf = async (businessId: string, unit = 'AI_ACTIONS'): Promise<number> => {
-    const day = 86_400_000;
-    const periods = new Set(
-      [-day, 0, day].map((offset) => usagePeriod(new Date(Date.now() + offset))),
+    const rows = await withBusiness(appDb, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
-    let total = 0;
-    for (const period of periods) {
-      const rows = await withBusiness(appDb, businessId, (tx) =>
-        usageRepo.usageFor(tx, businessId, period),
-      );
-      total += rows.find((row) => row.unit === unit)?.bonus ?? 0;
-    }
-    return total;
+    return rows.find((row) => row.unit === unit)?.bonus ?? 0;
   };
 
   const openPack = (businessId: string, opts: { quantity?: number; amountK?: number } = {}) =>
@@ -526,7 +526,7 @@ describe('a top-up pack', () => {
     const businessId = await seedBusiness();
     const reference = await openPack(businessId);
 
-    await deliver(reference, PACK_K / 2);
+    await deliver(reference, Math.floor(PACK_K / 2));
 
     expect((await chargeOf(businessId, reference))?.status).toBe('pending');
     expect(await bonusOf(businessId)).toBe(0);
