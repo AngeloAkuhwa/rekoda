@@ -24,11 +24,20 @@ export class R2Storage implements DocumentStorage {
     accessKeyId: string,
     secretAccessKey: string,
     private readonly bucket: string,
+    /**
+     * Where the S3 API lives. R2's own host by default; injectable so the wire
+     * (what is PUT, GET and DELETEd, and how a missing key answers) can be
+     * asserted against a local server, the way the Meta adapter's base URL is.
+     * A custom endpoint is addressed path-style because a local server has no
+     * per-bucket hostname.
+     */
+    endpoint?: string,
   ) {
     this.client = new S3Client({
       // R2 ignores the region but the SDK insists on one.
       region: 'auto',
-      endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+      endpoint: endpoint ?? `https://${accountId}.r2.cloudflarestorage.com`,
+      ...(endpoint ? { forcePathStyle: true } : {}),
       credentials: { accessKeyId, secretAccessKey },
     });
   }
