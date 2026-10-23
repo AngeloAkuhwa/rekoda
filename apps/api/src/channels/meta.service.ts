@@ -16,6 +16,8 @@ import { sealPayload } from '../privacy/payload-vault.js';
  * stops — the actual understanding of the message belongs to a worker reading
  * the same table.
  */
+const DELIVERY_STATUS_MAX_ATTEMPTS = 12;
+
 @Injectable()
 export class MetaIngressService {
   private readonly log = new Logger(MetaIngressService.name);
@@ -168,6 +170,12 @@ export class MetaIngressService {
               kind: JobKind.DeliveryStatus,
               payload: { eventId: stored.id, outboundMessageId },
               singletonKey: stored.id,
+              /* The job waits on the business's conversation lock, which an
+               * inbound job holds across model calls, so a lock timeout is
+               * expected now and then. Dying on the fifth (about 15 s of
+               * backoff) would leave an unseen preview confirmable; this
+               * spans several minutes. */
+              maxAttempts: DELIVERY_STATUS_MAX_ATTEMPTS,
             });
           }
           return stored;

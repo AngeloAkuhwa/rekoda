@@ -9971,11 +9971,15 @@ describe('a preview has a time limit (G-23)', () => {
     const again = await receipt('2348031234567', wamid, 'failed');
     expect(again.statusCode).toBe(200);
     const jobs = await withBusiness(db, business.id, (tx) =>
-      tx.execute<{ n: number }>(sql`
-        SELECT count(*)::int AS n FROM jobs
+      tx.execute<{ n: number; max_attempts: number }>(sql`
+        SELECT count(*)::int AS n, max(max_attempts)::int AS max_attempts FROM jobs
          WHERE business_id = ${business.id}::uuid AND kind = 'delivery.status'`),
     );
     expect([...jobs][0]?.n).toBe(1);
+    /* The job waits on the conversation lock, which an inbound job holds across
+     * model calls; a few lock timeouts must not kill it and leave the unseen
+     * preview confirmable (the default of 5 retries spans only ~15 s). */
+    expect([...jobs][0]?.max_attempts).toBeGreaterThanOrEqual(12);
     await drain();
 
     /* Its lapse is never called an expired request: it was never seen. */

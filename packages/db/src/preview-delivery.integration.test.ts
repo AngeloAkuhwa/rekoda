@@ -125,16 +125,19 @@ describe('a preview that failed after WhatsApp accepted it (G-20)', () => {
     expect(await undelivered(businessId, sent.wamid)).toBe(0);
   });
 
-  it('leaves a draft that is no longer pending as it was', async () => {
-    const businessId = await seedBusiness();
-    const sent = await previewed(businessId);
-    await withBusiness(app, businessId, (tx) =>
-      tx.execute(sql`UPDATE command_drafts SET state = 'confirmed'
+  it.each(['confirmed', 'abandoned', 'superseded'])(
+    'leaves a %s draft as it was',
+    async (state) => {
+      const businessId = await seedBusiness();
+      const sent = await previewed(businessId);
+      await withBusiness(app, businessId, (tx) =>
+        tx.execute(sql`UPDATE command_drafts SET state = ${state}
                       WHERE business_id = ${businessId}::uuid AND id = ${sent.draftId}::uuid`),
-    );
-    expect(await undelivered(businessId, sent.wamid)).toBe(0);
-    expect((await flags(businessId, sent.draftId))?.previewed).toBe(true);
-  });
+      );
+      expect(await undelivered(businessId, sent.wamid)).toBe(0);
+      expect((await flags(businessId, sent.draftId))?.previewed).toBe(true);
+    },
+  );
 
   it('also clears a draft whose window lapsed before the receipt arrived (G-20)', async () => {
     const businessId = await seedBusiness();

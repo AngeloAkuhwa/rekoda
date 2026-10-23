@@ -737,7 +737,7 @@ export async function markDraftUnseen(
  * the outbound wamid. That wamid is this business's outbound reply
  * (`provider_message_id`), whose `reply_to_message_id` names the inbound
  * message; that message's drafts are what the preview showed. Each one still
- * `pending` and `previewed` is marked unseen exactly as a failed send marks
+ * `pending` or `expired` and `previewed` is marked unseen exactly as a failed send marks
  * it: not previewed, so a lapsed "yes" is never told an unseen request
  * expired, and its link question was not asked, so the proposal goes (G-60).
  *
