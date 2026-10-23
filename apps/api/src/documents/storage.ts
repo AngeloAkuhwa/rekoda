@@ -51,3 +51,67 @@ export function documentKey(businessId: string, kind: string, extension = 'pdf')
 export class StorageUnavailable extends Error {
   override readonly name = 'StorageUnavailable';
 }
+
+/**
+ * Write, read back, compare and delete one object (G-40).
+ *
+ * The only thing that proves a bucket, its credentials and the delete
+ * permission work TOGETHER is doing all three against it; every other check
+ * (the config parser, the SDK constructing a client) passes with a revoked key.
+ * Run it from the staging checklist before J3's receipt is expected to be
+ * stored. The key is under `probe/`, unguessable, and removed again; a failure
+ * names the step so an operator knows whether to look at the key, the bucket
+ * policy or the network.
+ */
+export async function probeStorage(storage: DocumentStorage): Promise<void> {
+  const key = `probe/${randomBytes(16).toString('hex')}.txt`;
+  const body = Buffer.from(`rekoda storage probe ${randomBytes(8).toString('hex')}`);
+
+  try {
+    await storage.put(key, body, 'text/plain');
+  } catch (error) {
+    throw new StorageUnavailable(`storage probe: write failed (${errorName(error)})`);
+  }
+
+  let readBack: Buffer | null;
+  try {
+    readBack = await storage.get(key);
+  } catch (error) {
+    await bestEffortDelete(storage, key);
+    throw new StorageUnavailable(`storage probe: read failed (${errorName(error)})`);
+  }
+  if (!readBack || !readBack.equals(body)) {
+    await bestEffortDelete(storage, key);
+    throw new StorageUnavailable('storage probe: the object read back is not the object written');
+  }
+
+  try {
+    await storage.delete(key);
+  } catch (error) {
+    throw new StorageUnavailable(`storage probe: delete failed (${errorName(error)})`);
+  }
+  let afterDelete: Buffer | null;
+  try {
+    afterDelete = await storage.get(key);
+  } catch (error) {
+    throw new StorageUnavailable(
+      `storage probe: confirming the delete failed (${errorName(error)})`,
+    );
+  }
+  if (afterDelete !== null) {
+    throw new StorageUnavailable('storage probe: the object is still readable after delete');
+  }
+}
+
+/** The class of failure, never its message, which a provider may fill with request detail. */
+function errorName(error: unknown): string {
+  return error instanceof Error ? error.name : 'unknown';
+}
+
+async function bestEffortDelete(storage: DocumentStorage, key: string): Promise<void> {
+  try {
+    await storage.delete(key);
+  } catch {
+    /* The probe is already failing; a leftover probe object is the lesser harm. */
+  }
+}

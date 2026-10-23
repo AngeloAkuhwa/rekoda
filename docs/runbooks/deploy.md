@@ -532,7 +532,9 @@ only says a dependency failed, and the line is in `dc logs edge-check`:
   `AI_BASE_URL` and the operator OIDC URLs must be public https hosts (not
   localhost, a container name, a private address, or a reserved `.invalid`,
   `.test` or `.example` name);
-  `R2_ACCOUNT_ID` must be the 32-hex account id (G-72);
+  `R2_ACCOUNT_ID` must be the 32-hex account id (G-72), and R2 is all or
+  nothing: setting any of the account id, access key or secret requires all
+  three plus `R2_BUCKET` (G-40);
   `REKODA_RELEASE` and `REKODA_COMMIT` must be short tokens;
   each `REKODA_COMMAND_*` must be unset, `1` or `0` (OD-4).
 - **The edge** (`edge-check`, before caddy starts): `REKODA_EDGE_PROXIES`
@@ -562,5 +564,6 @@ check out.
 - [ ] Worker: `job runner started` in its log, and no growing `pending` backlog
 - [ ] Send a WhatsApp message to the Rekoda number; the reply arrives
 - [ ] Dashboard sign-in completes
+- [ ] Document storage works end to end: `dc exec api node dist/documents/probe-storage.js` prints `storage probe OK` (it writes, reads back and deletes one object under `probe/`; a failure names the step, G-40)
 - [ ] `SELECT max(created_at) FROM external_events` is recent (webhooks flowing)
 - [ ] Trial-balance job: zero drift rows

@@ -438,40 +438,48 @@ export class MetaSender implements MessageSender {
  * recorded whether or not a reply leaves.
  */
 export class NoSenderConfigured implements MessageSender {
+  /** What every send says, naming the variable(s) that are actually missing (G-58). */
+  private readonly reason: string;
+
+  constructor(missing: readonly string[] = ['META_ACCESS_TOKEN']) {
+    const names = missing.length > 0 ? missing : ['META_ACCESS_TOKEN'];
+    this.reason = `${names.join(' and ')} ${names.length === 1 ? 'is' : 'are'} not set`;
+  }
+
   send(): Promise<never> {
-    return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
+    return Promise.reject(new SendFailed(this.reason));
   }
 
   sendAuthCode(): Promise<never> {
-    return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
+    return Promise.reject(new SendFailed(this.reason));
   }
 
   fetchMedia(): Promise<never> {
-    return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
+    return Promise.reject(new SendFailed(this.reason));
   }
 
   sendDocument(): Promise<never> {
-    return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
+    return Promise.reject(new SendFailed(this.reason));
   }
 
   sendTemplate(): Promise<never> {
-    return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
+    return Promise.reject(new SendFailed(this.reason));
   }
 
   sendOnConnection(): Promise<never> {
-    return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
+    return Promise.reject(new SendFailed(this.reason));
   }
 
   sendBillingNotice(): Promise<never> {
-    return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
+    return Promise.reject(new SendFailed(this.reason));
   }
 
   sendDocumentNotice(): Promise<never> {
-    return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
+    return Promise.reject(new SendFailed(this.reason));
   }
 
   sendRetentionNotice(): Promise<never> {
-    return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
+    return Promise.reject(new SendFailed(this.reason));
   }
 }
 

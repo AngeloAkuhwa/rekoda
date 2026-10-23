@@ -298,7 +298,8 @@ called from `apps/api/src/commands/`.
 ### 5.22 PDF, Excel, CSV, storage, portability — VERIFIED COMPLETE (generation); NOT LIVE-VERIFIED (R2, delivery)
 
 - **Evidence:** `apps/api/src/documents/pdf.ts` (pdfkit with embedded Noto Sans for ₦ and Yoruba glyphs; missing fonts answer 503, never blank boxes); `packages/core/src/xlsx.ts` (hand-rolled OOXML writer, no parser dependency); `packages/core/src/csv.ts` (formula-injection defence); `apps/api/src/documents/{storage,r2.storage}.ts` (business-scoped, 128-random-bit keys; R2 via `@aws-sdk/client-s3`; local storage for development; no silent filesystem fallback in production); `apps/api/src/jobs/{render,deliver}-document.handler.ts`; `apps/web/src/app/app/export/[kind]/route.ts` (allow-list proxy, 8 kinds); `GET /v1/reports/portability.json` (owner-only, never metered, works on a lapsed plan, one in flight by partial unique index).
-- **Not yet:** `R2Storage` has no automated test; storage resolves at first use, so a partial R2 configuration fails at first document rather than at boot; customer and supplier statement CSVs have no UI link.
+- **G-40 (23 Oct 2026, in PR, not merged):** a partial R2 configuration now refuses to boot naming the missing variable; `R2Storage` has wire tests against a local S3-shaped server (key path, content type, missing key reads null, refused requests propagate); `probeStorage` and `node dist/documents/probe-storage.js` write, read back and delete one object (the staging step, NOT yet run against the real bucket).
+- **Not yet:** a real R2 bucket has not been exercised (G-40 staging step); customer and supplier statement CSVs have no UI link.
 
 ### 5.23 Accountant and member access — VERIFIED COMPLETE
 
