@@ -40,7 +40,8 @@ Evidence, then the gap each item leaves.
    `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}`: a superseded pull-request run is
    cancelled, a run on `main` never is, because `deploy-staging.yml` requires a successful push run
    for the exact commit. At most one newer `main` run waits behind a running one and GitHub drops
-   older waiting runs, which only skips commits staging would not deploy. `scripts/check-staging-deploy.mjs`
+   older waiting runs. If the newer run then fails, the replaced commit has no successful CI run for an
+   automatic staging deploy, so merges must stay serial (below). `scripts/check-staging-deploy.mjs`
    fails if the group stops being per-ref or `main` can be cancelled. Merges are still taken one at a
    time (one `main` CI run and its staging deploy finish before the next merge), so the staging deploy
    always has a commit with its own successful run.
