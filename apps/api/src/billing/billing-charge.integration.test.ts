@@ -443,11 +443,25 @@ describe('a top-up pack', () => {
   const PACK_K = 250_000;
   const PACK_UNITS = 100; // messages_100
 
+  /**
+   * The bonus on the meter, summed over the Lagos months around now. A payment
+   * is credited to the month it is processed in, so a run that straddles a
+   * month boundary must not read the other month's empty counter. Each test
+   * starts from an empty estate, so the sum is this test's grants only.
+   */
   const bonusOf = async (businessId: string, unit = 'AI_ACTIONS'): Promise<number> => {
-    const rows = await withBusiness(appDb, businessId, (tx) =>
-      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    const day = 86_400_000;
+    const periods = new Set(
+      [-day, 0, day].map((offset) => usagePeriod(new Date(Date.now() + offset))),
     );
-    return rows.find((row) => row.unit === unit)?.bonus ?? 0;
+    let total = 0;
+    for (const period of periods) {
+      const rows = await withBusiness(appDb, businessId, (tx) =>
+        usageRepo.usageFor(tx, businessId, period),
+      );
+      total += rows.find((row) => row.unit === unit)?.bonus ?? 0;
+    }
+    return total;
   };
 
   const openPack = (businessId: string, opts: { quantity?: number; amountK?: number } = {}) =>

@@ -556,6 +556,33 @@ describe('paying, and the gate in front of it', () => {
     expect(charges.rows).toHaveLength(1);
   });
 
+  it('grants a pack bought through buyPack once, however often its payment is delivered', async () => {
+    const { businessId, auth } = await onboard('+2348177100031');
+    const now = new Date();
+    await putOnPlan(businessId, 'chat', now, new Date(now.getTime() + 30 * 86_400_000));
+
+    const bought = await confirmedBilling().buyPack(businessId, 'messages_100');
+    if (bought.state !== 'payment_required') throw new Error('expected a payable pack charge');
+
+    const settle = (providerReference: string) =>
+      withBusiness(db, businessId, (tx) =>
+        applySettledCharge(tx, {
+          businessId,
+          reference: bought.reference,
+          providerReference,
+          paidAmountK: bought.amountK,
+          when: now,
+          config,
+        }),
+      );
+    expect(await settle('ps_first')).toBe('applied');
+    expect(await settle('ps_redelivered')).toBe('already_settled');
+    expect(await settle('ps_again')).toBe('already_settled');
+
+    const messages = (await overviewOf(auth)).units.find((unit) => unit.unit === 'AI_ACTIONS');
+    expect(messages?.bonus).toBe(100);
+  });
+
   it('refuses a pack the plan cannot use, before taking any money', async () => {
     const { businessId } = await onboard('+2348177100018');
     await putOnPlan(businessId, 'chat', new Date(), new Date(Date.now() + 30 * 86_400_000));
