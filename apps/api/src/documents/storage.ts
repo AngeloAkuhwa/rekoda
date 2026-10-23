@@ -90,7 +90,15 @@ export async function probeStorage(storage: DocumentStorage): Promise<void> {
   } catch (error) {
     throw new StorageUnavailable(`storage probe: delete failed (${errorName(error)})`);
   }
-  if ((await storage.get(key)) !== null) {
+  let afterDelete: Buffer | null;
+  try {
+    afterDelete = await storage.get(key);
+  } catch (error) {
+    throw new StorageUnavailable(
+      `storage probe: confirming the delete failed (${errorName(error)})`,
+    );
+  }
+  if (afterDelete !== null) {
     throw new StorageUnavailable('storage probe: the object is still readable after delete');
   }
 }

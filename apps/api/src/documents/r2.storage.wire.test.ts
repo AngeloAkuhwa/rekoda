@@ -180,6 +180,31 @@ describe('probeStorage', () => {
     await expect(probeStorage(sticky)).rejects.toThrow(/still readable after delete/);
   });
 
+  it('reports a failed post-delete read by step, without the provider message', async () => {
+    const kept = new Map<string, Buffer>();
+    let reads = 0;
+    const flaky: DocumentStorage = {
+      put: (key, body) => {
+        kept.set(key, body);
+        return Promise.resolve({ key, bytes: body.length });
+      },
+      get: (key) => {
+        reads += 1;
+        return reads === 1
+          ? Promise.resolve(kept.get(key) ?? null)
+          : Promise.reject(new Error('Ada Okafor token=secret at https://provider.example'));
+      },
+      delete: (key) => {
+        kept.delete(key);
+        return Promise.resolve();
+      },
+    };
+    const error = await probeStorage(flaky).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(StorageUnavailable);
+    expect((error as Error).message).toBe('storage probe: confirming the delete failed (Error)');
+    expect((error as Error).message).not.toMatch(/Okafor|secret|provider\.example/);
+  });
+
   it('fails when delete is not permitted', async () => {
     const kept = new Map<string, Buffer>();
     const noDelete: DocumentStorage = {
