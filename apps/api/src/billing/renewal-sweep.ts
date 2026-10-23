@@ -27,7 +27,7 @@
  */
 import { Logger } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
-import { addMonth, subscriptionReference } from '@rekoda/core';
+import { addInterval, subscriptionReference } from '@rekoda/core';
 import { redactForLog } from '@rekoda/core/privacy';
 import { subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import { planPriceKFor, type PlanTermsConfig } from './plan-terms.js';
@@ -133,7 +133,14 @@ export async function sweepRenewals(
            * the version whose price rows never changed. A scheduled
            * downgrade is a different plan, so the stale-pin rule prices it
            * at the version on sale today. */
-          const amountK = await planPriceKFor(deps.config, tx, business.businessId, plan, now);
+          const amountK = await planPriceKFor(
+            deps.config,
+            tx,
+            business.businessId,
+            plan,
+            now,
+            fresh.nextInterval,
+          );
           const reference = subscriptionReference(now, randomBytes);
           const id = await subscriptionsRepo.openCharge(tx, {
             businessId: business.businessId,
@@ -145,7 +152,8 @@ export async function sweepRenewals(
              * sweep happened to run. A sweep an hour late must not sell the
              * merchant fifty-nine minutes less month. */
             periodStart: fresh.renewsAt,
-            periodEnd: addMonth(fresh.renewsAt, anchorDay),
+            periodEnd: addInterval(fresh.renewsAt, fresh.nextInterval, anchorDay),
+            billingInterval: fresh.nextInterval,
           });
           if (!id) return false;
 

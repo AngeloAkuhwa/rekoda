@@ -31,7 +31,17 @@ export interface Subscription {
   pendingPlan: string | null;
   /** Who created the current paid cycle; null is unknown (G-115, OWN-33). */
   origin: SubscriptionOrigin | null;
+  /** The interval the current cycle was bought on (G-110, OWN-40). */
+  billingInterval: BillingInterval;
+  /** An interval switch waiting for the next renewal, or null. */
+  pendingBillingInterval: BillingInterval | null;
 }
+
+/** How often a subscription bills; the same two values as the plan catalogue (migration 0171). */
+export type BillingInterval = 'monthly' | 'annual';
+
+const intervalOf = (value: string | null | undefined): BillingInterval =>
+  value === 'annual' ? 'annual' : 'monthly';
 
 /** Who created a paid cycle: a settled provider charge or an operator. */
 export type SubscriptionOrigin = 'provider' | 'operator';
@@ -44,6 +54,8 @@ interface SubscriptionRow extends Record<string, unknown> {
   payment_failed_at: string | null;
   pending_plan: string | null;
   subscription_origin: string | null;
+  billing_interval: string;
+  pending_billing_interval: string | null;
 }
 
 const at = (value: string | null): Date | null => (value ? new Date(value) : null);
@@ -54,7 +66,8 @@ export async function subscriptionFor(
 ): Promise<Subscription | null> {
   const rows = await tx.execute<SubscriptionRow>(sql`
     SELECT plan, plan_expires_at, cycle_started_at, renewal_anchor_day,
-           payment_failed_at, pending_plan, subscription_origin
+           payment_failed_at, pending_plan, subscription_origin,
+           billing_interval, pending_billing_interval
     FROM businesses WHERE id = ${businessId}::uuid
   `);
   const row = [...rows][0];
@@ -70,6 +83,10 @@ export async function subscriptionFor(
       row.subscription_origin === 'provider' || row.subscription_origin === 'operator'
         ? row.subscription_origin
         : null,
+    billingInterval: intervalOf(row.billing_interval),
+    pendingBillingInterval: row.pending_billing_interval
+      ? intervalOf(row.pending_billing_interval)
+      : null,
   };
 }
 
@@ -105,9 +122,12 @@ export async function applyCycle(
     anchorDay: number;
     /** The plan the NEXT renewal moves to. Null clears a scheduled downgrade. */
     pendingPlan?: string | null;
+    /** The interval this cycle was bought on; absent keeps monthly. A switch waiting for renewal is cleared. */
+    billingInterval?: BillingInterval;
   },
 ): Promise<void> {
   await writeSubscriptionState(tx, businessId, {
+    billingInterval: cycle.billingInterval ?? 'monthly',
     plan: cycle.plan,
     paid: true,
     cycleStartedAt: cycle.cycleStartedAt,
@@ -136,6 +156,8 @@ export interface SubscriptionState {
   /** Null where there is no dated renewable cycle to anchor. */
   anchorDay: number | null;
   pendingPlan: string | null;
+  /** The interval of this cycle (G-110); absent is monthly. A pending interval switch is always cleared by a new state. */
+  billingInterval?: BillingInterval;
   /**
    * Who created this cycle (G-115). Null for an unpaid plan, or to keep the
    * origin the row already has when nothing about the cycle changed.
@@ -190,6 +212,8 @@ export async function writeSubscriptionState(
       cycle_started_at = ${cycleStarted},
       renewal_anchor_day = ${state.anchorDay},
       pending_plan = ${state.pendingPlan},
+      billing_interval = ${state.billingInterval ?? 'monthly'},
+      pending_billing_interval = NULL,
       subscription_origin = ${
         state.origin === 'keep' ? sql`subscription_origin` : sql`${state.origin}`
       },
@@ -307,6 +331,33 @@ export async function schedulePlanChange(
 }
 
 /**
+ * Schedule a switch of billing interval for the next renewal (G-110, OWN-40).
+ *
+ * Nothing else moves: a merchant who paid for a month, or a year, keeps it, and the
+ * other interval begins when the next cycle would. A year already paid for is never
+ * shortened and a month is never stretched, and no credit or refund is invented
+ * (the owner authorised none). Null undoes a pending switch.
+ *
+ * Both directions are a subscription DECISION (G-104): a renewal opened before it
+ * was priced on the other interval, so it is flagged stale and the sweep raises a
+ * replacement. The business row is locked first, as every settlement does.
+ */
+export async function scheduleIntervalChange(
+  tx: TenantDb,
+  businessId: string,
+  interval: BillingInterval | null,
+): Promise<void> {
+  await lockBusiness(tx, businessId);
+  await tx.execute(sql`
+    UPDATE businesses SET pending_billing_interval = ${interval},
+      plan_decided_at = CASE WHEN pending_billing_interval IS DISTINCT FROM ${interval}
+        THEN clock_timestamp() ELSE plan_decided_at END,
+      updated_at = now()
+    WHERE id = ${businessId}::uuid
+  `);
+}
+
+/**
  * Start the grace clock, once.
  *
  * `IS NULL` in the WHERE is what makes a second failed attempt harmless: the
@@ -339,6 +390,8 @@ export interface NewCharge {
   provider?: string;
   periodStart?: Date | null;
   periodEnd?: Date | null;
+  /** The interval this charge buys (G-110); absent is monthly. */
+  billingInterval?: BillingInterval;
 }
 
 /**
@@ -354,14 +407,14 @@ export async function openCharge(tx: TenantDb, charge: NewCharge): Promise<strin
   const rows = await tx.execute<{ id: string }>(sql`
     INSERT INTO subscription_charges
       (business_id, kind, plan, pack_id, quantity, amount_k, provider,
-       reference, period_start, period_end, created_at)
+       reference, period_start, period_end, billing_interval, created_at)
     VALUES (
       ${charge.businessId}::uuid, ${charge.kind}, ${charge.plan ?? null},
       ${charge.packId ?? null}, ${charge.quantity ?? 1}, ${charge.amountK},
       ${charge.provider ?? 'paystack'}, ${charge.reference},
       ${charge.periodStart ? charge.periodStart.toISOString() : null}::timestamptz,
       ${charge.periodEnd ? charge.periodEnd.toISOString() : null}::timestamptz,
-      clock_timestamp())
+      ${charge.billingInterval ?? 'monthly'}, clock_timestamp())
     ON CONFLICT DO NOTHING
     RETURNING id
   `);
@@ -387,6 +440,8 @@ export interface ChargeRow extends Record<string, unknown> {
   paidAmountK: number | null;
   /** How much of `amountK` has been returned; the status is `refunded` only when all of it has (G-111). */
   refundedAmountK: number;
+  /** The interval this charge buys (G-110). */
+  billingInterval: BillingInterval;
 }
 
 interface RawCharge extends Record<string, unknown> {
@@ -405,6 +460,7 @@ interface RawCharge extends Record<string, unknown> {
   superseded_at: string | null;
   paid_amount_k: string | number | null;
   refunded_amount_k: string | number | null;
+  billing_interval: string | null;
 }
 
 const shape = (row: RawCharge): ChargeRow => ({
@@ -423,6 +479,7 @@ const shape = (row: RawCharge): ChargeRow => ({
   supersededAt: at(row.superseded_at),
   paidAmountK: row.paid_amount_k === null ? null : Number(row.paid_amount_k),
   refundedAmountK: Number(row.refunded_amount_k ?? 0),
+  billingInterval: intervalOf(row.billing_interval),
 });
 
 /**
@@ -445,7 +502,7 @@ export async function pendingCharge(
   tx: TenantDb,
   businessId: string,
   match:
-    | { kind: 'first_purchase'; periodStart: Date; plan: string }
+    | { kind: 'first_purchase'; periodStart: Date; plan: string; billingInterval?: BillingInterval }
     | { kind: 'upgrade'; plan: string }
     | { kind: 'add_on'; packId: string },
 ): Promise<{ reference: string; amountK: number } | null> {
@@ -459,7 +516,8 @@ export async function pendingCharge(
       ${
         match.kind === 'first_purchase'
           ? sql`AND period_start = ${match.periodStart.toISOString()}::timestamptz
-                AND plan = ${match.plan}`
+                AND plan = ${match.plan}
+                AND billing_interval = ${match.billingInterval ?? 'monthly'}`
           : match.kind === 'upgrade'
             ? sql`AND plan = ${match.plan}`
             : sql`AND pack_id = ${match.packId}`
@@ -582,7 +640,8 @@ export async function retireAbandonedPending(
   tx: TenantDb,
   businessId: string,
   match:
-    { kind: 'first_purchase'; periodStart: Date; plan: string } | { kind: 'upgrade'; plan: string },
+    | { kind: 'first_purchase'; periodStart: Date; plan: string; billingInterval?: BillingInterval }
+    | { kind: 'upgrade'; plan: string },
 ): Promise<void> {
   await tx.execute(sql`
     UPDATE subscription_charges
@@ -593,7 +652,8 @@ export async function retireAbandonedPending(
       ${
         match.kind === 'first_purchase'
           ? sql`AND period_start = ${match.periodStart.toISOString()}::timestamptz
-                AND plan IS DISTINCT FROM ${match.plan}`
+                AND (plan IS DISTINCT FROM ${match.plan}
+                     OR billing_interval IS DISTINCT FROM ${match.billingInterval ?? 'monthly'})`
           : sql`AND plan = ${match.plan}`
       }
   `);
@@ -627,7 +687,8 @@ export async function dueForRenewalLocked(
 ): Promise<DueBusiness | null> {
   const rows = await tx.execute<RawDue>(sql`
     SELECT id, plan, pending_plan, plan_expires_at, cycle_started_at,
-           renewal_anchor_day, payment_failed_at
+           renewal_anchor_day, payment_failed_at,
+           billing_interval, pending_billing_interval
     FROM businesses
     WHERE id = ${businessId}::uuid
       AND plan NOT IN ('trial', 'expired')
@@ -860,6 +921,8 @@ export interface DueBusiness {
   cycleStartedAt: Date | null;
   renewalAnchorDay: number | null;
   paymentFailedAt: Date | null;
+  /** The interval the next cycle bills on: a scheduled switch, or the current one (G-110). */
+  nextInterval: BillingInterval;
 }
 
 interface RawDue extends Record<string, unknown> {
@@ -870,6 +933,8 @@ interface RawDue extends Record<string, unknown> {
   cycle_started_at: string | null;
   renewal_anchor_day: number | null;
   payment_failed_at: string | null;
+  billing_interval: string;
+  pending_billing_interval: string | null;
 }
 
 const due = (row: RawDue): DueBusiness => ({
@@ -880,6 +945,7 @@ const due = (row: RawDue): DueBusiness => ({
   cycleStartedAt: at(row.cycle_started_at),
   renewalAnchorDay: row.renewal_anchor_day,
   paymentFailedAt: at(row.payment_failed_at),
+  nextInterval: intervalOf(row.pending_billing_interval ?? row.billing_interval),
 });
 
 /**
@@ -921,7 +987,8 @@ const NO_PAYABLE_RENEWAL = sql`NOT EXISTS (
 export async function dueForRenewal(db: Db, now: Date, limit = 200): Promise<DueBusiness[]> {
   const rows = await db.execute<RawDue>(sql`
     SELECT id, plan, pending_plan, plan_expires_at, cycle_started_at,
-           renewal_anchor_day, payment_failed_at
+           renewal_anchor_day, payment_failed_at,
+           billing_interval, pending_billing_interval
     FROM businesses
     WHERE plan NOT IN ('trial', 'expired')
       AND plan_expires_at IS NOT NULL

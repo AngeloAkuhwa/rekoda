@@ -31,6 +31,10 @@ export const billingStateView = z.discriminatedUnion('state', [
 export const billingChargeStatus = z.enum(['pending', 'paid', 'failed', 'refunded']);
 export type BillingChargeStatus = z.infer<typeof billingChargeStatus>;
 
+/** How a subscription bills (OWN-40): a month, or a year at ten months' price. */
+export const billingInterval = z.enum(['monthly', 'annual']);
+export type BillingIntervalView = z.infer<typeof billingInterval>;
+
 export const billingChargeView = z.object({
   reference: z.string(),
   kind: z.enum(['first_purchase', 'renewal', 'upgrade', 'add_on', 'seat']),
@@ -44,6 +48,8 @@ export const billingChargeView = z.object({
   status: billingChargeStatus,
   periodStart: isoDate.nullable(),
   periodEnd: isoDate.nullable(),
+  /** What the charge bought: a month or a year of service (plan charges). */
+  interval: billingInterval,
   createdAt: isoDate,
 });
 
@@ -104,7 +110,14 @@ export const billingAddOnView = z.object({
 
 export const billingOverviewResponse = z.object({
   plan: z.string(),
+  /** The monthly price of the current plan. */
   priceK: kobo,
+  /** What a year of the current plan costs: ten months' price (OWN-40). Zero without a paid price. */
+  annualPriceK: kobo,
+  /** The interval the current cycle was bought on. */
+  interval: billingInterval,
+  /** A switch of interval waiting for the next renewal, or null. */
+  pendingInterval: billingInterval.nullable(),
   status: billingStateView,
   /** The plan the next renewal moves to, when a downgrade is waiting. */
   pendingPlan: z.string().nullable(),
@@ -135,6 +148,8 @@ export const billingQuoteResponse = z.object({
   renewsAt: isoDate,
   /** OWN-33: a non-standard cycle is never prorated automatically; support handles it. */
   supportReview: z.boolean().default(false),
+  /** The interval the amount buys (a first purchase can choose; any other change keeps the current one). */
+  interval: billingInterval.default('monthly'),
 });
 
 /** Buying an add-on pack. The id is validated against the price list server side. */
@@ -145,7 +160,26 @@ export type BillingPackPurchaseRequest = z.infer<typeof billingPackPurchaseReque
 
 export const billingPlanChangeRequest = z.object({
   plan: z.enum(['chat', 'integrate', 'complete']),
+  /** Only a first purchase chooses; a subscriber switches interval through `billingIntervalRequest`. */
+  interval: billingInterval.optional(),
 });
+
+/**
+ * Switching between monthly and annual billing (OWN-40). Never immediate: the
+ * switch waits for the next renewal, so a month or a year already paid for is
+ * kept whole, and no credit or refund is invented.
+ */
+export const billingIntervalRequest = z.object({ interval: billingInterval });
+export const billingIntervalResponse = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('scheduled'), interval: billingInterval, effectiveAt: isoDate }),
+  /** Choosing the interval already in force undoes a switch that was waiting. */
+  z.object({ state: z.literal('undone'), interval: billingInterval }),
+  z.object({ state: z.literal('unchanged'), interval: billingInterval }),
+  /** A trial or lapsed plan has no cycle to switch; choose the interval when buying. */
+  z.object({ state: z.literal('unavailable'), reason: z.enum(['no_cycle']) }),
+]);
+export type BillingIntervalRequest = z.infer<typeof billingIntervalRequest>;
+export type BillingIntervalResponse = z.infer<typeof billingIntervalResponse>;
 
 /**
  * What happened when a merchant asked to change plan.

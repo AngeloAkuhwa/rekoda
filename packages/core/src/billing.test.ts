@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ADD_ON_PACKS,
   addMonth,
+  addInterval,
+  annualPriceK,
   addOnPack,
   billingState,
   isStandardMonthlyCycle,
@@ -504,5 +506,40 @@ describe('upgradeProrationEligibility (OWN-33, G-115 Option B)', () => {
     expect(upgradeProrationEligibility({ origin, cycleStartedAt, planExpiresAt })).toBe(
       'support_review',
     );
+  });
+});
+
+describe('annual billing (OWN-40, G-110)', () => {
+  it('renews an annual cycle on the same Lagos day twelve months on', () => {
+    expect(addInterval(at('2026-08-12T09:00:00Z'), 'annual').toISOString()).toBe(
+      '2027-08-12T09:00:00.000Z',
+    );
+  });
+
+  it('a monthly interval is exactly addMonth', () => {
+    const from = at('2026-01-31T09:00:00Z');
+    expect(addInterval(from, 'monthly', 31).toISOString()).toBe(addMonth(from, 31).toISOString());
+  });
+
+  it('29 February renews on 28 February in a common year and returns to the 29th', () => {
+    const leap = at('2028-02-29T09:00:00Z');
+    const next = addInterval(leap, 'annual', 29);
+    expect(next.toISOString()).toBe('2029-02-28T09:00:00.000Z');
+    expect(addInterval(next, 'annual', 29).toISOString()).toBe('2030-02-28T09:00:00.000Z');
+    expect(addInterval(at('2031-02-28T09:00:00Z'), 'annual', 29).toISOString()).toBe(
+      '2032-02-29T09:00:00.000Z',
+    );
+  });
+
+  it('an annual cycle is never a standard monthly cycle, so it is never prorated automatically', () => {
+    const start = at('2026-08-12T09:00:00Z');
+    expect(isStandardMonthlyCycle(start, addInterval(start, 'annual'))).toBe(false);
+  });
+
+  it('prices a year at ten months, in whole kobo', () => {
+    expect(annualPriceK(990_000)).toBe(9_900_000);
+    expect(annualPriceK(1_990_000)).toBe(19_900_000);
+    expect(annualPriceK(2_990_000)).toBe(29_900_000);
+    expect(annualPriceK(0)).toBe(0);
   });
 });
