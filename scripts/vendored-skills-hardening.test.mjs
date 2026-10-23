@@ -12,6 +12,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -100,11 +101,17 @@ test('safeServeRoot refuses a marked directory that contains .git or sits above 
     execFileSync('git', ['init', '-q'], { cwd: top });
     writeFileSync(join(top, '.taste-serve-root'), '');
     writeFileSync(join(top, 'index.html'), 'x');
-    assert.throws(() => safeServeRoot(join(top, 'index.html'), top), /git repository|\.git/);
+    assert.throws(
+      () => safeServeRoot(join(top, 'index.html'), top),
+      /git work tree|git repository|\.git/,
+    );
     // a marked parent of the repo (cwd inside the repo) is refused too
     const sub = join(top, 'pkg');
     mkdirSync(sub);
-    assert.throws(() => safeServeRoot(join(top, 'index.html'), sub), /git repository|\.git/);
+    assert.throws(
+      () => safeServeRoot(join(top, 'index.html'), sub),
+      /git work tree|git repository|\.git/,
+    );
   } finally {
     rmSync(top, { recursive: true, force: true });
   }
@@ -189,6 +196,107 @@ test('the Impeccable launcher exits non-zero and ignores IMPECCABLE_BIN, PATH an
       assert.match(r.stderr, /disabled/);
     }
     assert.equal(existsSync(marker), false, 'a binary was executed');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- Independent security review of bc9c180 (serve-guard bypasses) ---------------------------
+
+test('a marked directory INSIDE a git work tree (a subdirectory) is refused, by the CLI and the server guard', async () => {
+  const { safeServeRoot } = await loadServe();
+  const top = scratch();
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: top });
+    writeFileSync(join(top, '.env'), 'SECRET=1');
+    const sub = join(top, 'apps');
+    mkdirSync(join(sub, 'api'), { recursive: true });
+    writeFileSync(join(sub, 'api', 'package.json'), '{}');
+    writeFileSync(join(sub, '.taste-serve-root'), '');
+    writeFileSync(join(sub, 'page.html'), '<h1>x</h1>');
+    const outside = scratch();
+    try {
+      assert.throws(
+        () => safeServeRoot(join(sub, 'page.html'), outside),
+        /git work tree|git repository/,
+      );
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+    for (const script of ['inspect.mjs', 'scenes.mjs']) {
+      const r = spawnSync('node', [join(TASTE, script), join(sub, 'page.html')], {
+        cwd: tmpdir(),
+        encoding: 'utf8',
+        timeout: 20000,
+      });
+      assert.equal(r.status, 2, `${script}: ${r.stderr}`);
+      assert.match(r.stderr, /refusing to serve/);
+    }
+  } finally {
+    rmSync(top, { recursive: true, force: true });
+  }
+});
+
+test('a git repository nested BELOW the marked root is refused', async () => {
+  const { safeServeRoot } = await loadServe();
+  const dir = scratch();
+  try {
+    writeFileSync(join(dir, '.taste-serve-root'), '');
+    writeFileSync(join(dir, 'index.html'), 'x');
+    mkdirSync(join(dir, 'a', 'b', 'clone'), { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: join(dir, 'a', 'b', 'clone') });
+    writeFileSync(join(dir, 'a', 'b', 'clone', 'CLAUDE.md'), 'repo');
+    assert.throws(() => safeServeRoot(join(dir, 'index.html'), tmpdir()), /\.git/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the walk below the root fails closed when it hits its bound', async () => {
+  const { safeServeRoot } = await loadServe();
+  const dir = scratch();
+  try {
+    writeFileSync(join(dir, '.taste-serve-root'), '');
+    writeFileSync(join(dir, 'index.html'), 'x');
+    let d = dir;
+    for (let i = 0; i < 5; i++) {
+      d = join(d, 'd' + i);
+      mkdirSync(d);
+    }
+    assert.throws(
+      () => safeServeRoot(join(dir, 'index.html'), tmpdir(), { maxDepth: 3 }),
+      /bound|could not be checked/,
+    );
+    assert.throws(
+      () => safeServeRoot(join(dir, 'index.html'), tmpdir(), { maxEntries: 2 }),
+      /bound|could not be checked/,
+    );
+    assert.equal(safeServeRoot(join(dir, 'index.html'), tmpdir()), realpathSync(dir));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a root that contains $HOME, or lies outside the temporary directory, is refused', async () => {
+  const { safeServeRoot } = await loadServe();
+  const dir = scratch();
+  try {
+    writeFileSync(join(dir, '.taste-serve-root'), '');
+    writeFileSync(join(dir, 'index.html'), 'x');
+    mkdirSync(join(dir, 'home'));
+    assert.throws(
+      () => safeServeRoot(join(dir, 'index.html'), tmpdir(), { home: join(dir, 'home') }),
+      /home/,
+    );
+    const elsewhere = scratch();
+    try {
+      assert.throws(
+        () => safeServeRoot(join(dir, 'index.html'), tmpdir(), { tmp: elsewhere }),
+        /temporary directory/,
+      );
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

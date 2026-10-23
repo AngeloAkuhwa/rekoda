@@ -305,8 +305,10 @@ in `.claude/skills/SOURCES.md` before using Taste or Impeccable.
 
 No coordination package is installed (decision recorded in the playbook).
 Impeccable's hooks are not installed, and its `scripts/impeccable` launcher is
-never run (it downloads and executes a binary); use its "Launcher unavailable"
-path and read the design-system files directly. Motion is subtle and honours
+never run. Upstream it downloads and executes a binary; here it is a patched
+stub that only exits 126 (`.claude/skills/SOURCES.md`, "Patches to vendored
+files"). Use its "Launcher unavailable" path and read the design-system files
+directly. Motion is subtle and honours
 `prefers-reduced-motion`; no new animation library without an owner ruling.
 
 Visual QA is mandatory for a significant UI change: run the app against test

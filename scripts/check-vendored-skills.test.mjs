@@ -193,7 +193,7 @@ function patchedFixture(patchOverrides = {}) {
   );
   writeFileSync(
     join(dir, '.claude/skills/SOURCES.md'),
-    `${IMPECCABLE_HASH} ${patchedFolderHash} impeccable/scripts/impeccable\n`,
+    `${IMPECCABLE_HASH} ${patchedFolderHash} impeccable/scripts/impeccable ${'u'.repeat(8)}... ${fileSha256(patched).slice(0, 8)}...\n`,
   );
   execFileSync('git', ['add', '-A'], { cwd: dir });
   return dir;
@@ -234,6 +234,28 @@ test('a patch not made from the recorded upstream, or not documented in SOURCES.
     const problems = problemsIn(dir);
     assert.ok(problems.some((p) => p.includes('does not record the patched hash')));
     assert.ok(problems.some((p) => p.includes('does not document the patch to')));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a patched file hash recorded in the lock but missing from SOURCES.md is reported', () => {
+  const dir = patchedFixture();
+  try {
+    writeFileSync(
+      join(dir, '.claude/skills/SOURCES.md'),
+      readFileSync(join(dir, '.claude/skills/SOURCES.md'), 'utf8').replace(
+        `${fileSha256(Buffer.from('patched launcher\n')).slice(0, 8)}...`,
+        'deadbeef...',
+      ),
+    );
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    assert.ok(
+      problemsIn(dir).some((p) =>
+        p.includes('does not record the patched SHA-256 of impeccable/scripts/impeccable'),
+      ),
+      problemsIn(dir).join('\n'),
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

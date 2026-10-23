@@ -53,7 +53,7 @@
   "rekodaPatches": {
     "design-taste-frontend": {
       "upstreamFolderHash": "69021ac7e671c0c0d85d65b570003cef360b1c296323fa28c042884e146478ca",
-      "patchedFolderHash": "2efbc446480c232a49d93d335a3812f8853c526713a36d1ad64e9f4c5a066e6b",
+      "patchedFolderHash": "aaf91d1ee505e460edf2ee99877c37261fcf642db91e916569917f5eed39cdcf",
       "files": [
         {
           "path": "scripts/inspect.mjs",
@@ -68,7 +68,7 @@
         {
           "path": "scripts/lib/rekoda-safe-serve.mjs",
           "upstreamSha256": null,
-          "patchedSha256": "0d0fa8b429f77dd71b3b5481c0d1be12e9f51533c5ad1862ae3a114f3e70d387"
+          "patchedSha256": "777bcf00fdba047bae12ed5b76d19d945cb1588cb0dc3e00bdbe0108013b610f"
         }
       ]
     },

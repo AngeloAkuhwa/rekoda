@@ -6,16 +6,18 @@
 //   1. The served root is always dirname(target), never the working directory.
 //   2. The root must carry an explicit opt-in marker file, `.taste-serve-root`, that the agent
 //      creates on purpose in a directory holding only a built page and its assets.
-//   3. The root may not be, contain, or sit above a git work tree (no `.git` inside it, and it is
-//      not the git toplevel of the cwd or of itself, nor an ancestor of either), nor $HOME or `/`.
+//   3. The root must be a directory of its own below os.tmpdir(); it may not be `/`, contain $HOME,
+//      sit inside any git work tree (no `.git` at or above it), contain the cwd's work tree, or hold
+//      a `.git` entry anywhere below it (bounded walk that fails closed at its bound or on an
+//      unreadable directory).
 //   4. Requests resolve through realpath, so `..`, encoded traversal and symlinks cannot leave the
 //      root; any path segment starting with "." (dotfiles, `.git`, `.env`) is refused, so the
 //      marker itself is never served; only GET/HEAD; the Host header must be 127.0.0.1:<port>.
 //   5. The listener binds 127.0.0.1 only.
-import { existsSync, realpathSync, statSync, createReadStream } from 'node:fs';
+import { existsSync, realpathSync, statSync, createReadStream, readdirSync } from 'node:fs';
 import { resolve, join, dirname, extname, sep, relative, parse } from 'node:path';
 import { createServer } from 'node:http';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 
 export const MARKER = '.taste-serve-root';
 
@@ -31,19 +33,51 @@ function gitToplevel(start) {
   }
 }
 
-/** Returns the real path of the serve root for `file`, or throws an Error saying why it is refused. */
-export function safeServeRoot(file, cwd = process.cwd()) {
+/**
+ * Walks below `root` without following symlinks and throws if any `.git` entry exists. Fails closed:
+ * an unreadable directory, more than `maxDepth` levels or more than `maxEntries` entries is a refusal.
+ */
+function assertNoGitBelow(root, maxDepth, maxEntries) {
+  let seen = 0;
+  const walk = (dir, depth) => {
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { throw new Error(`refusing to serve ${root}: ${dir} could not be checked for .git (unreadable).`); }
+    for (const e of entries) {
+      if (++seen > maxEntries) throw new Error(`refusing to serve ${root}: more than ${maxEntries} entries, past the bound of the .git check; it could not be checked.`);
+      if (e.name === '.git') throw new Error(`refusing to serve ${root}: it contains a git repository (${join(dir, '.git')}).`);
+      if (e.isDirectory()) {
+        if (depth + 1 > maxDepth) throw new Error(`refusing to serve ${root}: deeper than ${maxDepth} levels, past the bound of the .git check; it could not be checked.`);
+        walk(join(dir, e.name), depth + 1);
+      }
+    }
+  };
+  walk(root, 0);
+}
+
+/**
+ * Returns the real path of the serve root for `file`, or throws an Error saying why it is refused.
+ * `opts` exists for tests: { home, tmp, maxDepth, maxEntries }.
+ */
+export function safeServeRoot(file, cwd = process.cwd(), opts = {}) {
+  const { home = homedir(), tmp = tmpdir(), maxDepth = 6, maxEntries = 5000 } = opts;
   const realFile = realpathSync(resolve(file));
   const root = dirname(realFile);
   if (!existsSync(join(root, MARKER))) {
-    throw new Error(`refusing to serve ${root}: it has no ${MARKER} marker. Copy the built page and only its assets into a directory of their own, create ${MARKER} there on purpose, and run again.`);
+    throw new Error(`refusing to serve ${root}: it has no ${MARKER} marker. Copy the built page and only its assets into a fresh directory under ${tmp}, create ${MARKER} there on purpose, and run again.`);
   }
-  if (existsSync(join(root, '.git'))) throw new Error(`refusing to serve ${root}: it contains .git.`);
-  if (root === parse(root).root || root === realpathSync(homedir())) throw new Error(`refusing to serve ${root}: it is a filesystem or home root.`);
-  const tops = [gitToplevel(root), gitToplevel(realpathSync(resolve(cwd)))].filter(Boolean).map((t) => realpathSync(t));
-  for (const top of tops) {
-    if (inside(top, root)) throw new Error(`refusing to serve ${root}: it is, or contains, the git repository at ${top}.`);
-  }
+  if (root === parse(root).root) throw new Error(`refusing to serve ${root}: it is a filesystem root.`);
+  const realHome = existsSync(home) ? realpathSync(home) : resolve(home);
+  if (inside(realHome, root)) throw new Error(`refusing to serve ${root}: it is, or contains, the home directory ${realHome}.`);
+  const realTmp = realpathSync(tmp);
+  if (root === realTmp || !inside(root, realTmp)) throw new Error(`refusing to serve ${root}: it must be a directory of its own inside the temporary directory ${realTmp}.`);
+  // Inside any git work tree (the root itself or any ancestor holds .git).
+  const above = gitToplevel(root);
+  if (above) throw new Error(`refusing to serve ${root}: it is inside the git work tree at ${above}.`);
+  // The work tree the command runs from must not sit inside the root either.
+  const cwdTop = gitToplevel(realpathSync(resolve(cwd)));
+  if (cwdTop && inside(realpathSync(cwdTop), root)) throw new Error(`refusing to serve ${root}: it contains the git repository at ${cwdTop}.`);
+  // A repository nested anywhere below the root.
+  assertNoGitBelow(root, maxDepth, maxEntries);
   return root;
 }
 

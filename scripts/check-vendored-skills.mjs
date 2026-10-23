@@ -28,6 +28,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const SKILLS_DIR = '.claude/skills';
+export const SHA_PREFIX = 8;
 export const IMPECCABLE_HASH = 'fb28833d2d55b7de536436e9e6f2b56138ad713598092249272e503f2aa54fb6';
 // The file the `data/` rule once dropped; named so the failure is specific.
 export const SENTINEL = '.claude/skills/impeccable/scripts/data/font-index-failures.json';
@@ -154,6 +155,17 @@ export function problemsIn(root) {
       );
     }
     for (const f of patch.files ?? []) {
+      // The table in SOURCES.md quotes each hash by its first SHA_PREFIX hex characters.
+      for (const [kind, h] of [
+        ['patched', f.patchedSha256],
+        ['upstream', f.upstreamSha256],
+      ]) {
+        if (h && !sources.includes(h.slice(0, SHA_PREFIX))) {
+          problems.push(
+            `SOURCES.md does not record the ${kind} SHA-256 of ${skill}/${f.path} (${h.slice(0, SHA_PREFIX)}...)`,
+          );
+        }
+      }
       if (!sources.includes(`${skill}/${f.path}`)) {
         problems.push(`SOURCES.md does not document the patch to ${skill}/${f.path}`);
       }
