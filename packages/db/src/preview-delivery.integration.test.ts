@@ -245,6 +245,16 @@ describe('an unseen preview can never be confirmed (G-20, owner ruling)', () => 
     expect(await draftRow(businessId, sent.draftId)).toEqual({ state: 'expired', reason: null });
   });
 
+  it('a draft already confirmed keeps its state when a failed receipt arrives later', async () => {
+    const businessId = await seedBusiness();
+    const sent = await previewed(businessId);
+    expect(await claim(businessId, sent.draftId)).toEqual({ outcome: 'claimed' });
+    const claimed = await draftRow(businessId, sent.draftId);
+    expect(claimed?.state).not.toBe('pending');
+    expect(await undelivered(businessId, sent.wamid)).toBe(0);
+    expect(await draftRow(businessId, sent.draftId)).toEqual(claimed);
+  });
+
   it('the claim itself refuses a pending draft that was never previewed', async () => {
     const businessId = await seedBusiness();
     const sent = await previewed(businessId);
