@@ -136,7 +136,7 @@ describe('time and usage both bound the trial', () => {
     const [row] = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, PERIOD),
     );
-    expect(row?.used).toBe(2); // 48 trial units were never spent and nothing was taken
+    expect(row?.used).toBe(2); // the unspent trial units stay unspent; nothing was taken
     expect(allowanceFor('trial', 'AI_ACTIONS')).toBeGreaterThan(2);
   });
 });
@@ -166,7 +166,7 @@ describe('upgrading before, at and after the trial ends', () => {
 
       expect(await planAt(businessId, paidAt)).toBe('chat');
       expect(await lapseAt(businessId, paidAt)).toBeNull();
-      // The old trial date never reaches back and expires what was bought.
+      // A paid plan is not read against the stale trial date (planFor returns it as stored).
       expect(await planAt(businessId, new Date(end.getTime() + 8 * DAY))).toBe('chat');
       const sub = await withBusiness(db, businessId, (tx) =>
         subscriptionsRepo.subscriptionFor(tx, businessId),
