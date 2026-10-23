@@ -24,6 +24,8 @@ secrets/
 
 # data & runtime artifacts
 data/
+# ...except data shipped inside a vendored skill (.claude/skills/SOURCES.md)
+!/.claude/skills/**/data/
 *.db
 *.db-wal
 *.db-shm
@@ -75,3 +77,6 @@ r0a-i-report*
 
 # AI launch evaluation report (run-eval --json)
 eval-report*.json
+
+# design-skill inspector output (.claude/skills/design-taste-frontend/scripts/inspect.mjs)
+.taste-skill/

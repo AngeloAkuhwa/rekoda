@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "skills": {
+    "animate": {
+      "source": "emilkowalski/skills",
+      "sourceType": "github",
+      "skillPath": "skills/animate/SKILL.md",
+      "computedHash": "7598d33e7f60dd5c24531eaaa897621cc3bdb48e8050324211627973bc59c4ce"
+    },
+    "animation-performance": {
+      "source": "emilkowalski/skills",
+      "sourceType": "github",
+      "skillPath": "skills/animation-performance/SKILL.md",
+      "computedHash": "b68ba704106e27b1f83df0cb817e09ec947abb76825d86eabdee2954b6c1bb84"
+    },
+    "animation-vocabulary": {
+      "source": "emilkowalski/skills",
+      "sourceType": "github",
+      "skillPath": "skills/animation-vocabulary/SKILL.md",
+      "computedHash": "0058036865ecbb864fd0c4132efcc62425355d6e99c7e6ef6a936742d62a5dea"
+    },
+    "break-ui": {
+      "source": "emilkowalski/skills",
+      "sourceType": "github",
+      "skillPath": "skills/break-ui/SKILL.md",
+      "computedHash": "60ada67662925f4df5e3c6ff41cac3ab241b66f8898100a5ffcd7ba7196cb868"
+    },
+    "design-taste-frontend": {
+      "source": "Leonxlnx/taste-skill",
+      "sourceType": "github",
+      "skillPath": "skills/taste-skill/SKILL.md",
+      "computedHash": "69021ac7e671c0c0d85d65b570003cef360b1c296323fa28c042884e146478ca"
+    },
+    "emil-design-eng": {
+      "source": "emilkowalski/skills",
+      "sourceType": "github",
+      "skillPath": "skills/emil-design-eng/SKILL.md",
+      "computedHash": "51f2537e04d15911b41d78e2de24c36a0e26d41beae15e82a954fe5496a5eda9"
+    },
+    "improve-animations": {
+      "source": "emilkowalski/skills",
+      "sourceType": "github",
+      "skillPath": "skills/improve-animations/SKILL.md",
+      "computedHash": "524ea241e41d58bbdd8e288700fe24f5725e2a2f3ae7186ad7cebf9055058356"
+    },
+    "review-animations": {
+      "source": "emilkowalski/skills",
+      "sourceType": "github",
+      "skillPath": "skills/review-animations/SKILL.md",
+      "computedHash": "b4e5f0f4fe3e2743c85bf7354108f48a0b9d502cb20ef5c4a9c195da91f93736"
+    }
+  },
+  "rekodaPatches": {
+    "design-taste-frontend": {
+      "upstreamFolderHash": "69021ac7e671c0c0d85d65b570003cef360b1c296323fa28c042884e146478ca",
+      "patchedFolderHash": "aaf91d1ee505e460edf2ee99877c37261fcf642db91e916569917f5eed39cdcf",
+      "files": [
+        {
+          "path": "scripts/inspect.mjs",
+          "upstreamSha256": "9482c546288d4d5c738a915905959e99394551ec27bc202ed443af12a02bd1f7",
+          "patchedSha256": "c3bc98ce660566bbf0dea60c82b58ef30a55de69e87e6f24276dc5ca5d0cacdd"
+        },
+        {
+          "path": "scripts/scenes.mjs",
+          "upstreamSha256": "234ec582e2b841457c33033feeeba8535f9ac285495a74d08dc533a1566c90d5",
+          "patchedSha256": "996752892f29fdd8f798a8c4f81c8d35d3efe23aae1221d544206ce06c1dddc7"
+        },
+        {
+          "path": "scripts/lib/rekoda-safe-serve.mjs",
+          "upstreamSha256": null,
+          "patchedSha256": "777bcf00fdba047bae12ed5b76d19d945cb1588cb0dc3e00bdbe0108013b610f"
+        }
+      ]
+    },
+    "impeccable": {
+      "upstreamFolderHash": "fb28833d2d55b7de536436e9e6f2b56138ad713598092249272e503f2aa54fb6",
+      "patchedFolderHash": "05b4ee6613fb2b7942919ebc41837b73c1c998ae9a9a6f6e6dcb793c63a18457",
+      "files": [
+        {
+          "path": "scripts/impeccable",
+          "upstreamSha256": "f5d9fcd37559ed6af782306f71b7688ad1ec5e1a4f8ae1ef4d3168f42523b1b1",
+          "patchedSha256": "e82ff32e528d4d200c342df478f6a4e2554ede011d06b3b5616eb3a2fcff3f25"
+        },
+        {
+          "path": "scripts/impeccable.cmd",
+          "upstreamSha256": "e0dcc4cd739c8a6ac9e8ce637c216cf8bd4ddae36a8bac458345bdb5a5d7e252",
+          "patchedSha256": "0af14b3d12f9f93dc5d1966e82bd5d67c815e5f2e88675dfbb22d14dd8c70f0d"
+        }
+      ]
+    }
+  }
+}

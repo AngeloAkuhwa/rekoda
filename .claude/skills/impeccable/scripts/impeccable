@@ -1,0 +1,12 @@
+#!/bin/sh
+# REKODA PATCH (not upstream): disabled launcher. See .claude/skills/SOURCES.md,
+# "Patches to vendored files".
+#
+# The upstream launcher fetched a platform binary over the network and ran it, and also ran
+# any binary named by an environment variable, the home cache or PATH. Rekoda does not run
+# unattended third-party binaries, so this stub never fetches and never starts anything, and
+# always exits non-zero. The skill's "Launcher unavailable" path applies: say that context loading did not
+# run, then read docs/REKODA_DESIGN_SYSTEM.md and design-system/rekoda/MASTER.md directly.
+echo "impeccable: launcher disabled in this repository (no downloaded or third-party binaries are executed)." >&2
+echo "Take the skill's 'Launcher unavailable' path; see .claude/skills/SOURCES.md, rule 5." >&2
+exit 126
