@@ -53,7 +53,7 @@ its pinned upstream folder byte for byte (`diff -r`). Impeccable, which the
 installer did not write, hashes to
 `fb28833d2d55b7de536436e9e6f2b56138ad713598092249272e503f2aa54fb6` by the same
 algorithm, identical to `plugin/skills/impeccable` at `69c34b7`. Those
-22 Oct measurements predate the OWN-38 patches (23 Oct 2026): the six Emil
+22 Oct measurements predate the OWN-38 patches (23 Oct 2026): the seven Emil
 Kowalski skills still equal upstream, while `design-taste-frontend` and
 `impeccable` now match their `rekodaPatches` `patchedFolderHash` (upstream hash
 kept beside it); see "Patches to vendored files". Re-run that
