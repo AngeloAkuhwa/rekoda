@@ -142,7 +142,16 @@ export async function planPriceKFor(
   }
   const version = await planCatalogueRepo.versionForBusiness(tx, businessId, plan, now);
   if (!version) return 0;
-  return (await planCatalogueRepo.priceAt(tx, version.id, 'NGN', interval, now)) ?? 0;
+  const price = await planCatalogueRepo.priceAt(tx, version.id, 'NGN', interval, now);
+  if (price !== null) return price;
+  /* A version published without an annual row is legal (the catalogue does not require
+   * one). The approved rule is monthly x 10 (OWN-40), so a missing year is that, never
+   * zero: a zero-kobo annual renewal would start the grace clock on a charge nobody can pay. */
+  if (interval === 'annual') {
+    const monthly = await planCatalogueRepo.priceAt(tx, version.id, 'NGN', 'monthly', now);
+    return monthly === null ? 0 : annualPriceK(monthly);
+  }
+  return 0;
 }
 
 /**

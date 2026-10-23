@@ -105,9 +105,13 @@ export function planChangeCharge(input: {
   interval?: BillingInterval | undefined;
 }): PlanChangeCharge {
   const constantToK = PLAN_PRICES_K[input.to as PlanId] ?? 0;
+  /* Only a first purchase is priced on the interval it chose. Every other change
+   * compares the two plans' MONTHLY prices, so a downgrade from an annual cycle is
+   * never mistaken for an upgrade by setting a year's price against a month's. */
+  const firstPurchase = input.from === 'trial' || input.from === 'expired';
   const toK = input.pricesK
     ? input.pricesK.to
-    : input.interval === 'annual'
+    : firstPurchase && input.interval === 'annual'
       ? annualPriceK(constantToK)
       : constantToK;
   const fromNowK = input.pricesK ? input.pricesK.from : (PLAN_PRICES_K[input.from as PlanId] ?? 0);

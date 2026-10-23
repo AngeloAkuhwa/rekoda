@@ -15,7 +15,7 @@ import {
   unappliedChargeDueAt,
   unappliedChargeOverdue,
 } from './billing.js';
-import { isConsumable } from './allowances.js';
+import { isConsumable, PLAN_PRICES_K } from './allowances.js';
 
 const at = (iso: string) => new Date(iso);
 
@@ -541,5 +541,37 @@ describe('annual billing (OWN-40, G-110)', () => {
     expect(annualPriceK(1_990_000)).toBe(19_900_000);
     expect(annualPriceK(2_990_000)).toBe(29_900_000);
     expect(annualPriceK(0)).toBe(0);
+  });
+});
+
+describe('annual pricing never leaks into a plan comparison (OWN-40, review of #340)', () => {
+  it('a downgrade on the constant-price path stays a downgrade when the cycle is annual', () => {
+    const now = at('2026-11-02T09:00:00Z');
+    const charge = planChangeCharge({
+      from: 'complete',
+      to: 'chat',
+      cycleStart: at('2026-08-01T09:00:00Z'),
+      renewsAt: at('2027-08-01T09:00:00Z'),
+      now,
+      interval: 'annual',
+    });
+    expect(charge.kind).toBe('downgrade');
+    expect(charge.amountK).toBe(0);
+  });
+
+  it('a first purchase on the constant-price path is still priced at ten months', () => {
+    const now = at('2026-11-02T09:00:00Z');
+    const charge = planChangeCharge({
+      from: 'trial',
+      to: 'chat',
+      cycleStart: now,
+      renewsAt: now,
+      now,
+      interval: 'annual',
+    });
+    expect(charge).toMatchObject({
+      kind: 'first_purchase',
+      amountK: annualPriceK(PLAN_PRICES_K.chat),
+    });
   });
 });

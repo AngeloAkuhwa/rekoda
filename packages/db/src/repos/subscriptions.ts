@@ -214,6 +214,7 @@ export async function writeSubscriptionState(
       pending_plan = ${state.pendingPlan},
       billing_interval = ${state.billingInterval ?? 'monthly'},
       pending_billing_interval = NULL,
+      interval_decided_at = NULL,
       subscription_origin = ${
         state.origin === 'keep' ? sql`subscription_origin` : sql`${state.origin}`
       },
@@ -300,7 +301,11 @@ export async function schedulePlanChange(
     await tx.execute(sql`
       UPDATE businesses SET pending_plan = NULL,
         plan_decided_at = CASE WHEN pending_plan IS NULL
-          THEN plan_decided_at ELSE plan_decided_before_pending END,
+          THEN plan_decided_at
+          -- An interval switch chosen while the change waited is a LATER decision (G-110): a
+          -- renewal opened before it was priced on the other interval, so the undo must not
+          -- roll back past it. GREATEST ignores a NULL (no interval decision).
+          ELSE GREATEST(plan_decided_before_pending, interval_decided_at) END,
         plan_decided_before_pending = NULL,
         updated_at = now()
       WHERE id = ${businessId}::uuid
@@ -352,6 +357,8 @@ export async function scheduleIntervalChange(
     UPDATE businesses SET pending_billing_interval = ${interval},
       plan_decided_at = CASE WHEN pending_billing_interval IS DISTINCT FROM ${interval}
         THEN clock_timestamp() ELSE plan_decided_at END,
+      interval_decided_at = CASE WHEN pending_billing_interval IS DISTINCT FROM ${interval}
+        THEN clock_timestamp() ELSE interval_decided_at END,
       updated_at = now()
     WHERE id = ${businessId}::uuid
   `);

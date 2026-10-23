@@ -19,12 +19,19 @@ import {
   billingRepo,
   createDb,
   issueRepo,
+  planCatalogueRepo,
   sql,
   subscriptionsRepo,
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  migrate,
+  requireUrls,
+  resetPlanCatalogue,
+  truncateAll,
+  type Urls,
+} from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRenewals } from './renewal-sweep.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
@@ -34,9 +41,11 @@ let urls: Urls;
 let app: NestFastifyApplication;
 let db: Db;
 let workerDb: Db;
+let ownerDb: Db;
 let config: ApiConfig;
 let closeDb: () => Promise<void>;
 let closeWorker: () => Promise<void>;
+let closeOwner: () => Promise<void>;
 
 beforeAll(async () => {
   urls = requireUrls();
@@ -58,6 +67,7 @@ beforeAll(async () => {
 
   ({ db, close: closeDb } = createDb(urls.app, { max: 4 }));
   ({ db: workerDb, close: closeWorker } = createDb(urls.worker, { max: 4 }));
+  ({ db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 2 }));
   config = app.get<ApiConfig>(CONFIG);
 });
 
@@ -65,10 +75,12 @@ afterAll(async () => {
   await app?.close();
   await closeDb?.();
   await closeWorker?.();
+  await closeOwner?.();
 });
 
 beforeEach(async () => {
   await truncateAll(urls);
+  await resetPlanCatalogue(urls);
 });
 
 const DAY = 86_400_000;
@@ -476,5 +488,68 @@ describe('changing plan inside an annual cycle', () => {
     expect(sub?.plan).toBe('integrate');
     expect(sub?.billingInterval).toBe('monthly');
     expect(sub?.pendingBillingInterval).toBeNull();
+  });
+});
+
+describe('review of #340: three ways a year could be mispriced or misapplied', () => {
+  it('a catalogue version with only a monthly price still sells a year at ten months, never at zero', async () => {
+    const { businessId } = await onboard();
+    /* A version published without an annual row is legal; the approved rule is monthly x 10. */
+    await planCatalogueRepo.publishPlanVersion(ownerDb, {
+      planId: 'chat',
+      name: 'Rekoda Chat',
+      seats: 1,
+      effectiveFrom: new Date(Date.now() - 40 * DAY),
+      entitlements: ['REKODA_CHAT'],
+      allowances: { AI_ACTIONS: 300, DOCUMENT_GENERATION: 100 },
+      prices: [{ currency: 'NGN', billingInterval: 'monthly', amountMinor: 1_490_000 }],
+    });
+
+    const quote = await billing().quote(businessId, 'chat', new Date(), 'annual');
+    expect(quote).toMatchObject({ kind: 'first_purchase', amountK: 14_900_000 });
+
+    /* A merchant pinned to that version who switches to yearly is renewed at a payable price. */
+    const other = await onboard();
+    await putOnPlan(other.businessId, 'chat', 'monthly', new Date(Date.now() - 35 * DAY));
+    await billing().switchInterval(other.businessId, 'annual');
+    await sweepRenewals({ workerDb, appDb: db, config });
+    const [renewal] = await chargesOf(other.businessId);
+    expect(renewal).toMatchObject({ kind: 'renewal', amountK: 14_900_000 });
+    expect(renewal?.billingInterval).toBe('annual');
+  });
+
+  it('undoing a cancellation does not roll back an interval switch chosen meanwhile', async () => {
+    const { businessId } = await onboard();
+    await putOnPlan(businessId, 'chat', 'monthly', new Date(Date.now() - 35 * DAY));
+
+    /* A monthly renewal is raised for the cycle that just ended... */
+    await sweepRenewals({ workerDb, appDb: db, config });
+    const [monthly] = await chargesOf(businessId);
+    expect(monthly).toMatchObject({ kind: 'renewal', amountK: CHAT_MONTHLY });
+
+    /* ...the owner cancels, then switches to yearly, then undoes the cancellation. */
+    await billing().cancelPlan(businessId);
+    await billing().switchInterval(businessId, 'annual');
+    await billing().changePlan(businessId, 'chat');
+
+    /* The yearly choice stands, so the monthly renewal is no longer the one to pay. */
+    expect((await subOf(businessId))?.pendingBillingInterval).toBe('annual');
+    const stale = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.decidedSince(tx, businessId, monthly!.reference),
+    );
+    expect(stale).toBe(true);
+
+    /* Paying the old monthly link is recorded but does not start another month or erase the switch. */
+    expect(await pay(businessId, monthly!.reference, new Date())).toBe('superseded');
+    expect((await subOf(businessId))?.pendingBillingInterval).toBe('annual');
+
+    /* The sweep raises the yearly renewal in its place. */
+    await sweepRenewals({ workerDb, appDb: db, config });
+    const live = (await chargesOf(businessId)).filter(
+      (c) => c.status === 'pending' && c.supersededAt === null && c.kind === 'renewal',
+    );
+    expect(live).toHaveLength(1);
+    expect(live[0]?.billingInterval).toBe('annual');
+    expect(live[0]?.amountK).toBe(CHAT_ANNUAL);
   });
 });
