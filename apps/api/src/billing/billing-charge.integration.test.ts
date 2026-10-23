@@ -549,10 +549,16 @@ describe('a top-up pack', () => {
     const businessId = await seedBusiness();
     const reference = await openPack(businessId);
 
-    await deliver(reference, PACK_K * 2);
+    provider.willVerify(reference, { amountK: PACK_K * 2 });
+    const eventId = await storeChargeSuccess(reference, PACK_K * 2);
+    await pump();
+    await drainJobs();
 
     expect((await chargeOf(businessId, reference))?.status).toBe('paid');
     expect(await bonusOf(businessId)).toBe(PACK_UNITS);
+    // What the provider took is recorded and the event is flagged for a human.
+    expect((await chargeOf(businessId, reference))?.paidAmountK).toBe(PACK_K * 2);
+    expect((await events.eventStatus(workerDb, eventId))?.error).toBe('overpaid');
   });
 
   it('credits nothing when the provider says the attempt failed', async () => {
