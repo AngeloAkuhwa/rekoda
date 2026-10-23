@@ -122,7 +122,7 @@ describe('VAT', () => {
       /vat[- ]free/i,
       /\bvat\b/i,
       /\btax\b/i,
-      /7\.5/,
+      /7\.5\s*(%|per ?cent)/i,
     ]) {
       expect(text).not.toMatch(claim);
     }

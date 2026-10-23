@@ -151,8 +151,8 @@ describe('tax (OWN-30, G-11)', () => {
       RECORDED,
       { ...RECEIPT, ...over },
       { ...RECORDED, ...over },
-      { ...RECEIPT, ...over, excessDisposition: 'customer_credit' },
-      { ...RECEIPT, ...over, excessDisposition: 'unattributed' },
+      { ...RECORDED, ...over, excessDisposition: 'customer_credit' },
+      { ...RECORDED, ...over, excessDisposition: 'unattributed' },
     ];
     for (const doc of docs) {
       const text = textOf(doc);
