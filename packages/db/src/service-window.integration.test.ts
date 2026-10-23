@@ -98,8 +98,19 @@ describe('lastMerchantInboundAt', () => {
     const result = await withBusiness(app, business, async (tx) => {
       await tx.execute(sql`SELECT 1`);
       await new Promise((resolve) => setTimeout(resolve, 50));
-      /* The owner writes on another connection while this job is mid-flight. */
-      await inboundAt(business, new Date());
+      /* The owner writes on another connection while this job is mid-flight; the
+       * row is stamped by the DATABASE clock (no timestamp override), so the test
+       * is independent of any skew between this host and PostgreSQL. */
+      seq += 1;
+      await withBusiness(app, business, (other) =>
+        conversationsRepo.recordInbound(other, {
+          businessId: business,
+          channel: 'meta',
+          kind: 'text',
+          body: 'hello',
+          providerMessageId: `wamid.win-${seq}`,
+        }),
+      );
       return conversationsRepo.lastMerchantInboundAt(tx, business);
     });
     expect(result.at).not.toBeNull();
