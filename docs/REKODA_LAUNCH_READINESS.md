@@ -354,7 +354,7 @@ Status: **PASS** · **FAIL** · **NOT RUN** · **BLOCKED EXTERNALLY**. "Local 10
 | STOP / START                                       | CODE COMPLETE, staging pending (G-24: one exact consent matcher on every path; padded keywords change nothing)               |
 | Unknown sender answered once                       | PASS                                                                                                                         |
 | Delivery failure and retry                         | PARTIAL: retries PASS; failures on ops health; alert merged #318; draft clearing merged #320 (G-20), staging acceptance pending                                |
-| Business-initiated send outside the 24-hour window | FAIL (G-67, P1: no window pre-check on Rekoda's own sender; a late receipt is rejected by Meta and the failure is invisible) |
+| Business-initiated send outside the 24-hour window | CODE COMPLETE, NOT DEPLOYED (G-67, #322: the document job checks the window and sends the template notice instead; the template is not yet submitted or approved, so this gate stays FAIL until the staging J3 run with a webhook over 24 h after the owner's last message passes) |
 
 ### GATE 5 — AI and media
 
