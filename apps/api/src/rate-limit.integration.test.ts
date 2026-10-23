@@ -155,3 +155,26 @@ describe('nobody else can name the visitor', () => {
     expect((await viaWeb('198.51.100.10')).statusCode).toBe(429);
   });
 });
+
+describe('the routes exempt from the per-IP limit stay exempt with a query string (G-21)', () => {
+  /* Meta's verification handshake is a GET carrying hub.mode, hub.verify_token
+   * and hub.challenge, so the URL the limiter sees is never the bare path. */
+  const handshake = () =>
+    app.inject({
+      method: 'GET',
+      url: '/webhooks/meta?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=12345',
+      remoteAddress: '192.0.2.77',
+    });
+
+  it('never answers 429 to Meta’s handshake, however often it is called', async () => {
+    const codes = await statuses(handshake, LIMIT * 3);
+    expect(limited(codes)).toBe(0);
+  });
+
+  it('exempts the other two paths with a query as well', async () => {
+    const probe = (url: string) =>
+      statuses(() => app.inject({ method: 'GET', url, remoteAddress: '192.0.2.78' }), LIMIT * 2);
+    expect(limited(await probe('/health?probe=1'))).toBe(0);
+    expect(limited(await probe('/webhooks/paystack?x=1'))).toBe(0);
+  });
+});
