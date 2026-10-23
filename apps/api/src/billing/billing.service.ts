@@ -654,6 +654,7 @@ export async function applySettledCharge(
       anchorDay,
       pendingPlan: null,
       billingInterval: interval,
+      keepPendingInterval: charge.kind === 'upgrade',
     });
   }
   return 'applied';

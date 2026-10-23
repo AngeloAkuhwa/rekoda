@@ -424,6 +424,22 @@ describe('switching between monthly and annual', () => {
     expect(rows.find((c) => c.reference === first!.reference)?.supersededAt).not.toBeNull();
   });
 
+  it('a mid-cycle upgrade keeps a yearly switch that was scheduled before it', async () => {
+    const { businessId } = await onboard();
+    await putOnPlan(businessId, 'chat', 'monthly', new Date(Date.now() - 10 * DAY));
+    await billing().switchInterval(businessId, 'annual');
+
+    const answer = await billing().changePlan(businessId, 'complete', new Date());
+    if (answer.state !== 'payment_required') throw new Error(`got ${answer.state}`);
+    expect(await pay(businessId, answer.reference, new Date())).toBe('applied');
+
+    const after = await subOf(businessId);
+    expect(after?.plan).toBe('complete');
+    // The upgrade kept the cycle it landed in, so the confirmed yearly choice still waits for renewal.
+    expect(after?.billingInterval).toBe('monthly');
+    expect(after?.pendingBillingInterval).toBe('annual');
+  });
+
   it('a trial or lapsed merchant has no cycle to switch', async () => {
     const { businessId } = await onboard();
     expect(await billing().switchInterval(businessId, 'annual')).toEqual({
