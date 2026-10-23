@@ -16,6 +16,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { paymentReference } from '@rekoda/core';
 import { encryptFacet, matchKeyFor } from '@rekoda/core/vault';
 import {
+  conversationsRepo,
   createDb,
   customersRepo,
   events,
@@ -24,6 +25,7 @@ import {
   jobsRepo,
   paymentsHub,
   settleRepo,
+  sql,
   withBusiness,
   type Db,
 } from '@rekoda/db';
@@ -122,6 +124,28 @@ async function seedBusiness(): Promise<string> {
     ownerUserId: user.id,
   });
   return business.id;
+}
+
+/**
+ * The owner wrote to the business number `hoursAgo` hours ago. The receipt PDF
+ * is a free-form WhatsApp message, deliverable only inside the 24 hours after
+ * that (G-67); outside it the owner gets a template notice instead.
+ */
+let wroteSeq = 0;
+async function ownerWroteHoursAgo(businessId: string, hoursAgo: number): Promise<void> {
+  wroteSeq += 1;
+  await withBusiness(appDb, businessId, async (tx) => {
+    const message = await conversationsRepo.recordInbound(tx, {
+      businessId,
+      channel: 'meta',
+      kind: 'text',
+      body: 'hello',
+      providerMessageId: `wamid.pipeline-${wroteSeq}`,
+    });
+    await tx.execute(
+      sql`UPDATE conversation_messages SET created_at = now() - make_interval(hours => ${hoursAgo}) WHERE id = ${message.id}`,
+    );
+  });
 }
 
 /** An unpaid ₦150,000 invoice with a live intent, the normal way in. */
@@ -227,6 +251,7 @@ async function ledgerTotals(businessId: string): Promise<{ d: number; c: number;
 describe('the full payment (§37: "full payment")', () => {
   it('stored event → attributed → verified → booked: invoice PAID, receipt, balanced ledger', async () => {
     const businessId = await seedBusiness();
+    await ownerWroteHoursAgo(businessId, 2);
     const { sale, intent } = await seedObligation(businessId);
     provider.willVerify(intent.reference, { amountK: 15_000_000, providerFeeK: 225_000 });
     const eventId = await storeChargeSuccess(intent.reference);
@@ -274,6 +299,35 @@ describe('the full payment (§37: "full payment")', () => {
     });
   });
 
+  /**
+   * G-67, the staging J3 case: the provider webhook arrives more than 24 hours
+   * after the owner last wrote to the number. Money is booked and the receipt
+   * exists; Meta would refuse the free-form PDF, so the owner gets the
+   * approved template instead and "resend" delivers the PDF.
+   */
+  it('books a payment that arrives past the 24-hour window and tells the owner by template', async () => {
+    const businessId = await seedBusiness();
+    await ownerWroteHoursAgo(businessId, 30);
+    const { sale, intent } = await seedObligation(businessId);
+    provider.willVerify(intent.reference, { amountK: 15_000_000, providerFeeK: 225_000 });
+    await storeChargeSuccess(intent.reference);
+
+    expect(await pump()).toBe(1);
+    expect(await drainJobs()).toBe(3);
+
+    expect((await invoiceState(businessId, sale.invoiceId))?.status).toBe('paid');
+    expect(await receiptCount(businessId)).toBe(1);
+    expect(stubSender.lastDocument).toBeNull();
+    expect(stubSender.documentNotices).toEqual([
+      {
+        to: '+2348130000001',
+        documentLabel: 'receipt',
+        reference: expect.stringMatching(/^RCT-\d{4}-000001$/),
+      },
+    ]);
+    const totals = await ledgerTotals(businessId);
+    expect(totals.d).toBe(totals.c);
+  });
   it('believes the VERIFY amount, not the webhook`s — a lying event books what the provider confirms', async () => {
     const businessId = await seedBusiness();
     const { sale, intent } = await seedObligation(businessId);

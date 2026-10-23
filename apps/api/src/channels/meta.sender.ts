@@ -8,6 +8,7 @@ import {
   type OutboundBillingNotice,
   type OutboundDocument,
   type OutboundRetentionNotice,
+  type OutboundDocumentNotice,
   type OutboundTemplate,
   type OutboundConnectionText,
   type OutboundMessage,
@@ -51,6 +52,9 @@ export class MetaSender implements MessageSender {
     /** Meta-approved UTILITY template for retention warnings. */
     private readonly retentionTemplate: string | null = null,
     private readonly retentionTemplateLocale = 'en',
+    /** Meta-approved UTILITY template for "your document is ready" (G-67). */
+    private readonly documentTemplate: string | null = null,
+    private readonly documentTemplateLocale = 'en',
     /**
      * Graph's host. Injectable for the same reason the Paystack adapter's is:
      * the claims worth having about an adapter are about what goes over the
@@ -58,6 +62,38 @@ export class MetaSender implements MessageSender {
      */
     private readonly baseUrl = 'https://graph.facebook.com',
   ) {}
+
+  /**
+   * "Your document is ready", as a utility template (G-67).
+   *
+   * Refuses loudly when none is configured. The document job catches nothing
+   * here: it is retried a few times and then dies visibly instead of dropping
+   * the document silently, and the owner can still say "resend" at any time.
+   */
+  async sendDocumentNotice(notice: OutboundDocumentNotice): Promise<SendResult> {
+    if (!this.documentTemplate) {
+      throw new SendFailed('no document template configured (META_DOCUMENT_TEMPLATE)');
+    }
+    return this.post({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: notice.to,
+      type: 'template',
+      template: {
+        name: this.documentTemplate,
+        language: { code: this.documentTemplateLocale },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: notice.documentLabel },
+              { type: 'text', text: notice.reference },
+            ],
+          },
+        ],
+      },
+    });
+  }
 
   /**
    * A retention warning, as a utility template.
@@ -376,7 +412,10 @@ export class MetaSender implements MessageSender {
          * string in the system carrying a real customer name. Status is enough
          * to act on.
          */
-        throw new SendFailed(`meta ${path} failed with ${response.status}`);
+        throw new SendFailed(
+          `meta ${path} failed with ${response.status}`,
+          await providerCodeOf(response),
+        );
       }
       return await response.json();
     } catch (error) {
@@ -427,7 +466,28 @@ export class NoSenderConfigured implements MessageSender {
     return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
   }
 
+  sendDocumentNotice(): Promise<never> {
+    return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
+  }
+
   sendRetentionNotice(): Promise<never> {
     return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
+  }
+}
+
+/**
+ * Meta's numeric `error.code`, and nothing else from the error body.
+ *
+ * The body can echo the request, which is a rehydrated message, so it is never
+ * kept; a number cannot carry a customer name. Null for anything that is not
+ * the documented shape.
+ */
+async function providerCodeOf(response: Response): Promise<number | null> {
+  try {
+    const parsed = (await response.json()) as { error?: { code?: unknown } };
+    const code = parsed?.error?.code;
+    return typeof code === 'number' && Number.isInteger(code) ? code : null;
+  } catch {
+    return null;
   }
 }
