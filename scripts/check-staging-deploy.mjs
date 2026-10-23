@@ -472,13 +472,14 @@ export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
   }
   // CI on main is the evidence a deploy needs, so a later merge must not cancel it.
   if (
+    ciConcurrency?.group !== 'ci-${{ github.ref }}' ||
     typeof ciConcurrency?.['cancel-in-progress'] !== 'string' ||
     !/^\$\{\{\s*github\.ref\s*!=\s*'refs\/heads\/main'\s*\}\}$/.test(
       ciConcurrency['cancel-in-progress'],
     )
   ) {
     problems.push(
-      `${FILES.ci} must never cancel a run on main (cancel-in-progress: \${{ github.ref != 'refs/heads/main' }}): a cancelled push run is no evidence for a staging deploy`,
+      `${FILES.ci} must keep a per-ref group (ci-\${{ github.ref }}) and never cancel a run on main (cancel-in-progress: \${{ github.ref != 'refs/heads/main' }}): a cancelled push run is no evidence for a staging deploy`,
     );
   }
   const on = wf?.on ?? {};

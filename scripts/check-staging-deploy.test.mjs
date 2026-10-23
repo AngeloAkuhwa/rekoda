@@ -593,3 +593,8 @@ test('CI cancelling its own run on main', () => {
   );
   expectProblem(problems(edit), /must never cancel a run on main/);
 });
+
+test('CI sharing one concurrency group across refs', () => {
+  const edit = edited('ci', 'group: ci-${{ github.ref }}', 'group: ci');
+  expectProblem(problems(edit), /per-ref group/);
+});
