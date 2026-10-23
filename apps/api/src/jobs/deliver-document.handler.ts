@@ -137,10 +137,8 @@ export function deliverDocumentHandler(deps: DeliverDocumentDeps): JobHandler {
      * carry no sender phone, so a delegate's message can make the window look
      * open - Meta's own rejection is then the second check.
      */
-    const windowOpen = serviceWindowOpen(
-      await conversationsRepo.lastMerchantInboundAt(tx, businessId),
-      new Date(),
-    );
+    const inbound = await conversationsRepo.lastMerchantInboundAt(tx, businessId);
+    const windowOpen = serviceWindowOpen(inbound.at, inbound.now);
 
     /* A resend the owner just asked for is attempted whatever the clock says:
      * their message is what reopens the window, and a notice asking them to

@@ -60,10 +60,25 @@ async function inboundAt(businessId: string, at: Date): Promise<void> {
   });
 }
 
-const lastInbound = (businessId: string) =>
-  withBusiness(app, businessId, (tx) => conversationsRepo.lastMerchantInboundAt(tx, businessId));
+const lastInbound = async (businessId: string) =>
+  (
+    await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.lastMerchantInboundAt(tx, businessId),
+    )
+  ).at;
 
 describe('lastMerchantInboundAt', () => {
+  it("returns the database's own time, so the window is judged on one clock", async () => {
+    const business = await seedBusiness();
+    await inboundAt(business, new Date(Date.now() - 60_000));
+    const { at, now } = await withBusiness(app, business, (tx) =>
+      conversationsRepo.lastMerchantInboundAt(tx, business),
+    );
+    expect(at).not.toBeNull();
+    expect(now.getTime() - at!.getTime()).toBeGreaterThanOrEqual(59_000);
+    expect(now.getTime() - at!.getTime()).toBeLessThan(120_000);
+  });
+
   it('is null for a merchant who has never written', async () => {
     const business = await seedBusiness();
     expect(await lastInbound(business)).toBeNull();

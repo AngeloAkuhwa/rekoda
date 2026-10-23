@@ -218,12 +218,17 @@ export async function recordInbound(
 }
 
 /**
- * When the merchant last wrote to Rekoda's number (G-67).
+ * When the merchant last wrote to Rekoda's number (G-67), and what time the
+ * DATABASE thinks it is.
  *
  * The 24-hour service window is opened by the RECIPIENT's message, so a
  * proactive send to the owner asks this before choosing free-form or
  * template. Read from the merchant thread only: a customer thread is the
  * merchant's own WABA, whose window is `wabaRepo.serviceWindowOpen`.
+ *
+ * `at` is stamped by the database clock, so the comparison uses the database
+ * clock too (`now`, the transaction's time): an application host whose clock
+ * runs behind would otherwise read a fresh message as one from the future.
  *
  * Messages carry no sender phone, so a delegate's message counts the same as
  * the owner's. That can only make the window look open when the owner's is
@@ -233,9 +238,12 @@ export async function lastMerchantInboundAt(
   tx: TenantDb,
   businessId: string,
   channel: Channel = 'meta',
-): Promise<Date | null> {
+): Promise<{ at: Date | null; now: Date }> {
   const rows = await tx
-    .select({ at: sql<Date>`max(${conversationMessages.createdAt})` })
+    .select({
+      at: sql<Date | null>`max(${conversationMessages.createdAt})`,
+      now: sql<Date>`now()`,
+    })
     .from(conversationMessages)
     .innerJoin(conversations, eq(conversations.id, conversationMessages.conversationId))
     .where(
@@ -247,8 +255,8 @@ export async function lastMerchantInboundAt(
         eq(conversations.conversationKind, 'MERCHANT'),
       ),
     );
-  const at = rows[0]?.at;
-  return at ? new Date(at) : null;
+  const row = rows[0];
+  return { at: row?.at ? new Date(row.at) : null, now: row ? new Date(row.now) : new Date() };
 }
 
 export interface StoredMessage {

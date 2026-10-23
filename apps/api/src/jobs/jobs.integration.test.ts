@@ -2107,6 +2107,22 @@ describe('a document sent outside the 24-hour service window (G-67)', () => {
     expect(recorded?.sent).toBe(1);
   });
 
+  it('judges the window on the database clock, so a lagging application clock cannot close it', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348177000610');
+    await ownerWroteHoursAgo(businessId, 0);
+    const { quote, runner } = await renderedQuote(businessId);
+    /* The application host's clock runs ten minutes behind the database's: the
+     * message just recorded is then "from the future" by the app's reckoning. */
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() - 10 * 60_000 });
+    try {
+      expect(await runner.runOnce()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(stubSender.documents.map((d) => d.filename)).toEqual([`${quote.orderNumber}.pdf`]);
+    expect(stubSender.documentNotices).toHaveLength(0);
+  });
+
   it('treats an owner who never wrote as outside the window', async () => {
     const businessId = await seedBusiness('Ada Fashion', '+2348177000603');
     const { runner } = await renderedQuote(businessId);
