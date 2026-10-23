@@ -160,4 +160,3 @@ export function serviceWindowOpen(lastInboundAt: Date | null, now: Date): boolea
   const age = now.getTime() - lastInboundAt.getTime();
   return age >= 0 && age < SERVICE_WINDOW_MS;
 }
-
