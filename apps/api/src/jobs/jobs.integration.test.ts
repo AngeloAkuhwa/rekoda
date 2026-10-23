@@ -30,10 +30,11 @@ import {
 import { allowanceFor, replies, usagePeriod } from '@rekoda/core';
 import { encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
 import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '@rekoda/db/testing';
+import { Logger } from '@nestjs/common';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { JobRunner } from './runner.js';
+import { JobDeferred, JobRunner } from './runner.js';
 import { buildRunner, type RunnerDeps } from './jobs.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
@@ -350,6 +351,244 @@ describe('the polling loop', () => {
     await enqueue(ada, 'test.polled');
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(done).toHaveLength(1);
+  });
+});
+
+describe('a busy queue still recovers abandoned jobs (G-10)', () => {
+  /**
+   * The reclaim clock used to advance only on empty polls, so a queue that
+   * never went idle never gave back the job a crashed worker had abandoned.
+   * Here the queue stays busy for over a second; the abandoned job must be
+   * recovered while that work is still running.
+   */
+  it('reclaims a stranded job while other jobs keep the runner busy', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348050000001');
+    await enqueue(ada, 'test.stranded');
+    const stranded = await jobsRepo.claimNext(workerDb, 'dead-worker');
+    expect(stranded?.kind).toBe('test.stranded');
+
+    const BUSY_JOBS = 40;
+    for (let i = 0; i < BUSY_JOBS; i += 1) await enqueue(ada, 'test.busy');
+
+    let busyDone = 0;
+    let busyDoneWhenRecovered: number | null = null;
+    const runner = new JobRunner(workerDb, appDb, { idleMs: 10, stalledAfterMs: 150 });
+    runner.register('test.busy', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      busyDone += 1;
+    });
+    runner.register('test.stranded', async () => {
+      busyDoneWhenRecovered = busyDone;
+    });
+
+    runner.start();
+    try {
+      await waitFor(() => busyDoneWhenRecovered !== null);
+    } finally {
+      await runner.stop();
+    }
+    expect(busyDoneWhenRecovered).not.toBeNull();
+    expect(busyDoneWhenRecovered!).toBeLessThan(BUSY_JOBS);
+  });
+});
+
+describe('a long-running handler keeps its lease (G-10)', () => {
+  /**
+   * `reclaimStalled` hands a job to another worker once it has been untouched
+   * for the stall window. A handler that legitimately outlives that window
+   * (a slow upload) must not look like a crashed worker, or two workers run
+   * the same job. The runner renews the lease while the handler runs.
+   */
+  it('is not reclaimed while its handler is still running', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348050000001');
+    await enqueue(ada, 'test.slow');
+
+    let reclaimedMidRun: number | null = null;
+    let finished = false;
+    const runner = new JobRunner(workerDb, appDb, { idleMs: 10, stalledAfterMs: 150 });
+    runner.register('test.slow', async () => {
+      // Outlives the 150 ms stall window more than twice over.
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      reclaimedMidRun = await jobsRepo.reclaimStalled(workerDb, 150);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      finished = true;
+    });
+
+    expect(await runner.runOnce()).toBe(true);
+    expect(finished).toBe(true);
+    expect(reclaimedMidRun).toBe(0);
+    expect((await jobsOf(ada))[0]).toMatchObject({ state: 'done', attempts: 1 });
+  });
+});
+
+describe('an attempt that lost its job cannot commit (G-10)', () => {
+  /**
+   * A job reclaimed and claimed again while its first attempt is still
+   * running has two live attempts. Only the one holding the claim may finish:
+   * the other's completion fails, its transaction rolls back with every write
+   * the handler made, and the live attempt's state is left alone.
+   */
+  it('rolls back a stale attempt and leaves the new claim intact', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348050000001');
+    await enqueue(ada, 'test.stale');
+
+    const runner = new JobRunner(workerDb, appDb);
+    runner.register('test.stale', async ({ tx, businessId }) => {
+      await tx.insert(schema.products).values({ businessId, name: 'duplicate', unitPriceK: 1 });
+      // While this attempt runs, the job is reclaimed and taken by someone else.
+      await jobsRepo.reclaimStalled(workerDb, 0);
+      const taken = await jobsRepo.claimNext(workerDb, 'the-new-owner');
+      expect(taken?.kind).toBe('test.stale');
+    });
+
+    expect(await runner.runOnce()).toBe(true);
+
+    // The stale attempt's write did not commit...
+    expect(await productsOf(ada)).toHaveLength(0);
+    // ...and it did not clobber the new owner's claim.
+    const [job] = await jobsOf(ada);
+    expect(job).toMatchObject({ state: 'running', attempts: 2 });
+  });
+});
+
+describe('a stale attempt cannot fail or defer the live claim either (G-10)', () => {
+  async function staleThen(failWith: () => unknown) {
+    const ada = await seedBusiness('Ada Fashion', '+2348050000001');
+    await enqueue(ada, 'test.stale');
+    const runner = new JobRunner(workerDb, appDb);
+    runner.register('test.stale', async () => {
+      await jobsRepo.reclaimStalled(workerDb, 0);
+      const taken = await jobsRepo.claimNext(workerDb, 'the-new-owner');
+      expect(taken?.kind).toBe('test.stale');
+      throw failWith();
+    });
+    expect(await runner.runOnce()).toBe(true);
+    return (await jobsOf(ada))[0];
+  }
+
+  it('a stale attempt that throws does not mark the live claim failed', async () => {
+    const job = await staleThen(() => new Error('the stale attempt blew up'));
+    expect(job).toMatchObject({ state: 'running', attempts: 2 });
+  });
+
+  it('a stale attempt that defers does not requeue the live claim', async () => {
+    const job = await staleThen(() => new JobDeferred(1_000));
+    expect(job).toMatchObject({ state: 'running', attempts: 2 });
+  });
+});
+
+describe('reclaim does not depend on a free lane (G-10)', () => {
+  /**
+   * A worker restarted more often than the stall window would otherwise never
+   * reclaim what its predecessor abandoned. The stall window here is a minute,
+   * the abandoned claim an hour old: only the pass at start can recover it
+   * within the test's timeout.
+   */
+  it('reclaims a long-abandoned job at start, not a stall window later', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348050000001');
+    await enqueue(ada, 'test.long-abandoned');
+    const claimed = await jobsRepo.claimNext(workerDb, 'dead-worker');
+    expect(claimed?.kind).toBe('test.long-abandoned');
+    await withBusiness(appDb, ada, (tx) =>
+      tx.execute(
+        sql`UPDATE jobs SET locked_at = now() - interval '1 hour' WHERE id = ${claimed!.id}::uuid`,
+      ),
+    );
+
+    let ran = false;
+    const runner = new JobRunner(workerDb, appDb, { idleMs: 10, stalledAfterMs: 60_000 });
+    runner.register('test.long-abandoned', async () => {
+      ran = true;
+    });
+
+    runner.start();
+    try {
+      await waitFor(() => ran);
+    } finally {
+      await runner.stop();
+    }
+    expect(ran).toBe(true);
+  });
+
+  it('stop() waits for a reclaim pass that is still running', async () => {
+    const runner = new JobRunner(workerDb, appDb, { idleMs: 10, stalledAfterMs: 60_000 });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let finished = false;
+    vi.spyOn(runner, 'reclaim').mockImplementation(async () => {
+      await gate;
+      finished = true;
+      return 0;
+    });
+    runner.start();
+    let stopped = false;
+    const stopping = runner.stop().then(() => {
+      stopped = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(stopped).toBe(false);
+    release();
+    await stopping;
+    expect(finished).toBe(true);
+  });
+
+  it('an unknown-kind claim that was lost is discarded, not marked dead', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348050000001');
+    await enqueue(ada, 'test.no-handler');
+    const claimed = await jobsRepo.claimNext(workerDb, 'the-live-owner');
+    expect(claimed?.kind).toBe('test.no-handler');
+    const runner = new JobRunner(workerDb, appDb);
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    try {
+      // A stale attempt names a token that no longer owns the claim.
+      await (
+        runner as unknown as {
+          retireUnknownKind(job: unknown, claimedBy: string): Promise<void>;
+        }
+      ).retireUnknownKind(claimed, 'the-stale-attempt');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('lost its lease'));
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+    expect((await jobsOf(ada))[0]).toMatchObject({ state: 'running' });
+  });
+
+  it('requeues an abandoned job while the only lane sits in a slow handler', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348050000001');
+    await enqueue(ada, 'test.abandoned');
+    const abandoned = await jobsRepo.claimNext(workerDb, 'dead-worker');
+    expect(abandoned?.kind).toBe('test.abandoned');
+    await enqueue(ada, 'test.hang');
+
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const runner = new JobRunner(workerDb, appDb, { idleMs: 10, stalledAfterMs: 150 });
+    runner.register('test.hang', async () => {
+      await gate;
+    });
+    runner.register('test.abandoned', async () => {});
+
+    runner.start();
+    try {
+      const deadline = Date.now() + 5_000;
+      for (;;) {
+        const rows = await jobsOf(ada);
+        const row = rows.find((j) => j.kind === 'test.abandoned');
+        if (row && row.state !== 'running') break;
+        if (Date.now() > deadline) throw new Error('abandoned job was never requeued');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    } finally {
+      release();
+      await runner.stop();
+    }
   });
 });
 
@@ -1671,6 +1910,99 @@ describe('inbound messages for one business never overlap across lanes', () => {
       tx.select().from(schema.expenses),
     );
     expect(expenses).toHaveLength(1);
+  });
+
+  /**
+   * G-20 (Codex P1): a failed delivery receipt queued BEFORE the merchant's
+   * "yes" must unsee its preview first. The lock alone lets the later "yes"
+   * win it while the receipt's lane is between claim and lock, and confirm a
+   * draft the merchant never received. The inbound job must step back for an
+   * older live `delivery.status` job, not only for an older inbound one.
+   */
+  it('defers an inbound message while an older failed receipt is claimed elsewhere (G-20)', async () => {
+    const businessId = await seedBusiness('Stalled Receipt Ltd', '+2348140040003');
+    const waId = '2348140040003';
+    const body = {
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'WABA',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { display_phone_number: '15550002', phone_number_id: 'PNID' },
+                contacts: [{ profile: { name: 'X' }, wa_id: waId }],
+                messages: [
+                  {
+                    id: 'wamid.rcpt-yes',
+                    from: waId,
+                    timestamp: '1700000000',
+                    type: 'text',
+                    text: { body: 'yes' },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const yes = await recordPinned({
+      provider: 'meta',
+      eventType: 'message.text',
+      externalId: 'wamid.rcpt-yes',
+      payload: sealPayload(body, config.vaultKey, 'meta', 'wamid.rcpt-yes'),
+      businessId,
+    });
+    await arrivesAfterPreview(businessId, yes);
+    const receiptJob = await enqueue(businessId, 'delivery.status', {});
+    const yesJob = await enqueue(businessId, 'inbound.message', { eventId: storedEventId(yes) });
+    if (!receiptJob || !yesJob) throw new Error('both jobs should have enqueued');
+
+    // A lane claims the receipt — the older job — and stalls before the lock.
+    const stalled = await jobsRepo.claimNext(workerDb, 'stalled-lane');
+    expect(stalled?.id).toBe(receiptJob.id);
+
+    const runAtOf = async () => {
+      const rows = await withBusiness(appDb, businessId, (tx) =>
+        tx.execute<{ run_at: Date; state: string; attempts: number }>(
+          sql`SELECT run_at, state, attempts FROM jobs WHERE id = ${yesJob.id}::uuid`,
+        ),
+      );
+      return [...rows][0]!;
+    };
+    const before = new Date((await runAtOf()).run_at).getTime();
+
+    const runner = buildRunner(workerDb, appDb, deps, { idleMs: 20 });
+    runner.start();
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      /* Evidence of the deferral itself, not of a job nobody claimed: the
+       * runner claims the "yes", steps back, and `deferClaimed` pushes its
+       * `run_at` forward and hands the attempt back. A job never claimed would
+       * keep its enqueue-time `run_at`. */
+      let deferred = false;
+      const watchUntil = Date.now() + 5_000;
+      while (Date.now() < watchUntil) {
+        const now = await runAtOf();
+        expect(['pending', 'running']).toContain(now.state);
+        expect(now.attempts).toBeLessThanOrEqual(1);
+        if (
+          now.state === 'pending' &&
+          now.attempts === 0 &&
+          new Date(now.run_at).getTime() > before
+        ) {
+          deferred = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(deferred).toBe(true);
+    } finally {
+      await runner.stop();
+    }
   });
 });
 

@@ -16,6 +16,13 @@ export interface SendReplyInput {
    * without touching a customer, which is most of them.
    */
   tokens?: ReadonlyMap<string, string>;
+  /**
+   * The inbound conversation message this reply answers (G-20). Recorded on
+   * the outbound row so a delivery that fails after WhatsApp accepted it can
+   * be traced back to the preview it carried. Omit for a reply with no
+   * request behind it.
+   */
+  inReplyTo?: string;
 }
 
 /**
@@ -94,6 +101,7 @@ export class ReplySender {
         channel: 'meta',
         kind: 'text',
         body: safe.text,
+        ...(input.inReplyTo ? { replyToMessageId: input.inReplyTo } : {}),
       },
       /* The thread identity, stated rather than assumed (Appendix F.2):
        * a reply to the merchant belongs on the merchant's thread. */
@@ -113,6 +121,14 @@ export class ReplySender {
       const result = await this.sender.send({ to: input.to, text: forHuman });
       await conversationsRepo.markOutboundSent(tx, recorded.id, result.providerMessageId);
       await this.recordMessageCost(tx, input.businessId);
+      /* Accepted, but with no message id a later `failed` receipt could never
+       * be traced back to this reply, so the merchant could never be unshown
+       * what it carried (G-20). Treated as not delivered: nothing that
+       * depends on this reply being read is left confirmable. */
+      if (!result.providerMessageId) {
+        this.log.warn('reply accepted without a message id: treated as not delivered');
+        return { delivered: false };
+      }
       return { delivered: true, shown: forHuman === rehydrated ? safe.text : null };
     } catch (error) {
       if (error instanceof SendFailed) {

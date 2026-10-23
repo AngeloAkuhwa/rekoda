@@ -57,6 +57,13 @@ export interface ApiConfig {
    */
   webUrl: string | null;
   /**
+   * Where operational alerts are POSTed as JSON (G-26): a chat incoming-webhook
+   * or a mail relay. Null means no destination is configured, and the alert
+   * pass then only logs at error level and lists the active alerts on
+   * `/v1/ops/health`. https only; in production only a public host.
+   */
+  opsAlertWebhookUrl: string | null;
+  /**
    * Returns the OTP in the API response. Development and end-to-end tests
    * only — refused outright when NODE_ENV is production, because the failure
    * mode is handing every caller a working credential for any number.
@@ -513,6 +520,27 @@ function webUrl(env: NodeJS.ProcessEnv): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The alert destination (G-26). A malformed or non-https value refuses to
+ * boot: an alert path that silently goes nowhere is the failure this exists
+ * to prevent, and "unset" is the honest way to say there is no destination.
+ */
+function opsAlertWebhookUrl(env: NodeJS.ProcessEnv, isProduction: boolean): string | null {
+  const raw = env['REKODA_ALERT_WEBHOOK_URL']?.trim();
+  if (!raw) return null;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new ConfigError('REKODA_ALERT_WEBHOOK_URL is not a URL');
+  }
+  if (url.protocol !== 'https:') {
+    throw new ConfigError('REKODA_ALERT_WEBHOOK_URL must be https');
+  }
+  publicInProduction('REKODA_ALERT_WEBHOOK_URL', raw, isProduction);
+  return raw;
 }
 
 /**
@@ -1131,6 +1159,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     secret: required(env, 'REKODA_API_SECRET', 32),
     operatorSecret: operatorSecret(env, isProduction),
     webUrl: webUrl(env),
+    opsAlertWebhookUrl: opsAlertWebhookUrl(env, isProduction),
     revealOtp,
     /**
      * Both required everywhere, not just in production. A deployment without

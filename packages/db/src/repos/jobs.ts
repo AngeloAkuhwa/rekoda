@@ -146,18 +146,39 @@ export async function serializeBusiness(
  * taking the lock: an older sibling still `pending` or `running` means this
  * job is jumping the queue and should step back (see `deferClaimed`). Ordered
  * by the same (run_at, created_at) the claim query uses, with id as the
- * tiebreak.
+ * tiebreak, for a sibling that has been tried (`attempts > 0`: running, or
+ * backing off after a failure, which a newer request may deliberately pass).
+ * A sibling never tried (`attempts = 0`) is ordered by arrival (`created_at`,
+ * id): the only thing that moved its `run_at` is `deferClaimed`, which
+ * refunds the attempt, and a message that stepped back behind a failed
+ * receipt must still count as older than one that arrived after it (G-20).
+ *
+ * `alsoKinds` names other kinds whose older live jobs also count, by arrival:
+ * an inbound "yes" must not overtake an already-queued `delivery.status`
+ * failure for a preview, even one backing off after a failed attempt.
  */
-export async function hasEarlierLiveJob(tx: TenantDb, jobId: string): Promise<boolean> {
+export async function hasEarlierLiveJob(
+  tx: TenantDb,
+  jobId: string,
+  alsoKinds: readonly string[] = [],
+): Promise<boolean> {
+  const kinds = sql.join(
+    alsoKinds.map((k) => sql`${k}`),
+    sql`, `,
+  );
   const rows = await tx.execute(sql`
     SELECT 1
     FROM jobs j, jobs me
     WHERE me.id = ${jobId}::uuid
       AND j.business_id = me.business_id
-      AND j.kind = me.kind
       AND j.id <> me.id
       AND j.state IN ('pending', 'running')
-      AND (j.run_at, j.created_at, j.id) < (me.run_at, me.created_at, me.id)
+      AND (
+        (j.kind = me.kind AND j.attempts > 0
+           AND (j.run_at, j.created_at, j.id) < (me.run_at, me.created_at, me.id))
+        OR ((j.kind = me.kind AND j.attempts = 0${alsoKinds.length > 0 ? sql` OR j.kind IN (${kinds})` : sql``})
+           AND (j.created_at, j.id) < (me.created_at, me.id))
+      )
     LIMIT 1
   `);
   return [...rows].length > 0;
@@ -172,7 +193,12 @@ export async function hasEarlierLiveJob(tx: TenantDb, jobId: string): Promise<bo
  * The claim already incremented `attempts`, so this hands the increment back.
  * The short delay keeps the retry from racing the very job it deferred to.
  */
-export async function deferClaimed(db: Db, jobId: string, delayMs = 500): Promise<void> {
+export async function deferClaimed(
+  db: Db,
+  jobId: string,
+  delayMs = 500,
+  claimedBy?: string,
+): Promise<void> {
   await db.execute(sql`
     UPDATE jobs SET
       state      = 'pending',
@@ -182,6 +208,7 @@ export async function deferClaimed(db: Db, jobId: string, delayMs = 500): Promis
       locked_by  = NULL,
       updated_at = now()
     WHERE id = ${jobId}::uuid AND state = 'running'
+      AND (${claimedBy ?? null}::text IS NULL OR locked_by = ${claimedBy ?? null})
   `);
 }
 
@@ -272,11 +299,46 @@ export async function claimNext(db: Db, workerId: string): Promise<ClaimedJob | 
  * together. A worker that dies between "wrote the ledger entries" and "marked
  * it done" would otherwise re-run the handler on a job that already succeeded.
  */
-export async function markDone(tx: TenantDb, id: string): Promise<void> {
-  await tx
+export async function markDone(tx: TenantDb, id: string, claimedBy?: string): Promise<void> {
+  const rows = await tx
     .update(jobs)
     .set({ state: 'done', lockedAt: null, lockedBy: null, updatedAt: new Date() })
-    .where(eq(jobs.id, id));
+    .where(
+      claimedBy === undefined
+        ? eq(jobs.id, id)
+        : and(eq(jobs.id, id), eq(jobs.state, 'running'), eq(jobs.lockedBy, claimedBy)),
+    )
+    .returning({ id: jobs.id });
+  /* Fenced completion (G-10): when the caller names its claim and the row is
+   * no longer held under it (reclaimed and claimed again while this attempt
+   * was still running), committing would let two attempts both finish their
+   * effects. Throwing rolls the handler's transaction back with it. */
+  if (claimedBy !== undefined && rows.length === 0) throw new JobLeaseLost(id);
+}
+
+/** This attempt no longer owns the job; its work must not commit. */
+export class JobLeaseLost extends Error {
+  constructor(readonly jobId: string) {
+    super(`job ${jobId} was reclaimed while this attempt was still running`);
+  }
+}
+
+/**
+ * Renew a running job's lease (G-10).
+ *
+ * `reclaimStalled` treats `locked_at` as "this worker was last seen working on
+ * it". Without a renewal, a handler that legitimately runs longer than the
+ * stall window (a slow upload, a slow model call) looks identical to a
+ * crashed worker and is handed to a second worker while the first is still
+ * going. The runner calls this on a timer while a handler runs. Guarded by
+ * `locked_by` and `state` so a job that already finished, failed or was
+ * reclaimed is never resurrected.
+ */
+export async function touch(tx: TenantDb, id: string, claimedBy: string): Promise<void> {
+  await tx.execute(sql`
+    UPDATE jobs SET locked_at = now(), updated_at = now()
+    WHERE id = ${id}::uuid AND state = 'running' AND locked_by = ${claimedBy}
+  `);
 }
 
 /** Exponential, capped. Attempt 1 waits ~2s, attempt 5 ~32s. */
@@ -296,10 +358,11 @@ export async function markFailed(
   job: Pick<ClaimedJob, 'id' | 'attempts' | 'maxAttempts'>,
   error: string,
   delayMs = backoffMs(job.attempts),
-): Promise<{ state: 'pending' | 'dead' }> {
+  claimedBy?: string,
+): Promise<{ state: 'pending' | 'dead' | 'lost' }> {
   const exhausted = job.attempts >= job.maxAttempts;
   const state = exhausted ? 'dead' : 'pending';
-  await db.execute(sql`
+  const rows = await db.execute<{ id: string }>(sql`
     UPDATE jobs SET
       state      = ${state},
       run_at     = ${exhausted ? sql`run_at` : sql`now() + make_interval(secs => ${delayMs / 1000})`},
@@ -308,7 +371,12 @@ export async function markFailed(
       last_error = ${error},
       updated_at = now()
     WHERE id = ${job.id}::uuid
+      AND (${claimedBy ?? null}::text IS NULL OR locked_by = ${claimedBy ?? null})
+    RETURNING id
   `);
+  /* A fenced update that matched nothing means another claim owns the job:
+   * report it rather than a retry or exhaustion that never happened. */
+  if (claimedBy !== undefined && [...rows].length === 0) return { state: 'lost' };
   return { state };
 }
 
@@ -360,17 +428,28 @@ export async function jobsForBusiness(tx: TenantDb, kind?: string): Promise<JobR
 }
 
 export interface QueueHealth {
-  /** Jobs that exhausted their retries. Nothing retries these again. */
+  /** Jobs that exhausted their retries. Nothing retries these again, and nothing moves them out of `dead`. */
   dead: number;
+  /** Jobs that died in the last 24 hours: what an alert can act on (G-26). */
+  deadRecent: number;
   /** Waiting to run. A number that only grows means the worker is not. */
   pending: number;
-  /** Seconds the OLDEST waiting job has been waiting. The real alarm. */
+  /** Seconds the OLDEST job that is DUE has waited. The worker-not-keeping-up alarm. */
   oldestPendingSeconds: number;
+  /**
+   * Seconds since the oldest still-pending job was QUEUED, due or not (G-63).
+   * `oldestPendingSeconds` counts from `run_at`, which every retry pushes
+   * forward, so a backlog that keeps being rescheduled reads as healthy.
+   * `created_at` does not move.
+   */
+  oldestQueuedSeconds: number;
   running: number;
 }
 
 /**
- * The queue, in four numbers (MASTER-PLAN §6.4).
+ * The queue, in a handful of numbers (MASTER-PLAN §6.4). An approved
+ * operational-monitoring aggregate (OWN-36, ADR 0035): counts and ages only,
+ * never a business id or payload, read-only.
  *
  * Cross-tenant by construction and therefore worker-credentialed: "is
  * anything stuck" is a question about the platform, not about a business.
@@ -381,23 +460,31 @@ export interface QueueHealth {
 export async function queueHealth(db: Db): Promise<QueueHealth> {
   const rows = await db.execute<{
     dead: number;
+    dead_recent: number;
     pending: number;
     running: number;
     oldest_seconds: number | null;
+    oldest_queued_seconds: number | null;
   }>(sql`
     SELECT
       count(*) FILTER (WHERE state = 'dead')::int    AS dead,
+      count(*) FILTER (WHERE state = 'dead'
+                         AND updated_at > now() - interval '24 hours')::int AS dead_recent,
       count(*) FILTER (WHERE state = 'pending')::int AS pending,
       count(*) FILTER (WHERE state = 'running')::int AS running,
       EXTRACT(EPOCH FROM (now() - min(run_at) FILTER (WHERE state = 'pending')))::int
-        AS oldest_seconds
+        AS oldest_seconds,
+      EXTRACT(EPOCH FROM (now() - min(created_at) FILTER (WHERE state = 'pending')))::int
+        AS oldest_queued_seconds
     FROM jobs
   `);
   const row = [...rows][0];
   return {
     dead: row?.dead ?? 0,
+    deadRecent: row?.dead_recent ?? 0,
     pending: row?.pending ?? 0,
     running: row?.running ?? 0,
     oldestPendingSeconds: Math.max(0, row?.oldest_seconds ?? 0),
+    oldestQueuedSeconds: Math.max(0, row?.oldest_queued_seconds ?? 0),
   };
 }

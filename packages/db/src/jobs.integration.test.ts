@@ -163,6 +163,20 @@ describe('failure and retry', () => {
     expect(await jobsRepo.claimNext(workerDb, 'worker')).toBeNull();
   });
 
+  it('reports a fenced failure that updates no job as lost (G-10)', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    await enqueue(businessId);
+    const job = await jobsRepo.claimNext(workerDb, 'the-live-claim');
+
+    // A stale attempt names a claim that no longer holds the job.
+    const outcome = await jobsRepo.markFailed(workerDb, job!, 'late failure', 0, 'a-stale-claim');
+    expect(outcome.state).toBe('lost');
+
+    // The live claim is untouched.
+    const rows = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
+    expect(rows[0]).toMatchObject({ state: 'running', attempts: 1 });
+  });
+
   it('gives up after maxAttempts and keeps the reason', async () => {
     const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
     await enqueue(businessId, { maxAttempts: 2 });
@@ -349,6 +363,37 @@ describe('queue order is a promise, not a hope (H7a)', () => {
     });
   });
 
+  it('keeps an older other-kind job ahead of this one across its retry backoff (G-20)', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    const failure = await enqueue(businessId, { kind: 'delivery.status' });
+    const yes = await enqueue(businessId);
+    if (!failure || !yes) throw new Error('both jobs should have enqueued');
+    // The receipt failed once and backed off: its run_at is now in the future.
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(sql`UPDATE jobs SET run_at = now() + interval '1 minute'
+                      WHERE id = ${failure.id}::uuid`),
+    );
+    await withBusiness(appDb, businessId, async (tx) => {
+      expect(await jobsRepo.hasEarlierLiveJob(tx, yes.id, ['delivery.status'])).toBe(true);
+    });
+  });
+
+  it('keeps an older same-kind job ahead of this one after it was deferred (G-20)', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    const first = await enqueue(businessId);
+    const second = await enqueue(businessId);
+    if (!first || !second) throw new Error('both jobs should have enqueued');
+    // The first message stepped back behind a failed receipt: deferClaimed
+    // pushed its run_at forward. It is still the older message.
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(sql`UPDATE jobs SET run_at = now() + interval '1 minute'
+                      WHERE id = ${first.id}::uuid`),
+    );
+    await withBusiness(appDb, businessId, async (tx) => {
+      expect(await jobsRepo.hasEarlierLiveJob(tx, second.id)).toBe(true);
+    });
+  });
+
   it('ignores siblings of another kind and of another business', async () => {
     const ada = await seedBusiness('Ada Fashion', '+2348040000001');
     const bola = await seedBusiness('Bola Electronics', '+2348040000002');
@@ -359,6 +404,43 @@ describe('queue order is a promise, not a hope (H7a)', () => {
 
     await withBusiness(appDb, ada, async (tx) => {
       expect(await jobsRepo.hasEarlierLiveJob(tx, mine.id)).toBe(false);
+    });
+  });
+
+  it('counts an older live sibling of a named other kind, and only when asked (G-20)', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    const failure = await enqueue(businessId, { kind: 'delivery.status' });
+    const yes = await enqueue(businessId);
+    if (!failure || !yes) throw new Error('both jobs should have enqueued');
+
+    await withBusiness(appDb, businessId, async (tx) => {
+      // Default: same kind only, as before.
+      expect(await jobsRepo.hasEarlierLiveJob(tx, yes.id)).toBe(false);
+      // A later "yes" must wait for an already-queued failed receipt.
+      expect(await jobsRepo.hasEarlierLiveJob(tx, yes.id, ['delivery.status'])).toBe(true);
+      // The receipt waits for no inbound message: it is the older job.
+      expect(await jobsRepo.hasEarlierLiveJob(tx, failure.id, ['inbound.message'])).toBe(false);
+      await jobsRepo.markDone(tx, failure.id);
+      expect(await jobsRepo.hasEarlierLiveJob(tx, yes.id, ['delivery.status'])).toBe(false);
+    });
+  });
+
+  it('keeps same-kind arrival order after an earlier job was deferred (G-20)', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    const first = await enqueue(businessId);
+    const second = await enqueue(businessId);
+    if (!first || !second) throw new Error('both jobs should have enqueued');
+    const claimed = await jobsRepo.claimNext(workerDb, 'lane-a');
+    if (!claimed) throw new Error('claim should have won');
+    expect(claimed.id).toBe(first.id);
+    // The earlier message steps back; its run_at moves later than the second's.
+    await jobsRepo.deferClaimed(workerDb, first.id, 60_000);
+
+    await withBusiness(appDb, businessId, async (tx) => {
+      // The later message must still see the earlier one ahead of it ...
+      expect(await jobsRepo.hasEarlierLiveJob(tx, second.id)).toBe(true);
+      // ... and the earlier one never waits on the later one.
+      expect(await jobsRepo.hasEarlierLiveJob(tx, first.id)).toBe(false);
     });
   });
 

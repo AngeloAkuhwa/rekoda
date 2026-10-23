@@ -777,3 +777,26 @@ describe('the trusted web tier (G-71)', () => {
     },
   );
 });
+
+describe('the alert destination (G-26)', () => {
+  it('is null when unset or blank: no destination is the honest default', () => {
+    expect(loadConfig({ ...BASE }).opsAlertWebhookUrl).toBeNull();
+    expect(loadConfig({ ...BASE, REKODA_ALERT_WEBHOOK_URL: '  ' }).opsAlertWebhookUrl).toBeNull();
+  });
+
+  it('accepts an https URL', () => {
+    expect(
+      loadConfig({ ...BASE, REKODA_ALERT_WEBHOOK_URL: 'https://hooks.example.com/T1/B2' })
+        .opsAlertWebhookUrl,
+    ).toBe('https://hooks.example.com/T1/B2');
+  });
+
+  it('refuses to boot on a value that would send alerts nowhere', () => {
+    expect(() => loadConfig({ ...BASE, REKODA_ALERT_WEBHOOK_URL: 'not a url' })).toThrow(
+      /not a URL/,
+    );
+    expect(() =>
+      loadConfig({ ...BASE, REKODA_ALERT_WEBHOOK_URL: 'http://hooks.example.com/x' }),
+    ).toThrow(/must be https/);
+  });
+});

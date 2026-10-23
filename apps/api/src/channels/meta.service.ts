@@ -16,6 +16,8 @@ import { sealPayload } from '../privacy/payload-vault.js';
  * stops — the actual understanding of the message belongs to a worker reading
  * the same table.
  */
+const DELIVERY_STATUS_MAX_ATTEMPTS = 12;
+
 @Injectable()
 export class MetaIngressService {
   private readonly log = new Logger(MetaIngressService.name);
@@ -126,7 +128,9 @@ export class MetaIngressService {
    * merchant, and filing the receipt under them would show one tenant another's
    * delivery failures. An unclaimed number is stored unattributed. Receipts
    * are born processed, so they never read as a stuck queue; a `failed` one is
-   * counted on the ops health surface instead.
+   * counted on the ops health surface instead. The one exception: a `failed`
+   * receipt attributed to a tenant is queued as a `delivery.status` job, which
+   * marks a preview it carried as unseen and then marks the receipt processed.
    */
   private async acceptStatus(event: InboundEvent, payload: unknown): Promise<{ isNew: boolean }> {
     /* The recipient is only ever a tenant hint on Rekoda's OWN number, where
@@ -141,18 +145,42 @@ export class MetaIngressService {
       }
     }
 
-    const record = (q: Parameters<typeof events.recordEvent>[0]) =>
+    /* A `failed` receipt for a tenant's outbound message has work behind it:
+     * the preview it carried may now be unseen. It is stored UNPROCESSED and
+     * queued in the same transaction, so a crash between the two leaves
+     * neither, and the job marks it processed. Everything else (sent,
+     * delivered, read, and any receipt with no tenant) is born processed. */
+    const outboundMessageId = event.status === 'failed' ? event.outboundMessageId : null;
+    const record = (q: Parameters<typeof events.recordEvent>[0], processed: boolean) =>
       events.recordEvent(q, {
         provider: 'meta',
         eventType: `status.${event.status}`,
         externalId: event.externalId,
         payload: sealPayload(payload, this.config.vaultKey, 'meta', event.externalId),
         businessId,
-        processed: true,
+        processed,
       });
-    const recorded = businessId
-      ? await withBusiness(this.db, businessId, (tx) => record(tx))
-      : await record(this.db);
+    const tenant = businessId;
+    const recorded = tenant
+      ? await withBusiness(this.db, tenant, async (tx) => {
+          const stored = await record(tx, outboundMessageId === null);
+          if (stored.isNew && outboundMessageId !== null) {
+            await jobsRepo.enqueue(tx, {
+              businessId: tenant,
+              kind: JobKind.DeliveryStatus,
+              payload: { eventId: stored.id, outboundMessageId },
+              singletonKey: stored.id,
+              /* The job waits on the business's conversation lock, which an
+               * inbound job holds across model calls, so a lock timeout is
+               * expected now and then. Dying on the fifth (about 15 s of
+               * backoff) would leave an unseen preview confirmable; this
+               * spans several minutes. */
+              maxAttempts: DELIVERY_STATUS_MAX_ATTEMPTS,
+            });
+          }
+          return stored;
+        })
+      : await record(this.db, true);
     if (!recorded.isNew) {
       this.log.debug(`ignored a duplicate Meta event ${redactForLog(event.externalId)}`);
     }

@@ -9929,6 +9929,264 @@ describe('a preview has a time limit (G-23)', () => {
     expect((await footprint(business.id)).expenses).toBe(0);
   });
 
+  /* G-20: WhatsApp ACCEPTING a preview is not the merchant receiving it. A
+   * delivery that fails after acceptance comes back as a `failed` status
+   * webhook, and that preview is then exactly as unseen as one whose send
+   * failed outright. */
+  const previewFlags = async (businessId: string) => {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ previewed: boolean; linked: boolean }>(sql`
+        SELECT previewed, identity_link IS NOT NULL AS linked FROM command_drafts
+         WHERE business_id = ${businessId}::uuid ORDER BY insertion_seq`),
+    );
+    return [...rows];
+  };
+  /** The wamid the stub handed back for the last text it sent. */
+  const lastWamid = () => `wamid.STUB${stubSender.sent.length}`;
+  const receipt = (recipient: string, wamid: string, status: string) =>
+    post(statusPayload(recipient, wamid, status));
+
+  it('a preview accepted for delivery that then failed is not "previewed" (G-20)', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G20-late', AN_EXPENSE, 'bought fuel 20k cash');
+    expect(stubSender.lastText).toContain('Expense: fuel for generator');
+    const wamid = lastWamid();
+    expect(await previewFlags(business.id)).toEqual([{ previewed: true, linked: false }]);
+
+    const first = await receipt('2348031234567', wamid, 'failed');
+    expect(first.statusCode).toBe(200);
+    await drain();
+    expect(await previewFlags(business.id)).toEqual([{ previewed: false, linked: false }]);
+
+    /* Read, then marked processed: never a stuck backlog on the ops surface. */
+    const event = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ processed: boolean }>(sql`
+        SELECT processed_at IS NOT NULL AS processed FROM external_events
+         WHERE external_id = ${`${wamid}:failed`}`),
+    );
+    expect([...event]).toEqual([{ processed: true }]);
+    expect((await events.eventHealth(db, 'meta')).unprocessed).toBe(0);
+
+    /* Meta retries: a duplicate receipt queues nothing more and changes nothing. */
+    const again = await receipt('2348031234567', wamid, 'failed');
+    expect(again.statusCode).toBe(200);
+    const jobs = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ n: number; max_attempts: number }>(sql`
+        SELECT count(*)::int AS n, max(max_attempts)::int AS max_attempts FROM jobs
+         WHERE business_id = ${business.id}::uuid AND kind = 'delivery.status'`),
+    );
+    expect([...jobs][0]?.n).toBe(1);
+    /* The job waits on the conversation lock, which an inbound job holds across
+     * model calls; a few lock timeouts must not kill it and leave the unseen
+     * preview confirmable (the default of 5 retries spans only ~15 s). */
+    expect([...jobs][0]?.max_attempts).toBeGreaterThanOrEqual(12);
+    await drain();
+
+    /* Its lapse is never called an expired request: it was never seen. */
+    await lapse(business.id);
+    await plain('wamid.G20-late-yes', 'yes');
+    expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
+    expect((await footprint(business.id)).expenses).toBe(0);
+  });
+
+  const draftStates = async (businessId: string) => [
+    ...(await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ state: string; reason: string | null }>(sql`
+          SELECT state, retired_reason AS reason FROM command_drafts
+           WHERE business_id = ${businessId}::uuid ORDER BY insertion_seq`),
+    )),
+  ];
+
+  it('a "yes" right after a late delivery failure posts neither a sale nor an expense (G-20, owner ruling)', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G20-nb-sale', A_SALE, 'sold Ada 3 wigs for 300k');
+    const saleWamid = lastWamid();
+    await receipt('2348031234567', saleWamid, 'failed');
+    await drain();
+    expect(await draftStates(business.id)).toEqual([
+      { state: 'superseded', reason: 'preview_not_delivered' },
+    ]);
+    await plain('wamid.G20-nb-sale-yes', 'yes');
+    expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
+    expect(await footprint(business.id)).toMatchObject({ invoices: 0, postings: 0 });
+
+    await say('wamid.G20-nb-exp', AN_EXPENSE, 'bought fuel 20k cash');
+    await receipt('2348031234567', lastWamid(), 'failed');
+    await drain();
+    await plain('wamid.G20-nb-exp-yes', 'yes');
+    expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
+    expect(await footprint(business.id)).toMatchObject({ expenses: 0, postings: 0 });
+    expect((await used(business.id)).documents).toBe(0);
+  });
+
+  it('a "yes" after a preview whose send failed outright posts nothing (G-20, owner ruling)', async () => {
+    const business = await seedMerchant();
+    stubSender.failWith();
+    await say('wamid.G20-st-sale', A_SALE, 'sold Ada 3 wigs for 300k');
+    await plain('wamid.G20-st-sale-yes', 'yes');
+    expect(await footprint(business.id)).toMatchObject({ invoices: 0, postings: 0 });
+    stubSender.failWith();
+    await say('wamid.G20-st-exp', AN_EXPENSE, 'bought fuel 20k cash');
+    await plain('wamid.G20-st-exp-yes', 'yes');
+    expect(await footprint(business.id)).toMatchObject({ expenses: 0, postings: 0 });
+    expect((await used(business.id)).documents).toBe(0);
+  });
+
+  it('a preview Meta accepted without a message id can never be traced, so no yes confirms it (G-20)', async () => {
+    const business = await seedMerchant();
+    stubSender.omitNextMessageId();
+    await say('wamid.G20-noid', AN_EXPENSE, 'bought fuel 20k cash');
+    expect(await previewFlags(business.id)).toEqual([{ previewed: false, linked: false }]);
+    await plain('wamid.G20-noid-yes', 'yes');
+    expect((await footprint(business.id)).expenses).toBe(0);
+    expect((await used(business.id)).documents).toBe(0);
+  });
+
+  it('a retry needs a NEW preview and a fresh yes after a failed one (G-20)', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G20-rt-1', AN_EXPENSE, 'bought fuel 20k cash');
+    await receipt('2348031234567', lastWamid(), 'failed');
+    await drain();
+    await plain('wamid.G20-rt-1-yes', 'yes');
+    expect((await footprint(business.id)).expenses).toBe(0);
+
+    await say('wamid.G20-rt-2', AN_EXPENSE, 'bought fuel 20k cash');
+    expect(stubSender.lastText).toContain('Expense: fuel for generator');
+    await plain('wamid.G20-rt-2-yes', 'yes');
+    expect((await footprint(business.id)).expenses).toBe(1);
+  });
+
+  const receiptProcessed = async (businessId: string) =>
+    [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<{ processed: boolean }>(sql`
+          SELECT processed_at IS NOT NULL AS processed FROM external_events
+           WHERE business_id = ${businessId}::uuid AND event_type = 'status.failed'`),
+      )),
+    ].map((r) => r.processed);
+
+  it('a receipt job that died after every lock attempt still blocks the yes, and is applied once (G-20)', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G20-dead', AN_EXPENSE, 'bought fuel 20k cash');
+    const wamid = lastWamid();
+    await receipt('2348031234567', wamid, 'failed');
+    /* All 12 attempts spent on lock timeouts: the job is dead, the receipt
+     * never applied, the draft still previewed. */
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`
+        UPDATE jobs SET state = 'dead', attempts = max_attempts, last_error = 'lock timeout'
+         WHERE business_id = ${business.id}::uuid AND kind = 'delivery.status'`);
+    } finally {
+      await close();
+    }
+    expect(await previewFlags(business.id)).toEqual([{ previewed: true, linked: false }]);
+    expect(await receiptProcessed(business.id)).toEqual([false]);
+
+    await plain('wamid.G20-dead-yes', 'yes');
+    expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
+    expect((await footprint(business.id)).expenses).toBe(0);
+    expect(await draftStates(business.id)).toEqual([
+      { state: 'superseded', reason: 'preview_not_delivered' },
+    ]);
+    /* Applied exactly once: the receipt is now processed. */
+    expect(await receiptProcessed(business.id)).toEqual([true]);
+    await plain('wamid.G20-dead-yes-2', 'yes');
+    expect((await footprint(business.id)).expenses).toBe(0);
+    /* And the dead job stays visible to operational monitoring. */
+    expect((await jobsRepo.queueHealth(workerDb)).deadRecent).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a late failure closes the question that reply asked, and nothing else (G-20)', async () => {
+    const business = await seedMerchant();
+    const SPEND = {
+      intent: 'Query',
+      topic: 'expenses_summary',
+      customer: null,
+      period: null,
+      periodText: null,
+      format: 'chat',
+    };
+    const open = async () =>
+      [
+        ...(await withBusiness(db, business.id, (tx) =>
+          tx.execute<{ expects: string | null }>(sql`
+            SELECT expects FROM conversation_continuations
+             WHERE business_id = ${business.id}::uuid AND state = 'open'`),
+        )),
+      ].map((r) => r.expects);
+    await say('wamid.G20-co-q', SPEND, 'how much did I spend?');
+    expect(stubSender.lastText).toContain('which period');
+    const asked = lastWamid();
+    expect(await open()).toEqual(['period']);
+
+    /* An unrelated failed receipt leaves it. */
+    await receipt('2348031234567', 'wamid.never-ours', 'failed');
+    await drain();
+    expect(await open()).toEqual(['period']);
+
+    await receipt('2348031234567', asked, 'failed');
+    await drain();
+    expect(await open()).toEqual([]);
+    /* A duplicate changes nothing. */
+    await receipt('2348031234567', asked, 'failed');
+    await drain();
+    expect(await open()).toEqual([]);
+  });
+
+  it('a delivered or read receipt leaves a preview "previewed" (G-20)', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G20-ok', AN_EXPENSE, 'bought fuel 20k cash');
+    const wamid = lastWamid();
+    await receipt('2348031234567', wamid, 'sent');
+    await receipt('2348031234567', wamid, 'delivered');
+    await receipt('2348031234567', wamid, 'read');
+    await drain();
+    expect(await previewFlags(business.id)).toEqual([{ previewed: true, linked: false }]);
+
+    await lapse(business.id);
+    await plain('wamid.G20-ok-yes', 'yes');
+    expect(stubSender.lastText).toBe(EXPIRED);
+  });
+
+  it('a failed receipt for a reply that previewed nothing leaves the preview alone (G-20)', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G20-p', AN_EXPENSE, 'bought fuel 20k cash');
+    /* A later reply that is not a preview: a deterministic question. */
+    await plain('wamid.G20-owes', 'who owes me');
+    const notAPreview = lastWamid();
+    await receipt('2348031234567', notAPreview, 'failed');
+    await drain();
+    expect(await previewFlags(business.id)).toEqual([{ previewed: true, linked: false }]);
+
+    await lapse(business.id);
+    await plain('wamid.G20-p-yes', 'yes');
+    expect(stubSender.lastText).toBe(EXPIRED);
+  });
+
+  it("a failed receipt never reaches another business's preview (G-20)", async () => {
+    const ada = await seedMerchant();
+    await say('wamid.G20-ada', AN_EXPENSE, 'bought fuel 20k cash');
+    const adaWamid = lastWamid();
+    const bisi = await seedMerchant('+2348031234568');
+    stubTransport.replyWith(AN_EXPENSE);
+    await post(messagePayload('2348031234568', 'wamid.G20-bisi', 'bought fuel 20k cash'));
+    await drain();
+    const bisiWamid = lastWamid();
+
+    /* Ada's wamid, filed under Bisi: looked up inside Bisi's books only. */
+    await receipt('2348031234568', adaWamid, 'failed');
+    await drain();
+    expect(await previewFlags(ada.id)).toEqual([{ previewed: true, linked: false }]);
+    expect(await previewFlags(bisi.id)).toEqual([{ previewed: true, linked: false }]);
+
+    /* Bisi's own failure touches Bisi's preview and nobody else's. */
+    await receipt('2348031234568', bisiWamid, 'failed');
+    await drain();
+    expect(await previewFlags(ada.id)).toEqual([{ previewed: true, linked: false }]);
+    expect(await previewFlags(bisi.id)).toEqual([{ previewed: false, linked: false }]);
+  });
+
   it('a preview re-sent after its job rolled back is pointed at, never confirmed by the earlier yes', async () => {
     const business = await seedMerchant();
     const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
@@ -16413,11 +16671,13 @@ describe('one real purchase, one financial truth (G-81, OD-23)', () => {
       stubSender.failWith();
       await say('wamid.U6-again', MILO, 'I bought 10 cartons of Milo for 100k cash');
       /* The resend reached nobody, so what it replaced comes back and the
-       * resend is withdrawn: still one confirmable draft. */
+       * resend is withdrawn: one draft remains, and the merchant was shown
+       * neither, so no "yes" books it (G-20, owner ruling). */
       expect(await purchaseStates(business.id)).toEqual(['pending', 'superseded']);
       await reply('wamid.U6-yes-1', 'yes');
       await reply('wamid.U6-yes-2', 'yes');
-      expect(await purchases(business.id)).toBe(1);
+      expect(await purchases(business.id)).toBe(0);
+      expect(await purchaseStates(business.id)).toEqual(['pending', 'superseded']);
     });
 
     it('a purchase held back for an arithmetic question is no undelivered copy (final-head review of 77e9da8)', async () => {

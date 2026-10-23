@@ -176,7 +176,12 @@ reviews:
         mode: error
         instructions: |
           Fail if the diff does any of:
-          (a) adds a query on a business-owned table outside withBusiness() in apps/api or packages/db/src/repos;
+          (a) adds a query on a business-owned table outside withBusiness() in apps/api or packages/db/src/repos,
+          except an approved operational-monitoring aggregate (OWN-36, ADR 0035): a dedicated, read-only query on
+          the worker or a monitoring credential that returns only counts, ages and statuses (never a business id,
+          identity, message, payment detail, token or payload), reached only from an operator-guarded route or the
+          worker's alert pass and never from merchant input. Fail such a query if it returns or logs anything
+          tenant-identifying, writes data, or is a general-purpose cross-tenant reader;
           (b) adds a log, error message or trace attribute containing a message body, a customer or supplier
           name, a phone number, a vault token mapping, a secret or a key;
           (c) changes a webhook handler (Meta, Paystack, bank feeds) so that the payload is parsed or acted on
@@ -269,7 +274,7 @@ reviews:
         Tenant isolation, roles and PII (CLAUDE.md invariants 3, 4, 9; ADR 0005, 0020, 0021, 0034).
         - Tenant data is reached only through withBusiness() and is scoped by businessId in code AND by
           Postgres RLS. Flag a query on business-owned data outside withBusiness(), or a worker-role read
-          beyond claiming a job.
+          beyond claiming a job, except an approved operational-monitoring aggregate (OWN-36, ADR 0035).
         - Roles are enforced server-side, the command bus included (G-99): a forbidden action never
           executes. Operator access is OIDC identities, never a shared secret (ADR 0034).
         - Customer PII lives in the vault and travels as tokens; rehydration happens only in the authorised

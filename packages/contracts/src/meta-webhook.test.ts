@@ -68,6 +68,17 @@ describe('parsing what Meta sends', () => {
     expect(ids).toContain('wamid.X:delivered');
   });
 
+  it('names the outbound message a status is about, and none for a message (G-20)', () => {
+    const body = metaWebhookBody.parse({
+      entry: [{ changes: [{ value: { statuses: [{ id: 'wamid.OUT', status: 'failed' }] } }] }],
+    });
+    expect(extractInboundEvents(body)).toMatchObject([
+      { kind: 'status', status: 'failed', outboundMessageId: 'wamid.OUT' },
+    ]);
+    const [message] = extractInboundEvents(metaWebhookBody.parse(textMessage));
+    expect(message?.outboundMessageId).toBeNull();
+  });
+
   it('accepts a payload with nothing in it', () => {
     // Meta sends these. Throwing would earn a retry for an empty envelope.
     expect(extractInboundEvents(metaWebhookBody.parse({ entry: [] }))).toEqual([]);

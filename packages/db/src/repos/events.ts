@@ -36,7 +36,8 @@ export interface IncomingEvent {
   /**
    * Born finished: a delivery receipt has nothing to understand, so leaving it
    * `processed_at IS NULL` made every receipt a permanent "unprocessed" row and
-   * buried the real backlog signal (G-20).
+   * buried the real backlog signal (G-20). A `failed` receipt for a tenant's
+   * outbound message is the exception: it is queued, and its job marks it.
    */
   processed?: boolean;
 }
@@ -457,6 +458,8 @@ export async function claimStrangerReply(
 export interface EventHealth {
   /** Stored, never processed. A backlog here means a sweep is not running. */
   unprocessed: number;
+  /** Unprocessed for more than 10 minutes: stuck rather than in flight (G-26). */
+  unprocessedStale: number;
   /**
    * Processed but marked with a reason, and not yet worked — the exception
    * queue (§35). OPEN ones only, so this count and `exceptionQueue` below
@@ -480,16 +483,23 @@ export interface EventHealth {
  * The paystack pump has always marked events with WHY they went nowhere
  * ('unknown_reference', 'foreign_reference') and called those marks "the
  * admin exception queue" — a queue nothing could read until now.
+ *
+ * An approved operational-monitoring aggregate (OWN-36, ADR 0035): counts only,
+ * read-only. `provider` is a code literal ('meta', 'paystack'), never request
+ * input.
  */
 export async function eventHealth(db: Db, provider: string): Promise<EventHealth> {
   const rows = await db.execute<{
     unprocessed: number;
+    unprocessed_stale: number;
     flagged: number;
     bad: number;
     failed: number;
   }>(sql`
     SELECT
       count(*) FILTER (WHERE processed_at IS NULL)::int              AS unprocessed,
+      count(*) FILTER (WHERE processed_at IS NULL
+                         AND created_at < now() - interval '10 minutes')::int AS unprocessed_stale,
       count(*) FILTER (WHERE processed_at IS NOT NULL
                          AND error IS NOT NULL
                          AND resolved_at IS NULL)::int               AS flagged,
@@ -502,6 +512,7 @@ export async function eventHealth(db: Db, provider: string): Promise<EventHealth
   const row = [...rows][0];
   return {
     unprocessed: row?.unprocessed ?? 0,
+    unprocessedStale: row?.unprocessed_stale ?? 0,
     flagged: row?.flagged ?? 0,
     badSignatures: row?.bad ?? 0,
     deliveryFailures: row?.failed ?? 0,

@@ -123,17 +123,116 @@ describe('queue health', () => {
     expect(health.oldestPendingSeconds).toBe(0);
   });
 
+  it('shows a retry backlog that keeps being rescheduled even though nothing is due (G-63)', async () => {
+    // `oldestPendingSeconds` measures from run_at, so a job pushed back into
+    // the future on every failure reads as healthy forever. The age since it
+    // was queued does not reset.
+    const ada = await seedBusiness('+2348030000005');
+    await withBusiness(appDb, ada, (tx) =>
+      jobsRepo.enqueue(tx, { businessId: ada, kind: 'inbound.message', delayMs: 3_600_000 }),
+    );
+    await workerDb.execute(
+      sql`UPDATE jobs SET created_at = now() - interval '3 hours', updated_at = now()`,
+    );
+
+    const health = await jobsRepo.queueHealth(workerDb);
+
+    expect(health.oldestPendingSeconds).toBe(0);
+    expect(health.oldestQueuedSeconds).toBeGreaterThanOrEqual(3 * 3600);
+  });
+
+  it('does not count a running or finished job in the queued age', async () => {
+    const ada = await seedBusiness('+2348030000006');
+    await withBusiness(appDb, ada, (tx) =>
+      jobsRepo.enqueue(tx, { businessId: ada, kind: 'inbound.message' }),
+    );
+    await workerDb.execute(
+      sql`UPDATE jobs SET state = 'running', created_at = now() - interval '5 hours'`,
+    );
+
+    expect((await jobsRepo.queueHealth(workerDb)).oldestQueuedSeconds).toBe(0);
+  });
+
+  it('tells a merchant-scoped credential nothing about other tenants (OWN-36)', async () => {
+    // The aggregate is only meaningful on the worker credential. On the
+    // application role, row-level security hides every job outside the pinned
+    // tenant, so the same query cannot be turned into a cross-tenant probe.
+    const ada = await seedBusiness('+2348030000007');
+    const chidi = await seedBusiness('+2348030000008');
+    await withBusiness(appDb, ada, (tx) =>
+      jobsRepo.enqueue(tx, { businessId: ada, kind: 'inbound.message' }),
+    );
+    await workerDb.execute(sql`UPDATE jobs SET state = 'dead'`);
+
+    expect((await jobsRepo.queueHealth(workerDb)).dead).toBe(1);
+    expect((await jobsRepo.queueHealth(appDb)).dead).toBe(0);
+    expect(
+      (await withBusiness(appDb, chidi, (tx) => jobsRepo.queueHealth(tx as unknown as Db))).dead,
+    ).toBe(0);
+  });
+
+  it('counts only jobs that died in the last 24 hours as recent deaths (G-26 review)', async () => {
+    // Nothing moves a job out of `dead`, so an alert on the total would page
+    // for ever. The recent count is what the alert reads.
+    const ada = await seedBusiness('+2348030000041');
+    for (let i = 0; i < 2; i++) {
+      await withBusiness(appDb, ada, (tx) =>
+        jobsRepo.enqueue(tx, { businessId: ada, kind: 'inbound.message' }),
+      );
+    }
+    await workerDb.execute(sql`UPDATE jobs SET state = 'dead', updated_at = now()`);
+    await workerDb.execute(sql`
+      UPDATE jobs SET updated_at = now() - interval '3 days'
+      WHERE id = (SELECT id FROM jobs ORDER BY id LIMIT 1)
+    `);
+
+    const health = await jobsRepo.queueHealth(workerDb);
+
+    expect(health.dead).toBe(2);
+    expect(health.deadRecent).toBe(1);
+  });
+
   it('is all zeros on an empty queue rather than throwing', async () => {
     expect(await jobsRepo.queueHealth(workerDb)).toEqual({
       dead: 0,
+      deadRecent: 0,
       pending: 0,
       running: 0,
       oldestPendingSeconds: 0,
+      oldestQueuedSeconds: 0,
     });
   });
 });
 
 describe('event health', () => {
+  it('counts an unprocessed event as stale only after 10 minutes (G-26 review)', async () => {
+    // A burst still being processed is not a backlog; an event that has sat
+    // unprocessed is.
+    await events.recordEvent(workerDb, {
+      provider: 'paystack',
+      eventType: 'charge.success',
+      externalId: 'evt.fresh',
+      payload: { sealed: true },
+      businessId: null,
+    });
+    await events.recordEvent(workerDb, {
+      provider: 'paystack',
+      eventType: 'charge.success',
+      externalId: 'evt.stale',
+      payload: { sealed: true },
+      businessId: null,
+    });
+    await workerDb.execute(sql`
+      UPDATE external_events SET created_at = now() - interval '11 minutes'
+      WHERE external_id = 'evt.stale'
+    `);
+
+    const paystack = await events.eventHealth(workerDb, 'paystack');
+
+    expect(paystack.unprocessed).toBe(2);
+    expect(paystack.unprocessedStale).toBe(1);
+  });
+
   it('separates unprocessed from flagged, per provider', async () => {
     const waiting = await events.recordEvent(workerDb, {
       provider: 'meta',
@@ -207,7 +306,13 @@ describe('event health', () => {
 
     const health = await events.eventHealth(workerDb, 'meta');
 
-    expect(health).toEqual({ unprocessed: 0, flagged: 0, badSignatures: 0, deliveryFailures: 0 });
+    expect(health).toEqual({
+      unprocessed: 0,
+      unprocessedStale: 0,
+      flagged: 0,
+      badSignatures: 0,
+      deliveryFailures: 0,
+    });
   });
 });
 
