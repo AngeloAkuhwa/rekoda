@@ -591,7 +591,7 @@ test('CI cancelling its own run on main', () => {
     "cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}",
     'cancel-in-progress: true',
   );
-  expectProblem(problems(edit), /must never cancel a run on main/);
+  expectProblem(problems(edit), /never cancel a run on main/);
 });
 
 test('CI sharing one concurrency group across refs', () => {
