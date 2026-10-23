@@ -668,14 +668,16 @@ export async function claimDraft(
     UPDATE command_drafts SET state = 'confirmed', updated_at = clock_timestamp()
      WHERE id = ${draftId}::uuid AND state = 'pending' AND expires_at > ${now}
        AND created_at <= ${now}
-       AND (previewed OR intent IN ('Query', 'Unclear', 'EraseData'))
+       AND (previewed OR (intent IN ('Query', 'Unclear', 'EraseData')
+                          AND command->>'intent' IN ('Query', 'Unclear', 'EraseData')))
     RETURNING id`);
   if ([...claimed].length === 1) return { outcome: 'claimed' };
 
   const unseen = await tx.execute<{ id: string }>(sql`
     SELECT id FROM command_drafts
      WHERE id = ${draftId}::uuid AND state = 'pending' AND expires_at > ${now}
-       AND NOT previewed AND intent NOT IN ('Query', 'Unclear', 'EraseData')`);
+       AND NOT previewed AND NOT (intent IN ('Query', 'Unclear', 'EraseData')
+                                AND command->>'intent' IN ('Query', 'Unclear', 'EraseData'))`);
   if ([...unseen].length === 1) return { outcome: 'unseen' };
 
   const expired = await tx.execute<{ id: string }>(sql`

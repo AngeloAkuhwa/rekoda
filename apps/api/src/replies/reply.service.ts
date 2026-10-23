@@ -121,6 +121,14 @@ export class ReplySender {
       const result = await this.sender.send({ to: input.to, text: forHuman });
       await conversationsRepo.markOutboundSent(tx, recorded.id, result.providerMessageId);
       await this.recordMessageCost(tx, input.businessId);
+      /* Accepted, but with no message id a later `failed` receipt could never
+       * be traced back to this reply, so the merchant could never be unshown
+       * what it carried (G-20). Treated as not delivered: nothing that
+       * depends on this reply being read is left confirmable. */
+      if (!result.providerMessageId) {
+        this.log.warn('reply accepted without a message id: treated as not delivered');
+        return { delivered: false };
+      }
       return { delivered: true, shown: forHuman === rehydrated ? safe.text : null };
     } catch (error) {
       if (error instanceof SendFailed) {

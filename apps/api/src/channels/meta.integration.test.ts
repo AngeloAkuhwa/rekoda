@@ -10029,6 +10029,16 @@ describe('a preview has a time limit (G-23)', () => {
     expect((await used(business.id)).documents).toBe(0);
   });
 
+  it('a preview Meta accepted without a message id can never be traced, so no yes confirms it (G-20)', async () => {
+    const business = await seedMerchant();
+    stubSender.omitNextMessageId();
+    await say('wamid.G20-noid', AN_EXPENSE, 'bought fuel 20k cash');
+    expect(await previewFlags(business.id)).toEqual([{ previewed: false, linked: false }]);
+    await plain('wamid.G20-noid-yes', 'yes');
+    expect((await footprint(business.id)).expenses).toBe(0);
+    expect((await used(business.id)).documents).toBe(0);
+  });
+
   it('a retry needs a NEW preview and a fresh yes after a failed one (G-20)', async () => {
     const business = await seedMerchant();
     await say('wamid.G20-rt-1', AN_EXPENSE, 'bought fuel 20k cash');
