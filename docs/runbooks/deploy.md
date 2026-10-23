@@ -364,7 +364,7 @@ hand, from `/opt/rekoda` as the deploy user, only if **every** check agrees:
    `git checkout <running sha>` and
    `sed -i 's/^REKODA_RELEASE=.*/REKODA_RELEASE=<running release>/' .env`.
    No `down -v`, no prune, no `reset --hard`, no migration rollback. Migrations
-   are expand-only, so a migrate that ran before the kill stays and the running
+   are expand-only, so a migration that ran before the kill stays and the running
    release works against it. For a `live` marker, then remove
    `.git/rekoda-deploy-staging.state`.
 5. Re-run step 1; checkout, `.env` and `/health` must now agree. Then start the
