@@ -9726,20 +9726,19 @@ describe('a preview has a time limit (G-23)', () => {
     owner.execute(sql`
       UPDATE jobs SET run_at = now() WHERE business_id = ${businessId}::uuid AND state <> 'done'`);
 
-  it('a newer request waits behind a retried yes: the yes confirms what it was sent for, then the newer preview stands (G-20 order)', async () => {
+  it('a retried yes overtaken by a newer request confirms what it was sent for, never the newer preview', async () => {
     const business = await seedMerchant();
     await say('wamid.G23-ot1', A_SALE, 'sold Ada 3 wigs for 300k');
 
     await withFirstInvoiceFailing(async (owner) => {
       await post(messagePayload('2348031234567', 'wamid.G23-ot1-yes', 'yes'));
       await buildRunner(workerDb, db, deps).runOnce();
-      /* The yes is waiting to be retried, held back until the test releases it. */
+      /* Hold the retry back until the test releases it, so the newer message
+       * is handled first however slow the runner is. */
       await holdRetries(owner, business.id);
       expect((await footprint(business.id)).invoices).toBe(0);
 
-      /* A newer request arrives while the yes waits. Messages are handled in
-       * ARRIVAL order, whatever a retry did to the yes's schedule, so it is
-       * not previewed first. */
+      /* A newer request is previewed while the yes waits to be retried. */
       await say(
         'wamid.G23-ot2',
         {
@@ -9750,21 +9749,18 @@ describe('a preview has a time limit (G-23)', () => {
         },
         'sold Bayo 2 shoes',
       );
-      expect(stubSender.sent.map((m) => m.text).join('\n')).not.toContain('Total: ₦50,000');
-      expect(await states(business.id)).toEqual(['pending']);
-
+      expect(stubSender.lastText).toContain('Total: ₦50,000');
       await runRetriesNow(owner, business.id);
       await drain();
     });
 
-    /* The yes confirmed the 300k sale it answered, once, and only then was the
-     * shoes request previewed: it is still only a preview. */
+    /* The yes confirmed the 300k sale it answered, once; the shoes, which
+     * did not exist when it was sent, are still only a preview. */
     const invoices = await withBusiness(db, business.id, (tx) =>
       reportsRepo.invoicesFor(tx, business.id, 10),
     );
     expect(invoices.rows.map((i) => i.totalK)).toEqual([30_000_000]);
     expect(await states(business.id)).toEqual(['confirmed', 'pending']);
-    expect(stubSender.lastText).toContain('Total: ₦50,000');
     expect((await used(business.id)).documents).toBe(1);
   });
 
@@ -10283,7 +10279,7 @@ describe('a preview has a time limit (G-23)', () => {
     expect([...claimed].map((r) => r.claimed)).toEqual([true]);
   });
 
-  it('a correction sent while a yes waits for its retry is handled after it, and previews once (G-20 order)', async () => {
+  it('a retried yes whose draft a correction superseded while it waited gives the unit back', async () => {
     const business = await seedMerchant();
     await say('wamid.G23-sup1', A_SALE, 'sold Ada 3 wigs for 300k');
 
@@ -10293,8 +10289,7 @@ describe('a preview has a time limit (G-23)', () => {
       expect((await used(business.id)).documents).toBe(1);
       await holdRetries(owner, business.id);
 
-      /* The merchant corrects it before the retry runs. Arrival order: the
-       * correction waits, so it cannot supersede what the yes confirms. */
+      /* The merchant corrects it before the retry runs. */
       await say(
         'wamid.G23-sup2',
         {
@@ -10304,17 +10299,21 @@ describe('a preview has a time limit (G-23)', () => {
         },
         'sorry, 4 wigs not 3',
       );
-      expect(await states(business.id)).toEqual(['pending']);
+      expect(await states(business.id)).toEqual(['superseded', 'pending']);
 
       await runRetriesNow(owner, business.id);
       await drain();
     });
 
-    /* The yes issued the 300k sale it answered, once; the correction then
-     * arrived and is previewed as a new request. */
+    /* Nothing issued for that yes, and the unit its first attempt took is back. */
+    expect((await footprint(business.id)).invoices).toBe(0);
+    expect((await used(business.id)).documents).toBe(0);
+    expect(stubSender.lastText).toBe(replies.previewAwaitingYes().text);
+
+    /* The corrected preview is confirmed by the next yes, charged once. */
+    await plain('wamid.G23-sup2-yes', 'yes');
     expect((await footprint(business.id)).invoices).toBe(1);
     expect((await used(business.id)).documents).toBe(1);
-    expect(await states(business.id)).toEqual(['confirmed', 'pending']);
   });
 
   it('a yes queued behind a correction, retried, refunds nothing it never reserved', async () => {

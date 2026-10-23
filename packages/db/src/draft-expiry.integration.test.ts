@@ -99,6 +99,8 @@ async function draftAt(
       intent: 'RecordSale',
       command: { intent: 'RecordSale', note },
       model: null,
+      // A draft only a delivered preview can confirm (G-20): claimDraft refuses the rest.
+      previewed: true,
       ...(now ? { now } : {}),
     });
     return { ...draft, messageId: message.id };

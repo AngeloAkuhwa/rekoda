@@ -145,13 +145,17 @@ export async function serializeBusiness(
  * nothing and drops a record. So a handler that needs order calls this AFTER
  * taking the lock: an older sibling still `pending` or `running` means this
  * job is jumping the queue and should step back (see `deferClaimed`). Ordered
- * by ARRIVAL, (created_at, id), never by `run_at`: a deferral or a retry
- * backoff moves `run_at`, and an earlier message that stepped back must not
- * look newer than the one behind it (G-20).
+ * by the same (run_at, created_at) the claim query uses, with id as the
+ * tiebreak, for a sibling that has been tried (`attempts > 0`: running, or
+ * backing off after a failure, which a newer request may deliberately pass).
+ * A sibling never tried (`attempts = 0`) is ordered by arrival (`created_at`,
+ * id): the only thing that moved its `run_at` is `deferClaimed`, which
+ * refunds the attempt, and a message that stepped back behind a failed
+ * receipt must still count as older than one that arrived after it (G-20).
  *
- * `alsoKinds` names other kinds whose older live jobs also count (G-20): an
- * inbound "yes" must not overtake an already-queued `delivery.status` failure
- * for a preview, or it would confirm a draft the merchant never saw.
+ * `alsoKinds` names other kinds whose older live jobs also count, by arrival:
+ * an inbound "yes" must not overtake an already-queued `delivery.status`
+ * failure for a preview, even one backing off after a failed attempt.
  */
 export async function hasEarlierLiveJob(
   tx: TenantDb,
@@ -170,12 +174,10 @@ export async function hasEarlierLiveJob(
       AND j.id <> me.id
       AND j.state IN ('pending', 'running')
       AND (
-        (j.kind = me.kind AND (j.created_at, j.id) < (me.created_at, me.id))
-        ${
-          alsoKinds.length > 0
-            ? sql`OR (j.kind IN (${kinds}) AND (j.created_at, j.id) < (me.created_at, me.id))`
-            : sql``
-        }
+        (j.kind = me.kind AND j.attempts > 0
+           AND (j.run_at, j.created_at, j.id) < (me.run_at, me.created_at, me.id))
+        OR ((j.kind = me.kind AND j.attempts = 0${alsoKinds.length > 0 ? sql` OR j.kind IN (${kinds})` : sql``})
+           AND (j.created_at, j.id) < (me.created_at, me.id))
       )
     LIMIT 1
   `);

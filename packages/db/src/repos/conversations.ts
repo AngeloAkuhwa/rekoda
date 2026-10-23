@@ -826,7 +826,9 @@ export async function reconcileDeadReceipts(tx: TenantDb, businessId: string): P
   const dead = await tx.execute<{ event_id: string; wamid: string }>(sql`
     SELECT j.payload->>'eventId' AS event_id, j.payload->>'outboundMessageId' AS wamid
       FROM jobs j
-      JOIN external_events e ON e.id = (j.payload->>'eventId')::uuid
+      JOIN external_events e ON e.id = CASE
+             WHEN j.payload->>'eventId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+             THEN (j.payload->>'eventId')::uuid END
      WHERE j.business_id = ${businessId}::uuid
        AND j.kind = 'delivery.status'
        AND j.state = 'dead'
