@@ -583,6 +583,53 @@ test('the runbook forgetting the automation', () => {
   expectProblem(problems(edit), /must document \.github\/workflows\/deploy-staging\.yml/);
 });
 
+/* ---- interrupted deploys ---- */
+
+for (const [sig, code] of [
+  ['HUP', 129],
+  ['INT', 130],
+  ['TERM', 143],
+]) {
+  test(`the script no longer exiting on SIG${sig}`, () => {
+    const edit = edited('script', `trap 'exit ${code}' ${sig}\n`, '');
+    expectProblem(problems(edit), new RegExp(`exits on SIG${sig}`));
+  });
+}
+
+test('the prepared marker written after the checkout changed', () => {
+  const mark = 'write_state prepared\n';
+  const moved = edited('script', mark, '').script.replace(
+    '\nstep "build both images',
+    () => `\n${mark}step "build both images`,
+  );
+  expectProblem(
+    problems({ script: moved }),
+    /prepared marker after PHASE=prepared and before the checkout/,
+  );
+});
+
+test('no prepared marker at all', () => {
+  const edit = edited('script', 'write_state prepared\n', '');
+  expectProblem(problems(edit), /prepared marker after PHASE=prepared/);
+});
+
+test('an interrupted run reconciled only after the baseline is judged', () => {
+  const call = 'recover_interrupted\n\n';
+  const moved = edited('script', call, '').script.replace(
+    "\nstep 'fetch and verify the commit'\n",
+    () => `\n${call}step 'fetch and verify the commit'\n`,
+  );
+  expectProblem(
+    problems({ script: moved }),
+    /reconcile an interrupted run .* before it judges the rollback baseline/,
+  );
+});
+
+test('the marker written in place, where a kill leaves it truncated', () => {
+  const edit = edited('script', '  mv -f "$STATE.tmp" "$STATE"\n', '');
+  expectProblem(problems(edit), /writes its marker by atomic rename/);
+});
+
 /* ---- CI on main is never cancelled ---- */
 
 test('CI cancelling its own run on main', () => {
