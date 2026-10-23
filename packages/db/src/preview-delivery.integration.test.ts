@@ -266,7 +266,8 @@ describe('an unseen preview can never be confirmed (G-20, owner ruling)', () => 
     const businessId = await seedBusiness();
     const sent = await previewed(businessId);
     await withBusiness(app, businessId, (tx) =>
-      tx.execute(sql`UPDATE command_drafts SET previewed = false, intent = 'EraseData'
+      tx.execute(sql`UPDATE command_drafts SET previewed = false, intent = 'EraseData',
+                             command = '{"intent":"EraseData"}'::jsonb
                       WHERE business_id = ${businessId}::uuid AND id = ${sent.draftId}::uuid`),
     );
     expect(await claim(businessId, sent.draftId)).toEqual({
@@ -357,5 +358,17 @@ describe('a receipt job that died still unsees its preview (G-20)', () => {
       conversationsRepo.reconcileDeadReceipts(tx, businessId),
     );
     expect(second).toBe(0);
+  });
+});
+
+describe('the claim exemption needs the stored command to agree (G-20)', () => {
+  it('a financial command filed under an exempt intent column is still refused', async () => {
+    const businessId = await seedBusiness();
+    const sent = await previewed(businessId);
+    await withBusiness(app, businessId, (tx) =>
+      tx.execute(sql`UPDATE command_drafts SET previewed = false, intent = 'Query'
+                      WHERE business_id = ${businessId}::uuid AND id = ${sent.draftId}::uuid`),
+    );
+    expect(await claim(businessId, sent.draftId)).toEqual({ outcome: 'unseen' });
   });
 });
