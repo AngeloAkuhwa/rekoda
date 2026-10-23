@@ -660,5 +660,7 @@ describe('review of #340: three ways a year could be mispriced or misapplied', (
     const after = await subOf(businessId);
     expect(after?.paymentFailedAt).toBeNull();
     expect(after?.billingInterval).toBe('monthly');
+    // The confirmed yearly choice still waits for the next renewal.
+    expect(after?.pendingBillingInterval).toBe('annual');
   });
 });

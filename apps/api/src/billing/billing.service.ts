@@ -654,7 +654,13 @@ export async function applySettledCharge(
       anchorDay,
       pendingPlan: null,
       billingInterval: interval,
-      keepPendingInterval: charge.kind === 'upgrade',
+      /* A renewal that buys the interval the merchant asked for consumes the switch.
+       * One that buys a different interval (a link sent before the switch, paid
+       * after it) leaves the confirmed choice waiting for the next renewal. */
+      keepPendingInterval:
+        charge.kind === 'upgrade' ||
+        (subscription?.pendingBillingInterval != null &&
+          subscription.pendingBillingInterval !== charge.billingInterval),
     });
   }
   return 'applied';
