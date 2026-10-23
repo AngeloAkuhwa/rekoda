@@ -177,20 +177,17 @@ export function deliverDocumentHandler(deps: DeliverDocumentDeps): JobHandler {
      * is retried a few times and then dies VISIBLY rather than dropping
      * silently, and the owner can still say "resend" at any time.
      */
+    const label = documentLabelOf(stored.kind);
+    /* One reference for the template and for the history row, so what the owner
+     * was sent and what the thread shows cannot differ. */
+    const reference = stored.refNumber ?? 'n/a';
     try {
-      const result = await deps.sender.sendDocumentNotice({
-        to,
-        documentLabel: documentLabelOf(stored.kind),
-        reference: stored.refNumber ?? 'n/a',
-      });
+      const result = await deps.sender.sendDocumentNotice({ to, documentLabel: label, reference });
       const recorded = await conversationsRepo.recordOutbound(tx, {
         businessId,
         channel: 'meta',
         kind: 'text',
-        body: `${documentLabelOf(stored.kind)} ${stored.refNumber ?? ''} is ready; reply RESEND to receive it`.replace(
-          /\s+/g,
-          ' ',
-        ),
+        body: `${label} ${reference} is ready; reply RESEND to receive it`,
       });
       await conversationsRepo.markOutboundSent(tx, recorded.id, result.providerMessageId);
       const costMicros = MESSAGE_COST_MICROS.UTILITY_TEMPLATE;
@@ -204,7 +201,7 @@ export function deliverDocumentHandler(deps: DeliverDocumentDeps): JobHandler {
         billingPeriod: billingPeriod(new Date()),
         meta: { template: 'document', documentKind: stored.kind },
       });
-      log.log(`document ${stored.refNumber ?? ''} not sent: window closed, owner notified`);
+      log.log(`document ${reference} not sent: window closed, owner notified`);
     } catch (error) {
       if (error instanceof SendFailed) {
         log.warn(`document notice not delivered, will retry: ${redactForLog(error.message)}`);
