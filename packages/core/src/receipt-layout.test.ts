@@ -142,3 +142,23 @@ describe('overpayment', () => {
     expect(text).not.toContain('being reviewed');
   });
 });
+
+describe('tax (OWN-30, G-11)', () => {
+  it('says nothing about VAT or a tax status: a receipt records a payment, not a tax treatment', () => {
+    const over = { amountK: 18_000_000, allocatedK: 15_000_000 };
+    const docs: ReceiptDocument[] = [
+      RECEIPT,
+      RECORDED,
+      { ...RECEIPT, ...over },
+      { ...RECORDED, ...over },
+      { ...RECORDED, ...over, excessDisposition: 'customer_credit' },
+      { ...RECORDED, ...over, excessDisposition: 'unattributed' },
+    ];
+    for (const doc of docs) {
+      const text = textOf(doc);
+      for (const claim of [/\bvat\b/i, /zero[- ]rated/i, /exempt/i, /\btax\b/i]) {
+        expect(text).not.toMatch(claim);
+      }
+    }
+  });
+});

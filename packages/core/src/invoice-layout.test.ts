@@ -110,6 +110,23 @@ describe('VAT', () => {
     // their invoice is a question they will be asked and cannot answer.
     expect(textOf(INVOICE)).not.toContain('VAT');
   });
+
+  it('never calls an uncharged sale zero-rated, exempt or VAT-free (OWN-30, G-11)', () => {
+    /* No VAT recorded means none was charged, which is not a tax treatment.
+     * Rekoda adds no 7.5% and invents no status for a sale; the layout says
+     * nothing about tax unless the merchant's own record carries an amount. */
+    const text = textOf(INVOICE);
+    for (const claim of [
+      /zero[- ]rated/i,
+      /exempt/i,
+      /vat[- ]free/i,
+      /\bvat\b/i,
+      /\btax\b/i,
+      /7\.5\s*(%|per ?cent)/i,
+    ]) {
+      expect(text).not.toMatch(claim);
+    }
+  });
 });
 
 describe('discount and delivery', () => {
