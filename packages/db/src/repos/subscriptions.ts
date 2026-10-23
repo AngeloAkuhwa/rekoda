@@ -212,7 +212,11 @@ export async function writeSubscriptionState(
       cycle_started_at = ${cycleStarted},
       renewal_anchor_day = ${state.anchorDay},
       pending_plan = ${state.pendingPlan},
-      billing_interval = ${state.billingInterval ?? 'monthly'},
+      -- A re-post of the identical cycle (origin 'keep') changes nothing commercially, so the
+      -- interval stays with it; any other state without an interval is monthly.
+      billing_interval = ${
+        state.billingInterval ?? (state.origin === 'keep' ? sql`billing_interval` : 'monthly')
+      },
       pending_billing_interval = NULL,
       interval_decided_at = NULL,
       subscription_origin = ${

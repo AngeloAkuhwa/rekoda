@@ -473,6 +473,25 @@ describe('changing plan inside an annual cycle', () => {
     expect(after).toMatchObject({ plan: 'chat', billingInterval: 'annual', pendingPlan: null });
   });
 
+  it('an operator re-posting the identical annual cycle keeps it annual and provider-bought', async () => {
+    const { businessId } = await onboard();
+    const start = new Date(Date.now() - 100 * DAY);
+    await putOnPlan(businessId, 'chat', 'annual', start);
+    const before = await subOf(businessId);
+
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'chat',
+      expiresAt: before!.planExpiresAt!,
+      actor: 'operator:test',
+    });
+    const after = await subOf(businessId);
+    expect(after?.planExpiresAt?.toISOString()).toBe(before?.planExpiresAt?.toISOString());
+    expect(after?.origin).toBe('provider');
+    // The cycle is still a year long, so the next renewal must still bill a year.
+    expect(after?.billingInterval).toBe('annual');
+  });
+
   it('an operator move resets the interval to monthly: an arrangement is not a provider year', async () => {
     const { businessId } = await onboard();
     await putOnPlan(businessId, 'chat', 'annual', new Date());
