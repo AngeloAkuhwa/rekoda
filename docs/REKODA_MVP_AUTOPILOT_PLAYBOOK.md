@@ -692,7 +692,7 @@ For every PR, Claude:
 For each, publish the request, impact and proof of closure; never mark DONE without evidence:
 
 - G-02: off-server encrypted backup destination, keys/retention and restore-drill permission.
-- G-03: dedicated production WhatsApp business number, Meta App Review, valid tokens, and approved authentication + two utility templates (verify actual provider requirements before claiming completion).
+- G-03: dedicated production WhatsApp business number, Meta App Review, valid tokens, and approved authentication + three utility templates (billing, retention, document-ready) (verify actual provider requirements before claiming completion).
 - G-05: Paystack written API/settlement agreement and approved small real-money tests; any production merchant configuration.
 - G-09: effective `main` branch protection/ruleset enabled and verified by a repo administrator.
 - G-11/G-47: owner SaaS-only tax scope is ruled; obtain professional assessment of Rekoda subscription/add-on VAT, platform-specific collection obligations, merchant invoice presentation, and accounting statement sign-off.

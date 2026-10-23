@@ -1529,6 +1529,17 @@ describe('the W3 completion gate: catalogue to receipt (spec §3.2; PR-089)', ()
 
   it('an order from the catalogue reaches a receipt in the merchant thread, books correct end to end', async () => {
     const { businessId, wigId } = await seedGateMerchant('PN-GATE-1');
+    /* The owner is active on the business number, so the receipt PDF is
+     * deliverable free-form (G-67). */
+    await withBusiness(db, businessId, (tx) =>
+      conversationsRepo.recordInbound(tx, {
+        businessId,
+        channel: 'meta',
+        kind: 'text',
+        body: 'hello',
+        providerMessageId: 'wamid.gate-window-1',
+      }),
+    );
 
     /* 1 ── the cart, through the real webhook ingress. */
     expect(
@@ -4075,6 +4086,16 @@ describe('metering the things that cost money', () => {
       businessType: null,
       ownerUserId: user.id,
     });
+    /* Inside the 24-hour window the owner opened by writing (G-67). */
+    await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.recordInbound(tx, {
+        businessId: business.id,
+        channel: 'meta',
+        kind: 'text',
+        body: 'hello',
+        providerMessageId: 'wamid.cost-window-1',
+      }),
+    );
 
     await deps.storage.put('test/cost-1', Buffer.from('%PDF-fake'), 'application/pdf');
     const doc = await withBusiness(db, business.id, (tx) =>
