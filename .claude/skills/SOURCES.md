@@ -68,7 +68,7 @@ check above, review the diff). Do not auto-update.
 
 ## Patches to vendored files (security hardening, 23 Oct 2026)
 
-Owner security direction: no design skill may expose the repository through an
+Owner security direction (OWN-38, 23 Oct 2026, `docs/REKODA_OWNER_DECISIONS.md`): no design skill may expose the repository through an
 unrestricted local web server, and no skill may download or run a third-party
 binary unattended. Written rules were not enough, so two skills carry the
 smallest technical patches that enforce this. They are the **only** deviations
