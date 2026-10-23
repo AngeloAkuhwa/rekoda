@@ -9776,12 +9776,15 @@ describe('a preview has a time limit (G-23)', () => {
       await holdRetries(owner, business.id);
       expect((await used(business.id)).documents).toBe(1);
 
-      /* The window closes for good while the retry waits (what a sweep on a
-       * later interaction does). */
+      /* The window closes just after the yes arrived, and a later request
+       * (handled before the retry) closes it for good. */
       await owner.execute(sql`
-        UPDATE command_drafts SET state = 'expired'
+        UPDATE command_drafts SET expires_at = (
+          SELECT created_at + interval '1 millisecond' FROM external_events
+           WHERE business_id = ${business.id}::uuid ORDER BY created_at DESC LIMIT 1)
          WHERE business_id = ${business.id}::uuid`);
-      expect(await states(business.id)).toEqual(['expired']);
+      await say('wamid.G23-cl2', AN_EXPENSE, 'bought fuel 20k cash');
+      expect(await states(business.id)).toEqual(['expired', 'pending']);
 
       await runRetriesNow(owner, business.id);
       await drain();
