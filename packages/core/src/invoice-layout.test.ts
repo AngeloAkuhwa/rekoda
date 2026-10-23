@@ -116,7 +116,7 @@ describe('VAT', () => {
      * Rekoda adds no 7.5% and invents no status for a sale; the layout says
      * nothing about tax unless the merchant's own record carries an amount. */
     const text = textOf(INVOICE);
-    for (const claim of [/zero[- ]rated/i, /exempt/i, /vat[- ]free/i, /\btax\b/i, /7\.5/]) {
+    for (const claim of [/zero[- ]rated/i, /exempt/i, /vat[- ]free/i, /\bvat\b/i, /\btax\b/i, /7\.5/]) {
       expect(text).not.toMatch(claim);
     }
   });
