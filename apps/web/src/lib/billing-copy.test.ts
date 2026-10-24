@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  browsingInterval,
+  canOfferSwitch,
   chargeIntervalSuffix,
   emptyMeterCopy,
   firstPurchaseTerm,
@@ -109,5 +111,19 @@ describe('yearly billing copy (OWN-40)', () => {
     expect(chargeIntervalSuffix('renewal', 'monthly')).toBe('');
     expect(chargeIntervalSuffix('add_on', 'annual')).toBe('');
     expect(chargeIntervalSuffix('upgrade', 'annual')).toBe('');
+  });
+});
+
+describe('yearly billing gating', () => {
+  it('browses yearly prices only when a year can be chosen', () => {
+    expect(browsingInterval('annual', true)).toBe('annual');
+    expect(browsingInterval('annual', false)).toBe('monthly');
+    expect(browsingInterval(undefined, true)).toBe('monthly');
+  });
+
+  it('offers a monthly subscriber a year only when yearly billing is on, and a yearly one a way back always', () => {
+    expect(canOfferSwitch('monthly', false)).toBe(false);
+    expect(canOfferSwitch('monthly', true)).toBe(true);
+    expect(canOfferSwitch('annual', false)).toBe(true);
   });
 });

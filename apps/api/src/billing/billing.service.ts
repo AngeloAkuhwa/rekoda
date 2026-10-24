@@ -128,6 +128,7 @@ export class BillingService {
         annualPriceK: await planPriceKFor(this.config, tx, businessId, plan, now, 'annual'),
         interval: subscription?.billingInterval ?? 'monthly',
         pendingInterval: subscription?.pendingBillingInterval ?? null,
+        annualOffered: this.config.annualBillingSales && this.config.planCatalogueReads,
         status: statusOf(plan, subscription, now),
         pendingPlan: subscription?.pendingPlan ?? null,
         period,

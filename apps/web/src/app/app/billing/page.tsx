@@ -3,6 +3,8 @@ import { isOwner } from '@/lib/permissions';
 import { Money } from '@/components/ui/Money';
 import { PendingButton } from '@/components/ui/PendingButton';
 import {
+  browsingInterval,
+  canOfferSwitch,
   chargeIntervalSuffix,
   emptyMeterCopy,
   firstPurchaseTerm,
@@ -122,7 +124,7 @@ export default async function BillingPage({
   const overview = await billingOverview(token);
   /* Which price the plan table shows. A subscriber's interval is switched in its own
    * card, so this only decides what a first purchase is quoted at. */
-  const browsing: 'monthly' | 'annual' = params.interval === 'annual' ? 'annual' : 'monthly';
+  const browsing = browsingInterval(params.interval, overview.annualOffered);
   const proposed =
     params.to && params.to !== overview.plan
       ? await billingQuote(token, params.to, browsing)
@@ -270,7 +272,7 @@ export default async function BillingPage({
                 </PendingButton>
               </form>
             </>
-          ) : (
+          ) : canOfferSwitch(overview.interval, overview.annualOffered) ? (
             <>
               <p className="rk-fineprint">
                 {switchIntervalOffer(overview.interval)}
@@ -294,7 +296,7 @@ export default async function BillingPage({
                 </PendingButton>
               </form>
             </>
-          )}
+          ) : null}
         </div>
       ) : null}
 
@@ -431,7 +433,7 @@ export default async function BillingPage({
       ) : (
         <div className="rk-card">
           <h2>Change plan</h2>
-          {firstPurchase ? (
+          {firstPurchase && overview.annualOffered ? (
             <p className="rk-fineprint">
               Show prices:{' '}
               <a

@@ -113,6 +113,9 @@ export default defineConfig({
         // without a WhatsApp account. The API refuses this outright when
         // NODE_ENV is production.
         REKODA_REVEAL_OTP: '1',
+        // Yearly billing is off in a real deployment until every process is annual-aware;
+        // the suite exercises the screens it unlocks.
+        REKODA_ANNUAL_BILLING: '1',
       },
     },
     {

@@ -93,3 +93,20 @@ export function chargeIntervalSuffix(kind: string, interval: Interval): string {
     ? ' · Yearly'
     : '';
 }
+
+/** The price view a first purchase browses: a year only when a year can be chosen. */
+export function browsingInterval(
+  requested: string | undefined,
+  annualOffered: boolean,
+): 'monthly' | 'annual' {
+  return annualOffered && requested === 'annual' ? 'annual' : 'monthly';
+}
+
+/**
+ * Whether the billing frequency card has an action to offer outside a waiting switch: a
+ * yearly subscriber can always go back to monthly, but a monthly one is offered a year
+ * only when yearly billing is on.
+ */
+export function canOfferSwitch(interval: 'monthly' | 'annual', annualOffered: boolean): boolean {
+  return interval === 'annual' || annualOffered;
+}

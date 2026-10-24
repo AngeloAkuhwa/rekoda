@@ -118,6 +118,8 @@ export const billingOverviewResponse = z.object({
   interval: billingInterval,
   /** A switch of interval waiting for the next renewal, or null. */
   pendingInterval: billingInterval.nullable(),
+  /** Whether a year can be newly chosen (a first purchase or a switch to yearly). Off until annual billing is switched on. */
+  annualOffered: z.boolean(),
   status: billingStateView,
   /** The plan the next renewal moves to, when a downgrade is waiting. */
   pendingPlan: z.string().nullable(),
