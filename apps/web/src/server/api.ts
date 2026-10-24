@@ -42,6 +42,10 @@ import {
   sessionResponse,
   setupStateResponse,
   billingCancelResponse,
+  billingCheckoutResponse,
+  billingEmailConfirmResponse,
+  billingEmailStatusResponse,
+  billingEmailVerifyResponse,
   billingIntervalResponse,
   billingOverviewResponse,
   businessSettingsResponse,
@@ -86,6 +90,10 @@ import {
   voidInvoiceResponse,
   verifyOtpResponse,
   type BillingCancelResponse,
+  type BillingCheckoutResponse,
+  type BillingEmailConfirmResponse,
+  type BillingEmailStatusResponse,
+  type BillingEmailVerifyResponse,
   type BillingIntervalResponse,
   type BillingOverviewResponse,
   type BusinessSettingsRequest,
@@ -1427,4 +1435,62 @@ export async function voidInvoice(
     expect: [200, 400],
   });
   return status === 200 ? voidInvoiceResponse.parse(json) : null;
+}
+
+/* ── paying Rekoda, and proving the billing email (G-102 slices 2a to 2c) ─────── */
+
+/** The checkout for one pending charge. `restart` asks for a fresh link after a lost one. */
+export async function billingCheckout(
+  sessionToken: string,
+  body: { reference: string; billingEmail?: string; restart?: boolean },
+): Promise<BillingCheckoutResponse> {
+  const { json } = await call({
+    method: 'POST',
+    path: '/v1/billing/checkout',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return billingCheckoutResponse.parse(json);
+}
+
+export async function billingEmailStatus(
+  sessionToken: string,
+): Promise<BillingEmailStatusResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/billing/email',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return billingEmailStatusResponse.parse(json);
+}
+
+export async function billingEmailVerify(
+  sessionToken: string,
+  billingEmail?: string,
+): Promise<BillingEmailVerifyResponse> {
+  const { json } = await call({
+    method: 'POST',
+    path: '/v1/billing/email/verify',
+    body: billingEmail === undefined ? {} : { billingEmail },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return billingEmailVerifyResponse.parse(json);
+}
+
+/** Spend the token from a mailed link. It travels in the body, never a URL. */
+export async function billingEmailConfirm(
+  sessionToken: string,
+  token: string,
+): Promise<BillingEmailConfirmResponse | 'malformed'> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/billing/email/confirm',
+    body: { token },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? billingEmailConfirmResponse.parse(json) : 'malformed';
 }

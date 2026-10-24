@@ -13,7 +13,7 @@ import type { BillingChargeStatus } from '@rekoda/contracts';
 const LABELS: Record<BillingChargeStatus, string> = {
   pending: 'Awaiting payment',
   paid: 'Paid',
-  failed: 'Failed',
+  failed: 'Payment did not go through',
   refunded: 'Refunded',
 };
 
