@@ -79,6 +79,10 @@ export const businesses = pgTable(
      * automatically. Written with the cycle by the one state writer.
      */
     subscriptionOrigin: text('subscription_origin'),
+    /** The interval the current cycle was bought on (migration 0171, G-110, OWN-40). */
+    billingInterval: text('billing_interval').notNull().default('monthly'),
+    /** A switch of interval waiting for the next renewal; null when none (migration 0171). */
+    pendingBillingInterval: text('pending_billing_interval'),
     /**
      * When the subscription was last DECIDED (migration 0162, G-104): an
      * operator move, a settled plan charge, a scheduled plan change. A plan

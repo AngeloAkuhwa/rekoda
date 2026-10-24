@@ -20,6 +20,7 @@
 import {
   addOnPack,
   allowanceFor,
+  annualPriceK,
   isConsumable,
   packsFor,
   planPriceK,
@@ -27,6 +28,7 @@ import {
   UNIT_KIND,
   UNIT_SCALE,
   type AddOnPack,
+  type BillingInterval,
   type UsageUnit,
 } from '@rekoda/core';
 import { addOnsRepo, planCatalogueRepo, type TenantDb } from '@rekoda/db';
@@ -133,11 +135,23 @@ export async function planPriceKFor(
   businessId: string,
   plan: string,
   now = new Date(),
+  interval: BillingInterval = 'monthly',
 ): Promise<number> {
-  if (!config.planCatalogueReads) return planPriceK(plan);
+  if (!config.planCatalogueReads) {
+    return interval === 'annual' ? annualPriceK(planPriceK(plan)) : planPriceK(plan);
+  }
   const version = await planCatalogueRepo.versionForBusiness(tx, businessId, plan, now);
   if (!version) return 0;
-  return (await planCatalogueRepo.priceAt(tx, version.id, 'NGN', 'monthly', now)) ?? 0;
+  const price = await planCatalogueRepo.priceAt(tx, version.id, 'NGN', interval, now);
+  if (price !== null) return price;
+  /* A version published without an annual row is legal (the catalogue does not require
+   * one). The approved rule is monthly x 10 (OWN-40), so a missing year is that, never
+   * zero: a zero-kobo annual renewal would start the grace clock on a charge nobody can pay. */
+  if (interval === 'annual') {
+    const monthly = await planCatalogueRepo.priceAt(tx, version.id, 'NGN', 'monthly', now);
+    return monthly === null ? 0 : annualPriceK(monthly);
+  }
+  return 0;
 }
 
 /**

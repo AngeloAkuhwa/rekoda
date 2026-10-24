@@ -800,3 +800,17 @@ describe('the alert destination (G-26)', () => {
     ).toThrow(/must be https/);
   });
 });
+
+describe('REKODA_ANNUAL_BILLING', () => {
+  it('is off when absent or 0, on for 1, and refuses to boot on anything else', () => {
+    expect(loadConfig({ ...BASE }).annualBillingSales).toBe(false);
+    expect(loadConfig({ ...BASE, REKODA_ANNUAL_BILLING: '0' }).annualBillingSales).toBe(false);
+    expect(loadConfig({ ...BASE, REKODA_ANNUAL_BILLING: '1' }).annualBillingSales).toBe(true);
+    expect(() => loadConfig({ ...BASE, REKODA_ANNUAL_BILLING: '' })).toThrow(
+      /REKODA_ANNUAL_BILLING/,
+    );
+    expect(() => loadConfig({ ...BASE, REKODA_ANNUAL_BILLING: 'true' })).toThrow(
+      /REKODA_ANNUAL_BILLING/,
+    );
+  });
+});

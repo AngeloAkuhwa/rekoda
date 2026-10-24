@@ -97,8 +97,23 @@ export function planChangeCharge(input: {
    * old path, not an equal alternative.
    */
   pricesK?: { from: number; to: number } | undefined;
+  /**
+   * The interval a FIRST PURCHASE is bought on (G-110): it sets the cycle's end.
+   * Absent is monthly. `pricesK.to` must already be that interval's price; no other
+   * kind reads it, because an upgrade on an annual cycle is never prorated (OWN-40).
+   */
+  interval?: BillingInterval | undefined;
 }): PlanChangeCharge {
-  const toK = input.pricesK ? input.pricesK.to : (PLAN_PRICES_K[input.to as PlanId] ?? 0);
+  const constantToK = PLAN_PRICES_K[input.to as PlanId] ?? 0;
+  /* Only a first purchase is priced on the interval it chose. Every other change
+   * compares the two plans' MONTHLY prices, so a downgrade from an annual cycle is
+   * never mistaken for an upgrade by setting a year's price against a month's. */
+  const firstPurchase = input.from === 'trial' || input.from === 'expired';
+  const toK = input.pricesK
+    ? input.pricesK.to
+    : firstPurchase && input.interval === 'annual'
+      ? annualPriceK(constantToK)
+      : constantToK;
   const fromNowK = input.pricesK ? input.pricesK.from : (PLAN_PRICES_K[input.from as PlanId] ?? 0);
   /* Classified over the SAME prices the amounts use: a kind decided by the
    * constants while the catalogue prices the difference could call a move an
@@ -120,7 +135,7 @@ export function planChangeCharge(input: {
       kind,
       amountK: toK,
       effectiveFrom: 'now',
-      renewsAt: addMonth(input.now),
+      renewsAt: addInterval(input.now, input.interval ?? 'monthly'),
     };
   }
 
@@ -149,15 +164,43 @@ export function planChangeCharge(input: {
  * a merchant's renewal date walking backwards through the year.
  */
 export function addMonth(from: Date, anchorDay?: number): Date {
+  return addMonths(from, 1, anchorDay);
+}
+
+/** How often a subscription bills (OWN-40, G-110). */
+export type BillingInterval = 'monthly' | 'annual';
+
+/**
+ * `months` calendar months on, on the anchor day or the last day of that month.
+ *
+ * One rule for both intervals: a year is twelve months, so 29 February renews on
+ * 28 February in a common year and returns to the 29th in the next leap year
+ * when the anchor says so, exactly as 31 January does in a short month.
+ */
+function addMonths(from: Date, months: number, anchorDay?: number): Date {
   const lagos = new Date(from.getTime() + 3_600_000);
   const day = anchorDay ?? lagos.getUTCDate();
   const year = lagos.getUTCFullYear();
-  const month = lagos.getUTCMonth() + 1;
+  const month = lagos.getUTCMonth() + months;
   const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
   const next = new Date(
     Date.UTC(year, month, Math.min(day, lastDay), lagos.getUTCHours(), lagos.getUTCMinutes()),
   );
   return new Date(next.getTime() - 3_600_000);
+}
+
+/** The end of a cycle that starts at `from`: a month on, or a year on. */
+export function addInterval(from: Date, interval: BillingInterval, anchorDay?: number): Date {
+  return addMonths(from, interval === 'annual' ? 12 : 1, anchorDay);
+}
+
+/**
+ * The price of a year: ten months of the monthly price (OWN-40, "two months
+ * free"), in whole kobo. The catalogue holds the same figure as its own
+ * annual price row; this is the constant path's and the tests' statement of it.
+ */
+export function annualPriceK(monthlyK: number): number {
+  return monthlyK * 10;
 }
 
 /**

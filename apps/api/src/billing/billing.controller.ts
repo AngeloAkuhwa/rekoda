@@ -18,9 +18,11 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  billingIntervalRequest,
   billingPackPurchaseRequest,
   billingPlanChangeRequest,
   type BillingCancelResponse,
+  type BillingIntervalResponse,
   type BillingOverviewResponse,
   type BillingPlanChangeResponse,
   type BillingQuoteResponse,
@@ -51,7 +53,12 @@ export class BillingController {
   async quote(@Req() request: AuthedRequest, @Body() body: unknown): Promise<BillingQuoteResponse> {
     const parsed = billingPlanChangeRequest.safeParse(body);
     if (!parsed.success) throw new BadRequestException('plan must be chat, integrate or complete');
-    return this.billing.quote(request.auth!.businessId, parsed.data.plan);
+    return this.billing.quote(
+      request.auth!.businessId,
+      parsed.data.plan,
+      new Date(),
+      parsed.data.interval ?? 'monthly',
+    );
   }
 
   /* Spending the owner's money is the owner's decision. An invited member
@@ -68,7 +75,29 @@ export class BillingController {
   ): Promise<BillingPlanChangeResponse> {
     const parsed = billingPlanChangeRequest.safeParse(body);
     if (!parsed.success) throw new BadRequestException('plan must be chat, integrate or complete');
-    return this.billing.changePlan(request.auth!.businessId, parsed.data.plan);
+    return this.billing.changePlan(
+      request.auth!.businessId,
+      parsed.data.plan,
+      new Date(),
+      parsed.data.interval ?? 'monthly',
+    );
+  }
+
+  /**
+   * Switch between monthly and annual billing (OWN-40). Owner-only like every
+   * plan decision; it always waits for the next renewal and never refunds or
+   * prorates, because the merchant keeps the cycle they paid for.
+   */
+  @Post('interval')
+  @HttpCode(200)
+  @Roles('owner')
+  async switchInterval(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<BillingIntervalResponse> {
+    const parsed = billingIntervalRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('interval must be monthly or annual');
+    return this.billing.switchInterval(request.auth!.businessId, parsed.data.interval);
   }
 
   /**

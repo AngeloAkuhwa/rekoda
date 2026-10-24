@@ -11,9 +11,10 @@
  * and a pending charge opened before that would be a row somebody has to
  * remember to clean up.
  */
-import { Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
 import {
+  addInterval,
   addMonth,
   addOnReference,
   billingState,
@@ -23,6 +24,7 @@ import {
   subscriptionReference,
   usagePeriod,
   USAGE_UNITS,
+  type BillingInterval,
 } from '@rekoda/core';
 import {
   meterAllowances,
@@ -34,6 +36,7 @@ import {
 import type {
   BillingCancelResponse,
   BillingOverviewResponse,
+  BillingIntervalResponse,
   BillingPlanChangeResponse,
   BillingQuoteResponse,
   BillingStateView,
@@ -63,6 +66,19 @@ export class BillingService {
   ) {}
 
   /**
+   * Annual billing cannot be NEWLY chosen until it is switched on (`annualBillingSales`), and
+   * only from catalogue prices (OWN-40). A subscriber already on a year keeps it either way.
+   */
+  private refuseUnofferedAnnual(interval: BillingInterval): void {
+    if (
+      interval === 'annual' &&
+      !(this.config.annualBillingSales && this.config.planCatalogueReads)
+    ) {
+      throw new BadRequestException('annual billing is not available yet');
+    }
+  }
+
+  /**
    * The two prices a plan change is priced from, off the catalogue.
    *
    * `from` resolves through the grandfathering pin - what the merchant
@@ -78,11 +94,12 @@ export class BillingService {
     from: string,
     to: string,
     now: Date,
+    interval: BillingInterval = 'monthly',
   ): Promise<{ from: number; to: number } | undefined> {
     if (!this.config.planCatalogueReads) return undefined;
     return {
       from: await planPriceKFor(this.config, tx, businessId, from, now),
-      to: await planPriceKFor(this.config, tx, businessId, to, now),
+      to: await planPriceKFor(this.config, tx, businessId, to, now, interval),
     };
   }
 
@@ -108,6 +125,9 @@ export class BillingService {
       return {
         plan,
         priceK: await planPriceKFor(this.config, tx, businessId, plan, now),
+        annualPriceK: await planPriceKFor(this.config, tx, businessId, plan, now, 'annual'),
+        interval: subscription?.billingInterval ?? 'monthly',
+        pendingInterval: subscription?.pendingBillingInterval ?? null,
         status: statusOf(plan, subscription, now),
         pendingPlan: subscription?.pendingPlan ?? null,
         period,
@@ -149,6 +169,7 @@ export class BillingService {
             status: charge.status as BillingOverviewResponse['charges'][number]['status'],
             periodStart: charge.periodStart?.toISOString() ?? null,
             periodEnd: charge.periodEnd?.toISOString() ?? null,
+            interval: charge.billingInterval,
             createdAt: charge.createdAt.toISOString(),
           })),
         ),
@@ -157,11 +178,19 @@ export class BillingService {
   }
 
   /** What moving to `plan` costs today, and when it takes effect. */
-  async quote(businessId: string, to: string, now = new Date()): Promise<BillingQuoteResponse> {
+  async quote(
+    businessId: string,
+    to: string,
+    now = new Date(),
+    requested: BillingInterval = 'monthly',
+  ): Promise<BillingQuoteResponse> {
     return withBusiness(this.db, businessId, async (tx) => {
       const from = await usageRepo.planFor(tx, businessId, now);
       const subscription = await subscriptionsRepo.subscriptionFor(tx, businessId);
+      const interval = intervalFor(from, subscription, requested);
+      if (from === 'trial' || from === 'expired') this.refuseUnofferedAnnual(interval);
       const charge = planChangeCharge({
+        interval,
         from,
         to,
         /* A merchant with no cycle is a first purchase, and the two dates are
@@ -170,7 +199,14 @@ export class BillingService {
         cycleStart: subscription?.cycleStartedAt ?? now,
         renewsAt: subscription?.planExpiresAt ?? addMonth(now),
         now,
-        pricesK: await this.changePricesK(tx, businessId, from, to, now),
+        pricesK: await this.changePricesK(
+          tx,
+          businessId,
+          from,
+          to,
+          now,
+          pricingIntervalFor(from, interval),
+        ),
       });
       const supportReview = charge.kind === 'upgrade' && isCustomCycle(subscription);
       return {
@@ -181,6 +217,7 @@ export class BillingService {
         effectiveFrom: charge.effectiveFrom,
         renewsAt: charge.renewsAt.toISOString(),
         supportReview,
+        interval,
       };
     });
   }
@@ -232,6 +269,7 @@ export class BillingService {
     businessId: string,
     to: string,
     now = new Date(),
+    requested: BillingInterval = 'monthly',
   ): Promise<BillingPlanChangeResponse> {
     return withBusiness(this.db, businessId, async (tx) => {
       /* G-104: lock the business row BEFORE reading the plan this charge is
@@ -241,13 +279,24 @@ export class BillingService {
       const from = await usageRepo.planFor(tx, businessId, now);
       const subscription = await subscriptionsRepo.subscriptionFor(tx, businessId);
       const renewsAt = subscription?.planExpiresAt ?? addMonth(now);
+      /* A first purchase chooses its interval; anything else keeps the cycle's. */
+      const interval = intervalFor(from, subscription, requested);
+      if (from === 'trial' || from === 'expired') this.refuseUnofferedAnnual(interval);
       const charge = planChangeCharge({
+        interval,
         from,
         to,
         cycleStart: subscription?.cycleStartedAt ?? now,
         renewsAt,
         now,
-        pricesK: await this.changePricesK(tx, businessId, from, to, now),
+        pricesK: await this.changePricesK(
+          tx,
+          businessId,
+          from,
+          to,
+          now,
+          pricingIntervalFor(from, interval),
+        ),
       });
 
       if (charge.kind === 'downgrade' || charge.kind === 'same') {
@@ -333,6 +382,7 @@ export class BillingService {
           kind: 'first_purchase',
           periodStart,
           plan: to,
+          billingInterval: interval,
         });
       }
       const reference = subscriptionReference(now, randomBytes);
@@ -344,13 +394,14 @@ export class BillingService {
         reference,
         periodStart,
         periodEnd: charge.renewsAt,
+        billingInterval: interval,
       });
       if (!opened) {
         const pending = await subscriptionsRepo.pendingCharge(
           tx,
           businessId,
           charge.kind === 'first_purchase'
-            ? { kind: 'first_purchase', periodStart, plan: to }
+            ? { kind: 'first_purchase', periodStart, plan: to, billingInterval: interval }
             : { kind: 'upgrade', plan: to },
         );
         if (pending) {
@@ -368,6 +419,51 @@ export class BillingService {
         reference,
         amountK: charge.amountK,
         plan: to,
+      };
+    });
+  }
+
+  /**
+   * Switch between monthly and annual billing (OWN-40, G-110).
+   *
+   * Always at the next renewal: a month or a year already paid for is kept whole,
+   * and nothing is credited, refunded or prorated, because the owner authorised none.
+   * Choosing the interval already in force undoes a switch that was waiting. A trial or
+   * lapsed plan has no cycle to switch; the interval is chosen when buying.
+   */
+  async switchInterval(
+    businessId: string,
+    interval: BillingInterval,
+    now = new Date(),
+  ): Promise<BillingIntervalResponse> {
+    return withBusiness(this.db, businessId, async (tx) => {
+      await subscriptionsRepo.lockBusiness(tx, businessId);
+      const plan = await usageRepo.planFor(tx, businessId, now);
+      const subscription = await subscriptionsRepo.subscriptionFor(tx, businessId);
+      if (plan === 'trial' || plan === 'expired' || !subscription?.planExpiresAt) {
+        return { state: 'unavailable' as const, reason: 'no_cycle' as const };
+      }
+      if (interval === subscription.billingInterval) {
+        if (subscription.pendingBillingInterval === null) {
+          return { state: 'unchanged' as const, interval };
+        }
+        await subscriptionsRepo.scheduleIntervalChange(tx, businessId, null);
+        return { state: 'undone' as const, interval };
+      }
+      if (subscription.pendingBillingInterval === interval) {
+        return {
+          state: 'scheduled' as const,
+          interval,
+          effectiveAt: subscription.planExpiresAt.toISOString(),
+        };
+      }
+      /* Only a NEW move to a year needs the sale switched on; undoing a switch away from one never does. */
+      this.refuseUnofferedAnnual(interval);
+      await subscriptionsRepo.scheduleIntervalChange(tx, businessId, interval);
+      return {
+        state: 'scheduled' as const,
+        interval,
+        effectiveAt: subscription.planExpiresAt.toISOString(),
       };
     });
   }
@@ -556,17 +652,37 @@ export async function applySettledCharge(
           ? (subscription?.planExpiresAt ?? input.when)
           : input.when;
 
+    /* The interval is fixed when the charge is OPENED (G-110): a first purchase or a
+     * renewal buys exactly the cycle it was priced for, whatever has been scheduled
+     * since. An upgrade keeps the cycle it lands in. */
+    const interval =
+      charge.kind === 'upgrade'
+        ? (subscription?.billingInterval ?? 'monthly')
+        : charge.billingInterval;
     const renewsAt =
       charge.kind === 'upgrade'
-        ? (subscription?.planExpiresAt ?? addMonth(input.when, anchorDay))
-        : addMonth(cycleStartedAt, anchorDay);
+        ? (subscription?.planExpiresAt ?? addInterval(input.when, interval, anchorDay))
+        : addInterval(cycleStartedAt, interval, anchorDay);
 
+    const chosen =
+      subscription?.pendingBillingInterval ?? subscription?.billingInterval ?? 'monthly';
     await subscriptionsRepo.applyCycle(tx, input.businessId, {
       plan: charge.plan,
       cycleStartedAt,
       renewsAt,
       anchorDay,
       pendingPlan: null,
+      billingInterval: interval,
+      /* An upgrade keeps the cycle it lands in, so a switch waiting for renewal waits on.
+       * A renewal that buys the interval the merchant chose consumes the choice; one that
+       * buys another (a link sent before they chose, paid after) leaves the chosen interval
+       * waiting. The choice is the pending switch, or, when the merchant undid a switch,
+       * the interval the cycle was already on. */
+      ...(charge.kind === 'upgrade'
+        ? { keepPendingInterval: true }
+        : charge.kind === 'renewal'
+          ? { nextInterval: chosen === charge.billingInterval ? null : chosen }
+          : {}),
     });
   }
   return 'applied';
@@ -622,4 +738,28 @@ function isCustomCycle(
 ): boolean {
   if (!subscription) return false;
   return upgradeProrationEligibility(subscription) === 'support_review';
+}
+
+/**
+ * The interval a plan change is priced and recorded on (G-110). Only a first purchase
+ * (no live paid cycle) chooses; a subscriber's change keeps the cycle's own interval,
+ * and switching interval is its own scheduled action.
+ */
+function intervalFor(
+  from: string,
+  subscription: { billingInterval: BillingInterval } | null,
+  requested: BillingInterval,
+): BillingInterval {
+  if (from === 'trial' || from === 'expired' || !subscription) return requested;
+  return subscription.billingInterval;
+}
+
+/**
+ * The interval a plan change is COMPARED at. Only a first purchase is priced on the
+ * interval it chose; every other change compares the two plans' monthly prices, so a
+ * downgrade from an annual cycle is not mistaken for an upgrade by comparing a year's
+ * price with a month's (G-110).
+ */
+function pricingIntervalFor(from: string, interval: BillingInterval): BillingInterval {
+  return from === 'trial' || from === 'expired' ? interval : 'monthly';
 }
