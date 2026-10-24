@@ -114,10 +114,21 @@ export const STEPS = [
 const SCRIPT_FORBIDDEN = [
   [/\bdown\b.*(\s-v\b|--volumes)/, 'deletes the database and the certificates (`down -v`)'],
   [
-    /\b(image|system|builder|volume|container) prune\b|\bdocker rmi\b|\bimage rm\b/,
-    'removes images, and with them the rollback',
+    /\b(system|volume|container|network) prune\b|--volumes\b|\bdocker (volume|rmi)\b/,
+    'removes volumes (the database) or whole classes of Docker objects',
+  ],
+  [/\bimage prune\b.*(\s-\w*a\w*\b|--all)/, 'removes tagged images, and with them the rollback'],
+  [/\bdocker image rm\b.*(\s-\w*f\w*\b|--force)/, 'force-removes an image a container may use'],
+  [
+    /\bimage rm\b/,
+    'removes images outside prune_releases, whose keep list protects the running release and its rollback',
+    (line, index, all) => isGuardedImageRemoval(line, index, all),
   ],
   [/\bgit pull\b/, 'deploys whatever main is now, not the commit CI passed'],
+  [
+    /\bcheckout\b.*(\s-\w*f\w*\b|--force)|\bgit restore\b/,
+    'forces files over the checkout instead of refusing',
+  ],
   [/\breset --hard\b|\bgit clean\b|\bstash\b/, 'discards changes on the host instead of refusing'],
   [/--no-deps|--scale\b/, 'can start Caddy past the edge check (G-74)'],
   [/\bset -x\b|\bxtrace\b/, 'echoes every command, and so anything it expands'],
@@ -127,6 +138,29 @@ const SCRIPT_FORBIDDEN = [
     'hands the dc shell function to an external command, which cannot run it (exit 127)',
   ],
 ];
+
+/**
+ * The one allowed `docker image rm`: it must sit after the staging-tag, kept-tag
+ * and kept-image-ID guards of its own loop, so no tag is removed before they run.
+ */
+function isGuardedImageRemoval(line, index, all) {
+  if (!/^docker image rm "\$image" >\/dev\/null 2>&1 \|\| true$/.test(line.trim())) return false;
+  const trimmed = all.map((value) => value.trim());
+  const loop = trimmed.lastIndexOf('while read -r image id; do', index);
+  if (loop < 0) return false;
+  const body = trimmed.slice(loop + 1, index);
+  // A `done` before the removal means it is outside the guarded loop.
+  if (body.some((l) => /^done\b/.test(l))) return false;
+  return (
+    body.some((l) =>
+      /^\[\[ "\$image" =~ \^rekoda-\(app\|web\):\(staging-\[0-9a-f\]\{7\}\)\$ \]\] \|\| continue$/.test(
+        l,
+      ),
+    ) &&
+    body.includes('if in_list "$tag" "$keep"; then continue; fi') &&
+    body.includes('if [ -n "$id" ] && in_list "$id" "$keep_ids"; then continue; fi')
+  );
+}
 
 const codeLines = (text) =>
   text
@@ -360,7 +394,7 @@ const INTERRUPT_REQUIRES = [
   [/^trap 'exit 143' TERM$/, 'exits on SIGTERM so its EXIT trap runs'],
   [/^STATE=\.git\/rekoda-deploy-staging\.state$/, 'keeps its interruption marker in .git'],
   [/^recover_interrupted$/, 'reconciles a marker left by a killed run'],
-  [/^\s*mv -f "\$STATE\.tmp" "\$STATE"$/, 'writes its marker by atomic rename'],
+  [/^\s*mv -f "\$STATE\.tmp" "\$STATE"( \|\|)?$/, 'writes its marker by atomic rename'],
 ];
 
 function interruptProblems(lines) {
@@ -392,6 +426,77 @@ function interruptProblems(lines) {
   if (recover >= 0 && (recover < prev || (baseline >= 0 && recover > baseline))) {
     problems.push(
       `${FILES.script} must reconcile an interrupted run after it knows PREV_SHA and before it judges the rollback baseline`,
+    );
+  }
+  return problems;
+}
+
+/**
+ * Disk and image retention. The only image removal is prune_releases, and it
+ * must keep the release .env names, this run's baseline and target, an
+ * unfinished marker's releases and every container's image, remove only
+ * staging-<sha> tags of our two images, and run only once the new release is
+ * proven (after PHASE=done) or when the disk is under its floor. The deploy
+ * refuses a host without free space before it touches the checkout, and
+ * proves each tracked file whole after a checkout.
+ */
+const RETENTION_REQUIRES = [
+  [/^MIN_FREE_KB=\d+$/, 'holds a free-space floor (MIN_FREE_KB)'],
+  [
+    /-gt "\$MIN_FREE_KB" \]; then$/,
+    'lets a host raise the floor only, never lower it (REKODA_DEPLOY_MIN_FREE_KB)',
+  ],
+  [
+    /^\s*docker inspect --format '\{\{\.Image\}\}' \$ids$/,
+    'keeps every image ID a container was created from',
+  ],
+  [/^\s*if in_list "\$tag" "\$keep"; then continue; fi$/, 'skips every release in the keep list'],
+  [
+    /\[\[ "\$image" =~ \^rekoda-\(app\|web\):\(staging-\[0-9a-f\]\{7\}\)\$ \]\] \|\| continue/,
+    'removes only rekoda-app/rekoda-web staging-<sha> tags',
+  ],
+  [/^\s*printf '%s\\n' "\$PREV_RELEASE" "\$RELEASE"$/, "keeps this run's baseline and target"],
+  [/^\s*for key in prev_release release; do$/, "keeps an unfinished marker's releases"],
+  [/docker ps -a --format '\{\{\.Image\}\}'/, 'keeps every image a container uses'],
+  [
+    /^\s*\[ "\$\(git rev-parse HEAD\)" = "\$1" \] && git diff --quiet "\$1" --/,
+    'proves tracked files whole after a checkout (verify_checkout)',
+  ],
+  [/^verify_checkout "\$SHA" \|\| fail /, 'verifies the checkout of the target'],
+];
+
+function retentionProblems(lines) {
+  const problems = [];
+  for (const [pattern, what] of RETENTION_REQUIRES) {
+    if (!lines.some((line) => pattern.test(line))) {
+      problems.push(`${FILES.script} no longer ${what} (disk and image retention)`);
+    }
+  }
+  const at = (text) => lines.indexOf(text);
+  const lowCheck = lines.findIndex((line) => /^step 'disk space'$/.test(line));
+  const prepared = at('PHASE=prepared');
+  const baseline = lines.findIndex((line) => BASELINE_CALL.test(line));
+  // The baseline is proven only once the .status/.database/.release/.commit
+  // validation that follows the curl has run: it ends in this refusal.
+  const baselineEnd = lines.findIndex((line) => /^\s*fail "\$API_URL\/health reports /.test(line));
+  if (
+    lowCheck < 0 ||
+    baseline < 0 ||
+    baselineEnd < baseline ||
+    lowCheck < baselineEnd ||
+    prepared < 0 ||
+    lowCheck > prepared
+  ) {
+    problems.push(
+      `${FILES.script} must check free disk space after the running release is proven and before the checkout changes`,
+    );
+  }
+  const done = at('PHASE=done');
+  const routine = at('prune_releases routine');
+  const rmState = lines.findIndex((line) => line === 'rm -f "$STATE"');
+  if (routine < 0 || done < 0 || routine < done || rmState < 0 || routine < rmState) {
+    problems.push(
+      `${FILES.script} must prune old releases only after the new release is proven and the marker is cleared`,
     );
   }
   return problems;
@@ -444,9 +549,10 @@ export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
   if (!script.startsWith('#!/usr/bin/env bash\n') || firstCode !== 'set -Eeuo pipefail') {
     problems.push(`${FILES.script} must start with a bash shebang and then \`set -Eeuo pipefail\``);
   }
-  for (const line of lines) {
-    for (const [pattern, why] of SCRIPT_FORBIDDEN) {
-      if (pattern.test(line)) problems.push(`${FILES.script}: \`${line.trim()}\` ${why}`);
+  for (const [index, line] of lines.entries()) {
+    for (const [pattern, why, exempt] of SCRIPT_FORBIDDEN) {
+      if (pattern.test(line) && !exempt?.(line, index, lines))
+        problems.push(`${FILES.script}: \`${line.trim()}\` ${why}`);
     }
     if (/\bdocker compose\b/.test(line)) {
       const allowed =
@@ -508,6 +614,7 @@ export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
   problems.push(...schemaProblems(lines));
   problems.push(...newerOnlyProblems(lines));
   problems.push(...interruptProblems(lines));
+  problems.push(...retentionProblems(lines));
 
   /* ---- The workflow. ---- */
   let wf;
