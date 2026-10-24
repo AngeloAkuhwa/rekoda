@@ -314,6 +314,32 @@ runs against the newer schema. A migration that must itself be reverted is a
 restore from backup, and **there is no backup mechanism yet** (G-02 in
 `docs/REKODA_LAUNCH_READINESS.md`; `backup-restore.md` describes the plan).
 
+## Disk space and image retention (staging)
+
+`scripts/deploy-staging.sh` guards the host's disk, because a full disk once
+stopped a checkout part-way and left tracked files empty.
+
+- **Floor.** Before it reads the checkout, the script needs `MIN_FREE_KB`
+  (8 GiB) free on `/opt/rekoda` and on Docker's root. Below that it removes
+  superseded staging images once (below), then refuses with the free figure if
+  it is still short. Nothing live has changed at that point.
+- **What cleanup may remove:** `rekoda-app:staging-<sha>` and
+  `rekoda-web:staging-<sha>` tags, dangling images, and build cache. It keeps
+  the release `.env` names, the run's baseline and target, **both releases of an
+  unfinished `.git/rekoda-deploy-staging.state` marker**, and every image a
+  container (running or stopped) uses; an unreadable marker, or Docker unable to
+  say what is in use, removes nothing. After a successful deploy only the
+  running release and the one it replaced (proven healthy at the start of the
+  run) remain, so rollback stays a no-build change. Production tags (`v*`),
+  `postgres`, `caddy`, volumes and containers are never touched; the script has
+  no `volume`, `system prune` or `down -v`, and CI fails a change that adds one.
+- **Whole files.** After the checkout the script proves every tracked file equals
+  the commit; a mismatch (empty or cut short) fails the run, which restores the
+  baseline with a forced checkout and the same proof, after making room. A host
+  that already holds empty tracked files is refused and the files are named; the
+  script never discards them. Restore by hand once space is free:
+  `git checkout -- <the named files>`, then re-run.
+
 ## An interrupted staging deploy
 
 `scripts/deploy-staging.sh` changes the checkout and the `REKODA_RELEASE` line
@@ -511,7 +537,8 @@ back" says), check out the commit
 `dc run --rm -T migrate`, `dc up -d --wait --wait-timeout 300`, reload the
 Caddyfile, confirm the edge network, and require
 `https://staging-api.myrekoda.com/health` to answer `status` ok, `database`
-up, and this release and commit. It ends with `dc ps`. The workflow then asks
+up, and this release and commit. It ends with `dc ps`, then removes
+superseded staging images (see "Disk space and image retention"). The workflow then asks
 `/health` the same question from outside, through Cloudflare. CI
 (`scripts/check-staging-deploy.mjs`) fails a pull request that changes a
 command in "Deploy a release" without changing the script to match, or that

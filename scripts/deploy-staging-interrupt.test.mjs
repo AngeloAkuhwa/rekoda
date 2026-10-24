@@ -79,11 +79,33 @@ function host({ buildSeconds = 0 } = {}) {
     chmodSync(join(fake, name), 0o755);
   };
   bin('curl', `cat "${fake}/health.json"`);
+  // Free space is whatever the test says; a removal or cache prune may free more.
+  writeFileSync(join(fake, 'free-kb'), '20000000');
+  bin(
+    'df',
+    `printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\nfake 1 1 %s 1%% /\\n' "$(cat "${fake}/free-kb")"`,
+  );
+  const real = sh(root, 'command -v git');
+  // A full disk can cut a file short while git still reports success: after the
+  // checkout of the next commit, empty one tracked file when asked to.
+  bin(
+    'git',
+    `"${real}" "$@"; rc=$?
+if [ -e "${fake}/truncate-on-checkout" ] && [[ "$*" == *"--detach ${next}"* ]]; then : > docker-compose.prod.yml; fi
+exit $rc`,
+  );
   // `docker compose ... up` makes the next release the running one.
   bin(
     'docker',
-    `case "$*" in
-  *build*) [ -e "${fake}/fail-build" ] && exit 1; sleep ${buildSeconds} ;;
+    `echo "$*" >> "${fake}/docker.log"
+freed() { [ -e "${fake}/free-kb-after-prune" ] && cp "${fake}/free-kb-after-prune" "${fake}/free-kb"; return 0; }
+case "$*" in
+  *"info --format"*) echo "${fake}" ;;
+  *"image ls"*) cat "${fake}/images" 2>/dev/null ;;
+  *"image rm"*) echo "$3" >> "${fake}/removed"; freed ;;
+  *"image prune"*|*"builder prune"*) freed ;;
+  *"ps -a --format"*) cat "${fake}/containers" 2>/dev/null ;;
+  *build*) if [ -e "${fake}/fail-build" ]; then echo 1000 > "${fake}/free-kb"; echo 'no space left on device' >&2; exit 1; fi; sleep ${buildSeconds} ;;
   *" up "*) cp "${fake}/next-health.json" "${fake}/health.json" ;;
   *network\\ inspect*) echo '172.30.10.1 false' ;;
 esac
@@ -100,6 +122,12 @@ exit 0`,
     release: () => sh(dir, "sed -n 's/^REKODA_RELEASE=//p' .env"),
     marker: () => existsSync(join(dir, '.git/rekoda-deploy-staging.state')),
   };
+  const images = (...list) => writeFileSync(join(fake, 'images'), list.join('\n') + '\n');
+  const removed = () =>
+    existsSync(join(fake, 'removed'))
+      ? readFileSync(join(fake, 'removed'), 'utf8').split('\n').filter(Boolean)
+      : [];
+  const dockerCalls = () => readFileSync(join(fake, 'docker.log'), 'utf8');
   const run = (...args) =>
     spawnSync('bash', [script, ...args], {
       cwd: dir,
@@ -115,7 +143,21 @@ exit 0`,
       `phase=${phase}\nprev_sha=${prev}\nprev_release=staging-${prev.slice(0, 7)}\nsha=${next}\nrelease=staging-${next.slice(0, 7)}\n`,
     );
   };
-  return { dir, fake, script, env, prev, next, third, read, run, killedWhilePrepared };
+  return {
+    dir,
+    fake,
+    script,
+    env,
+    prev,
+    next,
+    third,
+    read,
+    run,
+    killedWhilePrepared,
+    images,
+    removed,
+    dockerCalls,
+  };
 }
 
 test('a deploy runs end to end and leaves no marker', () => {
@@ -263,4 +305,163 @@ test('a second deployment is refused while one holds the lock', () => {
   );
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /another staging deployment is running/);
+});
+
+/* ---- disk exhaustion, image retention and safe recovery ---- */
+
+const app = (sha) => `rekoda-app:staging-${sha.slice(0, 7)}`;
+const web = (sha) => `rekoda-web:staging-${sha.slice(0, 7)}`;
+const OLD = [
+  'rekoda-app:staging-0ld0ld0'.replace('0ld0ld0', 'aaaaaaa'),
+  'rekoda-web:staging-aaaaaaa',
+];
+const NOT_OURS = [
+  'postgres:16-alpine',
+  'caddy:2.11.4-alpine',
+  'rekoda-app:v1.0.0',
+  'rekoda-app:latest',
+];
+
+test('after a deploy, only older staging images go: the running release and its rollback stay', () => {
+  const h = host();
+  h.images(app(h.next), web(h.next), app(h.prev), web(h.prev), ...OLD, ...NOT_OURS);
+  const r = h.run(h.next);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.deepEqual(h.removed().sort(), [...OLD].sort());
+});
+
+test('an image a container still uses is kept even when no release names it', () => {
+  const h = host();
+  h.images(app(h.next), app(h.prev), ...OLD);
+  writeFileSync(join(h.fake, 'containers'), 'rekoda-app:staging-aaaaaaa\n');
+  const r = h.run(h.next);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  // A release is kept whole: its web image goes with its app image.
+  assert.deepEqual(h.removed(), []);
+});
+
+test('cleanup never touches a volume, a container or the database', () => {
+  const h = host();
+  h.images(app(h.prev), ...OLD);
+  writeFileSync(join(h.fake, 'free-kb'), '1000');
+  writeFileSync(join(h.fake, 'free-kb-after-prune'), '20000000');
+  const r = h.run(h.next);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const calls = h.dockerCalls();
+  assert.doesNotMatch(
+    calls,
+    /volume|system prune|container prune|\bdown\b|rmi|--volumes|image prune -a|image rm -f/,
+  );
+  assert.match(calls, /builder prune/);
+});
+
+test('a host below the free-space floor is cleaned, then deploys if that was enough', () => {
+  const h = host();
+  h.images(app(h.prev), ...OLD);
+  writeFileSync(join(h.fake, 'free-kb'), '1000');
+  writeFileSync(join(h.fake, 'free-kb-after-prune'), '20000000');
+  const r = h.run(h.next);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stdout, /only 1000 KiB free/);
+  assert.ok(h.removed().includes('rekoda-app:staging-aaaaaaa'));
+  assert.ok(!h.removed().includes(app(h.prev)), 'the running release is never removed');
+});
+
+test('a host that cleanup cannot free is refused before anything changes', () => {
+  const h = host();
+  h.images(app(h.prev), ...OLD);
+  writeFileSync(join(h.fake, 'free-kb'), '1000');
+  const r = h.run(h.next);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /free space by hand first/);
+  assert.match(r.stderr, /No volume or database file is ever removed/);
+  assert.equal(h.read.head(), h.prev);
+  assert.equal(h.read.release(), `staging-${h.prev.slice(0, 7)}`);
+  assert.equal(h.read.marker(), false);
+  assert.ok(!existsSync(join(h.fake, 'built')));
+  assert.doesNotMatch(h.dockerCalls(), /compose.* (build|up|run)/);
+});
+
+test('cleanup under pressure keeps the releases an unfinished marker names', () => {
+  const h = host();
+  h.killedWhilePrepared('live');
+  writeFileSync(join(h.fake, 'health.json'), readFileSync(join(h.fake, 'next-health.json')));
+  h.images(app(h.prev), web(h.prev), app(h.next), web(h.next), ...OLD);
+  writeFileSync(join(h.fake, 'free-kb'), '1000');
+  writeFileSync(join(h.fake, 'free-kb-after-prune'), '20000000');
+  // Refused after the cleanup (a live marker is not skipped past), so no routine
+  // cleanup follows and the marker still stands.
+  const r = h.run('--newer-only', h.prev);
+  assert.equal(r.status, 1, r.stderr + r.stdout);
+  assert.equal(h.read.marker(), true);
+  assert.deepEqual(h.removed().sort(), [...OLD].sort());
+});
+
+test('an unreadable marker stops all cleanup', () => {
+  const h = host();
+  writeFileSync(join(h.dir, '.git/rekoda-deploy-staging.state'), 'phase=live\nrelease=;rm -rf\n');
+  h.images(app(h.prev), ...OLD);
+  writeFileSync(join(h.fake, 'free-kb'), '1000');
+  const r = h.run(h.next);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /image cleanup skipped/);
+  assert.deepEqual(h.removed(), []);
+});
+
+test('tracked files left empty by a full disk are named and the run refuses', () => {
+  const h = host();
+  writeFileSync(join(h.dir, 'docker-compose.prod.yml'), '');
+  const r = h.run(h.next);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /empty here but not in the commit.*docker-compose\.prod\.yml/);
+  assert.match(r.stderr, /tracked local modifications/);
+  assert.equal(
+    readFileSync(join(h.dir, 'docker-compose.prod.yml'), 'utf8'),
+    '',
+    'refuses, never discards',
+  );
+});
+
+test('a checkout that git reports done but left a file empty is undone', () => {
+  const h = host();
+  writeFileSync(join(h.fake, 'truncate-on-checkout'), '');
+  const r = h.run(h.next);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /empty or cut short/);
+  assert.equal(h.read.head(), h.prev);
+  assert.equal(h.read.release(), `staging-${h.prev.slice(0, 7)}`);
+  assert.equal(h.read.marker(), false);
+  assert.match(readFileSync(join(h.dir, 'docker-compose.prod.yml'), 'utf8'), /# 1/);
+});
+
+test('a build that runs out of space restores the baseline and frees room first', () => {
+  const h = host();
+  h.images(app(h.prev), ...OLD);
+  writeFileSync(join(h.fake, 'fail-build'), '');
+  writeFileSync(join(h.fake, 'free-kb-after-prune'), '20000000');
+  const r = h.run(h.next);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /STAGING DEPLOY FAILED before anything live changed/);
+  assert.equal(h.read.head(), h.prev);
+  assert.equal(h.read.release(), `staging-${h.prev.slice(0, 7)}`);
+  assert.equal(h.read.marker(), false);
+  assert.ok(h.removed().includes('rekoda-app:staging-aaaaaaa'), 'room is made for the restore');
+  assert.ok(!h.removed().includes(app(h.prev)));
+});
+
+test('a cancelled build on a full disk still restores the baseline', async () => {
+  const h = host({ buildSeconds: 3 });
+  const child = spawn('bash', [h.script, h.next], {
+    cwd: h.dir,
+    env: { ...process.env, ...h.env },
+  });
+  for (let i = 0; i < 100 && !(h.read.marker() && h.read.head() === h.next); i++) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  writeFileSync(join(h.fake, 'free-kb'), '1000');
+  child.kill('SIGTERM');
+  await new Promise((r) => child.on('close', r));
+  assert.equal(h.read.head(), h.prev);
+  assert.equal(h.read.release(), `staging-${h.prev.slice(0, 7)}`);
+  assert.equal(h.read.marker(), false);
 });

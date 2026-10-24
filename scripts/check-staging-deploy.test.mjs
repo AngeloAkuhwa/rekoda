@@ -234,7 +234,7 @@ test('git pull instead of the commit', () => {
 
 test('pruning the previous images', () => {
   const edit = edited('script', '\ndc ps\n', '\ndocker image prune -af\ndc ps\n');
-  expectProblem(problems(edit), /removes images, and with them the rollback/);
+  expectProblem(problems(edit), /removes tagged images, and with them the rollback/);
 });
 
 test('a second compose file', () => {
@@ -644,4 +644,65 @@ test('CI cancelling its own run on main', () => {
 test('CI sharing one concurrency group across refs', () => {
   const edit = edited('ci', 'group: ci-${{ github.ref }}', 'group: ci');
   expectProblem(problems(edit), /per-ref group/);
+});
+
+/* ---- disk space and image retention ---- */
+
+test('a volume prune added to the script', () => {
+  const edit = edited(
+    'script',
+    '  return 0\n}\n\n# A full disk',
+    '  docker volume prune -f\n  return 0\n}\n\n# A full disk',
+  );
+  expectProblem(problems(edit), /removes volumes/);
+});
+
+test('a force-removal of an image', () => {
+  const edit = edited(
+    'script',
+    'docker image rm "$image" >/dev/null',
+    'docker image rm -f "$image" >/dev/null',
+  );
+  expectProblem(problems(edit), /force-removes an image/);
+});
+
+test('an unrelated image removal outside the keep list', () => {
+  const edit = edited(
+    'script',
+    'docker image prune -f >/dev/null',
+    'docker image prune -af >/dev/null',
+  );
+  expectProblem(problems(edit), /removes tagged images/);
+});
+
+test('the keep list ignored', () => {
+  const edit = edited('script', 'if grep -Fxq -- "$tag" <<<"$keep"; then continue; fi', ':');
+  expectProblem(problems(edit), /skips every release in the keep list/);
+});
+
+test("an unfinished marker's releases no longer kept", () => {
+  const edit = edited(
+    'script',
+    '    for key in prev_release release; do',
+    '    for key in nothing; do',
+  );
+  expectProblem(problems(edit), /unfinished marker's releases/);
+});
+
+test('cleanup before the new release is proven', () => {
+  const moved = edited('script', 'prune_releases routine\n', '').script.replace(
+    "\nstep 'running containers'\n",
+    () => "\nprune_releases routine\nstep 'running containers'\n",
+  );
+  expectProblem(problems({ script: moved }), /only after the new release is proven/);
+});
+
+test('no free-space preflight', () => {
+  const edit = edited('script', "step 'disk space'\n", '');
+  expectProblem(problems(edit), /free disk space before it reads the checkout/);
+});
+
+test('no proof that the checkout is whole', () => {
+  const edit = edited('script', 'verify_checkout "$SHA" || fail ', 'true || fail ');
+  expectProblem(problems(edit), /verifies the checkout of the target/);
 });

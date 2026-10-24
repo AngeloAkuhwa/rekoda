@@ -31,10 +31,15 @@
 #     migrations than the database has applied;
 #   - a second deployment while one is running.
 #
-# It never runs `down -v`, never prunes an image and never touches secrets/:
-# the only change to .env is its REKODA_RELEASE line. The previous release's
-# images stay on the host, which is what makes a rollback a no-build change
-# (see "Roll back" in the runbook).
+# It never runs `down -v`, never touches a volume (the database lives in one)
+# and never touches secrets/: the only change to .env is its REKODA_RELEASE
+# line. It frees disk only through prune_releases, which removes nothing but
+# older rekoda-app/rekoda-web staging-<sha> tags that are not the release
+# .env names, this run's baseline and target, a release an unfinished marker
+# names, or an image any container uses; the previous release's images stay
+# on the host, which is what makes a rollback a no-build change (see "Roll
+# back" in the runbook). A host with less than MIN_FREE_KB free on the
+# checkout or on Docker's root is cleaned that way once, then refused.
 #
 # CI keeps this file and the runbook in step: scripts/check-staging-deploy.mjs.
 set -Eeuo pipefail
@@ -88,12 +93,90 @@ write_state() {
 }
 state_value() { sed -n "s/^$1=//p" "$STATE"; }
 
+# Free space (KiB) the checkout and Docker's root must each have before a build
+# starts: the images, the build cache and the checkout itself all grow on them.
+MIN_FREE_KB=8388608
+LOW_PATH=
+LOW_KB=
+# Succeeds, naming the path, when a filesystem the deploy writes to is short of
+# space. An unreadable figure counts as short: never build on a guess.
+disk_low() {
+  local root path kb
+  root=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)
+  for path in "$REKODA_DIR" "${root:-/var/lib/docker}"; do
+    [ -d "$path" ] || continue
+    kb=$(df -Pk "$path" 2>/dev/null | awk 'NR==2 { print $4 }')
+    if ! [[ "$kb" =~ ^[0-9]+$ ]] || [ "$kb" -lt "$MIN_FREE_KB" ]; then
+      LOW_PATH=$path
+      LOW_KB=${kb:-unknown}
+      return 0
+    fi
+  done
+  return 1
+}
+
+# The releases whose images must survive any cleanup, one per line: the one
+# .env names, this run's baseline and target, both releases of an unfinished
+# marker, and every release a container (running or stopped) uses. Fails when
+# the marker cannot be read or Docker cannot say what is in use, and then
+# nothing is removed.
+keep_releases() {
+  local key r
+  printf '%s\n' "$PREV_RELEASE" "$RELEASE"
+  sed -n 's/^REKODA_RELEASE=//p' .env
+  if [ -f "$STATE" ]; then
+    for key in prev_release release; do
+      r=$(state_value "$key")
+      [[ "$r" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+      printf '%s\n' "$r"
+    done
+  fi
+  docker ps -a --format '{{.Image}}' | sed -n 's/^rekoda-\(app\|web\):\(.*\)$/\2/p'
+}
+
+# Frees image and build-cache space without touching a volume, a container, a
+# production tag or a third-party image. Never fails the deploy.
+#   $1  routine  (after a deploy) keeps recent build cache
+#       urgent   (disk below the floor) drops all build cache
+prune_releases() {
+  local keep images image tag
+  keep=$(keep_releases) || {
+    printf 'image cleanup skipped: the releases to keep could not be established\n' >&2
+    return 0
+  }
+  images=$(docker image ls --format '{{.Repository}}:{{.Tag}}') || return 0
+  while IFS= read -r image; do
+    [[ "$image" =~ ^rekoda-(app|web):(staging-[0-9a-f]{7})$ ]] || continue
+    tag=${BASH_REMATCH[2]}
+    if grep -Fxq -- "$tag" <<<"$keep"; then continue; fi
+    printf 'removing the old image %s\n' "$image"
+    docker image rm "$image" >/dev/null 2>&1 || true
+  done <<<"$images"
+  docker image prune -f >/dev/null 2>&1 || true
+  if [ "$1" = urgent ]; then
+    docker builder prune -f >/dev/null 2>&1 || true
+  else
+    docker builder prune -f --filter until=48h >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
+# A full disk can leave a checkout that git believes it wrote: files cut short
+# or empty. Succeeds only when every tracked file is byte-for-byte the commit's.
+verify_checkout() {
+  [ "$(git rev-parse HEAD)" = "$1" ] && git diff --quiet "$1" -- && [ -z "$(git ls-files --deleted)" ]
+}
+
 restore_prepared() {
   # Nothing live changed, so put the checkout and REKODA_RELEASE back to what
   # the running containers are, leaving the host exactly as it was. The marker
   # goes only once both are back; a failed restore keeps it.
   printf 'restoring the checkout to %s and REKODA_RELEASE to %s\n' "$PREV_SHA" "$PREV_RELEASE" >&2
-  if git -c advice.detachedHead=false checkout -q "$PREV_SHA" &&
+  # A run that failed for lack of space may have left its own half-written
+  # files; make room, then force the baseline back and prove every file whole.
+  if disk_low; then prune_releases urgent; fi
+  if git -c advice.detachedHead=false checkout -q -f "$PREV_SHA" &&
+    verify_checkout "$PREV_SHA" &&
     sed -i "s/^REKODA_RELEASE=.*/REKODA_RELEASE=${PREV_RELEASE}/" .env &&
     [ "$(git rev-parse HEAD)" = "$PREV_SHA" ] &&
     [ "$(sed -n 's/^REKODA_RELEASE=//p' .env)" = "$PREV_RELEASE" ]; then
@@ -168,8 +251,26 @@ api_public=$(sed -n 's/^REKODA_API_PUBLIC_URL=//p' .env)
 [ "$(grep -c '^REKODA_RELEASE=' .env)" = 1 ] || fail '.env must hold exactly one REKODA_RELEASE= line'
 PREV_RELEASE=$(sed -n 's/^REKODA_RELEASE=//p' .env)
 
-[ -z "$(git status --porcelain --untracked-files=no)" ] ||
+
+# Free space comes before anything is read from the checkout: a full disk is
+# what truncates tracked files, and cleanup needs only .env and Docker.
+step 'disk space'
+if disk_low; then
+  printf 'only %s KiB free on %s (floor %s KiB); removing superseded staging images\n' "$LOW_KB" "$LOW_PATH" "$MIN_FREE_KB"
+  prune_releases urgent
+  if disk_low; then
+    fail "only $LOW_KB KiB free on $LOW_PATH after removing superseded staging images (a deploy needs $MIN_FREE_KB); free space by hand first. No volume or database file is ever removed by this script"
+  fi
+fi
+
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  empty=$(git diff --name-only | while IFS= read -r f; do
+    if [ -f "$f" ] && [ ! -s "$f" ] && [ "$(git cat-file -s "HEAD:$f" 2>/dev/null || echo 0)" -gt 0 ]; then printf '%s ' "$f"; fi
+  done | head -c 400)
+  [ -z "$empty" ] ||
+    printf 'tracked files are empty here but not in the commit (what a full disk leaves): %s\n' "$empty" >&2
   fail 'the checkout has tracked local modifications; resolve them by hand first'
+fi
 # The build context is the checkout (`COPY . .`), so a file the commit does not
 # hold, ignored by git or not, would be built into staging without CI having
 # seen it. Only the host-local paths .dockerignore keeps out of every image may
@@ -297,6 +398,7 @@ PHASE=prepared
 write_state prepared
 git -c advice.detachedHead=false checkout -q --detach "$SHA"
 [ "$(git rev-parse HEAD)" = "$SHA" ] || fail 'the checkout is not at the requested commit'
+verify_checkout "$SHA" || fail 'the checkout holds tracked files that differ from the commit (empty or cut short: a full disk?)'
 sed -i "s/^REKODA_RELEASE=.*/REKODA_RELEASE=${RELEASE}/" .env
 [ "$(sed -n 's/^REKODA_RELEASE=//p' .env)" = "$RELEASE" ] || fail 'REKODA_RELEASE was not updated in .env'
 
@@ -343,5 +445,9 @@ dc ps
 rm -f "$STATE"
 PHASE=done
 printf '\nstaging is %s (%s)\n' "$RELEASE" "$SHA"
+# Only now, with the new release proven healthy and the marker gone: keep it and
+# the release it replaced (the rollback this run proved was running), drop older.
+step 'remove superseded staging images (keeping the running release and its rollback)'
+prune_releases routine
 exit 0
 }

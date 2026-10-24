@@ -114,8 +114,15 @@ export const STEPS = [
 const SCRIPT_FORBIDDEN = [
   [/\bdown\b.*(\s-v\b|--volumes)/, 'deletes the database and the certificates (`down -v`)'],
   [
-    /\b(image|system|builder|volume|container) prune\b|\bdocker rmi\b|\bimage rm\b/,
-    'removes images, and with them the rollback',
+    /\b(system|volume|container|network) prune\b|--volumes\b|\bdocker (volume|rmi)\b/,
+    'removes volumes (the database) or whole classes of Docker objects',
+  ],
+  [/\bimage prune\b.*(\s-\w*a\w*\b|--all)/, 'removes tagged images, and with them the rollback'],
+  [/\bdocker image rm\b.*(\s-\w*f\w*\b|--force)/, 'force-removes an image a container may use'],
+  [
+    /\bimage rm\b/,
+    'removes images outside prune_releases, whose keep list protects the running release and its rollback',
+    (line) => /^docker image rm "\$image" >\/dev\/null 2>&1 \|\| true$/.test(line.trim()),
   ],
   [/\bgit pull\b/, 'deploys whatever main is now, not the commit CI passed'],
   [/\breset --hard\b|\bgit clean\b|\bstash\b/, 'discards changes on the host instead of refusing'],
@@ -397,6 +404,61 @@ function interruptProblems(lines) {
   return problems;
 }
 
+/**
+ * Disk and image retention. The only image removal is prune_releases, and it
+ * must keep the release .env names, this run's baseline and target, an
+ * unfinished marker's releases and every container's image, remove only
+ * staging-<sha> tags of our two images, and run only once the new release is
+ * proven (after PHASE=done) or when the disk is under its floor. The deploy
+ * refuses a host without free space before it touches the checkout, and
+ * proves each tracked file whole after a checkout.
+ */
+const RETENTION_REQUIRES = [
+  [/^MIN_FREE_KB=\d+$/, 'holds a free-space floor (MIN_FREE_KB)'],
+  [
+    /^\s*if grep -Fxq -- "\$tag" <<<"\$keep"; then continue; fi$/,
+    'skips every release in the keep list',
+  ],
+  [
+    /\[\[ "\$image" =~ \^rekoda-\(app\|web\):\(staging-\[0-9a-f\]\{7\}\)\$ \]\] \|\| continue/,
+    'removes only rekoda-app/rekoda-web staging-<sha> tags',
+  ],
+  [/^\s*printf '%s\\n' "\$PREV_RELEASE" "\$RELEASE"$/, "keeps this run's baseline and target"],
+  [/^\s*for key in prev_release release; do$/, "keeps an unfinished marker's releases"],
+  [/docker ps -a --format '\{\{\.Image\}\}'/, 'keeps every image a container uses'],
+  [
+    /^\s*\[ "\$\(git rev-parse HEAD\)" = "\$1" \] && git diff --quiet "\$1" --/,
+    'proves tracked files whole after a checkout (verify_checkout)',
+  ],
+  [/^verify_checkout "\$SHA" \|\| fail /, 'verifies the checkout of the target'],
+];
+
+function retentionProblems(lines) {
+  const problems = [];
+  for (const [pattern, what] of RETENTION_REQUIRES) {
+    if (!lines.some((line) => pattern.test(line))) {
+      problems.push(`${FILES.script} no longer ${what} (disk and image retention)`);
+    }
+  }
+  const at = (text) => lines.indexOf(text);
+  const lowCheck = lines.findIndex((line) => /^step 'disk space'$/.test(line));
+  const dirty = lines.findIndex((line) =>
+    /^if \[ -n "\$\(git status --porcelain --untracked-files=no\)" \]; then$/.test(line),
+  );
+  if (lowCheck < 0 || (dirty >= 0 && lowCheck > dirty)) {
+    problems.push(`${FILES.script} must check free disk space before it reads the checkout`);
+  }
+  const done = at('PHASE=done');
+  const routine = at('prune_releases routine');
+  const rmState = lines.findIndex((line) => line === 'rm -f "$STATE"');
+  if (routine < 0 || done < 0 || routine < done || rmState < 0 || routine < rmState) {
+    problems.push(
+      `${FILES.script} must prune old releases only after the new release is proven and the marker is cleared`,
+    );
+  }
+  return problems;
+}
+
 export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
   const problems = [];
 
@@ -445,8 +507,9 @@ export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
     problems.push(`${FILES.script} must start with a bash shebang and then \`set -Eeuo pipefail\``);
   }
   for (const line of lines) {
-    for (const [pattern, why] of SCRIPT_FORBIDDEN) {
-      if (pattern.test(line)) problems.push(`${FILES.script}: \`${line.trim()}\` ${why}`);
+    for (const [pattern, why, exempt] of SCRIPT_FORBIDDEN) {
+      if (pattern.test(line) && !exempt?.(line))
+        problems.push(`${FILES.script}: \`${line.trim()}\` ${why}`);
     }
     if (/\bdocker compose\b/.test(line)) {
       const allowed =
@@ -508,6 +571,7 @@ export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
   problems.push(...schemaProblems(lines));
   problems.push(...newerOnlyProblems(lines));
   problems.push(...interruptProblems(lines));
+  problems.push(...retentionProblems(lines));
 
   /* ---- The workflow. ---- */
   let wf;

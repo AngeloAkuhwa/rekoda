@@ -53,7 +53,7 @@ Evidence, then the gap each item leaves.
    `gh run list`. It is serialised and never cancelled, and it runs `scripts/deploy-staging.sh` on
    the host. The script refuses an unhealthy baseline, refuses a commit that does not know staging's
    schema, migrates expand-only, and checks `/health` for the exact release and commit, from both
-   the host and Cloudflare. It never prunes images or volumes. Gaps: there is no post-deploy smoke of
+   the host and Cloudflare. It never touches volumes and removes only superseded staging images (runbook "Disk space and image retention"). Gaps: there is no post-deploy smoke of
    authentication, tenancy, the storefront or webhook rejection, and no disk-space check or
    structured deployment report (PR 4).
 7. **CodeRabbit** is installed and active. It reviews every PR to `main`, and its run shows the configuration
