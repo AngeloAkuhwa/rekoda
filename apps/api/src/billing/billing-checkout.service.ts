@@ -124,7 +124,13 @@ export class BillingCheckoutService {
       /* Retired charges keep status `pending` and gain `superseded_at` (a newer
        * plan choice or subscription decision): a payment on one is recorded but
        * never applied, so nobody is invited to pay for it, cached link or not. */
-      if (charge.supersededAt) {
+      if (
+        charge.supersededAt ||
+        /* A newer subscription decision the retirement sweep has not stamped yet:
+         * the predicate settlement applies, for plan charges only (a pack buys
+         * against whatever plan is current). */
+        (charge.plan && (await subscriptionsRepo.decidedSince(tx, businessId, reference)))
+      ) {
         return { state: 'done', response: { state: 'unavailable', reason: 'superseded' } };
       }
       if (charge.amountK <= 0) {

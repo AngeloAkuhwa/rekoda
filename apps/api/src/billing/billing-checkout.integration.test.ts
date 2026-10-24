@@ -12,7 +12,15 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { ServiceUnavailableException } from '@nestjs/common';
-import { createDb, identity, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
+import {
+  billingRepo,
+  createDb,
+  identity,
+  sql,
+  subscriptionsRepo,
+  withBusiness,
+  type Db,
+} from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../config.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
@@ -285,6 +293,51 @@ describe('what may be paid', () => {
       state: 'ready',
       reference: second.reference,
     });
+  });
+
+  it('refuses a plan charge a newer subscription decision has overtaken, stamped or not', async () => {
+    const businessId = await seedBusiness();
+    const { reference } = await pendingCharge(businessId);
+    await checkouts().checkout(businessId, reference, 'ada@shop.example.ng');
+    /* An operator move decides the subscription after the charge was opened. */
+    await billingRepo.setPlan(appDb, {
+      businessId,
+      plan: 'integrate',
+      expiresAt: new Date(Date.now() + 30 * 86_400_000),
+      actor: 'operator:test-g102',
+    });
+
+    const answer = await checkouts().checkout(businessId, reference, undefined);
+
+    expect(answer).toEqual({ state: 'unavailable', reason: 'superseded' });
+    expect(provider.initialized).toHaveLength(1);
+  });
+
+  it('does not record a link for a charge overtaken while Paystack was answering', async () => {
+    const businessId = await seedBusiness();
+    const { reference } = await pendingCharge(businessId);
+    /* The decision lands after `prepare` and before the link is recorded. */
+    const decide = async () =>
+      billingRepo.setPlan(appDb, {
+        businessId,
+        plan: 'integrate',
+        expiresAt: new Date(Date.now() + 30 * 86_400_000),
+        actor: 'operator:test-g102',
+      });
+    const original = provider.initializeTransaction.bind(provider);
+    provider.initializeTransaction = async (input) => {
+      const answer = await original(input);
+      await decide();
+      return answer;
+    };
+
+    const answer = await checkouts().checkout(businessId, reference, 'ada@shop.example.ng');
+
+    expect(answer).toEqual({ state: 'unavailable', reason: 'not_pending' });
+    const stored = await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.chargeByReference(tx, businessId, reference),
+    );
+    expect(stored?.checkoutUrl).toBeNull();
   });
 
   it('refuses a retired charge before it is ever started', async () => {

@@ -985,14 +985,20 @@ export async function recordCheckout(
   checkoutUrl: string,
   when: Date,
 ): Promise<string | null> {
+  /* The same staleness settlement applies (`decidedSince`): a plan charge
+   * opened before a newer subscription decision would be paid but never applied. */
   const rows = await tx.execute<{ checkout_url: string }>(sql`
-    UPDATE subscription_charges
-    SET checkout_url = COALESCE(checkout_url, ${checkoutUrl}),
-        checkout_started_at = COALESCE(checkout_started_at, ${when.toISOString()}::timestamptz),
+    UPDATE subscription_charges c
+    SET checkout_url = COALESCE(c.checkout_url, ${checkoutUrl}),
+        checkout_started_at = COALESCE(c.checkout_started_at, ${when.toISOString()}::timestamptz),
         updated_at = now()
-    WHERE business_id = ${businessId}::uuid AND reference = ${reference}
-      AND status = 'pending' AND superseded_at IS NULL
-    RETURNING checkout_url
+    WHERE c.business_id = ${businessId}::uuid AND c.reference = ${reference}
+      AND c.status = 'pending' AND c.superseded_at IS NULL
+      AND (c.plan IS NULL OR NOT EXISTS (
+        SELECT 1 FROM businesses b
+        WHERE b.id = c.business_id AND b.plan_decided_at IS NOT NULL
+          AND b.plan_decided_at > c.created_at))
+    RETURNING c.checkout_url
   `);
   return [...rows][0]?.checkout_url ?? null;
 }
