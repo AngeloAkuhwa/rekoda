@@ -181,7 +181,13 @@ export class BillingService {
             periodStart: charge.periodStart?.toISOString() ?? null,
             periodEnd: charge.periodEnd?.toISOString() ?? null,
             interval: charge.billingInterval,
-            superseded: charge.supersededAt !== null,
+            /* The checkout's own test for "replaced": stamped, or (plan charges) a newer
+             * subscription decision the retirement sweep has not stamped yet. */
+            superseded:
+              charge.status === 'pending' &&
+              (charge.supersededAt !== null ||
+                (charge.plan !== null &&
+                  (await subscriptionsRepo.decidedSince(tx, businessId, charge.reference)))),
             createdAt: charge.createdAt.toISOString(),
           })),
         ),
