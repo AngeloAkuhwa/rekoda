@@ -280,6 +280,22 @@ describe('a yearly renewal nobody pays', () => {
     // Payment truth survives: the old charge reads paid at its full yearly amount.
     const old = (await chargesOf(businessId)).find((row) => row.reference === charge.reference);
     expect(old).toMatchObject({ status: 'paid', amountK: CHAT_ANNUAL, billingInterval: 'annual' });
+    // ...and it is recorded as unapplied so reconciliation can see it (OWN-29).
+    const markers = await withBusiness(db, businessId, async (tx) => {
+      const rows = await tx.execute<{
+        superseded_at: string | null;
+        unapplied_at: string | null;
+        unapplied_reason: string | null;
+      }>(sql`
+        SELECT superseded_at, unapplied_at, unapplied_reason
+        FROM subscription_charges
+        WHERE reference = ${charge.reference}
+      `);
+      return [...rows][0];
+    });
+    expect(markers?.superseded_at).not.toBeNull();
+    expect(markers?.unapplied_at).not.toBeNull();
+    expect(markers?.unapplied_reason).toBe('subscription_decided_after_charge');
 
     const now = new Date();
     const answer = await billing().changePlan(businessId, 'chat', now, 'annual');
