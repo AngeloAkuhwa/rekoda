@@ -6,6 +6,7 @@ import {
   confirmCopy,
   emailVerifyCopy,
   lastPaymentFailed,
+  needsEmailInput,
   pendingCharge,
   safeCheckoutUrl,
   tokenFromFragment,
@@ -202,5 +203,14 @@ describe('values that reach the checkout and confirmation forms', () => {
     expect(checkoutInputProblem('x'.repeat(65), '')).toMatch(/Nothing was charged/);
     expect(checkoutInputProblem('REF-1', 'a'.repeat(321))).toMatch(/too long/);
     expect(checkoutInputProblem('REF-1', 'a'.repeat(320))).toBeNull();
+  });
+});
+
+describe('when the payment form asks for an email', () => {
+  it('asks when none is on file, or when paying or link recovery asks for another', () => {
+    expect(needsEmailInput(null)).toBe(true);
+    expect(needsEmailInput('a***@x.ng', {}, {})).toBe(false);
+    expect(needsEmailInput('a***@x.ng', { askEmail: true }, {})).toBe(true);
+    expect(needsEmailInput('a***@x.ng', {}, { askEmail: true })).toBe(true);
   });
 });

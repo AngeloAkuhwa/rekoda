@@ -241,3 +241,14 @@ export function checkoutInputProblem(reference: string, billingEmail: string): s
 export function billingEmailLengthProblem(billingEmail: string): string | null {
   return billingEmail.length > 320 ? 'That email address is too long. Nothing was charged.' : null;
 }
+
+/**
+ * Whether the payment form shows its billing-email input: when none is on file, or when either
+ * checkout answer (paying, or recovering a lost link) asked for another address.
+ */
+export function needsEmailInput(
+  maskedEmail: string | null,
+  ...answers: ReadonlyArray<{ askEmail?: boolean }>
+): boolean {
+  return maskedEmail === null || answers.some((answer) => answer.askEmail === true);
+}

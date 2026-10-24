@@ -3,6 +3,7 @@
 import { useActionState, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
+import { needsEmailInput } from '@/lib/billing-pay-copy';
 import { startCheckoutAction, type PayFormState } from './pay-actions';
 
 /**
@@ -28,7 +29,7 @@ export function PayForms({
   /* Controlled, because React clears an uncontrolled form once its action returns, and an email
    * the merchant just typed must survive an error about it. */
   const [typed, setTyped] = useState('');
-  const needEmail = maskedEmail === null || pay.askEmail === true;
+  const needEmail = needsEmailInput(maskedEmail, pay, again);
   const busy = paying || restarting;
 
   return (
