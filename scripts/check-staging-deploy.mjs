@@ -371,7 +371,7 @@ const INTERRUPT_REQUIRES = [
   [/^trap 'exit 143' TERM$/, 'exits on SIGTERM so its EXIT trap runs'],
   [/^STATE=\.git\/rekoda-deploy-staging\.state$/, 'keeps its interruption marker in .git'],
   [/^recover_interrupted$/, 'reconciles a marker left by a killed run'],
-  [/^\s*mv -f "\$STATE\.tmp" "\$STATE"$/, 'writes its marker by atomic rename'],
+  [/^\s*mv -f "\$STATE\.tmp" "\$STATE"( \|\|)?$/, 'writes its marker by atomic rename'],
 ];
 
 function interruptProblems(lines) {

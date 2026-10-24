@@ -584,3 +584,55 @@ test('a cancelled build on a full disk still restores the baseline', async () =>
   assert.equal(h.read.release(), `staging-${h.prev.slice(0, 7)}`);
   assert.equal(h.read.marker(), false);
 });
+
+test('a kill between the checkout and the .env edit leaves a marker the next run reconciles', () => {
+  const h = host();
+  h.killedWhilePrepared();
+  sh(h.dir, `sed -i 's/^REKODA_RELEASE=.*/REKODA_RELEASE=staging-${h.prev.slice(0, 7)}/' .env`);
+  const r = h.run(h.next);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stdout, /was interrupted before anything live changed/);
+  assert.equal(h.read.head(), h.next);
+  assert.equal(h.read.marker(), false);
+});
+
+test('a kill between the two halves of a restore leaves a marker the next run reconciles', () => {
+  const h = host();
+  h.killedWhilePrepared();
+  sh(h.dir, `git checkout -q --detach ${h.prev}`);
+  const r = h.run(h.next);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.equal(h.read.head(), h.next);
+  assert.equal(h.read.release(), `staging-${h.next.slice(0, 7)}`);
+  assert.equal(h.read.marker(), false);
+});
+
+test('a marker that cannot be written (full disk) ends as a refusal, not a failed restore', () => {
+  const h = host();
+  mkdirSync(join(h.dir, '.git/rekoda-deploy-staging.state.tmp'));
+  const r = h.run(h.next);
+  assert.notEqual(r.status, 0);
+  assert.doesNotMatch(r.stderr, /restore did not complete/);
+  assert.equal(h.read.head(), h.prev);
+  assert.equal(h.read.release(), `staging-${h.prev.slice(0, 7)}`);
+  assert.equal(h.read.marker(), false);
+});
+
+test('a cancelled run that restores keeps its signal exit status even with an earlier live marker', async () => {
+  const h = host({ buildSeconds: 3 });
+  h.killedWhilePrepared('live');
+  writeFileSync(join(h.fake, 'health.json'), readFileSync(join(h.fake, 'next-health.json')));
+  const child = spawn('bash', [h.script, h.third], {
+    cwd: h.dir,
+    env: { ...process.env, ...h.env },
+  });
+  for (let i = 0; i < 100 && h.read.head() !== h.third; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.equal(h.read.head(), h.third);
+  child.kill('SIGTERM');
+  const code = await new Promise((r) => child.on('close', r));
+  assert.equal(code, 143);
+  assert.equal(h.read.head(), h.next);
+  assert.equal(h.read.marker(), true);
+});

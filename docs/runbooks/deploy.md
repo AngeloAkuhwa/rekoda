@@ -370,6 +370,9 @@ What the script does for you:
   - `prepared`, checkout and `.env` still exactly what that run prepared, and
     `/health` healthy at the run's baseline: it restores the baseline and
     carries on.
+  - `prepared`, with the checkout and `.env` each at the baseline or at what that
+    run prepared in any combination (a kill can land between the two edits, also
+    inside a restore): it converges them to the baseline and carries on.
   - `prepared`, but anything else (checkout or `.env` edited, `/health`
     elsewhere): it refuses and changes nothing.
   - `live` (migrate or `up` had begun): it restores nothing. The baseline check

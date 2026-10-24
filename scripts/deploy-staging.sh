@@ -89,8 +89,12 @@ write_state() {
   # clears it.
   [ "$LIVE_MARKER" = true ] && [ "$1" = prepared ] && return 0
   printf 'phase=%s\nprev_sha=%s\nprev_release=%s\nsha=%s\nrelease=%s\n' \
-    "$1" "$PREV_SHA" "$PREV_RELEASE" "$SHA" "$RELEASE" >"$STATE.tmp"
-  mv -f "$STATE.tmp" "$STATE"
+    "$1" "$PREV_SHA" "$PREV_RELEASE" "$SHA" "$RELEASE" >"$STATE.tmp" ||
+    { [ "$1" = prepared ] && PHASE=checks; return 1; }
+  # The first marker could not be written (a full disk): nothing has changed yet,
+  # so the run ends as a refusal, not as a failed restore.
+  mv -f "$STATE.tmp" "$STATE" ||
+    { [ "$1" = prepared ] && PHASE=checks; return 1; }
 }
 state_value() { sed -n "s/^$1=//p" "$STATE"; }
 
@@ -243,7 +247,7 @@ restore_prepared() {
     sed -i "s/^REKODA_RELEASE=.*/REKODA_RELEASE=${PREV_RELEASE}/" .env &&
     [ "$(git rev-parse HEAD)" = "$PREV_SHA" ] &&
     [ "$(sed -n 's/^REKODA_RELEASE=//p' .env)" = "$PREV_RELEASE" ]; then
-    [ "$LIVE_MARKER" = true ] || rm -f "$STATE"
+    if [ "$LIVE_MARKER" != true ]; then rm -f "$STATE"; fi
   else
     save_evidence
     printf 'the restore did not complete; recover by hand as the runbook'"'"'s "An interrupted staging deploy" says\n' >&2
@@ -366,7 +370,11 @@ recover_interrupted() {
     rm -f "$STATE"
     return 0
   fi
-  if [ "$PREV_SHA" != "$s_sha" ] || [ "$PREV_RELEASE" != "$s_rel" ]; then
+  # A kill between the checkout and the .env edit (or between the two inside a
+  # restore) leaves one at the baseline and the other at the target. Either
+  # value of each is this run's own work; anything else is not, and is refused.
+  if { [ "$PREV_SHA" != "$s_prev_sha" ] && [ "$PREV_SHA" != "$s_sha" ]; } ||
+    { [ "$PREV_RELEASE" != "$s_prev_rel" ] && [ "$PREV_RELEASE" != "$s_rel" ]; }; then
     fail "an interrupted deploy of $s_sha left $STATE, but the checkout ($PREV_SHA) and REKODA_RELEASE ($PREV_RELEASE) are neither its baseline nor what it prepared; reconcile by hand"
   fi
   health=$(curl -fsS --max-time 10 --retry 2 --retry-delay 5 "$API_URL/health") ||
