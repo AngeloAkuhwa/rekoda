@@ -13,6 +13,7 @@ import {
   pendingIntervalCopy,
   perInterval,
   nextRenewalAnnualK,
+  showFrequencyCard,
   soldPrice,
   switchIntervalOffer,
   undoIntervalLabel,
@@ -263,7 +264,7 @@ export default async function BillingPage({
       {paidPlan &&
       overview.status.state !== 'expired' &&
       isOwner(identity.role) &&
-      (overview.pendingPlan !== 'expired' || overview.pendingInterval) ? (
+      showFrequencyCard(overview) ? (
         <div className="rk-card">
           <h2>Billing frequency</h2>
           <p className="rk-fineprint">

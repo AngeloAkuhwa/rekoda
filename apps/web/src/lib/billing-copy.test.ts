@@ -10,6 +10,7 @@ import {
   pendingIntervalCopy,
   perInterval,
   nextRenewalAnnualK,
+  showFrequencyCard,
   soldPrice,
   switchIntervalOffer,
   undoIntervalLabel,
@@ -157,5 +158,21 @@ describe('the price a plan is sold at', () => {
     expect(nextRenewalAnnualK({ ...base, pendingPlan: null })).toBe(29_900_000);
     expect(nextRenewalAnnualK({ ...base, pendingPlan: 'chat' })).toBe(9_900_000);
     expect(nextRenewalAnnualK({ ...base, pendingPlan: 'expired' })).toBe(29_900_000);
+  });
+
+  it('the frequency card shows only when it can offer or undo something', () => {
+    const base = {
+      interval: 'monthly',
+      annualOffered: false,
+      pendingPlan: null,
+      pendingInterval: null,
+    } as const;
+    expect(showFrequencyCard(base)).toBe(false); // yearly not on sale: nothing to say
+    expect(showFrequencyCard({ ...base, annualOffered: true })).toBe(true);
+    expect(showFrequencyCard({ ...base, interval: 'annual' })).toBe(true); // can always go monthly
+    expect(showFrequencyCard({ ...base, annualOffered: true, pendingPlan: 'expired' })).toBe(false);
+    expect(showFrequencyCard({ ...base, pendingPlan: 'expired', pendingInterval: 'annual' })).toBe(
+      true,
+    );
   });
 });

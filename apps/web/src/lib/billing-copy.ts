@@ -134,3 +134,19 @@ export function nextRenewalAnnualK(overview: {
   const next = overview.pendingPlan ? soldPrice(overview, overview.pendingPlan) : undefined;
   return next ? next.annualK : overview.annualPriceK;
 }
+
+/**
+ * Whether the Billing frequency card has anything to say. With yearly billing off, a
+ * monthly subscriber has no action and no waiting switch, so the card would only
+ * advertise a feature that is not on sale. A cancellation leaves no renewal to switch
+ * for, so only a waiting switch (to undo) keeps the card.
+ */
+export function showFrequencyCard(o: {
+  interval: 'monthly' | 'annual';
+  annualOffered: boolean;
+  pendingPlan: string | null;
+  pendingInterval: 'monthly' | 'annual' | null;
+}): boolean {
+  if (o.pendingInterval) return true;
+  return o.pendingPlan !== 'expired' && canOfferSwitch(o.interval, o.annualOffered);
+}
