@@ -24,6 +24,7 @@ const charge = (reference: string, status: BillingChargeView['status']): Billing
   periodStart: null,
   periodEnd: null,
   interval: 'monthly',
+  superseded: false,
   createdAt: '2026-10-20T10:00:00.000Z',
 });
 
@@ -61,6 +62,17 @@ describe('what is waiting and what failed', () => {
     expect(pendingCharge(list, 'A')?.reference).toBe('A');
     expect(pendingCharge(list, 'ZZZ')?.reference).toBe('B');
     expect(pendingCharge([charge('C', 'paid')])).toBeNull();
+  });
+  it('labels a replaced pending charge as replaced, not awaiting payment', () => {
+    expect(chargeStatusLabel('pending', true)).toBe('Replaced by a newer choice');
+    expect(chargeStatusLabel('pending')).toBe('Awaiting payment');
+    expect(chargeStatusLabel('paid', true)).toBe('Paid');
+  });
+  it('never offers a charge the server has replaced', () => {
+    const replaced = { ...charge('OLD', 'pending'), superseded: true };
+    expect(pendingCharge([replaced])).toBeNull();
+    expect(pendingCharge([replaced, charge('LIVE', 'pending')])?.reference).toBe('LIVE');
+    expect(pendingCharge([replaced, charge('LIVE', 'pending')], 'OLD')?.reference).toBe('LIVE');
   });
   it('never calls a pending charge failed', () => {
     expect(lastPaymentFailed([charge('B', 'pending')])).toBeNull();

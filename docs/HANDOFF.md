@@ -30,7 +30,7 @@ Claude's proposal and awaits the owner's confirmation. Provenance note: #347 (G-
 owner's GitHub account during this run without this run's involvement, and commit `811baa5` has no identified author;
 ask the owner whether another session is driving this repository.
 
-**G-102 slice 2c (24 Oct 2026): the merchant billing page is CODE COMPLETE and its PR is OPEN (web only, no migration; staging acceptance pending).** `/app/billing` shows trial days left, the billing email card, a Pay with Paystack action and the lost-link recovery for the newest waiting charge; `/app/billing/confirm-email` spends the fragment token. Next: 2d (billing-email erasure, OWN-52). Local verification used a Paystack test double on a throwaway Postgres; the pay journey is not in CI e2e. Superseded pending charges still read Awaiting payment in history (overview lacks `superseded_at`).
+**G-102 slice 2c (24 Oct 2026): the merchant billing page is CODE COMPLETE and its PR is OPEN (web only, no migration; staging acceptance pending).** `/app/billing` shows trial days left, the billing email card, a Pay with Paystack action and the lost-link recovery for the newest waiting charge; `/app/billing/confirm-email` spends the fragment token. Next: 2d (billing-email erasure, OWN-52). Local verification used a Paystack test double on a throwaway Postgres; the pay journey is not in CI e2e. The overview now carries `superseded` per charge (additive contract field), so the page never offers a replaced charge for payment and history reads it as "Replaced by a newer choice".
 
 **Autopilot playbook v4 installed (22 Oct 2026, #300); OWN-30 to OWN-33 recorded.**
 `docs/REKODA_MVP_AUTOPILOT_PLAYBOOK.md` is now the routine's operating playbook (summary in

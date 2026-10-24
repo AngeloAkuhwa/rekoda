@@ -39,7 +39,7 @@ export function PayForms({
           <Field
             id="payBillingEmail"
             label="Billing email"
-            hint="Paystack sends your receipt here. Use an address you read; it is not your WhatsApp number and we never share it."
+            hint="Paystack sends your receipt here. Use an address you read; it is not your WhatsApp number. We share it with Paystack so they can send your receipt."
           >
             <input
               name="billingEmail"

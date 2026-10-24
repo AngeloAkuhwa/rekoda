@@ -714,7 +714,7 @@ export default async function BillingPage({
                       {chargeIntervalSuffix(charge.kind, charge.interval)}
                     </td>
                     <td className="rk-mono">{charge.reference}</td>
-                    <td>{chargeStatusLabel(charge.status)}</td>
+                    <td>{chargeStatusLabel(charge.status, charge.superseded)}</td>
                     <td>
                       <Money kobo={charge.amountK} />
                       {partlyRefunded(charge.refundedAmountK, charge.status) ? (

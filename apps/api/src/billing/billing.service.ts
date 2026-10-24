@@ -181,6 +181,7 @@ export class BillingService {
             periodStart: charge.periodStart?.toISOString() ?? null,
             periodEnd: charge.periodEnd?.toISOString() ?? null,
             interval: charge.billingInterval,
+            superseded: charge.supersededAt !== null,
             createdAt: charge.createdAt.toISOString(),
           })),
         ),

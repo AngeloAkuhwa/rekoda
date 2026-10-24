@@ -291,7 +291,7 @@ describe('buying a year', () => {
   });
 
   it('a merchant who changes their mind the same day gets the charge for the interval they chose', async () => {
-    const { businessId } = await onboard();
+    const { businessId, auth } = await onboard();
     const now = new Date('2026-11-02T09:00:00Z');
 
     const annual = await billing().changePlan(businessId, 'chat', now, 'annual');
@@ -306,6 +306,10 @@ describe('buying a year', () => {
     const rows = await chargesOf(businessId);
     expect(rows.find((c) => c.reference === annual.reference)?.supersededAt).not.toBeNull();
     expect(rows.find((c) => c.reference === monthly.reference)?.supersededAt).toBeNull();
+    // The overview tells the page which one is replaced, so it never offers the dead link for payment.
+    const shown = await overviewOf(auth);
+    expect(shown.charges.find((c) => c.reference === annual.reference)?.superseded).toBe(true);
+    expect(shown.charges.find((c) => c.reference === monthly.reference)?.superseded).toBe(false);
 
     // Asking for the annual one again hands back a payable annual charge.
     const again = await billing().changePlan(businessId, 'chat', now, 'annual');

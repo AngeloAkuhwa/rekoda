@@ -36,12 +36,12 @@ export function trialCopy(endsOn: string | null, daysLeft: number | null): strin
   return daysLeft <= 3 ? `${base} Choose a plan below any time to carry on without a break.` : base;
 }
 
-/** The newest charge still waiting for money, or null. Newest first, as the API lists them. */
+/** The newest charge still waiting for money and still payable, or null. Newest first, as the API lists them. */
 export function pendingCharge(
   charges: readonly BillingChargeView[],
   preferred?: string,
 ): BillingChargeView | null {
-  const waiting = charges.filter((charge) => charge.status === 'pending');
+  const waiting = charges.filter((charge) => charge.status === 'pending' && !charge.superseded);
   return waiting.find((charge) => charge.reference === preferred) ?? waiting[0] ?? null;
 }
 
