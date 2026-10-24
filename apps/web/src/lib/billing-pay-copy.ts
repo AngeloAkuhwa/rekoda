@@ -89,7 +89,11 @@ export function checkoutRefusalCopy(answer: Exclude<BillingCheckoutResponse, { s
     case 'invalid_billing_email':
       return { message: invalidEmailCopy(answer.reason), askEmail: true };
     case 'unavailable':
-      return { message: unavailableCopy(answer.reason) };
+      return {
+        message: unavailableCopy(answer.reason),
+        /* "Try another one" needs somewhere to type it, even when an address is already on file. */
+        ...(answer.reason === 'provider_rejected_billing_email' ? { askEmail: true } : {}),
+      };
   }
 }
 

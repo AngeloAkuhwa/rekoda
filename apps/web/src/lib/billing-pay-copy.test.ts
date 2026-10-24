@@ -104,6 +104,17 @@ describe('checkout refusals say what happened to the money', () => {
     expect(r.askEmail).toBe(true);
     expect(r.message).toMatch(/Nothing was charged/);
   });
+  it('shows the email input again when Paystack rejects the address on file', () => {
+    const r = checkoutRefusalCopy({
+      state: 'unavailable',
+      reason: 'provider_rejected_billing_email',
+    });
+    expect(r.askEmail).toBe(true);
+    expect(r.message).toMatch(/Try another one/);
+    expect(
+      checkoutRefusalCopy({ state: 'unavailable', reason: 'superseded' }).askEmail,
+    ).toBeUndefined();
+  });
   it('explains the live-key mailbox rule honestly', () => {
     const r = checkoutRefusalCopy({
       state: 'requires_billing_email_verification',
