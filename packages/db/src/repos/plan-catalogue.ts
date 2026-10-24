@@ -16,7 +16,7 @@
  * a code-review hope.
  */
 import { sql } from 'drizzle-orm';
-import type { EntitlementKey, UsageUnit } from '@rekoda/core';
+import { annualPriceK, type EntitlementKey, type UsageUnit } from '@rekoda/core';
 import type { Db, TenantDb } from '../client.js';
 
 /**
@@ -296,6 +296,18 @@ export interface NewPlanVersion {
  * grandfathering requirement.
  */
 export async function publishPlanVersion(db: Db, input: NewPlanVersion): Promise<string> {
+  /* OWN-40: a year is ten months' price. A version may leave the year out (it is then
+   * sold at ten months), but never carry a different one, and never a year without a month. */
+  for (const year of input.prices.filter((p) => p.billingInterval === 'annual')) {
+    const month = input.prices.find(
+      (p) => p.billingInterval === 'monthly' && p.currency === year.currency,
+    );
+    if (!month || year.amountMinor !== annualPriceK(month.amountMinor)) {
+      throw new Error(
+        `annual price for ${year.currency} must be ten times the monthly price (OWN-40)`,
+      );
+    }
+  }
   const from = input.effectiveFrom.toISOString();
   return db.transaction(async (tx) => {
     await tx.execute(sql`
@@ -357,19 +369,66 @@ export async function changePlanPrice(
 ): Promise<void> {
   const from = change.from.toISOString();
   await db.transaction(async (tx) => {
+    /* Serialise repricing of this version, so the rows read below are the ones the write
+     * closes (a concurrent month and year repricing cannot interleave on a stale month). */
     await tx.execute(sql`
-      UPDATE plan_prices SET effective_to = ${from}::timestamptz
-      WHERE plan_version_id = ${change.planVersionId}::uuid
-        AND currency = ${change.currency}
-        AND billing_interval = ${change.billingInterval}
-        AND effective_to IS NULL
+      SELECT id FROM plan_versions WHERE id = ${change.planVersionId}::uuid FOR UPDATE
     `);
-    await tx.execute(sql`
-      INSERT INTO plan_prices
-        (plan_version_id, currency, billing_interval, amount_minor, effective_from)
-      VALUES (${change.planVersionId}::uuid, ${change.currency},
-              ${change.billingInterval}, ${change.amountMinor}, ${from}::timestamptz)
-    `);
+    const openRows = [
+      ...(await tx.execute<{ billing_interval: BillingInterval; amount_minor: number; ef: Date }>(
+        sql`
+          SELECT billing_interval, amount_minor, effective_from AS ef FROM plan_prices
+          WHERE plan_version_id = ${change.planVersionId}::uuid
+            AND currency = ${change.currency} AND effective_to IS NULL
+        `,
+      )),
+    ];
+    const open = (interval: BillingInterval) =>
+      openRows.find((r) => r.billing_interval === interval);
+    const month = open('monthly');
+
+    /* OWN-40: a year is ten months' price. A year is only ever priced against a month in
+     * force at the same moment: no month, or a month scheduled after this change, refuses. */
+    if (change.billingInterval === 'annual') {
+      if (
+        !month ||
+        new Date(month.ef).getTime() > change.from.getTime() ||
+        change.amountMinor !== annualPriceK(Number(month.amount_minor))
+      ) {
+        throw new Error(
+          `annual price for ${change.currency} must be ten times the monthly price in force (OWN-40)`,
+        );
+      }
+    }
+    /* Repricing the month carries an existing year with it, so the two never diverge. */
+    const intervals: BillingInterval[] = [change.billingInterval];
+    if (change.billingInterval === 'monthly' && open('annual')) intervals.push('annual');
+
+    for (const interval of intervals) {
+      /* Closing a row at `from` must not end it before it began: a change scheduled
+       * after this one is a conflict, never silently superseded. */
+      const row = open(interval);
+      if (row && new Date(row.ef).getTime() > change.from.getTime()) {
+        throw new Error(`a ${interval} price change is already scheduled after ${from}`);
+      }
+      const amountMinor =
+        interval === 'annual' && change.billingInterval === 'monthly'
+          ? annualPriceK(change.amountMinor)
+          : change.amountMinor;
+      await tx.execute(sql`
+        UPDATE plan_prices SET effective_to = ${from}::timestamptz
+        WHERE plan_version_id = ${change.planVersionId}::uuid
+          AND currency = ${change.currency}
+          AND billing_interval = ${interval}
+          AND effective_to IS NULL
+      `);
+      await tx.execute(sql`
+        INSERT INTO plan_prices
+          (plan_version_id, currency, billing_interval, amount_minor, effective_from)
+        VALUES (${change.planVersionId}::uuid, ${change.currency},
+                ${interval}, ${amountMinor}, ${from}::timestamptz)
+      `);
+    }
   });
 }
 

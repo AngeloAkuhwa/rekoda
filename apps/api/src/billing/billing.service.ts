@@ -58,6 +58,9 @@ function startOfLagosDay(when: Date): Date {
   return new Date(Math.floor(shifted / 86_400_000) * 86_400_000 - 3_600_000);
 }
 
+/** The plans a merchant can buy, in the order the billing page lists them. */
+const SELLABLE_PLANS = ['chat', 'integrate', 'complete'] as const;
+
 @Injectable()
 export class BillingService {
   constructor(
@@ -128,6 +131,14 @@ export class BillingService {
         annualPriceK: await planPriceKFor(this.config, tx, businessId, plan, now, 'annual'),
         interval: subscription?.billingInterval ?? 'monthly',
         pendingInterval: subscription?.pendingBillingInterval ?? null,
+        annualOffered: this.config.annualBillingSales && this.config.planCatalogueReads,
+        planPrices: await Promise.all(
+          SELLABLE_PLANS.map(async (id) => ({
+            plan: id,
+            monthlyK: await planPriceKFor(this.config, tx, businessId, id, now),
+            annualK: await planPriceKFor(this.config, tx, businessId, id, now, 'annual'),
+          })),
+        ),
         status: statusOf(plan, subscription, now),
         pendingPlan: subscription?.pendingPlan ?? null,
         period,
@@ -449,6 +460,10 @@ export class BillingService {
         }
         await subscriptionsRepo.scheduleIntervalChange(tx, businessId, null);
         return { state: 'undone' as const, interval };
+      }
+      /* A cancelled plan has no next renewal to switch at; undoing a waiting switch (above) stays open. */
+      if (subscription.pendingPlan === 'expired') {
+        return { state: 'unavailable' as const, reason: 'cancelling' as const };
       }
       if (subscription.pendingBillingInterval === interval) {
         return {

@@ -42,6 +42,7 @@ import {
   sessionResponse,
   setupStateResponse,
   billingCancelResponse,
+  billingIntervalResponse,
   billingOverviewResponse,
   businessSettingsResponse,
   businessSettingsView,
@@ -85,6 +86,7 @@ import {
   voidInvoiceResponse,
   verifyOtpResponse,
   type BillingCancelResponse,
+  type BillingIntervalResponse,
   type BillingOverviewResponse,
   type BusinessSettingsRequest,
   type BusinessSettingsResponse,
@@ -736,11 +738,12 @@ export async function billingOverview(sessionToken: string): Promise<BillingOver
 export async function billingQuote(
   sessionToken: string,
   plan: string,
+  interval: 'monthly' | 'annual' = 'monthly',
 ): Promise<BillingQuoteResponse | null> {
   const { status, json } = await call({
     method: 'POST',
     path: '/v1/billing/quote',
-    body: { plan },
+    body: { plan, interval },
     headers: { authorization: `Bearer ${sessionToken}` },
     expect: [200, 400],
   });
@@ -750,15 +753,31 @@ export async function billingQuote(
 export async function billingChangePlan(
   sessionToken: string,
   plan: string,
+  interval: 'monthly' | 'annual' = 'monthly',
 ): Promise<BillingPlanChangeResponse | null> {
   const { status, json } = await call({
     method: 'POST',
     path: '/v1/billing/plan',
-    body: { plan },
+    body: { plan, interval },
     headers: { authorization: `Bearer ${sessionToken}` },
     expect: [200, 400],
   });
   return status === 200 ? billingPlanChangeResponse.parse(json) : null;
+}
+
+/** Switch between monthly and yearly billing at the next renewal (OWN-40). */
+export async function billingSwitchInterval(
+  sessionToken: string,
+  interval: 'monthly' | 'annual',
+): Promise<BillingIntervalResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/billing/interval',
+    body: { interval },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? billingIntervalResponse.parse(json) : null;
 }
 
 export type BuyPackOutcome =

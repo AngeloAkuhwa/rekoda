@@ -47,3 +47,110 @@ export function partlyRefunded(
 ): boolean {
   return refundedAmountK > 0 && status !== 'refunded';
 }
+
+/** How a price is read: per month or per year (OWN-40). */
+export type Interval = 'monthly' | 'annual';
+
+/** "a month" / "a year", for a price line. */
+export function perInterval(interval: Interval): string {
+  return interval === 'annual' ? 'a year' : 'a month';
+}
+
+/**
+ * The line under "Billing frequency" while a switch waits for the renewal.
+ * Nothing is charged or refunded by the switch itself: the merchant keeps the
+ * month or the year they already paid for.
+ */
+export function pendingIntervalCopy(pending: Interval, cancelling = false): string {
+  if (cancelling) {
+    return `Your plan is set to end at the close of this period, so the switch to ${pending === 'annual' ? 'yearly' : 'monthly'} billing cannot take effect while the cancellation stands. Nothing is charged or refunded. You can clear the waiting switch below.`;
+  }
+  return pending === 'annual'
+    ? 'Switching to yearly billing at your next renewal. You keep your current monthly plan until then, and nothing is charged now.'
+    : 'Switching to monthly billing at your next renewal. You keep the year you paid for until then, and nothing is refunded or charged now.';
+}
+
+/** The button that undoes a scheduled interval switch. */
+export function undoIntervalLabel(current: Interval): string {
+  return current === 'annual' ? 'Stay on yearly billing' : 'Stay on monthly billing';
+}
+
+/**
+ * The offer to switch, with the saving stated plainly and no countdown.
+ * Yearly is ten months' price for twelve months of service.
+ */
+export function switchIntervalOffer(current: Interval): string {
+  return current === 'monthly'
+    ? 'Pay once a year and get two months free: twelve months of service for the price of ten. It starts at your next renewal.'
+    : 'Go back to paying month by month. It starts at your next renewal, after the year you paid for.';
+}
+
+/** What a first purchase buys, in words, for the confirmation step. */
+export function firstPurchaseTerm(interval: Interval): string {
+  return interval === 'annual' ? 'twelve months of service' : 'one month of service';
+}
+
+/** The suffix on a billing-history row: only yearly plan charges need saying. */
+export function chargeIntervalSuffix(kind: string, interval: Interval): string {
+  return interval === 'annual' && (kind === 'first_purchase' || kind === 'renewal')
+    ? ' · Yearly'
+    : '';
+}
+
+/** The price view a first purchase browses: a year only when a year can be chosen. */
+export function browsingInterval(
+  requested: string | undefined,
+  annualOffered: boolean,
+): 'monthly' | 'annual' {
+  return annualOffered && requested === 'annual' ? 'annual' : 'monthly';
+}
+
+/**
+ * Whether the billing frequency card has an action to offer outside a waiting switch: a
+ * yearly subscriber can always go back to monthly, but a monthly one is offered a year
+ * only when yearly billing is on.
+ */
+export function canOfferSwitch(interval: 'monthly' | 'annual', annualOffered: boolean): boolean {
+  return interval === 'annual' || annualOffered;
+}
+
+/** The price the API sells a plan at for this business, or undefined for a plan it does not list. */
+export function soldPrice<K>(
+  overview: { planPrices: { plan: string; monthlyK: K; annualK: K }[] },
+  plan: string,
+): { monthlyK: K; annualK: K } | undefined {
+  return overview.planPrices.find((row) => row.plan === plan);
+}
+
+/**
+ * The yearly price quoted in the "switch to yearly" offer. The switch applies at the
+ * next renewal, so a scheduled plan change is priced, not the plan being left.
+ */
+export function nextRenewalAnnualK(overview: {
+  annualPriceK: number;
+  pendingPlan: string | null;
+  planPrices: { plan: string; monthlyK: number; annualK: number }[];
+}): number {
+  const next = overview.pendingPlan ? soldPrice(overview, overview.pendingPlan) : undefined;
+  return next ? next.annualK : overview.annualPriceK;
+}
+
+/**
+ * Whether the Billing frequency card has anything to say. With yearly billing off, a
+ * monthly subscriber has no action and no waiting switch, so the card would only
+ * advertise a feature that is not on sale. A cancellation leaves no renewal to switch
+ * for, so only a waiting switch (to undo) keeps the card. In grace the renewal is
+ * already overdue and the late-renewal behaviour of a switch is not yet decided
+ * (slice 3), so a new switch is not offered there either.
+ */
+export function showFrequencyCard(o: {
+  state?: string;
+  interval: 'monthly' | 'annual';
+  annualOffered: boolean;
+  pendingPlan: string | null;
+  pendingInterval: 'monthly' | 'annual' | null;
+}): boolean {
+  if (o.pendingInterval) return true;
+  if (o.state === 'grace') return false;
+  return o.pendingPlan !== 'expired' && canOfferSwitch(o.interval, o.annualOffered);
+}

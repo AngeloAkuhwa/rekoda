@@ -833,6 +833,11 @@ a.rk-sr-only:focus-visible {
   font-size: var(--rk-text-sm);
   color: var(--rk-text-muted);
 }
+/* The view currently shown by a period or interval toggle. */
+.rk-period-link[aria-current='true'] {
+  font-weight: 600;
+  text-decoration: none;
+}
 .rk-period-now {
   text-decoration: none;
 }
@@ -1134,6 +1139,17 @@ a.rk-sr-only:focus-visible {
 }
 .rk-table th {
   white-space: nowrap;
+}
+/* A cell that may wrap: a plan or pack NAME, where keeping the price and the action
+   on a phone matters more than a single line. Numbers and references never use it. */
+.rk-table td.rk-wrap {
+  white-space: normal;
+}
+.rk-plan-tag {
+  display: block;
+  color: var(--rk-text-muted);
+  font-size: var(--rk-text-xs, 0.8125rem);
+  font-variant-numeric: normal;
 }
 /* A product photo in a table cell. Fixed box and `cover`, so a portrait
    phone photo and a square one occupy the same space and the rows stay a

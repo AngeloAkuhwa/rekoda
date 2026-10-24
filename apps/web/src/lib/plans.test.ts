@@ -13,7 +13,14 @@
  * selling something the gate would refuse.
  */
 import { describe, expect, it } from 'vitest';
-import { allowanceFor, capabilitiesFor, entitlementsForPlan } from '@rekoda/core';
+import {
+  allowanceFor,
+  annualPriceK,
+  capabilitiesFor,
+  entitlementsForPlan,
+  PLAN_PRICES_K,
+  type PlanId,
+} from '@rekoda/core';
 import { PLANS, SHARED_ACROSS_PLANS, TRIAL } from './plans';
 
 /**
@@ -131,6 +138,17 @@ describe('the shared dashboard', () => {
       expect(held, `${id} keeps the dashboard`).toContain('DASHBOARD_READ');
       expect(held, `${id} keeps manual bookkeeping`).toContain('MANUAL_BOOKKEEPING');
       expect(held, `${id} keeps reporting`).toContain('REPORTING');
+    }
+  });
+});
+
+describe('the plan table prices', () => {
+  it('match the monthly price the server sells and a year at ten months of it', () => {
+    for (const plan of PLANS) {
+      if (plan.id === 'trial') continue;
+      const monthly = PLAN_PRICES_K[plan.id as PlanId];
+      expect(Number(plan.monthlyK), `${plan.id} monthly`).toBe(monthly);
+      expect(Number(plan.annualK), `${plan.id} annual`).toBe(annualPriceK(monthly));
     }
   });
 });

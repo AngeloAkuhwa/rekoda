@@ -529,6 +529,30 @@ describe('switching between monthly and annual', () => {
     expect((await subOf(businessId))?.pendingBillingInterval).toBe('annual');
   });
 
+  it('a cancelled plan has no renewal to switch at, but a switch already waiting can still be undone', async () => {
+    const { businessId } = await onboard();
+    await putOnPlan(businessId, 'chat', 'monthly', new Date(Date.now() - 10 * DAY));
+
+    await billing().cancelPlan(businessId);
+    expect(await billing().switchInterval(businessId, 'annual')).toEqual({
+      state: 'unavailable',
+      reason: 'cancelling',
+    });
+    expect((await subOf(businessId))?.pendingBillingInterval).toBeNull();
+
+    // A switch chosen BEFORE the cancellation may still be taken back.
+    const other = await onboard();
+    await putOnPlan(other.businessId, 'chat', 'monthly', new Date(Date.now() - 10 * DAY));
+    await billing().switchInterval(other.businessId, 'annual');
+    await billing().cancelPlan(other.businessId);
+    // Asking again for the same switch is not "scheduled": there is no renewal to take effect at.
+    expect(await billing().switchInterval(other.businessId, 'annual')).toEqual({
+      state: 'unavailable',
+      reason: 'cancelling',
+    });
+    expect((await billing().switchInterval(other.businessId, 'monthly')).state).toBe('undone');
+  });
+
   it('a trial or lapsed merchant has no cycle to switch', async () => {
     const { businessId } = await onboard();
     expect(await billing().switchInterval(businessId, 'annual')).toEqual({
@@ -632,6 +656,14 @@ describe('review of #340: three ways a year could be mispriced or misapplied', (
     const quote = await billing().quote(businessId, 'chat', new Date(), 'annual');
     expect(quote).toMatchObject({ kind: 'first_purchase', amountK: 14_900_000 });
 
+    /* The plan table is fed from the same catalogue, so it cannot show a different price. */
+    const overview = await billing().overview(businessId);
+    expect(overview.planPrices.find((row) => row.plan === 'chat')).toEqual({
+      plan: 'chat',
+      monthlyK: 1_490_000,
+      annualK: 14_900_000,
+    });
+
     /* A merchant pinned to that version who switches to yearly is renewed at a payable price. */
     const other = await onboard();
     await putOnPlan(other.businessId, 'chat', 'monthly', new Date(Date.now() - 35 * DAY));
@@ -651,9 +683,10 @@ describe('review of #340: three ways a year could be mispriced or misapplied', (
     const [monthly] = await chargesOf(businessId);
     expect(monthly).toMatchObject({ kind: 'renewal', amountK: CHAT_MONTHLY });
 
-    /* ...the owner cancels, then switches to yearly, then undoes the cancellation. */
-    await billing().cancelPlan(businessId);
+    /* ...the owner switches to yearly, cancels, then undoes the cancellation (a switch
+     * cannot be started while a cancellation is waiting). */
     await billing().switchInterval(businessId, 'annual');
+    await billing().cancelPlan(businessId);
     await billing().changePlan(businessId, 'chat');
 
     /* The yearly choice stands and the monthly link stays withdrawn. */
