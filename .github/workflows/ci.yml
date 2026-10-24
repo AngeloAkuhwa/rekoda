@@ -273,12 +273,16 @@ jobs:
       # restore failure later.
       - name: Use the PostgreSQL 16 client tools
         run: |
-          if [ ! -x /usr/lib/postgresql/16/bin/pg_dump ]; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq --no-install-recommends postgresql-client-16
+          if [ -x /usr/lib/postgresql/16/bin/pg_dump ]; then
+            echo /usr/lib/postgresql/16/bin >> "$GITHUB_PATH"
+            /usr/lib/postgresql/16/bin/pg_dump --version
+          else
+            # No native 16 client on this image: run the postgres:16 image's
+            # tools through the wrappers (they use the host network).
+            client="$GITHUB_WORKSPACE/scripts/ci-pg16-client"
+            echo "$client" >> "$GITHUB_PATH"
+            PATH="$client:$PATH" pg_dump --version
           fi
-          echo /usr/lib/postgresql/16/bin >> "$GITHUB_PATH"
-          /usr/lib/postgresql/16/bin/pg_dump --version
       # The migration creates rekoda_app with no password on purpose —
       # credentials belong to ops, never to a file in the repository. Under
       # trust auth it needs none here.

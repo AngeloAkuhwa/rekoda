@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Runs a PostgreSQL 16 client tool from the postgres:16-alpine image, for CI.
+#
+# The recovery drill dumps and restores with the runner's own `pg_dump` and
+# `pg_restore` against a postgres:16 server. A client NEWER than the server writes
+# `SET transaction_timeout` (a PostgreSQL 17 setting) into the archive, which a
+# 16 server rejects on restore, so the client must match the server. The runner
+# image ships 18 and has no 16 package, but the job already pulled this image
+# for its service container, so the matching tools are one `docker run` away.
+#
+# Named by the tool it stands in for (see the `pg_dump` and `pg_restore` links
+# beside it): `pg_dump -Fc -f /tmp/x.dump db` runs `pg_dump` inside the image.
+set -euo pipefail
+
+tool=$(basename "$0")
+tmp="${TMPDIR:-/tmp}"
+tmp="${tmp%/}"
+
+# Host networking reaches the service container's published port as 127.0.0.1.
+# The temp directory is mounted at the same path, so dump file paths mean the
+# same thing on both sides, and the user id keeps those files removable by the job.
+exec docker run --rm --network host \
+  --user "$(id -u):$(id -g)" \
+  -v "$tmp:$tmp" \
+  -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE \
+  postgres:16-alpine "$tool" "$@"
