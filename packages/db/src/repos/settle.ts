@@ -58,6 +58,11 @@ import {
   markMerchantOverpayment,
   type ExcessDisposition,
 } from './merchant-overpayment.js';
+import {
+  orderIdsForPayments,
+  resolveOrderProcessingFee,
+  resolveProcessingFeeForInvoice,
+} from './charges.js';
 import { recordPaymentAttempt, resolvePaymentAttempt } from './payments-hub.js';
 
 /** The same rekoda_reference booked twice — the terminal-intent gate's job,
@@ -826,6 +831,19 @@ export async function markSettlements(
       ),
     )
     .returning({ id: payments.id });
+  /* G-116: a settled payout is the evidence that makes an order's processing
+   * fee final (OWN-42). Same transaction as the stamp, so a payment cannot be
+   * settled with its order's fee still ESTIMATED once everything is in. */
+  if (settlementStatus === 'settled' && rows.length > 0) {
+    const orderIds = await orderIdsForPayments(
+      tx,
+      businessId,
+      rows.map((r) => r.id),
+    );
+    for (const orderId of orderIds.sort()) {
+      await resolveOrderProcessingFee(tx, businessId, orderId);
+    }
+  }
   return rows.length;
 }
 
@@ -1210,6 +1228,12 @@ export async function recordMerchantPayment(
     } as never,
     sourceType: input.sourceType,
   });
+
+  /* G-116: the payment that closes the invoice may be the last thing an
+   * already-settled provider payment was waiting on. */
+  if (newBalanceK === 0) {
+    await resolveProcessingFeeForInvoice(tx, input.businessId, invoice.id);
+  }
 
   return {
     paymentId,
