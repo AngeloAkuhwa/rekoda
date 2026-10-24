@@ -149,6 +149,8 @@ function isGuardedImageRemoval(line, index, all) {
   const loop = trimmed.lastIndexOf('while read -r image id; do', index);
   if (loop < 0) return false;
   const body = trimmed.slice(loop + 1, index);
+  // A `done` before the removal means it is outside the guarded loop.
+  if (body.some((l) => /^done\b/.test(l))) return false;
   return (
     body.some((l) =>
       /^\[\[ "\$image" =~ \^rekoda-\(app\|web\):\(staging-\[0-9a-f\]\{7\}\)\$ \]\] \|\| continue$/.test(

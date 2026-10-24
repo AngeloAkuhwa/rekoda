@@ -739,3 +739,12 @@ test('the disk-space step placed between the baseline curl and its validation', 
   assert.notEqual(moved, without);
   expectProblem(problems({ script: moved }), /free disk space after the running release is proven/);
 });
+
+test('the image removal placed after the loop that holds the retention guards', () => {
+  const rm = '    docker image rm "$image" >/dev/null 2>&1 || true\n';
+  const done = '  done < <(printf \'%s\\n\' "$images")\n';
+  const without = edited('script', rm, '').script;
+  const moved = without.replace(done, () => done + rm.replace(/^ {4}/, '  '));
+  assert.notEqual(moved, without);
+  expectProblem(problems({ script: moved }), /removes images outside prune_releases/);
+});
