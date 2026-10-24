@@ -461,16 +461,16 @@ export class BillingService {
         await subscriptionsRepo.scheduleIntervalChange(tx, businessId, null);
         return { state: 'undone' as const, interval };
       }
+      /* A cancelled plan has no next renewal to switch at; undoing a waiting switch (above) stays open. */
+      if (subscription.pendingPlan === 'expired') {
+        return { state: 'unavailable' as const, reason: 'cancelling' as const };
+      }
       if (subscription.pendingBillingInterval === interval) {
         return {
           state: 'scheduled' as const,
           interval,
           effectiveAt: subscription.planExpiresAt.toISOString(),
         };
-      }
-      /* A cancelled plan has no next renewal to switch at; undoing a waiting switch (above) stays open. */
-      if (subscription.pendingPlan === 'expired') {
-        return { state: 'unavailable' as const, reason: 'cancelling' as const };
       }
       /* Only a NEW move to a year needs the sale switched on; undoing a switch away from one never does. */
       this.refuseUnofferedAnnual(interval);

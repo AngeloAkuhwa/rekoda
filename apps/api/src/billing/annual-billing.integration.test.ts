@@ -545,6 +545,11 @@ describe('switching between monthly and annual', () => {
     await putOnPlan(other.businessId, 'chat', 'monthly', new Date(Date.now() - 10 * DAY));
     await billing().switchInterval(other.businessId, 'annual');
     await billing().cancelPlan(other.businessId);
+    // Asking again for the same switch is not "scheduled": there is no renewal to take effect at.
+    expect(await billing().switchInterval(other.businessId, 'annual')).toEqual({
+      state: 'unavailable',
+      reason: 'cancelling',
+    });
     expect((await billing().switchInterval(other.businessId, 'monthly')).state).toBe('undone');
   });
 
