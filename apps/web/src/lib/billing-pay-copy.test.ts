@@ -7,6 +7,7 @@ import {
   emailVerifyCopy,
   lastPaymentFailed,
   needsEmailInput,
+  payHeading,
   pendingCharge,
   safeCheckoutUrl,
   tokenFromFragment,
@@ -212,5 +213,15 @@ describe('when the payment form asks for an email', () => {
     expect(needsEmailInput('a***@x.ng', {}, {})).toBe(false);
     expect(needsEmailInput('a***@x.ng', { askEmail: true }, {})).toBe(true);
     expect(needsEmailInput('a***@x.ng', {}, { askEmail: true })).toBe(true);
+  });
+});
+
+describe('the heading over a waiting charge', () => {
+  it('names a plan or an add-on, never calls a pack a plan', () => {
+    expect(payHeading('first_purchase')).toBe('Pay for your plan');
+    expect(payHeading('renewal')).toBe('Pay for your plan');
+    expect(payHeading('upgrade')).toBe('Pay for your plan');
+    expect(payHeading('add_on')).toBe('Pay for your add-on');
+    expect(payHeading('seat')).toBe('Pay for your add-on');
   });
 });

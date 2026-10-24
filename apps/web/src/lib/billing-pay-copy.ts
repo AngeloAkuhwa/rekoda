@@ -252,3 +252,12 @@ export function needsEmailInput(
 ): boolean {
   return maskedEmail === null || answers.some((answer) => answer.askEmail === true);
 }
+
+/** The heading over a waiting charge: a pack is not "your plan". */
+export function payHeading(kind: BillingChargeView['kind']): string {
+  return kind === 'add_on' || kind === 'seat' ? 'Pay for your add-on' : 'Pay for your plan';
+}
+
+/** Shown when the saved billing email could not be read, so the form is not mistaken for "none on file". */
+export const BILLING_EMAIL_UNREAD_COPY =
+  'We could not check the billing email on file just now. If you type one below it replaces the saved one.';

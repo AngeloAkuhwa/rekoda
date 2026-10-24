@@ -29,7 +29,14 @@ import { SignOutButton } from '../SignOutButton';
 import { buyPack, confirmPlanChange, switchInterval } from './actions';
 import { heldBy } from '@/lib/capabilities';
 import { chargeStatusLabel } from '@/lib/charge-status';
-import { lastPaymentFailed, pendingCharge, trialCopy, trialDaysLeft } from '@/lib/billing-pay-copy';
+import {
+  BILLING_EMAIL_UNREAD_COPY,
+  lastPaymentFailed,
+  payHeading,
+  pendingCharge,
+  trialCopy,
+  trialDaysLeft,
+} from '@/lib/billing-pay-copy';
 import { EmailForm } from './EmailForm';
 import { PayForms } from './PayForms';
 
@@ -140,7 +147,13 @@ export default async function BillingPage({
   const owner = isOwner(identity.role);
   /* The billing email is the owner's: a non-owner never asks for it. A failed read leaves the
    * card out rather than the page down. */
-  const email = owner ? await billingEmailStatus(token).catch(() => null) : null;
+  let emailUnread = false;
+  const email = owner
+    ? await billingEmailStatus(token).catch(() => {
+        emailUnread = true;
+        return null;
+      })
+    : null;
   const waiting = pendingCharge(overview.charges, params.pay);
   const lastFailed = waiting ? null : lastPaymentFailed(overview.charges);
   const firstPurchase = overview.plan === 'trial' || overview.plan === 'expired';
@@ -227,7 +240,7 @@ export default async function BillingPage({
       {/* ── a charge waiting for money (G-102 slice 2c) ── */}
       {waiting ? (
         <div className="rk-card" id="pay">
-          <h2>Pay for your plan</h2>
+          <h2>{payHeading(waiting.kind)}</h2>
           <p>
             <Money kobo={waiting.amountK} /> for{' '}
             {waiting.kind === 'add_on' && waiting.packLabel
@@ -240,6 +253,9 @@ export default async function BillingPage({
             You pay on Paystack&rsquo;s own page, and Rekoda never sees your card details. Reference{' '}
             <span className="rk-mono">{waiting.reference}</span>.
           </p>
+          {owner && emailUnread ? (
+            <p className="rk-fineprint">{BILLING_EMAIL_UNREAD_COPY}</p>
+          ) : null}
           {owner ? (
             <PayForms reference={waiting.reference} maskedEmail={email?.maskedEmail ?? null} />
           ) : (
