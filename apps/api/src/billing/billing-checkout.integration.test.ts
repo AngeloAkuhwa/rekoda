@@ -399,6 +399,45 @@ describe('what may be paid', () => {
     expect(provider.initialized).toHaveLength(1);
   });
 
+  it('hands out no link when the upgrade cycle ends while Paystack is being called', async () => {
+    const businessId = await seedBusiness();
+    await billingRepo.setPlan(appDb, {
+      businessId,
+      plan: 'chat',
+      expiresAt: new Date(Date.now() + 20 * 86_400_000),
+      actor: 'operator:test-g102',
+    });
+    await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.applyCycle(tx, businessId, {
+        plan: 'chat',
+        cycleStartedAt: new Date(Date.now() - 10 * 86_400_000),
+        renewsAt: new Date(Date.now() + 20 * 86_400_000),
+        anchorDay: new Date(Date.now() + 20 * 86_400_000).getUTCDate(),
+      }),
+    );
+    const upgrade = await plans().changePlan(businessId, 'complete');
+    if (upgrade.state !== 'payment_required') throw new Error('the upgrade should be payable');
+
+    /* The cycle runs out inside the provider call, after eligibility was read. */
+    const realInitialize = provider.initializeTransaction.bind(provider);
+    provider.initializeTransaction = async (input) => {
+      await withBusiness(appDb, businessId, (tx) =>
+        tx.execute(sql`
+          UPDATE businesses SET plan_expires_at = now() - interval '1 second'
+          WHERE id = ${businessId}::uuid
+        `),
+      );
+      return realInitialize(input);
+    };
+
+    const answer = await checkouts().checkout(businessId, upgrade.reference, 'ada@shop.example.ng');
+
+    expect(answer).toEqual({ state: 'unavailable', reason: 'cycle_ended' });
+    /* And the stored link is not handed out on a retry either. */
+    const retry = await checkouts().checkout(businessId, upgrade.reference, undefined);
+    expect(retry).toEqual({ state: 'unavailable', reason: 'cycle_ended' });
+  });
+
   it('refuses an upgrade on a cycle that is not a provider-bought month', async () => {
     const businessId = await seedBusiness();
     /* An operator grant is a custom cycle: never prorated or upgraded by payment. */

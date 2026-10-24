@@ -32,6 +32,12 @@ import { PAYMENT_PROVIDER, type PaymentProviderPort } from '../payments/provider
 /** A sealed billing email belongs to one business: a blob copied onto another row fails to open. */
 const emailAad = (businessId: string): string => `billing-email:${businessId}`;
 
+/** The later of the request's clock and the wall clock, read when a link is about to be handed out. */
+const handoffTime = (now: Date): Date => {
+  const wall = new Date();
+  return wall > now ? wall : now;
+};
+
 type Prepared =
   | { state: 'done'; response: BillingCheckoutResponse }
   | { state: 'initialise'; reference: string; amountK: number; email: string };
@@ -89,17 +95,33 @@ export class BillingCheckoutService {
       /* Two tabs can both reach here with one reference, and Paystack refuses
        * the second. If the first has already stored its link, that link is the
        * answer; otherwise this is an outage, not a result. */
-      const stored = await this.storedCheckout(businessId, prepared.reference, now);
+      const stored = await this.storedCheckout(businessId, prepared.reference, handoffTime(now));
       if (stored) return { state: 'ready', reference: prepared.reference, ...stored };
       this.log.warn(`Paystack initialize failed: ${error instanceof Error ? error.name : 'error'}`);
       throw new ServiceUnavailableException('the payment provider is not reachable right now');
     }
 
-    const recorded = await withBusiness(this.db, businessId, (tx) =>
-      subscriptionsRepo.recordCheckout(tx, businessId, prepared.reference, url, now),
-    );
-    /* Paid, failed or retired while the provider call was in flight. */
-    if (!recorded) return { state: 'unavailable', reason: 'not_pending' };
+    /* The provider call takes real time: an upgrade's cycle can end inside it,
+     * and a link handed out then would be paid for an upgrade settlement refuses.
+     * The link is still stored (first writer wins), but never handed out once
+     * the charge is refusable at the moment of handoff. */
+    const handoff = handoffTime(now);
+    const outcome = await withBusiness(this.db, businessId, async (tx) => {
+      const recorded = await subscriptionsRepo.recordCheckout(
+        tx,
+        businessId,
+        prepared.reference,
+        url,
+        now,
+      );
+      /* Paid, failed or retired while the provider call was in flight. */
+      if (!recorded) return { refused: 'not_pending' as const };
+      const charge = await subscriptionsRepo.chargeByReference(tx, businessId, prepared.reference);
+      const refused = charge ? await this.refusal(tx, businessId, charge, handoff) : 'not_pending';
+      return refused ? { refused } : { recorded };
+    });
+    if ('refused' in outcome) return { state: 'unavailable', reason: outcome.refused };
+    const recorded = outcome.recorded;
     return {
       state: 'ready',
       reference: prepared.reference,
