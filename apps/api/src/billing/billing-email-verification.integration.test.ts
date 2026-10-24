@@ -113,6 +113,28 @@ async function pendingCharge(businessId: string): Promise<string> {
   return answer.reference;
 }
 
+describe('who may touch the verification evidence', () => {
+  it('gives the worker role nothing on it, and the app role no delete', async () => {
+    const businessId = await seedBusiness();
+    const rows = await sql1<{ worker: boolean; app_delete: boolean; app_write: boolean }>(
+      businessId,
+      sql`SELECT
+            has_table_privilege('rekoda_worker', 'billing_email_verifications',
+                                'SELECT,INSERT,UPDATE,DELETE') AS worker,
+            has_table_privilege('rekoda_app', 'billing_email_verifications', 'DELETE') AS app_delete,
+            has_table_privilege('rekoda_app', 'billing_email_verifications', 'INSERT') AS app_write`,
+    );
+    expect(rows[0]).toEqual({ worker: false, app_delete: false, app_write: true });
+    for (const privilege of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
+      const one = await sql1<{ ok: boolean }>(
+        businessId,
+        sql`SELECT has_table_privilege('rekoda_worker', 'billing_email_verifications', ${privilege}) AS ok`,
+      );
+      expect(one[0]!.ok, privilege).toBe(false);
+    }
+  });
+});
+
 describe('the status the page shows', () => {
   it('has no address and no proof before one is given', async () => {
     const businessId = await seedBusiness();
