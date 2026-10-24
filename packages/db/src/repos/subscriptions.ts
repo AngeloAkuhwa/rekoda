@@ -1008,6 +1008,12 @@ export interface AttemptRow extends Record<string, unknown> {
   createdAt: Date;
   updatedAt: Date;
   /**
+   * The billing email's revision this session was started with (OWN-51), null for a
+   * session that predates it. A session started for an address the merchant has since
+   * replaced is not handed out again.
+   */
+  emailRevision: number | null;
+  /**
    * Milliseconds since the attempt last changed (opened, or its link stored),
    * measured by the DATABASE clock in the query that read it. Only `liveAttempt`
    * reads it; elsewhere it is 0. Never compare `updatedAt` with the server's
@@ -1026,6 +1032,7 @@ interface RawAttempt extends Record<string, unknown> {
   checkout_url: string | null;
   created_at: string;
   updated_at: string;
+  email_revision?: number | null;
   idle_ms?: string | number | null;
 }
 
@@ -1039,6 +1046,7 @@ const shapeAttempt = (row: RawAttempt): AttemptRow => ({
   checkoutUrl: row.checkout_url,
   createdAt: new Date(row.created_at),
   updatedAt: new Date(row.updated_at),
+  emailRevision: row.email_revision == null ? null : Number(row.email_revision),
   idleMs: row.idle_ms == null ? 0 : Math.max(0, Number(row.idle_ms)),
 });
 
@@ -1149,13 +1157,18 @@ export async function openAttempt(
     chargeId: string;
     attemptNo: number;
     providerReference: string;
+    /** False for a session adopted from before attempts existed: its address is unknown. */
+    bindEmail?: boolean;
   },
 ): Promise<AttemptRow | null> {
+  const bind = input.bindEmail !== false;
   const rows = await tx.execute<RawAttempt>(sql`
     INSERT INTO subscription_charge_attempts
-      (business_id, charge_id, attempt_no, provider_reference, status)
-    VALUES (${input.businessId}::uuid, ${input.chargeId}::uuid, ${input.attemptNo},
-            ${input.providerReference}, 'initializing')
+      (business_id, charge_id, attempt_no, provider_reference, status, email_revision)
+    SELECT ${input.businessId}::uuid, ${input.chargeId}::uuid, ${input.attemptNo},
+           ${input.providerReference}, 'initializing',
+           CASE WHEN ${bind} THEN b.billing_email_revision END
+    FROM businesses b WHERE b.id = ${input.businessId}::uuid
     ON CONFLICT DO NOTHING
     RETURNING *
   `);
@@ -1214,6 +1227,8 @@ export async function supersedeOtherLiveAttempts(
 /* ── proving the billing email's mailbox (migration 0174, G-102 slice 2b, OWN-51) ── */
 
 export interface BillingEmailState {
+  /** Counts every change of address; a mailed link and a checkout session are bound to it. */
+  revision: number;
   /** The sealed address, null when none has been given. */
   sealed: string | null;
   /** When it was last set. A mailed link is bound to this instant. */
@@ -1230,13 +1245,16 @@ export async function billingEmailState(
     sealed: string | null;
     set_at: string | null;
     verified_at: string | null;
+    revision: number;
   }>(sql`
     SELECT billing_email_sealed AS sealed, billing_email_set_at AS set_at,
+           billing_email_revision AS revision,
            billing_email_verified_at AS verified_at
     FROM businesses WHERE id = ${businessId}::uuid
   `);
   const row = [...rows][0];
   return {
+    revision: Number(row?.revision ?? 0),
     sealed: row?.sealed ?? null,
     setAt: at(row?.set_at ?? null),
     verifiedAt: at(row?.verified_at ?? null),

@@ -426,6 +426,33 @@ describe('a live payment', () => {
     expect((await emails().status(businessId)).verified).toBe(false);
   });
 
+  it('does not hand back the old link once the address was changed by asking for a link', async () => {
+    const businessId = await seedBusiness();
+    const reference = await pendingCharge(businessId);
+    await checkouts().checkout(businessId, reference, EMAIL);
+    await emails().confirm(businessId, await mailed(businessId));
+    expect((await checkouts(liveConfig()).checkout(businessId, reference, undefined)).state).toBe(
+      'ready',
+    );
+
+    /* The address changes through the verification route, not through checkout. */
+    await age(businessId, 61);
+    await emails().requestVerification(businessId, OTHER);
+
+    /* No address given, and none needed: the one on file is the new, unproven one. */
+    expect(await checkouts(liveConfig()).checkout(businessId, reference, undefined)).toMatchObject({
+      state: 'requires_billing_email_verification',
+    });
+
+    /* Proven, the old session still is not reused: it was started for the other address. */
+    await emails().confirm(businessId, tokenFrom(mail.outbox.at(-1)!));
+    const initialisedBefore = provider.initialized.length;
+    const answer = await checkouts(liveConfig()).checkout(businessId, reference, undefined);
+    expect(answer.state).toBe('ready');
+    expect(provider.initialized).toHaveLength(initialisedBefore + 1);
+    expect(provider.initialized.at(-1)!.customerEmail).toBe(OTHER);
+  });
+
   it('starts a fresh session for a different address on a test key', async () => {
     const businessId = await seedBusiness();
     const reference = await pendingCharge(businessId);

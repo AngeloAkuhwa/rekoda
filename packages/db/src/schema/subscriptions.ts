@@ -100,6 +100,8 @@ export const subscriptionChargeAttempts = pgTable('subscription_charge_attempts'
   /** initializing | active | ambiguous | superseded | paid | duplicate_paid | failed */
   status: text('status').notNull().default('initializing'),
   checkoutUrl: text('checkout_url'),
+  /** The business's `billing_email_revision` when the session was started (migration 0174). */
+  emailRevision: integer('email_revision'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

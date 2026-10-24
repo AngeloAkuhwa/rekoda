@@ -20,6 +20,12 @@ ALTER TABLE businesses
   ADD COLUMN billing_email_verified_at timestamptz,
   ADD COLUMN billing_email_revision integer NOT NULL DEFAULT 0;
 
+-- A checkout session is started for one address. Binding it to the revision lets a later
+-- request see that the address has changed since, and not hand the old session out.
+-- NULL for a session that predates this column: its address is unknown.
+ALTER TABLE subscription_charge_attempts
+  ADD COLUMN email_revision integer;
+
 CREATE TABLE IF NOT EXISTS billing_email_verifications (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   business_id   uuid NOT NULL REFERENCES businesses(id),

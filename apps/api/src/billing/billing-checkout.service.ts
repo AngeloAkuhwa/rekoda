@@ -208,6 +208,7 @@ export class BillingCheckoutService {
           chargeId: charge.id,
           attemptNo: 1,
           providerReference: attemptReference(charge.reference, 1),
+          bindEmail: false,
         });
         if (adopted) {
           await subscriptionsRepo.recordAttemptCheckout(
@@ -225,11 +226,7 @@ export class BillingCheckoutService {
         /* A different address than the one this session was started for must not be
          * answered with the old link: it is saved and proven first (OWN-51), and a
          * session already open for the old address is replaced once it is allowed. */
-        if (
-          live.status === 'active' &&
-          given &&
-          (await this.differsFromOnFile(tx, businessId, given))
-        ) {
+        if (live.status === 'active' && (await this.sessionStale(tx, businessId, live, given))) {
           const ready = await this.readyEmail(tx, businessId, given, now);
           if ('response' in ready) return { state: 'done', response: ready.response };
           return { state: 'resolve', attempt: live };
@@ -322,14 +319,21 @@ export class BillingCheckoutService {
     return subscriptionsRepo.lockChargeByReference(tx, businessId, reference);
   }
 
-  private async differsFromOnFile(
+  /**
+   * Was this session started for an address other than the one now on file, or is
+   * the merchant giving a different one? Then its link must not be handed out as is.
+   */
+  private async sessionStale(
     tx: TenantDb,
     businessId: string,
-    given: string,
+    live: subscriptionsRepo.AttemptRow,
+    given: string | null,
   ): Promise<boolean> {
-    const sealed = await subscriptionsRepo.billingEmailSealed(tx, businessId);
-    if (!sealed) return true;
-    return decryptFacet(sealed, this.config.vaultKey, emailAad(businessId)) !== given;
+    const state = await subscriptionsRepo.billingEmailState(tx, businessId);
+    if (live.emailRevision !== null && live.emailRevision !== state.revision) return true;
+    if (!given) return false;
+    if (!state.sealed) return true;
+    return decryptFacet(state.sealed, this.config.vaultKey, emailAad(businessId)) !== given;
   }
 
   /**
