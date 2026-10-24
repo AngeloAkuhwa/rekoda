@@ -264,7 +264,7 @@ export default async function BillingPage({
       {paidPlan &&
       overview.status.state !== 'expired' &&
       isOwner(identity.role) &&
-      showFrequencyCard(overview) ? (
+      showFrequencyCard({ ...overview, state: overview.status.state }) ? (
         <div className="rk-card">
           <h2>Billing frequency</h2>
           <p className="rk-fineprint">

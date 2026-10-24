@@ -139,14 +139,18 @@ export function nextRenewalAnnualK(overview: {
  * Whether the Billing frequency card has anything to say. With yearly billing off, a
  * monthly subscriber has no action and no waiting switch, so the card would only
  * advertise a feature that is not on sale. A cancellation leaves no renewal to switch
- * for, so only a waiting switch (to undo) keeps the card.
+ * for, so only a waiting switch (to undo) keeps the card. In grace the renewal is
+ * already overdue and the late-renewal behaviour of a switch is not yet decided
+ * (slice 3), so a new switch is not offered there either.
  */
 export function showFrequencyCard(o: {
+  state?: string;
   interval: 'monthly' | 'annual';
   annualOffered: boolean;
   pendingPlan: string | null;
   pendingInterval: 'monthly' | 'annual' | null;
 }): boolean {
   if (o.pendingInterval) return true;
+  if (o.state === 'grace') return false;
   return o.pendingPlan !== 'expired' && canOfferSwitch(o.interval, o.annualOffered);
 }

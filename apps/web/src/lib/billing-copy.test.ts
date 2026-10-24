@@ -174,5 +174,9 @@ describe('the price a plan is sold at', () => {
     expect(showFrequencyCard({ ...base, pendingPlan: 'expired', pendingInterval: 'annual' })).toBe(
       true,
     );
+    // grace: no new switch (late-renewal behaviour is slice 3), but a waiting one can be undone
+    expect(showFrequencyCard({ ...base, annualOffered: true, state: 'grace' })).toBe(false);
+    expect(showFrequencyCard({ ...base, interval: 'annual', state: 'grace' })).toBe(false);
+    expect(showFrequencyCard({ ...base, state: 'grace', pendingInterval: 'annual' })).toBe(true);
   });
 });
