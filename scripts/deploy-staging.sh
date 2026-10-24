@@ -76,6 +76,9 @@ SKIPPED=75
 LIVE_MARKER=false
 RELEASE=
 PREPARED_SHA=
+# The baseline release of an interrupted live deploy this run finishes: when the
+# retry re-deploys the release already running, that baseline is the rollback.
+MARKER_PREV_RELEASE=
 
 # What a run leaves behind if it is killed where no trap can run (SIGKILL, a
 # runner torn down): the phase it reached and the baseline it started from.
@@ -372,6 +375,7 @@ recover_interrupted() {
     fail "$REKODA_DIR/$STATE is unreadable; reconcile by hand as the runbook's \"An interrupted staging deploy\" says"
   if [ "$phase" = live ]; then
     LIVE_MARKER=true
+    MARKER_PREV_RELEASE=$s_prev_rel
     return 0
   fi
   [ "$phase" = prepared ] || fail "$REKODA_DIR/$STATE names an unknown phase; reconcile by hand"
@@ -538,8 +542,10 @@ PHASE=done
 printf '\nstaging is %s (%s)\n' "$RELEASE" "$SHA"
 # Only now, with the new release proven healthy and the marker gone: keep it and
 # the release it replaced (the rollback this run proved was running), drop older.
-if [ "$PREV_RELEASE" != "$RELEASE" ]; then
-  printf '%s\n' "$PREV_RELEASE" >"$ROLLBACK_FILE.tmp" && mv -f "$ROLLBACK_FILE.tmp" "$ROLLBACK_FILE" || true
+rollback=$PREV_RELEASE
+[ "$rollback" != "$RELEASE" ] || rollback=$MARKER_PREV_RELEASE
+if [ -n "$rollback" ] && [ "$rollback" != "$RELEASE" ]; then
+  printf '%s\n' "$rollback" >"$ROLLBACK_FILE.tmp" && mv -f "$ROLLBACK_FILE.tmp" "$ROLLBACK_FILE" || true
 fi
 step 'remove superseded staging images (keeping the running release and its rollback)'
 prune_releases routine

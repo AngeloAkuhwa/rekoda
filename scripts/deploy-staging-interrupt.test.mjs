@@ -670,3 +670,18 @@ test('a verified deploy records the release it replaced, and a later urgent clea
     'rekoda-web:staging-bbbbbbb',
   ]);
 });
+
+test('finishing an interrupted live deploy keeps the release it started from as the rollback', () => {
+  const h = host();
+  h.killedWhilePrepared('live');
+  writeFileSync(join(h.fake, 'health.json'), readFileSync(join(h.fake, 'next-health.json')));
+  h.images(app(h.next), app(h.prev), ...OLD);
+  const r = h.run(h.next);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.equal(h.read.marker(), false);
+  assert.equal(
+    readFileSync(join(h.dir, '.git/rekoda-deploy-staging.rollback'), 'utf8').trim(),
+    `staging-${h.prev.slice(0, 7)}`,
+  );
+  assert.deepEqual(h.removed().sort(), [...OLD].sort());
+});
