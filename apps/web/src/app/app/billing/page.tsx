@@ -237,8 +237,8 @@ export default async function BillingPage({
             {chargeIntervalSuffix(waiting.kind, waiting.interval)}
           </p>
           <p className="rk-fineprint">
-            Nothing has been charged yet. You pay on Paystack&rsquo;s own page, and Rekoda never
-            sees your card details. Reference <span className="rk-mono">{waiting.reference}</span>.
+            You pay on Paystack&rsquo;s own page, and Rekoda never sees your card details. Reference{' '}
+            <span className="rk-mono">{waiting.reference}</span>.
           </p>
           {owner ? (
             <PayForms reference={waiting.reference} maskedEmail={email?.maskedEmail ?? null} />
