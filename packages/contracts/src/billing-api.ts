@@ -118,6 +118,8 @@ export const billingOverviewResponse = z.object({
   interval: billingInterval,
   /** A switch of interval waiting for the next renewal, or null. */
   pendingInterval: billingInterval.nullable(),
+  /** What each plan on sale costs this business now (the active catalogue, through its pin): a month and a year. */
+  planPrices: z.array(z.object({ plan: z.string(), monthlyK: kobo, annualK: kobo })),
   /** Whether a year can be newly chosen (a first purchase or a switch to yearly). Off until annual billing is switched on. */
   annualOffered: z.boolean(),
   status: billingStateView,

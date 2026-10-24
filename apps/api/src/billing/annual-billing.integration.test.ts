@@ -632,6 +632,14 @@ describe('review of #340: three ways a year could be mispriced or misapplied', (
     const quote = await billing().quote(businessId, 'chat', new Date(), 'annual');
     expect(quote).toMatchObject({ kind: 'first_purchase', amountK: 14_900_000 });
 
+    /* The plan table is fed from the same catalogue, so it cannot show a different price. */
+    const overview = await billing().overview(businessId);
+    expect(overview.planPrices.find((row) => row.plan === 'chat')).toEqual({
+      plan: 'chat',
+      monthlyK: 1_490_000,
+      annualK: 14_900_000,
+    });
+
     /* A merchant pinned to that version who switches to yearly is renewed at a payable price. */
     const other = await onboard();
     await putOnPlan(other.businessId, 'chat', 'monthly', new Date(Date.now() - 35 * DAY));

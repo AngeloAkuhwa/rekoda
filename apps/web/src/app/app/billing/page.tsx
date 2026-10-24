@@ -12,6 +12,7 @@ import {
   partlyRefunded,
   pendingIntervalCopy,
   perInterval,
+  soldPrice,
   switchIntervalOffer,
   undoIntervalLabel,
   undoPendingLabel,
@@ -475,7 +476,11 @@ export default async function BillingPage({
                     </td>
                     <td className="rk-num">
                       <Money
-                        kobo={firstPurchase && browsing === 'annual' ? plan.annualK : plan.monthlyK}
+                        kobo={
+                          firstPurchase && browsing === 'annual'
+                            ? (soldPrice(overview, plan.id)?.annualK ?? plan.annualK)
+                            : (soldPrice(overview, plan.id)?.monthlyK ?? plan.monthlyK)
+                        }
                       />
                     </td>
                     <td>

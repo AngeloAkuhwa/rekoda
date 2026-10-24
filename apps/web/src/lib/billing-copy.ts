@@ -110,3 +110,11 @@ export function browsingInterval(
 export function canOfferSwitch(interval: 'monthly' | 'annual', annualOffered: boolean): boolean {
   return interval === 'annual' || annualOffered;
 }
+
+/** The price the API sells a plan at for this business, or undefined for a plan it does not list. */
+export function soldPrice<K>(
+  overview: { planPrices: { plan: string; monthlyK: K; annualK: K }[] },
+  plan: string,
+): { monthlyK: K; annualK: K } | undefined {
+  return overview.planPrices.find((row) => row.plan === plan);
+}

@@ -9,6 +9,7 @@ import {
   partlyRefunded,
   pendingIntervalCopy,
   perInterval,
+  soldPrice,
   switchIntervalOffer,
   undoIntervalLabel,
   undoPendingLabel,
@@ -125,5 +126,16 @@ describe('yearly billing gating', () => {
     expect(canOfferSwitch('monthly', false)).toBe(false);
     expect(canOfferSwitch('monthly', true)).toBe(true);
     expect(canOfferSwitch('annual', false)).toBe(true);
+  });
+});
+
+describe('the price a plan is sold at', () => {
+  it('is the API row for that plan, and nothing for a plan the API does not list', () => {
+    const overview = { planPrices: [{ plan: 'chat', monthlyK: 1_490_000, annualK: 14_900_000 }] };
+    expect(soldPrice(overview, 'chat')).toMatchObject({
+      monthlyK: 1_490_000,
+      annualK: 14_900_000,
+    });
+    expect(soldPrice(overview, 'complete')).toBeUndefined();
   });
 });
