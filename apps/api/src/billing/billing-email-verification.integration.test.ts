@@ -477,6 +477,26 @@ describe('a live payment', () => {
     }
   });
 
+  it('does not reuse a session from before revisions were recorded once the address changed', async () => {
+    const businessId = await seedBusiness();
+    const reference = await pendingCharge(businessId);
+    await checkouts().checkout(businessId, reference, EMAIL);
+    /* Make the session look like one created before migration 0174. */
+    await sql1(
+      businessId,
+      sql`UPDATE subscription_charge_attempts SET email_revision = NULL
+          WHERE business_id = ${businessId}::uuid`,
+    );
+    await emails().confirm(businessId, await mailed(businessId));
+    await age(businessId, 61);
+    await emails().requestVerification(businessId, OTHER);
+    await emails().confirm(businessId, tokenFrom(mail.outbox.at(-1)!));
+
+    const answer = await checkouts(liveConfig()).checkout(businessId, reference, undefined);
+    expect(answer.state).toBe('ready');
+    expect(provider.initialized.at(-1)!.customerEmail).toBe(OTHER);
+  });
+
   it('starts a fresh session for a different address on a test key', async () => {
     const businessId = await seedBusiness();
     const reference = await pendingCharge(businessId);

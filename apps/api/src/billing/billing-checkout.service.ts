@@ -341,7 +341,10 @@ export class BillingCheckoutService {
     given: string | null,
   ): Promise<boolean> {
     const state = await subscriptionsRepo.billingEmailState(tx, businessId);
-    if (live.emailRevision !== null && live.emailRevision !== state.revision) return true;
+    /* A session that predates the column was started before any address change was
+     * counted, so it belongs to revision 0: it stays valid until the address changes,
+     * and is replaced (after Paystack is asked about it) from then on. */
+    if ((live.emailRevision ?? 0) !== state.revision) return true;
     if (!given) return false;
     if (!state.sealed) return true;
     return decryptFacet(state.sealed, this.config.vaultKey, emailAad(businessId)) !== given;
