@@ -208,6 +208,20 @@ describe('a yearly renewal nobody pays', () => {
     const { businessId } = await unpaidYear();
     const failedAt = (await subOf(businessId))!.paymentFailedAt!;
     const sender = new StubSender();
+    /* A record the merchant made, so "nothing deleted" is proven against something that exists. */
+    const customersOf = (id: string) =>
+      withBusiness(db, id, async (tx) => {
+        const rows = await tx.execute<{ n: number }>(
+          sql`SELECT count(*)::int AS n FROM customers WHERE business_id = ${id}::uuid`,
+        );
+        return [...rows][0]?.n;
+      });
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(
+        sql`INSERT INTO customers (business_id, token) VALUES (${businessId}::uuid, 'CUSTOMER_KEEP1')`,
+      ),
+    );
+    expect(await customersOf(businessId)).toBe(1);
 
     expect(
       await sweepGracePeriods(sweepDeps(sender), new Date(failedAt.getTime() + 6 * DAY)),
@@ -226,6 +240,7 @@ describe('a yearly renewal nobody pays', () => {
       status: 'pending',
       amountK: CHAT_ANNUAL,
     });
+    expect(await customersOf(businessId)).toBe(1);
     expect(
       await withBusiness(db, businessId, (tx) => issueRepo.ledgerEntriesFor(tx, businessId)),
     ).toHaveLength(0);
