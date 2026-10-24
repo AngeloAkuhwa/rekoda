@@ -212,7 +212,11 @@ echo 'ok'
 
 step 'PostgreSQL starts, and is not reachable from the host'
 "${COMPOSE[@]}" up -d --wait postgres
-if "${COMPOSE[@]}" port postgres 5432 >/dev/null 2>&1; then fail 'postgres publishes a port'; fi
+# Decided by what `compose port` prints, not by its exit status: a published port
+# always prints its host address, while an unpublished one errors on some Compose
+# versions and prints nothing with a zero exit on others.
+published=$("${COMPOSE[@]}" port postgres 5432 2>/dev/null || true)
+[ -z "$published" ] || fail 'postgres publishes a port'
 if (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; then fail 'something answers on 5432'; fi
 echo 'ok'
 
