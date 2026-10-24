@@ -1,12 +1,14 @@
 import type { BillingChargeView } from '@rekoda/contracts';
 import { describe, expect, it } from 'vitest';
 import {
+  checkoutInputProblem,
   checkoutRefusalCopy,
   confirmCopy,
   emailVerifyCopy,
   lastPaymentFailed,
   pendingCharge,
   safeCheckoutUrl,
+  tokenFromFragment,
   trialCopy,
   trialDaysLeft,
 } from './billing-pay-copy';
@@ -182,5 +184,23 @@ describe('billing email and confirmation wording', () => {
     const titles = new Set(states.map((s) => confirmCopy(s).title));
     expect(titles.size).toBe(states.length);
     expect(confirmCopy('invalid').body).toMatch(/used already|different Rekoda account/);
+  });
+});
+
+describe('values that reach the checkout and confirmation forms', () => {
+  it('reads a token from the fragment and treats an empty or short one as missing', () => {
+    const token = 'abcdefghijklmnop1234567890_-AB';
+    expect(tokenFromFragment(`#token=${token}`)).toBe(token);
+    expect(tokenFromFragment(`#${token}`)).toBe(token);
+    expect(tokenFromFragment('#token=')).toBeNull();
+    expect(tokenFromFragment('#token=short')).toBeNull();
+    expect(tokenFromFragment('')).toBeNull();
+  });
+  it('turns an out-of-range reference or address into a sentence before the API is called', () => {
+    expect(checkoutInputProblem('REF-1', 'a@b.ng')).toBeNull();
+    expect(checkoutInputProblem('', '')).toMatch(/Nothing was charged/);
+    expect(checkoutInputProblem('x'.repeat(65), '')).toMatch(/Nothing was charged/);
+    expect(checkoutInputProblem('REF-1', 'a'.repeat(321))).toMatch(/too long/);
+    expect(checkoutInputProblem('REF-1', 'a'.repeat(320))).toBeNull();
   });
 });

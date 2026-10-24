@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useTransition } from 'react';
 import { Button } from '@/components/ui/Button';
-import { confirmCopy, type ConfirmState } from '@/lib/billing-pay-copy';
+import { confirmCopy, tokenFromFragment, type ConfirmState } from '@/lib/billing-pay-copy';
 import { confirmBillingEmailAction } from './actions';
 
 /**
@@ -19,7 +19,7 @@ export function ConfirmEmail() {
   useEffect(() => {
     const read = () => {
       const raw = window.location.hash.replace(/^#/, '');
-      const found = new URLSearchParams(raw).get('token') ?? (raw.length >= 16 ? raw : null);
+      const found = tokenFromFragment(raw);
       /* Nothing in the address bar means keep what we already hold (we clear it after reading). */
       if (found === null && raw === '') return;
       setToken(found);

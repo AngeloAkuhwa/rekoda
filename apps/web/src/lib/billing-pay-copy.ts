@@ -15,7 +15,7 @@ import type {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Whole days left in a trial, never negative. A trial that ends today has 0. */
+/** Whole days left in a trial, never negative. Any time left rounds up to a day; 0 only once the end has passed. */
 export function trialDaysLeft(endsAtIso: string, now: Date): number {
   const left = new Date(endsAtIso).getTime() - now.getTime();
   return left <= 0 ? 0 : Math.ceil(left / DAY_MS);
@@ -218,4 +218,26 @@ export function confirmCopy(state: ConfirmState): { title: string; body: string 
         body: 'This page needs the full link we emailed you, including everything after the #. Open it from the email again, or ask for a new one on the billing page.',
       };
   }
+}
+
+/**
+ * The confirmation token in a URL fragment: `#token=...`, or a bare token. Anything shorter than a
+ * real token (such as an empty `#token=`) is treated as missing, so no dead button is shown.
+ */
+export function tokenFromFragment(hash: string): string | null {
+  const raw = hash.replace(/^#/, '');
+  const candidate = raw.startsWith('token=') ? raw.slice('token='.length) : raw;
+  return candidate.length >= 16 ? candidate : null;
+}
+
+/** The limits the API enforces, checked first so an out-of-range value gets a sentence, not an error page. */
+export function checkoutInputProblem(reference: string, billingEmail: string): string | null {
+  if (reference.length === 0 || reference.length > 64) {
+    return 'We could not find that payment request. Nothing was charged.';
+  }
+  return billingEmailLengthProblem(billingEmail);
+}
+
+export function billingEmailLengthProblem(billingEmail: string): string | null {
+  return billingEmail.length > 320 ? 'That email address is too long. Nothing was charged.' : null;
 }

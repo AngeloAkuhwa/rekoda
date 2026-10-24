@@ -4,7 +4,13 @@ import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 import { ApiForbidden, billingCheckout, billingEmailVerify, viewOnlyRefusal } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
-import { checkoutRefusalCopy, emailVerifyCopy, safeCheckoutUrl } from '@/lib/billing-pay-copy';
+import {
+  billingEmailLengthProblem,
+  checkoutInputProblem,
+  checkoutRefusalCopy,
+  emailVerifyCopy,
+  safeCheckoutUrl,
+} from '@/lib/billing-pay-copy';
 
 export interface PayFormState {
   error?: string;
@@ -27,6 +33,8 @@ async function startCheckoutUnguarded(
 
   const reference = String(formData.get('reference') ?? '');
   const typed = String(formData.get('billingEmail') ?? '').trim();
+  const problem = checkoutInputProblem(reference, typed);
+  if (problem) return { error: problem };
   const restart = formData.get('restart') === '1';
   const answer = await billingCheckout(token, {
     reference,
@@ -67,6 +75,8 @@ async function sendConfirmationUnguarded(
   if (!token) redirect('/start');
 
   const typed = String(formData.get('billingEmail') ?? '').trim();
+  const tooLong = billingEmailLengthProblem(typed);
+  if (tooLong) return { error: tooLong };
   const answer = await billingEmailVerify(token, typed || undefined);
   revalidatePath('/app/billing');
   const copy = emailVerifyCopy(answer);
