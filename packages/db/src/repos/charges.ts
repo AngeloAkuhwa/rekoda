@@ -4,7 +4,7 @@
  * repo enforces it again at the write, because a charge a merchant did
  * not choose must not exist however it was asked for.
  */
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import {
   SurchargeNotConfigured,
   type ChargeBeneficiary,
@@ -13,7 +13,7 @@ import {
 } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { orders } from '../schema/commerce.js';
-import { payments } from '../schema/finance.js';
+import { invoices, payments } from '../schema/finance.js';
 import { auditEvents } from '../schema/ops.js';
 import { paymentCharges, paymentIntents } from '../schema/payments-hub.js';
 
@@ -152,7 +152,7 @@ export async function resolveOrderProcessingFee(
   if (!charge) return 'no_estimate';
 
   const orderRows = await tx
-    .select({ totalK: orders.totalK })
+    .select({ totalK: orders.totalK, invoiceId: orders.invoiceId })
     .from(orders)
     .where(and(eq(orders.businessId, businessId), eq(orders.id, orderId)))
     .limit(1);
@@ -176,15 +176,38 @@ export async function resolveOrderProcessingFee(
     .where(
       and(
         eq(payments.businessId, businessId),
-        eq(paymentIntents.orderId, orderId),
+        /* Production intents name the invoice, never the order (the checkout
+         * services mint them from `orders.invoiceId`), so the order is found
+         * through either link. */
+        or(
+          eq(paymentIntents.orderId, orderId),
+          order.invoiceId ? eq(paymentIntents.invoiceId, order.invoiceId) : sql`false`,
+        ),
         eq(payments.verified, 1),
         inArray(payments.status, ['confirmed', 'partially_refunded']),
       ),
     );
-  const paidK = paid.reduce((sum, p) => sum + Number(p.amountK), 0);
-  if (paid.length === 0 || paidK < Number(order.totalK)) return 'awaiting_payment';
+  if (paid.length === 0) return 'awaiting_payment';
+  /* Fully paid is read from what stands, not from gross payment amounts: a
+   * part-refund unwinds allocations and reopens the invoice balance, and a
+   * fee resolved over a reopened order would miss the next payment's fee. */
+  if (order.invoiceId) {
+    const inv = await tx
+      .select({ balanceDueK: invoices.balanceDueK })
+      .from(invoices)
+      .where(and(eq(invoices.businessId, businessId), eq(invoices.id, order.invoiceId)))
+      .limit(1);
+    if (!inv[0] || Number(inv[0].balanceDueK) !== 0) return 'awaiting_payment';
+  } else if (paid.reduce((sum, p) => sum + Number(p.amountK), 0) < Number(order.totalK)) {
+    return 'awaiting_payment';
+  }
   if (paid.some((p) => p.settlementStatus !== 'settled')) return 'awaiting_settlement';
-  if (paid.some((p) => p.providerFeeK === null)) return 'no_fee_evidence';
+  /* Paystack verify maps an absent `fees` to 0, so a stated zero cannot be
+   * told from no evidence; a real card or transfer fee is never zero, and a
+   * wrongly final zero is worse than an estimate that stays. */
+  if (paid.some((p) => p.providerFeeK === null || Number(p.providerFeeK) <= 0)) {
+    return 'no_fee_evidence';
+  }
 
   const actualMinor = paid.reduce((sum, p) => sum + Number(p.providerFeeK), 0);
   const resolved = await resolveChargeActual(tx, {
@@ -214,7 +237,7 @@ export async function orderIdsForPayments(
 ): Promise<string[]> {
   if (paymentIds.length === 0) return [];
   const rows = await tx
-    .selectDistinct({ orderId: paymentIntents.orderId })
+    .selectDistinct({ orderId: orders.id })
     .from(payments)
     .innerJoin(
       paymentIntents,
@@ -223,6 +246,13 @@ export async function orderIdsForPayments(
         eq(paymentIntents.id, payments.paymentIntentId),
       ),
     )
+    .innerJoin(
+      orders,
+      and(
+        eq(orders.businessId, payments.businessId),
+        or(eq(orders.id, paymentIntents.orderId), eq(orders.invoiceId, paymentIntents.invoiceId)),
+      ),
+    )
     .where(and(eq(payments.businessId, businessId), inArray(payments.id, paymentIds)));
-  return rows.map((r) => r.orderId).filter((id): id is string => id !== null);
+  return rows.map((r) => r.orderId);
 }

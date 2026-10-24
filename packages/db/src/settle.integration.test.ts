@@ -943,6 +943,8 @@ describe('an order processing fee becomes ACTUAL at settlement (G-116, OWN-42)',
         sourceId: 'g116-draft',
         actor: 'system',
       });
+      // What the checkout does: the order becomes its invoice.
+      await ordersRepo.markOrder(tx, businessId, order.id, 'placed', 'validated', sale.invoiceId);
       return { orderId: order.id, chargeId: charge.id, invoiceId: sale.invoiceId };
     });
   }
@@ -952,6 +954,9 @@ describe('an order processing fee becomes ACTUAL at settlement (G-116, OWN-42)',
     seeded: { orderId: string; invoiceId: string },
     amountK: number,
     providerFeeK: number,
+    /** Production intents carry the invoice only; the order link is the
+     * invoice. Pass true to also set the intent's own order id. */
+    withOrderId = false,
   ) {
     return withBusiness(db, businessId, async (tx) => {
       const intent = await paymentsHub.createIntent(tx, {
@@ -960,7 +965,7 @@ describe('an order processing fee becomes ACTUAL at settlement (G-116, OWN-42)',
         expectedAmountK: amountK,
         providerType: 'paystack',
         invoiceId: seeded.invoiceId,
-        orderId: seeded.orderId,
+        ...(withOrderId ? { orderId: seeded.orderId } : {}),
       });
       await book(tx, businessId, intent, amountK, {
         providerFeeK,
@@ -1054,6 +1059,40 @@ describe('an order processing fee becomes ACTUAL at settlement (G-116, OWN-42)',
     const ref = await payFor(businessId, seeded, TOTAL_K, 225_000);
 
     await settle(businessId, [ref], 'held');
+    expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ESTIMATED');
+  });
+
+  it('an intent that names the order directly, with no invoice link on the order, still resolves', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(sql`UPDATE orders SET invoice_id = NULL WHERE id = ${seeded.orderId}::uuid`),
+    );
+    const ref = await payFor(businessId, seeded, TOTAL_K, 225_000, true);
+    await settle(businessId, [ref]);
+    expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ACTUAL');
+  });
+
+  it('a payment with no stated fee never finalises the charge at zero', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    const ref = await payFor(businessId, seeded, TOTAL_K, 0, true);
+    await settle(businessId, [ref]);
+    const after = await charge(businessId, seeded.orderId);
+    expect(after.actualOrEstimated).toBe('ESTIMATED');
+    expect(after.amountMinor).toBe(300_000);
+  });
+
+  it('an invoice reopened by a part-refund keeps the estimate until it is paid again', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    const ref = await payFor(businessId, seeded, TOTAL_K, 225_000, true);
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(
+        sql`UPDATE invoices SET balance_due_k = 1000000, paid_k = paid_k - 1000000 WHERE id = ${seeded.invoiceId}::uuid`,
+      ),
+    );
+    await settle(businessId, [ref]);
     expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ESTIMATED');
   });
 });
