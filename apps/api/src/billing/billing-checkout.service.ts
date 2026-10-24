@@ -185,7 +185,7 @@ export class BillingCheckoutService {
     now: Date,
   ): Promise<Decision> {
     return withBusiness(this.db, businessId, async (tx): Promise<Decision> => {
-      const charge = await subscriptionsRepo.lockChargeByReference(tx, businessId, reference);
+      const charge = await this.lockCharge(tx, businessId, reference);
       if (!charge) {
         return { state: 'done', response: { state: 'unavailable', reason: 'unknown_charge' } };
       }
@@ -284,6 +284,24 @@ export class BillingCheckoutService {
     }
   }
 
+  /**
+   * The charge, locked, with the business locked first.
+   *
+   * Settlement (`applySettledCharge`) takes the business row and then updates the
+   * charge and its attempts. Anything here that takes the charge first and the
+   * business later (setting the billing email updates the business) could wait on
+   * a payment that is waiting on it: a deadlock Postgres resolves by aborting one
+   * of them. Every transaction here takes the business first, so there is one order.
+   */
+  private async lockCharge(
+    tx: TenantDb,
+    businessId: string,
+    reference: string,
+  ): Promise<subscriptionsRepo.ChargeRow | null> {
+    if (!(await subscriptionsRepo.lockBusiness(tx, businessId))) return null;
+    return subscriptionsRepo.lockChargeByReference(tx, businessId, reference);
+  }
+
   /** The email to start a session with, stored sealed when the merchant just gave one. */
   private async emailFor(
     tx: TenantDb,
@@ -362,7 +380,7 @@ export class BillingCheckoutService {
     now: Date,
   ): Promise<Decision> {
     return withBusiness(this.db, businessId, async (tx): Promise<Decision> => {
-      const charge = await subscriptionsRepo.lockChargeByReference(tx, businessId, reference);
+      const charge = await this.lockCharge(tx, businessId, reference);
       if (!charge) {
         return { state: 'done', response: { state: 'unavailable', reason: 'unknown_charge' } };
       }
@@ -443,6 +461,9 @@ export class BillingCheckoutService {
      * at the moment of handoff. */
     const handoff = handoffTime(now);
     const outcome = await withBusiness(this.db, businessId, async (tx) => {
+      /* The business first, as settlement does, so recording a link can never wait
+       * on a row a settling payment holds while it waits on one this holds. */
+      await subscriptionsRepo.lockBusiness(tx, businessId);
       const recorded = await subscriptionsRepo.recordAttemptCheckout(
         tx,
         businessId,

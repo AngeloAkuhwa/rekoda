@@ -1096,6 +1096,21 @@ export async function paidAttempt(
   return row ? shapeAttempt(row) : null;
 }
 
+/** Has the charge had a session replaced by a newer one (one that might still be paid)? */
+export async function hasSupersededAttempt(
+  tx: TenantDb,
+  businessId: string,
+  chargeId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ found: number }>(sql`
+    SELECT 1 AS found FROM subscription_charge_attempts
+    WHERE business_id = ${businessId}::uuid AND charge_id = ${chargeId}::uuid
+      AND status = 'superseded'
+    LIMIT 1
+  `);
+  return [...rows].length === 1;
+}
+
 /** The highest attempt number the charge has used (0 when it has none). */
 export async function latestAttemptNo(
   tx: TenantDb,

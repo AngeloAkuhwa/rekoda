@@ -78,6 +78,7 @@ beforeAll(async () => {
   config = { ...loadConfig(), paystackSecretKey: 'sk_test_x', paystackPlatformConfirmed: true };
 
   provider = new StubPaymentProvider();
+  originalInitialize = provider.initializeTransaction.bind(provider);
   const stubSender = new StubSender();
   deps = {
     gateway: new PrivacyGateway(appDb, config),
@@ -100,9 +101,13 @@ afterAll(async () => {
   await closeWorker?.();
 });
 
+/** The stub's own initialise, kept so a test that wraps it cannot leak into the next. */
+let originalInitialize: StubPaymentProvider['initializeTransaction'];
+
 beforeEach(async () => {
   await truncateAll(urls);
   provider.reset();
+  provider.initializeTransaction = originalInitialize;
   provider.modelPaystackReferences();
 });
 
@@ -692,6 +697,116 @@ describe('a payment on a replaced checkout', () => {
 
     expect((await chargeOf(businessId, reference))?.status).toBe('failed');
     expect((await attemptsOf(businessId))[0]).toMatchObject({ no: 1, status: 'failed' });
+  });
+});
+
+describe('a failed replacement does not strand a payment on the older session', () => {
+  it('keeps the charge pending when the live attempt fails after an older one was replaced, so the older session can still be paid', async () => {
+    const { businessId, reference, amountK, second } = await recoveredCharge();
+    provider.willVerify(second, { amountK, succeeded: false, providerStatus: 'failed' });
+    await storeEvent(second, amountK);
+    await pump();
+    await drainJobs();
+
+    expect((await chargeOf(businessId, reference))?.status).toBe('pending');
+    expect(await attemptsOf(businessId)).toMatchObject([
+      { no: 1, status: 'superseded' },
+      { no: 2, status: 'failed' },
+    ]);
+
+    /* The merchant still had the first session open and pays on it. */
+    provider.willVerify(reference, { amountK });
+    await storeEvent(reference, amountK);
+    await pump();
+    await drainJobs();
+
+    expect((await chargeOf(businessId, reference))?.status).toBe('paid');
+    expect((await attemptsOf(businessId))[0]).toMatchObject({ no: 1, status: 'paid' });
+  });
+
+  it('lets the merchant start a new session on a charge whose only live attempt failed', async () => {
+    const { businessId, reference, second } = await recoveredCharge();
+    provider.willVerify(second, { amountK: 0, succeeded: false, providerStatus: 'failed' });
+    await storeEvent(second, 0);
+    await pump();
+    await drainJobs();
+
+    const again = ready(await checkouts().checkout(businessId, reference, undefined));
+
+    expect(again.checkoutUrl).toContain(attemptReference(reference, 3));
+    expect(await liveCount(businessId)).toBe(1);
+  });
+});
+
+describe('lock order matches settlement, which takes the business before the charge', () => {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  /** Hold the business row the way a settling payment does, until released. */
+  function holdBusiness(businessId: string) {
+    let release!: () => void;
+    let locked!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const lockedP = new Promise<void>((resolve) => (locked = resolve));
+    const done = withBusiness(appDb, businessId, async (tx) => {
+      await subscriptionsRepo.lockBusiness(tx, businessId);
+      locked();
+      await held;
+    });
+    return { release, locked: lockedP, done };
+  }
+
+  const probeCanLock = (
+    businessId: string,
+    table: 'subscription_charges' | 'subscription_charge_attempts',
+  ) =>
+    withBusiness(appDb, businessId, async (tx) => {
+      await tx.execute(
+        table === 'subscription_charges'
+          ? sql`SELECT id FROM subscription_charges WHERE business_id = ${businessId}::uuid FOR UPDATE NOWAIT`
+          : sql`SELECT id FROM subscription_charge_attempts WHERE business_id = ${businessId}::uuid FOR UPDATE NOWAIT`,
+      );
+    });
+
+  it('does not hold the charge while it waits for the business, when a billing email is being set', async () => {
+    const businessId = await seedBusiness();
+    const { reference } = await pendingCharge(businessId);
+    const holder = holdBusiness(businessId);
+    await holder.locked;
+
+    const pending = checkouts().checkout(businessId, reference, EMAIL);
+    await sleep(400);
+
+    /* Were the charge locked first, a payment settling at this moment would
+     * wait for it while this request waited for the business: a deadlock. */
+    await expect(probeCanLock(businessId, 'subscription_charges')).resolves.toBeUndefined();
+
+    holder.release();
+    await holder.done;
+    expect(ready(await pending).checkoutUrl).toContain(reference);
+  });
+
+  it('does not hold the attempt while it waits for the business to record the link', async () => {
+    const businessId = await seedBusiness();
+    const { reference } = await pendingCharge(businessId);
+    let holder!: ReturnType<typeof holdBusiness>;
+    const real = provider.initializeTransaction.bind(provider);
+    provider.initializeTransaction = async (input) => {
+      const answer = await real(input);
+      /* A payment starts settling while Paystack's answer is on its way back. */
+      holder = holdBusiness(businessId);
+      await holder.locked;
+      return answer;
+    };
+
+    const pending = checkouts().checkout(businessId, reference, EMAIL);
+    await sleep(600);
+
+    await expect(probeCanLock(businessId, 'subscription_charge_attempts')).resolves.toBeUndefined();
+    await expect(probeCanLock(businessId, 'subscription_charges')).resolves.toBeUndefined();
+
+    holder.release();
+    await holder.done;
+    expect(ready(await pending).checkoutUrl).toContain(reference);
   });
 });
 

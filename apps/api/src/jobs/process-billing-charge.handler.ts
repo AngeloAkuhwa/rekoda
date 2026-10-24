@@ -163,6 +163,24 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
             await events.markProcessed(tx, eventId, null, businessId);
             return;
           }
+          /* A charge with a replaced session is not closed by the live one dying:
+           * the merchant may still hold the older session and pay on it, and a
+           * payment on a failed charge could not be settled. The dead attempt is
+           * recorded and the charge stays pending, so a new session can be started
+           * on it or the older one paid. */
+          if (await subscriptionsRepo.hasSupersededAttempt(tx, businessId, charge.id)) {
+            if (attempt) {
+              await subscriptionsRepo.moveAttempt(
+                tx,
+                businessId,
+                attempt.id,
+                ['initializing', 'active', 'ambiguous'],
+                'failed',
+              );
+            }
+            await events.markProcessed(tx, eventId, `provider_${t.providerStatus}`, businessId);
+            return;
+          }
           /* The attempt is over and the charge is closed. The obligation is
            * not: the cycle still ends when it ends, and the grace sweep is
            * already counting. A retry is a NEW charge. */
