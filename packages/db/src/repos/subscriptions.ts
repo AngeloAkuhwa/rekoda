@@ -969,6 +969,7 @@ export async function setBillingEmailSealed(
     SET billing_email_sealed = ${sealed},
         billing_email_set_at = ${when.toISOString()}::timestamptz,
         billing_email_verified_at = NULL,
+        billing_email_revision = b.billing_email_revision + 1,
         updated_at = now()
     FROM (SELECT billing_email_sealed IS NOT NULL AS replaced FROM businesses
           WHERE id = ${businessId}::uuid) AS previous
@@ -1266,7 +1267,7 @@ export async function recentEmailVerificationRequests(
 
 /**
  * Record one mailed link. Only the token's hash is kept. The link is bound to the
- * address it was mailed to by the business's `billing_email_set_at` as it stands
+ * address it was mailed to by the business's `billing_email_revision` as it stands
  * now; the caller holds the business lock, so it cannot change underneath.
  */
 export async function issueEmailVerification(
@@ -1275,8 +1276,8 @@ export async function issueEmailVerification(
 ): Promise<boolean> {
   const rows = await tx.execute<{ id: string }>(sql`
     INSERT INTO billing_email_verifications
-      (business_id, token_hash, email_set_at, created_at, expires_at)
-    SELECT b.id, ${input.tokenHash}, b.billing_email_set_at, clock_timestamp(),
+      (business_id, token_hash, email_revision, created_at, expires_at)
+    SELECT b.id, ${input.tokenHash}, b.billing_email_revision, clock_timestamp(),
            clock_timestamp() + make_interval(secs => ${input.ttlMs / 1000})
     FROM businesses b
     WHERE b.id = ${input.businessId}::uuid AND b.billing_email_set_at IS NOT NULL
@@ -1327,7 +1328,7 @@ export async function confirmEmailVerification(
   }>(sql`
     SELECT v.id, v.consumed_at IS NOT NULL AS consumed,
            v.expires_at <= clock_timestamp() AS expired,
-           v.email_set_at IS NOT DISTINCT FROM b.billing_email_set_at AS same_address
+           v.email_revision = b.billing_email_revision AS same_address
     FROM billing_email_verifications v
     JOIN businesses b ON b.id = v.business_id
     WHERE v.business_id = ${businessId}::uuid AND v.token_hash = ${tokenHash}

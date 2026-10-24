@@ -335,6 +335,18 @@ describe('changing the address', () => {
     expect((await emails().status(businessId)).verified).toBe(false);
   });
 
+  it('voids the old link even when both addresses were saved at the same instant', async () => {
+    /* Both requests captured the same clock reading before taking the lock (Codex P2). */
+    const businessId = await seedBusiness();
+    const same = new Date('2026-10-24T12:00:00.000Z');
+    expect((await emails().requestVerification(businessId, EMAIL, same)).state).toBe('sent');
+    const oldToken = tokenFrom(mail.outbox.at(-1)!);
+    await age(businessId, 61);
+    expect((await emails().requestVerification(businessId, OTHER, same)).state).toBe('sent');
+    expect(await emails().confirm(businessId, oldToken)).toEqual({ state: 'address_changed' });
+    expect((await emails().status(businessId)).verified).toBe(false);
+  });
+
   it('clears a proof the old address had earned', async () => {
     const businessId = await seedBusiness();
     await emails().confirm(businessId, await mailed(businessId, EMAIL));

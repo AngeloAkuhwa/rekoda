@@ -7,22 +7,24 @@
 --   billing_email_verifications           one row per mailed link. The link itself is a
 --                                         bearer secret and is never stored: only its
 --                                         SHA-256. A row is bound to the address it was
---                                         mailed to by `email_set_at` (the business's
---                                         billing_email_set_at when it was issued), so a
---                                         link for an address the merchant has since
---                                         replaced proves nothing about the new one. It
---                                         expires, and it works once.
+--                                         mailed to by `email_revision` (the business's
+--                                         billing_email_revision when it was issued; a counter
+--                                         bumped on every change, never a clock reading, so two
+--                                         changes in one instant still differ), so a link for an
+--                                         address the merchant has since replaced proves nothing
+--                                         about the new one. It expires, and it works once.
 --
 -- No address, plain or sealed, is kept here: the address lives only in
 -- businesses.billing_email_sealed, so erasing the account (OWN-52) leaves nothing to chase.
 ALTER TABLE businesses
-  ADD COLUMN billing_email_verified_at timestamptz;
+  ADD COLUMN billing_email_verified_at timestamptz,
+  ADD COLUMN billing_email_revision integer NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS billing_email_verifications (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   business_id   uuid NOT NULL REFERENCES businesses(id),
   token_hash    text NOT NULL CHECK (token_hash ~ '^[0-9a-f]{64}$'),
-  email_set_at  timestamptz NOT NULL,
+  email_revision integer NOT NULL,
   created_at    timestamptz NOT NULL DEFAULT now(),
   expires_at    timestamptz NOT NULL,
   consumed_at   timestamptz,

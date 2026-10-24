@@ -86,6 +86,7 @@ export const businesses = pgTable(
     /** The merchant's billing email, sealed with the vault key (migration 0172, G-102, OWN-39); null until given. */
     billingEmailSealed: text('billing_email_sealed'),
     /** When the billing email was last set (migration 0172). */
+    billingEmailRevision: integer('billing_email_revision').notNull().default(0),
     billingEmailSetAt: timestamp('billing_email_set_at', { withTimezone: true }),
     /** When the mailbox was proven to be the merchant's (migration 0174, OWN-51); null until, and reset when the address changes. */
     billingEmailVerifiedAt: timestamp('billing_email_verified_at', { withTimezone: true }),

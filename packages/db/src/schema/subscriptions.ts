@@ -116,8 +116,8 @@ export const billingEmailVerifications = pgTable('billing_email_verifications', 
     .notNull()
     .references(() => businesses.id),
   tokenHash: text('token_hash').notNull(),
-  /** The business's `billing_email_set_at` when the link was issued: binds it to that address. */
-  emailSetAt: timestamp('email_set_at', { withTimezone: true }).notNull(),
+  /** The business's `billing_email_revision` when the link was issued: binds it to that address. */
+  emailRevision: integer('email_revision').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   consumedAt: timestamp('consumed_at', { withTimezone: true }),
