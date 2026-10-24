@@ -842,6 +842,14 @@ function nonNegativeInteger(env: NodeJS.ProcessEnv, name: string, fallback: numb
   );
 }
 
+/** Absent or `0` is off, `1` is on; anything else refuses to boot rather than quietly selling nothing. */
+function zeroOrOneFlag(env: NodeJS.ProcessEnv, name: string): boolean {
+  const raw = env[name];
+  if (raw === undefined || raw === '' || raw === '0') return false;
+  if (raw === '1') return true;
+  throw new Error(`${name} must be 0 or 1, got "${raw}"`);
+}
+
 function positiveFiniteNumber(
   env: NodeJS.ProcessEnv,
   name: string,
@@ -1369,7 +1377,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     metaServiceReplyCostMicros: nonNegativeInteger(env, 'META_SERVICE_REPLY_COST_MICROS', 0),
     metaWabaRegisteredInNigeria: env['META_WABA_REGISTERED_IN_NIGERIA'] !== 'false',
     planCatalogueReads: env['REKODA_PLAN_CATALOGUE_READS'] !== '0',
-    annualBillingSales: env['REKODA_ANNUAL_BILLING'] === '1',
+    annualBillingSales: zeroOrOneFlag(env, 'REKODA_ANNUAL_BILLING'),
     r2AccountId: r2.accountId,
     r2AccessKeyId: r2.accessKeyId,
     r2SecretAccessKey: r2.secretAccessKey,

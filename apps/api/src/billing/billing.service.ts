@@ -65,9 +65,15 @@ export class BillingService {
     @Inject(DB) private readonly db: Db,
   ) {}
 
-  /** Annual billing cannot be chosen until it is switched on (`annualBillingSales`). */
+  /**
+   * Annual billing cannot be NEWLY chosen until it is switched on (`annualBillingSales`), and
+   * only from catalogue prices (OWN-40). A subscriber already on a year keeps it either way.
+   */
   private refuseUnofferedAnnual(interval: BillingInterval): void {
-    if (interval === 'annual' && !this.config.annualBillingSales) {
+    if (
+      interval === 'annual' &&
+      !(this.config.annualBillingSales && this.config.planCatalogueReads)
+    ) {
       throw new BadRequestException('annual billing is not available yet');
     }
   }
@@ -178,11 +184,11 @@ export class BillingService {
     now = new Date(),
     requested: BillingInterval = 'monthly',
   ): Promise<BillingQuoteResponse> {
-    this.refuseUnofferedAnnual(requested);
     return withBusiness(this.db, businessId, async (tx) => {
       const from = await usageRepo.planFor(tx, businessId, now);
       const subscription = await subscriptionsRepo.subscriptionFor(tx, businessId);
       const interval = intervalFor(from, subscription, requested);
+      if (from === 'trial' || from === 'expired') this.refuseUnofferedAnnual(interval);
       const charge = planChangeCharge({
         interval,
         from,
@@ -265,7 +271,6 @@ export class BillingService {
     now = new Date(),
     requested: BillingInterval = 'monthly',
   ): Promise<BillingPlanChangeResponse> {
-    this.refuseUnofferedAnnual(requested);
     return withBusiness(this.db, businessId, async (tx) => {
       /* G-104: lock the business row BEFORE reading the plan this charge is
        * priced against, so a concurrent operator move either finished (and is
@@ -276,6 +281,7 @@ export class BillingService {
       const renewsAt = subscription?.planExpiresAt ?? addMonth(now);
       /* A first purchase chooses its interval; anything else keeps the cycle's. */
       const interval = intervalFor(from, subscription, requested);
+      if (from === 'trial' || from === 'expired') this.refuseUnofferedAnnual(interval);
       const charge = planChangeCharge({
         interval,
         from,

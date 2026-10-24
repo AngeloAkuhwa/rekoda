@@ -196,6 +196,38 @@ describe('annual billing is off until it is switched on', () => {
   });
 });
 
+describe('the annual switch and the catalogue', () => {
+  it('lets a subscriber already on a year change plan with the flag off, and refuses a year without catalogue prices', async () => {
+    const { businessId } = await onboard();
+    await putOnPlan(businessId, 'complete', 'annual', new Date(Date.now() - 10 * DAY));
+    const off = new BillingService(
+      { ...config, paystackPlatformConfirmed: true, annualBillingSales: false },
+      db,
+    );
+    // The subscriber keeps their own interval; asking for annual again is not a new sale.
+    expect((await off.quote(businessId, 'chat', new Date(), 'annual')).supportReview).not.toBe(
+      undefined,
+    );
+    expect((await off.changePlan(businessId, 'chat', new Date(), 'annual')).state).toBe(
+      'scheduled',
+    );
+
+    const trial = (await onboard()).businessId;
+    const noCatalogue = new BillingService(
+      {
+        ...config,
+        paystackPlatformConfirmed: true,
+        annualBillingSales: true,
+        planCatalogueReads: false,
+      },
+      db,
+    );
+    await expect(noCatalogue.changePlan(trial, 'chat', new Date(), 'annual')).rejects.toThrow(
+      /annual/,
+    );
+  });
+});
+
 describe('buying a year', () => {
   it('quotes a first annual purchase at ten months and a year of service', async () => {
     const { businessId } = await onboard();
