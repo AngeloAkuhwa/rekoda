@@ -179,8 +179,8 @@ export const billingIntervalResponse = z.discriminatedUnion('state', [
   /** Choosing the interval already in force undoes a switch that was waiting. */
   z.object({ state: z.literal('undone'), interval: billingInterval }),
   z.object({ state: z.literal('unchanged'), interval: billingInterval }),
-  /** A trial or lapsed plan has no cycle to switch; choose the interval when buying. */
-  z.object({ state: z.literal('unavailable'), reason: z.enum(['no_cycle']) }),
+  /** A trial or lapsed plan has no cycle to switch (choose the interval when buying); a cancelled plan has no renewal to switch at. */
+  z.object({ state: z.literal('unavailable'), reason: z.enum(['no_cycle', 'cancelling']) }),
 ]);
 export type BillingIntervalRequest = z.infer<typeof billingIntervalRequest>;
 export type BillingIntervalResponse = z.infer<typeof billingIntervalResponse>;

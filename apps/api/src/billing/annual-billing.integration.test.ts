@@ -529,6 +529,25 @@ describe('switching between monthly and annual', () => {
     expect((await subOf(businessId))?.pendingBillingInterval).toBe('annual');
   });
 
+  it('a cancelled plan has no renewal to switch at, but a switch already waiting can still be undone', async () => {
+    const { businessId } = await onboard();
+    await putOnPlan(businessId, 'chat', 'monthly', new Date(Date.now() - 10 * DAY));
+
+    await billing().cancelPlan(businessId);
+    expect(await billing().switchInterval(businessId, 'annual')).toEqual({
+      state: 'unavailable',
+      reason: 'cancelling',
+    });
+    expect((await subOf(businessId))?.pendingBillingInterval).toBeNull();
+
+    // A switch chosen BEFORE the cancellation may still be taken back.
+    const other = await onboard();
+    await putOnPlan(other.businessId, 'chat', 'monthly', new Date(Date.now() - 10 * DAY));
+    await billing().switchInterval(other.businessId, 'annual');
+    await billing().cancelPlan(other.businessId);
+    expect((await billing().switchInterval(other.businessId, 'monthly')).state).toBe('undone');
+  });
+
   it('a trial or lapsed merchant has no cycle to switch', async () => {
     const { businessId } = await onboard();
     expect(await billing().switchInterval(businessId, 'annual')).toEqual({
@@ -659,9 +678,10 @@ describe('review of #340: three ways a year could be mispriced or misapplied', (
     const [monthly] = await chargesOf(businessId);
     expect(monthly).toMatchObject({ kind: 'renewal', amountK: CHAT_MONTHLY });
 
-    /* ...the owner cancels, then switches to yearly, then undoes the cancellation. */
-    await billing().cancelPlan(businessId);
+    /* ...the owner switches to yearly, cancels, then undoes the cancellation (a switch
+     * cannot be started while a cancellation is waiting). */
     await billing().switchInterval(businessId, 'annual');
+    await billing().cancelPlan(businessId);
     await billing().changePlan(businessId, 'chat');
 
     /* The yearly choice stands and the monthly link stays withdrawn. */

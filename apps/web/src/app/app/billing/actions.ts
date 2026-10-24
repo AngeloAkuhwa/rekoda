@@ -56,7 +56,11 @@ async function switchIntervalUnguarded(formData: FormData): Promise<void> {
   if (answer.state === 'scheduled') redirect('/app/billing?done=interval_scheduled');
   if (answer.state === 'undone') redirect('/app/billing?done=interval_undone');
   if (answer.state === 'unchanged') redirect('/app/billing');
-  redirect('/app/billing?problem=no_cycle');
+  redirect(
+    answer.state === 'unavailable' && answer.reason === 'cancelling'
+      ? '/app/billing?problem=interval_cancelling'
+      : '/app/billing?problem=no_cycle',
+  );
 }
 
 async function buyPackUnguarded(formData: FormData): Promise<void> {

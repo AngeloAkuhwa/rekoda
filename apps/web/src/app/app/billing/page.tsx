@@ -85,6 +85,8 @@ const PROBLEMS: Record<string, string> = {
   not_available_on_plan: 'That pack is not part of your plan. Nothing was charged.',
   unknown_pack: 'That pack does not exist. Nothing was charged.',
   no_cycle: 'That change did not go through. Nothing was charged.',
+  interval_cancelling:
+    'Your plan is set to end, so there is no next renewal to change the billing frequency at. Nothing was charged.',
   cycle_ended:
     'Your paid period has ended, so there is nothing to upgrade yet. Nothing was charged. Message upgrade on WhatsApp and we will sort out your renewal with you.',
   support_review:
@@ -257,7 +259,10 @@ export default async function BillingPage({
       {/* ── billing frequency: monthly or yearly (OWN-40) ──
           Always scheduled for the next renewal. The merchant keeps the month or the
           year they paid for, and the saving is stated once, without a countdown. */}
-      {paidPlan && overview.status.state !== 'expired' && isOwner(identity.role) ? (
+      {paidPlan &&
+      overview.status.state !== 'expired' &&
+      isOwner(identity.role) &&
+      (overview.pendingPlan !== 'expired' || overview.pendingInterval) ? (
         <div className="rk-card">
           <h2>Billing frequency</h2>
           <p className="rk-fineprint">
