@@ -549,6 +549,22 @@ describe('a live payment', () => {
     }
   });
 
+  it('does not hand out an adopted pre-attempts link on a live key while the mailbox is unproven', async () => {
+    const businessId = await seedBusiness();
+    const reference = await pendingCharge(businessId);
+    /* An address on file but never proven, and a link stored before attempts existed. */
+    await emails().requestVerification(businessId, EMAIL);
+    await sql1(
+      businessId,
+      sql`UPDATE subscription_charges
+          SET checkout_url = 'https://checkout.stub/legacy', checkout_started_at = now()
+          WHERE business_id = ${businessId}::uuid AND reference = ${reference}`,
+    );
+    const answer = await checkouts(liveConfig()).checkout(businessId, reference, undefined);
+    expect(answer).toMatchObject({ state: 'requires_billing_email_verification' });
+    expect(provider.initialized).toHaveLength(0);
+  });
+
   it('starts a fresh session for a different address on a test key', async () => {
     const businessId = await seedBusiness();
     const reference = await pendingCharge(businessId);
