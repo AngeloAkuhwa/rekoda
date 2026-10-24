@@ -87,6 +87,9 @@ function host({ buildSeconds = 0 } = {}) {
     'df',
     `printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\nfake 1 1 %s 1%% /\\n' "$(cat "${fake}/free-kb")"`,
   );
+  // Memory available is whatever the test says (the script reads /proc/meminfo;
+  // the copy under test reads this file instead).
+  writeFileSync(join(fake, 'meminfo'), 'MemTotal: 4000000 kB\nMemAvailable: 3000000 kB\n');
   const real = sh(root, 'command -v git');
   // A full disk can cut a file short while git still reports success: after the
   // checkout of the next commit, empty one tracked file when asked to.
@@ -110,7 +113,8 @@ case "$*" in
   *"image prune"*|*"builder prune"*) freed ;;
   *"ps -a --format"*) [ -e "${fake}/ps-fails" ] && exit 1; cat "${fake}/containers" 2>/dev/null ;;
   *"run --rm -T migrate"*) [ -e "${fake}/fail-migrate" ] && exit 1 ;;
-  *build*) if [ -e "${fake}/fail-build" ]; then echo 1000 > "${fake}/free-kb"; echo 'no space left on device' >&2; exit 1; fi; sleep ${buildSeconds} ;;
+  *build*) if [ -e "${fake}/mem-low-after-api" ] && [[ "$*" == *" api" ]]; then printf 'MemAvailable: 1000 kB\\n' > "${fake}/meminfo"; fi
+    if [ -e "${fake}/fail-build" ]; then echo 1000 > "${fake}/free-kb"; echo 'no space left on device' >&2; exit 1; fi; sleep ${buildSeconds} ;;
   *" up "*) cp "${fake}/next-health.json" "${fake}/health.json" ;;
   *network\\ inspect*) echo '172.30.10.1 false' ;;
 esac
@@ -119,7 +123,9 @@ exit 0`,
   const script = join(root, 'deploy.sh');
   writeFileSync(
     script,
-    SCRIPT.replaceAll('/opt/rekoda', dir).replaceAll('https://staging-api.myrekoda.com', API),
+    SCRIPT.replaceAll('/opt/rekoda', dir)
+      .replaceAll('https://staging-api.myrekoda.com', API)
+      .replaceAll('/proc/meminfo', join(fake, 'meminfo')),
   );
   const env = { PATH: `${fake}:${process.env.PATH}` };
   const read = {
@@ -133,12 +139,13 @@ exit 0`,
       ? readFileSync(join(fake, 'removed'), 'utf8').split('\n').filter(Boolean)
       : [];
   const dockerCalls = () => readFileSync(join(fake, 'docker.log'), 'utf8');
-  const run = (...args) =>
+  const runWith = (extra, ...args) =>
     spawnSync('bash', [script, ...args], {
       cwd: dir,
       encoding: 'utf8',
-      env: { ...process.env, ...env },
+      env: { ...process.env, ...env, ...extra },
     });
+  const run = (...args) => runWith({}, ...args);
   /** The state a SIGKILLed run leaves: the new commit prepared, a marker. */
   const killedWhilePrepared = (phase = 'prepared') => {
     sh(dir, `git checkout -q --detach ${next}`);
@@ -153,6 +160,7 @@ exit 0`,
     fake,
     script,
     env,
+    runWith,
     prev,
     next,
     third,
@@ -716,4 +724,67 @@ test('a rollback record that cannot be written keeps the marker and removes noth
   assert.match(r.stderr, /could not be recorded/);
   assert.equal(h.read.marker(), true);
   assert.deepEqual(h.removed(), []);
+});
+
+/* ---- memory: one build at a time, and none on a host too short of memory ---- */
+
+const builds = (log) => log.split('\n').filter((line) => / build /.test(line));
+
+test('the images are built one after the other, api then web, never a bare build', () => {
+  const h = host();
+  const r = h.run(h.next);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const calls = builds(h.dockerCalls());
+  assert.equal(calls.length, 2, calls.join('\n'));
+  assert.match(calls[0], / build --build-arg REKODA_COMMIT=\w+ api$/);
+  assert.match(calls[1], / build --build-arg REKODA_COMMIT=\w+ web$/);
+});
+
+test('a host short of memory is refused before anything changes', () => {
+  const h = host();
+  writeFileSync(join(h.fake, 'meminfo'), 'MemAvailable: 500000 kB\n');
+  const r = h.run(h.next);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /only 500000 KiB of memory available before any build/);
+  assert.match(r.stderr, /Nothing live was changed/);
+  assert.equal(h.read.head(), h.prev);
+  assert.equal(h.read.release(), `staging-${h.prev.slice(0, 7)}`);
+  assert.equal(h.read.marker(), false);
+  assert.doesNotMatch(h.dockerCalls(), /compose.* (build|up|run)/);
+});
+
+test('a host that cannot say how much memory it has is refused, not trusted', () => {
+  const h = host();
+  writeFileSync(join(h.fake, 'meminfo'), 'MemTotal: 4000000 kB\n');
+  const r = h.run(h.next);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /only unknown KiB of memory available before any build/);
+  assert.doesNotMatch(h.dockerCalls(), /compose.* (build|up|run)/);
+});
+
+test('a host may raise the memory floor, never lower it', () => {
+  const h = host();
+  writeFileSync(join(h.fake, 'meminfo'), 'MemAvailable: 1500000 kB\n');
+  const lowered = h.runWith({ REKODA_DEPLOY_MIN_MEM_KB: '1' }, h.next);
+  assert.equal(lowered.status, 0, lowered.stderr + lowered.stdout);
+  const h2 = host();
+  writeFileSync(join(h2.fake, 'meminfo'), 'MemAvailable: 1500000 kB\n');
+  const raised = h2.runWith({ REKODA_DEPLOY_MIN_MEM_KB: '2000000' }, h2.next);
+  assert.notEqual(raised.status, 0);
+  assert.match(raised.stderr, /needs at least 2000000/);
+});
+
+test('memory that runs out after the api build stops the web build and migrates nothing', () => {
+  const h = host();
+  writeFileSync(join(h.fake, 'mem-low-after-api'), '');
+  const r = h.run(h.next);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /memory available before the web build/);
+  const log = h.dockerCalls();
+  assert.equal(builds(log).length, 1, 'only the api image was built');
+  assert.doesNotMatch(log, /run --rm -T migrate| up /);
+  /* Still in the prepared phase, so the refusal restores the baseline itself. */
+  assert.equal(h.read.head(), h.prev);
+  assert.equal(h.read.release(), `staging-${h.prev.slice(0, 7)}`);
+  assert.equal(h.read.marker(), false);
 });

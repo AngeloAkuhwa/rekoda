@@ -84,9 +84,14 @@ export const STEPS = [
     script: /^sed -i "s\/\^REKODA_RELEASE=\.\*\/REKODA_RELEASE=\$\{RELEASE\}\/" \.env$/,
   },
   {
-    name: 'build with the commit',
-    runbook: /^dc build --build-arg REKODA_COMMIT=/,
-    script: /^dc build --build-arg REKODA_COMMIT="\$SHORT"$/,
+    name: 'build the api image with the commit',
+    runbook: /^dc build --build-arg REKODA_COMMIT=.+ api$/,
+    script: /^dc build --build-arg REKODA_COMMIT="\$SHORT" api$/,
+  },
+  {
+    name: 'build the web image with the commit, after the api image',
+    runbook: /^dc build --build-arg REKODA_COMMIT=.+ web$/,
+    script: /^dc build --build-arg REKODA_COMMIT="\$SHORT" web$/,
   },
   {
     name: 'migrate as the owner',

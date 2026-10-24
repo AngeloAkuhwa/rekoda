@@ -37,7 +37,7 @@ test('a new command in the runbook, not in the script', () => {
     'dc run --rm -T migrate                                             # expand-only migrations, as the owner\n',
     'dc run --rm -T migrate                                             # expand-only migrations, as the owner\ndc run --rm -T backup\n',
   );
-  expectProblem(problems(edit), /"Deploy a release" has 9 commands/);
+  expectProblem(problems(edit), /"Deploy a release" has 10 commands/);
 });
 
 test('a runbook command changed, the script left behind', () => {
@@ -46,7 +46,7 @@ test('a runbook command changed, the script left behind', () => {
     'dc exec caddy caddy reload --config /etc/caddy/Caddyfile            #',
     'dc exec caddy caddy reload --config /etc/caddy/Caddyfile --force    #',
   );
-  expectProblem(problems(edit), /command 7 is no longer "reload the Caddyfile"/);
+  expectProblem(problems(edit), /command 8 is no longer "reload the Caddyfile"/);
 });
 
 test('the script skipping the migrate job', () => {
@@ -91,7 +91,7 @@ test('deploying without proving the running release', () => {
 
 test('proving the running release only after the checkout changed', () => {
   const block = baseline();
-  const anchor = 'step "build both images';
+  const anchor = 'step "build the api image';
   const without = edited('script', block, '').script;
   assert.ok(without.includes(anchor), `fixture text not found in script: ${anchor}`);
   const moved = without.replace(anchor, () => `${block}${anchor}`);
@@ -207,7 +207,7 @@ test('paths no commit has checked only after the checkout changed', () => {
   const from = lines.findIndex((line) => line.startsWith('HOST_LOCAL='));
   const block = `${lines.slice(from, from + 4).join('\n')}\n`;
   const without = edited('script', block, '').script;
-  const anchor = 'step "build both images';
+  const anchor = 'step "build the api image';
   assert.ok(without.includes(anchor), `fixture text not found in script: ${anchor}`);
   const moved = without.replace(anchor, () => `${block}${anchor}`);
   expectProblem(problems({ script: moved }), /paths no commit has only after the prepared phase/);
@@ -494,7 +494,7 @@ test('the skip decided only after the checkout changed', () => {
   const at = lines.findIndex((line) => line.startsWith('if [ "$NEWER_ONLY" = true ]'));
   const block = `${lines.slice(at, at + 6).join('\n')}\n`;
   const without = edited('script', block, '').script;
-  const anchor = 'step "build both images';
+  const anchor = 'step "build the api image';
   assert.ok(without.includes(anchor), `fixture text not found in script: ${anchor}`);
   const moved = without.replace(anchor, () => `${block}${anchor}`);
   expectProblem(problems({ script: moved }), /--newer-only skip only after the prepared phase/);
@@ -567,7 +567,7 @@ test('the schema checked only after the checkout changed', () => {
   const at = lines.indexOf(block.trimEnd());
   const both = `${block}${lines[at + 1]}\n`;
   const without = edited('script', both, '').script;
-  const anchor = 'step "build both images';
+  const anchor = 'step "build the api image';
   assert.ok(without.includes(anchor), `fixture text not found in script: ${anchor}`);
   const moved = without.replace(anchor, () => `${both}${anchor}`);
   expectProblem(
@@ -599,8 +599,8 @@ for (const [sig, code] of [
 test('the prepared marker written after the checkout changed', () => {
   const mark = 'write_state prepared\n';
   const moved = edited('script', mark, '').script.replace(
-    '\nstep "build both images',
-    () => `\n${mark}step "build both images`,
+    '\nstep "build the api image',
+    () => `\n${mark}step "build the api image`,
   );
   expectProblem(
     problems({ script: moved }),
