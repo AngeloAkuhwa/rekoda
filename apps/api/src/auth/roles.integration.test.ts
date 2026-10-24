@@ -164,6 +164,9 @@ describe('what an accountant may do', () => {
       ['/v1/bank/statement/forget', {}],
       ['/v1/billing/plan', { plan: 'complete' }],
       ['/v1/billing/packs', { packId: 'docs-100' }],
+      /* Paying Rekoda spends the owner's money and asks for a billing email on
+       * their behalf (G-102). Owner only, like the plan and pack purchases. */
+      ['/v1/billing/checkout', { reference: 'RKD-SUB-20261024-AAAAAA' }],
       ['/v1/catalogue/product', {}],
       ['/v1/shop-settings', {}],
       /* Minting an API key is standing access to the whole business that
@@ -198,6 +201,7 @@ describe('what a delegate may do', () => {
       ['/v1/bank/match', {}],
       ['/v1/bank/statement/forget', {}],
       ['/v1/billing/plan', { plan: 'complete' }],
+      ['/v1/billing/checkout', { reference: 'RKD-SUB-20261024-AAAAAA' }],
       ['/v1/shop-settings', {}],
       ['/v1/api-keys/applications', { name: 'Delegate app' }],
       ['/v1/webhooks', { url: 'https://delegate.test/hook' }],
@@ -215,6 +219,7 @@ describe('what the owner may do', () => {
     expect((await post('/v1/reports/journal', {}, owner)).statusCode).toBe(400);
     expect((await post('/v1/bank/statement/forget', {}, owner)).statusCode).toBe(400);
     expect((await post('/v1/billing/packs', {}, owner)).statusCode).toBe(400);
+    expect((await post('/v1/billing/checkout', {}, owner)).statusCode).toBe(400);
     // The shop route answers a bad body with {outcome: 'bad_slug'} and 200,
     // so "past the guard" here is simply "anything but 403".
     expect((await post('/v1/shop-settings', {}, owner)).statusCode).not.toBe(403);
