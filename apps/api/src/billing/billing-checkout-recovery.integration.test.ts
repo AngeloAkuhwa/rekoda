@@ -738,6 +738,62 @@ describe('a failed replacement does not strand a payment on the older session', 
   });
 });
 
+describe('a failure report racing a replacement', () => {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it('does not close the charge when the live attempt is replaced while the failure is being processed', async () => {
+    const businessId = await seedBusiness();
+    const { reference, amountK } = await pendingCharge(businessId);
+    ready(await checkouts().checkout(businessId, reference, EMAIL));
+    provider.willVerify(reference, { amountK, succeeded: false, providerStatus: 'failed' });
+    await storeEvent(reference, amountK);
+    await pump();
+
+    /* A restart is mid-way through replacing the attempt: it holds the business and
+     * has not committed, as `replace` does between retiring one attempt and opening
+     * the next. */
+    let release!: () => void;
+    let replacing!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const replacingP = new Promise<void>((resolve) => (replacing = resolve));
+    const replacement = withBusiness(appDb, businessId, async (tx) => {
+      await subscriptionsRepo.lockBusiness(tx, businessId);
+      const charge = await subscriptionsRepo.chargeByReference(tx, businessId, reference);
+      const live = await subscriptionsRepo.liveAttempt(tx, businessId, charge!.id);
+      await subscriptionsRepo.moveAttempt(tx, businessId, live!.id, ['active'], 'superseded');
+      const next = await subscriptionsRepo.openAttempt(tx, {
+        businessId,
+        chargeId: charge!.id,
+        attemptNo: 2,
+        providerReference: attemptReference(reference, 2),
+      });
+      await subscriptionsRepo.recordAttemptCheckout(
+        tx,
+        businessId,
+        next!.id,
+        'https://checkout.stub/replacement',
+        new Date(),
+      );
+      replacing();
+      await held;
+    });
+    await replacingP;
+
+    const processing = drainJobs();
+    await sleep(500);
+    release();
+    await replacement;
+    await processing;
+
+    /* The failure was about the session that has just been replaced. */
+    expect((await chargeOf(businessId, reference))?.status).toBe('pending');
+    expect(await attemptsOf(businessId)).toMatchObject([
+      { no: 1, status: 'superseded' },
+      { no: 2, status: 'active' },
+    ]);
+  });
+});
+
 describe('lock order matches settlement, which takes the business before the charge', () => {
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 

@@ -155,6 +155,10 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
     if (judgement.verdict === 'rejected') {
       if (judgement.reason === 'provider_not_success') {
         if (DEAD_PROVIDER_STATUSES.has(t.providerStatus)) {
+          /* The business first, as checkout and settlement take it, so what is read
+           * below cannot change before the charge is acted on: a restart replacing the
+           * attempt waits for this, or has already committed and is seen. */
+          await subscriptionsRepo.lockBusiness(tx, businessId);
           /* A session Rekoda already replaced dying changes nothing about the charge:
            * the session the merchant was sent to is a different one. */
           const live = await subscriptionsRepo.liveAttempt(tx, businessId, charge.id);
