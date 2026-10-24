@@ -174,6 +174,10 @@ export async function refundUnit(
  * once: there is no idempotency key here because there is no second call to
  * guard against.
  *
+ * A trial business is never offered a pack (its price is 0), so a trial's base
+ * units meet this only through a direct call; there the bonus is held on the
+ * trial row with the rest of that unit's budget.
+ *
  * The pack is spent in the month it is bought and does not roll over, which
  * is why the period is an argument and not derived: the caller passes the
  * period the charge covers.
