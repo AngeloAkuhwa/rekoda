@@ -336,7 +336,9 @@ stopped a checkout part-way and left tracked files empty.
   failed build) removes nothing: cleanup runs before a deploy, once health is
   proven and only because the disk is short, or after a verified deploy. After a successful deploy (health and release
   verified, marker cleared) only the running release and the one it replaced
-  remain, so rollback stays a no-build change. Production tags (`v*`),
+  remain, so rollback stays a no-build change. The release a deploy replaced is also
+  recorded in `.git/rekoda-deploy-staging.rollback`, so a cleanup before the
+  _next_ deploy keeps the rollback of the then-running release too. Production tags (`v*`),
   `postgres`, `caddy`, volumes and containers are never touched; the script has
   no `volume`, `system prune` or `down -v`, and CI fails a change that adds one.
 - **Whole files, no forced recovery.** After the checkout the script proves every

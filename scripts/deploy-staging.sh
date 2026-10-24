@@ -81,6 +81,10 @@ PREPARED_SHA=
 # runner torn down): the phase it reached and the baseline it started from.
 # It lives in .git, so it is never part of the checkout or an image.
 STATE=.git/rekoda-deploy-staging.state
+# The release the running one replaced, kept across runs so a cleanup before the
+# next deploy never removes the no-build rollback. Written only after a deploy
+# is verified.
+ROLLBACK_FILE=.git/rekoda-deploy-staging.rollback
 # Written to a temporary file and renamed over the marker, so a kill mid-write
 # leaves the previous complete marker (or none), never a truncated one.
 write_state() {
@@ -139,6 +143,11 @@ keep_releases() {
       [[ "$r" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
       printf '%s\n' "$r"
     done
+  fi
+  if [ -f "$ROLLBACK_FILE" ]; then
+    r=$(sed -n '1p' "$ROLLBACK_FILE")
+    [[ "$r" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+    printf '%s\n' "$r"
   fi
   docker ps -a --format '{{.Image}}' | sed -n 's/^rekoda-\(app\|web\):\(.*\)$/\2/p'
 }
@@ -389,6 +398,9 @@ recover_interrupted() {
   PREV_RELEASE=$s_prev_rel
   PREPARED_SHA=$s_sha
   restore_prepared
+  # The interrupted commit is dealt with; a later restore in this run is of the
+  # checkout this run prepares.
+  PREPARED_SHA=
   [ ! -f "$STATE" ] || fail 'the interrupted deploy could not be restored; reconcile by hand'
 }
 recover_interrupted
@@ -526,6 +538,9 @@ PHASE=done
 printf '\nstaging is %s (%s)\n' "$RELEASE" "$SHA"
 # Only now, with the new release proven healthy and the marker gone: keep it and
 # the release it replaced (the rollback this run proved was running), drop older.
+if [ "$PREV_RELEASE" != "$RELEASE" ]; then
+  printf '%s\n' "$PREV_RELEASE" >"$ROLLBACK_FILE.tmp" && mv -f "$ROLLBACK_FILE.tmp" "$ROLLBACK_FILE" || true
+fi
 step 'remove superseded staging images (keeping the running release and its rollback)'
 prune_releases routine
 exit 0

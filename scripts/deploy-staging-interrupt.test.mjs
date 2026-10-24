@@ -636,3 +636,37 @@ test('a cancelled run that restores keeps its signal exit status even with an ea
   assert.equal(h.read.head(), h.next);
   assert.equal(h.read.marker(), true);
 });
+
+test('a failed build after recovering an interrupted deploy of another commit restores the baseline', () => {
+  const h = host();
+  h.killedWhilePrepared();
+  writeFileSync(join(h.fake, 'fail-build'), '');
+  const r = h.run(h.third);
+  assert.notEqual(r.status, 0);
+  assert.equal(h.read.head(), h.prev);
+  assert.equal(h.read.release(), `staging-${h.prev.slice(0, 7)}`);
+  assert.equal(h.read.marker(), false);
+});
+
+test('a verified deploy records the release it replaced, and a later urgent cleanup keeps it', () => {
+  const h = host();
+  h.images(app(h.next), app(h.prev), ...OLD);
+  const r = h.run(h.next);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.equal(
+    readFileSync(join(h.dir, '.git/rekoda-deploy-staging.rollback'), 'utf8').trim(),
+    `staging-${h.prev.slice(0, 7)}`,
+  );
+  // The next deploy finds the disk short and cannot recover it: the release
+  // before the running one (as recorded above) must survive the cleanup.
+  const g = host();
+  writeFileSync(join(g.dir, '.git/rekoda-deploy-staging.rollback'), 'staging-aaaaaaa\n');
+  g.images(app(g.prev), ...OLD, 'rekoda-app:staging-bbbbbbb', 'rekoda-web:staging-bbbbbbb');
+  writeFileSync(join(g.fake, 'free-kb'), '1000');
+  const refused = g.run(g.next);
+  assert.notEqual(refused.status, 0);
+  assert.deepEqual(g.removed().sort(), [
+    'rekoda-app:staging-bbbbbbb',
+    'rekoda-web:staging-bbbbbbb',
+  ]);
+});
