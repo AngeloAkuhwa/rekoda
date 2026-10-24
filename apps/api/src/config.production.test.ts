@@ -363,3 +363,42 @@ describe('REKODA_EMAIL_PROVIDER (OWN-51)', () => {
     );
   });
 });
+
+describe('REKODA_EMAIL_PROVIDER=resend (OWN-49)', () => {
+  const RESEND = {
+    REKODA_EMAIL_PROVIDER: 'resend',
+    REKODA_RESEND_API_KEY: 'k',
+    REKODA_EMAIL_FROM: 'Rekoda <billing@example.test>',
+  };
+
+  it('reads the key and the sender from configuration', () => {
+    expect(loadConfig({ ...PROD, ...RESEND }).resend).toEqual({
+      apiKey: 'k',
+      from: 'Rekoda <billing@example.test>',
+      replyTo: null,
+      baseUrl: 'https://api.resend.com',
+    });
+    expect(loadConfig(BASE).resend).toBeNull();
+  });
+
+  it('refuses to boot without the key or without a valid sender', () => {
+    expect(() => loadConfig({ ...PROD, ...RESEND, REKODA_RESEND_API_KEY: '' })).toThrow(
+      /REKODA_RESEND_API_KEY/,
+    );
+    expect(() => loadConfig({ ...PROD, ...RESEND, REKODA_EMAIL_FROM: '' })).toThrow(
+      /REKODA_EMAIL_FROM/,
+    );
+    expect(() => loadConfig({ ...PROD, ...RESEND, REKODA_EMAIL_FROM: 'not an address' })).toThrow(
+      /REKODA_EMAIL_FROM/,
+    );
+    expect(() => loadConfig({ ...PROD, ...RESEND, REKODA_EMAIL_REPLY_TO: 'nope' })).toThrow(
+      /REKODA_EMAIL_REPLY_TO/,
+    );
+  });
+
+  it('refuses a different Resend host in production', () => {
+    expect(() => loadConfig({ ...PROD, ...RESEND, RESEND_BASE_URL: 'http://evil.test' })).toThrow(
+      /RESEND_BASE_URL/,
+    );
+  });
+});

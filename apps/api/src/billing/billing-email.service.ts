@@ -122,6 +122,7 @@ export class BillingEmailService {
     try {
       await this.sender.send({
         to: prepared.email,
+        idempotencyKey: `billing-email/${tokenHash}`,
         subject: 'Confirm your Rekoda billing email',
         text:
           'Confirm that this is your billing email by opening this link while signed in to Rekoda. ' +

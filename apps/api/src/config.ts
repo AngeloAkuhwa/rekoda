@@ -319,6 +319,8 @@ export interface ApiConfig {
    * authenticated Cloudflare email service is configured.
    */
   emailProvider: EmailProvider;
+  /** Set exactly when `emailProvider` is `resend`. */
+  resend: ResendConfig | null;
   /**
    * How an operator proves who they are (P0-2).
    *
@@ -927,7 +929,7 @@ function planningFx(env: NodeJS.ProcessEnv): number {
 export const FX_MODES = ['off', 'shadow', 'sandbox', 'live'] as const;
 export type FxMode = (typeof FX_MODES)[number];
 
-const EMAIL_PROVIDERS = ['none', 'mock'] as const;
+const EMAIL_PROVIDERS = ['none', 'mock', 'resend'] as const;
 export type EmailProvider = (typeof EMAIL_PROVIDERS)[number];
 
 function emailProvider(env: NodeJS.ProcessEnv, isProduction: boolean): EmailProvider {
@@ -942,6 +944,49 @@ function emailProvider(env: NodeJS.ProcessEnv, isProduction: boolean): EmailProv
     );
   }
   return raw as EmailProvider;
+}
+
+const RESEND_API = 'https://api.resend.com';
+
+/** `a@b.co` or `Name <a@b.co>`: what Resend accepts as a sender; nothing else boots. */
+const SENDER_ADDRESS = /^(?:[^<>\r\n]{1,80}<)?[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>?$/;
+
+export interface ResendConfig {
+  apiKey: string;
+  /** The authenticated sender, from configuration so no address is hardcoded. */
+  from: string;
+  replyTo: string | null;
+  baseUrl: string;
+}
+
+/**
+ * Resend settings (OWN-49). Only read when REKODA_EMAIL_PROVIDER=resend, and
+ * then both the key and the sender must be set: a deployment that would send
+ * from nowhere refuses to boot rather than failing on a merchant's first mail.
+ */
+function resendConfig(
+  env: NodeJS.ProcessEnv,
+  provider: EmailProvider,
+  isProduction: boolean,
+): ResendConfig | null {
+  if (provider !== 'resend') return null;
+  const apiKey = env['REKODA_RESEND_API_KEY']?.trim() ?? '';
+  const from = env['REKODA_EMAIL_FROM']?.trim() ?? '';
+  const replyTo = env['REKODA_EMAIL_REPLY_TO']?.trim() || null;
+  if (!apiKey) throw new ConfigError('REKODA_EMAIL_PROVIDER=resend needs REKODA_RESEND_API_KEY');
+  if (!from) throw new ConfigError('REKODA_EMAIL_PROVIDER=resend needs REKODA_EMAIL_FROM');
+  if (!SENDER_ADDRESS.test(from)) {
+    throw new ConfigError('REKODA_EMAIL_FROM must be an address or "Name <address>"');
+  }
+  if (replyTo !== null && !SENDER_ADDRESS.test(replyTo)) {
+    throw new ConfigError('REKODA_EMAIL_REPLY_TO must be an email address');
+  }
+  return {
+    apiKey,
+    from,
+    replyTo,
+    baseUrl: providerBaseUrl(env, 'RESEND_BASE_URL', RESEND_API, isProduction),
+  };
 }
 
 /**
@@ -1164,6 +1209,7 @@ function flag(value: string | undefined): boolean {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const isProduction = isProductionEnv(env);
   const r2 = r2Settings(env);
+  const emailProviderValue = emailProvider(env, isProduction);
 
   const revealOtp = env['REKODA_REVEAL_OTP'] === '1';
   if (revealOtp && isProduction) {
@@ -1380,7 +1426,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     ),
     planningFxNairaPerUsd: planningFx(env),
     fxMode: fxMode(env, isProduction),
-    emailProvider: emailProvider(env, isProduction),
+    emailProvider: emailProviderValue,
+    resend: resendConfig(env, emailProviderValue, isProduction),
     operatorAuth: operatorAuth(env, isProduction),
     paystackSecretKey: env['PAYSTACK_SECRET_KEY'] ?? '',
     paystackBaseUrl: providerBaseUrl(env, 'PAYSTACK_BASE_URL', PAYSTACK_API, isProduction),

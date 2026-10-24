@@ -2,13 +2,30 @@
  * Transactional email (G-102 slice 2b, OWN-51).
  *
  * A port, like PAYMENT_PROVIDER: callers send through it and never know which
- * sender is bound. Only the mock and the honest "none" exist today; the real
- * sender arrives with the authenticated Cloudflare email service.
+ * sender is bound: the mock, the honest "none" and the Resend adapter.
  */
 export interface OutboundEmail {
   to: string;
   subject: string;
   text: string;
+  /**
+   * Makes a retry of the same logical message a no-op at the provider. Derive
+   * it from the thing being sent (a verification row), never from the address.
+   */
+  idempotencyKey?: string;
+}
+
+/** Why a send failed, without the address or the body. */
+export type EmailFailure = 'rate_limited' | 'rejected' | 'unavailable' | 'unauthorised';
+
+export class EmailSendError extends Error {
+  constructor(
+    readonly failure: EmailFailure,
+    readonly status?: number,
+  ) {
+    super(`email send failed: ${failure}${status ? ` (${status})` : ''}`);
+    this.name = 'EmailSendError';
+  }
 }
 
 export interface EmailSender {
