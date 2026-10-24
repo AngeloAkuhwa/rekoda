@@ -245,7 +245,10 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
       /* Another session of this charge settled it while this job was verifying (two
        * payments racing). If that was a different session, this is the duplicate. */
       const settling = await subscriptionsRepo.paidAttempt(tx, businessId, charge.id);
-      if (settling && settling.providerReference !== providerReference) {
+      /* A settlement that recorded no attempt (a charge from before attempts existed)
+       * was made through the charge's own reference. */
+      const settledReference = settling?.providerReference ?? reference;
+      if (providerReference !== settledReference) {
         if (attempt) {
           await subscriptionsRepo.moveAttempt(
             tx,

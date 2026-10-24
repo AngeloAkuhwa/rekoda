@@ -48,7 +48,7 @@ import { join } from 'node:path';
 import { ContainerAudioProbe } from '../ai/audio-duration.js';
 import { CommandBus } from '../commands/command-bus.service.js';
 import { RiskPolicyService } from '../risk/risk-policy.service.js';
-import { BillingService } from './billing.service.js';
+import { BillingService, applySettledCharge } from './billing.service.js';
 import { BillingCheckoutService } from './billing-checkout.service.js';
 
 const RUN_SALT = randomBytes(16).toString('hex');
@@ -79,6 +79,7 @@ beforeAll(async () => {
 
   provider = new StubPaymentProvider();
   originalInitialize = provider.initializeTransaction.bind(provider);
+  originalVerify = provider.verifyTransaction.bind(provider);
   const stubSender = new StubSender();
   deps = {
     gateway: new PrivacyGateway(appDb, config),
@@ -103,11 +104,13 @@ afterAll(async () => {
 
 /** The stub's own initialise, kept so a test that wraps it cannot leak into the next. */
 let originalInitialize: StubPaymentProvider['initializeTransaction'];
+let originalVerify: StubPaymentProvider['verifyTransaction'];
 
 beforeEach(async () => {
   await truncateAll(urls);
   provider.reset();
   provider.initializeTransaction = originalInitialize;
+  provider.verifyTransaction = originalVerify;
   provider.modelPaystackReferences();
 });
 
@@ -777,6 +780,56 @@ describe('a failed replacement does not strand a payment on the older session', 
     await drainJobs();
     expect(await eventError(businessId, repeat)).toBe('already_paid');
     expect(await eventError(businessId, other)).toBe('duplicate_payment');
+  });
+
+  it('flags a replacement payment as a duplicate when a payment with no recorded attempt settled the charge first', async () => {
+    const businessId = await seedBusiness();
+    const { reference, amountK } = await pendingCharge(businessId);
+    const second = attemptReference(reference, 2);
+    /* A charge from before attempts existed: its first session has no attempt row,
+     * and a replacement (attempt 2) was opened later. */
+    await withBusiness(appDb, businessId, async (tx) => {
+      const charge = await subscriptionsRepo.chargeByReference(tx, businessId, reference);
+      const opened = await subscriptionsRepo.openAttempt(tx, {
+        businessId,
+        chargeId: charge!.id,
+        attemptNo: 2,
+        providerReference: second,
+      });
+      await subscriptionsRepo.recordAttemptCheckout(
+        tx,
+        businessId,
+        opened!.id,
+        'https://checkout.stub/second',
+        new Date(),
+      );
+    });
+    provider.willVerify(second, { amountK });
+    const eventId = await storeEvent(second, amountK);
+    await pump();
+
+    /* While the replacement payment is being verified, the original payment settles
+     * the charge in another transaction; it has no attempt to record. */
+    const verify = provider.verifyTransaction.bind(provider);
+    provider.verifyTransaction = async (ref) => {
+      const answer = await verify(ref);
+      await withBusiness(appDb, businessId, (tx) =>
+        applySettledCharge(tx, {
+          businessId,
+          reference,
+          providerReference: 'legacy-payment',
+          paidAmountK: amountK,
+          when: new Date(),
+          config,
+        }),
+      );
+      return answer;
+    };
+    await drainJobs();
+
+    expect((await chargeOf(businessId, reference))?.status).toBe('paid');
+    expect(await eventError(businessId, eventId)).toBe('duplicate_payment');
+    expect((await attemptsOf(businessId))[0]).toMatchObject({ no: 2, status: 'duplicate_paid' });
   });
 
   it('lets the merchant start a new session on a charge whose only live attempt failed', async () => {
