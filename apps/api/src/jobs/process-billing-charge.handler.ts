@@ -21,7 +21,7 @@
  */
 import { Logger } from '@nestjs/common';
 import { redactForLog } from '@rekoda/core/privacy';
-import { judgeProviderPayment } from '@rekoda/core';
+import { chargeReferenceOf, judgeProviderPayment } from '@rekoda/core';
 import { paystackWebhookBody, summarisePaystackEvent } from '@rekoda/contracts';
 import { events, subscriptionsRepo } from '@rekoda/db';
 import type { ApiConfig } from '../config.js';
@@ -51,11 +51,15 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
       return;
     }
 
-    const reference = referenceOf(event.payload, deps.config.vaultKey, event.externalId);
-    if (!reference) {
+    /* The reference the event names is the PROVIDER's: a charge's first checkout
+     * session carries the charge's own reference, a replacement carries it with
+     * `-R<n>` appended (G-102, OWN-50). The charge is the one without the suffix. */
+    const providerReference = referenceOf(event.payload, deps.config.vaultKey, event.externalId);
+    if (!providerReference) {
       await events.markProcessed(tx, eventId, 'unreadable_at_processing', businessId);
       return;
     }
+    const reference = chargeReferenceOf(providerReference);
 
     const charge = await subscriptionsRepo.chargeByReference(tx, businessId, reference);
     if (!charge) {
@@ -79,7 +83,48 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
       return;
     }
 
+    /* A replacement reference is only ever one Rekoda issued. The suffix is not a
+     * secret, so an event naming `-R7` on a charge that never had a seventh attempt
+     * is not a session of ours and is never believed. */
+    const attempt = await subscriptionsRepo.attemptByProviderReference(
+      tx,
+      businessId,
+      providerReference,
+    );
+    if (providerReference !== reference && !attempt) {
+      await events.markProcessed(tx, eventId, 'unknown_attempt', businessId);
+      log.warn('a Paystack event named a checkout attempt Rekoda never issued');
+      return;
+    }
+
     if (charge.status !== 'pending') {
+      /* A payment on a DIFFERENT session than the one that settled this charge is a
+       * second payment for one obligation (a lost link was replaced and both
+       * sessions were paid). Never a second entitlement: it is recorded and flagged
+       * for an operator refund. A repeat of the settling payment is not that. */
+      if (charge.status === 'paid') {
+        const settling = await subscriptionsRepo.paidAttempt(tx, businessId, charge.id);
+        const settledReference = settling?.providerReference ?? reference;
+        if (providerReference !== settledReference) {
+          const second = await deps.provider.verifyTransaction(providerReference);
+          if (second.found && second.transaction.succeeded && second.transaction.amountK > 0) {
+            if (attempt) {
+              await subscriptionsRepo.moveAttempt(
+                tx,
+                businessId,
+                attempt.id,
+                ['initializing', 'active', 'ambiguous', 'superseded', 'failed'],
+                'duplicate_paid',
+              );
+            }
+            await events.markProcessed(tx, eventId, 'duplicate_payment', businessId);
+            log.warn(
+              `subscription charge ${reference} was paid twice for business ${businessId} (a replaced checkout session was also paid); refund the duplicate`,
+            );
+            return;
+          }
+        }
+      }
       /* A redelivery for a payment that is already recorded as paid but
        * UNAPPLIED is the same work item as the charge on the operator queue;
        * flagging the event too would queue it twice. */
@@ -94,7 +139,7 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
     }
 
     /* ── the authoritative call ────────────────────────────────────────── */
-    const verified = await deps.provider.verifyTransaction(reference);
+    const verified = await deps.provider.verifyTransaction(providerReference);
     if (!verified.found) {
       log.warn('a signed event named a subscription charge the provider does not know');
       await events.markProcessed(tx, eventId, 'verify_not_found', businessId);
@@ -103,13 +148,43 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
     const t = verified.transaction;
 
     const judgement = judgeProviderPayment(
-      { reference: charge.reference, amountK: charge.amountK, currency: 'NGN' },
+      { reference: providerReference, amountK: charge.amountK, currency: 'NGN' },
       { reference: t.reference, amountK: t.amountK, currency: t.currency, succeeded: t.succeeded },
     );
 
     if (judgement.verdict === 'rejected') {
       if (judgement.reason === 'provider_not_success') {
         if (DEAD_PROVIDER_STATUSES.has(t.providerStatus)) {
+          /* The business first, as checkout and settlement take it, so what is read
+           * below cannot change before the charge is acted on: a restart replacing the
+           * attempt waits for this, or has already committed and is seen. */
+          await subscriptionsRepo.lockBusiness(tx, businessId);
+          /* A session Rekoda already replaced dying changes nothing about the charge:
+           * the session the merchant was sent to is a different one. */
+          const live = await subscriptionsRepo.liveAttempt(tx, businessId, charge.id);
+          const replaced = attempt ? live?.id !== attempt.id : live !== null;
+          if (replaced) {
+            await events.markProcessed(tx, eventId, null, businessId);
+            return;
+          }
+          /* A charge with a replaced session is not closed by the live one dying:
+           * the merchant may still hold the older session and pay on it, and a
+           * payment on a failed charge could not be settled. The dead attempt is
+           * recorded and the charge stays pending, so a new session can be started
+           * on it or the older one paid. */
+          if (await subscriptionsRepo.hasSupersededAttempt(tx, businessId, charge.id)) {
+            if (attempt) {
+              await subscriptionsRepo.moveAttempt(
+                tx,
+                businessId,
+                attempt.id,
+                ['initializing', 'active', 'ambiguous'],
+                'failed',
+              );
+            }
+            await events.markProcessed(tx, eventId, `provider_${t.providerStatus}`, businessId);
+            return;
+          }
           /* The attempt is over and the charge is closed. The obligation is
            * not: the cycle still ends when it ends, and the grace sweep is
            * already counting. A retry is a NEW charge. */
@@ -121,6 +196,15 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
             failureReason: t.providerStatus,
             when: new Date(),
           });
+          if (attempt) {
+            await subscriptionsRepo.moveAttempt(
+              tx,
+              businessId,
+              attempt.id,
+              ['initializing', 'active', 'ambiguous'],
+              'failed',
+            );
+          }
           await events.markProcessed(tx, eventId, `provider_${t.providerStatus}`, businessId);
         } else {
           // Pending: not a failure, just not money yet. The success event,
@@ -157,6 +241,53 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
       when: new Date(),
       config: deps.config,
     });
+    if (outcome === 'already_settled') {
+      /* Another session of this charge settled it while this job was verifying (two
+       * payments racing). If that was a different session, this is the duplicate. */
+      const settling = await subscriptionsRepo.paidAttempt(tx, businessId, charge.id);
+      /* A settlement that recorded no attempt (a charge from before attempts existed)
+       * was made through the charge's own reference. */
+      const settledReference = settling?.providerReference ?? reference;
+      /* Only a PAID charge can have been paid twice: one closed as failed or refunded
+       * meanwhile is flagged as it always was. */
+      const closed = await subscriptionsRepo.chargeByReference(tx, businessId, reference);
+      if (closed?.status === 'paid' && providerReference !== settledReference) {
+        if (attempt) {
+          await subscriptionsRepo.moveAttempt(
+            tx,
+            businessId,
+            attempt.id,
+            ['initializing', 'active', 'ambiguous', 'superseded', 'failed'],
+            'duplicate_paid',
+          );
+        }
+        await events.markProcessed(tx, eventId, 'duplicate_payment', businessId);
+        log.warn(
+          `subscription charge ${reference} was paid twice for business ${businessId} (a replaced checkout session was also paid); refund the duplicate`,
+        );
+        return;
+      }
+    }
+    if (outcome === 'applied' || outcome === 'superseded') {
+      /* The charge is paid, by this session. The session it was paid through is the
+       * one on record, and any other live session must stop being presented: a later
+       * payment on one is a duplicate to refund, never a second entitlement. */
+      if (attempt) {
+        await subscriptionsRepo.moveAttempt(
+          tx,
+          businessId,
+          attempt.id,
+          ['initializing', 'active', 'ambiguous', 'superseded', 'failed'],
+          'paid',
+        );
+      }
+      await subscriptionsRepo.supersedeOtherLiveAttempts(
+        tx,
+        businessId,
+        charge.id,
+        attempt?.id ?? null,
+      );
+    }
     if (outcome === 'business_gone') {
       /* Retention deleted the business first, and with it this event, the job
        * and the charge: there is no row left to mark. The provider took money

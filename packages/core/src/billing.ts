@@ -432,7 +432,39 @@ export function addOnReference(at: Date, random: RandomBytes): string {
  * webhook and must not be confused. One books into their ledger; the other
  * must never touch it.
  */
-export const SUBSCRIPTION_REFERENCE_PATTERN = /^RKD-(SUB|PACK)-\d{8}-[0-9A-HJKMNP-TV-Z]{6}$/;
+export const SUBSCRIPTION_REFERENCE_PATTERN =
+  /^RKD-(SUB|PACK)-\d{8}-[0-9A-HJKMNP-TV-Z]{6}(?:-R(?:[2-9]|1\d|20))?$/;
+
+/* ── checkout attempts (G-102, OWN-50) ─────────────────────────────────────── */
+
+/**
+ * How many provider checkout sessions one charge may ever have had.
+ *
+ * Paystack rejects a reused reference, so a checkout whose link was lost
+ * cannot be started again under the same reference and is replaced by a new
+ * attempt with its own. The cap is a backstop against a loop, not a limit a
+ * merchant should meet.
+ */
+export const MAX_CHECKOUT_ATTEMPTS = 20;
+
+/**
+ * The provider reference of a charge's Nth checkout attempt.
+ *
+ * The first attempt keeps the charge's own reference, so every link and event
+ * from before attempts existed still matches. A later attempt appends `-R<n>`,
+ * which is what lets a webhook name its charge with no lookup: the charge is
+ * the reference with the suffix removed.
+ */
+export function attemptReference(chargeReference: string, attemptNo: number): string {
+  if (!Number.isInteger(attemptNo) || attemptNo < 1 || attemptNo > MAX_CHECKOUT_ATTEMPTS) {
+    throw new RangeError(`a checkout attempt number must be 1 to ${MAX_CHECKOUT_ATTEMPTS}`);
+  }
+  return attemptNo === 1 ? chargeReference : `${chargeReference}-R${attemptNo}`;
+}
+
+/** The charge a provider reference belongs to: the reference without any attempt suffix. */
+export const chargeReferenceOf = (providerReference: string): string =>
+  providerReference.replace(/-R\d+$/, '');
 
 /* ── a paid but unapplied subscription charge (OD-30 / OWN-29) ─────────────── */
 

@@ -7,7 +7,16 @@
  * two together would inflate a merchant's revenue with our revenue.
  */
 import { sql } from 'drizzle-orm';
-import { bigint, index, integer, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import {
+  bigint,
+  index,
+  integer,
+  pgTable,
+  smallint,
+  text,
+  timestamp,
+  uuid,
+} from 'drizzle-orm/pg-core';
 import { businesses } from './tenancy.js';
 
 export const subscriptionCharges = pgTable(
@@ -69,3 +78,28 @@ export const subscriptionCharges = pgTable(
   },
   (t) => [index('subscription_charges_business_ix').on(t.businessId, t.createdAt)],
 );
+
+/**
+ * One Paystack checkout session for a charge (migration 0173, G-102, OWN-50).
+ *
+ * Paystack rejects a reused reference, so a checkout whose link was lost is
+ * replaced by a new attempt with its own provider reference. A charge has at
+ * most one live attempt (`initializing`, `active` or `ambiguous`); the rest
+ * are history. The first attempt's provider reference is the charge's own.
+ */
+export const subscriptionChargeAttempts = pgTable('subscription_charge_attempts', {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  businessId: uuid('business_id')
+    .notNull()
+    .references(() => businesses.id),
+  chargeId: uuid('charge_id').notNull(),
+  attemptNo: smallint('attempt_no').notNull(),
+  providerReference: text('provider_reference').notNull(),
+  /** initializing | active | ambiguous | superseded | paid | duplicate_paid | failed */
+  status: text('status').notNull().default('initializing'),
+  checkoutUrl: text('checkout_url'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});

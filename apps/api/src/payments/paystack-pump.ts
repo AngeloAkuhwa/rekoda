@@ -18,7 +18,11 @@
  * is singleton-keyed on the event id, so two pumps racing produce one job.
  */
 import { Logger } from '@nestjs/common';
-import { PAYMENT_REFERENCE_PATTERN, SUBSCRIPTION_REFERENCE_PATTERN } from '@rekoda/core';
+import {
+  PAYMENT_REFERENCE_PATTERN,
+  SUBSCRIPTION_REFERENCE_PATTERN,
+  chargeReferenceOf,
+} from '@rekoda/core';
 import { paystackWebhookBody, summarisePaystackEvent } from '@rekoda/contracts';
 import {
   events,
@@ -78,7 +82,12 @@ export async function pumpPaystackEvents(deps: PumpDeps, limit = 50): Promise<nu
      * a handler that already has a merchant's ledger open.
      */
     if (SUBSCRIPTION_REFERENCE_PATTERN.test(reference)) {
-      const owner = await subscriptionsRepo.businessForCharge(deps.workerDb, reference);
+      /* A replacement checkout attempt carries `-R<n>` after its charge's reference
+       * (G-102, OWN-50): the charge, and so the business, is the reference without it. */
+      const owner = await subscriptionsRepo.businessForCharge(
+        deps.workerDb,
+        chargeReferenceOf(reference),
+      );
       if (!owner) {
         await events.markProcessed(deps.workerDb, event.id, 'unknown_reference');
         log.warn('a Paystack event carried a Rekoda-shaped subscription reference with no charge');
