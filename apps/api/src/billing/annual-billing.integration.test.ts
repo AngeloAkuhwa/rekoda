@@ -290,8 +290,34 @@ describe('buying a year', () => {
     expect(overview.charges[0]?.interval).toBe('annual');
   });
 
+  it('the overview marks a plan charge a newer subscription decision has made stale, before any sweep stamps it', async () => {
+    const { businessId, auth } = await onboard();
+    const now = new Date('2026-11-02T09:00:00Z');
+    const waiting = await billing().changePlan(businessId, 'chat', now, 'monthly');
+    if (waiting.state !== 'payment_required') throw new Error('expected a payment link');
+
+    // Not retired: nothing has stamped superseded_at on it.
+    expect(
+      (await chargesOf(businessId)).find((c) => c.reference === waiting.reference)?.supersededAt,
+    ).toBeNull();
+    expect(
+      (await overviewOf(auth)).charges.find((c) => c.reference === waiting.reference)?.superseded,
+    ).toBe(false);
+
+    // The subscription is decided after the charge was opened (a settled purchase or an operator move
+    // stamps plan_decided_at). Checkout then refuses this charge as superseded, so the page must not offer it.
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(
+        sql`UPDATE businesses SET plan_decided_at = clock_timestamp() + interval '1 second' WHERE id = ${businessId}::uuid`,
+      ),
+    );
+    expect(
+      (await overviewOf(auth)).charges.find((c) => c.reference === waiting.reference)?.superseded,
+    ).toBe(true);
+  });
+
   it('a merchant who changes their mind the same day gets the charge for the interval they chose', async () => {
-    const { businessId } = await onboard();
+    const { businessId, auth } = await onboard();
     const now = new Date('2026-11-02T09:00:00Z');
 
     const annual = await billing().changePlan(businessId, 'chat', now, 'annual');
@@ -306,6 +332,10 @@ describe('buying a year', () => {
     const rows = await chargesOf(businessId);
     expect(rows.find((c) => c.reference === annual.reference)?.supersededAt).not.toBeNull();
     expect(rows.find((c) => c.reference === monthly.reference)?.supersededAt).toBeNull();
+    // The overview tells the page which one is replaced, so it never offers the dead link for payment.
+    const shown = await overviewOf(auth);
+    expect(shown.charges.find((c) => c.reference === annual.reference)?.superseded).toBe(true);
+    expect(shown.charges.find((c) => c.reference === monthly.reference)?.superseded).toBe(false);
 
     // Asking for the annual one again hands back a payable annual charge.
     const again = await billing().changePlan(businessId, 'chat', now, 'annual');

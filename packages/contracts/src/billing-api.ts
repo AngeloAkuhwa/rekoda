@@ -50,6 +50,11 @@ export const billingChargeView = z.object({
   periodEnd: isoDate.nullable(),
   /** What the charge bought: a month or a year of service (plan charges). */
   interval: billingInterval,
+  /**
+   * A pending charge the account has since replaced with a newer choice. It stays `pending` in the
+   * history but can no longer be paid; a client never offers it (G-102 slice 2c).
+   */
+  superseded: z.boolean(),
   createdAt: isoDate,
 });
 

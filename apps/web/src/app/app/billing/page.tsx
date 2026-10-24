@@ -22,13 +22,23 @@ import {
 import { CancelForm } from './CancelForm';
 import { PLANS, PLAN_NAMES, SHARED_ACROSS_PLANS } from '@/lib/plans';
 import { capabilityWords, entitlementsForPlan, planSwitch } from '@rekoda/core';
-import { billingOverview, billingQuote } from '@/server/api';
+import { billingEmailStatus, billingOverview, billingQuote } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
 import { SignOutButton } from '../SignOutButton';
 import { buyPack, confirmPlanChange, switchInterval } from './actions';
 import { heldBy } from '@/lib/capabilities';
 import { chargeStatusLabel } from '@/lib/charge-status';
+import {
+  BILLING_EMAIL_UNREAD_COPY,
+  lastPaymentFailed,
+  payHeading,
+  pendingCharge,
+  trialCopy,
+  trialDaysLeft,
+} from '@/lib/billing-pay-copy';
+import { EmailForm } from './EmailForm';
+import { PayForms } from './PayForms';
 
 export const metadata: Metadata = {
   title: 'Billing',
@@ -134,6 +144,18 @@ export default async function BillingPage({
     params.to && params.to !== overview.plan
       ? await billingQuote(token, params.to, browsing)
       : null;
+  const owner = isOwner(identity.role);
+  /* The billing email is the owner's: a non-owner never asks for it. A failed read leaves the
+   * card out rather than the page down. */
+  let emailUnread = false;
+  const email = owner
+    ? await billingEmailStatus(token).catch(() => {
+        emailUnread = true;
+        return null;
+      })
+    : null;
+  const waiting = pendingCharge(overview.charges, params.pay);
+  const lastFailed = waiting ? null : lastPaymentFailed(overview.charges);
   const firstPurchase = overview.plan === 'trial' || overview.plan === 'expired';
   const paidPlan = !firstPurchase;
 
@@ -161,7 +183,10 @@ export default async function BillingPage({
       {overview.status.state === 'expired' ? (
         <div className="rk-attention-strip" role="status">
           Your subscription stopped on {lagosDate(overview.status.since)}. Your books are still here
-          and you can still read and export everything. Message upgrade on WhatsApp to start again.
+          and you can still read and export everything.{' '}
+          {owner
+            ? 'Choose a plan below to start again.'
+            : 'The owner can start it again from this page.'}
         </div>
       ) : null}
 
@@ -202,9 +227,44 @@ export default async function BillingPage({
         </div>
       ) : null}
 
-      {params.pay ? (
+      {lastFailed ? (
         <div className="rk-attention-strip" role="status">
-          Reference {params.pay}. Keep this number: it is how we match your payment.
+          Your last payment ({lastFailed.reference}) did not go through.{' '}
+          {owner
+            ? 'You can choose a plan below to try again, or message'
+            : 'Ask the owner to try again, or message'}{' '}
+          us on WhatsApp with that reference if you need a hand.
+        </div>
+      ) : null}
+
+      {/* ── a charge waiting for money (G-102 slice 2c) ── */}
+      {waiting ? (
+        <div className="rk-card" id="pay">
+          <h2>{payHeading(waiting.kind)}</h2>
+          <p>
+            <Money kobo={waiting.amountK} /> for{' '}
+            {waiting.kind === 'add_on' && waiting.packLabel
+              ? waiting.packLabel
+              : (CHARGE_LABELS[waiting.kind] ?? waiting.kind).toLowerCase()}
+            {waiting.plan ? ` · ${PLAN_NAMES[waiting.plan] ?? waiting.plan}` : ''}
+            {chargeIntervalSuffix(waiting.kind, waiting.interval)}
+          </p>
+          <p className="rk-fineprint">
+            You pay on Paystack&rsquo;s own page, and Rekoda never sees your card details. Reference{' '}
+            <span className="rk-mono">{waiting.reference}</span>.
+          </p>
+          {owner && emailUnread ? (
+            <p className="rk-fineprint">{BILLING_EMAIL_UNREAD_COPY}</p>
+          ) : null}
+          {owner ? (
+            <PayForms reference={waiting.reference} maskedEmail={email?.maskedEmail ?? null} />
+          ) : (
+            <p className="rk-fineprint">Payments are the owner&rsquo;s to make.</p>
+          )}
+          <p className="rk-fineprint">
+            Already paid? It can take a minute to show here. Refresh this page, and do not pay
+            again.
+          </p>
         </div>
       ) : null}
 
@@ -228,9 +288,10 @@ export default async function BillingPage({
           {overview.status.state === 'active'
             ? `Renews on ${lagosDate(overview.status.renewsAt)}.`
             : overview.status.state === 'trial'
-              ? overview.status.endsAt
-                ? `Your free trial runs until ${lagosDate(overview.status.endsAt)}. No card needed.`
-                : 'Your free trial is running. No card needed.'
+              ? trialCopy(
+                  overview.status.endsAt ? lagosDate(overview.status.endsAt) : null,
+                  overview.status.endsAt ? trialDaysLeft(overview.status.endsAt, new Date()) : null,
+                )
               : overview.status.state === 'grace'
                 ? `Grace period ends ${lagosDate(overview.status.endsAt)}.`
                 : `Stopped ${lagosDate(overview.status.since)}.`}
@@ -257,6 +318,40 @@ export default async function BillingPage({
           </>
         ) : null}
       </div>
+
+      {/* ── the billing email: where Paystack sends receipts, proven before a real payment ── */}
+      {email ? (
+        <div className="rk-card" id="billing-email">
+          <h2>Billing email</h2>
+          {email.maskedEmail ? (
+            <p>
+              {email.maskedEmail}{' '}
+              <span className="rk-fineprint">
+                {email.verified ? '· Confirmed' : '· Not confirmed yet'}
+              </span>
+            </p>
+          ) : (
+            <p className="rk-fineprint">
+              No billing email yet. Paystack needs one to send your receipt, and we ask for it when
+              you pay. It is separate from your WhatsApp number.
+            </p>
+          )}
+          {email.maskedEmail && !email.verified ? (
+            <p className="rk-fineprint">
+              Before your first real payment we ask you to confirm this address, so your receipts
+              reach you. We email a link that works once and lasts an hour.
+            </p>
+          ) : null}
+          {email.canSend ? (
+            <EmailForm hasEmail={email.maskedEmail !== null} verified={email.verified} />
+          ) : (
+            <p className="rk-fineprint">
+              Confirming by email is not switched on yet, so there is nothing for you to do here for
+              now. We will tell you when it is.
+            </p>
+          )}
+        </div>
+      ) : null}
 
       {/* ── billing frequency: monthly or yearly (OWN-40) ──
           Always scheduled for the next renewal. The merchant keeps the month or the
@@ -635,7 +730,7 @@ export default async function BillingPage({
                       {chargeIntervalSuffix(charge.kind, charge.interval)}
                     </td>
                     <td className="rk-mono">{charge.reference}</td>
-                    <td>{chargeStatusLabel(charge.status)}</td>
+                    <td>{chargeStatusLabel(charge.status, charge.superseded)}</td>
                     <td>
                       <Money kobo={charge.amountK} />
                       {partlyRefunded(charge.refundedAmountK, charge.status) ? (

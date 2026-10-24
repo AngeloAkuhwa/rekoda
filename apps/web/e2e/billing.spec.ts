@@ -121,3 +121,57 @@ test('a trial merchant is not offered a billing frequency switch they cannot use
   await page.goto('/app/billing');
   await expect(page.getByRole('heading', { name: 'Billing frequency' })).toHaveCount(0);
 });
+
+test('a trial merchant sees the days left, in plain words and with no countdown', async ({
+  page,
+}) => {
+  await onboard(page, freshPhone());
+  await page.goto('/app/billing');
+
+  await expect(page.getByText('14 days left in your free trial', { exact: false })).toBeVisible();
+  await expect(page.getByText('No card needed', { exact: false })).toBeVisible();
+  // Nothing was attempted, so nothing may read as failed or waiting.
+  await expect(page.getByText('did not go through', { exact: false })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Pay for your plan' })).toHaveCount(0);
+});
+
+test('the billing email card is honest while confirmation emails are not switched on', async ({
+  page,
+}) => {
+  await onboard(page, freshPhone());
+  await page.goto('/app/billing');
+
+  await expect(page.getByRole('heading', { name: 'Billing email' })).toBeVisible();
+  await expect(page.getByText('No billing email yet', { exact: false })).toBeVisible();
+  await expect(page.getByText('not switched on yet', { exact: false })).toBeVisible();
+  // No send button for a link that cannot be sent.
+  await expect(page.getByRole('button', { name: /confirmation link/ })).toHaveCount(0);
+});
+
+test('the emailed confirmation link needs its token, and an unknown one is refused kindly', async ({
+  page,
+}) => {
+  await onboard(page, freshPhone());
+
+  // Opened without the part after the # (a copied or truncated link).
+  await page.goto('/app/billing/confirm-email');
+  await expect(page.getByRole('heading', { name: 'Open the link from your email' })).toBeVisible();
+
+  // A link that was never issued: the token is read from the fragment, taken out of
+  // the address bar, and only spent when the owner presses the button.
+  await page.goto('/app/billing/confirm-email#token=abcdefghijklmnopqrstuvwxyz0123456789');
+  await expect(
+    page.getByRole('heading', { name: 'Confirm your billing email' }).nth(1),
+  ).toBeVisible();
+  await expect(page).toHaveURL(/\/app\/billing\/confirm-email$/);
+  await page.getByRole('button', { name: 'Confirm this email' }).click();
+  await expect(page.getByRole('heading', { name: 'This link did not work' })).toBeVisible();
+  await expect(page.getByText('used already', { exact: false })).toBeVisible();
+  await page.getByRole('link', { name: 'Back to billing' }).click();
+  await expect(page).toHaveURL(/\/app\/billing$/);
+});
+
+test('the confirmation page needs a signed-in owner', async ({ page }) => {
+  await page.goto('/app/billing/confirm-email#token=abcdefghijklmnopqrstuvwxyz0123456789');
+  await expect(page).toHaveURL(/\/start/);
+});

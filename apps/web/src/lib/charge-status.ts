@@ -13,10 +13,11 @@ import type { BillingChargeStatus } from '@rekoda/contracts';
 const LABELS: Record<BillingChargeStatus, string> = {
   pending: 'Awaiting payment',
   paid: 'Paid',
-  failed: 'Failed',
+  failed: 'Payment did not go through',
   refunded: 'Refunded',
 };
 
-export function chargeStatusLabel(status: BillingChargeStatus): string {
-  return LABELS[status];
+/** A pending charge the account has replaced can no longer be paid, so it is not "awaiting payment". */
+export function chargeStatusLabel(status: BillingChargeStatus, superseded = false): string {
+  return status === 'pending' && superseded ? 'Replaced by a newer choice' : LABELS[status];
 }
