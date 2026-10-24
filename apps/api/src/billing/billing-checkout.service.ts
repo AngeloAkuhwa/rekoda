@@ -97,6 +97,7 @@ export class BillingCheckoutService {
     const recorded = await withBusiness(this.db, businessId, (tx) =>
       subscriptionsRepo.recordCheckout(tx, businessId, prepared.reference, url, now),
     );
+    /* Paid, failed or retired while the provider call was in flight. */
     if (!recorded) return { state: 'unavailable', reason: 'not_pending' };
     return {
       state: 'ready',
@@ -119,6 +120,12 @@ export class BillingCheckoutService {
       }
       if (charge.status !== 'pending') {
         return { state: 'done', response: { state: 'unavailable', reason: 'not_pending' } };
+      }
+      /* Retired charges keep status `pending` and gain `superseded_at` (a newer
+       * plan choice or subscription decision): a payment on one is recorded but
+       * never applied, so nobody is invited to pay for it, cached link or not. */
+      if (charge.supersededAt) {
+        return { state: 'done', response: { state: 'unavailable', reason: 'superseded' } };
       }
       if (charge.amountK <= 0) {
         return { state: 'done', response: { state: 'unavailable', reason: 'nothing_to_pay' } };
@@ -162,7 +169,7 @@ export class BillingCheckoutService {
     const charge = await withBusiness(this.db, businessId, (tx) =>
       subscriptionsRepo.chargeByReference(tx, businessId, reference),
     );
-    return charge?.status === 'pending' && charge.checkoutUrl
+    return charge?.status === 'pending' && !charge.supersededAt && charge.checkoutUrl
       ? { checkoutUrl: charge.checkoutUrl, amountK: charge.amountK }
       : null;
   }

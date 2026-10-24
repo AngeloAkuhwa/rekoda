@@ -266,6 +266,36 @@ describe('what may be paid', () => {
     expect(provider.initialized).toEqual([]);
   });
 
+  it('refuses a charge a newer plan choice retired, even with a link already stored', async () => {
+    const businessId = await seedBusiness();
+    const first = await pendingCharge(businessId);
+    await checkouts().checkout(businessId, first.reference, 'ada@shop.example.ng');
+    /* Choosing another plan the same day retires the first charge but leaves it `pending`. */
+    const second = await plans().changePlan(businessId, 'complete');
+    if (second.state !== 'payment_required') throw new Error('the second plan should be payable');
+
+    const stale = await checkouts().checkout(businessId, first.reference, undefined);
+
+    expect(stale).toEqual({ state: 'unavailable', reason: 'superseded' });
+    expect(provider.initialized).toHaveLength(1);
+    expect(await checkouts().checkout(businessId, second.reference, undefined)).toMatchObject({
+      state: 'ready',
+      reference: second.reference,
+    });
+  });
+
+  it('refuses a retired charge before it is ever started', async () => {
+    const businessId = await seedBusiness();
+    const first = await pendingCharge(businessId);
+    await plans().changePlan(businessId, 'complete');
+
+    const stale = await checkouts().checkout(businessId, first.reference, 'ada@shop.example.ng');
+
+    expect(stale).toEqual({ state: 'unavailable', reason: 'superseded' });
+    expect(provider.initialized).toEqual([]);
+    expect((await rowOf(businessId)).sealed).toBeNull();
+  });
+
   it('refuses a charge of nothing', async () => {
     const businessId = await seedBusiness();
     await withBusiness(appDb, businessId, (tx) =>

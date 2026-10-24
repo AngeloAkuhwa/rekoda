@@ -976,7 +976,7 @@ export async function setBillingEmailSealed(
  * is the only link: a second request, or a second tab, hands back the stored one.
  * `checkout_url IS NULL` makes the first writer win; the loser is returned the
  * winner's URL so both tabs show the same checkout. Null when the charge is no
- * longer pending (paid, failed or retired meanwhile).
+ * longer payable (paid, failed, or retired as stale or abandoned meanwhile).
  */
 export async function recordCheckout(
   tx: TenantDb,
@@ -990,7 +990,8 @@ export async function recordCheckout(
     SET checkout_url = COALESCE(checkout_url, ${checkoutUrl}),
         checkout_started_at = COALESCE(checkout_started_at, ${when.toISOString()}::timestamptz),
         updated_at = now()
-    WHERE business_id = ${businessId}::uuid AND reference = ${reference} AND status = 'pending'
+    WHERE business_id = ${businessId}::uuid AND reference = ${reference}
+      AND status = 'pending' AND superseded_at IS NULL
     RETURNING checkout_url
   `);
   return [...rows][0]?.checkout_url ?? null;
