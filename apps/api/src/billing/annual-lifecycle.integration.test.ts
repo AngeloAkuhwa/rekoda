@@ -210,7 +210,12 @@ describe('a yearly renewal nobody pays', () => {
 
   it("keeps paid features through grace, and cuts them off on day seven without deleting the merchant's records", async () => {
     const { businessId } = await unpaidYear();
-    const failedAt = (await subOf(businessId))!.paymentFailedAt!;
+    const held = (await subOf(businessId))!;
+    const failedAt = held.paymentFailedAt!;
+    // Grace starts at the renewal date, not at sweep time: a late sweep must not gift days.
+    const lateBy = failedAt.getTime() - held.planExpiresAt!.getTime();
+    expect(lateBy).toBeGreaterThanOrEqual(0);
+    expect(lateBy).toBeLessThan(60_000);
     const sender = new StubSender();
     /* A record the merchant made, so "nothing deleted" is proven against something that exists. */
     const customersOf = (id: string) =>
