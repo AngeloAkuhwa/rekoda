@@ -263,6 +263,15 @@ jobs:
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: pnpm turbo build
+      # The recovery drill dumps with the runner's own `pg_dump` and restores into
+      # the postgres:16 service container. Debian's `pg_dump` is a wrapper that picks
+      # the NEWEST installed client, and a newer one writes `SET transaction_timeout`
+      # into the archive, which a 16 server rejects on restore. Pin the client to the
+      # server's major version, as production's `pg_dump` against 16 is.
+      - name: Use the PostgreSQL 16 client tools
+        run: |
+          if [ -d /usr/lib/postgresql/16/bin ]; then echo /usr/lib/postgresql/16/bin >> "$GITHUB_PATH"; fi
+          PATH="/usr/lib/postgresql/16/bin:$PATH" pg_dump --version
       # The migration creates rekoda_app with no password on purpose —
       # credentials belong to ops, never to a file in the repository. Under
       # trust auth it needs none here.
