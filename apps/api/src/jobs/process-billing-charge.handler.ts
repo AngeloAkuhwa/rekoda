@@ -113,7 +113,7 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
                 tx,
                 businessId,
                 attempt.id,
-                ['initializing', 'active', 'ambiguous', 'superseded'],
+                ['initializing', 'active', 'ambiguous', 'superseded', 'failed'],
                 'duplicate_paid',
               );
             }
@@ -251,7 +251,7 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
             tx,
             businessId,
             attempt.id,
-            ['initializing', 'active', 'ambiguous', 'superseded'],
+            ['initializing', 'active', 'ambiguous', 'superseded', 'failed'],
             'duplicate_paid',
           );
         }
@@ -271,7 +271,7 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
           tx,
           businessId,
           attempt.id,
-          ['initializing', 'active', 'ambiguous', 'superseded'],
+          ['initializing', 'active', 'ambiguous', 'superseded', 'failed'],
           'paid',
         );
       }

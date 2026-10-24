@@ -753,6 +753,32 @@ describe('a failed replacement does not strand a payment on the older session', 
     expect((await attemptsOf(businessId))[0]).toMatchObject({ no: 1, status: 'paid' });
   });
 
+  it('records the session as the one that settled the charge when it is paid after being reported failed', async () => {
+    const { businessId, reference, amountK, second } = await recoveredCharge();
+    provider.willVerify(second, { amountK, succeeded: false, providerStatus: 'abandoned' });
+    await storeEvent(second, amountK);
+    await pump();
+    await drainJobs();
+    expect((await attemptsOf(businessId))[1]).toMatchObject({ no: 2, status: 'failed' });
+
+    /* The merchant came back to that very session and paid. */
+    provider.willVerify(second, { amountK });
+    await storeEvent(second, amountK);
+    await pump();
+    await drainJobs();
+    expect((await chargeOf(businessId, reference))?.status).toBe('paid');
+    expect((await attemptsOf(businessId))[1]).toMatchObject({ no: 2, status: 'paid' });
+
+    /* So a repeat of that payment is a repeat, and a payment on the other session is the duplicate. */
+    const repeat = await storeEvent(second, amountK);
+    provider.willVerify(reference, { amountK });
+    const other = await storeEvent(reference, amountK);
+    await pump();
+    await drainJobs();
+    expect(await eventError(businessId, repeat)).toBe('already_paid');
+    expect(await eventError(businessId, other)).toBe('duplicate_payment');
+  });
+
   it('lets the merchant start a new session on a charge whose only live attempt failed', async () => {
     const { businessId, reference, second } = await recoveredCharge();
     provider.willVerify(second, { amountK: 0, succeeded: false, providerStatus: 'failed' });
