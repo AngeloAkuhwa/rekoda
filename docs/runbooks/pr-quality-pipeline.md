@@ -53,8 +53,9 @@ Evidence, then the gap each item leaves.
    `gh run list`. It is serialised and never cancelled, and it runs `scripts/deploy-staging.sh` on
    the host. The script refuses an unhealthy baseline, refuses a commit that does not know staging's
    schema, migrates expand-only, and checks `/health` for the exact release and commit, from both
-   the host and Cloudflare. It never touches volumes and removes only superseded staging images (runbook "Disk space and image retention"). Gaps: there is no post-deploy smoke of
-   authentication, tenancy, the storefront or webhook rejection, and no disk-space check or
+   the host and Cloudflare. It refuses a host below 8 GiB free (checkout and Docker root), never touches
+   volumes and removes only superseded staging images (runbook "Disk space and image retention"). Gaps:
+   there is no post-deploy smoke of authentication, tenancy, the storefront or webhook rejection, and no
    structured deployment report (PR 4).
 7. **CodeRabbit** is installed and active. It reviews every PR to `main`, and its run shows the configuration
    source and profile. `.coderabbit.yaml` (this PR) moves it to the repository configuration, the
@@ -77,13 +78,13 @@ Evidence, then the gap each item leaves.
 
 ## The sequence
 
-| PR       | Slice                                                                                                          | Status  |
-| -------- | -------------------------------------------------------------------------------------------------------------- | ------- |
-| 1 (#303) | CodeRabbit configuration, pre-merge checks, request-changes workflow, PR template, this runbook, playbook gate | OPEN    |
-| 2        | `rekoda-pr-quality-gate`: a deterministic GitHub Actions job that verifies the exact head from the GitHub API  | PLANNED |
-| 3        | A `main` run is never cancelled (concurrency policy and guard); serial merge-to-staging stays a practice       | PR OPEN |
-| 4        | Staging smoke tests, a deployment report (SHA, migrations, disk, health) and the recovery protections          | PLANNED |
-| 5        | Documentation and autopilot integration: CLAUDE.md, CONTRIBUTING.md, readiness, handoff                        | PLANNED |
+| PR       | Slice                                                                                                                                        | Status  |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| 1 (#303) | CodeRabbit configuration, pre-merge checks, request-changes workflow, PR template, this runbook, playbook gate                               | OPEN    |
+| 2        | `rekoda-pr-quality-gate`: a deterministic GitHub Actions job that verifies the exact head from the GitHub API                                | PLANNED |
+| 3        | A `main` run is never cancelled (concurrency policy and guard); serial merge-to-staging stays a practice                                     | PR OPEN |
+| 4        | Staging smoke tests and a structured deployment report (SHA, migrations, disk, health); the disk floor and image retention are in the script | PARTIAL |
+| 5        | Documentation and autopilot integration: CLAUDE.md, CONTRIBUTING.md, readiness, handoff                                                      | PLANNED |
 
 Production deployment is not part of any slice. It needs the owner's explicit approval and a release
 evidence report (playbook "Final go/no-go evidence").
