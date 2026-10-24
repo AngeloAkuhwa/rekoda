@@ -806,6 +806,9 @@ describe('REKODA_ANNUAL_BILLING', () => {
     expect(loadConfig({ ...BASE }).annualBillingSales).toBe(false);
     expect(loadConfig({ ...BASE, REKODA_ANNUAL_BILLING: '0' }).annualBillingSales).toBe(false);
     expect(loadConfig({ ...BASE, REKODA_ANNUAL_BILLING: '1' }).annualBillingSales).toBe(true);
+    expect(() => loadConfig({ ...BASE, REKODA_ANNUAL_BILLING: '' })).toThrow(
+      /REKODA_ANNUAL_BILLING/,
+    );
     expect(() => loadConfig({ ...BASE, REKODA_ANNUAL_BILLING: 'true' })).toThrow(
       /REKODA_ANNUAL_BILLING/,
     );

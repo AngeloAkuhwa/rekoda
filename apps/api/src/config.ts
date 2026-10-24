@@ -845,7 +845,7 @@ function nonNegativeInteger(env: NodeJS.ProcessEnv, name: string, fallback: numb
 /** Absent or `0` is off, `1` is on; anything else refuses to boot rather than quietly selling nothing. */
 function zeroOrOneFlag(env: NodeJS.ProcessEnv, name: string): boolean {
   const raw = env[name];
-  if (raw === undefined || raw === '' || raw === '0') return false;
+  if (raw === undefined || raw === '0') return false;
   if (raw === '1') return true;
   throw new Error(`${name} must be 0 or 1, got "${raw}"`);
 }
