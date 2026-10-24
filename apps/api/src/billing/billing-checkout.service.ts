@@ -1,6 +1,6 @@
 /**
  * A merchant paying Rekoda: turning a pending charge into a Paystack checkout
- * (G-102, OWN-39).
+ * (G-102, OWN-39, OWN-50).
  *
  * The settlement half already existed (`billing.process` verifies the payment
  * server-side and `applySettledCharge` settles a charge exactly once). What was
@@ -10,17 +10,36 @@
  * once. It is checked, kept sealed under the vault key, and never invented,
  * never swapped for the owner's own address, never one of Rekoda's own.
  *
- * Three phases, like the customer-payment path, because a provider call must
- * not sit inside a database transaction: decide and store, then call Paystack,
- * then record the link. A charge's reference is Paystack's idempotency key and
- * Paystack refuses to initialise one twice, so the first link is stored and
- * every later request is handed that same link.
+ * Every provider checkout is an ATTEMPT with its own provider reference. The
+ * reason is Paystack's contract: a reference it has seen is rejected, whether
+ * the session was paid, failed or abandoned, so a checkout whose link was lost
+ * (the response never arrived, or the merchant closed the tab) can never be
+ * started again under the same reference, and re-initialising is never assumed
+ * to be idempotent. The first attempt keeps the charge's own reference; a
+ * replacement appends `-R<n>` (core: `attemptReference`).
+ *
+ * Recovery, in order of safety:
+ *  1. a stored link is simply handed back;
+ *  2. a link that is missing (the call failed, timed out, or died) is never
+ *     replaced until Paystack has been ASKED about the old session: paid means
+ *     the merchant is told so, a payment under way means they wait, and only an
+ *     unpaid or unknown session is replaced. If Paystack cannot be asked the
+ *     answer is "try again", never a second session;
+ *  3. a charge has at most one live attempt, enforced by the database, and every
+ *     decision is made holding the charge's row lock, so two tabs, a retry racing
+ *     a replacement and a double click cannot produce two live sessions.
+ * A payment that nevertheless lands on a replaced session is settled once if the
+ * charge is still pending, and is a duplicate for an operator to refund if it is
+ * not (the pump and `billing.process` do that); it is never a second entitlement.
+ *
+ * Phases, because a provider call must not sit inside a database transaction:
+ * decide and store, then call Paystack, then record the link.
  *
  * This money is Rekoda's revenue. It is initialised without a subaccount and
  * lands in no merchant's books.
  */
 import { Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
-import { checkBillingEmail } from '@rekoda/core';
+import { MAX_CHECKOUT_ATTEMPTS, attemptReference, checkBillingEmail } from '@rekoda/core';
 import { decryptFacet, encryptFacet } from '@rekoda/core/vault';
 import type { BillingCheckoutResponse } from '@rekoda/contracts';
 import { subscriptionsRepo, withBusiness, type Db, type TenantDb } from '@rekoda/db';
@@ -38,9 +57,58 @@ const handoffTime = (now: Date): Date => {
   return wall > now ? wall : now;
 };
 
-type Prepared =
+/**
+ * How long a request may be mid-way through starting a checkout before another
+ * request treats it as dead and asks Paystack what became of it. Longer than
+ * any sane provider timeout, so a slow but live request is not trampled.
+ */
+const STALE_INITIALIZING_MS = 60_000;
+
+/**
+ * A request for a fresh link right after the link was stored hands that link
+ * back instead of replacing it: a double click must not cost a session, and a
+ * link made seconds ago is not one the merchant has lost. Measured from when
+ * the link was stored, not from when the attempt was opened.
+ */
+const RESTART_COOLDOWN_MS = 30_000;
+
+/** Provider statuses on which an unpaid session may be replaced (nothing is under way). */
+const REPLACEABLE_PROVIDER_STATUSES = new Set(['abandoned', 'failed', 'reversed']);
+
+type Attempt = subscriptionsRepo.AttemptRow;
+type Unavailable = Extract<BillingCheckoutResponse, { state: 'unavailable' }>['reason'];
+
+type Decision =
   | { state: 'done'; response: BillingCheckoutResponse }
-  | { state: 'initialise'; reference: string; amountK: number; email: string };
+  /** An attempt is open (status `initializing`) and Paystack has not been called for it. */
+  | {
+      state: 'initialise';
+      attempt: Attempt;
+      chargeReference: string;
+      amountK: number;
+      email: string;
+    }
+  /** The live attempt has no usable link: ask Paystack about it before doing anything else. */
+  | { state: 'resolve'; attempt: Attempt }
+  /** A sibling request is calling Paystack for this charge right now. */
+  | { state: 'wait' }
+  /** Someone else moved the attempt while we waited: decide again from what they did. */
+  | { state: 'retry' };
+
+type Verdict = 'paid' | 'in_progress' | 'replaceable';
+
+export interface CheckoutOptions {
+  /** The merchant asks for a fresh link (honoured only once Paystack confirms the old one is unpaid). */
+  restart?: boolean;
+  /** The request's clock; tests pin it. */
+  now?: Date;
+  /** How long to wait for a sibling request that is mid-way through starting this checkout. */
+  siblingWaitMs?: number;
+}
+
+/** How long a request waits for a sibling that is starting the same checkout, so a double click gets one link. */
+const SIBLING_WAIT_MS = 4_000;
+const SIBLING_POLL_MS = 200;
 
 @Injectable()
 export class BillingCheckoutService {
@@ -56,8 +124,10 @@ export class BillingCheckoutService {
     businessId: string,
     reference: string,
     billingEmail: string | undefined,
-    now = new Date(),
+    options: CheckoutOptions = {},
   ): Promise<BillingCheckoutResponse> {
+    const now = options.now ?? new Date();
+    const restart = options.restart === true;
     /* A missing key degrades honestly, and a live key waits for the written
      * Paystack confirmation (§47), exactly as opening a charge does. */
     const key = this.config.paystackSecretKey;
@@ -74,121 +144,378 @@ export class BillingCheckoutService {
       given = checked.email;
     }
 
-    const prepared = await this.prepare(businessId, reference, given, now);
-    if (prepared.state === 'done') return prepared.response;
+    /* Each pass is one decision under the charge's lock. A pass that finds the
+     * attempt already moved by a sibling decides again from what the sibling did;
+     * three passes is far more than a real race needs. */
+    for (let pass = 0; pass < 3; pass += 1) {
+      let decision = await this.decide(businessId, reference, given, restart, now);
+      if (decision.state === 'resolve') {
+        const verdict = await this.verdict(decision.attempt);
+        if (verdict === 'paid') return { state: 'unavailable', reason: 'payment_received' };
+        if (verdict === 'in_progress')
+          return { state: 'unavailable', reason: 'payment_in_progress' };
+        decision = await this.replace(businessId, reference, decision.attempt, given, now);
+      }
+      if (decision.state === 'wait') {
+        const linked = await this.awaitSibling(
+          businessId,
+          reference,
+          options.siblingWaitMs ?? SIBLING_WAIT_MS,
+        );
+        if (linked) return linked;
+        continue;
+      }
+      if (decision.state === 'retry') continue;
+      if (decision.state === 'done') return decision.response;
+      if (decision.state === 'initialise') return this.initialise(businessId, decision, now);
+    }
+    return { state: 'unavailable', reason: 'checkout_in_progress' };
+  }
 
-    /* The provider, outside any transaction. */
+  /**
+   * Decide what this request should do, holding the charge's lock. Opens the
+   * first attempt itself when the charge has none (and returns it to be
+   * initialised); everything else is a link to hand back, a refusal, or an
+   * attempt that needs Paystack to be asked about it.
+   */
+  private async decide(
+    businessId: string,
+    reference: string,
+    given: string | null,
+    restart: boolean,
+    now: Date,
+  ): Promise<Decision> {
+    return withBusiness(this.db, businessId, async (tx): Promise<Decision> => {
+      const charge = await this.lockCharge(tx, businessId, reference);
+      if (!charge) {
+        return { state: 'done', response: { state: 'unavailable', reason: 'unknown_charge' } };
+      }
+      const refused = await this.refusal(tx, businessId, charge, now);
+      if (refused) return { state: 'done', response: { state: 'unavailable', reason: refused } };
+
+      let live = await subscriptionsRepo.liveAttempt(tx, businessId, charge.id);
+      const latest = await subscriptionsRepo.latestAttemptNo(tx, businessId, charge.id);
+
+      /* A link stored before attempts existed is attempt 1. */
+      if (!live && latest === 0 && charge.checkoutUrl) {
+        const adopted = await subscriptionsRepo.openAttempt(tx, {
+          businessId,
+          chargeId: charge.id,
+          attemptNo: 1,
+          providerReference: attemptReference(charge.reference, 1),
+        });
+        if (adopted) {
+          await subscriptionsRepo.recordAttemptCheckout(
+            tx,
+            businessId,
+            adopted.id,
+            charge.checkoutUrl,
+            now,
+          );
+          live = await subscriptionsRepo.liveAttempt(tx, businessId, charge.id);
+        }
+      }
+
+      if (live) {
+        /* Measured by the database's clock, in the query that read the attempt:
+         * this server's clock and the database's are not the same clock. */
+        const idle = live.idleMs;
+        if (live.status === 'active' && live.checkoutUrl) {
+          if (!restart || idle < RESTART_COOLDOWN_MS) {
+            return {
+              state: 'done',
+              response: {
+                state: 'ready',
+                reference: charge.reference,
+                checkoutUrl: live.checkoutUrl,
+                amountK: charge.amountK,
+              },
+            };
+          }
+        } else if (live.status === 'initializing' && idle < STALE_INITIALIZING_MS) {
+          /* A sibling request is calling Paystack right now. */
+          return { state: 'wait' };
+        }
+        return { state: 'resolve', attempt: live };
+      }
+
+      /* No live attempt: the charge's first, or the next after a settled-away one. */
+      if (latest >= MAX_CHECKOUT_ATTEMPTS) {
+        return { state: 'done', response: { state: 'unavailable', reason: 'too_many_attempts' } };
+      }
+      return this.openNext(tx, businessId, charge, latest + 1, given, now);
+    });
+  }
+
+  /**
+   * Wait for a sibling request that is mid-way through starting this checkout.
+   * Returns its link as soon as there is one, null when the sibling is no longer
+   * starting it (so this request decides afresh), and "ask again" when it is
+   * still going after the budget.
+   */
+  private async awaitSibling(
+    businessId: string,
+    reference: string,
+    budgetMs: number,
+  ): Promise<BillingCheckoutResponse | null> {
+    const deadline = Date.now() + budgetMs;
+    for (;;) {
+      const seen = await withBusiness(this.db, businessId, async (tx) => {
+        const charge = await subscriptionsRepo.chargeByReference(tx, businessId, reference);
+        if (!charge) return { gone: true as const };
+        const live = await subscriptionsRepo.liveAttempt(tx, businessId, charge.id);
+        return { charge, live };
+      });
+      if ('gone' in seen || !seen.live) return null;
+      if (seen.live.status === 'active' && seen.live.checkoutUrl) {
+        const refused = await withBusiness(this.db, businessId, (tx) =>
+          this.refusal(tx, businessId, seen.charge, handoffTime(new Date())),
+        );
+        if (refused) return { state: 'unavailable', reason: refused };
+        return {
+          state: 'ready',
+          reference: seen.charge.reference,
+          checkoutUrl: seen.live.checkoutUrl,
+          amountK: seen.charge.amountK,
+        };
+      }
+      if (seen.live.status !== 'initializing') return null;
+      if (Date.now() >= deadline) {
+        return { state: 'unavailable', reason: 'checkout_in_progress' };
+      }
+      await new Promise((resolve) => setTimeout(resolve, SIBLING_POLL_MS));
+    }
+  }
+
+  /**
+   * The charge, locked, with the business locked first.
+   *
+   * Settlement (`applySettledCharge`) takes the business row and then updates the
+   * charge and its attempts. Anything here that takes the charge first and the
+   * business later (setting the billing email updates the business) could wait on
+   * a payment that is waiting on it: a deadlock Postgres resolves by aborting one
+   * of them. Every transaction here takes the business first, so there is one order.
+   */
+  private async lockCharge(
+    tx: TenantDb,
+    businessId: string,
+    reference: string,
+  ): Promise<subscriptionsRepo.ChargeRow | null> {
+    if (!(await subscriptionsRepo.lockBusiness(tx, businessId))) return null;
+    return subscriptionsRepo.lockChargeByReference(tx, businessId, reference);
+  }
+
+  /** The email to start a session with, stored sealed when the merchant just gave one. */
+  private async emailFor(
+    tx: TenantDb,
+    businessId: string,
+    given: string | null,
+    now: Date,
+  ): Promise<string | null> {
+    if (given) {
+      await subscriptionsRepo.setBillingEmailSealed(
+        tx,
+        businessId,
+        encryptFacet(given, this.config.vaultKey, emailAad(businessId)),
+        now,
+      );
+      return given;
+    }
+    const sealed = await subscriptionsRepo.billingEmailSealed(tx, businessId);
+    return sealed ? decryptFacet(sealed, this.config.vaultKey, emailAad(businessId)) : null;
+  }
+
+  private async openNext(
+    tx: TenantDb,
+    businessId: string,
+    charge: subscriptionsRepo.ChargeRow,
+    attemptNo: number,
+    given: string | null,
+    now: Date,
+  ): Promise<Decision> {
+    const email = await this.emailFor(tx, businessId, given, now);
+    if (!email) return { state: 'done', response: { state: 'requires_billing_email' } };
+    const attempt = await subscriptionsRepo.openAttempt(tx, {
+      businessId,
+      chargeId: charge.id,
+      attemptNo,
+      providerReference: attemptReference(charge.reference, attemptNo),
+    });
+    /* Holding the lock, a conflict means a sibling committed first. */
+    if (!attempt) return { state: 'retry' };
+    return {
+      state: 'initialise',
+      attempt,
+      chargeReference: charge.reference,
+      amountK: charge.amountK,
+      email,
+    };
+  }
+
+  /**
+   * Ask Paystack what became of an attempt that has no usable link. Outside any
+   * transaction. A provider that cannot be reached is an outage, never a result:
+   * the caller must not create a second session while it is unsure about the first.
+   */
+  private async verdict(attempt: Attempt): Promise<Verdict> {
+    let verified;
+    try {
+      verified = await this.provider.verifyTransaction(attempt.providerReference);
+    } catch (error) {
+      this.log.warn(`Paystack verify failed: ${error instanceof Error ? error.name : 'error'}`);
+      throw new ServiceUnavailableException('the payment provider is not reachable right now');
+    }
+    if (!verified.found) return 'replaceable';
+    const t = verified.transaction;
+    if (t.succeeded) return 'paid';
+    return REPLACEABLE_PROVIDER_STATUSES.has(t.providerStatus) ? 'replaceable' : 'in_progress';
+  }
+
+  /**
+   * Retire the attempt Paystack confirmed unpaid and open the next one, holding
+   * the lock again and re-checking that nobody moved the attempt meanwhile.
+   */
+  private async replace(
+    businessId: string,
+    reference: string,
+    attempt: Attempt,
+    given: string | null,
+    now: Date,
+  ): Promise<Decision> {
+    return withBusiness(this.db, businessId, async (tx): Promise<Decision> => {
+      const charge = await this.lockCharge(tx, businessId, reference);
+      if (!charge) {
+        return { state: 'done', response: { state: 'unavailable', reason: 'unknown_charge' } };
+      }
+      const refused = await this.refusal(tx, businessId, charge, now);
+      if (refused) return { state: 'done', response: { state: 'unavailable', reason: refused } };
+
+      const live = await subscriptionsRepo.liveAttempt(tx, businessId, charge.id);
+      if (!live || live.id !== attempt.id || live.status !== attempt.status) {
+        return { state: 'retry' };
+      }
+      const latest = await subscriptionsRepo.latestAttemptNo(tx, businessId, charge.id);
+      if (latest >= MAX_CHECKOUT_ATTEMPTS) {
+        return { state: 'done', response: { state: 'unavailable', reason: 'too_many_attempts' } };
+      }
+      /* The email is settled before the old attempt is retired, so a missing one
+       * leaves the charge exactly as it was. */
+      const email = await this.emailFor(tx, businessId, given, now);
+      if (!email) return { state: 'done', response: { state: 'requires_billing_email' } };
+      const moved = await subscriptionsRepo.moveAttempt(
+        tx,
+        businessId,
+        attempt.id,
+        [attempt.status],
+        'superseded',
+      );
+      if (!moved) return { state: 'retry' };
+      const next = await subscriptionsRepo.openAttempt(tx, {
+        businessId,
+        chargeId: charge.id,
+        attemptNo: latest + 1,
+        providerReference: attemptReference(charge.reference, latest + 1),
+      });
+      if (!next) return { state: 'retry' };
+      return {
+        state: 'initialise',
+        attempt: next,
+        chargeReference: charge.reference,
+        amountK: charge.amountK,
+        email,
+      };
+    });
+  }
+
+  /** Call Paystack for an open attempt, outside any transaction, then record the link. */
+  private async initialise(
+    businessId: string,
+    decision: Extract<Decision, { state: 'initialise' }>,
+    now: Date,
+  ): Promise<BillingCheckoutResponse> {
+    const { attempt } = decision;
     let url: string;
     try {
       const initialised = await this.provider.initializeTransaction({
-        reference: prepared.reference,
-        amountK: prepared.amountK,
+        reference: attempt.providerReference,
+        amountK: decision.amountK,
         currency: 'NGN',
-        customerEmail: prepared.email,
+        customerEmail: decision.email,
         subaccountCode: null,
       });
       if (initialised.state === 'requires_customer_information') {
+        /* Paystack refused to create a session at all, so there is nothing to recover. */
+        await this.move(businessId, attempt.id, ['initializing'], 'superseded');
         return { state: 'unavailable', reason: 'provider_rejected_billing_email' };
       }
       url = initialised.checkoutUrl;
     } catch (error) {
-      /* Two tabs can both reach here with one reference, and Paystack refuses
-       * the second. If the first has already stored its link, that link is the
-       * answer; otherwise this is an outage, not a result. */
-      const stored = await this.storedCheckout(businessId, prepared.reference, handoffTime(now));
-      if (stored) return { state: 'ready', reference: prepared.reference, ...stored };
+      /* Paystack may or may not hold a session now, and Rekoda does not have its
+       * link. Recorded as ambiguous so the next request asks Paystack before it
+       * does anything else; this one is an outage, not a result. */
+      await this.move(businessId, attempt.id, ['initializing'], 'ambiguous');
       this.log.warn(`Paystack initialize failed: ${error instanceof Error ? error.name : 'error'}`);
       throw new ServiceUnavailableException('the payment provider is not reachable right now');
     }
 
     /* The provider call takes real time: an upgrade's cycle can end inside it,
      * and a link handed out then would be paid for an upgrade settlement refuses.
-     * The link is still stored (first writer wins), but never handed out once
-     * the charge is refusable at the moment of handoff. */
+     * The link is still stored, but never handed out once the charge is refusable
+     * at the moment of handoff. */
     const handoff = handoffTime(now);
     const outcome = await withBusiness(this.db, businessId, async (tx) => {
-      const recorded = await subscriptionsRepo.recordCheckout(
+      /* The business first, as settlement does, so recording a link can never wait
+       * on a row a settling payment holds while it waits on one this holds. */
+      await subscriptionsRepo.lockBusiness(tx, businessId);
+      const recorded = await subscriptionsRepo.recordAttemptCheckout(
         tx,
         businessId,
-        prepared.reference,
+        attempt.id,
         url,
         now,
       );
-      /* Paid, failed or retired while the provider call was in flight. */
-      if (!recorded) return { refused: 'not_pending' as const };
-      const charge = await subscriptionsRepo.chargeByReference(tx, businessId, prepared.reference);
+      const charge = await subscriptionsRepo.chargeById(tx, businessId, attempt.chargeId);
       const refused = charge ? await this.refusal(tx, businessId, charge, handoff) : 'not_pending';
-      return refused ? { refused } : { recorded };
+      if (refused) return { refused };
+      /* Not recorded though the charge is payable: a sibling replaced this attempt
+       * while Paystack was answering. Its link is not the one to give out. */
+      if (!recorded) return { refused: 'checkout_in_progress' as const };
+      return { recorded };
     });
     if ('refused' in outcome) return { state: 'unavailable', reason: outcome.refused };
-    const recorded = outcome.recorded;
     return {
       state: 'ready',
-      reference: prepared.reference,
-      checkoutUrl: recorded,
-      amountK: prepared.amountK,
+      reference: decision.chargeReference,
+      checkoutUrl: outcome.recorded,
+      amountK: decision.amountK,
     };
   }
 
-  private async prepare(
+  private async move(
     businessId: string,
-    reference: string,
-    given: string | null,
-    now: Date,
-  ): Promise<Prepared> {
-    return withBusiness(this.db, businessId, async (tx): Promise<Prepared> => {
-      const charge = await subscriptionsRepo.chargeByReference(tx, businessId, reference);
-      if (!charge) {
-        return { state: 'done', response: { state: 'unavailable', reason: 'unknown_charge' } };
-      }
-      const refused = await this.refusal(tx, businessId, charge, now);
-      if (refused) return { state: 'done', response: { state: 'unavailable', reason: refused } };
-      /* Already initialised: the same link again, and no email needed. */
-      if (charge.checkoutUrl) {
-        return {
-          state: 'done',
-          response: {
-            state: 'ready',
-            reference: charge.reference,
-            checkoutUrl: charge.checkoutUrl,
-            amountK: charge.amountK,
-          },
-        };
-      }
-
-      let email = given;
-      if (email) {
-        await subscriptionsRepo.setBillingEmailSealed(
-          tx,
-          businessId,
-          encryptFacet(email, this.config.vaultKey, emailAad(businessId)),
-          now,
-        );
-      } else {
-        const sealed = await subscriptionsRepo.billingEmailSealed(tx, businessId);
-        if (!sealed) {
-          return { state: 'done', response: { state: 'requires_billing_email' } };
-        }
-        email = decryptFacet(sealed, this.config.vaultKey, emailAad(businessId));
-      }
-      return { state: 'initialise', reference: charge.reference, amountK: charge.amountK, email };
-    });
+    attemptId: string,
+    from: readonly subscriptionsRepo.AttemptStatus[],
+    to: subscriptionsRepo.AttemptStatus,
+  ): Promise<void> {
+    await withBusiness(this.db, businessId, (tx) =>
+      subscriptionsRepo.moveAttempt(tx, businessId, attemptId, from, to),
+    );
   }
 
   /**
    * Why this charge may not be paid now, or null when it may. One rule set for
-   * every path that could hand out a link (a fresh checkout, a stored link, the
-   * recovery after a provider error), so they cannot drift apart: each mirrors
-   * what `applySettledCharge` would do with a payment on it.
+   * every path that could hand out a link, so they cannot drift apart: each
+   * mirrors what `applySettledCharge` would do with a payment on it.
    */
   private async refusal(
     tx: TenantDb,
     businessId: string,
     charge: subscriptionsRepo.ChargeRow,
     now: Date,
-  ): Promise<
-    'not_pending' | 'superseded' | 'nothing_to_pay' | 'cycle_ended' | 'support_review' | null
-  > {
+  ): Promise<Extract<
+    Unavailable,
+    'not_pending' | 'superseded' | 'nothing_to_pay' | 'cycle_ended' | 'support_review'
+  > | null> {
     if (charge.status !== 'pending') return 'not_pending';
     /* Retired charges keep status `pending` and gain `superseded_at` (a newer
      * plan choice or subscription decision): a payment on one is recorded but
@@ -213,17 +540,5 @@ export class BillingCheckoutService {
       if (!subscription || isCustomCycle(subscription)) return 'support_review';
     }
     return null;
-  }
-
-  private async storedCheckout(
-    businessId: string,
-    reference: string,
-    now: Date,
-  ): Promise<{ checkoutUrl: string; amountK: number } | null> {
-    return withBusiness(this.db, businessId, async (tx) => {
-      const charge = await subscriptionsRepo.chargeByReference(tx, businessId, reference);
-      if (!charge?.checkoutUrl || (await this.refusal(tx, businessId, charge, now))) return null;
-      return { checkoutUrl: charge.checkoutUrl, amountK: charge.amountK };
-    });
   }
 }

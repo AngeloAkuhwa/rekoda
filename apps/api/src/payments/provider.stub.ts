@@ -32,6 +32,10 @@ export class StubPaymentProvider implements PaymentProviderPort {
   private failDisputeRead: Error | null = null;
   private readonly settlements: Array<ProviderSettlement & { references: string[] }> = [];
   private failInitialize: Error | null = null;
+  private enforceUniqueReferences = false;
+  private loseNextResponse = false;
+  /** Sessions the stub's Paystack model has created, by reference. */
+  private readonly created = new Map<string, InitializeTransactionInput>();
   private failVerify: Error | null = null;
   private failSettlements: Error | null = null;
   private rejectSubaccountWith: string | null = null;
@@ -50,6 +54,20 @@ export class StubPaymentProvider implements PaymentProviderPort {
       paidAtIso: null,
       ...overrides,
     });
+  }
+
+  /**
+   * Behave like Paystack about references: one is accepted once, ever, and a
+   * session that was created can be verified (as `abandoned` until a test
+   * scripts it paid). Off by default so older suites keep their loose stub.
+   */
+  modelPaystackReferences(): void {
+    this.enforceUniqueReferences = true;
+  }
+
+  /** The next initialise reaches Paystack and creates the session, but its response never arrives. */
+  loseNextInitializeResponse(): void {
+    this.loseNextResponse = true;
   }
 
   /** Script the authoritative answer about one refund. */
@@ -134,6 +152,9 @@ export class StubPaymentProvider implements PaymentProviderPort {
     this.settlements.length = 0;
     this.failVerify = null;
     this.failInitialize = null;
+    this.enforceUniqueReferences = false;
+    this.loseNextResponse = false;
+    this.created.clear();
     this.failSettlements = null;
     this.rejectSubaccountWith = null;
   }
@@ -163,7 +184,15 @@ export class StubPaymentProvider implements PaymentProviderPort {
         missing: ['email'],
       });
     }
+    if (this.enforceUniqueReferences && this.created.has(input.reference)) {
+      return Promise.reject(new Error('Duplicate Transaction Reference'));
+    }
     this.initialized.push(input);
+    if (this.enforceUniqueReferences) this.created.set(input.reference, input);
+    if (this.loseNextResponse) {
+      this.loseNextResponse = false;
+      return Promise.reject(new Error('timeout waiting for Paystack'));
+    }
     return Promise.resolve({
       state: 'initialized',
       checkoutUrl: `https://checkout.stub/${input.reference}`,
@@ -178,7 +207,24 @@ export class StubPaymentProvider implements PaymentProviderPort {
       return Promise.reject(error);
     }
     const transaction = this.verifications.get(reference);
-    if (!transaction) return Promise.resolve({ found: false });
+    if (!transaction) {
+      const session = this.enforceUniqueReferences ? this.created.get(reference) : undefined;
+      if (!session) return Promise.resolve({ found: false });
+      return Promise.resolve({
+        found: true,
+        transaction: {
+          succeeded: false,
+          reference,
+          amountK: session.amountK,
+          currency: 'NGN',
+          providerStatus: 'abandoned',
+          providerTransactionId: `stub-session-${reference}`,
+          providerFeeK: 0,
+          method: 'card',
+          paidAtIso: null,
+        },
+      });
+    }
     return Promise.resolve({ found: true, transaction });
   }
 

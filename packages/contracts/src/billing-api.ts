@@ -170,6 +170,12 @@ export type BillingPackPurchaseRequest = z.infer<typeof billingPackPurchaseReque
 export const billingCheckoutRequest = z.object({
   reference: z.string().min(1).max(64),
   billingEmail: z.string().max(320).optional(),
+  /**
+   * The merchant lost the link or wants a fresh one (G-102, OWN-50). Honoured
+   * only after Paystack confirms the existing session was not paid, and never
+   * while a payment on it is under way.
+   */
+  restart: z.boolean().optional(),
 });
 export type BillingCheckoutRequest = z.infer<typeof billingCheckoutRequest>;
 
@@ -198,6 +204,14 @@ export const billingCheckoutResponse = z.discriminatedUnion('state', [
       'payments_not_configured',
       'awaiting_platform_confirmation',
       'provider_rejected_billing_email',
+      /** Paystack says this charge was already paid: the receipt is on its way, nothing more to pay. */
+      'payment_received',
+      /** A payment on the current session is under way at Paystack; wait for it to settle. */
+      'payment_in_progress',
+      /** Another request is starting this checkout right now; ask again in a moment. */
+      'checkout_in_progress',
+      /** The charge has used every checkout attempt; an operator reconciles it. */
+      'too_many_attempts',
     ]),
   }),
 ]);
