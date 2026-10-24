@@ -270,7 +270,9 @@ export default async function BillingPage({
           </p>
           {overview.pendingInterval ? (
             <>
-              <p className="rk-fineprint">{pendingIntervalCopy(overview.pendingInterval)}</p>
+              <p className="rk-fineprint">
+                {pendingIntervalCopy(overview.pendingInterval, overview.pendingPlan === 'expired')}
+              </p>
               <form action={switchInterval}>
                 <input type="hidden" name="interval" value={overview.interval} />
                 <PendingButton pendingLabel="Saving…">

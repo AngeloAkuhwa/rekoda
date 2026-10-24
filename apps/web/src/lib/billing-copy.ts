@@ -61,7 +61,10 @@ export function perInterval(interval: Interval): string {
  * Nothing is charged or refunded by the switch itself: the merchant keeps the
  * month or the year they already paid for.
  */
-export function pendingIntervalCopy(pending: Interval): string {
+export function pendingIntervalCopy(pending: Interval, cancelling = false): string {
+  if (cancelling) {
+    return `Your plan is set to end at the close of this period, so the switch to ${pending === 'annual' ? 'yearly' : 'monthly'} billing cannot take effect while the cancellation stands. Nothing is charged or refunded. You can clear the waiting switch below.`;
+  }
   return pending === 'annual'
     ? 'Switching to yearly billing at your next renewal. You keep your current monthly plan until then, and nothing is charged now.'
     : 'Switching to monthly billing at your next renewal. You keep the year you paid for until then, and nothing is refunded or charged now.';

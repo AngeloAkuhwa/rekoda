@@ -92,6 +92,14 @@ describe('yearly billing copy (OWN-40)', () => {
     expect(pendingIntervalCopy('monthly')).toMatch(/keep the year you paid for/);
   });
 
+  it('while a cancellation waits, a waiting switch is not promised for a renewal', () => {
+    for (const pending of ['monthly', 'annual'] as const) {
+      const copy = pendingIntervalCopy(pending, true);
+      expect(copy).not.toMatch(/at your next renewal/);
+      expect(copy).toMatch(/cannot take effect while the cancellation stands/);
+    }
+  });
+
   it('states the saving as ten months for twelve, and invents no urgency', () => {
     const offer = switchIntervalOffer('monthly');
     expect(offer).toMatch(/twelve months of service for the price of ten/);
