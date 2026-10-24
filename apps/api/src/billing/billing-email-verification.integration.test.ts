@@ -461,14 +461,17 @@ describe('a live payment', () => {
     await age(businessId, 61);
     const realInitialize = provider.initializeTransaction.bind(provider);
     let release!: () => void;
+    let entered!: () => void;
+    const providerEntered = new Promise<void>((resolve) => (entered = resolve));
     const gate = new Promise<void>((resolve) => (release = resolve));
     provider.initializeTransaction = async (input) => {
+      entered();
       await gate;
       return realInitialize(input);
     };
     try {
       const pending = checkouts(liveConfig()).checkout(businessId, reference, undefined);
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await providerEntered;
       await emails().requestVerification(businessId, OTHER);
       release();
       expect(await pending).toMatchObject({ state: 'requires_billing_email_verification' });
@@ -508,6 +511,42 @@ describe('a live payment', () => {
       state: 'requires_billing_email_verification',
       maskedEmail: 'a**@shop.example.ng',
     });
+  });
+
+  it('does not give a waiting request the sibling link for a different address', async () => {
+    const businessId = await seedBusiness();
+    const reference = await pendingCharge(businessId);
+    const realInitialize = provider.initializeTransaction.bind(provider);
+    let release!: () => void;
+    let entered!: () => void;
+    const providerEntered = new Promise<void>((resolve) => (entered = resolve));
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let first = true;
+    provider.initializeTransaction = async (input) => {
+      if (first) {
+        first = false;
+        entered();
+        await gate;
+      }
+      return realInitialize(input);
+    };
+    try {
+      const a = checkouts().checkout(businessId, reference, EMAIL);
+      await providerEntered;
+      const b = checkouts().checkout(businessId, reference, OTHER, { siblingWaitMs: 5_000 });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      release();
+      const [first_, second] = await Promise.all([a, b]);
+      expect(first_.state).toBe('ready');
+      expect(second.state).toBe('ready');
+      if (first_.state === 'ready' && second.state === 'ready') {
+        expect(second.checkoutUrl).not.toBe(first_.checkoutUrl);
+      }
+      expect(provider.initialized.at(-1)!.customerEmail).toBe(OTHER);
+      expect((await emails().status(businessId)).maskedEmail).toBe('c****@shop.example.ng');
+    } finally {
+      provider.initializeTransaction = realInitialize;
+    }
   });
 
   it('starts a fresh session for a different address on a test key', async () => {

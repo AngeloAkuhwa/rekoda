@@ -165,6 +165,7 @@ export class BillingCheckoutService {
         const linked = await this.awaitSibling(
           businessId,
           reference,
+          given,
           options.siblingWaitMs ?? SIBLING_WAIT_MS,
         );
         if (linked) return linked;
@@ -270,6 +271,7 @@ export class BillingCheckoutService {
   private async awaitSibling(
     businessId: string,
     reference: string,
+    given: string | null,
     budgetMs: number,
   ): Promise<BillingCheckoutResponse | null> {
     const deadline = Date.now() + budgetMs;
@@ -282,20 +284,21 @@ export class BillingCheckoutService {
       });
       if ('gone' in seen || !seen.live) return null;
       if (seen.live.status === 'active' && seen.live.checkoutUrl) {
+        /* Decided under the locks, charge fresh: it may have settled since it was read. */
         const blocked = await withBusiness(
           this.db,
           businessId,
-          async (tx): Promise<BillingCheckoutResponse | null> => {
-            const refused = await this.refusal(
-              tx,
-              businessId,
-              seen.charge,
-              handoffTime(new Date()),
-            );
+          async (tx): Promise<BillingCheckoutResponse | 'redecide' | null> => {
+            const charge = await this.lockCharge(tx, businessId, reference);
+            if (!charge) return { state: 'unavailable', reason: 'unknown_charge' };
+            const refused = await this.refusal(tx, businessId, charge, handoffTime(new Date()));
             if (refused) return { state: 'unavailable', reason: refused };
+            /* The sibling started this session for another address than this request gave. */
+            if (await this.sessionStale(tx, businessId, seen.live!, given)) return 'redecide';
             return this.staleHandoff(tx, businessId, seen.live!.emailRevision);
           },
         );
+        if (blocked === 'redecide') return null;
         if (blocked) return blocked;
         return {
           state: 'ready',
