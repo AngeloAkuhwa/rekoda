@@ -306,8 +306,10 @@ describe('buying a year', () => {
 
     // The subscription is decided after the charge was opened (a settled purchase or an operator move
     // stamps plan_decided_at). Checkout then refuses this charge as superseded, so the page must not offer it.
-    await ownerDb.execute(
-      sql`UPDATE businesses SET plan_decided_at = clock_timestamp() + interval '1 second' WHERE id = ${businessId}::uuid`,
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(
+        sql`UPDATE businesses SET plan_decided_at = clock_timestamp() + interval '1 second' WHERE id = ${businessId}::uuid`,
+      ),
     );
     expect(
       (await overviewOf(auth)).charges.find((c) => c.reference === waiting.reference)?.superseded,
