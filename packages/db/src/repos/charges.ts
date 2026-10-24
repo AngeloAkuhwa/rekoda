@@ -4,7 +4,7 @@
  * repo enforces it again at the write, because a charge a merchant did
  * not choose must not exist however it was asked for.
  */
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import {
   SurchargeNotConfigured,
   type ChargeBeneficiary,
@@ -12,7 +12,10 @@ import {
   type EconomicFeeBearer,
 } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
-import { paymentCharges } from '../schema/payments-hub.js';
+import { orders } from '../schema/commerce.js';
+import { payments } from '../schema/finance.js';
+import { auditEvents } from '../schema/ops.js';
+import { paymentCharges, paymentIntents } from '../schema/payments-hub.js';
 
 export async function recordCharge(
   tx: TenantDb,
@@ -77,13 +80,8 @@ export async function chargesForOrder(tx: TenantDb, businessId: string, orderId:
  * with the resolution — the provider's real fee replaces the schedule's
  * guess — and resolves exactly once.
  *
- * NOTHING CALLS THIS IN PRODUCTION YET (G-116), although §19.1 requires the
- * resolution: an order's PAYMENT_PROCESSING charge stays ESTIMATED. The
- * figure exists (a verified payment carries the provider's stated fee,
- * `payments.provider_fee_k`); what is open, and an owner decision, is when
- * the charge resolves (at booking or at payout) and how an order paid in
- * parts resolves exactly once. Meanwhile the ledger recognises the real fee
- * from the settlement components.
+ * Production reaches this through `resolveOrderProcessingFee` (G-116, OWN-42),
+ * when the payout covering an order's last payment settles.
  */
 export async function resolveChargeActual(
   tx: TenantDb,
@@ -113,4 +111,118 @@ export async function resolveChargeActual(
     )
     .limit(1);
   return exists[0] ? 'already_actual' : 'not_found';
+}
+
+export type OrderFeeResolution =
+  'resolved' | 'no_estimate' | 'awaiting_payment' | 'awaiting_settlement' | 'no_fee_evidence';
+
+/**
+ * G-116 (OWN-42): an order's PAYMENT_PROCESSING charge becomes ACTUAL when
+ * the payout covering the order's last payment has settled (§19.1 "once
+ * settled"), never at authorisation. The figure is the sum of the provider's
+ * own stated fee on each of the order's verified payments, so a part-paid
+ * order counts every payment once, and the charge resolves exactly once (the
+ * ESTIMATED predicate under a row lock). The estimate is not lost: when the
+ * actual differs, an audit event keeps both figures.
+ *
+ * It waits, and changes nothing, while the order is not fully paid, while any
+ * of its payments is not `settled` (a `held` payout is not final), or while a
+ * payment carries no stated fee.
+ */
+export async function resolveOrderProcessingFee(
+  tx: TenantDb,
+  businessId: string,
+  orderId: string,
+): Promise<OrderFeeResolution> {
+  const locked = await tx
+    .select()
+    .from(paymentCharges)
+    .where(
+      and(
+        eq(paymentCharges.businessId, businessId),
+        eq(paymentCharges.orderId, orderId),
+        eq(paymentCharges.type, 'PAYMENT_PROCESSING'),
+        eq(paymentCharges.actualOrEstimated, 'ESTIMATED'),
+      ),
+    )
+    .orderBy(paymentCharges.createdAt, paymentCharges.id)
+    .limit(1)
+    .for('update');
+  const charge = locked[0];
+  if (!charge) return 'no_estimate';
+
+  const orderRows = await tx
+    .select({ totalK: orders.totalK })
+    .from(orders)
+    .where(and(eq(orders.businessId, businessId), eq(orders.id, orderId)))
+    .limit(1);
+  const order = orderRows[0];
+  if (!order) return 'no_estimate';
+
+  const paid = await tx
+    .select({
+      amountK: payments.amountK,
+      providerFeeK: payments.providerFeeK,
+      settlementStatus: payments.settlementStatus,
+    })
+    .from(payments)
+    .innerJoin(
+      paymentIntents,
+      and(
+        eq(paymentIntents.businessId, payments.businessId),
+        eq(paymentIntents.id, payments.paymentIntentId),
+      ),
+    )
+    .where(
+      and(
+        eq(payments.businessId, businessId),
+        eq(paymentIntents.orderId, orderId),
+        eq(payments.verified, 1),
+        inArray(payments.status, ['confirmed', 'partially_refunded']),
+      ),
+    );
+  const paidK = paid.reduce((sum, p) => sum + Number(p.amountK), 0);
+  if (paid.length === 0 || paidK < Number(order.totalK)) return 'awaiting_payment';
+  if (paid.some((p) => p.settlementStatus !== 'settled')) return 'awaiting_settlement';
+  if (paid.some((p) => p.providerFeeK === null)) return 'no_fee_evidence';
+
+  const actualMinor = paid.reduce((sum, p) => sum + Number(p.providerFeeK), 0);
+  const resolved = await resolveChargeActual(tx, {
+    businessId,
+    chargeId: charge.id,
+    actualAmountMinor: actualMinor,
+  });
+  if (resolved !== 'resolved') return 'no_estimate';
+  await tx.insert(auditEvents).values({
+    businessId,
+    actor: 'system',
+    entity: 'payment_charge',
+    entityId: charge.id,
+    action: 'resolved_actual',
+    oldValue: { actualOrEstimated: 'ESTIMATED', amountMinor: Number(charge.amountMinor) },
+    newValue: { actualOrEstimated: 'ACTUAL', amountMinor: actualMinor, orderId },
+    sourceType: 'settlement',
+  });
+  return 'resolved';
+}
+
+/** The orders the given payments settle (through their intents). */
+export async function orderIdsForPayments(
+  tx: TenantDb,
+  businessId: string,
+  paymentIds: string[],
+): Promise<string[]> {
+  if (paymentIds.length === 0) return [];
+  const rows = await tx
+    .selectDistinct({ orderId: paymentIntents.orderId })
+    .from(payments)
+    .innerJoin(
+      paymentIntents,
+      and(
+        eq(paymentIntents.businessId, payments.businessId),
+        eq(paymentIntents.id, payments.paymentIntentId),
+      ),
+    )
+    .where(and(eq(payments.businessId, businessId), inArray(payments.id, paymentIds)));
+  return rows.map((r) => r.orderId).filter((id): id is string => id !== null);
 }

@@ -284,8 +284,8 @@ export type ValidateCatalogueOrderResult =
  * Validation is also where the figures become records: the provider's
  * expected fee lands as an ESTIMATED PaymentCharge (§19.1 — every line a
  * record, never arithmetic in a controller; merchant-borne, so the
- * customer's total is untouched; §19.1 has it become ACTUAL once settled,
- * but nothing does that yet — G-116), and
+ * customer's total is untouched; it becomes ACTUAL once the payout
+ * covering the order settles — G-116), and
  * the invoice is issued exactly as the storefront's validated cart is —
  * revenue and receivable now, goods committed and costed now, paper and
  * payable link enqueued. VAT on the checkout stays at zero pending the
@@ -335,13 +335,11 @@ export async function validateCatalogueOrderWork(
    * a figure exists to estimate from. Priced from the mechanism that collects:
    * Pay-with-Transfer, Paystack's local rate, not the DVA rate (G-22).
    * Merchant-borne — the customer's
-   * total is untouched. §19.1 has it become ACTUAL once settled; NOTHING
-   * DOES YET, so it stays ESTIMATED (G-116). A per-order actual is knowable
-   * (a verified payment carries the provider's stated fee,
-   * `payments.provider_fee_k`); what is open is WHEN it resolves and how an
-   * order paid in parts resolves exactly once, an owner decision. The books
-   * take the real fee from the settlement's own components, not from this
-   * row. No connection, no invented figure. */
+   * total is untouched. It becomes ACTUAL, at the provider's stated fee, when
+   * the payout covering the order's last payment settles (G-116, OWN-42:
+   * `resolveOrderProcessingFee`, called by `markSettlements`). The books take
+   * the real fee from the settlement's own components, not from this row.
+   * No connection, no invented figure. */
   const connection = await paymentsHub.connectionFor(tx, input.businessId, 'paystack');
   if (connection) {
     const card = await paymentsHub.costScheduleInForce(

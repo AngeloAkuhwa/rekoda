@@ -12,7 +12,15 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { paymentReference } from '@rekoda/core';
 import { createDb, withBusiness, type Db, type TenantDb } from './client.js';
-import { identity, issueRepo, paymentsHub, reportsRepo, settleRepo } from './index.js';
+import {
+  chargesRepo,
+  identity,
+  issueRepo,
+  ordersRepo,
+  paymentsHub,
+  reportsRepo,
+  settleRepo,
+} from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
 
 let urls: Urls;
@@ -890,5 +898,162 @@ describe('the verification knows its try (§6.5; PR-055)', () => {
       `),
     );
     expect([...rows][0]!.payment_attempt_id).toBeNull();
+  });
+});
+
+describe('an order processing fee becomes ACTUAL at settlement (G-116, OWN-42)', () => {
+  const TOTAL_K = 15_000_000;
+
+  /** An order with its ESTIMATED processing charge and the invoice it became. */
+  async function seedOrderWithEstimate(businessId: string) {
+    return withBusiness(db, businessId, async (tx) => {
+      const order = await ordersRepo.placeOrder(tx, {
+        businessId,
+        customerId: null,
+        lines: [
+          { productId: null, name: 'wig', quantity: 3, unitPriceK: 5_000_000, lineTotalK: TOTAL_K },
+        ],
+        totalK: TOTAL_K,
+        sourceType: 'chat',
+        sourceId: 'g116-order',
+      });
+      const charge = await chargesRepo.recordCharge(tx, {
+        businessId,
+        orderId: order.id,
+        type: 'PAYMENT_PROCESSING',
+        label: 'Payment charge',
+        amountMinor: 300_000,
+        beneficiary: 'PROVIDER',
+        economicBearer: 'MERCHANT',
+      });
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_7K2',
+        items: [{ name: 'wig', quantity: 3, unitPriceK: 5_000_000 }],
+        subtotalK: TOTAL_K,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: TOTAL_K,
+        paidK: 0,
+        balanceDueK: TOTAL_K,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'g116-draft',
+        actor: 'system',
+      });
+      return { orderId: order.id, chargeId: charge.id, invoiceId: sale.invoiceId };
+    });
+  }
+
+  async function payFor(
+    businessId: string,
+    seeded: { orderId: string; invoiceId: string },
+    amountK: number,
+    providerFeeK: number,
+  ) {
+    return withBusiness(db, businessId, async (tx) => {
+      const intent = await paymentsHub.createIntent(tx, {
+        businessId,
+        reference: paymentReference(new Date(), (n) => randomBytes(n)),
+        expectedAmountK: amountK,
+        providerType: 'paystack',
+        invoiceId: seeded.invoiceId,
+        orderId: seeded.orderId,
+      });
+      await book(tx, businessId, intent, amountK, {
+        providerFeeK,
+        eventId: `event-${intent.reference}`,
+      });
+      // A confirmed intent is terminal, which frees the invoice for the next one.
+      await paymentsHub.advanceIntent(tx, intent.id, 'succeeded');
+      return intent.reference;
+    });
+  }
+
+  const settle = (businessId: string, refs: string[], status: 'settled' | 'held' = 'settled') =>
+    withBusiness(db, businessId, (tx) =>
+      settleRepo.markSettlements(tx, businessId, refs, status, '2026-08-19T04:00:00.000Z'),
+    );
+
+  const charge = async (businessId: string, orderId: string) => {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      chargesRepo.chargesForOrder(tx, businessId, orderId),
+    );
+    return rows.find((c) => c.type === 'PAYMENT_PROCESSING')!;
+  };
+
+  it('stays ESTIMATED when the payment is booked, and resolves to the stated provider fee once the payout settles', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    const ref = await payFor(businessId, seeded, TOTAL_K, 225_000);
+
+    // Authorisation alone proves no final fee.
+    expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ESTIMATED');
+    expect((await charge(businessId, seeded.orderId)).amountMinor).toBe(300_000);
+
+    await settle(businessId, [ref]);
+    const after = await charge(businessId, seeded.orderId);
+    expect(after.actualOrEstimated).toBe('ACTUAL');
+    expect(after.amountMinor).toBe(225_000);
+
+    // The estimate is kept in a traceable record, never silently overwritten.
+    const audit = await one<{
+      old_value: { amountMinor: number };
+      new_value: { amountMinor: number };
+    }>(
+      businessId,
+      sql`SELECT old_value, new_value FROM audit_events WHERE entity = 'payment_charge' AND action = 'resolved_actual'`,
+    );
+    expect(audit?.old_value.amountMinor).toBe(300_000);
+    expect(audit?.new_value.amountMinor).toBe(225_000);
+
+    // Re-polling the same payout resolves nothing a second time.
+    await settle(businessId, [ref]);
+    expect(
+      Number(
+        (
+          await one<{ n: number }>(
+            businessId,
+            sql`SELECT count(*)::int AS n FROM audit_events WHERE action = 'resolved_actual'`,
+          )
+        )?.n,
+      ),
+    ).toBe(1);
+  });
+
+  it('a part-paid order resolves once, with each payment fee counted once', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    const first = await payFor(businessId, seeded, 10_000_000, 150_000);
+    const second = await payFor(businessId, seeded, 5_000_000, 75_000);
+
+    await settle(businessId, [first]);
+    // One payout in, the order still part-settled: nothing is final yet.
+    expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ESTIMATED');
+
+    await settle(businessId, [second]);
+    const done = await charge(businessId, seeded.orderId);
+    expect(done.actualOrEstimated).toBe('ACTUAL');
+    expect(done.amountMinor).toBe(225_000);
+  });
+
+  it('an order not yet fully paid keeps its estimate even when a payment has settled', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    const first = await payFor(businessId, seeded, 10_000_000, 150_000);
+
+    await settle(businessId, [first]);
+    expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ESTIMATED');
+  });
+
+  it('a held payout is not final, so the estimate stands', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    const ref = await payFor(businessId, seeded, TOTAL_K, 225_000);
+
+    await settle(businessId, [ref], 'held');
+    expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ESTIMATED');
   });
 });

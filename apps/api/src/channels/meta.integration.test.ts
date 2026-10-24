@@ -1085,7 +1085,7 @@ describe('a catalogue cart becomes an order (spec §3.2; W3, PR-087)', () => {
 
     /* §19.1: the provider's expected fee is a RECORD — estimated from the
      * rate card of the mechanism actually used, merchant-borne, and per §19.1
-     * becomes actual once settled (not wired yet: G-116). The live mechanism is
+     * becomes actual once settled (G-116: `resolveOrderProcessingFee`). The live mechanism is
      * Pay-with-Transfer, which is Paystack's LOCAL rate (1.5% + ₦100, capped ₦2,000, the ₦100 waived under
      * ₦2,500), not the DVA rate (G-22, ADR 0016). A ₦3,000 order clears the
      * waiver: 1.5% of 300,000 kobo = 4,500, plus 10,000 flat = 14,500. */
