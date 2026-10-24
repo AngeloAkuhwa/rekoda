@@ -297,12 +297,12 @@ export interface NewPlanVersion {
  */
 export async function publishPlanVersion(db: Db, input: NewPlanVersion): Promise<string> {
   /* OWN-40: a year is ten months' price. A version may leave the year out (it is then
-   * sold at ten months), but never carry a different one. */
+   * sold at ten months), but never carry a different one, and never a year without a month. */
   for (const year of input.prices.filter((p) => p.billingInterval === 'annual')) {
     const month = input.prices.find(
       (p) => p.billingInterval === 'monthly' && p.currency === year.currency,
     );
-    if (month && year.amountMinor !== annualPriceK(month.amountMinor)) {
+    if (!month || year.amountMinor !== annualPriceK(month.amountMinor)) {
       throw new Error(
         `annual price for ${year.currency} must be ten times the monthly price (OWN-40)`,
       );
@@ -369,33 +369,48 @@ export async function changePlanPrice(
 ): Promise<void> {
   const from = change.from.toISOString();
   await db.transaction(async (tx) => {
-    /* OWN-40: a year is ten months' price. Repricing the year alone must say exactly that;
-     * repricing the month carries an existing year with it, so the two never diverge. */
+    /* Serialise repricing of this version, so the rows read below are the ones the write
+     * closes (a concurrent month and year repricing cannot interleave on a stale month). */
+    await tx.execute(sql`
+      SELECT id FROM plan_versions WHERE id = ${change.planVersionId}::uuid FOR UPDATE
+    `);
+    const openRows = [
+      ...(await tx.execute<{ billing_interval: BillingInterval; amount_minor: number; ef: Date }>(
+        sql`
+          SELECT billing_interval, amount_minor, effective_from AS ef FROM plan_prices
+          WHERE plan_version_id = ${change.planVersionId}::uuid
+            AND currency = ${change.currency} AND effective_to IS NULL
+        `,
+      )),
+    ];
+    const open = (interval: BillingInterval) =>
+      openRows.find((r) => r.billing_interval === interval);
+    const month = open('monthly');
+
+    /* OWN-40: a year is ten months' price. A year is only ever priced against a month in
+     * force at the same moment: no month, or a month scheduled after this change, refuses. */
     if (change.billingInterval === 'annual') {
-      const open = await tx.execute<{ amount_minor: number }>(sql`
-        SELECT amount_minor FROM plan_prices
-        WHERE plan_version_id = ${change.planVersionId}::uuid
-          AND currency = ${change.currency} AND billing_interval = 'monthly'
-          AND effective_to IS NULL
-      `);
-      const month = [...open][0]?.amount_minor;
-      if (month !== undefined && change.amountMinor !== annualPriceK(Number(month))) {
+      if (
+        !month ||
+        new Date(month.ef).getTime() > change.from.getTime() ||
+        change.amountMinor !== annualPriceK(Number(month.amount_minor))
+      ) {
         throw new Error(
-          `annual price for ${change.currency} must be ten times the monthly price (OWN-40)`,
+          `annual price for ${change.currency} must be ten times the monthly price in force (OWN-40)`,
         );
       }
     }
+    /* Repricing the month carries an existing year with it, so the two never diverge. */
     const intervals: BillingInterval[] = [change.billingInterval];
-    if (change.billingInterval === 'monthly') {
-      const year = await tx.execute<{ n: number }>(sql`
-        SELECT count(*)::int AS n FROM plan_prices
-        WHERE plan_version_id = ${change.planVersionId}::uuid
-          AND currency = ${change.currency} AND billing_interval = 'annual'
-          AND effective_to IS NULL
-      `);
-      if (Number([...year][0]?.n ?? 0) > 0) intervals.push('annual');
-    }
+    if (change.billingInterval === 'monthly' && open('annual')) intervals.push('annual');
+
     for (const interval of intervals) {
+      /* Closing a row at `from` must not end it before it began: a change scheduled
+       * after this one is a conflict, never silently superseded. */
+      const row = open(interval);
+      if (row && new Date(row.ef).getTime() > change.from.getTime()) {
+        throw new Error(`a ${interval} price change is already scheduled after ${from}`);
+      }
       const amountMinor =
         interval === 'annual' && change.billingInterval === 'monthly'
           ? annualPriceK(change.amountMinor)

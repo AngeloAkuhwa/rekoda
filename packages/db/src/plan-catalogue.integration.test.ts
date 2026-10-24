@@ -401,6 +401,86 @@ describe('the cutover resolution rule (BL2, PR-100)', () => {
       expect(annual).toBe(PLAN_PRICES_K.complete * 10);
     });
 
+    it('refuses a year with no month, on publish and on repricing', async () => {
+      await expect(
+        planCatalogueRepo.publishPlanVersion(ownerDb, {
+          planId: 'chat',
+          name: 'Rekoda Chat',
+          seats: 1,
+          effectiveFrom: new Date('2026-09-01T00:00:00Z'),
+          entitlements: ['REKODA_CHAT'],
+          allowances: { AI_ACTIONS: 300 },
+          prices: [{ currency: 'NGN', billingInterval: 'annual', amountMinor: 14_900_000 }],
+        }),
+      ).rejects.toThrow(/ten times the monthly price/);
+      const v = await planCatalogueRepo.planVersionAt(db, 'complete', new Date());
+      await expect(
+        planCatalogueRepo.changePlanPrice(ownerDb, {
+          planVersionId: v!.id,
+          currency: 'USD',
+          billingInterval: 'annual',
+          amountMinor: 1_000,
+          from: new Date('2026-09-02T00:00:00Z'),
+        }),
+      ).rejects.toThrow(/ten times the monthly price/);
+    });
+
+    it('never ends a price before it began: a change scheduled later is a conflict', async () => {
+      const v = await planCatalogueRepo.planVersionAt(db, 'integrate', new Date());
+      const before = await planCatalogueRepo.priceAt(db, v!.id, 'NGN', 'monthly', new Date());
+      /* Schedule a monthly change in the future, then try an earlier one. */
+      await planCatalogueRepo.changePlanPrice(ownerDb, {
+        planVersionId: v!.id,
+        currency: 'NGN',
+        billingInterval: 'monthly',
+        amountMinor: 2_200_000,
+        from: new Date('2027-01-01T00:00:00Z'),
+      });
+      await expect(
+        planCatalogueRepo.changePlanPrice(ownerDb, {
+          planVersionId: v!.id,
+          currency: 'NGN',
+          billingInterval: 'annual',
+          amountMinor: 10 * (before ?? 0),
+          from: new Date('2026-12-01T00:00:00Z'),
+        }),
+      ).rejects.toThrow(/ten times the monthly price in force|already scheduled/);
+      await expect(
+        planCatalogueRepo.changePlanPrice(ownerDb, {
+          planVersionId: v!.id,
+          currency: 'NGN',
+          billingInterval: 'monthly',
+          amountMinor: 2_100_000,
+          from: new Date('2026-12-01T00:00:00Z'),
+        }),
+      ).rejects.toThrow(/already scheduled/);
+    });
+
+    it('concurrent month and year repricing never leave a year that is not ten months', async () => {
+      const v = await planCatalogueRepo.planVersionAt(db, 'chat', new Date());
+      const month = await planCatalogueRepo.priceAt(db, v!.id, 'NGN', 'monthly', new Date());
+      await Promise.allSettled([
+        planCatalogueRepo.changePlanPrice(ownerDb, {
+          planVersionId: v!.id,
+          currency: 'NGN',
+          billingInterval: 'monthly',
+          amountMinor: (month ?? 0) + 100_000,
+          from: new Date('2026-09-04T00:00:00Z'),
+        }),
+        planCatalogueRepo.changePlanPrice(ownerDb, {
+          planVersionId: v!.id,
+          currency: 'NGN',
+          billingInterval: 'annual',
+          amountMinor: 10 * (month ?? 0),
+          from: new Date('2026-09-04T00:00:00Z'),
+        }),
+      ]);
+      const now = new Date('2026-09-05T00:00:00Z');
+      const m = await planCatalogueRepo.priceAt(db, v!.id, 'NGN', 'monthly', now);
+      const y = await planCatalogueRepo.priceAt(db, v!.id, 'NGN', 'annual', now);
+      expect(y).toBe(10 * (m ?? 0));
+    });
+
     it('repricing the month carries the year with it', async () => {
       const v = await planCatalogueRepo.planVersionAt(db, 'integrate', new Date());
       await planCatalogueRepo.changePlanPrice(ownerDb, {
