@@ -453,6 +453,30 @@ describe('a live payment', () => {
     expect(provider.initialized.at(-1)!.customerEmail).toBe(OTHER);
   });
 
+  it('holds back a link when the address changes while the provider is answering', async () => {
+    const businessId = await seedBusiness();
+    const reference = await pendingCharge(businessId);
+    /* Proven under the first address; no session yet. */
+    await emails().confirm(businessId, await mailed(businessId, EMAIL));
+    await age(businessId, 61);
+    const realInitialize = provider.initializeTransaction.bind(provider);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    provider.initializeTransaction = async (input) => {
+      await gate;
+      return realInitialize(input);
+    };
+    try {
+      const pending = checkouts(liveConfig()).checkout(businessId, reference, undefined);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await emails().requestVerification(businessId, OTHER);
+      release();
+      expect(await pending).toMatchObject({ state: 'requires_billing_email_verification' });
+    } finally {
+      provider.initializeTransaction = realInitialize;
+    }
+  });
+
   it('starts a fresh session for a different address on a test key', async () => {
     const businessId = await seedBusiness();
     const reference = await pendingCharge(businessId);

@@ -282,10 +282,21 @@ export class BillingCheckoutService {
       });
       if ('gone' in seen || !seen.live) return null;
       if (seen.live.status === 'active' && seen.live.checkoutUrl) {
-        const refused = await withBusiness(this.db, businessId, (tx) =>
-          this.refusal(tx, businessId, seen.charge, handoffTime(new Date())),
+        const blocked = await withBusiness(
+          this.db,
+          businessId,
+          async (tx): Promise<BillingCheckoutResponse | null> => {
+            const refused = await this.refusal(
+              tx,
+              businessId,
+              seen.charge,
+              handoffTime(new Date()),
+            );
+            if (refused) return { state: 'unavailable', reason: refused };
+            return this.staleHandoff(tx, businessId, seen.live!.emailRevision);
+          },
         );
-        if (refused) return { state: 'unavailable', reason: refused };
+        if (blocked) return blocked;
         return {
           state: 'ready',
           reference: seen.charge.reference,
@@ -541,11 +552,17 @@ export class BillingCheckoutService {
       const charge = await subscriptionsRepo.chargeById(tx, businessId, attempt.chargeId);
       const refused = charge ? await this.refusal(tx, businessId, charge, handoff) : 'not_pending';
       if (refused) return { refused };
+      /* The address may have changed while Paystack was answering: a link started for
+       * the old one is not handed out (OWN-51). It stays stored; the next request
+       * finds the session stale and replaces it. */
+      const held = await this.staleHandoff(tx, businessId, attempt.emailRevision);
+      if (held) return { held };
       /* Not recorded though the charge is payable: a sibling replaced this attempt
        * while Paystack was answering. Its link is not the one to give out. */
       if (!recorded) return { refused: 'checkout_in_progress' as const };
       return { recorded };
     });
+    if ('held' in outcome) return outcome.held;
     if ('refused' in outcome) return { state: 'unavailable', reason: outcome.refused };
     return {
       state: 'ready',
@@ -553,6 +570,32 @@ export class BillingCheckoutService {
       checkoutUrl: outcome.recorded,
       amountK: decision.amountK,
     };
+  }
+
+  /**
+   * Called under the business lock just before a link is handed out. The merchant may
+   * have changed the billing address while the provider was answering (or while this
+   * request waited on a sibling): a link started for another address, or for one whose
+   * mailbox a live key requires proven and is not, is held back (OWN-51).
+   */
+  private async staleHandoff(
+    tx: TenantDb,
+    businessId: string,
+    startedRevision: number | null,
+  ): Promise<BillingCheckoutResponse | null> {
+    const state = await subscriptionsRepo.billingEmailState(tx, businessId);
+    if (this.config.paystackSecretKey.startsWith('sk_live') && state.sealed && !state.verifiedAt) {
+      return {
+        state: 'requires_billing_email_verification',
+        maskedEmail: maskBillingEmail(
+          decryptFacet(state.sealed, this.config.vaultKey, emailAad(businessId)),
+        ),
+      };
+    }
+    if (startedRevision !== null && startedRevision !== state.revision) {
+      return { state: 'unavailable', reason: 'checkout_in_progress' };
+    }
+    return null;
   }
 
   private async move(
