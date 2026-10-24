@@ -262,6 +262,9 @@ describe('a yearly renewal nobody pays', () => {
     // The cut-off is a newer decision: money for the old renewal is kept as truth, the plan is not rewritten (OWN-29).
     expect(await pay(businessId, charge.reference, new Date())).toBe('superseded');
     expect((await subOf(businessId))?.plan).toBe('expired');
+    // Payment truth survives: the old charge reads paid at its full yearly amount.
+    const old = (await chargesOf(businessId)).find((row) => row.reference === charge.reference);
+    expect(old).toMatchObject({ status: 'paid', amountK: CHAT_ANNUAL, billingInterval: 'annual' });
 
     const now = new Date();
     const answer = await billing().changePlan(businessId, 'chat', now, 'annual');
