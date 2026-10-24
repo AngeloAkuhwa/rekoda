@@ -42,7 +42,7 @@ import { sealPayload } from '../privacy/payload-vault.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
 import { pumpPaystackEvents } from '../payments/paystack-pump.js';
 import { PaymentIntentsService } from '../payments/payment-intents.service.js';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ContainerAudioProbe } from '../ai/audio-duration.js';
@@ -509,6 +509,43 @@ describe('older and limiting cases', () => {
     ]);
   });
 
+  it('backfills the links slice 1 stored as attempt 1, once, mapping each charge status', async () => {
+    const businessId = await seedBusiness();
+    const owner = createDb(urls.owner, { max: 1 });
+    try {
+      await owner.db.execute(sql`
+        INSERT INTO subscription_charges
+          (business_id, kind, quantity, amount_k, status, reference, checkout_url, checkout_started_at)
+        VALUES
+          (${businessId}::uuid, 'add_on', 1, 1000, 'pending',  'RKD-PACK-20261024-AAAAAA', 'https://checkout.stub/a', now()),
+          (${businessId}::uuid, 'add_on', 1, 1000, 'failed',   'RKD-PACK-20261024-BBBBBB', 'https://checkout.stub/b', now()),
+          (${businessId}::uuid, 'add_on', 1, 1000, 'paid',     'RKD-PACK-20261024-CCCCCC', 'https://checkout.stub/c', now()),
+          (${businessId}::uuid, 'add_on', 1, 1000, 'refunded', 'RKD-PACK-20261024-DDDDDD', 'https://checkout.stub/d', now()),
+          (${businessId}::uuid, 'add_on', 1, 1000, 'pending',  'RKD-PACK-20261024-EEEEEE', NULL, NULL)
+      `);
+      /* The backfill statement itself, as the migration runs it. */
+      const migration = readFileSync(
+        new URL('../../../../packages/db/migrations/0173_checkout_attempts.sql', import.meta.url),
+        'utf8',
+      );
+      const backfill = migration.slice(
+        migration.lastIndexOf('INSERT INTO subscription_charge_attempts'),
+      );
+      await owner.db.execute(sql.raw(backfill));
+      await owner.db.execute(sql.raw(backfill));
+    } finally {
+      await owner.close();
+    }
+
+    const rows = (await attemptsOf(businessId)).sort((a, b) => a.ref.localeCompare(b.ref));
+    expect(rows.map((r) => [r.ref, r.no, r.status, r.url])).toEqual([
+      ['RKD-PACK-20261024-AAAAAA', 1, 'active', 'https://checkout.stub/a'],
+      ['RKD-PACK-20261024-BBBBBB', 1, 'failed', 'https://checkout.stub/b'],
+      ['RKD-PACK-20261024-CCCCCC', 1, 'paid', 'https://checkout.stub/c'],
+      ['RKD-PACK-20261024-DDDDDD', 1, 'paid', 'https://checkout.stub/d'],
+    ]);
+  });
+
   it('stops at the attempt limit instead of looping', async () => {
     const businessId = await seedBusiness();
     const { reference } = await pendingCharge(businessId);
@@ -830,6 +867,52 @@ describe('a failed replacement does not strand a payment on the older session', 
     expect((await chargeOf(businessId, reference))?.status).toBe('paid');
     expect(await eventError(businessId, eventId)).toBe('duplicate_payment');
     expect((await attemptsOf(businessId))[0]).toMatchObject({ no: 2, status: 'duplicate_paid' });
+  });
+
+  it('does not call a payment on a closed charge a duplicate', async () => {
+    const businessId = await seedBusiness();
+    const { reference, amountK } = await pendingCharge(businessId);
+    const second = attemptReference(reference, 2);
+    await withBusiness(appDb, businessId, async (tx) => {
+      const charge = await subscriptionsRepo.chargeByReference(tx, businessId, reference);
+      const opened = await subscriptionsRepo.openAttempt(tx, {
+        businessId,
+        chargeId: charge!.id,
+        attemptNo: 2,
+        providerReference: second,
+      });
+      await subscriptionsRepo.recordAttemptCheckout(
+        tx,
+        businessId,
+        opened!.id,
+        'https://checkout.stub/second',
+        new Date(),
+      );
+    });
+    provider.willVerify(second, { amountK });
+    const eventId = await storeEvent(second, amountK);
+    await pump();
+
+    /* While the payment is being verified the charge is closed as failed, not paid. */
+    const verify = provider.verifyTransaction.bind(provider);
+    provider.verifyTransaction = async (ref) => {
+      const answer = await verify(ref);
+      await withBusiness(appDb, businessId, async (tx) => {
+        await subscriptionsRepo.lockBusiness(tx, businessId);
+        await subscriptionsRepo.settleCharge(tx, {
+          reference,
+          status: 'failed',
+          failureReason: 'abandoned',
+          when: new Date(),
+        });
+      });
+      return answer;
+    };
+    await drainJobs();
+
+    expect((await chargeOf(businessId, reference))?.status).toBe('failed');
+    expect(await eventError(businessId, eventId)).toBe('already_settled');
+    expect((await attemptsOf(businessId))[0]).not.toMatchObject({ status: 'duplicate_paid' });
   });
 
   it('lets the merchant start a new session on a charge whose only live attempt failed', async () => {

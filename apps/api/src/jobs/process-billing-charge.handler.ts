@@ -248,7 +248,10 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
       /* A settlement that recorded no attempt (a charge from before attempts existed)
        * was made through the charge's own reference. */
       const settledReference = settling?.providerReference ?? reference;
-      if (providerReference !== settledReference) {
+      /* Only a PAID charge can have been paid twice: one closed as failed or refunded
+       * meanwhile is flagged as it always was. */
+      const closed = await subscriptionsRepo.chargeByReference(tx, businessId, reference);
+      if (closed?.status === 'paid' && providerReference !== settledReference) {
         if (attempt) {
           await subscriptionsRepo.moveAttempt(
             tx,
