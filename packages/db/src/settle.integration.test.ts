@@ -1118,4 +1118,22 @@ describe('an order processing fee becomes ACTUAL at settlement (G-116, OWN-42)',
     expect(after.actualOrEstimated).toBe('ACTUAL');
     expect(after.amountMinor).toBe(150_000);
   });
+
+  it('a settled payment whose stored fee is NULL keeps the estimate and writes no resolution', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    const ref = await payFor(businessId, seeded, TOTAL_K, 225_000);
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(sql`UPDATE payments SET provider_fee_k = NULL`),
+    );
+    await settle(businessId, [ref]);
+    const after = await charge(businessId, seeded.orderId);
+    expect(after.actualOrEstimated).toBe('ESTIMATED');
+    expect(after.amountMinor).toBe(300_000);
+    const audits = await one<{ n: number }>(
+      businessId,
+      sql`SELECT count(*)::int AS n FROM audit_events WHERE action = 'resolved_actual'`,
+    );
+    expect(Number(audits?.n)).toBe(0);
+  });
 });
