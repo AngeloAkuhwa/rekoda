@@ -144,7 +144,11 @@ export class BillingController {
     @Body() body: unknown,
   ): Promise<BillingCheckoutResponse> {
     const parsed = billingCheckoutRequest.safeParse(body);
-    if (!parsed.success) throw new BadRequestException('reference is required');
+    if (!parsed.success) {
+      throw new BadRequestException(
+        'reference must be a non-empty string of at most 64 characters; billingEmail, if given, must be a string of at most 320 characters',
+      );
+    }
     return this.checkouts.checkout(
       request.auth!.businessId,
       parsed.data.reference,
