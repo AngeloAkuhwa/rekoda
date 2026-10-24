@@ -9,6 +9,7 @@
 import { sql } from 'drizzle-orm';
 import {
   bigint,
+  boolean,
   index,
   integer,
   pgTable,
@@ -102,6 +103,8 @@ export const subscriptionChargeAttempts = pgTable('subscription_charge_attempts'
   checkoutUrl: text('checkout_url'),
   /** The business's `billing_email_revision` when the session was started (migration 0174). */
   emailRevision: integer('email_revision'),
+  /** Whether a live provider key started the session (migration 0174); null before it existed. */
+  providerLive: boolean('provider_live'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

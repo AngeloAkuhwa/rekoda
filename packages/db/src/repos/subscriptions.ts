@@ -1013,6 +1013,8 @@ export interface AttemptRow extends Record<string, unknown> {
    * replaced is not handed out again.
    */
   emailRevision: number | null;
+  /** Whether a live provider key started this session; null for one that predates the column. */
+  providerLive: boolean | null;
   /**
    * Milliseconds since the attempt last changed (opened, or its link stored),
    * measured by the DATABASE clock in the query that read it. Only `liveAttempt`
@@ -1033,6 +1035,7 @@ interface RawAttempt extends Record<string, unknown> {
   created_at: string;
   updated_at: string;
   email_revision?: number | null;
+  provider_live?: boolean | null;
   idle_ms?: string | number | null;
 }
 
@@ -1047,6 +1050,7 @@ const shapeAttempt = (row: RawAttempt): AttemptRow => ({
   createdAt: new Date(row.created_at),
   updatedAt: new Date(row.updated_at),
   emailRevision: row.email_revision == null ? null : Number(row.email_revision),
+  providerLive: row.provider_live ?? null,
   idleMs: row.idle_ms == null ? 0 : Math.max(0, Number(row.idle_ms)),
 });
 
@@ -1159,15 +1163,18 @@ export async function openAttempt(
     providerReference: string;
     /** False for a session adopted from before attempts existed: its address is unknown. */
     bindEmail?: boolean;
+    /** Whether the provider key starting this session is a live one; omitted for an adopted session. */
+    providerLive?: boolean;
   },
 ): Promise<AttemptRow | null> {
   const bind = input.bindEmail !== false;
   const rows = await tx.execute<RawAttempt>(sql`
     INSERT INTO subscription_charge_attempts
-      (business_id, charge_id, attempt_no, provider_reference, status, email_revision)
+      (business_id, charge_id, attempt_no, provider_reference, status, email_revision, provider_live)
     SELECT ${input.businessId}::uuid, ${input.chargeId}::uuid, ${input.attemptNo},
            ${input.providerReference}, 'initializing',
-           CASE WHEN ${bind} THEN b.billing_email_revision END
+           CASE WHEN ${bind} THEN b.billing_email_revision END,
+           ${input.providerLive ?? null}::boolean
     FROM businesses b WHERE b.id = ${input.businessId}::uuid
     ON CONFLICT DO NOTHING
     RETURNING *

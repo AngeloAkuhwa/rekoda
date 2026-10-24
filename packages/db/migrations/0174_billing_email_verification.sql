@@ -24,7 +24,10 @@ ALTER TABLE businesses
 -- request see that the address has changed since, and not hand the old session out.
 -- NULL for a session that predates this column: its address is unknown.
 ALTER TABLE subscription_charge_attempts
-  ADD COLUMN IF NOT EXISTS email_revision integer;
+  ADD COLUMN IF NOT EXISTS email_revision integer,
+  -- Whether the provider key that started the session was a live one. A test-key link is
+  -- never presented as a ready live checkout. NULL for a session that predates the column.
+  ADD COLUMN IF NOT EXISTS provider_live boolean;
 
 CREATE TABLE IF NOT EXISTS billing_email_verifications (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),

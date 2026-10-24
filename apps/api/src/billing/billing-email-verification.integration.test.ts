@@ -617,6 +617,27 @@ describe('a live payment', () => {
     expect(provider.initialized).toHaveLength(before + 1);
   });
 
+  it('does not present a test-key link as a ready live checkout once the mailbox is proven', async () => {
+    const businessId = await seedBusiness();
+    const reference = await pendingCharge(businessId);
+    const first = await checkouts().checkout(businessId, reference, EMAIL);
+    expect(first.state).toBe('ready');
+    await emails().confirm(businessId, await mailed(businessId));
+    const before = provider.initialized.length;
+
+    const answer = await checkouts(liveConfig()).checkout(businessId, reference, undefined);
+    expect(answer.state).toBe('ready');
+    if (first.state === 'ready' && answer.state === 'ready') {
+      expect(answer.checkoutUrl).not.toBe(first.checkoutUrl);
+    }
+    expect(provider.initialized).toHaveLength(before + 1);
+    /* And the live session is then reused, not replaced again. */
+    expect((await checkouts(liveConfig()).checkout(businessId, reference, undefined)).state).toBe(
+      'ready',
+    );
+    expect(provider.initialized).toHaveLength(before + 1);
+  });
+
   it('starts a fresh session for a different address on a test key', async () => {
     const businessId = await seedBusiness();
     const reference = await pendingCharge(businessId);

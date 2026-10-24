@@ -333,6 +333,10 @@ export class BillingCheckoutService {
     return subscriptionsRepo.lockChargeByReference(tx, businessId, reference);
   }
 
+  private liveKey(): boolean {
+    return this.config.paystackSecretKey.startsWith('sk_live');
+  }
+
   /**
    * Was this session started for an address other than the one now on file, or is
    * the merchant giving a different one? Then its link must not be handed out as is.
@@ -348,6 +352,9 @@ export class BillingCheckoutService {
      * counted, so it belongs to revision 0: it stays valid until the address changes,
      * and is replaced (after Paystack is asked about it) from then on. */
     if ((live.emailRevision ?? 0) !== state.revision) return true;
+    /* A link started by a test key is not a live checkout. A session from before the mode
+     * was recorded is trusted on a test key, as it always was, and not on a live one. */
+    if ((live.providerLive ?? false) !== this.liveKey()) return true;
     /* A live key hands out no link, cached or new, for a mailbox that is not proven. */
     if (this.config.paystackSecretKey.startsWith('sk_live') && !state.verifiedAt) return true;
     if (!given) return false;
@@ -422,6 +429,7 @@ export class BillingCheckoutService {
       chargeId: charge.id,
       attemptNo,
       providerReference: attemptReference(charge.reference, attemptNo),
+      providerLive: this.liveKey(),
     });
     /* Holding the lock, a conflict means a sibling committed first. */
     if (!attempt) return { state: 'retry' };
@@ -498,6 +506,7 @@ export class BillingCheckoutService {
         chargeId: charge.id,
         attemptNo: latest + 1,
         providerReference: attemptReference(charge.reference, latest + 1),
+        providerLive: this.liveKey(),
       });
       if (!next) return { state: 'retry' };
       return {
