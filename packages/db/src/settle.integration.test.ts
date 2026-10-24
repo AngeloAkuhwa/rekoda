@@ -1095,4 +1095,27 @@ describe('an order processing fee becomes ACTUAL at settlement (G-116, OWN-42)',
     await settle(businessId, [ref]);
     expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ESTIMATED');
   });
+
+  it('a cash payment that closes the invoice after the provider payout settled resolves the charge', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    const ref = await payFor(businessId, seeded, 10_000_000, 150_000);
+    await settle(businessId, [ref]);
+    expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ESTIMATED');
+
+    await withBusiness(db, businessId, (tx) =>
+      settleRepo.recordMerchantPayment(tx, {
+        businessId,
+        invoiceId: seeded.invoiceId,
+        amountK: 5_000_000,
+        method: 'cash',
+        actor: 'test',
+        sourceType: 'chat',
+        sourceId: 'cash-1',
+      }),
+    );
+    const after = await charge(businessId, seeded.orderId);
+    expect(after.actualOrEstimated).toBe('ACTUAL');
+    expect(after.amountMinor).toBe(150_000);
+  });
 });

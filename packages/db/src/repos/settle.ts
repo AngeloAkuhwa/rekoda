@@ -58,7 +58,11 @@ import {
   markMerchantOverpayment,
   type ExcessDisposition,
 } from './merchant-overpayment.js';
-import { orderIdsForPayments, resolveOrderProcessingFee } from './charges.js';
+import {
+  orderIdsForPayments,
+  resolveOrderProcessingFee,
+  resolveProcessingFeeForInvoice,
+} from './charges.js';
 import { recordPaymentAttempt, resolvePaymentAttempt } from './payments-hub.js';
 
 /** The same rekoda_reference booked twice — the terminal-intent gate's job,
@@ -1224,6 +1228,12 @@ export async function recordMerchantPayment(
     } as never,
     sourceType: input.sourceType,
   });
+
+  /* G-116: the payment that closes the invoice may be the last thing an
+   * already-settled provider payment was waiting on. */
+  if (newBalanceK === 0) {
+    await resolveProcessingFeeForInvoice(tx, input.businessId, invoice.id);
+  }
 
   return {
     paymentId,

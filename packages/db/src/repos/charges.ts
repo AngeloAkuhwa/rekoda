@@ -256,3 +256,21 @@ export async function orderIdsForPayments(
     .where(and(eq(payments.businessId, businessId), inArray(payments.id, paymentIds)));
   return rows.map((r) => r.orderId);
 }
+
+/**
+ * The same resolution, started from an invoice that has just closed: a
+ * provider payment that settled while the rest of the balance was still to be
+ * collected (a cash payment recorded later) is not stamped again, so the
+ * closing payment is the other moment the order can become final.
+ */
+export async function resolveProcessingFeeForInvoice(
+  tx: TenantDb,
+  businessId: string,
+  invoiceId: string,
+): Promise<void> {
+  const rows = await tx
+    .select({ id: orders.id })
+    .from(orders)
+    .where(and(eq(orders.businessId, businessId), eq(orders.invoiceId, invoiceId)));
+  for (const row of rows) await resolveOrderProcessingFee(tx, businessId, row.id);
+}
