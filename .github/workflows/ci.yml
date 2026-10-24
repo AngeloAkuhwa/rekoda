@@ -263,6 +263,31 @@ jobs:
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: pnpm turbo build
+      # The recovery drill dumps with the runner's own `pg_dump` and restores into
+      # the postgres:16 service container. A client newer than the server writes
+      # `SET transaction_timeout` (a PostgreSQL 17 setting) into the archive and a
+      # 16 server rejects it on restore, so the client must match the server. The
+      # runner image no longer ships 16 (ubuntu-latest moved to a release whose
+      # default is 18), so install it when it is missing. A failed install stops
+      # the job here, with the reason, rather than drifting into a confusing
+      # restore failure later.
+      - name: Use the PostgreSQL 16 client tools
+        run: |
+          if [ -x /usr/lib/postgresql/16/bin/pg_dump ]; then
+            echo /usr/lib/postgresql/16/bin >> "$GITHUB_PATH"
+            PATH="/usr/lib/postgresql/16/bin:$PATH"
+          else
+            # No native 16 client on this image: run the postgres:16 image's
+            # tools through the wrappers (they use the host network).
+            client="$GITHUB_WORKSPACE/scripts/ci-pg16-client"
+            echo "$client" >> "$GITHUB_PATH"
+            PATH="$client:$PATH"
+          fi
+          # Fail here, not in a confusing restore error later, if the client
+          # the drill will use is not the server's major version.
+          pg_dump --version | grep -Eq '^pg_dump \(PostgreSQL\) 16\.' ||
+            { echo "pg_dump is not PostgreSQL 16" >&2; exit 1; }
+          pg_dump --version
       # The migration creates rekoda_app with no password on purpose —
       # credentials belong to ops, never to a file in the repository. Under
       # trust auth it needs none here.

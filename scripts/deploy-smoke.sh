@@ -212,7 +212,15 @@ echo 'ok'
 
 step 'PostgreSQL starts, and is not reachable from the host'
 "${COMPOSE[@]}" up -d --wait postgres
-if "${COMPOSE[@]}" port postgres 5432 >/dev/null 2>&1; then fail 'postgres publishes a port'; fi
+# Asked of the container engine, not of `compose port`: that command's exit status
+# and output differ between Compose versions even for a port that is not published.
+# The engine records `{"5432/tcp":null}` for an exposed-only port and a host binding
+# for a published one.
+pg_container=$("${COMPOSE[@]}" ps -q postgres)
+[ -n "$pg_container" ] || fail 'the postgres container is not running'
+pg_published=$(docker inspect --format '{{json .NetworkSettings.Ports}}' "$pg_container" |
+  jq '[(. // {})[] | select(. != null and length > 0)] | length')
+[ "$pg_published" = 0 ] || fail 'postgres publishes a port'
 if (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; then fail 'something answers on 5432'; fi
 echo 'ok'
 
