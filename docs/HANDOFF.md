@@ -20,9 +20,11 @@
 **G-116 MERGED (24 Oct 2026, #347, `cdee03e`; no migration): an order's processing fee resolves from ESTIMATED to ACTUAL when its invoice balance is zero, every included verified provider payment is settled and each included provider fee is non-null and greater than zero; fully refunded and merchant-recorded payments are excluded from that set (`markSettlements`, `recordMerchantPayment`). An order with no invoice link resolves instead when its linked verified provider payments together cover the order total. STAGING ACCEPTANCE PENDING. Open residuals are in the G-116 readiness row.**
 
 **G-102 (24 Oct 2026): slice 1 (API) MERGED as #344; owner rulings OWN-50 to OWN-53 recorded in #346 (`13d4124`);
-slice 2a, lost-checkout-link recovery, is MERGED as #349 (`f62e6d5`, migration 0173; test-mode only; staging acceptance pending).** Remaining G-102
-order: 2b billing-email mailbox verification (OWN-51, mock sender until Cloudflare email is configured), 2c the billing
-page, 2d billing-email erasure in the account-deletion work (OWN-52, backlog rows 19/20/N4). The slice-2a design
+slice 2a, lost-checkout-link recovery, is MERGED as #349 (`f62e6d5`, migration 0173; test-mode only; staging acceptance pending).** Slice 2b (billing-email mailbox
+verification, OWN-51; migration 0174; mock/none email sender until Cloudflare email is configured; a LIVE Paystack key refuses to start a
+checkout until the mailbox is proven, a test key does not; `REKODA_EMAIL_PROVIDER`) is MERGED as #351 (`2f84410`, migration 0174; backend only; staging acceptance pending; its request limits are open owner decision OD-32). Remaining G-102
+order: 2c the billing
+page (and the page the emailed link opens, `/app/billing/confirm-email`), 2d billing-email erasure in the account-deletion work (OWN-52, backlog rows 19/20/N4). The slice-2a design
 (per-attempt provider references, verify-before-replace, a late duplicate payment flagged for an operator refund) is
 Claude's proposal and awaits the owner's confirmation. Provenance note: #347 (G-116) was opened and merged under the
 owner's GitHub account during this run without this run's involvement, and commit `811baa5` has no identified author;

@@ -234,7 +234,7 @@ test('git pull instead of the commit', () => {
 
 test('pruning the previous images', () => {
   const edit = edited('script', '\ndc ps\n', '\ndocker image prune -af\ndc ps\n');
-  expectProblem(problems(edit), /removes images, and with them the rollback/);
+  expectProblem(problems(edit), /removes tagged images, and with them the rollback/);
 });
 
 test('a second compose file', () => {
@@ -626,7 +626,7 @@ test('an interrupted run reconciled only after the baseline is judged', () => {
 });
 
 test('the marker written in place, where a kill leaves it truncated', () => {
-  const edit = edited('script', '  mv -f "$STATE.tmp" "$STATE"\n', '');
+  const edit = edited('script', '  mv -f "$STATE.tmp" "$STATE" ||\n', '');
   expectProblem(problems(edit), /writes its marker by atomic rename/);
 });
 
@@ -644,4 +644,113 @@ test('CI cancelling its own run on main', () => {
 test('CI sharing one concurrency group across refs', () => {
   const edit = edited('ci', 'group: ci-${{ github.ref }}', 'group: ci');
   expectProblem(problems(edit), /per-ref group/);
+});
+
+/* ---- disk space and image retention ---- */
+
+test('a volume prune added to the script', () => {
+  const edit = edited(
+    'script',
+    '  return 0\n}\n\n# A full disk',
+    '  docker volume prune -f\n  return 0\n}\n\n# A full disk',
+  );
+  expectProblem(problems(edit), /removes volumes/);
+});
+
+test('a force-removal of an image', () => {
+  const edit = edited(
+    'script',
+    'docker image rm "$image" >/dev/null',
+    'docker image rm -f "$image" >/dev/null',
+  );
+  expectProblem(problems(edit), /force-removes an image/);
+});
+
+test('an unrelated image removal outside the keep list', () => {
+  const edit = edited(
+    'script',
+    'docker image rm "$image" >/dev/null 2>&1 || true\n  done',
+    'docker image rm "$image" >/dev/null 2>&1 || true\n  docker image prune -af >/dev/null\n  done',
+  );
+  expectProblem(problems(edit), /removes tagged images/);
+});
+
+test('the keep list ignored', () => {
+  const edit = edited('script', 'if in_list "$tag" "$keep"; then continue; fi', ':');
+  expectProblem(problems(edit), /skips every release in the keep list/);
+});
+
+test("an unfinished marker's releases no longer kept", () => {
+  const edit = edited(
+    'script',
+    '    for key in prev_release release; do',
+    '    for key in nothing; do',
+  );
+  expectProblem(problems(edit), /unfinished marker's releases/);
+});
+
+test('cleanup before the new release is proven', () => {
+  const moved = edited('script', 'prune_releases routine\n', '').script.replace(
+    "\nstep 'running containers'\n",
+    () => "\nprune_releases routine\nstep 'running containers'\n",
+  );
+  expectProblem(problems({ script: moved }), /only after the new release is proven/);
+});
+
+test('no free-space preflight', () => {
+  const edit = edited('script', "step 'disk space'\n", '');
+  expectProblem(problems(edit), /free disk space after the running release is proven/);
+});
+
+test('no proof that the checkout is whole', () => {
+  const edit = edited('script', 'verify_checkout "$SHA" || fail ', 'true || fail ');
+  expectProblem(problems(edit), /verifies the checkout of the target/);
+});
+
+test('a forced checkout to restore files', () => {
+  const edit = edited('script', 'checkout -q "$PREV_SHA" &&', 'checkout -q -f "$PREV_SHA" &&');
+  expectProblem(problems(edit), /forces files over the checkout/);
+});
+
+test('the floor lowered by an environment variable', () => {
+  const edit = edited('script', '-gt "$MIN_FREE_KB" ]; then', '-lt "$MIN_FREE_KB" ]; then');
+  expectProblem(problems(edit), /raise the floor only/);
+});
+
+test('the free-space check kept but PHASE=prepared removed, so the order cannot be judged', () => {
+  const edit = edited('script', 'PHASE=prepared\n', '');
+  expectProblem(problems(edit), /free disk space after the running release is proven/);
+});
+
+test('the image removal placed before the retention guards', () => {
+  const rm = '    docker image rm "$image" >/dev/null 2>&1 || true\n';
+  const guard = '    if in_list "$tag" "$keep"; then continue; fi\n';
+  const moved = edited('script', rm, '').script.replace(guard, () => rm + guard);
+  expectProblem(problems({ script: moved }), /removes images outside prune_releases/);
+});
+
+test('the disk-space step placed between the baseline curl and its validation', () => {
+  const step = "step 'disk space'\n";
+  const without = edited('script', step, '').script;
+  const moved = without.replace(
+    'jq -e --arg pr "$PREV_RELEASE" --arg ps "$PREV_SHA" \\\n  \'.commit',
+    () => `${step}jq -e --arg pr "$PREV_RELEASE" --arg ps "$PREV_SHA" \\\n  '.commit`,
+  );
+  assert.notEqual(moved, without);
+  expectProblem(problems({ script: moved }), /free disk space after the running release is proven/);
+});
+
+test('the image removal placed after the loop that holds the retention guards', () => {
+  const rm = '    docker image rm "$image" >/dev/null 2>&1 || true\n';
+  const done = '  done < <(printf \'%s\\n\' "$images")\n';
+  const without = edited('script', rm, '').script;
+  // After the second loop's `done` (the removal loop), so only the closing-`done`
+  // guard, not the missing-retention-guard rule, can reject it.
+  const first = without.indexOf(done);
+  const second = without.indexOf(done, first + done.length);
+  assert.notEqual(second, -1);
+  const at = second + done.length;
+  const moved = without.slice(0, at) + rm.replace(/^ {4}/, '  ') + without.slice(at);
+  assert.notEqual(moved, without);
+  expectProblem(problems({ script: moved }), /removes images outside prune_releases/);
 });

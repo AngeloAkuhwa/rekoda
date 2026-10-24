@@ -188,6 +188,8 @@ export const billingCheckoutResponse = z.discriminatedUnion('state', [
   }),
   /** No billing email on file and none given: ask for one inside the payment flow. */
   z.object({ state: z.literal('requires_billing_email') }),
+  /** Live payments only: the address on file has not proven its mailbox yet (OWN-51). */
+  z.object({ state: z.literal('requires_billing_email_verification'), maskedEmail: z.string() }),
   z.object({
     state: z.literal('invalid_billing_email'),
     reason: z.enum(['invalid', 'too_long', 'reserved']),
@@ -216,6 +218,44 @@ export const billingCheckoutResponse = z.discriminatedUnion('state', [
   }),
 ]);
 export type BillingCheckoutResponse = z.infer<typeof billingCheckoutResponse>;
+
+/* ── proving the billing email's mailbox (G-102 slice 2b, OWN-51) ── */
+
+export const billingEmailStatusResponse = z.object({
+  /** The address with most of it hidden; the full address is never sent back. */
+  maskedEmail: z.string().nullable(),
+  verified: z.boolean(),
+  /** False while no email sender is configured: the page says confirmation is unavailable. */
+  canSend: z.boolean(),
+});
+export type BillingEmailStatusResponse = z.infer<typeof billingEmailStatusResponse>;
+
+/** Send (or resend) the confirmation link; a new address may ride along and replaces the old one. */
+export const billingEmailVerifyRequest = z.object({ billingEmail: z.string().max(320).optional() });
+export const billingEmailVerifyResponse = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('sent'), maskedEmail: z.string() }),
+  z.object({ state: z.literal('already_verified'), maskedEmail: z.string() }),
+  z.object({ state: z.literal('requires_billing_email') }),
+  z.object({
+    state: z.literal('invalid_billing_email'),
+    reason: z.enum(['invalid', 'too_long', 'reserved']),
+  }),
+  z.object({
+    state: z.literal('unavailable'),
+    reason: z.enum(['email_not_configured', 'send_failed']),
+  }),
+  /** Too many links asked for; `retryAfterSeconds` is when the next may be requested. */
+  z.object({ state: z.literal('rate_limited'), retryAfterSeconds: z.number().int().nonnegative() }),
+]);
+export type BillingEmailVerifyRequest = z.infer<typeof billingEmailVerifyRequest>;
+export type BillingEmailVerifyResponse = z.infer<typeof billingEmailVerifyResponse>;
+
+export const billingEmailConfirmRequest = z.object({ token: z.string().min(16).max(128) });
+export const billingEmailConfirmResponse = z.object({
+  state: z.enum(['verified', 'invalid', 'expired', 'address_changed']),
+});
+export type BillingEmailConfirmRequest = z.infer<typeof billingEmailConfirmRequest>;
+export type BillingEmailConfirmResponse = z.infer<typeof billingEmailConfirmResponse>;
 
 export const billingPlanChangeRequest = z.object({
   plan: z.enum(['chat', 'integrate', 'complete']),
