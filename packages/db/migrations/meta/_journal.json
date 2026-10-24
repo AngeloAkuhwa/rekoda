@@ -1233,6 +1233,13 @@
       "when": 1792756800000,
       "tag": "0175_reserved_meters",
       "breakpoints": true
+    },
+    {
+      "idx": 176,
+      "version": "7",
+      "when": 1792843200000,
+      "tag": "0176_trial_meter_backfill",
+      "breakpoints": true
     }
   ]
 }

@@ -165,6 +165,13 @@ export const externalEvents = pgTable(
       .array()
       .notNull()
       .default(sql`'{}'::text[]`),
+    /**
+     * The meter row each reserved unit was spent on (migration 0175, G-109):
+     * { "<UNIT>": "<meter row>" }. A delayed refund goes to exactly that row.
+     */
+    reservedMeters: jsonb('reserved_meters')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     createdAt: createdAt(),
   },
   (t) => [

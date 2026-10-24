@@ -8,9 +8,13 @@
  * commercial rules in the doc are enforced shapes, not intentions.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import postgres from 'postgres';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from './client.js';
 import { billingRepo, events, identity, usageRepo } from './index.js';
+import { MIGRATIONS_DIR } from './migrate.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
 import { USAGE_UNITS, allowanceFor } from '@rekoda/core';
 
@@ -36,6 +40,16 @@ async function seedBusiness(): Promise<string> {
   const user = await identity.upsertUserByPhone(db, '+2348140000001');
   const business = await identity.createBusinessWithOwner(db, {
     name: 'Ada Fashion',
+    businessType: null,
+    ownerUserId: user.id,
+  });
+  return business.id;
+}
+
+async function seedBusiness2(): Promise<string> {
+  const user = await identity.upsertUserByPhone(db, '+2348140000002');
+  const business = await identity.createBusinessWithOwner(db, {
+    name: 'Bola Stores',
     businessType: null,
     ownerUserId: user.id,
   });
@@ -256,9 +270,15 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
       expect(results.filter((r) => r.granted)).toHaveLength(5);
       expect(new Set(results.map((r) => r.meter))).toEqual(new Set([TRIAL_METER]));
 
-      // Concurrent refunds of the five reservations leave the row at zero, not below.
-      await Promise.all(results.filter((r) => r.granted).map((r) => refund(businessId, r.meter)));
-      expect(await rowUsed(businessId, usageRepo.TRIAL_PERIOD)).toBe(0);
+      // Concurrent refunds of three of the five leave exactly two spent: a stray
+      // extra refund would show, where flooring at zero would hide it.
+      await Promise.all(
+        results
+          .filter((r) => r.granted)
+          .slice(0, 3)
+          .map((r) => refund(businessId, r.meter)),
+      );
+      expect(await rowUsed(businessId, usageRepo.TRIAL_PERIOD)).toBe(2);
     });
 
     it('a refund names its row and never moves another, whatever the plan or the balances', async () => {
@@ -295,6 +315,9 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
           usageRepo.reserveUnit(tx, businessId, '2026-08', 'AI_ACTIONS', 5),
         ),
       );
+      // Another message spent a second trial unit, so a double refund would show
+      // as 0 left rather than being hidden by the floor at zero.
+      await reserve(businessId, '2026-08', 5);
       await setPlanOnRow(businessId, 'chat');
       await reserve(businessId, '2026-08', 5); // a paid unit spent meanwhile
 
@@ -312,8 +335,57 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
         });
       // Two concurrent releases (a retry racing a reclaim): one refund.
       await Promise.all([giveBack(), giveBack()]);
-      expect(await rowUsed(businessId, usageRepo.TRIAL_PERIOD)).toBe(0);
+      expect(await rowUsed(businessId, usageRepo.TRIAL_PERIOD)).toBe(1);
       expect(await rowUsed(businessId, '2026-08')).toBe(1);
+    });
+
+    it('two overlapping releases of a quantity reservation return its seconds once', async () => {
+      const businessId = await seedBusiness();
+      const eventId = await seedEvent(businessId);
+      await withBusiness(db, businessId, async (tx) => {
+        const spent = await usageRepo.reserveUnit(
+          tx,
+          businessId,
+          '2026-08',
+          'VOICE_MINUTES',
+          600,
+          7,
+        );
+        await events.noteReservedUnit(tx, businessId, eventId, 'VOICE_MINUTES:7', spent.meter);
+      });
+      await reserve(businessId, '2026-08', 600, 20, 'VOICE_MINUTES'); // other voice notes: 20 more
+
+      const giveBack = async (beforeCommit?: () => Promise<void>) =>
+        withBusiness(db, businessId, async (tx) => {
+          const taken = await events.takeRecordedUnit(tx, businessId, eventId, 'VOICE_MINUTES');
+          await beforeCommit?.();
+          if (taken) {
+            await usageRepo.refundUnit(
+              tx,
+              businessId,
+              usageRepo.storedMeter(taken.meter, '2026-08'),
+              'VOICE_MINUTES',
+              Number(taken.held.split(':')[1]),
+            );
+          }
+        });
+
+      // A has taken the reservation and not committed when B starts: B must wait
+      // for A, then find nothing, rather than read the same reservation beside it.
+      let aTook!: () => void;
+      const aHasTaken = new Promise<void>((r) => (aTook = r));
+      let releaseA!: () => void;
+      const aMayCommit = new Promise<void>((r) => (releaseA = r));
+      const a = giveBack(async () => {
+        aTook();
+        await aMayCommit;
+      });
+      await aHasTaken;
+      const b = giveBack();
+      await new Promise((r) => setTimeout(r, 300)); // B is now waiting on A's lock (or has read the same row)
+      releaseA();
+      await Promise.all([a, b]);
+      expect(await rowUsed(businessId, usageRepo.TRIAL_PERIOD, 'VOICE_MINUTES')).toBe(20);
     });
 
     it('a quantity reservation returns its quantity and its row together', async () => {
@@ -440,6 +512,89 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
       expect((await reserve(businessId, '2026-08', 5, 1, API)).meter).toBe(monthMeter('2026-08'));
       expect((await reserve(businessId, '2026-08', 5)).meter).toBe(monthMeter('2026-08'));
     });
+  });
+});
+
+describe('trials already running when the trial meter moved (migration 0176)', () => {
+  /** The migration's own SQL, run again against rows shaped as the old release left them. */
+  async function backfill(): Promise<void> {
+    const body = await readFile(join(MIGRATIONS_DIR, '0176_trial_meter_backfill.sql'), 'utf8');
+    const owner = postgres(urls.owner, { max: 1, onnotice: () => {} });
+    try {
+      await owner.unsafe(body).simple();
+    } finally {
+      await owner.end();
+    }
+  }
+  const ownerRun = async (statement: ReturnType<typeof sql>) => {
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      return [...(await ownerDb.execute<Record<string, unknown>>(statement))];
+    } finally {
+      await close();
+    }
+  };
+  const rows = (businessId: string) =>
+    ownerRun(sql`
+      SELECT period, unit, used, bonus FROM usage_counters
+       WHERE business_id = ${businessId}::uuid ORDER BY unit, period`);
+
+  it("moves a running trial's month usage onto the trial row and leaves everyone else alone", async () => {
+    const trial = await seedBusiness();
+    const paid = await seedBusiness2();
+    await setPlanOnRow(paid, 'chat');
+    await ownerRun(sql`
+      INSERT INTO usage_counters (business_id, period, unit, used, bonus) VALUES
+        (${trial}::uuid, '2026-09', 'AI_ACTIONS', 2, 1),
+        (${trial}::uuid, '2026-10', 'AI_ACTIONS', 3, 0),
+        (${trial}::uuid, '2026-10', 'API_REQUEST_UNITS', 4, 0),
+        (${paid}::uuid, '2026-10', 'AI_ACTIONS', 9, 0)`);
+
+    await backfill();
+
+    expect(await rows(trial)).toEqual([
+      { period: 'TRIAL00', unit: 'AI_ACTIONS', used: 5, bonus: 1 },
+      { period: '2026-10', unit: 'API_REQUEST_UNITS', used: 4, bonus: 0 }, // its own monthly cycle
+    ]);
+    expect(await rows(paid)).toEqual([
+      { period: '2026-10', unit: 'AI_ACTIONS', used: 9, bonus: 0 },
+    ]);
+
+    // A second run moves nothing.
+    await backfill();
+    expect((await rows(trial))[0]).toMatchObject({ period: 'TRIAL00', used: 5, bonus: 1 });
+  });
+
+  it('a first paid plan then starts fresh: nothing of the old trial month is left to carry', async () => {
+    const trial = await seedBusiness();
+    await ownerRun(sql`
+      INSERT INTO usage_counters (business_id, period, unit, used) VALUES
+        (${trial}::uuid, '2026-10', 'AI_ACTIONS', 3)`);
+    await backfill();
+    await setPlanOnRow(trial, 'chat');
+    const read = await withBusiness(db, trial, (tx) => usageRepo.usageFor(tx, trial, '2026-10'));
+    expect(read.find((r) => r.unit === 'AI_ACTIONS')?.used ?? 0).toBe(0);
+  });
+
+  it("points a running trial's recorded reservations at the trial row, so their refunds land there", async () => {
+    const trial = await seedBusiness();
+    const recorded = await withBusiness(db, trial, (tx) =>
+      events.recordEvent(tx, {
+        provider: 'meta',
+        eventType: 'messages',
+        externalId: `g109-backfill-${Math.random()}`,
+        payload: {},
+        businessId: trial,
+      }),
+    );
+    if (!recorded.isNew) throw new Error('event not recorded');
+    await ownerRun(sql`
+      UPDATE external_events SET reserved_units = ARRAY['AI_ACTIONS', 'VOICE_MINUTES:7', 'API_REQUEST_UNITS']
+       WHERE id = ${recorded.id}::uuid`);
+    await backfill();
+    const [event] = await ownerRun(sql`
+      SELECT reserved_meters AS meters FROM external_events WHERE id = ${recorded.id}::uuid`);
+    expect(event?.meters).toEqual({ AI_ACTIONS: 'TRIAL00', VOICE_MINUTES: 'TRIAL00' });
   });
 });
 

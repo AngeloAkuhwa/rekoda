@@ -236,11 +236,18 @@ export async function takeRecordedUnit(
   eventId: string,
   unit: string,
 ): Promise<{ held: string; meter: string | null } | null> {
+  /* The event row is locked first, so two releases of the same reservation (a
+   * reclaimed job beside its first worker) cannot both read it before either
+   * removes it: the second waits, then finds it gone and refunds nothing. */
   const rows = await tx.execute<{ u: string; meter: string | null }>(sql`
-    SELECT u, reserved_meters ->> ${unit}::text AS meter
-      FROM external_events, unnest(reserved_units) AS u
-     WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid
-       AND (u = ${unit} OR u LIKE ${unit} || ':%')
+    WITH locked AS (
+      SELECT id, reserved_units, reserved_meters FROM external_events
+       WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid
+       FOR UPDATE
+    )
+    SELECT u, locked.reserved_meters ->> ${unit}::text AS meter
+      FROM locked, unnest(locked.reserved_units) AS u
+     WHERE (u = ${unit} OR u LIKE ${unit} || ':%')
      LIMIT 1`);
   const found = [...rows][0];
   if (!found) return null;
