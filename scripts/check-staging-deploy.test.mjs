@@ -669,14 +669,14 @@ test('a force-removal of an image', () => {
 test('an unrelated image removal outside the keep list', () => {
   const edit = edited(
     'script',
-    'docker image prune -f >/dev/null',
-    'docker image prune -af >/dev/null',
+    'docker image rm "$image" >/dev/null 2>&1 || true\n  done',
+    'docker image rm "$image" >/dev/null 2>&1 || true\n  docker image prune -af >/dev/null\n  done',
   );
   expectProblem(problems(edit), /removes tagged images/);
 });
 
 test('the keep list ignored', () => {
-  const edit = edited('script', 'if grep -Fxq -- "$tag" <<<"$keep"; then continue; fi', ':');
+  const edit = edited('script', 'if in_list "$tag" "$keep"; then continue; fi', ':');
   expectProblem(problems(edit), /skips every release in the keep list/);
 });
 

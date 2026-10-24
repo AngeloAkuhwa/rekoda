@@ -427,10 +427,7 @@ const RETENTION_REQUIRES = [
     /^\s*docker inspect --format '\{\{\.Image\}\}' \$ids$/,
     'keeps every image ID a container was created from',
   ],
-  [
-    /^\s*if grep -Fxq -- "\$tag" <<<"\$keep"; then continue; fi$/,
-    'skips every release in the keep list',
-  ],
+  [/^\s*if in_list "\$tag" "\$keep"; then continue; fi$/, 'skips every release in the keep list'],
   [
     /\[\[ "\$image" =~ \^rekoda-\(app\|web\):\(staging-\[0-9a-f\]\{7\}\)\$ \]\] \|\| continue/,
     'removes only rekoda-app/rekoda-web staging-<sha> tags',

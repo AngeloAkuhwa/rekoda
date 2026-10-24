@@ -75,6 +75,7 @@ SKIPPED=75
 # part-way to its release, so this run must finish a deploy, never skip.
 LIVE_MARKER=false
 RELEASE=
+PREPARED_SHA=
 
 # What a run leaves behind if it is killed where no trap can run (SIGKILL, a
 # runner torn down): the phase it reached and the baseline it started from.
@@ -148,6 +149,13 @@ container_image_ids() {
   docker inspect --format '{{.Image}}' $ids
 }
 
+# Whether line $1 is in the newline-separated list $2, in pure bash: a full disk
+# is when cleanup runs, and a here-string or pipe buffer may need a temp file.
+in_list() {
+  local needle=$'\n'"$1"$'\n'
+  [[ $'\n'"$2"$'\n' == *"$needle"* ]]
+}
+
 # Frees image and build-cache space without touching a volume, a container, a
 # production tag or a third-party image. Never fails the deploy.
 #   $1  routine  (after a deploy) keeps recent build cache
@@ -169,17 +177,16 @@ prune_releases() {
   # An image any kept tag names is kept under all its tags.
   while read -r image id; do
     [[ "$image" =~ ^rekoda-(app|web):(staging-[0-9a-f]{7})$ ]] || continue
-    if grep -Fxq -- "${BASH_REMATCH[2]}" <<<"$keep"; then keep_ids+=$'\n'"$id"; fi
-  done <<<"$images"
+    if in_list "${BASH_REMATCH[2]}" "$keep"; then keep_ids+=$'\n'"$id"; fi
+  done < <(printf '%s\n' "$images")
   while read -r image id; do
     [[ "$image" =~ ^rekoda-(app|web):(staging-[0-9a-f]{7})$ ]] || continue
     tag=${BASH_REMATCH[2]}
-    if grep -Fxq -- "$tag" <<<"$keep"; then continue; fi
-    if [ -n "$id" ] && grep -Fxq -- "$id" <<<"$keep_ids"; then continue; fi
+    if in_list "$tag" "$keep"; then continue; fi
+    if [ -n "$id" ] && in_list "$id" "$keep_ids"; then continue; fi
     printf 'removing the old image %s\n' "$image"
     docker image rm "$image" >/dev/null 2>&1 || true
-  done <<<"$images"
-  docker image prune -f >/dev/null 2>&1 || true
+  done < <(printf '%s\n' "$images")
   if [ "$1" = urgent ]; then
     docker builder prune -f >/dev/null 2>&1 || true
   else
@@ -218,7 +225,9 @@ restore_prepared() {
   # work: it is kept, nothing is forced or discarded, and the run refuses.
   local head
   head=$(git rev-parse HEAD 2>/dev/null || true)
-  if [ "$head" != "$PREV_SHA" ] && [ "$head" != "$SHA" ]; then
+  # PREPARED_SHA is the commit an interrupted run prepared (set by recovery); a
+  # run restoring its own checkout prepared SHA.
+  if [ "$head" != "$PREV_SHA" ] && [ "$head" != "${PREPARED_SHA:-$SHA}" ]; then
     printf 'the checkout is at %s, neither the baseline nor the prepared commit; not restoring\n' "$head" >&2
     save_evidence
     return 0
@@ -228,8 +237,6 @@ restore_prepared() {
     save_evidence
     return 0
   fi
-  # Room first: the checkout rewrites the files it changes.
-  if disk_low; then prune_releases urgent; fi
   printf 'restoring the checkout to %s and REKODA_RELEASE to %s\n' "$PREV_SHA" "$PREV_RELEASE" >&2
   if git -c advice.detachedHead=false checkout -q "$PREV_SHA" &&
     verify_checkout "$PREV_SHA" &&
@@ -312,7 +319,7 @@ PREV_RELEASE=$(sed -n 's/^REKODA_RELEASE=//p' .env)
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   empty=$(git diff --name-only | while IFS= read -r f; do
     if [ -f "$f" ] && [ ! -s "$f" ] && [ "$(git cat-file -s "HEAD:$f" 2>/dev/null || echo 0)" -gt 0 ]; then printf '%s ' "$f"; fi
-  done | head -c 400)
+  done | head -c 400) || true
   [ -z "$empty" ] ||
     printf 'tracked files are empty here but not in the commit (what a full disk leaves): %s\n' "$empty" >&2
   fail 'the checkout has tracked local modifications; resolve them by hand first'
@@ -372,6 +379,7 @@ recover_interrupted() {
   printf 'a deploy of %s was interrupted before anything live changed; restoring its baseline %s at %s\n' "$s_sha" "$s_prev_rel" "$s_prev_sha"
   PREV_SHA=$s_prev_sha
   PREV_RELEASE=$s_prev_rel
+  PREPARED_SHA=$s_sha
   restore_prepared
   [ ! -f "$STATE" ] || fail 'the interrupted deploy could not be restored; reconcile by hand'
 }

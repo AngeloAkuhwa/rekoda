@@ -326,13 +326,15 @@ stopped a checkout part-way and left tracked files empty.
   superseded staging images once (below), then refuses, printing `df` and
   `docker system df`. The floor is a minimum, not a promise that a build fits.
 - **What cleanup may remove:** `rekoda-app:staging-<sha>` and
-  `rekoda-web:staging-<sha>` tags, dangling images, and build cache. It keeps
+  `rekoda-web:staging-<sha>` tags and build cache (never plain dangling images, which may be a retagged rollback). It keeps
   the release `.env` names, the run's baseline and target, **both releases of an
   unfinished `.git/rekoda-deploy-staging.state` marker**, every image any
   container (running or stopped) uses, by tag and by image ID, and any tag that
   shares an image ID with a kept one. If the marker, the container list or the
   image list cannot be read, nothing is removed and the run says so. A failing
-  removal never fails the deploy. After a successful deploy (health and release
+  removal never fails the deploy. The failure path of a run (a restore after a
+  failed build) removes nothing: cleanup runs before a deploy, once health is
+  proven and only because the disk is short, or after a verified deploy. After a successful deploy (health and release
   verified, marker cleared) only the running release and the one it replaced
   remain, so rollback stays a no-build change. Production tags (`v*`),
   `postgres`, `caddy`, volumes and containers are never touched; the script has

@@ -520,19 +520,52 @@ test('a prepared marker whose files were edited by hand is not restored over the
   assert.equal(h.read.marker(), true);
 });
 
-test('a build that runs out of space restores the baseline and frees room first', () => {
+test('a build that runs out of space restores the baseline and removes nothing in the failure path', () => {
   const h = host();
   h.images(app(h.prev), ...OLD);
   writeFileSync(join(h.fake, 'fail-build'), '');
-  writeFileSync(join(h.fake, 'free-kb-after-prune'), '20000000');
   const r = h.run(h.next);
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /STAGING DEPLOY FAILED before anything live changed/);
   assert.equal(h.read.head(), h.prev);
   assert.equal(h.read.release(), `staging-${h.prev.slice(0, 7)}`);
   assert.equal(h.read.marker(), false);
-  assert.ok(h.removed().includes('rekoda-app:staging-aaaaaaa'), 'room is made for the restore');
-  assert.ok(!h.removed().includes(app(h.prev)));
+  assert.deepEqual(h.removed(), [], 'cleanup waits for a verified deploy');
+});
+
+test('a run killed while prepared is restored even when the next run deploys a different commit', () => {
+  const h = host();
+  h.killedWhilePrepared();
+  // Once `up` runs, /health must name the commit this run deploys.
+  writeFileSync(
+    join(h.fake, 'next-health.json'),
+    JSON.stringify({
+      status: 'ok',
+      database: 'up',
+      release: `staging-${h.third.slice(0, 7)}`,
+      commit: h.third.slice(0, 7),
+      migrations: 1,
+    }),
+  );
+  const r = h.run(h.third);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stdout, /was interrupted before anything live changed/);
+  assert.equal(h.read.head(), h.third);
+  assert.equal(h.read.marker(), false);
+});
+
+test('many emptied files still produce the full-disk diagnostic and a refusal', () => {
+  const h = host();
+  for (let i = 0; i < 40; i++) {
+    const f = join(h.dir, `a-long-tracked-file-name-number-${i}.txt`);
+    writeFileSync(f, 'x\n');
+    sh(h.dir, `git add -A && git -c user.name=t -c user.email=t@t commit -q -m f${i}`);
+    writeFileSync(f, '');
+  }
+  const r = h.run(h.next);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /empty here but not in the commit/);
+  assert.match(r.stderr, /tracked local modifications/);
 });
 
 test('a cancelled build on a full disk still restores the baseline', async () => {
