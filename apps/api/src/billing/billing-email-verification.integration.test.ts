@@ -587,7 +587,7 @@ describe('a live payment', () => {
     expect(provider.initialized).toHaveLength(0);
   });
 
-  it('replaces a session with no recorded revision on a live key even when the address is unchanged', async () => {
+  it('replaces a session from before revisions were recorded on a live key once the mailbox is proven', async () => {
     const businessId = await seedBusiness();
     const reference = await pendingCharge(businessId);
     await checkouts().checkout(businessId, reference, EMAIL);
@@ -609,6 +609,12 @@ describe('a live payment', () => {
     );
     expect(revisions).toHaveLength(1);
     expect(revisions[0]!.email_revision).not.toBeNull();
+    const modes = await sql1<{ provider_live: boolean | null }>(
+      businessId,
+      sql`SELECT provider_live FROM subscription_charge_attempts
+          WHERE business_id = ${businessId}::uuid AND status = 'active'`,
+    );
+    expect(modes[0]!.provider_live).toBe(true);
 
     /* And it is not replaced again: the new session carries its revision. */
     expect((await checkouts(liveConfig()).checkout(businessId, reference, undefined)).state).toBe(
@@ -635,6 +641,22 @@ describe('a live payment', () => {
     expect((await checkouts(liveConfig()).checkout(businessId, reference, undefined)).state).toBe(
       'ready',
     );
+    expect(provider.initialized).toHaveLength(before + 1);
+  });
+
+  it('does not present a live-key link under a test key either', async () => {
+    const businessId = await seedBusiness();
+    const reference = await pendingCharge(businessId);
+    await emails().confirm(businessId, await mailed(businessId, EMAIL));
+    const first = await checkouts(liveConfig()).checkout(businessId, reference, undefined);
+    expect(first.state).toBe('ready');
+    const before = provider.initialized.length;
+
+    const answer = await checkouts().checkout(businessId, reference, undefined);
+    expect(answer.state).toBe('ready');
+    if (first.state === 'ready' && answer.state === 'ready') {
+      expect(answer.checkoutUrl).not.toBe(first.checkoutUrl);
+    }
     expect(provider.initialized).toHaveLength(before + 1);
   });
 
