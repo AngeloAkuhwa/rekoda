@@ -926,6 +926,20 @@ export async function chargeByReference(
   return row ? shape(row) : null;
 }
 
+/** One charge by id, under the tenant pin. */
+export async function chargeById(
+  tx: TenantDb,
+  businessId: string,
+  chargeId: string,
+): Promise<ChargeRow | null> {
+  const rows = await tx.execute<RawCharge>(sql`
+    SELECT * FROM subscription_charges
+    WHERE business_id = ${businessId}::uuid AND id = ${chargeId}::uuid
+  `);
+  const row = [...rows][0];
+  return row ? shape(row) : null;
+}
+
 /**
  * The merchant's sealed billing email (G-102, OWN-39), or null when none has been
  * given. Returned sealed: opening it is the caller's, at the one boundary that
@@ -969,38 +983,250 @@ export async function setBillingEmailSealed(
   `);
 }
 
+/* ── checkout attempts (migration 0173, G-102, OWN-50) ──────────────────────── */
+
+export type AttemptStatus =
+  'initializing' | 'active' | 'ambiguous' | 'superseded' | 'paid' | 'duplicate_paid' | 'failed';
+
+/** The statuses that mean "this is the session the merchant is being sent to". */
+export const LIVE_ATTEMPT_STATUSES: readonly AttemptStatus[] = [
+  'initializing',
+  'active',
+  'ambiguous',
+];
+
+export interface AttemptRow extends Record<string, unknown> {
+  id: string;
+  businessId: string;
+  chargeId: string;
+  attemptNo: number;
+  providerReference: string;
+  status: AttemptStatus;
+  checkoutUrl: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface RawAttempt extends Record<string, unknown> {
+  id: string;
+  business_id: string;
+  charge_id: string;
+  attempt_no: number;
+  provider_reference: string;
+  status: string;
+  checkout_url: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+const shapeAttempt = (row: RawAttempt): AttemptRow => ({
+  id: row.id,
+  businessId: row.business_id,
+  chargeId: row.charge_id,
+  attemptNo: Number(row.attempt_no),
+  providerReference: row.provider_reference,
+  status: row.status as AttemptStatus,
+  checkoutUrl: row.checkout_url,
+  createdAt: new Date(row.created_at),
+  updatedAt: new Date(row.updated_at),
+});
+
 /**
- * Remember the checkout a pending charge was initialised with (G-102).
+ * Take the charge's row lock and return the charge.
  *
- * Paystack refuses a second initialisation of one reference, so the first link
- * is the only link: a second request, or a second tab, hands back the stored one.
- * `checkout_url IS NULL` makes the first writer win; the loser is returned the
- * winner's URL so both tabs show the same checkout. Null when the charge is no
- * longer payable (paid, failed, or retired as stale or abandoned meanwhile).
+ * Every decision about a charge's checkout attempts is made holding this lock,
+ * so two requests for one charge (two tabs, a retry racing a replacement) are
+ * decided one after the other and the second sees what the first did.
  */
-export async function recordCheckout(
+export async function lockChargeByReference(
   tx: TenantDb,
   businessId: string,
   reference: string,
+): Promise<ChargeRow | null> {
+  const rows = await tx.execute<RawCharge>(sql`
+    SELECT * FROM subscription_charges
+    WHERE business_id = ${businessId}::uuid AND reference = ${reference}
+    FOR UPDATE
+  `);
+  const row = [...rows][0];
+  return row ? shape(row) : null;
+}
+
+/** The charge's live attempt, if it has one. */
+export async function liveAttempt(
+  tx: TenantDb,
+  businessId: string,
+  chargeId: string,
+): Promise<AttemptRow | null> {
+  const rows = await tx.execute<RawAttempt>(sql`
+    SELECT * FROM subscription_charge_attempts
+    WHERE business_id = ${businessId}::uuid AND charge_id = ${chargeId}::uuid
+      AND status IN ('initializing', 'active', 'ambiguous')
+  `);
+  const row = [...rows][0];
+  return row ? shapeAttempt(row) : null;
+}
+
+/** An attempt by the reference the provider knows it by, under the tenant pin. */
+export async function attemptByProviderReference(
+  tx: TenantDb,
+  businessId: string,
+  providerReference: string,
+): Promise<AttemptRow | null> {
+  const rows = await tx.execute<RawAttempt>(sql`
+    SELECT * FROM subscription_charge_attempts
+    WHERE business_id = ${businessId}::uuid AND provider_reference = ${providerReference}
+  `);
+  const row = [...rows][0];
+  return row ? shapeAttempt(row) : null;
+}
+
+/** The attempt that settled a charge, if one did. */
+export async function paidAttempt(
+  tx: TenantDb,
+  businessId: string,
+  chargeId: string,
+): Promise<AttemptRow | null> {
+  const rows = await tx.execute<RawAttempt>(sql`
+    SELECT * FROM subscription_charge_attempts
+    WHERE business_id = ${businessId}::uuid AND charge_id = ${chargeId}::uuid
+      AND status = 'paid'
+  `);
+  const row = [...rows][0];
+  return row ? shapeAttempt(row) : null;
+}
+
+/** The highest attempt number the charge has used (0 when it has none). */
+export async function latestAttemptNo(
+  tx: TenantDb,
+  businessId: string,
+  chargeId: string,
+): Promise<number> {
+  const rows = await tx.execute<{ n: number | null }>(sql`
+    SELECT max(attempt_no) AS n FROM subscription_charge_attempts
+    WHERE business_id = ${businessId}::uuid AND charge_id = ${chargeId}::uuid
+  `);
+  return Number([...rows][0]?.n ?? 0);
+}
+
+/**
+ * Open a charge's next attempt, status `initializing`. Null when the charge
+ * already has a live attempt or that number or reference is already taken:
+ * the partial unique indexes are what make two concurrent openers safe, and the
+ * caller treats null as "someone else got there first".
+ */
+export async function openAttempt(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    chargeId: string;
+    attemptNo: number;
+    providerReference: string;
+  },
+): Promise<AttemptRow | null> {
+  const rows = await tx.execute<RawAttempt>(sql`
+    INSERT INTO subscription_charge_attempts
+      (business_id, charge_id, attempt_no, provider_reference, status)
+    VALUES (${input.businessId}::uuid, ${input.chargeId}::uuid, ${input.attemptNo},
+            ${input.providerReference}, 'initializing')
+    ON CONFLICT DO NOTHING
+    RETURNING *
+  `);
+  const row = [...rows][0];
+  return row ? shapeAttempt(row) : null;
+}
+
+/**
+ * Move an attempt to a new status, only from one of the statuses it is
+ * expected to be in. Null when it was not (someone else moved it first): the
+ * `from` list is the compare-and-set that keeps a slow request from
+ * overwriting a decision made while it waited.
+ */
+export async function moveAttempt(
+  tx: TenantDb,
+  businessId: string,
+  attemptId: string,
+  from: readonly AttemptStatus[],
+  to: AttemptStatus,
+): Promise<AttemptRow | null> {
+  const rows = await tx.execute<RawAttempt>(sql`
+    UPDATE subscription_charge_attempts
+    SET status = ${to}, updated_at = now()
+    WHERE business_id = ${businessId}::uuid AND id = ${attemptId}::uuid
+      AND status IN (${sql.join(
+        from.map((f) => sql`${f}`),
+        sql`, `,
+      )})
+    RETURNING *
+  `);
+  const row = [...rows][0];
+  return row ? shapeAttempt(row) : null;
+}
+
+/**
+ * Every live attempt of a charge, other than the one named, retired as
+ * `superseded`. Called when a charge is settled: the sessions the merchant did
+ * not pay with must stop being presented, and a later payment on one is a
+ * duplicate to refund rather than a second entitlement.
+ */
+export async function supersedeOtherLiveAttempts(
+  tx: TenantDb,
+  businessId: string,
+  chargeId: string,
+  keepAttemptId: string | null,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE subscription_charge_attempts
+    SET status = 'superseded', updated_at = now()
+    WHERE business_id = ${businessId}::uuid AND charge_id = ${chargeId}::uuid
+      AND status IN ('initializing', 'active', 'ambiguous')
+      AND (${keepAttemptId}::uuid IS NULL OR id <> ${keepAttemptId}::uuid)
+  `);
+}
+
+/**
+ * Remember the checkout an attempt was started with (G-102).
+ *
+ * Only an attempt still waiting for its link (`initializing`, or `ambiguous`
+ * after a failed call that Paystack in fact honoured) can take it, and only
+ * while the charge is still payable: not paid, failed or retired, and a plan
+ * charge not made stale by a newer subscription decision (the same staleness
+ * settlement applies, `decidedSince`). Null otherwise, and the caller hands out
+ * no link. The link is mirrored onto the charge for the billing history.
+ */
+export async function recordAttemptCheckout(
+  tx: TenantDb,
+  businessId: string,
+  attemptId: string,
   checkoutUrl: string,
   when: Date,
 ): Promise<string | null> {
-  /* The same staleness settlement applies (`decidedSince`): a plan charge
-   * opened before a newer subscription decision would be paid but never applied. */
   const rows = await tx.execute<{ checkout_url: string }>(sql`
-    UPDATE subscription_charges c
-    SET checkout_url = COALESCE(c.checkout_url, ${checkoutUrl}),
-        checkout_started_at = COALESCE(c.checkout_started_at, ${when.toISOString()}::timestamptz),
-        updated_at = now()
-    WHERE c.business_id = ${businessId}::uuid AND c.reference = ${reference}
+    UPDATE subscription_charge_attempts a
+    SET status = 'active', checkout_url = ${checkoutUrl}, updated_at = now()
+    FROM subscription_charges c
+    WHERE a.business_id = ${businessId}::uuid AND a.id = ${attemptId}::uuid
+      AND a.status IN ('initializing', 'ambiguous')
+      AND c.business_id = a.business_id AND c.id = a.charge_id
       AND c.status = 'pending' AND c.superseded_at IS NULL
       AND (c.plan IS NULL OR NOT EXISTS (
         SELECT 1 FROM businesses b
         WHERE b.id = c.business_id AND b.plan_decided_at IS NOT NULL
           AND b.plan_decided_at > c.created_at))
-    RETURNING c.checkout_url
+    RETURNING a.checkout_url
   `);
-  return [...rows][0]?.checkout_url ?? null;
+  const url = [...rows][0]?.checkout_url ?? null;
+  if (url) {
+    await tx.execute(sql`
+      UPDATE subscription_charges c
+      SET checkout_url = ${url},
+          checkout_started_at = COALESCE(c.checkout_started_at, ${when.toISOString()}::timestamptz),
+          updated_at = now()
+      FROM subscription_charge_attempts a
+      WHERE a.id = ${attemptId}::uuid AND c.id = a.charge_id AND c.business_id = ${businessId}::uuid
+    `);
+  }
+  return url;
 }
 
 /**

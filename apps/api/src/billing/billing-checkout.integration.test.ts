@@ -295,22 +295,13 @@ describe('what may be paid', () => {
     });
   });
 
-  it('does not hand back a sibling request’s link for a charge overtaken meanwhile', async () => {
+  it('hands out no link for a charge overtaken while its Paystack call failed', async () => {
     const businessId = await seedBusiness();
     const { reference } = await pendingCharge(businessId);
-    /* This request passes `prepare`. While its Paystack call is in flight, a sibling
-     * request stores a link, an operator decides the subscription (no stamp on the
-     * charge), and then this call fails. Recovery must not return the sibling's link. */
+    /* This request passes `prepare`. While its Paystack call is in flight an operator
+     * decides the subscription (no stamp on the charge), and then the call fails.
+     * Neither this request nor the recovery that follows may hand out a link. */
     provider.initializeTransaction = async () => {
-      await withBusiness(appDb, businessId, (tx) =>
-        subscriptionsRepo.recordCheckout(
-          tx,
-          businessId,
-          reference,
-          'https://checkout.stub/x',
-          new Date(),
-        ),
-      );
       await billingRepo.setPlan(appDb, {
         businessId,
         plan: 'integrate',
@@ -323,6 +314,10 @@ describe('what may be paid', () => {
     await expect(
       checkouts().checkout(businessId, reference, 'ada@shop.example.ng'),
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+    const recovery = await checkouts().checkout(businessId, reference, undefined);
+    expect(recovery).toEqual({ state: 'unavailable', reason: 'superseded' });
+    expect(provider.initialized).toEqual([]);
   });
 
   it('refuses a plan charge a newer subscription decision has overtaken, stamped or not', async () => {
@@ -363,7 +358,7 @@ describe('what may be paid', () => {
 
     const answer = await checkouts().checkout(businessId, reference, 'ada@shop.example.ng');
 
-    expect(answer).toEqual({ state: 'unavailable', reason: 'not_pending' });
+    expect(answer).toEqual({ state: 'unavailable', reason: 'superseded' });
     const stored = await withBusiness(appDb, businessId, (tx) =>
       subscriptionsRepo.chargeByReference(tx, businessId, reference),
     );
@@ -393,7 +388,9 @@ describe('what may be paid', () => {
 
     /* The cycle runs out with no newer subscription decision. */
     const after = new Date(Date.now() + 21 * 86_400_000);
-    const late = await checkouts().checkout(businessId, upgrade.reference, undefined, after);
+    const late = await checkouts().checkout(businessId, upgrade.reference, undefined, {
+      now: after,
+    });
 
     expect(late).toEqual({ state: 'unavailable', reason: 'cycle_ended' });
     expect(provider.initialized).toHaveLength(1);

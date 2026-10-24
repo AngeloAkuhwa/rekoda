@@ -146,13 +146,14 @@ export class BillingController {
     const parsed = billingCheckoutRequest.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(
-        'reference must be a non-empty string of at most 64 characters; billingEmail, if given, must be a string of at most 320 characters',
+        'reference must be a non-empty string of at most 64 characters; billingEmail, if given, must be a string of at most 320 characters; restart, if given, must be true or false',
       );
     }
     return this.checkouts.checkout(
       request.auth!.businessId,
       parsed.data.reference,
       parsed.data.billingEmail,
+      { restart: parsed.data.restart === true },
     );
   }
 }
