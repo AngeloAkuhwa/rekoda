@@ -25,9 +25,7 @@ const testKey = (label: string): string =>
 
 let urls: Urls;
 let appDb: Db;
-let ownerDb: Db;
 let closeApp: () => Promise<void>;
-let closeOwner: () => Promise<void>;
 let config: ApiConfig;
 let provider: StubPaymentProvider;
 
@@ -35,7 +33,6 @@ beforeAll(async () => {
   urls = requireUrls();
   await migrate(urls);
   ({ db: appDb, close: closeApp } = createDb(urls.app, { max: 4 }));
-  ({ db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 2 }));
   process.env['DATABASE_URL'] = urls.app;
   process.env['OTP_PEPPER'] = testKey('pepper');
   process.env['REKODA_API_SECRET'] = testKey('secret');
@@ -46,7 +43,6 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await closeApp?.();
-  await closeOwner?.();
 });
 
 beforeEach(async () => {
@@ -78,13 +74,14 @@ async function pendingCharge(businessId: string): Promise<{ reference: string; a
   return { reference: answer.reference, amountK: answer.amountK };
 }
 
-const rowOf = async (businessId: string) => {
-  const rows = await ownerDb.execute<{ sealed: string | null; set_at: string | null }>(sql`
-    SELECT billing_email_sealed AS sealed, billing_email_set_at AS set_at
-    FROM businesses WHERE id = ${businessId}::uuid
-  `);
-  return [...rows][0]!;
-};
+const rowOf = (businessId: string) =>
+  withBusiness(appDb, businessId, async (tx) => {
+    const rows = await tx.execute<{ sealed: string | null; set_at: string | null }>(sql`
+      SELECT billing_email_sealed AS sealed, billing_email_set_at AS set_at
+      FROM businesses WHERE id = ${businessId}::uuid
+    `);
+    return [...rows][0]!;
+  });
 
 describe('the billing email', () => {
   it('is asked for when none is on file, and nothing reaches the provider', async () => {
@@ -109,16 +106,22 @@ describe('the billing email', () => {
     expect(sealed).not.toBeNull();
     expect(sealed).not.toContain('ada');
     expect(set_at).not.toBeNull();
-    const audit = await ownerDb.execute<{ action: string; new_value: unknown }>(sql`
-      SELECT action, new_value FROM audit_events WHERE action = 'billing_email_set'
-    `);
-    expect([...audit]).toHaveLength(1);
-    expect(JSON.stringify([...audit])).not.toContain('shop.example.ng');
+    const audit = await withBusiness(appDb, businessId, async (tx) => {
+      const rows = await tx.execute<{ action: string; new_value: unknown }>(sql`
+        SELECT action, new_value FROM audit_events
+        WHERE business_id = ${businessId}::uuid AND action = 'billing_email_set'
+      `);
+      return [...rows];
+    });
+    expect(audit).toHaveLength(1);
+    expect(JSON.stringify(audit)).not.toContain('shop.example.ng');
 
     /* A blob copied onto another business is refused, not read as theirs. */
-    await ownerDb.execute(sql`
-      UPDATE businesses SET billing_email_sealed = ${sealed} WHERE id = ${other}::uuid
-    `);
+    await withBusiness(appDb, other, (tx) =>
+      tx.execute(sql`
+        UPDATE businesses SET billing_email_sealed = ${sealed} WHERE id = ${other}::uuid
+      `),
+    );
     const stolen = await pendingCharge(other);
     await expect(checkouts().checkout(other, stolen.reference, undefined)).rejects.toThrow();
     expect(provider.initialized).toHaveLength(1);
