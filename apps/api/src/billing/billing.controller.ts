@@ -18,10 +18,12 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  billingCheckoutRequest,
   billingIntervalRequest,
   billingPackPurchaseRequest,
   billingPlanChangeRequest,
   type BillingCancelResponse,
+  type BillingCheckoutResponse,
   type BillingIntervalResponse,
   type BillingOverviewResponse,
   type BillingPlanChangeResponse,
@@ -29,12 +31,16 @@ import {
 } from '@rekoda/contracts';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
+import { BillingCheckoutService } from './billing-checkout.service.js';
 import { BillingService } from './billing.service.js';
 
 @Controller('v1/billing')
 @UseGuards(SessionGuard, RolesGuard)
 export class BillingController {
-  constructor(@Inject(BillingService) private readonly billing: BillingService) {}
+  constructor(
+    @Inject(BillingService) private readonly billing: BillingService,
+    @Inject(BillingCheckoutService) private readonly checkouts: BillingCheckoutService,
+  ) {}
 
   @Get()
   async overview(@Req() request: AuthedRequest): Promise<BillingOverviewResponse> {
@@ -122,5 +128,31 @@ export class BillingController {
     const parsed = billingPackPurchaseRequest.safeParse(body);
     if (!parsed.success) throw new BadRequestException('packId is required');
     return this.billing.buyPack(request.auth!.businessId, parsed.data.packId);
+  }
+
+  /**
+   * Pay a pending charge (G-102, OWN-39): hands back the Paystack checkout for
+   * it, asking for a billing email the first time. Owner-only, like every
+   * decision that spends the owner's money. The charge must belong to the
+   * session's business; a reference from another tenant reads as unknown.
+   */
+  @Post('checkout')
+  @HttpCode(200)
+  @Roles('owner')
+  async checkout(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<BillingCheckoutResponse> {
+    const parsed = billingCheckoutRequest.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(
+        'reference must be a non-empty string of at most 64 characters; billingEmail, if given, must be a string of at most 320 characters',
+      );
+    }
+    return this.checkouts.checkout(
+      request.auth!.businessId,
+      parsed.data.reference,
+      parsed.data.billingEmail,
+    );
   }
 }

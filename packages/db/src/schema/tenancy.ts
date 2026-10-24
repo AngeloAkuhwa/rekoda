@@ -83,6 +83,10 @@ export const businesses = pgTable(
     billingInterval: text('billing_interval').notNull().default('monthly'),
     /** A switch of interval waiting for the next renewal; null when none (migration 0171). */
     pendingBillingInterval: text('pending_billing_interval'),
+    /** The merchant's billing email, sealed with the vault key (migration 0172, G-102, OWN-39); null until given. */
+    billingEmailSealed: text('billing_email_sealed'),
+    /** When the billing email was last set (migration 0172). */
+    billingEmailSetAt: timestamp('billing_email_set_at', { withTimezone: true }),
     /**
      * When the subscription was last DECIDED (migration 0162, G-104): an
      * operator move, a settled plan charge, a scheduled plan change. A plan

@@ -480,6 +480,8 @@ export interface ChargeRow extends Record<string, unknown> {
   refundedAmountK: number;
   /** The interval this charge buys (G-110). */
   billingInterval: BillingInterval;
+  /** The Paystack checkout it was initialised with (G-102); null until the merchant starts paying. */
+  checkoutUrl: string | null;
 }
 
 interface RawCharge extends Record<string, unknown> {
@@ -499,6 +501,7 @@ interface RawCharge extends Record<string, unknown> {
   paid_amount_k: string | number | null;
   refunded_amount_k: string | number | null;
   billing_interval: string | null;
+  checkout_url: string | null;
 }
 
 const shape = (row: RawCharge): ChargeRow => ({
@@ -518,6 +521,7 @@ const shape = (row: RawCharge): ChargeRow => ({
   paidAmountK: row.paid_amount_k === null ? null : Number(row.paid_amount_k),
   refundedAmountK: Number(row.refunded_amount_k ?? 0),
   billingInterval: intervalOf(row.billing_interval),
+  checkoutUrl: row.checkout_url,
 });
 
 /**
@@ -920,6 +924,83 @@ export async function chargeByReference(
   `);
   const row = [...rows][0];
   return row ? shape(row) : null;
+}
+
+/**
+ * The merchant's sealed billing email (G-102, OWN-39), or null when none has been
+ * given. Returned sealed: opening it is the caller's, at the one boundary that
+ * needs the address.
+ */
+export async function billingEmailSealed(tx: TenantDb, businessId: string): Promise<string | null> {
+  const rows = await tx.execute<{ billing_email_sealed: string | null }>(sql`
+    SELECT billing_email_sealed FROM businesses WHERE id = ${businessId}::uuid
+  `);
+  return [...rows][0]?.billing_email_sealed ?? null;
+}
+
+/**
+ * Keep a sealed billing email (G-102). The caller has validated and sealed it.
+ *
+ * The audit row records THAT it was set and whether it replaced one, never the
+ * address: the trail is read by more people than the vault key.
+ */
+export async function setBillingEmailSealed(
+  tx: TenantDb,
+  businessId: string,
+  sealed: string,
+  when: Date,
+): Promise<void> {
+  const rows = await tx.execute<{ replaced: boolean }>(sql`
+    UPDATE businesses AS b
+    SET billing_email_sealed = ${sealed},
+        billing_email_set_at = ${when.toISOString()}::timestamptz,
+        updated_at = now()
+    FROM (SELECT billing_email_sealed IS NOT NULL AS replaced FROM businesses
+          WHERE id = ${businessId}::uuid) AS previous
+    WHERE b.id = ${businessId}::uuid
+    RETURNING previous.replaced
+  `);
+  const replaced = [...rows][0]?.replaced ?? false;
+  await tx.execute(sql`
+    INSERT INTO audit_events
+      (business_id, actor, entity, entity_id, action, new_value, source_type)
+    VALUES (${businessId}::uuid, 'owner', 'business', ${businessId}, 'billing_email_set',
+            ${JSON.stringify({ replaced })}::jsonb, 'dashboard')
+  `);
+}
+
+/**
+ * Remember the checkout a pending charge was initialised with (G-102).
+ *
+ * Paystack refuses a second initialisation of one reference, so the first link
+ * is the only link: a second request, or a second tab, hands back the stored one.
+ * `checkout_url IS NULL` makes the first writer win; the loser is returned the
+ * winner's URL so both tabs show the same checkout. Null when the charge is no
+ * longer payable (paid, failed, or retired as stale or abandoned meanwhile).
+ */
+export async function recordCheckout(
+  tx: TenantDb,
+  businessId: string,
+  reference: string,
+  checkoutUrl: string,
+  when: Date,
+): Promise<string | null> {
+  /* The same staleness settlement applies (`decidedSince`): a plan charge
+   * opened before a newer subscription decision would be paid but never applied. */
+  const rows = await tx.execute<{ checkout_url: string }>(sql`
+    UPDATE subscription_charges c
+    SET checkout_url = COALESCE(c.checkout_url, ${checkoutUrl}),
+        checkout_started_at = COALESCE(c.checkout_started_at, ${when.toISOString()}::timestamptz),
+        updated_at = now()
+    WHERE c.business_id = ${businessId}::uuid AND c.reference = ${reference}
+      AND c.status = 'pending' AND c.superseded_at IS NULL
+      AND (c.plan IS NULL OR NOT EXISTS (
+        SELECT 1 FROM businesses b
+        WHERE b.id = c.business_id AND b.plan_decided_at IS NOT NULL
+          AND b.plan_decided_at > c.created_at))
+    RETURNING c.checkout_url
+  `);
+  return [...rows][0]?.checkout_url ?? null;
 }
 
 /**
