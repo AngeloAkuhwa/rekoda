@@ -754,3 +754,35 @@ test('the image removal placed after the loop that holds the retention guards', 
   assert.notEqual(moved, without);
   expectProblem(problems({ script: moved }), /removes images outside prune_releases/);
 });
+
+test('the memory check removed, moved after the prepared phase, or not repeated before the web build', () => {
+  const first = "require_memory 'before any build'\n";
+  expectProblem(
+    problems(edited('script', first, '')),
+    /no longer refuses a host short of memory before any build/,
+  );
+  const without = edited('script', first, '').script;
+  const anchor = "step 'check out the commit and name the release'\nPHASE=prepared\n";
+  assert.ok(without.includes(anchor), 'fixture text not found in script: the prepared phase');
+  expectProblem(
+    problems({ script: without.replace(anchor, () => `${anchor}${first}`) }),
+    /checks memory after the prepared phase begins/,
+  );
+  expectProblem(
+    problems(edited('script', "require_memory 'before the web build'\n", '')),
+    /no longer checks memory again right before the web build/,
+  );
+});
+
+test('the web image built before the api image', () => {
+  const api = 'dc build --build-arg REKODA_COMMIT="$SHORT" api\n';
+  const web = 'dc build --build-arg REKODA_COMMIT="$SHORT" web\n';
+  const swapped = REAL.script
+    .replace(api, () => '@@A@@')
+    .replace(web, () => api)
+    .replace('@@A@@', () => web);
+  expectProblem(
+    problems({ script: swapped }),
+    /must build the api image, check memory, then build the web image/,
+  );
+});

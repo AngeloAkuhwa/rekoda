@@ -429,7 +429,7 @@ When a host has just recovered from an overload, in this order, one step at a
 time and reading each answer before the next:
 
 1. Confirm what is running and that nothing is building:
-   `docker ps` (no `buildx`/`buildkit` build container), `pgrep -a docker`,
+   `docker ps`, `pgrep -af 'docker (compose|build|buildx)'` (a build runs inside the Docker daemon, so there is no build container to see; look for a build command still running),
    `grep -E 'MemAvailable|SwapFree' /proc/meminfo` (at least 1048576 kB
    available), `df -Pk /opt/rekoda /var/lib/docker` (at least 8 GiB each).
 2. Read the state without changing it: `git -C /opt/rekoda rev-parse HEAD`,

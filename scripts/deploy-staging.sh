@@ -352,7 +352,7 @@ SHA=${1:-}
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || fail 'the commit must be a full 40-character lowercase SHA'
 
 step 'preflight'
-for tool in git docker curl jq flock timeout sed; do
+for tool in git docker curl jq flock timeout sed awk; do
   command -v "$tool" >/dev/null || fail "$tool is not installed on this host"
 done
 docker compose version >/dev/null || fail 'the docker compose plugin is not installed'

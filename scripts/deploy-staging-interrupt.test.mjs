@@ -750,6 +750,9 @@ test('a host short of memory is refused before anything changes', () => {
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /only 500000 KiB of memory available before any build/);
   assert.match(r.stderr, /Nothing live was changed/);
+  /* Refused BEFORE the checkout and the prepared marker, not restored after them. */
+  assert.doesNotMatch(r.stdout, /== check out the commit/);
+  assert.doesNotMatch(r.stderr, /restor/i);
   assert.equal(h.read.head(), h.prev);
   assert.equal(h.read.release(), `staging-${h.prev.slice(0, 7)}`);
   assert.equal(h.read.marker(), false);
@@ -767,9 +770,11 @@ test('a host that cannot say how much memory it has is refused, not trusted', ()
 
 test('a host may raise the memory floor, never lower it', () => {
   const h = host();
-  writeFileSync(join(h.fake, 'meminfo'), 'MemAvailable: 1500000 kB\n');
+  /* Below the default floor: lowering it must not let this deploy through. */
+  writeFileSync(join(h.fake, 'meminfo'), 'MemAvailable: 500000 kB\n');
   const lowered = h.runWith({ REKODA_DEPLOY_MIN_MEM_KB: '1' }, h.next);
-  assert.equal(lowered.status, 0, lowered.stderr + lowered.stdout);
+  assert.notEqual(lowered.status, 0, 'a lower floor than the default is ignored');
+  assert.match(lowered.stderr, /needs at least 1048576/);
   const h2 = host();
   writeFileSync(join(h2.fake, 'meminfo'), 'MemAvailable: 1500000 kB\n');
   const raised = h2.runWith({ REKODA_DEPLOY_MIN_MEM_KB: '2000000' }, h2.next);
