@@ -110,12 +110,24 @@ export async function refundUnit(
   unit: UsageUnit,
   n = 1,
 ): Promise<void> {
-  period = await meterPeriod(tx, businessId, period);
-  await tx.execute(sql`
-    UPDATE usage_counters
-    SET used = GREATEST(used - ${n}, 0), updated_at = now()
-    WHERE business_id = ${businessId}::uuid AND period = ${period} AND unit = ${unit}
-  `);
+  const wanted = await meterPeriod(tx, businessId, period);
+  /**
+   * The unit may have been spent under the other plan: a business can move
+   * between trial and paid between the consume and its refund (an upgrade, or
+   * a plan that lapses mid-job). Give it back from the row the plan names now
+   * if that row holds something to give back, otherwise from the other one,
+   * so a refund never vanishes into an empty row.
+   */
+  const rows = [wanted, wanted === TRIAL_PERIOD ? period : TRIAL_PERIOD];
+  for (const row of rows) {
+    const done = await tx.execute(sql`
+      UPDATE usage_counters
+      SET used = GREATEST(used - ${n}, 0), updated_at = now()
+      WHERE business_id = ${businessId}::uuid AND period = ${row} AND unit = ${unit} AND used > 0
+      RETURNING 1
+    `);
+    if ([...done].length > 0) return;
+  }
 }
 
 /**

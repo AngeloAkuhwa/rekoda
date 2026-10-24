@@ -167,6 +167,22 @@ describe('one budget per trial (G-109, OWN-27)', () => {
     expect(await spend(businessId, '2026-09', 1)).toBe(true);
   });
 
+  it('a refund after the plan moved off trial still gives back the trial unit', async () => {
+    const businessId = await seedBusiness();
+    expect(await spend(businessId, '2026-08', 1)).toBe(true);
+    await setPlanOnRow(businessId, 'chat'); // lapsed or upgraded between consume and refund
+    await withBusiness(db, businessId, (tx) =>
+      usageRepo.refundUnit(tx, businessId, '2026-08', 'AI_ACTIONS'),
+    );
+    const trialRow = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ used: number }>(sql`
+        SELECT used FROM usage_counters
+        WHERE business_id = ${businessId}::uuid AND period = ${usageRepo.TRIAL_PERIOD}
+          AND unit = 'AI_ACTIONS'`),
+    );
+    expect([...trialRow][0]?.used).toBe(0);
+  });
+
   it('a first paid plan starts a fresh meter: trial usage does not carry into the paid month', async () => {
     const businessId = await seedBusiness();
     expect(await spend(businessId, '2026-08', 3)).toBe(true);

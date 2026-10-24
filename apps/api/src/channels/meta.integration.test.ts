@@ -6643,7 +6643,7 @@ describe('a receipt photo', () => {
 
       await ownerDb.execute(sql`
         INSERT INTO usage_counters (business_id, period, unit, used)
-        VALUES (${business.id}::uuid, ${usagePeriod(new Date())}, 'DOCUMENTS_UNDERSTOOD', 100000)`);
+        VALUES (${business.id}::uuid, ${usageRepo.TRIAL_PERIOD}, 'DOCUMENTS_UNDERSTOOD', 100000)`);
       await post(photoPayload('2348031234592', 'wamid.P.FULL_RETRY'));
       await drain();
       await ownerDb.execute(

@@ -73,11 +73,6 @@ function get(url: string, headers: Record<string, string> = {}) {
   return app.inject({ method: 'GET', url, headers });
 }
 
-/** The same instant one month on, for the periods a backoff can reach. */
-function nextMonth(at: Date): Date {
-  return new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth() + 1, 1, 12));
-}
-
 /** A business with an owner session. */
 async function onboard(phone: string, name: string) {
   const requested = (await post('/v1/auth/otp/request', { phone })).json() as { devCode: string };
@@ -103,8 +98,12 @@ async function onboard(phone: string, name: string) {
    * a merchant whose subscription renews has capacity there too. Crediting
    * only the current period made the retry test pass on the 1st and fail on
    * the 31st, which is a property of the calendar rather than of the code
-   * under test. */
-  for (const period of [usagePeriod(now), usagePeriod(nextMonth(now))]) {
+   * under test.
+   *
+   * A trial business meters on ONE row for its whole trial (G-109), whatever
+   * month is named, so crediting two months would credit that row twice:
+   * one period is enough here and the month question cannot arise. */
+  for (const period of [usagePeriod(now)]) {
     await withBusiness(db, created.businessId, (tx) =>
       usageRepo.creditBonus(tx, created.businessId, period, 'WEBHOOK_DELIVERIES', 100),
     );
