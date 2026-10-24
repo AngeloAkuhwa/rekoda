@@ -233,6 +233,10 @@ describe('a yearly renewal nobody pays', () => {
 
   it('paying in grace restores the plan for a full year, once', async () => {
     const { businessId, auth, charge } = await unpaidYear();
+    /* Read before paying: the expectation must not come from fields the payment rewrites. */
+    const before = await subOf(businessId);
+    const previousExpiry = before!.planExpiresAt!;
+    const previousAnchor = before!.renewalAnchorDay!;
     const paidAt = new Date();
     expect(await pay(businessId, charge.reference, paidAt)).toBe('applied');
     expect(await pay(businessId, charge.reference, new Date(paidAt.getTime() + 1000))).toBe(
@@ -241,8 +245,10 @@ describe('a yearly renewal nobody pays', () => {
 
     const sub = await subOf(businessId);
     expect(sub).toMatchObject({ plan: 'chat', billingInterval: 'annual', paymentFailedAt: null });
+    // The year is bought from where the last one ended, not from the day it was paid.
+    expect(sub!.cycleStartedAt?.toISOString()).toBe(previousExpiry.toISOString());
     expect(sub!.planExpiresAt?.toISOString()).toBe(
-      addInterval(sub!.cycleStartedAt!, 'annual', sub!.renewalAnchorDay!).toISOString(),
+      addInterval(previousExpiry, 'annual', previousAnchor).toISOString(),
     );
     expect((await overviewOf(auth)).status.state).toBe('active');
   });
@@ -266,8 +272,10 @@ describe('a yearly renewal nobody pays', () => {
 
     const sub = await subOf(businessId);
     expect(sub).toMatchObject({ plan: 'chat', billingInterval: 'annual', paymentFailedAt: null });
+    // A new purchase after expiry starts today and anchors on today, not on the lapsed cycle.
+    expect(sub!.renewalAnchorDay).toBe(anchorOf(now));
     expect(sub!.planExpiresAt?.toISOString()).toBe(
-      addInterval(now, 'annual', sub!.renewalAnchorDay!).toISOString(),
+      addInterval(now, 'annual', anchorOf(now)).toISOString(),
     );
   });
 });
