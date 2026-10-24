@@ -959,7 +959,11 @@ export interface DueBusiness {
   cycleStartedAt: Date | null;
   renewalAnchorDay: number | null;
   paymentFailedAt: Date | null;
-  /** The interval the next cycle bills on: a scheduled switch, or the current one (G-110). */
+  /**
+   * The interval the next cycle bills on: a scheduled switch, or the current one (G-110). Only
+   * `dueForRenewalLocked` (read inside the business) fills it; the cross-tenant lists leave it
+   * monthly and a caller that prices a cycle must re-read through the locked read.
+   */
   nextInterval: BillingInterval;
 }
 
@@ -971,8 +975,9 @@ interface RawDue extends Record<string, unknown> {
   cycle_started_at: string | null;
   renewal_anchor_day: number | null;
   payment_failed_at: string | null;
-  billing_interval: string;
-  pending_billing_interval: string | null;
+  /** Only the tenant-pinned read (`dueForRenewalLocked`) selects these; the cross-tenant lists never do. */
+  billing_interval?: string;
+  pending_billing_interval?: string | null;
 }
 
 const due = (row: RawDue): DueBusiness => ({
@@ -1025,8 +1030,7 @@ const NO_PAYABLE_RENEWAL = sql`NOT EXISTS (
 export async function dueForRenewal(db: Db, now: Date, limit = 200): Promise<DueBusiness[]> {
   const rows = await db.execute<RawDue>(sql`
     SELECT id, plan, pending_plan, plan_expires_at, cycle_started_at,
-           renewal_anchor_day, payment_failed_at,
-           billing_interval, pending_billing_interval
+           renewal_anchor_day, payment_failed_at
     FROM businesses
     WHERE plan NOT IN ('trial', 'expired')
       AND plan_expires_at IS NOT NULL
@@ -1079,7 +1083,6 @@ export async function inGrace(
   >(sql`
     SELECT b.id, b.plan, b.pending_plan, b.plan_expires_at, b.cycle_started_at,
            b.renewal_anchor_day, b.payment_failed_at, b.last_grace_reminder_day,
-           b.billing_interval, b.pending_billing_interval,
            u.phone AS owner_phone, u.opted_out_at
     FROM businesses b
     JOIN users u ON u.id = b.owner_user_id
