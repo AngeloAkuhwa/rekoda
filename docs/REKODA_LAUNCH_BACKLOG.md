@@ -12,7 +12,7 @@
 Priority: **A** = needed before consolidated staging acceptance; **B** = before
 private beta or production; **C** = after launch.
 
-Baseline: `main` `9fd8a9c` (23 Oct 2026). This register is updated in the PR
+Baseline: `main` `b0b3d9f` (24 Oct 2026). This register is updated in the PR
 that changes a row; a row says MERGED only once its PR is on `main`.
 
 **Next actionable item (24 Oct 2026):** row 12 (G-110) annual billing, slices 1 and 2 MERGED (`ddf2355` on staging, not yet staging-accepted; `b0b3d9f` merged but its Deploy staging run was cancelled, so it reaches staging with the next main deploy), slice 3 (refunds, grace and expiry on a yearly cycle; tests only) in review as #342; then row 9 (G-102, billing email and test-mode checkout), row 8 (G-116), row 14 verification, row 11 (G-109), row 28 (G-28). Debt reminders (OWN-43), financial insights (OWN-44), document resend (OWN-45) and the account-deletion work (OWN-46) are new scope beyond the original 41 rows and are tracked in the section below.

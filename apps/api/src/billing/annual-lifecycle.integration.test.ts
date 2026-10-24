@@ -18,6 +18,7 @@ import { billingOverviewResponse } from '@rekoda/contracts';
 import {
   billingRepo,
   createDb,
+  entitlementsRepo,
   issueRepo,
   planCatalogueRepo,
   settleRepo,
@@ -204,7 +205,10 @@ describe('a yearly renewal nobody pays', () => {
     expect(days).toBe(7);
   });
 
-  it('keeps paid features through grace, and cuts them off on day seven without deleting anything', async () => {
+  const entitlementsOf = (id: string) =>
+    withBusiness(db, id, (tx) => entitlementsRepo.resolve(tx, id));
+
+  it("keeps paid features through grace, and cuts them off on day seven without deleting the merchant's records", async () => {
     const { businessId } = await unpaidYear();
     const failedAt = (await subOf(businessId))!.paymentFailedAt!;
     const sender = new StubSender();
@@ -229,11 +233,13 @@ describe('a yearly renewal nobody pays', () => {
       expired: 0,
     });
     expect((await subOf(businessId))?.plan).toBe('chat');
+    expect(await entitlementsOf(businessId)).toContain('REKODA_CHAT');
 
     const end = await sweepGracePeriods(sweepDeps(sender), new Date(failedAt.getTime() + 7 * DAY));
     expect(end.expired).toBe(1);
     const sub = await subOf(businessId);
     expect(sub?.plan).toBe('expired');
+    expect(await entitlementsOf(businessId)).not.toContain('REKODA_CHAT');
 
     // The unpaid year is still payable and nothing the merchant recorded went anywhere.
     expect((await chargesOf(businessId))[0]).toMatchObject({
@@ -366,12 +372,15 @@ describe('money returned on a yearly charge', () => {
     });
   });
 
-  it('refuses to return more than the year cost, and repeats add up rather than double', async () => {
+  it('refuses to return more than the year cost, and repeats add up to the amount paid and no further', async () => {
     const { businessId, reference } = await paidYear();
     expect(await refund(businessId, reference, CHAT_ANNUAL - 100)).not.toBeNull();
     expect(await refund(businessId, reference, 101)).toBeNull();
     const [charge] = await chargesOf(businessId);
     expect(charge?.refundedAmountK).toBe(CHAT_ANNUAL - 100);
+    // A second successful refund adds to the first; the exact remainder completes it.
+    expect((await refund(businessId, reference, 100))?.status).toBe('refunded');
+    expect((await chargesOf(businessId))[0]?.refundedAmountK).toBe(CHAT_ANNUAL);
   });
 
   it('a yearly payment and its refund never enter the merchant books', async () => {
