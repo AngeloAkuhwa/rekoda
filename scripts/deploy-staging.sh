@@ -96,6 +96,10 @@ state_value() { sed -n "s/^$1=//p" "$STATE"; }
 # Free space (KiB) the checkout and Docker's root must each have before a build
 # starts: the images, the build cache and the checkout itself all grow on them.
 MIN_FREE_KB=8388608
+# A host may demand more, never less than the floor above.
+if [[ "${REKODA_DEPLOY_MIN_FREE_KB:-}" =~ ^[0-9]+$ ]] && [ "$REKODA_DEPLOY_MIN_FREE_KB" -gt "$MIN_FREE_KB" ]; then
+  MIN_FREE_KB=$REKODA_DEPLOY_MIN_FREE_KB
+fi
 LOW_PATH=
 LOW_KB=
 # Succeeds, naming the path, when a filesystem the deploy writes to is short of
@@ -117,9 +121,9 @@ disk_low() {
 
 # The releases whose images must survive any cleanup, one per line: the one
 # .env names, this run's baseline and target, both releases of an unfinished
-# marker, and every release a container (running or stopped) uses. Fails when
-# the marker cannot be read or Docker cannot say what is in use, and then
-# nothing is removed.
+# marker, and every release a container (running or stopped: none is assumed
+# disposable) uses. Fails when the marker cannot be read or Docker cannot say
+# what is in use, and then nothing is removed.
 keep_releases() {
   local key r
   printf '%s\n' "$PREV_RELEASE" "$RELEASE"
@@ -134,21 +138,44 @@ keep_releases() {
   docker ps -a --format '{{.Image}}' | sed -n 's/^rekoda-\(app\|web\):\(.*\)$/\2/p'
 }
 
+# The image IDs every container (running or stopped) was created from. Several
+# tags can name one image, so a tag that shares an ID with a kept one is kept.
+container_image_ids() {
+  local ids
+  ids=$(docker ps -aq) || return 1
+  [ -z "$ids" ] && return 0
+  # shellcheck disable=SC2086
+  docker inspect --format '{{.Image}}' $ids
+}
+
 # Frees image and build-cache space without touching a volume, a container, a
 # production tag or a third-party image. Never fails the deploy.
 #   $1  routine  (after a deploy) keeps recent build cache
 #       urgent   (disk below the floor) drops all build cache
 prune_releases() {
-  local keep images image tag
+  local keep images keep_ids line image id tag
   keep=$(keep_releases) || {
     printf 'image cleanup skipped: the releases to keep could not be established\n' >&2
     return 0
   }
-  images=$(docker image ls --format '{{.Repository}}:{{.Tag}}') || return 0
-  while IFS= read -r image; do
+  keep_ids=$(container_image_ids) || {
+    printf 'image cleanup skipped: the images the containers use could not be established\n' >&2
+    return 0
+  }
+  images=$(docker image ls --no-trunc --format '{{.Repository}}:{{.Tag}} {{.ID}}') || {
+    printf 'image cleanup skipped: the image list could not be read\n' >&2
+    return 0
+  }
+  # An image any kept tag names is kept under all its tags.
+  while read -r image id; do
+    [[ "$image" =~ ^rekoda-(app|web):(staging-[0-9a-f]{7})$ ]] || continue
+    if grep -Fxq -- "${BASH_REMATCH[2]}" <<<"$keep"; then keep_ids+=$'\n'"$id"; fi
+  done <<<"$images"
+  while read -r image id; do
     [[ "$image" =~ ^rekoda-(app|web):(staging-[0-9a-f]{7})$ ]] || continue
     tag=${BASH_REMATCH[2]}
     if grep -Fxq -- "$tag" <<<"$keep"; then continue; fi
+    if [ -n "$id" ] && grep -Fxq -- "$id" <<<"$keep_ids"; then continue; fi
     printf 'removing the old image %s\n' "$image"
     docker image rm "$image" >/dev/null 2>&1 || true
   done <<<"$images"
@@ -167,21 +194,51 @@ verify_checkout() {
   [ "$(git rev-parse HEAD)" = "$1" ] && git diff --quiet "$1" -- && [ -z "$(git ls-files --deleted)" ]
 }
 
+# Keep what a half-finished checkout left, for whoever reconciles it by hand.
+save_evidence() {
+  local file=".git/rekoda-deploy-evidence-$(date -u +%Y%m%dT%H%M%SZ).txt"
+  {
+    printf 'HEAD %s\n' "$(git rev-parse HEAD 2>&1)"
+    git status --short --untracked-files=no 2>&1
+    git diff --stat 2>&1
+    df -Pk . 2>&1
+  } >"$file" 2>/dev/null || true
+  printf 'evidence kept in %s/%s\n' "$REKODA_DIR" "$file" >&2
+}
+
 restore_prepared() {
   # Nothing live changed, so put the checkout and REKODA_RELEASE back to what
   # the running containers are, leaving the host exactly as it was. The marker
   # goes only once both are back; a failed restore keeps it.
-  printf 'restoring the checkout to %s and REKODA_RELEASE to %s\n' "$PREV_SHA" "$PREV_RELEASE" >&2
-  # A run that failed for lack of space may have left its own half-written
-  # files; make room, then force the baseline back and prove every file whole.
+  #
+  # Automatic only when it is provably safe: the checkout is exactly the commit
+  # this run prepared (or already the baseline) with no tracked file changed, so
+  # the only thing to undo is this run's own checkout. Anything else, a file cut
+  # short by a full disk or edited by hand, is evidence of damage or of someone's
+  # work: it is kept, nothing is forced or discarded, and the run refuses.
+  local head
+  head=$(git rev-parse HEAD 2>/dev/null || true)
+  if [ "$head" != "$PREV_SHA" ] && [ "$head" != "$SHA" ]; then
+    printf 'the checkout is at %s, neither the baseline nor the prepared commit; not restoring\n' "$head" >&2
+    save_evidence
+    return 0
+  fi
+  if ! git diff --quiet "$head" -- || [ -n "$(git ls-files --deleted)" ]; then
+    printf 'tracked files differ from commit %s (empty, cut short or edited); not restoring\n' "$head" >&2
+    save_evidence
+    return 0
+  fi
+  # Room first: the checkout rewrites the files it changes.
   if disk_low; then prune_releases urgent; fi
-  if git -c advice.detachedHead=false checkout -q -f "$PREV_SHA" &&
+  printf 'restoring the checkout to %s and REKODA_RELEASE to %s\n' "$PREV_SHA" "$PREV_RELEASE" >&2
+  if git -c advice.detachedHead=false checkout -q "$PREV_SHA" &&
     verify_checkout "$PREV_SHA" &&
     sed -i "s/^REKODA_RELEASE=.*/REKODA_RELEASE=${PREV_RELEASE}/" .env &&
     [ "$(git rev-parse HEAD)" = "$PREV_SHA" ] &&
     [ "$(sed -n 's/^REKODA_RELEASE=//p' .env)" = "$PREV_RELEASE" ]; then
     [ "$LIVE_MARKER" = true ] || rm -f "$STATE"
   else
+    save_evidence
     printf 'the restore did not complete; recover by hand as the runbook'"'"'s "An interrupted staging deploy" says\n' >&2
   fi
 }
@@ -251,17 +308,6 @@ api_public=$(sed -n 's/^REKODA_API_PUBLIC_URL=//p' .env)
 [ "$(grep -c '^REKODA_RELEASE=' .env)" = 1 ] || fail '.env must hold exactly one REKODA_RELEASE= line'
 PREV_RELEASE=$(sed -n 's/^REKODA_RELEASE=//p' .env)
 
-
-# Free space comes before anything is read from the checkout: a full disk is
-# what truncates tracked files, and cleanup needs only .env and Docker.
-step 'disk space'
-if disk_low; then
-  printf 'only %s KiB free on %s (floor %s KiB); removing superseded staging images\n' "$LOW_KB" "$LOW_PATH" "$MIN_FREE_KB"
-  prune_releases urgent
-  if disk_low; then
-    fail "only $LOW_KB KiB free on $LOW_PATH after removing superseded staging images (a deploy needs $MIN_FREE_KB); free space by hand first. No volume or database file is ever removed by this script"
-  fi
-fi
 
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   empty=$(git diff --name-only | while IFS= read -r f; do
@@ -342,6 +388,23 @@ jq -e --arg pr "$PREV_RELEASE" --arg ps "$PREV_SHA" \
    and ($c | type) == "string" and ($c | length) >= 7 and ($ps | startswith($c))' \
   <<<"$running" >/dev/null ||
   fail "$API_URL/health reports $(jq -c '{status, database, release, commit}' <<<"$running" 2>/dev/null || echo 'an unreadable body'), not a healthy $PREV_RELEASE at $PREV_SHA as this checkout and .env say"
+
+# Free space is judged once the running release is proven healthy (cleanup
+# keeps that release and its rollback only on that proof) and before anything
+# in the checkout changes: the build, the checkout and the images all need it.
+step 'disk space'
+if disk_low; then
+  printf 'only %s KiB free on %s (floor %s KiB); removing superseded staging images\n' "$LOW_KB" "$LOW_PATH" "$MIN_FREE_KB"
+  prune_releases urgent
+  if disk_low; then
+    {
+      printf 'free space now:\n'
+      df -Pk "$REKODA_DIR" "$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)" 2>&1 || true
+      docker system df 2>&1 || true
+    } >&2
+    fail "only $LOW_KB KiB free on $LOW_PATH after removing superseded staging images (a deploy needs at least $MIN_FREE_KB; the floor is a minimum, not a promise a build fits). Free space by hand first. No volume, database file or backup is ever removed by this script"
+  fi
+fi
 
 step 'fetch and verify the commit'
 git fetch --prune origin

@@ -699,10 +699,20 @@ test('cleanup before the new release is proven', () => {
 
 test('no free-space preflight', () => {
   const edit = edited('script', "step 'disk space'\n", '');
-  expectProblem(problems(edit), /free disk space before it reads the checkout/);
+  expectProblem(problems(edit), /free disk space after the running release is proven/);
 });
 
 test('no proof that the checkout is whole', () => {
   const edit = edited('script', 'verify_checkout "$SHA" || fail ', 'true || fail ');
   expectProblem(problems(edit), /verifies the checkout of the target/);
+});
+
+test('a forced checkout to restore files', () => {
+  const edit = edited('script', 'checkout -q "$PREV_SHA" &&', 'checkout -q -f "$PREV_SHA" &&');
+  expectProblem(problems(edit), /forces files over the checkout/);
+});
+
+test('the floor lowered by an environment variable', () => {
+  const edit = edited('script', '-gt "$MIN_FREE_KB" ]; then', '-lt "$MIN_FREE_KB" ]; then');
+  expectProblem(problems(edit), /raise the floor only/);
 });

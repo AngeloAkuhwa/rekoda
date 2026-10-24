@@ -125,6 +125,10 @@ const SCRIPT_FORBIDDEN = [
     (line) => /^docker image rm "\$image" >\/dev\/null 2>&1 \|\| true$/.test(line.trim()),
   ],
   [/\bgit pull\b/, 'deploys whatever main is now, not the commit CI passed'],
+  [
+    /\bcheckout\b.*(\s-\w*f\w*\b|--force)|\bgit restore\b/,
+    'forces files over the checkout instead of refusing',
+  ],
   [/\breset --hard\b|\bgit clean\b|\bstash\b/, 'discards changes on the host instead of refusing'],
   [/--no-deps|--scale\b/, 'can start Caddy past the edge check (G-74)'],
   [/\bset -x\b|\bxtrace\b/, 'echoes every command, and so anything it expands'],
@@ -416,6 +420,14 @@ function interruptProblems(lines) {
 const RETENTION_REQUIRES = [
   [/^MIN_FREE_KB=\d+$/, 'holds a free-space floor (MIN_FREE_KB)'],
   [
+    /-gt "\$MIN_FREE_KB" \]; then$/,
+    'lets a host raise the floor only, never lower it (REKODA_DEPLOY_MIN_FREE_KB)',
+  ],
+  [
+    /^\s*docker inspect --format '\{\{\.Image\}\}' \$ids$/,
+    'keeps every image ID a container was created from',
+  ],
+  [
     /^\s*if grep -Fxq -- "\$tag" <<<"\$keep"; then continue; fi$/,
     'skips every release in the keep list',
   ],
@@ -442,11 +454,17 @@ function retentionProblems(lines) {
   }
   const at = (text) => lines.indexOf(text);
   const lowCheck = lines.findIndex((line) => /^step 'disk space'$/.test(line));
-  const dirty = lines.findIndex((line) =>
-    /^if \[ -n "\$\(git status --porcelain --untracked-files=no\)" \]; then$/.test(line),
-  );
-  if (lowCheck < 0 || (dirty >= 0 && lowCheck > dirty)) {
-    problems.push(`${FILES.script} must check free disk space before it reads the checkout`);
+  const prepared = at('PHASE=prepared');
+  const baseline = lines.findIndex((line) => BASELINE_CALL.test(line));
+  if (
+    lowCheck < 0 ||
+    baseline < 0 ||
+    lowCheck < baseline ||
+    (prepared >= 0 && lowCheck > prepared)
+  ) {
+    problems.push(
+      `${FILES.script} must check free disk space after the running release is proven and before the checkout changes`,
+    );
   }
   const done = at('PHASE=done');
   const routine = at('prune_releases routine');

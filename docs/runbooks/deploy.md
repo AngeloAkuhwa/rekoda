@@ -319,26 +319,35 @@ restore from backup, and **there is no backup mechanism yet** (G-02 in
 `scripts/deploy-staging.sh` guards the host's disk, because a full disk once
 stopped a checkout part-way and left tracked files empty.
 
-- **Floor.** Before it reads the checkout, the script needs `MIN_FREE_KB`
-  (8 GiB) free on `/opt/rekoda` and on Docker's root. Below that it removes
-  superseded staging images once (below), then refuses with the free figure if
-  it is still short. Nothing live has changed at that point.
+- **Floor.** Once `/health` has proved the running release and before the
+  checkout changes, the script needs 8 GiB (`MIN_FREE_KB`) free on `/opt/rekoda`
+  **and** on Docker's root. A host may raise the floor with
+  `REKODA_DEPLOY_MIN_FREE_KB`, never lower it. Below the floor it removes
+  superseded staging images once (below), then refuses, printing `df` and
+  `docker system df`. The floor is a minimum, not a promise that a build fits.
 - **What cleanup may remove:** `rekoda-app:staging-<sha>` and
   `rekoda-web:staging-<sha>` tags, dangling images, and build cache. It keeps
   the release `.env` names, the run's baseline and target, **both releases of an
-  unfinished `.git/rekoda-deploy-staging.state` marker**, and every image a
-  container (running or stopped) uses; an unreadable marker, or Docker unable to
-  say what is in use, removes nothing. After a successful deploy only the
-  running release and the one it replaced (proven healthy at the start of the
-  run) remain, so rollback stays a no-build change. Production tags (`v*`),
+  unfinished `.git/rekoda-deploy-staging.state` marker**, every image any
+  container (running or stopped) uses, by tag and by image ID, and any tag that
+  shares an image ID with a kept one. If the marker, the container list or the
+  image list cannot be read, nothing is removed and the run says so. A failing
+  removal never fails the deploy. After a successful deploy (health and release
+  verified, marker cleared) only the running release and the one it replaced
+  remain, so rollback stays a no-build change. Production tags (`v*`),
   `postgres`, `caddy`, volumes and containers are never touched; the script has
   no `volume`, `system prune` or `down -v`, and CI fails a change that adds one.
-- **Whole files.** After the checkout the script proves every tracked file equals
-  the commit; a mismatch (empty or cut short) fails the run, which restores the
-  baseline with a forced checkout and the same proof, after making room. A host
-  that already holds empty tracked files is refused and the files are named; the
-  script never discards them. Restore by hand once space is free:
-  `git checkout -- <the named files>`, then re-run.
+- **Whole files, no forced recovery.** After the checkout the script proves every
+  tracked file equals the commit. If not (empty or cut short), or if a tracked
+  file differs when it tries to restore the baseline, it does **not** force
+  anything: it writes `git status`, `git diff --stat` and `df` to
+  `.git/rekoda-deploy-evidence-<time>.txt`, leaves the checkout and marker as
+  found, and refuses. It restores automatically only when the checkout is the
+  baseline or the commit the run prepared with no tracked file changed, so the
+  only thing undone is its own checkout. A host that already holds modified or
+  empty tracked files is refused and the files are named. Reconcile by hand
+  (`git checkout -- <files>` once space is free and the evidence is kept), then
+  follow "An interrupted staging deploy" for the marker.
 
 ## An interrupted staging deploy
 

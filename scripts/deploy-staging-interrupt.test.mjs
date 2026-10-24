@@ -14,6 +14,8 @@ import {
   readFileSync,
   writeFileSync,
   existsSync,
+  readdirSync,
+  rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -101,10 +103,12 @@ exit $rc`,
 freed() { [ -e "${fake}/free-kb-after-prune" ] && cp "${fake}/free-kb-after-prune" "${fake}/free-kb"; return 0; }
 case "$*" in
   *"info --format"*) echo "${fake}" ;;
-  *"image ls"*) cat "${fake}/images" 2>/dev/null ;;
-  *"image rm"*) echo "$3" >> "${fake}/removed"; freed ;;
+  *"ps -aq"*) [ -e "${fake}/ps-fails" ] && exit 1; cat "${fake}/container-ids" 2>/dev/null ;;
+  *"inspect --format"*) cat "${fake}/container-image-ids" 2>/dev/null ;;
+  *"image ls"*) [ -e "${fake}/image-ls-fails" ] && exit 1; cat "${fake}/images" 2>/dev/null ;;
+  *"image rm"*) [ -e "${fake}/image-rm-fails" ] && exit 1; echo "$3" >> "${fake}/removed"; freed ;;
   *"image prune"*|*"builder prune"*) freed ;;
-  *"ps -a --format"*) cat "${fake}/containers" 2>/dev/null ;;
+  *"ps -a --format"*) [ -e "${fake}/ps-fails" ] && exit 1; cat "${fake}/containers" 2>/dev/null ;;
   *build*) if [ -e "${fake}/fail-build" ]; then echo 1000 > "${fake}/free-kb"; echo 'no space left on device' >&2; exit 1; fi; sleep ${buildSeconds} ;;
   *" up "*) cp "${fake}/next-health.json" "${fake}/health.json" ;;
   *network\\ inspect*) echo '172.30.10.1 false' ;;
@@ -373,8 +377,8 @@ test('a host that cleanup cannot free is refused before anything changes', () =>
   writeFileSync(join(h.fake, 'free-kb'), '1000');
   const r = h.run(h.next);
   assert.notEqual(r.status, 0);
-  assert.match(r.stderr, /free space by hand first/);
-  assert.match(r.stderr, /No volume or database file is ever removed/);
+  assert.match(r.stderr, /Free space by hand first/);
+  assert.match(r.stderr, /No volume, database file or backup is ever removed/);
   assert.equal(h.read.head(), h.prev);
   assert.equal(h.read.release(), `staging-${h.prev.slice(0, 7)}`);
   assert.equal(h.read.marker(), false);
@@ -397,15 +401,72 @@ test('cleanup under pressure keeps the releases an unfinished marker names', () 
   assert.deepEqual(h.removed().sort(), [...OLD].sort());
 });
 
-test('an unreadable marker stops all cleanup', () => {
+test('an unreadable marker is refused before any cleanup can run', () => {
   const h = host();
   writeFileSync(join(h.dir, '.git/rekoda-deploy-staging.state'), 'phase=live\nrelease=;rm -rf\n');
   h.images(app(h.prev), ...OLD);
   writeFileSync(join(h.fake, 'free-kb'), '1000');
   const r = h.run(h.next);
   assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /is unreadable/);
+  assert.deepEqual(h.removed(), []);
+});
+
+test('when Docker cannot say what containers exist, nothing is removed and the deploy still succeeds', () => {
+  const h = host();
+  h.images(app(h.next), app(h.prev), ...OLD);
+  writeFileSync(join(h.fake, 'ps-fails'), '');
+  const r = h.run(h.next);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
   assert.match(r.stderr, /image cleanup skipped/);
   assert.deepEqual(h.removed(), []);
+});
+
+test('missing image metadata skips cleanup and the deploy still succeeds', () => {
+  const h = host();
+  writeFileSync(join(h.fake, 'image-ls-fails'), '');
+  const r = h.run(h.next);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stderr, /the image list could not be read/);
+  assert.deepEqual(h.removed(), []);
+});
+
+test('a failing image removal never fails the deploy', () => {
+  const h = host();
+  h.images(app(h.next), app(h.prev), ...OLD);
+  writeFileSync(join(h.fake, 'image-rm-fails'), '');
+  const r = h.run(h.next);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.equal(h.read.head(), h.next);
+  assert.equal(h.read.marker(), false);
+});
+
+test('an old tag that names the same image as a kept release is kept', () => {
+  const h = host();
+  h.images(
+    `${app(h.next)} sha256:same`,
+    `${app(h.prev)} sha256:prev`,
+    `${OLD[0]} sha256:same`,
+    `${OLD[1]} sha256:gone`,
+  );
+  const r = h.run(h.next);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.deepEqual(h.removed(), [OLD[1]]);
+});
+
+test('an image behind a stopped container is kept by its ID even when its tag is old', () => {
+  const h = host();
+  h.images(
+    `${app(h.next)} sha256:n`,
+    `${app(h.prev)} sha256:p`,
+    `${OLD[0]} sha256:stopped`,
+    `${OLD[1]} sha256:gone`,
+  );
+  writeFileSync(join(h.fake, 'container-ids'), 'abc123\n');
+  writeFileSync(join(h.fake, 'container-image-ids'), 'sha256:stopped\n');
+  const r = h.run(h.next);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.deepEqual(h.removed(), [OLD[1]]);
 });
 
 test('tracked files left empty by a full disk are named and the run refuses', () => {
@@ -422,16 +483,41 @@ test('tracked files left empty by a full disk are named and the run refuses', ()
   );
 });
 
-test('a checkout that git reports done but left a file empty is undone', () => {
+test('a checkout that git reports done but left a file empty is refused and kept as evidence', () => {
   const h = host();
   writeFileSync(join(h.fake, 'truncate-on-checkout'), '');
   const r = h.run(h.next);
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /empty or cut short/);
-  assert.equal(h.read.head(), h.prev);
-  assert.equal(h.read.release(), `staging-${h.prev.slice(0, 7)}`);
-  assert.equal(h.read.marker(), false);
-  assert.match(readFileSync(join(h.dir, 'docker-compose.prod.yml'), 'utf8'), /# 1/);
+  assert.match(r.stderr, /not restoring/);
+  assert.match(r.stderr, /evidence kept in/);
+  // Nothing is forced or discarded: the damaged file, the checkout and the
+  // marker stay for a person to reconcile.
+  assert.equal(h.read.head(), h.next);
+  assert.equal(readFileSync(join(h.dir, 'docker-compose.prod.yml'), 'utf8'), '');
+  assert.equal(h.read.marker(), true);
+  const evidence = readdirSync(join(h.dir, '.git')).filter((f) =>
+    f.startsWith('rekoda-deploy-evidence-'),
+  );
+  assert.equal(evidence.length, 1);
+  assert.match(readFileSync(join(h.dir, '.git', evidence[0]), 'utf8'), /docker-compose\.prod\.yml/);
+  // The next run does not clear it silently either.
+  rmSync(join(h.fake, 'truncate-on-checkout'));
+  const again = h.run(h.next);
+  assert.notEqual(again.status, 0);
+  assert.equal(h.read.marker(), true);
+  assert.equal(readFileSync(join(h.dir, 'docker-compose.prod.yml'), 'utf8'), '');
+});
+
+test('a prepared marker whose files were edited by hand is not restored over the edit', () => {
+  const h = host();
+  h.killedWhilePrepared();
+  writeFileSync(join(h.dir, 'docker-compose.prod.yml'), '# my local work\n');
+  const r = h.run(h.next);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /tracked local modifications/);
+  assert.equal(readFileSync(join(h.dir, 'docker-compose.prod.yml'), 'utf8'), '# my local work\n');
+  assert.equal(h.read.marker(), true);
 });
 
 test('a build that runs out of space restores the baseline and frees room first', () => {
