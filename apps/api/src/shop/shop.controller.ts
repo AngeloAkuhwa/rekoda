@@ -309,8 +309,8 @@ export class PublicShopController {
      * transactions, refunded on every path that delivers nothing. */
     const period = usagePeriod(new Date());
     const plan = await withBusiness(this.db, businessId, (tx) => usageRepo.planFor(tx, businessId));
-    const orderGranted = await withBusiness(this.db, businessId, async (own) =>
-      usageRepo.consumeUnit(
+    const orderSpent = await withBusiness(this.db, businessId, async (own) =>
+      usageRepo.reserveUnit(
         own,
         businessId,
         period,
@@ -318,9 +318,9 @@ export class PublicShopController {
         await meterAllowance(this.config, own, businessId, plan, 'CATALOGUE_ORDERS'),
       ),
     );
-    if (!orderGranted) return { outcome: 'closed' };
-    const documentGranted = await withBusiness(this.db, businessId, async (own) =>
-      usageRepo.consumeUnit(
+    if (!orderSpent.granted) return { outcome: 'closed' };
+    const documentSpent = await withBusiness(this.db, businessId, async (own) =>
+      usageRepo.reserveUnit(
         own,
         businessId,
         period,
@@ -331,13 +331,13 @@ export class PublicShopController {
       /* The order unit is already paid; a meter that fails now must not keep
        * it (G-60). The failure itself surfaces. */
       await withBusiness(this.db, businessId, (own) =>
-        usageRepo.refundUnit(own, businessId, period, 'CATALOGUE_ORDERS'),
+        usageRepo.refundUnit(own, businessId, orderSpent.meter, 'CATALOGUE_ORDERS'),
       ).catch(() => shopLog.error('a storefront refund failed; a unit stays spent'));
       throw error;
     });
-    if (!documentGranted) {
+    if (!documentSpent.granted) {
       await withBusiness(this.db, businessId, (own) =>
-        usageRepo.refundUnit(own, businessId, period, 'CATALOGUE_ORDERS'),
+        usageRepo.refundUnit(own, businessId, orderSpent.meter, 'CATALOGUE_ORDERS'),
       );
       return { outcome: 'closed' };
     }
@@ -348,6 +348,12 @@ export class PublicShopController {
      * has failed (G-60). Where a failure is already being surfaced, that one
      * is rethrown instead (`refundQuietly`). */
     const refunded = new Set<string>();
+    /* Each unit goes back to the row it was spent on, not to one worked out
+     * from the plan the shop is on by the time the refund runs. */
+    const spentOn = {
+      CATALOGUE_ORDERS: orderSpent.meter,
+      DOCUMENT_GENERATION: documentSpent.meter,
+    } as const;
     const refundBoth = async () => {
       /* Each unit at most once, however many paths reach here. */
       const refunds = await Promise.allSettled(
@@ -355,7 +361,7 @@ export class PublicShopController {
           .filter((unit) => !refunded.has(unit))
           .map(async (unit) => {
             await withBusiness(this.db, businessId, (own) =>
-              usageRepo.refundUnit(own, businessId, period, unit),
+              usageRepo.refundUnit(own, businessId, spentOn[unit], unit),
             );
             refunded.add(unit);
           }),

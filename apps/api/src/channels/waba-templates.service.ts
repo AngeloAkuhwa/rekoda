@@ -165,7 +165,7 @@ export class WabaTemplateService {
       const unit = templateUnitFor(template.category as TemplateCategory, to);
       const plan = await usageRepo.planFor(tx, businessId);
       const period = usagePeriod(new Date());
-      const allowed = await usageRepo.consumeUnit(
+      const spent = await usageRepo.reserveUnit(
         tx,
         businessId,
         period,
@@ -174,7 +174,7 @@ export class WabaTemplateService {
       );
       /* §4.3 rule 4: the refusal consumed nothing — the atomic consume
        * writes no row when it refuses. */
-      if (!allowed) return { outcome: 'allowance_exhausted', unit };
+      if (!spent.granted) return { outcome: 'allowance_exhausted', unit };
 
       const token = connection.accessTokenCipher
         ? decryptFacet(
@@ -184,7 +184,7 @@ export class WabaTemplateService {
           )
         : null;
       if (!token) {
-        await usageRepo.refundUnit(tx, businessId, period, unit);
+        await usageRepo.refundUnit(tx, businessId, spent.meter, unit);
         return { outcome: 'unavailable', reason: 'token_missing' };
       }
 
@@ -229,7 +229,7 @@ export class WabaTemplateService {
           /* §4.3 rule 4: refunded on every path that does not deliver. The
            * recorded message keeps its empty provider id — a reply owed
            * and not delivered, findable as such. */
-          await usageRepo.refundUnit(tx, businessId, period, unit);
+          await usageRepo.refundUnit(tx, businessId, spent.meter, unit);
           /* And the failure is health signal: UNHEALTHY plus WHY, so the
            * dashboard has something the merchant can act on. SendFailed
            * messages carry status codes, never message content. */
@@ -321,14 +321,14 @@ export class WabaTemplateService {
       const unit = 'SERVICE_MESSAGE' as const;
       const plan = await usageRepo.planFor(tx, businessId);
       const period = usagePeriod(new Date());
-      const allowed = await usageRepo.consumeUnit(
+      const spent = await usageRepo.reserveUnit(
         tx,
         businessId,
         period,
         unit,
         await meterAllowance(this.config, tx, businessId, plan, unit),
       );
-      if (!allowed) return { outcome: 'allowance_exhausted', unit };
+      if (!spent.granted) return { outcome: 'allowance_exhausted', unit };
 
       const token = connection.accessTokenCipher
         ? decryptFacet(
@@ -338,7 +338,7 @@ export class WabaTemplateService {
           )
         : null;
       if (!token) {
-        await usageRepo.refundUnit(tx, businessId, period, unit);
+        await usageRepo.refundUnit(tx, businessId, spent.meter, unit);
         return { outcome: 'unavailable', reason: 'token_missing' };
       }
 
@@ -371,7 +371,7 @@ export class WabaTemplateService {
         return { outcome: 'sent', unit };
       } catch (error) {
         if (error instanceof SendFailed) {
-          await usageRepo.refundUnit(tx, businessId, period, unit);
+          await usageRepo.refundUnit(tx, businessId, spent.meter, unit);
           await wabaRepo.markWabaUnhealthy(tx, {
             businessId,
             connectionId: connection.id,

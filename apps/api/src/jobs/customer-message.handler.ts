@@ -496,7 +496,7 @@ async function ingestCatalogueOrder(
     withBusiness(deps.db, businessId, (own) =>
       events.reserveUnitForEvent(own, businessId, eventId, unit, async () => {
         const plan = await usageRepo.planFor(own, businessId);
-        return usageRepo.consumeUnit(
+        return usageRepo.reserveUnit(
           own,
           businessId,
           period,
@@ -507,8 +507,15 @@ async function ingestCatalogueOrder(
     );
   const giveBack = (unit: 'CATALOGUE_ORDERS' | 'DOCUMENT_GENERATION') =>
     withBusiness(deps.db, businessId, async (own) => {
-      if (await events.takeReservedUnit(own, businessId, eventId, unit)) {
-        await usageRepo.refundUnit(own, businessId, period, unit);
+      const taken = await events.takeReservedUnit(own, businessId, eventId, unit);
+      if (taken) {
+        /* The row the unit was spent on, as recorded with the reservation. */
+        await usageRepo.refundUnit(
+          own,
+          businessId,
+          usageRepo.storedMeter(taken.meter, period),
+          unit,
+        );
       }
     });
   /**

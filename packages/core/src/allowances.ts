@@ -146,6 +146,19 @@ export const UNIT_SCALE: Record<UsageUnit, number> = {
  */
 export type PlanId = 'trial' | 'expired' | 'chat' | 'integrate' | 'complete';
 
+/**
+ * The units a standalone recurring holding sells (Developer API Starter), not
+ * the base plan. They follow the holding's own monthly cycle whatever the base
+ * plan is, so a business that holds the API product while still on the trial
+ * meters them by calendar month. Every other unit is a base-plan allowance, and
+ * on the trial plan those are bounded to ONE budget for the 14 days (G-109,
+ * OD-26).
+ */
+export const INDEPENDENTLY_METERED_UNITS: readonly UsageUnit[] = [
+  'API_REQUEST_UNITS',
+  'WEBHOOK_DELIVERIES',
+];
+
 /** A trial is 14 days from the day the business was created. */
 export const TRIAL_DAYS = 14;
 

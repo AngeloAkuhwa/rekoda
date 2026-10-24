@@ -23,6 +23,7 @@
  */
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
+import type { MeterRow } from './usage.js';
 import { externalEvents } from '../schema/ops.js';
 
 export type Queryable = Db | TenantDb;
@@ -117,10 +118,24 @@ export async function noteReservedUnit(
   businessId: string,
   eventId: string,
   unit: string,
+  /** The meter row the consume spent it on (`usageRepo.reserveUnit`'s answer). */
+  meter: MeterRow,
 ): Promise<void> {
   await tx.execute(sql`
-    UPDATE external_events SET reserved_units = array_append(reserved_units, ${unit})
+    UPDATE external_events
+       SET reserved_units = array_append(reserved_units, ${unit}),
+           reserved_meters = reserved_meters || jsonb_build_object(${unitOf(unit)}::text, ${meter}::text)
      WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid`);
+}
+
+/** "VOICE_MINUTES:5" is the unit VOICE_MINUTES with its quantity. */
+const unitOf = (recorded: string): string => recorded.split(':')[0] ?? recorded;
+
+/** What a reserved unit is read back as: its name, and the meter row it was spent on. */
+export interface TakenUnit {
+  unit: string;
+  /** Null for a reservation recorded before meter rows were kept: spent in its month. */
+  meter: string | null;
 }
 
 /** The unit went back in this attempt: no longer reserved (same transaction as the refund). */
@@ -131,7 +146,9 @@ export async function releaseReservedUnit(
   unit: string,
 ): Promise<void> {
   await tx.execute(sql`
-    UPDATE external_events SET reserved_units = array_remove(reserved_units, ${unit})
+    UPDATE external_events
+       SET reserved_units = array_remove(reserved_units, ${unit}),
+           reserved_meters = reserved_meters - ${unitOf(unit)}::text
      WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid`);
 }
 
@@ -145,18 +162,19 @@ export async function takeReservedUnits(
   tx: TenantDb,
   businessId: string,
   eventId: string,
-): Promise<string[]> {
-  const rows = await tx.execute<{ units: string[] }>(sql`
+): Promise<TakenUnit[]> {
+  const rows = await tx.execute<{ units: string[]; meters: Record<string, string> }>(sql`
     WITH held AS (
-      SELECT reserved_units AS units FROM external_events
+      SELECT reserved_units AS units, reserved_meters AS meters FROM external_events
        WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid
        FOR UPDATE
     )
-    UPDATE external_events e SET reserved_units = '{}'
+    UPDATE external_events e SET reserved_units = '{}', reserved_meters = '{}'::jsonb
       FROM held
      WHERE e.id = ${eventId}::uuid AND e.business_id = ${businessId}::uuid
-    RETURNING held.units`);
-  return [...rows][0]?.units ?? [];
+    RETURNING held.units, held.meters`);
+  const row = [...rows][0];
+  return (row?.units ?? []).map((u) => ({ unit: u, meter: row?.meters?.[unitOf(u)] ?? null }));
 }
 
 /**
@@ -168,14 +186,15 @@ export async function takeReservedUnits(
  * unit twice and a give-back never refunds one of two charges.
  *
  * `consume` meters the unit in this same transaction and says whether the
- * plan allowed it; the reservation is recorded only when it did.
+ * plan allowed it, and on which meter row; the reservation (and that row) is
+ * recorded only when it did.
  */
 export async function reserveUnitForEvent(
   tx: TenantDb,
   businessId: string,
   eventId: string,
   unit: string,
-  consume: () => Promise<boolean>,
+  consume: () => Promise<{ granted: boolean; meter: MeterRow }>,
 ): Promise<boolean> {
   const rows = await tx.execute<{ units: string[] }>(sql`
     SELECT reserved_units AS units FROM external_events
@@ -183,8 +202,9 @@ export async function reserveUnitForEvent(
      FOR UPDATE`);
   const held = [...rows][0]?.units ?? [];
   if (held.some((u) => u === unit || u.startsWith(`${unit}:`))) return true;
-  if (!(await consume())) return false;
-  await noteReservedUnit(tx, businessId, eventId, unit);
+  const spent = await consume();
+  if (!spent.granted) return false;
+  await noteReservedUnit(tx, businessId, eventId, unit, spent.meter);
   return true;
 }
 
@@ -207,26 +227,29 @@ export async function holdsReservedUnit(
 
 /**
  * Take one recorded unit of `unit` off the event, with or without a
- * quantity ("VOICE_MINUTES:5"), and return it as recorded, or null when the
- * event holds none. In the caller's transaction, beside the refund.
+ * quantity ("VOICE_MINUTES:5"), and return it as recorded with the meter row
+ * it was spent on, or null when the event holds none. In the caller's transaction, beside the refund.
  */
 export async function takeRecordedUnit(
   tx: TenantDb,
   businessId: string,
   eventId: string,
   unit: string,
-): Promise<string | null> {
-  const rows = await tx.execute<{ u: string }>(sql`
-    SELECT u FROM external_events, unnest(reserved_units) AS u
+): Promise<{ held: string; meter: string | null } | null> {
+  const rows = await tx.execute<{ u: string; meter: string | null }>(sql`
+    SELECT u, reserved_meters ->> ${unit}::text AS meter
+      FROM external_events, unnest(reserved_units) AS u
      WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid
        AND (u = ${unit} OR u LIKE ${unit} || ':%')
      LIMIT 1`);
-  const held = [...rows][0]?.u;
-  if (!held) return null;
+  const found = [...rows][0];
+  if (!found) return null;
   await tx.execute(sql`
-    UPDATE external_events SET reserved_units = array_remove(reserved_units, ${held})
+    UPDATE external_events
+       SET reserved_units = array_remove(reserved_units, ${found.u}),
+           reserved_meters = reserved_meters - ${unit}::text
      WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid`);
-  return held;
+  return { held: found.u, meter: found.meter };
 }
 
 /**
@@ -239,26 +262,29 @@ export async function takeReservedUnitsOf(
   businessId: string,
   eventId: string,
   kinds: readonly string[],
-): Promise<string[]> {
-  const rows = await tx.execute<{ units: string[] }>(sql`
-    SELECT reserved_units AS units FROM external_events
+): Promise<TakenUnit[]> {
+  const rows = await tx.execute<{ units: string[]; meters: Record<string, string> }>(sql`
+    SELECT reserved_units AS units, reserved_meters AS meters FROM external_events
      WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid
      FOR UPDATE`);
   const held = [...rows][0]?.units ?? [];
+  const meters = [...rows][0]?.meters ?? {};
   const taken = held.filter((u) => kinds.includes(u));
   /* One kind at a time: `array_remove` takes every occurrence of it, and a
    * bound array would be expanded into separate parameters. */
   for (const kind of new Set(taken)) {
     await tx.execute(sql`
-      UPDATE external_events SET reserved_units = array_remove(reserved_units, ${kind})
+      UPDATE external_events
+         SET reserved_units = array_remove(reserved_units, ${kind}),
+             reserved_meters = reserved_meters - ${unitOf(kind)}::text
        WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid`);
   }
-  return taken;
+  return taken.map((u) => ({ unit: u, meter: meters[unitOf(u)] ?? null }));
 }
 
 /**
- * Take ONE recorded unit off the event, if it is there, and say whether it
- * was. Unlike `takeReservedUnits`, which clears all of them, this leaves the
+ * Take ONE recorded unit off the event, if it is there, and return the meter
+ * row it was spent on (null when there is none to take). Unlike `takeReservedUnits`, which clears all of them, this leaves the
  * rest: a voice note's seconds stay charged when its message unit goes back.
  * In the caller's transaction, beside the refund, so they commit together.
  */
@@ -267,13 +293,22 @@ export async function takeReservedUnit(
   businessId: string,
   eventId: string,
   unit: string,
-): Promise<boolean> {
-  const rows = await tx.execute<{ id: string }>(sql`
-    UPDATE external_events SET reserved_units = array_remove(reserved_units, ${unit})
-     WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid
-       AND ${unit} = ANY(reserved_units)
-    RETURNING id`);
-  return [...rows].length === 1;
+): Promise<{ meter: string | null } | null> {
+  const rows = await tx.execute<{ meter: string | null }>(sql`
+    WITH held AS (
+      SELECT id, reserved_meters ->> ${unit}::text AS meter FROM external_events
+       WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid
+         AND ${unit} = ANY(reserved_units)
+       FOR UPDATE
+    )
+    UPDATE external_events e
+       SET reserved_units = array_remove(e.reserved_units, ${unit}),
+           reserved_meters = e.reserved_meters - ${unit}::text
+      FROM held
+     WHERE e.id = held.id
+    RETURNING held.meter`);
+  const row = [...rows][0];
+  return row ? { meter: row.meter } : null;
 }
 
 /**

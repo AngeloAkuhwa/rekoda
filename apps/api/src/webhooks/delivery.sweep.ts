@@ -69,7 +69,7 @@ export async function deliverWebhooks(deps: {
      * silently at a ceiling would be the platform deciding which of their
      * own events they may hear about. */
     const capacity = await withBusiness(deps.worker, delivery.businessId, async (tx) =>
-      usageRepo.consumeUnit(
+      usageRepo.reserveUnit(
         tx,
         delivery.businessId,
         usagePeriod(now),
@@ -83,7 +83,7 @@ export async function deliverWebhooks(deps: {
         ),
       ),
     );
-    if (!capacity) {
+    if (!capacity.granted) {
       const outcome = await webhooksRepo.markAttemptFailed(deps.worker, {
         id: delivery.id,
         status: null,
@@ -114,7 +114,7 @@ export async function deliverWebhooks(deps: {
        * failed did not. Only reachable for an attempt that TOOK a unit —
        * the capacity refusal above never enters this block. */
       await withBusiness(deps.worker, delivery.businessId, (tx) =>
-        usageRepo.refundUnit(tx, delivery.businessId, usagePeriod(now), 'WEBHOOK_DELIVERIES'),
+        usageRepo.refundUnit(tx, delivery.businessId, capacity.meter, 'WEBHOOK_DELIVERIES'),
       );
       const status = error instanceof WebhookSendFailed ? error.status : null;
       const reason = error instanceof Error ? error.message : 'delivery failed';

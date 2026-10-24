@@ -1,0 +1,11 @@
+-- G-109: a delayed refund goes back to the exact meter row its unit was spent on.
+--
+-- A business on the trial plan meters its base-plan units on one trial row for the 14 days, and
+-- a paid business meters by calendar month. A reservation recorded on the message
+-- (`reserved_units`) is refunded later, possibly after the business has changed plan, so the
+-- row can never be inferred from the plan the business is on when the refund runs. This column
+-- records, in the same transaction as the consume, the meter row each reserved unit was spent
+-- on: { "<UNIT>": "<meter row>" }. A reservation recorded before this column existed has no
+-- entry and is refunded to its calendar month, which is where it was spent.
+-- Unit names and meter labels only; nothing about the message or the merchant.
+ALTER TABLE external_events ADD COLUMN reserved_meters jsonb NOT NULL DEFAULT '{}'::jsonb;
