@@ -1219,6 +1219,13 @@
       "when": 1792584000000,
       "tag": "0173_checkout_attempts",
       "breakpoints": true
+    },
+    {
+      "idx": 174,
+      "version": "7",
+      "when": 1792670400000,
+      "tag": "0174_billing_email_verification",
+      "breakpoints": true
     }
   ]
 }

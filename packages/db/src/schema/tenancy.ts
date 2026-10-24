@@ -87,6 +87,8 @@ export const businesses = pgTable(
     billingEmailSealed: text('billing_email_sealed'),
     /** When the billing email was last set (migration 0172). */
     billingEmailSetAt: timestamp('billing_email_set_at', { withTimezone: true }),
+    /** When the mailbox was proven to be the merchant's (migration 0174, OWN-51); null until, and reset when the address changes. */
+    billingEmailVerifiedAt: timestamp('billing_email_verified_at', { withTimezone: true }),
     /**
      * When the subscription was last DECIDED (migration 0162, G-104): an
      * operator move, a settled plan charge, a scheduled plan change. A plan

@@ -103,3 +103,23 @@ export const subscriptionChargeAttempts = pgTable('subscription_charge_attempts'
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * One mailed link that proves a billing email's mailbox (migration 0174, OWN-51).
+ * Only the SHA-256 of the link's token is kept, never the token or the address.
+ */
+export const billingEmailVerifications = pgTable('billing_email_verifications', {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  businessId: uuid('business_id')
+    .notNull()
+    .references(() => businesses.id),
+  tokenHash: text('token_hash').notNull(),
+  /** The business's `billing_email_set_at` when the link was issued: binds it to that address. */
+  emailSetAt: timestamp('email_set_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  consumedAt: timestamp('consumed_at', { withTimezone: true }),
+  voidedAt: timestamp('voided_at', { withTimezone: true }),
+});

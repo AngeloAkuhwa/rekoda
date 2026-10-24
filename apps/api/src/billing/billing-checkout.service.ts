@@ -39,7 +39,12 @@
  * lands in no merchant's books.
  */
 import { Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
-import { MAX_CHECKOUT_ATTEMPTS, attemptReference, checkBillingEmail } from '@rekoda/core';
+import {
+  MAX_CHECKOUT_ATTEMPTS,
+  attemptReference,
+  checkBillingEmail,
+  maskBillingEmail,
+} from '@rekoda/core';
 import { decryptFacet, encryptFacet } from '@rekoda/core/vault';
 import type { BillingCheckoutResponse } from '@rekoda/contracts';
 import { subscriptionsRepo, withBusiness, type Db, type TenantDb } from '@rekoda/db';
@@ -305,24 +310,55 @@ export class BillingCheckoutService {
     return subscriptionsRepo.lockChargeByReference(tx, businessId, reference);
   }
 
-  /** The email to start a session with, stored sealed when the merchant just gave one. */
+  /**
+   * The email to start a session with, stored sealed when the merchant just gave
+   * a DIFFERENT one. Giving the address already on file changes nothing, so a
+   * proven mailbox stays proven; a new address is unproven until its link is used.
+   */
   private async emailFor(
     tx: TenantDb,
     businessId: string,
     given: string | null,
     now: Date,
-  ): Promise<string | null> {
-    if (given) {
+  ): Promise<{ email: string; verified: boolean } | null> {
+    const state = await subscriptionsRepo.billingEmailState(tx, businessId);
+    const onFile = state.sealed
+      ? decryptFacet(state.sealed, this.config.vaultKey, emailAad(businessId))
+      : null;
+    if (given && given !== onFile) {
       await subscriptionsRepo.setBillingEmailSealed(
         tx,
         businessId,
         encryptFacet(given, this.config.vaultKey, emailAad(businessId)),
         now,
       );
-      return given;
+      return { email: given, verified: false };
     }
-    const sealed = await subscriptionsRepo.billingEmailSealed(tx, businessId);
-    return sealed ? decryptFacet(sealed, this.config.vaultKey, emailAad(businessId)) : null;
+    return onFile ? { email: onFile, verified: state.verifiedAt !== null } : null;
+  }
+
+  /**
+   * The address a session may start with, or the answer that explains why none
+   * may: no address yet, or (live key only) a mailbox not yet proven (OWN-51).
+   * A test key never waits, so development and staging need no inbox.
+   */
+  private async readyEmail(
+    tx: TenantDb,
+    businessId: string,
+    given: string | null,
+    now: Date,
+  ): Promise<{ email: string } | { response: BillingCheckoutResponse }> {
+    const found = await this.emailFor(tx, businessId, given, now);
+    if (!found) return { response: { state: 'requires_billing_email' } };
+    if (this.config.paystackSecretKey.startsWith('sk_live') && !found.verified) {
+      return {
+        response: {
+          state: 'requires_billing_email_verification',
+          maskedEmail: maskBillingEmail(found.email),
+        },
+      };
+    }
+    return { email: found.email };
   }
 
   private async openNext(
@@ -333,8 +369,9 @@ export class BillingCheckoutService {
     given: string | null,
     now: Date,
   ): Promise<Decision> {
-    const email = await this.emailFor(tx, businessId, given, now);
-    if (!email) return { state: 'done', response: { state: 'requires_billing_email' } };
+    const ready = await this.readyEmail(tx, businessId, given, now);
+    if ('response' in ready) return { state: 'done', response: ready.response };
+    const email = ready.email;
     const attempt = await subscriptionsRepo.openAttempt(tx, {
       businessId,
       chargeId: charge.id,
@@ -400,8 +437,9 @@ export class BillingCheckoutService {
       }
       /* The email is settled before the old attempt is retired, so a missing one
        * leaves the charge exactly as it was. */
-      const email = await this.emailFor(tx, businessId, given, now);
-      if (!email) return { state: 'done', response: { state: 'requires_billing_email' } };
+      const ready = await this.readyEmail(tx, businessId, given, now);
+      if ('response' in ready) return { state: 'done', response: ready.response };
+      const email = ready.email;
       const moved = await subscriptionsRepo.moveAttempt(
         tx,
         businessId,
