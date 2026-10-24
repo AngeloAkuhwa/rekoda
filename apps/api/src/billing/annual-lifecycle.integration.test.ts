@@ -241,8 +241,9 @@ describe('a yearly renewal nobody pays', () => {
 
     const sub = await subOf(businessId);
     expect(sub).toMatchObject({ plan: 'chat', billingInterval: 'annual', paymentFailedAt: null });
-    const days = (sub!.planExpiresAt!.getTime() - Date.now()) / DAY;
-    expect(days).toBeGreaterThan(300);
+    expect(sub!.planExpiresAt?.toISOString()).toBe(
+      addInterval(sub!.cycleStartedAt!, 'annual', sub!.renewalAnchorDay!).toISOString(),
+    );
     expect((await overviewOf(auth)).status.state).toBe('active');
   });
 
@@ -265,7 +266,9 @@ describe('a yearly renewal nobody pays', () => {
 
     const sub = await subOf(businessId);
     expect(sub).toMatchObject({ plan: 'chat', billingInterval: 'annual', paymentFailedAt: null });
-    expect((sub!.planExpiresAt!.getTime() - now.getTime()) / DAY).toBeGreaterThan(363);
+    expect(sub!.planExpiresAt?.toISOString()).toBe(
+      addInterval(now, 'annual', sub!.renewalAnchorDay!).toISOString(),
+    );
   });
 });
 
