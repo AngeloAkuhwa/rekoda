@@ -121,8 +121,8 @@ async function onboard() {
 
 /** The Lagos day of the month a cycle started on: the anchor a renewal keeps. */
 const anchorOf = (start: Date) => new Date(start.getTime() + 3_600_000).getUTCDate();
-/** An annual cycle whose year ended about a day ago, so the sweep (which prices at the real clock) finds it due. */
-const justEndedYear = () => new Date(Date.now() - 366 * DAY);
+/** An annual cycle whose year ended one to two days ago (367 days back covers a 365- or 366-day year, so it is never due by milliseconds), so the sweep (which prices at the real clock) finds it due. */
+const justEndedYear = () => new Date(Date.now() - 367 * DAY);
 /** A monthly cycle whose month ended a few days ago. */
 const justEndedMonth = () => new Date(Date.now() - 35 * DAY);
 
@@ -307,6 +307,14 @@ describe('money returned on a yearly charge', () => {
 
     const charge = await refund(businessId, reference, CHAT_ANNUAL);
     expect(charge?.status).toBe('refunded');
+    const audit = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ action: string; new_value: { reason: string } }>(sql`
+        SELECT action, new_value FROM audit_events
+        WHERE business_id = ${businessId}::uuid AND entity_id = ${reference} AND action = 'refunded'
+      `),
+    );
+    expect([...audit]).toHaveLength(1);
+    expect([...audit][0]?.new_value.reason).toBe('goodwill');
     expect(await subOf(businessId)).toMatchObject({
       plan: 'chat',
       planExpiresAt: before!.planExpiresAt,
