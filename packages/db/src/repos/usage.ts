@@ -21,6 +21,27 @@ export type { UsageUnit } from '@rekoda/core';
 import type { UsageUnit } from '@rekoda/core';
 
 /**
+ * The meter row a business's units live on (G-109, OWN-27).
+ *
+ * A paid business meters by calendar month, as callers pass it. A business
+ * still on the trial meters on ONE fixed row for the whole trial, whatever
+ * month the caller names: the trial is one 14-day budget, so a trial that
+ * crosses a month boundary does not earn a second allowance. The row is
+ * left behind when the first paid plan lands, so trial usage never carries
+ * into the paid month and a first purchase starts a fresh meter. A lapsed
+ * trial keeps this row too; its allowances are zero and nothing is spent.
+ */
+export const TRIAL_PERIOD = 'TRIAL00';
+
+async function meterPeriod(tx: TenantDb, businessId: string, period: string): Promise<string> {
+  const rows = await tx.execute<{ plan: string }>(sql`
+    SELECT plan FROM businesses WHERE id = ${businessId}::uuid
+  `);
+  const row = [...rows][0];
+  return !row || row.plan === 'trial' ? TRIAL_PERIOD : period;
+}
+
+/**
  * Spend `n` units, atomically, against `allowance + bonus`.
  * Returns whether the spend was GRANTED; a refusal means exhausted.
  */
@@ -32,6 +53,7 @@ export async function consumeUnit(
   allowance: number,
   n = 1,
 ): Promise<boolean> {
+  period = await meterPeriod(tx, businessId, period);
   /**
    * Both arms carry the ceiling. The SELECT's WHERE guards the FRESH-ROW
    * case (an allowance of zero, like orders on Chat, must refuse the
@@ -88,6 +110,7 @@ export async function refundUnit(
   unit: UsageUnit,
   n = 1,
 ): Promise<void> {
+  period = await meterPeriod(tx, businessId, period);
   await tx.execute(sql`
     UPDATE usage_counters
     SET used = GREATEST(used - ${n}, 0), updated_at = now()
@@ -119,6 +142,7 @@ export async function creditBonus(
   unit: UsageUnit,
   n: number,
 ): Promise<void> {
+  period = await meterPeriod(tx, businessId, period);
   await tx.execute(sql`
     INSERT INTO usage_counters (business_id, period, unit, bonus)
     VALUES (${businessId}::uuid, ${period}, ${unit}, ${n})
@@ -139,6 +163,7 @@ export async function usageFor(
   businessId: string,
   period: string,
 ): Promise<UsageRow[]> {
+  period = await meterPeriod(tx, businessId, period);
   const rows = await tx.execute<UsageRow>(sql`
     SELECT unit, used, bonus FROM usage_counters
     WHERE business_id = ${businessId}::uuid AND period = ${period}

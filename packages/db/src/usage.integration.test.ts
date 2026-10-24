@@ -44,6 +44,13 @@ async function seedBusiness(): Promise<string> {
 
 const PERIOD = '2026-08';
 
+/** Put a business on a plan directly, as a settled charge would. */
+async function setPlanOnRow(businessId: string, plan: string) {
+  await withBusiness(db, businessId, (tx) =>
+    tx.execute(sql`UPDATE businesses SET plan = ${plan} WHERE id = ${businessId}::uuid`),
+  );
+}
+
 const consume = (businessId: string, allowance: number, n = 1) =>
   withBusiness(db, businessId, (tx) =>
     usageRepo.consumeUnit(tx, businessId, PERIOD, 'AI_ACTIONS', allowance, n),
@@ -75,6 +82,7 @@ describe('the atomic gate', () => {
 
   it('lets a billing top-up raise the ceiling through bonus, and only through bonus', async () => {
     const businessId = await seedBusiness();
+    await setPlanOnRow(businessId, 'chat'); // paid: meters by calendar month
     expect(await consume(businessId, 2)).toBe(true);
     expect(await consume(businessId, 2)).toBe(true);
     expect(await consume(businessId, 2)).toBe(false); // exhausted at plan allowance
@@ -118,6 +126,7 @@ describe('the atomic gate', () => {
 
   it('keeps months separate — a new period is a fresh meter', async () => {
     const businessId = await seedBusiness();
+    await setPlanOnRow(businessId, 'chat');
     expect(await consume(businessId, 1)).toBe(true);
     expect(await consume(businessId, 1)).toBe(false);
 
@@ -125,6 +134,48 @@ describe('the atomic gate', () => {
       usageRepo.consumeUnit(tx, businessId, '2026-09', 'AI_ACTIONS', 1),
     );
     expect(nextMonth).toBe(true);
+  });
+});
+
+describe('one budget per trial (G-109, OWN-27)', () => {
+  const spend = (businessId: string, period: string, allowance: number) =>
+    withBusiness(db, businessId, (tx) =>
+      usageRepo.consumeUnit(tx, businessId, period, 'AI_ACTIONS', allowance),
+    );
+  const readUsed = async (businessId: string, period: string) => {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, period),
+    );
+    return rows.find((r) => r.unit === 'AI_ACTIONS')?.used ?? 0;
+  };
+
+  it('a trial that crosses a month boundary does not get a second allowance', async () => {
+    const businessId = await seedBusiness();
+    expect(await spend(businessId, '2026-08', 1)).toBe(true);
+    // The calendar month rolled over mid-trial: the unit is still spent.
+    expect(await spend(businessId, '2026-09', 1)).toBe(false);
+    expect(await readUsed(businessId, '2026-09')).toBe(1);
+    expect(await readUsed(businessId, '2026-08')).toBe(1);
+  });
+
+  it('a refund in a later month gives back the unit the trial spent', async () => {
+    const businessId = await seedBusiness();
+    expect(await spend(businessId, '2026-08', 1)).toBe(true);
+    await withBusiness(db, businessId, (tx) =>
+      usageRepo.refundUnit(tx, businessId, '2026-09', 'AI_ACTIONS'),
+    );
+    expect(await spend(businessId, '2026-09', 1)).toBe(true);
+  });
+
+  it('a first paid plan starts a fresh meter: trial usage does not carry into the paid month', async () => {
+    const businessId = await seedBusiness();
+    expect(await spend(businessId, '2026-08', 3)).toBe(true);
+    expect(await spend(businessId, '2026-08', 1)).toBe(false); // trial budget gone
+
+    await setPlanOnRow(businessId, 'chat');
+    // Bought in the same month the trial used its budget in.
+    expect(await readUsed(businessId, '2026-08')).toBe(0);
+    expect(await spend(businessId, '2026-08', 1)).toBe(true);
   });
 });
 
