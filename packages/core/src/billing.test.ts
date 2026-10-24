@@ -5,8 +5,13 @@ import {
   addInterval,
   annualPriceK,
   addOnPack,
+  attemptReference,
   billingState,
+  chargeReferenceOf,
   isStandardMonthlyCycle,
+  MAX_CHECKOUT_ATTEMPTS,
+  SUBSCRIPTION_REFERENCE_PATTERN,
+  subscriptionReference,
   upgradeProrationEligibility,
   EXTRA_SEAT_PRICE_K,
   packsFor,
@@ -573,5 +578,61 @@ describe('annual pricing never leaks into a plan comparison (OWN-40, review of #
       kind: 'first_purchase',
       amountK: annualPriceK(PLAN_PRICES_K.chat),
     });
+  });
+});
+
+describe('checkout attempt references (G-102, OWN-50)', () => {
+  const charge = 'RKD-SUB-20261024-ABCDEF';
+
+  it('keeps the first attempt on the charge reference itself, so existing links and events still match', () => {
+    expect(attemptReference(charge, 1)).toBe(charge);
+  });
+
+  it('gives every replacement attempt its own provider reference', () => {
+    expect(attemptReference(charge, 2)).toBe('RKD-SUB-20261024-ABCDEF-R2');
+    expect(attemptReference(charge, MAX_CHECKOUT_ATTEMPTS)).toBe('RKD-SUB-20261024-ABCDEF-R20');
+    const all = Array.from({ length: MAX_CHECKOUT_ATTEMPTS }, (_, i) =>
+      attemptReference(charge, i + 1),
+    );
+    expect(new Set(all).size).toBe(MAX_CHECKOUT_ATTEMPTS);
+  });
+
+  it('refuses an attempt number outside 1..MAX', () => {
+    expect(() => attemptReference(charge, 0)).toThrow();
+    expect(() => attemptReference(charge, MAX_CHECKOUT_ATTEMPTS + 1)).toThrow();
+    expect(() => attemptReference(charge, 1.5)).toThrow();
+  });
+
+  it('recognises every attempt reference as a subscription reference, and nothing else', () => {
+    for (let n = 1; n <= MAX_CHECKOUT_ATTEMPTS; n += 1) {
+      expect(SUBSCRIPTION_REFERENCE_PATTERN.test(attemptReference(charge, n))).toBe(true);
+    }
+    for (const bad of [
+      `${charge}-R1`,
+      `${charge}-R0`,
+      `${charge}-R21`,
+      `${charge}-R02`,
+      `${charge}-r2`,
+      `${charge}-R2-R3`,
+      `${charge}-R`,
+      `${charge}X`,
+      'RKD-INV-20261024-ABCDEF-R2',
+    ]) {
+      expect(SUBSCRIPTION_REFERENCE_PATTERN.test(bad)).toBe(false);
+    }
+  });
+
+  it('maps any attempt reference back to the charge it belongs to', () => {
+    for (let n = 1; n <= MAX_CHECKOUT_ATTEMPTS; n += 1) {
+      expect(chargeReferenceOf(attemptReference(charge, n))).toBe(charge);
+    }
+  });
+
+  it('works on a reference minted by the real generator', () => {
+    const minted = subscriptionReference(new Date('2026-10-24T10:00:00Z'), (n) =>
+      Uint8Array.from({ length: n }, (_, i) => i * 7),
+    );
+    expect(SUBSCRIPTION_REFERENCE_PATTERN.test(minted)).toBe(true);
+    expect(chargeReferenceOf(attemptReference(minted, 3))).toBe(minted);
   });
 });
