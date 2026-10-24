@@ -109,6 +109,7 @@ case "$*" in
   *"image rm"*) [ -e "${fake}/image-rm-fails" ] && exit 1; echo "$3" >> "${fake}/removed"; freed ;;
   *"image prune"*|*"builder prune"*) freed ;;
   *"ps -a --format"*) [ -e "${fake}/ps-fails" ] && exit 1; cat "${fake}/containers" 2>/dev/null ;;
+  *"run --rm -T migrate"*) [ -e "${fake}/fail-migrate" ] && exit 1 ;;
   *build*) if [ -e "${fake}/fail-build" ]; then echo 1000 > "${fake}/free-kb"; echo 'no space left on device' >&2; exit 1; fi; sleep ${buildSeconds} ;;
   *" up "*) cp "${fake}/next-health.json" "${fake}/health.json" ;;
   *network\\ inspect*) echo '172.30.10.1 false' ;;
@@ -684,4 +685,35 @@ test('finishing an interrupted live deploy keeps the release it started from as 
     `staging-${h.prev.slice(0, 7)}`,
   );
   assert.deepEqual(h.removed().sort(), [...OLD].sort());
+});
+
+test('repeated retries of an interrupted live deploy still keep the original rollback', () => {
+  const h = host();
+  h.killedWhilePrepared('live');
+  writeFileSync(join(h.fake, 'health.json'), readFileSync(join(h.fake, 'next-health.json')));
+  h.images(app(h.next), app(h.prev), ...OLD);
+  writeFileSync(join(h.fake, 'fail-migrate'), '');
+  const second = h.run(h.next);
+  assert.notEqual(second.status, 0);
+  const state = readFileSync(join(h.dir, '.git/rekoda-deploy-staging.state'), 'utf8');
+  assert.match(state, new RegExp(`^prev_release=staging-${h.prev.slice(0, 7)}$`, 'm'));
+  rmSync(join(h.fake, 'fail-migrate'));
+  const third = h.run(h.next);
+  assert.equal(third.status, 0, third.stderr + third.stdout);
+  assert.equal(
+    readFileSync(join(h.dir, '.git/rekoda-deploy-staging.rollback'), 'utf8').trim(),
+    `staging-${h.prev.slice(0, 7)}`,
+  );
+  assert.deepEqual(h.removed().sort(), [...OLD].sort());
+});
+
+test('a rollback record that cannot be written keeps the marker and removes nothing', () => {
+  const h = host();
+  h.images(app(h.next), app(h.prev), ...OLD);
+  mkdirSync(join(h.dir, '.git/rekoda-deploy-staging.rollback.tmp'));
+  const r = h.run(h.next);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /could not be recorded/);
+  assert.equal(h.read.marker(), true);
+  assert.deepEqual(h.removed(), []);
 });

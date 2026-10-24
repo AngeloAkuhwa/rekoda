@@ -95,8 +95,14 @@ write_state() {
   # still be part-way to that release, and only a deploy that runs to the end
   # clears it.
   [ "$LIVE_MARKER" = true ] && [ "$1" = prepared ] && return 0
+  # A live marker rewritten for the release already running keeps the baseline
+  # the interrupted deploy started from: it is the only record of the rollback.
+  local prev_rel=$PREV_RELEASE
+  if [ "$1" = live ] && [ -n "$MARKER_PREV_RELEASE" ] && [ "$PREV_RELEASE" = "$RELEASE" ]; then
+    prev_rel=$MARKER_PREV_RELEASE
+  fi
   printf 'phase=%s\nprev_sha=%s\nprev_release=%s\nsha=%s\nrelease=%s\n' \
-    "$1" "$PREV_SHA" "$PREV_RELEASE" "$SHA" "$RELEASE" >"$STATE.tmp" ||
+    "$1" "$PREV_SHA" "$prev_rel" "$SHA" "$RELEASE" >"$STATE.tmp" ||
     { [ "$1" = prepared ] && PHASE=checks; return 1; }
   # The first marker could not be written (a full disk): nothing has changed yet,
   # so the run ends as a refusal, not as a failed restore.
@@ -537,16 +543,22 @@ jq -e --argjson m "$MIGRATIONS" '.migrations >= $m' <<<"$health" >/dev/null ||
 
 step 'running containers'
 dc ps
+# The release this deploy replaced is the rollback. Record it durably before the
+# marker (which may be the only other record of it) goes; if it cannot be written
+# (a full disk), keep the marker and report, so nothing is cleaned up on a guess.
+rollback=$PREV_RELEASE
+[ "$rollback" != "$RELEASE" ] || rollback=$MARKER_PREV_RELEASE
+if [ -n "$rollback" ] && [ "$rollback" != "$RELEASE" ]; then
+  if ! { printf '%s\n' "$rollback" >"$ROLLBACK_FILE.tmp" && mv -f "$ROLLBACK_FILE.tmp" "$ROLLBACK_FILE"; }; then
+    PHASE=done
+    fail "staging runs $RELEASE and is healthy, but its rollback $rollback could not be recorded in $REKODA_DIR/$ROLLBACK_FILE (a full disk?); the marker stays and no image is removed. Free space, then run the manual Deploy staging workflow to finish"
+  fi
+fi
 rm -f "$STATE"
 PHASE=done
 printf '\nstaging is %s (%s)\n' "$RELEASE" "$SHA"
 # Only now, with the new release proven healthy and the marker gone: keep it and
-# the release it replaced (the rollback this run proved was running), drop older.
-rollback=$PREV_RELEASE
-[ "$rollback" != "$RELEASE" ] || rollback=$MARKER_PREV_RELEASE
-if [ -n "$rollback" ] && [ "$rollback" != "$RELEASE" ]; then
-  printf '%s\n' "$rollback" >"$ROLLBACK_FILE.tmp" && mv -f "$ROLLBACK_FILE.tmp" "$ROLLBACK_FILE" || true
-fi
+# the release it replaced, drop older.
 step 'remove superseded staging images (keeping the running release and its rollback)'
 prune_releases routine
 exit 0
