@@ -189,7 +189,7 @@ describe('billing email and confirmation wording', () => {
 
 describe('values that reach the checkout and confirmation forms', () => {
   it('reads a token from the fragment and treats an empty or short one as missing', () => {
-    const token = 'abcdefghijklmnop1234567890_-AB';
+    const token = 'x'.repeat(30); // gitleaks:allow (a fixture of no entropy, not a credential)
     expect(tokenFromFragment(`#token=${token}`)).toBe(token);
     expect(tokenFromFragment(`#${token}`)).toBe(token);
     expect(tokenFromFragment('#token=')).toBeNull();

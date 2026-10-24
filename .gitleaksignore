@@ -10,3 +10,7 @@
 # Test fixture in the API-key suite: a self-describing constant
 # ('api-keys-secret-at-least-32-characters'), never a real key.
 4393b0e353d50e831217cb4190afb5f1d9dfc7f8:apps/api/src/api/api-keys.integration.test.ts:generic-api-key:21
+
+# Test fixture for the confirmation-token fragment parser (a made-up 30-character string, not a credential);
+# the live line is now a repeated letter with an inline gitleaks:allow.
+aaf444e10fdf4f21fd498a507cb6760233ff6086:apps/web/src/lib/billing-pay-copy.test.ts:generic-api-key:192
