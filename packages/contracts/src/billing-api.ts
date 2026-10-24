@@ -162,6 +162,44 @@ export const billingPackPurchaseRequest = z.object({
 });
 export type BillingPackPurchaseRequest = z.infer<typeof billingPackPurchaseRequest>;
 
+/**
+ * Pay one pending charge (G-102, OWN-39). The reference names the charge; the
+ * billing email is needed only the first time, or to change it. The business
+ * comes from the session, never from here.
+ */
+export const billingCheckoutRequest = z.object({
+  reference: z.string().min(1).max(64),
+  billingEmail: z.string().max(320).optional(),
+});
+export type BillingCheckoutRequest = z.infer<typeof billingCheckoutRequest>;
+
+export const billingCheckoutResponse = z.discriminatedUnion('state', [
+  z.object({
+    state: z.literal('ready'),
+    reference: z.string(),
+    checkoutUrl: z.string().url(),
+    amountK: kobo,
+  }),
+  /** No billing email on file and none given: ask for one inside the payment flow. */
+  z.object({ state: z.literal('requires_billing_email') }),
+  z.object({
+    state: z.literal('invalid_billing_email'),
+    reason: z.enum(['invalid', 'too_long', 'reserved']),
+  }),
+  z.object({
+    state: z.literal('unavailable'),
+    reason: z.enum([
+      'unknown_charge',
+      'not_pending',
+      'nothing_to_pay',
+      'payments_not_configured',
+      'awaiting_platform_confirmation',
+      'provider_rejected_billing_email',
+    ]),
+  }),
+]);
+export type BillingCheckoutResponse = z.infer<typeof billingCheckoutResponse>;
+
 export const billingPlanChangeRequest = z.object({
   plan: z.enum(['chat', 'integrate', 'complete']),
   /** Only a first purchase chooses; a subscriber switches interval through `billingIntervalRequest`. */

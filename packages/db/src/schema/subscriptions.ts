@@ -61,6 +61,9 @@ export const subscriptionCharges = pgTable(
     abandonedAt: timestamp('abandoned_at', { withTimezone: true }),
     /** What the provider verified it took (migration 0164, G-107); the excess over `amountK` is an overpayment. */
     paidAmountK: bigint('paid_amount_k', { mode: 'number' }),
+    /** The Paystack checkout this charge was initialised with (migration 0172, G-102); null until the merchant starts paying. */
+    checkoutUrl: text('checkout_url'),
+    checkoutStartedAt: timestamp('checkout_started_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

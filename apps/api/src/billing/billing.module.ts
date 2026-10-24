@@ -2,7 +2,9 @@ import { Module } from '@nestjs/common';
 import { AuthService } from '../auth/auth.service.js';
 import { SessionGuard } from '../auth/session.guard.js';
 import { DbModule } from '../db/db.module.js';
+import { PaymentsModule } from '../payments/payments.module.js';
 import { RepliesModule } from '../replies/replies.module.js';
+import { BillingCheckoutService } from './billing-checkout.service.js';
 import { BillingController } from './billing.controller.js';
 import { BillingService } from './billing.service.js';
 
@@ -12,9 +14,9 @@ import { BillingService } from './billing.service.js';
  * that declares the controller using them.
  */
 @Module({
-  imports: [DbModule, RepliesModule],
+  imports: [DbModule, RepliesModule, PaymentsModule],
   controllers: [BillingController],
-  providers: [AuthService, SessionGuard, BillingService],
+  providers: [AuthService, SessionGuard, BillingService, BillingCheckoutService],
   exports: [BillingService],
 })
 export class BillingModule {}
