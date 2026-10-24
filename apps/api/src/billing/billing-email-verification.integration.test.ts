@@ -497,6 +497,19 @@ describe('a live payment', () => {
     expect(provider.initialized.at(-1)!.customerEmail).toBe(OTHER);
   });
 
+  it('does not hand back a cached link on a live key while the mailbox is unproven', async () => {
+    const businessId = await seedBusiness();
+    const reference = await pendingCharge(businessId);
+    /* A session started under a test key, never proven. */
+    expect((await checkouts().checkout(businessId, reference, EMAIL)).state).toBe('ready');
+
+    const answer = await checkouts(liveConfig()).checkout(businessId, reference, undefined);
+    expect(answer).toMatchObject({
+      state: 'requires_billing_email_verification',
+      maskedEmail: 'a**@shop.example.ng',
+    });
+  });
+
   it('starts a fresh session for a different address on a test key', async () => {
     const businessId = await seedBusiness();
     const reference = await pendingCharge(businessId);
