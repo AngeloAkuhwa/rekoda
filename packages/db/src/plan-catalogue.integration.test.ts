@@ -456,29 +456,32 @@ describe('the cutover resolution rule (BL2, PR-100)', () => {
       ).rejects.toThrow(/already scheduled/);
     });
 
-    it('concurrent month and year repricing never leave a year that is not ten months', async () => {
-      const v = await planCatalogueRepo.planVersionAt(db, 'chat', new Date());
-      const month = await planCatalogueRepo.priceAt(db, v!.id, 'NGN', 'monthly', new Date());
-      await Promise.allSettled([
-        planCatalogueRepo.changePlanPrice(ownerDb, {
-          planVersionId: v!.id,
-          currency: 'NGN',
-          billingInterval: 'monthly',
-          amountMinor: (month ?? 0) + 100_000,
-          from: new Date('2026-09-04T00:00:00Z'),
-        }),
-        planCatalogueRepo.changePlanPrice(ownerDb, {
-          planVersionId: v!.id,
-          currency: 'NGN',
-          billingInterval: 'annual',
-          amountMinor: 10 * (month ?? 0),
-          from: new Date('2026-09-04T00:00:00Z'),
-        }),
-      ]);
-      const now = new Date('2026-09-05T00:00:00Z');
-      const m = await planCatalogueRepo.priceAt(db, v!.id, 'NGN', 'monthly', now);
-      const y = await planCatalogueRepo.priceAt(db, v!.id, 'NGN', 'annual', now);
-      expect(y).toBe(10 * (m ?? 0));
+    it('repricing waits for a concurrent writer of the same version (it takes the row lock)', async () => {
+      const v = await planCatalogueRepo.planVersionAt(db, 'complete', new Date());
+      let settled = false;
+      let pending: Promise<void> | undefined;
+      await ownerDb.transaction(async (tx) => {
+        /* A concurrent repricing holds the version row. */
+        await tx.execute(
+          sql`SELECT id FROM plan_versions WHERE id = ${v!.id}::uuid FOR NO KEY UPDATE`,
+        );
+        pending = planCatalogueRepo
+          .changePlanPrice(ownerDb, {
+            planVersionId: v!.id,
+            currency: 'NGN',
+            billingInterval: 'monthly',
+            amountMinor: PLAN_PRICES_K.complete + 100_000,
+            from: new Date('2026-09-06T00:00:00Z'),
+          })
+          .finally(() => {
+            settled = true;
+          });
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        /* Without the lock it would already have written and settled. */
+        expect(settled).toBe(false);
+      });
+      await pending;
+      expect(settled).toBe(true);
     });
 
     it('repricing the month carries the year with it', async () => {
