@@ -587,6 +587,36 @@ describe('a live payment', () => {
     expect(provider.initialized).toHaveLength(0);
   });
 
+  it('replaces a session with no recorded revision on a live key even when the address is unchanged', async () => {
+    const businessId = await seedBusiness();
+    const reference = await pendingCharge(businessId);
+    await checkouts().checkout(businessId, reference, EMAIL);
+    await emails().confirm(businessId, await mailed(businessId));
+    await sql1(
+      businessId,
+      sql`UPDATE subscription_charge_attempts SET email_revision = NULL
+          WHERE business_id = ${businessId}::uuid`,
+    );
+    const before = provider.initialized.length;
+
+    const first = await checkouts(liveConfig()).checkout(businessId, reference, undefined);
+    expect(first.state).toBe('ready');
+    expect(provider.initialized).toHaveLength(before + 1);
+    const revisions = await sql1<{ email_revision: number | null; status: string }>(
+      businessId,
+      sql`SELECT email_revision, status FROM subscription_charge_attempts
+          WHERE business_id = ${businessId}::uuid AND status = 'active'`,
+    );
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]!.email_revision).not.toBeNull();
+
+    /* And it is not replaced again: the new session carries its revision. */
+    expect((await checkouts(liveConfig()).checkout(businessId, reference, undefined)).state).toBe(
+      'ready',
+    );
+    expect(provider.initialized).toHaveLength(before + 1);
+  });
+
   it('starts a fresh session for a different address on a test key', async () => {
     const businessId = await seedBusiness();
     const reference = await pendingCharge(businessId);
