@@ -52,3 +52,42 @@ export function checkBillingEmail(raw: string): BillingEmailCheck {
   }
   return { ok: true, email };
 }
+
+/* ── proving the mailbox is the merchant's (G-102 slice 2b, OWN-51) ─────────── */
+
+/**
+ * The rules for confirming a billing email. A confirmation link is a bearer
+ * secret mailed to the address: whoever opens it proves they can read that
+ * mailbox, so it expires, works once, and is useless once the address changes.
+ */
+export const BILLING_EMAIL_VERIFICATION = {
+  /** How long a mailed link works. */
+  ttlMs: 60 * 60 * 1000,
+  /** At most this many links may be requested for one business in an hour. */
+  maxPerHour: 5,
+  /** The wait between one request and the next, so a double click mails once. */
+  cooldownMs: 60 * 1000,
+} as const;
+
+/**
+ * An address for display: enough for its owner to recognise it, not enough to
+ * read it aloud. `ada@shop.example.ng` becomes `a**@shop.example.ng`.
+ */
+export function maskBillingEmail(email: string): string {
+  const at = email.lastIndexOf('@');
+  if (at < 1) return '***';
+  const local = email.slice(0, at);
+  /* A one-character local part is hidden whole: showing its first character would
+   * show all of it. */
+  if (local.length === 1) return `*${email.slice(at)}`;
+  return `${local[0]}${'*'.repeat(Math.min(local.length - 1, 8))}${email.slice(at)}`;
+}
+
+/**
+ * The page a merchant opens from the mail. The token rides in the URL fragment,
+ * which a browser never sends to a server, so it stays out of access logs and
+ * referrer headers; the page reads it and posts it to the confirm endpoint.
+ */
+export function billingEmailConfirmationLink(webUrl: string, token: string): string {
+  return `${webUrl.replace(/\/+$/, '')}/app/billing/confirm-email#token=${encodeURIComponent(token)}`;
+}

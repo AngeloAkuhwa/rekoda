@@ -968,6 +968,8 @@ export async function setBillingEmailSealed(
     UPDATE businesses AS b
     SET billing_email_sealed = ${sealed},
         billing_email_set_at = ${when.toISOString()}::timestamptz,
+        billing_email_verified_at = NULL,
+        billing_email_revision = b.billing_email_revision + 1,
         updated_at = now()
     FROM (SELECT billing_email_sealed IS NOT NULL AS replaced FROM businesses
           WHERE id = ${businessId}::uuid) AS previous
@@ -1006,6 +1008,14 @@ export interface AttemptRow extends Record<string, unknown> {
   createdAt: Date;
   updatedAt: Date;
   /**
+   * The billing email's revision this session was started with (OWN-51), null for a
+   * session that predates it. A session started for an address the merchant has since
+   * replaced is not handed out again.
+   */
+  emailRevision: number | null;
+  /** Whether a live provider key started this session; null for one that predates the column. */
+  providerLive: boolean | null;
+  /**
    * Milliseconds since the attempt last changed (opened, or its link stored),
    * measured by the DATABASE clock in the query that read it. Only `liveAttempt`
    * reads it; elsewhere it is 0. Never compare `updatedAt` with the server's
@@ -1024,6 +1034,8 @@ interface RawAttempt extends Record<string, unknown> {
   checkout_url: string | null;
   created_at: string;
   updated_at: string;
+  email_revision?: number | null;
+  provider_live?: boolean | null;
   idle_ms?: string | number | null;
 }
 
@@ -1037,6 +1049,8 @@ const shapeAttempt = (row: RawAttempt): AttemptRow => ({
   checkoutUrl: row.checkout_url,
   createdAt: new Date(row.created_at),
   updatedAt: new Date(row.updated_at),
+  emailRevision: row.email_revision == null ? null : Number(row.email_revision),
+  providerLive: row.provider_live ?? null,
   idleMs: row.idle_ms == null ? 0 : Math.max(0, Number(row.idle_ms)),
 });
 
@@ -1147,13 +1161,21 @@ export async function openAttempt(
     chargeId: string;
     attemptNo: number;
     providerReference: string;
+    /** False for a session adopted from before attempts existed: its address is unknown. */
+    bindEmail?: boolean;
+    /** Whether the provider key starting this session is a live one; omitted for an adopted session. */
+    providerLive?: boolean;
   },
 ): Promise<AttemptRow | null> {
+  const bind = input.bindEmail !== false;
   const rows = await tx.execute<RawAttempt>(sql`
     INSERT INTO subscription_charge_attempts
-      (business_id, charge_id, attempt_no, provider_reference, status)
-    VALUES (${input.businessId}::uuid, ${input.chargeId}::uuid, ${input.attemptNo},
-            ${input.providerReference}, 'initializing')
+      (business_id, charge_id, attempt_no, provider_reference, status, email_revision, provider_live)
+    SELECT ${input.businessId}::uuid, ${input.chargeId}::uuid, ${input.attemptNo},
+           ${input.providerReference}, 'initializing',
+           CASE WHEN ${bind} THEN b.billing_email_revision END,
+           ${input.providerLive ?? null}::boolean
+    FROM businesses b WHERE b.id = ${input.businessId}::uuid
     ON CONFLICT DO NOTHING
     RETURNING *
   `);
@@ -1207,6 +1229,155 @@ export async function supersedeOtherLiveAttempts(
       AND status IN ('initializing', 'active', 'ambiguous')
       AND (${keepAttemptId}::uuid IS NULL OR id <> ${keepAttemptId}::uuid)
   `);
+}
+
+/* ── proving the billing email's mailbox (migration 0174, G-102 slice 2b, OWN-51) ── */
+
+export interface BillingEmailState {
+  /** Counts every change of address; a mailed link and a checkout session are bound to it. */
+  revision: number;
+  /** The sealed address, null when none has been given. */
+  sealed: string | null;
+  /** When it was last set. A mailed link is bound to this instant. */
+  setAt: Date | null;
+  /** When its mailbox was proven, null when it has not been (or the address has changed since). */
+  verifiedAt: Date | null;
+}
+
+export async function billingEmailState(
+  tx: TenantDb,
+  businessId: string,
+): Promise<BillingEmailState> {
+  const rows = await tx.execute<{
+    sealed: string | null;
+    set_at: string | null;
+    verified_at: string | null;
+    revision: number;
+  }>(sql`
+    SELECT billing_email_sealed AS sealed, billing_email_set_at AS set_at,
+           billing_email_revision AS revision,
+           billing_email_verified_at AS verified_at
+    FROM businesses WHERE id = ${businessId}::uuid
+  `);
+  const row = [...rows][0];
+  return {
+    revision: Number(row?.revision ?? 0),
+    sealed: row?.sealed ?? null,
+    setAt: at(row?.set_at ?? null),
+    verifiedAt: at(row?.verified_at ?? null),
+  };
+}
+
+/**
+ * How many links were requested for this business in the last hour, and how long
+ * ago the latest was. Both measured by the DATABASE clock in one query, so the
+ * rate limit never compares this server's clock with a stored timestamp.
+ */
+export async function recentEmailVerificationRequests(
+  tx: TenantDb,
+  businessId: string,
+): Promise<{ lastHour: number; sinceLatestMs: number | null }> {
+  const rows = await tx.execute<{ n: number; since_ms: string | number | null }>(sql`
+    SELECT count(*) FILTER (WHERE created_at > clock_timestamp() - interval '1 hour')::int AS n,
+           (extract(epoch FROM (clock_timestamp() - max(created_at))) * 1000)::bigint AS since_ms
+    FROM billing_email_verifications
+    WHERE business_id = ${businessId}::uuid AND voided_at IS NULL
+  `);
+  const row = [...rows][0];
+  return {
+    lastHour: Number(row?.n ?? 0),
+    sinceLatestMs: row?.since_ms == null ? null : Math.max(0, Number(row.since_ms)),
+  };
+}
+
+/**
+ * Record one mailed link. Only the token's hash is kept. The link is bound to the
+ * address it was mailed to by the business's `billing_email_revision` as it stands
+ * now; the caller holds the business lock, so it cannot change underneath.
+ */
+export async function issueEmailVerification(
+  tx: TenantDb,
+  input: { businessId: string; tokenHash: string; ttlMs: number },
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    INSERT INTO billing_email_verifications
+      (business_id, token_hash, email_revision, created_at, expires_at)
+    SELECT b.id, ${input.tokenHash}, b.billing_email_revision, clock_timestamp(),
+           clock_timestamp() + make_interval(secs => ${input.ttlMs / 1000})
+    FROM businesses b
+    WHERE b.id = ${input.businessId}::uuid AND b.billing_email_set_at IS NOT NULL
+    RETURNING id
+  `);
+  if ([...rows].length === 0) return false;
+  await tx.execute(sql`
+    INSERT INTO audit_events
+      (business_id, actor, entity, entity_id, action, new_value, source_type)
+    VALUES (${input.businessId}::uuid, 'owner', 'business', ${input.businessId},
+            'billing_email_verification_requested', '{}'::jsonb, 'dashboard')
+  `);
+  return true;
+}
+
+/** Take back a link that could not be mailed, so a failed send does not use up the merchant's allowance. */
+export async function voidEmailVerification(
+  tx: TenantDb,
+  businessId: string,
+  tokenHash: string,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE billing_email_verifications
+    SET consumed_at = clock_timestamp(), voided_at = clock_timestamp()
+    WHERE business_id = ${businessId}::uuid AND token_hash = ${tokenHash} AND consumed_at IS NULL
+  `);
+}
+
+export type EmailVerificationOutcome = 'verified' | 'invalid' | 'expired' | 'address_changed';
+
+/**
+ * Spend a link. Works once, only before it expires, only for the address it was
+ * mailed to, and only for the business whose session presents it. Everything but
+ * a fresh, matching link is refused without saying which of the others it was,
+ * except "expired" and "address changed", which the merchant can act on.
+ * The caller holds the business lock.
+ */
+export async function confirmEmailVerification(
+  tx: TenantDb,
+  businessId: string,
+  tokenHash: string,
+): Promise<EmailVerificationOutcome> {
+  const rows = await tx.execute<{
+    id: string;
+    consumed: boolean;
+    expired: boolean;
+    same_address: boolean;
+  }>(sql`
+    SELECT v.id, v.consumed_at IS NOT NULL AS consumed,
+           v.expires_at <= clock_timestamp() AS expired,
+           v.email_revision = b.billing_email_revision AS same_address
+    FROM billing_email_verifications v
+    JOIN businesses b ON b.id = v.business_id
+    WHERE v.business_id = ${businessId}::uuid AND v.token_hash = ${tokenHash}
+  `);
+  const row = [...rows][0];
+  if (!row || row.consumed) return 'invalid';
+  if (row.expired) return 'expired';
+  if (!row.same_address) return 'address_changed';
+  /* Every outstanding link is spent with it: one proof is enough. */
+  await tx.execute(sql`
+    UPDATE billing_email_verifications SET consumed_at = clock_timestamp()
+    WHERE business_id = ${businessId}::uuid AND consumed_at IS NULL
+  `);
+  await tx.execute(sql`
+    UPDATE businesses SET billing_email_verified_at = clock_timestamp(), updated_at = now()
+    WHERE id = ${businessId}::uuid
+  `);
+  await tx.execute(sql`
+    INSERT INTO audit_events
+      (business_id, actor, entity, entity_id, action, new_value, source_type)
+    VALUES (${businessId}::uuid, 'owner', 'business', ${businessId},
+            'billing_email_verified', '{}'::jsonb, 'dashboard')
+  `);
+  return 'verified';
 }
 
 /**

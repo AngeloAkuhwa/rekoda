@@ -343,3 +343,23 @@ describe('REKODA_TRUSTED_WEB', () => {
     expect(loadConfig({ ...DEV, REKODA_TRUSTED_WEB: '0.0.0.0/0' }).trustedWeb).toHaveLength(1);
   });
 });
+
+describe('REKODA_EMAIL_PROVIDER (OWN-51)', () => {
+  it('defaults to none and accepts mock outside production', () => {
+    expect(loadConfig(BASE).emailProvider).toBe('none');
+    expect(loadConfig({ ...BASE, REKODA_EMAIL_PROVIDER: 'mock' }).emailProvider).toBe('mock');
+  });
+
+  it('refuses mock in production, where mail would vanish into memory', () => {
+    expect(() => loadConfig({ ...PROD, REKODA_EMAIL_PROVIDER: 'mock' })).toThrow(
+      /REKODA_EMAIL_PROVIDER/,
+    );
+    expect(loadConfig({ ...PROD, REKODA_EMAIL_PROVIDER: '' }).emailProvider).toBe('none');
+  });
+
+  it('refuses a value it does not know', () => {
+    expect(() => loadConfig({ ...BASE, REKODA_EMAIL_PROVIDER: 'smtp' })).toThrow(
+      /REKODA_EMAIL_PROVIDER/,
+    );
+  });
+});

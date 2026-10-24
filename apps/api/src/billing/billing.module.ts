@@ -2,8 +2,10 @@ import { Module } from '@nestjs/common';
 import { AuthService } from '../auth/auth.service.js';
 import { SessionGuard } from '../auth/session.guard.js';
 import { DbModule } from '../db/db.module.js';
+import { EmailModule } from '../email/email.module.js';
 import { PaymentsModule } from '../payments/payments.module.js';
 import { RepliesModule } from '../replies/replies.module.js';
+import { BillingEmailService } from './billing-email.service.js';
 import { BillingCheckoutService } from './billing-checkout.service.js';
 import { BillingController } from './billing.controller.js';
 import { BillingService } from './billing.service.js';
@@ -14,9 +16,15 @@ import { BillingService } from './billing.service.js';
  * that declares the controller using them.
  */
 @Module({
-  imports: [DbModule, RepliesModule, PaymentsModule],
+  imports: [DbModule, RepliesModule, PaymentsModule, EmailModule],
   controllers: [BillingController],
-  providers: [AuthService, SessionGuard, BillingService, BillingCheckoutService],
+  providers: [
+    AuthService,
+    SessionGuard,
+    BillingService,
+    BillingCheckoutService,
+    BillingEmailService,
+  ],
   exports: [BillingService],
 })
 export class BillingModule {}

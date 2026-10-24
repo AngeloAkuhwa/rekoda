@@ -19,11 +19,16 @@ import {
 } from '@nestjs/common';
 import {
   billingCheckoutRequest,
+  billingEmailConfirmRequest,
+  billingEmailVerifyRequest,
   billingIntervalRequest,
   billingPackPurchaseRequest,
   billingPlanChangeRequest,
   type BillingCancelResponse,
   type BillingCheckoutResponse,
+  type BillingEmailConfirmResponse,
+  type BillingEmailStatusResponse,
+  type BillingEmailVerifyResponse,
   type BillingIntervalResponse,
   type BillingOverviewResponse,
   type BillingPlanChangeResponse,
@@ -31,6 +36,7 @@ import {
 } from '@rekoda/contracts';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
+import { BillingEmailService } from './billing-email.service.js';
 import { BillingCheckoutService } from './billing-checkout.service.js';
 import { BillingService } from './billing.service.js';
 
@@ -40,6 +46,7 @@ export class BillingController {
   constructor(
     @Inject(BillingService) private readonly billing: BillingService,
     @Inject(BillingCheckoutService) private readonly checkouts: BillingCheckoutService,
+    @Inject(BillingEmailService) private readonly emails: BillingEmailService,
   ) {}
 
   @Get()
@@ -155,5 +162,42 @@ export class BillingController {
       parsed.data.billingEmail,
       { restart: parsed.data.restart === true },
     );
+  }
+
+  /** The billing email as the merchant may see it: masked, and whether its mailbox is proven. */
+  @Get('email')
+  @Roles('owner')
+  async emailStatus(@Req() request: AuthedRequest): Promise<BillingEmailStatusResponse> {
+    return this.emails.status(request.auth!.businessId);
+  }
+
+  /** Mail the confirmation link (OWN-51), saving a new address first when one is given. */
+  @Post('email/verify')
+  @HttpCode(200)
+  @Roles('owner')
+  async emailVerify(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<BillingEmailVerifyResponse> {
+    const parsed = billingEmailVerifyRequest.safeParse(body ?? {});
+    if (!parsed.success) {
+      throw new BadRequestException(
+        'billingEmail, if given, must be a string of at most 320 characters',
+      );
+    }
+    return this.emails.requestVerification(request.auth!.businessId, parsed.data.billingEmail);
+  }
+
+  /** Spend a mailed link. The token travels in the body, never in a URL. */
+  @Post('email/confirm')
+  @HttpCode(200)
+  @Roles('owner')
+  async emailConfirm(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<BillingEmailConfirmResponse> {
+    const parsed = billingEmailConfirmRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('token is required');
+    return this.emails.confirm(request.auth!.businessId, parsed.data.token);
   }
 }
