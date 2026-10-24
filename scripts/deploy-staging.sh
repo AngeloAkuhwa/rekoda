@@ -162,6 +162,11 @@ mem_low() {
   fi
   [ "$MEM_KB" -lt "$MIN_MEM_KB" ]
 }
+# Says how much memory is available, so a deploy's output shows what each build
+# left (the floor is tuned from these figures).
+log_memory() {
+  printf 'memory available %s: %s KiB\n' "$1" "$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo 2>/dev/null || echo unknown)"
+}
 # Refuses, naming the build it was about to start, when memory is short.
 require_memory() {
   if mem_low; then
@@ -542,11 +547,14 @@ sed -i "s/^REKODA_RELEASE=.*/REKODA_RELEASE=${RELEASE}/" .env
 # the host. The api image is the one api, worker, migrate and edge-check run.
 step "build the api image, tagged $RELEASE (nothing live changes)"
 dc config -q
+log_memory 'before the api build'
 dc build --build-arg REKODA_COMMIT="$SHORT" api
+log_memory 'after the api build'
 
 step "build the web image, tagged $RELEASE (nothing live changes)"
 require_memory 'before the web build'
 dc build --build-arg REKODA_COMMIT="$SHORT" web
+log_memory 'after the web build'
 
 step 'migrate (expand-only, as the owner)'
 PHASE=live

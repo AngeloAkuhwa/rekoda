@@ -444,7 +444,14 @@ time and reading each answer before the next:
    without a SHA). Watch the host: `watch -n 5 'grep MemAvailable
 /proc/meminfo'` from a second session. If the run refuses for memory, it
    changed nothing: find what is using memory and run it again.
-5. Never run `docker compose build` bare, never start a second build while one
+5. The 1 GiB floor is a starting value, not a measured peak. The deploy prints
+   `memory available before the api build / after the api build / after the
+web build`: keep those figures from the first sequential deploy and raise
+   `REKODA_DEPLOY_MIN_MEM_KB` if a build ended near zero. Inside each image
+   build turbo now runs one task at a time (`--concurrency=1`). A 2 GiB swap
+   file on the host is a sensible safety net (an owner change to the host,
+   never made by the deploy script).
+6. Never run `docker compose build` bare, never start a second build while one
    runs, and never `down -v`.
 
 ## Roll back one write command (OD-4)

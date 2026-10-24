@@ -44,7 +44,9 @@ RUN pnpm install --offline --frozen-lockfile
 # caches, tool configs and the other app. The tree stays at /repo, where its
 # links point, and is copied into the runtime stage unchanged.
 FROM source AS app-build
-RUN pnpm turbo run build --filter=@rekoda/api...
+# One task at a time: turbo's default runs up to ten, and on the 4 GB staging host
+# a parallel compile of several packages is the memory peak, not the build itself.
+RUN pnpm turbo run build --concurrency=1 --filter=@rekoda/api...
 RUN rm -rf node_modules apps/*/node_modules packages/*/node_modules \
  && pnpm install --offline --frozen-lockfile --prod --filter "@rekoda/api..."
 RUN set -eu; \
@@ -88,7 +90,7 @@ RUN node --input-type=module -e " \
         console.error('refusing to build the site without: ' + missing.join(', ')); \
         process.exit(1); \
       }"
-RUN pnpm turbo run build --filter=@rekoda/web...
+RUN pnpm turbo run build --concurrency=1 --filter=@rekoda/web...
 RUN rm -rf node_modules apps/*/node_modules packages/*/node_modules \
  && pnpm install --offline --frozen-lockfile --prod --filter "@rekoda/web..."
 RUN set -eu; \
