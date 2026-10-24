@@ -9,6 +9,7 @@ import {
   partlyRefunded,
   pendingIntervalCopy,
   perInterval,
+  nextRenewalAnnualK,
   soldPrice,
   switchIntervalOffer,
   undoIntervalLabel,
@@ -145,5 +146,16 @@ describe('the price a plan is sold at', () => {
       annualK: 14_900_000,
     });
     expect(soldPrice(overview, 'complete')).toBeUndefined();
+  });
+
+  it('the yearly offer is priced on the plan the next renewal carries', () => {
+    const planPrices = [
+      { plan: 'chat', monthlyK: 990_000, annualK: 9_900_000 },
+      { plan: 'complete', monthlyK: 2_990_000, annualK: 29_900_000 },
+    ];
+    const base = { annualPriceK: 29_900_000, planPrices };
+    expect(nextRenewalAnnualK({ ...base, pendingPlan: null })).toBe(29_900_000);
+    expect(nextRenewalAnnualK({ ...base, pendingPlan: 'chat' })).toBe(9_900_000);
+    expect(nextRenewalAnnualK({ ...base, pendingPlan: 'expired' })).toBe(29_900_000);
   });
 });

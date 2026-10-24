@@ -121,3 +121,16 @@ export function soldPrice<K>(
 ): { monthlyK: K; annualK: K } | undefined {
   return overview.planPrices.find((row) => row.plan === plan);
 }
+
+/**
+ * The yearly price quoted in the "switch to yearly" offer. The switch applies at the
+ * next renewal, so a scheduled plan change is priced, not the plan being left.
+ */
+export function nextRenewalAnnualK(overview: {
+  annualPriceK: number;
+  pendingPlan: string | null;
+  planPrices: { plan: string; monthlyK: number; annualK: number }[];
+}): number {
+  const next = overview.pendingPlan ? soldPrice(overview, overview.pendingPlan) : undefined;
+  return next ? next.annualK : overview.annualPriceK;
+}

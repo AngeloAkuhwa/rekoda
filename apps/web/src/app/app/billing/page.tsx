@@ -12,6 +12,7 @@ import {
   partlyRefunded,
   pendingIntervalCopy,
   perInterval,
+  nextRenewalAnnualK,
   soldPrice,
   switchIntervalOffer,
   undoIntervalLabel,
@@ -284,10 +285,10 @@ export default async function BillingPage({
             <>
               <p className="rk-fineprint">
                 {switchIntervalOffer(overview.interval)}
-                {overview.interval === 'monthly' && overview.annualPriceK > 0 ? (
+                {overview.interval === 'monthly' && nextRenewalAnnualK(overview) > 0 ? (
                   <>
                     {' '}
-                    A year costs <Money kobo={overview.annualPriceK} />.
+                    A year costs <Money kobo={nextRenewalAnnualK(overview)} />.
                   </>
                 ) : null}
               </p>
