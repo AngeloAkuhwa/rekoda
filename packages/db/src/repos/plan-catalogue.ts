@@ -16,7 +16,7 @@
  * a code-review hope.
  */
 import { sql } from 'drizzle-orm';
-import type { EntitlementKey, UsageUnit } from '@rekoda/core';
+import { annualPriceK, type EntitlementKey, type UsageUnit } from '@rekoda/core';
 import type { Db, TenantDb } from '../client.js';
 
 /**
@@ -296,6 +296,18 @@ export interface NewPlanVersion {
  * grandfathering requirement.
  */
 export async function publishPlanVersion(db: Db, input: NewPlanVersion): Promise<string> {
+  /* OWN-40: a year is ten months' price. A version may leave the year out (it is then
+   * sold at ten months), but never carry a different one. */
+  for (const year of input.prices.filter((p) => p.billingInterval === 'annual')) {
+    const month = input.prices.find(
+      (p) => p.billingInterval === 'monthly' && p.currency === year.currency,
+    );
+    if (month && year.amountMinor !== annualPriceK(month.amountMinor)) {
+      throw new Error(
+        `annual price for ${year.currency} must be ten times the monthly price (OWN-40)`,
+      );
+    }
+  }
   const from = input.effectiveFrom.toISOString();
   return db.transaction(async (tx) => {
     await tx.execute(sql`
@@ -357,19 +369,51 @@ export async function changePlanPrice(
 ): Promise<void> {
   const from = change.from.toISOString();
   await db.transaction(async (tx) => {
-    await tx.execute(sql`
-      UPDATE plan_prices SET effective_to = ${from}::timestamptz
-      WHERE plan_version_id = ${change.planVersionId}::uuid
-        AND currency = ${change.currency}
-        AND billing_interval = ${change.billingInterval}
-        AND effective_to IS NULL
-    `);
-    await tx.execute(sql`
-      INSERT INTO plan_prices
-        (plan_version_id, currency, billing_interval, amount_minor, effective_from)
-      VALUES (${change.planVersionId}::uuid, ${change.currency},
-              ${change.billingInterval}, ${change.amountMinor}, ${from}::timestamptz)
-    `);
+    /* OWN-40: a year is ten months' price. Repricing the year alone must say exactly that;
+     * repricing the month carries an existing year with it, so the two never diverge. */
+    if (change.billingInterval === 'annual') {
+      const open = await tx.execute<{ amount_minor: number }>(sql`
+        SELECT amount_minor FROM plan_prices
+        WHERE plan_version_id = ${change.planVersionId}::uuid
+          AND currency = ${change.currency} AND billing_interval = 'monthly'
+          AND effective_to IS NULL
+      `);
+      const month = [...open][0]?.amount_minor;
+      if (month !== undefined && change.amountMinor !== annualPriceK(Number(month))) {
+        throw new Error(
+          `annual price for ${change.currency} must be ten times the monthly price (OWN-40)`,
+        );
+      }
+    }
+    const intervals: BillingInterval[] = [change.billingInterval];
+    if (change.billingInterval === 'monthly') {
+      const year = await tx.execute<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM plan_prices
+        WHERE plan_version_id = ${change.planVersionId}::uuid
+          AND currency = ${change.currency} AND billing_interval = 'annual'
+          AND effective_to IS NULL
+      `);
+      if (Number([...year][0]?.n ?? 0) > 0) intervals.push('annual');
+    }
+    for (const interval of intervals) {
+      const amountMinor =
+        interval === 'annual' && change.billingInterval === 'monthly'
+          ? annualPriceK(change.amountMinor)
+          : change.amountMinor;
+      await tx.execute(sql`
+        UPDATE plan_prices SET effective_to = ${from}::timestamptz
+        WHERE plan_version_id = ${change.planVersionId}::uuid
+          AND currency = ${change.currency}
+          AND billing_interval = ${interval}
+          AND effective_to IS NULL
+      `);
+      await tx.execute(sql`
+        INSERT INTO plan_prices
+          (plan_version_id, currency, billing_interval, amount_minor, effective_from)
+        VALUES (${change.planVersionId}::uuid, ${change.currency},
+                ${interval}, ${amountMinor}, ${from}::timestamptz)
+      `);
+    }
   });
 }
 

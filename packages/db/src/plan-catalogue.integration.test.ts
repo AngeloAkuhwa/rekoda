@@ -367,4 +367,55 @@ describe('the cutover resolution rule (BL2, PR-100)', () => {
     );
     expect(unknown).toBe(0);
   });
+
+  describe('a year is ten months, enforced at the write (OWN-40)', () => {
+    it('refuses to publish a version whose year is not ten times its month', async () => {
+      await expect(
+        planCatalogueRepo.publishPlanVersion(ownerDb, {
+          planId: 'chat',
+          name: 'Rekoda Chat',
+          seats: 1,
+          effectiveFrom: new Date('2026-09-01T00:00:00Z'),
+          entitlements: ['REKODA_CHAT'],
+          allowances: { AI_ACTIONS: 300 },
+          prices: [
+            { currency: 'NGN', billingInterval: 'monthly', amountMinor: 1_490_000 },
+            { currency: 'NGN', billingInterval: 'annual', amountMinor: 12_000_000 },
+          ],
+        }),
+      ).rejects.toThrow(/ten times the monthly price/);
+    });
+
+    it('refuses to reprice the year to anything but ten months', async () => {
+      const v = await planCatalogueRepo.planVersionAt(db, 'complete', new Date());
+      await expect(
+        planCatalogueRepo.changePlanPrice(ownerDb, {
+          planVersionId: v!.id,
+          currency: 'NGN',
+          billingInterval: 'annual',
+          amountMinor: 1,
+          from: new Date('2026-09-02T00:00:00Z'),
+        }),
+      ).rejects.toThrow(/ten times the monthly price/);
+      const annual = await planCatalogueRepo.priceAt(db, v!.id, 'NGN', 'annual', new Date());
+      expect(annual).toBe(PLAN_PRICES_K.complete * 10);
+    });
+
+    it('repricing the month carries the year with it', async () => {
+      const v = await planCatalogueRepo.planVersionAt(db, 'integrate', new Date());
+      await planCatalogueRepo.changePlanPrice(ownerDb, {
+        planVersionId: v!.id,
+        currency: 'NGN',
+        billingInterval: 'monthly',
+        amountMinor: 2_000_000,
+        from: new Date('2026-09-03T00:00:00Z'),
+      });
+      expect(await planCatalogueRepo.priceAt(db, v!.id, 'NGN', 'monthly', new Date())).toBe(
+        2_000_000,
+      );
+      expect(await planCatalogueRepo.priceAt(db, v!.id, 'NGN', 'annual', new Date())).toBe(
+        20_000_000,
+      );
+    });
+  });
 });
