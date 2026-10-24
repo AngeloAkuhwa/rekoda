@@ -122,8 +122,7 @@ export type OrderFeeResolution =
  * settled"), never at authorisation. The figure is the sum of the provider's
  * own stated fee on each of the order's verified payments, so a part-paid
  * order counts every payment once, and the charge resolves exactly once (the
- * ESTIMATED predicate under a row lock). The estimate is not lost: when the
- * actual differs, an audit event keeps both figures.
+ * ESTIMATED predicate under a row lock). The estimate is not lost: an audit event keeps both figures.
  *
  * It waits, and changes nothing, while the order is not fully paid, while any
  * of its payments is not `settled` (a `held` payout is not final), or while a

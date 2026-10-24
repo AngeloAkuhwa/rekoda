@@ -905,7 +905,7 @@ describe('an order processing fee becomes ACTUAL at settlement (G-116, OWN-42)',
   const TOTAL_K = 15_000_000;
 
   /** An order with its ESTIMATED processing charge and the invoice it became. */
-  async function seedOrderWithEstimate(businessId: string) {
+  async function seedOrderWithEstimate(businessId: string, tag = 'g116') {
     return withBusiness(db, businessId, async (tx) => {
       const order = await ordersRepo.placeOrder(tx, {
         businessId,
@@ -915,7 +915,7 @@ describe('an order processing fee becomes ACTUAL at settlement (G-116, OWN-42)',
         ],
         totalK: TOTAL_K,
         sourceType: 'chat',
-        sourceId: 'g116-order',
+        sourceId: `${tag}-order`,
       });
       const charge = await chargesRepo.recordCharge(tx, {
         businessId,
@@ -940,7 +940,7 @@ describe('an order processing fee becomes ACTUAL at settlement (G-116, OWN-42)',
         balanceDueK: TOTAL_K,
         method: 'transfer',
         sourceType: 'chat',
-        sourceId: 'g116-draft',
+        sourceId: `${tag}-draft`,
         actor: 'system',
       });
       // What the checkout does: the order becomes its invoice.
@@ -1135,5 +1135,30 @@ describe('an order processing fee becomes ACTUAL at settlement (G-116, OWN-42)',
       sql`SELECT count(*)::int AS n FROM audit_events WHERE action = 'resolved_actual'`,
     );
     expect(Number(audits?.n)).toBe(0);
+  });
+
+  it('a payout covering two orders resolves each from its own payments only', async () => {
+    const businessId = await seedBusiness();
+    const a = await seedOrderWithEstimate(businessId, 'a');
+    const b = await seedOrderWithEstimate(businessId, 'b');
+    const refA = await payFor(businessId, a, TOTAL_K, 225_000);
+    const refB = await payFor(businessId, b, TOTAL_K, 180_000);
+
+    await settle(businessId, [refA, refB]);
+    expect((await charge(businessId, a.orderId)).amountMinor).toBe(225_000);
+    expect((await charge(businessId, b.orderId)).amountMinor).toBe(180_000);
+    expect((await charge(businessId, a.orderId)).actualOrEstimated).toBe('ACTUAL');
+    expect((await charge(businessId, b.orderId)).actualOrEstimated).toBe('ACTUAL');
+  });
+
+  it('a payment first held and later settled resolves the charge at the later settlement', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    const ref = await payFor(businessId, seeded, TOTAL_K, 225_000);
+
+    await settle(businessId, [ref], 'held');
+    expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ESTIMATED');
+    await settle(businessId, [ref]);
+    expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ACTUAL');
   });
 });
