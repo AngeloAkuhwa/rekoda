@@ -76,6 +76,8 @@ export function PayForms({
         <form action={againAction} className="rk-form" noValidate>
           <input type="hidden" name="reference" value={reference} />
           <input type="hidden" name="restart" value="1" />
+          {/* The address typed above travels with a recovery too, so a refused address can be replaced here. */}
+          <input type="hidden" name="billingEmail" value={typed} />
           <p className="rk-fineprint">
             Closed the Paystack page, or lost the link? We check with Paystack first. If you have
             already paid we will say so, and you will not be charged twice.
