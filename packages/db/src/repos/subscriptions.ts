@@ -129,11 +129,14 @@ export async function applyCycle(
      * NEXT renewal must survive it. A renewal or a first purchase starts a new cycle and clears it.
      */
     keepPendingInterval?: boolean;
+    /** Leaves this interval waiting for the next renewal (a cycle bought on another interval than the one chosen). */
+    nextInterval?: BillingInterval | null;
   },
 ): Promise<void> {
   await writeSubscriptionState(tx, businessId, {
     billingInterval: cycle.billingInterval ?? 'monthly',
     keepPendingInterval: cycle.keepPendingInterval ?? false,
+    ...(cycle.nextInterval !== undefined ? { nextInterval: cycle.nextInterval } : {}),
     plan: cycle.plan,
     paid: true,
     cycleStartedAt: cycle.cycleStartedAt,
@@ -166,6 +169,8 @@ export interface SubscriptionState {
   billingInterval?: BillingInterval;
   /** Keep a scheduled interval switch (an upgrade inside the cycle); otherwise it is cleared. */
   keepPendingInterval?: boolean;
+  /** Sets the interval waiting for the next renewal; wins over `keepPendingInterval`. */
+  nextInterval?: BillingInterval | null;
   /**
    * Who created this cycle (G-115). Null for an unpaid plan, or to keep the
    * origin the row already has when nothing about the cycle changed.
@@ -225,7 +230,13 @@ export async function writeSubscriptionState(
       billing_interval = ${
         state.billingInterval ?? (state.origin === 'keep' ? sql`billing_interval` : 'monthly')
       },
-      pending_billing_interval = ${state.keepPendingInterval ? sql`pending_billing_interval` : null},
+      pending_billing_interval = ${
+        state.nextInterval !== undefined
+          ? state.nextInterval
+          : state.keepPendingInterval
+            ? sql`pending_billing_interval`
+            : null
+      },
       subscription_origin = ${
         state.origin === 'keep' ? sql`subscription_origin` : sql`${state.origin}`
       },

@@ -632,6 +632,25 @@ describe('review of #340: three ways a year could be mispriced or misapplied', (
     expect(live[0]?.billingInterval).toBe('annual');
   });
 
+  it('paying a yearly link after the switch was undone leaves monthly waiting for the next renewal', async () => {
+    const { businessId } = await onboard();
+    await putOnPlan(businessId, 'chat', 'monthly', new Date(Date.now() - 35 * DAY));
+    await billing().switchInterval(businessId, 'annual');
+    await sweepRenewals({ workerDb, appDb: db, config });
+    const [yearly] = await chargesOf(businessId);
+    expect(yearly?.billingInterval).toBe('annual');
+
+    // The merchant changes their mind and goes back to monthly; the yearly link is withdrawn.
+    await billing().switchInterval(businessId, 'monthly');
+    expect((await subOf(businessId))?.pendingBillingInterval).toBeNull();
+
+    // They pay it anyway: they get the year they paid for, and monthly is what they chose next.
+    expect(await pay(businessId, yearly!.reference, new Date())).toBe('applied');
+    const after = await subOf(businessId);
+    expect(after?.billingInterval).toBe('annual');
+    expect(after?.pendingBillingInterval).toBe('monthly');
+  });
+
   it('a switch never strands an open upgrade payment: the upgrade still applies and the switch survives', async () => {
     const { businessId } = await onboard();
     await putOnPlan(businessId, 'chat', 'monthly', new Date(Date.now() - 10 * DAY));

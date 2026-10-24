@@ -647,6 +647,8 @@ export async function applySettledCharge(
         ? (subscription?.planExpiresAt ?? addInterval(input.when, interval, anchorDay))
         : addInterval(cycleStartedAt, interval, anchorDay);
 
+    const chosen =
+      subscription?.pendingBillingInterval ?? subscription?.billingInterval ?? 'monthly';
     await subscriptionsRepo.applyCycle(tx, input.businessId, {
       plan: charge.plan,
       cycleStartedAt,
@@ -654,13 +656,16 @@ export async function applySettledCharge(
       anchorDay,
       pendingPlan: null,
       billingInterval: interval,
-      /* A renewal that buys the interval the merchant asked for consumes the switch.
-       * One that buys a different interval (a link sent before the switch, paid
-       * after it) leaves the confirmed choice waiting for the next renewal. */
-      keepPendingInterval:
-        charge.kind === 'upgrade' ||
-        (subscription?.pendingBillingInterval != null &&
-          subscription.pendingBillingInterval !== charge.billingInterval),
+      /* An upgrade keeps the cycle it lands in, so a switch waiting for renewal waits on.
+       * A renewal that buys the interval the merchant chose consumes the choice; one that
+       * buys another (a link sent before they chose, paid after) leaves the chosen interval
+       * waiting. The choice is the pending switch, or, when the merchant undid a switch,
+       * the interval the cycle was already on. */
+      ...(charge.kind === 'upgrade'
+        ? { keepPendingInterval: true }
+        : charge.kind === 'renewal'
+          ? { nextInterval: chosen === charge.billingInterval ? null : chosen }
+          : {}),
     });
   }
   return 'applied';
