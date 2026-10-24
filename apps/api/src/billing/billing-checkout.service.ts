@@ -23,7 +23,7 @@ import { Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs
 import { checkBillingEmail } from '@rekoda/core';
 import { decryptFacet, encryptFacet } from '@rekoda/core/vault';
 import type { BillingCheckoutResponse } from '@rekoda/contracts';
-import { subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
+import { subscriptionsRepo, withBusiness, type Db, type TenantDb } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
 import { isCustomCycle } from './billing.service.js';
@@ -89,7 +89,7 @@ export class BillingCheckoutService {
       /* Two tabs can both reach here with one reference, and Paystack refuses
        * the second. If the first has already stored its link, that link is the
        * answer; otherwise this is an outage, not a result. */
-      const stored = await this.storedCheckout(businessId, prepared.reference);
+      const stored = await this.storedCheckout(businessId, prepared.reference, now);
       if (stored) return { state: 'ready', reference: prepared.reference, ...stored };
       this.log.warn(`Paystack initialize failed: ${error instanceof Error ? error.name : 'error'}`);
       throw new ServiceUnavailableException('the payment provider is not reachable right now');
@@ -119,37 +119,8 @@ export class BillingCheckoutService {
       if (!charge) {
         return { state: 'done', response: { state: 'unavailable', reason: 'unknown_charge' } };
       }
-      if (charge.status !== 'pending') {
-        return { state: 'done', response: { state: 'unavailable', reason: 'not_pending' } };
-      }
-      /* Retired charges keep status `pending` and gain `superseded_at` (a newer
-       * plan choice or subscription decision): a payment on one is recorded but
-       * never applied, so nobody is invited to pay for it, cached link or not. */
-      if (
-        charge.supersededAt ||
-        /* A newer subscription decision the retirement sweep has not stamped yet:
-         * the predicate settlement applies, for plan charges only (a pack buys
-         * against whatever plan is current). */
-        (charge.plan && (await subscriptionsRepo.decidedSince(tx, businessId, reference)))
-      ) {
-        return { state: 'done', response: { state: 'unavailable', reason: 'superseded' } };
-      }
-      if (charge.amountK <= 0) {
-        return { state: 'done', response: { state: 'unavailable', reason: 'nothing_to_pay' } };
-      }
-      /* An upgrade is priced against the rest of the cycle it was opened in, and
-       * settlement refuses to apply it once that cycle has ended or when the
-       * cycle is not a provider-bought standard month (OWN-29, OWN-33): the money
-       * would be recorded for an operator and the plan would not move. */
-      if (charge.kind === 'upgrade') {
-        const subscription = await subscriptionsRepo.subscriptionFor(tx, businessId);
-        if (subscription?.planExpiresAt && subscription.planExpiresAt <= now) {
-          return { state: 'done', response: { state: 'unavailable', reason: 'cycle_ended' } };
-        }
-        if (!subscription || isCustomCycle(subscription)) {
-          return { state: 'done', response: { state: 'unavailable', reason: 'support_review' } };
-        }
-      }
+      const refused = await this.refusal(tx, businessId, charge, now);
+      if (refused) return { state: 'done', response: { state: 'unavailable', reason: refused } };
       /* Already initialised: the same link again, and no email needed. */
       if (charge.checkoutUrl) {
         return {
@@ -182,15 +153,55 @@ export class BillingCheckoutService {
     });
   }
 
+  /**
+   * Why this charge may not be paid now, or null when it may. One rule set for
+   * every path that could hand out a link (a fresh checkout, a stored link, the
+   * recovery after a provider error), so they cannot drift apart: each mirrors
+   * what `applySettledCharge` would do with a payment on it.
+   */
+  private async refusal(
+    tx: TenantDb,
+    businessId: string,
+    charge: subscriptionsRepo.ChargeRow,
+    now: Date,
+  ): Promise<
+    'not_pending' | 'superseded' | 'nothing_to_pay' | 'cycle_ended' | 'support_review' | null
+  > {
+    if (charge.status !== 'pending') return 'not_pending';
+    /* Retired charges keep status `pending` and gain `superseded_at` (a newer
+     * plan choice or subscription decision): a payment on one is recorded but
+     * never applied, so nobody is invited to pay for it, cached link or not. */
+    if (
+      charge.supersededAt ||
+      /* A newer subscription decision the retirement sweep has not stamped yet:
+       * the predicate settlement applies, for plan charges only (a pack buys
+       * against whatever plan is current). */
+      (charge.plan && (await subscriptionsRepo.decidedSince(tx, businessId, charge.reference)))
+    ) {
+      return 'superseded';
+    }
+    if (charge.amountK <= 0) return 'nothing_to_pay';
+    /* An upgrade is priced against the rest of the cycle it was opened in, and
+     * settlement refuses to apply it once that cycle has ended or when the
+     * cycle is not a provider-bought standard month (OWN-29, OWN-33): the money
+     * would be recorded for an operator and the plan would not move. */
+    if (charge.kind === 'upgrade') {
+      const subscription = await subscriptionsRepo.subscriptionFor(tx, businessId);
+      if (subscription?.planExpiresAt && subscription.planExpiresAt <= now) return 'cycle_ended';
+      if (!subscription || isCustomCycle(subscription)) return 'support_review';
+    }
+    return null;
+  }
+
   private async storedCheckout(
     businessId: string,
     reference: string,
+    now: Date,
   ): Promise<{ checkoutUrl: string; amountK: number } | null> {
-    const charge = await withBusiness(this.db, businessId, (tx) =>
-      subscriptionsRepo.chargeByReference(tx, businessId, reference),
-    );
-    return charge?.status === 'pending' && !charge.supersededAt && charge.checkoutUrl
-      ? { checkoutUrl: charge.checkoutUrl, amountK: charge.amountK }
-      : null;
+    return withBusiness(this.db, businessId, async (tx) => {
+      const charge = await subscriptionsRepo.chargeByReference(tx, businessId, reference);
+      if (!charge?.checkoutUrl || (await this.refusal(tx, businessId, charge, now))) return null;
+      return { checkoutUrl: charge.checkoutUrl, amountK: charge.amountK };
+    });
   }
 }

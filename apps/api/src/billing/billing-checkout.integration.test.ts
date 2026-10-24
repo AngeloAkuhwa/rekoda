@@ -295,6 +295,36 @@ describe('what may be paid', () => {
     });
   });
 
+  it('does not hand back a sibling request’s link for a charge overtaken meanwhile', async () => {
+    const businessId = await seedBusiness();
+    const { reference } = await pendingCharge(businessId);
+    /* This request passes `prepare`. While its Paystack call is in flight, a sibling
+     * request stores a link, an operator decides the subscription (no stamp on the
+     * charge), and then this call fails. Recovery must not return the sibling's link. */
+    provider.initializeTransaction = async () => {
+      await withBusiness(appDb, businessId, (tx) =>
+        subscriptionsRepo.recordCheckout(
+          tx,
+          businessId,
+          reference,
+          'https://checkout.stub/x',
+          new Date(),
+        ),
+      );
+      await billingRepo.setPlan(appDb, {
+        businessId,
+        plan: 'integrate',
+        expiresAt: new Date(Date.now() + 30 * 86_400_000),
+        actor: 'operator:test-g102',
+      });
+      throw new Error('paystack down');
+    };
+
+    await expect(
+      checkouts().checkout(businessId, reference, 'ada@shop.example.ng'),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+  });
+
   it('refuses a plan charge a newer subscription decision has overtaken, stamped or not', async () => {
     const businessId = await seedBusiness();
     const { reference } = await pendingCharge(businessId);
