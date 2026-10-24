@@ -453,12 +453,7 @@ function retentionProblems(lines) {
   const lowCheck = lines.findIndex((line) => /^step 'disk space'$/.test(line));
   const prepared = at('PHASE=prepared');
   const baseline = lines.findIndex((line) => BASELINE_CALL.test(line));
-  if (
-    lowCheck < 0 ||
-    baseline < 0 ||
-    lowCheck < baseline ||
-    (prepared >= 0 && lowCheck > prepared)
-  ) {
+  if (lowCheck < 0 || baseline < 0 || lowCheck < baseline || prepared < 0 || lowCheck > prepared) {
     problems.push(
       `${FILES.script} must check free disk space after the running release is proven and before the checkout changes`,
     );

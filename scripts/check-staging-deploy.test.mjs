@@ -716,3 +716,8 @@ test('the floor lowered by an environment variable', () => {
   const edit = edited('script', '-gt "$MIN_FREE_KB" ]; then', '-lt "$MIN_FREE_KB" ]; then');
   expectProblem(problems(edit), /raise the floor only/);
 });
+
+test('the free-space check kept but PHASE=prepared removed, so the order cannot be judged', () => {
+  const edit = edited('script', 'PHASE=prepared\n', '');
+  expectProblem(problems(edit), /free disk space after the running release is proven/);
+});
