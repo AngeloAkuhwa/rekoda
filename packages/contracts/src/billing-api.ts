@@ -192,6 +192,8 @@ export const billingCheckoutResponse = z.discriminatedUnion('state', [
       'unknown_charge',
       'not_pending',
       'superseded',
+      'cycle_ended',
+      'support_review',
       'nothing_to_pay',
       'payments_not_configured',
       'awaiting_platform_confirmation',

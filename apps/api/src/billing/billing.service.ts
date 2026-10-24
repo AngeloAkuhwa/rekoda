@@ -744,7 +744,7 @@ function statusOf(
  * standard month is never prorated automatically (`upgradeProrationEligibility`).
  * No subscription row means a first purchase, which has no cycle to prorate.
  */
-function isCustomCycle(
+export function isCustomCycle(
   subscription: {
     origin: 'provider' | 'operator' | null;
     cycleStartedAt: Date | null;

@@ -340,6 +340,64 @@ describe('what may be paid', () => {
     expect(stored?.checkoutUrl).toBeNull();
   });
 
+  it('refuses an upgrade once its cycle has ended, link stored or not', async () => {
+    const businessId = await seedBusiness();
+    await billingRepo.setPlan(appDb, {
+      businessId,
+      plan: 'chat',
+      expiresAt: new Date(Date.now() + 20 * 86_400_000),
+      actor: 'operator:test-g102',
+    });
+    await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.applyCycle(tx, businessId, {
+        plan: 'chat',
+        cycleStartedAt: new Date(Date.now() - 10 * 86_400_000),
+        renewsAt: new Date(Date.now() + 20 * 86_400_000),
+        anchorDay: new Date(Date.now() + 20 * 86_400_000).getUTCDate(),
+      }),
+    );
+    const upgrade = await plans().changePlan(businessId, 'complete');
+    if (upgrade.state !== 'payment_required') throw new Error('the upgrade should be payable');
+    const during = await checkouts().checkout(businessId, upgrade.reference, 'ada@shop.example.ng');
+    expect(during).toMatchObject({ state: 'ready' });
+
+    /* The cycle runs out with no newer subscription decision. */
+    const after = new Date(Date.now() + 21 * 86_400_000);
+    const late = await checkouts().checkout(businessId, upgrade.reference, undefined, after);
+
+    expect(late).toEqual({ state: 'unavailable', reason: 'cycle_ended' });
+    expect(provider.initialized).toHaveLength(1);
+  });
+
+  it('refuses an upgrade on a cycle that is not a provider-bought month', async () => {
+    const businessId = await seedBusiness();
+    /* An operator grant is a custom cycle: never prorated or upgraded by payment. */
+    await billingRepo.setPlan(appDb, {
+      businessId,
+      plan: 'chat',
+      expiresAt: new Date(Date.now() + 20 * 86_400_000),
+      actor: 'operator:test-g102',
+    });
+    await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.openCharge(tx, {
+        businessId,
+        kind: 'upgrade',
+        plan: 'complete',
+        amountK: 50_000,
+        reference: 'RKD-SUB-20261024-BBBBBB',
+      }),
+    );
+
+    const answer = await checkouts().checkout(
+      businessId,
+      'RKD-SUB-20261024-BBBBBB',
+      'ada@shop.example.ng',
+    );
+
+    expect(answer).toEqual({ state: 'unavailable', reason: 'support_review' });
+    expect(provider.initialized).toEqual([]);
+  });
+
   it('refuses a retired charge before it is ever started', async () => {
     const businessId = await seedBusiness();
     const first = await pendingCharge(businessId);

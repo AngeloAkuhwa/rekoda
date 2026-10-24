@@ -26,6 +26,7 @@ import type { BillingCheckoutResponse } from '@rekoda/contracts';
 import { subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
+import { isCustomCycle } from './billing.service.js';
 import { PAYMENT_PROVIDER, type PaymentProviderPort } from '../payments/provider.port.js';
 
 /** A sealed billing email belongs to one business: a blob copied onto another row fails to open. */
@@ -135,6 +136,19 @@ export class BillingCheckoutService {
       }
       if (charge.amountK <= 0) {
         return { state: 'done', response: { state: 'unavailable', reason: 'nothing_to_pay' } };
+      }
+      /* An upgrade is priced against the rest of the cycle it was opened in, and
+       * settlement refuses to apply it once that cycle has ended or when the
+       * cycle is not a provider-bought standard month (OWN-29, OWN-33): the money
+       * would be recorded for an operator and the plan would not move. */
+      if (charge.kind === 'upgrade') {
+        const subscription = await subscriptionsRepo.subscriptionFor(tx, businessId);
+        if (subscription?.planExpiresAt && subscription.planExpiresAt <= now) {
+          return { state: 'done', response: { state: 'unavailable', reason: 'cycle_ended' } };
+        }
+        if (!subscription || isCustomCycle(subscription)) {
+          return { state: 'done', response: { state: 'unavailable', reason: 'support_review' } };
+        }
       }
       /* Already initialised: the same link again, and no email needed. */
       if (charge.checkoutUrl) {
