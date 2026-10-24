@@ -77,6 +77,9 @@ export function maskBillingEmail(email: string): string {
   const at = email.lastIndexOf('@');
   if (at < 1) return '***';
   const local = email.slice(0, at);
+  /* A one-character local part is hidden whole: showing its first character would
+   * show all of it. */
+  if (local.length === 1) return `*${email.slice(at)}`;
   return `${local[0]}${'*'.repeat(Math.min(local.length - 1, 8))}${email.slice(at)}`;
 }
 

@@ -222,6 +222,18 @@ export class BillingCheckoutService {
       }
 
       if (live) {
+        /* A different address than the one this session was started for must not be
+         * answered with the old link: it is saved and proven first (OWN-51), and a
+         * session already open for the old address is replaced once it is allowed. */
+        if (
+          live.status === 'active' &&
+          given &&
+          (await this.differsFromOnFile(tx, businessId, given))
+        ) {
+          const ready = await this.readyEmail(tx, businessId, given, now);
+          if ('response' in ready) return { state: 'done', response: ready.response };
+          return { state: 'resolve', attempt: live };
+        }
         /* Measured by the database's clock, in the query that read the attempt:
          * this server's clock and the database's are not the same clock. */
         const idle = live.idleMs;
@@ -308,6 +320,16 @@ export class BillingCheckoutService {
   ): Promise<subscriptionsRepo.ChargeRow | null> {
     if (!(await subscriptionsRepo.lockBusiness(tx, businessId))) return null;
     return subscriptionsRepo.lockChargeByReference(tx, businessId, reference);
+  }
+
+  private async differsFromOnFile(
+    tx: TenantDb,
+    businessId: string,
+    given: string,
+  ): Promise<boolean> {
+    const sealed = await subscriptionsRepo.billingEmailSealed(tx, businessId);
+    if (!sealed) return true;
+    return decryptFacet(sealed, this.config.vaultKey, emailAad(businessId)) !== given;
   }
 
   /**

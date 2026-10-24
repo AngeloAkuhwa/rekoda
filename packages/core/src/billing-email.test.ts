@@ -67,11 +67,15 @@ describe('proving the mailbox (G-102 slice 2b, OWN-51)', () => {
 
   it.each([
     ['ada@shop.example.ng', 'a**@shop.example.ng'],
-    ['a@shop.example.ng', 'a@shop.example.ng'],
+    ['a@shop.example.ng', '*@shop.example.ng'],
     ['ab@x.io', 'a*@x.io'],
     ['averyveryverylonglocalpart@example.ng', 'a********@example.ng'],
   ])('masks %s as %s', (raw, masked) => {
     expect(maskBillingEmail(raw)).toBe(masked);
+  });
+
+  it('hides a one-character local part whole', () => {
+    expect(maskBillingEmail('a@shop.example.ng')).toBe('*@shop.example.ng');
   });
 
   it('never reveals more of the local part than its first character', () => {
