@@ -9,6 +9,7 @@
 import { sql } from 'drizzle-orm';
 import {
   bigint,
+  boolean,
   index,
   integer,
   pgTable,
@@ -100,6 +101,30 @@ export const subscriptionChargeAttempts = pgTable('subscription_charge_attempts'
   /** initializing | active | ambiguous | superseded | paid | duplicate_paid | failed */
   status: text('status').notNull().default('initializing'),
   checkoutUrl: text('checkout_url'),
+  /** The business's `billing_email_revision` when the session was started (migration 0174). */
+  emailRevision: integer('email_revision'),
+  /** Whether a live provider key started the session (migration 0174); null before it existed. */
+  providerLive: boolean('provider_live'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * One mailed link that proves a billing email's mailbox (migration 0174, OWN-51).
+ * Only the SHA-256 of the link's token is kept, never the token or the address.
+ */
+export const billingEmailVerifications = pgTable('billing_email_verifications', {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  businessId: uuid('business_id')
+    .notNull()
+    .references(() => businesses.id),
+  tokenHash: text('token_hash').notNull(),
+  /** The business's `billing_email_revision` when the link was issued: binds it to that address. */
+  emailRevision: integer('email_revision').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  consumedAt: timestamp('consumed_at', { withTimezone: true }),
+  voidedAt: timestamp('voided_at', { withTimezone: true }),
 });

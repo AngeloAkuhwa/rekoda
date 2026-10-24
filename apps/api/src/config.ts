@@ -313,6 +313,13 @@ export interface ApiConfig {
    */
   fxMode: FxMode;
   /**
+   * How transactional email leaves Rekoda (G-102 slice 2b, OWN-51). `none` sends
+   * nothing and says so; `mock` keeps messages in memory for development and
+   * tests and is refused in production. A real sender joins when the
+   * authenticated Cloudflare email service is configured.
+   */
+  emailProvider: EmailProvider;
+  /**
    * How an operator proves who they are (P0-2).
    *
    * `null` means no verifier is configured. In production that is a state
@@ -920,6 +927,23 @@ function planningFx(env: NodeJS.ProcessEnv): number {
 export const FX_MODES = ['off', 'shadow', 'sandbox', 'live'] as const;
 export type FxMode = (typeof FX_MODES)[number];
 
+const EMAIL_PROVIDERS = ['none', 'mock'] as const;
+export type EmailProvider = (typeof EMAIL_PROVIDERS)[number];
+
+function emailProvider(env: NodeJS.ProcessEnv, isProduction: boolean): EmailProvider {
+  const raw = env['REKODA_EMAIL_PROVIDER']?.trim() || 'none';
+  if (!(EMAIL_PROVIDERS as readonly string[]).includes(raw)) {
+    throw new ConfigError(`REKODA_EMAIL_PROVIDER must be one of ${EMAIL_PROVIDERS.join(', ')}`);
+  }
+  if (raw === 'mock' && isProduction) {
+    throw new ConfigError(
+      'REKODA_EMAIL_PROVIDER=mock keeps mail in memory and is refused in production: ' +
+        'leave it unset until the real email service is configured',
+    );
+  }
+  return raw as EmailProvider;
+}
+
 /**
  * `live` needs more than one environment variable, and today it needs a
  * decision nobody has made.
@@ -1356,6 +1380,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     ),
     planningFxNairaPerUsd: planningFx(env),
     fxMode: fxMode(env, isProduction),
+    emailProvider: emailProvider(env, isProduction),
     operatorAuth: operatorAuth(env, isProduction),
     paystackSecretKey: env['PAYSTACK_SECRET_KEY'] ?? '',
     paystackBaseUrl: providerBaseUrl(env, 'PAYSTACK_BASE_URL', PAYSTACK_API, isProduction),

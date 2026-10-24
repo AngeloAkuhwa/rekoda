@@ -39,7 +39,12 @@
  * lands in no merchant's books.
  */
 import { Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
-import { MAX_CHECKOUT_ATTEMPTS, attemptReference, checkBillingEmail } from '@rekoda/core';
+import {
+  MAX_CHECKOUT_ATTEMPTS,
+  attemptReference,
+  checkBillingEmail,
+  maskBillingEmail,
+} from '@rekoda/core';
 import { decryptFacet, encryptFacet } from '@rekoda/core/vault';
 import type { BillingCheckoutResponse } from '@rekoda/contracts';
 import { subscriptionsRepo, withBusiness, type Db, type TenantDb } from '@rekoda/db';
@@ -160,6 +165,7 @@ export class BillingCheckoutService {
         const linked = await this.awaitSibling(
           businessId,
           reference,
+          given,
           options.siblingWaitMs ?? SIBLING_WAIT_MS,
         );
         if (linked) return linked;
@@ -203,6 +209,7 @@ export class BillingCheckoutService {
           chargeId: charge.id,
           attemptNo: 1,
           providerReference: attemptReference(charge.reference, 1),
+          bindEmail: false,
         });
         if (adopted) {
           await subscriptionsRepo.recordAttemptCheckout(
@@ -217,6 +224,14 @@ export class BillingCheckoutService {
       }
 
       if (live) {
+        /* A different address than the one this session was started for must not be
+         * answered with the old link: it is saved and proven first (OWN-51), and a
+         * session already open for the old address is replaced once it is allowed. */
+        if (live.status === 'active' && (await this.sessionStale(tx, businessId, live, given))) {
+          const ready = await this.readyEmail(tx, businessId, given, now);
+          if ('response' in ready) return { state: 'done', response: ready.response };
+          return { state: 'resolve', attempt: live };
+        }
         /* Measured by the database's clock, in the query that read the attempt:
          * this server's clock and the database's are not the same clock. */
         const idle = live.idleMs;
@@ -256,6 +271,7 @@ export class BillingCheckoutService {
   private async awaitSibling(
     businessId: string,
     reference: string,
+    given: string | null,
     budgetMs: number,
   ): Promise<BillingCheckoutResponse | null> {
     const deadline = Date.now() + budgetMs;
@@ -268,10 +284,22 @@ export class BillingCheckoutService {
       });
       if ('gone' in seen || !seen.live) return null;
       if (seen.live.status === 'active' && seen.live.checkoutUrl) {
-        const refused = await withBusiness(this.db, businessId, (tx) =>
-          this.refusal(tx, businessId, seen.charge, handoffTime(new Date())),
+        /* Decided under the locks, charge fresh: it may have settled since it was read. */
+        const blocked = await withBusiness(
+          this.db,
+          businessId,
+          async (tx): Promise<BillingCheckoutResponse | 'redecide' | null> => {
+            const charge = await this.lockCharge(tx, businessId, reference);
+            if (!charge) return { state: 'unavailable', reason: 'unknown_charge' };
+            const refused = await this.refusal(tx, businessId, charge, handoffTime(new Date()));
+            if (refused) return { state: 'unavailable', reason: refused };
+            /* The sibling started this session for another address than this request gave. */
+            if (await this.sessionStale(tx, businessId, seen.live!, given)) return 'redecide';
+            return this.staleHandoff(tx, businessId, seen.live!.emailRevision);
+          },
         );
-        if (refused) return { state: 'unavailable', reason: refused };
+        if (blocked === 'redecide') return null;
+        if (blocked) return blocked;
         return {
           state: 'ready',
           reference: seen.charge.reference,
@@ -305,24 +333,84 @@ export class BillingCheckoutService {
     return subscriptionsRepo.lockChargeByReference(tx, businessId, reference);
   }
 
-  /** The email to start a session with, stored sealed when the merchant just gave one. */
+  private liveKey(): boolean {
+    return this.config.paystackSecretKey.startsWith('sk_live');
+  }
+
+  /**
+   * Was this session started for an address other than the one now on file, or is
+   * the merchant giving a different one? Then its link must not be handed out as is.
+   */
+  private async sessionStale(
+    tx: TenantDb,
+    businessId: string,
+    live: subscriptionsRepo.AttemptRow,
+    given: string | null,
+  ): Promise<boolean> {
+    const state = await subscriptionsRepo.billingEmailState(tx, businessId);
+    /* A session that predates the column was started before any address change was
+     * counted, so it belongs to revision 0: it stays valid until the address changes,
+     * and is replaced (after Paystack is asked about it) from then on. */
+    if ((live.emailRevision ?? 0) !== state.revision) return true;
+    /* A link started by a test key is not a live checkout. A session from before the mode
+     * was recorded is trusted on a test key, as it always was, and not on a live one. */
+    if ((live.providerLive ?? false) !== this.liveKey()) return true;
+    /* A live key hands out no link, cached or new, for a mailbox that is not proven. */
+    if (this.config.paystackSecretKey.startsWith('sk_live') && !state.verifiedAt) return true;
+    if (!given) return false;
+    if (!state.sealed) return true;
+    return decryptFacet(state.sealed, this.config.vaultKey, emailAad(businessId)) !== given;
+  }
+
+  /**
+   * The email to start a session with, stored sealed when the merchant just gave
+   * a DIFFERENT one. Giving the address already on file changes nothing, so a
+   * proven mailbox stays proven; a new address is unproven until its link is used.
+   */
   private async emailFor(
     tx: TenantDb,
     businessId: string,
     given: string | null,
     now: Date,
-  ): Promise<string | null> {
-    if (given) {
+  ): Promise<{ email: string; verified: boolean } | null> {
+    const state = await subscriptionsRepo.billingEmailState(tx, businessId);
+    const onFile = state.sealed
+      ? decryptFacet(state.sealed, this.config.vaultKey, emailAad(businessId))
+      : null;
+    if (given && given !== onFile) {
       await subscriptionsRepo.setBillingEmailSealed(
         tx,
         businessId,
         encryptFacet(given, this.config.vaultKey, emailAad(businessId)),
         now,
       );
-      return given;
+      return { email: given, verified: false };
     }
-    const sealed = await subscriptionsRepo.billingEmailSealed(tx, businessId);
-    return sealed ? decryptFacet(sealed, this.config.vaultKey, emailAad(businessId)) : null;
+    return onFile ? { email: onFile, verified: state.verifiedAt !== null } : null;
+  }
+
+  /**
+   * The address a session may start with, or the answer that explains why none
+   * may: no address yet, or (live key only) a mailbox not yet proven (OWN-51).
+   * A test key never waits, so development and staging need no inbox.
+   */
+  private async readyEmail(
+    tx: TenantDb,
+    businessId: string,
+    given: string | null,
+    now: Date,
+  ): Promise<{ email: string } | { response: BillingCheckoutResponse }> {
+    const found = await this.emailFor(tx, businessId, given, now);
+    if (!found) return { response: { state: 'requires_billing_email' } };
+    if (this.config.paystackSecretKey.startsWith('sk_live') && !found.verified) {
+      return {
+        response: {
+          state: 'requires_billing_email_verification',
+          maskedEmail: maskBillingEmail(found.email),
+        },
+      };
+    }
+    return { email: found.email };
   }
 
   private async openNext(
@@ -333,13 +421,15 @@ export class BillingCheckoutService {
     given: string | null,
     now: Date,
   ): Promise<Decision> {
-    const email = await this.emailFor(tx, businessId, given, now);
-    if (!email) return { state: 'done', response: { state: 'requires_billing_email' } };
+    const ready = await this.readyEmail(tx, businessId, given, now);
+    if ('response' in ready) return { state: 'done', response: ready.response };
+    const email = ready.email;
     const attempt = await subscriptionsRepo.openAttempt(tx, {
       businessId,
       chargeId: charge.id,
       attemptNo,
       providerReference: attemptReference(charge.reference, attemptNo),
+      providerLive: this.liveKey(),
     });
     /* Holding the lock, a conflict means a sibling committed first. */
     if (!attempt) return { state: 'retry' };
@@ -400,8 +490,9 @@ export class BillingCheckoutService {
       }
       /* The email is settled before the old attempt is retired, so a missing one
        * leaves the charge exactly as it was. */
-      const email = await this.emailFor(tx, businessId, given, now);
-      if (!email) return { state: 'done', response: { state: 'requires_billing_email' } };
+      const ready = await this.readyEmail(tx, businessId, given, now);
+      if ('response' in ready) return { state: 'done', response: ready.response };
+      const email = ready.email;
       const moved = await subscriptionsRepo.moveAttempt(
         tx,
         businessId,
@@ -415,6 +506,7 @@ export class BillingCheckoutService {
         chargeId: charge.id,
         attemptNo: latest + 1,
         providerReference: attemptReference(charge.reference, latest + 1),
+        providerLive: this.liveKey(),
       });
       if (!next) return { state: 'retry' };
       return {
@@ -477,11 +569,17 @@ export class BillingCheckoutService {
       const charge = await subscriptionsRepo.chargeById(tx, businessId, attempt.chargeId);
       const refused = charge ? await this.refusal(tx, businessId, charge, handoff) : 'not_pending';
       if (refused) return { refused };
+      /* The address may have changed while Paystack was answering: a link started for
+       * the old one is not handed out (OWN-51). It stays stored; the next request
+       * finds the session stale and replaces it. */
+      const held = await this.staleHandoff(tx, businessId, attempt.emailRevision);
+      if (held) return { held };
       /* Not recorded though the charge is payable: a sibling replaced this attempt
        * while Paystack was answering. Its link is not the one to give out. */
       if (!recorded) return { refused: 'checkout_in_progress' as const };
       return { recorded };
     });
+    if ('held' in outcome) return outcome.held;
     if ('refused' in outcome) return { state: 'unavailable', reason: outcome.refused };
     return {
       state: 'ready',
@@ -489,6 +587,32 @@ export class BillingCheckoutService {
       checkoutUrl: outcome.recorded,
       amountK: decision.amountK,
     };
+  }
+
+  /**
+   * Called under the business lock just before a link is handed out. The merchant may
+   * have changed the billing address while the provider was answering (or while this
+   * request waited on a sibling): a link started for another address, or for one whose
+   * mailbox a live key requires proven and is not, is held back (OWN-51).
+   */
+  private async staleHandoff(
+    tx: TenantDb,
+    businessId: string,
+    startedRevision: number | null,
+  ): Promise<BillingCheckoutResponse | null> {
+    const state = await subscriptionsRepo.billingEmailState(tx, businessId);
+    if (this.config.paystackSecretKey.startsWith('sk_live') && state.sealed && !state.verifiedAt) {
+      return {
+        state: 'requires_billing_email_verification',
+        maskedEmail: maskBillingEmail(
+          decryptFacet(state.sealed, this.config.vaultKey, emailAad(businessId)),
+        ),
+      };
+    }
+    if (startedRevision !== null && startedRevision !== state.revision) {
+      return { state: 'unavailable', reason: 'checkout_in_progress' };
+    }
+    return null;
   }
 
   private async move(
