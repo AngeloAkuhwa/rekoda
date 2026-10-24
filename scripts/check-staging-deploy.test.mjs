@@ -721,3 +721,21 @@ test('the free-space check kept but PHASE=prepared removed, so the order cannot 
   const edit = edited('script', 'PHASE=prepared\n', '');
   expectProblem(problems(edit), /free disk space after the running release is proven/);
 });
+
+test('the image removal placed before the retention guards', () => {
+  const rm = '    docker image rm "$image" >/dev/null 2>&1 || true\n';
+  const guard = '    if in_list "$tag" "$keep"; then continue; fi\n';
+  const moved = edited('script', rm, '').script.replace(guard, () => rm + guard);
+  expectProblem(problems({ script: moved }), /removes images outside prune_releases/);
+});
+
+test('the disk-space step placed between the baseline curl and its validation', () => {
+  const step = "step 'disk space'\n";
+  const without = edited('script', step, '').script;
+  const moved = without.replace(
+    'jq -e --arg pr "$PREV_RELEASE" --arg ps "$PREV_SHA" \\\n  \'.commit',
+    () => `${step}jq -e --arg pr "$PREV_RELEASE" --arg ps "$PREV_SHA" \\\n  '.commit`,
+  );
+  assert.notEqual(moved, without);
+  expectProblem(problems({ script: moved }), /free disk space after the running release is proven/);
+});

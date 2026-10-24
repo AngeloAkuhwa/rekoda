@@ -122,7 +122,7 @@ const SCRIPT_FORBIDDEN = [
   [
     /\bimage rm\b/,
     'removes images outside prune_releases, whose keep list protects the running release and its rollback',
-    (line) => /^docker image rm "\$image" >\/dev\/null 2>&1 \|\| true$/.test(line.trim()),
+    (line, index, all) => isGuardedImageRemoval(line, index, all),
   ],
   [/\bgit pull\b/, 'deploys whatever main is now, not the commit CI passed'],
   [
@@ -138,6 +138,27 @@ const SCRIPT_FORBIDDEN = [
     'hands the dc shell function to an external command, which cannot run it (exit 127)',
   ],
 ];
+
+/**
+ * The one allowed `docker image rm`: it must sit after the staging-tag, kept-tag
+ * and kept-image-ID guards of its own loop, so no tag is removed before they run.
+ */
+function isGuardedImageRemoval(line, index, all) {
+  if (!/^docker image rm "\$image" >\/dev\/null 2>&1 \|\| true$/.test(line.trim())) return false;
+  const trimmed = all.map((value) => value.trim());
+  const loop = trimmed.lastIndexOf('while read -r image id; do', index);
+  if (loop < 0) return false;
+  const body = trimmed.slice(loop + 1, index);
+  return (
+    body.some((l) =>
+      /^\[\[ "\$image" =~ \^rekoda-\(app\|web\):\(staging-\[0-9a-f\]\{7\}\)\$ \]\] \|\| continue$/.test(
+        l,
+      ),
+    ) &&
+    body.includes('if in_list "$tag" "$keep"; then continue; fi') &&
+    body.includes('if [ -n "$id" ] && in_list "$id" "$keep_ids"; then continue; fi')
+  );
+}
 
 const codeLines = (text) =>
   text
@@ -453,7 +474,17 @@ function retentionProblems(lines) {
   const lowCheck = lines.findIndex((line) => /^step 'disk space'$/.test(line));
   const prepared = at('PHASE=prepared');
   const baseline = lines.findIndex((line) => BASELINE_CALL.test(line));
-  if (lowCheck < 0 || baseline < 0 || lowCheck < baseline || prepared < 0 || lowCheck > prepared) {
+  // The baseline is proven only once the .status/.database/.release/.commit
+  // validation that follows the curl has run: it ends in this refusal.
+  const baselineEnd = lines.findIndex((line) => /^\s*fail "\$API_URL\/health reports /.test(line));
+  if (
+    lowCheck < 0 ||
+    baseline < 0 ||
+    baselineEnd < baseline ||
+    lowCheck < baselineEnd ||
+    prepared < 0 ||
+    lowCheck > prepared
+  ) {
     problems.push(
       `${FILES.script} must check free disk space after the running release is proven and before the checkout changes`,
     );
@@ -516,9 +547,9 @@ export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
   if (!script.startsWith('#!/usr/bin/env bash\n') || firstCode !== 'set -Eeuo pipefail') {
     problems.push(`${FILES.script} must start with a bash shebang and then \`set -Eeuo pipefail\``);
   }
-  for (const line of lines) {
+  for (const [index, line] of lines.entries()) {
     for (const [pattern, why, exempt] of SCRIPT_FORBIDDEN) {
-      if (pattern.test(line) && !exempt?.(line))
+      if (pattern.test(line) && !exempt?.(line, index, lines))
         problems.push(`${FILES.script}: \`${line.trim()}\` ${why}`);
     }
     if (/\bdocker compose\b/.test(line)) {
