@@ -14,7 +14,7 @@
  * references: one is accepted once, and a created session can be verified.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServiceUnavailableException } from '@nestjs/common';
 import { MAX_CHECKOUT_ATTEMPTS, attemptReference } from '@rekoda/core';
 import type { BillingCheckoutResponse } from '@rekoda/contracts';
@@ -411,6 +411,35 @@ describe('requests that race', () => {
 
     expect(answer).toEqual({ state: 'unavailable', reason: 'checkout_in_progress' });
     expect(provider.initialized).toHaveLength(0);
+  });
+
+  it('measures how long a request has been starting with the database clock, not the server clock', async () => {
+    const businessId = await seedBusiness();
+    const { reference } = await pendingCharge(businessId);
+    await withBusiness(appDb, businessId, async (tx) => {
+      const charge = await subscriptionsRepo.chargeByReference(tx, businessId, reference);
+      await subscriptionsRepo.openAttempt(tx, {
+        businessId,
+        chargeId: charge!.id,
+        attemptNo: 1,
+        providerReference: reference,
+      });
+    });
+
+    /* This server's clock runs an hour ahead of the database's. The attempt was
+     * opened a moment ago by the database's reckoning, so it is not abandoned. */
+    const real = Date.now();
+    const skewed = vi.spyOn(Date, 'now').mockReturnValue(real + 3_600_000);
+    let answer;
+    try {
+      answer = await checkouts().checkout(businessId, reference, EMAIL, { siblingWaitMs: 0 });
+    } finally {
+      skewed.mockRestore();
+    }
+
+    expect(answer).toEqual({ state: 'unavailable', reason: 'checkout_in_progress' });
+    expect(provider.initialized).toHaveLength(0);
+    expect(await liveCount(businessId)).toBe(1);
   });
 
   it('recovers an attempt whose request died long ago', async () => {

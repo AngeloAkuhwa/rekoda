@@ -65,9 +65,10 @@ const handoffTime = (now: Date): Date => {
 const STALE_INITIALIZING_MS = 60_000;
 
 /**
- * A request for a fresh link right after a link was made hands that link back
- * instead of replacing it: a double click must not cost a session, and a link
- * made seconds ago is not one the merchant has lost.
+ * A request for a fresh link right after the link was stored hands that link
+ * back instead of replacing it: a double click must not cost a session, and a
+ * link made seconds ago is not one the merchant has lost. Measured from when
+ * the link was stored, not from when the attempt was opened.
  */
 const RESTART_COOLDOWN_MS = 30_000;
 
@@ -216,9 +217,11 @@ export class BillingCheckoutService {
       }
 
       if (live) {
-        const age = Date.now() - live.createdAt.getTime();
+        /* Measured by the database's clock, in the query that read the attempt:
+         * this server's clock and the database's are not the same clock. */
+        const idle = live.idleMs;
         if (live.status === 'active' && live.checkoutUrl) {
-          if (!restart || age < RESTART_COOLDOWN_MS) {
+          if (!restart || idle < RESTART_COOLDOWN_MS) {
             return {
               state: 'done',
               response: {
@@ -229,7 +232,7 @@ export class BillingCheckoutService {
               },
             };
           }
-        } else if (live.status === 'initializing' && age < STALE_INITIALIZING_MS) {
+        } else if (live.status === 'initializing' && idle < STALE_INITIALIZING_MS) {
           /* A sibling request is calling Paystack right now. */
           return { state: 'wait' };
         }

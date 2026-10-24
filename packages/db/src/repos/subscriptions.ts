@@ -1005,6 +1005,13 @@ export interface AttemptRow extends Record<string, unknown> {
   checkoutUrl: string | null;
   createdAt: Date;
   updatedAt: Date;
+  /**
+   * Milliseconds since the attempt last changed (opened, or its link stored),
+   * measured by the DATABASE clock in the query that read it. Only `liveAttempt`
+   * reads it; elsewhere it is 0. Never compare `updatedAt` with the server's
+   * clock: the two machines' clocks are not the same clock.
+   */
+  idleMs: number;
 }
 
 interface RawAttempt extends Record<string, unknown> {
@@ -1017,6 +1024,7 @@ interface RawAttempt extends Record<string, unknown> {
   checkout_url: string | null;
   created_at: string;
   updated_at: string;
+  idle_ms?: string | number | null;
 }
 
 const shapeAttempt = (row: RawAttempt): AttemptRow => ({
@@ -1029,6 +1037,7 @@ const shapeAttempt = (row: RawAttempt): AttemptRow => ({
   checkoutUrl: row.checkout_url,
   createdAt: new Date(row.created_at),
   updatedAt: new Date(row.updated_at),
+  idleMs: row.idle_ms == null ? 0 : Math.max(0, Number(row.idle_ms)),
 });
 
 /**
@@ -1059,7 +1068,8 @@ export async function liveAttempt(
   chargeId: string,
 ): Promise<AttemptRow | null> {
   const rows = await tx.execute<RawAttempt>(sql`
-    SELECT * FROM subscription_charge_attempts
+    SELECT *, (extract(epoch FROM (clock_timestamp() - updated_at)) * 1000)::bigint AS idle_ms
+    FROM subscription_charge_attempts
     WHERE business_id = ${businessId}::uuid AND charge_id = ${chargeId}::uuid
       AND status IN ('initializing', 'active', 'ambiguous')
   `);
