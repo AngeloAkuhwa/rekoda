@@ -429,6 +429,13 @@ export interface ApiConfig {
    * soaked (step E, with the add-ons slice).
    */
   planCatalogueReads: boolean;
+  /**
+   * Whether annual billing may be CHOSEN (G-110, OWN-40): a first annual purchase and a switch
+   * to annual. Off by default so the migration and every API, worker and sweep process can be
+   * on annual-aware code before the first year is sold; a process still on older code would
+   * settle a year's charge as one month. Switching back to monthly is always allowed.
+   */
+  annualBillingSales: boolean;
   /** R2. All four empty means documents are rendered but not stored. */
   r2AccountId: string;
   r2AccessKeyId: string;
@@ -1362,6 +1369,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     metaServiceReplyCostMicros: nonNegativeInteger(env, 'META_SERVICE_REPLY_COST_MICROS', 0),
     metaWabaRegisteredInNigeria: env['META_WABA_REGISTERED_IN_NIGERIA'] !== 'false',
     planCatalogueReads: env['REKODA_PLAN_CATALOGUE_READS'] !== '0',
+    annualBillingSales: env['REKODA_ANNUAL_BILLING'] === '1',
     r2AccountId: r2.accountId,
     r2AccessKeyId: r2.accessKeyId,
     r2SecretAccessKey: r2.secretAccessKey,

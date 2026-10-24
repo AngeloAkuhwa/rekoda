@@ -123,7 +123,8 @@ const justEndedYear = () => new Date(Date.now() - 366 * DAY);
 /** A monthly cycle whose month ended a few days ago. */
 const justEndedMonth = () => new Date(Date.now() - 35 * DAY);
 
-const billing = () => new BillingService({ ...config, paystackPlatformConfirmed: true }, db);
+const billing = () =>
+  new BillingService({ ...config, paystackPlatformConfirmed: true, annualBillingSales: true }, db);
 
 const overviewOf = async (auth: Record<string, string>) =>
   billingOverviewResponse.parse(
@@ -170,6 +171,30 @@ async function putOnPlan(
     );
   });
 }
+
+describe('annual billing is off until it is switched on', () => {
+  const off = () =>
+    new BillingService(
+      { ...config, paystackPlatformConfirmed: true, annualBillingSales: false },
+      db,
+    );
+
+  it('refuses a yearly quote, purchase and switch, opens nothing, and still allows monthly', async () => {
+    const { businessId } = await onboard();
+    await expect(off().quote(businessId, 'chat', new Date(), 'annual')).rejects.toThrow(/annual/);
+    await expect(off().changePlan(businessId, 'chat', new Date(), 'annual')).rejects.toThrow(
+      /annual/,
+    );
+    expect(await chargesOf(businessId)).toHaveLength(0);
+
+    const monthly = await off().changePlan(businessId, 'chat', new Date(), 'monthly');
+    expect(monthly.state).toBe('payment_required');
+
+    await putOnPlan(businessId, 'chat', 'monthly', new Date(Date.now() - 10 * DAY));
+    await expect(off().switchInterval(businessId, 'annual')).rejects.toThrow(/annual/);
+    expect((await off().switchInterval(businessId, 'monthly')).state).toBe('unchanged');
+  });
+});
 
 describe('buying a year', () => {
   it('quotes a first annual purchase at ten months and a year of service', async () => {

@@ -11,7 +11,7 @@
  * and a pending charge opened before that would be a row somebody has to
  * remember to clean up.
  */
-import { Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
 import {
   addInterval,
@@ -64,6 +64,13 @@ export class BillingService {
     @Inject(CONFIG) private readonly config: ApiConfig,
     @Inject(DB) private readonly db: Db,
   ) {}
+
+  /** Annual billing cannot be chosen until it is switched on (`annualBillingSales`). */
+  private refuseUnofferedAnnual(interval: BillingInterval): void {
+    if (interval === 'annual' && !this.config.annualBillingSales) {
+      throw new BadRequestException('annual billing is not available yet');
+    }
+  }
 
   /**
    * The two prices a plan change is priced from, off the catalogue.
@@ -171,6 +178,7 @@ export class BillingService {
     now = new Date(),
     requested: BillingInterval = 'monthly',
   ): Promise<BillingQuoteResponse> {
+    this.refuseUnofferedAnnual(requested);
     return withBusiness(this.db, businessId, async (tx) => {
       const from = await usageRepo.planFor(tx, businessId, now);
       const subscription = await subscriptionsRepo.subscriptionFor(tx, businessId);
@@ -257,6 +265,7 @@ export class BillingService {
     now = new Date(),
     requested: BillingInterval = 'monthly',
   ): Promise<BillingPlanChangeResponse> {
+    this.refuseUnofferedAnnual(requested);
     return withBusiness(this.db, businessId, async (tx) => {
       /* G-104: lock the business row BEFORE reading the plan this charge is
        * priced against, so a concurrent operator move either finished (and is
@@ -421,6 +430,7 @@ export class BillingService {
     interval: BillingInterval,
     now = new Date(),
   ): Promise<BillingIntervalResponse> {
+    this.refuseUnofferedAnnual(interval);
     return withBusiness(this.db, businessId, async (tx) => {
       await subscriptionsRepo.lockBusiness(tx, businessId);
       const plan = await usageRepo.planFor(tx, businessId, now);
