@@ -212,6 +212,10 @@ describe('the annual switch and the catalogue', () => {
       'scheduled',
     );
 
+    // Switching away from the year and changing their mind needs no new annual sale.
+    expect((await off.switchInterval(businessId, 'monthly')).state).toBe('scheduled');
+    expect((await off.switchInterval(businessId, 'annual')).state).toBe('undone');
+
     const trial = (await onboard()).businessId;
     const noCatalogue = new BillingService(
       {

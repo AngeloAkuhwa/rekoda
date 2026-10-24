@@ -436,7 +436,6 @@ export class BillingService {
     interval: BillingInterval,
     now = new Date(),
   ): Promise<BillingIntervalResponse> {
-    this.refuseUnofferedAnnual(interval);
     return withBusiness(this.db, businessId, async (tx) => {
       await subscriptionsRepo.lockBusiness(tx, businessId);
       const plan = await usageRepo.planFor(tx, businessId, now);
@@ -458,6 +457,8 @@ export class BillingService {
           effectiveAt: subscription.planExpiresAt.toISOString(),
         };
       }
+      /* Only a NEW move to a year needs the sale switched on; undoing a switch away from one never does. */
+      this.refuseUnofferedAnnual(interval);
       await subscriptionsRepo.scheduleIntervalChange(tx, businessId, interval);
       return {
         state: 'scheduled' as const,
