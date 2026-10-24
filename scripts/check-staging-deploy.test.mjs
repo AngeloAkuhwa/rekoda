@@ -744,7 +744,13 @@ test('the image removal placed after the loop that holds the retention guards', 
   const rm = '    docker image rm "$image" >/dev/null 2>&1 || true\n';
   const done = '  done < <(printf \'%s\\n\' "$images")\n';
   const without = edited('script', rm, '').script;
-  const moved = without.replace(done, () => done + rm.replace(/^ {4}/, '  '));
+  // After the second loop's `done` (the removal loop), so only the closing-`done`
+  // guard, not the missing-retention-guard rule, can reject it.
+  const first = without.indexOf(done);
+  const second = without.indexOf(done, first + done.length);
+  assert.notEqual(second, -1);
+  const at = second + done.length;
+  const moved = without.slice(0, at) + rm.replace(/^ {4}/, '  ') + without.slice(at);
   assert.notEqual(moved, without);
   expectProblem(problems({ script: moved }), /removes images outside prune_releases/);
 });
