@@ -24,6 +24,19 @@ BEGIN
    WHERE business_id = NEW.id
      AND period <> 'TRIAL00'
      AND unit NOT IN ('API_REQUEST_UNITS', 'WEBHOOK_DELIVERIES');
+
+  -- A reservation the previous release recorded on a message has no meter row (it writes only
+  -- `reserved_units`). It was spent on the trial usage just discarded, so name that row: a later
+  -- refund then goes to the trial row, where nothing is left to harm, instead of falling back to a
+  -- calendar month and debiting a paid counter created after the upgrade.
+  UPDATE external_events e
+     SET reserved_meters = e.reserved_meters || COALESCE((
+           SELECT jsonb_object_agg(split_part(u, ':', 1), 'TRIAL00')
+             FROM unnest(e.reserved_units) AS u
+            WHERE split_part(u, ':', 1) NOT IN ('API_REQUEST_UNITS', 'WEBHOOK_DELIVERIES')
+              AND NOT (e.reserved_meters ? split_part(u, ':', 1))), '{}'::jsonb)
+   WHERE e.business_id = NEW.id
+     AND cardinality(e.reserved_units) > 0;
   RETURN NULL;
 END $$;
 

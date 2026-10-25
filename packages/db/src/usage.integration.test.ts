@@ -647,7 +647,9 @@ describe('a business leaving the trial leaves no trial usage on a month row (mig
   const strayOldProcessWrites = (businessId: string) =>
     ownerRun(sql`
       INSERT INTO usage_counters (business_id, period, unit, used) VALUES
+        (${businessId}::uuid, '2026-09', 'AI_ACTIONS', 2),
         (${businessId}::uuid, '2026-10', 'AI_ACTIONS', 4),
+        (${businessId}::uuid, '2026-09', 'API_REQUEST_UNITS', 5),
         (${businessId}::uuid, '2026-10', 'API_REQUEST_UNITS', 6)`);
 
   it('discards stray month rows for base-plan units when the first paid plan lands, and keeps API units', async () => {
@@ -656,7 +658,9 @@ describe('a business leaving the trial leaves no trial usage on a month row (mig
 
     await setPlanOnRow(businessId, 'chat');
 
+    // Both months of base-plan usage go; both months of API usage stay.
     expect(await monthRows(businessId)).toEqual([
+      { period: '2026-09', unit: 'API_REQUEST_UNITS', used: 5 },
       { period: '2026-10', unit: 'API_REQUEST_UNITS', used: 6 },
     ]);
     const read = await withBusiness(db, businessId, (tx) =>
@@ -673,7 +677,7 @@ describe('a business leaving the trial leaves no trial usage on a month row (mig
         sql`UPDATE businesses SET plan = 'trial', updated_at = now() WHERE id = ${stays}::uuid`,
       ),
     );
-    expect(await monthRows(stays)).toHaveLength(2);
+    expect(await monthRows(stays)).toHaveLength(4);
 
     const paid = await seedBusiness2();
     await setPlanOnRow(paid, 'chat');
@@ -684,11 +688,59 @@ describe('a business leaving the trial leaves no trial usage on a month row (mig
     expect(await monthRows(paid)).toEqual([{ period: '2026-10', unit: 'AI_ACTIONS', used: 7 }]);
   });
 
+  it('names the trial row on a reservation the previous release recorded, so its refund cannot debit a paid counter', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await withBusiness(db, businessId, (tx) =>
+      events.recordEvent(tx, {
+        provider: 'meta',
+        eventType: 'messages',
+        externalId: `g109-0177-${Math.random()}`,
+        payload: {},
+        businessId,
+      }),
+    );
+    if (!recorded.isNew) throw new Error('event not recorded');
+    // The previous release writes reserved_units only: no meter row.
+    await ownerRun(sql`
+      UPDATE external_events SET reserved_units = ARRAY['AI_ACTIONS', 'API_REQUEST_UNITS']
+       WHERE id = ${recorded.id}::uuid`);
+
+    await setPlanOnRow(businessId, 'chat');
+    // Paid usage in the month the old reservation names.
+    await withBusiness(db, businessId, (tx) =>
+      usageRepo.reserveUnit(tx, businessId, '2026-10', 'AI_ACTIONS', 5),
+    );
+
+    const taken = await withBusiness(db, businessId, (tx) =>
+      events.takeReservedUnit(tx, businessId, recorded.id, 'AI_ACTIONS'),
+    );
+    expect(taken).toEqual({ meter: 'TRIAL00' });
+    await withBusiness(db, businessId, (tx) =>
+      usageRepo.refundUnit(
+        tx,
+        businessId,
+        usageRepo.storedMeter(taken!.meter, '2026-10'),
+        'AI_ACTIONS',
+      ),
+    );
+    const paid = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, '2026-10'),
+    );
+    expect(paid.find((r) => r.unit === 'AI_ACTIONS')?.used).toBe(1); // the paid unit is untouched
+    // The API unit keeps its own monthly cycle, so it names no trial row.
+    const [event] = await ownerRun(sql`
+      SELECT reserved_meters AS meters FROM external_events WHERE id = ${recorded.id}::uuid`);
+    expect(event?.meters).toEqual({});
+  });
+
   it('also discards them when a trial lapses to expired', async () => {
     const businessId = await seedBusiness();
     await strayOldProcessWrites(businessId);
     await setPlanOnRow(businessId, 'expired');
-    expect((await monthRows(businessId)).map((r) => r.unit)).toEqual(['API_REQUEST_UNITS']);
+    expect((await monthRows(businessId)).map((r) => r.unit)).toEqual([
+      'API_REQUEST_UNITS',
+      'API_REQUEST_UNITS',
+    ]);
   });
 });
 
