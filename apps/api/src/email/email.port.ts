@@ -2,13 +2,15 @@
  * Transactional email (G-102 slice 2b, OWN-51).
  *
  * A port, like PAYMENT_PROVIDER: callers send through it and never know which
- * sender is bound. Only the mock and the honest "none" exist today; the real
- * sender arrives with the authenticated Cloudflare email service.
+ * sender is bound: the honest "none", the in-memory mock, or Resend
+ * (`resend.sender.ts`).
  */
 export interface OutboundEmail {
   to: string;
   subject: string;
   text: string;
+  /** A stable key for one logical message, so a provider can drop a retried duplicate. */
+  idempotencyKey?: string;
 }
 
 export interface EmailSender {
