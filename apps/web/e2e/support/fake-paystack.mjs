@@ -10,6 +10,8 @@ import { createServer } from 'node:http';
 
 const port = Number(process.env.FAKE_PAYSTACK_PORT ?? 3199);
 const transactions = new Map();
+/* Paystack's transaction id is unique per transaction and never changes: one counter, assigned when the transaction is initialised. */
+let nextTransactionId = 4_000_000;
 
 const json = (res, status, body) => {
   res.writeHead(status, { 'content-type': 'application/json' });
@@ -30,7 +32,7 @@ createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/transaction/initialize') {
     const body = JSON.parse((await readBody(req)) || '{}');
-    transactions.set(body.reference, { ...body, paid: false });
+    transactions.set(body.reference, { ...body, paid: false, id: nextTransactionId++ });
     return json(res, 200, {
       status: true,
       message: 'Authorization URL created',
@@ -50,8 +52,8 @@ createServer(async (req, res) => {
       status: true,
       message: 'Verification successful',
       data: {
-        id: 4_000_000 + transactions.size,
-        status: t.paid ? 'success' : 'abandoned',
+        id: t.id,
+        status: t.paid ? 'success' : t.failed ? 'failed' : 'abandoned',
         reference: t.reference,
         amount: t.amount,
         currency: t.currency,
@@ -59,7 +61,11 @@ createServer(async (req, res) => {
         fees: Math.floor((t.amount * 15 + 500) / 1000),
         channel: 'card',
         paid_at: t.paid ? new Date().toISOString() : null,
-        gateway_response: t.paid ? 'Successful' : 'The customer did not complete the transaction',
+        gateway_response: t.paid
+          ? 'Successful'
+          : t.failed
+            ? 'Declined'
+            : 'The customer did not complete the transaction',
       },
     });
   }
@@ -70,6 +76,20 @@ createServer(async (req, res) => {
     const t = transactions.get(decodeURIComponent(pay[1]));
     if (!t) return json(res, 404, { ok: false });
     t.paid = true;
+    return json(res, 200, {
+      ok: true,
+      amount: t.amount,
+      currency: t.currency,
+      reference: t.reference,
+    });
+  }
+
+  // Test control: the customer's card was declined on the hosted page.
+  const fail = url.pathname.match(/^\/__fail\/(.+)$/);
+  if (req.method === 'POST' && fail) {
+    const t = transactions.get(decodeURIComponent(fail[1]));
+    if (!t) return json(res, 404, { ok: false });
+    t.failed = true;
     return json(res, 200, {
       ok: true,
       amount: t.amount,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { RESEND_SEND_URL, ResendEmailSender } from './resend.sender.js';
+import { EmailDeliveryUncertainError, EmailRefusedError } from './email.port.js';
 
 type Call = { url: string; init: RequestInit };
 
@@ -57,7 +58,7 @@ describe('ResendEmailSender', () => {
       () => null,
       (e: Error) => e,
     );
-    expect(error).toBeInstanceOf(Error);
+    expect(error).toBeInstanceOf(EmailRefusedError);
     expect(error!.message).toBe('resend send failed with 422');
     expect(error!.message).not.toContain('owner@shop.example');
     expect(error!.message).not.toContain('re_test_key');
@@ -87,5 +88,47 @@ describe('ResendEmailSender', () => {
         })) as unknown as typeof fetch,
     });
     await expect(slow.send(MESSAGE)).rejects.toThrow('resend request failed: AbortError');
+  });
+
+  it('calls a server error, a timeout and a dropped connection uncertain, and a 4xx a definite refusal', async () => {
+    const outcome = async (status: number) =>
+      sender(() => new Response('x', { status }))
+        .send(MESSAGE)
+        .then(
+          () => null,
+          (e: Error) => e,
+        );
+    for (const status of [500, 502, 503, 408, 409]) {
+      expect(await outcome(status), String(status)).toBeInstanceOf(EmailDeliveryUncertainError);
+    }
+    for (const status of [400, 401, 403, 422, 429]) {
+      const error = await outcome(status);
+      expect(error, String(status)).toBeInstanceOf(Error);
+      expect(error, String(status)).not.toBeInstanceOf(EmailDeliveryUncertainError);
+    }
+    const dropped = await sender(() => {
+      throw new TypeError('fetch failed');
+    })
+      .send(MESSAGE)
+      .then(
+        () => null,
+        (e: Error) => e,
+      );
+    expect(dropped).toBeInstanceOf(EmailDeliveryUncertainError);
+  });
+
+  it('a request that outlives its budget is uncertain, not "not sent"', async () => {
+    const slow = new ResendEmailSender({
+      apiKey: 're_test_key',
+      from: 'billing@example.com',
+      timeoutMs: 20,
+      fetchImpl: ((_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal!.addEventListener('abort', () =>
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+          );
+        })) as unknown as typeof fetch,
+    });
+    await expect(slow.send(MESSAGE)).rejects.toBeInstanceOf(EmailDeliveryUncertainError);
   });
 });

@@ -180,6 +180,17 @@ describe('billing email and confirmation wording', () => {
       /a minute/,
     );
   });
+  it('says an uncertain send may or may not have arrived, and never that it failed or was sent', () => {
+    const { ok, message } = emailVerifyCopy({
+      state: 'delivery_uncertain',
+      maskedEmail: 'a***@x.ng',
+      retryAfterSeconds: 60,
+    });
+    expect(ok).toBe(false);
+    expect(message).toMatch(/may or may not arrive/);
+    expect(message).toMatch(/link we made still works/);
+    expect(message).not.toMatch(/could not send|did not send|we sent/i);
+  });
   it('has a distinct, calm sentence for each way a link can end', () => {
     const states = [
       'verified',

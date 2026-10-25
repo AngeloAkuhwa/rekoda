@@ -150,6 +150,11 @@ export function emailVerifyCopy(answer: BillingEmailVerifyResponse): {
         ok: true,
         message: `We sent a confirmation link to ${answer.maskedEmail}. Open it while you are signed in to Rekoda. It works once and lasts one hour.`,
       };
+    case 'delivery_uncertain':
+      return {
+        ok: false,
+        message: `We could not confirm that the email to ${answer.maskedEmail} was sent, so it may or may not arrive. The link we made still works. Check your inbox and spam folder; if nothing comes in a few minutes, ask for another in about a minute.`,
+      };
     case 'already_verified':
       return { ok: true, message: `${answer.maskedEmail} is already confirmed.` };
     case 'requires_billing_email':

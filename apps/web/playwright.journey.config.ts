@@ -56,7 +56,7 @@ process.env.REKODA_E2E_API_URL ??= `http://127.0.0.1:${API_PORT}`;
  */
 export default defineConfig({
   testDir: './e2e',
-  testMatch: /billing-journey\.spec\.ts/,
+  testMatch: /billing-journey.*\.spec\.ts/,
   fullyParallel: false,
   // One at a time: both viewports share one API, one worker and one stand-in Paystack.
   workers: 1,
