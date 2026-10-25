@@ -20,11 +20,6 @@
 CREATE OR REPLACE FUNCTION release_trial_month_rows() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-  DELETE FROM usage_counters
-   WHERE business_id = NEW.id
-     AND period <> 'TRIAL00'
-     AND unit NOT IN ('API_REQUEST_UNITS', 'WEBHOOK_DELIVERIES');
-
   -- A reservation the previous release recorded on a message has no meter row (it writes only
   -- `reserved_units`). It was spent on the trial usage just discarded, so name that row: a later
   -- refund then goes to the trial row, where nothing is left to harm, instead of falling back to a
@@ -37,6 +32,13 @@ BEGIN
               AND NOT (e.reserved_meters ? split_part(u, ':', 1))), '{}'::jsonb)
    WHERE e.business_id = NEW.id
      AND cardinality(e.reserved_units) > 0;
+
+  -- Same order as the reserve path (the event row, then the counter row), so a plan change cannot
+  -- deadlock against a reservation in flight.
+  DELETE FROM usage_counters
+   WHERE business_id = NEW.id
+     AND period <> 'TRIAL00'
+     AND unit NOT IN ('API_REQUEST_UNITS', 'WEBHOOK_DELIVERIES');
   RETURN NULL;
 END $$;
 

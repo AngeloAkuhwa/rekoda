@@ -16,7 +16,9 @@
 -- rows and are not touched, nor is any business that is not on the trial plan.
 --
 -- Row-level security is switched off for the statements and restored (enabled and forced) in the
--- same migration, as migration 0053 does.
+-- same migration, as migration 0053 does. This file touches ONE table (the reservations are the next
+-- migration), so its ACCESS EXCLUSIVE lock is never held while another table's is wanted: the
+-- previous release is still running and takes row locks on both.
 
 ALTER TABLE usage_counters DISABLE ROW LEVEL SECURITY;
 
@@ -32,19 +34,3 @@ ON CONFLICT (business_id, period, unit) DO NOTHING;
 
 ALTER TABLE usage_counters ENABLE ROW LEVEL SECURITY;
 ALTER TABLE usage_counters FORCE ROW LEVEL SECURITY;
-
-ALTER TABLE external_events DISABLE ROW LEVEL SECURITY;
-
-UPDATE external_events e
-   SET reserved_meters = e.reserved_meters || COALESCE((
-         SELECT jsonb_object_agg(split_part(u, ':', 1), 'TRIAL00')
-           FROM unnest(e.reserved_units) AS u
-          WHERE split_part(u, ':', 1) NOT IN ('API_REQUEST_UNITS', 'WEBHOOK_DELIVERIES')
-            AND NOT (e.reserved_meters ? split_part(u, ':', 1))), '{}'::jsonb)
-  FROM businesses b
- WHERE b.id = e.business_id
-   AND b.plan = 'trial'
-   AND cardinality(e.reserved_units) > 0;
-
-ALTER TABLE external_events ENABLE ROW LEVEL SECURITY;
-ALTER TABLE external_events FORCE ROW LEVEL SECURITY;

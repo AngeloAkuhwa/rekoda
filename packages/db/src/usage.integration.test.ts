@@ -515,13 +515,14 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
   });
 });
 
-describe('trials already running when the trial meter moved (migration 0176)', () => {
-  /** The migration's own SQL, run again against rows shaped as the old release left them. */
+describe('trials already running when the trial meter moved (migrations 0176 and 0177)', () => {
+  /** The migrations' own SQL (the usage copy, then the reservations), run again against rows shaped as the old release left them. */
   async function backfill(): Promise<void> {
-    const body = await readFile(join(MIGRATIONS_DIR, '0176_trial_meter_backfill.sql'), 'utf8');
     const owner = postgres(urls.owner, { max: 1, onnotice: () => {} });
     try {
-      await owner.unsafe(body).simple();
+      for (const file of ['0176_trial_meter_backfill.sql', '0177_trial_reservations_meter.sql']) {
+        await owner.unsafe(await readFile(join(MIGRATIONS_DIR, file), 'utf8')).simple();
+      }
     } finally {
       await owner.end();
     }
@@ -630,7 +631,26 @@ describe('trials already running when the trial meter moved (migration 0176)', (
   });
 });
 
-describe('a business leaving the trial leaves no trial usage on a month row (migration 0177)', () => {
+describe('the trial migrations leave row-level security as they found it', () => {
+  it('keeps it enabled and forced on usage_counters and external_events', async () => {
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      const rls = [
+        ...(await ownerDb.execute<{ relname: string; on: boolean; forced: boolean }>(sql`
+          SELECT relname, relrowsecurity AS "on", relforcerowsecurity AS forced
+            FROM pg_class WHERE relname IN ('usage_counters', 'external_events') ORDER BY relname`)),
+      ];
+      expect(rls).toEqual([
+        { relname: 'external_events', on: true, forced: true },
+        { relname: 'usage_counters', on: true, forced: true },
+      ]);
+    } finally {
+      await close();
+    }
+  });
+});
+
+describe('a business leaving the trial leaves no trial usage on a month row (migration 0178)', () => {
   const ownerRun = async (statement: ReturnType<typeof sql>) => {
     const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
     try {
