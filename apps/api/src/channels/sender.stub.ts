@@ -42,6 +42,7 @@ export class StubSender implements MessageSender {
   readonly connectionTexts: OutboundConnectionText[] = [];
   private failNext: Error | null = null;
   private failDocuments: Error | null = null;
+  private failTrialNotices: Error | null = null;
 
   /** Make the next TEXT send fail, as an outage or a revoked token would. */
   failWith(error: Error = new SendFailed('stub outage')): void {
@@ -59,6 +60,11 @@ export class StubSender implements MessageSender {
     this.failDocuments = error;
   }
 
+  /** Fail every trial notice until reset (an outage lasting the whole pass). */
+  failTrialNoticesWith(error: Error = new SendFailed('stub outage')): void {
+    this.failTrialNotices = error;
+  }
+
   reset(): void {
     this.sent.length = 0;
     this.documents.length = 0;
@@ -73,6 +79,7 @@ export class StubSender implements MessageSender {
     this.failNext = null;
     this.omitIdNext = false;
     this.failDocuments = null;
+    this.failTrialNotices = null;
   }
 
   /** The text as the merchant would have seen it. */
@@ -136,6 +143,7 @@ export class StubSender implements MessageSender {
   }
 
   sendTrialNotice(notice: OutboundTrialNotice): Promise<SendResult> {
+    if (this.failTrialNotices) return Promise.reject(this.failTrialNotices);
     if (this.failNext) {
       const error = this.failNext;
       this.failNext = null;

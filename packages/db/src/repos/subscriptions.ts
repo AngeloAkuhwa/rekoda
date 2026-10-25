@@ -1614,7 +1614,7 @@ export interface TrialBusiness {
   /** The latest reminder attempt on record (OWN-47), if any. */
   attempt: {
     stage: number;
-    state: 'sending' | 'sent' | 'unknown' | 'suppressed';
+    state: 'sending' | 'sent' | 'unknown' | 'suppressed' | 'refused';
     at: Date;
   } | null;
 }
@@ -1640,7 +1640,7 @@ export async function trialsEndingWithin(
     id: string;
     plan_expires_at: Date | string;
     last_trial_notice_stage: number | null;
-    trial_notice_state: 'sending' | 'sent' | 'unknown' | 'suppressed' | null;
+    trial_notice_state: 'sending' | 'sent' | 'unknown' | 'suppressed' | 'refused' | null;
     trial_notice_attempted_at: Date | string | null;
   }>(sql`
     SELECT b.id, b.plan_expires_at,
@@ -1677,7 +1677,8 @@ export async function trialsEndingWithin(
  * page of 500 is processed over minutes, so what the listing saw may be stale. An opted-out
  * owner claims nothing, so the milestone is still owed if they opt back in.
  *
- * Runs under the tenant pin: another tenant's id changes nothing (RLS).
+ * Isolation holds when called through `withBusiness()` on the application role (RLS pins
+ * the tenant); it is not a guarantee of the function on its own.
  */
 export async function claimTrialNotice(
   tx: TenantDb,
@@ -1772,21 +1773,43 @@ export async function markTrialNoticeSent(
 
 /**
  * The outcome of this stage's attempt cannot be told (timeout, dropped connection, or a
- * worker that died mid-send). The claim stays: the reminder is not resent.
+ * worker that died mid-send). The claim stays: the reminder is not resent. `olderThan`
+ * (the stale-attempt rule) requires the attempt to have STARTED before that time, so an
+ * attempt re-claimed after the listing was read is never mislabelled.
  */
 export async function markTrialNoticeUnknown(
   tx: TenantDb,
   businessId: string,
   stage: number,
+  olderThan?: Date,
 ): Promise<boolean> {
   const rows = await tx.execute<{ id: string }>(sql`
     UPDATE businesses
     SET trial_notice_state = 'unknown', updated_at = now()
     WHERE id = ${businessId}::uuid AND last_trial_notice_stage = ${stage}
       AND trial_notice_state = 'sending'
+      ${olderThan === undefined ? sql`` : sql`AND trial_notice_attempted_at < ${olderThan.toISOString()}::timestamptz`}
     RETURNING id
   `);
   return [...rows].length === 1;
+}
+
+/**
+ * The provider definitively rejected this stage's message with an error that will repeat
+ * identically (a bad recipient, a wrong template). Nothing was sent. The stage stays
+ * claimed as 'refused' so it is not hammered hourly; the next milestone is still owed.
+ */
+export async function markTrialNoticeRefused(
+  tx: TenantDb,
+  businessId: string,
+  stage: number,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE businesses
+    SET trial_notice_state = 'refused', updated_at = now()
+    WHERE id = ${businessId}::uuid AND last_trial_notice_stage = ${stage}
+      AND trial_notice_state = 'sending'
+  `);
 }
 
 /**

@@ -9,6 +9,8 @@
 --   'suppressed' the final eligibility check just before dispatch found the trial ended, a plan
 --              bought or the owner opted out, so nothing was sent; the stage stays claimed and is
 --              never retried;
+--   'refused'  the provider rejected it with an error that will repeat identically (a bad
+--              recipient, a wrong template); the stage stays claimed and is not retried hourly;
 --   'unknown'  the outcome cannot be told (timeout, dropped connection, a crash). Never resent: a
 --              duplicate reminder is not a harm worth risking, and no exactly-once claim is made.
 -- A send the provider definitively refused releases the claim and clears the state.
@@ -16,6 +18,6 @@
 ALTER TABLE businesses
   ADD COLUMN IF NOT EXISTS last_trial_notice_stage smallint,
   ADD COLUMN IF NOT EXISTS trial_notice_state text
-    CHECK (trial_notice_state IN ('sending', 'sent', 'unknown', 'suppressed')),
+    CHECK (trial_notice_state IN ('sending', 'sent', 'unknown', 'suppressed', 'refused')),
   ADD COLUMN IF NOT EXISTS trial_notice_attempted_at timestamptz,
   ADD COLUMN IF NOT EXISTS trial_notice_provider_message_id text;

@@ -3,10 +3,11 @@
  * before a 14-day trial ends.
  *
  * Core says which stage a trial has reached (`trialNoticeDue`); this sends it, claimed
- * through a conditional UPDATE so two overlapping passes produce one message. Three
+ * through a conditional UPDATE so two overlapping passes claim a stage once (at most one
+ * message per stage; no exactly-once delivery is claimed). Three
  * rules from the owner:
  *
- *   - A message is never sent through an unapproved or unconfigured template. With no
+ *   - A message is never sent through an unconfigured template. With no
  *     `META_TRIAL_TEMPLATE` the pass does nothing: it claims nothing, so approving the
  *     template later still reaches every trial that is still running.
  *   - A skipped message is never recorded or reported as delivered. An opted-out owner is
@@ -45,6 +46,10 @@ export interface TrialNoticeSweepResult {
   /** Claimed, then found ineligible by the final check just before dispatch; nothing sent. */
   suppressed: number;
   failed: number;
+  /** Rejected with an error that will repeat identically; the stage is not retried. */
+  refused: number;
+  /** The pass stopped after repeated transient refusals (rate limit, token). */
+  stoppedEarly: boolean;
   /** Attempts whose outcome cannot be told (timeout, dropped connection, worker death); never resent. */
   uncertain: number;
   /** True when the pass did not run because no template is configured. */
@@ -56,6 +61,9 @@ const log = new Logger('TrialNoticeSweep');
 /** An attempt still 'sending' after this long was abandoned by a dead worker. */
 const STALE_ATTEMPT_MS = 30 * 60_000;
 
+/** Transient refusals in a row after which a pass gives up until the next hour. */
+const TRANSIENT_FAILURES_BEFORE_STOP = 3;
+
 /** Lagos, so a merchant reads the date they would write on a form. */
 function lagosDate(at: Date): string {
   const lagos = new Date(at.getTime() + 3_600_000);
@@ -64,17 +72,19 @@ function lagosDate(at: Date): string {
 
 export async function sweepTrialNotices(
   deps: TrialNoticeSweepDeps,
-  at?: Date,
+  at?: Date | (() => Date),
 ): Promise<TrialNoticeSweepResult> {
   /* A fixed time only in tests; in production every use reads the clock afresh, because a
    * pass over many pages takes minutes and eligibility is rechecked at each claim. */
-  const clock = (): Date => at ?? new Date();
+  const clock = (): Date => (typeof at === 'function' ? at() : (at ?? new Date()));
   const now = clock();
   const result: TrialNoticeSweepResult = {
     sent: 0,
     optedOut: 0,
     suppressed: 0,
     failed: 0,
+    refused: 0,
+    stoppedEarly: false,
     uncertain: 0,
     disabled: false,
   };
@@ -84,6 +94,7 @@ export async function sweepTrialNotices(
   }
 
   const PAGE = 500;
+  let consecutiveTransient = 0;
   const firstMilestone = Math.max(...TRIAL_NOTICE_DAYS_LEFT);
   let after: string | null = null;
   for (;;) {
@@ -109,7 +120,12 @@ export async function sweepTrialNotices(
         let marked = false;
         try {
           marked = await withBusiness(deps.appDb, row.businessId, (tx) =>
-            subscriptionsRepo.markTrialNoticeUnknown(tx, row.businessId, stage),
+            subscriptionsRepo.markTrialNoticeUnknown(
+              tx,
+              row.businessId,
+              stage,
+              new Date(now.getTime() - STALE_ATTEMPT_MS),
+            ),
           );
         } catch (markError) {
           /* Safe to retry on the next pass; one business never stops the others. */
@@ -123,7 +139,7 @@ export async function sweepTrialNotices(
         }
       }
 
-      const due = trialNoticeDue(row.trialEndsAt, now);
+      const due = trialNoticeDue(row.trialEndsAt, clock());
       if (due === null) continue;
 
       let claimed: 'claimed' | 'opted_out' | 'not_claimed';
@@ -189,11 +205,30 @@ export async function sweepTrialNotices(
         });
       } catch (error) {
         const reason = error instanceof SendFailed ? error.message : String(error);
-        if (error instanceof SendFailed && error.notSent) {
-          /* Definitely not sent: the claim goes BACK so the next hourly pass retries
-           * this stage. A release that itself fails is logged and leaves the attempt
-           * 'sending', which the stale rule above turns into 'unknown' rather than
-           * aborting the pass for every other business. */
+        if (error instanceof SendFailed && error.notSent && !error.transient) {
+          /* Definitely not sent, and the refusal will repeat identically (a bad recipient,
+           * a wrong template): the stage stays claimed as 'refused' instead of being
+           * hammered at Meta every hour. The next milestone is still owed. */
+          try {
+            await withBusiness(deps.appDb, row.businessId, (tx) =>
+              subscriptionsRepo.markTrialNoticeRefused(tx, row.businessId, due.stage),
+            );
+          } catch (refuseError) {
+            log.error(
+              `business ${row.businessId}: trial stage ${due.stage} refusal not recorded: ${redactForLog(String(refuseError))}`,
+            );
+          }
+          result.refused += 1;
+          log.error(
+            `business ${row.businessId}: trial reminder refused by the provider, not retried: ${redactForLog(reason)}`,
+          );
+        } else if (error instanceof SendFailed && error.notSent) {
+          /* Definitely not sent and likely to clear (rate limit, expired or revoked token):
+           * the claim goes BACK so a later pass retries this stage. A release that itself
+           * fails is logged and leaves the attempt 'sending', which the stale rule turns
+           * into 'unknown' rather than aborting the pass for every other business. After
+           * a few in a row the whole pass stops, so an outage costs a handful of Meta
+           * requests per hour, not one per trial. */
           try {
             await withBusiness(deps.appDb, row.businessId, (tx) =>
               subscriptionsRepo.releaseTrialNotice(tx, row.businessId, due.stage),
@@ -207,6 +242,12 @@ export async function sweepTrialNotices(
           log.warn(
             `business ${row.businessId}: trial reminder not delivered: ${redactForLog(reason)}`,
           );
+          consecutiveTransient += 1;
+          if (consecutiveTransient >= TRANSIENT_FAILURES_BEFORE_STOP) {
+            result.stoppedEarly = true;
+            log.error('trial reminder pass stopped early after repeated provider refusals');
+            return result;
+          }
         } else {
           /* A timeout or dropped connection: Meta may have accepted it. Keep the claim,
            * record the attempt as unknown and do not resend. */
@@ -226,6 +267,8 @@ export async function sweepTrialNotices(
         }
         continue;
       }
+
+      consecutiveTransient = 0;
 
       /* Accepted. Everything after this point is bookkeeping and can never put the
        * claim back: a failed ledger write must not become a second reminder. */

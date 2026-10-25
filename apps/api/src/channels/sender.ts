@@ -242,6 +242,13 @@ export class SendFailed extends Error {
      * would otherwise retry a proactive message must not assume it was not delivered.
      */
     readonly notSent: boolean = false,
+    /**
+     * With `notSent`: the refusal is of a kind that clears by itself or by an operator
+     * (rate limit, expired or revoked token), so retrying later is sensible. A refusal that
+     * is not transient (a bad recipient, a wrong template name or parameters) will repeat
+     * identically, and a caller that retries it hourly only hammers the shared sender.
+     */
+    readonly transient: boolean = false,
   ) {
     super(message);
   }

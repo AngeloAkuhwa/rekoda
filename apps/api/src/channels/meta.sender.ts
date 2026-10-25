@@ -36,6 +36,9 @@ import {
 /** The most media one download may buffer: WhatsApp's own media cap, rounded. */
 const MAX_MEDIA_BYTES = 16 * 1024 * 1024;
 
+/** 4xx statuses that clear by themselves or by an operator: rate limit, token expired or revoked. */
+const TRANSIENT_STATUSES: ReadonlySet<number> = new Set([401, 403, 429]);
+
 export class MetaSender implements MessageSender {
   private readonly log = new Logger(MetaSender.name);
 
@@ -452,6 +455,7 @@ export class MetaSender implements MessageSender {
           `meta ${path} failed with ${response.status}`,
           await providerCodeOf(response),
           response.status >= 400 && response.status < 500,
+          TRANSIENT_STATUSES.has(response.status),
         );
       }
       return await response.json();

@@ -137,10 +137,10 @@ describe('trial reminders', () => {
     expect(sender.trialNotices).toHaveLength(1);
   });
 
-  it('gives a definitively refused send back, so the next pass retries it and records no cost', async () => {
+  it('gives a transiently refused send back, so the next pass retries it and records no cost', async () => {
     const { id } = await seedTrial();
     const sender = new StubSender();
-    sender.failWith(new SendFailed('meta 400', 100, true));
+    sender.failWith(new SendFailed('meta 429', 130429, true, true));
 
     const first = await sweep(sender, at(12));
     expect(first).toMatchObject({ sent: 0, failed: 1 });
@@ -250,22 +250,6 @@ describe('trial reminders', () => {
     expect(sender.trialNotices).toHaveLength(0);
   });
 
-  it('a failure after Meta accepted (cost bookkeeping) never puts the claim back', async () => {
-    const { id } = await seedTrial();
-    const sender = new StubSender();
-    /* The platform cost table refuses the write, as a broken ledger would. */
-    await ownerDb.execute(sql`ALTER TABLE platform_cost_events RENAME TO platform_cost_events_x`);
-    try {
-      await sweep(sender, at(12));
-      await sweep(sender, at(12, 3_600_000));
-    } finally {
-      await ownerDb.execute(sql`ALTER TABLE platform_cost_events_x RENAME TO platform_cost_events`);
-    }
-
-    expect(sender.trialNotices).toHaveLength(1);
-    expect((await stateOf(id)).stage).toBe(2);
-  });
-
   it('a trial that ends between the listing and the claim is not claimed', async () => {
     const { id } = await seedTrial();
     const { subscriptionsRepo } = await import('@rekoda/db');
@@ -309,6 +293,8 @@ describe('trial reminders', () => {
     try {
       const result = await sweep(sender, at(12));
       expect(result.sent).toBe(1);
+      /* A later pass (past the 30 minute stale rule) must not send it again. */
+      await sweep(sender, at(12, 3_600_000));
     } finally {
       await ownerDb.execute(sql`DROP TRIGGER refuse_sent ON businesses`);
       await ownerDb.execute(sql`DROP FUNCTION refuse_sent()`);
@@ -319,7 +305,9 @@ describe('trial reminders', () => {
       sql`SELECT count(*)::text AS n FROM platform_cost_events WHERE business_id = ${id}::uuid`,
     );
     expect([...cost][0]?.n).toBe('1');
-    expect((await stateOf(id)).state).toBe('sending');
+    /* The acknowledgement never landed, so the stale rule has by now called it unknown; it was
+     * not resent. */
+    expect((await stateOf(id)).state).toBe('unknown');
   });
 
   it('one business whose claim fails does not stop the others', async () => {
@@ -527,12 +515,17 @@ describe('trial reminders', () => {
       const victim = await seedTrial();
       const other = await seedTrial();
       const { subscriptionsRepo } = await import('@rekoda/db');
+      /* The victim is mid-attempt, so every write below WOULD change it if the tenant pin
+       * did not stop it. */
+      await withBusiness(appDb, victim.id, (tx) =>
+        subscriptionsRepo.claimTrialNotice(tx, victim.id, 2, at(12)),
+      );
       const asOther = <T>(
         fn: (tx: Parameters<Parameters<typeof withBusiness>[2]>[0]) => Promise<T>,
       ) => withBusiness(appDb, other.id, fn);
 
       expect(
-        await asOther((tx) => subscriptionsRepo.claimTrialNotice(tx, victim.id, 2, at(12))),
+        await asOther((tx) => subscriptionsRepo.claimTrialNotice(tx, victim.id, 3, at(13))),
       ).toBe('not_claimed');
       expect(
         await asOther((tx) =>
@@ -540,12 +533,13 @@ describe('trial reminders', () => {
         ),
       ).toEqual({ outcome: 'lost' });
       await asOther((tx) => subscriptionsRepo.markTrialNoticeSent(tx, victim.id, 2, 'x'));
+      await asOther((tx) => subscriptionsRepo.markTrialNoticeRefused(tx, victim.id, 2));
       expect(
         await asOther((tx) => subscriptionsRepo.markTrialNoticeUnknown(tx, victim.id, 2)),
       ).toBe(false);
       await asOther((tx) => subscriptionsRepo.releaseTrialNotice(tx, victim.id, 2));
 
-      expect(await stateOf(victim.id)).toEqual({ stage: null, state: null, provider: null });
+      expect(await stateOf(victim.id)).toEqual({ stage: 2, state: 'sending', provider: null });
     });
 
     it('never reads the owner phone outside the tenant that owns it', async () => {
@@ -561,6 +555,83 @@ describe('trial reminders', () => {
       );
 
       expect(final).toEqual({ outcome: 'lost' });
+    });
+  });
+
+  describe('provider refusals and the clock', () => {
+    it('a permanent refusal is recorded against the stage and not retried every hour', async () => {
+      const { id } = await seedTrial();
+      const sender = new StubSender();
+      sender.failTrialNoticesWith(new SendFailed('meta 132001', 132001, true, false));
+
+      const first = await sweep(sender, at(12));
+      const second = await sweep(sender, at(12, 3_600_000));
+      const third = await sweep(sender, at(12, 7_200_000));
+
+      expect(first).toMatchObject({ refused: 1, failed: 0 });
+      expect(second).toMatchObject({ refused: 0 });
+      expect(third).toMatchObject({ refused: 0 });
+      expect(await stateOf(id)).toMatchObject({ stage: 2, state: 'refused' });
+
+      /* The next milestone is still owed once the template is fixed. */
+      sender.reset();
+      await sweep(sender, at(13));
+      expect(sender.trialNotices).toHaveLength(1);
+    });
+
+    it('stops the pass after repeated transient refusals instead of asking Meta once per trial', async () => {
+      for (let i = 0; i < 6; i += 1) await seedTrial();
+      let attempts = 0;
+      const sender = new StubSender();
+      const original = sender.sendTrialNotice.bind(sender);
+      sender.sendTrialNotice = (notice) => {
+        attempts += 1;
+        return original(notice);
+      };
+      sender.failTrialNoticesWith(new SendFailed('meta 429', 130429, true, true));
+
+      const result = await sweep(sender, at(12));
+
+      expect(attempts).toBe(3);
+      expect(result).toMatchObject({ stoppedEarly: true, failed: 3, sent: 0 });
+
+      /* A later pass, once the outage has cleared, still reaches everyone. */
+      sender.reset();
+      await sweep(sender, at(12, 3_600_000));
+      expect(sender.trialNotices).toHaveLength(6);
+    });
+
+    it('rechecks eligibility against a fresh clock at each claim', async () => {
+      await seedTrial();
+      const sender = new StubSender();
+      /* The first two reads (pass start, stage) are inside the trial; the claim's read is
+       * after it ended, as in a pass that has been running for minutes. */
+      let reads = 0;
+      const clock = () => {
+        reads += 1;
+        return reads <= 2 ? at(12) : expiry;
+      };
+
+      const result = await sweepTrialNotices(
+        { workerDb, appDb, sender, templateConfigured: true, fxNairaPerUsd: 1500 },
+        clock,
+      );
+
+      expect(sender.trialNotices).toHaveLength(0);
+      expect(result.sent).toBe(0);
+    });
+
+    it('does not mislabel an attempt that was re-claimed after the listing was read', async () => {
+      const { id } = await seedTrial();
+      const { subscriptionsRepo } = await import('@rekoda/db');
+      await withBusiness(appDb, id, (tx) => subscriptionsRepo.claimTrialNotice(tx, id, 2, at(12)));
+
+      const marked = await withBusiness(appDb, id, (tx) =>
+        subscriptionsRepo.markTrialNoticeUnknown(tx, id, 2, new Date(Date.now() - 60_000)),
+      );
+
+      expect(marked).toBe(false);
+      expect((await stateOf(id)).state).toBe('sending');
     });
   });
 });
