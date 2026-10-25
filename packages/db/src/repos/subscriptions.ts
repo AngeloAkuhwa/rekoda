@@ -1623,8 +1623,9 @@ export interface TrialBusiness {
  * Businesses on a running trial that end within `withinDays` of `now` (G-109).
  *
  * This is the one cross-tenant read of the reminder sweep, made through the worker role's
- * documented read-only reach on `businesses` (policy `ops_read_businesses`, migration
- * 0019). It returns the MINIMUM needed to decide what is due: the id, the trial end and the
+ * read-only policy on `businesses` (`ops_read_businesses`, migration 0019, written for the
+ * margin report). Whether sweep discovery is an approved exception to invariant 3 is an open
+ * owner decision (OD-33 in docs/REKODA_LAUNCH_READINESS.md). It returns the MINIMUM needed to decide what is due: the id, the trial end and the
  * latest attempt. It joins nothing and exposes no owner phone, name or consent flag; those
  * are read later, inside the tenant's own scope, only for a notice that is about to be
  * sent. Which stage a business is at is core's call (`trialNoticeDue`). Keyset-paged by id.

@@ -36,33 +36,38 @@ import {
 /** The most media one download may buffer: WhatsApp's own media cap, rounded. */
 const MAX_MEDIA_BYTES = 16 * 1024 * 1024;
 
-/** 4xx statuses that clear by themselves or by an operator: rate limit, token expired or revoked. */
-const TRANSIENT_STATUSES: ReadonlySet<number> = new Set([401, 403, 429]);
-
 /**
- * Graph error codes that repeat identically for the same message: invalid parameters, a
- * wrong or unapproved template, a recipient that cannot receive it. Everything else on a
- * 4xx is treated as transient, because losing a reminder to an error that would have
- * cleared costs more than one more bounded retry (a token reported as HTTP 400 code 190,
- * session codes 102, 463, 467 and throttling codes are among those that clear).
+ * Graph error codes that mean THIS recipient cannot receive this message, and will not be
+ * able to later: undeliverable (131026), not on the allowed list (131030), the recipient is
+ * the sender (131021). Only these end a stage as refused; they say nothing about the next
+ * owner, so they never count toward stopping a pass.
  */
-const PERMANENT_CODES: ReadonlySet<number> = new Set([
-  33, 100, 131009, 131026, 131030, 132000, 132001, 132005, 132007, 132012, 132015, 132016,
-]);
+const RECIPIENT_PERMANENT_CODES: ReadonlySet<number> = new Set([131021, 131026, 131030]);
 
 /**
- * Throttles that apply to one sender and recipient pair, not the whole sender (131056).
+ * Throttles that apply to one recipient or one sender and recipient pair, not the whole
+ * sender (131056 pair limit, 131049 per-recipient marketing limit). They clear with time.
  * 131048, the spam rate limit, restricts the sending number itself, so it is NOT here.
  */
-const PER_RECIPIENT_CODES: ReadonlySet<number> = new Set([131056]);
+const PER_RECIPIENT_CODES: ReadonlySet<number> = new Set([131049, 131056]);
 
-/** How a refused Graph request should be treated; see `SendFailed`. */
+/**
+ * How a refused Graph request should be treated; see `SendFailed`.
+ *
+ * Everything that is not a recipient-scope condition is sender-wide: a bad token, a rate
+ * limit, but also a paused or unapproved template (132001, 132015, 132016), wrong
+ * parameters (132000, 100) or a wrong phone-number id. Those would hit every business
+ * identically, so they release the claim and count toward stopping the pass, and the stage
+ * is delivered once an operator fixes the cause instead of being burnt for everyone.
+ * Recipient-scope codes win over the status, so a 403 carrying 131030 is still permanent.
+ */
 function classifyRefusal(
-  status: number,
+  _status: number,
   code: number | null,
 ): { transient: boolean; outage: boolean } {
-  const permanent = !TRANSIENT_STATUSES.has(status) && code !== null && PERMANENT_CODES.has(code);
-  if (permanent) return { transient: false, outage: false };
+  if (code !== null && RECIPIENT_PERMANENT_CODES.has(code)) {
+    return { transient: false, outage: false };
+  }
   return { transient: true, outage: code === null || !PER_RECIPIENT_CODES.has(code) };
 }
 

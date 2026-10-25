@@ -672,12 +672,19 @@ describe('trial reminders', () => {
 
     it('counts only consecutive outages: a different answer in between clears the count', async () => {
       for (let i = 0; i < 6; i += 1) await seedTrial();
-      const { sender, calls } = scripted(['outage', 'permanent', 'outage', 'outage', 'ok', 'ok']);
+      const { sender, calls } = scripted([
+        'outage',
+        'outage',
+        'permanent',
+        'outage',
+        'outage',
+        'ok',
+      ]);
 
       const result = await sweep(sender, at(12));
 
       expect(calls()).toBe(6);
-      expect(result).toMatchObject({ stoppedEarly: false, refused: 1, failed: 3, sent: 2 });
+      expect(result).toMatchObject({ stoppedEarly: false, refused: 1, failed: 4, sent: 1 });
     });
   });
 

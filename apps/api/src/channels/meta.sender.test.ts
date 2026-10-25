@@ -283,7 +283,7 @@ describe('the utility templates', () => {
     ).rejects.toMatchObject({ notSent: true });
   });
 
-  it('treats an expired token reported as HTTP 400 code 190 as transient, and a wrong template as permanent', async () => {
+  it('treats an expired token reported as HTTP 400 code 190, and a missing template, as sender-wide transient', async () => {
     respond = (_req, res) => {
       res.writeHead(400, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: { code: 190 } }));
@@ -296,9 +296,11 @@ describe('the utility templates', () => {
       res.writeHead(400, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: { code: 132001 } }));
     };
+    /* A missing or paused template hits every business, so it is a sender-wide outage the
+     * operator fixes, not a refusal to record against each owner. */
     await expect(
       sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
-    ).rejects.toMatchObject({ notSent: true, transient: false });
+    ).rejects.toMatchObject({ notSent: true, transient: true, outage: true });
 
     respond = (_req, res) => {
       res.writeHead(429);
@@ -344,6 +346,30 @@ describe('the utility templates', () => {
     await expect(
       sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
     ).rejects.toMatchObject({ notSent: true, transient: true, outage: true });
+  });
+
+  it('ends a stage as refused only for a recipient-scope code, whatever the HTTP status', async () => {
+    for (const [status, code] of [
+      [400, 131026],
+      [403, 131030],
+      [400, 131021],
+    ] as const) {
+      respond = (_req, res) => {
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { code } }));
+      };
+      await expect(
+        sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+      ).rejects.toMatchObject({ notSent: true, transient: false, outage: false });
+    }
+
+    respond = (_req, res) => {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: 131049 } }));
+    };
+    await expect(
+      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+    ).rejects.toMatchObject({ notSent: true, transient: true, outage: false });
   });
 
   it('puts what the document is and its reference in the body, in order (G-67)', async () => {
