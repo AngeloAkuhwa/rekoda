@@ -235,6 +235,13 @@ export class SendFailed extends Error {
   constructor(
     message: string,
     readonly providerCode: number | null = null,
+    /**
+     * True only when the message DEFINITELY did not leave: nothing was configured to send
+     * it, or Meta answered with a client error rejecting it. False (the default) means the
+     * outcome is not known, as after a timeout or a dropped connection, and a caller that
+     * would otherwise retry a proactive message must not assume it was not delivered.
+     */
+    readonly notSent: boolean = false,
   ) {
     super(message);
   }

@@ -108,7 +108,7 @@ export class MetaSender implements MessageSender {
    */
   async sendTrialNotice(notice: OutboundTrialNotice): Promise<SendResult> {
     if (!this.trialTemplate) {
-      throw new SendFailed('no trial template configured (META_TRIAL_TEMPLATE)');
+      throw new SendFailed('no trial template configured (META_TRIAL_TEMPLATE)', null, true);
     }
     return this.post({
       messaging_product: 'whatsapp',
@@ -451,6 +451,7 @@ export class MetaSender implements MessageSender {
         throw new SendFailed(
           `meta ${path} failed with ${response.status}`,
           await providerCodeOf(response),
+          response.status >= 400 && response.status < 500,
         );
       }
       return await response.json();
@@ -519,7 +520,7 @@ export class NoSenderConfigured implements MessageSender {
   }
 
   sendTrialNotice(): Promise<never> {
-    return Promise.reject(new SendFailed(this.reason));
+    return Promise.reject(new SendFailed(this.reason, null, true));
   }
 }
 

@@ -9,8 +9,10 @@
  *   - A message is never sent through an unapproved or unconfigured template. With no
  *     `META_TRIAL_TEMPLATE` the pass does nothing: it claims nothing, so approving the
  *     template later still reaches every trial that is still running.
- *   - A skipped message is never recorded or reported as delivered. A failed send gives
- *     its claim back; an opted-out owner is counted as opted out, not as sent.
+ *   - A skipped message is never recorded or reported as delivered. An opted-out owner is
+ *     counted as opted out and nothing is claimed; a send Meta definitively refused gives
+ *     its claim back; one whose outcome cannot be told (timeout, crash) is recorded as
+ *     'unknown' and NOT resent. No exactly-once delivery is claimed (OWN-47).
  *   - Nothing is sent after the trial ends or once a plan has been bought (the claim
  *     itself requires `plan = 'trial'`).
  */
@@ -37,11 +39,16 @@ export interface TrialNoticeSweepResult {
   sent: number;
   optedOut: number;
   failed: number;
+  /** Attempts whose outcome cannot be told (timeout, dropped connection, worker death); never resent. */
+  uncertain: number;
   /** True when the pass did not run because no template is configured. */
   disabled: boolean;
 }
 
 const log = new Logger('TrialNoticeSweep');
+
+/** An attempt still 'sending' after this long was abandoned by a dead worker. */
+const STALE_ATTEMPT_MS = 30 * 60_000;
 
 /** Lagos, so a merchant reads the date they would write on a form. */
 function lagosDate(at: Date): string {
@@ -53,7 +60,13 @@ export async function sweepTrialNotices(
   deps: TrialNoticeSweepDeps,
   now: Date = new Date(),
 ): Promise<TrialNoticeSweepResult> {
-  const result: TrialNoticeSweepResult = { sent: 0, optedOut: 0, failed: 0, disabled: false };
+  const result: TrialNoticeSweepResult = {
+    sent: 0,
+    optedOut: 0,
+    failed: 0,
+    uncertain: 0,
+    disabled: false,
+  };
   if (!deps.templateConfigured) {
     result.disabled = true;
     return result;
@@ -74,45 +87,110 @@ export async function sweepTrialNotices(
     after = rows[rows.length - 1]!.businessId;
 
     for (const row of rows) {
+      /* An attempt still 'sending' long after it started belongs to a worker that died
+       * mid-send: the message may or may not have left. It is recorded as unknown and
+       * never resent (OWN-47: no exactly-once claim). */
+      if (
+        row.attempt?.state === 'sending' &&
+        now.getTime() - row.attempt.at.getTime() > STALE_ATTEMPT_MS
+      ) {
+        const stage = row.attempt.stage;
+        const marked = await withBusiness(deps.appDb, row.businessId, (tx) =>
+          subscriptionsRepo.markTrialNoticeUnknown(tx, row.businessId, stage),
+        );
+        if (marked) {
+          result.uncertain += 1;
+          log.warn(`business ${row.businessId}: trial reminder stage ${stage} outcome unknown`);
+        }
+      }
+
       const due = trialNoticeDue(row.trialEndsAt, now);
       if (due === null) continue;
+
+      /* STOP is a fact and is checked before every proactive send, and BEFORE the claim:
+       * a skipped message is never recorded as handled, so an owner who sends START again
+       * is still owed the milestone if it is current (OWN-56). */
+      if (row.ownerOptedOut) {
+        result.optedOut += 1;
+        continue;
+      }
 
       const claimed = await withBusiness(deps.appDb, row.businessId, (tx) =>
         subscriptionsRepo.claimTrialNotice(tx, row.businessId, due.stage),
       );
       if (!claimed) continue;
 
-      /* STOP is a fact and is checked before every proactive send. The claim stands:
-       * an opted-out merchant is not owed the same message on the next pass. */
-      if (row.ownerOptedOut) {
-        result.optedOut += 1;
-        continue;
-      }
-
+      let accepted: { providerMessageId: string | null };
       try {
-        await deps.sender.sendTrialNotice({
+        accepted = await deps.sender.sendTrialNotice({
           to: row.ownerPhone,
           daysLeft: String(due.daysLeft),
           endsOn: lagosDate(row.trialEndsAt),
         });
+      } catch (error) {
+        const reason = error instanceof SendFailed ? error.message : String(error);
+        if (error instanceof SendFailed && error.notSent) {
+          /* Definitely not sent: the claim goes BACK so the next hourly pass retries
+           * this stage. A release that itself fails is logged and leaves the attempt
+           * 'sending', which the stale rule above turns into 'unknown' rather than
+           * aborting the pass for every other business. */
+          try {
+            await withBusiness(deps.appDb, row.businessId, (tx) =>
+              subscriptionsRepo.releaseTrialNotice(tx, row.businessId, due.stage),
+            );
+          } catch (releaseError) {
+            log.error(
+              `business ${row.businessId}: trial stage ${due.stage} claim not released: ${redactForLog(String(releaseError))}`,
+            );
+          }
+          result.failed += 1;
+          log.warn(
+            `business ${row.businessId}: trial reminder not delivered: ${redactForLog(reason)}`,
+          );
+        } else {
+          /* A timeout or dropped connection: Meta may have accepted it. Keep the claim,
+           * record the attempt as unknown and do not resend. */
+          try {
+            await withBusiness(deps.appDb, row.businessId, (tx) =>
+              subscriptionsRepo.markTrialNoticeUnknown(tx, row.businessId, due.stage),
+            );
+          } catch (markError) {
+            log.error(
+              `business ${row.businessId}: trial stage ${due.stage} attempt not recorded: ${redactForLog(String(markError))}`,
+            );
+          }
+          result.uncertain += 1;
+          log.warn(
+            `business ${row.businessId}: trial reminder outcome unknown, not resent: ${redactForLog(reason)}`,
+          );
+        }
+        continue;
+      }
+
+      /* Accepted. Everything after this point is bookkeeping and can never put the
+       * claim back: a failed ledger write must not become a second reminder. */
+      result.sent += 1;
+      try {
+        await withBusiness(deps.appDb, row.businessId, (tx) =>
+          subscriptionsRepo.markTrialNoticeSent(
+            tx,
+            row.businessId,
+            due.stage,
+            accepted.providerMessageId,
+          ),
+        );
         await recordMessageCost(
           deps.appDb,
           row.businessId,
           'UTILITY_TEMPLATE',
           deps.fxNairaPerUsd,
-          { template: 'trial' },
+          {
+            template: 'trial',
+          },
         );
-        result.sent += 1;
-      } catch (error) {
-        /* The claim goes BACK, so the next hourly pass retries this stage and a
-         * channel outage cannot silence a milestone for good. */
-        await withBusiness(deps.appDb, row.businessId, (tx) =>
-          subscriptionsRepo.releaseTrialNotice(tx, row.businessId, due.stage),
-        );
-        result.failed += 1;
-        const reason = error instanceof SendFailed ? error.message : String(error);
-        log.warn(
-          `business ${row.businessId}: trial reminder not delivered: ${redactForLog(reason)}`,
+      } catch (bookkeepingError) {
+        log.error(
+          `business ${row.businessId}: trial reminder sent but not fully recorded: ${redactForLog(String(bookkeepingError))}`,
         );
       }
     }

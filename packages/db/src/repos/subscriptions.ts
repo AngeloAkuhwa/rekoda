@@ -1613,6 +1613,8 @@ export interface TrialBusiness {
   ownerPhone: string;
   ownerOptedOut: boolean;
   trialEndsAt: Date;
+  /** The latest reminder attempt on record (OWN-47), if any. */
+  attempt: { stage: number; state: 'sending' | 'sent' | 'unknown'; at: Date } | null;
 }
 
 /**
@@ -1634,8 +1636,12 @@ export async function trialsEndingWithin(
     plan_expires_at: Date | string;
     owner_phone: string;
     opted_out_at: string | null;
+    last_trial_notice_stage: number | null;
+    trial_notice_state: 'sending' | 'sent' | 'unknown' | null;
+    trial_notice_attempted_at: Date | string | null;
   }>(sql`
-    SELECT b.id, b.plan_expires_at, u.phone AS owner_phone, u.opted_out_at
+    SELECT b.id, b.plan_expires_at, u.phone AS owner_phone, u.opted_out_at,
+           b.last_trial_notice_stage, b.trial_notice_state, b.trial_notice_attempted_at
     FROM businesses b
     JOIN users u ON u.id = b.owner_user_id
     WHERE b.plan = 'trial'
@@ -1651,13 +1657,24 @@ export async function trialsEndingWithin(
     ownerPhone: row.owner_phone,
     ownerOptedOut: row.opted_out_at !== null,
     trialEndsAt: new Date(row.plan_expires_at),
+    attempt:
+      row.trial_notice_state !== null &&
+      row.last_trial_notice_stage !== null &&
+      row.trial_notice_attempted_at !== null
+        ? {
+            stage: row.last_trial_notice_stage,
+            state: row.trial_notice_state,
+            at: new Date(row.trial_notice_attempted_at),
+          }
+        : null,
   }));
 }
 
 /**
- * Claim a trial reminder stage, or discover it was already sent. Returns true exactly
- * once per stage to exactly one caller, and only while the business is still on its
- * trial (a purchase that landed between the read and this claim sends nothing).
+ * Claim a trial reminder stage and record the attempt as 'sending', or discover it was
+ * already claimed. Returns true exactly once per stage to exactly one caller, and only
+ * while the business is still on its trial (a purchase that landed between the read and
+ * this claim sends nothing).
  */
 export async function claimTrialNotice(
   tx: TenantDb,
@@ -1666,7 +1683,9 @@ export async function claimTrialNotice(
 ): Promise<boolean> {
   const rows = await tx.execute<{ id: string }>(sql`
     UPDATE businesses
-    SET last_trial_notice_stage = ${stage}, updated_at = now()
+    SET last_trial_notice_stage = ${stage}, trial_notice_state = 'sending',
+        trial_notice_attempted_at = now(), trial_notice_provider_message_id = NULL,
+        updated_at = now()
     WHERE id = ${businessId}::uuid
       AND plan = 'trial'
       AND (last_trial_notice_stage IS NULL OR last_trial_notice_stage < ${stage})
@@ -1675,7 +1694,45 @@ export async function claimTrialNotice(
   return [...rows].length === 1;
 }
 
-/** Give a claimed stage back after a failed send, so the next pass retries that stage only. */
+/** The provider accepted the attempt for this stage. */
+export async function markTrialNoticeSent(
+  tx: TenantDb,
+  businessId: string,
+  stage: number,
+  providerMessageId: string | null,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE businesses
+    SET trial_notice_state = 'sent', trial_notice_provider_message_id = ${providerMessageId},
+        updated_at = now()
+    WHERE id = ${businessId}::uuid AND last_trial_notice_stage = ${stage}
+      AND trial_notice_state = 'sending'
+  `);
+}
+
+/**
+ * The outcome of this stage's attempt cannot be told (timeout, dropped connection, or a
+ * worker that died mid-send). The claim stays: the reminder is not resent.
+ */
+export async function markTrialNoticeUnknown(
+  tx: TenantDb,
+  businessId: string,
+  stage: number,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE businesses
+    SET trial_notice_state = 'unknown', updated_at = now()
+    WHERE id = ${businessId}::uuid AND last_trial_notice_stage = ${stage}
+      AND trial_notice_state = 'sending'
+    RETURNING id
+  `);
+  return [...rows].length === 1;
+}
+
+/**
+ * Give a claimed stage back after the provider DEFINITIVELY refused it, so the next pass
+ * retries that stage only. Only an attempt still 'sending' is released.
+ */
 export async function releaseTrialNotice(
   tx: TenantDb,
   businessId: string,
@@ -1683,8 +1740,10 @@ export async function releaseTrialNotice(
 ): Promise<void> {
   await tx.execute(sql`
     UPDATE businesses
-    SET last_trial_notice_stage = ${stage - 1}, updated_at = now()
+    SET last_trial_notice_stage = ${stage - 1}, trial_notice_state = NULL,
+        trial_notice_attempted_at = NULL, updated_at = now()
     WHERE id = ${businessId}::uuid AND last_trial_notice_stage = ${stage}
+      AND trial_notice_state = 'sending'
   `);
 }
 

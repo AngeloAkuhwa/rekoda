@@ -261,6 +261,28 @@ describe('the utility templates', () => {
     });
   });
 
+  it('says a client error is definitely not sent and a server error is not known (OWN-47)', async () => {
+    respond = (_req, res) => {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: 100 } }));
+    };
+    await expect(
+      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+    ).rejects.toMatchObject({ notSent: true, providerCode: 100 });
+
+    respond = (_req, res) => {
+      res.writeHead(503);
+      res.end();
+    };
+    await expect(
+      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+    ).rejects.toMatchObject({ notSent: false });
+
+    await expect(
+      sender({ trial: null }).sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+    ).rejects.toMatchObject({ notSent: true });
+  });
+
   it('puts what the document is and its reference in the body, in order (G-67)', async () => {
     await sender().sendDocumentNotice({
       to: '2348031234567',
