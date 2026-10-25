@@ -378,6 +378,9 @@ describe('REKODA_EMAIL_PROVIDER (OWN-51)', () => {
       'a@b.c, d@e.f',
       'Rekoda <billing@example.com',
       'billing@example.com>',
+      'billing@example..com',
+      'billing@example.com.',
+      'billing@-example.com',
       'a@example.com\r\nBcc: x@y.z',
     ]) {
       expect(() => loadConfig({ ...BASE, ...ok, REKODA_EMAIL_FROM: from })).toThrow(
