@@ -139,7 +139,7 @@ test('a new merchant pays for a plan on Paystack, comes back, and the plan switc
   await expect(page.getByText(/₦9,900/).first()).toBeVisible();
   await expect(page.getByText(/Subscription · Rekoda Chat/)).toBeVisible();
   await expect(page.locator('dt', { hasText: 'Service period' })).toBeVisible();
-  await expect(page.locator('dt', { hasText: 'Paid on' })).toBeVisible();
+  await expect(page.locator('dt', { hasText: 'Payment recorded on' })).toBeVisible();
   await expect(page.locator('dd', { hasText: /^Yes$/ })).toBeVisible();
   await expect(page.getByText(/not a VAT invoice, tax invoice or tax receipt/)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Print or save as PDF' })).toBeVisible();

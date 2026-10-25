@@ -138,7 +138,7 @@ export default async function PaymentRecordPage({
           </div>
           {record.paidAt ? (
             <div>
-              <dt>{record.noCharge ? 'Applied on' : 'Paid on'}</dt>
+              <dt>{record.noCharge ? 'Applied on' : 'Payment recorded on'}</dt>
               <dd>{lagosDateTime(record.paidAt)} (Lagos time)</dd>
             </div>
           ) : null}
@@ -153,7 +153,7 @@ export default async function PaymentRecordPage({
               <dt>Returned to you</dt>
               <dd>
                 <Money kobo={record.refundedAmountK} currency={record.currency} />
-                {record.refundedAt ? ` on ${lagosDate(record.refundedAt)}` : ''}
+                {record.refundedAt ? ` (latest refund on ${lagosDate(record.refundedAt)})` : ''}
               </dd>
             </div>
           ) : null}
