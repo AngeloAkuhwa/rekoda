@@ -84,9 +84,14 @@ export const STEPS = [
     script: /^sed -i "s\/\^REKODA_RELEASE=\.\*\/REKODA_RELEASE=\$\{RELEASE\}\/" \.env$/,
   },
   {
-    name: 'build with the commit',
-    runbook: /^dc build --build-arg REKODA_COMMIT=/,
-    script: /^dc build --build-arg REKODA_COMMIT="\$SHORT"$/,
+    name: 'build the api image with the commit',
+    runbook: /^dc build --build-arg REKODA_COMMIT=.+ api$/,
+    script: /^dc build --build-arg REKODA_COMMIT="\$SHORT" api$/,
+  },
+  {
+    name: 'build the web image with the commit, after the api image',
+    runbook: /^dc build --build-arg REKODA_COMMIT=.+ web$/,
+    script: /^dc build --build-arg REKODA_COMMIT="\$SHORT" web$/,
   },
   {
     name: 'migrate as the owner',
@@ -236,6 +241,40 @@ function baselineProblems(lines) {
     if (change >= 0 && change < at) {
       problems.push(`${FILES.script} checks the rollback baseline after ${what}`);
     }
+  }
+  return problems;
+}
+
+/**
+ * The memory preflight: a host too short of memory is refused before the
+ * checkout, the `.env` edit and the prepared marker change anything, and again
+ * before the web build; the two builds run one after the other.
+ */
+function memoryProblems(lines) {
+  const problems = [];
+  const first = lines.findIndex((line) => line === "require_memory 'before any build'");
+  const prepared = lines.findIndex((line) => /^PHASE=prepared$/.test(line));
+  if (first < 0) {
+    problems.push(`${FILES.script} no longer refuses a host short of memory before any build`);
+  } else if (prepared >= 0 && first > prepared) {
+    problems.push(
+      `${FILES.script} checks memory after the prepared phase begins, so a refusal would need a restore`,
+    );
+  }
+  const web = lines.findIndex((line) =>
+    /^dc build --build-arg REKODA_COMMIT="\$SHORT" web$/.test(line),
+  );
+  const api = lines.findIndex((line) =>
+    /^dc build --build-arg REKODA_COMMIT="\$SHORT" api$/.test(line),
+  );
+  const second = lines.findIndex((line) => line === "require_memory 'before the web build'");
+  if (second < 0 || web < 0 || second > web) {
+    problems.push(`${FILES.script} no longer checks memory again right before the web build`);
+  }
+  if (api < 0 || web < 0 || api > web || (second >= 0 && (second < api || second > web))) {
+    problems.push(
+      `${FILES.script} must build the api image, check memory, then build the web image`,
+    );
   }
   return problems;
 }
@@ -611,6 +650,7 @@ export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
   }
   problems.push(...baselineProblems(lines));
   problems.push(...strayProblems(lines, dockerignore));
+  problems.push(...memoryProblems(lines));
   problems.push(...schemaProblems(lines));
   problems.push(...newerOnlyProblems(lines));
   problems.push(...interruptProblems(lines));

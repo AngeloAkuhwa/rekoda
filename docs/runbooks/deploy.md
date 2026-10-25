@@ -121,8 +121,14 @@ treat it as a variable. Every generated value above is hex.
 6. **Build.** Before anything starts:
 
    ```bash
-   dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD)
+   dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) api
+   dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) web
    ```
+
+   Build the images one after the other, never with a bare `dc build` (it
+   builds both at once, and on the 4 GB staging host that exhausted memory
+   and took SSH and Docker down). Check `grep MemAvailable /proc/meminfo`
+   first: at least 1 GiB (1048576 kB) free, or stop what is using it.
 
    The web build refuses to run without `NEXT_PUBLIC_SITE_URL` and the five
    mandatory legal facts, because Next bakes them into the pages.
@@ -159,7 +165,8 @@ different keys refuses to start. Keep the secret-store copy exact.
 cd /opt/rekoda
 git fetch --tags && git checkout vX.Y.Z
 sed -i 's/^REKODA_RELEASE=.*/REKODA_RELEASE=vX.Y.Z/' .env
-dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD)   # build BEFORE touching anything live
+dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) api   # build BEFORE touching anything live
+dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) web   # one image at a time: never both at once
 dc run --rm -T migrate                                             # expand-only migrations, as the owner
 dc up -d --wait                                                    # recreates api, worker and web on the new images
 dc exec caddy caddy reload --config /etc/caddy/Caddyfile            # apply a changed Caddyfile (validated first)
@@ -412,6 +419,41 @@ hand, from `/opt/rekoda` as the deploy user, only if **every** check agrees:
 5. Re-run step 1; checkout, `.env` and `/health` must now agree. Then start the
    manual "Deploy staging" workflow from `main` (blank `sha` deploys its tip).
 
+## After a memory overload on the staging host
+
+The staging host has 4 GB. A bare `dc build` builds the api and web images at
+once and can use all of it, which starves the host (SSH and the Docker daemon
+included). The script builds one image at a time and refuses below 1 GiB of
+available memory (`REKODA_DEPLOY_MIN_MEM_KB` raises that, never lowers it).
+When a host has just recovered from an overload, in this order, one step at a
+time and reading each answer before the next:
+
+1. Confirm what is running and that nothing is building:
+   `docker ps`, `pgrep -af 'docker (compose|build|buildx)'` (a build runs inside the Docker daemon, so there is no build container to see; look for a build command still running),
+   `grep -E 'MemAvailable|SwapFree' /proc/meminfo` (at least 1048576 kB
+   available), `df -Pk /opt/rekoda /var/lib/docker` (at least 8 GiB each).
+2. Read the state without changing it: `git -C /opt/rekoda rev-parse HEAD`,
+   `cat /opt/rekoda/.git/rekoda-deploy-staging.state` (a `phase=prepared`
+   marker is normal after a killed build; nothing live changed in that phase),
+   `curl -fsS https://staging-api.myrekoda.com/health` (the running release,
+   `status` ok, `database` up), and that the deployment lock is not held.
+3. Do nothing else by hand. The next deploy restores a valid `prepared` state
+   itself (see "An interrupted staging deploy"), then builds the api image,
+   then the web image, then migrates.
+4. Only then start Deploy staging by hand from `main` (workflow_dispatch,
+   without a SHA). Watch the host: `watch -n 5 'grep MemAvailable
+/proc/meminfo'` from a second session. If the run refuses for memory, it
+   changed nothing: find what is using memory and run it again.
+5. The 1 GiB floor is a starting value, not a measured peak. The deploy prints
+   `memory available before the api build / after the api build / after the
+web build`: keep those figures from the first sequential deploy and raise
+   `REKODA_DEPLOY_MIN_MEM_KB` if a build ended near zero. Inside each image
+   build turbo now runs one task at a time (`--concurrency=1`). A 2 GiB swap
+   file on the host is a sensible safety net (an owner change to the host,
+   never made by the deploy script).
+6. Never run `docker compose build` bare, never start a second build while one
+   runs, and never `down -v`.
+
 ## Roll back one write command (OD-4)
 
 Every write runs through the command bus by default (OWN-22). Do not set any
@@ -549,8 +591,10 @@ says the database has applied: `/health` asks only for the build's own
 migrations, so it would read ok even after a later contraction removed what
 the older code uses; a rollback across a migration is done by hand, as "Roll
 back" says), check out the commit
-(detached), change only the `REKODA_RELEASE` line of `.env`, `dc build`,
-`dc run --rm -T migrate`, `dc up -d --wait --wait-timeout 300`, reload the
+(detached), change only the `REKODA_RELEASE` line of `.env`, build the api
+image and then the web image (`dc build ... api`, `dc build ... web`, never
+both at once, and refused below `MIN_MEM_KB` of available memory, 1 GiB by
+default, raised with `REKODA_DEPLOY_MIN_MEM_KB`), `dc run --rm -T migrate`, `dc up -d --wait --wait-timeout 300`, reload the
 Caddyfile, confirm the edge network, and require
 `https://staging-api.myrekoda.com/health` to answer `status` ok, `database`
 up, and this release and commit. It ends with `dc ps`, then removes

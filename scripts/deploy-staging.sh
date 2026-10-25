@@ -29,6 +29,9 @@
 #   - a commit whose code does not know the schema staging already has: one
 #     missing a migration the running commit carries, or carrying fewer
 #     migrations than the database has applied;
+#   - a host with less than MIN_MEM_KB of memory available (MemAvailable)
+#     before the api build or the web build, which run one after the other,
+#     never together;
 #   - a second deployment while one is running.
 #
 # It never runs `down -v`, never touches a volume (the database lives in one)
@@ -135,6 +138,40 @@ disk_low() {
     fi
   done
   return 1
+}
+
+# Memory (KiB) the host must have available before an image build starts. The
+# host is small (4 GB) and a build of either image can use most of it: the one
+# build that tried to do both at once starved the host of memory, and its
+# SSH and Docker daemon with it. A build that would start below the floor is
+# refused instead, while nothing live has changed. A host may demand more,
+# never less than the floor above.
+MIN_MEM_KB=1048576
+if [[ "${REKODA_DEPLOY_MIN_MEM_KB:-}" =~ ^[0-9]+$ ]] && [ "$REKODA_DEPLOY_MIN_MEM_KB" -gt "$MIN_MEM_KB" ]; then
+  MIN_MEM_KB=$REKODA_DEPLOY_MIN_MEM_KB
+fi
+# Succeeds, setting MEM_KB, when the kernel's own estimate of memory available
+# without swapping (MemAvailable, which counts reclaimable cache) is below the
+# floor. An unreadable figure counts as short: never build on a guess.
+MEM_KB=
+mem_low() {
+  MEM_KB=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo 2>/dev/null || true)
+  if ! [[ "$MEM_KB" =~ ^[0-9]+$ ]]; then
+    MEM_KB=unknown
+    return 0
+  fi
+  [ "$MEM_KB" -lt "$MIN_MEM_KB" ]
+}
+# Says how much memory is available, so a deploy's output shows what each build
+# left (the floor is tuned from these figures).
+log_memory() {
+  printf 'memory available %s: %s KiB\n' "$1" "$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo 2>/dev/null || echo unknown)"
+}
+# Refuses, naming the build it was about to start, when memory is short.
+require_memory() {
+  if mem_low; then
+    fail "only $MEM_KB KiB of memory available $1 (a deploy needs at least $MIN_MEM_KB): a build on a host this short can starve it of memory, SSH and Docker included. Stop whatever else is using memory (another build, a stuck container) and deploy again. Nothing live was changed by this run"
+  fi
 }
 
 # The releases whose images must survive any cleanup, one per line: the one
@@ -315,7 +352,7 @@ SHA=${1:-}
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || fail 'the commit must be a full 40-character lowercase SHA'
 
 step 'preflight'
-for tool in git docker curl jq flock timeout sed; do
+for tool in git docker curl jq flock timeout sed awk; do
   command -v "$tool" >/dev/null || fail "$tool is not installed on this host"
 done
 docker compose version >/dev/null || fail 'the docker compose plugin is not installed'
@@ -444,6 +481,9 @@ if disk_low; then
   fi
 fi
 
+step 'memory'
+require_memory 'before any build'
+
 step 'fetch and verify the commit'
 git fetch --prune origin
 git cat-file -e "${SHA}^{commit}" 2>/dev/null || fail "commit $SHA is not in origin"
@@ -503,9 +543,18 @@ verify_checkout "$SHA" || fail 'the checkout holds tracked files that differ fro
 sed -i "s/^REKODA_RELEASE=.*/REKODA_RELEASE=${RELEASE}/" .env
 [ "$(sed -n 's/^REKODA_RELEASE=//p' .env)" = "$RELEASE" ] || fail 'REKODA_RELEASE was not updated in .env'
 
-step "build both images, tagged $RELEASE (nothing live changes)"
+# One image at a time, never both at once: concurrent builds are what overloaded
+# the host. The api image is the one api, worker, migrate and edge-check run.
+step "build the api image, tagged $RELEASE (nothing live changes)"
 dc config -q
-dc build --build-arg REKODA_COMMIT="$SHORT"
+log_memory 'before the api build'
+dc build --build-arg REKODA_COMMIT="$SHORT" api
+log_memory 'after the api build'
+
+step "build the web image, tagged $RELEASE (nothing live changes)"
+require_memory 'before the web build'
+dc build --build-arg REKODA_COMMIT="$SHORT" web
+log_memory 'after the web build'
 
 step 'migrate (expand-only, as the owner)'
 PHASE=live
