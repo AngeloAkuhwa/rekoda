@@ -29,6 +29,7 @@ const charge = (reference: string, status: BillingChargeView['status']): Billing
   periodEnd: null,
   interval: 'monthly',
   superseded: false,
+  applied: false,
   createdAt: '2026-10-20T10:00:00.000Z',
 });
 

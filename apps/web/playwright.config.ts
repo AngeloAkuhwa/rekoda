@@ -30,6 +30,18 @@ const ephemeralSecret = () => randomBytes(24).toString('hex');
 /** AES-256 and the match HMAC both want exactly 32 bytes, as 64 hex characters. */
 const ephemeralKey = () => randomBytes(32).toString('hex');
 
+// Empty string means "use Playwright's own download" (CI); unset falls back to the container's
+// pre-installed Chromium (this environment).
+const browserLaunch =
+  process.env.REKODA_CHROME === ''
+    ? {}
+    : {
+        launchOptions: {
+          executablePath:
+            process.env.REKODA_CHROME ?? '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
+        },
+      };
+
 /**
  * `reuseExistingServer` is FALSE everywhere, including locally, and that is
  * deliberate despite the slower iteration.
@@ -42,6 +54,8 @@ const ephemeralKey = () => randomBytes(32).toString('hex');
  */
 export default defineConfig({
   testDir: './e2e',
+  // The paid-plan journey needs its own API and a Paystack stand-in: playwright.journey.config.ts.
+  testIgnore: /billing-journey\.spec\.ts/,
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 0,
@@ -69,16 +83,16 @@ export default defineConfig({
       name: 'mobile',
       use: {
         viewport: { width: 390, height: 844 },
-        // Empty string means "use Playwright's own download" (CI); unset falls
-        // back to the container's pre-installed Chromium (this environment).
-        ...(process.env.REKODA_CHROME === ''
-          ? {}
-          : {
-              launchOptions: {
-                executablePath:
-                  process.env.REKODA_CHROME ?? '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
-              },
-            }),
+        ...browserLaunch,
+      },
+    },
+    {
+      // The billing page on a laptop-sized screen too: it is the page a merchant pays from.
+      name: 'desktop',
+      testMatch: /billing\.spec\.ts/,
+      use: {
+        viewport: { width: 1280, height: 800 },
+        ...browserLaunch,
       },
     },
   ],

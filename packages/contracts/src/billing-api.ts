@@ -55,6 +55,12 @@ export const billingChargeView = z.object({
    * history but can no longer be paid; a client never offers it (G-102 slice 2c).
    */
   superseded: z.boolean(),
+  /**
+   * A paid charge that took effect on the account. False for a payment that arrived but was
+   * refused as stale (OD-30: money received, nothing applied, an operator reconciles it) and for
+   * any charge that is not paid.
+   */
+  applied: z.boolean(),
   createdAt: isoDate,
 });
 

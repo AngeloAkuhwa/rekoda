@@ -520,6 +520,20 @@ export class BillingCheckoutService {
   }
 
   /** Call Paystack for an open attempt, outside any transaction, then record the link. */
+  /**
+   * Where Paystack sends the merchant after paying: the billing return page, which reads the
+   * outcome from Rekoda and not from the query string. Null when the web address is not set, so
+   * a misconfigured deployment keeps Paystack's own page rather than sending a broken link.
+   */
+  private returnUrl(): string | null {
+    if (!this.config.webUrl) return null;
+    try {
+      return new URL('/app/billing/return', this.config.webUrl).toString();
+    } catch {
+      return null;
+    }
+  }
+
   private async initialise(
     businessId: string,
     decision: Extract<Decision, { state: 'initialise' }>,
@@ -534,6 +548,7 @@ export class BillingCheckoutService {
         currency: 'NGN',
         customerEmail: decision.email,
         subaccountCode: null,
+        callbackUrl: this.returnUrl(),
       });
       if (initialised.state === 'requires_customer_information') {
         /* Paystack refused to create a session at all, so there is nothing to recover. */

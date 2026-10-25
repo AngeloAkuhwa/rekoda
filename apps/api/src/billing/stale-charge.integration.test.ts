@@ -621,6 +621,17 @@ describe('a paid but unapplied charge is an operator exception (OD-30)', () => {
     await operator(businessId, 'chat');
     expect(await settle(businessId, 'RKD-SUB-OPS-1')).toBe('superseded');
 
+    /* The merchant's own billing view must not call this payment applied: the money arrived and
+     * the plan did not move (the return page keys its "your plan is active" on this). */
+    const overview = await new BillingService(
+      { planCatalogueReads: false, paystackPlatformConfirmed: true } as never,
+      appDb,
+    ).overview(businessId);
+    expect(overview.charges.find((c) => c.reference === 'RKD-SUB-OPS-1')).toMatchObject({
+      status: 'paid',
+      applied: false,
+    });
+
     const [row] = (await subscriptionsRepo.unappliedCharges(realWorkerDb)).filter(
       (q) => q.reference === 'RKD-SUB-OPS-1',
     );

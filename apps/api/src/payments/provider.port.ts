@@ -33,6 +33,11 @@ export interface InitializeTransactionInput {
   customerEmail: string | null;
   /** The merchant's provider-side settlement target, when one exists. */
   subaccountCode?: string | null;
+  /**
+   * Where the provider sends the customer after the hosted page. Subscription billing sets it so a
+   * merchant lands back on Rekoda and sees the outcome; null or absent keeps the provider's default.
+   */
+  callbackUrl?: string | null;
 }
 
 export type InitializeTransactionResult =

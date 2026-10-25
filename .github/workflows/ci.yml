@@ -357,6 +357,18 @@ jobs:
           # CI has no pre-installed browser at a fixed path, so let Playwright
           # resolve the one it just installed.
           REKODA_CHROME: ''
+      # The paid-plan journey runs its own API (a Paystack test key aimed at a stand-in, the
+      # worker in-process), so it needs a database that has not been enrolled with the first
+      # run's random keys. It gets its own empty database beside the first; nothing is dropped.
+      - name: Create a separate database for the purchase journey
+        run: psql postgres://rekoda@127.0.0.1:5432/postgres -c 'CREATE DATABASE rekoda_journey'
+      - name: Run the purchase journey (Paystack stand-in)
+        run: pnpm --filter @rekoda/web e2e:journey
+        env:
+          REKODA_CHROME: ''
+          DATABASE_URL: postgres://rekoda@127.0.0.1:5432/rekoda_journey
+          APP_DATABASE_URL: postgres://rekoda_app@127.0.0.1:5432/rekoda_journey
+          WORKER_DATABASE_URL: postgres://rekoda_worker@127.0.0.1:5432/rekoda_journey
       - uses: actions/upload-artifact@v7
         if: failure()
         with:

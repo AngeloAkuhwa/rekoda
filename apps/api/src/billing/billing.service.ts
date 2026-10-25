@@ -188,6 +188,7 @@ export class BillingService {
               (charge.supersededAt !== null ||
                 (charge.plan !== null &&
                   (await subscriptionsRepo.decidedSince(tx, businessId, charge.reference)))),
+            applied: charge.status === 'paid' && charge.unappliedAt === null,
             createdAt: charge.createdAt.toISOString(),
           })),
         ),
