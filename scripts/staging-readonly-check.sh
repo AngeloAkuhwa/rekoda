@@ -36,8 +36,12 @@ echo "== migration 0183 (billing email send outcome column)"
 
 echo "== recent errors (last 30 minutes; counts only, no log text is printed)"
 for c in api worker; do
-  n="$(dc logs --since 30m "$c" 2>&1 | grep -ciE '"level":(50|60)|ERROR|FATAL|migration')"
-  say "error-like lines in $c" "${n:-unknown}"
+  if logs="$(dc logs --since 30m "$c" 2>&1)"; then
+    n="$(printf '%s\n' "$logs" | grep -ciE '"level":(50|60)|ERROR|FATAL|migration')" || true
+  else
+    n=unknown
+  fi
+  say "error-like lines in $c" "${n:-0}"
 done
 
 echo "== resources"
