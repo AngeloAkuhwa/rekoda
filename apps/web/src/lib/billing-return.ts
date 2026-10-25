@@ -119,8 +119,8 @@ export function returnView(
     return {
       kind: 'replaced',
       title: 'That payment was replaced by a newer choice',
-      body: 'You chose something else after starting it, so this one can no longer be paid. Your billing page shows the current choice.',
-      poll: false,
+      body: 'You chose something else after starting it. If you did complete this payment, we are still checking for it and will show the result here. Your billing page shows the current choice.',
+      poll: true,
     };
   }
   return {

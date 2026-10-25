@@ -108,16 +108,19 @@ describe('returnView', () => {
     expect(failed.body).toContain('your plan has not changed');
   });
 
-  it('handles refunded, replaced and unknown payments without polling', () => {
+  it('keeps checking a replaced checkout, because its hosted page can still be paid late', () => {
+    const view = returnView(
+      overview(charge({ status: 'pending', superseded: true })),
+      'RKD-SUB-20261025-AB12CD',
+    );
+    expect(view).toMatchObject({ kind: 'replaced', poll: true });
+    expect(view.body).not.toMatch(/no longer be paid|cannot be paid/);
+  });
+
+  it('handles refunded and unknown payments without polling', () => {
     expect(
       returnView(overview(charge({ status: 'refunded' })), 'RKD-SUB-20261025-AB12CD').kind,
     ).toBe('refunded');
-    expect(
-      returnView(
-        overview(charge({ status: 'pending', superseded: true })),
-        'RKD-SUB-20261025-AB12CD',
-      ).kind,
-    ).toBe('replaced');
     for (const ref of [null, 'RKD-SUB-20261025-ZZZZZZ']) {
       expect(returnView(overview(charge({})), ref)).toMatchObject({ kind: 'unknown', poll: false });
     }
