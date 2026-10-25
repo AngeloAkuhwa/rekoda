@@ -336,6 +336,16 @@ describe('the utility templates', () => {
     ).rejects.toMatchObject({ notSent: true, transient: true, outage: false });
   });
 
+  it('treats the spam rate limit 131048 as sender-wide, since it restricts the sending number', async () => {
+    respond = (_req, res) => {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: 131048 } }));
+    };
+    await expect(
+      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+    ).rejects.toMatchObject({ notSent: true, transient: true, outage: true });
+  });
+
   it('puts what the document is and its reference in the body, in order (G-67)', async () => {
     await sender().sendDocumentNotice({
       to: '2348031234567',

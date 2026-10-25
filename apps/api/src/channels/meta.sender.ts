@@ -50,8 +50,11 @@ const PERMANENT_CODES: ReadonlySet<number> = new Set([
   33, 100, 131009, 131026, 131030, 132000, 132001, 132005, 132007, 132012, 132015, 132016,
 ]);
 
-/** Throttles that apply to one recipient (or sender and recipient pair), not the whole sender. */
-const PER_RECIPIENT_CODES: ReadonlySet<number> = new Set([131048, 131056]);
+/**
+ * Throttles that apply to one sender and recipient pair, not the whole sender (131056).
+ * 131048, the spam rate limit, restricts the sending number itself, so it is NOT here.
+ */
+const PER_RECIPIENT_CODES: ReadonlySet<number> = new Set([131056]);
 
 /** How a refused Graph request should be treated; see `SendFailed`. */
 function classifyRefusal(
