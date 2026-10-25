@@ -163,23 +163,29 @@ test('a paying merchant upgrades, schedules a downgrade and a yearly switch, buy
   // First purchase: Chat.
   await page.goto('/app/billing?to=chat');
   await page.getByRole('button', { name: 'Confirm and pay' }).click();
-  await payWaiting(page, request);
+  const chatPayment = await payWaiting(page, request);
 
   // Upgrade to Integrate: the pro-rated difference is shown, paid, and the plan changes at once.
   await page.goto('/app/billing?to=integrate');
   await expect(page.getByText(/₦1\d,\d{3} today|₦9,\d{3} today|₦10,\d{3} today/)).toBeVisible();
   await page.getByRole('button', { name: /Confirm/ }).click();
-  await payWaiting(page, request);
+  const upgradePayment = await payWaiting(page, request);
   await page.goto('/app/billing');
-  await expect(page.getByText('Rekoda Integrate').first()).toBeVisible();
+  await expect(page.locator('.rk-plan-current')).toContainText('Rekoda Integrate');
 
   // Downgrade to Chat: nothing is charged, it is scheduled for the next renewal and can be undone.
   await page.goto('/app/billing?to=chat');
   await page.getByRole('button', { name: /Confirm/ }).click();
+  await expect(page.getByText(/Rekoda Chat at your next renewal/)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Stay on Rekoda Integrate' })).toBeVisible();
 
   // Switch to yearly billing at the next renewal, also undoable.
   await page.getByRole('button', { name: 'Switch to yearly at my next renewal' }).click();
+  await expect(
+    page.getByText(
+      'Switching to yearly billing at your next renewal. You keep your current monthly plan until then, and nothing is charged now.',
+    ),
+  ).toBeVisible();
   await expect(page.getByRole('button', { name: 'Stay on monthly billing' })).toBeVisible();
 
   // A usage pack is paid for like a plan and raises the meter by exactly its size.
@@ -187,7 +193,7 @@ test('a paying merchant upgrades, schedules a downgrade and a yearly switch, buy
     .getByRole('row', { name: /50 extra document generations/ })
     .getByRole('button', { name: 'Buy' })
     .click();
-  await payWaiting(page, request);
+  const packPayment = await payWaiting(page, request);
   await expect(
     page.getByText('Your 50 extra document generations pack has been added to your account.'),
   ).toBeVisible();
@@ -195,7 +201,11 @@ test('a paying merchant upgrades, schedules a downgrade and a yearly switch, buy
   await expect(page.getByText(/\(50 bought\)/).first()).toBeVisible();
 
   // Every payment is in the history as paid.
-  await expect(page.getByRole('cell', { name: 'Paid' }).first()).toBeVisible();
+  for (const reference of [chatPayment, upgradePayment, packPayment]) {
+    await expect(
+      page.getByRole('row').filter({ hasText: reference }).getByRole('cell', { name: 'Paid' }),
+    ).toBeVisible();
+  }
 
   // Cancelling keeps the access already paid for, and can be taken back.
   await page.locator('summary', { hasText: 'Cancel my subscription' }).click();
