@@ -1,8 +1,9 @@
 -- OD-33 (owner ruling 25 Oct 2026): narrow, ID-only scheduling discovery for the trial reminder sweep.
 --
 -- The sweep needs to know WHICH businesses have a trial ending soon; that is a cross-tenant question
--- by nature. Instead of reading `businesses` through the worker's broad table policy, discovery is one
--- dedicated function:
+-- by nature. Discovery for this sweep is one dedicated function (the worker's older table grants and
+-- ops_read_businesses remain for the other sweeps and are NOT removed here; see ADR 0035 Amendment 1,
+-- residual privilege, and backlog N8):
 --   * SECURITY DEFINER with a pinned search_path, so it runs with the owner's reach and the caller
 --     needs no table access for it;
 --   * takes only scheduling inputs (a clock reading, a window, a page size, a keyset cursor), no

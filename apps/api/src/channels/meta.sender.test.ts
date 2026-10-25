@@ -414,6 +414,10 @@ describe('the utility templates', () => {
     await expect(
       sender({ trial: null }).sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
     ).rejects.toThrow(/META_TRIAL_TEMPLATE/);
+    /* An unconfigured trial template is a fixable condition: it must not burn a reminder stage. */
+    await expect(
+      sender({ trial: null }).sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+    ).rejects.toMatchObject({ notSent: true, transient: true, outage: true });
 
     /* The retention one matters most: no template means no warning, and the
      * sweep treats an undelivered warning as a reason NOT to delete. */

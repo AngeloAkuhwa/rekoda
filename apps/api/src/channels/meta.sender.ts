@@ -143,7 +143,14 @@ export class MetaSender implements MessageSender {
    */
   async sendTrialNotice(notice: OutboundTrialNotice): Promise<SendResult> {
     if (!this.trialTemplate) {
-      throw new SendFailed('no trial template configured (META_TRIAL_TEMPLATE)', null, true);
+      /* Transient and sender-wide: configuration may be fixed, so the stage must not burn. */
+      throw new SendFailed(
+        'no trial template configured (META_TRIAL_TEMPLATE)',
+        null,
+        true,
+        true,
+        true,
+      );
     }
     return this.post({
       messaging_product: 'whatsapp',

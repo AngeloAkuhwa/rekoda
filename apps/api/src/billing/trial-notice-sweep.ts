@@ -296,7 +296,7 @@ export async function sweepTrialNotices(
         /* The attempt stays 'sending' and the stale rule will call it 'unknown'; the
          * provider's id is kept in the log so an operator can tell it was accepted. */
         log.error(
-          `business ${row.businessId}: trial stage ${due.stage} accepted by the provider (${accepted.providerMessageId ?? 'no message id'}) but not recorded: ${redactForLog(String(markError))}`,
+          `business ${row.businessId}: trial stage ${due.stage} accepted by the provider but not recorded: ${redactForLog(String(markError))}`,
         );
       }
       /* Cost attribution is independent of the local acknowledgement above. */

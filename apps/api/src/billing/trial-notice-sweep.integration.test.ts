@@ -552,6 +552,33 @@ describe('trial reminders', () => {
       expect(rows.map((r) => r.businessId)).toEqual([running.id]);
     });
 
+    it('clamps the window and the page, and pages by id without repeats or gaps', async () => {
+      const ids: string[] = [];
+      for (let k = 0; k < 5; k += 1) ids.push((await seedTrial()).id);
+      const far = await seedTrial();
+      await ownerDb.execute(
+        sql`UPDATE businesses SET plan_expires_at = ${at(100).toISOString()}::timestamptz WHERE id = ${far.id}::uuid`,
+      );
+      const { subscriptionsRepo } = await import('@rekoda/db');
+
+      /* A window of 10000 days is capped at 60: the trial 100 days out is never listed. */
+      const wide = await subscriptionsRepo.trialsEndingWithin(workerDb, at(0), 10_000, 100);
+      expect(wide.map((r) => r.businessId).sort()).toEqual([...ids].sort());
+      /* A negative window and a zero page still return a bounded, sane answer. */
+      expect(await subscriptionsRepo.trialsEndingWithin(workerDb, at(0), -5, 100)).toEqual([]);
+      expect(await subscriptionsRepo.trialsEndingWithin(workerDb, at(0), 20, 0)).toHaveLength(1);
+
+      const seen: string[] = [];
+      let cursor: string | null = null;
+      for (;;) {
+        const page = await subscriptionsRepo.trialsEndingWithin(workerDb, at(0), 20, 2, cursor);
+        if (page.length === 0) break;
+        seen.push(...page.map((r) => r.businessId));
+        cursor = page[page.length - 1]!.businessId;
+      }
+      expect(seen).toEqual([...ids].sort());
+    });
+
     it('scheduling a due task grants no wider read: discovery returns no business column beyond the minimum', async () => {
       await seedTrial();
 
