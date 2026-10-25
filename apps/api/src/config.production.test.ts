@@ -357,6 +357,59 @@ describe('REKODA_EMAIL_PROVIDER (OWN-51)', () => {
     expect(loadConfig({ ...PROD, REKODA_EMAIL_PROVIDER: '' }).emailProvider).toBe('none');
   });
 
+  it('resend needs a key and one verified from-address, in production too', () => {
+    const ok = {
+      REKODA_EMAIL_PROVIDER: 'resend',
+      RESEND_API_KEY: 're_test_key',
+      REKODA_EMAIL_FROM: 'Rekoda <billing@example.com>',
+    };
+    const config = loadConfig({ ...PROD, ...ok });
+    expect(config.emailProvider).toBe('resend');
+    expect(config.resendApiKey).toBe('re_test_key');
+    expect(config.emailFrom).toBe('Rekoda <billing@example.com>');
+    expect(loadConfig({ ...BASE, ...ok, REKODA_EMAIL_FROM: 'billing@example.com' }).emailFrom).toBe(
+      'billing@example.com',
+    );
+
+    for (const from of [
+      'first.last@example.co.uk',
+      'Rekoda Billing <first.last+tag@sub.example.com>',
+      "o'neil_x@example-shop.ng",
+    ]) {
+      expect(loadConfig({ ...BASE, ...ok, REKODA_EMAIL_FROM: from }).emailFrom).toBe(from);
+    }
+
+    expect(() => loadConfig({ ...BASE, ...ok, RESEND_API_KEY: '' })).toThrow(/RESEND_API_KEY/);
+    for (const from of [
+      '',
+      'not-an-address',
+      'a@b.c, d@e.f',
+      'Rekoda <billing@example.com',
+      'billing@example.com>',
+      'billing@example..com',
+      'billing@example.com.',
+      'billing@-example.com',
+      'billing..team@example.com',
+      '.billing@example.com',
+      'billing.@example.com',
+      'Billing\u0007 <billing@example.com>',
+      'Billing\t<billing@example.com>',
+      'Billing\u007f <billing@example.com>',
+      'Billing\u2028 <billing@example.com>',
+      'a@example.com\r\nBcc: x@y.z',
+    ]) {
+      expect(() => loadConfig({ ...BASE, ...ok, REKODA_EMAIL_FROM: from })).toThrow(
+        /REKODA_EMAIL_FROM/,
+      );
+    }
+  });
+
+  it('keeps the Resend settings empty for any other provider', () => {
+    const config = loadConfig({ ...BASE, RESEND_API_KEY: 'ignored', REKODA_EMAIL_FROM: 'a@b.co' });
+    expect(config.resendApiKey).toBe('');
+    expect(config.emailFrom).toBe('');
+  });
+
   it('refuses a value it does not know', () => {
     expect(() => loadConfig({ ...BASE, REKODA_EMAIL_PROVIDER: 'smtp' })).toThrow(
       /REKODA_EMAIL_PROVIDER/,
