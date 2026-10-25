@@ -29,10 +29,10 @@ echo "== services"
 dc ps -a --format 'table {{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null
 
 echo "== migration 0181 (the OD-33 discovery function)"
-dc exec -T postgres sh -c 'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-rekoda}" -Atc "select proname, prosecdef from pg_proc where proname = '"'"'sweep_trial_candidates'"'"'"' 2>/dev/null || echo "could not query (check the postgres user/db names)" | awk 'NF{f=1;print} END{if(!f)print "MISSING"}'
+{ dc exec -T postgres sh -c 'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-rekoda}" -Atc "select proname, prosecdef from pg_proc where proname = '"'"'sweep_trial_candidates'"'"'"' 2>/dev/null || echo "could not query (check the postgres user/db names)"; } | awk 'NF{f=1;print} END{if(!f)print "MISSING"}'
 
 echo "== migration 0183 (billing email send outcome column)"
-dc exec -T postgres sh -c 'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-rekoda}" -Atc "select column_name from information_schema.columns where table_name = '"'"'billing_email_verifications'"'"' and column_name = '"'"'send_outcome'"'"'"' 2>/dev/null || echo "could not query (check the postgres user/db names)" | awk 'NF{f=1;print} END{if(!f)print "MISSING"}'
+{ dc exec -T postgres sh -c 'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-rekoda}" -Atc "select column_name from information_schema.columns where table_name = '"'"'billing_email_verifications'"'"' and column_name = '"'"'send_outcome'"'"'"' 2>/dev/null || echo "could not query (check the postgres user/db names)"; } | awk 'NF{f=1;print} END{if(!f)print "MISSING"}'
 
 echo "== recent errors (last 30 minutes; message text only, no env)"
 for c in api worker; do
