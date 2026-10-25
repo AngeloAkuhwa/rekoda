@@ -46,7 +46,12 @@ beforeAll(async () => {
   process.env['REKODA_API_SECRET'] = testKey('secret');
   process.env['VAULT_KEY'] = testKey('vault');
   process.env['MATCH_KEY'] = testKey('match');
-  config = { ...loadConfig(), paystackSecretKey: 'sk_test_x', paystackPlatformConfirmed: true };
+  config = {
+    ...loadConfig(),
+    paystackSecretKey: 'sk_test_x',
+    paystackPlatformConfirmed: true,
+    webUrl: 'https://app.example.ng',
+  };
 });
 
 afterAll(async () => {
@@ -195,8 +200,18 @@ describe('the checkout', () => {
         currency: 'NGN',
         customerEmail: 'ada@shop.example.ng',
         subaccountCode: null,
+        callbackUrl: 'https://app.example.ng/app/billing/return',
       },
     ]);
+  });
+
+  it('sends no return address when the web address is not configured, rather than a broken one', async () => {
+    const businessId = await seedBusiness();
+    const { reference } = await pendingCharge(businessId);
+
+    await checkouts({ webUrl: null }).checkout(businessId, reference, 'ada@shop.example.ng');
+
+    expect(provider.initialized[0]?.callbackUrl).toBeNull();
   });
 
   it('asks Paystack once: a repeat gets the same link, with no email needed', async () => {

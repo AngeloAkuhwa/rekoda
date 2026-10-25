@@ -185,6 +185,7 @@ export class PaystackProvider implements PaymentProviderPort {
       channels: ['bank_transfer', 'card'],
     };
     if (input.subaccountCode) body['subaccount'] = input.subaccountCode;
+    if (input.callbackUrl) body['callback_url'] = input.callbackUrl;
 
     const parsed = paystackInitializeResponse.safeParse(
       await this.request('POST', '/transaction/initialize', body),

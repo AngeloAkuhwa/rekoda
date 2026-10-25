@@ -98,6 +98,32 @@ describe('initialising a transaction', () => {
     expect(body['subaccount']).toBe('ACCT_abc123');
     // Nigerian V1 is transfer-first (§10).
     expect((body['channels'] as string[])[0]).toBe('bank_transfer');
+    // No return address given, so none is sent: Paystack keeps its own default.
+    expect(body).not.toHaveProperty('callback_url');
+  });
+
+  it('sends the return address so the customer comes back to Rekoda after paying', async () => {
+    respond = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          status: true,
+          data: {
+            authorization_url: 'https://checkout.paystack.com/x2',
+            access_code: 'x2',
+            reference: input.reference,
+          },
+        }),
+      );
+    };
+
+    await provider().initializeTransaction({
+      ...input,
+      callbackUrl: 'https://app.example.ng/app/billing/return',
+    });
+
+    const body = requests[0]?.body as Record<string, unknown>;
+    expect(body['callback_url']).toBe('https://app.example.ng/app/billing/return');
   });
 
   it('answers requires_customer_information for a missing email — NO request, NO invented address', async () => {
