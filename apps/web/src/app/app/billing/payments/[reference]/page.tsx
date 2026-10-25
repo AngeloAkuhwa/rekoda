@@ -51,6 +51,11 @@ function whatWasBought(record: BillingPaymentRecord): string {
     return `${record.packLabel ?? 'Usage pack'}${record.quantity > 1 ? ` × ${record.quantity}` : ''}`;
   }
   const plan = record.plan ? (PLAN_NAMES[record.plan] ?? record.plan) : null;
+  /* An upgrade is priced for the rest of the cycle it lands in and keeps the renewal date, so it
+   * never bought a whole month or year of service. */
+  if (record.kind === 'upgrade') {
+    return `${KIND_LABELS.upgrade}${plan ? ` · ${plan}` : ''} (for the rest of your current billing period)`;
+  }
   const term = record.interval === 'annual' ? 'a year' : 'a month';
   return `${KIND_LABELS[record.kind]}${plan ? ` · ${plan}` : ''} (${term} of service)`;
 }

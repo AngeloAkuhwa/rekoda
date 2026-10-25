@@ -244,6 +244,13 @@ test('a paying merchant upgrades, schedules a downgrade and a yearly switch, buy
   await page.getByRole('link', { name: 'Back to billing' }).click();
   await expect(page.getByText(/\(50 bought\)/).first()).toBeVisible();
 
+  // The upgrade's record says it covers the rest of the period, never a whole month.
+  await page.goto(`/app/billing/payments/${upgradePayment}`);
+  await expect(page.getByText(/Plan upgrade · Rekoda Integrate/)).toBeVisible();
+  await expect(page.getByText(/for the rest of your current billing period/)).toBeVisible();
+  await expect(page.getByText(/month of service/)).toHaveCount(0);
+  await page.goto('/app/billing');
+
   // Every payment is in the history as paid.
   for (const reference of [chatPayment, upgradePayment, packPayment]) {
     await expect(
