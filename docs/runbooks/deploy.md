@@ -214,6 +214,13 @@ these migrations**, stop `api` and `worker` first, then run `migrate`, then
 start the new release, so no previous-release writer overlaps the plan
 transition.
 
+Accepted and documented: the trial-exit trigger locks a business's event rows and
+then its usage rows (as `reserveUnitForEvent` does), while the voice and
+`consumeMessage` paths lock the usage row first. A plan change landing in the
+middle of such a reservation can make Postgres abort one of the two
+transactions (about one second); the payment webhook and the message job both
+retry, and no row is left half written.
+
 ## Rotate a database password
 
 The migrate job sets `rekoda_app` and `rekoda_worker` to the passwords in
