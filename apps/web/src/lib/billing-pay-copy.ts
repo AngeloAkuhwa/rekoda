@@ -179,7 +179,7 @@ function unavailableMessage(reason: 'email_not_configured' | 'send_failed' | 'ad
     case 'email_not_configured':
       return 'We cannot send confirmation emails yet. Your address is fine; we will tell you when this is switched on.';
     case 'address_unusable':
-      return 'That address could not receive our email before, so we will not send to it again. Use a different billing email.';
+      return 'We cannot send email to that address. Please use a different billing email.';
     case 'send_failed':
       return 'We could not send that email just now. Try again in a few minutes.';
   }

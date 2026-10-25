@@ -58,4 +58,10 @@ seen it work on staging.
 - Lifting a suppression (a mailbox that is fixed, or an erasure request) is an
   operator act with no UI and no API: as the database owner, delete the row
   whose `address_hash` is the SHA-256 of the trimmed, lower-cased address. The
-  API role cannot update or delete these rows by design.
+  API role cannot update or delete these rows by design. Deleting lifts it for
+  future mail only: a new permanent bounce or complaint for that address will
+  suppress it again (intended), and an event Resend is still retrying when the
+  row is deleted can restore it. No record of lifted addresses is kept, so an
+  erasure request is only final once Resend has no event left to deliver for
+  that address. Whether a lift must survive such a redelivery is an open owner
+  decision (backlog N7).
