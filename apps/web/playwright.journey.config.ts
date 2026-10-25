@@ -140,8 +140,9 @@ export default defineConfig({
         REKODA_API_SECRET: ephemeralSecret(),
         VAULT_KEY: ephemeralKey(),
         MATCH_KEY: ephemeralKey(),
-        // Lets the payments e2e store settlement details. No Paystack key is
-        // set, so activation correctly holds at pending_provider_creation.
+        // The key the API needs to store a merchant's settlement details. Kept so this
+        // API boots with the same secrets as the main suite; the Paystack settings for
+        // this purchase journey are set further down.
         CONNECTION_KEY: ephemeralKey(),
         // Every request in this suite arrives from 127.0.0.1 through the Next
         // server, so the whole run shares ONE per-IP budget — and the default
