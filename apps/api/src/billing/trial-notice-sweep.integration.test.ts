@@ -292,4 +292,61 @@ describe('trial reminders', () => {
     expect(claimed).toBe(false);
     expect((await stateOf(id)).stage).toBeNull();
   });
+
+  it('records the cost of an accepted message even when marking it sent fails', async () => {
+    const { id } = await seedTrial();
+    const sender = new StubSender();
+    /* Marking an attempt 'sent' is refused, as a failing write would be. */
+    await ownerDb.execute(sql`
+      CREATE FUNCTION refuse_sent() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.trial_notice_state = 'sent' THEN RAISE EXCEPTION 'refused'; END IF;
+        RETURN NEW;
+      END $$`);
+    await ownerDb.execute(
+      sql`CREATE TRIGGER refuse_sent BEFORE UPDATE ON businesses FOR EACH ROW EXECUTE FUNCTION refuse_sent()`,
+    );
+    try {
+      const result = await sweep(sender, at(12));
+      expect(result.sent).toBe(1);
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER refuse_sent ON businesses`);
+      await ownerDb.execute(sql`DROP FUNCTION refuse_sent()`);
+    }
+
+    expect(sender.trialNotices).toHaveLength(1);
+    const cost = await ownerDb.execute<{ n: string }>(
+      sql`SELECT count(*)::text AS n FROM platform_cost_events WHERE business_id = ${id}::uuid`,
+    );
+    expect([...cost][0]?.n).toBe('1');
+    expect((await stateOf(id)).state).toBe('sending');
+  });
+
+  it('one business whose claim fails does not stop the others', async () => {
+    const first = await seedTrial();
+    const second = await seedTrial();
+    const sender = new StubSender();
+    await ownerDb.execute(
+      sql.raw(`
+      CREATE FUNCTION refuse_claim() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.trial_notice_state = 'sending' AND NEW.id = '${first.id}'::uuid THEN
+          RAISE EXCEPTION 'refused';
+        END IF;
+        RETURN NEW;
+      END $$`),
+    );
+    await ownerDb.execute(
+      sql`CREATE TRIGGER refuse_claim BEFORE UPDATE ON businesses FOR EACH ROW EXECUTE FUNCTION refuse_claim()`,
+    );
+    try {
+      await sweep(sender, at(12));
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER refuse_claim ON businesses`);
+      await ownerDb.execute(sql`DROP FUNCTION refuse_claim()`);
+    }
+
+    expect(sender.trialNotices.map((n) => n.to)).toEqual([second.phone]);
+    expect((await stateOf(first.id)).stage).toBeNull();
+  });
 });

@@ -99,9 +99,17 @@ export async function sweepTrialNotices(
         now.getTime() - row.attempt.at.getTime() > STALE_ATTEMPT_MS
       ) {
         const stage = row.attempt.stage;
-        const marked = await withBusiness(deps.appDb, row.businessId, (tx) =>
-          subscriptionsRepo.markTrialNoticeUnknown(tx, row.businessId, stage),
-        );
+        let marked = false;
+        try {
+          marked = await withBusiness(deps.appDb, row.businessId, (tx) =>
+            subscriptionsRepo.markTrialNoticeUnknown(tx, row.businessId, stage),
+          );
+        } catch (markError) {
+          /* Safe to retry on the next pass; one business never stops the others. */
+          log.error(
+            `business ${row.businessId}: stale trial stage ${stage} not recorded: ${redactForLog(String(markError))}`,
+          );
+        }
         if (marked) {
           result.uncertain += 1;
           log.warn(`business ${row.businessId}: trial reminder stage ${stage} outcome unknown`);
@@ -119,9 +127,18 @@ export async function sweepTrialNotices(
         continue;
       }
 
-      const claimed = await withBusiness(deps.appDb, row.businessId, (tx) =>
-        subscriptionsRepo.claimTrialNotice(tx, row.businessId, due.stage, clock()),
-      );
+      let claimed: boolean;
+      try {
+        claimed = await withBusiness(deps.appDb, row.businessId, (tx) =>
+          subscriptionsRepo.claimTrialNotice(tx, row.businessId, due.stage, clock()),
+        );
+      } catch (claimError) {
+        /* Nothing was sent; the next pass tries again. */
+        log.error(
+          `business ${row.businessId}: trial stage ${due.stage} not claimed: ${redactForLog(String(claimError))}`,
+        );
+        continue;
+      }
       if (!claimed) continue;
 
       let accepted: { providerMessageId: string | null };
@@ -183,18 +200,25 @@ export async function sweepTrialNotices(
             accepted.providerMessageId,
           ),
         );
+      } catch (markError) {
+        /* The attempt stays 'sending' and the stale rule will call it 'unknown'; the
+         * provider's id is kept in the log so an operator can tell it was accepted. */
+        log.error(
+          `business ${row.businessId}: trial stage ${due.stage} accepted by the provider (${accepted.providerMessageId ?? 'no message id'}) but not recorded: ${redactForLog(String(markError))}`,
+        );
+      }
+      /* Cost attribution is independent of the local acknowledgement above. */
+      try {
         await recordMessageCost(
           deps.appDb,
           row.businessId,
           'UTILITY_TEMPLATE',
           deps.fxNairaPerUsd,
-          {
-            template: 'trial',
-          },
+          { template: 'trial' },
         );
-      } catch (bookkeepingError) {
+      } catch (costError) {
         log.error(
-          `business ${row.businessId}: trial reminder sent but not fully recorded: ${redactForLog(String(bookkeepingError))}`,
+          `business ${row.businessId}: trial reminder cost not recorded: ${redactForLog(String(costError))}`,
         );
       }
     }
