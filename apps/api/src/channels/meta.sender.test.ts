@@ -309,6 +309,15 @@ describe('the utility templates', () => {
     ).rejects.toMatchObject({ notSent: true, transient: true });
   });
 
+  it('an unconfigured sender refuses a trial notice as not sent and transient (the operator can fix it)', async () => {
+    await expect(
+      new NoSenderConfigured(['META_ACCESS_TOKEN']).sendTrialNotice(),
+    ).rejects.toMatchObject({
+      notSent: true,
+      transient: true,
+    });
+  });
+
   it('puts what the document is and its reference in the body, in order (G-67)', async () => {
     await sender().sendDocumentNotice({
       to: '2348031234567',

@@ -536,7 +536,7 @@ export class NoSenderConfigured implements MessageSender {
   }
 
   sendTrialNotice(): Promise<never> {
-    return Promise.reject(new SendFailed(this.reason, null, true));
+    return Promise.reject(new SendFailed(this.reason, null, true, true));
   }
 }
 
