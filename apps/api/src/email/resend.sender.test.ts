@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { RESEND_SEND_URL, ResendEmailSender } from './resend.sender.js';
-import { EmailDeliveryUncertainError } from './email.port.js';
+import { EmailDeliveryUncertainError, EmailRefusedError } from './email.port.js';
 
 type Call = { url: string; init: RequestInit };
 
@@ -58,7 +58,7 @@ describe('ResendEmailSender', () => {
       () => null,
       (e: Error) => e,
     );
-    expect(error).toBeInstanceOf(Error);
+    expect(error).toBeInstanceOf(EmailRefusedError);
     expect(error!.message).toBe('resend send failed with 422');
     expect(error!.message).not.toContain('owner@shop.example');
     expect(error!.message).not.toContain('re_test_key');

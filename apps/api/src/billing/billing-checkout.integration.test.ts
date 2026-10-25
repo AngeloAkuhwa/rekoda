@@ -100,16 +100,19 @@ describe('changing your mind before paying', () => {
   it('a merchant who opened a checkout for Chat and then chooses Integrate can pay for Integrate', async () => {
     const businessId = await seedBusiness();
     const chat = await pendingCharge(businessId);
-    expect(
-      (await checkouts().checkout(businessId, chat.reference, 'ada@shop.example.ng')).state,
-    ).toBe('ready');
+    const first = await checkouts().checkout(businessId, chat.reference, 'ada@shop.example.ng');
+    expect(first.state).toBe('ready');
 
     const integrate = await plans().changePlan(businessId, 'integrate');
     if (integrate.state !== 'payment_required')
       throw new Error('a first purchase should be payable');
     const answer = await checkouts().checkout(businessId, integrate.reference, undefined);
 
-    expect(answer.state).toBe('ready');
+    expect(answer).toMatchObject({ state: 'ready', reference: integrate.reference });
+    if (first.state !== 'ready' || answer.state !== 'ready')
+      throw new Error('both should be ready');
+    expect(answer.reference).not.toBe(first.reference);
+    expect(answer.checkoutUrl).not.toBe(first.checkoutUrl);
   });
 });
 

@@ -1412,7 +1412,7 @@ export async function voidEmailVerification(
   `);
 }
 
-/** How a link's hand-over to the email provider ended (migration 0182). */
+/** How a link's hand-over to the email provider ended (migration 0183). */
 export type EmailSendOutcome = 'accepted' | 'uncertain';
 
 /** Record the outcome of handing a link to the provider; a spent or voided link is left alone. */

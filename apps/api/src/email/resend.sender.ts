@@ -1,5 +1,10 @@
 import { Logger } from '@nestjs/common';
-import { EmailDeliveryUncertainError, type EmailSender, type OutboundEmail } from './email.port.js';
+import {
+  EmailDeliveryUncertainError,
+  EmailRefusedError,
+  type EmailSender,
+  type OutboundEmail,
+} from './email.port.js';
 
 /** Resend's one send endpoint. Fixed: no variable can point production at another host. */
 export const RESEND_SEND_URL = 'https://api.resend.com/emails';
@@ -66,16 +71,16 @@ export class ResendEmailSender implements EmailSender {
         if (response.status >= 500 || response.status === 408 || response.status === 409) {
           throw new EmailDeliveryUncertainError(reason);
         }
-        throw new Error(reason);
+        throw new EmailRefusedError(reason);
       }
     } catch (error) {
       if (error instanceof EmailDeliveryUncertainError) {
         this.log.warn(error.message);
         throw error;
       }
-      if (error instanceof Error && error.message.startsWith('resend send failed')) {
+      if (error instanceof EmailRefusedError) {
         this.log.warn(error.message);
-        throw new Error(error.message);
+        throw error;
       }
       /* A timeout, a dropped connection or any failure before an answer: the message may have
        * been taken. Only the failure kind is kept, never the recipient or the key. */

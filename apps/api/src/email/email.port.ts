@@ -27,6 +27,14 @@ export class EmailDeliveryUncertainError extends Error {
   }
 }
 
+/** Thrown when the provider definitely refused the message (a non-retryable 4xx): it was not sent. */
+export class EmailRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EmailRefusedError';
+  }
+}
+
 export interface EmailSender {
   /** False when nothing can be sent, so a caller can say so instead of pretending. */
   readonly available: boolean;

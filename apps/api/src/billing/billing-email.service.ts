@@ -152,9 +152,7 @@ export class BillingEmailService {
         this.log.warn(
           'a billing-email confirmation may or may not have been sent: outcome unknown',
         );
-        await withBusiness(this.db, businessId, (tx) =>
-          subscriptionsRepo.markEmailVerificationSend(tx, businessId, tokenHash, 'uncertain'),
-        );
+        await this.recordSendOutcome(businessId, tokenHash, 'uncertain');
         return {
           state: 'delivery_uncertain',
           maskedEmail: maskBillingEmail(prepared.email),
@@ -173,10 +171,26 @@ export class BillingEmailService {
       );
       return { state: 'unavailable', reason: unusable ? 'address_unusable' : 'send_failed' };
     }
-    await withBusiness(this.db, businessId, (tx) =>
-      subscriptionsRepo.markEmailVerificationSend(tx, businessId, tokenHash, 'accepted'),
-    );
+    await this.recordSendOutcome(businessId, tokenHash, 'accepted');
     return { state: 'sent', maskedEmail: maskBillingEmail(prepared.email) };
+  }
+
+  /**
+   * The outcome is an annotation (a NULL column reads as unknown), so a failed write must not turn
+   * a finished hand-over into an error. The failure is logged without the address.
+   */
+  private async recordSendOutcome(
+    businessId: string,
+    tokenHash: string,
+    outcome: 'accepted' | 'uncertain',
+  ): Promise<void> {
+    try {
+      await withBusiness(this.db, businessId, (tx) =>
+        subscriptionsRepo.markEmailVerificationSend(tx, businessId, tokenHash, outcome),
+      );
+    } catch {
+      this.log.warn('a billing-email send outcome could not be recorded');
+    }
   }
 
   /**
