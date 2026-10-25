@@ -194,7 +194,7 @@ describe('trial reminders', () => {
       subscriptionsRepo.claimTrialNotice(tx, id, 2, at(12)),
     );
 
-    expect(claimed).toBe(false);
+    expect(claimed).toBe('not_claimed');
   });
 
   it('two overlapping passes produce one message', async () => {
@@ -274,7 +274,7 @@ describe('trial reminders', () => {
       subscriptionsRepo.claimTrialNotice(tx, id, 3, expiry),
     );
 
-    expect(claimed).toBe(false);
+    expect(claimed).toBe('not_claimed');
     expect((await stateOf(id)).stage).toBeNull();
   });
 
@@ -289,7 +289,7 @@ describe('trial reminders', () => {
       subscriptionsRepo.claimTrialNotice(tx, id, 2, at(12)),
     );
 
-    expect(claimed).toBe(false);
+    expect(claimed).toBe('opted_out');
     expect((await stateOf(id)).stage).toBeNull();
   });
 
@@ -348,5 +348,219 @@ describe('trial reminders', () => {
 
     expect(sender.trialNotices.map((n) => n.to)).toEqual([second.phone]);
     expect((await stateOf(first.id)).stage).toBeNull();
+  });
+
+  describe('the final eligibility check before dispatch (owner ruling, 25 Oct 2026)', () => {
+    /* A trigger fires inside the claim's own transaction, so the change commits together
+     * with the claim and is therefore visible to the final check but not to the claim's
+     * predicate: the exact "after claim, before dispatch" window. */
+    async function afterClaim(effect: string, run: () => Promise<void>): Promise<void> {
+      await ownerDb.execute(
+        sql.raw(`
+        CREATE FUNCTION after_claim_effect() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.trial_notice_state = 'sending' AND OLD.trial_notice_state IS DISTINCT FROM 'sending' THEN
+            ${effect}
+          END IF;
+          RETURN NEW;
+        END $$`),
+      );
+      await ownerDb.execute(
+        sql`CREATE TRIGGER after_claim_effect AFTER UPDATE ON businesses FOR EACH ROW EXECUTE FUNCTION after_claim_effect()`,
+      );
+      try {
+        await run();
+      } finally {
+        await ownerDb.execute(sql`DROP TRIGGER after_claim_effect ON businesses`);
+        await ownerDb.execute(sql`DROP FUNCTION after_claim_effect()`);
+      }
+    }
+
+    const costRows = async (id: string) =>
+      [
+        ...(await ownerDb.execute<{ n: string }>(
+          sql`SELECT count(*)::text AS n FROM platform_cost_events WHERE business_id = ${id}::uuid`,
+        )),
+      ][0]?.n;
+
+    it('a STOP that lands after the claim stops the send, and the stage is not retried', async () => {
+      const { id } = await seedTrial();
+      const sender = new StubSender();
+
+      let result!: Awaited<ReturnType<typeof sweep>>;
+      await afterClaim(
+        'UPDATE users SET opted_out_at = now() WHERE id = NEW.owner_user_id;',
+        async () => {
+          result = await sweep(sender, at(12));
+        },
+      );
+
+      expect(sender.trialNotices).toHaveLength(0);
+      expect(result).toMatchObject({ sent: 0, suppressed: 1 });
+      expect(await stateOf(id)).toMatchObject({ stage: 2, state: 'suppressed' });
+      expect(await costRows(id)).toBe('0');
+
+      /* Opting back in later does not resurrect the suppressed stage ... */
+      await ownerDb.execute(
+        sql`UPDATE users SET opted_out_at = NULL WHERE opted_out_at IS NOT NULL`,
+      );
+      await sweep(sender, at(12, 3_600_000));
+      expect(sender.trialNotices).toHaveLength(0);
+      /* ... but the next milestone is still owed. */
+      await sweep(sender, at(13));
+      expect(sender.trialNotices).toHaveLength(1);
+    });
+
+    it('a plan purchase that lands after the claim stops the send', async () => {
+      const { id } = await seedTrial();
+      const sender = new StubSender();
+
+      let result!: Awaited<ReturnType<typeof sweep>>;
+      await afterClaim(
+        "IF NEW.plan = 'trial' THEN UPDATE businesses SET plan = 'chat' WHERE id = NEW.id; END IF;",
+        async () => {
+          result = await sweep(sender, at(12));
+        },
+      );
+
+      expect(sender.trialNotices).toHaveLength(0);
+      expect(result).toMatchObject({ sent: 0, suppressed: 1 });
+      expect((await stateOf(id)).state).toBe('suppressed');
+      expect(await costRows(id)).toBe('0');
+    });
+
+    it('a trial that ends between the claim and the check stops the send', async () => {
+      const { id } = await seedTrial();
+      const { subscriptionsRepo } = await import('@rekoda/db');
+
+      const claimed = await withBusiness(appDb, id, (tx) =>
+        subscriptionsRepo.claimTrialNotice(tx, id, 3, at(13)),
+      );
+      const final = await withBusiness(appDb, id, (tx) =>
+        subscriptionsRepo.finalizeTrialNoticeDispatch(tx, id, 3, expiry),
+      );
+
+      expect(claimed).toBe('claimed');
+      expect(final).toEqual({ outcome: 'suppressed' });
+      expect((await stateOf(id)).state).toBe('suppressed');
+    });
+
+    it('sends nothing when the attempt is no longer the one in flight', async () => {
+      const { id } = await seedTrial();
+      const { subscriptionsRepo } = await import('@rekoda/db');
+      await withBusiness(appDb, id, (tx) => subscriptionsRepo.claimTrialNotice(tx, id, 2, at(12)));
+      await ownerDb.execute(
+        sql`UPDATE businesses SET trial_notice_state = 'unknown' WHERE id = ${id}::uuid`,
+      );
+
+      const final = await withBusiness(appDb, id, (tx) =>
+        subscriptionsRepo.finalizeTrialNoticeDispatch(tx, id, 2, at(12)),
+      );
+
+      expect(final).toEqual({ outcome: 'lost' });
+      expect((await stateOf(id)).state).toBe('unknown');
+    });
+
+    it('a failing final check puts the claim back, since nothing was sent', async () => {
+      const { id } = await seedTrial();
+      const sender = new StubSender();
+      await ownerDb.execute(sql`
+        CREATE FUNCTION refuse_suppress() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.trial_notice_state = 'sending' AND OLD.trial_notice_state = 'sending' THEN
+            RAISE EXCEPTION 'refused';
+          END IF;
+          RETURN NEW;
+        END $$`);
+      await ownerDb.execute(
+        sql`CREATE TRIGGER refuse_suppress BEFORE UPDATE ON businesses FOR EACH ROW EXECUTE FUNCTION refuse_suppress()`,
+      );
+      try {
+        await sweep(sender, at(12));
+      } finally {
+        await ownerDb.execute(sql`DROP TRIGGER refuse_suppress ON businesses`);
+        await ownerDb.execute(sql`DROP FUNCTION refuse_suppress()`);
+      }
+
+      expect(sender.trialNotices).toHaveLength(0);
+      expect((await stateOf(id)).stage).toBe(1);
+    });
+  });
+
+  describe('tenant isolation of the reminder sweep (security review)', () => {
+    it('lists only the minimum: an id, the trial end and the latest attempt', async () => {
+      await seedTrial();
+      const { subscriptionsRepo } = await import('@rekoda/db');
+
+      const rows = await subscriptionsRepo.trialsEndingWithin(workerDb, at(12), 7);
+
+      expect(rows).toHaveLength(1);
+      expect(Object.keys(rows[0]!).sort()).toEqual(['attempt', 'businessId', 'trialEndsAt']);
+    });
+
+    it('the worker role can read candidates but cannot write a business row', async () => {
+      const { id } = await seedTrial();
+
+      const visible = await workerDb.execute<{ id: string }>(
+        sql`SELECT id FROM businesses WHERE id = ${id}::uuid`,
+      );
+      const written = await workerDb.execute<{ id: string }>(
+        sql`UPDATE businesses SET trial_notice_state = 'sent', last_trial_notice_stage = 3 WHERE id = ${id}::uuid RETURNING id`,
+      );
+
+      expect([...visible]).toHaveLength(1);
+      expect([...written]).toHaveLength(0);
+      expect((await stateOf(id)).stage).toBeNull();
+    });
+
+    it('an unpinned application connection sees and changes no business', async () => {
+      const { id } = await seedTrial();
+
+      const written = await appDb.execute<{ id: string }>(
+        sql`UPDATE businesses SET trial_notice_state = 'sent' WHERE id = ${id}::uuid RETURNING id`,
+      );
+
+      expect([...written]).toHaveLength(0);
+    });
+
+    it('a candidate id used under another tenant changes nothing, for every write', async () => {
+      const victim = await seedTrial();
+      const other = await seedTrial();
+      const { subscriptionsRepo } = await import('@rekoda/db');
+      const asOther = <T>(
+        fn: (tx: Parameters<Parameters<typeof withBusiness>[2]>[0]) => Promise<T>,
+      ) => withBusiness(appDb, other.id, fn);
+
+      expect(
+        await asOther((tx) => subscriptionsRepo.claimTrialNotice(tx, victim.id, 2, at(12))),
+      ).toBe('not_claimed');
+      expect(
+        await asOther((tx) =>
+          subscriptionsRepo.finalizeTrialNoticeDispatch(tx, victim.id, 2, at(12)),
+        ),
+      ).toEqual({ outcome: 'lost' });
+      await asOther((tx) => subscriptionsRepo.markTrialNoticeSent(tx, victim.id, 2, 'x'));
+      expect(
+        await asOther((tx) => subscriptionsRepo.markTrialNoticeUnknown(tx, victim.id, 2)),
+      ).toBe(false);
+      await asOther((tx) => subscriptionsRepo.releaseTrialNotice(tx, victim.id, 2));
+
+      expect(await stateOf(victim.id)).toEqual({ stage: null, state: null, provider: null });
+    });
+
+    it('never reads the owner phone outside the tenant that owns it', async () => {
+      const victim = await seedTrial();
+      const other = await seedTrial();
+      const { subscriptionsRepo } = await import('@rekoda/db');
+      await withBusiness(appDb, victim.id, (tx) =>
+        subscriptionsRepo.claimTrialNotice(tx, victim.id, 2, at(12)),
+      );
+
+      const final = await withBusiness(appDb, other.id, (tx) =>
+        subscriptionsRepo.finalizeTrialNoticeDispatch(tx, victim.id, 2, at(12)),
+      );
+
+      expect(final).toEqual({ outcome: 'lost' });
+    });
   });
 });

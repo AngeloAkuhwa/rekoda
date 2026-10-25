@@ -13,11 +13,12 @@
  *     counted as opted out and nothing is claimed; a send Meta definitively refused gives
  *     its claim back; one whose outcome cannot be told (timeout, crash) is recorded as
  *     'unknown' and NOT resent. No exactly-once delivery is claimed (OWN-47).
- *   - Eligibility is decided AT CLAIM TIME: the claim requires a trial that has not ended
- *     as of the current clock and an owner who has not opted out. A STOP or a purchase
- *     committing in the milliseconds between the claim and the Meta request does not
- *     stop that one message (no lock is held across the network call); the next pass
- *     honours it.
+ *   - Eligibility is checked twice: at the claim, and again by a final check immediately
+ *     before the Meta request (plan, trial end against the current clock, consent). A
+ *     message found ineligible there is recorded 'suppressed', never retried. No lock is
+ *     held across the network call, so a STOP or purchase committing after that final
+ *     check, while the request is in flight, cannot recall the message; the next pass
+ *     honours it. No absolute prevention is claimed.
  */
 import { Logger } from '@nestjs/common';
 import { TRIAL_NOTICE_DAYS_LEFT, trialNoticeDue } from '@rekoda/core';
@@ -41,6 +42,8 @@ export interface TrialNoticeSweepDeps {
 export interface TrialNoticeSweepResult {
   sent: number;
   optedOut: number;
+  /** Claimed, then found ineligible by the final check just before dispatch; nothing sent. */
+  suppressed: number;
   failed: number;
   /** Attempts whose outcome cannot be told (timeout, dropped connection, worker death); never resent. */
   uncertain: number;
@@ -70,6 +73,7 @@ export async function sweepTrialNotices(
   const result: TrialNoticeSweepResult = {
     sent: 0,
     optedOut: 0,
+    suppressed: 0,
     failed: 0,
     uncertain: 0,
     disabled: false,
@@ -122,15 +126,7 @@ export async function sweepTrialNotices(
       const due = trialNoticeDue(row.trialEndsAt, now);
       if (due === null) continue;
 
-      /* STOP is a fact and is checked before every proactive send, and BEFORE the claim:
-       * a skipped message is never recorded as handled, so an owner who sends START again
-       * is still owed the milestone if it is current (OWN-56). */
-      if (row.ownerOptedOut) {
-        result.optedOut += 1;
-        continue;
-      }
-
-      let claimed: boolean;
+      let claimed: 'claimed' | 'opted_out' | 'not_claimed';
       try {
         claimed = await withBusiness(deps.appDb, row.businessId, (tx) =>
           subscriptionsRepo.claimTrialNotice(tx, row.businessId, due.stage, clock()),
@@ -142,12 +138,52 @@ export async function sweepTrialNotices(
         );
         continue;
       }
-      if (!claimed) continue;
+      /* STOP is a fact: an opted-out owner claims nothing, so a skipped message is never
+       * recorded as handled and a START later still owes the current milestone (OWN-56). */
+      if (claimed === 'opted_out') {
+        result.optedOut += 1;
+        continue;
+      }
+      if (claimed !== 'claimed') continue;
+
+      /* The final eligibility check, immediately before the Meta request (owner ruling,
+       * 25 Oct 2026): plan, trial end and consent are read again, and the owner's phone is
+       * read here, inside the tenant's scope, because the listing never carried it. No lock
+       * is held across the request; once it begins an in-flight message cannot be recalled.
+       * Nothing else happens between this statement's commit and the send. */
+      let finalCheck: Awaited<ReturnType<typeof subscriptionsRepo.finalizeTrialNoticeDispatch>>;
+      try {
+        finalCheck = await withBusiness(deps.appDb, row.businessId, (tx) =>
+          subscriptionsRepo.finalizeTrialNoticeDispatch(tx, row.businessId, due.stage, clock()),
+        );
+      } catch (finalError) {
+        /* Nothing was sent, so the claim can safely go back for the next pass. */
+        log.error(
+          `business ${row.businessId}: trial stage ${due.stage} final check failed: ${redactForLog(String(finalError))}`,
+        );
+        try {
+          await withBusiness(deps.appDb, row.businessId, (tx) =>
+            subscriptionsRepo.releaseTrialNotice(tx, row.businessId, due.stage),
+          );
+        } catch (releaseError) {
+          log.error(
+            `business ${row.businessId}: trial stage ${due.stage} claim not released: ${redactForLog(String(releaseError))}`,
+          );
+        }
+        continue;
+      }
+      if (finalCheck.outcome === 'suppressed') {
+        /* The stage stays claimed as 'suppressed': it is never retried. */
+        result.suppressed += 1;
+        log.log(`business ${row.businessId}: trial stage ${due.stage} suppressed before dispatch`);
+        continue;
+      }
+      if (finalCheck.outcome !== 'proceed') continue;
 
       let accepted: { providerMessageId: string | null };
       try {
         accepted = await deps.sender.sendTrialNotice({
-          to: row.ownerPhone,
+          to: finalCheck.ownerPhone,
           daysLeft: String(due.daysLeft),
           endsOn: lagosDate(row.trialEndsAt),
         });

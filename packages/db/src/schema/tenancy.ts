@@ -110,7 +110,7 @@ export const businesses = pgTable(
     lastGraceReminderDay: smallint('last_grace_reminder_day'),
     /** The last trial-reminder stage sent (1..3, core's trialNoticeDue), claimed by conditional UPDATE. */
     lastTrialNoticeStage: smallint('last_trial_notice_stage'),
-    /** The latest reminder attempt: 'sending' | 'sent' | 'unknown' (OWN-47; migration 0180). */
+    /** The latest reminder attempt: 'sending' | 'sent' | 'unknown' | 'suppressed' (OWN-47; migration 0180). */
     trialNoticeState: text('trial_notice_state'),
     trialNoticeAttemptedAt: timestamp('trial_notice_attempted_at', { withTimezone: true }),
     trialNoticeProviderMessageId: text('trial_notice_provider_message_id'),

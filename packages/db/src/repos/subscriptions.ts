@@ -1610,19 +1610,24 @@ export async function inGrace(
 
 export interface TrialBusiness {
   businessId: string;
-  ownerPhone: string;
-  ownerOptedOut: boolean;
   trialEndsAt: Date;
   /** The latest reminder attempt on record (OWN-47), if any. */
-  attempt: { stage: number; state: 'sending' | 'sent' | 'unknown'; at: Date } | null;
+  attempt: {
+    stage: number;
+    state: 'sending' | 'sent' | 'unknown' | 'suppressed';
+    at: Date;
+  } | null;
 }
 
 /**
  * Businesses on a running trial that end within `withinDays` of `now` (G-109).
  *
- * Narrowed in SQL to the trials that can owe a reminder, because most trials are
- * younger than the first milestone; which stage a business is at is core's call
- * (`trialNoticeDue`), not this query's. Keyset-paged by id like `inGrace`.
+ * This is the one cross-tenant read of the reminder sweep, made through the worker role's
+ * documented read-only reach on `businesses` (policy `ops_read_businesses`, migration
+ * 0019). It returns the MINIMUM needed to decide what is due: the id, the trial end and the
+ * latest attempt. It joins nothing and exposes no owner phone, name or consent flag; those
+ * are read later, inside the tenant's own scope, only for a notice that is about to be
+ * sent. Which stage a business is at is core's call (`trialNoticeDue`). Keyset-paged by id.
  */
 export async function trialsEndingWithin(
   db: Db,
@@ -1634,16 +1639,13 @@ export async function trialsEndingWithin(
   const rows = await db.execute<{
     id: string;
     plan_expires_at: Date | string;
-    owner_phone: string;
-    opted_out_at: string | null;
     last_trial_notice_stage: number | null;
-    trial_notice_state: 'sending' | 'sent' | 'unknown' | null;
+    trial_notice_state: 'sending' | 'sent' | 'unknown' | 'suppressed' | null;
     trial_notice_attempted_at: Date | string | null;
   }>(sql`
-    SELECT b.id, b.plan_expires_at, u.phone AS owner_phone, u.opted_out_at,
+    SELECT b.id, b.plan_expires_at,
            b.last_trial_notice_stage, b.trial_notice_state, b.trial_notice_attempted_at
     FROM businesses b
-    JOIN users u ON u.id = b.owner_user_id
     WHERE b.plan = 'trial'
       AND b.plan_expires_at IS NOT NULL
       AND b.plan_expires_at > ${now.toISOString()}::timestamptz
@@ -1654,8 +1656,6 @@ export async function trialsEndingWithin(
   `);
   return [...rows].map((row) => ({
     businessId: row.id,
-    ownerPhone: row.owner_phone,
-    ownerOptedOut: row.opted_out_at !== null,
     trialEndsAt: new Date(row.plan_expires_at),
     attempt:
       row.trial_notice_state !== null &&
@@ -1671,18 +1671,20 @@ export async function trialsEndingWithin(
 }
 
 /**
- * Claim a trial reminder stage and record the attempt as 'sending', or discover it was
- * already claimed. Returns true exactly once per stage to exactly one caller, and only
- * while, AT CLAIM TIME, the business is still on a trial that has not ended as of `asOf`
- * and its owner has not opted out: a page of 500 is processed over minutes, so what the
- * listing saw may be stale (a purchase, the expiry instant, a STOP in between).
+ * Claim a trial reminder stage and record the attempt as 'sending'. 'claimed' is returned
+ * exactly once per stage to exactly one caller, and only while, AT CLAIM TIME, the business
+ * is still on a trial that has not ended as of `asOf` and its owner has not opted out: a
+ * page of 500 is processed over minutes, so what the listing saw may be stale. An opted-out
+ * owner claims nothing, so the milestone is still owed if they opt back in.
+ *
+ * Runs under the tenant pin: another tenant's id changes nothing (RLS).
  */
 export async function claimTrialNotice(
   tx: TenantDb,
   businessId: string,
   stage: number,
   asOf: Date,
-): Promise<boolean> {
+): Promise<'claimed' | 'opted_out' | 'not_claimed'> {
   const rows = await tx.execute<{ id: string }>(sql`
     UPDATE businesses
     SET last_trial_notice_stage = ${stage}, trial_notice_state = 'sending',
@@ -1698,7 +1700,58 @@ export async function claimTrialNotice(
       AND (last_trial_notice_stage IS NULL OR last_trial_notice_stage < ${stage})
     RETURNING id
   `);
-  return [...rows].length === 1;
+  if ([...rows].length === 1) return 'claimed';
+  const optedOut = await tx.execute<{ id: string }>(sql`
+    SELECT b.id FROM businesses b JOIN users u ON u.id = b.owner_user_id
+    WHERE b.id = ${businessId}::uuid AND u.opted_out_at IS NOT NULL
+  `);
+  return [...optedOut].length === 1 ? 'opted_out' : 'not_claimed';
+}
+
+/**
+ * The final eligibility check, made immediately before the Meta request (OWN-56, owner
+ * ruling 25 Oct 2026). One statement, no lock held afterwards: it re-reads the plan, the
+ * trial end against the current clock and the owner's consent, and requires that this very
+ * attempt is still the one 'sending' for `stage`.
+ *
+ * - still eligible: returns the owner's phone, read here (inside the tenant's scope) so the
+ *   listing never carried it;
+ * - no longer eligible: the attempt becomes 'suppressed' and the stage stays claimed, so it
+ *   is never retried; returns 'suppressed';
+ * - not this attempt any more (another pass or writer moved it): returns 'lost', send nothing.
+ *
+ * Once the Meta request begins an in-flight message cannot be recalled; this narrows the
+ * race to the span between this statement's commit and the request, and does not close it.
+ */
+export async function finalizeTrialNoticeDispatch(
+  tx: TenantDb,
+  businessId: string,
+  stage: number,
+  asOf: Date,
+): Promise<{ outcome: 'proceed'; ownerPhone: string } | { outcome: 'suppressed' | 'lost' }> {
+  const rows = await tx.execute<{ ok: boolean; phone: string }>(sql`
+    WITH cur AS (
+      SELECT b.id,
+             (b.plan = 'trial'
+              AND b.plan_expires_at > ${asOf.toISOString()}::timestamptz
+              AND u.opted_out_at IS NULL) AS ok,
+             u.phone AS phone
+      FROM businesses b JOIN users u ON u.id = b.owner_user_id
+      WHERE b.id = ${businessId}::uuid
+        AND b.last_trial_notice_stage = ${stage}
+        AND b.trial_notice_state = 'sending'
+      FOR UPDATE OF b
+    )
+    UPDATE businesses
+    SET trial_notice_state = CASE WHEN cur.ok THEN businesses.trial_notice_state ELSE 'suppressed' END,
+        updated_at = CASE WHEN cur.ok THEN businesses.updated_at ELSE now() END
+    FROM cur
+    WHERE businesses.id = cur.id
+    RETURNING cur.ok AS ok, cur.phone AS phone
+  `);
+  const row = [...rows][0];
+  if (!row) return { outcome: 'lost' };
+  return row.ok ? { outcome: 'proceed', ownerPhone: row.phone } : { outcome: 'suppressed' };
 }
 
 /** The provider accepted the attempt for this stage. */
