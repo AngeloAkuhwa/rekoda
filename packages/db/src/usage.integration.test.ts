@@ -598,6 +598,68 @@ describe('trials already running when the trial meter moved (migration 0176)', (
   });
 });
 
+describe('a business leaving the trial leaves no trial usage on a month row (migration 0177)', () => {
+  const ownerRun = async (statement: ReturnType<typeof sql>) => {
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      return [...(await ownerDb.execute<Record<string, unknown>>(statement))];
+    } finally {
+      await close();
+    }
+  };
+  const monthRows = (businessId: string) =>
+    ownerRun(sql`
+      SELECT period, unit, used FROM usage_counters
+       WHERE business_id = ${businessId}::uuid AND period <> 'TRIAL00' ORDER BY unit, period`);
+  /** What an old process, still running during a deploy, writes for a trial business. */
+  const strayOldProcessWrites = (businessId: string) =>
+    ownerRun(sql`
+      INSERT INTO usage_counters (business_id, period, unit, used) VALUES
+        (${businessId}::uuid, '2026-10', 'AI_ACTIONS', 4),
+        (${businessId}::uuid, '2026-10', 'API_REQUEST_UNITS', 6)`);
+
+  it('discards stray month rows for base-plan units when the first paid plan lands, and keeps API units', async () => {
+    const businessId = await seedBusiness();
+    await strayOldProcessWrites(businessId);
+
+    await setPlanOnRow(businessId, 'chat');
+
+    expect(await monthRows(businessId)).toEqual([
+      { period: '2026-10', unit: 'API_REQUEST_UNITS', used: 6 },
+    ]);
+    const read = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, '2026-10'),
+    );
+    expect(read.find((r) => r.unit === 'AI_ACTIONS')?.used ?? 0).toBe(0); // a fresh paid meter
+  });
+
+  it('does not touch month rows while the business stays on trial, or moves between paid plans', async () => {
+    const stays = await seedBusiness();
+    await strayOldProcessWrites(stays);
+    await withBusiness(db, stays, (tx) =>
+      tx.execute(
+        sql`UPDATE businesses SET plan = 'trial', updated_at = now() WHERE id = ${stays}::uuid`,
+      ),
+    );
+    expect(await monthRows(stays)).toHaveLength(2);
+
+    const paid = await seedBusiness2();
+    await setPlanOnRow(paid, 'chat');
+    await ownerRun(sql`
+      INSERT INTO usage_counters (business_id, period, unit, used)
+      VALUES (${paid}::uuid, '2026-10', 'AI_ACTIONS', 7)`);
+    await setPlanOnRow(paid, 'complete');
+    expect(await monthRows(paid)).toEqual([{ period: '2026-10', unit: 'AI_ACTIONS', used: 7 }]);
+  });
+
+  it('also discards them when a trial lapses to expired', async () => {
+    const businessId = await seedBusiness();
+    await strayOldProcessWrites(businessId);
+    await setPlanOnRow(businessId, 'expired');
+    expect((await monthRows(businessId)).map((r) => r.unit)).toEqual(['API_REQUEST_UNITS']);
+  });
+});
+
 describe('the trial clock (docs/pricing-model.md)', () => {
   /** Move a business's plan and expiry directly, as an operator or time would. */
   async function setPlanRow(businessId: string, plan: string, expiresAt: Date | null) {

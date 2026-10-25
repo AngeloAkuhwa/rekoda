@@ -1240,6 +1240,13 @@
       "when": 1792843200000,
       "tag": "0176_trial_meter_backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 177,
+      "version": "7",
+      "when": 1792929600000,
+      "tag": "0177_trial_leaves_month_rows",
+      "breakpoints": true
     }
   ]
 }
