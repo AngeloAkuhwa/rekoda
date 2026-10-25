@@ -1261,6 +1261,20 @@
       "when": 1793102400000,
       "tag": "0179_email_suppressions",
       "breakpoints": true
+    },
+    {
+      "idx": 180,
+      "version": "7",
+      "when": 1793188800000,
+      "tag": "0180_trial_notice_stage",
+      "breakpoints": true
+    },
+    {
+      "idx": 181,
+      "version": "7",
+      "when": 1793275200000,
+      "tag": "0181_sweep_trial_candidates",
+      "breakpoints": true
     }
   ]
 }

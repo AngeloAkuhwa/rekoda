@@ -10,6 +10,7 @@ import {
   type OutboundRetentionNotice,
   type OutboundDocumentNotice,
   type OutboundTemplate,
+  type OutboundTrialNotice,
   type OutboundConnectionText,
   type OutboundMessage,
   type SendResult,
@@ -35,6 +36,41 @@ import {
 /** The most media one download may buffer: WhatsApp's own media cap, rounded. */
 const MAX_MEDIA_BYTES = 16 * 1024 * 1024;
 
+/**
+ * Graph error codes that mean THIS recipient cannot receive this message, and will not be
+ * able to later: undeliverable (131026), not on the allowed list (131030), the recipient is
+ * the sender (131021). Only these end a stage as refused; they say nothing about the next
+ * owner, so they never count toward stopping a pass.
+ */
+const RECIPIENT_PERMANENT_CODES: ReadonlySet<number> = new Set([131021, 131026, 131030]);
+
+/**
+ * Throttles that apply to one recipient or one sender and recipient pair, not the whole
+ * sender (131056 pair limit, 131049 per-recipient marketing limit). They clear with time.
+ * 131048, the spam rate limit, restricts the sending number itself, so it is NOT here.
+ */
+const PER_RECIPIENT_CODES: ReadonlySet<number> = new Set([131049, 131056]);
+
+/**
+ * How a refused Graph request should be treated; see `SendFailed`.
+ *
+ * Everything that is not a recipient-scope condition is sender-wide: a bad token, a rate
+ * limit, but also a paused or unapproved template (132001, 132015, 132016), wrong
+ * parameters (132000, 100) or a wrong phone-number id. Those would hit every business
+ * identically, so they release the claim and count toward stopping the pass, and the stage
+ * is delivered once an operator fixes the cause instead of being burnt for everyone.
+ * Recipient-scope codes win over the status, so a 403 carrying 131030 is still permanent.
+ */
+function classifyRefusal(
+  _status: number,
+  code: number | null,
+): { transient: boolean; outage: boolean } {
+  if (code !== null && RECIPIENT_PERMANENT_CODES.has(code)) {
+    return { transient: false, outage: false };
+  }
+  return { transient: true, outage: code === null || !PER_RECIPIENT_CODES.has(code) };
+}
+
 export class MetaSender implements MessageSender {
   private readonly log = new Logger(MetaSender.name);
 
@@ -55,6 +91,9 @@ export class MetaSender implements MessageSender {
     /** Meta-approved UTILITY template for "your document is ready" (G-67). */
     private readonly documentTemplate: string | null = null,
     private readonly documentTemplateLocale = 'en',
+    /** Meta-approved UTILITY template for trial reminders (G-109). Null: none is sent. */
+    private readonly trialTemplate: string | null = null,
+    private readonly trialTemplateLocale = 'en',
     /**
      * Graph's host. Injectable for the same reason the Paystack adapter's is:
      * the claims worth having about an adapter are about what goes over the
@@ -88,6 +127,45 @@ export class MetaSender implements MessageSender {
             parameters: [
               { type: 'text', text: notice.documentLabel },
               { type: 'text', text: notice.reference },
+            ],
+          },
+        ],
+      },
+    });
+  }
+
+  /**
+   * A trial reminder, as a utility template (G-109, OWN-56).
+   *
+   * Refuses loudly when none is configured: a message is never sent through an
+   * unapproved or unconfigured template, and the sweep that asked records nothing
+   * as delivered.
+   */
+  async sendTrialNotice(notice: OutboundTrialNotice): Promise<SendResult> {
+    if (!this.trialTemplate) {
+      /* Transient and sender-wide: configuration may be fixed, so the stage must not burn. */
+      throw new SendFailed(
+        'no trial template configured (META_TRIAL_TEMPLATE)',
+        null,
+        true,
+        true,
+        true,
+      );
+    }
+    return this.post({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: notice.to,
+      type: 'template',
+      template: {
+        name: this.trialTemplate,
+        language: { code: this.trialTemplateLocale },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: notice.daysLeft },
+              { type: 'text', text: notice.endsOn },
             ],
           },
         ],
@@ -412,9 +490,14 @@ export class MetaSender implements MessageSender {
          * string in the system carrying a real customer name. Status is enough
          * to act on.
          */
+        const code = await providerCodeOf(response);
+        const refusal = classifyRefusal(response.status, code);
         throw new SendFailed(
           `meta ${path} failed with ${response.status}`,
-          await providerCodeOf(response),
+          code,
+          response.status >= 400 && response.status < 500,
+          refusal.transient,
+          refusal.outage,
         );
       }
       return await response.json();
@@ -480,6 +563,10 @@ export class NoSenderConfigured implements MessageSender {
 
   sendRetentionNotice(): Promise<never> {
     return Promise.reject(new SendFailed(this.reason));
+  }
+
+  sendTrialNotice(): Promise<never> {
+    return Promise.reject(new SendFailed(this.reason, null, true, true, true));
   }
 }
 

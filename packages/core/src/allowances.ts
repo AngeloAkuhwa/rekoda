@@ -168,6 +168,41 @@ export function trialExpiry(startedAt: Date): Date {
 }
 
 /**
+ * Days of trial left at which a reminder goes out: the halfway point (7), the
+ * ending-soon notice (2, "day 12") and the final-day notice (1, "day 13"). Stages
+ * are numbered 1..3 in the order they fall, so a stored "last stage sent" only ever
+ * grows. There is no message on the expiry day itself: the trial has ended and the
+ * dashboard says so (OWN-56 asks for milestones, not a countdown).
+ */
+export const TRIAL_NOTICE_DAYS_LEFT = [7, 2, 1] as const;
+
+export interface TrialNoticeDue {
+  /** 1-based index into TRIAL_NOTICE_DAYS_LEFT. */
+  stage: number;
+  /** Whole days left, rounded up, as the merchant should read it. */
+  daysLeft: number;
+}
+
+/**
+ * The latest reminder stage a running trial has reached, or null.
+ *
+ * Answers with the latest stage REACHED rather than only today's, so an outage
+ * across a milestone delays that notice to the next pass instead of cancelling
+ * it; the caller's claim keeps it to one send. Null before day 7, and null from
+ * the expiry instant on: an ended trial is never told it is "ending soon".
+ */
+export function trialNoticeDue(expiresAt: Date, now: Date): TrialNoticeDue | null {
+  const remainingMs = expiresAt.getTime() - now.getTime();
+  if (remainingMs <= 0) return null;
+  const daysLeft = Math.ceil(remainingMs / 86_400_000);
+  let stage = 0;
+  TRIAL_NOTICE_DAYS_LEFT.forEach((threshold, index) => {
+    if (daysLeft <= threshold) stage = index + 1;
+  });
+  return stage === 0 ? null : { stage, daysLeft };
+}
+
+/**
  * What one plan sells, unit by unit.
  *
  * A unit left out of the object is not sold on that plan, which the meter

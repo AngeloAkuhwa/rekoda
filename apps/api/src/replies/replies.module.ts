@@ -39,6 +39,8 @@ export function missingSenderSettings(config: ApiConfig): string[] {
               config.metaRetentionTemplateLocale,
               config.metaDocumentTemplate,
               config.metaDocumentTemplateLocale,
+              config.metaTrialTemplate,
+              config.metaTrialTemplateLocale,
             )
           : new NoSenderConfigured(missingSenderSettings(config)),
     },

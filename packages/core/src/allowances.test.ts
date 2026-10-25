@@ -12,6 +12,7 @@ import {
   seatsFor,
   templateUnitFor,
   trialExpiry,
+  trialNoticeDue,
   transcriptDurationsDisagree,
   unitsOfKind,
   usagePeriod,
@@ -302,5 +303,38 @@ describe('the trial length (OWN-27: 14 days)', () => {
 
   it('is not the retired month-long trial', () => {
     expect(trialExpiry(start).getTime() - start.getTime()).not.toBe(30 * 86_400_000);
+  });
+});
+
+describe('trial reminder milestones (OWN-56)', () => {
+  const start = new Date('2026-11-02T09:00:00Z');
+  const expiry = trialExpiry(start);
+  const at = (days: number, extraMs = 0): Date =>
+    new Date(start.getTime() + days * 86_400_000 + extraMs);
+  const due = (now: Date) => trialNoticeDue(expiry, now);
+
+  it('says nothing on days 0 to 6', () => {
+    expect(due(at(0))).toBeNull();
+    expect(due(at(1))).toBeNull();
+    expect(due(at(6, 86_399_999))).toBeNull();
+  });
+
+  it('opens stage 1 at day 7, with seven days left', () => {
+    expect(due(at(7))).toEqual({ stage: 1, daysLeft: 7 });
+    expect(due(at(11, 86_399_999))).toEqual({ stage: 1, daysLeft: 3 });
+  });
+
+  it('opens stage 2 at day 12, with two days left', () => {
+    expect(due(at(12))).toEqual({ stage: 2, daysLeft: 2 });
+  });
+
+  it('opens stage 3 on day 13 and keeps it to the last millisecond', () => {
+    expect(due(at(13))).toEqual({ stage: 3, daysLeft: 1 });
+    expect(due(at(14, -1))).toEqual({ stage: 3, daysLeft: 1 });
+  });
+
+  it('is silent from the expiry instant on, so an ended trial is never "ending soon"', () => {
+    expect(due(at(14))).toBeNull();
+    expect(due(at(20))).toBeNull();
   });
 });

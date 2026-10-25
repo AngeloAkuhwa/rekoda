@@ -1608,6 +1608,223 @@ export async function inGrace(
   }));
 }
 
+export interface TrialBusiness {
+  businessId: string;
+  trialEndsAt: Date;
+  /** The latest reminder attempt on record (OWN-47), if any. */
+  attempt: {
+    stage: number;
+    state: 'sending' | 'sent' | 'unknown' | 'suppressed' | 'refused';
+    at: Date;
+  } | null;
+}
+
+/**
+ * Businesses on a running trial that end within `withinDays` of `now` (G-109).
+ *
+ * This is the one cross-tenant read of the reminder sweep: ID-only scheduling discovery
+ * (OD-33, ADR 0035 class 2), made ONLY through the dedicated `sweep_trial_candidates`
+ * function (migration 0181; EXECUTE for the worker role alone). It returns the MINIMUM needed
+ * to decide what is due: the id, the trial end and the latest attempt. No owner phone, name or
+ * consent flag; those are read later, inside the tenant's own scope, only for a notice that
+ * is about to be sent. Which stage a business is at is core's call (`trialNoticeDue`).
+ * Keyset-paged by id.
+ */
+export async function trialsEndingWithin(
+  db: Db,
+  now: Date,
+  withinDays: number,
+  limit = 500,
+  afterId: string | null = null,
+): Promise<TrialBusiness[]> {
+  const rows = await db.execute<{
+    id: string;
+    plan_expires_at: Date | string;
+    last_trial_notice_stage: number | null;
+    trial_notice_state: 'sending' | 'sent' | 'unknown' | 'suppressed' | 'refused' | null;
+    trial_notice_attempted_at: Date | string | null;
+  }>(sql`
+    SELECT id, plan_expires_at, last_trial_notice_stage, trial_notice_state, trial_notice_attempted_at
+    FROM sweep_trial_candidates(
+      ${now.toISOString()}::timestamptz, ${withinDays}::int, ${limit}::int, ${afterId}::uuid
+    )
+  `);
+  return [...rows].map((row) => ({
+    businessId: row.id,
+    trialEndsAt: new Date(row.plan_expires_at),
+    attempt:
+      row.trial_notice_state !== null &&
+      row.last_trial_notice_stage !== null &&
+      row.trial_notice_attempted_at !== null
+        ? {
+            stage: row.last_trial_notice_stage,
+            state: row.trial_notice_state,
+            at: new Date(row.trial_notice_attempted_at),
+          }
+        : null,
+  }));
+}
+
+/**
+ * Claim a trial reminder stage and record the attempt as 'sending'. 'claimed' is returned
+ * exactly once per stage to exactly one caller, and only while, AT CLAIM TIME, the business
+ * is still on a trial that has not ended as of `asOf` and its owner has not opted out: a
+ * page of 500 is processed over minutes, so what the listing saw may be stale. An opted-out
+ * owner claims nothing, so the milestone is still owed if they opt back in.
+ *
+ * Isolation holds when called through `withBusiness()` on the application role (RLS pins
+ * the tenant); it is not a guarantee of the function on its own.
+ */
+export async function claimTrialNotice(
+  tx: TenantDb,
+  businessId: string,
+  stage: number,
+  asOf: Date,
+): Promise<'claimed' | 'opted_out' | 'not_claimed'> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE businesses
+    SET last_trial_notice_stage = ${stage}, trial_notice_state = 'sending',
+        trial_notice_attempted_at = now(), trial_notice_provider_message_id = NULL,
+        updated_at = now()
+    WHERE id = ${businessId}::uuid
+      AND plan = 'trial'
+      AND plan_expires_at > ${asOf.toISOString()}::timestamptz
+      AND NOT EXISTS (
+        SELECT 1 FROM users u
+        WHERE u.id = businesses.owner_user_id AND u.opted_out_at IS NOT NULL
+      )
+      AND (last_trial_notice_stage IS NULL OR last_trial_notice_stage < ${stage})
+    RETURNING id
+  `);
+  if ([...rows].length === 1) return 'claimed';
+  const optedOut = await tx.execute<{ id: string }>(sql`
+    SELECT b.id FROM businesses b JOIN users u ON u.id = b.owner_user_id
+    WHERE b.id = ${businessId}::uuid AND u.opted_out_at IS NOT NULL
+  `);
+  return [...optedOut].length === 1 ? 'opted_out' : 'not_claimed';
+}
+
+/**
+ * The final eligibility check, made immediately before the Meta request (OWN-56, owner
+ * ruling 25 Oct 2026). One statement, no lock held afterwards: it re-reads the plan, the
+ * trial end against the current clock and the owner's consent, and requires that this very
+ * attempt is still the one 'sending' for `stage`.
+ *
+ * - still eligible: returns the owner's phone, read here (inside the tenant's scope) so the
+ *   listing never carried it;
+ * - no longer eligible: the attempt becomes 'suppressed' and the stage stays claimed, so it
+ *   is never retried; returns 'suppressed';
+ * - not this attempt any more (another pass or writer moved it): returns 'lost', send nothing.
+ *
+ * Once the Meta request begins an in-flight message cannot be recalled; this narrows the
+ * race to the span between this statement's commit and the request, and does not close it.
+ */
+export async function finalizeTrialNoticeDispatch(
+  tx: TenantDb,
+  businessId: string,
+  stage: number,
+  asOf: Date,
+): Promise<{ outcome: 'proceed'; ownerPhone: string } | { outcome: 'suppressed' | 'lost' }> {
+  const rows = await tx.execute<{ ok: boolean; phone: string }>(sql`
+    WITH cur AS (
+      SELECT b.id,
+             (b.plan = 'trial'
+              AND b.plan_expires_at > ${asOf.toISOString()}::timestamptz
+              AND u.opted_out_at IS NULL) AS ok,
+             u.phone AS phone
+      FROM businesses b JOIN users u ON u.id = b.owner_user_id
+      WHERE b.id = ${businessId}::uuid
+        AND b.last_trial_notice_stage = ${stage}
+        AND b.trial_notice_state = 'sending'
+      FOR UPDATE OF b
+    )
+    UPDATE businesses
+    SET trial_notice_state = CASE WHEN cur.ok THEN businesses.trial_notice_state ELSE 'suppressed' END,
+        updated_at = CASE WHEN cur.ok THEN businesses.updated_at ELSE now() END
+    FROM cur
+    WHERE businesses.id = cur.id
+    RETURNING cur.ok AS ok, cur.phone AS phone
+  `);
+  const row = [...rows][0];
+  if (!row) return { outcome: 'lost' };
+  return row.ok ? { outcome: 'proceed', ownerPhone: row.phone } : { outcome: 'suppressed' };
+}
+
+/** The provider accepted the attempt for this stage. */
+export async function markTrialNoticeSent(
+  tx: TenantDb,
+  businessId: string,
+  stage: number,
+  providerMessageId: string | null,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE businesses
+    SET trial_notice_state = 'sent', trial_notice_provider_message_id = ${providerMessageId},
+        updated_at = now()
+    WHERE id = ${businessId}::uuid AND last_trial_notice_stage = ${stage}
+      AND trial_notice_state = 'sending'
+  `);
+}
+
+/**
+ * The outcome of this stage's attempt cannot be told (timeout, dropped connection, or a
+ * worker that died mid-send). The claim stays: the reminder is not resent. `olderThan`
+ * (the stale-attempt rule) requires the attempt to have STARTED before that time, so an
+ * attempt re-claimed after the listing was read is never mislabelled.
+ */
+export async function markTrialNoticeUnknown(
+  tx: TenantDb,
+  businessId: string,
+  stage: number,
+  olderThan?: Date,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE businesses
+    SET trial_notice_state = 'unknown', updated_at = now()
+    WHERE id = ${businessId}::uuid AND last_trial_notice_stage = ${stage}
+      AND trial_notice_state = 'sending'
+      ${olderThan === undefined ? sql`` : sql`AND trial_notice_attempted_at < ${olderThan.toISOString()}::timestamptz`}
+    RETURNING id
+  `);
+  return [...rows].length === 1;
+}
+
+/**
+ * The provider definitively rejected this stage's message with an error that will repeat
+ * identically (a bad recipient, a wrong template). Nothing was sent. The stage stays
+ * claimed as 'refused' so it is not hammered hourly; the next milestone is still owed.
+ */
+export async function markTrialNoticeRefused(
+  tx: TenantDb,
+  businessId: string,
+  stage: number,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE businesses
+    SET trial_notice_state = 'refused', updated_at = now()
+    WHERE id = ${businessId}::uuid AND last_trial_notice_stage = ${stage}
+      AND trial_notice_state = 'sending'
+  `);
+}
+
+/**
+ * Give a claimed stage back after the provider DEFINITIVELY refused it, so the next pass
+ * retries that stage only. Only an attempt still 'sending' is released.
+ */
+export async function releaseTrialNotice(
+  tx: TenantDb,
+  businessId: string,
+  stage: number,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE businesses
+    SET last_trial_notice_stage = ${stage - 1}, trial_notice_state = NULL,
+        trial_notice_attempted_at = NULL, updated_at = now()
+    WHERE id = ${businessId}::uuid AND last_trial_notice_stage = ${stage}
+      AND trial_notice_state = 'sending'
+  `);
+}
+
 /**
  * Claim today's grace reminder, or discover somebody else already sent it.
  *

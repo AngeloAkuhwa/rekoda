@@ -121,8 +121,10 @@ session never starts a capability from zero.
    under approved worker policies. Separately, designated internal
    operational-monitoring functions may read only explicitly approved,
    non-identifying aggregate queue, webhook and delivery-health metrics using
-   narrowly scoped service authorization (OWN-36, ADR 0035). This exception
-   does not grant general access to tenant-owned records, payloads or
+   narrowly scoped service authorization (OWN-36, ADR 0035). A third, narrower class
+   (OWN-57, ADR 0035 Amendment 1): ID-only scheduling discovery through a dedicated
+   worker-only `SECURITY DEFINER` function, followed by tenant-scoped reads and writes. None of these
+   exceptions grants general access to tenant-owned records, payloads or
    merchant data.
 4. **Customer PII lives in the vault** and travels as tokens; rehydration
    happens only in the authorised output layer. Never log a message body,

@@ -96,6 +96,20 @@ export interface OutboundRetentionNotice {
 }
 
 /**
+ * A trial reminder, sent as a UTILITY TEMPLATE (G-109, OWN-56).
+ *
+ * A merchant in the middle of a trial has not necessarily written to the business
+ * number in the last 24 hours, so a free-form text would be rejected the same way
+ * a billing notice is. Two parameters, in order: whole days of trial left and the
+ * date it ends. Nothing about what the business sold.
+ */
+export interface OutboundTrialNotice {
+  to: string;
+  daysLeft: string;
+  endsOn: string;
+}
+
+/**
  * "Your document is ready", sent as a UTILITY TEMPLATE (G-67).
  *
  * A receipt or invoice is delivered to the owner the moment it exists, which
@@ -203,6 +217,11 @@ export interface MessageSender {
    * merchant did not ask for at the moment it was sent.
    */
   sendDocumentNotice(notice: OutboundDocumentNotice): Promise<SendResult>;
+  /**
+   * A trial reminder (G-109). Its own template: Meta approves by text, and "your
+   * trial ends" is not the grace reminder's "your payment failed".
+   */
+  sendTrialNotice(notice: OutboundTrialNotice): Promise<SendResult>;
 }
 
 /** The send failed. The reply is lost; the merchant's record is not. */
@@ -216,6 +235,27 @@ export class SendFailed extends Error {
   constructor(
     message: string,
     readonly providerCode: number | null = null,
+    /**
+     * True only when the message DEFINITELY did not leave: nothing was configured to send
+     * it, or Meta answered with a client error rejecting it. False (the default) means the
+     * outcome is not known, as after a timeout or a dropped connection, and a caller that
+     * would otherwise retry a proactive message must not assume it was not delivered.
+     */
+    readonly notSent: boolean = false,
+    /**
+     * With `notSent`: the refusal is of a kind that clears by itself or by an operator
+     * (rate limit, expired or revoked token), so retrying later is sensible. A refusal that
+     * is not transient (a bad recipient, a wrong template name or parameters) will repeat
+     * identically, and a caller that retries it hourly only hammers the shared sender.
+     */
+    readonly transient: boolean = false,
+    /**
+     * With `transient`: the refusal affects the whole sender (credentials, app-level rate
+     * limit, or an error not recognised at all), so every other send is likely to meet it
+     * too and a caller looping over many recipients should stop. False for a per-recipient
+     * condition (a pair rate limit) that says nothing about the next recipient.
+     */
+    readonly outage: boolean = false,
   ) {
     super(message);
   }

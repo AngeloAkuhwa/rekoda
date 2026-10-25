@@ -411,6 +411,9 @@ export interface ApiConfig {
   /** Approved UTILITY template for "your document is ready" (G-67). Null: no fallback outside the window. */
   metaDocumentTemplate: string | null;
   metaDocumentTemplateLocale: string;
+  /** Approved UTILITY template for trial reminders (G-109, OWN-56). Null: the trial sweep sends nothing. */
+  metaTrialTemplate: string | null;
+  metaTrialTemplateLocale: string;
   /**
    * USD micros per in-window service reply. Zero today — Meta does not charge
    * for them yet — and chargeable from 1 October 2026, at which point this is
@@ -1439,6 +1442,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     metaRetentionTemplateLocale: env['META_RETENTION_TEMPLATE_LOCALE'] ?? 'en',
     metaDocumentTemplate: env['META_DOCUMENT_TEMPLATE'] || null,
     metaDocumentTemplateLocale: env['META_DOCUMENT_TEMPLATE_LOCALE'] ?? 'en',
+    metaTrialTemplate: env['META_TRIAL_TEMPLATE'] || null,
+    metaTrialTemplateLocale: env['META_TRIAL_TEMPLATE_LOCALE'] ?? 'en',
     metaServiceReplyCostMicros: nonNegativeInteger(env, 'META_SERVICE_REPLY_COST_MICROS', 0),
     metaWabaRegisteredInNigeria: env['META_WABA_REGISTERED_IN_NIGERIA'] !== 'false',
     planCatalogueReads: env['REKODA_PLAN_CATALOGUE_READS'] !== '0',
