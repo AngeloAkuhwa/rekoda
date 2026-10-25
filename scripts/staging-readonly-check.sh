@@ -11,7 +11,7 @@ say() { printf '%-34s %s\n' "$1" "$2"; }
 
 echo "== release identity"
 say "checkout HEAD" "$(git rev-parse HEAD)"
-say "tracked modifications" "$(git status --porcelain --untracked-files=no | wc -l)"
+say "tracked modifications" "$(git --no-optional-locks status --porcelain --untracked-files=no | wc -l)"
 say ".env REKODA_RELEASE" "$(sed -n 's/^REKODA_RELEASE=//p' .env)"
 [ -n "${EXPECT_SHA:-}" ] && say "matches EXPECT_SHA" "$([ "$(git rev-parse HEAD)" = "$EXPECT_SHA" ] && echo yes || echo NO)"
 for c in api worker web; do
@@ -29,10 +29,10 @@ echo "== services"
 dc ps -a --format 'table {{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null
 
 echo "== migration 0181 (the OD-33 discovery function)"
-dc exec -T postgres sh -c 'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-rekoda}" -Atc "select proname, prosecdef from pg_proc where proname = '"'"'sweep_trial_candidates'"'"'"' 2>/dev/null || echo "could not query (check the postgres user/db names)"
+dc exec -T postgres sh -c 'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-rekoda}" -Atc "select proname, prosecdef from pg_proc where proname = '"'"'sweep_trial_candidates'"'"'"' 2>/dev/null || echo "could not query (check the postgres user/db names)" | awk 'NF{f=1;print} END{if(!f)print "MISSING"}'
 
 echo "== migration 0183 (billing email send outcome column)"
-dc exec -T postgres sh -c 'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-rekoda}" -Atc "select column_name from information_schema.columns where table_name = '"'"'billing_email_verifications'"'"' and column_name = '"'"'send_outcome'"'"'"' 2>/dev/null || echo "could not query (check the postgres user/db names)"
+dc exec -T postgres sh -c 'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-rekoda}" -Atc "select column_name from information_schema.columns where table_name = '"'"'billing_email_verifications'"'"' and column_name = '"'"'send_outcome'"'"'"' 2>/dev/null || echo "could not query (check the postgres user/db names)" | awk 'NF{f=1;print} END{if(!f)print "MISSING"}'
 
 echo "== recent errors (last 30 minutes; message text only, no env)"
 for c in api worker; do
@@ -54,7 +54,7 @@ for k in PAYSTACK_SECRET_KEY REKODA_PAYSTACK_PLATFORM_CONFIRMED REKODA_WEB_URL R
   v="$(sed -n "s/^$k=//p" .env | head -1)"
   if [ -z "$v" ]; then say "$k" UNSET; else
     case "$k" in
-      PAYSTACK_SECRET_KEY) say "$k" "SET ($(printf '%s' "$v" | cut -c1-8)... $( [ "${v#sk_test_}" != "$v" ] && echo TEST-KEY || echo NOT-A-TEST-KEY ))" ;;
+      PAYSTACK_SECRET_KEY) say "$k" "SET ($( [ "${v#sk_test_}" != "$v" ] && echo TEST-KEY || echo NOT-A-TEST-KEY ))" ;;
       REKODA_PAYSTACK_PLATFORM_CONFIRMED|REKODA_ANNUAL_BILLING|REKODA_EMAIL_PROVIDER|REKODA_WEB_URL|REKODA_WORKER|META_BILLING_TEMPLATE|META_TRIAL_TEMPLATE) say "$k" "SET ($v)" ;;
       *) say "$k" SET ;;
     esac
