@@ -123,11 +123,17 @@ export default async function PaymentRecordPage({
           ) : null}
           <div>
             <dt>Payment status</dt>
-            <dd>{paidStates ? 'Confirmed by Paystack' : 'Not confirmed'}</dd>
+            <dd>
+              {record.noCharge
+                ? 'No payment was needed'
+                : paidStates
+                  ? 'Confirmed by Paystack'
+                  : 'Not confirmed'}
+            </dd>
           </div>
           {record.paidAt ? (
             <div>
-              <dt>Paid on</dt>
+              <dt>{record.noCharge ? 'Applied on' : 'Paid on'}</dt>
               <dd>{lagosDateTime(record.paidAt)} (Lagos time)</dd>
             </div>
           ) : null}

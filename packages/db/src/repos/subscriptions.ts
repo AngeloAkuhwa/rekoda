@@ -938,6 +938,28 @@ export interface ChargeRecordRow {
   abandonedAt: Date | null;
   currency: string;
   unappliedResolvedAt: Date | null;
+  /** The cycle the payment actually bought, written at settlement (migration 0182). */
+  appliedPeriodStart: Date | null;
+  appliedPeriodEnd: Date | null;
+  /** Why a paid charge was not applied (OD-30); never shown to a merchant as written. */
+  unappliedReason: string | null;
+  /** An upgrade that cost nothing: applied with no payment and no provider involved. */
+  noCharge: boolean;
+}
+
+/** Record the cycle a settled charge actually bought. */
+export async function markChargeApplied(
+  tx: TenantDb,
+  reference: string,
+  start: Date,
+  end: Date,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE subscription_charges
+    SET applied_period_start = ${start.toISOString()}::timestamptz,
+        applied_period_end = ${end.toISOString()}::timestamptz
+    WHERE reference = ${reference} AND status = 'paid' AND unapplied_at IS NULL
+  `);
 }
 
 /**
@@ -958,6 +980,10 @@ export async function chargeRecordByReference(
       abandoned_at: string | null;
       currency: string;
       unapplied_resolved_at: string | null;
+      applied_period_start: string | null;
+      applied_period_end: string | null;
+      unapplied_reason: string | null;
+      provider_reference: string | null;
     }
   >(sql`
     SELECT * FROM subscription_charges
@@ -974,6 +1000,10 @@ export async function chargeRecordByReference(
     abandonedAt: at(row.abandoned_at),
     currency: row.currency,
     unappliedResolvedAt: at(row.unapplied_resolved_at),
+    appliedPeriodStart: at(row.applied_period_start),
+    appliedPeriodEnd: at(row.applied_period_end),
+    unappliedReason: row.unapplied_reason,
+    noCharge: row.provider_reference?.startsWith('no_charge:') ?? false,
   };
 }
 

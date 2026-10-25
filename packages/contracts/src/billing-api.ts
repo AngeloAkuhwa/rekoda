@@ -96,6 +96,7 @@ export const billingPaymentRecord = z.object({
   paidAmountK: kobo.nullable(),
   refundedAmountK: kobo,
   currency: z.string(),
+  /** The cycle the payment actually bought; null when it bought none or the cycle was not recorded. */
   periodStart: isoDate.nullable(),
   periodEnd: isoDate.nullable(),
   createdAt: isoDate,
@@ -106,6 +107,10 @@ export const billingPaymentRecord = z.object({
   applied: z.boolean(),
   /** For `paid_not_applied`: an operator has since reconciled it. */
   reconciled: z.boolean(),
+  /** An upgrade that cost nothing: applied with no payment taken and no provider involved. */
+  noCharge: z.boolean(),
+  /** Why a paid charge was not applied, in merchant-safe families; null when it was applied. */
+  notAppliedReason: z.enum(['plan_changed', 'period_ended', 'under_review']).nullable(),
 });
 export type BillingPaymentRecord = z.infer<typeof billingPaymentRecord>;
 

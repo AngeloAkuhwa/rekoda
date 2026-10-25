@@ -45,35 +45,69 @@ const VIEWS: Record<State, PaymentRecordView> = {
   paid_not_applied: {
     title: 'Payment received, not applied',
     summary:
-      'Paystack confirmed this payment, but it was not applied to your plan because you had already made a newer plan choice. It does not make a subscription active. Contact support to have it applied or refunded.',
+      'Paystack confirmed this payment, but it was not applied to your plan. It does not make a subscription active. Contact support to have it applied or refunded.',
     confirmed: true,
   },
   part_refunded: {
     title: 'Partly refunded',
-    summary: 'Paystack confirmed this payment. Part of it has since been returned to you.',
+    summary:
+      'Paystack confirmed this payment. Part of the charged amount has since been returned to you.',
     confirmed: true,
   },
   refunded: {
     title: 'Refunded',
-    summary: 'Paystack confirmed this payment. All of it has since been returned to you.',
+    summary:
+      'Paystack confirmed this payment. All of the charged amount has since been returned to you.',
     confirmed: true,
   },
 };
 
-export function paymentRecordView(
-  record: Pick<BillingPaymentRecord, 'state' | 'reconciled' | 'applied'>,
-): PaymentRecordView {
+/** Why a confirmed payment was not applied, in words that invent no event the merchant did not cause. */
+const NOT_APPLIED_WHY: Record<NonNullable<BillingPaymentRecord['notAppliedReason']>, string> = {
+  plan_changed: 'It was not applied because your plan changed after this payment was started.',
+  period_ended: 'It was not applied because your billing period had already ended when it arrived.',
+  under_review: 'It was not applied and is being reviewed.',
+};
+
+type ViewInput = Pick<
+  BillingPaymentRecord,
+  'state' | 'reconciled' | 'applied' | 'noCharge' | 'notAppliedReason' | 'amountK' | 'paidAmountK'
+>;
+
+export function paymentRecordView(record: ViewInput): PaymentRecordView {
+  /* An upgrade that cost nothing took no payment: no provider confirmed anything. */
+  if (record.noCharge && record.state === 'paid_applied') {
+    return {
+      title: 'No payment needed',
+      summary:
+        'This change cost nothing, so no payment was taken. It has been applied to your account.',
+      confirmed: false,
+    };
+  }
   const view = VIEWS[record.state];
   let summary = view.summary;
-  if (record.state === 'paid_not_applied' && record.reconciled) {
-    summary = `${summary} Our team has since reviewed it; ask support for the outcome.`;
+  const why = record.notAppliedReason ? NOT_APPLIED_WHY[record.notAppliedReason] : null;
+  if (record.state === 'paid_not_applied') {
+    if (why) summary = summary.replace('but it was not applied to your plan.', `but ${lower(why)}`);
+    if (record.reconciled)
+      summary = `${summary} Our team has since reviewed it; ask support for the outcome.`;
   }
   /* A part refund of money that was never applied must still say it was never applied. */
   if (record.state === 'part_refunded' && !record.applied) {
-    summary = `${summary} It was not applied to your plan because you had already made a newer plan choice.`;
+    summary = `${summary} ${why ?? 'It was not applied to your plan.'}`;
+  }
+  /* Refunds return the charged amount; an overpayment leaves the difference with Paystack. */
+  if (
+    (record.state === 'refunded' || record.state === 'part_refunded') &&
+    record.paidAmountK !== null &&
+    record.paidAmountK > record.amountK
+  ) {
+    summary = `${summary} Paystack received more than was charged; contact support about the difference.`;
   }
   return summary === view.summary ? view : { ...view, summary };
 }
+
+const lower = (sentence: string): string => sentence.charAt(0).toLowerCase() + sentence.slice(1);
 
 /** The sentence under every record: factual, and neither a tax invoice nor a tax receipt. */
 export const PAYMENT_RECORD_NOTICE =

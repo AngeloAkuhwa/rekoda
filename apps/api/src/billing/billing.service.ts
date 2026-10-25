@@ -238,8 +238,10 @@ export class BillingService {
         paidAmountK: charge.paidAmountK,
         refundedAmountK: charge.refundedAmountK,
         currency: charge.currency,
-        periodStart: charge.periodStart?.toISOString() ?? null,
-        periodEnd: charge.periodEnd?.toISOString() ?? null,
+        /* The cycle actually bought, or nothing: never the estimate made when the charge was
+         * opened, and never for a charge that bought no cycle. */
+        periodStart: charge.appliedPeriodStart?.toISOString() ?? null,
+        periodEnd: charge.appliedPeriodEnd?.toISOString() ?? null,
         createdAt: charge.createdAt.toISOString(),
         paidAt: charge.paidAt?.toISOString() ?? null,
         failedAt: charge.failedAt?.toISOString() ?? null,
@@ -247,6 +249,8 @@ export class BillingService {
         /* A refund returns money; it does not un-apply a plan that took effect. */
         applied: (status === 'paid' || status === 'refunded') && !unapplied,
         reconciled: unapplied && charge.unappliedResolvedAt !== null,
+        noCharge: charge.noCharge,
+        notAppliedReason: unapplied ? notAppliedReason(charge.unappliedReason) : null,
       };
     });
   }
@@ -762,8 +766,18 @@ export async function applySettledCharge(
           ? { nextInterval: chosen === charge.billingInterval ? null : chosen }
           : {}),
     });
+    /* What the payment actually bought, kept apart from the period it was priced for: a checkout
+     * opened one day and paid the next buys the later cycle. */
+    await subscriptionsRepo.markChargeApplied(tx, input.reference, cycleStartedAt, renewsAt);
   }
   return 'applied';
+}
+
+/** The merchant-safe family of an internal reason a paid charge was not applied (OD-30). */
+function notAppliedReason(reason: string | null): 'plan_changed' | 'period_ended' | 'under_review' {
+  if (reason === 'subscription_decided_after_charge') return 'plan_changed';
+  if (reason === 'cycle_ended') return 'period_ended';
+  return 'under_review';
 }
 
 function statusOf(

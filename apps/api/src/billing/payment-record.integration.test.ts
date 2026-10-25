@@ -106,8 +106,12 @@ describe('payment record', () => {
 
     expect(record).toMatchObject({ state: 'paid_applied', status: 'paid', applied: true });
     expect(record!.paidAt).not.toBeNull();
-    expect(record!.periodStart).toBe('2026-11-01T00:00:00.000Z');
-    expect(record!.periodEnd).toBe('2026-12-01T00:00:00.000Z');
+    /* The cycle ACTUALLY bought: a first purchase starts when it settles (1 Nov 10:00 UTC), not at
+     * the estimate made when the checkout was opened (1 Nov 00:00 UTC). */
+    expect(record!.periodStart).toBe('2026-11-01T10:00:00.000Z');
+    expect(new Date(record!.periodEnd!).getTime()).toBeGreaterThan(
+      new Date('2026-11-27T00:00:00Z').getTime(),
+    );
   });
 
   it('money received but refused as stale is paid_not_applied, never an applied plan', async () => {
@@ -232,6 +236,53 @@ describe('payment record', () => {
       amountK: 990_000,
       paidAmountK: 1_000_000,
     });
+  });
+
+  it('shows no period for a payment that bought none, whatever the charge was priced for', async () => {
+    const b = await seedBusiness();
+    await open(b, 'RKD-SUB-20261101-NNNNNN');
+    await set('RKD-SUB-20261101-NNNNNN', sql`status = 'paid', paid_at = now()`);
+
+    expect(await service().paymentRecord(b, 'RKD-SUB-20261101-NNNNNN')).toMatchObject({
+      periodStart: null,
+      periodEnd: null,
+    });
+  });
+
+  it('an upgrade that cost nothing is recorded as applied with no payment taken', async () => {
+    const b = await seedBusiness();
+    await open(b, 'RKD-SUB-20261101-OOOOOO');
+    await set(
+      'RKD-SUB-20261101-OOOOOO',
+      sql`status = 'paid', paid_at = now(), amount_k = 0, provider_reference = 'no_charge:RKD-SUB-20261101-OOOOOO'`,
+    );
+
+    expect(await service().paymentRecord(b, 'RKD-SUB-20261101-OOOOOO')).toMatchObject({
+      noCharge: true,
+      state: 'paid_applied',
+    });
+  });
+
+  it('gives a merchant-safe family for why a payment was not applied, never the internal reason', async () => {
+    const cases: [string, string, string][] = [
+      ['RKD-SUB-20261101-PPPPP1', 'subscription_decided_after_charge', 'plan_changed'],
+      ['RKD-SUB-20261101-PPPPP2', 'cycle_ended', 'period_ended'],
+      ['RKD-SUB-20261101-PPPPP3', 'support_review', 'under_review'],
+    ];
+    for (const [reference, reason, family] of cases) {
+      const b = await seedBusiness();
+      await open(b, reference);
+      await set(
+        reference,
+        sql`status = 'paid', paid_at = now(), unapplied_at = now(), unapplied_reason = ${reason}`,
+      );
+      const record = await service().paymentRecord(b, reference);
+      expect(record, reference).toMatchObject({
+        state: 'paid_not_applied',
+        notAppliedReason: family,
+      });
+      expect(JSON.stringify(record)).not.toContain(reason);
+    }
   });
 
   it('a pack names what was bought', async () => {
