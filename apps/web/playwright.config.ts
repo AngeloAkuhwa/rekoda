@@ -54,6 +54,8 @@ const browserLaunch =
  */
 export default defineConfig({
   testDir: './e2e',
+  // The paid-plan journey needs its own API and a Paystack stand-in: playwright.journey.config.ts.
+  testIgnore: /billing-journey\.spec\.ts/,
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 0,
