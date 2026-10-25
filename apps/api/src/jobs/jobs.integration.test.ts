@@ -1216,7 +1216,7 @@ describe('the chat surface enforces roles', () => {
 
       await ownerDb.execute(sql`
         INSERT INTO usage_counters (business_id, period, unit, used)
-        VALUES (${businessId}::uuid, ${usagePeriod(new Date())}, 'AI_ACTIONS', 100000)`);
+        VALUES (${businessId}::uuid, ${usageRepo.TRIAL_PERIOD}, 'AI_ACTIONS', 100000)`);
       stubTransport.replyWith(A_SALES_QUESTION);
       await saysOverChat(businessId, '+2348140010049', 'how much did we sell this month?');
       await ownerDb.execute(sql`
@@ -1339,6 +1339,10 @@ describe('the chat surface enforces roles', () => {
 
   it('refunds the original month once when a retry crosses the month boundary (G-57)', async () => {
     const businessId = await seedBusiness('Role Gate Month Ltd', '+2348140010047');
+    /* A paid plan meters by calendar month, which is what this test is about. */
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(sql`UPDATE businesses SET plan = 'complete' WHERE id = ${businessId}::uuid`),
+    );
     await memberOf(businessId, '+2348140010048', 'accountant');
     const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
     const used = async (period: string) => {

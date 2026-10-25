@@ -630,6 +630,10 @@ describe('an add-on pack', () => {
 
   it('does not roll over into the next month', async () => {
     const businessId = await seedBusiness();
+    // A paid plan meters by calendar month; a trial meters one row for its 14 days.
+    await inTenant(businessId, (tx) =>
+      tx.execute(sql`UPDATE businesses SET plan = 'chat' WHERE id = ${businessId}::uuid`),
+    );
     await inTenant(businessId, (tx) =>
       usageRepo.creditBonus(tx, businessId, PERIOD, 'AI_ACTIONS', 5),
     );

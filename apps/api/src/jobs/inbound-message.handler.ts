@@ -1035,15 +1035,23 @@ async function readReceiptPhoto(
   const granted =
     (retrying && (await holdsUnit(deps, businessId, eventId, 'DOCUMENTS_UNDERSTOOD'))) ||
     (await withBusiness(deps.db, businessId, async (own) => {
-      const ok = await usageRepo.consumeUnit(
+      const spent = await usageRepo.reserveUnit(
         own,
         businessId,
         period,
         'DOCUMENTS_UNDERSTOOD',
         allowance,
       );
-      if (ok) await events.noteReservedUnit(own, businessId, eventId, 'DOCUMENTS_UNDERSTOOD');
-      return ok;
+      if (spent.granted) {
+        await events.noteReservedUnit(
+          own,
+          businessId,
+          eventId,
+          'DOCUMENTS_UNDERSTOOD',
+          spent.meter,
+        );
+      }
+      return spent.granted;
     }));
   if (!granted) {
     // The plan refused after the day allowed: no provider was reached, so
@@ -1294,7 +1302,7 @@ async function transcribeVoiceNote(
   const granted =
     (retrying && (await holdsUnit(deps, businessId, eventId, 'VOICE_MINUTES'))) ||
     (await withBusiness(deps.db, businessId, async (own) => {
-      const ok = await usageRepo.consumeUnit(
+      const spent = await usageRepo.reserveUnit(
         own,
         businessId,
         period,
@@ -1303,9 +1311,18 @@ async function transcribeVoiceNote(
         seconds,
       );
       /* The seconds are recorded with the unit, so a give-back returns
-       * exactly what was taken (G-57 final review B). */
-      if (ok) await events.noteReservedUnit(own, businessId, eventId, `VOICE_MINUTES:${seconds}`);
-      return ok;
+       * exactly what was taken (G-57 final review B), and the meter row they
+       * were spent on, so it returns them to that row. */
+      if (spent.granted) {
+        await events.noteReservedUnit(
+          own,
+          businessId,
+          eventId,
+          `VOICE_MINUTES:${seconds}`,
+          spent.meter,
+        );
+      }
+      return spent.granted;
     }));
   if (!granted) {
     // The plan refused after the day allowed: no provider was reached, so
@@ -2241,8 +2258,13 @@ async function refundRecordedReservations(
     'DOCUMENT_GENERATION',
     'CATALOGUE_ORDERS',
   ]);
-  for (const unit of units) {
-    await usageRepo.refundUnit(tx, businessId, period, unit as UsageUnit);
+  for (const { unit, meter } of units) {
+    await usageRepo.refundUnit(
+      tx,
+      businessId,
+      usageRepo.storedMeter(meter, period),
+      unit as UsageUnit,
+    );
   }
 }
 
@@ -2452,8 +2474,17 @@ async function confirmPendingDraft(
    */
   const giveBack = (unit: UsageUnit) =>
     withBusiness(deps.db, businessId, async (own) => {
-      await usageRepo.refundUnit(own, businessId, period, unit);
-      await events.releaseReservedUnit(own, businessId, eventId, unit);
+      /* The row the unit was spent on, recorded with the reservation; taking
+       * the record and refunding it are one step, so it goes back once. */
+      const taken = await events.takeReservedUnit(own, businessId, eventId, unit);
+      if (taken) {
+        await usageRepo.refundUnit(
+          own,
+          businessId,
+          usageRepo.storedMeter(taken.meter, period),
+          unit,
+        );
+      }
     });
   const refundReserved = async (): Promise<void> => {
     /* A retry took nothing itself; what an earlier attempt took is on the
@@ -2486,15 +2517,17 @@ async function confirmPendingDraft(
     );
     /* The reservation is recorded with the consume, in its transaction. */
     const granted = await withBusiness(deps.db, businessId, async (own) => {
-      const ok = await usageRepo.consumeUnit(
+      const spent = await usageRepo.reserveUnit(
         own,
         businessId,
         period,
         'DOCUMENT_GENERATION',
         allowance,
       );
-      if (ok) await events.noteReservedUnit(own, businessId, eventId, 'DOCUMENT_GENERATION');
-      return ok;
+      if (spent.granted) {
+        await events.noteReservedUnit(own, businessId, eventId, 'DOCUMENT_GENERATION', spent.meter);
+      }
+      return spent.granted;
     });
     if (!granted) return exhaustedReply(deps.db, businessId, allowance, 'DOCUMENT_GENERATION');
     documentTaken = true;
@@ -2524,15 +2557,17 @@ async function confirmPendingDraft(
         'CATALOGUE_ORDERS',
       );
       const orderGranted = await withBusiness(deps.db, businessId, async (own) => {
-        const ok = await usageRepo.consumeUnit(
+        const spent = await usageRepo.reserveUnit(
           own,
           businessId,
           period,
           'CATALOGUE_ORDERS',
           orderAllowance,
         );
-        if (ok) await events.noteReservedUnit(own, businessId, eventId, 'CATALOGUE_ORDERS');
-        return ok;
+        if (spent.granted) {
+          await events.noteReservedUnit(own, businessId, eventId, 'CATALOGUE_ORDERS', spent.meter);
+        }
+        return spent.granted;
       });
       if (!orderGranted) {
         await refundReserved();
@@ -5513,9 +5548,11 @@ function consumeMessage(
    * as the consume, so every later attempt knows exactly what this message
    * holds, in which month (G-57: the reservation's identity). */
   return withBusiness(deps.db, businessId, async (tx) => {
-    const ok = await usageRepo.consumeUnit(tx, businessId, period, 'AI_ACTIONS', allowance);
-    if (ok) await events.noteReservedUnit(tx, businessId, eventId, 'AI_ACTIONS');
-    return ok;
+    const spent = await usageRepo.reserveUnit(tx, businessId, period, 'AI_ACTIONS', allowance);
+    if (spent.granted) {
+      await events.noteReservedUnit(tx, businessId, eventId, 'AI_ACTIONS', spent.meter);
+    }
+    return spent.granted;
   });
 }
 
@@ -5548,8 +5585,14 @@ function giveBackUnit(
     const held = await events.takeRecordedUnit(own, businessId, eventId, unit);
     if (!held) return;
     /* The quantity recorded when it was taken, if there is one. */
-    const recorded = Number(held.split(':')[1]);
-    await usageRepo.refundUnit(own, businessId, period, unit, recorded > 0 ? recorded : n);
+    const recorded = Number(held.held.split(':')[1]);
+    await usageRepo.refundUnit(
+      own,
+      businessId,
+      usageRepo.storedMeter(held.meter, period),
+      unit,
+      recorded > 0 ? recorded : n,
+    );
   });
 }
 
@@ -5598,8 +5641,14 @@ async function refundMessage(
   eventId: string,
   period: string,
 ): Promise<void> {
-  if (await events.takeReservedUnit(tx, businessId, eventId, 'AI_ACTIONS')) {
-    await usageRepo.refundUnit(tx, businessId, period, 'AI_ACTIONS');
+  const taken = await events.takeReservedUnit(tx, businessId, eventId, 'AI_ACTIONS');
+  if (taken) {
+    await usageRepo.refundUnit(
+      tx,
+      businessId,
+      usageRepo.storedMeter(taken.meter, period),
+      'AI_ACTIONS',
+    );
   }
 }
 

@@ -1015,10 +1015,10 @@ export class ReportsController {
     const allowance = await withBusiness(this.db, businessId, (tx) =>
       meterAllowance(this.config, tx, businessId, plan, 'DOCUMENT_GENERATION'),
     );
-    const granted = await withBusiness(this.db, businessId, (own) =>
-      usageRepo.consumeUnit(own, businessId, period, 'DOCUMENT_GENERATION', allowance),
+    const spent = await withBusiness(this.db, businessId, (own) =>
+      usageRepo.reserveUnit(own, businessId, period, 'DOCUMENT_GENERATION', allowance),
     );
-    if (!granted) return { outcome: 'exhausted', allowance };
+    if (!spent.granted) return { outcome: 'exhausted', allowance };
 
     try {
       return await withBusiness(this.db, businessId, async (tx) => {
@@ -1077,7 +1077,7 @@ export class ReportsController {
       });
     } catch (error) {
       await withBusiness(this.db, businessId, (own) =>
-        usageRepo.refundUnit(own, businessId, period, 'DOCUMENT_GENERATION'),
+        usageRepo.refundUnit(own, businessId, spent.meter, 'DOCUMENT_GENERATION'),
       );
       if (error instanceof QuoteAlreadyTaken) {
         const taken = await withBusiness(this.db, businessId, (tx) =>

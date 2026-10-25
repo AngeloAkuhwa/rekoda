@@ -1226,6 +1226,34 @@
       "when": 1792670400000,
       "tag": "0174_billing_email_verification",
       "breakpoints": true
+    },
+    {
+      "idx": 175,
+      "version": "7",
+      "when": 1792756800000,
+      "tag": "0175_reserved_meters",
+      "breakpoints": true
+    },
+    {
+      "idx": 176,
+      "version": "7",
+      "when": 1792843200000,
+      "tag": "0176_trial_leaves_month_rows",
+      "breakpoints": true
+    },
+    {
+      "idx": 177,
+      "version": "7",
+      "when": 1792929600000,
+      "tag": "0177_trial_meter_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 178,
+      "version": "7",
+      "when": 1793016000000,
+      "tag": "0178_trial_reservations_meter",
+      "breakpoints": true
     }
   ]
 }

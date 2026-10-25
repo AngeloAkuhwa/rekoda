@@ -18,7 +18,49 @@ import { sql } from 'drizzle-orm';
 import type { TenantDb } from '../client.js';
 
 export type { UsageUnit } from '@rekoda/core';
-import type { UsageUnit } from '@rekoda/core';
+import { INDEPENDENTLY_METERED_UNITS, type UsageUnit } from '@rekoda/core';
+
+/**
+ * The meter row a unit is spent on (G-109, OWN-27, OD-26).
+ *
+ * A paid business meters by calendar month. A business still on the trial
+ * meters its BASE-PLAN units on ONE fixed row for the whole trial, whatever
+ * month the caller names: the trial is one 14-day budget, so a trial that
+ * crosses a month boundary does not earn a second allowance, and the row is
+ * left behind when the first paid plan lands, so trial usage never carries
+ * into the paid month. The units a standalone holding sells
+ * (`INDEPENDENTLY_METERED_UNITS`, the Developer API Starter) follow that
+ * holding's own monthly cycle whatever the base plan is.
+ *
+ * A row is named by this brand so a refund cannot be given a calendar month
+ * by mistake: the only ways to hold one are a consume's answer, a stored
+ * record of one, and the two constructors below, which say what they are.
+ */
+export type MeterRow = string & { readonly __meterRow: unique symbol };
+
+export const TRIAL_PERIOD = 'TRIAL00';
+/** The one row a trial's base-plan units are spent on. */
+export const TRIAL_METER = TRIAL_PERIOD as MeterRow;
+/** A calendar-month row, for a paid business or a standalone holding's unit. */
+export const monthMeter = (period: string): MeterRow => period as MeterRow;
+/** A row read back from a stored reservation; a missing one was spent in its month. */
+export const storedMeter = (stored: string | null | undefined, period: string): MeterRow =>
+  (stored && stored.length > 0 ? stored : period) as MeterRow;
+
+const independent = new Set<string>(INDEPENDENTLY_METERED_UNITS);
+
+async function planOf(tx: TenantDb, businessId: string): Promise<string | undefined> {
+  const rows = await tx.execute<{ plan: string }>(sql`
+    SELECT plan FROM businesses WHERE id = ${businessId}::uuid
+  `);
+  return [...rows][0]?.plan;
+}
+
+/** The row `unit` is spent on now, for a business on `plan`. */
+function meterOn(plan: string | undefined, period: string, unit: string): MeterRow {
+  const trial = !plan || plan === 'trial';
+  return trial && !independent.has(unit) ? TRIAL_METER : monthMeter(period);
+}
 
 /**
  * Spend `n` units, atomically, against `allowance + bonus`.
@@ -32,6 +74,26 @@ export async function consumeUnit(
   allowance: number,
   n = 1,
 ): Promise<boolean> {
+  return (await reserveUnit(tx, businessId, period, unit, allowance, n)).granted;
+}
+
+/**
+ * `consumeUnit`, also saying WHICH meter row the spend was taken from. A caller
+ * that may give the unit back later keeps that row with the reservation and
+ * hands it to `refundUnit`: a refund is never worked out from the plan the
+ * business is on when it runs, which may not be the plan it was on when it
+ * spent the unit.
+ */
+export async function reserveUnit(
+  tx: TenantDb,
+  businessId: string,
+  period: string,
+  unit: UsageUnit,
+  allowance: number,
+  n = 1,
+): Promise<{ granted: boolean; meter: MeterRow }> {
+  const meter = meterOn(await planOf(tx, businessId), period, unit);
+  period = meter;
   /**
    * Both arms carry the ceiling. The SELECT's WHERE guards the FRESH-ROW
    * case (an allowance of zero, like orders on Chat, must refuse the
@@ -71,7 +133,7 @@ export async function consumeUnit(
       WHERE usage_counters.used + ${n}::int <= ${allowance}::int + usage_counters.bonus
     RETURNING used
   `);
-  return [...rows].length === 1;
+  return { granted: [...rows].length === 1, meter };
 }
 
 /**
@@ -80,18 +142,22 @@ export async function consumeUnit(
  * the provider was down, the answer was unusable): the merchant's meter
  * must only move when the product actually worked. GREATEST guards the
  * floor; the CHECK constraint would reject a negative anyway.
+ *
+ * `meter` is the exact row the unit was spent on, as `reserveUnit` returned it
+ * (or a stored reservation recorded it): exactly that row, never one chosen by
+ * the current plan or by which counter has something to give back.
  */
 export async function refundUnit(
   tx: TenantDb,
   businessId: string,
-  period: string,
+  meter: MeterRow,
   unit: UsageUnit,
   n = 1,
 ): Promise<void> {
   await tx.execute(sql`
     UPDATE usage_counters
     SET used = GREATEST(used - ${n}, 0), updated_at = now()
-    WHERE business_id = ${businessId}::uuid AND period = ${period} AND unit = ${unit}
+    WHERE business_id = ${businessId}::uuid AND period = ${meter} AND unit = ${unit}
   `);
 }
 
@@ -108,6 +174,10 @@ export async function refundUnit(
  * once: there is no idempotency key here because there is no second call to
  * guard against.
  *
+ * A trial business is never offered a pack (its price is 0), so a trial's base
+ * units meet this only through a direct call; there the bonus is held on the
+ * trial row with the rest of that unit's budget.
+ *
  * The pack is spent in the month it is bought and does not roll over, which
  * is why the period is an argument and not derived: the caller passes the
  * period the charge covers.
@@ -119,6 +189,7 @@ export async function creditBonus(
   unit: UsageUnit,
   n: number,
 ): Promise<void> {
+  period = meterOn(await planOf(tx, businessId), period, unit);
   await tx.execute(sql`
     INSERT INTO usage_counters (business_id, period, unit, bonus)
     VALUES (${businessId}::uuid, ${period}, ${unit}, ${n})
@@ -139,11 +210,29 @@ export async function usageFor(
   businessId: string,
   period: string,
 ): Promise<UsageRow[]> {
-  const rows = await tx.execute<UsageRow>(sql`
+  const plan = await planOf(tx, businessId);
+  const trial = !plan || plan === 'trial';
+  const independentList = sql.join(
+    INDEPENDENTLY_METERED_UNITS.map((u) => sql`${u}`),
+    sql`, `,
+  );
+  /* A trial reads its base-plan units from the trial row and the units a
+   * standalone holding sells from the month, which is where they are spent. */
+  const rows = await tx.execute<UsageRow>(
+    trial
+      ? sql`
+    SELECT unit, used, bonus FROM usage_counters
+    WHERE business_id = ${businessId}::uuid
+      AND ((period = ${TRIAL_PERIOD} AND unit NOT IN (${independentList}))
+        OR (period = ${period} AND unit IN (${independentList})))
+    ORDER BY unit
+  `
+      : sql`
     SELECT unit, used, bonus FROM usage_counters
     WHERE business_id = ${businessId}::uuid AND period = ${period}
     ORDER BY unit
-  `);
+  `,
+  );
   return [...rows];
 }
 
