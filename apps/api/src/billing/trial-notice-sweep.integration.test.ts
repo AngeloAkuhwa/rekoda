@@ -634,4 +634,19 @@ describe('trial reminders', () => {
       expect((await stateOf(id)).state).toBe('sending');
     });
   });
+
+  it('skips a stage the listing already shows as handled, and does not recount an opted-out owner', async () => {
+    const { id } = await seedTrial();
+    const sender = new StubSender();
+    await sweep(sender, at(12));
+    expect(sender.trialNotices).toHaveLength(1);
+    await ownerDb.execute(
+      sql`UPDATE users SET opted_out_at = now() WHERE id = (SELECT owner_user_id FROM businesses WHERE id = ${id}::uuid)`,
+    );
+
+    const later = await sweep(sender, at(12, 3_600_000));
+
+    expect(later).toMatchObject({ sent: 0, optedOut: 0 });
+    expect(sender.trialNotices).toHaveLength(1);
+  });
 });

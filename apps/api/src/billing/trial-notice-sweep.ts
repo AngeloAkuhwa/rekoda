@@ -141,6 +141,12 @@ export async function sweepTrialNotices(
 
       const due = trialNoticeDue(row.trialEndsAt, clock());
       if (due === null) continue;
+      /* The listing carries the latest attempt: a stage that is not newer than it has
+       * already been handled (sent, unknown, suppressed, refused or in flight). Skipping it
+       * here saves a tenant transaction per business per hour for the rest of the window,
+       * and keeps an opted-out owner from being counted again for a notice that is not
+       * owed. The claim still guards the stage if this snapshot is stale. */
+      if (row.attempt !== null && row.attempt.stage >= due.stage) continue;
 
       let claimed: 'claimed' | 'opted_out' | 'not_claimed';
       try {
