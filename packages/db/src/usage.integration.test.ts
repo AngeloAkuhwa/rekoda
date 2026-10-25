@@ -754,8 +754,8 @@ describe('a business leaving the trial leaves no trial usage on a month row (mig
     // The subscription writer stamps this on any paid plan, and never clears it (G-103).
     await ownerRun(sql`UPDATE businesses SET ever_paid_at = now() WHERE id = ${businessId}::uuid`);
     await ownerRun(sql`
-      INSERT INTO usage_counters (business_id, period, unit, used)
-      VALUES (${businessId}::uuid, '2026-10', 'AI_ACTIONS', 7)`);
+      INSERT INTO usage_counters (business_id, period, unit, used, bonus)
+      VALUES (${businessId}::uuid, '2026-10', 'AI_ACTIONS', 7, 25)`);
     await withBusiness(db, businessId, (tx) =>
       tx.execute(
         sql`UPDATE businesses SET plan = 'trial', updated_at = now() WHERE id = ${businessId}::uuid`,
@@ -767,6 +767,11 @@ describe('a business leaving the trial leaves no trial usage on a month row (mig
     expect(await monthRows(businessId)).toEqual([
       { period: '2026-10', unit: 'AI_ACTIONS', used: 7 },
     ]);
+    expect(
+      await ownerRun(sql`
+        SELECT bonus FROM usage_counters
+         WHERE business_id = ${businessId}::uuid AND period = '2026-10' AND unit = 'AI_ACTIONS'`),
+    ).toEqual([{ bonus: 25 }]);
   });
 
   it('names the trial row on a reservation the previous release recorded, so its refund cannot debit a paid counter', async () => {
