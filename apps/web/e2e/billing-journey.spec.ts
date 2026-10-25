@@ -183,7 +183,12 @@ test('a paying merchant upgrades, schedules a downgrade and a yearly switch, buy
   // Downgrade to Chat: nothing is charged, it is scheduled for the next renewal and can be undone.
   await page.goto('/app/billing?to=chat');
   await page.getByRole('button', { name: /Confirm/ }).click();
-  await expect(page.getByText(/Rekoda Chat at your next renewal/)).toBeVisible();
+  await expect(
+    page.getByText(
+      'Changing to Rekoda Chat at your next renewal. You keep what you paid for until then.',
+      { exact: true },
+    ),
+  ).toBeVisible();
   await expect(page.getByRole('button', { name: 'Stay on Rekoda Integrate' })).toBeVisible();
 
   // Switch to yearly billing at the next renewal, also undoable.
@@ -191,6 +196,7 @@ test('a paying merchant upgrades, schedules a downgrade and a yearly switch, buy
   await expect(
     page.getByText(
       'Switching to yearly billing at your next renewal. You keep your current monthly plan until then, and nothing is charged now.',
+      { exact: true },
     ),
   ).toBeVisible();
   await expect(page.getByRole('button', { name: 'Stay on monthly billing' })).toBeVisible();
