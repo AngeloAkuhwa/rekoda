@@ -768,7 +768,14 @@ export async function applySettledCharge(
     });
     /* What the payment actually bought, kept apart from the period it was priced for: a checkout
      * opened one day and paid the next buys the later cycle. */
-    await subscriptionsRepo.markChargeApplied(tx, input.reference, cycleStartedAt, renewsAt);
+    /* An upgrade keeps the cycle it lands in (cycleStartedAt stays the original start so later
+     * proration is right), but what it bought runs from the day it was paid. */
+    await subscriptionsRepo.markChargeApplied(
+      tx,
+      input.reference,
+      charge.kind === 'upgrade' ? input.when : cycleStartedAt,
+      renewsAt,
+    );
   }
   return 'applied';
 }

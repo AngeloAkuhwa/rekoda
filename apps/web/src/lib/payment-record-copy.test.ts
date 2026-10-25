@@ -59,6 +59,13 @@ describe('payment record copy', () => {
     const applied = paymentRecordView({ ...base, state: 'part_refunded' });
     expect(unapplied.summary).toMatch(/was not applied because your billing period/i);
     expect(applied.summary).not.toMatch(/not applied/i);
+    const refunded = paymentRecordView({
+      ...base,
+      state: 'refunded',
+      applied: false,
+      notAppliedReason: 'plan_changed',
+    });
+    expect(refunded.summary).toMatch(/was not applied because your plan changed/i);
   });
 
   it('names the true reason a payment was not applied and invents no newer choice', () => {

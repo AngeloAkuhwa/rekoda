@@ -285,11 +285,52 @@ describe('payment record', () => {
     }
   });
 
+  it('an upgrade records the day it took effect, not the start of the cycle it landed in', async () => {
+    const b = await seedBusiness();
+    const cycleStart = new Date('2026-11-01T00:00:00Z');
+    const renewsAt = new Date('2026-12-01T00:00:00Z');
+    await withBusiness(appDb, b, (tx) =>
+      subscriptionsRepo.applyCycle(tx, b, {
+        plan: 'chat',
+        cycleStartedAt: cycleStart,
+        renewsAt,
+        anchorDay: 1,
+      }),
+    );
+    await withBusiness(appDb, b, (tx) =>
+      subscriptionsRepo.openCharge(tx, {
+        businessId: b,
+        kind: 'upgrade',
+        plan: 'integrate',
+        amountK: 100_000,
+        reference: 'RKD-SUB-20261128-QQQQQQ',
+        periodStart: cycleStart,
+        periodEnd: renewsAt,
+      }),
+    );
+    const paidOn = new Date('2026-11-28T09:00:00Z');
+    await withBusiness(appDb, b, (tx) =>
+      applySettledCharge(tx, {
+        businessId: b,
+        reference: 'RKD-SUB-20261128-QQQQQQ',
+        providerReference: 'ps_QQQQQQ',
+        when: paidOn,
+        config,
+      }),
+    );
+
+    expect(await service().paymentRecord(b, 'RKD-SUB-20261128-QQQQQQ')).toMatchObject({
+      state: 'paid_applied',
+      periodStart: paidOn.toISOString(),
+      periodEnd: renewsAt.toISOString(),
+    });
+  });
+
   it('a pack names what was bought', async () => {
     const b = await seedBusiness();
-    await open(b, 'RKD-ADD-20261101-GGGGGG', { pack: true });
+    await open(b, 'RKD-PACK-20261101-GGGGGG', { pack: true });
 
-    expect(await service().paymentRecord(b, 'RKD-ADD-20261101-GGGGGG')).toMatchObject({
+    expect(await service().paymentRecord(b, 'RKD-PACK-20261101-GGGGGG')).toMatchObject({
       kind: 'add_on',
       packId: 'messages_100',
       plan: null,

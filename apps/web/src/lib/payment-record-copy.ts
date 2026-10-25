@@ -93,7 +93,7 @@ export function paymentRecordView(record: ViewInput): PaymentRecordView {
       summary = `${summary} Our team has since reviewed it; ask support for the outcome.`;
   }
   /* A part refund of money that was never applied must still say it was never applied. */
-  if (record.state === 'part_refunded' && !record.applied) {
+  if ((record.state === 'part_refunded' || record.state === 'refunded') && !record.applied) {
     summary = `${summary} ${why ?? 'It was not applied to your plan.'}`;
   }
   /* Refunds return the charged amount; an overpayment leaves the difference with Paystack. */
