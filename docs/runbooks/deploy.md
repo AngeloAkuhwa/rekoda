@@ -201,6 +201,19 @@ release as the code that needs it must be backward-compatible with the
 previous release (additive columns and tables). Destructive contractions ship
 one release later.
 
+**G-109 trial-meter handover (migrations 0175 to 0178).** The previous release
+writes a trial's base-plan usage to a calendar-month row; the new release writes
+it to the trial row. The migrations copy running trials' usage and a trigger
+discards stray month rows when a business leaves the trial, so only one window
+is left: a previous-release write that commits after that business's own plan
+change, in the minutes between `migrate` and the new processes replacing the old
+ones. It cannot be told from paid usage at the row, and it can leave a few units
+in a first paid month. It moves no money. On the staging host (no live
+merchants) this is accepted. **Before the first production deploy that carries
+these migrations**, stop `api` and `worker` first, then run `migrate`, then
+start the new release, so no previous-release writer overlaps the plan
+transition.
+
 ## Rotate a database password
 
 The migrate job sets `rekoda_app` and `rekoda_worker` to the passwords in
