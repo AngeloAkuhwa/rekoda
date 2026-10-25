@@ -46,7 +46,9 @@ describe('returnView', () => {
     expect(view).toMatchObject({ kind: 'paid_not_applied', poll: false });
     expect(view.body).not.toMatch(/is active/);
     // It does not guess why (a changed choice, an ended cycle, a support review).
-    expect(view.body).not.toMatch(/changed|choice|ended/);
+    expect(view.body).not.toMatch(/changed|choice|ended|whatsapp|put it right/i);
+    expect(view.body).toContain('recorded as paid, but it has not been applied');
+    expect(view.body).toContain('operator review');
     expect(view.body).toContain('RKD-SUB-20261025-AB12CD');
   });
 

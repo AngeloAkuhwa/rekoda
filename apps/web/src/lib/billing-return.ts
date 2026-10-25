@@ -69,7 +69,7 @@ export function returnView(
       return {
         kind: 'paid_not_applied',
         title: 'Payment received, but not applied',
-        body: `Your payment arrived, but it could not be applied to your plan as it stands now, so it has not switched anything on. Nothing is lost: message us on WhatsApp with reference ${charge.reference} and we will put it right.`,
+        body: `Your payment is recorded as paid, but it has not been applied to your plan, so it has not switched anything on. Send Rekoda support this reference for operator review: ${charge.reference}.`,
         poll: false,
       };
     }
