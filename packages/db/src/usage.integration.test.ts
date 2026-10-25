@@ -409,6 +409,29 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
       expect(taken).toEqual({ held: 'VOICE_MINUTES:7', meter: TRIAL_METER });
     });
 
+    it('a quantity-suffixed unit is released to the row it was spent on, by either reader', async () => {
+      for (const read of ['takeReservedUnit', 'takeRecordedUnit'] as const) {
+        const businessId = await seedBusiness();
+        const eventId = await seedEvent(businessId);
+        await withBusiness(db, businessId, async (tx) => {
+          const spent = await usageRepo.reserveUnit(
+            tx,
+            businessId,
+            '2026-08',
+            'VOICE_MINUTES',
+            600,
+            7,
+          );
+          await events.noteReservedUnit(tx, businessId, eventId, 'VOICE_MINUTES:7', spent.meter);
+        });
+        await setPlanOnRow(businessId, 'chat');
+        const taken = await withBusiness(db, businessId, (tx) =>
+          events[read](tx, businessId, eventId, 'VOICE_MINUTES:7'),
+        );
+        expect(taken?.meter).toBe(TRIAL_METER);
+      }
+    });
+
     it('a reservation recorded before the column existed is refunded to its month', async () => {
       const businessId = await seedBusiness();
       await setPlanOnRow(businessId, 'chat');
@@ -515,12 +538,12 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
   });
 });
 
-describe('trials already running when the trial meter moved (migrations 0176 and 0177)', () => {
+describe('trials already running when the trial meter moved (migrations 0177 and 0178)', () => {
   /** The migrations' own SQL (the usage copy, then the reservations), run again against rows shaped as the old release left them. */
   async function backfill(): Promise<void> {
     const owner = postgres(urls.owner, { max: 1, onnotice: () => {} });
     try {
-      for (const file of ['0176_trial_meter_backfill.sql', '0177_trial_reservations_meter.sql']) {
+      for (const file of ['0177_trial_meter_backfill.sql', '0178_trial_reservations_meter.sql']) {
         await owner.unsafe(await readFile(join(MIGRATIONS_DIR, file), 'utf8')).simple();
       }
     } finally {
@@ -673,7 +696,7 @@ describe('the trial migrations leave row-level security as they found it', () =>
   });
 });
 
-describe('a business leaving the trial leaves no trial usage on a month row (migration 0178)', () => {
+describe('a business leaving the trial leaves no trial usage on a month row (migration 0176)', () => {
   const ownerRun = async (statement: ReturnType<typeof sql>) => {
     const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
     try {
@@ -737,7 +760,7 @@ describe('a business leaving the trial leaves no trial usage on a month row (mig
       events.recordEvent(tx, {
         provider: 'meta',
         eventType: 'messages',
-        externalId: `g109-0177-${Math.random()}`,
+        externalId: `g109-0176-${Math.random()}`,
         payload: {},
         businessId,
       }),
