@@ -948,8 +948,9 @@ function emailProvider(env: NodeJS.ProcessEnv, isProduction: boolean): EmailProv
   return raw as EmailProvider;
 }
 
-/** One mailbox, bare or `Name <mailbox>`; no list, no control characters. */
-const SENDER_ADDRESS = /^(?:[^<>\r\n,;]+ <)?[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+>?$/;
+/** One mailbox, bare or `Name <mailbox>` with both brackets; no list, no control characters. */
+const MAILBOX = String.raw`[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+`;
+const SENDER_ADDRESS = new RegExp(String.raw`^(?:${MAILBOX}|[^<>\r\n,;]+ <${MAILBOX}>)$`);
 
 /** Resend needs a key and a verified from-address; a half-set pair refuses to boot (invariant 8). */
 function resendSettings(

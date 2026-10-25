@@ -372,7 +372,14 @@ describe('REKODA_EMAIL_PROVIDER (OWN-51)', () => {
     );
 
     expect(() => loadConfig({ ...BASE, ...ok, RESEND_API_KEY: '' })).toThrow(/RESEND_API_KEY/);
-    for (const from of ['', 'not-an-address', 'a@b.c, d@e.f', 'a@example.com\r\nBcc: x@y.z']) {
+    for (const from of [
+      '',
+      'not-an-address',
+      'a@b.c, d@e.f',
+      'Rekoda <billing@example.com',
+      'billing@example.com>',
+      'a@example.com\r\nBcc: x@y.z',
+    ]) {
       expect(() => loadConfig({ ...BASE, ...ok, REKODA_EMAIL_FROM: from })).toThrow(
         /REKODA_EMAIL_FROM/,
       );
