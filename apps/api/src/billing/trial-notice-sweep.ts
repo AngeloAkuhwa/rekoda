@@ -293,8 +293,9 @@ export async function sweepTrialNotices(
           ),
         );
       } catch (markError) {
-        /* The attempt stays 'sending' and the stale rule will call it 'unknown'; the
-         * provider's id is kept in the log so an operator can tell it was accepted. */
+        /* The attempt stays 'sending' and the stale rule will call it 'unknown' (never
+         * resent). The provider's message id is deliberately not logged: WhatsApp ids can
+         * encode the recipient, so an operator matches the message by time and business. */
         log.error(
           `business ${row.businessId}: trial stage ${due.stage} accepted by the provider but not recorded: ${redactForLog(String(markError))}`,
         );

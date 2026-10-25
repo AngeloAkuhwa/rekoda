@@ -43,6 +43,7 @@ export * from './purchase-identity.js';
 export * from './margin.js';
 export * from './billing.js';
 export * from './billing-email.js';
+export * from './payment-record.js';
 export * from './retention.js';
 export * from './audit.js';
 export * as replies from './replies.js';

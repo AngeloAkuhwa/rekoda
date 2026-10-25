@@ -64,6 +64,56 @@ export const billingChargeView = z.object({
   createdAt: isoDate,
 });
 
+/**
+ * One payment to Rekoda in full (billing Slice A). Every field is read from the charge's own row
+ * under the tenant pin; nothing is composed from the provider's response at read time. `paidAt`
+ * is the verified payment time and is null for anything that is not paid.
+ */
+export const billingPaymentState = z.enum([
+  'awaiting_payment',
+  'replaced',
+  'failed',
+  'paid_applied',
+  'paid_not_applied',
+  'part_refunded',
+  'refunded',
+]);
+
+export const billingPaymentRecord = z.object({
+  reference: z.string(),
+  kind: z.enum(['first_purchase', 'renewal', 'upgrade', 'add_on', 'seat']),
+  state: billingPaymentState,
+  status: billingChargeStatus,
+  plan: z.string().nullable(),
+  packId: z.string().nullable(),
+  packLabel: z.string().nullable(),
+  /** Units a pack buys, or 1 for a plan charge. */
+  quantity: z.number().int().positive(),
+  interval: billingInterval,
+  /** What was asked for, in kobo. */
+  amountK: kobo,
+  /** What the provider verified it took; null until a payment was verified. */
+  paidAmountK: kobo.nullable(),
+  refundedAmountK: kobo,
+  currency: z.string(),
+  /** The cycle the payment actually bought; null when it bought none or the cycle was not recorded. */
+  periodStart: isoDate.nullable(),
+  periodEnd: isoDate.nullable(),
+  createdAt: isoDate,
+  paidAt: isoDate.nullable(),
+  failedAt: isoDate.nullable(),
+  refundedAt: isoDate.nullable(),
+  /** A verified payment that took effect on the account, whether or not it was later refunded. False for any unpaid state and for money received but refused as stale. */
+  applied: z.boolean(),
+  /** For `paid_not_applied`: an operator has since reconciled it. */
+  reconciled: z.boolean(),
+  /** An upgrade that cost nothing: applied with no payment taken and no provider involved. */
+  noCharge: z.boolean(),
+  /** Why a paid charge was not applied, in merchant-safe families; null when it was applied. */
+  notAppliedReason: z.enum(['plan_changed', 'period_ended', 'under_review']).nullable(),
+});
+export type BillingPaymentRecord = z.infer<typeof billingPaymentRecord>;
+
 export const billingUnitView = z.object({
   /**
    * The canonical seventeen (spec 4.2). Written out rather than imported so

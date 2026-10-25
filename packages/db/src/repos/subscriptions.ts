@@ -930,6 +930,83 @@ export async function chargeByReference(
   return row ? shape(row) : null;
 }
 
+/** The dates and flags a payment record shows beyond `ChargeRow` (billing Slice A). */
+export interface ChargeRecordRow {
+  paidAt: Date | null;
+  failedAt: Date | null;
+  refundedAt: Date | null;
+  abandonedAt: Date | null;
+  currency: string;
+  unappliedResolvedAt: Date | null;
+  /** The cycle the payment actually bought, written at settlement (migration 0182). */
+  appliedPeriodStart: Date | null;
+  appliedPeriodEnd: Date | null;
+  /** Why a paid charge was not applied (OD-30); never shown to a merchant as written. */
+  unappliedReason: string | null;
+  /** An upgrade that cost nothing: applied with no payment and no provider involved. */
+  noCharge: boolean;
+}
+
+/** Record the cycle a settled charge actually bought. */
+export async function markChargeApplied(
+  tx: TenantDb,
+  reference: string,
+  start: Date,
+  end: Date,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE subscription_charges
+    SET applied_period_start = ${start.toISOString()}::timestamptz,
+        applied_period_end = ${end.toISOString()}::timestamptz
+    WHERE reference = ${reference} AND status = 'paid' AND unapplied_at IS NULL
+  `);
+}
+
+/**
+ * One charge by our reference with the payment-record extras, read under the tenant pin. A
+ * reference belonging to another business reads as null: the `WHERE business_id` is the code
+ * fence and RLS is the second.
+ */
+export async function chargeRecordByReference(
+  tx: TenantDb,
+  businessId: string,
+  reference: string,
+): Promise<(ChargeRow & ChargeRecordRow) | null> {
+  const rows = await tx.execute<
+    RawCharge & {
+      paid_at: string | null;
+      failed_at: string | null;
+      refunded_at: string | null;
+      abandoned_at: string | null;
+      currency: string;
+      unapplied_resolved_at: string | null;
+      applied_period_start: string | null;
+      applied_period_end: string | null;
+      unapplied_reason: string | null;
+      provider_reference: string | null;
+    }
+  >(sql`
+    SELECT * FROM subscription_charges
+    WHERE business_id = ${businessId}::uuid AND reference = ${reference}
+  `);
+  const row = [...rows][0];
+  if (!row) return null;
+  const at = (v: string | null): Date | null => (v === null ? null : new Date(v));
+  return {
+    ...shape(row),
+    paidAt: at(row.paid_at),
+    failedAt: at(row.failed_at),
+    refundedAt: at(row.refunded_at),
+    abandonedAt: at(row.abandoned_at),
+    currency: row.currency,
+    unappliedResolvedAt: at(row.unapplied_resolved_at),
+    appliedPeriodStart: at(row.applied_period_start),
+    appliedPeriodEnd: at(row.applied_period_end),
+    unappliedReason: row.unapplied_reason,
+    noCharge: row.provider_reference?.startsWith('no_charge:') ?? false,
+  };
+}
+
 /** One charge by id, under the tenant pin. */
 export async function chargeById(
   tx: TenantDb,

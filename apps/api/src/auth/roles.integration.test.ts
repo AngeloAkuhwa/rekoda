@@ -135,6 +135,11 @@ describe('what an accountant may do', () => {
     expect((await get('/v1/reports/invoices.csv', accountant)).statusCode).toBe(200);
     expect((await get('/v1/bank/position', accountant)).statusCode).toBe(200);
     expect((await get('/v1/billing', accountant)).statusCode).toBe(200);
+    /* A payment record is read like the overview; a malformed or unknown reference is a plain 404. */
+    expect((await get('/v1/billing/payments/RKD-SUB-20261101-ZZZZZZ', accountant)).statusCode).toBe(
+      404,
+    );
+    expect((await get('/v1/billing/payments/%00', accountant)).statusCode).toBe(404);
     expect((await get('/v1/catalogue', accountant)).statusCode).toBe(200);
     expect((await get('/v1/shop-settings', accountant)).statusCode).toBe(200);
   });

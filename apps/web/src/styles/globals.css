@@ -1941,3 +1941,46 @@ a.rk-sr-only:focus-visible {
   text-transform: uppercase;
   color: var(--rk-ink-soft);
 }
+
+/* ── a payment record (billing Slice A) ──────────────────────────────── */
+
+.rk-record-grid {
+  display: grid;
+  gap: var(--rk-space-3);
+  grid-template-columns: 1fr;
+  margin: var(--rk-space-4) 0;
+}
+.rk-record-grid dt {
+  color: var(--rk-text-muted);
+  font-size: var(--rk-text-sm);
+}
+.rk-record-grid dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+@media (min-width: 640px) {
+  .rk-record-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.rk-record-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rk-space-3);
+}
+.rk-print-only {
+  display: none;
+}
+@media print {
+  .rk-no-print,
+  nav {
+    display: none !important;
+  }
+  .rk-print-only {
+    display: block;
+  }
+  .rk-record {
+    border: none;
+    box-shadow: none;
+  }
+}

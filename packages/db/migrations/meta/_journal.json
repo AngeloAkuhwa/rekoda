@@ -1275,6 +1275,13 @@
       "when": 1793275200000,
       "tag": "0181_sweep_trial_candidates",
       "breakpoints": true
+    },
+    {
+      "idx": 182,
+      "version": "7",
+      "when": 1793361600000,
+      "tag": "0182_charge_applied_period",
+      "breakpoints": true
     }
   ]
 }

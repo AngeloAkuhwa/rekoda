@@ -103,3 +103,14 @@ tracked follow-up.
 migration 0004's table grants and `ops_read_businesses`; the new function does
 not remove them, because the older sweeps still rely on them. Removing them is
 the end state of the follow-up above.
+
+**Dependency (recorded after the retrospective review of #362).** `businesses` has
+`FORCE ROW LEVEL SECURITY`, so a `SECURITY DEFINER` discovery function returns rows only while its
+owner bypasses RLS. Today the function is owned by the migrating role, and
+`packages/db/src/migrate.ts` (`assertCanReachEveryTenant`) refuses to migrate as a role that cannot
+reach every tenant. That guard protects migration-time setup only: it does not keep the owner's
+`BYPASSRLS` or the function's ownership after deployment. If the deployed owner loses effective RLS
+bypass (neither `rolsuper` nor `rolbypassrls`), discovery returns zero rows and reminders can stop
+silently; rotating to another owner that keeps the bypass is safe. Any later change to the function owner or its RLS capability must
+be reviewed against this paragraph, and an alert on "reminders due but none claimed" is the
+monitoring that would catch it (not built; tracked with backlog N8).

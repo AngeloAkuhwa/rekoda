@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { isOwner } from '@/lib/permissions';
 import { Money } from '@/components/ui/Money';
 import { PendingButton } from '@/components/ui/PendingButton';
@@ -729,7 +730,11 @@ export default async function BillingPage({
                       {charge.plan ? ` · ${PLAN_NAMES[charge.plan] ?? charge.plan}` : ''}
                       {chargeIntervalSuffix(charge.kind, charge.interval)}
                     </td>
-                    <td className="rk-mono">{charge.reference}</td>
+                    <td className="rk-mono">
+                      <Link href={`/app/billing/payments/${encodeURIComponent(charge.reference)}`}>
+                        {charge.reference}
+                      </Link>
+                    </td>
                     <td>{chargeStatusLabel(charge.status, charge.superseded)}</td>
                     <td>
                       <Money kobo={charge.amountK} />

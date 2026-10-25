@@ -20,6 +20,7 @@ import {
   billingState,
   GRACE_DAYS,
   upgradeProrationEligibility,
+  paymentRecordState,
   planChangeCharge,
   subscriptionReference,
   usagePeriod,
@@ -36,6 +37,7 @@ import {
 import type {
   BillingCancelResponse,
   BillingOverviewResponse,
+  BillingPaymentRecord,
   BillingIntervalResponse,
   BillingPlanChangeResponse,
   BillingQuoteResponse,
@@ -192,6 +194,63 @@ export class BillingService {
             createdAt: charge.createdAt.toISOString(),
           })),
         ),
+      };
+    });
+  }
+
+  /**
+   * One payment in full (billing Slice A). Null when the reference is not this business's own, so
+   * the controller answers 404 for another tenant's payment exactly as for one that never existed.
+   * Every field comes from the charge row; the state is core's `paymentRecordState`.
+   */
+  async paymentRecord(businessId: string, reference: string): Promise<BillingPaymentRecord | null> {
+    return withBusiness(this.db, businessId, async (tx) => {
+      const charge = await subscriptionsRepo.chargeRecordByReference(tx, businessId, reference);
+      if (!charge) return null;
+      const status = charge.status as BillingPaymentRecord['status'];
+      const replaced =
+        status === 'pending' &&
+        (charge.supersededAt !== null ||
+          charge.abandonedAt !== null ||
+          (charge.plan !== null &&
+            (await subscriptionsRepo.decidedSince(tx, businessId, charge.reference))));
+      const unapplied = charge.unappliedAt !== null;
+      const state = paymentRecordState({
+        status,
+        replaced,
+        unapplied,
+        amountK: charge.amountK,
+        refundedAmountK: charge.refundedAmountK,
+      });
+      return {
+        reference: charge.reference,
+        kind: charge.kind as BillingPaymentRecord['kind'],
+        state,
+        status,
+        plan: charge.plan,
+        packId: charge.packId,
+        packLabel: charge.packId
+          ? ((await packOffer(this.config, tx, charge.packId, charge.createdAt))?.label ?? null)
+          : null,
+        quantity: charge.quantity,
+        interval: charge.billingInterval,
+        amountK: charge.amountK,
+        paidAmountK: charge.paidAmountK,
+        refundedAmountK: charge.refundedAmountK,
+        currency: charge.currency,
+        /* The cycle actually bought, or nothing: never the estimate made when the charge was
+         * opened, and never for a charge that bought no cycle. */
+        periodStart: charge.appliedPeriodStart?.toISOString() ?? null,
+        periodEnd: charge.appliedPeriodEnd?.toISOString() ?? null,
+        createdAt: charge.createdAt.toISOString(),
+        paidAt: charge.paidAt?.toISOString() ?? null,
+        failedAt: charge.failedAt?.toISOString() ?? null,
+        refundedAt: charge.refundedAt?.toISOString() ?? null,
+        /* A refund returns money; it does not un-apply a plan that took effect. */
+        applied: (status === 'paid' || status === 'refunded') && !unapplied,
+        reconciled: unapplied && charge.unappliedResolvedAt !== null,
+        noCharge: charge.noCharge,
+        notAppliedReason: unapplied ? notAppliedReason(charge.unappliedReason) : null,
       };
     });
   }
@@ -707,8 +766,25 @@ export async function applySettledCharge(
           ? { nextInterval: chosen === charge.billingInterval ? null : chosen }
           : {}),
     });
+    /* What the payment actually bought, kept apart from the period it was priced for: a checkout
+     * opened one day and paid the next buys the later cycle. */
+    /* An upgrade keeps the cycle it lands in (cycleStartedAt stays the original start so later
+     * proration is right), but what it bought runs from the day it was paid. */
+    await subscriptionsRepo.markChargeApplied(
+      tx,
+      input.reference,
+      charge.kind === 'upgrade' ? input.when : cycleStartedAt,
+      renewsAt,
+    );
   }
   return 'applied';
+}
+
+/** The merchant-safe family of an internal reason a paid charge was not applied (OD-30). */
+function notAppliedReason(reason: string | null): 'plan_changed' | 'period_ended' | 'under_review' {
+  if (reason === 'subscription_decided_after_charge') return 'plan_changed';
+  if (reason === 'cycle_ended') return 'period_ended';
+  return 'under_review';
 }
 
 function statusOf(
