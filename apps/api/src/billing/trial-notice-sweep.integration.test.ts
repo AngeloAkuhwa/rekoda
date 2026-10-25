@@ -559,10 +559,10 @@ describe('trial reminders', () => {
   });
 
   describe('provider refusals and the clock', () => {
-    it('a permanent refusal is recorded against the stage and not retried every hour', async () => {
+    it('a recipient-permanent refusal is recorded against the stage and not retried every hour', async () => {
       const { id } = await seedTrial();
       const sender = new StubSender();
-      sender.failTrialNoticesWith(new SendFailed('meta 132001', 132001, true, false));
+      sender.failTrialNoticesWith(new SendFailed('meta 131026', 131026, true, false));
 
       const first = await sweep(sender, at(12));
       const second = await sweep(sender, at(12, 3_600_000));
@@ -647,7 +647,7 @@ describe('trial reminders', () => {
         if (outcome === 'recipient')
           return Promise.reject(new SendFailed('meta 131056', 131056, true, true, false));
         if (outcome === 'permanent')
-          return Promise.reject(new SendFailed('meta 132001', 132001, true, false, false));
+          return Promise.reject(new SendFailed('meta 131026', 131026, true, false, false));
         return original(notice);
       };
       return { sender, calls: () => call };
