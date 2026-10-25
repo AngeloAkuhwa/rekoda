@@ -204,8 +204,9 @@ one release later.
 **G-109 trial-meter handover (migrations 0175 to 0178).** The previous release
 writes a trial's base-plan usage to a calendar-month row; the new release writes
 it to the trial row. The migrations copy running trials' usage and a trigger
-discards stray month rows on a business's first exit from the trial (while
-`ever_paid_at` is still null; a later exit keeps its paid counters), so only one window
+discards stray month rows when the business exits the trial for the first time
+(while `ever_paid_at` is still null; later exits keep the business's paid
+counters), so only one window
 is left: a previous-release write that commits after that business's own plan
 change, in the minutes between `migrate` and the new processes replacing the old
 ones. It cannot be told from paid usage at the row, and it can leave a few units
@@ -215,6 +216,14 @@ and staging acceptance of G-109 is still pending. **Before the first production 
 these migrations**, stop `api` and `worker` first, then run `migrate`, then
 start the new release, so no previous-release writer overlaps the plan
 transition.
+
+**Rolling back after cutover is roll-forward only for trials.** The previous
+release meters a trial's base-plan units by calendar month, this one on the
+trial row, and nothing carries post-cutover trial spending back. A rollback can
+therefore hand an already-exhausted trial a fresh month allowance (never a
+paid plan, never another tenant). Prefer a fix-forward release; if you must roll
+back, expect that over-allowance for trials that started or spent after the
+cutover.
 
 Accepted and documented: the trial-exit trigger locks a business's event rows and
 then its usage rows (as `reserveUnitForEvent` does), while the voice and
