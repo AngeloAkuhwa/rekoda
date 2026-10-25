@@ -94,6 +94,8 @@ test('a new merchant pays for a plan on Paystack, comes back, and the plan switc
   // Before anything is confirmed, coming back must NOT claim a plan.
   await page.getByRole('link', { name: 'Return to merchant' }).click();
   await expect(page.getByRole('heading', { name: 'Payment status' })).toBeVisible();
+  await expect(page.locator('[data-return=confirming]')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Payment received' })).toHaveCount(0);
 
   const eventId = Date.now();
   await customerPays(request, reference, eventId);
@@ -109,13 +111,27 @@ test('a new merchant pays for a plan on Paystack, comes back, and the plan switc
   await expect(page.getByText('Rekoda Chat').first()).toBeVisible();
   await expect(page.getByRole('cell', { name: 'Paid' }).first()).toBeVisible();
 
-  // A redelivered webhook changes nothing: one paid charge, one entitlement period.
+  // The worker has applied the one event. A redelivery of it is dropped at the door and changes
+  // nothing: the same single event row, the same paid-to date, still one paid charge.
+  const eventKey = `${eventId}:charge.success`;
+  const state = async () => {
+    const [row] = await sql<{ events: number; processed: number; ends: string; paid: number }[]>`
+      SELECT (SELECT count(*)::int FROM external_events WHERE external_id = ${eventKey}) AS events,
+             (SELECT count(*)::int FROM external_events
+               WHERE external_id = ${eventKey} AND processed_at IS NOT NULL) AS processed,
+             (SELECT plan_expires_at::text FROM businesses WHERE id = ${businessId}) AS ends,
+             (SELECT count(*)::int FROM subscription_charges
+               WHERE business_id = ${businessId} AND status = 'paid') AS paid`;
+    return row!;
+  };
+  await expect.poll(async () => (await state()).processed, { timeout: 20_000 }).toBe(1);
+  const before = await state();
+  expect(before).toMatchObject({ events: 1, paid: 1 });
+
   await customerPays(request, reference, eventId);
-  await page.waitForTimeout(3_000);
-  const [{ paid }] = await sql<{ paid: number }[]>`
-    SELECT count(*)::int AS paid FROM subscription_charges
-     WHERE business_id = ${businessId} AND status = 'paid'`;
-  expect(paid).toBe(1);
+  // Give a (wrong) second application time to show, then compare with the state before.
+  await page.waitForTimeout(2_000);
+  expect(await state()).toEqual(before);
 });
 
 test('coming back to the payment page with a reference that is not yours shows nothing', async ({

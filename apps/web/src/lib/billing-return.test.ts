@@ -19,7 +19,8 @@ const charge = (over: Partial<Charge>): Charge => ({
   createdAt: '2026-10-25T10:00:00.000Z',
   ...over,
 });
-const overview = (...charges: Charge[]) => ({ charges }) as unknown as BillingOverviewResponse;
+const overview = (...charges: Charge[]) =>
+  ({ plan: 'chat', charges }) as unknown as BillingOverviewResponse;
 
 describe('returnView', () => {
   it('shows a paid plan with its end date, and stops polling', () => {
@@ -29,6 +30,19 @@ describe('returnView', () => {
     );
     expect(view).toMatchObject({ kind: 'paid', title: 'Payment received', poll: false });
     expect(view.body).toBe('Your Chat plan is active until 25 Nov 2026.');
+  });
+
+  it('does not say a plan is active when the payment is for a plan the account is not on', () => {
+    const view = returnView(
+      {
+        plan: 'complete',
+        charges: [charge({ status: 'paid', plan: 'chat' })],
+      } as unknown as BillingOverviewResponse,
+      'RKD-SUB-20261025-AB12CD',
+    );
+    expect(view).toMatchObject({ kind: 'paid_not_applied', poll: false });
+    expect(view.body).not.toMatch(/is active/);
+    expect(view.body).toContain('RKD-SUB-20261025-AB12CD');
   });
 
   it('finds the charge through a replacement attempt reference (-R2)', () => {

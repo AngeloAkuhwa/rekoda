@@ -363,7 +363,7 @@ jobs:
       - name: Reset the database for the purchase journey
         run: >-
           psql postgres://rekoda@127.0.0.1:5432/postgres
-          -c 'DROP DATABASE rekoda' -c 'CREATE DATABASE rekoda'
+          -c 'DROP DATABASE rekoda WITH (FORCE)' -c 'CREATE DATABASE rekoda'
       - name: Run the purchase journey (Paystack stand-in)
         run: pnpm --filter @rekoda/web e2e:journey
         env:

@@ -8,7 +8,8 @@ import type { BillingOverviewResponse } from '@rekoda/contracts';
  * answer comes from the charge Rekoda holds, which only a verified payment can change, so a
  * hand-typed `?reference=` cannot show "paid".
  */
-export type ReturnKind = 'paid' | 'confirming' | 'failed' | 'refunded' | 'replaced' | 'unknown';
+export type ReturnKind =
+  'paid' | 'paid_not_applied' | 'confirming' | 'failed' | 'refunded' | 'replaced' | 'unknown';
 
 export interface ReturnView {
   kind: ReturnKind;
@@ -61,6 +62,17 @@ export function returnView(
     };
   }
   if (charge.status === 'paid') {
+    /* Money arrived, but a plan charge only switches a plan on when it is the plan the account is
+     * on. A payment that landed after a newer decision (the merchant changed their mind, or the
+     * cycle moved) was received and is not applied, and must not read "active" (OD-30). */
+    if (charge.plan && charge.kind !== 'add_on' && overview.plan !== charge.plan) {
+      return {
+        kind: 'paid_not_applied',
+        title: 'Payment received, but not applied',
+        body: `Your payment arrived after your plan choice had changed, so it has not switched anything on. Nothing is lost: message us on WhatsApp with reference ${charge.reference} and we will put it right.`,
+        poll: false,
+      };
+    }
     const plan = charge.plan ? (PLAN_NAMES[charge.plan] ?? charge.plan) : null;
     const until = charge.periodEnd ? ` until ${lagosDate(charge.periodEnd)}` : '';
     const what =
@@ -98,7 +110,7 @@ export function returnView(
   return {
     kind: 'confirming',
     title: 'Confirming your payment',
-    body: 'Paystack is confirming it with us. This usually takes under a minute, and your plan switches on by itself as soon as it does. You can leave this page.',
+    body: 'We have not had Paystack’s confirmation yet. If you completed the payment, this usually takes under a minute and your plan switches on by itself. If you left without paying, nothing was charged. You can leave this page.',
     poll: true,
   };
 }
