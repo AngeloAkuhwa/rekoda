@@ -45,6 +45,8 @@ describe('returnView', () => {
     );
     expect(view).toMatchObject({ kind: 'paid_not_applied', poll: false });
     expect(view.body).not.toMatch(/is active/);
+    // It does not guess why (a changed choice, an ended cycle, a support review).
+    expect(view.body).not.toMatch(/changed|choice|ended/);
     expect(view.body).toContain('RKD-SUB-20261025-AB12CD');
   });
 
@@ -84,7 +86,9 @@ describe('returnView', () => {
       ),
       'RKD-SUB-20261025-AB12CD',
     );
-    expect(view.body).toBe('Your 100 messages pack has been added to this month.');
+    expect(view.body).toBe('Your 100 messages pack has been added to your account.');
+    // No month is named, so reopening the page in a later month stays true.
+    expect(view.body).not.toMatch(/this month/);
   });
 
   it('keeps asking while a payment is unconfirmed, and never claims it is paid', () => {

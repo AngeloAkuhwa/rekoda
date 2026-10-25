@@ -69,7 +69,7 @@ export function returnView(
       return {
         kind: 'paid_not_applied',
         title: 'Payment received, but not applied',
-        body: `Your payment arrived after your plan choice had changed, so it has not switched anything on. Nothing is lost: message us on WhatsApp with reference ${charge.reference} and we will put it right.`,
+        body: `Your payment arrived, but it could not be applied to your plan as it stands now, so it has not switched anything on. Nothing is lost: message us on WhatsApp with reference ${charge.reference} and we will put it right.`,
         poll: false,
       };
     }
@@ -77,7 +77,7 @@ export function returnView(
       return {
         kind: 'paid',
         title: 'Payment received',
-        body: `Your ${charge.packLabel ? `${charge.packLabel} pack` : 'extra units'} has been added to this month.`,
+        body: `Your ${charge.packLabel ? `${charge.packLabel} pack` : 'extra units'} has been added to your account.`,
         poll: false,
       };
     }
