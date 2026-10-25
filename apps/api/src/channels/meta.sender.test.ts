@@ -70,6 +70,7 @@ const sender = (
     billing?: string | null;
     retention?: string | null;
     document?: string | null;
+    trial?: string | null;
   } = {},
 ) =>
   new MetaSender(
@@ -84,6 +85,8 @@ const sender = (
     opts.retention === undefined ? 'rekoda_retention' : opts.retention,
     'en',
     opts.document === undefined ? 'rekoda_document' : opts.document,
+    'en',
+    opts.trial === undefined ? 'rekoda_trial' : opts.trial,
     'en',
     baseUrl,
   );
@@ -239,6 +242,25 @@ describe('the utility templates', () => {
     });
   });
 
+  it('puts days left and the end date in the trial body, in order (G-109)', async () => {
+    await sender().sendTrialNotice({ to: '2348031234567', daysLeft: '2', endsOn: '16/11/2026' });
+
+    expect(bodyOf()).toMatchObject({
+      template: {
+        name: 'rekoda_trial',
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: '2' },
+              { type: 'text', text: '16/11/2026' },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
   it('puts what the document is and its reference in the body, in order (G-67)', async () => {
     await sender().sendDocumentNotice({
       to: '2348031234567',
@@ -278,6 +300,9 @@ describe('the utility templates', () => {
     await expect(
       sender({ retention: null }).sendRetentionNotice({ to: '1', daysLeft: '1', deletesOn: 'x' }),
     ).rejects.toThrow(/META_RETENTION_TEMPLATE/);
+    await expect(
+      sender({ trial: null }).sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+    ).rejects.toThrow(/META_TRIAL_TEMPLATE/);
 
     /* The retention one matters most: no template means no warning, and the
      * sweep treats an undelivered warning as a reason NOT to delete. */
@@ -497,6 +522,7 @@ describe('the unconfigured sender names what is missing (G-58)', () => {
       sender.sendBillingNotice(),
       sender.sendRetentionNotice(),
       sender.sendDocumentNotice(),
+      sender.sendTrialNotice(),
     ]) {
       await expect(call).rejects.toThrow('META_PHONE_NUMBER_ID is not set');
     }

@@ -7,6 +7,7 @@ import {
   type OutboundDocument,
   type OutboundDocumentNotice,
   type OutboundRetentionNotice,
+  type OutboundTrialNotice,
   type OutboundTemplate,
   type OutboundConnectionText,
   type OutboundMessage,
@@ -31,6 +32,8 @@ export class StubSender implements MessageSender {
   readonly billingNotices: OutboundBillingNotice[] = [];
   /** Retention warnings, kept apart from billing ones for the same reason. */
   readonly retentionNotices: OutboundRetentionNotice[] = [];
+  /** Trial reminders (G-109), apart from billing ones: a test must not match one for the other. */
+  readonly trialNotices: OutboundTrialNotice[] = [];
   /** "Your document is ready" templates (G-67), apart from the documents themselves. */
   readonly documentNotices: OutboundDocumentNotice[] = [];
   /** Merchant-WABA template sends (PR-060), with the credential they carried. */
@@ -63,6 +66,7 @@ export class StubSender implements MessageSender {
     this.billingNotices.length = 0;
     this.retentionNotices.length = 0;
     this.documentNotices.length = 0;
+    this.trialNotices.length = 0;
     this.templates.length = 0;
     this.connectionTexts.length = 0;
     this.media.clear();
@@ -129,6 +133,16 @@ export class StubSender implements MessageSender {
     }
     this.billingNotices.push(notice);
     return Promise.resolve({ providerMessageId: `wamid.BILL${this.billingNotices.length}` });
+  }
+
+  sendTrialNotice(notice: OutboundTrialNotice): Promise<SendResult> {
+    if (this.failNext) {
+      const error = this.failNext;
+      this.failNext = null;
+      return Promise.reject(error);
+    }
+    this.trialNotices.push(notice);
+    return Promise.resolve({ providerMessageId: `stub-${this.trialNotices.length}` });
   }
 
   sendDocumentNotice(notice: OutboundDocumentNotice): Promise<SendResult> {

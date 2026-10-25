@@ -108,6 +108,8 @@ export const businesses = pgTable(
     pendingPlan: text('pending_plan'),
     /** The last grace-reminder day sent, claimed by conditional UPDATE. */
     lastGraceReminderDay: smallint('last_grace_reminder_day'),
+    /** The last trial-reminder stage sent (1..3, core's trialNoticeDue), claimed by conditional UPDATE. */
+    lastTrialNoticeStage: smallint('last_trial_notice_stage'),
     /**
      * The grandfathering pin (spec §30, migration 0105). Null floats on the
      * current open plan_versions row for `plan`; non-null holds the business

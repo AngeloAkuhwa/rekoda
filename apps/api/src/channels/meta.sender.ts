@@ -10,6 +10,7 @@ import {
   type OutboundRetentionNotice,
   type OutboundDocumentNotice,
   type OutboundTemplate,
+  type OutboundTrialNotice,
   type OutboundConnectionText,
   type OutboundMessage,
   type SendResult,
@@ -55,6 +56,9 @@ export class MetaSender implements MessageSender {
     /** Meta-approved UTILITY template for "your document is ready" (G-67). */
     private readonly documentTemplate: string | null = null,
     private readonly documentTemplateLocale = 'en',
+    /** Meta-approved UTILITY template for trial reminders (G-109). Null: none is sent. */
+    private readonly trialTemplate: string | null = null,
+    private readonly trialTemplateLocale = 'en',
     /**
      * Graph's host. Injectable for the same reason the Paystack adapter's is:
      * the claims worth having about an adapter are about what goes over the
@@ -88,6 +92,38 @@ export class MetaSender implements MessageSender {
             parameters: [
               { type: 'text', text: notice.documentLabel },
               { type: 'text', text: notice.reference },
+            ],
+          },
+        ],
+      },
+    });
+  }
+
+  /**
+   * A trial reminder, as a utility template (G-109, OWN-56).
+   *
+   * Refuses loudly when none is configured: a message is never sent through an
+   * unapproved or unconfigured template, and the sweep that asked records nothing
+   * as delivered.
+   */
+  async sendTrialNotice(notice: OutboundTrialNotice): Promise<SendResult> {
+    if (!this.trialTemplate) {
+      throw new SendFailed('no trial template configured (META_TRIAL_TEMPLATE)');
+    }
+    return this.post({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: notice.to,
+      type: 'template',
+      template: {
+        name: this.trialTemplate,
+        language: { code: this.trialTemplateLocale },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: notice.daysLeft },
+              { type: 'text', text: notice.endsOn },
             ],
           },
         ],
@@ -479,6 +515,10 @@ export class NoSenderConfigured implements MessageSender {
   }
 
   sendRetentionNotice(): Promise<never> {
+    return Promise.reject(new SendFailed(this.reason));
+  }
+
+  sendTrialNotice(): Promise<never> {
     return Promise.reject(new SendFailed(this.reason));
   }
 }

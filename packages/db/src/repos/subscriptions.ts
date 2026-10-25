@@ -1608,6 +1608,86 @@ export async function inGrace(
   }));
 }
 
+export interface TrialBusiness {
+  businessId: string;
+  ownerPhone: string;
+  ownerOptedOut: boolean;
+  trialEndsAt: Date;
+}
+
+/**
+ * Businesses on a running trial that end within `withinDays` of `now` (G-109).
+ *
+ * Narrowed in SQL to the trials that can owe a reminder, because most trials are
+ * younger than the first milestone; which stage a business is at is core's call
+ * (`trialNoticeDue`), not this query's. Keyset-paged by id like `inGrace`.
+ */
+export async function trialsEndingWithin(
+  db: Db,
+  now: Date,
+  withinDays: number,
+  limit = 500,
+  afterId: string | null = null,
+): Promise<TrialBusiness[]> {
+  const rows = await db.execute<{
+    id: string;
+    plan_expires_at: Date | string;
+    owner_phone: string;
+    opted_out_at: string | null;
+  }>(sql`
+    SELECT b.id, b.plan_expires_at, u.phone AS owner_phone, u.opted_out_at
+    FROM businesses b
+    JOIN users u ON u.id = b.owner_user_id
+    WHERE b.plan = 'trial'
+      AND b.plan_expires_at IS NOT NULL
+      AND b.plan_expires_at > ${now.toISOString()}::timestamptz
+      AND b.plan_expires_at <= ${new Date(now.getTime() + withinDays * 86_400_000).toISOString()}::timestamptz
+      ${afterId === null ? sql`` : sql`AND b.id > ${afterId}::uuid`}
+    ORDER BY b.id
+    LIMIT ${limit}
+  `);
+  return [...rows].map((row) => ({
+    businessId: row.id,
+    ownerPhone: row.owner_phone,
+    ownerOptedOut: row.opted_out_at !== null,
+    trialEndsAt: new Date(row.plan_expires_at),
+  }));
+}
+
+/**
+ * Claim a trial reminder stage, or discover it was already sent. Returns true exactly
+ * once per stage to exactly one caller, and only while the business is still on its
+ * trial (a purchase that landed between the read and this claim sends nothing).
+ */
+export async function claimTrialNotice(
+  tx: TenantDb,
+  businessId: string,
+  stage: number,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE businesses
+    SET last_trial_notice_stage = ${stage}, updated_at = now()
+    WHERE id = ${businessId}::uuid
+      AND plan = 'trial'
+      AND (last_trial_notice_stage IS NULL OR last_trial_notice_stage < ${stage})
+    RETURNING id
+  `);
+  return [...rows].length === 1;
+}
+
+/** Give a claimed stage back after a failed send, so the next pass retries that stage only. */
+export async function releaseTrialNotice(
+  tx: TenantDb,
+  businessId: string,
+  stage: number,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE businesses
+    SET last_trial_notice_stage = ${stage - 1}, updated_at = now()
+    WHERE id = ${businessId}::uuid AND last_trial_notice_stage = ${stage}
+  `);
+}
+
 /**
  * Claim today's grace reminder, or discover somebody else already sent it.
  *

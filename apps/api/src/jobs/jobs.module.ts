@@ -40,6 +40,7 @@ import { BANK_FEED, type BankFeedPort } from '../bank/feed.port.js';
 import { sweepBankFeeds } from '../bank/feed-sync.js';
 import { sweepUnknownSenders } from '../channels/stranger-sweep.js';
 import { sweepGracePeriods } from '../billing/grace-sweep.js';
+import { sweepTrialNotices } from '../billing/trial-notice-sweep.js';
 import { AUDIO_METADATA_PROBE, type AudioMetadataProbe } from '../ai/audio-duration.js';
 import { sweepRenewals } from '../billing/renewal-sweep.js';
 import { runRetentionPass } from '../privacy/retention-sweep.js';
@@ -239,6 +240,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private strangerTimer: NodeJS.Timeout | null = null;
   private greeting = false;
   private sweepingGrace = false;
+  private sweepingTrialNotices = false;
   private sweepingRenewals = false;
   private sweepingRecurring = false;
   private sweepingDepreciation = false;
@@ -497,6 +499,32 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
             })
             .finally(() => {
               this.sweepingGrace = false;
+            });
+        },
+      }),
+    );
+
+    /** Trial reminders (G-109): the unit is a day, so hourly is plenty. */
+    this.sweepSchedules.push(
+      scheduleSweep({
+        intervalMs: 3_600_000,
+        run: () => {
+          if (this.sweepingTrialNotices) return;
+          this.sweepingTrialNotices = true;
+          this.exclusively('trial-notices', () =>
+            sweepTrialNotices({
+              workerDb,
+              appDb: this.appDb,
+              sender: this.sender,
+              templateConfigured: this.config.metaTrialTemplate !== null,
+              fxNairaPerUsd: this.config.planningFxNairaPerUsd,
+            }),
+          )
+            .catch((error: unknown) => {
+              this.log.warn(`trial notice sweep failed: ${redactForLog(describeFailure(error))}`);
+            })
+            .finally(() => {
+              this.sweepingTrialNotices = false;
             });
         },
       }),

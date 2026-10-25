@@ -96,6 +96,20 @@ export interface OutboundRetentionNotice {
 }
 
 /**
+ * A trial reminder, sent as a UTILITY TEMPLATE (G-109, OWN-56).
+ *
+ * A merchant in the middle of a trial has not necessarily written to the business
+ * number in the last 24 hours, so a free-form text would be rejected the same way
+ * a billing notice is. Two parameters, in order: whole days of trial left and the
+ * date it ends. Nothing about what the business sold.
+ */
+export interface OutboundTrialNotice {
+  to: string;
+  daysLeft: string;
+  endsOn: string;
+}
+
+/**
  * "Your document is ready", sent as a UTILITY TEMPLATE (G-67).
  *
  * A receipt or invoice is delivered to the owner the moment it exists, which
@@ -203,6 +217,11 @@ export interface MessageSender {
    * merchant did not ask for at the moment it was sent.
    */
   sendDocumentNotice(notice: OutboundDocumentNotice): Promise<SendResult>;
+  /**
+   * A trial reminder (G-109). Its own template: Meta approves by text, and "your
+   * trial ends" is not the grace reminder's "your payment failed".
+   */
+  sendTrialNotice(notice: OutboundTrialNotice): Promise<SendResult>;
 }
 
 /** The send failed. The reply is lost; the merchant's record is not. */
