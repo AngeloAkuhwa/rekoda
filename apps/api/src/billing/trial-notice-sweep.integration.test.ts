@@ -486,6 +486,88 @@ describe('trial reminders', () => {
       expect(Object.keys(rows[0]!).sort()).toEqual(['attempt', 'businessId', 'trialEndsAt']);
     });
 
+    it('discovery is a SECURITY DEFINER function with a pinned path, executable by the worker alone', async () => {
+      const fn = [
+        ...(await ownerDb.execute<{
+          definer: boolean;
+          config: string[] | null;
+          columns: string[];
+          app: boolean;
+          worker: boolean;
+          pub: boolean;
+        }>(sql`
+          SELECT p.prosecdef AS definer, p.proconfig AS config,
+                 (SELECT array_agg(a ORDER BY a) FROM unnest(p.proargnames) a
+                   WHERE a NOT IN ('as_of', 'within_days', 'page_size', 'after_id')) AS columns,
+                 has_function_privilege('rekoda_app', p.oid, 'EXECUTE') AS app,
+                 has_function_privilege('rekoda_worker', p.oid, 'EXECUTE') AS worker,
+                 has_function_privilege('public', p.oid, 'EXECUTE') AS pub
+          FROM pg_proc p WHERE p.proname = 'sweep_trial_candidates'
+        `)),
+      ];
+
+      expect(fn).toHaveLength(1);
+      expect(fn[0]!.definer).toBe(true);
+      expect(fn[0]!.config).toContain('search_path=pg_catalog, pg_temp');
+      expect(fn[0]!.worker).toBe(true);
+      expect(fn[0]!.app).toBe(false);
+      expect(fn[0]!.pub).toBe(false);
+      expect(fn[0]!.columns).toEqual(
+        [
+          'id',
+          'plan_expires_at',
+          'last_trial_notice_stage',
+          'trial_notice_state',
+          'trial_notice_attempted_at',
+        ].sort(),
+      );
+    });
+
+    it('the application role cannot run discovery', async () => {
+      await seedTrial();
+
+      await expect(
+        appDb.execute(
+          sql`SELECT * FROM sweep_trial_candidates(${at(12).toISOString()}::timestamptz, 7, 10, NULL)`,
+        ),
+      ).rejects.toThrow();
+    });
+
+    it('discovery names only running trials: not a bought plan, an expired trial or a later trial', async () => {
+      const running = await seedTrial();
+      const bought = await seedTrial();
+      const ended = await seedTrial();
+      const later = await seedTrial();
+      await ownerDb.execute(sql`UPDATE businesses SET plan = 'chat' WHERE id = ${bought.id}::uuid`);
+      await ownerDb.execute(
+        sql`UPDATE businesses SET plan_expires_at = ${at(10).toISOString()}::timestamptz WHERE id = ${ended.id}::uuid`,
+      );
+      await ownerDb.execute(
+        sql`UPDATE businesses SET plan_expires_at = ${at(40).toISOString()}::timestamptz WHERE id = ${later.id}::uuid`,
+      );
+      const { subscriptionsRepo } = await import('@rekoda/db');
+
+      const rows = await subscriptionsRepo.trialsEndingWithin(workerDb, at(12), 7);
+
+      expect(rows.map((r) => r.businessId)).toEqual([running.id]);
+    });
+
+    it('scheduling a due task grants no wider read: discovery returns no business column beyond the minimum', async () => {
+      await seedTrial();
+
+      const raw = await workerDb.execute<Record<string, unknown>>(
+        sql`SELECT * FROM sweep_trial_candidates(${at(12).toISOString()}::timestamptz, 7, 10, NULL)`,
+      );
+
+      expect(Object.keys([...raw][0]!).sort()).toEqual([
+        'id',
+        'last_trial_notice_stage',
+        'plan_expires_at',
+        'trial_notice_attempted_at',
+        'trial_notice_state',
+      ]);
+    });
+
     it('the worker role can read candidates but cannot write a business row', async () => {
       const { id } = await seedTrial();
 

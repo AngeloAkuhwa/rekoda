@@ -154,3 +154,14 @@ scale apart.
 - We want scheduled/cron jobs, at which point pg-boss's feature set starts to
   earn its cost again — but the tenancy argument above does not change, so
   anything we adopt has to answer it.
+
+## Clarification (25 Oct 2026, owner ruling OWN-57)
+
+This ADR describes the worker's extra reach as the `jobs` table. In practice
+the worker role also holds migration 0004's table grants (limited by RLS) and a
+read-only policy on `businesses` (`ops_read_businesses`, migration 0019). The
+worker's cross-tenant discovery for scheduled operations is governed by
+[0035](0035-operational-aggregate-monitoring.md), Amendment 1: ID-only
+discovery through a dedicated `SECURITY DEFINER` function, with all further
+tenant data reached under `withBusiness()`. Nothing in this ADR's queue, claim
+policy or role split changes.

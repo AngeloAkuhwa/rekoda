@@ -1622,13 +1622,13 @@ export interface TrialBusiness {
 /**
  * Businesses on a running trial that end within `withinDays` of `now` (G-109).
  *
- * This is the one cross-tenant read of the reminder sweep, made through the worker role's
- * read-only policy on `businesses` (`ops_read_businesses`, migration 0019, written for the
- * margin report). Whether sweep discovery is an approved exception to invariant 3 is an open
- * owner decision (OD-33 in docs/REKODA_LAUNCH_READINESS.md). It returns the MINIMUM needed to decide what is due: the id, the trial end and the
- * latest attempt. It joins nothing and exposes no owner phone, name or consent flag; those
- * are read later, inside the tenant's own scope, only for a notice that is about to be
- * sent. Which stage a business is at is core's call (`trialNoticeDue`). Keyset-paged by id.
+ * This is the one cross-tenant read of the reminder sweep: ID-only scheduling discovery
+ * (OD-33, ADR 0035 class 2), made ONLY through the dedicated `sweep_trial_candidates`
+ * function (migration 0181; EXECUTE for the worker role alone). It returns the MINIMUM needed
+ * to decide what is due: the id, the trial end and the latest attempt. No owner phone, name or
+ * consent flag; those are read later, inside the tenant's own scope, only for a notice that
+ * is about to be sent. Which stage a business is at is core's call (`trialNoticeDue`).
+ * Keyset-paged by id.
  */
 export async function trialsEndingWithin(
   db: Db,
@@ -1644,16 +1644,10 @@ export async function trialsEndingWithin(
     trial_notice_state: 'sending' | 'sent' | 'unknown' | 'suppressed' | 'refused' | null;
     trial_notice_attempted_at: Date | string | null;
   }>(sql`
-    SELECT b.id, b.plan_expires_at,
-           b.last_trial_notice_stage, b.trial_notice_state, b.trial_notice_attempted_at
-    FROM businesses b
-    WHERE b.plan = 'trial'
-      AND b.plan_expires_at IS NOT NULL
-      AND b.plan_expires_at > ${now.toISOString()}::timestamptz
-      AND b.plan_expires_at <= ${new Date(now.getTime() + withinDays * 86_400_000).toISOString()}::timestamptz
-      ${afterId === null ? sql`` : sql`AND b.id > ${afterId}::uuid`}
-    ORDER BY b.id
-    LIMIT ${limit}
+    SELECT id, plan_expires_at, last_trial_notice_stage, trial_notice_state, trial_notice_attempted_at
+    FROM sweep_trial_candidates(
+      ${now.toISOString()}::timestamptz, ${withinDays}::int, ${limit}::int, ${afterId}::uuid
+    )
   `);
   return [...rows].map((row) => ({
     businessId: row.id,

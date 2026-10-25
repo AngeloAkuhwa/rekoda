@@ -60,3 +60,46 @@ UPDATE, DELETE` on all tables, and `worker_claim` lets it read and change any
   migration and a new credential and is tracked in the launch backlog.
 - An endpoint or query that does not meet every rule above is a tenant-isolation
   defect, whatever its purpose.
+
+## Amendment 1 (25 Oct 2026, owner ruling OWN-57 / OD-33): three classes of access
+
+The decision above stands unchanged for its own subject. A scheduler needs a
+second, differently shaped cross-tenant read, so the policy now distinguishes
+three classes. None weakens tenant isolation.
+
+1. **Non-identifying aggregate operational queries** (this ADR's original
+   decision). Counts, ages and statuses only; never a business id.
+2. **Narrow ID-only scheduling discovery.** A trusted background worker may
+   discover which business ids a scheduled operation must act on. Rules:
+   - it is a dedicated `SECURITY DEFINER` function with a pinned `search_path`
+     and `EXECUTE` granted to `rekoda_worker` only (revoked from `PUBLIC` and
+     `rekoda_app`); broad table permissions are not the mechanism for new
+     discovery;
+   - it takes only scheduling inputs (a clock reading, a window, a page size, a
+     keyset cursor), never merchant input;
+   - it returns the business id and the minimum scheduling state the decision
+     needs, and never a phone, name, consent flag, financial figure, contact
+     detail, message, payload or credential;
+   - it is limited to named, approved scheduling operations (today: trial
+     reminders, `sweep_trial_candidates`, migration 0181); a new operation
+     needs its own function and a line here;
+   - after discovery, every read of owner data and every write runs under
+     `withBusiness()` on the application role, and eligibility, consent, expiry
+     and plan are revalidated inside that scope before anything is dispatched;
+   - the worker cannot use discovery to read arbitrary tenant records: the
+     function returns a fixed column set, and tests prove the grants, the
+     column set, and that a wrong tenant pin reads and changes nothing.
+3. **Tenant-scoped business data access.** Everything else, through
+   `withBusiness()` only.
+
+The grace, renewal, retention and settlement sweeps predate this amendment and
+list through the worker role's table policy (`ops_read_businesses`, migration
+0019). They are not approved by precedent: they are recorded in the OD-33
+readiness row with the data each discovery returns, and moving each to a
+dedicated function (and removing the owner phone from grace discovery) is a
+tracked follow-up.
+
+**Residual privilege (unchanged, recorded).** The worker credential still holds
+migration 0004's table grants and `ops_read_businesses`; the new function does
+not remove them, because the older sweeps still rely on them. Removing them is
+the end state of the follow-up above.
