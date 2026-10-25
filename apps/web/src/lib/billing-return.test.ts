@@ -122,7 +122,11 @@ describe('returnView', () => {
       returnView(overview(charge({ status: 'refunded' })), 'RKD-SUB-20261025-AB12CD').kind,
     ).toBe('refunded');
     for (const ref of [null, 'RKD-SUB-20261025-ZZZZZZ']) {
-      expect(returnView(overview(charge({})), ref)).toMatchObject({ kind: 'unknown', poll: false });
+      const unknown = returnView(overview(charge({})), ref);
+      expect(unknown).toMatchObject({ kind: 'unknown', poll: false });
+      // It says only that the payment is not among the latest ones shown, never that it is not on the account.
+      expect(unknown.body).toContain('not among your most recent payments');
+      expect(unknown.body).not.toMatch(/not on your account|could not find/i);
     }
   });
 
