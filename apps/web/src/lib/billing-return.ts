@@ -62,10 +62,10 @@ export function returnView(
     };
   }
   if (charge.status === 'paid') {
-    /* Money arrived, but a plan charge only switches a plan on when it is the plan the account is
-     * on. A payment that landed after a newer decision (the merchant changed their mind, or the
-     * cycle moved) was received and is not applied, and must not read "active" (OD-30). */
-    if (charge.plan && charge.kind !== 'add_on' && overview.plan !== charge.plan) {
+    /* Money arrived, but only an APPLIED charge changed the account. A payment that landed after a
+     * newer decision (the merchant changed their mind, or the cycle moved) was received and
+     * refused as stale (OD-30), so it must not read "active". */
+    if (!charge.applied) {
       return {
         kind: 'paid_not_applied',
         title: 'Payment received, but not applied',
@@ -73,15 +73,31 @@ export function returnView(
         poll: false,
       };
     }
+    if (charge.kind === 'add_on') {
+      return {
+        kind: 'paid',
+        title: 'Payment received',
+        body: `Your ${charge.packLabel ? `${charge.packLabel} pack` : 'extra units'} has been added to this month.`,
+        poll: false,
+      };
+    }
+    /* The date comes from the cycle the account actually holds, not from the date quoted when the
+     * checkout was opened: a payment made days later starts its cycle when it settles. */
     const plan = charge.plan ? (PLAN_NAMES[charge.plan] ?? charge.plan) : null;
-    const until = charge.periodEnd ? ` until ${lagosDate(charge.periodEnd)}` : '';
-    const what =
-      charge.kind === 'add_on'
-        ? `Your ${charge.packLabel ? `${charge.packLabel} pack` : 'extra units'} has been added to this month.`
-        : plan
-          ? `Your ${plan} plan is active${until}.`
-          : 'Your payment has been applied.';
-    return { kind: 'paid', title: 'Payment received', body: what, poll: false };
+    if (plan && overview.plan === charge.plan && overview.status.state === 'active') {
+      return {
+        kind: 'paid',
+        title: 'Payment received',
+        body: `Your ${plan} plan is active until ${lagosDate(overview.status.renewsAt)}.`,
+        poll: false,
+      };
+    }
+    return {
+      kind: 'paid',
+      title: 'Payment received',
+      body: 'Your payment has been applied. Your billing page shows what is active now.',
+      poll: false,
+    };
   }
   if (charge.status === 'refunded') {
     return {

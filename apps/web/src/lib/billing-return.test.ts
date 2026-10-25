@@ -16,28 +16,31 @@ const charge = (over: Partial<Charge>): Charge => ({
   periodEnd: null,
   interval: 'monthly',
   superseded: false,
+  applied: false,
   createdAt: '2026-10-25T10:00:00.000Z',
   ...over,
 });
 const overview = (...charges: Charge[]) =>
-  ({ plan: 'chat', charges }) as unknown as BillingOverviewResponse;
+  ({
+    plan: 'chat',
+    status: { state: 'active', renewsAt: '2026-11-27T10:00:00.000Z' },
+    charges,
+  }) as unknown as BillingOverviewResponse;
 
 describe('returnView', () => {
-  it('shows a paid plan with its end date, and stops polling', () => {
+  it('shows the paid-to date the account holds, not the date quoted when checkout opened', () => {
+    // Opened on 25 Oct (quoted to 25 Nov) and paid on 27 Oct: the cycle runs to 27 Nov.
     const view = returnView(
-      overview(charge({ status: 'paid', periodEnd: '2026-11-25T10:00:00.000Z' })),
+      overview(charge({ status: 'paid', applied: true, periodEnd: '2026-11-25T10:00:00.000Z' })),
       'RKD-SUB-20261025-AB12CD',
     );
     expect(view).toMatchObject({ kind: 'paid', title: 'Payment received', poll: false });
-    expect(view.body).toBe('Your Chat plan is active until 25 Nov 2026.');
+    expect(view.body).toBe('Your Chat plan is active until 27 Nov 2026.');
   });
 
-  it('does not say a plan is active when the payment is for a plan the account is not on', () => {
+  it('does not say a plan is active when the payment was received but not applied', () => {
     const view = returnView(
-      {
-        plan: 'complete',
-        charges: [charge({ status: 'paid', plan: 'chat' })],
-      } as unknown as BillingOverviewResponse,
+      overview(charge({ status: 'paid', applied: false })),
       'RKD-SUB-20261025-AB12CD',
     );
     expect(view).toMatchObject({ kind: 'paid_not_applied', poll: false });
@@ -45,14 +48,40 @@ describe('returnView', () => {
     expect(view.body).toContain('RKD-SUB-20261025-AB12CD');
   });
 
+  it('makes no date claim when the account is not in an active cycle or is on another plan', () => {
+    const other = {
+      plan: 'complete',
+      status: { state: 'active', renewsAt: '2026-11-27T10:00:00.000Z' },
+      charges: [charge({ status: 'paid', applied: true, plan: 'chat' })],
+    } as unknown as BillingOverviewResponse;
+    expect(returnView(other, 'RKD-SUB-20261025-AB12CD').body).not.toMatch(/until/);
+    const grace = {
+      plan: 'chat',
+      status: { state: 'grace', endsAt: '2026-11-01T10:00:00.000Z', daysLeft: 3 },
+      charges: [charge({ status: 'paid', applied: true })],
+    } as unknown as BillingOverviewResponse;
+    expect(returnView(grace, 'RKD-SUB-20261025-AB12CD').body).not.toMatch(/until/);
+  });
+
   it('finds the charge through a replacement attempt reference (-R2)', () => {
-    const view = returnView(overview(charge({ status: 'paid' })), 'RKD-SUB-20261025-AB12CD-R2');
+    const view = returnView(
+      overview(charge({ status: 'paid', applied: true })),
+      'RKD-SUB-20261025-AB12CD-R2',
+    );
     expect(view.kind).toBe('paid');
   });
 
   it('says a pack was added', () => {
     const view = returnView(
-      overview(charge({ kind: 'add_on', plan: null, packLabel: '100 messages', status: 'paid' })),
+      overview(
+        charge({
+          kind: 'add_on',
+          plan: null,
+          packLabel: '100 messages',
+          status: 'paid',
+          applied: true,
+        }),
+      ),
       'RKD-SUB-20261025-AB12CD',
     );
     expect(view.body).toBe('Your 100 messages pack has been added to this month.');

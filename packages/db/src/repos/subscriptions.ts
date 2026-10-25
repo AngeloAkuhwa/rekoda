@@ -474,6 +474,8 @@ export interface ChargeRow extends Record<string, unknown> {
   createdAt: Date;
   /** Paid (or pending) but its plan change was refused as stale (G-104): an operator reconciles it. */
   supersededAt: Date | null;
+  /** Paid but its plan change was refused (OD-30): money received, nothing applied. Null otherwise. */
+  unappliedAt: Date | null;
   /** What the provider verified it took (G-107). Above `amountK` is an overpayment; null if unrecorded. */
   paidAmountK: number | null;
   /** How much of `amountK` has been returned; the status is `refunded` only when all of it has (G-111). */
@@ -498,6 +500,7 @@ interface RawCharge extends Record<string, unknown> {
   period_end: string | null;
   created_at: string;
   superseded_at: string | null;
+  unapplied_at: string | null;
   paid_amount_k: string | number | null;
   refunded_amount_k: string | number | null;
   billing_interval: string | null;
@@ -518,6 +521,7 @@ const shape = (row: RawCharge): ChargeRow => ({
   periodEnd: at(row.period_end),
   createdAt: new Date(row.created_at),
   supersededAt: at(row.superseded_at),
+  unappliedAt: at(row.unapplied_at),
   paidAmountK: row.paid_amount_k === null ? null : Number(row.paid_amount_k),
   refundedAmountK: Number(row.refunded_amount_k ?? 0),
   billingInterval: intervalOf(row.billing_interval),
