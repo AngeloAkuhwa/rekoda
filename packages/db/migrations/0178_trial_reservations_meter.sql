@@ -1,10 +1,10 @@
 -- G-109 (OWN-54): point the reservations still recorded on a running trial's messages at the trial
--- row (`TRIAL00`), where migration 0176 copied that trial's usage, so a delayed refund lands there.
+-- row (`TRIAL00`), where migration 0177 copied that trial's usage, so a delayed refund lands there.
 -- EXPAND-ONLY: it fills `reserved_meters`, which the previous release never reads, and deletes
 -- nothing. Only reservations of a business still on the trial plan, and only units without a meter
 -- row already; API request and webhook units keep their own monthly cycle. Re-running changes nothing.
 --
--- A separate file from 0176 on purpose: each migration is one transaction, and disabling row-level
+-- A separate file from 0177 on purpose: each migration is one transaction, and disabling row-level
 -- security takes an ACCESS EXCLUSIVE lock on its table until the file ends. The previous release is
 -- still running while this runs and takes row locks on external_events and usage_counters in
 -- turn, so one file must never hold the lock on one of them while it waits for the other.

@@ -245,7 +245,7 @@ export async function takeRecordedUnit(
        WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid
        FOR UPDATE
     )
-    SELECT u, locked.reserved_meters ->> ${unit}::text AS meter
+    SELECT u, locked.reserved_meters ->> ${unitOf(unit)}::text AS meter
       FROM locked, unnest(locked.reserved_units) AS u
      WHERE (u = ${unit} OR u LIKE ${unit} || ':%')
      LIMIT 1`);
@@ -254,7 +254,7 @@ export async function takeRecordedUnit(
   await tx.execute(sql`
     UPDATE external_events
        SET reserved_units = array_remove(reserved_units, ${found.u}),
-           reserved_meters = reserved_meters - ${unit}::text
+           reserved_meters = reserved_meters - ${unitOf(unit)}::text
      WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid`);
   return { held: found.u, meter: found.meter };
 }
@@ -303,14 +303,14 @@ export async function takeReservedUnit(
 ): Promise<{ meter: string | null } | null> {
   const rows = await tx.execute<{ meter: string | null }>(sql`
     WITH held AS (
-      SELECT id, reserved_meters ->> ${unit}::text AS meter FROM external_events
+      SELECT id, reserved_meters ->> ${unitOf(unit)}::text AS meter FROM external_events
        WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid
          AND ${unit} = ANY(reserved_units)
        FOR UPDATE
     )
     UPDATE external_events e
        SET reserved_units = array_remove(e.reserved_units, ${unit}),
-           reserved_meters = e.reserved_meters - ${unit}::text
+           reserved_meters = e.reserved_meters - ${unitOf(unit)}::text
       FROM held
      WHERE e.id = held.id
     RETURNING held.meter`);

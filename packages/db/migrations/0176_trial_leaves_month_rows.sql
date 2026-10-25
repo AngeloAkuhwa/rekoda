@@ -1,10 +1,10 @@
 -- G-109 (OWN-54): a business leaving the trial leaves no trial usage on a calendar-month row.
 --
--- The trial meters its base-plan units on ONE row (`TRIAL00`); migration 0176 copied the usage a
+-- The trial meters its base-plan units on ONE row (`TRIAL00`); migration 0177 copied the usage a
 -- running trial had on calendar-month rows onto it and left those rows in place, so the previous
 -- release (which still reads and writes them) keeps working until it is replaced. A deploy cannot
 -- stop that release's processes before it migrates, so a trial business can have calendar-month
--- rows from before 0176 and from the previous release's writes after it. The new release never
+-- rows from before 0177 and from the previous release's writes after it. The new release never
 -- reads such a row for a trial, and left alone it would be read as PAID usage the moment the
 -- business buys a plan in that month, so the first paid month would not start fresh.
 --
@@ -14,8 +14,11 @@
 -- sells (API_REQUEST_UNITS, WEBHOOK_DELIVERIES) keep their own months and are not touched. Runs as
 -- the invoking role under the tenant pin (the application and worker roles may delete their own
 -- tenant's usage rows); with no pin the delete matches nothing and the plan change is unaffected.
--- What the previous release spent after 0176 copied the totals is not counted against the trial
+-- What the previous release spent after 0177 copied the totals is not counted against the trial
 -- budget: a bounded, one-time benefit to the merchant during a single deploy window.
+
+-- This file runs BEFORE the backfill (0177) on purpose: a trial that upgrades between the copy and a
+-- later trigger install would keep its month rows, and the first paid month would not start fresh.
 
 CREATE OR REPLACE FUNCTION release_trial_month_rows() RETURNS trigger
 LANGUAGE plpgsql AS $$

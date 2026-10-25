@@ -11,7 +11,7 @@
 -- overwrites a `TRIAL00` row that exists (DO NOTHING), so running it again changes nothing.
 --
 -- The month rows are left where they are. The new release never reads them for a trial; migration
--- 0177 discards them when the business leaves the trial, so a first paid month starts fresh. The
+-- 0176 discards them when the business leaves the trial, so a first paid month starts fresh. The
 -- units a standalone holding sells (API_REQUEST_UNITS, WEBHOOK_DELIVERIES) keep their own monthly
 -- rows and are not touched, nor is any business that is not on the trial plan.
 --

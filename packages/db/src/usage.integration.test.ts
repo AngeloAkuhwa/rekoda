@@ -425,6 +425,23 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
       expect(usageRepo.storedMeter(taken!.meter, '2026-08')).toBe(monthMeter('2026-08'));
     });
 
+    it('a quantity-suffixed unit is taken with the row recorded under its kind', async () => {
+      const businessId = await seedBusiness();
+      const eventId = await seedEvent(businessId);
+      await withBusiness(db, businessId, (tx) =>
+        events.noteReservedUnit(tx, businessId, eventId, 'VOICE_MINUTES:5', TRIAL_METER),
+      );
+      const taken = await withBusiness(db, businessId, (tx) =>
+        events.takeReservedUnit(tx, businessId, eventId, 'VOICE_MINUTES:5'),
+      );
+      expect(taken).toEqual({ meter: TRIAL_METER });
+      const left = await withBusiness(db, businessId, (tx) =>
+        tx.execute<{ m: Record<string, string> }>(sql`
+          SELECT reserved_meters AS m FROM external_events WHERE id = ${eventId}::uuid`),
+      );
+      expect([...left][0]?.m).toEqual({});
+    });
+
     it('takeReservedUnitsOf and takeReservedUnits carry each unit with its row', async () => {
       const businessId = await seedBusiness();
       const eventId = await seedEvent(businessId);
@@ -515,12 +532,12 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
   });
 });
 
-describe('trials already running when the trial meter moved (migrations 0176 and 0177)', () => {
+describe('trials already running when the trial meter moved (migrations 0177 and 0178)', () => {
   /** The migrations' own SQL (the usage copy, then the reservations), run again against rows shaped as the old release left them. */
   async function backfill(): Promise<void> {
     const owner = postgres(urls.owner, { max: 1, onnotice: () => {} });
     try {
-      for (const file of ['0176_trial_meter_backfill.sql', '0177_trial_reservations_meter.sql']) {
+      for (const file of ['0177_trial_meter_backfill.sql', '0178_trial_reservations_meter.sql']) {
         await owner.unsafe(await readFile(join(MIGRATIONS_DIR, file), 'utf8')).simple();
       }
     } finally {
@@ -673,7 +690,7 @@ describe('the trial migrations leave row-level security as they found it', () =>
   });
 });
 
-describe('a business leaving the trial leaves no trial usage on a month row (migration 0178)', () => {
+describe('a business leaving the trial leaves no trial usage on a month row (migration 0176)', () => {
   const ownerRun = async (statement: ReturnType<typeof sql>) => {
     const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
     try {
