@@ -588,7 +588,7 @@ describe('trial reminders', () => {
         attempts += 1;
         return original(notice);
       };
-      sender.failTrialNoticesWith(new SendFailed('meta 429', 130429, true, true));
+      sender.failTrialNoticesWith(new SendFailed('meta 429', 130429, true, true, true));
 
       const result = await sweep(sender, at(12));
 
@@ -632,6 +632,52 @@ describe('trial reminders', () => {
 
       expect(marked).toBe(false);
       expect((await stateOf(id)).state).toBe('sending');
+    });
+
+    /** A sender whose Nth call (in listing order) follows the given outcomes. */
+    function scripted(outcomes: Array<'ok' | 'outage' | 'recipient' | 'permanent'>) {
+      const sender = new StubSender();
+      let call = 0;
+      const original = sender.sendTrialNotice.bind(sender);
+      sender.sendTrialNotice = (notice) => {
+        const outcome = outcomes[call] ?? 'ok';
+        call += 1;
+        if (outcome === 'outage')
+          return Promise.reject(new SendFailed('meta 429', 130429, true, true, true));
+        if (outcome === 'recipient')
+          return Promise.reject(new SendFailed('meta 131056', 131056, true, true, false));
+        if (outcome === 'permanent')
+          return Promise.reject(new SendFailed('meta 132001', 132001, true, false, false));
+        return original(notice);
+      };
+      return { sender, calls: () => call };
+    }
+
+    it('does not stop the pass for per-recipient throttles, however many there are', async () => {
+      for (let i = 0; i < 6; i += 1) await seedTrial();
+      const { sender, calls } = scripted([
+        'recipient',
+        'recipient',
+        'recipient',
+        'recipient',
+        'ok',
+        'ok',
+      ]);
+
+      const result = await sweep(sender, at(12));
+
+      expect(calls()).toBe(6);
+      expect(result).toMatchObject({ stoppedEarly: false, failed: 4, sent: 2 });
+    });
+
+    it('counts only consecutive outages: a different answer in between clears the count', async () => {
+      for (let i = 0; i < 6; i += 1) await seedTrial();
+      const { sender, calls } = scripted(['outage', 'permanent', 'outage', 'outage', 'ok', 'ok']);
+
+      const result = await sweep(sender, at(12));
+
+      expect(calls()).toBe(6);
+      expect(result).toMatchObject({ stoppedEarly: false, refused: 1, failed: 3, sent: 2 });
     });
   });
 

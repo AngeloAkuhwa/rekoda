@@ -40,15 +40,28 @@ const MAX_MEDIA_BYTES = 16 * 1024 * 1024;
 const TRANSIENT_STATUSES: ReadonlySet<number> = new Set([401, 403, 429]);
 
 /**
- * Graph error codes that clear by themselves or by an operator, whatever the HTTP status:
- * Meta reports an expired or invalid token as HTTP 400 with code 190 (and 102, 463, 467 for
- * session problems), and throttling as 4, 17, 32, 613, 80007, 130429, 131048 or 131056.
- * A wrong template (132001) or parameters (132000) or a bad recipient is NOT here: those
- * repeat identically.
+ * Graph error codes that repeat identically for the same message: invalid parameters, a
+ * wrong or unapproved template, a recipient that cannot receive it. Everything else on a
+ * 4xx is treated as transient, because losing a reminder to an error that would have
+ * cleared costs more than one more bounded retry (a token reported as HTTP 400 code 190,
+ * session codes 102, 463, 467 and throttling codes are among those that clear).
  */
-const TRANSIENT_CODES: ReadonlySet<number> = new Set([
-  4, 17, 32, 102, 190, 463, 467, 613, 80007, 130429, 131048, 131056,
+const PERMANENT_CODES: ReadonlySet<number> = new Set([
+  33, 100, 131009, 131026, 131030, 132000, 132001, 132005, 132007, 132012, 132015, 132016,
 ]);
+
+/** Throttles that apply to one recipient (or sender and recipient pair), not the whole sender. */
+const PER_RECIPIENT_CODES: ReadonlySet<number> = new Set([131048, 131056]);
+
+/** How a refused Graph request should be treated; see `SendFailed`. */
+function classifyRefusal(
+  status: number,
+  code: number | null,
+): { transient: boolean; outage: boolean } {
+  const permanent = !TRANSIENT_STATUSES.has(status) && code !== null && PERMANENT_CODES.has(code);
+  if (permanent) return { transient: false, outage: false };
+  return { transient: true, outage: code === null || !PER_RECIPIENT_CODES.has(code) };
+}
 
 export class MetaSender implements MessageSender {
   private readonly log = new Logger(MetaSender.name);
@@ -463,11 +476,13 @@ export class MetaSender implements MessageSender {
          * to act on.
          */
         const code = await providerCodeOf(response);
+        const refusal = classifyRefusal(response.status, code);
         throw new SendFailed(
           `meta ${path} failed with ${response.status}`,
           code,
           response.status >= 400 && response.status < 500,
-          TRANSIENT_STATUSES.has(response.status) || (code !== null && TRANSIENT_CODES.has(code)),
+          refusal.transient,
+          refusal.outage,
         );
       }
       return await response.json();
@@ -536,7 +551,7 @@ export class NoSenderConfigured implements MessageSender {
   }
 
   sendTrialNotice(): Promise<never> {
-    return Promise.reject(new SendFailed(this.reason, null, true, true));
+    return Promise.reject(new SendFailed(this.reason, null, true, true, true));
   }
 }
 

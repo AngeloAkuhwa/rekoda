@@ -290,7 +290,7 @@ describe('the utility templates', () => {
     };
     await expect(
       sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
-    ).rejects.toMatchObject({ notSent: true, transient: true });
+    ).rejects.toMatchObject({ notSent: true, transient: true, outage: true });
 
     respond = (_req, res) => {
       res.writeHead(400, { 'content-type': 'application/json' });
@@ -316,6 +316,24 @@ describe('the utility templates', () => {
       notSent: true,
       transient: true,
     });
+  });
+
+  it('treats an unrecognised 4xx as transient, and a per-recipient throttle as not an outage', async () => {
+    respond = (_req, res) => {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: 999999 } }));
+    };
+    await expect(
+      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+    ).rejects.toMatchObject({ notSent: true, transient: true, outage: true });
+
+    respond = (_req, res) => {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: 131056 } }));
+    };
+    await expect(
+      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+    ).rejects.toMatchObject({ notSent: true, transient: true, outage: false });
   });
 
   it('puts what the document is and its reference in the body, in order (G-67)', async () => {

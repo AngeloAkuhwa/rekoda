@@ -249,6 +249,13 @@ export class SendFailed extends Error {
      * identically, and a caller that retries it hourly only hammers the shared sender.
      */
     readonly transient: boolean = false,
+    /**
+     * With `transient`: the refusal affects the whole sender (credentials, app-level rate
+     * limit, or an error not recognised at all), so every other send is likely to meet it
+     * too and a caller looping over many recipients should stop. False for a per-recipient
+     * condition (a pair rate limit) that says nothing about the next recipient.
+     */
+    readonly outage: boolean = false,
   ) {
     super(message);
   }

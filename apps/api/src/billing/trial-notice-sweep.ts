@@ -224,6 +224,7 @@ export async function sweepTrialNotices(
               `business ${row.businessId}: trial stage ${due.stage} refusal not recorded: ${redactForLog(String(refuseError))}`,
             );
           }
+          consecutiveTransient = 0;
           result.refused += 1;
           log.error(
             `business ${row.businessId}: trial reminder refused by the provider, not retried: ${redactForLog(reason)}`,
@@ -248,7 +249,10 @@ export async function sweepTrialNotices(
           log.warn(
             `business ${row.businessId}: trial reminder not delivered: ${redactForLog(reason)}`,
           );
-          consecutiveTransient += 1;
+          /* Only a refusal that says something about the whole sender counts toward
+           * stopping the pass; a per-recipient throttle says nothing about the next
+           * owner, and any answer that is not an outage clears the count. */
+          consecutiveTransient = error.outage ? consecutiveTransient + 1 : 0;
           if (consecutiveTransient >= TRANSIENT_FAILURES_BEFORE_STOP) {
             result.stoppedEarly = true;
             log.error('trial reminder pass stopped early after repeated provider refusals');
