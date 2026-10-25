@@ -1,6 +1,6 @@
 # Meta template: trial reminder (G-109, OWN-56, OWN-61)
 
-Rekoda sends this template at 7, 2 and 1 days before a trial ends. The sweep is inert while
+Rekoda sends this template 7 days, 2 days and 1 day before a trial ends. The sweep is inert while
 `META_TRIAL_TEMPLATE` is unset. The code does not check Meta's approval status: it sends through whatever
 name is set, so setting the name before Meta approves it is an operator error (OWN-56, OWN-61). Set it only after approval.
 

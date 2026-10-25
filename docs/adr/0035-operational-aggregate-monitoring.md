@@ -109,7 +109,8 @@ the end state of the follow-up above.
 owner bypasses RLS. Today the function is owned by the migrating role, and
 `packages/db/src/migrate.ts` (`assertCanReachEveryTenant`) refuses to migrate as a role that cannot
 reach every tenant. That guard protects migration-time setup only: it does not keep the owner's
-`BYPASSRLS` or the function's ownership after deployment. If either changes, discovery returns zero
-rows and reminders can stop silently. Any later change to the function owner or its RLS capability must
+`BYPASSRLS` or the function's ownership after deployment. If the deployed owner loses effective RLS
+bypass (neither `rolsuper` nor `rolbypassrls`), discovery returns zero rows and reminders can stop
+silently; rotating to another owner that keeps the bypass is safe. Any later change to the function owner or its RLS capability must
 be reviewed against this paragraph, and an alert on "reminders due but none claimed" is the
 monitoring that would catch it (not built; tracked with backlog N8).
