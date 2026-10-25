@@ -134,6 +134,75 @@ test('a new merchant pays for a plan on Paystack, comes back, and the plan switc
   expect(await state()).toEqual(before);
 });
 
+/**
+ * From a payment that is waiting (the "Pay with Paystack" button is showing): open Paystack, have
+ * the customer pay, deliver the signed webhook, come back, and wait for the verified result.
+ */
+async function payWaiting(page: Page, request: APIRequestContext): Promise<string> {
+  const button = page.getByRole('button', { name: 'Pay with Paystack' });
+  await expect(button).toBeVisible();
+  if (await page.locator('#payBillingEmail').count()) {
+    await page.fill('#payBillingEmail', 'ada@shop.example.ng');
+  }
+  await button.click();
+  const reference = (await page.locator('[data-ref]').textContent())!.trim();
+  await customerPays(request, reference, Date.now() + seq++);
+  await page.getByRole('link', { name: 'Return to merchant' }).click();
+  await expect(page.getByRole('heading', { name: 'Payment received' })).toBeVisible({
+    timeout: 45_000,
+  });
+  return reference;
+}
+
+test('a paying merchant upgrades, schedules a downgrade and a yearly switch, buys a pack and cancels', async ({
+  page,
+  request,
+}) => {
+  await onboard(page, `Ada Manage ${RUN}-${seq}`);
+
+  // First purchase: Chat.
+  await page.goto('/app/billing?to=chat');
+  await page.getByRole('button', { name: 'Confirm and pay' }).click();
+  await payWaiting(page, request);
+
+  // Upgrade to Integrate: the pro-rated difference is shown, paid, and the plan changes at once.
+  await page.goto('/app/billing?to=integrate');
+  await expect(page.getByText(/₦1\d,\d{3} today|₦9,\d{3} today|₦10,\d{3} today/)).toBeVisible();
+  await page.getByRole('button', { name: /Confirm/ }).click();
+  await payWaiting(page, request);
+  await page.goto('/app/billing');
+  await expect(page.getByText('Rekoda Integrate').first()).toBeVisible();
+
+  // Downgrade to Chat: nothing is charged, it is scheduled for the next renewal and can be undone.
+  await page.goto('/app/billing?to=chat');
+  await page.getByRole('button', { name: /Confirm/ }).click();
+  await expect(page.getByRole('button', { name: 'Stay on Rekoda Integrate' })).toBeVisible();
+
+  // Switch to yearly billing at the next renewal, also undoable.
+  await page.getByRole('button', { name: 'Switch to yearly at my next renewal' }).click();
+  await expect(page.getByRole('button', { name: 'Stay on monthly billing' })).toBeVisible();
+
+  // A usage pack is paid for like a plan and raises the meter by exactly its size.
+  await page
+    .getByRole('row', { name: /50 extra document generations/ })
+    .getByRole('button', { name: 'Buy' })
+    .click();
+  await payWaiting(page, request);
+  await expect(
+    page.getByText('Your 50 extra document generations pack has been added to your account.'),
+  ).toBeVisible();
+  await page.getByRole('link', { name: 'Back to billing' }).click();
+  await expect(page.getByText(/\(50 bought\)/).first()).toBeVisible();
+
+  // Every payment is in the history as paid.
+  await expect(page.getByRole('cell', { name: 'Paid' }).first()).toBeVisible();
+
+  // Cancelling keeps the access already paid for, and can be taken back.
+  await page.locator('summary', { hasText: 'Cancel my subscription' }).click();
+  await page.getByRole('button', { name: 'Cancel my subscription' }).click();
+  await expect(page.getByRole('button', { name: 'Keep my subscription' })).toBeVisible();
+});
+
 test('coming back to the payment page with a reference that is not yours shows nothing', async ({
   page,
 }) => {
