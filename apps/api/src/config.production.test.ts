@@ -371,6 +371,14 @@ describe('REKODA_EMAIL_PROVIDER (OWN-51)', () => {
       'billing@example.com',
     );
 
+    for (const from of [
+      'first.last@example.co.uk',
+      'Rekoda Billing <first.last+tag@sub.example.com>',
+      "o'neil_x@example-shop.ng",
+    ]) {
+      expect(loadConfig({ ...BASE, ...ok, REKODA_EMAIL_FROM: from }).emailFrom).toBe(from);
+    }
+
     expect(() => loadConfig({ ...BASE, ...ok, RESEND_API_KEY: '' })).toThrow(/RESEND_API_KEY/);
     for (const from of [
       '',
@@ -381,6 +389,9 @@ describe('REKODA_EMAIL_PROVIDER (OWN-51)', () => {
       'billing@example..com',
       'billing@example.com.',
       'billing@-example.com',
+      'billing..team@example.com',
+      '.billing@example.com',
+      'billing.@example.com',
       'a@example.com\r\nBcc: x@y.z',
     ]) {
       expect(() => loadConfig({ ...BASE, ...ok, REKODA_EMAIL_FROM: from })).toThrow(

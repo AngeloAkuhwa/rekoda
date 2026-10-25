@@ -948,9 +948,9 @@ function emailProvider(env: NodeJS.ProcessEnv, isProduction: boolean): EmailProv
   return raw as EmailProvider;
 }
 
-/** One mailbox, bare or `Name <mailbox>` with both brackets; dot-separated non-empty ASCII domain labels; no list, no control characters. */
+/** One mailbox, bare or `Name <mailbox>` with both brackets; an RFC 5322 dot-atom local part; dot-separated non-empty ASCII domain labels; no list, no control characters. */
 const SENDER_ADDRESS =
-  /^(?:[^\s@<>,;]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?|[^<>\r\n,;]+ <[^\s@<>,;]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?>)$/;
+  /^(?:[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?|[^<>\r\n,;"\\]+ <[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?>)$/;
 
 /** Resend needs a key and a verified from-address; a half-set pair refuses to boot (invariant 8). */
 function resendSettings(
