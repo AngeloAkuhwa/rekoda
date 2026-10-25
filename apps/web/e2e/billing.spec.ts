@@ -12,7 +12,14 @@ import { expect, test, type Page } from '@playwright/test';
 
 const RUN = String(Math.floor(Math.random() * 900) + 100);
 let seq = 0;
-const freshPhone = () => `0817${RUN}${String(1000 + seq++).slice(-4)}`;
+/**
+ * A phone number no other run of this file has used. RUN is random per worker process, so two
+ * projects (mobile, desktop) running the same file could draw the same RUN once in 900 times and
+ * collide on a number that is already a merchant. The desktop project therefore takes a
+ * different block of numbers.
+ */
+const freshPhone = () =>
+  `0817${RUN}${String(1000 + seq++ + (test.info().project.name === 'desktop' ? 500 : 0)).slice(-4)}`;
 
 async function onboard(page: Page, phone: string) {
   await page.goto('/start');
