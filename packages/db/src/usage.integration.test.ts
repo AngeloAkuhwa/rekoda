@@ -748,6 +748,27 @@ describe('a business leaving the trial leaves no trial usage on a month row (mig
     expect(await monthRows(paid)).toEqual([{ period: '2026-10', unit: 'AI_ACTIONS', used: 7 }]);
   });
 
+  it('keeps paid counters and bonus capacity when an operator returns a once-paid business to its paid plan', async () => {
+    const businessId = await seedBusiness();
+    await setPlanOnRow(businessId, 'chat');
+    // The subscription writer stamps this on any paid plan, and never clears it (G-103).
+    await ownerRun(sql`UPDATE businesses SET ever_paid_at = now() WHERE id = ${businessId}::uuid`);
+    await ownerRun(sql`
+      INSERT INTO usage_counters (business_id, period, unit, used)
+      VALUES (${businessId}::uuid, '2026-10', 'AI_ACTIONS', 7)`);
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(
+        sql`UPDATE businesses SET plan = 'trial', updated_at = now() WHERE id = ${businessId}::uuid`,
+      ),
+    );
+    await setPlanOnRow(businessId, 'chat'); // operator restores the paid plan in the same month
+
+    // Paid history is not trial usage: it survives the move out of trial.
+    expect(await monthRows(businessId)).toEqual([
+      { period: '2026-10', unit: 'AI_ACTIONS', used: 7 },
+    ]);
+  });
+
   it('names the trial row on a reservation the previous release recorded, so its refund cannot debit a paid counter', async () => {
     const businessId = await seedBusiness();
     const recorded = await withBusiness(db, businessId, (tx) =>

@@ -49,5 +49,8 @@ DROP TRIGGER IF EXISTS businesses_release_trial_month_rows ON businesses;
 CREATE TRIGGER businesses_release_trial_month_rows
   AFTER UPDATE OF plan ON businesses
   FOR EACH ROW
-  WHEN (OLD.plan = 'trial' AND NEW.plan IS DISTINCT FROM 'trial')
+  -- Only a business that has never held a paid plan is making its first exit: one an operator returns
+  -- to trial and then restores keeps its paid counters and bonus capacity (`ever_paid_at` is set by
+  -- the subscription writer on any paid plan and never cleared).
+  WHEN (OLD.plan = 'trial' AND NEW.plan IS DISTINCT FROM 'trial' AND OLD.ever_paid_at IS NULL)
   EXECUTE FUNCTION release_trial_month_rows();
