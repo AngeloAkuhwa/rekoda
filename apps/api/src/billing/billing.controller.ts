@@ -37,6 +37,7 @@ import {
   type BillingPlanChangeResponse,
   type BillingQuoteResponse,
 } from '@rekoda/contracts';
+import { SUBSCRIPTION_REFERENCE_PATTERN } from '@rekoda/core';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { BillingEmailService } from './billing-email.service.js';
@@ -67,6 +68,10 @@ export class BillingController {
     @Req() request: AuthedRequest,
     @Param('reference') reference: string,
   ): Promise<BillingPaymentRecord> {
+    /* A malformed reference (a NUL byte, an absurd length) is a reference nobody has. */
+    if (!SUBSCRIPTION_REFERENCE_PATTERN.test(reference)) {
+      throw new NotFoundException('payment_not_found');
+    }
     const record = await this.billing.paymentRecord(request.auth!.businessId, reference);
     if (!record) throw new NotFoundException('payment_not_found');
     return record;
