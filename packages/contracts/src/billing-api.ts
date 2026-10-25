@@ -288,6 +288,13 @@ export const billingEmailStatusResponse = z.object({
   verified: z.boolean(),
   /** False while no email sender is configured: the page says confirmation is unavailable. */
   canSend: z.boolean(),
+  /**
+   * The newest confirmation link that could still work, with how its hand-over to the email
+   * provider ended: `uncertain` means the request timed out and the mail may or may not have gone.
+   */
+  outstandingLink: z
+    .object({ sentAt: isoDate, delivery: z.enum(['accepted', 'uncertain', 'unknown']) })
+    .nullable(),
 });
 export type BillingEmailStatusResponse = z.infer<typeof billingEmailStatusResponse>;
 
@@ -295,6 +302,15 @@ export type BillingEmailStatusResponse = z.infer<typeof billingEmailStatusRespon
 export const billingEmailVerifyRequest = z.object({ billingEmail: z.string().max(320).optional() });
 export const billingEmailVerifyResponse = z.discriminatedUnion('state', [
   z.object({ state: z.literal('sent'), maskedEmail: z.string() }),
+  /**
+   * The provider's answer was lost: the link may or may not have been mailed. It stays valid, and
+   * counts against the hourly allowance; `retryAfterSeconds` is when another may be asked for.
+   */
+  z.object({
+    state: z.literal('delivery_uncertain'),
+    maskedEmail: z.string(),
+    retryAfterSeconds: z.number().int().nonnegative(),
+  }),
   z.object({ state: z.literal('already_verified'), maskedEmail: z.string() }),
   z.object({ state: z.literal('requires_billing_email') }),
   z.object({

@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import type { EmailSender, OutboundEmail } from './email.port.js';
+import { EmailDeliveryUncertainError, type EmailSender, type OutboundEmail } from './email.port.js';
 
 /** Resend's one send endpoint. Fixed: no variable can point production at another host. */
 export const RESEND_SEND_URL = 'https://api.resend.com/emails';
@@ -59,14 +59,29 @@ export class ResendEmailSender implements EmailSender {
         }),
         signal: controller.signal,
       });
-      if (!response.ok) throw new Error(`resend send failed with ${response.status}`);
+      if (!response.ok) {
+        const reason = `resend send failed with ${response.status}`;
+        /* A server error, a request timeout or a concurrent same-key request (409) can follow an
+         * acceptance, so they are uncertain. Any other 4xx is a definite refusal: not sent. */
+        if (response.status >= 500 || response.status === 408 || response.status === 409) {
+          throw new EmailDeliveryUncertainError(reason);
+        }
+        throw new Error(reason);
+      }
     } catch (error) {
-      const reason =
-        error instanceof Error && error.message.startsWith('resend send failed')
-          ? error.message
-          : `resend request failed: ${error instanceof Error ? error.name : 'unknown'}`;
+      if (error instanceof EmailDeliveryUncertainError) {
+        this.log.warn(error.message);
+        throw error;
+      }
+      if (error instanceof Error && error.message.startsWith('resend send failed')) {
+        this.log.warn(error.message);
+        throw new Error(error.message);
+      }
+      /* A timeout, a dropped connection or any failure before an answer: the message may have
+       * been taken. Only the failure kind is kept, never the recipient or the key. */
+      const reason = `resend request failed: ${error instanceof Error ? error.name : 'unknown'}`;
       this.log.warn(reason);
-      throw new Error(reason);
+      throw new EmailDeliveryUncertainError(reason);
     } finally {
       clearTimeout(timer);
     }

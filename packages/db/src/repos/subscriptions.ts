@@ -1412,6 +1412,46 @@ export async function voidEmailVerification(
   `);
 }
 
+/** How a link's hand-over to the email provider ended (migration 0182). */
+export type EmailSendOutcome = 'accepted' | 'uncertain';
+
+/** Record the outcome of handing a link to the provider; a spent or voided link is left alone. */
+export async function markEmailVerificationSend(
+  tx: TenantDb,
+  businessId: string,
+  tokenHash: string,
+  outcome: EmailSendOutcome,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE billing_email_verifications SET send_outcome = ${outcome}
+    WHERE business_id = ${businessId}::uuid AND token_hash = ${tokenHash}
+      AND consumed_at IS NULL AND voided_at IS NULL
+  `);
+}
+
+/**
+ * The newest link that could still work (not spent, not voided, not expired) and how its send
+ * ended, so the page can say "we could not confirm the email was handed over" truthfully.
+ */
+export async function outstandingEmailLink(
+  tx: TenantDb,
+  businessId: string,
+): Promise<{ sentAt: Date; outcome: EmailSendOutcome | null } | null> {
+  const rows = await tx.execute<{ created_at: string; send_outcome: EmailSendOutcome | null }>(sql`
+    SELECT v.created_at, v.send_outcome
+    FROM billing_email_verifications v
+    JOIN businesses b ON b.id = v.business_id
+    WHERE v.business_id = ${businessId}::uuid
+      AND v.consumed_at IS NULL AND v.voided_at IS NULL
+      AND v.expires_at > clock_timestamp()
+      AND v.email_revision = b.billing_email_revision
+    ORDER BY v.created_at DESC
+    LIMIT 1
+  `);
+  const row = [...rows][0];
+  return row ? { sentAt: new Date(row.created_at), outcome: row.send_outcome } : null;
+}
+
 export type EmailVerificationOutcome = 'verified' | 'invalid' | 'expired' | 'address_changed';
 
 /**

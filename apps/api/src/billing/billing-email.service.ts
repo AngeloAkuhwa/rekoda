@@ -34,7 +34,11 @@ import type {
 import { subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
-import { EMAIL_SENDER, type EmailSender } from '../email/email.port.js';
+import {
+  EMAIL_SENDER,
+  EmailDeliveryUncertainError,
+  type EmailSender,
+} from '../email/email.port.js';
 
 const emailAad = (businessId: string): string => `billing-email:${businessId}`;
 const hashToken = (token: string): string => createHash('sha256').update(token).digest('hex');
@@ -53,10 +57,18 @@ export class BillingEmailService {
     const state = await withBusiness(this.db, businessId, (tx) =>
       subscriptionsRepo.billingEmailState(tx, businessId),
     );
+    const link = state.verifiedAt
+      ? null
+      : await withBusiness(this.db, businessId, (tx) =>
+          subscriptionsRepo.outstandingEmailLink(tx, businessId),
+        );
     return {
       maskedEmail: state.sealed ? maskBillingEmail(this.open(businessId, state.sealed)) : null,
       verified: state.verifiedAt !== null,
       canSend: this.sender.available && this.config.webUrl !== null,
+      outstandingLink: link
+        ? { sentAt: link.sentAt.toISOString(), delivery: link.outcome ?? 'unknown' }
+        : null,
     };
   }
 
@@ -120,18 +132,36 @@ export class BillingEmailService {
     );
     if ('state' in prepared) return prepared;
 
+    const message = {
+      to: prepared.email,
+      subject: 'Confirm your Rekoda billing email',
+      text:
+        'Confirm that this is your billing email by opening this link while signed in to Rekoda. ' +
+        'It works once and expires in one hour.\n\n' +
+        `${billingEmailConfirmationLink(this.config.webUrl, token)}\n\n` +
+        'If you did not ask for this, ignore this message.',
+      /* One logical message: a repeat with this key is dropped by the provider, never mailed twice. */
+      idempotencyKey: `billing-email-verify:${tokenHash}`,
+    };
     try {
-      await this.sender.send({
-        to: prepared.email,
-        subject: 'Confirm your Rekoda billing email',
-        text:
-          'Confirm that this is your billing email by opening this link while signed in to Rekoda. ' +
-          'It works once and expires in one hour.\n\n' +
-          `${billingEmailConfirmationLink(this.config.webUrl, token)}\n\n` +
-          'If you did not ask for this, ignore this message.',
-      });
+      await this.sendWithOneSafeRetry(message);
     } catch (error) {
-      /* The address is not logged. A failed send gives the allowance back. */
+      if (error instanceof EmailDeliveryUncertainError) {
+        /* The mail may have gone. The link stays valid and counted; nothing is resent under a new
+         * token, and the merchant is told the truth instead of "it failed". */
+        this.log.warn(
+          'a billing-email confirmation may or may not have been sent: outcome unknown',
+        );
+        await withBusiness(this.db, businessId, (tx) =>
+          subscriptionsRepo.markEmailVerificationSend(tx, businessId, tokenHash, 'uncertain'),
+        );
+        return {
+          state: 'delivery_uncertain',
+          maskedEmail: maskBillingEmail(prepared.email),
+          retryAfterSeconds: Math.ceil(BILLING_EMAIL_VERIFICATION.cooldownMs / 1000),
+        };
+      }
+      /* The address is not logged. A definite refusal gives the allowance back. */
       const unusable = error instanceof EmailSuppressedError;
       this.log.warn(
         unusable
@@ -143,7 +173,33 @@ export class BillingEmailService {
       );
       return { state: 'unavailable', reason: unusable ? 'address_unusable' : 'send_failed' };
     }
+    await withBusiness(this.db, businessId, (tx) =>
+      subscriptionsRepo.markEmailVerificationSend(tx, businessId, tokenHash, 'accepted'),
+    );
     return { state: 'sent', maskedEmail: maskBillingEmail(prepared.email) };
+  }
+
+  /**
+   * Hand the message over. If the first attempt's outcome is unknown, ask once more with the SAME
+   * idempotency key: the provider drops a repeat of a request it already took, so this cannot mail
+   * twice. If that is also unknown, the error reaches the caller, which keeps the link and says so.
+   * Any other failure is a definite refusal and is not retried.
+   */
+  private async sendWithOneSafeRetry(message: Parameters<EmailSender['send']>[0]): Promise<void> {
+    try {
+      await this.sender.send(message);
+    } catch (error) {
+      if (!(error instanceof EmailDeliveryUncertainError)) throw error;
+      try {
+        await this.sender.send(message);
+      } catch {
+        /* The first attempt may have been taken, so whatever the second says, it is not proof
+         * that nothing was mailed. */
+        throw new EmailDeliveryUncertainError(
+          'billing email: outcome still unknown after one retry',
+        );
+      }
+    }
   }
 
   async confirm(businessId: string, token: string): Promise<BillingEmailConfirmResponse> {

@@ -14,7 +14,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDb, identity, sql, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../config.js';
-import { MockEmailSender, NoEmailSender, type EmailSender } from '../email/email.port.js';
+import {
+  EmailDeliveryUncertainError,
+  MockEmailSender,
+  NoEmailSender,
+  type EmailSender,
+} from '../email/email.port.js';
 import { EmailSuppressedError } from '../email/suppressing.sender.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
 import { BillingService } from './billing.service.js';
@@ -143,6 +148,7 @@ describe('the status the page shows', () => {
       maskedEmail: null,
       verified: false,
       canSend: true,
+      outstandingLink: null,
     });
   });
 
@@ -275,6 +281,135 @@ describe('asking for a link', () => {
           WHERE business_id = ${businessId}::uuid AND consumed_at IS NULL`,
     );
     expect(unspent[0]!.n).toBe(1);
+  });
+});
+
+describe('an uncertain hand-over to the email provider (billing Slice C)', () => {
+  const links = (businessId: string) =>
+    sql1<{ voided: boolean; outcome: string | null; consumed: boolean }>(
+      businessId,
+      sql`SELECT voided_at IS NOT NULL AS voided, send_outcome AS outcome,
+                 consumed_at IS NOT NULL AS consumed
+          FROM billing_email_verifications WHERE business_id = ${businessId}::uuid
+          ORDER BY created_at`,
+    );
+
+  it('asks once more with the same key, and a lost response mails the link exactly once', async () => {
+    const businessId = await seedBusiness();
+    mail.uncertainNext = 1;
+    mail.acceptedBeforeUncertain = true;
+
+    const answer = await emails().requestVerification(businessId, EMAIL);
+
+    expect(answer.state).toBe('sent');
+    expect(mail.attempts).toBe(2);
+    expect(mail.outbox).toHaveLength(1);
+    expect(mail.outbox[0]!.idempotencyKey).toMatch(/^billing-email-verify:[0-9a-f]{64}$/);
+    expect(await links(businessId)).toEqual([
+      { voided: false, outcome: 'accepted', consumed: false },
+    ]);
+  });
+
+  it('still unknown after the retry: the link stays valid, is counted, and the merchant is told the truth', async () => {
+    const businessId = await seedBusiness();
+    mail.uncertainNext = 2;
+    mail.acceptedBeforeUncertain = true;
+
+    const answer = await emails().requestVerification(businessId, EMAIL);
+
+    expect(answer).toMatchObject({ state: 'delivery_uncertain', retryAfterSeconds: 60 });
+    expect(mail.attempts).toBe(2);
+    expect(await links(businessId)).toEqual([
+      { voided: false, outcome: 'uncertain', consumed: false },
+    ]);
+    /* It counts against the cooldown, so a double click cannot mail a second link. */
+    expect((await emails().requestVerification(businessId, undefined)).state).toBe('rate_limited');
+    /* The status says what is known and what is not. */
+    const status = await emails().status(businessId);
+    expect(status.outstandingLink).toMatchObject({ delivery: 'uncertain' });
+  });
+
+  it('a link whose response was lost still proves the mailbox when it arrives', async () => {
+    const businessId = await seedBusiness();
+    mail.uncertainNext = 2;
+    mail.acceptedBeforeUncertain = true;
+    expect((await emails().requestVerification(businessId, EMAIL)).state).toBe(
+      'delivery_uncertain',
+    );
+
+    /* The provider had taken it after all: the merchant opens the mail. */
+    expect(mail.outbox).toHaveLength(1);
+    const confirmed = await emails().confirm(businessId, tokenFrom(mail.outbox[0]!));
+
+    expect(confirmed.state).toBe('verified');
+    expect((await emails().status(businessId)).outstandingLink).toBeNull();
+  });
+
+  it('does not mail a second copy: a later request after the cooldown issues one new link, bounded by the hour', async () => {
+    const businessId = await seedBusiness();
+    mail.uncertainNext = 2;
+    expect((await emails().requestVerification(businessId, EMAIL)).state).toBe(
+      'delivery_uncertain',
+    );
+    expect(mail.outbox).toHaveLength(0);
+    await age(businessId, 61);
+
+    expect((await emails().requestVerification(businessId, undefined)).state).toBe('sent');
+    expect(mail.outbox).toHaveLength(1);
+    /* Both attempts count toward the five an hour. */
+    const counted = await sql1<{ n: number }>(
+      businessId,
+      sql`SELECT count(*)::int AS n FROM billing_email_verifications
+          WHERE business_id = ${businessId}::uuid AND voided_at IS NULL`,
+    );
+    expect(counted[0]!.n).toBe(2);
+  });
+
+  it('a definite refusal on the retry is not proof that nothing was mailed', async () => {
+    const businessId = await seedBusiness();
+    const flaky = new MockEmailSender();
+    let calls = 0;
+    flaky.send = async () => {
+      calls += 1;
+      if (calls === 1) throw new EmailDeliveryUncertainError('lost');
+      throw new Error('resend send failed with 422');
+    };
+
+    const answer = await emails(flaky).requestVerification(businessId, EMAIL);
+
+    expect(answer.state).toBe('delivery_uncertain');
+    expect(await links(businessId)).toEqual([
+      { voided: false, outcome: 'uncertain', consumed: false },
+    ]);
+  });
+
+  it('a definite refusal on the first attempt still voids the link and gives the allowance back', async () => {
+    const businessId = await seedBusiness();
+    mail.failNext = true;
+
+    expect(await emails().requestVerification(businessId, EMAIL)).toEqual({
+      state: 'unavailable',
+      reason: 'send_failed',
+    });
+    expect(mail.attempts).toBe(1);
+    expect((await links(businessId))[0]).toMatchObject({ voided: true });
+  });
+
+  it('a suppressed address is refused outright, never called uncertain', async () => {
+    const businessId = await seedBusiness();
+    const suppressed: EmailSender = {
+      available: true,
+      send: async () => {
+        throw new EmailSuppressedError();
+      },
+    };
+
+    expect(
+      await emails(suppressed as MockEmailSender).requestVerification(businessId, EMAIL),
+    ).toEqual({
+      state: 'unavailable',
+      reason: 'address_unusable',
+    });
   });
 });
 

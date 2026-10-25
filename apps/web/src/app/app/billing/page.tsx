@@ -337,6 +337,13 @@ export default async function BillingPage({
               you pay. It is separate from your WhatsApp number.
             </p>
           )}
+          {email.outstandingLink?.delivery === 'uncertain' ? (
+            <p className="rk-fineprint" role="status">
+              We made a confirmation link on {lagosDate(email.outstandingLink.sentAt)} but could not
+              confirm that the email was sent. It may still arrive, and the link still works. Check
+              your inbox and spam folder before asking for another.
+            </p>
+          ) : null}
           {email.maskedEmail && !email.verified ? (
             <p className="rk-fineprint">
               Before your first real payment we ask you to confirm this address, so your receipts
