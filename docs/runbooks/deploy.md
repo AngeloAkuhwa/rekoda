@@ -204,12 +204,14 @@ one release later.
 **G-109 trial-meter handover (migrations 0175 to 0178).** The previous release
 writes a trial's base-plan usage to a calendar-month row; the new release writes
 it to the trial row. The migrations copy running trials' usage and a trigger
-discards stray month rows when a business leaves the trial, so only one window
+discards stray month rows on a business's first exit from the trial (while
+`ever_paid_at` is still null; a later exit keeps its paid counters), so only one window
 is left: a previous-release write that commits after that business's own plan
 change, in the minutes between `migrate` and the new processes replacing the old
 ones. It cannot be told from paid usage at the row, and it can leave a few units
 in a first paid month. It moves no money. On the staging host (no live
-merchants) this is accepted. **Before the first production deploy that carries
+merchants) the engineering call is to carry this risk; it is not an owner ruling,
+and staging acceptance of G-109 is still pending. **Before the first production deploy that carries
 these migrations**, stop `api` and `worker` first, then run `migrate`, then
 start the new release, so no previous-release writer overlaps the plan
 transition.
