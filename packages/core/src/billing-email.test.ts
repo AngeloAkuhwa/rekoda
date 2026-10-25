@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  emailSuppressionKey,
   BILLING_EMAIL_VERIFICATION,
   billingEmailConfirmationLink,
   checkBillingEmail,
@@ -95,5 +96,15 @@ describe('proving the mailbox (G-102 slice 2b, OWN-51)', () => {
   it('encodes a token that is not URL-safe rather than splitting the link', () => {
     const link = billingEmailConfirmationLink('https://app.example.ng', 'a b&c=d');
     expect(link.endsWith('#token=a%20b%26c%3Dd')).toBe(true);
+  });
+});
+
+describe('emailSuppressionKey (N7)', () => {
+  it('is the same for any case and surrounding space, and is a 64-hex hash, never the address', () => {
+    const key = emailSuppressionKey(' Owner@Example.COM ');
+    expect(key).toBe(emailSuppressionKey('owner@example.com'));
+    expect(key).toMatch(/^[0-9a-f]{64}$/);
+    expect(key).not.toContain('owner');
+    expect(emailSuppressionKey('other@example.com')).not.toBe(key);
   });
 });

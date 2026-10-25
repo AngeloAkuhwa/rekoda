@@ -85,6 +85,49 @@ export function verifyPaystackSignature(
   return timingSafeEqual(a, b);
 }
 
+/**
+ * Resend signs its webhooks with the Svix scheme (N7): three headers,
+ * `svix-id`, `svix-timestamp` (unix seconds) and `svix-signature`
+ * (`v1,<base64>`, space-separated when a secret is being rotated), over
+ * `<id>.<timestamp>.<raw body>` with HMAC-SHA256 under the base64 part of a
+ * `whsec_...` secret. The timestamp sits inside the signed material, so a
+ * captured delivery is refused once it is older than the tolerance.
+ *
+ * Returns false for anything malformed, stale or unsigned; no secret rejects
+ * everything, the safe direction for a deployment that has not turned it on.
+ */
+export function verifySvixSignature(
+  rawBody: Buffer | string,
+  headers: {
+    id?: string | undefined;
+    timestamp?: string | undefined;
+    signature?: string | undefined;
+  },
+  secret: string,
+  nowMs: number,
+  toleranceSeconds = 300,
+): boolean {
+  const { id, timestamp, signature } = headers;
+  if (!id || !timestamp || !signature || !secret) return false;
+  if (!/^\d{1,12}$/.test(timestamp)) return false;
+  if (Math.abs(nowMs / 1000 - Number(timestamp)) > toleranceSeconds) return false;
+
+  const key = Buffer.from(secret.startsWith('whsec_') ? secret.slice(6) : secret, 'base64');
+  if (key.length === 0) return false;
+  const body = typeof rawBody === 'string' ? Buffer.from(rawBody, 'utf8') : rawBody;
+  const expected = createHmac('sha256', key)
+    .update(Buffer.concat([Buffer.from(`${id}.${timestamp}.`, 'utf8'), body]))
+    .digest();
+
+  for (const candidate of signature.split(' ')) {
+    const [version, value] = candidate.split(',');
+    if (version !== 'v1' || !value) continue;
+    const provided = Buffer.from(value, 'base64');
+    if (provided.length === expected.length && timingSafeEqual(provided, expected)) return true;
+  }
+  return false;
+}
+
 /* ─────────────────── outbound: what Rekoda signs (PR-112) ─────────────── */
 
 /**

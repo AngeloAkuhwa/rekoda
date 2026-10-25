@@ -340,7 +340,7 @@ called from `apps/api/src/commands/`.
 
 ### 5.29 Notifications — PARTIAL
 
-WhatsApp is the only channel: replies, documents, OTP, billing and retention templates, graduation nudge. No email and no SMS exist anywhere, so sign-in has a single point of failure. The graduation nudge sends free-form text outside the 24-hour window with no template and will be rejected by Meta (131047) and swallowed.
+WhatsApp is the only channel: replies, documents, OTP, billing and retention templates, graduation nudge. Email is code complete behind a port (Resend sender and bounce/complaint suppression, N7; not yet live-verified; staging acceptance pending), used only for the billing-email confirmation; no SMS exists anywhere, so sign-in has a single point of failure. The graduation nudge sends free-form text outside the 24-hour window with no template and will be rejected by Meta (131047) and swallowed.
 
 ### 5.30 Queues, workers, sweeps — IMPLEMENTED, NOT LIVE-VERIFIED / PARTIAL
 

@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { isRateLimitExempt } from './rate-limit-exempt.js';
 
 describe('isRateLimitExempt (G-21)', () => {
-  it.each(['/health', '/webhooks/meta', '/webhooks/paystack'])('exempts %s', (path) => {
-    expect(isRateLimitExempt(path)).toBe(true);
-  });
+  it.each(['/health', '/webhooks/meta', '/webhooks/paystack', '/webhooks/resend'])(
+    'exempts %s',
+    (path) => {
+      expect(isRateLimitExempt(path)).toBe(true);
+    },
+  );
 
   it('exempts Meta’s handshake, whose URL carries a query string', () => {
     expect(

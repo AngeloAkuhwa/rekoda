@@ -4,6 +4,7 @@ import {
   answerVerificationChallenge,
   verifyMetaSignature,
   verifyPaystackSignature,
+  verifySvixSignature,
 } from './webhooks.js';
 
 const SECRET = 'meta-app-secret';
@@ -122,5 +123,50 @@ describe('Paystack signatures (payments-v1 §18)', () => {
 
   it('rejects an absent header', () => {
     expect(verifyPaystackSignature(body, undefined, SECRET)).toBe(false);
+  });
+});
+
+describe('Resend (Svix) webhook signatures', () => {
+  const secret = `whsec_${Buffer.from('resend-signing-key').toString('base64')}`;
+  const body = '{"type":"email.bounced","data":{"to":["a@example.com"]}}';
+  const now = 1_800_000_000_000;
+  const ts = String(now / 1000);
+  const sign = (id: string, t: string, b: string, key = 'resend-signing-key') =>
+    `v1,${createHmac('sha256', Buffer.from(key))
+      .update(`${id}.${t}.${b}`, 'utf8')
+      .digest('base64')}`;
+  const headers = (signature: string, t = ts) => ({ id: 'msg_1', timestamp: t, signature });
+
+  it('accepts a correctly signed, fresh body', () => {
+    expect(verifySvixSignature(body, headers(sign('msg_1', ts, body)), secret, now)).toBe(true);
+  });
+
+  it('accepts when any one of several space-separated signatures matches', () => {
+    const rotated = `v1,${Buffer.from('stale').toString('base64')} ${sign('msg_1', ts, body)}`;
+    expect(verifySvixSignature(body, headers(rotated), secret, now)).toBe(true);
+  });
+
+  it('rejects an altered body, another id, another key and no secret', () => {
+    const good = sign('msg_1', ts, body);
+    expect(verifySvixSignature(body + ' ', headers(good), secret, now)).toBe(false);
+    expect(verifySvixSignature(body, { ...headers(good), id: 'msg_2' }, secret, now)).toBe(false);
+    expect(verifySvixSignature(body, headers(sign('msg_1', ts, body, 'other')), secret, now)).toBe(
+      false,
+    );
+    expect(verifySvixSignature(body, headers(good), '', now)).toBe(false);
+  });
+
+  it('rejects a stale or malformed timestamp even when correctly signed', () => {
+    const old = String(now / 1000 - 301);
+    expect(verifySvixSignature(body, headers(sign('msg_1', old, body), old), secret, now)).toBe(
+      false,
+    );
+    expect(verifySvixSignature(body, headers(sign('msg_1', 'x', body), 'x'), secret, now)).toBe(
+      false,
+    );
+  });
+
+  it('rejects missing headers', () => {
+    expect(verifySvixSignature(body, {}, secret, now)).toBe(false);
   });
 });

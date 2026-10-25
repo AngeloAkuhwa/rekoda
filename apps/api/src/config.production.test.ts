@@ -367,6 +367,10 @@ describe('REKODA_EMAIL_PROVIDER (OWN-51)', () => {
     expect(config.emailProvider).toBe('resend');
     expect(config.resendApiKey).toBe('re_test_key');
     expect(config.emailFrom).toBe('Rekoda <billing@example.com>');
+    expect(config.resendWebhookSecret).toBe('');
+    expect(
+      loadConfig({ ...PROD, ...ok, RESEND_WEBHOOK_SECRET: ' whsec_abc ' }).resendWebhookSecret,
+    ).toBe('whsec_abc');
     expect(loadConfig({ ...BASE, ...ok, REKODA_EMAIL_FROM: 'billing@example.com' }).emailFrom).toBe(
       'billing@example.com',
     );
