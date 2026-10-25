@@ -539,7 +539,12 @@ describe('trials already running when the trial meter moved (migration 0176)', (
       SELECT period, unit, used, bonus FROM usage_counters
        WHERE business_id = ${businessId}::uuid ORDER BY unit, period`);
 
-  it("moves a running trial's month usage onto the trial row and leaves everyone else alone", async () => {
+  const reserveIn = (businessId: string, allowance: number) =>
+    withBusiness(db, businessId, (tx) =>
+      usageRepo.reserveUnit(tx, businessId, '2026-11', 'AI_ACTIONS', allowance),
+    );
+
+  it("copies a running trial's month usage onto the trial row, deletes nothing, and leaves everyone else alone", async () => {
     const trial = await seedBusiness();
     const paid = await seedBusiness2();
     await setPlanOnRow(paid, 'chat');
@@ -552,20 +557,47 @@ describe('trials already running when the trial meter moved (migration 0176)', (
 
     await backfill();
 
-    expect(await rows(trial)).toEqual([
-      { period: 'TRIAL00', unit: 'AI_ACTIONS', used: 5, bonus: 1 },
-      { period: '2026-10', unit: 'API_REQUEST_UNITS', used: 4, bonus: 0 }, // its own monthly cycle
-    ]);
+    // Expand-only: the month rows the previous release reads are still there.
+    const after = await rows(trial);
+    expect(after).toHaveLength(4);
+    expect(after).toEqual(
+      expect.arrayContaining([
+        { period: '2026-09', unit: 'AI_ACTIONS', used: 2, bonus: 1 },
+        { period: '2026-10', unit: 'AI_ACTIONS', used: 3, bonus: 0 },
+        { period: 'TRIAL00', unit: 'AI_ACTIONS', used: 5, bonus: 1 },
+        { period: '2026-10', unit: 'API_REQUEST_UNITS', used: 4, bonus: 0 }, // its own monthly cycle
+      ]),
+    );
     expect(await rows(paid)).toEqual([
       { period: '2026-10', unit: 'AI_ACTIONS', used: 9, bonus: 0 },
     ]);
 
-    // A second run moves nothing.
+    // A second run changes nothing, even once the trial row has moved on.
+    await ownerRun(sql`
+      UPDATE usage_counters SET used = 6
+       WHERE business_id = ${trial}::uuid AND period = 'TRIAL00' AND unit = 'AI_ACTIONS'`);
     await backfill();
-    expect((await rows(trial))[0]).toMatchObject({ period: 'TRIAL00', used: 5, bonus: 1 });
+    expect((await rows(trial)).find((r) => r.period === 'TRIAL00')).toMatchObject({
+      used: 6,
+      bonus: 1,
+    });
   });
 
-  it('a first paid plan then starts fresh: nothing of the old trial month is left to carry', async () => {
+  it('the new release spends against the copied trial usage, not the month rows it ignores', async () => {
+    const trial = await seedBusiness();
+    await ownerRun(sql`
+      INSERT INTO usage_counters (business_id, period, unit, used) VALUES
+        (${trial}::uuid, '2026-10', 'AI_ACTIONS', 3)`);
+    await backfill();
+    const read = await withBusiness(db, trial, (tx) => usageRepo.usageFor(tx, trial, '2026-11'));
+    expect(read.find((r) => r.unit === 'AI_ACTIONS')?.used).toBe(3);
+    // 5 allowed, 3 already used: two more are granted, the third is refused.
+    expect((await reserveIn(trial, 5)).granted).toBe(true);
+    expect((await reserveIn(trial, 5)).granted).toBe(true);
+    expect((await reserveIn(trial, 5)).granted).toBe(false);
+  });
+
+  it('a first paid plan then starts fresh: the trigger clears the old trial month the copy left behind', async () => {
     const trial = await seedBusiness();
     await ownerRun(sql`
       INSERT INTO usage_counters (business_id, period, unit, used) VALUES
