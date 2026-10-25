@@ -598,6 +598,29 @@ describe('trials already running when the trial meter moved (migrations 0176 and
     expect((await reserveIn(trial, 5)).granted).toBe(false);
   });
 
+  it('a write the previous release makes after the copy is ignored by the trial meter and discarded when the trial ends', async () => {
+    const trial = await seedBusiness();
+    await ownerRun(sql`
+      INSERT INTO usage_counters (business_id, period, unit, used) VALUES
+        (${trial}::uuid, '2026-10', 'AI_ACTIONS', 3)`);
+    await backfill();
+
+    // The previous release, still running during the deploy, spends two more on the month row.
+    await ownerRun(sql`
+      UPDATE usage_counters SET used = used + 2
+       WHERE business_id = ${trial}::uuid AND period = '2026-10' AND unit = 'AI_ACTIONS'`);
+
+    // The new release's trial meter reads the copied total: the two late units are not counted
+    // against the trial (the accepted, bounded window), and nothing double-counts.
+    const during = await withBusiness(db, trial, (tx) => usageRepo.usageFor(tx, trial, '2026-10'));
+    expect(during.find((r) => r.unit === 'AI_ACTIONS')?.used).toBe(3);
+
+    // When the trial ends the stale month row is discarded, so the first paid month starts fresh.
+    await setPlanOnRow(trial, 'chat');
+    const after = await withBusiness(db, trial, (tx) => usageRepo.usageFor(tx, trial, '2026-10'));
+    expect(after.find((r) => r.unit === 'AI_ACTIONS')?.used ?? 0).toBe(0);
+  });
+
   it('a first paid plan then starts fresh: the trigger clears the old trial month the copy left behind', async () => {
     const trial = await seedBusiness();
     await ownerRun(sql`
