@@ -39,6 +39,17 @@ const MAX_MEDIA_BYTES = 16 * 1024 * 1024;
 /** 4xx statuses that clear by themselves or by an operator: rate limit, token expired or revoked. */
 const TRANSIENT_STATUSES: ReadonlySet<number> = new Set([401, 403, 429]);
 
+/**
+ * Graph error codes that clear by themselves or by an operator, whatever the HTTP status:
+ * Meta reports an expired or invalid token as HTTP 400 with code 190 (and 102, 463, 467 for
+ * session problems), and throttling as 4, 17, 32, 613, 80007, 130429, 131048 or 131056.
+ * A wrong template (132001) or parameters (132000) or a bad recipient is NOT here: those
+ * repeat identically.
+ */
+const TRANSIENT_CODES: ReadonlySet<number> = new Set([
+  4, 17, 32, 102, 190, 463, 467, 613, 80007, 130429, 131048, 131056,
+]);
+
 export class MetaSender implements MessageSender {
   private readonly log = new Logger(MetaSender.name);
 
@@ -451,11 +462,12 @@ export class MetaSender implements MessageSender {
          * string in the system carrying a real customer name. Status is enough
          * to act on.
          */
+        const code = await providerCodeOf(response);
         throw new SendFailed(
           `meta ${path} failed with ${response.status}`,
-          await providerCodeOf(response),
+          code,
           response.status >= 400 && response.status < 500,
-          TRANSIENT_STATUSES.has(response.status),
+          TRANSIENT_STATUSES.has(response.status) || (code !== null && TRANSIENT_CODES.has(code)),
         );
       }
       return await response.json();

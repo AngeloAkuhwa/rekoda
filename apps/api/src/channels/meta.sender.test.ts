@@ -283,6 +283,32 @@ describe('the utility templates', () => {
     ).rejects.toMatchObject({ notSent: true });
   });
 
+  it('treats an expired token reported as HTTP 400 code 190 as transient, and a wrong template as permanent', async () => {
+    respond = (_req, res) => {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: 190 } }));
+    };
+    await expect(
+      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+    ).rejects.toMatchObject({ notSent: true, transient: true });
+
+    respond = (_req, res) => {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: 132001 } }));
+    };
+    await expect(
+      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+    ).rejects.toMatchObject({ notSent: true, transient: false });
+
+    respond = (_req, res) => {
+      res.writeHead(429);
+      res.end();
+    };
+    await expect(
+      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+    ).rejects.toMatchObject({ notSent: true, transient: true });
+  });
+
   it('puts what the document is and its reference in the body, in order (G-67)', async () => {
     await sender().sendDocumentNotice({
       to: '2348031234567',
