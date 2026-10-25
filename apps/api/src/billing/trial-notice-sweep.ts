@@ -13,8 +13,11 @@
  *     counted as opted out and nothing is claimed; a send Meta definitively refused gives
  *     its claim back; one whose outcome cannot be told (timeout, crash) is recorded as
  *     'unknown' and NOT resent. No exactly-once delivery is claimed (OWN-47).
- *   - Nothing is sent after the trial ends or once a plan has been bought (the claim
- *     itself requires `plan = 'trial'`).
+ *   - Eligibility is decided AT CLAIM TIME: the claim requires a trial that has not ended
+ *     as of the current clock and an owner who has not opted out. A STOP or a purchase
+ *     committing in the milliseconds between the claim and the Meta request does not
+ *     stop that one message (no lock is held across the network call); the next pass
+ *     honours it.
  */
 import { Logger } from '@nestjs/common';
 import { TRIAL_NOTICE_DAYS_LEFT, trialNoticeDue } from '@rekoda/core';
