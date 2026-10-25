@@ -16,6 +16,7 @@
  *
  * Every write takes the business lock first, the order every billing path uses.
  */
+import { EmailSuppressedError } from '../email/suppressing.sender.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import {
@@ -129,13 +130,18 @@ export class BillingEmailService {
           `${billingEmailConfirmationLink(this.config.webUrl, token)}\n\n` +
           'If you did not ask for this, ignore this message.',
       });
-    } catch {
+    } catch (error) {
       /* The address is not logged. A failed send gives the allowance back. */
-      this.log.warn('a billing-email confirmation could not be sent');
+      const unusable = error instanceof EmailSuppressedError;
+      this.log.warn(
+        unusable
+          ? 'a billing-email confirmation was not sent: the address is suppressed'
+          : 'a billing-email confirmation could not be sent',
+      );
       await withBusiness(this.db, businessId, (tx) =>
         subscriptionsRepo.voidEmailVerification(tx, businessId, tokenHash),
       );
-      return { state: 'unavailable', reason: 'send_failed' };
+      return { state: 'unavailable', reason: unusable ? 'address_unusable' : 'send_failed' };
     }
     return { state: 'sent', maskedEmail: maskBillingEmail(prepared.email) };
   }

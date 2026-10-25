@@ -324,6 +324,11 @@ export interface ApiConfig {
   /** The verified sending address; empty unless `emailProvider` is `resend`. */
   emailFrom: string;
   /**
+   * Resend's webhook signing secret (`whsec_...`). Required with `resend`, because without it
+   * no bounce would ever be recorded; empty otherwise. Never logged.
+   */
+  resendWebhookSecret: string;
+  /**
    * How an operator proves who they are (P0-2).
    *
    * `null` means no verifier is configured. In production that is a state
@@ -956,8 +961,8 @@ const SENDER_ADDRESS =
 function resendSettings(
   env: NodeJS.ProcessEnv,
   provider: EmailProvider,
-): { resendApiKey: string; emailFrom: string } {
-  if (provider !== 'resend') return { resendApiKey: '', emailFrom: '' };
+): { resendApiKey: string; emailFrom: string; resendWebhookSecret: string } {
+  if (provider !== 'resend') return { resendApiKey: '', emailFrom: '', resendWebhookSecret: '' };
   const resendApiKey = env['RESEND_API_KEY']?.trim() ?? '';
   const emailFrom = env['REKODA_EMAIL_FROM']?.trim() ?? '';
   if (!resendApiKey) throw new ConfigError('REKODA_EMAIL_PROVIDER=resend needs RESEND_API_KEY');
@@ -967,7 +972,15 @@ function resendSettings(
         'such as billing@example.com or Rekoda <billing@example.com>',
     );
   }
-  return { resendApiKey, emailFrom };
+  const resendWebhookSecret = env['RESEND_WEBHOOK_SECRET']?.trim() ?? '';
+  if (!resendWebhookSecret) {
+    /* Without it no bounce or complaint is recorded and mail keeps going to dead addresses. */
+    throw new ConfigError(
+      'REKODA_EMAIL_PROVIDER=resend needs RESEND_WEBHOOK_SECRET, the signing secret of the ' +
+        'Resend webhook for /webhooks/resend',
+    );
+  }
+  return { resendApiKey, emailFrom, resendWebhookSecret };
 }
 
 /**

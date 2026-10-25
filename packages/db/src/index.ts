@@ -4,6 +4,7 @@ export * as identity from './repos/identity.js';
 export * as suppliersRepo from './repos/suppliers.js';
 export * as apiKeysRepo from './repos/api-keys.js';
 export * as assetsRepo from './repos/assets.js';
+export * as emailSuppressionsRepo from './repos/email-suppressions.js';
 export * as billingRepo from './repos/billing.js';
 export * as customersRepo from './repos/customers.js';
 export * as customerConsentRepo from './repos/customer-consent.js';

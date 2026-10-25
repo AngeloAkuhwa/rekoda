@@ -23,7 +23,7 @@ import { isRateLimitExempt } from './rate-limit-exempt.js';
  * a byte is parsed or an HMAC computed.
  */
 const WEBHOOK_MAX_BYTES = 128 * 1024;
-const WEBHOOK_PATHS = new Set(['/webhooks/meta', '/webhooks/paystack']);
+const WEBHOOK_PATHS = new Set(['/webhooks/meta', '/webhooks/paystack', '/webhooks/resend']);
 
 export async function createApp(): Promise<NestFastifyApplication> {
   const app = await NestFactory.create<NestFastifyApplication>(

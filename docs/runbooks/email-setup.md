@@ -8,8 +8,10 @@ production) or `resend`.
 
 Cloudflare email routing only RECEIVES mail for role addresses. Sending needs an
 authenticated sender, which is Resend here (OWN-49). Suppression and bounce
-handling are Rekoda's and are not built yet; do not use this sender for bulk
-mail until they are.
+handling are Rekoda's: a permanent bounce or a spam complaint reported by Resend
+is recorded (as an unkeyed SHA-256 of the address, not the address; still personal data, because a guessed address can be matched) and Rekoda will not mail
+that address again. Do not use this sender for bulk mail until the owner has
+seen it work on staging.
 
 ## Owner checklist
 
@@ -24,11 +26,18 @@ mail until they are.
    - `RESEND_API_KEY=<the key>`
    - `REKODA_EMAIL_FROM=Rekoda <billing@your-domain>` (an address on the
      verified domain)
-5. Restart the api. A missing key or a malformed from-address refuses to boot,
+5. In Resend, add a webhook endpoint `https://<api-host>/webhooks/resend` for
+   the events `email.bounced` and `email.complained`, and put its signing
+   secret (`whsec_...`) in the same env file as `RESEND_WEBHOOK_SECRET`. With
+   `resend` selected the api refuses to boot without it, because no bounce
+   could be recorded.
+6. Restart the api. A missing key or a malformed from-address refuses to boot,
    naming the variable; it never starts half-configured.
-6. Staging check: request a billing-email confirmation from `/app/billing` with
+7. Staging check: request a billing-email confirmation from `/app/billing` with
    a Paystack TEST key and an address you own. Confirm the mail arrives, the
-   link works once and the second use is refused.
+   link works once and the second use is refused. Then send to Resend's
+   bounce test address and confirm a later request to it is refused without a
+   send.
 
 ## What the code guarantees
 
@@ -37,3 +46,22 @@ mail until they are.
 - A send that fails is an error to the caller; it is never reported as sent.
 - Logs carry the HTTP status or the failure kind only: never the recipient, the
   body, the provider's response or the key.
+- A webhook is admitted only with a valid Svix signature over the raw body and a
+  timestamp within five minutes; a replay changes nothing. Only a permanent
+  bounce and a complaint suppress; transient and undetermined bounces do not.
+- Known gap: if Resend accepts a message but the response is lost (a timeout),
+  the billing caller treats it as not sent and voids that link, so the mail can
+  arrive with a dead link. The merchant is told the send failed and can ask
+  again.
+- A merchant whose billing email is suppressed is told that address could not
+  receive our email and to use a different one; it is not told to retry.
+- Lifting a suppression (a mailbox that is fixed, or an erasure request) is an
+  operator act with no UI and no API: as the database owner, delete the row
+  whose `address_hash` is the SHA-256 of the trimmed, lower-cased address. The
+  API role cannot update or delete these rows by design. Deleting lifts it for
+  future mail only: a new permanent bounce or complaint for that address will
+  suppress it again (intended), and an event Resend is still retrying when the
+  row is deleted can restore it. No record of lifted addresses is kept, so an
+  erasure request is only final once Resend has no event left to deliver for
+  that address. Whether a lift must survive such a redelivery is an open owner
+  decision (backlog N7).

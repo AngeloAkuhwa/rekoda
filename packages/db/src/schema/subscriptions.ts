@@ -128,3 +128,14 @@ export const billingEmailVerifications = pgTable('billing_email_verifications', 
   consumedAt: timestamp('consumed_at', { withTimezone: true }),
   voidedAt: timestamp('voided_at', { withTimezone: true }),
 });
+
+/**
+ * An address that bounced for good or complained (migration 0179, N7). Platform-wide,
+ * keyed by the SHA-256 of the lower-cased address: the address itself is never kept.
+ */
+export const emailSuppressions = pgTable('email_suppressions', {
+  addressHash: text('address_hash').primaryKey(),
+  reason: text('reason').notNull(),
+  providerEventId: text('provider_event_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});

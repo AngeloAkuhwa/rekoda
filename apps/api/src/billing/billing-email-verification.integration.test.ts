@@ -14,7 +14,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDb, identity, sql, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../config.js';
-import { MockEmailSender, NoEmailSender } from '../email/email.port.js';
+import { MockEmailSender, NoEmailSender, type EmailSender } from '../email/email.port.js';
+import { EmailSuppressedError } from '../email/suppressing.sender.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
 import { BillingService } from './billing.service.js';
 import { BillingCheckoutService } from './billing-checkout.service.js';
@@ -238,6 +239,24 @@ describe('asking for a link', () => {
       reason: 'email_not_configured',
     });
     expect(mail.outbox).toHaveLength(0);
+  });
+
+  it('says the address cannot receive Rekoda mail, not "try again", when it is suppressed', async () => {
+    const businessId = await seedBusiness();
+    const suppressed: EmailSender = {
+      available: true,
+      send: async () => {
+        throw new EmailSuppressedError();
+      },
+    };
+    const answer = await new BillingEmailService(config, appDb, suppressed).requestVerification(
+      businessId,
+      EMAIL,
+    );
+    expect(answer).toEqual({ state: 'unavailable', reason: 'address_unusable' });
+    /* Nothing left, so the link is spent and the merchant may fix the address at once. */
+    const retry = await emails().requestVerification(businessId, undefined);
+    expect(retry.state).toBe('sent');
   });
 
   it('gives the allowance back when the send fails', async () => {

@@ -247,7 +247,7 @@ export const billingEmailVerifyResponse = z.discriminatedUnion('state', [
   }),
   z.object({
     state: z.literal('unavailable'),
-    reason: z.enum(['email_not_configured', 'send_failed']),
+    reason: z.enum(['email_not_configured', 'send_failed', 'address_unusable']),
   }),
   /** Too many links asked for; `retryAfterSeconds` is when the next may be requested. */
   z.object({ state: z.literal('rate_limited'), retryAfterSeconds: z.number().int().nonnegative() }),

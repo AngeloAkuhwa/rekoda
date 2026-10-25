@@ -166,6 +166,12 @@ describe('billing email and confirmation wording', () => {
     expect(
       emailVerifyCopy({ state: 'unavailable', reason: 'email_not_configured' }).message,
     ).toMatch(/cannot send confirmation emails yet/);
+    expect(emailVerifyCopy({ state: 'unavailable', reason: 'address_unusable' }).message).toMatch(
+      /cannot send email to that address/,
+    );
+    expect(emailVerifyCopy({ state: 'unavailable', reason: 'send_failed' }).message).toMatch(
+      /Try again in a few minutes/,
+    );
     expect(emailVerifyCopy({ state: 'rate_limited', retryAfterSeconds: 3600 }).message).toMatch(
       /60 minutes/,
     );

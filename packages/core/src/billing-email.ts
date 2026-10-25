@@ -12,6 +12,7 @@
  * The third, never the owner's personal email by substitution, is the caller's
  * rule: this module only ever sees what a person typed.
  */
+import { createHash } from 'node:crypto';
 
 /** Domains that are Rekoda's own. An address here is a support or billing mailbox of ours, not a merchant's. */
 export const REKODA_EMAIL_DOMAINS: readonly string[] = ['rekoda.app', 'rekoda.ng', 'rekoda.com'];
@@ -90,4 +91,13 @@ export function maskBillingEmail(email: string): string {
  */
 export function billingEmailConfirmationLink(webUrl: string, token: string): string {
   return `${webUrl.replace(/\/+$/, '')}/app/billing/confirm-email#token=${encodeURIComponent(token)}`;
+}
+
+/**
+ * The key a suppressed address is stored under (N7): the SHA-256 of the trimmed,
+ * lower-cased address. The address is not stored in clear text, but an unkeyed hash
+ * stays linkable by anyone who can guess the address, so treat the table as personal data.
+ */
+export function emailSuppressionKey(address: string): string {
+  return createHash('sha256').update(address.trim().toLowerCase(), 'utf8').digest('hex');
 }

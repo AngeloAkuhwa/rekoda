@@ -362,11 +362,16 @@ describe('REKODA_EMAIL_PROVIDER (OWN-51)', () => {
       REKODA_EMAIL_PROVIDER: 'resend',
       RESEND_API_KEY: 're_test_key',
       REKODA_EMAIL_FROM: 'Rekoda <billing@example.com>',
+      RESEND_WEBHOOK_SECRET: ' whsec_abc ',
     };
     const config = loadConfig({ ...PROD, ...ok });
     expect(config.emailProvider).toBe('resend');
     expect(config.resendApiKey).toBe('re_test_key');
     expect(config.emailFrom).toBe('Rekoda <billing@example.com>');
+    expect(config.resendWebhookSecret).toBe('whsec_abc');
+    expect(() => loadConfig({ ...PROD, ...ok, RESEND_WEBHOOK_SECRET: '' })).toThrow(
+      /RESEND_WEBHOOK_SECRET/,
+    );
     expect(loadConfig({ ...BASE, ...ok, REKODA_EMAIL_FROM: 'billing@example.com' }).emailFrom).toBe(
       'billing@example.com',
     );

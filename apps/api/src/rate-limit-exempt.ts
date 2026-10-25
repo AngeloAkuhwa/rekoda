@@ -17,6 +17,7 @@ const EXEMPT_PATHS: ReadonlySet<string> = new Set([
   '/health',
   '/webhooks/meta',
   '/webhooks/paystack',
+  '/webhooks/resend',
 ]);
 
 export function isRateLimitExempt(url: string | undefined): boolean {
