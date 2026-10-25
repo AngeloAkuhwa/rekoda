@@ -95,8 +95,8 @@ export function billingEmailConfirmationLink(webUrl: string, token: string): str
 
 /**
  * The key a suppressed address is stored under (N7): the SHA-256 of the trimmed,
- * lower-cased address. The address itself is never kept, so erasing an account
- * leaves nothing to chase and a leaked table names nobody.
+ * lower-cased address. The address is not stored in clear text, but an unkeyed hash
+ * stays linkable by anyone who can guess the address, so treat the table as personal data.
  */
 export function emailSuppressionKey(address: string): string {
   return createHash('sha256').update(address.trim().toLowerCase(), 'utf8').digest('hex');

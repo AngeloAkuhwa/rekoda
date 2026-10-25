@@ -159,10 +159,7 @@ export function emailVerifyCopy(answer: BillingEmailVerifyResponse): {
     case 'unavailable':
       return {
         ok: false,
-        message:
-          answer.reason === 'email_not_configured'
-            ? 'We cannot send confirmation emails yet. Your address is fine; we will tell you when this is switched on.'
-            : 'We could not send that email just now. Try again in a few minutes.',
+        message: unavailableMessage(answer.reason),
       };
     case 'rate_limited': {
       const minutes = Math.max(1, Math.ceil(answer.retryAfterSeconds / 60));
@@ -174,6 +171,17 @@ export function emailVerifyCopy(answer: BillingEmailVerifyResponse): {
             : `You have asked for several links. Please try again in about ${minutes} minutes.`,
       };
     }
+  }
+}
+
+function unavailableMessage(reason: 'email_not_configured' | 'send_failed' | 'address_unusable') {
+  switch (reason) {
+    case 'email_not_configured':
+      return 'We cannot send confirmation emails yet. Your address is fine; we will tell you when this is switched on.';
+    case 'address_unusable':
+      return 'That address could not receive our email before, so we will not send to it again. Use a different billing email.';
+    case 'send_failed':
+      return 'We could not send that email just now. Try again in a few minutes.';
   }
 }
 

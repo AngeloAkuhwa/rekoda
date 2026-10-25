@@ -9,7 +9,7 @@ production) or `resend`.
 Cloudflare email routing only RECEIVES mail for role addresses. Sending needs an
 authenticated sender, which is Resend here (OWN-49). Suppression and bounce
 handling are Rekoda's: a permanent bounce or a spam complaint reported by Resend
-is recorded (as an address hash, never the address) and Rekoda will not mail
+is recorded (as an unkeyed SHA-256 of the address, not the address; still personal data, because a guessed address can be matched) and Rekoda will not mail
 that address again. Do not use this sender for bulk mail until the owner has
 seen it work on staging.
 
@@ -28,8 +28,9 @@ seen it work on staging.
      verified domain)
 5. In Resend, add a webhook endpoint `https://<api-host>/webhooks/resend` for
    the events `email.bounced` and `email.complained`, and put its signing
-   secret (`whsec_...`) in the same env file as `RESEND_WEBHOOK_SECRET`. Without
-   it every delivery is rejected and bounces are not recorded.
+   secret (`whsec_...`) in the same env file as `RESEND_WEBHOOK_SECRET`. With
+   `resend` selected the api refuses to boot without it, because no bounce
+   could be recorded.
 6. Restart the api. A missing key or a malformed from-address refuses to boot,
    naming the variable; it never starts half-configured.
 7. Staging check: request a billing-email confirmation from `/app/billing` with
@@ -52,3 +53,9 @@ seen it work on staging.
   the billing caller treats it as not sent and voids that link, so the mail can
   arrive with a dead link. The merchant is told the send failed and can ask
   again.
+- A merchant whose billing email is suppressed is told that address could not
+  receive our email and to use a different one; it is not told to retry.
+- Lifting a suppression (a mailbox that is fixed, or an erasure request) is an
+  operator act with no UI and no API: as the database owner, delete the row
+  whose `address_hash` is the SHA-256 of the trimmed, lower-cased address. The
+  API role cannot update or delete these rows by design.

@@ -3,8 +3,9 @@
 --
 -- Platform-wide, not tenant-owned: a mailbox that rejects Rekoda rejects it for every
 -- merchant, and the webhook that learns of it knows no business. So there is no business_id
--- and no tenant policy. Only the SHA-256 of the lower-cased address is kept (never the
--- address), so erasing an account leaves nothing to chase here (OWN-52).
+-- and no tenant policy. Only the SHA-256 of the lower-cased address is kept, not the address. An
+-- unkeyed hash is still linkable by anyone who can guess the address, so the table is personal
+-- data: an operator removes a row for an erasure request (OWN-52) by hashing the address.
 CREATE TABLE IF NOT EXISTS email_suppressions (
   address_hash      text PRIMARY KEY CHECK (address_hash ~ '^[0-9a-f]{64}$'),
   reason            text NOT NULL CHECK (reason IN ('bounced', 'complained')),

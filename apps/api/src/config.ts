@@ -324,8 +324,8 @@ export interface ApiConfig {
   /** The verified sending address; empty unless `emailProvider` is `resend`. */
   emailFrom: string;
   /**
-   * Resend's webhook signing secret (`whsec_...`); empty unless `emailProvider` is `resend`.
-   * Empty rejects every Resend webhook, so bounces are not recorded until it is set.
+   * Resend's webhook signing secret (`whsec_...`). Required with `resend`, because without it
+   * no bounce would ever be recorded; empty otherwise. Never logged.
    */
   resendWebhookSecret: string;
   /**
@@ -972,11 +972,15 @@ function resendSettings(
         'such as billing@example.com or Rekoda <billing@example.com>',
     );
   }
-  return {
-    resendApiKey,
-    emailFrom,
-    resendWebhookSecret: env['RESEND_WEBHOOK_SECRET']?.trim() ?? '',
-  };
+  const resendWebhookSecret = env['RESEND_WEBHOOK_SECRET']?.trim() ?? '';
+  if (!resendWebhookSecret) {
+    /* Without it no bounce or complaint is recorded and mail keeps going to dead addresses. */
+    throw new ConfigError(
+      'REKODA_EMAIL_PROVIDER=resend needs RESEND_WEBHOOK_SECRET, the signing secret of the ' +
+        'Resend webhook for /webhooks/resend',
+    );
+  }
+  return { resendApiKey, emailFrom, resendWebhookSecret };
 }
 
 /**
