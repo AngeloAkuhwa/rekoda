@@ -9,6 +9,7 @@ export * from './ops.js';
 export * from './waba.js';
 export * from './payments-hub.js';
 export * from './subscriptions.js';
+export * from './reminders.js';
 export * from './plan-catalogue.js';
 export * from './platform-costs.js';
 export * from './tax.js';

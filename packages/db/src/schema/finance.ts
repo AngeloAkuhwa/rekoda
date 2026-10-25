@@ -71,6 +71,8 @@ export const invoices = pgTable(
     balanceDueK: kobo('balance_due_k').notNull(),
     currency: text('currency').notNull().default('NGN'),
     dueDate: timestamp('due_date', { withTimezone: true }),
+    /** The merchant's "stop reminders for this invoice" control (migration 0180, N1); null: reminders may go. */
+    remindersStoppedAt: timestamp('reminders_stopped_at', { withTimezone: true }),
     /** The document exactly as issued (tokenised refs, not PII). */
     snapshotJson: jsonb('snapshot_json'),
     docHash: text('doc_hash'),
