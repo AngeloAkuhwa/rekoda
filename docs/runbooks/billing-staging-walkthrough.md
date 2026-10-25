@@ -8,7 +8,8 @@ Paystack; only a real Paystack TEST payment proves the provider side.
 ## 0. Staging settings that must be on first
 
 If one of these is missing, the matching step below shows a plain "not switched on" message and
-charges nothing. They live in the staging host's env file, never in source or chat.
+charges nothing, except `REKODA_WEB_URL`: without it checkout still opens, but Paystack cannot send
+the merchant back to Rekoda afterwards. They live in the staging host's env file, never in source or chat.
 
 | Setting                                                                                        | Needed for                                                                                      |
 | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |

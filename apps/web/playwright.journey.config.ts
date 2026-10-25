@@ -63,11 +63,10 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: 0,
   /**
-   * Above Playwright's 30s default, deliberately. These are full-stack
-   * journeys — the sign-out test alone makes six navigations, each a real HTTP
-   * round trip to the API and a query against Postgres. The default budget is
-   * sized for a single page interaction and turns an honest slow test into a
-   * confusing timeout with no failure to read.
+   * Above Playwright's 30s default, deliberately. This is a full-stack journey:
+   * onboarding, plan choice, checkout, and a wait of up to 45 seconds for the
+   * payment to be confirmed. Each step is a real HTTP round trip to the API and a
+   * query against Postgres, so an honest slow run is not mistaken for a hang.
    */
   timeout: 60_000,
   /**
@@ -146,9 +145,10 @@ export default defineConfig({
         CONNECTION_KEY: ephemeralKey(),
         // Every request in this suite arrives from 127.0.0.1 through the Next
         // server, so the whole run shares ONE per-IP budget — and the default
-        // 60/minute is sized for a person, not for 33 full-stack journeys.
-        // The limiter itself is pinned by auth.integration.test.ts; raising it
-        // here tests the product instead of the throttle.
+        // 60/minute is sized for a person, not for a scripted journey repeated
+        // in two viewports. The limiter itself is pinned by
+        // auth.integration.test.ts; raising it here tests the product instead of
+        // the throttle.
         REKODA_RATE_LIMIT_MAX: '2000',
         // Returns the code in the response so the suite can complete the flow
         // without a WhatsApp account. The API refuses this outright when

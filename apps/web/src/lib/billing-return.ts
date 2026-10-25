@@ -57,7 +57,7 @@ export function returnView(
     return {
       kind: 'unknown',
       title: 'We could not find that payment',
-      body: 'It is not on your account, so nothing has changed. Your billing page lists every payment made to Rekoda.',
+      body: 'It is not among your most recent payments, so nothing has changed. Your billing page lists your latest payments to Rekoda.',
       poll: false,
     };
   }
