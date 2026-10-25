@@ -55,7 +55,8 @@ createServer(async (req, res) => {
         reference: t.reference,
         amount: t.amount,
         currency: t.currency,
-        fees: Math.round(t.amount * 0.015),
+        // 1.5% in whole kobo, rounded half up, with no floating-point rate.
+        fees: Math.floor((t.amount * 15 + 500) / 1000),
         channel: 'card',
         paid_at: t.paid ? new Date().toISOString() : null,
         gateway_response: t.paid ? 'Successful' : 'The customer did not complete the transaction',
