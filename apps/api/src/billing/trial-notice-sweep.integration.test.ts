@@ -191,7 +191,7 @@ describe('trial reminders', () => {
     await ownerDb.execute(sql`UPDATE businesses SET plan = 'chat' WHERE id = ${id}::uuid`);
 
     const claimed = await withBusiness(appDb, id, (tx) =>
-      subscriptionsRepo.claimTrialNotice(tx, id, 2),
+      subscriptionsRepo.claimTrialNotice(tx, id, 2, at(12)),
     );
 
     expect(claimed).toBe(false);
@@ -264,5 +264,32 @@ describe('trial reminders', () => {
 
     expect(sender.trialNotices).toHaveLength(1);
     expect((await stateOf(id)).stage).toBe(2);
+  });
+
+  it('a trial that ends between the listing and the claim is not claimed', async () => {
+    const { id } = await seedTrial();
+    const { subscriptionsRepo } = await import('@rekoda/db');
+
+    const claimed = await withBusiness(appDb, id, (tx) =>
+      subscriptionsRepo.claimTrialNotice(tx, id, 3, expiry),
+    );
+
+    expect(claimed).toBe(false);
+    expect((await stateOf(id)).stage).toBeNull();
+  });
+
+  it('an owner who sends STOP between the listing and the claim is not claimed', async () => {
+    const { id } = await seedTrial();
+    const { subscriptionsRepo } = await import('@rekoda/db');
+    await ownerDb.execute(
+      sql`UPDATE users SET opted_out_at = now() WHERE id = (SELECT owner_user_id FROM businesses WHERE id = ${id}::uuid)`,
+    );
+
+    const claimed = await withBusiness(appDb, id, (tx) =>
+      subscriptionsRepo.claimTrialNotice(tx, id, 2, at(12)),
+    );
+
+    expect(claimed).toBe(false);
+    expect((await stateOf(id)).stage).toBeNull();
   });
 });

@@ -58,8 +58,12 @@ function lagosDate(at: Date): string {
 
 export async function sweepTrialNotices(
   deps: TrialNoticeSweepDeps,
-  now: Date = new Date(),
+  at?: Date,
 ): Promise<TrialNoticeSweepResult> {
+  /* A fixed time only in tests; in production every use reads the clock afresh, because a
+   * pass over many pages takes minutes and eligibility is rechecked at each claim. */
+  const clock = (): Date => at ?? new Date();
+  const now = clock();
   const result: TrialNoticeSweepResult = {
     sent: 0,
     optedOut: 0,
@@ -116,7 +120,7 @@ export async function sweepTrialNotices(
       }
 
       const claimed = await withBusiness(deps.appDb, row.businessId, (tx) =>
-        subscriptionsRepo.claimTrialNotice(tx, row.businessId, due.stage),
+        subscriptionsRepo.claimTrialNotice(tx, row.businessId, due.stage, clock()),
       );
       if (!claimed) continue;
 

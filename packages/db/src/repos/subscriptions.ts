@@ -1673,13 +1673,15 @@ export async function trialsEndingWithin(
 /**
  * Claim a trial reminder stage and record the attempt as 'sending', or discover it was
  * already claimed. Returns true exactly once per stage to exactly one caller, and only
- * while the business is still on its trial (a purchase that landed between the read and
- * this claim sends nothing).
+ * while, AT CLAIM TIME, the business is still on a trial that has not ended as of `asOf`
+ * and its owner has not opted out: a page of 500 is processed over minutes, so what the
+ * listing saw may be stale (a purchase, the expiry instant, a STOP in between).
  */
 export async function claimTrialNotice(
   tx: TenantDb,
   businessId: string,
   stage: number,
+  asOf: Date,
 ): Promise<boolean> {
   const rows = await tx.execute<{ id: string }>(sql`
     UPDATE businesses
@@ -1688,6 +1690,11 @@ export async function claimTrialNotice(
         updated_at = now()
     WHERE id = ${businessId}::uuid
       AND plan = 'trial'
+      AND plan_expires_at > ${asOf.toISOString()}::timestamptz
+      AND NOT EXISTS (
+        SELECT 1 FROM users u
+        WHERE u.id = businesses.owner_user_id AND u.opted_out_at IS NOT NULL
+      )
       AND (last_trial_notice_stage IS NULL OR last_trial_notice_stage < ${stage})
     RETURNING id
   `);
