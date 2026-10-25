@@ -28,7 +28,7 @@ const VIEWS: Record<State, PaymentRecordView> = {
   replaced: {
     title: 'Replaced by a newer choice',
     summary:
-      'You chose something else after this, so it can no longer be paid. No payment has been confirmed for it, and your plan has not changed because of it.',
+      'You chose something else after this, so it should not be paid. No payment has been confirmed for it, and your plan has not changed because of it.',
     confirmed: false,
   },
   failed: {
@@ -61,15 +61,18 @@ const VIEWS: Record<State, PaymentRecordView> = {
 };
 
 export function paymentRecordView(
-  record: Pick<BillingPaymentRecord, 'state' | 'reconciled'>,
+  record: Pick<BillingPaymentRecord, 'state' | 'reconciled' | 'applied'>,
 ): PaymentRecordView {
   const view = VIEWS[record.state];
-  return record.state === 'paid_not_applied' && record.reconciled
-    ? {
-        ...view,
-        summary: `${view.summary} Our team has since reviewed it; ask support for the outcome.`,
-      }
-    : view;
+  let summary = view.summary;
+  if (record.state === 'paid_not_applied' && record.reconciled) {
+    summary = `${summary} Our team has since reviewed it; ask support for the outcome.`;
+  }
+  /* A part refund of money that was never applied must still say it was never applied. */
+  if (record.state === 'part_refunded' && !record.applied) {
+    summary = `${summary} It was not applied to your plan because you had already made a newer plan choice.`;
+  }
+  return summary === view.summary ? view : { ...view, summary };
 }
 
 /** The sentence under every record: factual, and neither a tax invoice nor a tax receipt. */

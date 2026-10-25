@@ -5,7 +5,7 @@ import { PAYMENT_RECORD_NOTICE, paymentRecordView } from './payment-record-copy'
 describe('payment record copy', () => {
   it('has words for every state the API can send', () => {
     for (const state of billingPaymentState.options) {
-      const view = paymentRecordView({ state, reconciled: false });
+      const view = paymentRecordView({ state, reconciled: false, applied: true });
       expect(view.title.length).toBeGreaterThan(0);
       expect(view.summary.length).toBeGreaterThan(0);
     }
@@ -13,7 +13,7 @@ describe('payment record copy', () => {
 
   it('only a paid state claims the provider confirmed a payment', () => {
     const confirmed = billingPaymentState.options.filter(
-      (state) => paymentRecordView({ state, reconciled: false }).confirmed,
+      (state) => paymentRecordView({ state, reconciled: false, applied: true }).confirmed,
     );
     expect(confirmed.sort()).toEqual(
       ['paid_applied', 'paid_not_applied', 'part_refunded', 'refunded'].sort(),
@@ -22,22 +22,37 @@ describe('payment record copy', () => {
 
   it('a started or replaced payment never reads as paid or active', () => {
     for (const state of ['awaiting_payment', 'replaced'] as const) {
-      const { summary, title } = paymentRecordView({ state, reconciled: false });
+      const { summary, title } = paymentRecordView({ state, reconciled: false, applied: true });
       expect(`${title} ${summary}`).toMatch(/no payment has been confirmed/i);
       expect(`${title} ${summary}`).not.toMatch(/confirmed this payment|applied to your account/i);
     }
   });
 
   it('money received after a newer choice says it is not applied and not a subscription', () => {
-    const { summary } = paymentRecordView({ state: 'paid_not_applied', reconciled: false });
+    const { summary } = paymentRecordView({
+      state: 'paid_not_applied',
+      reconciled: false,
+      applied: false,
+    });
     expect(summary).toMatch(/not applied/i);
     expect(summary).toMatch(/does not make a subscription active/i);
+  });
+
+  it('a part refund of money that was never applied still says it was not applied', () => {
+    const unapplied = paymentRecordView({
+      state: 'part_refunded',
+      reconciled: false,
+      applied: false,
+    });
+    const applied = paymentRecordView({ state: 'part_refunded', reconciled: false, applied: true });
+    expect(unapplied.summary).toMatch(/not applied to your plan/i);
+    expect(applied.summary).not.toMatch(/not applied/i);
   });
 
   it('never calls itself a tax document, and says it is not one', () => {
     expect(PAYMENT_RECORD_NOTICE).toMatch(/not a VAT invoice, tax invoice or tax receipt/);
     for (const state of billingPaymentState.options) {
-      const { title, summary } = paymentRecordView({ state, reconciled: true });
+      const { title, summary } = paymentRecordView({ state, reconciled: true, applied: true });
       expect(`${title} ${summary}`).not.toMatch(/vat|tax/i);
     }
   });

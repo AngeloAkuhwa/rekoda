@@ -67,7 +67,14 @@ export default async function PaymentRecordPage({
 }) {
   const { reference } = await params;
   const { identity, token } = await requireSessionWithToken('/app/billing');
-  const record = await billingPayment(token, decodeURIComponent(reference));
+  /* A malformed escape is a reference nobody has, not a server error. */
+  let wanted: string;
+  try {
+    wanted = decodeURIComponent(reference);
+  } catch {
+    notFound();
+  }
+  const record = await billingPayment(token, wanted);
   if (!record) notFound();
 
   const view = paymentRecordView(record);

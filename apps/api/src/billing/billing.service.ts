@@ -244,7 +244,8 @@ export class BillingService {
         paidAt: charge.paidAt?.toISOString() ?? null,
         failedAt: charge.failedAt?.toISOString() ?? null,
         refundedAt: charge.refundedAt?.toISOString() ?? null,
-        applied: status === 'paid' && !unapplied,
+        /* A refund returns money; it does not un-apply a plan that took effect. */
+        applied: (status === 'paid' || status === 'refunded') && !unapplied,
         reconciled: unapplied && charge.unappliedResolvedAt !== null,
       };
     });

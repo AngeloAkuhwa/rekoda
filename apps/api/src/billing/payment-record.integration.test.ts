@@ -169,8 +169,69 @@ describe('payment record', () => {
       sql`status = 'refunded', refunded_amount_k = 990000, refunded_at = now()`,
     );
     const full = await service().paymentRecord(b, 'RKD-SUB-20261101-FFFFFF');
-    expect(full).toMatchObject({ state: 'refunded', refundedAmountK: 990_000, applied: false });
+    expect(full).toMatchObject({ state: 'refunded', refundedAmountK: 990_000 });
     expect(full!.refundedAt).not.toBeNull();
+  });
+
+  it('a payment that was applied and later fully refunded is still recorded as applied', async () => {
+    const b = await seedBusiness();
+    await open(b, 'RKD-SUB-20261101-JJJJJJ');
+    await withBusiness(appDb, b, (tx) =>
+      applySettledCharge(tx, {
+        businessId: b,
+        reference: 'RKD-SUB-20261101-JJJJJJ',
+        providerReference: 'ps_JJJJJJ',
+        when: new Date('2026-11-01T10:00:00Z'),
+        config,
+      }),
+    );
+    await set(
+      'RKD-SUB-20261101-JJJJJJ',
+      sql`status = 'refunded', refunded_amount_k = 990000, refunded_at = now()`,
+    );
+
+    expect(await service().paymentRecord(b, 'RKD-SUB-20261101-JJJJJJ')).toMatchObject({
+      state: 'refunded',
+      applied: true,
+    });
+  });
+
+  it('money refused as stale and then part-refunded is a part refund that was not applied', async () => {
+    const b = await seedBusiness();
+    await open(b, 'RKD-SUB-20261101-KKKKKK');
+    await set(
+      'RKD-SUB-20261101-KKKKKK',
+      sql`status = 'paid', paid_at = now(), unapplied_at = now(), refunded_amount_k = 100000`,
+    );
+
+    expect(await service().paymentRecord(b, 'RKD-SUB-20261101-KKKKKK')).toMatchObject({
+      state: 'part_refunded',
+      applied: false,
+    });
+  });
+
+  it('a charge stamped superseded, with no abandonment, is replaced', async () => {
+    const b = await seedBusiness();
+    await open(b, 'RKD-SUB-20261101-LLLLLL');
+    await set('RKD-SUB-20261101-LLLLLL', sql`superseded_at = now()`);
+
+    expect(await service().paymentRecord(b, 'RKD-SUB-20261101-LLLLLL')).toMatchObject({
+      state: 'replaced',
+    });
+  });
+
+  it('an overpayment shows what the provider took beside what was asked', async () => {
+    const b = await seedBusiness();
+    await open(b, 'RKD-SUB-20261101-MMMMMM');
+    await set(
+      'RKD-SUB-20261101-MMMMMM',
+      sql`status = 'paid', paid_at = now(), paid_amount_k = 1000000`,
+    );
+
+    expect(await service().paymentRecord(b, 'RKD-SUB-20261101-MMMMMM')).toMatchObject({
+      amountK: 990_000,
+      paidAmountK: 1_000_000,
+    });
   });
 
   it('a pack names what was bought', async () => {

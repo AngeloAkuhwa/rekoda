@@ -102,7 +102,7 @@ export const billingPaymentRecord = z.object({
   paidAt: isoDate.nullable(),
   failedAt: isoDate.nullable(),
   refundedAt: isoDate.nullable(),
-  /** A paid charge that took effect on the account (false for any other state). */
+  /** A verified payment that took effect on the account, whether or not it was later refunded. False for any unpaid state and for money received but refused as stale. */
   applied: z.boolean(),
   /** For `paid_not_applied`: an operator has since reconciled it. */
   reconciled: z.boolean(),
