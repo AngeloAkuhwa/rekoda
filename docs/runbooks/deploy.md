@@ -167,6 +167,7 @@ git fetch --tags && git checkout vX.Y.Z
 sed -i 's/^REKODA_RELEASE=.*/REKODA_RELEASE=vX.Y.Z/' .env
 dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) api   # build BEFORE touching anything live
 dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) web   # one image at a time: never both at once
+# First PRODUCTION deploy carrying migrations 0175-0178 (G-109): run `dc stop api worker` here first
 dc run --rm -T migrate                                             # expand-only migrations, as the owner
 dc up -d --wait                                                    # recreates api, worker and web on the new images
 dc exec caddy caddy reload --config /etc/caddy/Caddyfile            # apply a changed Caddyfile (validated first)
@@ -217,7 +218,7 @@ these migrations**, stop `api` and `worker` first, then run `migrate`, then
 start the new release, so no previous-release writer overlaps the plan
 transition.
 
-**Rolling back after cutover is roll-forward only for trials.** The previous
+**After the G-109 cutover, prefer fixing forward; a rollback has a cost for trials.** The previous
 release meters a trial's base-plan units by calendar month, this one on the
 trial row, and nothing carries post-cutover trial spending back. A rollback can
 therefore hand an already-exhausted trial a fresh month allowance (never a
