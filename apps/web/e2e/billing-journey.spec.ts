@@ -98,6 +98,16 @@ test('a new merchant pays for a plan on Paystack, comes back, and the plan switc
     /\/app\/billing\/return\?trxref=/,
   );
 
+  // The payment record of a payment that has only been started says so: not paid, not applied.
+  const pending = await page.context().newPage();
+  await pending.goto(`/app/billing/payments/${reference}`);
+  await expect(pending.getByRole('heading', { name: 'Not paid yet' })).toBeVisible();
+  await expect(pending.getByText('Not confirmed')).toBeVisible();
+  await expect(pending.getByText('Confirmed by Paystack')).toHaveCount(0);
+  await expect(pending.locator('dt', { hasText: 'Applied to your account' })).toBeVisible();
+  await expect(pending.locator('dd', { hasText: /^No$/ })).toBeVisible();
+  await pending.close();
+
   // Before anything is confirmed, coming back must NOT claim a plan.
   await page.getByRole('link', { name: 'Return to merchant' }).click();
   await expect(page.getByRole('heading', { name: 'Payment status' })).toBeVisible();
@@ -117,6 +127,27 @@ test('a new merchant pays for a plan on Paystack, comes back, and the plan switc
   await page.getByRole('link', { name: 'Back to billing' }).click();
   await expect(page.getByText('Rekoda Chat').first()).toBeVisible();
   await expect(page.getByRole('cell', { name: 'Paid' }).first()).toBeVisible();
+
+  // The history links to the payment record: verified status, reference, amount, what it bought,
+  // the period, that it was applied, and a neutral note that it is not a tax document.
+  await page.getByRole('link', { name: reference }).click();
+  await expect(page.getByRole('heading', { name: 'Payment record' })).toBeVisible();
+  await expect(page.locator('[data-state=paid_applied]')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Paid', exact: true })).toBeVisible();
+  await expect(page.getByText('Confirmed by Paystack')).toBeVisible();
+  await expect(page.getByText(reference, { exact: true })).toBeVisible();
+  await expect(page.getByText(/₦9,900/).first()).toBeVisible();
+  await expect(page.getByText(/Subscription · Rekoda Chat/)).toBeVisible();
+  await expect(page.locator('dt', { hasText: 'Service period' })).toBeVisible();
+  await expect(page.locator('dt', { hasText: 'Paid on' })).toBeVisible();
+  await expect(page.locator('dd', { hasText: /^Yes$/ })).toBeVisible();
+  await expect(page.getByText(/not a VAT invoice, tax invoice or tax receipt/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Print or save as PDF' })).toBeVisible();
+  // No horizontal scroll at the mobile width this file runs at.
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+  await page.goBack();
 
   // The worker has applied the one event. A redelivery of it is dropped at the door and changes
   // nothing: the same single event row, the same paid-to date, still one paid charge.
@@ -234,4 +265,33 @@ test('coming back to the payment page with a reference that is not yours shows n
   await expect(page.getByRole('heading', { name: 'We could not find that payment' })).toBeVisible();
   await page.goto('/app/billing/return?reference=%3Cscript%3E');
   await expect(page.getByRole('heading', { name: 'We could not find that payment' })).toBeVisible();
+});
+
+test("another merchant's payment record, and one that does not exist, show nothing", async ({
+  page,
+  browser,
+  request,
+}) => {
+  // Merchant A has a real payment waiting.
+  const businessId = await onboard(page, `Ada Owner ${RUN}-${seq}`);
+  await page.goto('/app/billing?to=chat');
+  await page.getByRole('button', { name: 'Confirm and pay' }).click();
+  await expect(page.getByRole('button', { name: 'Pay with Paystack' })).toBeVisible();
+  const [charge] = await sql<{ reference: string }[]>`
+    SELECT reference FROM subscription_charges WHERE business_id = ${businessId}`;
+  const reference = charge!.reference;
+  await page.goto(`/app/billing/payments/${reference}`);
+  await expect(page.getByRole('heading', { name: 'Not paid yet' })).toBeVisible();
+
+  // Merchant B, in a separate session, cannot read it, and cannot tell it from a missing one.
+  const other = await (await browser.newContext()).newPage();
+  await onboard(other, `Bola Stranger ${RUN}-${seq}`);
+  await other.goto(`/app/billing/payments/${reference}`);
+  await expect(other.getByRole('heading', { name: 'That page does not exist' })).toBeVisible();
+  await expect(other.getByText(reference)).toHaveCount(0);
+  await expect(other.getByRole('heading', { name: 'Payment record' })).toHaveCount(0);
+  await expect(other.getByText('Not paid yet')).toHaveCount(0);
+  await other.goto('/app/billing/payments/RKD-SUB-20260101-ZZZZZZ');
+  await expect(other.getByRole('heading', { name: 'That page does not exist' })).toBeVisible();
+  void request;
 });

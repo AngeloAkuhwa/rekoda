@@ -48,6 +48,7 @@ import {
   billingEmailVerifyResponse,
   billingIntervalResponse,
   billingOverviewResponse,
+  billingPaymentRecord,
   businessSettingsResponse,
   businessSettingsView,
   billingPlanChangeResponse,
@@ -96,6 +97,7 @@ import {
   type BillingEmailVerifyResponse,
   type BillingIntervalResponse,
   type BillingOverviewResponse,
+  type BillingPaymentRecord,
   type BusinessSettingsRequest,
   type BusinessSettingsResponse,
   type BusinessSettingsView,
@@ -740,6 +742,20 @@ export async function billingOverview(sessionToken: string): Promise<BillingOver
     expect: [200],
   });
   return billingOverviewResponse.parse(json);
+}
+
+/** One payment in full, or null when the reference is not this business's own (billing Slice A). */
+export async function billingPayment(
+  sessionToken: string,
+  reference: string,
+): Promise<BillingPaymentRecord | null> {
+  const { status, json } = await call({
+    method: 'GET',
+    path: `/v1/billing/payments/${encodeURIComponent(reference)}`,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 404],
+  });
+  return status === 200 ? billingPaymentRecord.parse(json) : null;
 }
 
 /** What a plan change costs, before the merchant commits to it. */

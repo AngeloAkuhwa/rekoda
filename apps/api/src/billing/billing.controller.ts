@@ -13,6 +13,8 @@ import {
   Get,
   HttpCode,
   Inject,
+  NotFoundException,
+  Param,
   Post,
   Req,
   UseGuards,
@@ -31,6 +33,7 @@ import {
   type BillingEmailVerifyResponse,
   type BillingIntervalResponse,
   type BillingOverviewResponse,
+  type BillingPaymentRecord,
   type BillingPlanChangeResponse,
   type BillingQuoteResponse,
 } from '@rekoda/contracts';
@@ -52,6 +55,21 @@ export class BillingController {
   @Get()
   async overview(@Req() request: AuthedRequest): Promise<BillingOverviewResponse> {
     return this.billing.overview(request.auth!.businessId);
+  }
+
+  /**
+   * One payment in full, for the record page (billing Slice A). The reference must be one of this
+   * business's own; anyone else's, and one that never existed, are both 404 so the route cannot
+   * be used to learn whether another merchant holds a reference. Same readers as the overview.
+   */
+  @Get('payments/:reference')
+  async paymentRecord(
+    @Req() request: AuthedRequest,
+    @Param('reference') reference: string,
+  ): Promise<BillingPaymentRecord> {
+    const record = await this.billing.paymentRecord(request.auth!.businessId, reference);
+    if (!record) throw new NotFoundException('payment_not_found');
+    return record;
   }
 
   /**

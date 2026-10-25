@@ -1,0 +1,214 @@
+/**
+ * The payment record page's data (billing Slice A): one payment in full, from the charge's own row.
+ *
+ * Asserted on the states a merchant must be able to tell apart: a started payment is not a paid
+ * one, money received is not entitlement applied, a replaced charge is not awaiting payment, and a
+ * part refund is not a full refund. Another business's reference reads as nothing.
+ */
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { billingPaymentRecord } from '@rekoda/contracts';
+import { createDb, identity, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
+import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { applySettledCharge, BillingService } from './billing.service.js';
+
+let urls: Urls;
+let appDb: Db;
+let closeApp: () => Promise<void>;
+let ownerDb: Db;
+let closeOwner: () => Promise<void>;
+
+beforeAll(async () => {
+  urls = requireUrls();
+  await migrate(urls);
+  ({ db: appDb, close: closeApp } = createDb(urls.app, { max: 4 }));
+  ({ db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 2 }));
+});
+
+afterAll(async () => {
+  await closeApp?.();
+  await closeOwner?.();
+});
+
+beforeEach(async () => {
+  await truncateAll(urls);
+});
+
+const config = { planCatalogueReads: false };
+const service = () => new BillingService(config as never, appDb);
+
+let seq = 0;
+async function seedBusiness(): Promise<string> {
+  seq += 1;
+  const user = await identity.upsertUserByPhone(appDb, `+23481600${String(seq).padStart(4, '0')}`);
+  const business = await identity.createBusinessWithOwner(appDb, {
+    name: 'Payment Record Ltd',
+    businessType: null,
+    ownerUserId: user.id,
+  });
+  return business.id;
+}
+
+const open = (businessId: string, reference: string, over: { pack?: boolean } = {}) =>
+  withBusiness(appDb, businessId, (tx) =>
+    subscriptionsRepo.openCharge(tx, {
+      businessId,
+      kind: over.pack ? 'add_on' : 'first_purchase',
+      ...(over.pack ? { packId: 'messages_100' } : { plan: 'chat' }),
+      amountK: 990_000,
+      reference,
+      ...(over.pack
+        ? {}
+        : {
+            periodStart: new Date('2026-11-01T00:00:00Z'),
+            periodEnd: new Date('2026-12-01T00:00:00Z'),
+          }),
+    }),
+  );
+
+const set = (reference: string, assignments: ReturnType<typeof sql>) =>
+  ownerDb.execute(
+    sql`UPDATE subscription_charges SET ${assignments} WHERE reference = ${reference}`,
+  );
+
+describe('payment record', () => {
+  it('a started payment is awaiting payment: no paid date, no applied claim', async () => {
+    const b = await seedBusiness();
+    await open(b, 'RKD-SUB-20261101-AAAAAA');
+
+    const record = await service().paymentRecord(b, 'RKD-SUB-20261101-AAAAAA');
+
+    expect(record).toMatchObject({
+      state: 'awaiting_payment',
+      status: 'pending',
+      paidAt: null,
+      paidAmountK: null,
+      applied: false,
+      amountK: 990_000,
+      currency: 'NGN',
+      plan: 'chat',
+    });
+  });
+
+  it('a verified payment that took effect is paid and applied, with its paid date', async () => {
+    const b = await seedBusiness();
+    await open(b, 'RKD-SUB-20261101-BBBBBB');
+    await withBusiness(appDb, b, (tx) =>
+      applySettledCharge(tx, {
+        businessId: b,
+        reference: 'RKD-SUB-20261101-BBBBBB',
+        providerReference: 'ps_BBBBBB',
+        when: new Date('2026-11-01T10:00:00Z'),
+        config,
+      }),
+    );
+
+    const record = await service().paymentRecord(b, 'RKD-SUB-20261101-BBBBBB');
+
+    expect(record).toMatchObject({ state: 'paid_applied', status: 'paid', applied: true });
+    expect(record!.paidAt).not.toBeNull();
+    expect(record!.periodStart).toBe('2026-11-01T00:00:00.000Z');
+    expect(record!.periodEnd).toBe('2026-12-01T00:00:00.000Z');
+  });
+
+  it('money received but refused as stale is paid_not_applied, never an applied plan', async () => {
+    const b = await seedBusiness();
+    await open(b, 'RKD-SUB-20261101-CCCCCC');
+    await set(
+      'RKD-SUB-20261101-CCCCCC',
+      sql`status = 'paid', paid_at = now(), unapplied_at = now(), unapplied_reason = 'stale'`,
+    );
+
+    const open1 = await service().paymentRecord(b, 'RKD-SUB-20261101-CCCCCC');
+    expect(open1).toMatchObject({ state: 'paid_not_applied', applied: false, reconciled: false });
+
+    await set('RKD-SUB-20261101-CCCCCC', sql`unapplied_resolved_at = now()`);
+    expect(await service().paymentRecord(b, 'RKD-SUB-20261101-CCCCCC')).toMatchObject({
+      state: 'paid_not_applied',
+      reconciled: true,
+    });
+  });
+
+  it('a pending charge the merchant replaced is replaced, not awaiting payment', async () => {
+    const b = await seedBusiness();
+    await open(b, 'RKD-SUB-20261101-DDDDDD');
+    await set('RKD-SUB-20261101-DDDDDD', sql`abandoned_at = now()`);
+
+    expect(await service().paymentRecord(b, 'RKD-SUB-20261101-DDDDDD')).toMatchObject({
+      state: 'replaced',
+      status: 'pending',
+      paidAt: null,
+    });
+  });
+
+  it('a failed payment is failed, with no paid date', async () => {
+    const b = await seedBusiness();
+    await open(b, 'RKD-SUB-20261101-EEEEEE');
+    await set('RKD-SUB-20261101-EEEEEE', sql`status = 'failed', failed_at = now()`);
+
+    const record = await service().paymentRecord(b, 'RKD-SUB-20261101-EEEEEE');
+
+    expect(record).toMatchObject({ state: 'failed', applied: false, paidAt: null });
+    expect(record!.failedAt).not.toBeNull();
+  });
+
+  it('a part refund and a full refund are different states with their amounts', async () => {
+    const b = await seedBusiness();
+    await open(b, 'RKD-SUB-20261101-FFFFFF');
+    await set(
+      'RKD-SUB-20261101-FFFFFF',
+      sql`status = 'paid', paid_at = now(), paid_amount_k = 990000, refunded_amount_k = 100000`,
+    );
+    expect(await service().paymentRecord(b, 'RKD-SUB-20261101-FFFFFF')).toMatchObject({
+      state: 'part_refunded',
+      refundedAmountK: 100_000,
+      paidAmountK: 990_000,
+    });
+
+    await set(
+      'RKD-SUB-20261101-FFFFFF',
+      sql`status = 'refunded', refunded_amount_k = 990000, refunded_at = now()`,
+    );
+    const full = await service().paymentRecord(b, 'RKD-SUB-20261101-FFFFFF');
+    expect(full).toMatchObject({ state: 'refunded', refundedAmountK: 990_000, applied: false });
+    expect(full!.refundedAt).not.toBeNull();
+  });
+
+  it('a pack names what was bought', async () => {
+    const b = await seedBusiness();
+    await open(b, 'RKD-ADD-20261101-GGGGGG', { pack: true });
+
+    expect(await service().paymentRecord(b, 'RKD-ADD-20261101-GGGGGG')).toMatchObject({
+      kind: 'add_on',
+      packId: 'messages_100',
+      plan: null,
+    });
+  });
+
+  it("another business's reference, and one that does not exist, both read as nothing", async () => {
+    const mine = await seedBusiness();
+    const theirs = await seedBusiness();
+    await open(theirs, 'RKD-SUB-20261101-HHHHHH');
+
+    expect(await service().paymentRecord(mine, 'RKD-SUB-20261101-HHHHHH')).toBeNull();
+    expect(await service().paymentRecord(mine, 'RKD-SUB-20261101-ZZZZZZ')).toBeNull();
+    expect(await service().paymentRecord(theirs, 'RKD-SUB-20261101-HHHHHH')).not.toBeNull();
+  });
+
+  it('answers the contract and exposes no checkout link, provider reference or internal reason', async () => {
+    const b = await seedBusiness();
+    await open(b, 'RKD-SUB-20261101-IIIIII');
+    await set(
+      'RKD-SUB-20261101-IIIIII',
+      sql`checkout_url = 'https://checkout.example/secret', provider_reference = 'ps_internal', failure_reason = 'card_declined_internal', unapplied_reason = 'internal'`,
+    );
+
+    const record = await service().paymentRecord(b, 'RKD-SUB-20261101-IIIIII');
+
+    expect(billingPaymentRecord.parse(record)).toEqual(record);
+    const text = JSON.stringify(record);
+    expect(text).not.toContain('checkout.example');
+    expect(text).not.toContain('ps_internal');
+    expect(text).not.toContain('card_declined_internal');
+    expect(text).not.toContain('"internal"');
+  });
+});

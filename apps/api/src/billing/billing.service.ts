@@ -20,6 +20,7 @@ import {
   billingState,
   GRACE_DAYS,
   upgradeProrationEligibility,
+  paymentRecordState,
   planChangeCharge,
   subscriptionReference,
   usagePeriod,
@@ -36,6 +37,7 @@ import {
 import type {
   BillingCancelResponse,
   BillingOverviewResponse,
+  BillingPaymentRecord,
   BillingIntervalResponse,
   BillingPlanChangeResponse,
   BillingQuoteResponse,
@@ -192,6 +194,58 @@ export class BillingService {
             createdAt: charge.createdAt.toISOString(),
           })),
         ),
+      };
+    });
+  }
+
+  /**
+   * One payment in full (billing Slice A). Null when the reference is not this business's own, so
+   * the controller answers 404 for another tenant's payment exactly as for one that never existed.
+   * Every field comes from the charge row; the state is core's `paymentRecordState`.
+   */
+  async paymentRecord(businessId: string, reference: string): Promise<BillingPaymentRecord | null> {
+    return withBusiness(this.db, businessId, async (tx) => {
+      const charge = await subscriptionsRepo.chargeRecordByReference(tx, businessId, reference);
+      if (!charge) return null;
+      const status = charge.status as BillingPaymentRecord['status'];
+      const replaced =
+        status === 'pending' &&
+        (charge.supersededAt !== null ||
+          charge.abandonedAt !== null ||
+          (charge.plan !== null &&
+            (await subscriptionsRepo.decidedSince(tx, businessId, charge.reference))));
+      const unapplied = charge.unappliedAt !== null;
+      const state = paymentRecordState({
+        status,
+        replaced,
+        unapplied,
+        amountK: charge.amountK,
+        refundedAmountK: charge.refundedAmountK,
+      });
+      return {
+        reference: charge.reference,
+        kind: charge.kind as BillingPaymentRecord['kind'],
+        state,
+        status,
+        plan: charge.plan,
+        packId: charge.packId,
+        packLabel: charge.packId
+          ? ((await packOffer(this.config, tx, charge.packId, charge.createdAt))?.label ?? null)
+          : null,
+        quantity: charge.quantity,
+        interval: charge.billingInterval,
+        amountK: charge.amountK,
+        paidAmountK: charge.paidAmountK,
+        refundedAmountK: charge.refundedAmountK,
+        currency: charge.currency,
+        periodStart: charge.periodStart?.toISOString() ?? null,
+        periodEnd: charge.periodEnd?.toISOString() ?? null,
+        createdAt: charge.createdAt.toISOString(),
+        paidAt: charge.paidAt?.toISOString() ?? null,
+        failedAt: charge.failedAt?.toISOString() ?? null,
+        refundedAt: charge.refundedAt?.toISOString() ?? null,
+        applied: status === 'paid' && !unapplied,
+        reconciled: unapplied && charge.unappliedResolvedAt !== null,
       };
     });
   }
