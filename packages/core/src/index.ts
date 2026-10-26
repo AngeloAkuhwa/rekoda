@@ -28,6 +28,7 @@ export * from './due-dates.js';
 export * from './csv.js';
 export * from './xlsx.js';
 export * from './periods.js';
+export * from './period-compare.js';
 export * from './recurring.js';
 export * from './assistant.js';
 export * from './images.js';

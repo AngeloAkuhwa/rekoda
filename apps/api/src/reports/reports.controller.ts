@@ -42,6 +42,11 @@ interface FileReply {
   send(payload: Buffer): unknown;
 }
 import {
+  comparePeriods,
+  previousWindow,
+  resolveCustomRange,
+  resolvePeriod,
+  type DateRange,
   postCostOfSale,
   splitPayment,
   buildBalanceSheet,
@@ -76,6 +81,7 @@ import { FontsMissing, renderStatementsPdf } from '../documents/pdf.js';
 import type {
   PartyStatementResponse,
   ReportsActivityResponse,
+  ReportsCompareResponse,
   ReportsAuditResponse,
   ReportsCashflowResponse,
   ReportsDebtorsResponse,
@@ -2466,6 +2472,57 @@ export class ReportsController {
     };
   }
 
+  /**
+   * One window against the one before it (N2, OWN-44).
+   *
+   * `from` and `to` are Lagos days (`YYYY-MM-DD`). Neither given means the
+   * month so far. Every figure is SQL over this tenant's records and every
+   * boundary and percentage is `@rekoda/core`; a window that has not finished
+   * is stopped at the end of today and the response says so. Readable by every
+   * member, like the rest of the books.
+   */
+  @Get('compare')
+  async compare(
+    @Req() request: AuthedRequest,
+    @Query('from') fromParam?: string,
+    @Query('to') toParam?: string,
+  ): Promise<ReportsCompareResponse> {
+    const businessId = request.auth!.businessId;
+    const now = new Date();
+
+    let range: DateRange;
+    let clampedToToday = false;
+    if (fromParam === undefined && toParam === undefined) {
+      range = resolvePeriod('month', now);
+    } else if (fromParam === undefined || toParam === undefined) {
+      throw new BadRequestException('Give both from and to as YYYY-MM-DD, or neither.');
+    } else {
+      const custom = resolveCustomRange(fromParam, toParam, now);
+      if (!custom.ok) throw new BadRequestException(CUSTOM_RANGE_MESSAGES[custom.reason]);
+      range = custom.range;
+      clampedToToday = custom.clampedToToday;
+    }
+    const before = previousWindow(range);
+
+    const [current, previous] = await withBusiness(this.db, businessId, async (tx) => [
+      await reportsRepo.summaryFor(tx, businessId, range.from, range.to),
+      await reportsRepo.summaryFor(tx, businessId, before.from, before.to),
+    ]);
+    const compared = comparePeriods(current, previous);
+    const window = (r: DateRange) => ({
+      from: r.from.toISOString(),
+      to: r.to.toISOString(),
+      label: r.label,
+    });
+    return {
+      current: window(range),
+      previous: window(before),
+      clampedToToday,
+      ...compared,
+      invoices: { current: current.invoices, previous: previous.invoices },
+    };
+  }
+
   @Get('activity')
   async activity(@Req() request: AuthedRequest): Promise<ReportsActivityResponse> {
     const businessId = request.auth!.businessId;
@@ -2491,6 +2548,13 @@ export class ReportsController {
  * named for what it is and when they took it, not `invoices.csv` for the
  * fourth time this month.
  */
+const CUSTOM_RANGE_MESSAGES = {
+  bad_date: 'from and to must be real dates written YYYY-MM-DD.',
+  end_before_start: 'to must not be before from.',
+  starts_in_future: 'from is in the future, so there is nothing to show yet.',
+  too_long: 'That range is longer than a year. Choose a shorter one.',
+} as const;
+
 function requirePeriod(period: string | undefined): string {
   const wanted = period ?? usagePeriod(new Date());
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(wanted)) {

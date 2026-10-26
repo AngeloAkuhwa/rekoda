@@ -13,6 +13,9 @@ import {
   tokenFromFragment,
   trialCopy,
   trialDaysLeft,
+  trialMilestone,
+  trialMilestoneAt,
+  trialStripAudience,
 } from './billing-pay-copy';
 import { chargeStatusLabel } from './charge-status';
 
@@ -241,5 +244,70 @@ describe('the heading over a waiting charge', () => {
     expect(payHeading('upgrade')).toBe('Pay for your plan');
     expect(payHeading('add_on')).toBe('Pay for your add-on');
     expect(payHeading('seat')).toBe('Pay for your add-on');
+  });
+});
+
+describe('trialMilestone', () => {
+  it('names a moment only at the milestones, never every day', () => {
+    expect(trialMilestone(14)?.kind).toBe('start');
+    expect(trialMilestone(13)?.kind).toBe('start');
+    expect(trialMilestone(10)).toBeNull();
+    // A trial stored with a longer expiry (an older 30-day one) is not welcomed again on every visit.
+    expect(trialMilestone(20)).toBeNull();
+    expect(trialMilestone(7)?.kind).toBe('halfway');
+    expect(trialMilestone(6)?.kind).toBe('halfway');
+    expect(trialMilestone(5)).toBeNull();
+    expect(trialMilestone(3)?.kind).toBe('ending');
+    expect(trialMilestone(2)?.kind).toBe('ending');
+    expect(trialMilestone(1)?.kind).toBe('last');
+    expect(trialMilestone(0)?.kind).toBe('last');
+  });
+
+  it('always says records stay safe near the end, and never invents a charge', () => {
+    for (const days of [3, 2, 1, 0]) {
+      const m = trialMilestone(days);
+      expect(m?.body).toMatch(/records (are|stay) safe/i);
+      expect(m?.body).not.toMatch(/payment|failed|charged/i);
+    }
+  });
+
+  it('never says tomorrow or today: days left rounds up, so the end may be hours away', () => {
+    for (const days of [1, 0]) {
+      expect(trialMilestone(days)?.heading).toBe('Your trial ends soon');
+    }
+  });
+});
+
+describe('trialMilestoneAt', () => {
+  const now = new Date('2026-11-01T10:00:00Z');
+
+  it('shows a milestone while the trial still has time left', () => {
+    expect(trialMilestoneAt('2026-11-02T09:00:00Z', now)?.kind).toBe('last');
+  });
+
+  it('shows nothing once the trial has ended, even by a second', () => {
+    expect(trialMilestoneAt('2026-11-01T10:00:00Z', now)).toBeNull();
+    expect(trialMilestoneAt('2026-10-30T10:00:00Z', now)).toBeNull();
+  });
+
+  it('shows nothing when there is no end date', () => {
+    expect(trialMilestoneAt(null, now)).toBeNull();
+  });
+});
+
+describe('trialStripAudience', () => {
+  it('is the owner on a trial, who is the one who can choose a plan', () => {
+    expect(trialStripAudience('trial', 'owner')).toBe(true);
+  });
+
+  it('never an accountant or delegate, who are told to ask the owner on the billing page', () => {
+    expect(trialStripAudience('trial', 'accountant')).toBe(false);
+    expect(trialStripAudience('trial', 'delegate')).toBe(false);
+  });
+
+  it('never a business that is not on a trial', () => {
+    for (const plan of ['chat', 'integrate', 'complete', 'expired']) {
+      expect(trialStripAudience(plan, 'owner')).toBe(false);
+    }
   });
 });

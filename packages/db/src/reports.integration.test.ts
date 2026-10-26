@@ -7,6 +7,7 @@
  * hand total ever disagree, the dashboard was about to lie to a merchant.
  */
 import { randomBytes } from 'node:crypto';
+import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { paymentReference, usagePeriod } from '@rekoda/core';
 import { createDb, withBusiness, type Db } from './client.js';
@@ -793,5 +794,208 @@ describe('the last day of the month', () => {
       reportsRepo.expenseScheduleFor(tx, businessId, '2026-03'),
     );
     expect(schedule.totalK).toBe(1_500_000);
+  });
+});
+
+/**
+ * N2 / OWN-44: the window figures a spoken question and a comparison read.
+ * Recorded sales, credit notes, cash collected and spending stay distinct, and
+ * a void or a refund is never silently absorbed into any of them.
+ */
+describe('the window summary (N2)', () => {
+  const NOW = () => ({
+    from: new Date(Date.now() - 3_600_000),
+    to: new Date(Date.now() + 3_600_000),
+  });
+  const summary = (businessId: string) =>
+    withBusiness(db, businessId, (tx) => {
+      const { from, to } = NOW();
+      return reportsRepo.summaryFor(tx, businessId, from, to);
+    });
+
+  it('leaves a withdrawn expense out of what was spent', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordExpense(tx, {
+        businessId,
+        description: 'dispatch rider to Yaba',
+        category: null,
+        amountK: 300_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'draft-w1',
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordExpense(tx, {
+        businessId,
+        description: 'fuel',
+        category: 'utilities',
+        amountK: 100_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'draft-w2',
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.voidExpense(tx, businessId, recorded.expenseId, 'never happened', 'user:1'),
+    );
+
+    const after = await summary(businessId);
+    expect(after.moneyOutK).toBe(100_000);
+    expect(after.expenses).toBe(1);
+  });
+
+  it('leaves a voided sale out of recorded sales, and reports a credit note beside them', async () => {
+    const businessId = await seedBusiness();
+    const sale = async (n: number, amountK: number) =>
+      withBusiness(db, businessId, (tx) =>
+        issueRepo.issueSale(tx, {
+          businessId,
+          customerId: null,
+          customerToken: `CUSTOMER_N2${n}`,
+          items: [{ name: 'wig', quantity: 1, unitPriceK: amountK }],
+          subtotalK: amountK,
+          discountK: 0,
+          deliveryFeeK: 0,
+          vatK: 0,
+          totalK: amountK,
+          paidK: 0,
+          balanceDueK: amountK,
+          method: 'cash',
+          sourceType: 'chat',
+          sourceId: `n2-${n}`,
+          actor: 'test',
+        }),
+      );
+    const kept = await sale(1, 5_000_000);
+    const voided = await sale(2, 1_000_000);
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.voidInvoice(tx, businessId, voided.invoiceNumber, 'never happened', 'user:1'),
+    );
+    expect(kept.invoiceNumber).toBeTruthy();
+
+    const after = await summary(businessId);
+    expect(after.salesK).toBe(5_000_000);
+    expect(after.invoices).toBe(1);
+    expect(after.creditedK).toBe(0);
+  });
+
+  it('counts only the cash that moved: stock bought on credit leaves recorded spending but not the till', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordPurchase(tx, {
+        businessId,
+        description: 'ankara fabric',
+        amountK: 5_000_000,
+        paidK: 2_000_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'n2-credit-stock',
+      }),
+    );
+
+    const after = await summary(businessId);
+    /* The whole purchase is recorded spending; only the paid part left the
+     * till. Cash movement must come from the cash accounts, not from it. */
+    expect(after.moneyOutK).toBe(5_000_000);
+    expect(after.cashOutK).toBe(2_000_000);
+    expect(after.cashInK).toBe(0);
+  });
+
+  it('counts a payment as money in only if it really arrived, and reports refunds beside it', async () => {
+    const businessId = await seedBusiness();
+    /* Four sales paid in cash at the counter, so each writes a merchant-recorded
+     * payment with no status. A different amount each lets the test tell them apart. */
+    const amounts = [1_000_000, 2_000_000, 4_000_000, 8_000_000, 16_000_000, 32_000_000];
+    for (const [n, amountK] of amounts.entries()) {
+      await withBusiness(db, businessId, (tx) =>
+        issueRepo.issueSale(tx, {
+          businessId,
+          customerId: null,
+          customerToken: `CUSTOMER_N2P${n}`,
+          items: [{ name: 'wig', quantity: 1, unitPriceK: amountK }],
+          subtotalK: amountK,
+          discountK: 0,
+          deliveryFeeK: 0,
+          vatK: 0,
+          totalK: amountK,
+          paidK: amountK,
+          balanceDueK: 0,
+          method: 'cash',
+          sourceType: 'chat',
+          sourceId: `n2-pay-${n}`,
+          actor: 'test',
+        }),
+      );
+    }
+    /* The statuses a provider flow can leave, set as the owner (the app role
+     * cannot rewrite a payment): 1m stays NULL (merchant-recorded), 2m is
+     * confirmed, 4m refunded; 8m is pending, 16m failed, 32m reversed. */
+    const owner = postgres(urls.owner, { max: 1, onnotice: () => {} });
+    try {
+      const set = (amountK: number, status: string) =>
+        owner`UPDATE payments SET status = ${status}
+               WHERE business_id = ${businessId}::uuid AND amount_k = ${amountK}`;
+      await set(2_000_000, 'confirmed');
+      await set(4_000_000, 'refunded');
+      await set(8_000_000, 'pending');
+      await set(16_000_000, 'failed');
+      await set(32_000_000, 'reversed');
+      await owner`INSERT INTO refunds (business_id, payment_id, amount_k, method, reason, actor)
+                  SELECT ${businessId}::uuid, id, 1500000, 'cash', 'returned', 'user:1'
+                    FROM payments
+                   WHERE business_id = ${businessId}::uuid AND amount_k = 4000000`;
+    } finally {
+      await owner.end();
+    }
+
+    const after = await summary(businessId);
+    /* 1m + 2m + 4m arrived; pending, failed and reversed never did. */
+    expect(after.moneyInK).toBe(7_000_000);
+    expect(after.refundedK).toBe(1_500_000);
+  });
+
+  it('reports a credit note beside sales instead of netting it away', async () => {
+    const businessId = await seedBusiness();
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      businessId,
+      'CUSTOMER_N2CN',
+      [],
+    );
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: customer.id,
+        customerToken: 'CUSTOMER_N2CN',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 5_000_000 }],
+        subtotalK: 5_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 5_000_000,
+        paidK: 5_000_000,
+        balanceDueK: 0,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'n2-cn',
+        actor: 'test',
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueCreditNote(tx, {
+        businessId,
+        invoiceNumber: sale.invoiceNumber,
+        amountK: 2_000_000,
+        reason: 'returned one',
+        actor: 'user:1',
+      }),
+    );
+
+    const after = await summary(businessId);
+    /* Recorded sales stay what was issued; the credit is its own figure. */
+    expect(after.salesK).toBe(5_000_000);
+    expect(after.creditedK).toBe(2_000_000);
   });
 });
