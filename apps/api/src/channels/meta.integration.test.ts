@@ -13997,6 +13997,8 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
           SELECT
             (SELECT count(*) FROM invoices WHERE business_id = ${businessId}::uuid) AS invoices,
             (SELECT count(*) FROM receipts WHERE business_id = ${businessId}::uuid) AS receipts,
+            (SELECT count(*) FROM documents WHERE business_id = ${businessId}::uuid) AS documents,
+            (SELECT count(*) FROM orders WHERE business_id = ${businessId}::uuid) AS orders,
             (SELECT count(*) FROM payments WHERE business_id = ${businessId}::uuid) AS payments,
             (SELECT count(*) FROM expenses WHERE business_id = ${businessId}::uuid) AS expenses,
             (SELECT count(*) FROM inventory_movements
