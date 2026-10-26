@@ -14089,7 +14089,6 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
     'wetin remain',
     'payment details',
     'remind {INV}',
-    'resend',
   ] as const;
 
   it.each(CHAT_COMMANDS)(
@@ -14290,12 +14289,39 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
     expect(await send(`remind ${invoiceNumber}`)).toContain(`reminder for ${invoiceNumber}`);
     expect(await send('stock')).toContain('not counting any stock');
 
-    // A resend delivers a document, which a lapsed plan does not.
-    const before = await footprint(business.id);
-    const mark = sendMark();
-    expect(await send('resend')).toBe(LAPSED);
-    await expectOnlyReplies(business.id, before, 1);
-    expect(beyondTheMerchant(mark)).toEqual(NOTHING_BEYOND);
+    // A resend retrieves a document that already exists, so an owner whose
+    // plan lapsed still gets nothing new, but may ask for the old one (N3).
+    expect(await send('resend')).not.toBe(LAPSED);
+  });
+
+  it('N3: a resend of a retained document works on an Integrate-only and on a lapsed plan, and creates no record', async () => {
+    for (const standing of ['integrate', 'lapsed'] as const) {
+      await truncateAll(urls);
+      const business = await seedMerchant();
+      const doc = await withBusiness(db, business.id, (tx) =>
+        issueRepo.recordDocument(tx, {
+          businessId: business.id,
+          kind: 'invoice_pdf',
+          storageKey: `test/n3-${standing}`,
+          refNumber: 'INV-2026-000042',
+          bytes: 1234,
+        }),
+      );
+      if (standing === 'integrate') await moveToPlan(business.id, 'integrate');
+      else await lapse(business.id);
+      const ledgerBefore = await invoiceCount(business.id);
+
+      expect(await send('resend'), standing).toContain('Sending INV-2026-000042 again');
+
+      const queued = await withBusiness(db, business.id, (tx) =>
+        jobsRepo.jobsForBusiness(tx, 'document.deliver'),
+      );
+      expect(queued, standing).toHaveLength(1);
+      expect(doc.id).toBeTruthy();
+      // No sale, invoice or model call: it only hands back what exists.
+      expect(await invoiceCount(business.id)).toBe(ledgerBefore);
+      expect(stubTransport.requests).toHaveLength(0);
+    }
   });
 
   it('a short reply does not resume a read for a plan without Chat', async () => {
@@ -14338,7 +14364,7 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
     const before = await footprint(business.id);
 
     expect(await send('yes')).toBe(replies.notSavedPlanEnded('plan').text);
-    expect(await send('resend')).toBe(replies.planEnded().text);
+    expect(await send('Ada bought 4 wigs for 400k', A_SALE)).toBe(replies.planEnded().text);
     expect(stubSender.lastText).not.toContain('trial');
     await expectOnlyReplies(business.id, before, 2);
     // The reads the lapse keeps are kept here too.
@@ -14682,7 +14708,8 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
       else await lapsePaid(business.id);
       const ACCOUNTANT = '2348039990001';
 
-      expect(await sendFrom(ACCOUNTANT, 'resend')).toBe(expected);
+      // A view-only member sends no document on any plan (N3 keeps the role guard).
+      expect(await sendFrom(ACCOUNTANT, 'resend')).toBe(replies.viewOnlyRole().text);
       stubTransport.replyWith(A_SALE);
       expect(await sendFrom(ACCOUNTANT, 'Ada bought 3 wigs for 300k')).toBe(expected);
       expect(expected).not.toContain('payment details');
@@ -14701,7 +14728,7 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
         ).not.toContain(said);
       }
       // The owner still reads the sentence every owner always has.
-      expect(await send('resend')).toBe(
+      expect(await send('Ada bought 3 wigs for 300k', A_SALE)).toBe(
         kind === 'trial' ? replies.trialEnded().text : replies.planEnded().text,
       );
       expect(stubTransport.requests).toHaveLength(0);
