@@ -205,6 +205,30 @@ test('a new trial merchant is welcomed on the dashboard, with a way to the billi
   await expect(page).toHaveURL(/\/app\/billing$/);
 });
 
+/**
+ * Runs in the browser: parses a computed colour (`rgb()`, `rgba()` or `color(srgb ...)`)
+ * into 0-255 channels plus alpha, and finds the first opaque background at or above an element.
+ */
+const COLOUR_HELPERS = `
+  const parse = (css) => {
+    const nums = (css.match(/-?[\\d.]+/g) ?? []).map(Number);
+    if (css.startsWith('color(')) return [nums[0] * 255, nums[1] * 255, nums[2] * 255, nums[3] ?? 1];
+    return [nums[0] ?? 0, nums[1] ?? 0, nums[2] ?? 0, nums[3] ?? 1];
+  };
+  const lum = ([r, g, b]) => {
+    const f = (v) => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+  };
+  const ratio = (a, b) => { const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
+  const surfaceOf = (el) => {
+    for (let n = el; n; n = n.parentElement) {
+      const c = parse(getComputedStyle(n).backgroundColor);
+      if (c[3] > 0.99) return c;
+    }
+    return [255, 255, 255, 1];
+  };
+`;
+
 test('the trial welcome strip can be reached and opened from the keyboard', async ({ page }) => {
   await onboard(page, freshPhone());
   await page.goto('/app');
@@ -220,13 +244,24 @@ test('the trial welcome strip can be reached and opened from the keyboard', asyn
   }
   expect(reached).toBe(true);
 
-  // The focus ring is drawn, not removed.
-  const outline = await strip.evaluate((el) => {
+  // The focus ring is drawn, not removed, and its colour shows against the strip's surface.
+  const outline = await strip.evaluate((el, helpers) => {
+    const { parse, ratio, surfaceOf } = new Function(
+      `${helpers} return { parse, ratio, surfaceOf };`,
+    )();
     const style = getComputedStyle(el);
-    return { style: style.outlineStyle, width: parseFloat(style.outlineWidth) };
-  });
+    const colour = parse(style.outlineColor);
+    return {
+      style: style.outlineStyle,
+      width: parseFloat(style.outlineWidth),
+      alpha: colour[3],
+      contrast: ratio(colour, surfaceOf(el)),
+    };
+  }, COLOUR_HELPERS);
   expect(outline.style).not.toBe('none');
   expect(outline.width).toBeGreaterThan(0);
+  expect(outline.alpha).toBeGreaterThan(0);
+  expect(outline.contrast).toBeGreaterThanOrEqual(3);
 
   await page.keyboard.press('Enter');
   await expect(page).toHaveURL(/\/app\/billing$/);
@@ -240,15 +275,12 @@ test('the trial welcome strip reads in the dark theme', async ({ page }) => {
   const strip = page.locator('.rk-trial-strip');
   await expect(strip).toBeVisible();
 
-  // Light text on a dark surface: the strip follows the theme tokens.
-  const [text, surface] = await strip.evaluate((el) => {
-    const luminance = (css: string) => {
-      const [r, g, b] = (css.match(/[\d.]+/g) ?? ['0', '0', '0']).map(Number);
-      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    };
-    const style = getComputedStyle(el);
-    return [luminance(style.color), luminance(getComputedStyle(document.body).backgroundColor)];
-  });
-  expect(surface).toBeLessThan(128);
-  expect(text).toBeGreaterThan(surface);
+  // Readable text on the strip's own surface, not merely lighter than the page.
+  const contrast = await strip.evaluate((el, helpers) => {
+    const { parse, ratio, surfaceOf } = new Function(
+      `${helpers} return { parse, ratio, surfaceOf };`,
+    )();
+    return ratio(parse(getComputedStyle(el).color), surfaceOf(el));
+  }, COLOUR_HELPERS);
+  expect(contrast).toBeGreaterThanOrEqual(4.5);
 });
