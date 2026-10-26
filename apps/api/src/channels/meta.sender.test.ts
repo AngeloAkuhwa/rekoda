@@ -625,6 +625,15 @@ describe('the unconfigured sender names what is missing (G-58)', () => {
     );
   });
 
+  it('reports a customer send with no sender configured as definitely not sent', async () => {
+    const sender = new NoSenderConfigured(['META_ACCESS_TOKEN']);
+    for (const attempt of [() => sender.sendOnConnection(), () => sender.sendTemplate()]) {
+      const error = await attempt().catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(SendFailed);
+      expect((error as SendFailed).notSent).toBe(true);
+    }
+  });
+
   it('every method refuses with the same named reason', async () => {
     const sender = new NoSenderConfigured(['META_PHONE_NUMBER_ID']);
     for (const call of [
