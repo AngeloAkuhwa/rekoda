@@ -880,6 +880,28 @@ describe('the window summary (N2)', () => {
     expect(after.creditedK).toBe(0);
   });
 
+  it('counts only the cash that moved: stock bought on credit leaves recorded spending but not the till', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordPurchase(tx, {
+        businessId,
+        description: 'ankara fabric',
+        amountK: 5_000_000,
+        paidK: 2_000_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'n2-credit-stock',
+      }),
+    );
+
+    const after = await summary(businessId);
+    /* The whole purchase is recorded spending; only the paid part left the
+     * till. Cash movement must come from the cash accounts, not from it. */
+    expect(after.moneyOutK).toBe(5_000_000);
+    expect(after.cashOutK).toBe(2_000_000);
+    expect(after.cashInK).toBe(0);
+  });
+
   it('reports a credit note beside sales instead of netting it away', async () => {
     const businessId = await seedBusiness();
     const customer = await customersRepo.createCustomerWithIdentities(

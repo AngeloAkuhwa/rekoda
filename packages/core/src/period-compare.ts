@@ -3,7 +3,8 @@
  *
  * Pure: the figures come from SQL, the windows from `periods.ts`, and this
  * file only does the arithmetic between them. Recorded sales, credit notes,
- * cash collected, refunds and spending stay distinct measures. There is no
+ * cash collected, refunds, recorded spending and cash movement stay distinct
+ * measures. There is no
  * profit here and there will not be one: Rekoda does not infer profit where
  * costs are missing, and "money in minus money out" is a cash movement.
  */
@@ -21,6 +22,10 @@ export interface WindowFigures {
   readonly refundedK: number;
   readonly moneyOutK: number;
   readonly expenses: number;
+  /** Cash that really arrived, from the cash accounts of the ledger. */
+  readonly cashInK: number;
+  /** Cash that really left them. Stock bought on credit adds nothing here. */
+  readonly cashOutK: number;
 }
 
 export interface Change {
@@ -49,9 +54,14 @@ export interface PeriodComparison {
   readonly collected: Measure;
   /** Money returned to customers. */
   readonly refunded: Measure;
-  /** Spending recorded, withdrawn entries excluded. */
+  /** Spending RECORDED, withdrawn entries excluded. Stock bought is recorded at
+   * its full value, paid or not, so this is not what left the till. */
   readonly spent: Measure;
-  /** Collected, less refunded, less spent. Cash, not profit. */
+  /**
+   * Cash in less cash out, read from the ledger's cash accounts: refunds,
+   * supplier payments and the paid part of stock are already in it, and stock
+   * bought on credit is not until the supplier is paid. Cash, not profit.
+   */
   readonly cashMovement: Measure;
   /** Nothing at all was recorded in the earlier window. */
   readonly previousIsEmpty: boolean;
@@ -73,7 +83,7 @@ const measure = (current: number, previous: number): Measure => ({
 });
 
 export function comparePeriods(current: WindowFigures, previous: WindowFigures): PeriodComparison {
-  const cash = (f: WindowFigures) => f.moneyInK - f.refundedK - f.moneyOutK;
+  const cash = (f: WindowFigures) => f.cashInK - f.cashOutK;
   return {
     sales: measure(current.salesK, previous.salesK),
     credited: measure(current.creditedK, previous.creditedK),
@@ -88,7 +98,9 @@ export function comparePeriods(current: WindowFigures, previous: WindowFigures):
       previous.moneyInK === 0 &&
       previous.refundedK === 0 &&
       previous.moneyOutK === 0 &&
-      previous.expenses === 0,
+      previous.expenses === 0 &&
+      previous.cashInK === 0 &&
+      previous.cashOutK === 0,
   };
 }
 

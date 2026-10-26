@@ -135,7 +135,7 @@ export const reportsCompareResponse = z.object({
   collected: comparedMeasure,
   refunded: comparedMeasure,
   spent: comparedMeasure,
-  /** Collected, less refunded, less spent. Cash, not profit. */
+  /** Cash in less cash out, from the cash accounts of the ledger. Cash, not profit. */
   cashMovement: comparedMeasure,
   invoices: z.object({
     current: z.number().int().nonnegative(),

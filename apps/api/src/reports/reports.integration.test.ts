@@ -4700,7 +4700,9 @@ describe('the period comparison (N2)', () => {
 
   it('stops a range that runs past today at the end of today and says so', async () => {
     const { auth } = await onboard('+2348177100005');
-    const res = await get(auth, '?from=2026-01-01&to=2099-12-31');
+    /* Derived from today, so the test cannot age into the 366-day limit. */
+    const start = new Date(Date.now() + 3_600_000 - 30 * 86_400_000).toISOString().slice(0, 10);
+    const res = await get(auth, `?from=${start}&to=2099-12-31`);
     expect(res.statusCode).toBe(200);
     const body = reportsCompareResponse.parse(res.json());
     expect(body.clampedToToday).toBe(true);

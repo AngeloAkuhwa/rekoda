@@ -103,6 +103,8 @@ describe('comparePeriods', () => {
     refundedK: 0,
     moneyOutK: 0,
     expenses: 0,
+    cashInK: 0,
+    cashOutK: 0,
     ...over,
   });
 
@@ -120,21 +122,24 @@ describe('comparePeriods', () => {
     expect(c.spent.change).toEqual({ absoluteK: -100, percent: -25 });
   });
 
-  it('computes money in minus money out as cash movement, never as profit', () => {
+  it('reads cash movement from the cash accounts, never from recorded spending, and never as profit', () => {
+    /* ₦300 of stock recorded as spending, bought wholly on credit: spending is
+     * 300 but the till did not move. */
     const c = comparePeriods(
-      figures({ moneyInK: 700, refundedK: 50, moneyOutK: 300 }),
-      figures({ moneyInK: 500, moneyOutK: 400 }),
+      figures({ moneyInK: 700, moneyOutK: 300, cashInK: 700, cashOutK: 0 }),
+      figures({ moneyInK: 500, moneyOutK: 400, cashInK: 500, cashOutK: 400 }),
     );
-    expect(c.cashMovement.current).toBe(350);
+    expect(c.spent.current).toBe(300);
+    expect(c.cashMovement.current).toBe(700);
     expect(c.cashMovement.previous).toBe(100);
     expect(c).not.toHaveProperty('profit');
   });
 
   it('gives no percentage for cash movement when the earlier period was zero or negative', () => {
-    const negative = comparePeriods(figures({ moneyInK: 100 }), figures({ moneyOutK: 400 }));
+    const negative = comparePeriods(figures({ cashInK: 100 }), figures({ cashOutK: 400 }));
     expect(negative.cashMovement.change.absoluteK).toBe(500);
     expect(negative.cashMovement.change.percent).toBeNull();
-    const zero = comparePeriods(figures({ moneyInK: 100 }), figures());
+    const zero = comparePeriods(figures({ cashInK: 100 }), figures());
     expect(zero.cashMovement.change.percent).toBeNull();
   });
 

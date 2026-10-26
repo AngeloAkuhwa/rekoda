@@ -816,9 +816,18 @@ export interface WindowSummary {
   /** Money returned to customers in the window (`refunds`), beside the cash
    * collected rather than netted into it. */
   refundedK: number;
-  /** Spending recorded in the window; a withdrawn expense is not spending. */
+  /** Spending recorded in the window; a withdrawn expense is not spending.
+   * Stock bought is recorded at its full value, paid or not, so this is what
+   * was RECORDED, never what left the till: see `cashOutK`. */
   moneyOutK: number;
   expenses: number;
+  /** Cash that actually arrived in the cash, bank and provider accounts, read
+   * from the ledger like the dashboard's tiles so the two cannot disagree. */
+  cashInK: number;
+  /** Cash that actually left those accounts: paid expenses, the paid part of
+   * stock, supplier payments and refunds. Stock bought on credit adds nothing
+   * until the supplier is paid. */
+  cashOutK: number;
 }
 
 /**
@@ -844,6 +853,8 @@ export async function summaryFor(
     refunded_k: string;
     money_out_k: string;
     expenses: number;
+    cash_in_k: string;
+    cash_out_k: string;
   }>(sql`
     SELECT
       COALESCE((SELECT SUM(total_k) FROM invoices
@@ -879,7 +890,21 @@ export async function summaryFor(
                 WHERE business_id = ${businessId}::uuid
                   AND status <> 'voided'
                   AND created_at BETWEEN ${from.toISOString()}::timestamptz
-                                     AND ${to.toISOString()}::timestamptz), 0)::int    AS expenses
+                                     AND ${to.toISOString()}::timestamptz), 0)::int    AS expenses,
+      COALESCE((SELECT SUM(e.debit_k) FROM ledger_entries e
+                JOIN accounts acc ON acc.id = e.account_id
+                WHERE e.business_id = ${businessId}::uuid
+                  AND (acc.code IN (${CASH_CODES})
+                       OR acc.system_role = 'PAYMENT_PROVIDER_CLEARING')
+                  AND e.created_at BETWEEN ${from.toISOString()}::timestamptz
+                                       AND ${to.toISOString()}::timestamptz), 0)::bigint AS cash_in_k,
+      COALESCE((SELECT SUM(e.credit_k) FROM ledger_entries e
+                JOIN accounts acc ON acc.id = e.account_id
+                WHERE e.business_id = ${businessId}::uuid
+                  AND (acc.code IN (${CASH_CODES})
+                       OR acc.system_role = 'PAYMENT_PROVIDER_CLEARING')
+                  AND e.created_at BETWEEN ${from.toISOString()}::timestamptz
+                                       AND ${to.toISOString()}::timestamptz), 0)::bigint AS cash_out_k
   `);
   const row = [...rows][0];
   return {
@@ -890,6 +915,8 @@ export async function summaryFor(
     refundedK: Number(row?.refunded_k ?? 0),
     moneyOutK: Number(row?.money_out_k ?? 0),
     expenses: row?.expenses ?? 0,
+    cashInK: Number(row?.cash_in_k ?? 0),
+    cashOutK: Number(row?.cash_out_k ?? 0),
   };
 }
 
