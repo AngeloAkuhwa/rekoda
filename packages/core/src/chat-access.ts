@@ -23,7 +23,8 @@ import type { DeterministicIntent } from './router.js';
 /**
  * How a deterministic intent is entitled.
  *
- *  - `universal`: works on every plan, including a lapsed one.
+ *  - `universal`: works on every plan, including a lapsed one. The handler
+ *    still applies the member's role.
  *  - `conversation`: yes, a questioned yes, no and cancel. Never refused
  *    here: "no" and "cancel" keep their safety meaning on every plan, and a
  *    "yes" (or "yes?") is judged by the DRAFT it would confirm
@@ -68,9 +69,12 @@ export const DETERMINISTIC_ACCESS: Readonly<
   payment_details: 'chat_kept_on_lapse',
   remind: 'chat_kept_on_lapse',
 
-  /* The one deterministic command that delivers a document. A lapsed or
-   * read-only plan sends no new document (G-65). */
-  resend: 'chat',
+  /* N3 (OWN-45): "resend" retrieves a document that already exists. It
+   * creates no sale, payment or record and charges no document unit, so an
+   * owner on any plan, a lapsed one included, may ask for it. The role guard
+   * (a view-only member sends nothing) stays in the handler. It never
+   * generates a NEW document: that remains Chat's and a lapsed plan's refusal. */
+  resend: 'universal',
 };
 
 /** What the business's standing is, as the handler resolved it. */
