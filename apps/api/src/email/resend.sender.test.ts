@@ -131,4 +131,16 @@ describe('ResendEmailSender', () => {
     });
     await expect(slow.send(MESSAGE)).rejects.toBeInstanceOf(EmailDeliveryUncertainError);
   });
+
+  it('shows a display name before the configured address and never lets it change the address', async () => {
+    const calls: Call[] = [];
+    await sender(() => new Response('{}', { status: 200 }), calls).send({
+      ...MESSAGE,
+      fromName: 'Ada <evil@attacker.example>" via Rekoda',
+      replyTo: 'support@rekoda.example',
+    });
+    const body = JSON.parse(String(calls[0]!.init.body));
+    expect(body.from).toBe('Ada evil@attacker.example via Rekoda <billing@example.com>');
+    expect(body.reply_to).toBe('support@rekoda.example');
+  });
 });

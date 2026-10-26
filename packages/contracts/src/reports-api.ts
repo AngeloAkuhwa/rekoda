@@ -1923,3 +1923,58 @@ export type CreditInvoiceResponse = z.infer<typeof creditInvoiceResponse>;
 
 export type VoidInvoiceRequest = z.infer<typeof voidInvoiceRequest>;
 export type VoidInvoiceResponse = z.infer<typeof voidInvoiceResponse>;
+
+/* ── Customer payment reminders (N1, OWN-43, OWN-57) ─────────────────────── */
+
+export const reminderChannel = z.enum(['email', 'whatsapp']);
+
+/** Ask Rekoda to send one reminder for one unpaid invoice. */
+export const sendReminderRequest = z.object({
+  invoiceNumber: z.string().trim().min(1).max(40),
+  channel: reminderChannel,
+  /** One per click: a repeated request with the same key never sends twice. */
+  idempotencyKey: z.string().min(8).max(100),
+  /** The merchant states, for email, that they have a lawful basis to contact this customer. */
+  attest: z.boolean().optional(),
+});
+export type SendReminderRequest = z.infer<typeof sendReminderRequest>;
+
+export const reminderStatus = z.enum(['sending', 'sent', 'blocked', 'failed', 'uncertain']);
+
+export const reminderHistoryItem = z.object({
+  id: z.string().uuid(),
+  channel: reminderChannel,
+  status: reminderStatus,
+  /** A named reason when nothing was sent. */
+  reasonCode: z.string().nullable(),
+  balanceK: z.number().int().nullable(),
+  createdAt: z.string(),
+  sentAt: z.string().nullable(),
+});
+export type ReminderHistoryItem = z.infer<typeof reminderHistoryItem>;
+
+export const sendReminderResponse = z.object({
+  reminder: reminderHistoryItem,
+  /** True when this key had already been used and the earlier answer is returned. */
+  replayed: z.boolean(),
+});
+export type SendReminderResponse = z.infer<typeof sendReminderResponse>;
+
+export const reminderHistoryResponse = z.object({
+  invoiceNumber: z.string(),
+  remindersStopped: z.boolean(),
+  items: z.array(reminderHistoryItem),
+});
+export type ReminderHistoryResponse = z.infer<typeof reminderHistoryResponse>;
+
+export const stopRemindersRequest = z.object({
+  invoiceNumber: z.string().trim().min(1).max(40),
+  stopped: z.boolean(),
+});
+export type StopRemindersRequest = z.infer<typeof stopRemindersRequest>;
+
+/** The public phone a reminder shows. Never the sign-in number unless the merchant says so. */
+export const publicContactRequest = z.object({ phone: z.string().trim().min(7).max(20) });
+export type PublicContactRequest = z.infer<typeof publicContactRequest>;
+
+export const reminderOptOutRequest = z.object({ token: z.string().min(40).max(200) });

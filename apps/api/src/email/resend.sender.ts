@@ -27,6 +27,17 @@ export interface ResendSenderOptions {
  * the recipient is a merchant's billing address. The status is enough to act
  * on. The API key never leaves the Authorization header.
  */
+/** `Name <address>` over a configured sender that may be a bare address or already named. */
+export function withDisplayName(name: string, configuredFrom: string): string {
+  const angle = /<([^<>]+)>\s*$/.exec(configuredFrom);
+  const address = (angle ? angle[1]! : configuredFrom).trim();
+  const safe = name
+    .replace(/[<>"\\\r\n]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return `${safe} <${address}>`;
+}
+
 export class ResendEmailSender implements EmailSender {
   readonly available = true;
   private readonly log = new Logger('ResendEmailSender');
@@ -57,7 +68,8 @@ export class ResendEmailSender implements EmailSender {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          from: this.from,
+          from: message.fromName ? withDisplayName(message.fromName, this.from) : this.from,
+          ...(message.replyTo ? { reply_to: message.replyTo } : {}),
           to: [message.to],
           subject: message.subject,
           text: message.text,
