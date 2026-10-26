@@ -87,3 +87,75 @@ function lagosMidnight(at: Date): number {
   const shifted = at.getTime() + LAGOS_OFFSET_MS;
   return shifted - (shifted % DAY_MS) - LAGOS_OFFSET_MS;
 }
+
+/** Calendar dates are `YYYY-MM-DD` in the merchant's Lagos day, and nothing else. */
+const YMD = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/** The longest custom range answered: a year and a leap day. */
+export const MAX_CUSTOM_RANGE_DAYS = 366;
+
+export type CustomRangeRefusal = 'bad_date' | 'end_before_start' | 'starts_in_future' | 'too_long';
+
+export type CustomRange =
+  | { readonly ok: true; readonly range: DateRange; readonly clampedToToday: boolean }
+  | { readonly ok: false; readonly reason: CustomRangeRefusal };
+
+/** The Lagos midnight a `YYYY-MM-DD` names, or null when it is not a real date. */
+function lagosDay(ymd: string): number | null {
+  const match = YMD.exec(ymd);
+  if (!match) return null;
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const utc = new Date(Date.UTC(year, month - 1, day));
+  /* Date.UTC rolls 30 February into March; a real date survives the trip back. */
+  if (
+    utc.getUTCFullYear() !== year ||
+    utc.getUTCMonth() !== month - 1 ||
+    utc.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return utc.getTime() - LAGOS_OFFSET_MS;
+}
+
+/** "5 Oct 2026", or "1 Oct 2026 to 7 Oct 2026", in the merchant's words. */
+export function labelRange(from: Date, to: Date): string {
+  const day = (at: Date) =>
+    new Date(at.getTime() + LAGOS_OFFSET_MS).toLocaleDateString('en-NG', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      timeZone: 'UTC',
+    });
+  const start = day(from);
+  const end = day(to);
+  return start === end ? start : `${start} to ${end}`;
+}
+
+/**
+ * A range the merchant named (N2, OWN-44): Lagos days, both ends included.
+ *
+ * Code draws it, like every other window: the model may report the two dates
+ * it understood, never the instants. A range that has not finished is stopped
+ * at the end of today and says so, because comparing a half-finished week with
+ * a whole one would call a normal week a collapse.
+ */
+export function resolveCustomRange(fromYmd: string, toYmd: string, now: Date): CustomRange {
+  const start = lagosDay(fromYmd);
+  const endDay = lagosDay(toYmd);
+  if (start === null || endDay === null) return { ok: false, reason: 'bad_date' };
+  if (endDay < start) return { ok: false, reason: 'end_before_start' };
+
+  const endOfToday = lagosMidnight(now) + DAY_MS - 1;
+  if (start > endOfToday) return { ok: false, reason: 'starts_in_future' };
+
+  let end = endDay + DAY_MS - 1;
+  const clampedToToday = end > endOfToday;
+  if (clampedToToday) end = endOfToday;
+
+  const days = Math.round((end - start + 1) / DAY_MS);
+  if (days > MAX_CUSTOM_RANGE_DAYS) return { ok: false, reason: 'too_long' };
+
+  const from = new Date(start);
+  const to = new Date(end);
+  return { ok: true, range: { from, to, label: labelRange(from, to) }, clampedToToday };
+}
