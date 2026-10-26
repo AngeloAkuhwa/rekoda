@@ -204,3 +204,22 @@ test('a new trial merchant is welcomed on the dashboard, with a way to the billi
   await strip.click();
   await expect(page).toHaveURL(/\/app\/billing$/);
 });
+
+test('the trial welcome strip can be reached and opened from the keyboard', async ({ page }) => {
+  await onboard(page, freshPhone());
+  await page.goto('/app');
+
+  const strip = page.locator('.rk-trial-strip');
+  await expect(strip).toBeVisible();
+
+  // Tab through the page header and section tabs until the strip has focus.
+  let reached = false;
+  for (let i = 0; i < 40 && !reached; i++) {
+    await page.keyboard.press('Tab');
+    reached = await strip.evaluate((el) => el === document.activeElement);
+  }
+  expect(reached).toBe(true);
+
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\/app\/billing$/);
+});
