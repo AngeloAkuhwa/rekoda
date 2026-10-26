@@ -105,7 +105,7 @@ test('a billed and part-paid month reads the same on every page and in the ledge
     .filter({ has: page.getByRole('columnheader', { name: 'Invoice' }) });
   await expect(receipts.getByRole('row').filter({ hasText: invoiceA })).toContainText('₦200,000');
   await expect(receipts.getByRole('row').filter({ hasText: invoiceB })).toContainText('₦30,000');
-  await expect(page.getByText('2 receipts all time')).toBeVisible();
+  await expect(page.getByText('2 receipts all time', { exact: true })).toBeVisible();
 
   // The debtors list shows exactly what is still owed, and not the settled invoice.
   await page.goto('/app/debtors');
