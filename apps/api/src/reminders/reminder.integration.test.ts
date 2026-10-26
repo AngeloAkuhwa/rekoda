@@ -385,6 +385,23 @@ describe('an email reminder', () => {
   });
 });
 
+describe('a customer with two stored addresses', () => {
+  it('sends to neither, rather than guessing which one is current', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    await customersRepo.addIdentityFacet(appDb, s.businessId, s.customerId, {
+      facet: 'email',
+      ciphertext: encryptFacet('new@customer.example.ng', config.vaultKey, `${s.businessId}:email`),
+      matchKey: null,
+    });
+    const r = await sendEmail(s, { attest: true });
+    expect(r.reminder).toMatchObject({ status: 'blocked', reasonCode: 'ambiguous_contact' });
+    expect(mail.outbox).toHaveLength(0);
+    // The phone is still unambiguous, so WhatsApp is unaffected.
+    expect((await sendVia(s, 'whatsapp')).reminder.status).toBe('sent');
+  });
+});
+
 describe('the opt-out link', () => {
   it('still works after MATCH_KEY is rotated', async () => {
     const s = await seed();

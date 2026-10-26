@@ -62,6 +62,8 @@ export interface ReminderWhatsApp {
 }
 
 /** A stale `sending` row older than this is shown as uncertain, never as still sending. */
+/* Kept well above the provider call timeouts (Resend 10 s, Meta's sender similar) so a live send is
+ * never settled as uncertain while it is still in flight. */
 const STALE_SENDING_MINUTES = 10;
 
 /** The key was already used for a different invoice: replaying would silently skip this one. */
@@ -255,6 +257,9 @@ export class ReminderService {
 
       let email: string | null = null;
       let phone: string | null = null;
+      /* More than one stored address of the kind this channel uses: which is current is unknown,
+       * and an old one may now belong to someone else. Nothing is sent to a guess. */
+      let ambiguous = false;
       if (invoice.customerId) {
         const facets = await customersRepo.identityFacetsFor(tx, businessId, invoice.customerId);
         const open = (facet: 'email' | 'phone'): string | null => {
@@ -265,6 +270,8 @@ export class ReminderService {
         };
         email = open('email');
         phone = open('phone');
+        const wanted = channel === 'email' ? 'email' : 'phone';
+        ambiguous = facets.filter((f) => f.facet === wanted).length > 1;
       }
 
       const channelAddress = channel === 'email' ? email : phone;
@@ -291,6 +298,7 @@ export class ReminderService {
         needsAttestation: channel === 'email',
         optedOut,
       });
+      if (block === null && ambiguous) block = 'ambiguous_contact';
       if (block === null && channel === 'email') {
         if (!this.email.available || !this.config.webUrl) block = 'email_not_configured';
       }

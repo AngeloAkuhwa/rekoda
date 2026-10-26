@@ -31,6 +31,7 @@ export type ReminderBlockReason =
   | 'no_whatsapp_connection'
   | 'allowance_exhausted'
   | 'invalid_recipient'
+  | 'ambiguous_contact'
   | 'email_not_configured'
   | 'send_failed';
 
