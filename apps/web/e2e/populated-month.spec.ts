@@ -91,6 +91,11 @@ test('a billed and part-paid month reads the same on every page and in the ledge
   await expect(page.getByText('No invoices yet')).toHaveCount(0);
   await expect(page.getByText(invoiceA).first()).toBeVisible();
   await expect(page.getByText(invoiceB).first()).toBeVisible();
+  // The register row itself says what is still owing on B, not just that B exists.
+  const register = page
+    .locator('table')
+    .filter({ has: page.getByRole('columnheader', { name: 'Balance' }) });
+  await expect(register.getByRole('row').filter({ hasText: invoiceB })).toContainText('₦50,000');
 
   // The receipt register has the receipt for the paid invoice only.
   await page.goto('/app/receipts');
@@ -109,8 +114,11 @@ test('a billed and part-paid month reads the same on every page and in the ledge
   await expect(page.getByRole('heading', { name: 'Profit and loss' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Balance sheet' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Trial balance' })).toBeVisible();
-  // Both invoices were billed this month: ₦280,000 of sales.
-  await expect(page.getByText('₦280,000').first()).toBeVisible();
+  // Both invoices were billed this month: ₦280,000 of income, read in the profit and loss itself.
+  const profitAndLoss = page
+    .locator('.rk-card')
+    .filter({ has: page.getByRole('heading', { name: 'Profit and loss' }) });
+  await expect(profitAndLoss.getByRole('row', { name: /Total income/ })).toContainText('₦280,000');
 
   // The statement fits a phone with no sideways scroll.
   const overflow = await page.evaluate(
@@ -124,6 +132,13 @@ test('a billed and part-paid month reads the same on every page and in the ledge
            coalesce(sum(e.debit_k - e.credit_k) FILTER (WHERE a.code = '1100'), 0)::text AS receivable
       FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
      WHERE e.business_id = ${businessId}`;
+  // Balanced journal by journal: two opposite imbalances would cancel in a business-wide sum.
+  const unbalanced = await sql<{ transaction_id: string }[]>`
+    SELECT transaction_id FROM ledger_entries
+     WHERE business_id = ${businessId}
+     GROUP BY transaction_id
+    HAVING sum(debit_k) <> sum(credit_k)`;
+  expect(unbalanced).toEqual([]);
   expect(books!.debit).toBe(books!.credit);
   expect(Number(books!.receivable)).toBe(50_000 * 100);
 });
