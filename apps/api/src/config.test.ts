@@ -840,7 +840,7 @@ describe('REKODA_CUSTOMER_REMINDERS', () => {
       'https://user@app.rekoda.test',
     ]) {
       expect(() => loadConfig({ ...on, REKODA_WEB_URL: bad })).toThrow(
-        'no path, query or fragment',
+        'no credentials, path, query or fragment',
       );
     }
     expect(loadConfig({ ...on, REKODA_WEB_URL: 'https://app.rekoda.test' }).customerReminders).toBe(
