@@ -836,6 +836,8 @@ describe('REKODA_CUSTOMER_REMINDERS', () => {
       'https://app.rekoda.test/?',
       'https://app.rekoda.test/#',
       'https://app.rekoda.test/sign-in',
+      'https://user:pass@app.rekoda.test',
+      'https://user@app.rekoda.test',
     ]) {
       expect(() => loadConfig({ ...on, REKODA_WEB_URL: bad })).toThrow(
         'no path, query or fragment',

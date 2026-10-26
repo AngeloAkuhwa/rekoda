@@ -1221,9 +1221,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     const url = base === null ? null : new URL(base);
     // URL.search and URL.hash are empty for a bare trailing `?` or `#`, so the raw text is checked too.
     const raw = env['REKODA_WEB_URL'] ?? '';
-    if (url === null || url.protocol !== 'https:' || url.pathname !== '/' || /[?#]/.test(raw)) {
+    if (
+      url === null ||
+      url.protocol !== 'https:' ||
+      url.pathname !== '/' ||
+      url.username !== '' ||
+      url.password !== '' ||
+      /[?#]/.test(raw)
+    ) {
       throw new ConfigError(
-        'REKODA_CUSTOMER_REMINDERS=1 needs REKODA_WEB_URL to be an https:// origin with no path, query or fragment (the opt-out link in a reminder email)',
+        'REKODA_CUSTOMER_REMINDERS=1 needs REKODA_WEB_URL to be an https:// origin with no credentials, path, query or fragment (the opt-out link in a reminder email)',
       );
     }
   }
