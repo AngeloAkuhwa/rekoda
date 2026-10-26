@@ -13,6 +13,11 @@ describe('keepParsedToken', () => {
     expect(keepParsedToken(first, '')).toBe(token);
   });
 
+  it('replaces the token when a second link arrives in the same tab', () => {
+    const second = `${'d'.repeat(20)}.${'e'.repeat(20)}.${'f'.repeat(20)}`;
+    expect(keepParsedToken(token, `#token=${second}`)).toBe(second);
+  });
+
   it('is null for a missing, short or malformed fragment', () => {
     expect(keepParsedToken(undefined, '')).toBeNull();
     expect(keepParsedToken(undefined, '#token=short')).toBeNull();

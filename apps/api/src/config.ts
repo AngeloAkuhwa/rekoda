@@ -1213,6 +1213,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const isProduction = isProductionEnv(env);
   const r2 = r2Settings(env);
 
+  const customerReminders = zeroOrOneFlag(env, 'REKODA_CUSTOMER_REMINDERS');
+  // A reminder email carries a signed opt-out link; it must never point at a plain-HTTP page.
+  if (customerReminders && !webUrl(env)?.startsWith('https://')) {
+    throw new ConfigError(
+      'REKODA_CUSTOMER_REMINDERS=1 needs REKODA_WEB_URL to be an https:// URL (the opt-out link in a reminder email)',
+    );
+  }
+
   const revealOtp = env['REKODA_REVEAL_OTP'] === '1';
   if (revealOtp && isProduction) {
     throw new ConfigError(
@@ -1454,7 +1462,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     metaWabaRegisteredInNigeria: env['META_WABA_REGISTERED_IN_NIGERIA'] !== 'false',
     planCatalogueReads: env['REKODA_PLAN_CATALOGUE_READS'] !== '0',
     annualBillingSales: zeroOrOneFlag(env, 'REKODA_ANNUAL_BILLING'),
-    customerReminders: zeroOrOneFlag(env, 'REKODA_CUSTOMER_REMINDERS'),
+    customerReminders,
     r2AccountId: r2.accountId,
     r2AccessKeyId: r2.accessKeyId,
     r2SecretAccessKey: r2.secretAccessKey,

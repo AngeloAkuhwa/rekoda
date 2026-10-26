@@ -16,11 +16,20 @@ export function OptOut() {
   const [pending, start] = useTransition();
 
   useEffect(() => {
-    const hash = window.location.hash;
-    // Strict mode runs this effect twice in development and the first run clears the fragment, so
-    // a token already read must survive an empty second read.
-    setToken((prev) => keepParsedToken(prev, hash));
-    if (hash) window.history.replaceState(null, '', window.location.pathname);
+    const read = () => {
+      const hash = window.location.hash;
+      // Strict mode runs this effect twice in development and the first read clears the fragment, so
+      // a token already read survives an empty fragment; a new fragment replaces it.
+      setToken((prev) => keepParsedToken(prev, hash));
+      if (hash) {
+        setState(null);
+        window.history.replaceState(null, '', window.location.pathname);
+      }
+    };
+    read();
+    // A second reminder link opened in the same tab only changes the fragment.
+    window.addEventListener('hashchange', read);
+    return () => window.removeEventListener('hashchange', read);
   }, []);
 
   if (token === undefined) return <p className="rk-fineprint">One moment…</p>;
