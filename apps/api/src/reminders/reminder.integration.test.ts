@@ -234,6 +234,12 @@ describe('an email reminder', () => {
       sql`SELECT count(*)::text AS n FROM reminder_attestations`,
     );
     expect(count!.n).toBe('1');
+    // The attestation names its purpose, so it cannot be read as consent to anything else.
+    const [purpose] = await rows<{ purpose: string }>(
+      s.businessId,
+      sql`SELECT purpose FROM reminder_attestations`,
+    );
+    expect(purpose!.purpose).toBe('debt_reminder');
   });
 
   it('waits for the merchant to approve a public business phone', async () => {

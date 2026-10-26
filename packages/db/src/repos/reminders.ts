@@ -144,8 +144,8 @@ export async function recordAttestation(
 ): Promise<string> {
   const rows = await tx.execute<{ id: string }>(sql`
     INSERT INTO reminder_attestations
-      (business_id, customer_id, channel, address_hash, policy_version, attested_by_user_id)
-    VALUES (${input.businessId}::uuid, ${input.customerId}::uuid, ${input.channel}, ${input.addressHash},
+      (business_id, customer_id, channel, purpose, address_hash, policy_version, attested_by_user_id)
+    VALUES (${input.businessId}::uuid, ${input.customerId}::uuid, ${input.channel}, 'debt_reminder', ${input.addressHash},
             ${input.policyVersion}, ${input.userId}::uuid)
     RETURNING id
   `);

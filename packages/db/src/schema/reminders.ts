@@ -17,6 +17,7 @@ export const reminderAttestations = pgTable('reminder_attestations', {
     .references(() => businesses.id),
   customerId: uuid('customer_id').notNull(),
   channel: text('channel').notNull(),
+  purpose: text('purpose').notNull().default('debt_reminder'),
   addressHash: text('address_hash').notNull(),
   policyVersion: text('policy_version').notNull(),
   attestedByUserId: uuid('attested_by_user_id').notNull(),

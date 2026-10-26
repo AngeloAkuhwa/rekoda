@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS reminder_attestations (
   business_id         uuid NOT NULL REFERENCES businesses(id),
   customer_id         uuid NOT NULL,
   channel             text NOT NULL CHECK (channel IN ('email')),
+  purpose             text NOT NULL DEFAULT 'debt_reminder' CHECK (purpose = 'debt_reminder'),
   address_hash        text NOT NULL CHECK (address_hash ~ '^[0-9a-f]{64}$'),
   policy_version      text NOT NULL CHECK (length(policy_version) BETWEEN 1 AND 40),
   attested_by_user_id uuid NOT NULL REFERENCES users(id),
