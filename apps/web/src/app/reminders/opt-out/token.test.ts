@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { keepParsedToken } from './token';
+import { keepParsedToken, stateAfterSubmit } from './token';
 
 const token = `${'a'.repeat(20)}.${'b'.repeat(20)}.${'c'.repeat(20)}`;
 
@@ -22,5 +22,16 @@ describe('keepParsedToken', () => {
     expect(keepParsedToken(undefined, '')).toBeNull();
     expect(keepParsedToken(undefined, '#token=short')).toBeNull();
     expect(keepParsedToken(undefined, '#token=%E0%A4%A')).toBeNull();
+  });
+});
+
+describe('stateAfterSubmit', () => {
+  it('applies the result when the token is unchanged', () => {
+    expect(stateAfterSubmit(token, token, 'done', null)).toBe('done');
+  });
+
+  it('drops the result of the first link once a second link has replaced the token', () => {
+    const second = `${'d'.repeat(20)}.${'e'.repeat(20)}.${'f'.repeat(20)}`;
+    expect(stateAfterSubmit(second, token, 'done', null)).toBeNull();
   });
 });

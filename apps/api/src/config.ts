@@ -1214,11 +1214,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const r2 = r2Settings(env);
 
   const customerReminders = zeroOrOneFlag(env, 'REKODA_CUSTOMER_REMINDERS');
-  // A reminder email carries a signed opt-out link; it must never point at a plain-HTTP page.
-  if (customerReminders && !webUrl(env)?.startsWith('https://')) {
-    throw new ConfigError(
-      'REKODA_CUSTOMER_REMINDERS=1 needs REKODA_WEB_URL to be an https:// URL (the opt-out link in a reminder email)',
-    );
+  // A reminder email carries a signed opt-out link appended to this URL: it must be https, and a
+  // query or fragment would swallow the appended path.
+  if (customerReminders) {
+    const base = webUrl(env);
+    const url = base === null ? null : new URL(base);
+    if (url === null || url.protocol !== 'https:' || url.search !== '' || url.hash !== '') {
+      throw new ConfigError(
+        'REKODA_CUSTOMER_REMINDERS=1 needs REKODA_WEB_URL to be an https:// URL with no query or fragment (the opt-out link in a reminder email)',
+      );
+    }
   }
 
   const revealOtp = env['REKODA_REVEAL_OTP'] === '1';

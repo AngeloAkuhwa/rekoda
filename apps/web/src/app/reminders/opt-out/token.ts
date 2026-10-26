@@ -16,3 +16,17 @@ export function keepParsedToken(previous: string | null | undefined, hash: strin
   }
   return decoded.length >= 40 ? decoded : null;
 }
+
+/**
+ * The page state after a submission finishes. A result belongs to the token that was submitted: if a
+ * second link replaced the token while the request was pending, the result is dropped so it cannot
+ * mark the new link as done.
+ */
+export function stateAfterSubmit<T>(
+  currentToken: string | null | undefined,
+  submittedToken: string,
+  result: T,
+  state: T | null,
+): T | null {
+  return currentToken === submittedToken ? result : state;
+}

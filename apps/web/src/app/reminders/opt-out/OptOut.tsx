@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useState, useTransition } from 'react';
+import { useEffect, useRef, useState, useTransition } from 'react';
 import { Button } from '@/components/ui/Button';
 import { optOutAction, type OptOutState } from './actions';
-import { keepParsedToken } from './token';
+import { keepParsedToken, stateAfterSubmit } from './token';
 
 /**
  * The page a customer's reminder email links to. The token lives in the URL fragment (never sent to
@@ -14,6 +14,8 @@ export function OptOut() {
   const [token, setToken] = useState<string | null | undefined>(undefined);
   const [state, setState] = useState<OptOutState | null>(null);
   const [pending, start] = useTransition();
+  const latestToken = useRef(token);
+  latestToken.current = token;
 
   useEffect(() => {
     const read = () => {
@@ -72,7 +74,8 @@ export function OptOut() {
         disabled={pending}
         onClick={() => {
           start(async () => {
-            setState(await optOutAction(token));
+            const result = await optOutAction(token);
+            setState((prev) => stateAfterSubmit(latestToken.current, token, result, prev));
           });
         }}
       >
