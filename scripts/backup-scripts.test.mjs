@@ -49,7 +49,11 @@ test('the newest backup decrypts with the passphrase and not with another', () =
   writeFileSync(other, 'y'.repeat(40));
   const bad = spawnSync('bash', ['-c', sh], { cwd: ROOT, env: { ...t.env, BACKUP_PASSPHRASE_FILE: other }, encoding: 'utf8' });
   assert.notEqual(bad.status, 0);
-  assert.match(bad.stderr, /decryption failed/);
+  /* AES-CBC with a wrong key passes openssl's padding check about once in 256
+   * runs; the script then refuses at the next check instead. Both are the same
+   * refusal (non-zero exit, nothing restored), so the test accepts either
+   * message rather than failing one run in 250. */
+  assert.match(bad.stderr, /decryption failed|did not decrypt to a pg_dump custom archive/);
 });
 
 test('a tampered object is refused by its checksum', () => {
