@@ -402,7 +402,7 @@ export class ReminderService {
 }
 
 function whatsAppResult(outcome: SendCustomerTextOutcome): {
-  status: 'sent' | 'failed' | 'blocked';
+  status: 'sent' | 'failed' | 'blocked' | 'uncertain';
   reason: string | null;
 } {
   switch (outcome.outcome) {
@@ -423,6 +423,11 @@ function whatsAppResult(outcome: SendCustomerTextOutcome): {
     case 'allowance_exhausted':
       return { status: 'blocked', reason: 'allowance_exhausted' };
     case 'send_failed':
+      /* A timeout or dropped connection after Meta may have accepted it: not told as a failure,
+       * so the merchant is not encouraged to send another. */
+      return outcome.unknown
+        ? { status: 'uncertain', reason: 'delivery_unconfirmed' }
+        : { status: 'failed', reason: 'send_failed' };
     case 'unavailable':
       return { status: 'failed', reason: 'send_failed' };
   }

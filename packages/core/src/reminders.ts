@@ -7,7 +7,7 @@
  * reason it may not go is a named code, so a refusal is never silent and never a guess.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { daysOverdue } from './due-dates.js';
+import { daysOverdue, isOverdue } from './due-dates.js';
 import { formatKobo, type Kobo } from './money.js';
 
 /** The wording of the merchant's attestation. A new wording is a new version and asks again. */
@@ -85,6 +85,18 @@ export interface ReminderFacts {
 }
 
 function dueSentence(facts: ReminderFacts): string {
+  /* Never demand money before the agreed date: a future deadline is reported as the date, and a
+   * debt with no agreed date as outstanding. */
+  if (facts.dueDate === null) return 'is outstanding';
+  if (!isOverdue(facts.dueDate, facts.balanceDueK, facts.now)) {
+    const date = facts.dueDate.toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+      timeZone: 'Africa/Lagos',
+    });
+    return `is due on ${date}`;
+  }
   const late = daysOverdue(facts.dueDate, facts.balanceDueK, facts.now);
   if (late <= 0) return 'is now due';
   return late === 1 ? 'is one day overdue' : `is ${late} days overdue`;

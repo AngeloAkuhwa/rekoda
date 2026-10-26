@@ -79,9 +79,14 @@ describe('the email', () => {
     expect(mail.text).toMatch(/Rekoda is not the\s+creditor/);
   });
 
-  it('says "now due" before the due date and counts a single day', () => {
+  it('reports a future deadline as its date, never as due now, and counts a single day', () => {
     const before = composeEmailReminder({ ...facts, now: new Date('2026-10-19T09:00:00Z') }, 'u');
-    expect(before.text).toContain('is now due');
+    expect(before.text).toContain('is due on 20 October 2026');
+    expect(before.text).not.toContain('is now due');
+    const none = composeEmailReminder({ ...facts, dueDate: null }, 'u');
+    expect(none.text).toContain('is outstanding');
+    const sameDay = composeEmailReminder({ ...facts, now: new Date('2026-10-20T15:00:00Z') }, 'u');
+    expect(sameDay.text).toContain('is now due');
     const one = composeEmailReminder({ ...facts, now: new Date('2026-10-21T09:00:00Z') }, 'u');
     expect(one.text).toContain('is one day overdue');
   });

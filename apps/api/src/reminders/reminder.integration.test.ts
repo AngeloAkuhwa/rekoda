@@ -398,6 +398,14 @@ describe('a WhatsApp reminder', () => {
     expect(mail.outbox).toHaveLength(0);
   });
 
+  it('records a send whose outcome Meta left unknown as uncertain, not failed', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    whatsappOutcome = { outcome: 'send_failed', unit: 'SERVICE_MESSAGE', unknown: true };
+    const r = await sendVia(s, 'whatsapp');
+    expect(r.reminder).toMatchObject({ status: 'uncertain', reasonCode: 'delivery_unconfirmed' });
+  });
+
   it('refuses a customer with no phone', async () => {
     const s = await seed({ phone: null });
     await approvePhone(s);
