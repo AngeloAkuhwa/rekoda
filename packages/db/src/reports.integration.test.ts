@@ -7,6 +7,7 @@
  * hand total ever disagree, the dashboard was about to lie to a merchant.
  */
 import { randomBytes } from 'node:crypto';
+import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { paymentReference, usagePeriod } from '@rekoda/core';
 import { createDb, withBusiness, type Db } from './client.js';
@@ -900,6 +901,59 @@ describe('the window summary (N2)', () => {
     expect(after.moneyOutK).toBe(5_000_000);
     expect(after.cashOutK).toBe(2_000_000);
     expect(after.cashInK).toBe(0);
+  });
+
+  it('counts a payment as money in only if it really arrived, and reports refunds beside it', async () => {
+    const businessId = await seedBusiness();
+    /* Four sales paid in cash at the counter, so each writes a merchant-recorded
+     * payment with no status. A different amount each lets the test tell them apart. */
+    const amounts = [1_000_000, 2_000_000, 4_000_000, 8_000_000, 16_000_000, 32_000_000];
+    for (const [n, amountK] of amounts.entries()) {
+      await withBusiness(db, businessId, (tx) =>
+        issueRepo.issueSale(tx, {
+          businessId,
+          customerId: null,
+          customerToken: `CUSTOMER_N2P${n}`,
+          items: [{ name: 'wig', quantity: 1, unitPriceK: amountK }],
+          subtotalK: amountK,
+          discountK: 0,
+          deliveryFeeK: 0,
+          vatK: 0,
+          totalK: amountK,
+          paidK: amountK,
+          balanceDueK: 0,
+          method: 'cash',
+          sourceType: 'chat',
+          sourceId: `n2-pay-${n}`,
+          actor: 'test',
+        }),
+      );
+    }
+    /* The statuses a provider flow can leave, set as the owner (the app role
+     * cannot rewrite a payment): 1m stays NULL (merchant-recorded), 2m is
+     * confirmed, 4m refunded; 8m is pending, 16m failed, 32m reversed. */
+    const owner = postgres(urls.owner, { max: 1, onnotice: () => {} });
+    try {
+      const set = (amountK: number, status: string) =>
+        owner`UPDATE payments SET status = ${status}
+               WHERE business_id = ${businessId}::uuid AND amount_k = ${amountK}`;
+      await set(2_000_000, 'confirmed');
+      await set(4_000_000, 'refunded');
+      await set(8_000_000, 'pending');
+      await set(16_000_000, 'failed');
+      await set(32_000_000, 'reversed');
+      await owner`INSERT INTO refunds (business_id, payment_id, amount_k, method, reason, actor)
+                  SELECT ${businessId}::uuid, id, 1500000, 'cash', 'returned', 'user:1'
+                    FROM payments
+                   WHERE business_id = ${businessId}::uuid AND amount_k = 4000000`;
+    } finally {
+      await owner.end();
+    }
+
+    const after = await summary(businessId);
+    /* 1m + 2m + 4m arrived; pending, failed and reversed never did. */
+    expect(after.moneyInK).toBe(7_000_000);
+    expect(after.refundedK).toBe(1_500_000);
   });
 
   it('reports a credit note beside sales instead of netting it away', async () => {
