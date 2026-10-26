@@ -77,7 +77,7 @@ async function payCash(page: Page, invoiceNumber: string, naira: number) {
 test('a billed and part-paid month reads the same on every page and in the ledger', async ({
   page,
 }) => {
-  const name = `Ada Month ${RUN}-${seq}`;
+  const name = `Ada Month ${RUN}-${seq}-${Date.now()}`;
   const businessId = await onboard(page, name);
 
   // Invoice A is paid in full, invoice B only in part.
@@ -97,15 +97,20 @@ test('a billed and part-paid month reads the same on every page and in the ledge
     .filter({ has: page.getByRole('columnheader', { name: 'Balance' }) });
   await expect(register.getByRole('row').filter({ hasText: invoiceB })).toContainText('₦50,000');
 
-  // The receipt register has the receipt for the paid invoice only.
+  // One immutable receipt per accepted payment, part payments included: ₦200,000 and ₦30,000.
   await page.goto('/app/receipts');
   await expect(page.getByText('No receipts yet')).toHaveCount(0);
-  await expect(page.getByText('₦200,000').first()).toBeVisible();
+  const receipts = page
+    .locator('table')
+    .filter({ has: page.getByRole('columnheader', { name: 'Invoice' }) });
+  await expect(receipts.getByRole('row').filter({ hasText: invoiceA })).toContainText('₦200,000');
+  await expect(receipts.getByRole('row').filter({ hasText: invoiceB })).toContainText('₦30,000');
+  await expect(page.getByText('2 receipts all time')).toBeVisible();
 
   // The debtors list shows exactly what is still owed, and not the settled invoice.
   await page.goto('/app/debtors');
   await expect(page.getByText('Nobody owes you anything right now')).toHaveCount(0);
-  await expect(page.getByText('₦50,000').first()).toBeVisible();
+  await expect(page.getByRole('row').filter({ hasText: invoiceB })).toContainText('₦50,000');
   await expect(page.getByText(invoiceA)).toHaveCount(0);
 
   // The statements are built, not the empty month.
