@@ -242,7 +242,8 @@ export function chatNotInPlan(): Reply {
 
 /**
  * A merchant on the Integrate plan sent a fixed Chat command: *who owes me*,
- * *stock*, *records*, *payment details*, a reminder or *resend* (G-65).
+ * *stock*, *records*, *payment details* or a reminder (G-65; *resend* works on
+ * every plan since N3).
  *
  * Not `chatNotInPlan`, whose first sentence is about recording: "who owes
  * me" records nothing, and a refusal that names the wrong thing reads as a

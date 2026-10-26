@@ -42,12 +42,13 @@ describe('the deterministic entitlement matrix (G-65)', () => {
     'delete_my_data',
     'dashboard',
     'upgrade',
+    'resend',
   ] as const;
   const KEPT_ON_LAPSE = ['debtors', 'records', 'stock', 'payment_details', 'remind'] as const;
 
   it('classifies every intent the router can produce, and nothing else', () => {
     expect(Object.keys(DETERMINISTIC_ACCESS).sort()).toEqual(
-      [...UNIVERSAL, ...KEPT_ON_LAPSE, 'resend', 'affirm', 'unsure', 'deny', 'cancel'].sort(),
+      [...UNIVERSAL, ...KEPT_ON_LAPSE, 'affirm', 'unsure', 'deny', 'cancel'].sort(),
     );
   });
 
@@ -65,31 +66,34 @@ describe('the deterministic entitlement matrix (G-65)', () => {
   });
 
   it.each(['trial', 'chat', 'complete'])('runs every Chat command on %s', (plan) => {
-    for (const kind of [...KEPT_ON_LAPSE, 'resend'] as const) {
+    for (const kind of KEPT_ON_LAPSE) {
       expect(deterministicAccess(kind, standing(plan)), kind).toBe('allow');
     }
   });
 
   it('refuses every Chat command to an Integrate-only plan', () => {
-    for (const kind of [...KEPT_ON_LAPSE, 'resend'] as const) {
+    for (const kind of KEPT_ON_LAPSE) {
       expect(deterministicAccess(kind, standing('integrate')), kind).toBe('chat_not_in_plan');
       expect(needsChatStanding(kind), kind).toBe(true);
     }
   });
 
-  it('keeps the reads a lapsed plan is promised, and refuses it a new document send', () => {
+  it('keeps the reads a lapsed plan is promised', () => {
     for (const kind of KEPT_ON_LAPSE) {
       expect(deterministicAccess(kind, standing('expired')), kind).toBe('allow');
     }
-    expect(deterministicAccess('resend', standing('expired'))).toBe('plan_lapsed');
+  });
+
+  it('lets an owner resend a retained document on every plan, lapsed and Integrate-only included (N3, OWN-45)', () => {
+    for (const plan of PLANS) {
+      expect(deterministicAccess('resend', standing(plan)), plan).toBe('allow');
+    }
+    expect(needsChatStanding('resend')).toBe(false);
   });
 
   it('asks the lapsed question first, as the model path does', () => {
-    // An explicit REKODA_CHAT grant does not reopen a lapsed plan's sends.
-    expect(deterministicAccess('resend', { plan: 'expired', holdsChat: true })).toBe('plan_lapsed');
+    // An explicit REKODA_CHAT grant does not reopen a lapsed plan's recording.
     expect(chatDraftAccess({ plan: 'expired', holdsChat: true })).toBe('plan_lapsed');
-    // And a grant on a live plan is what it says it is.
-    expect(deterministicAccess('resend', { plan: 'integrate', holdsChat: true })).toBe('allow');
   });
 
   it('an unknown plan is refused rather than trusted', () => {
