@@ -6,6 +6,7 @@
  * described plainly, with no countdown pressure; nothing here computes a price
  * (every figure arrives from the API in kobo and is rendered by `Money`).
  */
+import { isOwner } from './permissions';
 import type {
   BillingChargeView,
   BillingCheckoutResponse,
@@ -36,6 +37,15 @@ export function trialCopy(endsOn: string | null, daysLeft: number | null): strin
   return daysLeft <= 3 ? `${base} Choose a plan below any time to carry on without a break.` : base;
 }
 
+/**
+ * Who the dashboard's trial strip is for: the owner of a business on a trial.
+ * Its message tells the reader to choose a plan, and only the owner can; an
+ * accountant or delegate would be pointed at a page where they cannot act.
+ */
+export function trialStripAudience(plan: string, role: string): boolean {
+  return plan === 'trial' && isOwner(role);
+}
+
 export type TrialMilestone = {
   kind: 'start' | 'halfway' | 'ending' | 'last';
   heading: string;
@@ -44,7 +54,7 @@ export type TrialMilestone = {
 
 /**
  * The one calm sentence the dashboard shows at a trial milestone, or null on
- * every other day: the start (day 0 and 1), the halfway point (days 7 and 6
+ * every other day: the start (14 and 13 days left), the halfway point (days 7 and 6
  * left), the last three days, and the final day (worded "soon": the days left round up, so
  * "today" or "tomorrow" could be wrong by hours). Not a countdown: most days
  * say nothing. Near the end it always says the records stay safe, and it never
@@ -62,7 +72,7 @@ export function trialMilestone(daysLeft: number): TrialMilestone | null {
     return {
       kind: 'halfway',
       heading: 'Halfway through your trial',
-      body: 'Your records and balances so far are all here. Choose a plan any time to keep recording without a break.',
+      body: 'Choose a plan any time to keep recording without a break. Your records stay yours either way.',
     };
   }
   if (daysLeft >= 2 && daysLeft <= 3) {

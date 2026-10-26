@@ -275,12 +275,19 @@ test('the trial welcome strip reads in the dark theme', async ({ page }) => {
   const strip = page.locator('.rk-trial-strip');
   await expect(strip).toBeVisible();
 
-  // Readable text on the strip's own surface, not merely lighter than the page.
-  const contrast = await strip.evaluate((el, helpers) => {
-    const { parse, ratio, surfaceOf } = new Function(
-      `${helpers} return { parse, ratio, surfaceOf };`,
+  // Dark mode really applied (the strip's surface is dark), and the text is readable on it.
+  const result = await strip.evaluate((el, helpers) => {
+    const { parse, ratio, surfaceOf, lum } = new Function(
+      `${helpers} return { parse, ratio, surfaceOf, lum };`,
     )();
-    return ratio(parse(getComputedStyle(el).color), surfaceOf(el));
+    const surface = surfaceOf(el);
+    return {
+      dark: window.matchMedia('(prefers-color-scheme: dark)').matches,
+      surfaceLuminance: lum(surface) as number,
+      contrast: ratio(parse(getComputedStyle(el).color), surface) as number,
+    };
   }, COLOUR_HELPERS);
-  expect(contrast).toBeGreaterThanOrEqual(4.5);
+  expect(result.dark).toBe(true);
+  expect(result.surfaceLuminance).toBeLessThan(0.2);
+  expect(result.contrast).toBeGreaterThanOrEqual(4.5);
 });

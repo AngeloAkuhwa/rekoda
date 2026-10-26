@@ -16,7 +16,7 @@ import { PLAN_NAMES } from '@/lib/plans';
 import { CashflowChart } from './CashflowChart';
 import { SignOutButton } from './SignOutButton';
 import { heldBy } from '@/lib/capabilities';
-import { trialMilestoneAt } from '@/lib/billing-pay-copy';
+import { trialMilestoneAt, trialStripAudience } from '@/lib/billing-pay-copy';
 
 export const metadata: Metadata = {
   title: 'Your dashboard',
@@ -47,14 +47,13 @@ export default async function DashboardPage() {
     usageMeter(token),
   ]);
 
-  // Only a trial needs the billing read; every other plan skips the extra call.
-  const trialEndsAt =
-    identity.plan === 'trial'
-      ? await billingOverview(token).then(
-          (b) => (b.status.state === 'trial' ? b.status.endsAt : null),
-          () => null,
-        )
-      : null;
+  // Only the owner of a trial sees the strip, so only that dashboard makes the billing read.
+  const trialEndsAt = trialStripAudience(identity.plan, identity.role)
+    ? await billingOverview(token).then(
+        (b) => (b.status.state === 'trial' ? b.status.endsAt : null),
+        () => null,
+      )
+    : null;
   const milestone = trialMilestoneAt(trialEndsAt, new Date());
 
   const hasBooks = activity.items.length > 0;

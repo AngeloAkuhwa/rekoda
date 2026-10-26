@@ -15,6 +15,7 @@ import {
   trialDaysLeft,
   trialMilestone,
   trialMilestoneAt,
+  trialStripAudience,
 } from './billing-pay-copy';
 import { chargeStatusLabel } from './charge-status';
 
@@ -291,5 +292,22 @@ describe('trialMilestoneAt', () => {
 
   it('shows nothing when there is no end date', () => {
     expect(trialMilestoneAt(null, now)).toBeNull();
+  });
+});
+
+describe('trialStripAudience', () => {
+  it('is the owner on a trial, who is the one who can choose a plan', () => {
+    expect(trialStripAudience('trial', 'owner')).toBe(true);
+  });
+
+  it('never an accountant or delegate, who are told to ask the owner on the billing page', () => {
+    expect(trialStripAudience('trial', 'accountant')).toBe(false);
+    expect(trialStripAudience('trial', 'delegate')).toBe(false);
+  });
+
+  it('never a business that is not on a trial', () => {
+    for (const plan of ['chat', 'integrate', 'complete', 'expired']) {
+      expect(trialStripAudience(plan, 'owner')).toBe(false);
+    }
   });
 });
