@@ -13,6 +13,7 @@ import {
   tokenFromFragment,
   trialCopy,
   trialDaysLeft,
+  trialMilestone,
 } from './billing-pay-copy';
 import { chargeStatusLabel } from './charge-status';
 
@@ -241,5 +242,28 @@ describe('the heading over a waiting charge', () => {
     expect(payHeading('upgrade')).toBe('Pay for your plan');
     expect(payHeading('add_on')).toBe('Pay for your add-on');
     expect(payHeading('seat')).toBe('Pay for your add-on');
+  });
+});
+
+describe('trialMilestone', () => {
+  it('names a moment only at the milestones, never every day', () => {
+    expect(trialMilestone(14)?.kind).toBe('start');
+    expect(trialMilestone(13)?.kind).toBe('start');
+    expect(trialMilestone(10)).toBeNull();
+    expect(trialMilestone(7)?.kind).toBe('halfway');
+    expect(trialMilestone(6)?.kind).toBe('halfway');
+    expect(trialMilestone(5)).toBeNull();
+    expect(trialMilestone(3)?.kind).toBe('ending');
+    expect(trialMilestone(2)?.kind).toBe('ending');
+    expect(trialMilestone(1)?.kind).toBe('last');
+    expect(trialMilestone(0)?.kind).toBe('last');
+  });
+
+  it('always says records stay safe near the end, and never invents a charge', () => {
+    for (const days of [3, 2, 1, 0]) {
+      const m = trialMilestone(days);
+      expect(m?.body).toMatch(/records (are|stay) safe/i);
+      expect(m?.body).not.toMatch(/payment|failed|charged/i);
+    }
   });
 });

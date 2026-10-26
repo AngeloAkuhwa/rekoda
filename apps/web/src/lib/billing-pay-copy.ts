@@ -36,6 +36,51 @@ export function trialCopy(endsOn: string | null, daysLeft: number | null): strin
   return daysLeft <= 3 ? `${base} Choose a plan below any time to carry on without a break.` : base;
 }
 
+export type TrialMilestone = {
+  kind: 'start' | 'halfway' | 'ending' | 'last';
+  heading: string;
+  body: string;
+};
+
+/**
+ * The one calm sentence the dashboard shows at a trial milestone, or null on
+ * every other day: the start (day 0 and 1), the halfway point (days 7 and 6
+ * left), the last three days, and the final day. Not a countdown: most days
+ * say nothing. Near the end it always says the records stay safe, and it never
+ * mentions a payment, because none has been attempted.
+ */
+export function trialMilestone(daysLeft: number): TrialMilestone | null {
+  if (daysLeft >= 13) {
+    return {
+      kind: 'start',
+      heading: 'Welcome to your free trial',
+      body: 'Send Rekoda a sale or an expense on WhatsApp and watch it appear here as a record. No card needed.',
+    };
+  }
+  if (daysLeft === 7 || daysLeft === 6) {
+    return {
+      kind: 'halfway',
+      heading: 'Halfway through your trial',
+      body: 'Your records and balances so far are all here. Choose a plan any time to keep recording without a break.',
+    };
+  }
+  if (daysLeft >= 2 && daysLeft <= 3) {
+    return {
+      kind: 'ending',
+      heading: `${daysLeft} days left in your trial`,
+      body: 'Your records are safe whatever you decide. Choose a plan to keep recording new transactions after the trial.',
+    };
+  }
+  if (daysLeft <= 1) {
+    return {
+      kind: 'last',
+      heading: daysLeft === 1 ? 'Your trial ends tomorrow' : 'Your trial ends today',
+      body: 'Your records stay safe and readable. To keep recording new transactions, choose a plan.',
+    };
+  }
+  return null;
+}
+
 /** The newest charge still waiting for money and still payable, or null. Newest first, as the API lists them. */
 export function pendingCharge(
   charges: readonly BillingChargeView[],

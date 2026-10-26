@@ -4,6 +4,7 @@ import { Money } from '@/components/ui/Money';
 import { MoneyBadge } from '@/components/ui/MoneyBadge';
 import { requireSessionWithToken } from '@/server/guards';
 import {
+  billingOverview,
   reportsActivity,
   reportsCashflow,
   reportsDebtors,
@@ -15,6 +16,7 @@ import { PLAN_NAMES } from '@/lib/plans';
 import { CashflowChart } from './CashflowChart';
 import { SignOutButton } from './SignOutButton';
 import { heldBy } from '@/lib/capabilities';
+import { trialDaysLeft, trialMilestone } from '@/lib/billing-pay-copy';
 
 export const metadata: Metadata = {
   title: 'Your dashboard',
@@ -44,6 +46,16 @@ export default async function DashboardPage() {
     reportsActivity(token),
     usageMeter(token),
   ]);
+
+  // Only a trial needs the billing read; every other plan skips the extra call.
+  const trialEndsAt =
+    identity.plan === 'trial'
+      ? await billingOverview(token).then(
+          (b) => (b.status.state === 'trial' ? b.status.endsAt : null),
+          () => null,
+        )
+      : null;
+  const milestone = trialEndsAt ? trialMilestone(trialDaysLeft(trialEndsAt, new Date())) : null;
 
   const hasBooks = activity.items.length > 0;
   const hasCashflow = cashflow.months.some((m) => m.inK > 0 || m.outK > 0);
@@ -83,6 +95,12 @@ export default async function DashboardPage() {
       </header>
 
       <AppNav active="overview" held={heldBy(identity)} role={identity.role} />
+
+      {milestone ? (
+        <a href="/app/billing" className="rk-trial-strip" data-milestone={milestone.kind}>
+          <strong>{milestone.heading}.</strong> {milestone.body}
+        </a>
+      ) : null}
 
       {overview.exceptionsOpen > 0 ? (
         <a href="/app/payments" className="rk-attention-strip">

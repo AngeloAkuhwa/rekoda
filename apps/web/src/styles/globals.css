@@ -778,6 +778,22 @@ a.rk-sr-only:focus-visible {
   text-decoration: underline;
 }
 
+/* A trial milestone: calm and informational, not a warning. The surface is
+   the neutral card colour so it never competes with a payment that needs
+   attention. */
+.rk-trial-strip {
+  display: block;
+  padding: var(--rk-space-3) var(--rk-space-4);
+  border: 1px solid var(--rk-border);
+  border-radius: var(--rk-radius-md);
+  background: var(--rk-surface, transparent);
+  color: inherit;
+  text-decoration: none;
+}
+.rk-trial-strip:hover {
+  text-decoration: underline;
+}
+
 /* Section tabs. The active tab carries the ledger's accent top rule — the
    same mark as the stat tiles, so "you are here" and "this is a ledger cell"
    read as one language. */
