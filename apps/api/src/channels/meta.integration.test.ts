@@ -14276,7 +14276,7 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
     expect(await draftStates(business.id)).toEqual(['pending']);
   });
 
-  it('a lapsed plan keeps the reads it is promised, and sends no new document', async () => {
+  it('a lapsed plan keeps the reads it is promised, and still resends a stored document', async () => {
     const business = await seedMerchant();
     const invoiceNumber = await seedBooks(business.id);
     await lapse(business.id);
@@ -14289,16 +14289,16 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
     expect(await send(`remind ${invoiceNumber}`)).toContain(`reminder for ${invoiceNumber}`);
     expect(await send('stock')).toContain('not counting any stock');
 
-    // A resend retrieves a document that already exists, so an owner whose
-    // plan lapsed still gets nothing new, but may ask for the old one (N3).
-    expect(await send('resend')).not.toBe(LAPSED);
+    // A resend retrieves a document that already exists, so a lapsed owner may
+    // ask for it (N3): the invoice just seeded, not the lapse sentence.
+    expect(await send('resend')).toContain(`Sending ${invoiceNumber} again`);
   });
 
   it('N3: a resend of a retained document works on an Integrate-only and on a lapsed plan, and creates no record', async () => {
     for (const standing of ['integrate', 'lapsed'] as const) {
       await truncateAll(urls);
       const business = await seedMerchant();
-      const doc = await withBusiness(db, business.id, (tx) =>
+      await withBusiness(db, business.id, (tx) =>
         issueRepo.recordDocument(tx, {
           businessId: business.id,
           kind: 'invoice_pdf',
@@ -14317,8 +14317,6 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
         jobsRepo.jobsForBusiness(tx, 'document.deliver'),
       );
       expect(queued, standing).toHaveLength(1);
-      expect(doc.id).toBeTruthy();
-      // No sale, invoice or model call: it only hands back what exists.
       // Exactly one reply and one queued delivery; no sale, payment, receipt,
       // expense, order or ledger row.
       expect(await footprint(business.id), standing).toEqual({
