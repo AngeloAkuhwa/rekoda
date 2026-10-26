@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState, useTransition } from 'react';
+import { useEffect, useState, useTransition } from 'react';
 import { Button } from '@/components/ui/Button';
 import { optOutAction, type OptOutState } from './actions';
-import { keepParsedToken, stateAfterSubmit } from './token';
+import { keepParsedToken, visibleState, type TokenOutcome } from './token';
 
 /**
  * The page a customer's reminder email links to. The token lives in the URL fragment (never sent to
@@ -12,10 +12,9 @@ import { keepParsedToken, stateAfterSubmit } from './token';
  */
 export function OptOut() {
   const [token, setToken] = useState<string | null | undefined>(undefined);
-  const [state, setState] = useState<OptOutState | null>(null);
+  const [outcome, setOutcome] = useState<TokenOutcome<OptOutState> | null>(null);
+  const state = visibleState(outcome, token);
   const [pending, start] = useTransition();
-  const latestToken = useRef(token);
-  latestToken.current = token;
 
   useEffect(() => {
     const read = () => {
@@ -24,7 +23,7 @@ export function OptOut() {
       // a token already read survives an empty fragment; a new fragment replaces it.
       setToken((prev) => keepParsedToken(prev, hash));
       if (hash) {
-        setState(null);
+        setOutcome(null);
         window.history.replaceState(null, '', window.location.pathname);
       }
     };
@@ -75,7 +74,7 @@ export function OptOut() {
         onClick={() => {
           start(async () => {
             const result = await optOutAction(token);
-            setState((prev) => stateAfterSubmit(latestToken.current, token, result, prev));
+            setOutcome({ token, state: result });
           });
         }}
       >

@@ -830,7 +830,12 @@ describe('REKODA_CUSTOMER_REMINDERS', () => {
     expect(() => loadConfig({ ...on, REKODA_WEB_URL: 'http://app.rekoda.test' })).toThrow(
       'https://',
     );
-    for (const bad of ['https://app.rekoda.test/#top', 'https://app.rekoda.test/?a=1']) {
+    for (const bad of [
+      'https://app.rekoda.test/#top',
+      'https://app.rekoda.test/?a=1',
+      'https://app.rekoda.test/?',
+      'https://app.rekoda.test/#',
+    ]) {
       expect(() => loadConfig({ ...on, REKODA_WEB_URL: bad })).toThrow('no query or fragment');
     }
     expect(loadConfig({ ...on, REKODA_WEB_URL: 'https://app.rekoda.test' }).customerReminders).toBe(

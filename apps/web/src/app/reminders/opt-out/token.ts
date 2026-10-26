@@ -17,16 +17,19 @@ export function keepParsedToken(previous: string | null | undefined, hash: strin
   return decoded.length >= 40 ? decoded : null;
 }
 
+/** A submission outcome, stored with the token it was submitted for. */
+export interface TokenOutcome<T> {
+  token: string;
+  state: T;
+}
+
 /**
- * The page state after a submission finishes. A result belongs to the token that was submitted: if a
- * second link replaced the token while the request was pending, the result is dropped so it cannot
- * mark the new link as done.
+ * The state to show for the current token. An outcome belongs to the token it was submitted for, so
+ * a second link opened while the first request was pending never shows the first link's result.
  */
-export function stateAfterSubmit<T>(
+export function visibleState<T>(
+  outcome: TokenOutcome<T> | null,
   currentToken: string | null | undefined,
-  submittedToken: string,
-  result: T,
-  state: T | null,
 ): T | null {
-  return currentToken === submittedToken ? result : state;
+  return outcome !== null && outcome.token === currentToken ? outcome.state : null;
 }

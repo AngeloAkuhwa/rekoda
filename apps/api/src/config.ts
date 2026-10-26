@@ -1219,7 +1219,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   if (customerReminders) {
     const base = webUrl(env);
     const url = base === null ? null : new URL(base);
-    if (url === null || url.protocol !== 'https:' || url.search !== '' || url.hash !== '') {
+    // URL.search and URL.hash are empty for a bare trailing `?` or `#`, so the raw text is checked too.
+    const raw = env['REKODA_WEB_URL'] ?? '';
+    if (url === null || url.protocol !== 'https:' || /[?#]/.test(raw)) {
       throw new ConfigError(
         'REKODA_CUSTOMER_REMINDERS=1 needs REKODA_WEB_URL to be an https:// URL with no query or fragment (the opt-out link in a reminder email)',
       );

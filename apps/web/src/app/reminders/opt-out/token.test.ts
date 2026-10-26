@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { keepParsedToken, stateAfterSubmit } from './token';
+import { keepParsedToken, visibleState } from './token';
 
 const token = `${'a'.repeat(20)}.${'b'.repeat(20)}.${'c'.repeat(20)}`;
 
@@ -25,13 +25,17 @@ describe('keepParsedToken', () => {
   });
 });
 
-describe('stateAfterSubmit', () => {
-  it('applies the result when the token is unchanged', () => {
-    expect(stateAfterSubmit(token, token, 'done', null)).toBe('done');
+describe('visibleState', () => {
+  it('shows the outcome while the submitted link is still the current one', () => {
+    expect(visibleState({ token, state: 'done' }, token)).toBe('done');
   });
 
-  it('drops the result of the first link once a second link has replaced the token', () => {
+  it('shows nothing for a second link, even if the first request resolves after it opened', () => {
     const second = `${'d'.repeat(20)}.${'e'.repeat(20)}.${'f'.repeat(20)}`;
-    expect(stateAfterSubmit(second, token, 'done', null)).toBeNull();
+    expect(visibleState({ token, state: 'done' }, second)).toBeNull();
+  });
+
+  it('shows nothing before any submission', () => {
+    expect(visibleState(null, token)).toBeNull();
   });
 });
