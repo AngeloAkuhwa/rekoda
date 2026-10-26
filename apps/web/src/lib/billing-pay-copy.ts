@@ -45,7 +45,8 @@ export type TrialMilestone = {
 /**
  * The one calm sentence the dashboard shows at a trial milestone, or null on
  * every other day: the start (day 0 and 1), the halfway point (days 7 and 6
- * left), the last three days, and the final day. Not a countdown: most days
+ * left), the last three days, and the final day (worded "soon": the days left round up, so
+ * "today" or "tomorrow" could be wrong by hours). Not a countdown: most days
  * say nothing. Near the end it always says the records stay safe, and it never
  * mentions a payment, because none has been attempted.
  */
@@ -74,7 +75,7 @@ export function trialMilestone(daysLeft: number): TrialMilestone | null {
   if (daysLeft <= 1) {
     return {
       kind: 'last',
-      heading: daysLeft === 1 ? 'Your trial ends tomorrow' : 'Your trial ends today',
+      heading: 'Your trial ends soon',
       body: 'Your records stay safe and readable. To keep recording new transactions, choose a plan.',
     };
   }

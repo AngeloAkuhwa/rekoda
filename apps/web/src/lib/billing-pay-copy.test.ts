@@ -266,4 +266,10 @@ describe('trialMilestone', () => {
       expect(m?.body).not.toMatch(/payment|failed|charged/i);
     }
   });
+
+  it('never says tomorrow or today: days left rounds up, so the end may be hours away', () => {
+    for (const days of [1, 0]) {
+      expect(trialMilestone(days)?.heading).toBe('Your trial ends soon');
+    }
+  });
 });
