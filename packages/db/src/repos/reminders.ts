@@ -41,8 +41,10 @@ export async function invoiceForReminder(
     reminders_stopped_at: Date | null;
   }>(sql`
     SELECT i.id, i.invoice_number, i.status, i.balance_due_k::bigint AS balance_due_k, i.due_date,
-           i.reminders_stopped_at, COALESCE(i.customer_id, c.id) AS customer_id
+           s.stopped_at AS reminders_stopped_at, COALESCE(i.customer_id, c.id) AS customer_id
     FROM invoices i
+    LEFT JOIN invoice_reminder_stops s
+      ON s.business_id = i.business_id AND s.invoice_id = i.id
     LEFT JOIN customers c
       ON c.business_id = i.business_id AND c.token = i.snapshot_json ->> 'customerToken'
     WHERE i.business_id = ${businessId}::uuid AND upper(i.invoice_number) = upper(${invoiceNumber})
@@ -106,9 +108,17 @@ export async function setRemindersStopped(
   invoiceId: string,
   at: Date | null,
 ): Promise<void> {
+  if (at === null) {
+    await tx.execute(sql`
+      DELETE FROM invoice_reminder_stops
+       WHERE business_id = ${businessId}::uuid AND invoice_id = ${invoiceId}::uuid
+    `);
+    return;
+  }
   await tx.execute(sql`
-    UPDATE invoices SET reminders_stopped_at = ${at === null ? null : at.toISOString()}::timestamptz
-     WHERE business_id = ${businessId}::uuid AND id = ${invoiceId}::uuid
+    INSERT INTO invoice_reminder_stops (business_id, invoice_id, stopped_at)
+    VALUES (${businessId}::uuid, ${invoiceId}::uuid, ${at.toISOString()}::timestamptz)
+    ON CONFLICT (business_id, invoice_id) DO NOTHING
   `);
 }
 

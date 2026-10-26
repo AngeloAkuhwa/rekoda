@@ -4,8 +4,9 @@
 --   businesses.public_contact_phone / _approved_at
 --       the PUBLIC business phone shown in a reminder (never the private sign-in number). Reminders
 --       are refused until the owner has approved one.
---   invoices.reminders_stopped_at
---       the merchant's "stop reminders for this invoice" control. NULL: reminders may go.
+--   invoice_reminder_stops
+--       the merchant's "stop reminders for this invoice" control. A row: stopped. Kept apart from
+--       invoices so a posted invoice is never updated by a reminder control (invariant 6).
 --   reminder_attestations
 --       the merchant's statement, before the first email reminder to a customer, that they have a
 --       lawful basis to contact that customer about the debt. Append-only: who, when, which
@@ -19,9 +20,6 @@
 ALTER TABLE businesses
   ADD COLUMN IF NOT EXISTS public_contact_phone text,
   ADD COLUMN IF NOT EXISTS public_contact_approved_at timestamptz;
-
-ALTER TABLE invoices
-  ADD COLUMN IF NOT EXISTS reminders_stopped_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS reminder_attestations (
   id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -45,6 +43,15 @@ CREATE TABLE IF NOT EXISTS customer_email_optouts (
   address_hash text NOT NULL CHECK (address_hash ~ '^[0-9a-f]{64}$'),
   opted_out_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (business_id, address_hash)
+);
+
+CREATE TABLE IF NOT EXISTS invoice_reminder_stops (
+  business_id uuid NOT NULL REFERENCES businesses(id),
+  invoice_id  uuid NOT NULL,
+  stopped_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (business_id, invoice_id),
+  CONSTRAINT invoice_reminder_stops_invoice_fk
+    FOREIGN KEY (business_id, invoice_id) REFERENCES invoices (business_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS invoice_reminders (
@@ -88,6 +95,12 @@ CREATE POLICY tenant_isolation ON customer_email_optouts
   USING (business_id = nullif(current_setting('app.business_id', true), '')::uuid)
   WITH CHECK (business_id = nullif(current_setting('app.business_id', true), '')::uuid);
 
+ALTER TABLE invoice_reminder_stops ENABLE ROW LEVEL SECURITY;
+ALTER TABLE invoice_reminder_stops FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON invoice_reminder_stops
+  USING (business_id = nullif(current_setting('app.business_id', true), '')::uuid)
+  WITH CHECK (business_id = nullif(current_setting('app.business_id', true), '')::uuid);
+
 ALTER TABLE invoice_reminders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invoice_reminders FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON invoice_reminders
@@ -104,6 +117,11 @@ REVOKE ALL ON reminder_attestations FROM rekoda_worker;
 GRANT SELECT, INSERT ON customer_email_optouts TO rekoda_app;
 REVOKE UPDATE, DELETE ON customer_email_optouts FROM rekoda_app;
 REVOKE ALL ON customer_email_optouts FROM rekoda_worker;
+
+-- A stop is a switch the merchant flips both ways, so this table (only) keeps DELETE.
+GRANT SELECT, INSERT, DELETE ON invoice_reminder_stops TO rekoda_app;
+REVOKE UPDATE ON invoice_reminder_stops FROM rekoda_app;
+REVOKE ALL ON invoice_reminder_stops FROM rekoda_worker;
 
 GRANT SELECT, INSERT, UPDATE ON invoice_reminders TO rekoda_app;
 REVOKE DELETE ON invoice_reminders FROM rekoda_app;

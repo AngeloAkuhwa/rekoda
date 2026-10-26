@@ -51,8 +51,6 @@ export const invoices = pgTable(
     /** The composite FK to `orders (business_id, id)` lives in migration
      * 0132; another tenant's order is unrepresentable. */
     orderId: uuid('order_id'),
-    /** The merchant's "stop reminders for this invoice" control (migration 0184, N1); null: reminders may go. */
-    remindersStoppedAt: timestamp('reminders_stopped_at', { withTimezone: true }),
     invoiceNumber: text('invoice_number').notNull(),
     /**
      * issued | partially_paid | paid | voided | credited

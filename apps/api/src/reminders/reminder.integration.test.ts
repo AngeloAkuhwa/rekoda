@@ -278,11 +278,14 @@ describe('an email reminder', () => {
   it('stops for an invoice the merchant stopped, and resumes when they undo it', async () => {
     const s = await seed();
     await approvePhone(s);
+    const invoiceBefore = await rows(s.businessId, sql`SELECT * FROM invoices`);
     await service().setStopped(s.businessId, s.invoiceNumber, true);
+    expect(await rows(s.businessId, sql`SELECT * FROM invoices`)).toEqual(invoiceBefore);
     expect((await sendEmail(s, { attest: true })).reminder.reasonCode).toBe('reminders_stopped');
     expect((await service().history(s.businessId, s.invoiceNumber)).remindersStopped).toBe(true);
 
     await service().setStopped(s.businessId, s.invoiceNumber, false);
+    expect(await rows(s.businessId, sql`SELECT * FROM invoices`)).toEqual(invoiceBefore);
     expect((await sendEmail(s, { attest: true })).reminder.status).toBe('sent');
   });
 

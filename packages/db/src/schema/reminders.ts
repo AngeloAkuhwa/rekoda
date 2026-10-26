@@ -32,6 +32,14 @@ export const customerEmailOptouts = pgTable('customer_email_optouts', {
   optedOutAt: timestamp('opted_out_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const invoiceReminderStops = pgTable('invoice_reminder_stops', {
+  businessId: uuid('business_id')
+    .notNull()
+    .references(() => businesses.id),
+  invoiceId: uuid('invoice_id').notNull(),
+  stoppedAt: timestamp('stopped_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const invoiceReminders = pgTable('invoice_reminders', {
   id: uuid('id')
     .primaryKey()
