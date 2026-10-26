@@ -20,7 +20,7 @@ test.afterAll(async () => {
 /** Distinct from the other specs' ranges so parallel runs never collide. */
 const RUN = String(Math.floor(Math.random() * 900) + 100);
 let seq = 0;
-const freshPhone = () => `0815${RUN}${String(1000 + seq++).slice(-4)}`;
+const freshPhone = () => `0809${RUN}${String(1000 + seq++).slice(-4)}`;
 
 async function onboard(page: Page, name: string): Promise<void> {
   await page.goto('/start');
