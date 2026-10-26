@@ -3,6 +3,7 @@
 import { useEffect, useState, useTransition } from 'react';
 import { Button } from '@/components/ui/Button';
 import { optOutAction, type OptOutState } from './actions';
+import { keepParsedToken } from './token';
 
 /**
  * The page a customer's reminder email links to. The token lives in the URL fragment (never sent to
@@ -15,16 +16,11 @@ export function OptOut() {
   const [pending, start] = useTransition();
 
   useEffect(() => {
-    const raw = window.location.hash.replace(/^#/, '');
-    const value = raw.startsWith('token=') ? raw.slice('token='.length) : '';
-    let decoded = '';
-    try {
-      decoded = decodeURIComponent(value);
-    } catch {
-      decoded = '';
-    }
-    setToken(decoded.length >= 40 ? decoded : null);
-    if (decoded) window.history.replaceState(null, '', window.location.pathname);
+    const hash = window.location.hash;
+    // Strict mode runs this effect twice in development and the first run clears the fragment, so
+    // a token already read must survive an empty second read.
+    setToken((prev) => keepParsedToken(prev, hash));
+    if (hash) window.history.replaceState(null, '', window.location.pathname);
   }, []);
 
   if (token === undefined) return <p className="rk-fineprint">One moment…</p>;
