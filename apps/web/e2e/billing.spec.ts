@@ -191,7 +191,7 @@ test('a new trial merchant is welcomed on the dashboard, with a way to the billi
 
   const strip = page.locator('.rk-trial-strip');
   await expect(strip).toBeVisible();
-  await expect(strip).toContainText('Welcome to your free trial');
+  await expect(strip.getByText('Welcome to your free trial.', { exact: true })).toBeVisible();
   // Calm: no payment is claimed and no countdown is shown.
   await expect(strip).not.toContainText(/payment|failed|charged/i);
 
