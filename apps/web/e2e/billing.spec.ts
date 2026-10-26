@@ -182,3 +182,25 @@ test('the confirmation page needs a signed-in owner', async ({ page }) => {
   await page.goto('/app/billing/confirm-email#token=abcdefghijklmnopqrstuvwxyz0123456789');
   await expect(page).toHaveURL(/\/start/);
 });
+
+test('a new trial merchant is welcomed on the dashboard, with a way to the billing page', async ({
+  page,
+}) => {
+  await onboard(page, freshPhone());
+  await page.goto('/app');
+
+  const strip = page.locator('.rk-trial-strip');
+  await expect(strip).toBeVisible();
+  await expect(strip).toContainText('Welcome to your free trial');
+  // Calm: no payment is claimed and no countdown is shown.
+  await expect(strip).not.toContainText(/payment|failed|charged/i);
+
+  // The strip fits the screen: no sideways scroll on a phone.
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(0);
+
+  await strip.click();
+  await expect(page).toHaveURL(/\/app\/billing$/);
+});

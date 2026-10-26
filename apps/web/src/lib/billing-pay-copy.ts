@@ -51,7 +51,7 @@ export type TrialMilestone = {
  * mentions a payment, because none has been attempted.
  */
 export function trialMilestone(daysLeft: number): TrialMilestone | null {
-  if (daysLeft >= 13) {
+  if (daysLeft === 14 || daysLeft === 13) {
     return {
       kind: 'start',
       heading: 'Welcome to your free trial',

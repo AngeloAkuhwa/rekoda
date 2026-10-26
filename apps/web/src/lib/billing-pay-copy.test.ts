@@ -250,6 +250,8 @@ describe('trialMilestone', () => {
     expect(trialMilestone(14)?.kind).toBe('start');
     expect(trialMilestone(13)?.kind).toBe('start');
     expect(trialMilestone(10)).toBeNull();
+    // A trial stored with a longer expiry (an older 30-day one) is not welcomed again on every visit.
+    expect(trialMilestone(20)).toBeNull();
     expect(trialMilestone(7)?.kind).toBe('halfway');
     expect(trialMilestone(6)?.kind).toBe('halfway');
     expect(trialMilestone(5)).toBeNull();
