@@ -60,6 +60,16 @@ export interface ReminderWhatsApp {
   ): Promise<SendCustomerTextOutcome>;
 }
 
+/** A stale `sending` row older than this is shown as uncertain, never as still sending. */
+const STALE_SENDING_MINUTES = 10;
+
+/** The key was already used for a different invoice: replaying would silently skip this one. */
+export class ReminderKeyReused extends Error {
+  constructor() {
+    super('idempotency_key_reused');
+  }
+}
+
 export class ReminderInvoiceNotFound extends Error {
   constructor() {
     super('invoice_not_found');
@@ -218,11 +228,18 @@ export class ReminderService {
     now: Date,
   ): Promise<Prepared> {
     return withBusiness(this.db, businessId, async (tx): Promise<Prepared> => {
-      const prior = await remindersRepo.reminderByKey(tx, businessId, input.idempotencyKey);
-      if (prior) return { kind: 'replay', row: prior };
+      /* One key at a time: a raced repeat waits here, then finds the winner's committed row, so
+       * it cannot write a second attestation or a second reminder. */
+      await remindersRepo.lockReminderKey(tx, businessId, input.idempotencyKey);
+      await remindersRepo.settleStaleSending(tx, businessId, STALE_SENDING_MINUTES);
 
       const invoice = await remindersRepo.invoiceForReminder(tx, businessId, input.invoiceNumber);
       if (!invoice) throw new ReminderInvoiceNotFound();
+      const prior = await remindersRepo.reminderByKey(tx, businessId, input.idempotencyKey);
+      if (prior) {
+        if (prior.invoiceId !== invoice.invoiceId) throw new ReminderKeyReused();
+        return { kind: 'replay', row: prior };
+      }
       const business = await remindersRepo.businessForReminder(tx, businessId);
 
       let email: string | null = null;
@@ -333,6 +350,7 @@ export class ReminderService {
 
   async history(businessId: string, invoiceNumber: string): Promise<ReminderHistoryResponse> {
     return withBusiness(this.db, businessId, async (tx) => {
+      await remindersRepo.settleStaleSending(tx, businessId, STALE_SENDING_MINUTES);
       const invoice = await remindersRepo.invoiceForReminder(tx, businessId, invoiceNumber);
       if (!invoice) throw new ReminderInvoiceNotFound();
       const rows = await remindersRepo.remindersForInvoice(tx, businessId, invoice.invoiceId);

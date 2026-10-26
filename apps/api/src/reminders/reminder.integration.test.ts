@@ -29,6 +29,7 @@ import { EmailSuppressedError } from '../email/suppressing.sender.js';
 import type { SendCustomerTextOutcome } from '../channels/waba-templates.service.js';
 import {
   ReminderInvoiceNotFound,
+  ReminderKeyReused,
   ReminderService,
   type ReminderWhatsApp,
 } from './reminder.service.js';
@@ -284,6 +285,12 @@ describe('an email reminder', () => {
     expect(mail.outbox).toHaveLength(1);
     expect(new Set(results.map((r) => r.reminder.id)).size).toBe(1);
     expect(results.filter((r) => !r.replayed)).toHaveLength(1);
+    // One click is one attestation, however many raced copies of it arrived.
+    const [attested] = await rows<{ n: string }>(
+      s.businessId,
+      sql`SELECT count(*)::text AS n FROM reminder_attestations`,
+    );
+    expect(attested!.n).toBe('1');
     const [count] = await rows<{ n: string }>(
       s.businessId,
       sql`SELECT count(*)::text AS n FROM invoice_reminders`,
@@ -397,6 +404,78 @@ describe('a WhatsApp reminder', () => {
     const r = await sendVia(s, 'whatsapp');
     expect(r.reminder).toMatchObject({ status: 'blocked', reasonCode: 'no_contact' });
     expect(whatsappCalls).toHaveLength(0);
+  });
+});
+
+describe('an attempt that cannot be finished or repeated wrongly', () => {
+  it('shows a reminder stuck in sending as uncertain, never as still sending, and does not resend it', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    const idempotencyKey = key();
+    const first = await sendEmail(s, { attest: true, idempotencyKey });
+    // Simulate a crash after the provider call: the row never left 'sending'.
+    await rows(
+      s.businessId,
+      sql`UPDATE invoice_reminders
+             SET status = 'sending', reason_code = NULL, sent_at = NULL,
+                 updated_at = now() - interval '30 minutes'
+           WHERE id = ${first.reminder.id}::uuid`,
+    );
+    const history = await service().history(s.businessId, s.invoiceNumber);
+    expect(history.items[0]).toMatchObject({
+      status: 'uncertain',
+      reasonCode: 'delivery_unconfirmed',
+    });
+    const again = await sendEmail(s, { attest: true, idempotencyKey });
+    expect(again.replayed).toBe(true);
+    expect(mail.outbox).toHaveLength(1);
+  });
+
+  it('leaves a recent sending row alone: it may still be in flight', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    const sent = await sendEmail(s, { attest: true });
+    await rows(
+      s.businessId,
+      sql`UPDATE invoice_reminders SET status = 'sending', reason_code = NULL, sent_at = NULL
+           WHERE id = ${sent.reminder.id}::uuid`,
+    );
+    const history = await service().history(s.businessId, s.invoiceNumber);
+    expect(history.items[0]!.status).toBe('sending');
+  });
+
+  it('refuses a key that was already used for a different invoice instead of silently skipping it', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    const second = await withBusiness(appDb, s.businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId: s.businessId,
+        customerId: s.customerId,
+        customerToken: 'CUSTOMER_X81',
+        items: [{ name: 'scarf', quantity: 1, unitPriceK: 1_000_000 }],
+        subtotalK: 1_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 1_000_000,
+        paidK: 0,
+        balanceDueK: 1_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-second',
+        actor: 'system',
+      }),
+    );
+    const idempotencyKey = key();
+    await sendEmail(s, { attest: true, idempotencyKey });
+    await expect(
+      service().send(s.businessId, s.userId, {
+        invoiceNumber: second.invoiceNumber,
+        channels: ['email'],
+        idempotencyKey,
+      }),
+    ).rejects.toBeInstanceOf(ReminderKeyReused);
+    expect(mail.outbox).toHaveLength(1);
   });
 });
 

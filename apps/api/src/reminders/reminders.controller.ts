@@ -8,6 +8,7 @@
 import {
   BadRequestException,
   Body,
+  ConflictException,
   Controller,
   Get,
   HttpCode,
@@ -29,7 +30,7 @@ import {
 } from '@rekoda/contracts';
 import { AllMembers, Roles, RolesGuard } from '../auth/roles.guard.js';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
-import { ReminderInvoiceNotFound, ReminderService } from './reminder.service.js';
+import { ReminderInvoiceNotFound, ReminderKeyReused, ReminderService } from './reminder.service.js';
 
 @Controller('v1/reminders')
 @UseGuards(SessionGuard, RolesGuard)
@@ -47,6 +48,7 @@ export class RemindersController {
     } catch (error) {
       if (error instanceof ReminderInvoiceNotFound)
         throw new NotFoundException('invoice_not_found');
+      if (error instanceof ReminderKeyReused) throw new ConflictException('idempotency_key_reused');
       throw error;
     }
   }

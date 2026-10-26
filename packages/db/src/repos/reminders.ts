@@ -307,3 +307,32 @@ export async function remindersForInvoice(
   `);
   return [...rows].map(readReminder);
 }
+
+/**
+ * A `sending` row that was never finished (the process died after the provider call, or the final
+ * write failed) is shown as `uncertain`, not as still sending: the provider may or may not have
+ * the message, and the merchant must not be told otherwise. It is never resent.
+ */
+export async function settleStaleSending(
+  tx: TenantDb,
+  businessId: string,
+  olderThanMinutes: number,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE invoice_reminders
+       SET status = 'uncertain', reason_code = 'delivery_unconfirmed', updated_at = now()
+     WHERE business_id = ${businessId}::uuid AND status = 'sending'
+       AND updated_at < now() - make_interval(mins => ${olderThanMinutes})
+  `);
+}
+
+/** Serialises everything one idempotency key does, so a raced repeat finds the winner's row. */
+export async function lockReminderKey(
+  tx: TenantDb,
+  businessId: string,
+  idempotencyKey: string,
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`reminder:${businessId}:${idempotencyKey}`}, 0))`,
+  );
+}
