@@ -1,5 +1,5 @@
 /**
- * Customer payment reminders (N1, OWN-43, OWN-57). Pure rules, no IO and no clock.
+ * Customer payment reminders (N1, OWN-43, OWN-62). Pure rules, no IO and no clock.
  *
  * A reminder is Rekoda writing on a merchant's behalf to the merchant's own customer about a debt.
  * Three things follow and are fixed here: it names the merchant honestly and never presents Rekoda

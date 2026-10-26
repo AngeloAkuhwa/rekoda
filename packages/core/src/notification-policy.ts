@@ -1,7 +1,7 @@
 /**
  * Which channels a notification may use (owner directive, 26 Oct 2026). Pure rules, no IO.
  *
- * Rekoda is WhatsApp-native: WhatsApp is the primary channel and email is an additional one
+ * Owner ruling OWN-63. Rekoda is WhatsApp-native: WhatsApp is the primary channel and email is an additional one
  * whenever an address that is valid, authorised and not suppressed exists. Nothing here decides
  * whether a channel can actually deliver (the 24-hour window, templates, STOP, suppression and
  * rate limits are checked at send time by the channel's own door); this only decides which

@@ -1,5 +1,5 @@
 /**
- * Customer payment reminders (migration 0184, N1, OWN-43, OWN-57).
+ * Customer payment reminders (migration 0184, N1, OWN-43, OWN-62).
  *
  * Tenant-owned and RLS-protected; the composite foreign keys to invoices and customers live in the
  * migration, so another business's invoice or customer is unrepresentable.

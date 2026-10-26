@@ -35,7 +35,7 @@ export function withDisplayName(name: string, configuredFrom: string): string {
     .replace(/[<>"\\\r\n]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  return `${safe} <${address}>`;
+  return `"${safe}" <${address}>`;
 }
 
 export class ResendEmailSender implements EmailSender {

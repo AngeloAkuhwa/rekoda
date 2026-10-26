@@ -1924,7 +1924,7 @@ export type CreditInvoiceResponse = z.infer<typeof creditInvoiceResponse>;
 export type VoidInvoiceRequest = z.infer<typeof voidInvoiceRequest>;
 export type VoidInvoiceResponse = z.infer<typeof voidInvoiceResponse>;
 
-/* ── Customer payment reminders (N1, OWN-43, OWN-57) ─────────────────────── */
+/* ── Customer payment reminders (N1, OWN-43, OWN-62) ─────────────────────── */
 
 export const reminderChannel = z.enum(['email', 'whatsapp']);
 

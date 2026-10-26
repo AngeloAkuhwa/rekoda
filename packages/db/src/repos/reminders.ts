@@ -1,5 +1,5 @@
 /**
- * Customer payment reminders (migration 0184, N1, OWN-43, OWN-57).
+ * Customer payment reminders (migration 0184, N1, OWN-43, OWN-62).
  *
  * Reads and writes only reminder bookkeeping. Nothing here touches the ledger, an invoice's money
  * columns or a payment: a reminder creates no sale, invoice or accounting event.

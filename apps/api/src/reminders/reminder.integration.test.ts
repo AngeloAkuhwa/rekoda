@@ -1,5 +1,5 @@
 /**
- * Customer payment reminders, slice A (N1, OWN-43, OWN-57).
+ * Customer payment reminders, slice A (N1, OWN-43, OWN-62).
  *
  * The claims pinned here, each against the real database under RLS with provider doubles:
  * a reminder quotes the balance read now and goes only with a public phone, an attestation and
@@ -24,7 +24,12 @@ import {
 } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../config.js';
-import { MockEmailSender, NoEmailSender, type EmailSender } from '../email/email.port.js';
+import {
+  EmailRefusedError,
+  MockEmailSender,
+  NoEmailSender,
+  type EmailSender,
+} from '../email/email.port.js';
 import { EmailSuppressedError } from '../email/suppressing.sender.js';
 import type { SendCustomerTextOutcome } from '../channels/waba-templates.service.js';
 import {
@@ -315,11 +320,25 @@ describe('an email reminder', () => {
     expect(mail.attempts).toBe(1);
   });
 
-  it('records a definite provider failure as failed, and a suppressed address as blocked', async () => {
+  it('records a refusal as failed, an unexpected error as uncertain, and a suppressed address as blocked', async () => {
     const s = await seed();
     await approvePhone(s);
     mail.failNext = true;
-    expect((await sendEmail(s, { attest: true })).reminder.status).toBe('uncertain');
+    expect((await sendEmail(s, { attest: true })).reminder).toMatchObject({
+      status: 'uncertain',
+      reasonCode: 'unexpected',
+    });
+
+    const refused: EmailSender = {
+      available: true,
+      send: async () => {
+        throw new EmailRefusedError('422');
+      },
+    };
+    expect((await sendVia(s, 'email', { sender: refused })).reminder).toMatchObject({
+      status: 'failed',
+      reasonCode: 'send_failed',
+    });
 
     const suppressed: EmailSender = {
       available: true,
@@ -363,6 +382,22 @@ describe('an email reminder', () => {
     // The opt-out is this merchant's only: another business may still write to that address.
     await approvePhone(other);
     expect((await sendEmail(other, { attest: true })).reminder.status).toBe('sent');
+  });
+});
+
+describe('the opt-out link', () => {
+  it('still works after MATCH_KEY is rotated', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    await sendEmail(s, { attest: true });
+    const token = decodeURIComponent(/token=([^\s]+)/.exec(mail.outbox[0]!.text)![1]!);
+    const rotated = new ReminderService(
+      { ...config, matchKey: testKey('a-different-match-key') },
+      appDb,
+      mail,
+      whatsapp,
+    );
+    expect(await rotated.optOut(token)).toBe(true);
   });
 });
 

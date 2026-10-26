@@ -1,5 +1,5 @@
 /**
- * Sending one payment reminder to a merchant's own customer (N1 slice A, OWN-43, OWN-57).
+ * Sending one payment reminder to a merchant's own customer (N1 slice A, OWN-43, OWN-62).
  *
  * The order is the safety:
  *   1. one transaction re-reads the invoice and its balance, the contact, the opt-out and the
@@ -13,6 +13,7 @@
  * A reminder writes no sale, invoice, payment or ledger row: it reads the invoice and writes only
  * reminder bookkeeping.
  */
+import { createHmac } from 'node:crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import {
   REMINDER_POLICY_VERSION,
@@ -100,13 +101,23 @@ const toItem = (row: remindersRepo.ReminderRow): ReminderHistoryItem => ({
 @Injectable()
 export class ReminderService {
   private readonly log = new Logger(ReminderService.name);
+  /**
+   * The opt-out link's signing key: derived from the API secret under its own label, so rotating
+   * MATCH_KEY (which the vault's blind index uses) never breaks a link already in a customer's
+   * inbox, and the API secret itself (which signs setup grants) is never used directly.
+   */
+  private readonly optOutKey: string;
 
   constructor(
     @Inject(CONFIG) private readonly config: ApiConfig,
     @Inject(DB) private readonly db: Db,
     @Inject(EMAIL_SENDER) private readonly email: EmailSender,
     @Inject(REMINDER_WHATSAPP) private readonly whatsapp: ReminderWhatsApp,
-  ) {}
+  ) {
+    this.optOutKey = createHmac('sha256', config.secret)
+      .update('rekoda:reminder-optout-key:v1', 'utf8')
+      .digest('hex');
+  }
 
   /**
    * One notification event, possibly on two channels. Each channel is its own durable attempt with
@@ -174,7 +185,7 @@ export class ReminderService {
     try {
       if (channel === 'email') {
         const optOut = signReminderOptOut(
-          this.config.matchKey,
+          this.optOutKey,
           businessId,
           emailSuppressionKey(prepared.email!),
         );
@@ -392,7 +403,7 @@ export class ReminderService {
 
   /** The signed link in a reminder email. Idempotent; a bad or forged token changes nothing. */
   async optOut(token: string): Promise<boolean> {
-    const verified = verifyReminderOptOut(this.config.matchKey, token);
+    const verified = verifyReminderOptOut(this.optOutKey, token);
     if (!verified) return false;
     await withBusiness(this.db, verified.businessId, (tx) =>
       remindersRepo.recordEmailOptOut(tx, verified.businessId, verified.addressHash),
@@ -414,7 +425,7 @@ function whatsAppResult(outcome: SendCustomerTextOutcome): {
       return { status: 'blocked', reason: 'no_whatsapp_connection' };
     case 'invalid_recipient':
       return { status: 'blocked', reason: 'invalid_recipient' };
-    /* OWN-57(C): outside the 24-hour window only an approved template may go, and none is
+    /* OWN-62(C): outside the 24-hour window only an approved template may go, and none is
      * configured for reminders yet. Nothing is substituted. */
     case 'window_closed':
       return { status: 'blocked', reason: 'window_closed_no_template' };

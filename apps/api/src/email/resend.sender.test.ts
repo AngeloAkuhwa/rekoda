@@ -140,7 +140,7 @@ describe('ResendEmailSender', () => {
       replyTo: 'support@rekoda.example',
     });
     const body = JSON.parse(String(calls[0]!.init.body));
-    expect(body.from).toBe('Ada evil@attacker.example via Rekoda <billing@example.com>');
+    expect(body.from).toBe('"Ada evil@attacker.example via Rekoda" <billing@example.com>');
     expect(body.reply_to).toBe('support@rekoda.example');
   });
 });

@@ -1,4 +1,4 @@
--- N1 slice 1 (OWN-43, OWN-57): a merchant can have Rekoda send a payment reminder for one unpaid
+-- N1 slice 1 (OWN-43, OWN-62): a merchant can have Rekoda send a payment reminder for one unpaid
 -- invoice, by email or WhatsApp, with a history, a stop control and an opt-out.
 --
 --   businesses.public_contact_phone / _approved_at

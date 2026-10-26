@@ -46,8 +46,8 @@ export function OptOut() {
       <div className="rk-card" role="alert">
         <h2>This link does not work</h2>
         <p>
-          It may be incomplete or no longer valid. Open the link from the email again, or reply to
-          the business and ask them to stop.
+          It may be incomplete or no longer valid. Open the link from the email again, or call the
+          business on the phone number in the email and ask them to stop.
         </p>
       </div>
     );

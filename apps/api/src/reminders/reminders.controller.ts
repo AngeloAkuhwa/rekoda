@@ -1,5 +1,5 @@
 /**
- * Customer payment reminders (N1 slice A, OWN-43, OWN-57). Thin: the rules are in `@rekoda/core`
+ * Customer payment reminders (N1 slice A, OWN-43, OWN-62). Thin: the rules are in `@rekoda/core`
  * and the sequence in `ReminderService`. `businessId` comes from the session, never a body.
  *
  * Sending and stopping are for the owner and the delegate (day-to-day trade); an accountant reads.
