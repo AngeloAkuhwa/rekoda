@@ -67,7 +67,7 @@ beforeAll(async () => {
   process.env['REKODA_API_SECRET'] = testKey('secret');
   process.env['VAULT_KEY'] = testKey('vault');
   process.env['MATCH_KEY'] = testKey('match');
-  config = { ...loadConfig(), webUrl: 'https://app.rekoda.test' };
+  config = { ...loadConfig(), webUrl: 'https://app.rekoda.test', customerReminders: true };
 });
 
 afterAll(async () => {
@@ -357,6 +357,30 @@ describe('an email reminder', () => {
     };
     const r = await sendVia(s, 'email', { sender: suppressed });
     expect(r.reminder).toMatchObject({ status: 'blocked', reasonCode: 'address_suppressed' });
+  });
+
+  it('sends nothing on any channel until reminders are released', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    const held = new ReminderService(
+      { ...config, customerReminders: false },
+      appDb,
+      mail,
+      whatsapp,
+    );
+    for (const channel of ['email', 'whatsapp'] as const) {
+      const r = await held.send(s.businessId, s.userId, {
+        invoiceNumber: s.invoiceNumber,
+        channels: [channel],
+        idempotencyKey: key(),
+        attest: true,
+      });
+      expect(r.results[0]!.reminder).toMatchObject({
+        status: 'blocked',
+        reasonCode: 'reminders_not_released',
+      });
+    }
+    expect(mail.outbox).toHaveLength(0);
   });
 
   it('says email is not set up rather than pretending, when no sender is configured', async () => {

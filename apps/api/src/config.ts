@@ -455,6 +455,12 @@ export interface ApiConfig {
    * settle a year's charge as one month. Switching back to monthly is always allowed.
    */
   annualBillingSales: boolean;
+  /**
+   * Release switch for customer payment reminders on every channel (N1, OWN-62/OWN-63). Off unless
+   * `REKODA_CUSTOMER_REMINDERS=1`, so configuring an email sender or a Meta connection never starts
+   * messaging a merchant's customers by itself; the owner turns it on after the legal sign-off.
+   */
+  customerReminders: boolean;
   /** R2. All four empty means documents are rendered but not stored. */
   r2AccountId: string;
   r2AccessKeyId: string;
@@ -1448,6 +1454,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     metaWabaRegisteredInNigeria: env['META_WABA_REGISTERED_IN_NIGERIA'] !== 'false',
     planCatalogueReads: env['REKODA_PLAN_CATALOGUE_READS'] !== '0',
     annualBillingSales: zeroOrOneFlag(env, 'REKODA_ANNUAL_BILLING'),
+    customerReminders: zeroOrOneFlag(env, 'REKODA_CUSTOMER_REMINDERS'),
     r2AccountId: r2.accountId,
     r2AccessKeyId: r2.accessKeyId,
     r2SecretAccessKey: r2.secretAccessKey,

@@ -306,6 +306,7 @@ export class ReminderService {
         needsAttestation: channel === 'email',
         optedOut,
       });
+      if (!this.config.customerReminders) block = 'reminders_not_released';
       if (block === null && ambiguous) block = 'ambiguous_contact';
       if (block === null && channel === 'email') {
         if (!this.email.available || !this.config.webUrl) block = 'email_not_configured';

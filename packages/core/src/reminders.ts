@@ -15,6 +15,7 @@ export const REMINDER_POLICY_VERSION = '2026-10-25.1';
 
 /** Why a reminder was not sent. Stored on the history row and shown to the merchant. */
 export type ReminderBlockReason =
+  | 'reminders_not_released'
   | 'invoice_not_found'
   | 'nothing_owing'
   | 'reminders_stopped'
