@@ -19,6 +19,7 @@ import {
   composeEmailReminder,
   composeWhatsAppReminder,
   emailSuppressionKey,
+  planChannels,
   reminderBlock,
   signReminderOptOut,
   verifyReminderOptOut,
@@ -27,11 +28,13 @@ import {
 import { normaliseParticipant, InvalidPhoneError } from '@rekoda/core/identity';
 import { decryptFacet } from '@rekoda/core/vault';
 import type {
+  ReminderChannelResult,
   ReminderHistoryItem,
   ReminderHistoryResponse,
   SendReminderRequest,
   SendReminderResponse,
 } from '@rekoda/contracts';
+import type { NotificationChannel } from '@rekoda/core';
 import { customersRepo, remindersRepo, withBusiness, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
@@ -95,13 +98,63 @@ export class ReminderService {
     @Inject(REMINDER_WHATSAPP) private readonly whatsapp: ReminderWhatsApp,
   ) {}
 
+  /**
+   * One notification event, possibly on two channels. Each channel is its own durable attempt with
+   * its own key (`<key>:<channel>`), judged and recorded independently, WhatsApp first: a failure,
+   * a refusal or an unknown outcome on one never marks the other delivered and never repeats it.
+   */
   async send(
     businessId: string,
     userId: string,
     input: SendReminderRequest,
     now: Date = new Date(),
   ): Promise<SendReminderResponse> {
-    const prepared = await this.prepare(businessId, userId, input, now);
+    let channels: NotificationChannel[];
+    if (input.channels === 'auto') {
+      const on = await this.onFile(businessId, input.invoiceNumber);
+      channels = planChannels('debt_reminder', 'auto', on);
+      /* Neither is on file: one honest refusal row, not silence. */
+      if (channels.length === 0) channels = ['whatsapp'];
+    } else {
+      channels = planChannels('debt_reminder', input.channels, { whatsapp: true, email: true });
+    }
+    const results: ReminderChannelResult[] = [];
+    for (const channel of channels) {
+      const one = await this.sendOne(
+        businessId,
+        userId,
+        { ...input, channels: [channel], idempotencyKey: `${input.idempotencyKey}:${channel}` },
+        channel,
+        now,
+      );
+      results.push({ channel, ...one });
+    }
+    return { results };
+  }
+
+  /** Which channels have an address on file for this invoice's customer. */
+  private async onFile(businessId: string, invoiceNumber: string) {
+    return withBusiness(this.db, businessId, async (tx) => {
+      const invoice = await remindersRepo.invoiceForReminder(tx, businessId, invoiceNumber);
+      if (!invoice) throw new ReminderInvoiceNotFound();
+      if (!invoice.customerId) return { whatsapp: false, email: false };
+      const facets = await customersRepo.identityFacetsFor(tx, businessId, invoice.customerId);
+      return {
+        whatsapp: facets.some((f) => f.facet === 'phone'),
+        email: facets.some((f) => f.facet === 'email'),
+      };
+    });
+  }
+
+  /** One channel of one event. */
+  async sendOne(
+    businessId: string,
+    userId: string,
+    input: SendReminderRequest,
+    channel: NotificationChannel,
+    now: Date = new Date(),
+  ): Promise<{ reminder: ReminderHistoryItem; replayed: boolean }> {
+    const prepared = await this.prepare(businessId, userId, input, channel, now);
     if (prepared.kind === 'replay') return { reminder: toItem(prepared.row), replayed: true };
     if (prepared.kind === 'blocked') return { reminder: toItem(prepared.row), replayed: false };
 
@@ -109,7 +162,7 @@ export class ReminderService {
     let status: 'sent' | 'failed' | 'uncertain' | 'blocked' = 'sent';
     let reason: string | null = null;
     try {
-      if (input.channel === 'email') {
+      if (channel === 'email') {
         const optOut = signReminderOptOut(
           this.config.matchKey,
           businessId,
@@ -161,6 +214,7 @@ export class ReminderService {
     businessId: string,
     userId: string,
     input: SendReminderRequest,
+    channel: NotificationChannel,
     now: Date,
   ): Promise<Prepared> {
     return withBusiness(this.db, businessId, async (tx): Promise<Prepared> => {
@@ -185,14 +239,14 @@ export class ReminderService {
         phone = open('phone');
       }
 
-      const channelAddress = input.channel === 'email' ? email : phone;
+      const channelAddress = channel === 'email' ? email : phone;
       const attestation =
-        invoice.customerId && input.channel === 'email'
+        invoice.customerId && channel === 'email'
           ? await remindersRepo.latestAttestation(tx, businessId, invoice.customerId, 'email')
           : null;
       const attestedAlready = attestation?.policyVersion === REMINDER_POLICY_VERSION;
       const optedOut =
-        input.channel === 'email' && email !== null
+        channel === 'email' && email !== null
           ? await remindersRepo.emailOptedOut(tx, businessId, emailSuppressionKey(email))
           : false;
 
@@ -206,13 +260,13 @@ export class ReminderService {
         publicContactApproved:
           business?.publicContactPhone != null && business.publicContactApprovedAt !== null,
         attested: attestedAlready || input.attest === true,
-        needsAttestation: input.channel === 'email',
+        needsAttestation: channel === 'email',
         optedOut,
       });
-      if (block === null && input.channel === 'email') {
+      if (block === null && channel === 'email') {
         if (!this.email.available || !this.config.webUrl) block = 'email_not_configured';
       }
-      if (block === null && input.channel === 'whatsapp') {
+      if (block === null && channel === 'whatsapp') {
         try {
           normaliseParticipant(phone!);
         } catch (error) {
@@ -226,7 +280,7 @@ export class ReminderService {
           businessId,
           invoiceId: invoice.invoiceId,
           customerId: invoice.customerId,
-          channel: input.channel,
+          channel: channel,
           idempotencyKey: input.idempotencyKey,
           reasonCode: block,
           balanceK: invoice.balanceDueK,
@@ -237,7 +291,7 @@ export class ReminderService {
       }
 
       let attestationId = attestation?.id ?? null;
-      if (input.channel === 'email' && !attestedAlready) {
+      if (channel === 'email' && !attestedAlready) {
         attestationId = await remindersRepo.recordAttestation(tx, {
           businessId,
           customerId: invoice.customerId!,
@@ -250,10 +304,10 @@ export class ReminderService {
         businessId,
         invoiceId: invoice.invoiceId,
         customerId: invoice.customerId,
-        channel: input.channel,
+        channel: channel,
         idempotencyKey: input.idempotencyKey,
         balanceK: invoice.balanceDueK,
-        attestationId: input.channel === 'email' ? attestationId : null,
+        attestationId: channel === 'email' ? attestationId : null,
         userId,
       });
       if (!started) {

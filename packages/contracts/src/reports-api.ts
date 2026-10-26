@@ -1928,12 +1928,15 @@ export type VoidInvoiceResponse = z.infer<typeof voidInvoiceResponse>;
 
 export const reminderChannel = z.enum(['email', 'whatsapp']);
 
-/** Ask Rekoda to send one reminder for one unpaid invoice. */
+/**
+ * Ask Rekoda to send a reminder for one unpaid invoice. `channels: 'auto'` (the default) tries
+ * WhatsApp first and email as well when the customer has an address, each judged on its own.
+ */
 export const sendReminderRequest = z.object({
   invoiceNumber: z.string().trim().min(1).max(40),
-  channel: reminderChannel,
-  /** One per click: a repeated request with the same key never sends twice. */
-  idempotencyKey: z.string().min(8).max(100),
+  channels: z.union([z.literal('auto'), z.array(reminderChannel).min(1).max(2)]).default('auto'),
+  /** One per click: a repeated request with the same key never sends twice on any channel. */
+  idempotencyKey: z.string().min(8).max(90),
   /** The merchant states, for email, that they have a lawful basis to contact this customer. */
   attest: z.boolean().optional(),
 });
@@ -1953,11 +1956,16 @@ export const reminderHistoryItem = z.object({
 });
 export type ReminderHistoryItem = z.infer<typeof reminderHistoryItem>;
 
-export const sendReminderResponse = z.object({
+/** One channel's own outcome. A failure on one never marks the other delivered or repeats it. */
+export const reminderChannelResult = z.object({
+  channel: reminderChannel,
   reminder: reminderHistoryItem,
-  /** True when this key had already been used and the earlier answer is returned. */
+  /** True when this key had already been used on this channel and the earlier answer is returned. */
   replayed: z.boolean(),
 });
+export type ReminderChannelResult = z.infer<typeof reminderChannelResult>;
+
+export const sendReminderResponse = z.object({ results: z.array(reminderChannelResult) });
 export type SendReminderResponse = z.infer<typeof sendReminderResponse>;
 
 export const reminderHistoryResponse = z.object({

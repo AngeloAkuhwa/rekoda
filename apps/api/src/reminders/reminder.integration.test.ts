@@ -168,13 +168,22 @@ const books = async (businessId: string) => {
   return r;
 };
 
-const sendEmail = (s: Seeded, extra: { attest?: boolean; idempotencyKey?: string } = {}) =>
-  service().send(s.businessId, s.userId, {
+/** One channel of one event, with the same per-channel key the dual-channel door derives. */
+const sendVia = async (
+  s: Seeded,
+  channel: 'email' | 'whatsapp',
+  extra: { attest?: boolean; idempotencyKey?: string; sender?: EmailSender } = {},
+) => {
+  const out = await service(extra.sender).send(s.businessId, s.userId, {
     invoiceNumber: s.invoiceNumber,
-    channel: 'email',
+    channels: [channel],
     idempotencyKey: extra.idempotencyKey ?? key(),
     ...(extra.attest === undefined ? {} : { attest: extra.attest }),
   });
+  return out.results[0]!;
+};
+const sendEmail = (s: Seeded, extra: { attest?: boolean; idempotencyKey?: string } = {}) =>
+  sendVia(s, 'email', extra);
 
 describe('an email reminder', () => {
   it('names the merchant, quotes the balance and phone, and links an opt-out', async () => {
@@ -311,23 +320,14 @@ describe('an email reminder', () => {
         throw new EmailSuppressedError();
       },
     };
-    const r = await service(suppressed).send(s.businessId, s.userId, {
-      invoiceNumber: s.invoiceNumber,
-      channel: 'email',
-      idempotencyKey: key(),
-    });
+    const r = await sendVia(s, 'email', { sender: suppressed });
     expect(r.reminder).toMatchObject({ status: 'blocked', reasonCode: 'address_suppressed' });
   });
 
   it('says email is not set up rather than pretending, when no sender is configured', async () => {
     const s = await seed();
     await approvePhone(s);
-    const r = await service(new NoEmailSender()).send(s.businessId, s.userId, {
-      invoiceNumber: s.invoiceNumber,
-      channel: 'email',
-      idempotencyKey: key(),
-      attest: true,
-    });
+    const r = await sendVia(s, 'email', { sender: new NoEmailSender(), attest: true });
     expect(r.reminder).toMatchObject({ status: 'blocked', reasonCode: 'email_not_configured' });
   });
 
@@ -363,11 +363,7 @@ describe('a WhatsApp reminder', () => {
   it('goes through the merchant line inside the window, with the public phone', async () => {
     const s = await seed();
     await approvePhone(s);
-    const r = await service().send(s.businessId, s.userId, {
-      invoiceNumber: s.invoiceNumber,
-      channel: 'whatsapp',
-      idempotencyKey: key(),
-    });
+    const r = await sendVia(s, 'whatsapp');
     expect(r.reminder.status).toBe('sent');
     expect(whatsappCalls).toHaveLength(1);
     expect(whatsappCalls[0]!.to).toBe('+2348039998888');
@@ -390,11 +386,7 @@ describe('a WhatsApp reminder', () => {
     const s = await seed();
     await approvePhone(s);
     whatsappOutcome = outcome;
-    const r = await service().send(s.businessId, s.userId, {
-      invoiceNumber: s.invoiceNumber,
-      channel: 'whatsapp',
-      idempotencyKey: key(),
-    });
+    const r = await sendVia(s, 'whatsapp');
     expect(r.reminder).toMatchObject({ status, reasonCode });
     expect(mail.outbox).toHaveLength(0);
   });
@@ -402,13 +394,124 @@ describe('a WhatsApp reminder', () => {
   it('refuses a customer with no phone', async () => {
     const s = await seed({ phone: null });
     await approvePhone(s);
-    const r = await service().send(s.businessId, s.userId, {
-      invoiceNumber: s.invoiceNumber,
-      channel: 'whatsapp',
-      idempotencyKey: key(),
-    });
+    const r = await sendVia(s, 'whatsapp');
     expect(r.reminder).toMatchObject({ status: 'blocked', reasonCode: 'no_contact' });
     expect(whatsappCalls).toHaveLength(0);
+  });
+});
+
+describe('both channels for one event', () => {
+  const event = (s: Seeded, extra: { attest?: boolean; idempotencyKey?: string } = {}) =>
+    service().send(s.businessId, s.userId, {
+      invoiceNumber: s.invoiceNumber,
+      channels: 'auto',
+      idempotencyKey: extra.idempotencyKey ?? key(),
+      ...(extra.attest === undefined ? {} : { attest: extra.attest }),
+    });
+  const byChannel = (out: Awaited<ReturnType<typeof event>>) =>
+    Object.fromEntries(out.results.map((r) => [r.channel, r.reminder]));
+
+  it('sends WhatsApp first and email as well, and records each channel on its own row', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    const out = await event(s, { attest: true });
+    expect(out.results.map((r) => r.channel)).toEqual(['whatsapp', 'email']);
+    expect(byChannel(out)['whatsapp']!.status).toBe('sent');
+    expect(byChannel(out)['email']!.status).toBe('sent');
+    expect(whatsappCalls).toHaveLength(1);
+    expect(mail.outbox).toHaveLength(1);
+    const history = await service().history(s.businessId, s.invoiceNumber);
+    expect(history.items.map((i) => i.channel).sort()).toEqual(['email', 'whatsapp']);
+  });
+
+  it('uses WhatsApp alone for a phone-only customer, with no phantom email row', async () => {
+    const s = await seed({ email: null });
+    await approvePhone(s);
+    const out = await event(s);
+    expect(out.results.map((r) => r.channel)).toEqual(['whatsapp']);
+    expect(out.results[0]!.reminder.status).toBe('sent');
+  });
+
+  it('uses email alone for an email-only customer', async () => {
+    const s = await seed({ phone: null });
+    await approvePhone(s);
+    const out = await event(s, { attest: true });
+    expect(out.results.map((r) => r.channel)).toEqual(['email']);
+    expect(out.results[0]!.reminder.status).toBe('sent');
+    expect(whatsappCalls).toHaveLength(0);
+  });
+
+  it('records one honest refusal when the customer has neither a phone nor an email', async () => {
+    const s = await seed({ phone: null, email: null });
+    await approvePhone(s);
+    const out = await event(s);
+    expect(out.results).toHaveLength(1);
+    expect(out.results[0]!.reminder).toMatchObject({ status: 'blocked', reasonCode: 'no_contact' });
+    expect(whatsappCalls).toHaveLength(0);
+    expect(mail.outbox).toHaveLength(0);
+  });
+
+  it('lets email go when WhatsApp is outside its window, and says why WhatsApp did not', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    whatsappOutcome = { outcome: 'window_closed' };
+    const out = byChannel(await event(s, { attest: true }));
+    expect(out['whatsapp']).toMatchObject({
+      status: 'blocked',
+      reasonCode: 'window_closed_no_template',
+    });
+    expect(out['email']!.status).toBe('sent');
+  });
+
+  it("keeps one channel's failure off the other, and never repeats either on a repeat event", async () => {
+    const s = await seed();
+    await approvePhone(s);
+    mail.uncertainNext = 1;
+    const idempotencyKey = key();
+    const first = byChannel(await event(s, { attest: true, idempotencyKey }));
+    expect(first['whatsapp']!.status).toBe('sent');
+    expect(first['email']).toMatchObject({
+      status: 'uncertain',
+      reasonCode: 'delivery_unconfirmed',
+    });
+
+    const again = await event(s, { attest: true, idempotencyKey });
+    expect(again.results.every((r) => r.replayed)).toBe(true);
+    expect(whatsappCalls).toHaveLength(1);
+    expect(mail.attempts).toBe(1);
+  });
+
+  it('sends WhatsApp when the merchant has not attested for email, and blocks only the email', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    const out = byChannel(await event(s));
+    expect(out['whatsapp']!.status).toBe('sent');
+    expect(out['email']).toMatchObject({ status: 'blocked', reasonCode: 'attestation_required' });
+    expect(mail.outbox).toHaveLength(0);
+  });
+
+  it('sends nothing on either channel once the invoice is paid before dispatch', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    await rows(s.businessId, sql`UPDATE invoices SET balance_due_k = 0, status = 'paid'`);
+    const out = await event(s, { attest: true });
+    expect(out.results.map((r) => r.reminder.reasonCode)).toEqual([
+      'nothing_owing',
+      'nothing_owing',
+    ]);
+    expect(whatsappCalls).toHaveLength(0);
+    expect(mail.outbox).toHaveLength(0);
+  });
+
+  it("shows the merchant's changed public phone on the next event, never the old one", async () => {
+    const s = await seed();
+    await approvePhone(s);
+    await event(s, { attest: true });
+    await service().setPublicContact(s.businessId, '08055550000');
+    await event(s);
+    expect(whatsappCalls.at(-1)!.text).toContain('+2348055550000');
+    expect(mail.outbox.at(-1)!.text).toContain('+2348055550000');
+    expect(mail.outbox.at(-1)!.text).not.toContain('+2348031112222');
   });
 });
 

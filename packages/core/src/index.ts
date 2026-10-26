@@ -72,3 +72,4 @@ export * from './recognition.js';
 export * from './fulfilment.js';
 export * from './charges.js';
 export * from './ops-alerts.js';
+export * from './notification-policy.js';

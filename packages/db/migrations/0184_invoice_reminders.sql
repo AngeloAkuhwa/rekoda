@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS reminder_attestations (
   policy_version      text NOT NULL CHECK (length(policy_version) BETWEEN 1 AND 40),
   attested_by_user_id uuid NOT NULL REFERENCES users(id),
   attested_at         timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT reminder_attestations_tenant_id_ux UNIQUE (business_id, id),
   CONSTRAINT reminder_attestations_customer_fk
     FOREIGN KEY (business_id, customer_id) REFERENCES customers (business_id, id)
 );
@@ -56,13 +57,15 @@ CREATE TABLE IF NOT EXISTS invoice_reminders (
   reason_code     text CHECK (reason_code IS NULL OR length(reason_code) <= 60),
   idempotency_key text NOT NULL CHECK (length(idempotency_key) BETWEEN 8 AND 100),
   balance_k       bigint,
-  attestation_id  uuid REFERENCES reminder_attestations(id),
+  attestation_id  uuid,
   requested_by    uuid REFERENCES users(id),
   created_at      timestamptz NOT NULL DEFAULT now(),
   updated_at      timestamptz NOT NULL DEFAULT now(),
   sent_at         timestamptz,
   CONSTRAINT invoice_reminders_invoice_fk
     FOREIGN KEY (business_id, invoice_id) REFERENCES invoices (business_id, id),
+  CONSTRAINT invoice_reminders_attestation_fk
+    FOREIGN KEY (business_id, attestation_id) REFERENCES reminder_attestations (business_id, id),
   CONSTRAINT invoice_reminders_customer_fk
     FOREIGN KEY (business_id, customer_id) REFERENCES customers (business_id, id)
 );
