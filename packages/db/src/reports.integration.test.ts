@@ -795,3 +795,131 @@ describe('the last day of the month', () => {
     expect(schedule.totalK).toBe(1_500_000);
   });
 });
+
+/**
+ * N2 / OWN-44: the window figures a spoken question and a comparison read.
+ * Recorded sales, credit notes, cash collected and spending stay distinct, and
+ * a void or a refund is never silently absorbed into any of them.
+ */
+describe('the window summary (N2)', () => {
+  const NOW = () => ({
+    from: new Date(Date.now() - 3_600_000),
+    to: new Date(Date.now() + 3_600_000),
+  });
+  const summary = (businessId: string) =>
+    withBusiness(db, businessId, (tx) => {
+      const { from, to } = NOW();
+      return reportsRepo.summaryFor(tx, businessId, from, to);
+    });
+
+  it('leaves a withdrawn expense out of what was spent', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordExpense(tx, {
+        businessId,
+        description: 'dispatch rider to Yaba',
+        category: null,
+        amountK: 300_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'draft-w1',
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordExpense(tx, {
+        businessId,
+        description: 'fuel',
+        category: 'utilities',
+        amountK: 100_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'draft-w2',
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.voidExpense(tx, businessId, recorded.expenseId, 'never happened', 'user:1'),
+    );
+
+    const after = await summary(businessId);
+    expect(after.moneyOutK).toBe(100_000);
+    expect(after.expenses).toBe(1);
+  });
+
+  it('leaves a voided sale out of recorded sales, and reports a credit note beside them', async () => {
+    const businessId = await seedBusiness();
+    const sale = async (n: number, amountK: number) =>
+      withBusiness(db, businessId, (tx) =>
+        issueRepo.issueSale(tx, {
+          businessId,
+          customerId: null,
+          customerToken: `CUSTOMER_N2${n}`,
+          items: [{ name: 'wig', quantity: 1, unitPriceK: amountK }],
+          subtotalK: amountK,
+          discountK: 0,
+          deliveryFeeK: 0,
+          vatK: 0,
+          totalK: amountK,
+          paidK: 0,
+          balanceDueK: amountK,
+          method: 'cash',
+          sourceType: 'chat',
+          sourceId: `n2-${n}`,
+          actor: 'test',
+        }),
+      );
+    const kept = await sale(1, 5_000_000);
+    const voided = await sale(2, 1_000_000);
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.voidInvoice(tx, businessId, voided.invoiceNumber, 'never happened', 'user:1'),
+    );
+    expect(kept.invoiceNumber).toBeTruthy();
+
+    const after = await summary(businessId);
+    expect(after.salesK).toBe(5_000_000);
+    expect(after.invoices).toBe(1);
+    expect(after.creditedK).toBe(0);
+  });
+
+  it('reports a credit note beside sales instead of netting it away', async () => {
+    const businessId = await seedBusiness();
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      businessId,
+      'CUSTOMER_N2CN',
+      [],
+    );
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: customer.id,
+        customerToken: 'CUSTOMER_N2CN',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 5_000_000 }],
+        subtotalK: 5_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 5_000_000,
+        paidK: 5_000_000,
+        balanceDueK: 0,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'n2-cn',
+        actor: 'test',
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueCreditNote(tx, {
+        businessId,
+        invoiceNumber: sale.invoiceNumber,
+        amountK: 2_000_000,
+        reason: 'returned one',
+        actor: 'user:1',
+      }),
+    );
+
+    const after = await summary(businessId);
+    /* Recorded sales stay what was issued; the credit is its own figure. */
+    expect(after.salesK).toBe(5_000_000);
+    expect(after.creditedK).toBe(2_000_000);
+  });
+});

@@ -18,6 +18,7 @@ import {
   receivePurchaseOrderResponse,
   reportsActivityResponse,
   reportsCashflowResponse,
+  reportsCompareResponse,
   reportsDebtorsResponse,
   creditInvoiceResponse,
   reportsAuditResponse,
@@ -169,6 +170,7 @@ const ENDPOINTS = [
   '/v1/reports/cashflow',
   '/v1/reports/debtors',
   '/v1/reports/activity',
+  '/v1/reports/compare',
   '/v1/reports/statements',
   '/v1/reports/invoices',
   '/v1/reports/receipts',
@@ -4630,3 +4632,101 @@ describe('exports on the kernel (D1, PR-098)', () => {
     expect(lines[lines.length - 1]).toContain('150000.00');
   });
 });
+
+/**
+ * Period comparison, over the wire (N2, OWN-44). The arithmetic is proven in
+ * @rekoda/core and the window figures in packages/db; this pins the endpoint:
+ * it parses, scopes to the session's tenant, and refuses a range it cannot
+ * draw with a sentence, never a 500.
+ */
+describe('the period comparison (N2)', () => {
+  const lagosToday = () => new Date(Date.now() + 3_600_000).toISOString().slice(0, 10);
+  const get = (auth: Record<string, string>, query = '') =>
+    app.inject({ method: 'GET', url: `/v1/reports/compare${query}`, headers: auth });
+
+  async function spend(businessId: string, description: string, amountK: number) {
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordExpense(tx, {
+        businessId,
+        description,
+        category: 'utilities',
+        amountK,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: `n2-${description}`,
+      }),
+    );
+  }
+
+  it('answers a fresh business with zeros, and says there is nothing to compare with', async () => {
+    const { auth } = await onboard('+2348177100001');
+    const res = await get(auth);
+    expect(res.statusCode).toBe(200);
+    const body = reportsCompareResponse.parse(res.json());
+    expect(body.sales.current).toBe(0);
+    expect(body.sales.change.percent).toBeNull();
+    expect(body.previousIsEmpty).toBe(true);
+    expect(body.clampedToToday).toBe(false);
+  });
+
+  it("counts today's spending in today's window and not in the one before", async () => {
+    const { auth, businessId } = await onboard('+2348177100002');
+    await spend(businessId, 'generator fuel', 1_200_000);
+    const today = lagosToday();
+    const body = reportsCompareResponse.parse(
+      (await get(auth, `?from=${today}&to=${today}`)).json(),
+    );
+    expect(body.spent.current).toBe(1_200_000);
+    expect(body.spent.previous).toBe(0);
+    expect(body.spent.change).toEqual({ absoluteK: 1_200_000, percent: null });
+    /* Cash movement is money in less money out: here, minus the fuel. It is
+     * not a profit and the response has no profit field. */
+    expect(body.cashMovement.current).toBe(-1_200_000);
+    expect(body).not.toHaveProperty('profit');
+    expect(body.previousIsEmpty).toBe(true);
+  });
+
+  it('never counts spending from another tenant', async () => {
+    const ada = await onboard('+2348177100003');
+    const bola = await onboard('+2348177100004');
+    await spend(ada.businessId, 'fuel', 400_000);
+    await spend(bola.businessId, 'rent', 9_000_000);
+    const today = lagosToday();
+    const body = reportsCompareResponse.parse(
+      (await get(ada.auth, `?from=${today}&to=${today}`)).json(),
+    );
+    expect(body.spent.current).toBe(400_000);
+  });
+
+  it('stops a range that runs past today at the end of today and says so', async () => {
+    const { auth } = await onboard('+2348177100005');
+    const res = await get(auth, '?from=2026-01-01&to=2099-12-31');
+    expect(res.statusCode).toBe(200);
+    const body = reportsCompareResponse.parse(res.json());
+    expect(body.clampedToToday).toBe(true);
+  });
+
+  it.each([
+    ['?from=2026-10-01', 'both'],
+    ['?to=2026-10-01', 'both'],
+    ['?from=2026-13-01&to=2026-13-05', 'real dates'],
+    ['?from=2026-10-07&to=2026-10-01', 'before'],
+    ['?from=2099-01-01&to=2099-01-05', 'future'],
+    ['?from=2020-01-01&to=2026-01-01', 'longer than a year'],
+  ])('refuses %s with a sentence, not a crash', async (query, word) => {
+    const { auth } = await onboard(
+      `+23481771${String(Math.abs(hash(query)))
+        .slice(0, 5)
+        .padStart(5, '0')}`,
+    );
+    const res = await get(auth, query);
+    expect(res.statusCode).toBe(400);
+    expect(JSON.stringify(res.json())).toContain(word);
+  });
+});
+
+function hash(text: string): number {
+  let h = 0;
+  for (const ch of text) h = (h * 31 + ch.charCodeAt(0)) | 0;
+  return h;
+}

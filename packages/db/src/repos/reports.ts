@@ -807,8 +807,16 @@ export interface WindowSummary {
   /** Invoiced in the window, at issue: accrual, not cash. */
   salesK: number;
   invoices: number;
-  /** Money that actually arrived, verified and merchant-reported together. */
+  /** Credit notes issued in the window: sales taken back, shown beside sales
+   * rather than silently netted into them (N2, OWN-44). */
+  creditedK: number;
+  /** Money that actually arrived, verified and merchant-reported together.
+   * A payment that was reversed, failed or is still pending never arrived. */
   moneyInK: number;
+  /** Money returned to customers in the window (`refunds`), beside the cash
+   * collected rather than netted into it. */
+  refundedK: number;
+  /** Spending recorded in the window; a withdrawn expense is not spending. */
   moneyOutK: number;
   expenses: number;
 }
@@ -831,7 +839,9 @@ export async function summaryFor(
   const rows = await tx.execute<{
     sales_k: string;
     invoices: number;
+    credited_k: string;
     money_in_k: string;
+    refunded_k: string;
     money_out_k: string;
     expenses: number;
   }>(sql`
@@ -846,16 +856,28 @@ export async function summaryFor(
                   AND status <> 'voided'
                   AND created_at BETWEEN ${from.toISOString()}::timestamptz
                                      AND ${to.toISOString()}::timestamptz), 0)::int    AS invoices,
-      COALESCE((SELECT SUM(amount_k) FROM payments
+      COALESCE((SELECT SUM(amount_k) FROM credit_notes
                 WHERE business_id = ${businessId}::uuid
                   AND created_at BETWEEN ${from.toISOString()}::timestamptz
+                                     AND ${to.toISOString()}::timestamptz), 0)::bigint AS credited_k,
+      COALESCE((SELECT SUM(amount_k) FROM payments
+                WHERE business_id = ${businessId}::uuid
+                  AND (status IS NULL
+                       OR status IN ('confirmed', 'refunded', 'partially_refunded'))
+                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
                                      AND ${to.toISOString()}::timestamptz), 0)::bigint AS money_in_k,
+      COALESCE((SELECT SUM(amount_k) FROM refunds
+                WHERE business_id = ${businessId}::uuid
+                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
+                                     AND ${to.toISOString()}::timestamptz), 0)::bigint AS refunded_k,
       COALESCE((SELECT SUM(amount_k) FROM expenses
                 WHERE business_id = ${businessId}::uuid
+                  AND status <> 'voided'
                   AND created_at BETWEEN ${from.toISOString()}::timestamptz
                                      AND ${to.toISOString()}::timestamptz), 0)::bigint AS money_out_k,
       COALESCE((SELECT count(*) FROM expenses
                 WHERE business_id = ${businessId}::uuid
+                  AND status <> 'voided'
                   AND created_at BETWEEN ${from.toISOString()}::timestamptz
                                      AND ${to.toISOString()}::timestamptz), 0)::int    AS expenses
   `);
@@ -863,7 +885,9 @@ export async function summaryFor(
   return {
     salesK: Number(row?.sales_k ?? 0),
     invoices: row?.invoices ?? 0,
+    creditedK: Number(row?.credited_k ?? 0),
     moneyInK: Number(row?.money_in_k ?? 0),
+    refundedK: Number(row?.refunded_k ?? 0),
     moneyOutK: Number(row?.money_out_k ?? 0),
     expenses: row?.expenses ?? 0,
   };

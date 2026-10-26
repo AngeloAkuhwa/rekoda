@@ -99,6 +99,53 @@ export const reportsActivityResponse = z.object({
 });
 export type ReportsActivityResponse = z.infer<typeof reportsActivityResponse>;
 
+/* ── period comparison (N2, OWN-44) ─────────────────────────────────────── */
+
+const signedKobo = z.number().int().finite();
+
+const comparedMeasure = z.object({
+  current: signedKobo,
+  previous: signedKobo,
+  change: z.object({
+    absoluteK: signedKobo,
+    /** One decimal place; null where a percentage would mean nothing. */
+    percent: z.number().finite().nullable(),
+  }),
+});
+
+const comparedWindow = z.object({
+  /** ISO instants; both ends inclusive, drawn in the merchant's Lagos day. */
+  from: z.string(),
+  to: z.string(),
+  label: z.string(),
+});
+
+/**
+ * One window against the one before it. Recorded sales, credit notes, cash
+ * collected, refunds and spending are separate measures; there is no profit
+ * field because Rekoda does not infer profit where costs are missing.
+ */
+export const reportsCompareResponse = z.object({
+  current: comparedWindow,
+  previous: comparedWindow,
+  /** The range asked for ran past today and was stopped at the end of today. */
+  clampedToToday: z.boolean(),
+  sales: comparedMeasure,
+  credited: comparedMeasure,
+  collected: comparedMeasure,
+  refunded: comparedMeasure,
+  spent: comparedMeasure,
+  /** Collected, less refunded, less spent. Cash, not profit. */
+  cashMovement: comparedMeasure,
+  invoices: z.object({
+    current: z.number().int().nonnegative(),
+    previous: z.number().int().nonnegative(),
+  }),
+  /** Nothing at all was recorded in the earlier window. */
+  previousIsEmpty: z.boolean(),
+});
+export type ReportsCompareResponse = z.infer<typeof reportsCompareResponse>;
+
 /* ── customer and supplier statements (D1, PR-096) ──────────────────────── */
 
 /** One party's account: dated, signed entries with a running balance. */
