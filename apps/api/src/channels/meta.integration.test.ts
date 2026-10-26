@@ -14309,7 +14309,7 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
       );
       if (standing === 'integrate') await moveToPlan(business.id, 'integrate');
       else await lapse(business.id);
-      const ledgerBefore = await invoiceCount(business.id);
+      const before = await footprint(business.id);
 
       expect(await send('resend'), standing).toContain('Sending INV-2026-000042 again');
 
@@ -14319,7 +14319,13 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
       expect(queued, standing).toHaveLength(1);
       expect(doc.id).toBeTruthy();
       // No sale, invoice or model call: it only hands back what exists.
-      expect(await invoiceCount(business.id)).toBe(ledgerBefore);
+      // Exactly one reply and one queued delivery; no sale, payment, receipt,
+      // expense, order or ledger row.
+      expect(await footprint(business.id), standing).toEqual({
+        ...before,
+        deliveries: String(Number(before['deliveries']) + 1),
+        service_messages: String(Number(before['service_messages']) + 1),
+      });
       expect(stubTransport.requests).toHaveLength(0);
     }
   });
