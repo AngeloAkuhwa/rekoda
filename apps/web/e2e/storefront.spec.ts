@@ -83,6 +83,8 @@ test('a priced, listed product reaches an anonymous customer, and closing the sh
   await addProduct(page, 'Ankara bale', '8500');
   await addProduct(page, 'Unpriced sample', '');
   await listInShop(page, 'Ankara bale');
+  // Listing an unpriced product is allowed on the dashboard; the shop must still leave it out.
+  await listInShop(page, 'Unpriced sample');
 
   // Draft first: saved and closed, so a customer still gets the not-found page.
   await saveShop(page, slug, shopName, false);
