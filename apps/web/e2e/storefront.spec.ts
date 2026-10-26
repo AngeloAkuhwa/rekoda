@@ -187,23 +187,49 @@ test('a customer orders two of a listed product, and it is billed once as an unp
 
   // One order for the right amount reached the merchant's records and was billed exactly once:
   // one unpaid invoice for ₦17,000, owed by the customer, with a ledger that balances.
-  const orders = await sql<{ total_k: string; status: string }[]>`
-    SELECT total_k::text, status FROM orders WHERE business_id = ${businessId}`;
+  const orders = await sql<{ total_k: string; status: string; invoice_id: string | null }[]>`
+    SELECT total_k::text, status, invoice_id FROM orders WHERE business_id = ${businessId}`;
   expect(orders).toHaveLength(1);
-  expect(orders[0]).toEqual({ total_k: String(17_000 * 100), status: 'confirmed' });
-  const invoices = await sql<{ total_k: string; paid_k: string; balance_due_k: string }[]>`
-    SELECT total_k::text, paid_k::text, balance_due_k::text
+  expect({ total_k: orders[0]!.total_k, status: orders[0]!.status }).toEqual({
+    total_k: String(17_000 * 100),
+    status: 'confirmed',
+  });
+  const invoices = await sql<
+    {
+      id: string;
+      total_k: string;
+      paid_k: string;
+      balance_due_k: string;
+      ledger_transaction_id: string | null;
+    }[]
+  >`
+    SELECT id, total_k::text, paid_k::text, balance_due_k::text, ledger_transaction_id
       FROM invoices WHERE business_id = ${businessId}`;
-  expect(invoices).toEqual([
-    { total_k: String(17_000 * 100), paid_k: '0', balance_due_k: String(17_000 * 100) },
-  ]);
-  const entries = await sql<{ code: string; debit_k: string; credit_k: string }[]>`
-    SELECT a.code, e.debit_k::text, e.credit_k::text
+  expect(invoices).toHaveLength(1);
+  expect({
+    total_k: invoices[0]!.total_k,
+    paid_k: invoices[0]!.paid_k,
+    balance_due_k: invoices[0]!.balance_due_k,
+  }).toEqual({
+    total_k: String(17_000 * 100),
+    paid_k: '0',
+    balance_due_k: String(17_000 * 100),
+  });
+  // The order points at that invoice, not merely at some invoice.
+  expect(orders[0]!.invoice_id).toBe(invoices[0]!.id);
+  const entries = await sql<
+    { code: string; debit_k: string; credit_k: string; transaction_id: string }[]
+  >`
+    SELECT a.code, e.debit_k::text, e.credit_k::text, e.transaction_id
       FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
      WHERE e.business_id = ${businessId} ORDER BY a.code`;
   // Receivable up, sales income up, by the same amount and nothing else.
-  expect(entries).toEqual([
+  expect(entries.map(({ code, debit_k, credit_k }) => ({ code, debit_k, credit_k }))).toEqual([
     { code: '1100', debit_k: String(17_000 * 100), credit_k: '0' },
     { code: '4000', debit_k: '0', credit_k: String(17_000 * 100) },
   ]);
+  // Both postings belong to the transaction the invoice recorded.
+  for (const entry of entries) {
+    expect(entry.transaction_id).toBe(invoices[0]!.ledger_transaction_id);
+  }
 });
