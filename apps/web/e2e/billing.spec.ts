@@ -182,3 +182,112 @@ test('the confirmation page needs a signed-in owner', async ({ page }) => {
   await page.goto('/app/billing/confirm-email#token=abcdefghijklmnopqrstuvwxyz0123456789');
   await expect(page).toHaveURL(/\/start/);
 });
+
+test('a new trial merchant is welcomed on the dashboard, with a way to the billing page', async ({
+  page,
+}) => {
+  await onboard(page, freshPhone());
+  await page.goto('/app');
+
+  const strip = page.locator('.rk-trial-strip');
+  await expect(strip).toBeVisible();
+  await expect(strip.getByText('Welcome to your free trial.', { exact: true })).toBeVisible();
+  // Calm: no payment is claimed and no countdown is shown.
+  await expect(strip).not.toContainText(/payment|failed|charged/i);
+
+  // The strip fits the screen: no sideways scroll on a phone.
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(0);
+
+  await strip.click();
+  await expect(page).toHaveURL(/\/app\/billing$/);
+});
+
+/**
+ * Runs in the browser: parses a computed colour (`rgb()`, `rgba()` or `color(srgb ...)`)
+ * into 0-255 channels plus alpha, and finds the first opaque background at or above an element.
+ */
+const COLOUR_HELPERS = `
+  const parse = (css) => {
+    const nums = (css.match(/-?[\\d.]+/g) ?? []).map(Number);
+    if (css.startsWith('color(')) return [nums[0] * 255, nums[1] * 255, nums[2] * 255, nums[3] ?? 1];
+    return [nums[0] ?? 0, nums[1] ?? 0, nums[2] ?? 0, nums[3] ?? 1];
+  };
+  const lum = ([r, g, b]) => {
+    const f = (v) => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+  };
+  const ratio = (a, b) => { const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
+  const surfaceOf = (el) => {
+    for (let n = el; n; n = n.parentElement) {
+      const c = parse(getComputedStyle(n).backgroundColor);
+      if (c[3] > 0.99) return c;
+    }
+    return [255, 255, 255, 1];
+  };
+`;
+
+test('the trial welcome strip can be reached and opened from the keyboard', async ({ page }) => {
+  await onboard(page, freshPhone());
+  await page.goto('/app');
+
+  const strip = page.locator('.rk-trial-strip');
+  await expect(strip).toBeVisible();
+
+  // Tab through the page header and section tabs until the strip has focus.
+  let reached = false;
+  for (let i = 0; i < 40 && !reached; i++) {
+    await page.keyboard.press('Tab');
+    reached = await strip.evaluate((el) => el === document.activeElement);
+  }
+  expect(reached).toBe(true);
+
+  // The focus ring is drawn, not removed, and its colour shows against the strip's surface.
+  const outline = await strip.evaluate((el, helpers) => {
+    const { parse, ratio, surfaceOf } = new Function(
+      `${helpers} return { parse, ratio, surfaceOf };`,
+    )();
+    const style = getComputedStyle(el);
+    const colour = parse(style.outlineColor);
+    return {
+      style: style.outlineStyle,
+      width: parseFloat(style.outlineWidth),
+      alpha: colour[3],
+      contrast: ratio(colour, surfaceOf(el)),
+    };
+  }, COLOUR_HELPERS);
+  expect(outline.style).not.toBe('none');
+  expect(outline.width).toBeGreaterThan(0);
+  expect(outline.alpha).toBeGreaterThan(0);
+  expect(outline.contrast).toBeGreaterThanOrEqual(3);
+
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\/app\/billing$/);
+});
+
+test('the trial welcome strip reads in the dark theme', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await onboard(page, freshPhone());
+  await page.goto('/app');
+
+  const strip = page.locator('.rk-trial-strip');
+  await expect(strip).toBeVisible();
+
+  // Dark mode really applied (the strip's surface is dark), and the text is readable on it.
+  const result = await strip.evaluate((el, helpers) => {
+    const { parse, ratio, surfaceOf, lum } = new Function(
+      `${helpers} return { parse, ratio, surfaceOf, lum };`,
+    )();
+    const surface = surfaceOf(el);
+    return {
+      dark: window.matchMedia('(prefers-color-scheme: dark)').matches,
+      surfaceLuminance: lum(surface) as number,
+      contrast: ratio(parse(getComputedStyle(el).color), surface) as number,
+    };
+  }, COLOUR_HELPERS);
+  expect(result.dark).toBe(true);
+  expect(result.surfaceLuminance).toBeLessThan(0.2);
+  expect(result.contrast).toBeGreaterThanOrEqual(4.5);
+});

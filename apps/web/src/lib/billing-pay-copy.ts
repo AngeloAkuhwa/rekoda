@@ -6,6 +6,7 @@
  * described plainly, with no countdown pressure; nothing here computes a price
  * (every figure arrives from the API in kobo and is rendered by `Money`).
  */
+import { isOwner } from './permissions';
 import type {
   BillingChargeView,
   BillingCheckoutResponse,
@@ -34,6 +35,70 @@ export function trialCopy(endsOn: string | null, daysLeft: number | null): strin
   const days = daysLeft === 1 ? '1 day' : `${daysLeft} days`;
   const base = `${days} left in your free trial, which runs until ${endsOn}. No card needed.`;
   return daysLeft <= 3 ? `${base} Choose a plan below any time to carry on without a break.` : base;
+}
+
+/**
+ * Who the dashboard's trial strip is for: the owner of a business on a trial.
+ * Its message tells the reader to choose a plan, and only the owner can; an
+ * accountant or delegate would be pointed at a page where they cannot act.
+ */
+export function trialStripAudience(plan: string, role: string): boolean {
+  return plan === 'trial' && isOwner(role);
+}
+
+export type TrialMilestone = {
+  kind: 'start' | 'halfway' | 'ending' | 'last';
+  heading: string;
+  body: string;
+};
+
+/**
+ * The one calm sentence the dashboard shows at a trial milestone, or null on
+ * every other day: the start (14 and 13 days left), the halfway point (days 7 and 6
+ * left), the last three days, and the final day (worded "soon": the days left round up, so
+ * "today" or "tomorrow" could be wrong by hours). Not a countdown: most days
+ * say nothing. Near the end it always says the records stay safe, and it never
+ * mentions a payment, because none has been attempted.
+ */
+export function trialMilestone(daysLeft: number): TrialMilestone | null {
+  if (daysLeft === 14 || daysLeft === 13) {
+    return {
+      kind: 'start',
+      heading: 'Welcome to your free trial',
+      body: 'Send Rekoda a sale or an expense on WhatsApp and watch it appear here as a record. No card needed.',
+    };
+  }
+  if (daysLeft === 7 || daysLeft === 6) {
+    return {
+      kind: 'halfway',
+      heading: 'Halfway through your trial',
+      body: 'Choose a plan any time to keep recording without a break. Your records stay yours either way.',
+    };
+  }
+  if (daysLeft >= 2 && daysLeft <= 3) {
+    return {
+      kind: 'ending',
+      heading: `${daysLeft} days left in your trial`,
+      body: 'Your records are safe whatever you decide. Choose a plan to keep recording new transactions after the trial.',
+    };
+  }
+  if (daysLeft <= 1) {
+    return {
+      kind: 'last',
+      heading: 'Your trial ends soon',
+      body: 'Your records stay safe and readable. To keep recording new transactions, choose a plan.',
+    };
+  }
+  return null;
+}
+
+/**
+ * The milestone for a trial that ends at `endsAtIso`, or null when there is no
+ * end date or the end has already passed: an ended trial is not "ending soon".
+ */
+export function trialMilestoneAt(endsAtIso: string | null, now: Date): TrialMilestone | null {
+  if (endsAtIso === null || new Date(endsAtIso).getTime() <= now.getTime()) return null;
+  return trialMilestone(trialDaysLeft(endsAtIso, now));
 }
 
 /** The newest charge still waiting for money and still payable, or null. Newest first, as the API lists them. */
