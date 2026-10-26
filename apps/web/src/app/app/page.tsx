@@ -16,7 +16,7 @@ import { PLAN_NAMES } from '@/lib/plans';
 import { CashflowChart } from './CashflowChart';
 import { SignOutButton } from './SignOutButton';
 import { heldBy } from '@/lib/capabilities';
-import { trialDaysLeft, trialMilestone } from '@/lib/billing-pay-copy';
+import { trialMilestoneAt } from '@/lib/billing-pay-copy';
 
 export const metadata: Metadata = {
   title: 'Your dashboard',
@@ -55,7 +55,7 @@ export default async function DashboardPage() {
           () => null,
         )
       : null;
-  const milestone = trialEndsAt ? trialMilestone(trialDaysLeft(trialEndsAt, new Date())) : null;
+  const milestone = trialMilestoneAt(trialEndsAt, new Date());
 
   const hasBooks = activity.items.length > 0;
   const hasCashflow = cashflow.months.some((m) => m.inK > 0 || m.outK > 0);

@@ -14,6 +14,7 @@ import {
   trialCopy,
   trialDaysLeft,
   trialMilestone,
+  trialMilestoneAt,
 } from './billing-pay-copy';
 import { chargeStatusLabel } from './charge-status';
 
@@ -273,5 +274,22 @@ describe('trialMilestone', () => {
     for (const days of [1, 0]) {
       expect(trialMilestone(days)?.heading).toBe('Your trial ends soon');
     }
+  });
+});
+
+describe('trialMilestoneAt', () => {
+  const now = new Date('2026-11-01T10:00:00Z');
+
+  it('shows a milestone while the trial still has time left', () => {
+    expect(trialMilestoneAt('2026-11-02T09:00:00Z', now)?.kind).toBe('last');
+  });
+
+  it('shows nothing once the trial has ended, even by a second', () => {
+    expect(trialMilestoneAt('2026-11-01T10:00:00Z', now)).toBeNull();
+    expect(trialMilestoneAt('2026-10-30T10:00:00Z', now)).toBeNull();
+  });
+
+  it('shows nothing when there is no end date', () => {
+    expect(trialMilestoneAt(null, now)).toBeNull();
   });
 });

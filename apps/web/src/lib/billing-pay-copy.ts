@@ -82,6 +82,15 @@ export function trialMilestone(daysLeft: number): TrialMilestone | null {
   return null;
 }
 
+/**
+ * The milestone for a trial that ends at `endsAtIso`, or null when there is no
+ * end date or the end has already passed: an ended trial is not "ending soon".
+ */
+export function trialMilestoneAt(endsAtIso: string | null, now: Date): TrialMilestone | null {
+  if (endsAtIso === null || new Date(endsAtIso).getTime() <= now.getTime()) return null;
+  return trialMilestone(trialDaysLeft(endsAtIso, now));
+}
+
 /** The newest charge still waiting for money and still payable, or null. Newest first, as the API lists them. */
 export function pendingCharge(
   charges: readonly BillingChargeView[],
