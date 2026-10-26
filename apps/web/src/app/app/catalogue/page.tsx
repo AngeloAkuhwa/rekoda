@@ -158,11 +158,20 @@ export default async function CataloguePage() {
       <div className="rk-card">
         <h2>Your products</h2>
         {products.length === 0 ? (
-          <p className="rk-fineprint">
-            Nothing here yet. Rekoda adds a product the first time you mention it, so tell it on
-            WhatsApp what you sold or what came in, like <strong>sold 2 bags of rice</strong>, and
-            the row appears. Then come back and give it a price and a photo.
-          </p>
+          <>
+            <p className="rk-fineprint">
+              Nothing here yet. Rekoda adds a product the first time you mention it, so tell it on
+              WhatsApp what you sold or what came in, like <strong>sold 2 bags of rice</strong>, and
+              the row appears. Then come back and give it a price and a photo.
+              {canRecordTrade(identity.role) ? ' Or add the first one here.' : null}
+            </p>
+            {canRecordTrade(identity.role) ? (
+              <details className="rk-void">
+                <summary>Add a product</summary>
+                <CreateProductForm />
+              </details>
+            ) : null}
+          </>
         ) : (
           <>
             <div className="rk-table-scroll">
