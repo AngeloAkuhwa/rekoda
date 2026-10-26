@@ -385,6 +385,33 @@ describe('an email reminder', () => {
   });
 });
 
+describe('the merchant attestation is for one address', () => {
+  it("asks again when the customer's address has changed", async () => {
+    const s = await seed();
+    await approvePhone(s);
+    expect((await sendEmail(s, { attest: true })).reminder.status).toBe('sent');
+    expect((await sendEmail(s)).reminder.status).toBe('sent');
+
+    // The stored address is replaced (the old facet row is rewritten with another address).
+    await rows(
+      s.businessId,
+      sql`UPDATE customer_identities SET ciphertext = ${encryptFacet(
+        'someone.else@customer.example.ng',
+        config.vaultKey,
+        `${s.businessId}:email`,
+      )} WHERE customer_id = ${s.customerId}::uuid AND facet = 'email'`,
+    );
+    const changed = await sendEmail(s);
+    expect(changed.reminder).toMatchObject({
+      status: 'blocked',
+      reasonCode: 'attestation_required',
+    });
+    expect(mail.outbox).toHaveLength(2);
+    expect((await sendEmail(s, { attest: true })).reminder.status).toBe('sent');
+    expect(mail.outbox.at(-1)!.to).toBe('someone.else@customer.example.ng');
+  });
+});
+
 describe('a customer with two stored addresses', () => {
   it('sends to neither, rather than guessing which one is current', async () => {
     const s = await seed();

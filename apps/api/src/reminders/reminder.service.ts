@@ -277,7 +277,15 @@ export class ReminderService {
       const channelAddress = channel === 'email' ? email : phone;
       const attestation =
         invoice.customerId && channel === 'email'
-          ? await remindersRepo.latestAttestation(tx, businessId, invoice.customerId, 'email')
+          ? email !== null
+            ? await remindersRepo.latestAttestation(
+                tx,
+                businessId,
+                invoice.customerId,
+                'email',
+                emailSuppressionKey(email),
+              )
+            : null
           : null;
       const attestedAlready = attestation?.policyVersion === REMINDER_POLICY_VERSION;
       const optedOut =
@@ -332,6 +340,7 @@ export class ReminderService {
           businessId,
           customerId: invoice.customerId!,
           channel: 'email',
+          addressHash: emailSuppressionKey(email!),
           policyVersion: REMINDER_POLICY_VERSION,
           userId,
         });

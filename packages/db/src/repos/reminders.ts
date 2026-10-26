@@ -117,10 +117,12 @@ export async function latestAttestation(
   businessId: string,
   customerId: string,
   channel: 'email',
+  addressHash: string,
 ): Promise<{ id: string; policyVersion: string; attestedAt: Date } | null> {
   const rows = await tx.execute<{ id: string; policy_version: string; attested_at: Date }>(sql`
     SELECT id, policy_version, attested_at FROM reminder_attestations
      WHERE business_id = ${businessId}::uuid AND customer_id = ${customerId}::uuid AND channel = ${channel}
+       AND address_hash = ${addressHash}
      ORDER BY attested_at DESC LIMIT 1
   `);
   const row = [...rows][0];
@@ -135,14 +137,15 @@ export async function recordAttestation(
     businessId: string;
     customerId: string;
     channel: 'email';
+    addressHash: string;
     policyVersion: string;
     userId: string;
   },
 ): Promise<string> {
   const rows = await tx.execute<{ id: string }>(sql`
     INSERT INTO reminder_attestations
-      (business_id, customer_id, channel, policy_version, attested_by_user_id)
-    VALUES (${input.businessId}::uuid, ${input.customerId}::uuid, ${input.channel},
+      (business_id, customer_id, channel, address_hash, policy_version, attested_by_user_id)
+    VALUES (${input.businessId}::uuid, ${input.customerId}::uuid, ${input.channel}, ${input.addressHash},
             ${input.policyVersion}, ${input.userId}::uuid)
     RETURNING id
   `);
