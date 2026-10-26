@@ -220,6 +220,35 @@ test('the trial welcome strip can be reached and opened from the keyboard', asyn
   }
   expect(reached).toBe(true);
 
+  // The focus ring is drawn, not removed.
+  const outline = await strip.evaluate((el) => {
+    const style = getComputedStyle(el);
+    return { style: style.outlineStyle, width: parseFloat(style.outlineWidth) };
+  });
+  expect(outline.style).not.toBe('none');
+  expect(outline.width).toBeGreaterThan(0);
+
   await page.keyboard.press('Enter');
   await expect(page).toHaveURL(/\/app\/billing$/);
+});
+
+test('the trial welcome strip reads in the dark theme', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await onboard(page, freshPhone());
+  await page.goto('/app');
+
+  const strip = page.locator('.rk-trial-strip');
+  await expect(strip).toBeVisible();
+
+  // Light text on a dark surface: the strip follows the theme tokens.
+  const [text, surface] = await strip.evaluate((el) => {
+    const luminance = (css: string) => {
+      const [r, g, b] = (css.match(/[\d.]+/g) ?? ['0', '0', '0']).map(Number);
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const style = getComputedStyle(el);
+    return [luminance(style.color), luminance(getComputedStyle(document.body).backgroundColor)];
+  });
+  expect(surface).toBeLessThan(128);
+  expect(text).toBeGreaterThan(surface);
 });
