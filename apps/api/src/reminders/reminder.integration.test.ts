@@ -10,7 +10,8 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { emailSuppressionKey, signReminderOptOut } from '@rekoda/core';
+import { emailSuppressionKey } from '@rekoda/core';
+import { signReminderOptOut } from '@rekoda/core/reminders';
 import { encryptFacet } from '@rekoda/core/vault';
 import { matchKeyFor } from '@rekoda/core/vault';
 import {

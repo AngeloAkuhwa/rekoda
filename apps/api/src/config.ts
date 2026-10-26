@@ -1214,16 +1214,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const r2 = r2Settings(env);
 
   const customerReminders = zeroOrOneFlag(env, 'REKODA_CUSTOMER_REMINDERS');
-  // A reminder email carries a signed opt-out link appended to this URL: it must be https, and a
-  // query or fragment would swallow the appended path.
+  // A reminder email carries a signed opt-out link appended to this URL: it must be an https origin, and a
+  // path, query or fragment would put the appended route in the wrong place.
   if (customerReminders) {
     const base = webUrl(env);
     const url = base === null ? null : new URL(base);
     // URL.search and URL.hash are empty for a bare trailing `?` or `#`, so the raw text is checked too.
     const raw = env['REKODA_WEB_URL'] ?? '';
-    if (url === null || url.protocol !== 'https:' || /[?#]/.test(raw)) {
+    if (url === null || url.protocol !== 'https:' || url.pathname !== '/' || /[?#]/.test(raw)) {
       throw new ConfigError(
-        'REKODA_CUSTOMER_REMINDERS=1 needs REKODA_WEB_URL to be an https:// URL with no query or fragment (the opt-out link in a reminder email)',
+        'REKODA_CUSTOMER_REMINDERS=1 needs REKODA_WEB_URL to be an https:// origin with no path, query or fragment (the opt-out link in a reminder email)',
       );
     }
   }

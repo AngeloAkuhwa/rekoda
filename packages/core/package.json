@@ -33,6 +33,10 @@
     "./documents": {
       "types": "./dist/documents.d.ts",
       "default": "./dist/documents.js"
+    },
+    "./reminders": {
+      "types": "./dist/reminders.d.ts",
+      "default": "./dist/reminders.js"
     }
   },
   "scripts": {

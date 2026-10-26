@@ -15,17 +15,16 @@
  */
 import { createHmac } from 'node:crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { emailSuppressionKey, planChannels } from '@rekoda/core';
 import {
   REMINDER_POLICY_VERSION,
   composeEmailReminder,
   composeWhatsAppReminder,
-  emailSuppressionKey,
-  planChannels,
   reminderBlock,
   signReminderOptOut,
   verifyReminderOptOut,
   type ReminderBlockReason,
-} from '@rekoda/core';
+} from '@rekoda/core/reminders';
 import { normaliseParticipant, InvalidPhoneError } from '@rekoda/core/identity';
 import { decryptFacet } from '@rekoda/core/vault';
 import type {
