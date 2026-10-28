@@ -1542,6 +1542,13 @@ export function expensesAnswer(input: {
    * provider took (G-118): the amount is real, so it is said, without
    * pretending to a count of entries. */
   /* Spending taken back in this window that was made in an earlier one. */
+  if (input.moneyOutK < 0 && input.expenses > 0) {
+    return reply(
+      `${input.label[0]!.toUpperCase()}${input.label.slice(1)}: ${input.expenses} ` +
+        `${input.expenses === 1 ? 'expense' : 'expenses'} recorded, and ${formatKobo(-input.moneyOutK)} ` +
+        'more of earlier spending was taken back than was spent.',
+    );
+  }
   if (input.moneyOutK < 0) {
     return reply(
       `${input.label[0]!.toUpperCase()}${input.label.slice(1)}: ${formatKobo(-input.moneyOutK)} ` +

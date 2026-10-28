@@ -44,8 +44,6 @@ const CASH_CODES = sql.raw(
 
 const AR_CODE = codeOf('ACCOUNTS_RECEIVABLE');
 const CUSTOMER_CREDIT_CODE = codeOf('CUSTOMER_CREDIT');
-/* Unearned revenue (chart role CONTRACT_LIABILITY): where a customer's advance on an order lands. */
-const CONTRACT_LIABILITY_CODE = sql.raw("'2200'");
 const REVENUE_CODE = codeOf('SALES_REVENUE');
 const VAT_CODE = codeOf('VAT_PAYABLE');
 const EXPENSES_CODE = codeOf('EXPENSES');
@@ -918,7 +916,8 @@ export async function summaryFor(
       SELECT id FROM sale_tx
       UNION
       SELECT DISTINCT transaction_id FROM lm
-      WHERE code IN (${AR_CODE}, ${CUSTOMER_CREDIT_CODE}, ${CONTRACT_LIABILITY_CODE}) AND credit_k > 0
+      WHERE (code IN (${AR_CODE}, ${CUSTOMER_CREDIT_CODE}) OR system_role = 'CONTRACT_LIABILITY')
+        AND credit_k > 0
     )
     SELECT
       COALESCE((SELECT SUM(credit_k - debit_k) FROM lm
@@ -969,11 +968,8 @@ export async function summaryFor(
                   AND x.ledger_transaction_id IN (SELECT transaction_id FROM lm
                                                   WHERE reverses_id IS NULL
                                                     AND code IN (${EXPENSES_CODE}, ${INVENTORY_CODE}))
-                  AND NOT EXISTS (SELECT 1 FROM ledger_transactions r
-                                  WHERE r.business_id = ${businessId}::uuid
-                                    AND r.reverses_id = x.ledger_transaction_id
-                                    AND r.created_at BETWEEN ${from.toISOString()}::timestamptz
-                                                         AND ${to.toISOString()}::timestamptz)), 0)::int AS expenses,
+                  AND NOT EXISTS (SELECT 1 FROM lm
+                                  WHERE lm.reverses_id = x.ledger_transaction_id)), 0)::int AS expenses,
       COALESCE((SELECT SUM(debit_k) FROM lm
                 WHERE code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING'), 0)::bigint AS cash_in_k,
       COALESCE((SELECT SUM(credit_k) FROM lm

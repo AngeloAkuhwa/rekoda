@@ -916,6 +916,14 @@ describe('spending taken back in a window (G-118)', () => {
     expect(text).toContain('taken back');
     expect(text).not.toContain('-');
   });
+
+  it('keeps the entry count when a larger reversal outweighs spending in the same window', () => {
+    const text = replies.expensesAnswer({ label: 'today', moneyOutK: -300_000, expenses: 2 }).text;
+    expect(text).toContain('2 expenses');
+    expect(text).toContain('₦3,000');
+    expect(text).toContain('taken back');
+    expect(text).not.toContain('-');
+  });
 });
 
 describe('sales the books hold with no invoice behind it (G-118)', () => {

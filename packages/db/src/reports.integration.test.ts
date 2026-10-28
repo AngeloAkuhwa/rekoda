@@ -1398,6 +1398,39 @@ describe('the window summary reconciles with the ledger (G-118)', () => {
     expect(after.salesK).toBe(0);
   });
 
+  it('recognises an advance by the chart role when the tenant moved unearned revenue to another code', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(
+        sql`UPDATE accounts SET code = '2299' WHERE business_id = ${businessId}::uuid AND system_role = 'CONTRACT_LIABILITY'`,
+      ),
+    );
+    const accountIdFor = (code: string) =>
+      withBusiness(db, businessId, async (tx) => {
+        const rows = await tx.execute<{ id: string }>(
+          sql`SELECT id FROM accounts WHERE business_id = ${businessId}::uuid AND code = ${code}`,
+        );
+        return [...rows][0]!.id;
+      });
+    const cash = await accountIdFor('1000');
+    const unearned = await accountIdFor('2299');
+    const { id } = await withBusiness(db, businessId, (tx) =>
+      journalDraftsRepo.createJournalDraft(tx, {
+        businessId,
+        memo: 'advance on an order',
+        createdBy: 'user:ada',
+        lines: [
+          { accountId: cash, debitK: 3_000_000, creditK: 0 },
+          { accountId: unearned, debitK: 0, creditK: 3_000_000 },
+        ],
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      journalDraftsRepo.postJournalDraft(tx, { businessId, draftId: id, actor: 'user:ada' }),
+    );
+    expect((await summary(businessId)).moneyInK).toBe(3_000_000);
+  });
+
   it("does not let a void of an earlier sale reduce this window's invoice count, and keeps a later void out of the expense count", async () => {
     const businessId = await seedBusiness();
     const sell = (sourceId: string) =>
