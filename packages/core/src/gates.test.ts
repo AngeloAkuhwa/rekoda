@@ -637,13 +637,13 @@ describe('the funding question offers the short answer only while it can be take
     paymentMethod: 'pos',
   } as never;
 
-  it('offers "Reply *bank* or *cash*" by default, and only "send it again" when told not to', () => {
+  it('offers "Reply *bank* or *cash*" by default, and only "record it again" when told not to', () => {
     const offered = gatePurchase(pos);
     const plain = gatePurchase(pos, { shortAnswer: false });
     expect(offered.gate === 'CG1' && offered.question).toContain('Reply *bank* or *cash*');
     expect(plain.gate === 'CG1' && plain.question).not.toContain('Reply *bank*');
     expect(plain.gate === 'CG1' && plain.question).toContain(
-      'Send it again with where the money came',
+      'Record it again with where the money came',
     );
   });
 });

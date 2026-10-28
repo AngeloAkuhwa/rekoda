@@ -13360,7 +13360,7 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
       await reply('wamid.F3b-yes', 'yes');
       expect(stubSender.lastText).toContain(POS_QUESTION);
       expect(stubSender.lastText).not.toContain('Reply *bank*');
-      expect(stubSender.lastText).toContain('Send it again with where the money came');
+      expect(stubSender.lastText).toContain('Record it again with where the money came');
 
       await reply('wamid.F3b-bank', 'bank');
       expect(stubSender.lastText).toBe(UNCLEAR.clarification);
