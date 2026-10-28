@@ -909,6 +909,15 @@ describe('asking for, and naming, a window of trading (Build 6)', () => {
   });
 });
 
+describe('spending taken back in a window (G-118)', () => {
+  it('says so instead of printing a negative amount', () => {
+    const text = replies.expensesAnswer({ label: 'today', moneyOutK: -500_000, expenses: 0 }).text;
+    expect(text).toContain('₦5,000');
+    expect(text).toContain('taken back');
+    expect(text).not.toContain('-');
+  });
+});
+
 describe('sales the books hold with no invoice behind it (G-118)', () => {
   it('says the amount instead of claiming nothing was recorded', () => {
     const text = replies.salesAnswer({

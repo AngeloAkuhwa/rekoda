@@ -44,6 +44,8 @@ const CASH_CODES = sql.raw(
 
 const AR_CODE = codeOf('ACCOUNTS_RECEIVABLE');
 const CUSTOMER_CREDIT_CODE = codeOf('CUSTOMER_CREDIT');
+/* Unearned revenue (chart role CONTRACT_LIABILITY): where a customer's advance on an order lands. */
+const CONTRACT_LIABILITY_CODE = sql.raw("'2200'");
 const REVENUE_CODE = codeOf('SALES_REVENUE');
 const VAT_CODE = codeOf('VAT_PAYABLE');
 const EXPENSES_CODE = codeOf('EXPENSES');
@@ -874,7 +876,7 @@ export async function summaryFor(
       SELECT e.transaction_id, t.reverses_id, t.posting_purpose, t.source_type,
              acc.code, acc.system_role, e.debit_k, e.credit_k
       FROM ledger_entries e
-      JOIN accounts acc ON acc.id = e.account_id
+      JOIN accounts acc ON acc.id = e.account_id AND acc.business_id = e.business_id
       JOIN ledger_transactions t
         ON t.id = e.transaction_id AND t.business_id = e.business_id
       WHERE e.business_id = ${businessId}::uuid
@@ -916,7 +918,7 @@ export async function summaryFor(
       SELECT id FROM sale_tx
       UNION
       SELECT DISTINCT transaction_id FROM lm
-      WHERE code IN (${AR_CODE}, ${CUSTOMER_CREDIT_CODE}) AND credit_k > 0
+      WHERE code IN (${AR_CODE}, ${CUSTOMER_CREDIT_CODE}, ${CONTRACT_LIABILITY_CODE}) AND credit_k > 0
     )
     SELECT
       COALESCE((SELECT SUM(credit_k - debit_k) FROM lm

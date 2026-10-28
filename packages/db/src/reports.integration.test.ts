@@ -1368,6 +1368,36 @@ describe('the window summary reconciles with the ledger (G-118)', () => {
     expect(after.invoices).toBe(0);
   });
 
+  it('counts a customer advance (cash against unearned revenue) as money in', async () => {
+    const businessId = await seedBusiness();
+    const accountIdFor = (code: string) =>
+      withBusiness(db, businessId, async (tx) => {
+        const rows = await tx.execute<{ id: string }>(
+          sql`SELECT id FROM accounts WHERE business_id = ${businessId}::uuid AND code = ${code}`,
+        );
+        return [...rows][0]!.id;
+      });
+    const cash = await accountIdFor('1000');
+    const unearned = await accountIdFor('2200');
+    const { id } = await withBusiness(db, businessId, (tx) =>
+      journalDraftsRepo.createJournalDraft(tx, {
+        businessId,
+        memo: 'advance on an order',
+        createdBy: 'user:ada',
+        lines: [
+          { accountId: cash, debitK: 5_000_000, creditK: 0 },
+          { accountId: unearned, debitK: 0, creditK: 5_000_000 },
+        ],
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      journalDraftsRepo.postJournalDraft(tx, { businessId, draftId: id, actor: 'user:ada' }),
+    );
+    const after = await summary(businessId);
+    expect(after.moneyInK).toBe(5_000_000);
+    expect(after.salesK).toBe(0);
+  });
+
   it('counts spending the ledger holds even where no register row exists, and ties to the ledger', async () => {
     const businessId = await seedBusiness();
     await withBusiness(db, businessId, (tx) =>

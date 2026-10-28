@@ -1541,6 +1541,13 @@ export function expensesAnswer(input: {
   /* Spending the books hold with no entry behind it, such as a charge a
    * provider took (G-118): the amount is real, so it is said, without
    * pretending to a count of entries. */
+  /* Spending taken back in this window that was made in an earlier one. */
+  if (input.moneyOutK < 0) {
+    return reply(
+      `${input.label[0]!.toUpperCase()}${input.label.slice(1)}: ${formatKobo(-input.moneyOutK)} ` +
+        'of earlier spending was taken back.',
+    );
+  }
   if (input.expenses === 0) {
     return reply(
       `${input.label[0]!.toUpperCase()}${input.label.slice(1)}: ${formatKobo(input.moneyOutK)} spent.`,
