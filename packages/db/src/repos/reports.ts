@@ -881,13 +881,6 @@ export async function summaryFor(
         AND e.created_at BETWEEN ${from.toISOString()}::timestamptz
                              AND ${to.toISOString()}::timestamptz
     ),
-    sale_tx AS (
-      /* A sale's own posting. An opening-balance receivable also has an
-       * invoice, but its posting credits equity, so it carries no revenue
-       * line and is never a sale. */
-      SELECT ledger_transaction_id AS id FROM invoices
-      WHERE business_id = ${businessId}::uuid AND ledger_transaction_id IS NOT NULL
-    ),
     credit_tx AS (
       SELECT ledger_transaction_id AS id FROM credit_notes
       WHERE business_id = ${businessId}::uuid AND ledger_transaction_id IS NOT NULL
@@ -896,33 +889,46 @@ export async function summaryFor(
       SELECT ledger_transaction_id AS id FROM expenses
       WHERE business_id = ${businessId}::uuid AND ledger_transaction_id IS NOT NULL
     ),
-    collection_tx AS (
-      /* A customer paying: the sale itself (its paid part) or a posting that
-       * clears a receivable or a customer credit with money. */
+    sale_tx AS (
+      /* A sale is known by its SHAPE: a posting that credits sales revenue or
+       * VAT. No document link is needed, so a sale posted before invoices
+       * carried one is still a sale, and an opening-balance receivable (whose
+       * posting credits equity) never is. */
       SELECT DISTINCT transaction_id AS id FROM lm
-      WHERE (code IN (${AR_CODE}, ${CUSTOMER_CREDIT_CODE}) AND credit_k > 0)
-         OR transaction_id IN (SELECT id FROM sale_tx)
+      WHERE code IN (${REVENUE_CODE}, ${VAT_CODE}) AND credit_k > 0
+        AND reverses_id IS NULL
+        AND transaction_id NOT IN (SELECT id FROM credit_tx)
+    ),
+    collection_tx AS (
+      /* A customer paying: a sale (its paid part) or a posting that clears a
+       * receivable or a customer credit with money. Opening balances credit
+       * equity, so the cash they declare is not a collection. */
+      SELECT id FROM sale_tx
+      UNION
+      SELECT DISTINCT transaction_id FROM lm
+      WHERE code IN (${AR_CODE}, ${CUSTOMER_CREDIT_CODE}) AND credit_k > 0
     )
     SELECT
       COALESCE((SELECT SUM(credit_k - debit_k) FROM lm
                 WHERE code IN (${REVENUE_CODE}, ${VAT_CODE})
-                  AND COALESCE(reverses_id, transaction_id) IN (SELECT id FROM sale_tx)), 0)::bigint AS sales_k,
-      COALESCE((SELECT count(*) FROM invoices i
-                WHERE i.business_id = ${businessId}::uuid
-                  AND i.ledger_transaction_id IN (SELECT transaction_id FROM lm
-                                                  WHERE reverses_id IS NULL
-                                                    AND code IN (${REVENUE_CODE}, ${VAT_CODE}))
-                  AND NOT EXISTS (SELECT 1 FROM ledger_transactions r
+                  AND transaction_id NOT IN (SELECT id FROM credit_tx)), 0)::bigint AS sales_k,
+      COALESCE((SELECT count(*) FROM sale_tx s
+                WHERE NOT EXISTS (SELECT 1 FROM ledger_transactions r
                                   WHERE r.business_id = ${businessId}::uuid
-                                    AND r.reverses_id = i.ledger_transaction_id)), 0)::int AS invoices,
-      COALESCE((SELECT SUM(credit_k) FROM lm
-                WHERE code = ${CUSTOMER_CREDIT_CODE}
+                                    AND r.reverses_id = s.id)), 0)::int AS invoices,
+      COALESCE((SELECT SUM(debit_k - credit_k) FROM lm
+                WHERE code IN (${REVENUE_CODE}, ${VAT_CODE})
                   AND transaction_id IN (SELECT id FROM credit_tx)), 0)::bigint AS credited_k,
+      /* Gross collections: the cash that arrived, plus any fee the provider
+       * kept (posted to expenses in the same payment), less payments undone by
+       * a reversal or chargeback, which debit receivables whatever account
+       * the money came back through. */
       COALESCE((SELECT SUM(debit_k) FROM lm
-                WHERE (code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING')
+                WHERE (code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING'
+                       OR code = ${EXPENSES_CODE})
                   AND transaction_id IN (SELECT id FROM collection_tx)), 0)::bigint
-        - COALESCE((SELECT SUM(credit_k) FROM lm
-                    WHERE (code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING')
+        - COALESCE((SELECT SUM(debit_k) FROM lm
+                    WHERE code = ${AR_CODE}
                       AND posting_purpose IN ('REVERSAL', 'CHARGEBACK')), 0)::bigint AS money_in_k,
       COALESCE((SELECT SUM(credit_k) FROM lm
                 WHERE (code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING')

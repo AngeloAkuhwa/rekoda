@@ -909,6 +909,15 @@ describe('asking for, and naming, a window of trading (Build 6)', () => {
   });
 });
 
+describe('spending the books hold with no entry behind it (G-118)', () => {
+  it('says the amount instead of claiming nothing was recorded', () => {
+    const text = replies.expensesAnswer({ label: 'today', moneyOutK: 150_000, expenses: 0 }).text;
+    expect(text).toContain('₦1,500');
+    expect(text).toContain('spent');
+    expect(text).not.toContain('not recorded');
+  });
+});
+
 describe('a bare "no" or "cancel" with nothing waiting (G-68)', () => {
   it('answers a "no" truthfully instead of claiming a cancellation', () => {
     const text = replies.nothingToDecline().text;

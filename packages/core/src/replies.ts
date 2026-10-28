@@ -1516,9 +1516,17 @@ export function expensesAnswer(input: {
   moneyOutK: number;
   expenses: number;
 }): Reply {
-  if (input.expenses === 0) {
+  if (input.expenses === 0 && input.moneyOutK === 0) {
     return reply(
       `You have not recorded any spending ${inWindow(input.label)}. Tell me one like "fuel 12k".`,
+    );
+  }
+  /* Spending the books hold with no entry behind it, such as a charge a
+   * provider took (G-118): the amount is real, so it is said, without
+   * pretending to a count of entries. */
+  if (input.expenses === 0) {
+    return reply(
+      `${input.label[0]!.toUpperCase()}${input.label.slice(1)}: ${formatKobo(input.moneyOutK)} spent.`,
     );
   }
   return reply(

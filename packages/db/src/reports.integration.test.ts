@@ -1123,6 +1123,118 @@ describe('the window summary reconciles with the ledger (G-118)', () => {
     expect(await ledgerNet(businessId, ['4000', '2100'], 'credit')).toBe(0);
   });
 
+  it('does not count the cash and bank an opening balance declares as money in', async () => {
+    const businessId = await seedBusiness();
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      businessId,
+      'CUSTOMER_G118OC',
+      [],
+    );
+    await withBusiness(db, businessId, (tx) =>
+      openingRepo.recordOpeningBalances(tx, {
+        businessId,
+        asAt: lagosDay(new Date()),
+        cashK: 20_000_000,
+        bankK: 10_000_000,
+        stockK: 0,
+        receivables: [{ customerId: customer.id, amountK: 5_000_000, dueDate: null }],
+        actor: 'test',
+      }),
+    );
+    const after = await summary(businessId);
+    expect(after.moneyInK).toBe(0);
+    expect(after.salesK).toBe(0);
+    expect(after.invoices).toBe(0);
+  });
+
+  it('still counts a sale whose invoice carries no ledger link (issued before the link existed)', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_G118NL',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 3_000_000 }],
+        subtotalK: 3_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 3_000_000,
+        paidK: 3_000_000,
+        balanceDueK: 0,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'g118-nolink',
+        actor: 'test',
+      }),
+    );
+    const owner = postgres(urls.owner, { max: 1, onnotice: () => {} });
+    try {
+      await owner`UPDATE invoices SET ledger_transaction_id = NULL WHERE business_id = ${businessId}::uuid`;
+    } finally {
+      await owner.end();
+    }
+    const after = await summary(businessId);
+    expect(after.salesK).toBe(3_000_000);
+    expect(after.invoices).toBe(1);
+    expect(after.moneyInK).toBe(3_000_000);
+  });
+
+  it('reports a provider payment gross when the provider kept a fee, and the fee as spending', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(db, businessId, async (tx) => {
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_G118FEE',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 10_000_000 }],
+        subtotalK: 10_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 10_000_000,
+        paidK: 0,
+        balanceDueK: 10_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'g118-fee',
+        actor: 'system',
+      });
+      const intent = await paymentsHub.createIntent(tx, {
+        businessId,
+        reference: paymentReference(new Date(), (n) => randomBytes(n)),
+        expectedAmountK: 10_000_000,
+        providerType: 'paystack',
+        invoiceId: sale.invoiceId,
+      });
+      /* No payment connection, so no clearing account: the fee comes off the
+       * bank debit and is posted to expenses. */
+      await settleRepo.bookVerifiedPayment(tx, {
+        businessId,
+        intent: {
+          id: intent.id,
+          reference: intent.reference,
+          invoiceId: intent.invoiceId,
+          customerId: intent.customerId,
+        },
+        confirmedAmountK: 10_000_000,
+        currency: 'NGN',
+        providerType: 'paystack',
+        providerRef: `pst-${randomBytes(4).toString('hex')}`,
+        providerStatus: 'success',
+        providerFeeK: 150_000,
+        feePolicy: 'merchant_bearing',
+        method: 'transfer',
+        actor: 'test',
+        eventId: `event-${randomBytes(4).toString('hex')}`,
+      });
+    });
+    const after = await summary(businessId);
+    expect(after.moneyInK).toBe(10_000_000);
+    expect(after.moneyOutK).toBe(150_000);
+  });
+
   it('counts spending the ledger holds even where no register row exists, and ties to the ledger', async () => {
     const businessId = await seedBusiness();
     await withBusiness(db, businessId, (tx) =>
