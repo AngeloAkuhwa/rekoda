@@ -1498,10 +1498,19 @@ export function salesAnswer(input: {
   invoices: number;
   moneyInK: number;
 }): Reply {
-  if (input.invoices === 0) {
+  if (input.invoices === 0 && input.salesK <= 0) {
     return reply(
       `You have not recorded any sales ${inWindow(input.label)}. Tell me one the way you would ` +
         'tell a person, like "sold 2 bags to Ada for 40k".',
+    );
+  }
+  /* Revenue the books hold with no invoice behind it, such as one posted by
+   * hand (G-118): the amount is real, so it is said, without pretending to a
+   * count of sales. */
+  if (input.invoices === 0) {
+    return reply(
+      `${input.label[0]!.toUpperCase()}${input.label.slice(1)}: ${formatKobo(input.salesK)} ` +
+        'in sales recorded in your books.',
     );
   }
   return reply(

@@ -909,6 +909,24 @@ describe('asking for, and naming, a window of trading (Build 6)', () => {
   });
 });
 
+describe('sales the books hold with no invoice behind it (G-118)', () => {
+  it('says the amount instead of claiming nothing was recorded', () => {
+    const text = replies.salesAnswer({
+      label: 'today',
+      salesK: 200_000,
+      invoices: 0,
+      moneyInK: 0,
+    }).text;
+    expect(text).toContain('₦2,000');
+    expect(text).not.toContain('not recorded');
+  });
+
+  it('still says nothing was recorded when the window nets to nothing', () => {
+    const text = replies.salesAnswer({ label: 'today', salesK: 0, invoices: 0, moneyInK: 0 }).text;
+    expect(text).toContain('not recorded');
+  });
+});
+
 describe('spending the books hold with no entry behind it (G-118)', () => {
   it('says the amount instead of claiming nothing was recorded', () => {
     const text = replies.expensesAnswer({ label: 'today', moneyOutK: 150_000, expenses: 0 }).text;
