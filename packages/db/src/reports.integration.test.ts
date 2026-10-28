@@ -1235,6 +1235,54 @@ describe('the window summary reconciles with the ledger (G-118)', () => {
     expect(after.moneyOutK).toBe(150_000);
   });
 
+  it('does not let a VAT remittance reduce sales, or a receivable write-off count as money in', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_G118V',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 10_000_000 }],
+        subtotalK: 10_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 750_000,
+        totalK: 10_750_000,
+        paidK: 0,
+        balanceDueK: 10_750_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'g118-vat',
+        actor: 'test',
+      }),
+    );
+    /* Paying VAT over, and writing a bad debt off, are journals: neither is a
+     * sale undone, and neither is a customer paying. */
+    await withBusiness(db, businessId, (tx) =>
+      journalRepo.recordJournal(tx, {
+        businessId,
+        memo: 'VAT remitted',
+        amountK: 750_000,
+        intoAccount: 'VAT_PAYABLE',
+        outOfAccount: 'BANK',
+        actor: 'user:1',
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      journalRepo.recordJournal(tx, {
+        businessId,
+        memo: 'bad debt written off',
+        amountK: 5_000_000,
+        intoAccount: 'EXPENSES',
+        outOfAccount: 'ACCOUNTS_RECEIVABLE',
+        actor: 'user:1',
+      }),
+    );
+    const after = await summary(businessId);
+    expect(after.salesK).toBe(10_750_000);
+    expect(after.moneyInK).toBe(0);
+  });
+
   it('counts spending the ledger holds even where no register row exists, and ties to the ledger', async () => {
     const businessId = await seedBusiness();
     await withBusiness(db, businessId, (tx) =>

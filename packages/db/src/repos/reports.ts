@@ -885,6 +885,16 @@ export async function summaryFor(
       SELECT ledger_transaction_id AS id FROM credit_notes
       WHERE business_id = ${businessId}::uuid AND ledger_transaction_id IS NOT NULL
     ),
+    revenue_tx AS (
+      /* Postings that move sales revenue: a sale, or the reversal of one. VAT
+       * counts as sales only inside these, so a VAT remittance (which debits
+       * the VAT account alone) never reduces what was invoiced. */
+      SELECT DISTINCT transaction_id AS id FROM lm WHERE code = ${REVENUE_CODE}
+    ),
+    cash_tx AS (
+      SELECT DISTINCT transaction_id AS id FROM lm
+      WHERE (code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING') AND debit_k > 0
+    ),
     spend_tx AS (
       SELECT ledger_transaction_id AS id FROM expenses
       WHERE business_id = ${businessId}::uuid AND ledger_transaction_id IS NOT NULL
@@ -895,7 +905,7 @@ export async function summaryFor(
        * carried one is still a sale, and an opening-balance receivable (whose
        * posting credits equity) never is. */
       SELECT DISTINCT transaction_id AS id FROM lm
-      WHERE code IN (${REVENUE_CODE}, ${VAT_CODE}) AND credit_k > 0
+      WHERE code = ${REVENUE_CODE} AND credit_k > 0
         AND reverses_id IS NULL
         AND transaction_id NOT IN (SELECT id FROM credit_tx)
     ),
@@ -911,6 +921,7 @@ export async function summaryFor(
     SELECT
       COALESCE((SELECT SUM(credit_k - debit_k) FROM lm
                 WHERE code IN (${REVENUE_CODE}, ${VAT_CODE})
+                  AND transaction_id IN (SELECT id FROM revenue_tx)
                   AND transaction_id NOT IN (SELECT id FROM credit_tx)), 0)::bigint AS sales_k,
       COALESCE((SELECT count(*) FROM sale_tx s
                 WHERE NOT EXISTS (SELECT 1 FROM ledger_transactions r
@@ -925,7 +936,8 @@ export async function summaryFor(
        * the money came back through. */
       COALESCE((SELECT SUM(debit_k) FROM lm
                 WHERE (code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING'
-                       OR code = ${EXPENSES_CODE})
+                       OR (code = ${EXPENSES_CODE}
+                           AND transaction_id IN (SELECT id FROM cash_tx)))
                   AND transaction_id IN (SELECT id FROM collection_tx)), 0)::bigint
         - COALESCE((SELECT SUM(debit_k) FROM lm
                     WHERE code = ${AR_CODE}
