@@ -930,11 +930,11 @@ export async function summaryFor(
       GREATEST(0,
         COALESCE((SELECT count(*) FROM sale_tx s
                   WHERE s.id NOT IN (SELECT transaction_id FROM lm
-                                     WHERE source_type IN ('journal', 'bank_classification'))), 0)
+                                     WHERE source_type IN ('journal', 'journal_draft', 'bank_classification'))), 0)
         - COALESCE((SELECT count(DISTINCT transaction_id) FROM lm
                     WHERE code = ${REVENUE_CODE} AND debit_k > 0
                       AND transaction_id NOT IN (SELECT id FROM credit_tx)
-                      AND source_type NOT IN ('journal', 'bank_classification')), 0)
+                      AND source_type NOT IN ('journal', 'journal_draft', 'bank_classification')), 0)
       )::int AS invoices,
       COALESCE((SELECT SUM(debit_k - credit_k) FROM lm
                 WHERE code IN (${REVENUE_CODE}, ${VAT_CODE})

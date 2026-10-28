@@ -16,6 +16,7 @@ import {
   customersRepo,
   identity,
   issueRepo,
+  journalDraftsRepo,
   journalRepo,
   openingRepo,
   paymentsHub,
@@ -1334,6 +1335,36 @@ describe('the window summary reconciles with the ledger (G-118)', () => {
     );
     const after = await summary(businessId);
     expect(after.salesK).toBe(0);
+    expect(after.invoices).toBe(0);
+  });
+
+  it('counts a posted journal draft that credits revenue in sales but not as an invoice', async () => {
+    const businessId = await seedBusiness();
+    const accountIdFor = (code: string) =>
+      withBusiness(db, businessId, async (tx) => {
+        const rows = await tx.execute<{ id: string }>(
+          sql`SELECT id FROM accounts WHERE business_id = ${businessId}::uuid AND code = ${code}`,
+        );
+        return [...rows][0]!.id;
+      });
+    const cash = await accountIdFor('1000');
+    const revenue = await accountIdFor('4000');
+    const { id } = await withBusiness(db, businessId, (tx) =>
+      journalDraftsRepo.createJournalDraft(tx, {
+        businessId,
+        memo: 'cash sale, hand entered',
+        createdBy: 'user:ada',
+        lines: [
+          { accountId: cash, debitK: 100_000, creditK: 0 },
+          { accountId: revenue, debitK: 0, creditK: 100_000 },
+        ],
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      journalDraftsRepo.postJournalDraft(tx, { businessId, draftId: id, actor: 'user:ada' }),
+    );
+    const after = await summary(businessId);
+    expect(after.salesK).toBe(100_000);
     expect(after.invoices).toBe(0);
   });
 
