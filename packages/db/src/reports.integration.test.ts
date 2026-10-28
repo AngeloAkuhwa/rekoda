@@ -1398,6 +1398,83 @@ describe('the window summary reconciles with the ledger (G-118)', () => {
     expect(after.salesK).toBe(0);
   });
 
+  it("does not let a void of an earlier sale reduce this window's invoice count, and keeps a later void out of the expense count", async () => {
+    const businessId = await seedBusiness();
+    const sell = (sourceId: string) =>
+      withBusiness(db, businessId, (tx) =>
+        issueRepo.issueSale(tx, {
+          businessId,
+          customerId: null,
+          customerToken: `CUSTOMER_${sourceId}`,
+          items: [{ name: 'wig', quantity: 1, unitPriceK: 1_000_000 }],
+          subtotalK: 1_000_000,
+          discountK: 0,
+          deliveryFeeK: 0,
+          vatK: 0,
+          totalK: 1_000_000,
+          paidK: 0,
+          balanceDueK: 1_000_000,
+          method: 'transfer',
+          sourceType: 'chat',
+          sourceId,
+          actor: 'test',
+        }),
+      );
+    const early = await sell('g118-early');
+    await sell('g118-now');
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.voidInvoice(tx, businessId, early.invoiceNumber, 'never delivered', 'user:1'),
+    );
+    const spent = await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordExpense(tx, {
+        businessId,
+        description: 'fuel',
+        category: 'utilities',
+        amountK: 400_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'g118-late-void',
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.voidExpense(tx, businessId, spent.expenseId, 'never happened', 'user:1'),
+    );
+    /* Move the early sale back five days and the expense's void forward five,
+     * as the owner with the append-only guards suspended: a fixture only. */
+    const owner = postgres(urls.owner, { max: 1, onnotice: () => {} });
+    try {
+      await owner.unsafe(`
+        SET session_replication_role = replica;
+        UPDATE ledger_entries SET created_at = now() - interval '5 days'
+         WHERE business_id = '${businessId}'
+           AND transaction_id IN (SELECT id FROM ledger_transactions
+                                   WHERE business_id = '${businessId}' AND source_id = 'g118-early'
+                                     AND reverses_id IS NULL);
+        UPDATE ledger_entries SET created_at = now() + interval '5 days'
+         WHERE business_id = '${businessId}'
+           AND transaction_id IN (SELECT id FROM ledger_transactions
+                                   WHERE business_id = '${businessId}' AND source_id = 'g118-late-void'
+                                     AND reverses_id IS NOT NULL);
+        UPDATE ledger_transactions SET created_at = now() - interval '5 days'
+         WHERE business_id = '${businessId}' AND source_id = 'g118-early' AND reverses_id IS NULL;
+        UPDATE ledger_transactions SET created_at = now() + interval '5 days'
+         WHERE business_id = '${businessId}' AND source_id = 'g118-late-void' AND reverses_id IS NOT NULL;
+        SET session_replication_role = origin;`);
+    } finally {
+      await owner.end();
+    }
+    const after = await summary(businessId);
+    /* This window holds one new sale and the void of a sale made five days ago:
+     * the void takes sales down by the earlier sale's amount, but it is not
+     * one of this window's invoices, so the count stays at one. */
+    expect(after.invoices).toBe(1);
+    expect(after.salesK).toBe(0);
+    /* The expense was made inside the window and voided after it: its money is
+     * counted, so its entry is too. */
+    expect(after.moneyOutK).toBe(400_000);
+    expect(after.expenses).toBe(1);
+  });
+
   it('counts spending the ledger holds even where no register row exists, and ties to the ledger', async () => {
     const businessId = await seedBusiness();
     await withBusiness(db, businessId, (tx) =>

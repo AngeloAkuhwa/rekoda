@@ -936,7 +936,10 @@ export async function summaryFor(
         - COALESCE((SELECT count(DISTINCT transaction_id) FROM lm
                     WHERE code = ${REVENUE_CODE} AND debit_k > 0
                       AND transaction_id NOT IN (SELECT id FROM credit_tx)
-                      AND source_type NOT IN ('journal', 'journal_draft', 'bank_classification')), 0)
+                      AND source_type NOT IN ('journal', 'journal_draft', 'bank_classification')
+                      /* A reversal that names its sale only counts against a sale
+                       * issued in this window; one that names nothing always does. */
+                      AND (reverses_id IS NULL OR reverses_id IN (SELECT id FROM sale_tx))), 0)
       )::int AS invoices,
       COALESCE((SELECT SUM(debit_k - credit_k) FROM lm
                 WHERE code IN (${REVENUE_CODE}, ${VAT_CODE})
@@ -968,7 +971,9 @@ export async function summaryFor(
                                                     AND code IN (${EXPENSES_CODE}, ${INVENTORY_CODE}))
                   AND NOT EXISTS (SELECT 1 FROM ledger_transactions r
                                   WHERE r.business_id = ${businessId}::uuid
-                                    AND r.reverses_id = x.ledger_transaction_id)), 0)::int AS expenses,
+                                    AND r.reverses_id = x.ledger_transaction_id
+                                    AND r.created_at BETWEEN ${from.toISOString()}::timestamptz
+                                                         AND ${to.toISOString()}::timestamptz)), 0)::int AS expenses,
       COALESCE((SELECT SUM(debit_k) FROM lm
                 WHERE code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING'), 0)::bigint AS cash_in_k,
       COALESCE((SELECT SUM(credit_k) FROM lm
