@@ -21,7 +21,7 @@
     "@fastify/multipart": "^10.1.6",
     "@fastify/rate-limit": "^11.2.1",
     "@nestjs/common": "^11.2.3",
-    "@nestjs/core": "^11.2.3",
+    "@nestjs/core": "^12.2.0",
     "@nestjs/platform-fastify": "^11.2.3",
     "@rekoda/contracts": "workspace:*",
     "@rekoda/core": "workspace:*",
