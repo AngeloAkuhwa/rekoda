@@ -42,6 +42,13 @@ const CASH_CODES = sql.raw(
   `'${ACCOUNTS.CASH.code}', '${ACCOUNTS.BANK.code}', '${ACCOUNTS.BANK_PAYSTACK.code}'`,
 );
 
+const AR_CODE = codeOf('ACCOUNTS_RECEIVABLE');
+const CUSTOMER_CREDIT_CODE = codeOf('CUSTOMER_CREDIT');
+const REVENUE_CODE = codeOf('SALES_REVENUE');
+const VAT_CODE = codeOf('VAT_PAYABLE');
+const EXPENSES_CODE = codeOf('EXPENSES');
+const INVENTORY_CODE = codeOf('INVENTORY');
+
 export interface Overview {
   /** Cash that arrived this Lagos month, in kobo. */
   moneyInK: number;
@@ -856,55 +863,87 @@ export async function summaryFor(
     cash_in_k: string;
     cash_out_k: string;
   }>(sql`
+    WITH lm AS (
+      /* Every ledger line dated inside the window, with the posting it
+       * belongs to. Amounts and dates come from here and nowhere else (G-118):
+       * the operational tables are joined only to say WHAT a posting was (a
+       * sale, a credit note, an expense), never to supply a figure. A
+       * reversal is its own posting dated when it was written, and
+       * \`reverses_id\` names the posting it undoes, so a void nets against the
+       * sale it cancels without anybody editing history. */
+      SELECT e.transaction_id, t.reverses_id, t.posting_purpose,
+             acc.code, acc.system_role, e.debit_k, e.credit_k
+      FROM ledger_entries e
+      JOIN accounts acc ON acc.id = e.account_id
+      JOIN ledger_transactions t
+        ON t.id = e.transaction_id AND t.business_id = e.business_id
+      WHERE e.business_id = ${businessId}::uuid
+        AND e.created_at BETWEEN ${from.toISOString()}::timestamptz
+                             AND ${to.toISOString()}::timestamptz
+    ),
+    sale_tx AS (
+      /* A sale's own posting. An opening-balance receivable also has an
+       * invoice, but its posting credits equity, so it carries no revenue
+       * line and is never a sale. */
+      SELECT ledger_transaction_id AS id FROM invoices
+      WHERE business_id = ${businessId}::uuid AND ledger_transaction_id IS NOT NULL
+    ),
+    credit_tx AS (
+      SELECT ledger_transaction_id AS id FROM credit_notes
+      WHERE business_id = ${businessId}::uuid AND ledger_transaction_id IS NOT NULL
+    ),
+    spend_tx AS (
+      SELECT ledger_transaction_id AS id FROM expenses
+      WHERE business_id = ${businessId}::uuid AND ledger_transaction_id IS NOT NULL
+    ),
+    collection_tx AS (
+      /* A customer paying: the sale itself (its paid part) or a posting that
+       * clears a receivable or a customer credit with money. */
+      SELECT DISTINCT transaction_id AS id FROM lm
+      WHERE (code IN (${AR_CODE}, ${CUSTOMER_CREDIT_CODE}) AND credit_k > 0)
+         OR transaction_id IN (SELECT id FROM sale_tx)
+    )
     SELECT
-      COALESCE((SELECT SUM(total_k) FROM invoices
-                WHERE business_id = ${businessId}::uuid
-                  AND status <> 'voided'
-                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
-                                     AND ${to.toISOString()}::timestamptz), 0)::bigint AS sales_k,
-      COALESCE((SELECT count(*) FROM invoices
-                WHERE business_id = ${businessId}::uuid
-                  AND status <> 'voided'
-                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
-                                     AND ${to.toISOString()}::timestamptz), 0)::int    AS invoices,
-      COALESCE((SELECT SUM(amount_k) FROM credit_notes
-                WHERE business_id = ${businessId}::uuid
-                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
-                                     AND ${to.toISOString()}::timestamptz), 0)::bigint AS credited_k,
-      COALESCE((SELECT SUM(amount_k) FROM payments
-                WHERE business_id = ${businessId}::uuid
-                  AND (status IS NULL
-                       OR status IN ('confirmed', 'refunded', 'partially_refunded'))
-                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
-                                     AND ${to.toISOString()}::timestamptz), 0)::bigint AS money_in_k,
-      COALESCE((SELECT SUM(amount_k) FROM refunds
-                WHERE business_id = ${businessId}::uuid
-                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
-                                     AND ${to.toISOString()}::timestamptz), 0)::bigint AS refunded_k,
-      COALESCE((SELECT SUM(amount_k) FROM expenses
-                WHERE business_id = ${businessId}::uuid
-                  AND status <> 'voided'
-                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
-                                     AND ${to.toISOString()}::timestamptz), 0)::bigint AS money_out_k,
-      COALESCE((SELECT count(*) FROM expenses
-                WHERE business_id = ${businessId}::uuid
-                  AND status <> 'voided'
-                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
-                                     AND ${to.toISOString()}::timestamptz), 0)::int    AS expenses,
-      COALESCE((SELECT SUM(e.debit_k) FROM ledger_entries e
-                JOIN accounts acc ON acc.id = e.account_id
-                WHERE e.business_id = ${businessId}::uuid
-                  AND (acc.code IN (${CASH_CODES})
-                       OR acc.system_role = 'PAYMENT_PROVIDER_CLEARING')
-                  AND e.created_at BETWEEN ${from.toISOString()}::timestamptz
-                                       AND ${to.toISOString()}::timestamptz), 0)::bigint AS cash_in_k,
-      COALESCE((SELECT SUM(e.credit_k) FROM ledger_entries e
-                JOIN accounts acc ON acc.id = e.account_id
-                WHERE e.business_id = ${businessId}::uuid
-                  AND (acc.code IN (${CASH_CODES})
-                       OR acc.system_role = 'PAYMENT_PROVIDER_CLEARING')
-                  AND e.created_at BETWEEN ${from.toISOString()}::timestamptz
-                                       AND ${to.toISOString()}::timestamptz), 0)::bigint AS cash_out_k
+      COALESCE((SELECT SUM(credit_k - debit_k) FROM lm
+                WHERE code IN (${REVENUE_CODE}, ${VAT_CODE})
+                  AND COALESCE(reverses_id, transaction_id) IN (SELECT id FROM sale_tx)), 0)::bigint AS sales_k,
+      COALESCE((SELECT count(*) FROM invoices i
+                WHERE i.business_id = ${businessId}::uuid
+                  AND i.ledger_transaction_id IN (SELECT transaction_id FROM lm
+                                                  WHERE reverses_id IS NULL
+                                                    AND code IN (${REVENUE_CODE}, ${VAT_CODE}))
+                  AND NOT EXISTS (SELECT 1 FROM ledger_transactions r
+                                  WHERE r.business_id = ${businessId}::uuid
+                                    AND r.reverses_id = i.ledger_transaction_id)), 0)::int AS invoices,
+      COALESCE((SELECT SUM(credit_k) FROM lm
+                WHERE code = ${CUSTOMER_CREDIT_CODE}
+                  AND transaction_id IN (SELECT id FROM credit_tx)), 0)::bigint AS credited_k,
+      COALESCE((SELECT SUM(debit_k) FROM lm
+                WHERE (code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING')
+                  AND transaction_id IN (SELECT id FROM collection_tx)), 0)::bigint
+        - COALESCE((SELECT SUM(credit_k) FROM lm
+                    WHERE (code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING')
+                      AND posting_purpose IN ('REVERSAL', 'CHARGEBACK')), 0)::bigint AS money_in_k,
+      COALESCE((SELECT SUM(credit_k) FROM lm
+                WHERE (code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING')
+                  AND posting_purpose = 'REFUND'), 0)::bigint AS refunded_k,
+      COALESCE((SELECT SUM(debit_k - credit_k) FROM lm
+                WHERE code = ${EXPENSES_CODE}), 0)::bigint
+        + COALESCE((SELECT SUM(debit_k - credit_k) FROM lm
+                    WHERE code = ${INVENTORY_CODE}
+                      AND COALESCE(reverses_id, transaction_id) IN (SELECT id FROM spend_tx)), 0)::bigint AS money_out_k,
+      COALESCE((SELECT count(*) FROM expenses x
+                WHERE x.business_id = ${businessId}::uuid
+                  AND x.ledger_transaction_id IN (SELECT transaction_id FROM lm
+                                                  WHERE reverses_id IS NULL
+                                                    AND code IN (${EXPENSES_CODE}, ${INVENTORY_CODE}))
+                  AND NOT EXISTS (SELECT 1 FROM ledger_transactions r
+                                  WHERE r.business_id = ${businessId}::uuid
+                                    AND r.reverses_id = x.ledger_transaction_id)), 0)::int AS expenses,
+      COALESCE((SELECT SUM(debit_k) FROM lm
+                WHERE code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING'), 0)::bigint AS cash_in_k,
+      COALESCE((SELECT SUM(credit_k) FROM lm
+                WHERE code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING'), 0)::bigint AS cash_out_k
   `);
   const row = [...rows][0];
   return {

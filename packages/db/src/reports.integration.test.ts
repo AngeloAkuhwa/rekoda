@@ -8,14 +8,18 @@
  */
 import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
+import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { paymentReference, usagePeriod } from '@rekoda/core';
+import { lagosDay, paymentReference, usagePeriod } from '@rekoda/core';
 import { createDb, withBusiness, type Db } from './client.js';
 import {
   customersRepo,
   identity,
   issueRepo,
+  journalRepo,
+  openingRepo,
   paymentsHub,
+  refundsRepo,
   reportsRepo,
   settleRepo,
   spendRepo,
@@ -905,53 +909,117 @@ describe('the window summary (N2)', () => {
 
   it('counts a payment as money in only if it really arrived, and reports refunds beside it', async () => {
     const businessId = await seedBusiness();
-    /* Four sales paid in cash at the counter, so each writes a merchant-recorded
-     * payment with no status. A different amount each lets the test tell them apart. */
-    const amounts = [1_000_000, 2_000_000, 4_000_000, 8_000_000, 16_000_000, 32_000_000];
-    for (const [n, amountK] of amounts.entries()) {
-      await withBusiness(db, businessId, (tx) =>
-        issueRepo.issueSale(tx, {
+    const connection = await withBusiness(db, businessId, (tx) =>
+      paymentsHub.upsertConnection(tx, { businessId, providerType: 'paystack' }),
+    );
+    /* Money in is read from the ledger (G-118), so each payment below is made
+     * the way the product makes it: a merchant-recorded cash sale, and three
+     * provider payments booked on open invoices. A different amount each lets
+     * the test tell them apart. */
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_N2P0',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 1_000_000 }],
+        subtotalK: 1_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 1_000_000,
+        paidK: 1_000_000,
+        balanceDueK: 0,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'n2-pay-cash',
+        actor: 'test',
+      }),
+    );
+    const providerPayment = (amountK: number, sourceId: string) =>
+      withBusiness(db, businessId, async (tx) => {
+        const sale = await issueRepo.issueSale(tx, {
           businessId,
           customerId: null,
-          customerToken: `CUSTOMER_N2P${n}`,
+          customerToken: `CUSTOMER_${sourceId}`,
           items: [{ name: 'wig', quantity: 1, unitPriceK: amountK }],
           subtotalK: amountK,
           discountK: 0,
           deliveryFeeK: 0,
           vatK: 0,
           totalK: amountK,
-          paidK: amountK,
-          balanceDueK: 0,
-          method: 'cash',
+          paidK: 0,
+          balanceDueK: amountK,
+          method: 'transfer',
           sourceType: 'chat',
-          sourceId: `n2-pay-${n}`,
+          sourceId,
+          actor: 'system',
+        });
+        const intent = await paymentsHub.createIntent(tx, {
+          businessId,
+          reference: paymentReference(new Date(), (n) => randomBytes(n)),
+          expectedAmountK: amountK,
+          providerType: 'paystack',
+          invoiceId: sale.invoiceId,
+        });
+        const booked = await settleRepo.bookVerifiedPayment(tx, {
+          businessId,
+          intent: {
+            id: intent.id,
+            reference: intent.reference,
+            invoiceId: intent.invoiceId,
+            customerId: intent.customerId,
+          },
+          confirmedAmountK: amountK,
+          currency: 'NGN',
+          providerType: 'paystack',
+          providerRef: `pst-${randomBytes(4).toString('hex')}`,
+          providerStatus: 'success',
+          providerFeeK: 0,
+          feePolicy: 'merchant_bearing',
+          method: 'transfer',
           actor: 'test',
-        }),
-      );
-    }
-    /* The statuses a provider flow can leave, set as the owner (the app role
-     * cannot rewrite a payment): 1m stays NULL (merchant-recorded), 2m is
-     * confirmed, 4m refunded; 8m is pending, 16m failed, 32m reversed. */
+          eventId: `event-${randomBytes(4).toString('hex')}`,
+          paymentConnectionId: connection.id,
+        });
+        return booked.paymentId;
+      });
+    await providerPayment(2_000_000, 'n2-pay-kept');
+    const refundedPayment = await providerPayment(4_000_000, 'n2-pay-refunded');
+    const reversedPayment = await providerPayment(8_000_000, 'n2-pay-reversed');
+
+    await withBusiness(db, businessId, (tx) =>
+      refundsRepo.recordRefund(tx, {
+        businessId,
+        paymentId: refundedPayment,
+        amountK: 1_500_000,
+        method: 'bank',
+        reason: 'returned',
+        actor: 'user:1',
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      refundsRepo.recordPaymentReversal(tx, {
+        businessId,
+        paymentId: reversedPayment,
+        paymentConnectionId: connection.id,
+        reason: 'duplicate charge undone by provider',
+        actor: 'provider:paystack',
+      }),
+    );
+    /* A pending and a failed attempt post nothing: no money moved. Rows only,
+     * written as the owner because the app role cannot set a status. */
     const owner = postgres(urls.owner, { max: 1, onnotice: () => {} });
     try {
-      const set = (amountK: number, status: string) =>
-        owner`UPDATE payments SET status = ${status}
-               WHERE business_id = ${businessId}::uuid AND amount_k = ${amountK}`;
-      await set(2_000_000, 'confirmed');
-      await set(4_000_000, 'refunded');
-      await set(8_000_000, 'pending');
-      await set(16_000_000, 'failed');
-      await set(32_000_000, 'reversed');
-      await owner`INSERT INTO refunds (business_id, payment_id, amount_k, method, reason, actor)
-                  SELECT ${businessId}::uuid, id, 1500000, 'cash', 'returned', 'user:1'
-                    FROM payments
-                   WHERE business_id = ${businessId}::uuid AND amount_k = 4000000`;
+      await owner`INSERT INTO payments (business_id, amount_k, method, source_type, status)
+                  VALUES (${businessId}::uuid, 16000000, 'transfer', 'provider_webhook', 'pending'),
+                         (${businessId}::uuid, 32000000, 'transfer', 'provider_webhook', 'failed')`;
     } finally {
       await owner.end();
     }
 
     const after = await summary(businessId);
-    /* 1m + 2m + 4m arrived; pending, failed and reversed never did. */
+    /* 1m cash + 2m kept + 4m refunded-in-part arrived; the 8m reversed one
+     * arrived and was taken back; pending and failed never did. */
     expect(after.moneyInK).toBe(7_000_000);
     expect(after.refundedK).toBe(1_500_000);
   });
@@ -997,5 +1065,161 @@ describe('the window summary (N2)', () => {
     /* Recorded sales stay what was issued; the credit is its own figure. */
     expect(after.salesK).toBe(5_000_000);
     expect(after.creditedK).toBe(2_000_000);
+  });
+});
+
+/**
+ * G-118: the window summary reads the ledger.
+ *
+ * `summaryFor` feeds the chat sales and spending answers and
+ * `GET /v1/reports/compare`. Each figure here is checked against the ledger
+ * summed directly, so a second source of truth cannot creep back in.
+ */
+describe('the window summary reconciles with the ledger (G-118)', () => {
+  const wide = () => ({
+    from: new Date(Date.now() - 2 * 86_400_000),
+    to: new Date(Date.now() + 2 * 86_400_000),
+  });
+  const summary = (businessId: string) =>
+    withBusiness(db, businessId, (tx) => {
+      const { from, to } = wide();
+      return reportsRepo.summaryFor(tx, businessId, from, to);
+    });
+  const ledgerNet = (businessId: string, codes: string[], sign: 'debit' | 'credit') =>
+    withBusiness(db, businessId, async (tx) => {
+      const rows = await tx.execute<{ n: string }>(sql`
+        SELECT COALESCE(SUM(${sign === 'debit' ? sql`e.debit_k - e.credit_k` : sql`e.credit_k - e.debit_k`}), 0)::text AS n
+        FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+        WHERE e.business_id = ${businessId}::uuid AND a.code IN (${sql.join(
+          codes.map((c) => sql`${c}`),
+          sql`, `,
+        )})
+      `);
+      return Number([...rows][0]!.n);
+    });
+
+  it('does not count an opening-balance receivable as a sale', async () => {
+    const businessId = await seedBusiness();
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      businessId,
+      'CUSTOMER_G118O',
+      [],
+    );
+    await withBusiness(db, businessId, (tx) =>
+      openingRepo.recordOpeningBalances(tx, {
+        businessId,
+        asAt: lagosDay(new Date()),
+        cashK: 0,
+        bankK: 0,
+        stockK: 0,
+        receivables: [{ customerId: customer.id, amountK: 5_000_000, dueDate: null }],
+        actor: 'test',
+      }),
+    );
+    const after = await summary(businessId);
+    expect(after.salesK).toBe(0);
+    expect(after.invoices).toBe(0);
+    expect(await ledgerNet(businessId, ['4000', '2100'], 'credit')).toBe(0);
+  });
+
+  it('counts spending the ledger holds even where no register row exists, and ties to the ledger', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordExpense(tx, {
+        businessId,
+        description: 'fuel',
+        category: 'utilities',
+        amountK: 300_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'g118-e1',
+      }),
+    );
+    /* A charge posted straight to the expenses account, as a provider fee is:
+     * a journal, so no row in the expense register. */
+    await withBusiness(db, businessId, (tx) =>
+      journalRepo.recordJournal(tx, {
+        businessId,
+        memo: 'provider fee',
+        amountK: 50_000,
+        intoAccount: 'EXPENSES',
+        outOfAccount: 'CASH',
+        actor: 'user:1',
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordPurchase(tx, {
+        businessId,
+        description: 'bales',
+        amountK: 2_000_000,
+        paidK: 0,
+        method: null,
+        sourceType: 'chat',
+        sourceId: 'g118-p1',
+      }),
+    );
+    const after = await summary(businessId);
+    expect(after.moneyOutK).toBe(
+      (await ledgerNet(businessId, ['6000'], 'debit')) +
+        (await ledgerNet(businessId, ['1200'], 'debit')),
+    );
+    expect(after.moneyOutK).toBe(300_000 + 50_000 + 2_000_000);
+    /* Only the register's two entries are counted as entries. */
+    expect(after.expenses).toBe(2);
+  });
+
+  it('keeps sales, the unpaid part and cash received apart, and every figure ties to the ledger', async () => {
+    const businessId = await seedBusiness();
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      businessId,
+      'CUSTOMER_G118S',
+      [],
+    );
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: customer.id,
+        customerToken: 'CUSTOMER_G118S',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 10_000_000 }],
+        subtotalK: 10_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 750_000,
+        totalK: 10_750_000,
+        paidK: 4_000_000,
+        balanceDueK: 6_750_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'g118-s1',
+        actor: 'test',
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueCreditNote(tx, {
+        businessId,
+        invoiceNumber: sale.invoiceNumber,
+        amountK: 1_000_000,
+        reason: 'returned',
+        actor: 'user:1',
+      }),
+    );
+    const after = await summary(businessId);
+    /* What was sold is the whole invoice; only the paid part is cash. */
+    expect(after.salesK).toBe(10_750_000);
+    expect(after.invoices).toBe(1);
+    expect(after.moneyInK).toBe(4_000_000);
+    expect(after.creditedK).toBe(1_000_000);
+    expect(after.cashInK).toBe(4_000_000);
+    /* The ledger, summed directly, says the same. */
+    expect(after.salesK - after.creditedK).toBe(
+      await ledgerNet(businessId, ['4000', '2100'], 'credit'),
+    );
+    expect(after.cashInK - after.cashOutK).toBe(
+      await ledgerNet(businessId, ['1000', '1010', '1020', '1015'], 'debit'),
+    );
+    /* What is still owed is a receivable, in neither sales nor cash. */
+    expect(await ledgerNet(businessId, ['1100'], 'debit')).toBe(6_750_000);
   });
 });
