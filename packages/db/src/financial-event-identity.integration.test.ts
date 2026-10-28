@@ -97,6 +97,17 @@ describe('a purchase is one financial event per source', () => {
     expect(await expenseCount(businessId)).toBe(1);
   });
 
+  it('treats a purchase-order receipt as one event per order', async () => {
+    const businessId = await seedBusiness('+2348090000107');
+    const first = await purchase(businessId, 'po-1', 'purchase_order');
+    const replay = await purchase(businessId, 'po-1', 'purchase_order').catch((e: unknown) => e);
+    expect(replay).toBeInstanceOf(issueRepo.FinancialEventAlreadyPostedError);
+    expect((replay as issueRepo.FinancialEventAlreadyPostedError).existingTransactionId).toBe(
+      first.ledgerTransactionId,
+    );
+    expect(await journalCount(businessId)).toBe(1);
+  });
+
   it('lets exactly one of eight overlapping workers post', async () => {
     const businessId = await seedBusiness('+2348090000102');
     const results = await Promise.allSettled(
@@ -202,7 +213,7 @@ describe('the database refuses a writer that bypasses writePosting', () => {
           VALUES (${businessId}::uuid, 'raw', 'chat', 'draft-raw', 'purchase:chat:draft-raw')
         `),
       ),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({ cause: { code: '23505' } });
     expect(await journalCount(businessId)).toBe(1);
   });
 });

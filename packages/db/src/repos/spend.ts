@@ -185,6 +185,8 @@ export async function recordPurchase(
      * purchase order), and the spec's purpose enum has no purchase value, so
      * the ledger-level identity is a key. A void of it is a reversal and
      * carries none, so it never collides. */
+    /* Not injective if either part held a colon; today the source types are
+     * fixed words and the ids are uuids, so it cannot collide. */
     { postingKey: `purchase:${input.sourceType}:${input.sourceId}` },
   );
 
