@@ -923,12 +923,19 @@ export async function summaryFor(
                 WHERE code IN (${REVENUE_CODE}, ${VAT_CODE})
                   AND transaction_id IN (SELECT id FROM revenue_tx)
                   AND transaction_id NOT IN (SELECT id FROM credit_tx)), 0)::bigint AS sales_k,
-      COALESCE((SELECT count(*) FROM sale_tx s
-                WHERE s.id NOT IN (SELECT transaction_id FROM lm
-                                   WHERE source_type IN ('journal', 'bank_classification'))
-                  AND NOT EXISTS (SELECT 1 FROM ledger_transactions r
-                                  WHERE r.business_id = ${businessId}::uuid
-                                    AND r.reverses_id = s.id)), 0)::int AS invoices,
+      /* Sales issued less sales taken back, by posting shape, so a sale voided
+       * through a reversal that carries no link to it (an invoice from before
+       * the link existed) still nets out, and the count agrees with the amount
+       * across windows. Never below zero. */
+      GREATEST(0,
+        COALESCE((SELECT count(*) FROM sale_tx s
+                  WHERE s.id NOT IN (SELECT transaction_id FROM lm
+                                     WHERE source_type IN ('journal', 'bank_classification'))), 0)
+        - COALESCE((SELECT count(DISTINCT transaction_id) FROM lm
+                    WHERE code = ${REVENUE_CODE} AND debit_k > 0
+                      AND transaction_id NOT IN (SELECT id FROM credit_tx)
+                      AND source_type NOT IN ('journal', 'bank_classification')), 0)
+      )::int AS invoices,
       COALESCE((SELECT SUM(debit_k - credit_k) FROM lm
                 WHERE code IN (${REVENUE_CODE}, ${VAT_CODE})
                   AND transaction_id IN (SELECT id FROM credit_tx)), 0)::bigint AS credited_k,

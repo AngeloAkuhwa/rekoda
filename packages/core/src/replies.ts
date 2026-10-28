@@ -1498,10 +1498,18 @@ export function salesAnswer(input: {
   invoices: number;
   moneyInK: number;
 }): Reply {
-  if (input.invoices === 0 && input.salesK <= 0) {
+  if (input.invoices === 0 && input.salesK === 0) {
     return reply(
       `You have not recorded any sales ${inWindow(input.label)}. Tell me one the way you would ` +
         'tell a person, like "sold 2 bags to Ada for 40k".',
+    );
+  }
+  /* Sales taken back in this window that were made in an earlier one: the
+   * movement is real and negative, so it is said, not hidden (G-118). */
+  if (input.invoices === 0 && input.salesK < 0) {
+    return reply(
+      `${input.label[0]!.toUpperCase()}${input.label.slice(1)}: ${formatKobo(-input.salesK)} ` +
+        'of earlier sales was taken back.',
     );
   }
   /* Revenue the books hold with no invoice behind it, such as one posted by

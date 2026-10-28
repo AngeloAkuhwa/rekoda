@@ -921,6 +921,18 @@ describe('sales the books hold with no invoice behind it (G-118)', () => {
     expect(text).not.toContain('not recorded');
   });
 
+  it('says so when earlier sales were taken back in the window', () => {
+    const text = replies.salesAnswer({
+      label: 'today',
+      salesK: -300_000,
+      invoices: 0,
+      moneyInK: 0,
+    }).text;
+    expect(text).toContain('₦3,000');
+    expect(text).toContain('taken back');
+    expect(text).not.toContain('not recorded');
+  });
+
   it('still says nothing was recorded when the window nets to nothing', () => {
     const text = replies.salesAnswer({ label: 'today', salesK: 0, invoices: 0, moneyInK: 0 }).text;
     expect(text).toContain('not recorded');

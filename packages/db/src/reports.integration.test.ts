@@ -1300,6 +1300,43 @@ describe('the window summary reconciles with the ledger (G-118)', () => {
     expect(after.invoices).toBe(0);
   });
 
+  it('nets a voided sale out of the invoice count even when the invoice carries no ledger link', async () => {
+    const businessId = await seedBusiness();
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_G118NV',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 3_000_000 }],
+        subtotalK: 3_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 3_000_000,
+        paidK: 0,
+        balanceDueK: 3_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'g118-nolink-void',
+        actor: 'test',
+      }),
+    );
+    /* An invoice from before the link existed: no link, so its void writes a
+     * reversal that names nothing. */
+    const owner = postgres(urls.owner, { max: 1, onnotice: () => {} });
+    try {
+      await owner`UPDATE invoices SET ledger_transaction_id = NULL WHERE business_id = ${businessId}::uuid`;
+    } finally {
+      await owner.end();
+    }
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.voidInvoice(tx, businessId, sale.invoiceNumber, 'never delivered', 'user:1'),
+    );
+    const after = await summary(businessId);
+    expect(after.salesK).toBe(0);
+    expect(after.invoices).toBe(0);
+  });
+
   it('counts spending the ledger holds even where no register row exists, and ties to the ledger', async () => {
     const businessId = await seedBusiness();
     await withBusiness(db, businessId, (tx) =>
