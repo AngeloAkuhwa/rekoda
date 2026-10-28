@@ -1283,6 +1283,23 @@ describe('the window summary reconciles with the ledger (G-118)', () => {
     expect(after.moneyInK).toBe(0);
   });
 
+  it('counts revenue posted by hand in sales but not as an invoice', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(db, businessId, (tx) =>
+      journalRepo.recordJournal(tx, {
+        businessId,
+        memo: 'cash sale made outside Rekoda',
+        amountK: 2_000_000,
+        intoAccount: 'CASH',
+        outOfAccount: 'SALES_REVENUE',
+        actor: 'user:1',
+      }),
+    );
+    const after = await summary(businessId);
+    expect(after.salesK).toBe(2_000_000);
+    expect(after.invoices).toBe(0);
+  });
+
   it('counts spending the ledger holds even where no register row exists, and ties to the ledger', async () => {
     const businessId = await seedBusiness();
     await withBusiness(db, businessId, (tx) =>
