@@ -240,7 +240,9 @@ export class FinancialEventAlreadyPostedError extends Error {
     readonly identity: string,
     readonly existingTransactionId: string,
   ) {
-    super(`financial event ${identity} is already posted`);
+    /* A fixed message: the identity holds a source id and must not reach a
+     * log or an error body. It stays on the typed field for the caller. */
+    super('financial event is already posted');
     this.name = 'FinancialEventAlreadyPostedError';
   }
 }
