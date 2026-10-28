@@ -944,12 +944,13 @@ export async function summaryFor(
                 WHERE code IN (${REVENUE_CODE}, ${VAT_CODE})
                   AND transaction_id IN (SELECT id FROM credit_tx)), 0)::bigint AS credited_k,
       /* Gross collections: the cash that arrived, plus any fee the provider
-       * kept (posted to expenses in the same payment), less payments undone by
+       * kept (posted to expenses in the same payment confirmation, never in a hand-posted journal), less payments undone by
        * a reversal or chargeback, which debit receivables whatever account
        * the money came back through. */
       COALESCE((SELECT SUM(debit_k) FROM lm
                 WHERE (code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING'
                        OR (code = ${EXPENSES_CODE}
+                           AND posting_purpose = 'PAYMENT_CONFIRMATION'
                            AND transaction_id IN (SELECT id FROM cash_tx)))
                   AND transaction_id IN (SELECT id FROM collection_tx)), 0)::bigint
         - COALESCE((SELECT SUM(debit_k) FROM lm

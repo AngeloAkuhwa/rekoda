@@ -1398,6 +1398,36 @@ describe('the window summary reconciles with the ledger (G-118)', () => {
     expect(after.salesK).toBe(0);
   });
 
+  it('does not count a write-off in a hand-posted journal as money collected', async () => {
+    const businessId = await seedBusiness();
+    const accountIdFor = (code: string) =>
+      withBusiness(db, businessId, async (tx) => {
+        const rows = await tx.execute<{ id: string }>(
+          sql`SELECT id FROM accounts WHERE business_id = ${businessId}::uuid AND code = ${code}`,
+        );
+        return [...rows][0]!.id;
+      });
+    const cash = await accountIdFor('1000');
+    const expenses = await accountIdFor('6000');
+    const receivable = await accountIdFor('1100');
+    const { id } = await withBusiness(db, businessId, (tx) =>
+      journalDraftsRepo.createJournalDraft(tx, {
+        businessId,
+        memo: 'part payment, rest written off',
+        createdBy: 'user:ada',
+        lines: [
+          { accountId: cash, debitK: 4_000_000, creditK: 0 },
+          { accountId: expenses, debitK: 1_000_000, creditK: 0 },
+          { accountId: receivable, debitK: 0, creditK: 5_000_000 },
+        ],
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      journalDraftsRepo.postJournalDraft(tx, { businessId, draftId: id, actor: 'user:ada' }),
+    );
+    expect((await summary(businessId)).moneyInK).toBe(4_000_000);
+  });
+
   it('recognises an advance by the chart role when the tenant moved unearned revenue to another code', async () => {
     const businessId = await seedBusiness();
     await withBusiness(db, businessId, (tx) =>
