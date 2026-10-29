@@ -71,7 +71,9 @@ function topLevelEnd(text: string, from: number, end: RegExp): number {
     const ch = text[i]!;
     if (ch === "'") quoted = !quoted;
     if (quoted) continue;
-    if (depth === 0 && !/\w/.test(text[i - 1] ?? ' ') && end.test(text.slice(i))) return i;
+    /* A keyword only ends the clause at a word boundary (not inside `effective_from`). */
+    const insideWord = /\w/.test(ch) && /\w/.test(text[i - 1] ?? ' ');
+    if (depth === 0 && !insideWord && end.test(text.slice(i))) return i;
     if ('({['.includes(ch)) depth++;
     else if (')}]'.includes(ch)) depth--;
   }
@@ -147,6 +149,18 @@ function planWriteOffsets(code: string): number[] {
     const stmt = code.slice(m.index!, end);
     const set = /\bON\s+CONFLICT\b[\s\S]*?\bDO\s+UPDATE\s+SET\s/i.exec(stmt);
     if (set && assignsPlan(stmt, set.index + set[0].length)) hits.push(m.index!);
+    /* A plain insert naming the column: INSERT INTO businesses [AS b] (..., plan, ...) */
+    const cols = new RegExp(String.raw`^INSERT\s+INTO\s+${table}${alias}\s*\(([^)]*)\)`, 'i').exec(
+      stmt,
+    );
+    if (cols && new RegExp(String.raw`(^|,)\s*${column}\s*(,|$)`, 'i').test(cols[1]!)) {
+      hits.push(m.index!);
+    }
+  }
+  for (const m of code.matchAll(new RegExp(String.raw`MERGE\s+INTO\s+${table}\b`, 'gi'))) {
+    const stmt = code.slice(m.index!, statementEnd(code, m.index!));
+    const set = /\bWHEN\s+MATCHED\b[\s\S]*?\bUPDATE\s+SET\s/i.exec(stmt);
+    if (set && assignsPlan(stmt, set.index + set[0].length)) hits.push(m.index!);
   }
 
   /* A query-builder object is read property by property; anything else (a
@@ -154,7 +168,11 @@ function planWriteOffsets(code: string): number[] {
   const writes = (text: string, from: number): boolean => {
     if (text[from] !== '{') return true;
     const props = topLevelSplit(text.slice(from + 1, topLevelEnd(text, from + 1, /^\}/)));
-    return props.some((p) => /^\s*(plan|planExpiresAt)\s*(:|$)/.test(p) || /^\s*\.\.\./.test(p));
+    return props.some((p) =>
+      /^\s*(?:(?:plan|planExpiresAt)\s*(?::|$)|['"](?:plan|planExpiresAt)['"]\s*:|\[|\.\.\.)/.test(
+        p,
+      ),
+    );
   };
   for (const m of code.matchAll(/\.update\(businesses\)\s*\.set\(\s*/g)) {
     if (writes(code, m.index! + m[0].length)) hits.push(m.index!);
@@ -164,8 +182,15 @@ function planWriteOffsets(code: string): number[] {
   }
   for (const m of code.matchAll(/\.insert\(businesses\)/g)) {
     const chain = code.slice(m.index!, chainEnd(code, m.index!));
-    const set = /\.onConflictDoUpdate\(\s*\{[\s\S]*?\bset:\s*/.exec(chain);
-    if (set && writes(chain, set.index + set[0].length)) hits.push(m.index!);
+    const conflict = /\.onConflictDoUpdate\(\s*/.exec(chain);
+    if (!conflict) continue;
+    const at = conflict.index + conflict[0].length;
+    /* A config passed as a variable cannot be read, so it counts as a write. */
+    if (chain[at] !== '{') hits.push(m.index!);
+    else {
+      const set = /\bset:\s*/.exec(chain.slice(at));
+      if (set && writes(chain, at + set.index + set[0].length)) hits.push(m.index!);
+    }
   }
   return hits;
 }
@@ -250,7 +275,7 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
     expect(w('function a(){ tx.update(businesses).set({ name: next.name }) }')).toEqual([]);
     expect(
       w(
-        'function a(){ sql`INSERT INTO businesses (id, plan) VALUES (${i}, ${p}) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name` }',
+        'function a(){ sql`INSERT INTO businesses (id, name) VALUES (${i}, ${n}) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name` }',
       ),
     ).toEqual([]);
     expect(
@@ -287,6 +312,29 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
       planWriters('function a(){ tx.update(businesses).set({ ...patch, updatedAt }) }'),
     ).toEqual(['a']);
     expect(planWriters('function a(){ tx.insert(businesses).values({ ...row }) }')).toEqual(['a']);
+  });
+
+  it('reads unspaced shorthand, quoted and computed keys, config variables, MERGE and column lists', () => {
+    const w = (src: string) => planWriters(src);
+    expect(w('function a(){ tx.update(businesses).set({plan}) }')).toEqual(['a']);
+    expect(w("function a(){ tx.update(businesses).set({ 'plan': next }) }")).toEqual(['a']);
+    expect(w('function a(){ tx.update(businesses).set({ [col]: next }) }')).toEqual(['a']);
+    expect(
+      w(
+        'function a(){ tx.insert(businesses).values({ name }).onConflictDoUpdate(conflictConfig) }',
+      ),
+    ).toEqual(['a']);
+    expect(
+      w(
+        'function a(){ sql`MERGE INTO businesses b USING t ON b.id = t.id WHEN MATCHED THEN UPDATE SET plan = t.plan` }',
+      ),
+    ).toEqual(['a']);
+    expect(
+      w('function a(){ sql`INSERT INTO businesses AS b (id, plan) VALUES (${i}, ${p})` }'),
+    ).toEqual(['a']);
+    expect(w('function a(){ sql`INSERT INTO businesses (id, name) VALUES (${i}, ${n})` }')).toEqual(
+      [],
+    );
   });
 
   it('keeps a semicolon inside a quoted builder argument within the chain', () => {
