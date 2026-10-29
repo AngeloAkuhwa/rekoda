@@ -16,9 +16,12 @@ const root = fileURLToPath(new URL('../../../', import.meta.url));
 /**
  * The permitted write sites, as `file#function`. `expireSubscription` is the
  * deliberate lapse (`plan = 'expired'`); it clears the cycle bookkeeping in the
- * same statement. Anything else, in this file or another, fails the sweep.
+ * same statement. `createBusinessWithOwner` starts the 14-day trial: it inserts
+ * the new row with its first plan and expiry and nothing else ever does.
+ * Anything else, in these files or another, fails the sweep.
  */
 const ALLOWED = [
+  'packages/db/src/repos/identity.ts#createBusinessWithOwner',
   'packages/db/src/repos/subscriptions.ts#expireSubscription',
   'packages/db/src/repos/subscriptions.ts#writeSubscriptionState',
 ];
@@ -73,7 +76,41 @@ function topLevelEnd(text: string, from: number, end: RegExp): number {
   return text.length;
 }
 
-/** Offsets in `code` of every statement assigning the plan or its expiry on `businesses`. */
+/**
+ * Replace every `${...}` interpolation with `$1`, so an apostrophe, bracket or
+ * semicolon inside a TypeScript expression cannot be mistaken for SQL text. The
+ * Drizzle table `${businesses}` stays readable as the table name.
+ */
+function maskInterpolations(code: string): string {
+  let out = '';
+  for (let i = 0; i < code.length; i++) {
+    if (code[i] === '$' && code[i + 1] === '{') {
+      let depth = 1;
+      let k = i + 2;
+      while (k < code.length && depth > 0) {
+        if (code[k] === '{') depth++;
+        else if (code[k] === '}') depth--;
+        k++;
+      }
+      out += code.slice(i + 2, k - 1).trim() === 'businesses' ? 'businesses' : '$1';
+      i = k - 1;
+    } else out += code[i];
+  }
+  return out;
+}
+
+/** End of the SQL statement starting at `from`: a `;` or the closing backtick outside single quotes. */
+function statementEnd(code: string, from: number): number {
+  let quoted = false;
+  for (let i = from; i < code.length; i++) {
+    const ch = code[i]!;
+    if (ch === "'") quoted = !quoted;
+    else if (!quoted && (ch === ';' || ch === '`')) return i;
+  }
+  return code.length;
+}
+
+/** Offsets in `code` (interpolations already masked) of every statement assigning the plan or its expiry on `businesses`. */
 function planWriteOffsets(code: string): number[] {
   const hits: number[] = [];
   const table = String.raw`(?:ONLY\s+)?(?:"?public"?\.)?"?businesses"?`;
@@ -81,35 +118,38 @@ function planWriteOffsets(code: string): number[] {
   const column = String.raw`"?(?:plan|plan_expires_at)"?`;
   const single = new RegExp(String.raw`^\s*(?:\w+\.)?${column}\s*=(?!=)`, 'i');
   const tuple = new RegExp(String.raw`^\s*\([^)]*\b${column}\b[^)]*\)\s*=`, 'i');
+  const assignsPlan = (text: string, from: number) =>
+    topLevelSplit(
+      text.slice(from, topLevelEnd(text, from, /^(WHERE\b|RETURNING\b|FROM\b|`)/i)),
+    ).some((a) => single.test(a) || tuple.test(a));
+
   for (const m of code.matchAll(new RegExp(String.raw`UPDATE\s+${table}${alias}\s+SET\s`, 'gi'))) {
-    const from = m.index! + m[0].length;
-    const stop = topLevelEnd(code, from, /^(WHERE\b|RETURNING\b|FROM\b|`)/i);
-    const assigns = topLevelSplit(code.slice(from, stop));
-    if (assigns.some((a) => single.test(a) || tuple.test(a))) hits.push(m.index!);
+    if (assignsPlan(code, m.index! + m[0].length)) hits.push(m.index!);
   }
-  /* One character of a statement: a quoted string (which may hold `;`) or anything but `;` and the closing backtick. */
-  const stmt = String.raw`(?:'(?:[^']|'')*'|[^;\x60'])`;
-  const upsert = String.raw`INSERT\s+INTO\s+${table}${alias}${stmt}*?ON\s+CONFLICT${stmt}*?DO\s+UPDATE\s+SET\s`;
-  for (const m of code.matchAll(new RegExp(upsert, 'gi'))) {
-    const from = m.index! + m[0].length;
-    const stop = topLevelEnd(code, from, /^(WHERE\b|RETURNING\b|`)/i);
-    const assigns = topLevelSplit(code.slice(from, stop));
-    if (assigns.some((a) => single.test(a) || tuple.test(a))) hits.push(m.index!);
+  for (const m of code.matchAll(new RegExp(String.raw`INSERT\s+INTO\s+${table}\b`, 'gi'))) {
+    const end = statementEnd(code, m.index!);
+    const stmt = code.slice(m.index!, end);
+    const set = /\bON\s+CONFLICT\b[\s\S]*?\bDO\s+UPDATE\s+SET\s/i.exec(stmt);
+    if (set && assignsPlan(stmt, set.index + set[0].length)) hits.push(m.index!);
   }
-  const builders = [
-    /\.update\(businesses\)\s*\.set\(\s*\{/g,
-    /\.insert\(businesses\)[^;]*?\.onConflictDoUpdate\(\s*\{[^;]*?\bset:\s*\{/g,
-  ];
-  /* A patch passed as a variable cannot be read here, so it counts as a write. */
-  for (const m of code.matchAll(/\.update\(businesses\)\s*\.set\(\s*(?!\{)[\w.]/g))
-    hits.push(m.index!);
-  for (const re of builders) {
-    for (const m of code.matchAll(re)) {
-      const from = m.index! + m[0].length;
-      const stop = topLevelEnd(code, from, /^\}/);
-      const props = topLevelSplit(code.slice(from, stop));
-      if (props.some((p) => /^\s*(plan|planExpiresAt)\s*(:|$)/.test(p))) hits.push(m.index!);
-    }
+
+  /* A query-builder object is read property by property; anything else (a
+   * patch variable) cannot be read here, so it counts as a write. */
+  const writes = (text: string, from: number): boolean => {
+    if (text[from] !== '{') return true;
+    const props = topLevelSplit(text.slice(from + 1, topLevelEnd(text, from + 1, /^\}/)));
+    return props.some((p) => /^\s*(plan|planExpiresAt)\s*(:|$)/.test(p));
+  };
+  for (const m of code.matchAll(/\.update\(businesses\)\s*\.set\(\s*/g)) {
+    if (writes(code, m.index! + m[0].length)) hits.push(m.index!);
+  }
+  for (const m of code.matchAll(/\.insert\(businesses\)\s*\.values\(\s*/g)) {
+    if (writes(code, m.index! + m[0].length)) hits.push(m.index!);
+  }
+  for (const m of code.matchAll(/\.insert\(businesses\)/g)) {
+    const chain = code.slice(m.index!, code.indexOf(';', m.index!) >>> 0 || code.length);
+    const set = /\.onConflictDoUpdate\(\s*\{[\s\S]*?\bset:\s*/.exec(chain);
+    if (set && writes(chain, set.index + set[0].length)) hits.push(m.index!);
   }
   return hits;
 }
@@ -133,7 +173,8 @@ function enclosing(code: string, offset: number): string {
 
 /** `function` names (or `<module>`) that assign the plan or its expiry in `src`. */
 export function planWriters(src: string): string[] {
-  const code = strip(src);
+  /* Offsets and scopes are both read from the masked text, so they agree. */
+  const code = maskInterpolations(strip(src));
   return [...new Set(planWriteOffsets(code).map((o) => enclosing(code, o)))].sort();
 }
 
@@ -214,6 +255,36 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
     expect(planWriters(src)).toEqual(['rogue', 'writeSubscriptionState']);
   });
 
+  it('reads interpolated table names and ignores apostrophes inside interpolations', () => {
+    expect(planWriters('function a(){ sql`UPDATE ${businesses} SET plan = ${p}` }')).toEqual(['a']);
+    expect(
+      planWriters(
+        'function a(){ sql`INSERT INTO businesses (name) VALUES (${b.name ?? "owner\'s shop"}) ON CONFLICT (id) DO UPDATE SET plan = ${p}` }',
+      ),
+    ).toEqual(['a']);
+  });
+
+  it('sees inserts that set the plan and upserts through a variable', () => {
+    expect(
+      planWriters('function a(){ tx.insert(businesses).values({ name, planExpiresAt: d }) }'),
+    ).toEqual(['a']);
+    expect(planWriters('function a(){ tx.insert(businesses).values(row) }')).toEqual(['a']);
+    expect(planWriters('function a(){ tx.insert(businesses).values({ name }) }')).toEqual([]);
+    expect(
+      planWriters(
+        'function a(){ tx.insert(businesses).values({ name }).onConflictDoUpdate({ target: businesses.id, set: patch }) }',
+      ),
+    ).toEqual(['a']);
+  });
+
+  it('scans a plain insert with many doubled apostrophes in linear time', () => {
+    const src =
+      "function a(){ sql`INSERT INTO businesses (note) VALUES ('" + "it''s ".repeat(5000) + "')` }";
+    const started = Date.now();
+    expect(planWriters(src)).toEqual([]);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
   it('keeps a semicolon inside a quoted SQL string within the upsert match', () => {
     expect(
       planWriters(
@@ -232,7 +303,7 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
     ).toEqual(['rogue']);
     expect(
       planWriters(
-        'function good(){ tx.insert(businesses).values(v); }\n' +
+        'function good(){ tx.insert(businesses).values({ name }); }\n' +
           'function rogue(){ tx.insert(businesses).values(v).onConflictDoUpdate({ target: businesses.id, set: { plan } }); }',
       ),
     ).toEqual(['rogue']);
