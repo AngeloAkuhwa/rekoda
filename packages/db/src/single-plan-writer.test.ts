@@ -137,7 +137,7 @@ function chainEnd(code: string, from: number): number {
 function planWriteOffsets(code: string): number[] {
   const hits: number[] = [];
   const table = String.raw`(?:ONLY\s+)?(?:"?public"?\.)?"?businesses"?`;
-  const alias = String.raw`(?:\s+(?:AS\s+)?(?!SET\b)"?\w+"?)?`;
+  const alias = String.raw`(?:\s+(?:AS\s+)?(?!(?:SET|VALUES|SELECT|DEFAULT|OVERRIDING|WITH|TABLE)\b)"?\w+"?)?`;
   const column = String.raw`"?(?:plan|plan_expires_at)"?`;
   const single = new RegExp(String.raw`^\s*(?:\w+\.)?${column}\s*=(?!=)`, 'i');
   const tuple = new RegExp(String.raw`^\s*\([^)]*\b${column}\b[^)]*\)\s*=`, 'i');
@@ -161,11 +161,13 @@ function planWriteOffsets(code: string): number[] {
     if (cols && new RegExp(String.raw`(^|,)\s*${column}\s*(,|$)`, 'i').test(cols[1]!)) {
       hits.push(m.index!);
     }
+    /* No column list (INSERT ... VALUES / SELECT): the target columns are unknown. */
+    if (!cols) hits.push(m.index!);
   }
+  /* MERGE has several actions (matched update, not-matched insert); no code
+   * uses it on `businesses`, so any use counts as a write and needs review. */
   for (const m of code.matchAll(new RegExp(String.raw`MERGE\s+INTO\s+${table}\b`, 'gi'))) {
-    const stmt = code.slice(m.index!, statementEnd(code, m.index!));
-    const set = /\bWHEN\s+MATCHED\b[\s\S]*?\bUPDATE\s+SET\s/i.exec(stmt);
-    if (set && assignsPlan(stmt, set.index + set[0].length)) hits.push(m.index!);
+    hits.push(m.index!);
   }
 
   /* A query-builder object is read property by property; anything else (a
@@ -194,7 +196,8 @@ function planWriteOffsets(code: string): number[] {
     if (chain[at] !== '{') hits.push(m.index!);
     else {
       const set = /\bset:\s*/.exec(chain.slice(at));
-      if (set && writes(chain, at + set.index + set[0].length)) hits.push(m.index!);
+      /* No literal `set:` (shorthand `set`, or none) cannot be read: count it. */
+      if (!set || writes(chain, at + set.index + set[0].length)) hits.push(m.index!);
     }
   }
   return hits;
@@ -340,6 +343,27 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
     expect(w('function a(){ sql`INSERT INTO businesses (id, name) VALUES (${i}, ${n})` }')).toEqual(
       [],
     );
+  });
+
+  it('counts MERGE, columnless inserts and unreadable conflict sets as writes', () => {
+    const w = (src: string) => planWriters(src);
+    expect(
+      w(
+        'function a(){ sql`MERGE INTO businesses b USING t ON b.id = t.id WHEN NOT MATCHED THEN INSERT (plan) VALUES (t.plan)` }',
+      ),
+    ).toEqual(['a']);
+    expect(w('function a(){ sql`INSERT INTO businesses VALUES (${i}, ${p})` }')).toEqual(['a']);
+    expect(w('function a(){ sql`INSERT INTO businesses SELECT * FROM staged` }')).toEqual(['a']);
+    expect(
+      w(
+        'function a(){ tx.insert(businesses).values({ name }).onConflictDoUpdate({ target: businesses.id, set }) }',
+      ),
+    ).toEqual(['a']);
+    expect(
+      w(
+        'function a(){ tx.insert(businesses).values({ name }).onConflictDoUpdate({ target: businesses.id, set: { name } }) }',
+      ),
+    ).toEqual([]);
   });
 
   it('keeps a semicolon inside a quoted builder argument within the chain', () => {
