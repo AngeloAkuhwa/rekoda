@@ -16,6 +16,7 @@ import { PaymentsModule } from './payments/payments.module.js';
 import { RepliesModule } from './replies/replies.module.js';
 import { CatalogueModule } from './catalogue/catalogue.module.js';
 import { BankModule } from './bank/bank.module.js';
+import { RemindersModule } from './reminders/reminders.module.js';
 import { ReportsModule } from './reports/reports.module.js';
 import { ShopModule } from './shop/shop.module.js';
 import { RiskModule } from './risk/risk.module.js';
@@ -34,6 +35,7 @@ import { WebhooksModule } from './webhooks/webhooks.module.js';
     JobsModule,
     PaymentsModule,
     RepliesModule,
+    RemindersModule,
     ReportsModule,
     RiskModule,
     CommandsModule,

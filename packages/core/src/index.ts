@@ -58,7 +58,8 @@ export type { Reply } from './replies.js';
  *
  * Import it explicitly instead:  import { … } from '@rekoda/core/identity'
  *
- * `documents` is held back for the node:crypto reason too.
+ * `documents` is held back for the node:crypto reason too, and so is `reminders`
+ * (`@rekoda/core/reminders`; it signs the customer opt-out token).
  *
  * `privacy` and `vault` are held back for the same reason, and for a second
  * one that matters more: `rehydrate` and `decryptFacet` are the two functions
@@ -72,3 +73,4 @@ export * from './recognition.js';
 export * from './fulfilment.js';
 export * from './charges.js';
 export * from './ops-alerts.js';
+export * from './notification-policy.js';

@@ -71,7 +71,10 @@ export type SendCustomerTextOutcome =
    * sendable, and nothing is metered for a message nobody may receive. */
   | { outcome: 'suppressed' }
   | { outcome: 'allowance_exhausted'; unit: 'SERVICE_MESSAGE' }
-  | { outcome: 'send_failed'; unit: 'SERVICE_MESSAGE' }
+  /* `unknown`: the provider may have accepted the message (a timeout or a dropped connection),
+   * so a caller that would warn about or retry a proactive message must not assume it was not
+   * delivered. */
+  | { outcome: 'send_failed'; unit: 'SERVICE_MESSAGE'; unknown?: boolean }
   | { outcome: 'unavailable'; reason: 'connection_key_missing' | 'token_missing' };
 
 export type SendTemplateOutcome =
@@ -378,7 +381,7 @@ export class WabaTemplateService {
             reason: error.message,
           });
           this.log.warn('customer text send failed; unit refunded');
-          return { outcome: 'send_failed', unit };
+          return { outcome: 'send_failed', unit, ...(error.notSent ? {} : { unknown: true }) };
         }
         throw error;
       }

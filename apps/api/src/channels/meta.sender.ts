@@ -546,11 +546,15 @@ export class NoSenderConfigured implements MessageSender {
   }
 
   sendTemplate(): Promise<never> {
-    return Promise.reject(new SendFailed(this.reason));
+    /* Nothing is configured to send with, so nothing can have been sent: a definite non-delivery,
+     * not an unknown outcome (N1 review). */
+    return Promise.reject(new SendFailed(this.reason, null, true));
   }
 
   sendOnConnection(): Promise<never> {
-    return Promise.reject(new SendFailed(this.reason));
+    /* Nothing is configured to send with, so nothing can have been sent: a definite non-delivery,
+     * not an unknown outcome (N1 review). */
+    return Promise.reject(new SendFailed(this.reason, null, true));
   }
 
   sendBillingNotice(): Promise<never> {

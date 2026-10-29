@@ -1510,3 +1510,17 @@ export async function billingEmailConfirm(
   });
   return status === 200 ? billingEmailConfirmResponse.parse(json) : 'malformed';
 }
+
+/**
+ * A customer stopping a merchant's payment reminders from the link in the email (N1). Public: the
+ * signed token in the body is the only credential. A bad, forged or foreign token is one answer.
+ */
+export async function reminderOptOut(token: string): Promise<'done' | 'invalid'> {
+  const { status } = await call({
+    method: 'POST',
+    path: '/v1/public/reminders/opt-out',
+    body: { token },
+    expect: [200, 404, 400],
+  });
+  return status === 200 ? 'done' : 'invalid';
+}
