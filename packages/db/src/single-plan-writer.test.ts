@@ -80,11 +80,24 @@ function planWriteOffsets(code: string): number[] {
     const assigns = topLevelSplit(code.slice(from, stop));
     if (assigns.some((a) => single.test(a) || tuple.test(a))) hits.push(m.index!);
   }
-  for (const m of code.matchAll(/\.update\(businesses\)\s*\.set\(\s*\{/g)) {
+  const upsert = String.raw`INSERT\s+INTO\s+${table}${alias}[\s\S]*?ON\s+CONFLICT[\s\S]*?DO\s+UPDATE\s+SET\s`;
+  for (const m of code.matchAll(new RegExp(upsert, 'gi'))) {
     const from = m.index! + m[0].length;
-    const stop = topLevelEnd(code, from, /^\}/);
-    const props = topLevelSplit(code.slice(from, stop));
-    if (props.some((p) => /^\s*(plan|planExpiresAt)\s*(:|$)/.test(p))) hits.push(m.index!);
+    const stop = topLevelEnd(code, from, /^(WHERE\b|RETURNING\b|`)/i);
+    const assigns = topLevelSplit(code.slice(from, stop));
+    if (assigns.some((a) => single.test(a) || tuple.test(a))) hits.push(m.index!);
+  }
+  const builders = [
+    /\.update\(businesses\)\s*\.set\(\s*\{/g,
+    /\.insert\(businesses\)[\s\S]*?\.onConflictDoUpdate\(\s*\{[\s\S]*?\bset:\s*\{/g,
+  ];
+  for (const re of builders) {
+    for (const m of code.matchAll(re)) {
+      const from = m.index! + m[0].length;
+      const stop = topLevelEnd(code, from, /^\}/);
+      const props = topLevelSplit(code.slice(from, stop));
+      if (props.some((p) => /^\s*(plan|planExpiresAt)\s*(:|$)/.test(p))) hits.push(m.index!);
+    }
   }
   return hits;
 }
@@ -133,6 +146,16 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
     ).toEqual(['a']);
     expect(w('function a(){ tx.update(businesses).set({ plan }) }')).toEqual(['a']);
     expect(
+      w(
+        'function a(){ sql`INSERT INTO businesses (id, plan) VALUES (${i}, ${p}) ON CONFLICT (id) DO UPDATE SET plan = EXCLUDED.plan` }',
+      ),
+    ).toEqual(['a']);
+    expect(
+      w(
+        'function a(){ tx.insert(businesses).values(v).onConflictDoUpdate({ target: businesses.id, set: { planExpiresAt: d } }) }',
+      ),
+    ).toEqual(['a']);
+    expect(
       w('function a(){ sql`UPDATE businesses AS b SET plan = ${p} WHERE b.id = ${i}` }'),
     ).toEqual(['a']);
     expect(w('function a(){ sql`UPDATE businesses b SET plan_expires_at = ${d}` }')).toEqual(['a']);
@@ -147,6 +170,11 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
   it('ignores what is not a plan assignment', () => {
     const w = (s: string) => planWriters(s);
     expect(w('function a(){ tx.update(businesses).set({ name: next.name }) }')).toEqual([]);
+    expect(
+      w(
+        'function a(){ sql`INSERT INTO businesses (id, plan) VALUES (${i}, ${p}) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name` }',
+      ),
+    ).toEqual([]);
     expect(
       w('function a(){ sql`UPDATE businesses SET pending_plan = ${p} WHERE plan = ${q}` }'),
     ).toEqual([]);
