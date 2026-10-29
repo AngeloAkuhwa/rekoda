@@ -89,6 +89,7 @@ test('invited people see the screens their role allows, and removing one takes i
   await expect(people.getByRole('row').filter({ hasText: e164(helperPhone) })).toHaveCount(0);
 
   // The accountant reads everything but changes nothing in the catalogue and cannot see the team.
+  // Their session stays open through the owner's removal below: that is the case that matters.
   const accountant = await signInMember(browser, accountantPhone);
   try {
     await accountant.goto('/app/team');
@@ -100,14 +101,19 @@ test('invited people see the screens their role allows, and removing one takes i
     await expect(accountant.getByRole('heading', { name: 'Your products' })).toBeVisible();
     await expect(accountant.getByText('Add a product', { exact: true })).toHaveCount(0);
     await expect(accountant.getByText(/Set up your shop|Change your shop/)).toHaveCount(0);
+
+    // Removing the accountant frees the seat and takes them off the owner's list...
+    await page.goto('/app/team');
+    await page.getByRole('button', { name: `Remove ${e164(accountantPhone)}` }).click();
+    await expect(people.getByRole('row').filter({ hasText: e164(accountantPhone) })).toHaveCount(0);
+
+    // ...and their already-open session stops working: the next protected page sends them to sign in.
+    await accountant.goto('/app/catalogue');
+    await expect(accountant).toHaveURL(/\/start/);
+    await expect(accountant.getByRole('heading', { name: 'Your products' })).toHaveCount(0);
   } finally {
     await accountant.context().close();
   }
-
-  // Removing the accountant frees the seat and takes them off the owner's list.
-  await page.goto('/app/team');
-  await page.getByRole('button', { name: `Remove ${e164(accountantPhone)}` }).click();
-  await expect(people.getByRole('row').filter({ hasText: e164(accountantPhone) })).toHaveCount(0);
 
   // The helper records trade, so the catalogue offers adding a product, but the shop and the team
   // stay the owner's.
