@@ -388,7 +388,9 @@ describe('the sweep', () => {
    * protect the normal path; this is the defence in depth the spec asks
    * for — a writer that bypasses the bus entirely still cannot raise one
    * month's rent twice, because the posting carries the raise's identity
-   * and `ledger_tx_posting_key_ux` refuses a second one.
+   * and the ledger refuses a second one: `writePosting` answers with the typed
+   * already-posted error (G-88), `ledger_tx_posting_key_ux` is the backstop
+   * (proved by a raw insert in financial-event-identity.integration.test.ts).
    */
   it('stamps the raise on the posting, and the ledger refuses it twice', async () => {
     const { businessId, id, firstDueOn } = await scheduleFor('+2348177200016', 1);
@@ -417,7 +419,7 @@ describe('the sweep', () => {
           postingKey: `recurring:${id}:${firstDueOn}`,
         }),
       ),
-    ).rejects.toThrow(/ledger_transactions/);
+    ).rejects.toThrow(/already posted/);
   });
 
   /**
