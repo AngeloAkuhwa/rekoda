@@ -623,6 +623,8 @@ describe('withdrawing an entry', () => {
  * same debt is how a merchant stops believing either.
  */
 describe('ageing what is owed to suppliers', () => {
+  /* One draft is one purchase (G-88): the fixture's source ids are distinct. */
+  let purchaseSeq = 0;
   async function purchaseAt(businessId: string, daysAgo: number, amountK: number, paidK: number) {
     const at = new Date(Date.now() - daysAgo * 86_400_000);
     const recorded = await withBusiness(db, businessId, (tx) =>
@@ -633,7 +635,7 @@ describe('ageing what is owed to suppliers', () => {
         paidK,
         method: 'cash',
         sourceType: 'chat',
-        sourceId: `p-${daysAgo}`,
+        sourceId: `p-${daysAgo}-${++purchaseSeq}`,
       }),
     );
     /* Back-date the row, because the ageing reads the expense's own date. */
