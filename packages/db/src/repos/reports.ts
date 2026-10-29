@@ -823,6 +823,9 @@ export async function receiptsFor(
 export interface WindowSummary {
   /** Invoiced in the window, at issue: accrual, not cash. */
   salesK: number;
+  /** The part of `salesK` posted by hand or classified from a bank line, with no
+   * invoice behind it (G-118); the rest is invoiced. */
+  handPostedK: number;
   invoices: number;
   /** Credit notes issued in the window: sales taken back, shown beside sales
    * rather than silently netted into them (N2, OWN-44). */
@@ -864,6 +867,7 @@ export async function summaryFor(
 ): Promise<WindowSummary> {
   const rows = await tx.execute<{
     sales_k: string;
+    hand_posted_k: string;
     invoices: number;
     credited_k: string;
     money_in_k: string;
@@ -930,6 +934,11 @@ export async function summaryFor(
                 WHERE system_role IN (${REVENUE_ROLE}, ${VAT_ROLE})
                   AND transaction_id IN (SELECT id FROM revenue_tx)
                   AND transaction_id NOT IN (SELECT id FROM credit_tx)), 0)::bigint AS sales_k,
+      COALESCE((SELECT SUM(credit_k - debit_k) FROM lm
+                WHERE system_role IN (${REVENUE_ROLE}, ${VAT_ROLE})
+                  AND transaction_id IN (SELECT id FROM revenue_tx)
+                  AND transaction_id NOT IN (SELECT id FROM credit_tx)
+                  AND source_type IN ('journal', 'journal_draft', 'bank_classification')), 0)::bigint AS hand_posted_k,
       /* Sales issued less sales taken back, by posting shape, so a sale voided
        * through a reversal that carries no link to it (an invoice from before
        * the link existed) still nets out, and the count agrees with the amount
@@ -992,6 +1001,7 @@ export async function summaryFor(
   const row = [...rows][0];
   return {
     salesK: Number(row?.sales_k ?? 0),
+    handPostedK: Number(row?.hand_posted_k ?? 0),
     invoices: row?.invoices ?? 0,
     creditedK: Number(row?.credited_k ?? 0),
     moneyInK: Number(row?.money_in_k ?? 0),

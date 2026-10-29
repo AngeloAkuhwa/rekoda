@@ -948,8 +948,48 @@ describe('a negative net with invoices in the window (G-118)', () => {
       moneyInK: -100_000,
     }).text;
     expect(text).toContain('₦1,000');
-    expect(text).toContain('paid back');
+    expect(text).toContain('taken back');
     expect(text).not.toContain('-');
+  });
+});
+
+describe('a window with an invoice and revenue posted by hand (G-118)', () => {
+  it('does not call the hand-posted part invoiced', () => {
+    const text = replies.salesAnswer({
+      label: 'today',
+      salesK: 1_500_000,
+      handPostedK: 500_000,
+      invoices: 1,
+      moneyInK: 1_000_000,
+    }).text;
+    expect(text).toContain('₦15,000 in sales recorded in your books');
+    expect(text).toContain('₦10,000 of it invoiced across one sale');
+    expect(text).not.toContain('₦15,000 invoiced');
+  });
+});
+
+describe('money undone in a window with no sale of its own (G-118)', () => {
+  it('says a reversal or chargeback outweighing money in, instead of claiming no sales and nothing else', () => {
+    const text = replies.salesAnswer({
+      label: 'today',
+      salesK: 0,
+      invoices: 0,
+      moneyInK: -250_000,
+    }).text;
+    expect(text).toContain('not recorded any sales');
+    expect(text).toContain('₦2,500');
+    expect(text).toContain('taken back');
+    expect(text).not.toContain('-');
+  });
+
+  it('says money that came in from earlier sales when the window has no sale of its own', () => {
+    const text = replies.salesAnswer({
+      label: 'today',
+      salesK: 0,
+      invoices: 0,
+      moneyInK: 400_000,
+    }).text;
+    expect(text).toContain('₦4,000 came in');
   });
 });
 

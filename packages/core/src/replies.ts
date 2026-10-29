@@ -1497,50 +1497,52 @@ export function salesAnswer(input: {
   salesK: number;
   invoices: number;
   moneyInK: number;
+  /** Revenue posted by hand, part of `salesK` with no invoice behind it. */
+  handPostedK?: number;
 }): Reply {
-  if (input.invoices === 0 && input.salesK === 0) {
+  if (input.invoices === 0 && input.salesK === 0 && input.moneyInK === 0) {
     return reply(
       `You have not recorded any sales ${inWindow(input.label)}. Tell me one the way you would ` +
         'tell a person, like "sold 2 bags to Ada for 40k".',
     );
   }
-  /* Sales taken back in this window that were made in an earlier one: the
-   * movement is real and negative, so it is said, not hidden (G-118). */
-  if (input.invoices === 0 && input.salesK < 0) {
-    return reply(
-      `${input.label[0]!.toUpperCase()}${input.label.slice(1)}: ${formatKobo(-input.salesK)} ` +
-        'of earlier sales was taken back.',
-    );
-  }
-  /* Revenue the books hold with no invoice behind it, such as one posted by
-   * hand (G-118): the amount is real, so it is said, without pretending to a
-   * count of sales. */
-  if (input.invoices === 0) {
-    return reply(
-      `${input.label[0]!.toUpperCase()}${input.label.slice(1)}: ${formatKobo(input.salesK)} ` +
-        'in sales recorded in your books.',
-    );
-  }
   const head = input.label[0]!.toUpperCase() + input.label.slice(1);
   const sales = input.invoices === 1 ? 'one sale' : `${input.invoices} sales`;
-  /* Earlier sales taken back outweigh what was sold in this window: the net is
-   * negative, so it is worded as a take-back, never printed as a minus. */
-  if (input.salesK < 0) {
-    return reply(
+  /* The sales line. A negative net is worded as a take-back, never printed as
+   * a minus, and revenue the books hold with no invoice behind it (one posted
+   * by hand) is said without pretending to a count of sales (G-118). */
+  let first: string;
+  if (input.invoices === 0 && input.salesK === 0) {
+    first = `You have not recorded any sales ${inWindow(input.label)}.`;
+  } else if (input.invoices === 0 && input.salesK < 0) {
+    first = `${head}: ${formatKobo(-input.salesK)} of earlier sales was taken back.`;
+  } else if (input.invoices === 0) {
+    first = `${head}: ${formatKobo(input.salesK)} in sales recorded in your books.`;
+  } else if (input.salesK < 0) {
+    first =
       `${head}: ${sales} invoiced, but ${formatKobo(-input.salesK)} more of earlier sales was ` +
-        'taken back than was sold.',
-    );
+      'taken back than was sold.';
+  } else if ((input.handPostedK ?? 0) > 0 && input.handPostedK! < input.salesK) {
+    /* Part of the total was posted by hand: only the rest is invoiced, so the
+     * answer does not call all of it invoiced. */
+    first =
+      `${head}: ${formatKobo(input.salesK)} in sales recorded in your books, ` +
+      `${formatKobo(input.salesK - input.handPostedK!)} of it invoiced across ${sales}.`;
+  } else {
+    first = `${head}: ${formatKobo(input.salesK)} invoiced across ${sales}.`;
   }
+  /* The money line. Payments undone by a reversal or chargeback can outweigh
+   * what came in, and that is said even when the window has no sale of its
+   * own. A refund is reported apart from this figure. */
+  let second: string | null = null;
   if (input.moneyInK < 0) {
-    return reply(
-      `${head}: ${formatKobo(input.salesK)} invoiced across ${sales}.\n` +
-        `${formatKobo(-input.moneyInK)} more was paid back than came in.`,
-    );
+    second = `${formatKobo(-input.moneyInK)} more was taken back than came in.`;
+  } else if (input.invoices > 0 && input.salesK >= 0) {
+    second = `${formatKobo(input.moneyInK)} of that has actually come in.`;
+  } else if (input.moneyInK > 0) {
+    second = `${formatKobo(input.moneyInK)} came in.`;
   }
-  return reply(
-    `${head}: ${formatKobo(input.salesK)} invoiced across ${sales}.\n` +
-      `${formatKobo(input.moneyInK)} of that has actually come in.`,
-  );
+  return reply(second === null ? first : `${first}\n${second}`);
 }
 
 export function expensesAnswer(input: {

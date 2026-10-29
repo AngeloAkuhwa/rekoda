@@ -1353,7 +1353,45 @@ describe('the window summary reconciles with the ledger (G-118)', () => {
     );
     const after = await summary(businessId);
     expect(after.salesK).toBe(2_000_000);
+    expect(after.handPostedK).toBe(2_000_000);
     expect(after.invoices).toBe(0);
+  });
+
+  it('separates revenue posted by hand from an invoiced sale in the same window', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_G118MX',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 1_000_000 }],
+        subtotalK: 1_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 1_000_000,
+        paidK: 0,
+        balanceDueK: 1_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'g118-mixed',
+        actor: 'test',
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      journalRepo.recordJournal(tx, {
+        businessId,
+        memo: 'cash sale made outside Rekoda',
+        amountK: 500_000,
+        intoAccount: 'CASH',
+        outOfAccount: 'SALES_REVENUE',
+        actor: 'user:1',
+      }),
+    );
+    const after = await summary(businessId);
+    expect(after.salesK).toBe(1_500_000);
+    expect(after.handPostedK).toBe(500_000);
+    expect(after.invoices).toBe(1);
   });
 
   it('nets a voided sale out of the invoice count even when the invoice carries no ledger link', async () => {
