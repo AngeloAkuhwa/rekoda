@@ -1149,6 +1149,19 @@ describe('no reply tells the merchant to type a phrase the router reads as anoth
   });
 
   it('the sweep itself catches the phrase it guards against', () => {
-    expect(routeMessage('send it again')).toMatchObject({ route: 'deterministic' });
+    expect(routeMessage('send it again')).toMatchObject({
+      route: 'deterministic',
+      intent: { kind: 'resend' },
+    });
   });
+
+  it.each(['Record it again', 'try again', 'send it in shorter parts'])(
+    'the advice that replaced it, "%s", is not read as resend',
+    (phrase) => {
+      expect(routeMessage(phrase)).not.toMatchObject({
+        route: 'deterministic',
+        intent: { kind: 'resend' },
+      });
+    },
+  );
 });
