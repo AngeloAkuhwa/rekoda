@@ -600,8 +600,8 @@ export function quotaReachedForBusiness(): Reply {
 /** The platform ceiling. Not the merchant's fault, and it should not read as if it were. */
 export function busyRightNow(): Reply {
   return reply(
-    'I am very busy right now and could not read that properly. Please send it ' +
-      'again in a few minutes. Nothing was lost.',
+    'I am very busy right now and could not read that properly. Please try again ' +
+      'in a few minutes. Nothing was lost.',
   );
 }
 
@@ -1388,7 +1388,7 @@ export function voiceTooLong(maxSeconds: number): Reply {
 export function messageTooLong(): Reply {
   return reply(
     'That message is more than I can read safely at once.\n\nPlease send it ' +
-      'again in shorter parts and I will record every one of them.',
+      'in shorter parts and I will record every one of them.',
   );
 }
 

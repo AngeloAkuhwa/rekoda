@@ -1130,17 +1130,20 @@ describe('no reply tells the merchant to type a phrase the router reads as anoth
    * advises it makes the merchant resend the last document instead of
    * repeating the entry. Swept over the source of every reply a gate or the
    * reply module can produce, comments removed, so a new occurrence fails. */
-  const strip = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const strip = (src: string) =>
+    src
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '')
+      .replace(/['"]\s*\+\s*['"]/g, '');
+  const advisedPhrases = (src: string) =>
+    [...src.matchAll(/\b(?:re)?send (?:(?:it|them|that|this|am) )?again\b/gi)].map((m) => m[0]);
   const sources = ['./replies.ts', './gates.ts'].map((f) => [
     f,
     strip(readFileSync(new URL(f, import.meta.url), 'utf8')),
   ]);
 
   it.each(sources)('%s advises no phrase that routes to resend', (_, src) => {
-    const advised = [...src!.matchAll(/\b(?:re)?send (?:(?:it|them|that|this|am) )?again\b/gi)].map(
-      (m) => m[0],
-    );
-    for (const phrase of advised) {
+    for (const phrase of advisedPhrases(src!)) {
       const route = routeMessage(phrase);
       expect(route.route === 'deterministic' ? route.intent : null, phrase).not.toEqual({
         kind: 'resend',
@@ -1148,8 +1151,10 @@ describe('no reply tells the merchant to type a phrase the router reads as anoth
     }
   });
 
-  it('the sweep itself catches the phrase it guards against', () => {
-    expect(routeMessage('send it again')).toMatchObject({
+  it('the sweep itself catches the phrase it guards against, even split across two literals', () => {
+    const advised = advisedPhrases(strip("'send it ' +\n  'again'"));
+    expect(advised).toEqual(['send it again']);
+    expect(routeMessage(advised[0]!)).toMatchObject({
       route: 'deterministic',
       intent: { kind: 'resend' },
     });
