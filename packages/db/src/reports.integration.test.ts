@@ -1428,6 +1428,40 @@ describe('the window summary reconciles with the ledger (G-118)', () => {
     expect((await summary(businessId)).moneyInK).toBe(4_000_000);
   });
 
+  it('still counts a sale by chart role after the tenant moved revenue and receivables to other codes', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_ROLE',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 1_000_000 }],
+        subtotalK: 1_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 1_000_000,
+        paidK: 0,
+        balanceDueK: 1_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'g118-role',
+        actor: 'test',
+      }),
+    );
+    await withBusiness(db, businessId, async (tx) => {
+      await tx.execute(
+        sql`UPDATE accounts SET code = '4999' WHERE business_id = ${businessId}::uuid AND system_role = 'SALES_REVENUE'`,
+      );
+      await tx.execute(
+        sql`UPDATE accounts SET code = '1199' WHERE business_id = ${businessId}::uuid AND system_role = 'ACCOUNTS_RECEIVABLE'`,
+      );
+    });
+    const after = await summary(businessId);
+    expect(after.salesK).toBe(1_000_000);
+    expect(after.invoices).toBe(1);
+  });
+
   it('recognises an advance by the chart role when the tenant moved unearned revenue to another code', async () => {
     const businessId = await seedBusiness();
     await withBusiness(db, businessId, (tx) =>

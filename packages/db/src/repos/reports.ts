@@ -42,12 +42,16 @@ const CASH_CODES = sql.raw(
   `'${ACCOUNTS.CASH.code}', '${ACCOUNTS.BANK.code}', '${ACCOUNTS.BANK_PAYSTACK.code}'`,
 );
 
-const AR_CODE = codeOf('ACCOUNTS_RECEIVABLE');
-const CUSTOMER_CREDIT_CODE = codeOf('CUSTOMER_CREDIT');
-const REVENUE_CODE = codeOf('SALES_REVENUE');
-const VAT_CODE = codeOf('VAT_PAYABLE');
-const EXPENSES_CODE = codeOf('EXPENSES');
-const INVENTORY_CODE = codeOf('INVENTORY');
+/* Matched by chart ROLE, not code, so an account a tenant replaced under a
+ * different code keeps its postings in the report. Historical rows stay in:
+ * no active-only filter. */
+const AR_ROLE = sql.raw("'ACCOUNTS_RECEIVABLE'");
+const CUSTOMER_CREDIT_ROLE = sql.raw("'CUSTOMER_CREDIT'");
+const CONTRACT_LIABILITY_ROLE = sql.raw("'CONTRACT_LIABILITY'");
+const REVENUE_ROLE = sql.raw("'SALES_REVENUE'");
+const VAT_ROLE = sql.raw("'VAT_PAYABLE'");
+const EXPENSES_ROLE = sql.raw("'OPERATING_EXPENSES'");
+const INVENTORY_ROLE = sql.raw("'INVENTORY_ASSET'");
 
 export interface Overview {
   /** Cash that arrived this Lagos month, in kobo. */
@@ -889,7 +893,7 @@ export async function summaryFor(
       /* Postings that move sales revenue: a sale, or the reversal of one. VAT
        * counts as sales only inside these, so a VAT remittance (which debits
        * the VAT account alone) never reduces what was invoiced. */
-      SELECT DISTINCT transaction_id AS id FROM lm WHERE code = ${REVENUE_CODE}
+      SELECT DISTINCT transaction_id AS id FROM lm WHERE system_role = ${REVENUE_ROLE}
     ),
     cash_tx AS (
       SELECT DISTINCT transaction_id AS id FROM lm
@@ -905,7 +909,7 @@ export async function summaryFor(
        * carried one is still a sale, and an opening-balance receivable (whose
        * posting credits equity) never is. */
       SELECT DISTINCT transaction_id AS id FROM lm
-      WHERE code = ${REVENUE_CODE} AND credit_k > 0
+      WHERE system_role = ${REVENUE_ROLE} AND credit_k > 0
         AND reverses_id IS NULL
         AND transaction_id NOT IN (SELECT id FROM credit_tx)
     ),
@@ -916,12 +920,12 @@ export async function summaryFor(
       SELECT id FROM sale_tx
       UNION
       SELECT DISTINCT transaction_id FROM lm
-      WHERE (code IN (${AR_CODE}, ${CUSTOMER_CREDIT_CODE}) OR system_role = 'CONTRACT_LIABILITY')
+      WHERE system_role IN (${AR_ROLE}, ${CUSTOMER_CREDIT_ROLE}, ${CONTRACT_LIABILITY_ROLE})
         AND credit_k > 0
     )
     SELECT
       COALESCE((SELECT SUM(credit_k - debit_k) FROM lm
-                WHERE code IN (${REVENUE_CODE}, ${VAT_CODE})
+                WHERE system_role IN (${REVENUE_ROLE}, ${VAT_ROLE})
                   AND transaction_id IN (SELECT id FROM revenue_tx)
                   AND transaction_id NOT IN (SELECT id FROM credit_tx)), 0)::bigint AS sales_k,
       /* Sales issued less sales taken back, by posting shape, so a sale voided
@@ -933,7 +937,7 @@ export async function summaryFor(
                   WHERE s.id NOT IN (SELECT transaction_id FROM lm
                                      WHERE source_type IN ('journal', 'journal_draft', 'bank_classification'))), 0)
         - COALESCE((SELECT count(DISTINCT transaction_id) FROM lm
-                    WHERE code = ${REVENUE_CODE} AND debit_k > 0
+                    WHERE system_role = ${REVENUE_ROLE} AND debit_k > 0
                       AND transaction_id NOT IN (SELECT id FROM credit_tx)
                       AND source_type NOT IN ('journal', 'journal_draft', 'bank_classification')
                       /* A reversal that names its sale only counts against a sale
@@ -941,7 +945,7 @@ export async function summaryFor(
                       AND (reverses_id IS NULL OR reverses_id IN (SELECT id FROM sale_tx))), 0)
       )::int AS invoices,
       COALESCE((SELECT SUM(debit_k - credit_k) FROM lm
-                WHERE code IN (${REVENUE_CODE}, ${VAT_CODE})
+                WHERE system_role IN (${REVENUE_ROLE}, ${VAT_ROLE})
                   AND transaction_id IN (SELECT id FROM credit_tx)), 0)::bigint AS credited_k,
       /* Gross collections: the cash that arrived, plus any fee the provider
        * kept (posted to expenses in the same payment confirmation, never in a hand-posted journal), less payments undone by
@@ -949,26 +953,26 @@ export async function summaryFor(
        * the money came back through. */
       COALESCE((SELECT SUM(debit_k) FROM lm
                 WHERE (code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING'
-                       OR (code = ${EXPENSES_CODE}
+                       OR (system_role = ${EXPENSES_ROLE}
                            AND posting_purpose = 'PAYMENT_CONFIRMATION'
                            AND transaction_id IN (SELECT id FROM cash_tx)))
                   AND transaction_id IN (SELECT id FROM collection_tx)), 0)::bigint
         - COALESCE((SELECT SUM(debit_k) FROM lm
-                    WHERE code = ${AR_CODE}
+                    WHERE system_role = ${AR_ROLE}
                       AND posting_purpose IN ('REVERSAL', 'CHARGEBACK')), 0)::bigint AS money_in_k,
       COALESCE((SELECT SUM(credit_k) FROM lm
                 WHERE (code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING')
                   AND posting_purpose = 'REFUND'), 0)::bigint AS refunded_k,
       COALESCE((SELECT SUM(debit_k - credit_k) FROM lm
-                WHERE code = ${EXPENSES_CODE}), 0)::bigint
+                WHERE system_role = ${EXPENSES_ROLE}), 0)::bigint
         + COALESCE((SELECT SUM(debit_k - credit_k) FROM lm
-                    WHERE code = ${INVENTORY_CODE}
+                    WHERE system_role = ${INVENTORY_ROLE}
                       AND COALESCE(reverses_id, transaction_id) IN (SELECT id FROM spend_tx)), 0)::bigint AS money_out_k,
       COALESCE((SELECT count(*) FROM expenses x
                 WHERE x.business_id = ${businessId}::uuid
                   AND x.ledger_transaction_id IN (SELECT transaction_id FROM lm
                                                   WHERE reverses_id IS NULL
-                                                    AND code IN (${EXPENSES_CODE}, ${INVENTORY_CODE}))
+                                                    AND system_role IN (${EXPENSES_ROLE}, ${INVENTORY_ROLE}))
                   AND NOT EXISTS (SELECT 1 FROM lm
                                   WHERE lm.reverses_id = x.ledger_transaction_id)), 0)::int AS expenses,
       COALESCE((SELECT SUM(debit_k) FROM lm
