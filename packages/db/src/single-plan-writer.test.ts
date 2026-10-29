@@ -181,6 +181,13 @@ function planWriteOffsets(code: string): number[] {
       ),
     );
   };
+  /* A builder stored and finished in a later statement cannot be read: count it. */
+  for (const re of [
+    /\.update\(\s*businesses\s*\)(?!\s*\.set\()/g,
+    /\.insert\(\s*businesses\s*\)(?!\s*\.values\()/g,
+  ]) {
+    for (const m of code.matchAll(re)) hits.push(m.index!);
+  }
   for (const m of code.matchAll(/\.update\(\s*businesses\s*\)\s*\.set\(\s*/g)) {
     if (writes(code, m.index! + m[0].length)) hits.push(m.index!);
   }
@@ -364,6 +371,15 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
         'function a(){ tx.insert(businesses).values({ name }).onConflictDoUpdate({ target: businesses.id, set: { name } }) }',
       ),
     ).toEqual([]);
+  });
+
+  it('counts a builder split across statements as a write', () => {
+    expect(
+      planWriters('function a(){ const q = tx.update(businesses); await q.set({ plan: next }); }'),
+    ).toEqual(['a']);
+    expect(
+      planWriters('function a(){ const q = tx.insert(businesses); await q.values({ name }); }'),
+    ).toEqual(['a']);
   });
 
   it('reads whitespace inside the table argument', () => {
