@@ -268,7 +268,7 @@ export function gatePurchase(
       reason: 'zero_amount',
       question:
         'I read the stock as costing ₦0, which I cannot record. What did it cost?' +
-        '\n\nSend it again with the amount, for example: ' +
+        '\n\nRecord it again with the amount, for example: ' +
         '"bought 10 cartons from Emeka for 180k, paid transfer".',
     };
   }
@@ -310,8 +310,8 @@ export function gatePurchase(
           'I know you paid by POS. I just need the source of the money for your books: ' +
           'did it come from your bank account or from physical cash?' +
           (shortAnswer
-            ? '\n\nReply *bank* or *cash*, or send it again with where the money came '
-            : '\n\nSend it again with where the money came ') +
+            ? '\n\nReply *bank* or *cash*, or record it again with where the money came '
+            : '\n\nRecord it again with where the money came ') +
           'from, for example: ' +
           '"bought 10 cartons from Emeka for 180k, paid by POS from my bank account".',
       };
@@ -325,8 +325,8 @@ export function gatePurchase(
             'If you have not paid it all yet, say how much you paid.'
           : `You paid ${formatKobo(paidK)} for this stock. Was that cash or transfer?`) +
         (shortAnswer
-          ? '\n\nReply *cash* or *transfer*, or send it again with how you paid, for example: '
-          : '\n\nSend it again with how you paid, for example: ') +
+          ? '\n\nReply *cash* or *transfer*, or record it again with how you paid, for example: '
+          : '\n\nRecord it again with how you paid, for example: ') +
         '"bought 10 cartons from Emeka for 180k, paid transfer".',
     };
   }

@@ -5,8 +5,10 @@
  * the three rules the file is built on: short enough to read on a phone, never
  * claiming something that has not happened, and naming what to do next.
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import * as replies from './replies.js';
+import { routeMessage } from './router.js';
 
 /**
  * Every reply this file can produce, with arguments that stretch it.
@@ -862,7 +864,7 @@ describe('an expired preview (G-23)', () => {
     const text = replies.draftExpired().text;
     expect(text).toContain('expired');
     expect(text).toContain('did not save anything');
-    expect(text).toContain('Send it again');
+    expect(text).toContain('Record it again');
     expect(text).toContain('fresh preview');
     expect(text).not.toBe(replies.nothingToConfirm().text);
     /* A safety refusal, not a fault. */
@@ -1119,6 +1121,52 @@ describe('the trial-lapse copy names no trial length (OWN-27)', () => {
     (_i, text) => {
       expect(text).toContain('Your free trial has ended');
       expect(text).not.toMatch(/\b\d+[- ]day\b/i);
+    },
+  );
+});
+
+describe('no reply tells the merchant to type a phrase the router reads as another command (G-86)', () => {
+  /* "send it again" is the deterministic resend command, so a reply that
+   * advises it makes the merchant resend the last document instead of
+   * repeating the entry. Swept over the source of every reply a gate or the
+   * reply module can produce, comments removed, so a new occurrence fails. */
+  const strip = (src: string) =>
+    src
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '')
+      .replace(/['"]\s*\+\s*['"]/g, '');
+  const advisedPhrases = (src: string) =>
+    [...src.matchAll(/\b(?:re)?send (?:(?:it|them|that|this|am) )?again\b/gi)].map((m) => m[0]);
+  const sources = ['./replies.ts', './gates.ts'].map((f) => [
+    f,
+    strip(readFileSync(new URL(f, import.meta.url), 'utf8')),
+  ]);
+
+  it.each(sources)('%s advises no phrase that routes to resend', (_, src) => {
+    for (const phrase of advisedPhrases(src!)) {
+      const route = routeMessage(phrase);
+      expect(route.route === 'deterministic' ? route.intent : null, phrase).not.toEqual({
+        kind: 'resend',
+      });
+    }
+  });
+
+  it('the sweep itself catches the phrase it guards against, even split across two literals', () => {
+    const advised = advisedPhrases(strip("'send it ' +\n  'again'"));
+    expect(advised).toEqual(['send it again']);
+    expect(routeMessage(advised[0]!)).toMatchObject({
+      route: 'deterministic',
+      intent: { kind: 'resend' },
+    });
+  });
+
+  it.each(['Record it again', 'try again', 'send it in shorter parts'])(
+    'the advice that replaced it, "%s", is not read as resend',
+    (phrase) => {
+      expect(routeMessage(phrase)).not.toMatchObject({
+        route: 'deterministic',
+        intent: { kind: 'resend' },
+      });
     },
   );
 });

@@ -89,8 +89,8 @@ export function confirmErasure(draftsDiscarded = 0): Reply {
   if (draftsDiscarded > 0) {
     lines.push(
       draftsDiscarded === 1
-        ? 'The entry that was waiting for your yes has been dropped. Send it again after this.'
-        : `The ${draftsDiscarded} entries waiting for your yes have been dropped. Send them again after this.`,
+        ? 'The entry that was waiting for your yes has been dropped. Record it again after this.'
+        : `The ${draftsDiscarded} entries waiting for your yes have been dropped. Record them again after this.`,
     );
   }
   lines.push('Reply *DELETE MY DATA* again to confirm, or anything else to keep it.');
@@ -600,8 +600,8 @@ export function quotaReachedForBusiness(): Reply {
 /** The platform ceiling. Not the merchant's fault, and it should not read as if it were. */
 export function busyRightNow(): Reply {
   return reply(
-    'I am very busy right now and could not read that properly. Please send it ' +
-      'again in a few minutes. Nothing was lost.',
+    'I am very busy right now and could not read that properly. Please try again ' +
+      'in a few minutes. Nothing was lost.',
   );
 }
 
@@ -680,7 +680,7 @@ export function alreadyConfirmed(): Reply {
  */
 export function draftExpired(): Reply {
   return reply(
-    'That request has expired, so I did not save anything. Send it again and ' +
+    'That request has expired, so I did not save anything. Record it again and ' +
       'I will show you a fresh preview.',
   );
 }
@@ -1376,7 +1376,7 @@ export function voiceTooLong(maxSeconds: number): Reply {
       : `${maxSeconds} seconds`;
   return reply(
     `That voice note is longer than ${limit}, which is as much as I can listen ` +
-      'to at once.\n\nPlease send it again in shorter parts and I will record ' +
+      'to at once.\n\nPlease send it in shorter parts and I will record ' +
       'every one of them.',
   );
 }
@@ -1388,7 +1388,7 @@ export function voiceTooLong(maxSeconds: number): Reply {
 export function messageTooLong(): Reply {
   return reply(
     'That message is more than I can read safely at once.\n\nPlease send it ' +
-      'again in shorter parts and I will record every one of them.',
+      'in shorter parts and I will record every one of them.',
   );
 }
 
@@ -1400,7 +1400,7 @@ export function messageTooLong(): Reply {
 export function messageNotReadSafely(): Reply {
   return reply(
     'I could not read that safely, so I have not recorded anything from it.\n\n' +
-      'Please send it again without the account or phone number.',
+      'Please try again without the account or phone number.',
   );
 }
 
@@ -1930,7 +1930,7 @@ export function stockList(rows: StockLine[], count: number, outOfStock: number):
 export function confirmationLapsed(what: string): Reply {
   return reply(
     `That took a little too long, so I did not save ${what}. ` +
-      'Send it again and I will show you a fresh preview.',
+      'Record it again and I will show you a fresh preview.',
   );
 }
 
