@@ -17,10 +17,16 @@ test.afterAll(async () => {
   await sql.end();
 });
 
-/** Distinct from the other specs' ranges so parallel runs never collide. */
-const RUN = String(Math.floor(Math.random() * 900) + 100);
-let seq = 0;
-const freshPhone = () => `0807${RUN}${String(1000 + seq++).slice(-4)}`;
+/** Seven random digits behind this spec's own prefix, so a reused local database never repeats one. */
+const issued = new Set<string>();
+const freshPhone = (): string => {
+  let phone: string;
+  do {
+    phone = `0807${String(Math.floor(Math.random() * 10_000_000)).padStart(7, '0')}`;
+  } while (issued.has(phone));
+  issued.add(phone);
+  return phone;
+};
 
 async function onboard(page: Page, name: string): Promise<string> {
   await page.goto('/start');
@@ -42,7 +48,7 @@ async function onboard(page: Page, name: string): Promise<string> {
 test('goods received against an order reach the shelf, the export and a balanced ledger', async ({
   page,
 }) => {
-  const stamp = `${RUN}${seq}${Date.now().toString(36)}`;
+  const stamp = Date.now().toString(36);
   const businessId = await onboard(page, `Stock Biz ${stamp}`);
 
   // Nothing counted yet: the page says how to start rather than showing an empty table.
@@ -72,9 +78,10 @@ test('goods received against an order reach the shelf, the export and a balanced
   await page.goto('/app/stock');
   const row = page.getByRole('row').filter({ hasText: 'Ankara bale' });
   await expect(row).toHaveCount(1);
-  await expect(row).toContainText('10');
-  await expect(row).toContainText('₦5,000');
-  await expect(row).toContainText('In stock');
+  const cells = row.getByRole('cell');
+  await expect(cells.nth(1)).toHaveText(/^10$/);
+  await expect(cells.nth(2)).toHaveText(/^₦5,000$/);
+  await expect(cells.nth(3)).toHaveText(/^In stock$/);
   await expect(page.getByText('One product counted')).toBeVisible();
 
   // The export is the same shelf.
