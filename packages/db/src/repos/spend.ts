@@ -120,7 +120,14 @@ export async function recordExpense(
     input.sourceId,
     {
       ...(input.recordedAt ? { occurredAt: input.recordedAt } : {}),
-      ...(input.postingKey ? { postingKey: input.postingKey } : {}),
+      /* An explicit key wins (the recurring raise). A Chat expense is one
+       * event per draft, so the draft is its identity (G-88); other sources
+       * name none, because two identical entries are two expenses. */
+      ...(input.postingKey
+        ? { postingKey: input.postingKey }
+        : input.sourceType === 'chat'
+          ? { postingKey: `expense:chat:${input.sourceId}` }
+          : {}),
     },
   );
 
@@ -174,6 +181,13 @@ export async function recordPurchase(
     posting,
     input.sourceType,
     input.sourceId,
+    /* G-88: the purchase is ONE financial event per source (a Chat draft, a
+     * purchase order), and the spec's purpose enum has no purchase value, so
+     * the ledger-level identity is a key. A void of it is a reversal and
+     * carries none, so it never collides. */
+    /* Not injective if either part held a colon; today the source types are
+     * fixed words and the ids are uuids, so it cannot collide. */
+    { postingKey: `purchase:${input.sourceType}:${input.sourceId}` },
   );
 
   const rows = await tx
@@ -950,5 +964,61 @@ export async function billsFor(
     billedOn: r.billed_on,
     dueDate: r.due_date,
     description: r.description,
+  }));
+}
+
+/** One source that booked the same kind of spend more than once. */
+export interface DuplicateSpendEvent {
+  sourceType: string;
+  sourceId: string;
+  kind: 'purchase' | 'expense';
+  /** Every expense row for the source, oldest first, voided ones included. */
+  expenseIds: string[];
+  /** How many of them are not withdrawn: the ones that moved the books. */
+  standing: number;
+}
+
+/**
+ * Historical duplicates (G-88): sources that booked the same kind of spend
+ * more than once.
+ *
+ * The ledger-level keys protect every posting from now on, and history
+ * carries none (a key assigned after the fact would be a guess). This is the
+ * read-only answer to "what already doubled up": a Chat draft or a purchase
+ * order is one event, so two rows for it are a candidate duplicate. It
+ * changes nothing. A confirmed duplicate is corrected by the approved ledger
+ * adjustment process (a void or a reversing journal), never by deleting or
+ * editing the posted rows.
+ */
+export async function findDuplicateSpendEvents(
+  tx: TenantDb,
+  businessId: string,
+): Promise<DuplicateSpendEvent[]> {
+  const rows = await tx.execute<{
+    source_type: string;
+    source_id: string;
+    kind: 'purchase' | 'expense';
+    expense_ids: string[];
+    standing: string;
+  }>(sql`
+    SELECT source_type,
+           source_id,
+           CASE WHEN category = 'stock' THEN 'purchase' ELSE 'expense' END AS kind,
+           array_agg(id ORDER BY created_at, id) AS expense_ids,
+           count(*) FILTER (WHERE status = 'recorded')::text AS standing
+    FROM expenses
+    WHERE business_id = ${businessId}::uuid
+      AND source_type IN ('chat', 'purchase_order')
+      AND source_id IS NOT NULL
+    GROUP BY source_type, source_id, CASE WHEN category = 'stock' THEN 'purchase' ELSE 'expense' END
+    HAVING count(*) > 1
+    ORDER BY source_type, source_id
+  `);
+  return [...rows].map((r) => ({
+    sourceType: r.source_type,
+    sourceId: r.source_id,
+    kind: r.kind,
+    expenseIds: r.expense_ids,
+    standing: Number(r.standing),
   }));
 }

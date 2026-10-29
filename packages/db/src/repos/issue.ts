@@ -224,6 +224,29 @@ export async function nextDocumentNumber(
   return formatDocumentNumber(docType, year, seq);
 }
 
+/**
+ * The financial event this posting names is already in the ledger (G-88).
+ *
+ * Raised by `writePosting` BEFORE it inserts, when the (postingPurpose or
+ * postingKey) identity it was given has already produced a journal. It is the
+ * typed face of the unique indexes `ledger_tx_financial_event_ux` and
+ * `ledger_tx_posting_key_ux`: those stay the backstop, this is the answer a
+ * retry gets without a transaction aborted by a constraint violation. The
+ * caller's transaction rolls back whole, so nothing else the attempt wrote
+ * (a stock movement, a bill) survives it.
+ */
+export class FinancialEventAlreadyPostedError extends Error {
+  constructor(
+    readonly identity: string,
+    readonly existingTransactionId: string,
+  ) {
+    /* A fixed message: the identity holds a source id and must not reach a
+     * log or an error body. It stays on the typed field for the caller. */
+    super('financial event is already posted');
+    this.name = 'FinancialEventAlreadyPostedError';
+  }
+}
+
 /** Write a balanced posting. `assertBalanced` already ran in `@rekoda/core`.
  * Exported for the other repos that persist postings (spend.ts) — one write
  * path for ledger rows, so the shape cannot fork. */
@@ -279,6 +302,36 @@ export async function writePosting(
    * written, so an ordinary refusal reaches the caller as something they can
    * act on rather than as a transaction that fails at COMMIT. */
   await assertPeriodOpen(tx, businessId, opts.occurredAt ?? new Date());
+
+  /* G-88: a posting that names its financial event is serialised on that
+   * identity, so two workers (or a retry that overlaps the original) cannot
+   * both pass the check below. The lock is transaction-scoped and keyed on
+   * the business and the identity; whoever waits re-reads after the winner
+   * commits and sees its row. The unique indexes behind this remain the
+   * guarantee for a writer that never came through here. */
+  const identities: Array<{ label: string; match: ReturnType<typeof sql> }> = [];
+  if (opts.postingKey) {
+    identities.push({
+      label: `key ${opts.postingKey}`,
+      match: sql`posting_key = ${opts.postingKey}`,
+    });
+  }
+  if (opts.postingPurpose) {
+    identities.push({
+      label: `${opts.postingPurpose} ${sourceType}:${sourceId}`,
+      match: sql`source_type = ${sourceType} AND source_id = ${sourceId} AND posting_purpose = ${opts.postingPurpose}`,
+    });
+  }
+  for (const identity of identities) {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`ledger-event:${businessId}:${identity.label}`}, 0))`,
+    );
+    const existing = await tx.execute<{ id: string }>(
+      sql`SELECT id FROM ledger_transactions WHERE business_id = ${businessId}::uuid AND ${identity.match} LIMIT 1`,
+    );
+    const found = [...existing][0];
+    if (found) throw new FinancialEventAlreadyPostedError(identity.label, found.id);
+  }
 
   const inserted = await tx
     .insert(ledgerTransactions)
