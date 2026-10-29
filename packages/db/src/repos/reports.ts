@@ -953,10 +953,12 @@ export async function summaryFor(
                 WHERE system_role IN (${REVENUE_ROLE}, ${VAT_ROLE})
                   AND transaction_id IN (SELECT id FROM credit_tx)), 0)::bigint AS credited_k,
       /* Gross collections: the cash that arrived, plus any fee the provider
-       * kept (posted to expenses in the same payment confirmation, never in a hand-posted journal), less payments undone by
+       * kept (posted to expenses in the same payment confirmation, never in a hand-posted journal), less cash a collection posting moved between the merchant's own
+       * accounts, less payments undone by
        * a reversal or chargeback, which debit receivables whatever account
        * the money came back through. */
-      COALESCE((SELECT SUM(debit_k) FROM lm
+      COALESCE((SELECT SUM(CASE WHEN system_role IN (${CASH_LENS_ROLES})
+                                THEN debit_k - credit_k ELSE debit_k END) FROM lm
                 WHERE (system_role IN (${CASH_LENS_ROLES})
                        OR (system_role = ${EXPENSES_ROLE}
                            AND posting_purpose = 'PAYMENT_CONFIRMATION'))
