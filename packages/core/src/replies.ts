@@ -1521,9 +1521,24 @@ export function salesAnswer(input: {
         'in sales recorded in your books.',
     );
   }
+  const head = input.label[0]!.toUpperCase() + input.label.slice(1);
+  const sales = input.invoices === 1 ? 'one sale' : `${input.invoices} sales`;
+  /* Earlier sales taken back outweigh what was sold in this window: the net is
+   * negative, so it is worded as a take-back, never printed as a minus. */
+  if (input.salesK < 0) {
+    return reply(
+      `${head}: ${sales} invoiced, but ${formatKobo(-input.salesK)} more of earlier sales was ` +
+        'taken back than was sold.',
+    );
+  }
+  if (input.moneyInK < 0) {
+    return reply(
+      `${head}: ${formatKobo(input.salesK)} invoiced across ${sales}.\n` +
+        `${formatKobo(-input.moneyInK)} more was paid back than came in.`,
+    );
+  }
   return reply(
-    `${input.label[0]!.toUpperCase()}${input.label.slice(1)}: ${formatKobo(input.salesK)} ` +
-      `invoiced across ${input.invoices === 1 ? 'one sale' : `${input.invoices} sales`}.\n` +
+    `${head}: ${formatKobo(input.salesK)} invoiced across ${sales}.\n` +
       `${formatKobo(input.moneyInK)} of that has actually come in.`,
   );
 }
@@ -1538,9 +1553,6 @@ export function expensesAnswer(input: {
       `You have not recorded any spending ${inWindow(input.label)}. Tell me one like "fuel 12k".`,
     );
   }
-  /* Spending the books hold with no entry behind it, such as a charge a
-   * provider took (G-118): the amount is real, so it is said, without
-   * pretending to a count of entries. */
   /* Spending taken back in this window that was made in an earlier one. */
   if (input.moneyOutK < 0 && input.expenses > 0) {
     return reply(
@@ -1555,6 +1567,9 @@ export function expensesAnswer(input: {
         'of earlier spending was taken back.',
     );
   }
+  /* Spending the books hold with no entry behind it, such as a charge a
+   * provider took (G-118): the amount is real, so it is said, without
+   * pretending to a count of entries. */
   if (input.expenses === 0) {
     return reply(
       `${input.label[0]!.toUpperCase()}${input.label.slice(1)}: ${formatKobo(input.moneyOutK)} spent.`,

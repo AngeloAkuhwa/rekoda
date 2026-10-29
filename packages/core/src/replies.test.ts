@@ -926,6 +926,33 @@ describe('spending taken back in a window (G-118)', () => {
   });
 });
 
+describe('a negative net with invoices in the window (G-118)', () => {
+  it('words earlier sales taken back as a take-back, never a minus', () => {
+    const text = replies.salesAnswer({
+      label: 'today',
+      salesK: -300_000,
+      invoices: 2,
+      moneyInK: 0,
+    }).text;
+    expect(text).toContain('2 sales invoiced');
+    expect(text).toContain('₦3,000');
+    expect(text).toContain('taken back');
+    expect(text).not.toContain('-');
+  });
+
+  it('words money paid back beyond money in without a minus', () => {
+    const text = replies.salesAnswer({
+      label: 'today',
+      salesK: 500_000,
+      invoices: 1,
+      moneyInK: -100_000,
+    }).text;
+    expect(text).toContain('₦1,000');
+    expect(text).toContain('paid back');
+    expect(text).not.toContain('-');
+  });
+});
+
 describe('sales the books hold with no invoice behind it (G-118)', () => {
   it('says the amount instead of claiming nothing was recorded', () => {
     const text = replies.salesAnswer({
