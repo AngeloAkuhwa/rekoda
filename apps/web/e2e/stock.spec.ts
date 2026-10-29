@@ -28,9 +28,12 @@ const freshPhone = (): string => {
   return phone;
 };
 
-async function onboard(page: Page, name: string): Promise<string> {
+/** The business is named after its owner's phone, which is unique, so the id lookup below can only find this one. */
+async function onboard(page: Page): Promise<string> {
+  const phone = freshPhone();
+  const name = `Stock Biz ${phone}`;
   await page.goto('/start');
-  await page.fill('#phone', freshPhone());
+  await page.fill('#phone', phone);
   await page.click('button[type=submit]');
   await expect(page).toHaveURL(/\/verify/);
   const code = (await page.locator('[data-e2e-otp]').getAttribute('data-e2e-otp'))!;
@@ -48,8 +51,7 @@ async function onboard(page: Page, name: string): Promise<string> {
 test('goods received against an order reach the shelf, the export and a balanced ledger', async ({
   page,
 }) => {
-  const stamp = Date.now().toString(36);
-  const businessId = await onboard(page, `Stock Biz ${stamp}`);
+  const businessId = await onboard(page);
 
   // Nothing counted yet: the page says how to start rather than showing an empty table.
   await page.goto('/app/stock');
