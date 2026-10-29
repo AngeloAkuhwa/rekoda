@@ -113,7 +113,12 @@ function statementEnd(code: string, from: number): number {
   let quoted = false;
   for (let i = from; i < code.length; i++) {
     const ch = code[i]!;
-    if (ch === "'") quoted = !quoted;
+    if (code.startsWith('$$', i)) {
+      /* PostgreSQL dollar quoting: `$$ ... $$` is text, whatever it contains. */
+      const close = code.indexOf('$$', i + 2);
+      if (close === -1) return code.length;
+      i = close + 1;
+    } else if (ch === "'") quoted = !quoted;
     else if (!quoted && (ch === ';' || ch === '`')) return i;
   }
   return code.length;
@@ -127,7 +132,7 @@ function chainEnd(code: string, from: number): number {
     if (quote) {
       if (ch === '\\') i++;
       else if (ch === quote) quote = '';
-    } else if (ch === "'" || ch === '"') quote = ch;
+    } else if (ch === "'" || ch === '"' || ch === '`') quote = ch;
     else if (ch === ';') return i;
   }
   return code.length;
@@ -136,7 +141,7 @@ function chainEnd(code: string, from: number): number {
 /** Offsets in `code` (interpolations already masked) of every statement assigning the plan or its expiry on `businesses`. */
 function planWriteOffsets(code: string): number[] {
   const hits: number[] = [];
-  const table = String.raw`(?:ONLY\s+)?(?:"?public"?\.)?"?businesses"?`;
+  const table = String.raw`(?:ONLY\s+)?(?:"?public"?\.)?"?businesses"?\*?`;
   const alias = String.raw`(?:\s+(?:AS\s+)?(?!(?:SET|VALUES|SELECT|DEFAULT|OVERRIDING|WITH|TABLE)\b)"?\w+"?)?`;
   const column = String.raw`"?(?:plan|plan_expires_at)"?`;
   const single = new RegExp(String.raw`^\s*(?:\w+\.)?${column}\s*=(?!=)`, 'i');
@@ -218,13 +223,18 @@ function planWriteOffsets(code: string): number[] {
  */
 function enclosing(code: string, offset: number): string {
   let name = '<module>';
+  let end = -1;
   const decl =
     /^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\*?\s+(\w+)|(?:const|let|var)\s+(\w+)|class\s+(\w+))/gm;
   for (const m of code.matchAll(decl)) {
     if (m.index! > offset) break;
     name = m[1] ?? m[2] ?? m[3] ?? name;
+    /* A declaration ends at the next `}` at column 0. */
+    const close = /^\}/m.exec(code.slice(m.index! + 1));
+    end = close ? m.index! + 1 + close.index : code.length;
   }
-  return name;
+  /* Past the end of the last declaration: module-level code, never inherited. */
+  return offset > end ? '<module>' : name;
 }
 
 /** `function` names (or `<module>`) that assign the plan or its expiry in `src`. */
@@ -371,6 +381,28 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
         'function a(){ tx.insert(businesses).values({ name }).onConflictDoUpdate({ target: businesses.id, set: { name } }) }',
       ),
     ).toEqual([]);
+  });
+
+  it('reads the optional table star, dollar-quoted text and template literals in a chain', () => {
+    const w = (src: string) => planWriters(src);
+    expect(w('function a(){ sql`UPDATE businesses* SET plan = ${p}` }')).toEqual(['a']);
+    expect(
+      w(
+        'function a(){ sql`INSERT INTO businesses (id, name) VALUES (${i}, $$merchant; name$$) ON CONFLICT (id) DO UPDATE SET plan = ${p}` }',
+      ),
+    ).toEqual(['a']);
+    expect(
+      w(
+        'function a(){ tx.insert(businesses).values({ name: `a; b` }).onConflictDoUpdate({ target: businesses.id, set: { plan } }); }',
+      ),
+    ).toEqual(['a']);
+  });
+
+  it('does not credit module-level code to the declaration before it', () => {
+    const src =
+      'export async function writeSubscriptionState() {\n  await tx.update(businesses).set({ name });\n}\n\n' +
+      'await db.update(businesses).set({ plan: next });\n';
+    expect(planWriters(src)).toEqual(['<module>']);
   });
 
   it('counts a builder split across statements as a write', () => {
