@@ -37,15 +37,19 @@ function sources(dir: string): string[] {
 const strip = (src: string) =>
   src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*(\/\/|--).*$/gm, '');
 
-/** Split on commas that are not inside (), {} or []. */
+/** Split on commas outside (), {}, [] and single-quoted SQL text (a doubled quote stays inside). */
 function topLevelSplit(text: string): string[] {
   const parts: string[] = [];
   let depth = 0;
+  let quoted = false;
   let cur = '';
   for (const ch of text) {
-    if ('({['.includes(ch)) depth++;
-    else if (')}]'.includes(ch)) depth--;
-    if (ch === ',' && depth === 0) {
+    if (ch === "'") quoted = !quoted;
+    else if (!quoted) {
+      if ('({['.includes(ch)) depth++;
+      else if (')}]'.includes(ch)) depth--;
+    }
+    if (ch === ',' && depth === 0 && !quoted) {
       parts.push(cur);
       cur = '';
     } else cur += ch;
@@ -54,11 +58,14 @@ function topLevelSplit(text: string): string[] {
   return parts;
 }
 
-/** Index of the first `needle` match at bracket depth 0 from `from`, else the end. */
+/** Index of the first `end` match at bracket depth 0, outside single-quoted text, from `from`; else the end. */
 function topLevelEnd(text: string, from: number, end: RegExp): number {
   let depth = 0;
+  let quoted = false;
   for (let i = from; i < text.length; i++) {
     const ch = text[i]!;
+    if (ch === "'") quoted = !quoted;
+    if (quoted) continue;
     if (depth === 0 && end.test(text.slice(i))) return i;
     if ('({['.includes(ch)) depth++;
     else if (')}]'.includes(ch)) depth--;
@@ -80,7 +87,7 @@ function planWriteOffsets(code: string): number[] {
     const assigns = topLevelSplit(code.slice(from, stop));
     if (assigns.some((a) => single.test(a) || tuple.test(a))) hits.push(m.index!);
   }
-  const upsert = String.raw`INSERT\s+INTO\s+${table}${alias}[\s\S]*?ON\s+CONFLICT[\s\S]*?DO\s+UPDATE\s+SET\s`;
+  const upsert = String.raw`INSERT\s+INTO\s+${table}${alias}[^;\x60]*?ON\s+CONFLICT[^;\x60]*?DO\s+UPDATE\s+SET\s`;
   for (const m of code.matchAll(new RegExp(upsert, 'gi'))) {
     const from = m.index! + m[0].length;
     const stop = topLevelEnd(code, from, /^(WHERE\b|RETURNING\b|`)/i);
@@ -89,8 +96,11 @@ function planWriteOffsets(code: string): number[] {
   }
   const builders = [
     /\.update\(businesses\)\s*\.set\(\s*\{/g,
-    /\.insert\(businesses\)[\s\S]*?\.onConflictDoUpdate\(\s*\{[\s\S]*?\bset:\s*\{/g,
+    /\.insert\(businesses\)[^;]*?\.onConflictDoUpdate\(\s*\{[^;]*?\bset:\s*\{/g,
   ];
+  /* A patch passed as a variable cannot be read here, so it counts as a write. */
+  for (const m of code.matchAll(/\.update\(businesses\)\s*\.set\(\s*(?!\{)[\w.]/g))
+    hits.push(m.index!);
   for (const re of builders) {
     for (const m of code.matchAll(re)) {
       const from = m.index! + m[0].length;
@@ -145,6 +155,15 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
       w('function a(){ tx.update(businesses).set({ plan: next, updatedAt: new Date() }) }'),
     ).toEqual(['a']);
     expect(w('function a(){ tx.update(businesses).set({ plan }) }')).toEqual(['a']);
+    expect(w('function a(){ tx.update(businesses).set(patch) }')).toEqual(['a']);
+    expect(
+      w(
+        "function a(){ sql`INSERT INTO businesses (id) VALUES (${i}) ON CONFLICT (id) DO UPDATE SET name = 'where applicable', plan = EXCLUDED.plan` }",
+      ),
+    ).toEqual(['a']);
+    expect(
+      w("function a(){ sql`UPDATE businesses SET note = 'a (b', plan = ${p} WHERE id = ${i}` }"),
+    ).toEqual(['a']);
     expect(
       w(
         'function a(){ sql`INSERT INTO businesses (id, plan) VALUES (${i}, ${p}) ON CONFLICT (id) DO UPDATE SET plan = EXCLUDED.plan` }',
@@ -191,6 +210,22 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
       'export async function writeSubscriptionState(){ sql`UPDATE businesses SET plan = ${p}` }\n' +
       'export const rogue = async () => {\n  await tx.update(businesses).set({ plan });\n};';
     expect(planWriters(src)).toEqual(['rogue', 'writeSubscriptionState']);
+  });
+
+  it('does not let a plain insert in one function claim a later upsert in another', () => {
+    const sql = 'function good(){ sql`INSERT INTO businesses (id) VALUES (${i})` }\n';
+    expect(
+      planWriters(
+        sql +
+          'function rogue(){ sql`INSERT INTO businesses (id) VALUES (${i}) ON CONFLICT (id) DO UPDATE SET plan = ${p}` }',
+      ),
+    ).toEqual(['rogue']);
+    expect(
+      planWriters(
+        'function good(){ tx.insert(businesses).values(v); }\n' +
+          'function rogue(){ tx.insert(businesses).values(v).onConflictDoUpdate({ target: businesses.id, set: { plan } }); }',
+      ),
+    ).toEqual(['rogue']);
   });
 
   it('names the function that wrote, so a second writer in the same file is caught', () => {
