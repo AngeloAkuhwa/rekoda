@@ -87,7 +87,9 @@ function planWriteOffsets(code: string): number[] {
     const assigns = topLevelSplit(code.slice(from, stop));
     if (assigns.some((a) => single.test(a) || tuple.test(a))) hits.push(m.index!);
   }
-  const upsert = String.raw`INSERT\s+INTO\s+${table}${alias}[^;\x60]*?ON\s+CONFLICT[^;\x60]*?DO\s+UPDATE\s+SET\s`;
+  /* One character of a statement: a quoted string (which may hold `;`) or anything but `;` and the closing backtick. */
+  const stmt = String.raw`(?:'(?:[^']|'')*'|[^;\x60'])`;
+  const upsert = String.raw`INSERT\s+INTO\s+${table}${alias}${stmt}*?ON\s+CONFLICT${stmt}*?DO\s+UPDATE\s+SET\s`;
   for (const m of code.matchAll(new RegExp(upsert, 'gi'))) {
     const from = m.index! + m[0].length;
     const stop = topLevelEnd(code, from, /^(WHERE\b|RETURNING\b|`)/i);
@@ -210,6 +212,14 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
       'export async function writeSubscriptionState(){ sql`UPDATE businesses SET plan = ${p}` }\n' +
       'export const rogue = async () => {\n  await tx.update(businesses).set({ plan });\n};';
     expect(planWriters(src)).toEqual(['rogue', 'writeSubscriptionState']);
+  });
+
+  it('keeps a semicolon inside a quoted SQL string within the upsert match', () => {
+    expect(
+      planWriters(
+        "function a(){ sql`INSERT INTO businesses (id, note) VALUES (${i}, 'a; b') ON CONFLICT (id) DO UPDATE SET plan = ${p}` }",
+      ),
+    ).toEqual(['a']);
   });
 
   it('does not let a plain insert in one function claim a later upsert in another', () => {
