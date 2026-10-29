@@ -9,6 +9,13 @@ export interface OutboundEmail {
   to: string;
   subject: string;
   text: string;
+  /**
+   * Display name shown before Rekoda's own verified sender address (N1: `Business via Rekoda`).
+   * The address itself never changes, so a message cannot impersonate a merchant's domain.
+   */
+  fromName?: string;
+  /** A monitored address replies go to, when it differs from the sender. */
+  replyTo?: string;
   /** A stable key for one logical message, so a provider can drop a retried duplicate. */
   idempotencyKey?: string;
 }
