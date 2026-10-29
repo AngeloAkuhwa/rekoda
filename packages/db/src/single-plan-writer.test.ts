@@ -8,6 +8,11 @@
  * column (`writeSubscriptionState` for every change, `expireSubscription` for
  * the lapse, and the insert that starts a new business's trial). A second path
  * fails here, whatever it is called.
+ *
+ * This is a tripwire over source text, not a proof: it reads the Drizzle table
+ * under its schema name `businesses` and raw SQL, and cannot follow a table
+ * imported under another name or a statement assembled from fragments. Those
+ * need review, and the database role grants remain the hard boundary.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
