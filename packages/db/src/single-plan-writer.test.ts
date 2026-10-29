@@ -181,13 +181,13 @@ function planWriteOffsets(code: string): number[] {
       ),
     );
   };
-  for (const m of code.matchAll(/\.update\(businesses\)\s*\.set\(\s*/g)) {
+  for (const m of code.matchAll(/\.update\(\s*businesses\s*\)\s*\.set\(\s*/g)) {
     if (writes(code, m.index! + m[0].length)) hits.push(m.index!);
   }
-  for (const m of code.matchAll(/\.insert\(businesses\)\s*\.values\(\s*/g)) {
+  for (const m of code.matchAll(/\.insert\(\s*businesses\s*\)\s*\.values\(\s*/g)) {
     if (writes(code, m.index! + m[0].length)) hits.push(m.index!);
   }
-  for (const m of code.matchAll(/\.insert\(businesses\)/g)) {
+  for (const m of code.matchAll(/\.insert\(\s*businesses\s*\)/g)) {
     const chain = code.slice(m.index!, chainEnd(code, m.index!));
     const conflict = /\.onConflictDoUpdate\(\s*/.exec(chain);
     if (!conflict) continue;
@@ -364,6 +364,13 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
         'function a(){ tx.insert(businesses).values({ name }).onConflictDoUpdate({ target: businesses.id, set: { name } }) }',
       ),
     ).toEqual([]);
+  });
+
+  it('reads whitespace inside the table argument', () => {
+    expect(planWriters('function a(){ tx.update( businesses ).set({ plan }) }')).toEqual(['a']);
+    expect(planWriters('function a(){ tx.insert(\n  businesses\n).values({ plan }) }')).toEqual([
+      'a',
+    ]);
   });
 
   it('keeps a semicolon inside a quoted builder argument within the chain', () => {
