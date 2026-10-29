@@ -45,6 +45,9 @@ const CASH_CODES = sql.raw(
 /* Matched by chart ROLE, not code, so an account a tenant replaced under a
  * different code keeps its postings in the report. Historical rows stay in:
  * no active-only filter. */
+/* The cash lens by role (CASH, BANK, provider clearing), so a cash or bank
+ * account a tenant replaced under another code still counts. */
+const CASH_LENS_ROLES = sql.raw("'CASH', 'BANK', 'PAYMENT_PROVIDER_CLEARING'");
 const AR_ROLE = sql.raw("'ACCOUNTS_RECEIVABLE'");
 const CUSTOMER_CREDIT_ROLE = sql.raw("'CUSTOMER_CREDIT'");
 const CONTRACT_LIABILITY_ROLE = sql.raw("'CONTRACT_LIABILITY'");
@@ -897,7 +900,7 @@ export async function summaryFor(
     ),
     cash_tx AS (
       SELECT DISTINCT transaction_id AS id FROM lm
-      WHERE (code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING') AND debit_k > 0
+      WHERE (system_role IN (${CASH_LENS_ROLES})) AND debit_k > 0
     ),
     spend_tx AS (
       SELECT ledger_transaction_id AS id FROM expenses
@@ -952,7 +955,7 @@ export async function summaryFor(
        * a reversal or chargeback, which debit receivables whatever account
        * the money came back through. */
       COALESCE((SELECT SUM(debit_k) FROM lm
-                WHERE (code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING'
+                WHERE (system_role IN (${CASH_LENS_ROLES})
                        OR (system_role = ${EXPENSES_ROLE}
                            AND posting_purpose = 'PAYMENT_CONFIRMATION'
                            AND transaction_id IN (SELECT id FROM cash_tx)))
@@ -961,7 +964,7 @@ export async function summaryFor(
                     WHERE system_role = ${AR_ROLE}
                       AND posting_purpose IN ('REVERSAL', 'CHARGEBACK')), 0)::bigint AS money_in_k,
       COALESCE((SELECT SUM(credit_k) FROM lm
-                WHERE (code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING')
+                WHERE (system_role IN (${CASH_LENS_ROLES}))
                   AND posting_purpose = 'REFUND'), 0)::bigint AS refunded_k,
       COALESCE((SELECT SUM(debit_k - credit_k) FROM lm
                 WHERE system_role = ${EXPENSES_ROLE}), 0)::bigint
@@ -976,9 +979,9 @@ export async function summaryFor(
                   AND NOT EXISTS (SELECT 1 FROM lm
                                   WHERE lm.reverses_id = x.ledger_transaction_id)), 0)::int AS expenses,
       COALESCE((SELECT SUM(debit_k) FROM lm
-                WHERE code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING'), 0)::bigint AS cash_in_k,
+                WHERE system_role IN (${CASH_LENS_ROLES})), 0)::bigint AS cash_in_k,
       COALESCE((SELECT SUM(credit_k) FROM lm
-                WHERE code IN (${CASH_CODES}) OR system_role = 'PAYMENT_PROVIDER_CLEARING'), 0)::bigint AS cash_out_k
+                WHERE system_role IN (${CASH_LENS_ROLES})), 0)::bigint AS cash_out_k
   `);
   const row = [...rows][0];
   return {

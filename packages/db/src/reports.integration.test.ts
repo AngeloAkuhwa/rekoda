@@ -1428,6 +1428,39 @@ describe('the window summary reconciles with the ledger (G-118)', () => {
     expect((await summary(businessId)).moneyInK).toBe(4_000_000);
   });
 
+  it('counts a collection into a cash account the tenant moved to another code', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(
+        sql`UPDATE accounts SET code = '1099' WHERE business_id = ${businessId}::uuid AND code = '1000'`,
+      ),
+    );
+    const accountIdFor = (code: string) =>
+      withBusiness(db, businessId, async (tx) => {
+        const rows = await tx.execute<{ id: string }>(
+          sql`SELECT id FROM accounts WHERE business_id = ${businessId}::uuid AND code = ${code}`,
+        );
+        return [...rows][0]!.id;
+      });
+    const cash = await accountIdFor('1099');
+    const receivable = await accountIdFor('1100');
+    const { id } = await withBusiness(db, businessId, (tx) =>
+      journalDraftsRepo.createJournalDraft(tx, {
+        businessId,
+        memo: 'customer paid into moved till',
+        createdBy: 'user:ada',
+        lines: [
+          { accountId: cash, debitK: 2_000_000, creditK: 0 },
+          { accountId: receivable, debitK: 0, creditK: 2_000_000 },
+        ],
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      journalDraftsRepo.postJournalDraft(tx, { businessId, draftId: id, actor: 'user:ada' }),
+    );
+    expect((await summary(businessId)).moneyInK).toBe(2_000_000);
+  });
+
   it('still counts a sale by chart role after the tenant moved revenue and receivables to other codes', async () => {
     const businessId = await seedBusiness();
     await withBusiness(db, businessId, (tx) =>
