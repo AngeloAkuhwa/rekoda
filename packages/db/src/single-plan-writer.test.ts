@@ -69,14 +69,16 @@ function topLevelEnd(text: string, from: number, end: RegExp): number {
 /** Offsets in `code` of every statement assigning the plan or its expiry on `businesses`. */
 function planWriteOffsets(code: string): number[] {
   const hits: number[] = [];
-  const table = String.raw`(?:"?public"?\.)?"?businesses"?`;
-  for (const m of code.matchAll(new RegExp(String.raw`UPDATE\s+${table}\s+SET\s`, 'gi'))) {
+  const table = String.raw`(?:ONLY\s+)?(?:"?public"?\.)?"?businesses"?`;
+  const alias = String.raw`(?:\s+(?:AS\s+)?(?!SET\b)"?\w+"?)?`;
+  const column = String.raw`"?(?:plan|plan_expires_at)"?`;
+  const single = new RegExp(String.raw`^\s*(?:\w+\.)?${column}\s*=(?!=)`, 'i');
+  const tuple = new RegExp(String.raw`^\s*\([^)]*\b${column}\b[^)]*\)\s*=`, 'i');
+  for (const m of code.matchAll(new RegExp(String.raw`UPDATE\s+${table}${alias}\s+SET\s`, 'gi'))) {
     const from = m.index! + m[0].length;
     const stop = topLevelEnd(code, from, /^(WHERE\b|RETURNING\b|FROM\b|`)/i);
     const assigns = topLevelSplit(code.slice(from, stop));
-    if (assigns.some((a) => /^\s*"?(plan|plan_expires_at)"?\s*=(?!=)/i.test(a))) {
-      hits.push(m.index!);
-    }
+    if (assigns.some((a) => single.test(a) || tuple.test(a))) hits.push(m.index!);
   }
   for (const m of code.matchAll(/\.update\(businesses\)\s*\.set\(\s*\{/g)) {
     const from = m.index! + m[0].length;
@@ -87,12 +89,19 @@ function planWriteOffsets(code: string): number[] {
   return hits;
 }
 
-/** Name of the function enclosing `offset`: the nearest declaration before it. */
+/**
+ * The top-level declaration containing `offset`. Prettier keeps every top-level
+ * declaration at column 0, so the nearest preceding unindented `function`,
+ * `const` or `class` is the scope; an arrow assigned to a top-level `const` is
+ * named by that const, so a second writer cannot hide behind the one before it.
+ */
 function enclosing(code: string, offset: number): string {
   let name = '<module>';
-  for (const m of code.matchAll(/^(?:export\s+)?(?:async\s+)?function\s+(\w+)/gm)) {
+  const decl =
+    /^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\*?\s+(\w+)|(?:const|let|var)\s+(\w+)|class\s+(\w+))/gm;
+  for (const m of code.matchAll(decl)) {
     if (m.index! > offset) break;
-    name = m[1]!;
+    name = m[1] ?? m[2] ?? m[3] ?? name;
   }
   return name;
 }
@@ -123,6 +132,13 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
       w('function a(){ tx.update(businesses).set({ plan: next, updatedAt: new Date() }) }'),
     ).toEqual(['a']);
     expect(w('function a(){ tx.update(businesses).set({ plan }) }')).toEqual(['a']);
+    expect(
+      w('function a(){ sql`UPDATE businesses AS b SET plan = ${p} WHERE b.id = ${i}` }'),
+    ).toEqual(['a']);
+    expect(w('function a(){ sql`UPDATE businesses b SET plan_expires_at = ${d}` }')).toEqual(['a']);
+    expect(
+      w('function a(){ sql`UPDATE businesses SET (plan, plan_expires_at) = (${p}, ${d})` }'),
+    ).toEqual(['a']);
     expect(w('function a(){ tx.update(businesses).set({ updatedAt, planExpiresAt }) }')).toEqual([
       'a',
     ]);
@@ -140,6 +156,13 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
       ),
     ).toEqual([]);
     expect(w('// UPDATE businesses SET plan = 1\nconst x = 1;')).toEqual([]);
+  });
+
+  it('attributes an arrow-function writer to itself, not to the function before it', () => {
+    const src =
+      'export async function writeSubscriptionState(){ sql`UPDATE businesses SET plan = ${p}` }\n' +
+      'export const rogue = async () => {\n  await tx.update(businesses).set({ plan });\n};';
+    expect(planWriters(src)).toEqual(['rogue', 'writeSubscriptionState']);
   });
 
   it('names the function that wrote, so a second writer in the same file is caught', () => {
