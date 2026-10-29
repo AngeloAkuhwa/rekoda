@@ -54,6 +54,9 @@ const CONTRACT_LIABILITY_ROLE = sql.raw("'CONTRACT_LIABILITY'");
 const REVENUE_ROLE = sql.raw("'SALES_REVENUE'");
 const VAT_ROLE = sql.raw("'VAT_PAYABLE'");
 const EXPENSES_ROLE = sql.raw("'OPERATING_EXPENSES'");
+/* The fee a provider keeps from a payout posts here, not to operating expenses
+ * (settlements.ts), and is spending all the same. */
+const FEES_ROLE = sql.raw("'PAYMENT_PROCESSING_FEES'");
 const INVENTORY_ROLE = sql.raw("'INVENTORY_ASSET'");
 
 export interface Overview {
@@ -970,7 +973,7 @@ export async function summaryFor(
                 WHERE (system_role IN (${CASH_LENS_ROLES}))
                   AND posting_purpose = 'REFUND'), 0)::bigint AS refunded_k,
       COALESCE((SELECT SUM(debit_k - credit_k) FROM lm
-                WHERE system_role = ${EXPENSES_ROLE}), 0)::bigint
+                WHERE system_role IN (${EXPENSES_ROLE}, ${FEES_ROLE})), 0)::bigint
         + COALESCE((SELECT SUM(debit_k - credit_k) FROM lm
                     WHERE system_role = ${INVENTORY_ROLE}
                       AND COALESCE(reverses_id, transaction_id) IN (SELECT id FROM spend_tx)), 0)::bigint AS money_out_k,

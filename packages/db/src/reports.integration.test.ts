@@ -23,6 +23,7 @@ import {
   refundsRepo,
   reportsRepo,
   settleRepo,
+  settlementsRepo,
   spendRepo,
 } from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
@@ -1786,6 +1787,85 @@ describe('the window summary reconciles with the ledger (G-118)', () => {
     expect(after.moneyOutK).toBe(300_000 + 50_000 + 2_000_000);
     /* Only the register's two entries are counted as entries. */
     expect(after.expenses).toBe(2);
+  });
+
+  it('counts the fee a provider kept from a posted settlement as spending, and ties to the fee account', async () => {
+    const businessId = await seedBusiness();
+    const connection = await withBusiness(db, businessId, (tx) =>
+      paymentsHub.upsertConnection(tx, { businessId, providerType: 'paystack' }),
+    );
+    const paymentId = await withBusiness(db, businessId, async (tx) => {
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_G118F',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 10_000_000 }],
+        subtotalK: 10_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 10_000_000,
+        paidK: 0,
+        balanceDueK: 10_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'g118-fee-sale',
+        actor: 'system',
+      });
+      const intent = await paymentsHub.createIntent(tx, {
+        businessId,
+        reference: paymentReference(new Date(), (n) => randomBytes(n)),
+        expectedAmountK: 10_000_000,
+        providerType: 'paystack',
+        invoiceId: sale.invoiceId,
+      });
+      const booked = await settleRepo.bookVerifiedPayment(tx, {
+        businessId,
+        intent: {
+          id: intent.id,
+          reference: intent.reference,
+          invoiceId: intent.invoiceId,
+          customerId: intent.customerId,
+        },
+        confirmedAmountK: 10_000_000,
+        currency: 'NGN',
+        providerType: 'paystack',
+        providerRef: 'pst-g118-fee',
+        providerStatus: 'success',
+        providerFeeK: 0,
+        feePolicy: 'merchant_bearing',
+        method: 'transfer',
+        actor: 'test',
+        eventId: 'event-g118-fee',
+        paymentConnectionId: connection.id,
+      });
+      return booked.paymentId;
+    });
+    const settlement = await withBusiness(db, businessId, (tx) =>
+      settlementsRepo.recordSettlement(tx, {
+        businessId,
+        paymentConnectionId: connection.id,
+        providerSettlementId: 'STL_G118_FEE',
+        status: 'SETTLED',
+        grossK: 10_000_000,
+        netK: 9_850_000,
+        settledAt: new Date(),
+        items: [{ paymentId, amountK: 10_000_000 }],
+        components: [{ kind: 'PROCESSING_FEE', direction: 'DEDUCTION', amountK: 150_000 }],
+      }),
+    );
+    if (settlement.outcome !== 'recorded') throw new Error('settlement refused');
+    const posted = await withBusiness(db, businessId, (tx) =>
+      settlementsRepo.postSettlement(tx, businessId, settlement.id),
+    );
+    expect(posted).toMatchObject({ posted: true });
+
+    const after = await summary(businessId);
+    /* The fee is an expense in the ledger (account 6050), so it is spending,
+     * and it is never added to money in. */
+    expect(await ledgerNet(businessId, ['6050'], 'debit')).toBe(150_000);
+    expect(after.moneyOutK).toBe(150_000);
+    expect(after.moneyInK).toBe(10_000_000);
   });
 
   it('keeps sales, the unpaid part and cash received apart, and every figure ties to the ledger', async () => {
