@@ -64,3 +64,24 @@ Use a phone you control. On mobile and on a laptop-sized window.
 
 | #   | Date | Tester | Desktop | Mobile | Notes |
 | --- | ---- | ------ | ------- | ------ | ----- |
+
+## 5. Automated evidence per step (status as of 29 Oct 2026)
+
+Every step in sections 1 and 2 is **MERGED code with automated tests and STAGING ACCEPTANCE PENDING**: the
+result table in section 4 is empty, so no step has been walked on staging, and nothing here is live provider
+verified (Paystack test mode only, once walked). The files below exercise the area of each step; they are
+where to look, not a claim that a test asserts the exact wording on screen.
+
+| Steps | Area                                   | Automated tests that exercise it                                                                                                                                                                    | Staging walk |
+| ----- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| 1-2   | Sign-up, 14-day trial, days left       | `packages/db/src/trial-lifecycle.integration.test.ts`, `apps/api/src/billing/trial-notice-sweep.integration.test.ts`, `apps/web/e2e/billing.spec.ts`                                                | PENDING      |
+| 3-5   | Plan prices, yearly option, quote      | `apps/api/src/billing/annual-billing.integration.test.ts`, `apps/web/e2e/billing-journey.spec.ts`                                                                                                   | PENDING      |
+| 6-10  | Checkout, Paystack return, history     | `apps/api/src/billing/billing-checkout.integration.test.ts`, `billing-checkout-recovery.integration.test.ts`, `payment-record.integration.test.ts`, `apps/web/e2e/billing-journey.spec.ts`          | PENDING      |
+| 11    | Webhook replay applies once            | `apps/api/src/billing/billing-charge.integration.test.ts`, `retry-and-zero-charge.integration.test.ts`, `stale-charge.integration.test.ts`                                                          | PENDING      |
+| 12-14 | Upgrade proration, scheduled downgrade | `packages/db/src/subscription-journey.integration.test.ts`, `packages/db/src/subscriptions.integration.test.ts`                                                                                     | PENDING      |
+| 15    | Pack purchase, units granted once      | `apps/api/src/billing/pack-grant.integration.test.ts`, `packages/db/src/usage.integration.test.ts`, `quota.integration.test.ts`                                                                     | PENDING      |
+| 16-18 | Cancel, grace, read-only, reactivation | `apps/api/src/billing/lapsed-plan.integration.test.ts`, `annual-lifecycle.integration.test.ts`, `subscription-retention-race.integration.test.ts`, `apps/web/e2e/billing-journey-lifecycle.spec.ts` | PENDING      |
+
+Not covered by any automated test, so only a staging walk can show it: Paystack's hosted page and the live
+redirect back to Rekoda, the emailed confirmation link, and the WhatsApp grace reminders (held until
+`META_BILLING_TEMPLATE` is approved).
