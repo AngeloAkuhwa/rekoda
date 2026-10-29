@@ -878,7 +878,7 @@ export async function summaryFor(
        * reversal is its own posting dated when it was written, and
        * \`reverses_id\` names the posting it undoes, so a void nets against the
        * sale it cancels without anybody editing history. */
-      SELECT e.transaction_id, t.reverses_id, t.posting_purpose, t.source_type,
+      SELECT e.transaction_id, t.reverses_id, t.posting_purpose, t.source_type, t.source_id,
              acc.code, acc.system_role, e.debit_k, e.credit_k
       FROM ledger_entries e
       JOIN accounts acc ON acc.id = e.account_id AND acc.business_id = e.business_id
@@ -939,9 +939,15 @@ export async function summaryFor(
                     WHERE system_role = ${REVENUE_ROLE} AND debit_k > 0
                       AND transaction_id NOT IN (SELECT id FROM credit_tx)
                       AND source_type NOT IN ('journal', 'journal_draft', 'bank_classification')
-                      /* A reversal that names its sale only counts against a sale
-                       * issued in this window; one that names nothing always does. */
-                      AND (reverses_id IS NULL OR reverses_id IN (SELECT id FROM sale_tx))), 0)
+                      /* A reversal counts against a sale issued in this window: the
+                       * one it names, or, for an invoice from before the link
+                       * existed, the sale posted under the same source. */
+                      AND (reverses_id IN (SELECT id FROM sale_tx)
+                           OR (reverses_id IS NULL
+                               AND EXISTS (SELECT 1 FROM lm s
+                                           WHERE s.transaction_id IN (SELECT id FROM sale_tx)
+                                             AND s.source_type = lm.source_type
+                                             AND s.source_id = lm.source_id)))), 0)
       )::int AS invoices,
       COALESCE((SELECT SUM(debit_k - credit_k) FROM lm
                 WHERE system_role IN (${REVENUE_ROLE}, ${VAT_ROLE})

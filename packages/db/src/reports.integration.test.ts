@@ -1392,6 +1392,59 @@ describe('the window summary reconciles with the ledger (G-118)', () => {
     expect(after.invoices).toBe(0);
   });
 
+  it("does not let the void of an earlier unlinked invoice reduce this window's invoice count", async () => {
+    const businessId = await seedBusiness();
+    const sell = (sourceId: string, amountK: number) =>
+      withBusiness(db, businessId, (tx) =>
+        issueRepo.issueSale(tx, {
+          businessId,
+          customerId: null,
+          customerToken: `CUSTOMER_${sourceId}`,
+          items: [{ name: 'wig', quantity: 1, unitPriceK: amountK }],
+          subtotalK: amountK,
+          discountK: 0,
+          deliveryFeeK: 0,
+          vatK: 0,
+          totalK: amountK,
+          paidK: 0,
+          balanceDueK: amountK,
+          method: 'transfer',
+          sourceType: 'chat',
+          sourceId,
+          actor: 'test',
+        }),
+      );
+    const early = await sell('g118-old-unlinked', 1_000_000);
+    await sell('g118-new-sale', 2_000_000);
+    /* Invoices from before the link existed: their void names no sale. */
+    const owner = postgres(urls.owner, { max: 1, onnotice: () => {} });
+    try {
+      await owner`UPDATE invoices SET ledger_transaction_id = NULL WHERE business_id = ${businessId}::uuid`;
+    } finally {
+      await owner.end();
+    }
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.voidInvoice(tx, businessId, early.invoiceNumber, 'never delivered', 'user:1'),
+    );
+    /* Move the old sale back five days: a fixture only. */
+    const owner2 = postgres(urls.owner, { max: 1, onnotice: () => {} });
+    try {
+      await owner2.unsafe(`
+        SET session_replication_role = replica;
+        UPDATE ledger_entries SET created_at = now() - interval '5 days'
+         WHERE business_id = '${businessId}'
+           AND transaction_id IN (SELECT id FROM ledger_transactions
+                                   WHERE business_id = '${businessId}' AND source_id = 'g118-old-unlinked'
+                                     AND reverses_id IS NULL AND memo NOT LIKE 'Void%');
+        SET session_replication_role = origin;`);
+    } finally {
+      await owner2.end();
+    }
+    const after = await summary(businessId);
+    expect(after.salesK).toBe(1_000_000);
+    expect(after.invoices).toBe(1);
+  });
+
   it('counts a posted journal draft that credits revenue in sales but not as an invoice', async () => {
     const businessId = await seedBusiness();
     const accountIdFor = (code: string) =>
