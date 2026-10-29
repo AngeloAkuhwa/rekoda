@@ -67,7 +67,8 @@ test('invited people see the screens their role allows, and removing one takes i
   const stamp = `${RUN}${seq}${Date.now().toString(36)}`;
   const accountantPhone = phone('0805');
   const helperPhone = phone('0805');
-  await onboardOwner(page, phone('0805'), `Team Biz ${stamp}`);
+  const ownerPhone = phone('0805');
+  await onboardOwner(page, ownerPhone, `Team Biz ${stamp}`);
 
   await invite(page, accountantPhone, 'accountant');
 
@@ -77,6 +78,9 @@ test('invited people see the screens their role allows, and removing one takes i
     .filter({ has: page.getByRole('columnheader', { name: 'Phone' }) });
   await expect(people.getByRole('row').filter({ hasText: e164(accountantPhone) })).toContainText(
     'Accountant, can read everything',
+  );
+  await expect(people.getByRole('row').filter({ hasText: e164(ownerPhone) })).toContainText(
+    'that is you',
   );
   await expect(people.getByText('that is you')).toHaveCount(1);
 
