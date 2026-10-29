@@ -1236,6 +1236,60 @@ describe('the window summary reconciles with the ledger (G-118)', () => {
     expect(after.moneyOutK).toBe(150_000);
   });
 
+  it('reports the gross payment when the provider kept the whole amount as its fee', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(db, businessId, async (tx) => {
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_G118FULL',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 10_000_000 }],
+        subtotalK: 10_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 10_000_000,
+        paidK: 0,
+        balanceDueK: 10_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'g118-fullfee',
+        actor: 'system',
+      });
+      const intent = await paymentsHub.createIntent(tx, {
+        businessId,
+        reference: paymentReference(new Date(), (n) => randomBytes(n)),
+        expectedAmountK: 10_000_000,
+        providerType: 'paystack',
+        invoiceId: sale.invoiceId,
+      });
+      /* No payment connection, so no clearing account: the fee comes off the
+       * bank debit and is posted to expenses. */
+      await settleRepo.bookVerifiedPayment(tx, {
+        businessId,
+        intent: {
+          id: intent.id,
+          reference: intent.reference,
+          invoiceId: intent.invoiceId,
+          customerId: intent.customerId,
+        },
+        confirmedAmountK: 10_000_000,
+        currency: 'NGN',
+        providerType: 'paystack',
+        providerRef: `pst-${randomBytes(4).toString('hex')}`,
+        providerStatus: 'success',
+        providerFeeK: 10_000_000,
+        feePolicy: 'merchant_bearing',
+        method: 'transfer',
+        actor: 'test',
+        eventId: `event-${randomBytes(4).toString('hex')}`,
+      });
+    });
+    const after = await summary(businessId);
+    expect(after.moneyInK).toBe(10_000_000);
+    expect(after.moneyOutK).toBe(10_000_000);
+  });
+
   it('does not let a VAT remittance reduce sales, or a receivable write-off count as money in', async () => {
     const businessId = await seedBusiness();
     await withBusiness(db, businessId, (tx) =>

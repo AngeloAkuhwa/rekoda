@@ -898,10 +898,6 @@ export async function summaryFor(
        * the VAT account alone) never reduces what was invoiced. */
       SELECT DISTINCT transaction_id AS id FROM lm WHERE system_role = ${REVENUE_ROLE}
     ),
-    cash_tx AS (
-      SELECT DISTINCT transaction_id AS id FROM lm
-      WHERE (system_role IN (${CASH_LENS_ROLES})) AND debit_k > 0
-    ),
     spend_tx AS (
       SELECT ledger_transaction_id AS id FROM expenses
       WHERE business_id = ${businessId}::uuid AND ledger_transaction_id IS NOT NULL
@@ -957,8 +953,7 @@ export async function summaryFor(
       COALESCE((SELECT SUM(debit_k) FROM lm
                 WHERE (system_role IN (${CASH_LENS_ROLES})
                        OR (system_role = ${EXPENSES_ROLE}
-                           AND posting_purpose = 'PAYMENT_CONFIRMATION'
-                           AND transaction_id IN (SELECT id FROM cash_tx)))
+                           AND posting_purpose = 'PAYMENT_CONFIRMATION'))
                   AND transaction_id IN (SELECT id FROM collection_tx)), 0)::bigint
         - COALESCE((SELECT SUM(debit_k) FROM lm
                     WHERE system_role = ${AR_ROLE}
