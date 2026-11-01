@@ -171,6 +171,12 @@ question that has to be answered rather than the milestone it blocks.
 | OWN-0a | The eight rulings of 26 August 2026 (products collapsed, the plan table corrected, and the rest) | Build plan amendment 1.11 |
 | OWN-0b | The commercial terms of 21 August 2026                                                           | ADR 0024                  |
 
+### Open owner decisions
+
+| ID | Question | Options and recommendation | Recorded in |
+| -- | -------- | -------------------------- | ----------- |
+| G-62b | How to guard "only the subscription writer assigns `plan` and `plan_expires_at`" after PR #387 (hand-written SQL/TS scanner, 12 unresolved findings, not authorised to merge) | A. database trigger plus transaction-local marker (recommended); B. SECURITY DEFINER function plus column revokes; C. TypeScript AST sweep (new dependency); D. allowlist only. Close #387 unmerged on approval | `docs/proposals/g62-plan-writer-guard.md` |
+
 ---
 
 ## 2. The external go-live register
