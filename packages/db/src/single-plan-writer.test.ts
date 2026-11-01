@@ -104,6 +104,10 @@ function stripComments(src: string): string {
     if (src.startsWith('/*', i)) {
       const close = src.indexOf('*/', i + 2);
       i = close === -1 ? src.length : close + 2;
+    } else if (src.startsWith('//', i)) {
+      /* A line comment runs to the newline; an apostrophe in it opens no string. */
+      const nl = src.indexOf('\n', i);
+      i = nl === -1 ? src.length : nl;
     } else if (ch === "'" || ch === '"' || ch === '`') {
       const end = quotedEnd(src, i, true);
       out += src.slice(i, end);
@@ -294,11 +298,11 @@ function chainEnd(code: string, from: number): number {
 /** Offsets in `code` (interpolations already masked) of every statement assigning the plan or its expiry on `businesses`. */
 function planWriteOffsets(code: string): number[] {
   const hits: number[] = [];
-  const table = String.raw`(?:ONLY\s+)?(?:"?public"?\.)?"?businesses"?(?:\s*\*)?`;
-  const alias = String.raw`(?:\s+(?:AS\s+)?(?!(?:SET|VALUES|SELECT|DEFAULT|OVERRIDING|WITH|TABLE)\b)"?\w+"?)?`;
-  const column = String.raw`"?(?:plan|plan_expires_at)"?`;
-  /* PostgreSQL reads a comment as whitespace, so one may sit before SET. */
+  /* PostgreSQL reads a comment as whitespace, so one may sit at any token gap. */
   const sqlWs = String.raw`(?:\s|/\*[\s\S]*?\*/|--[^\n]*\n)+`;
+  const table = String.raw`(?:ONLY${sqlWs})?(?:"?public"?\.)?"?businesses"?(?:\s*\*)?`;
+  const alias = String.raw`(?:${sqlWs}(?:AS${sqlWs})?(?!(?:SET|VALUES|SELECT|DEFAULT|OVERRIDING|WITH|TABLE)\b)"?\w+"?)?`;
+  const column = String.raw`"?(?:plan|plan_expires_at)"?`;
   const single = new RegExp(String.raw`^\s*(?:\w+\.)?${column}\s*=(?!=)`, 'i');
   const tuple = new RegExp(String.raw`^\s*\([^)]*\b${column}\b[^)]*\)\s*=`, 'i');
   const assignsPlan = (raw: string, from: number) => {
@@ -311,19 +315,22 @@ function planWriteOffsets(code: string): number[] {
   };
 
   for (const m of code.matchAll(
-    new RegExp(String.raw`UPDATE\s+${table}${alias}${sqlWs}SET\s`, 'gi'),
+    new RegExp(String.raw`UPDATE${sqlWs}${table}${alias}${sqlWs}SET\s`, 'gi'),
   )) {
     if (assignsPlan(code, m.index! + m[0].length)) hits.push(m.index!);
   }
-  for (const m of code.matchAll(new RegExp(String.raw`INSERT\s+INTO\s+${table}\b`, 'gi'))) {
+  for (const m of code.matchAll(
+    new RegExp(String.raw`INSERT${sqlWs}INTO${sqlWs}${table}\b`, 'gi'),
+  )) {
     const end = statementEnd(code, m.index!);
     const stmt = code.slice(m.index!, end);
     const set = /\bON\s+CONFLICT\b[\s\S]*?\bDO\s+UPDATE\s+SET\s/i.exec(stmt);
     if (set && assignsPlan(stmt, set.index + set[0].length)) hits.push(m.index!);
     /* A plain insert naming the column: INSERT INTO businesses [AS b] (..., plan, ...) */
-    const cols = new RegExp(String.raw`^INSERT\s+INTO\s+${table}${alias}\s*\(([^)]*)\)`, 'i').exec(
-      stmt,
-    );
+    const cols = new RegExp(
+      String.raw`^INSERT${sqlWs}INTO${sqlWs}${table}${alias}\s*\(([^)]*)\)`,
+      'i',
+    ).exec(stmt);
     if (cols && new RegExp(String.raw`(^|,)\s*${column}\s*(,|$)`, 'i').test(cols[1]!)) {
       hits.push(m.index!);
     }
@@ -332,7 +339,9 @@ function planWriteOffsets(code: string): number[] {
   }
   /* MERGE has several actions (matched update, not-matched insert); no code
    * uses it on `businesses`, so any use counts as a write and needs review. */
-  for (const m of code.matchAll(new RegExp(String.raw`MERGE\s+INTO\s+${table}\b`, 'gi'))) {
+  for (const m of code.matchAll(
+    new RegExp(String.raw`MERGE${sqlWs}INTO${sqlWs}${table}\b`, 'gi'),
+  )) {
     hits.push(m.index!);
   }
 
@@ -403,12 +412,18 @@ function enclosing(code: string, offset: number): string {
   if (offset > end) return '<module>';
   /* A named function-valued helper nested in the declaration owns its own writes. */
   const nested =
-    /^([ \t]+)(?:(?:async\s+)?function\*?\s+(\w+)|(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*(?::[^=]+)?=>\s*\{|\w+\s*=>\s*\{))/gm;
+    /^([ \t]+)(?:(?:async\s+)?function\*?\s+(\w+)|(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?(?:function\b|(?:\([^)]*\)\s*(?::[^=]+)?|\w+)\s*=>\s*(\{)?))/gm;
   let inner = '';
   for (const m of code.matchAll(nested)) {
     if (m.index! > offset) break;
+    /* A block body ends at its closing brace; an expression body at its `;`. */
+    const arrowExpr = m[0].includes('=>') && !m[4];
     const close = new RegExp(`^${m[1]}\\}`, 'm').exec(code.slice(m.index! + 1));
-    const nestedEnd = close ? m.index! + 1 + close.index : code.length;
+    const nestedEnd = arrowExpr
+      ? chainEnd(code, m.index! + m[0].length)
+      : close
+        ? m.index! + 1 + close.index
+        : code.length;
     if (offset <= nestedEnd && m.index! > start) inner = m[2] ?? m[3] ?? '';
   }
   return inner ? `${name}>${inner}` : name;
@@ -815,6 +830,62 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
         'function a(){ sql`UPDATE businesses SET note = ${x.replace(/}/g, `y`)}, plan = ${p} WHERE id = ${i}` }',
       ),
     ).toEqual(['a']);
+  });
+
+  it('reads a SQL comment at every token gap (CodeRabbit, 1 Nov)', () => {
+    const w = (s: string) => planWriters(s);
+    expect(w('function a(){ sql`UPDATE /* x */ businesses SET plan = ${p}` }')).toEqual(['a']);
+    expect(w('function a(){ sql`UPDATE businesses /* x */ AS b SET plan = ${p}` }')).toEqual(['a']);
+    expect(w('function a(){ sql`UPDATE businesses AS /* x */ b SET plan = ${p}` }')).toEqual(['a']);
+    expect(w('function a(){ sql`INSERT INTO /* x */ businesses (plan) VALUES (${p})` }')).toEqual([
+      'a',
+    ]);
+    expect(
+      w('function a(){ sql`UPDATE /* x */ ONLY /* y */ businesses SET plan = ${p}` }'),
+    ).toEqual(['a']);
+    expect(w('function a(){ sql`UPDATE /* plan */ businesses SET name = ${n}` }')).toEqual([]);
+  });
+
+  it('a trailing JavaScript comment, even with an apostrophe, hides nothing', () => {
+    const w = (s: string) => planWriters(s);
+    expect(
+      w("function a(){\n  const x = 1; // it's fine\n  tx.update(businesses).set({ plan: n });\n}"),
+    ).toEqual(['a']);
+    expect(
+      w('function a(){\n  const x = 1; // plain\n  tx.update(businesses).set({ plan: n });\n}'),
+    ).toEqual(['a']);
+    expect(
+      w(
+        "function a(){\n  const u = 'http://x'; // it's\n  tx.update(businesses).set({ plan: n });\n}",
+      ),
+    ).toEqual(['a']);
+    expect(
+      w('function a(){\n  const x = 1; // tx.update(businesses).set({ plan: n });\n}'),
+    ).toEqual([]);
+  });
+
+  it('a named expression-bodied helper owns the write inside it', () => {
+    const one = [
+      'export function outer() {',
+      '  const helper = (tx) => tx.update(businesses).set({ plan: next });',
+      '}',
+    ].join('\n');
+    expect(planWriters(one)).toEqual(['outer>helper']);
+    const bare = [
+      'export function outer() {',
+      '  const helper = tx => tx.update(businesses).set({ plan: next });',
+      '  return helper;',
+      '}',
+    ].join('\n');
+    expect(planWriters(bare)).toEqual(['outer>helper']);
+    const multi = [
+      'export function outer() {',
+      '  const helper = (tx) =>',
+      '    tx.update(businesses).set({ plan: next });',
+      '  tx.update(businesses).set({ plan: other });',
+      '}',
+    ].join('\n');
+    expect(planWriters(multi)).toEqual(['outer', 'outer>helper']);
   });
 
   it('finds the plan assigned only by the permitted writers', () => {
