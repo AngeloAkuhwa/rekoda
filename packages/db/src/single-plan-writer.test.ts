@@ -313,6 +313,11 @@ function expressionEnd(code: string, from: number): number {
       continue;
     }
     const ch = code[i]!;
+    if (ch === '/' && code[i + 1] !== '/' && code[i + 1] !== '*' && regexAllowed(code, i)) {
+      /* A regex literal may hold `;`, `,` or a bracket: it is not code. */
+      i = regexEnd(code, i) - 1;
+      continue;
+    }
     if ('({['.includes(ch)) depth++;
     else if (')}]'.includes(ch)) {
       if (depth === 0) return i;
@@ -1010,6 +1015,16 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
     );
     writeFileSync(join(dir, '0004_d.sql'), "UPDATE /* c */ businesses SET plan = 'complete';\n");
     expect(migrationWriters(dir)).toEqual(['0001_a.sql', '0004_d.sql']);
+  });
+
+  it('a semicolon inside a regex literal does not end an expression-bodied helper (CodeRabbit, 1 Nov)', () => {
+    const src = [
+      'export async function writeSubscriptionState() {',
+      '  const helper = (tx) => /;/.test(value) ? tx.update(businesses).set({ plan: next }) : null;',
+      '  return helper;',
+      '}',
+    ].join('\n');
+    expect(planWriters(src)).toEqual(['writeSubscriptionState>helper']);
   });
 
   it('finds the plan assigned only by the permitted writers', () => {
