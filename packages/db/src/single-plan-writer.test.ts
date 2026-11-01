@@ -61,7 +61,7 @@ function quotedEnd(text: string, i: number, js = false): number {
     return text.length;
   }
   if (ch === '$' && !/\w/.test(text[i - 1] ?? ' ')) {
-    const tag = /^\$(?:[A-Za-z_]\w*)?\$/.exec(text.slice(i, i + 64));
+    const tag = /^\$(?:[A-Za-z_]\w*)?\$/.exec(text.slice(i, i + 65));
     if (tag) {
       const close = text.indexOf(tag[0], i + tag[0].length);
       return close === -1 ? text.length : close + tag[0].length;
@@ -142,19 +142,72 @@ function topLevelEnd(text: string, from: number, end: RegExp, js = false): numbe
  * Drizzle table `${businesses}` stays readable as the table name.
  */
 function maskInterpolations(code: string): string {
-  let out = '';
-  for (let i = 0; i < code.length; i++) {
-    if (code[i] === '$' && code[i + 1] === '{') {
-      let depth = 1;
-      let k = i + 2;
-      while (k < code.length && depth > 0) {
-        if (code[k] === '{') depth++;
-        else if (code[k] === '}') depth--;
+  const n = code.length;
+  /* End of a JavaScript string starting at `k` (they cannot span lines). */
+  const stringEnd = (k: number): number => {
+    const q = code[k];
+    for (k++; k < n; k++) {
+      if (code[k] === '\\') k++;
+      else if (code[k] === q) return k + 1;
+      else if (code[k] === '\n') return k;
+    }
+    return n;
+  };
+  /* End (exclusive) of the expression whose `${` ended just before `k`. */
+  const exprEnd = (k: number): number => {
+    let depth = 1;
+    while (k < n && depth > 0) {
+      const ch = code[k];
+      if (ch === "'" || ch === '"') k = stringEnd(k);
+      else if (ch === '`') k = templateEnd(k);
+      else {
+        if (ch === '{') depth++;
+        else if (ch === '}') depth--;
         k++;
       }
-      out += code.slice(i + 2, k - 1).trim() === 'businesses' ? 'businesses' : '$1';
-      i = k - 1;
-    } else out += code[i];
+    }
+    return k;
+  };
+  /* End (exclusive) of the template literal starting at `k`, skipping nested ones. */
+  const templateEnd = (k: number): number => {
+    for (k++; k < n;) {
+      if (code[k] === '\\') k += 2;
+      else if (code[k] === '`') return k + 1;
+      else if (code[k] === '$' && code[k + 1] === '{') k = exprEnd(k + 2);
+      else k++;
+    }
+    return n;
+  };
+  let out = '';
+  let i = 0;
+  while (i < n) {
+    const ch = code[i]!;
+    if (ch === "'" || ch === '"') {
+      /* An ordinary string is text: a `${` inside it is not an interpolation. */
+      const end = stringEnd(i);
+      out += code.slice(i, end);
+      i = end;
+    } else if (ch === '`') {
+      out += '`';
+      i++;
+      while (i < n && code[i] !== '`') {
+        if (code[i] === '\\') {
+          out += code.slice(i, i + 2);
+          i += 2;
+        } else if (code[i] === '$' && code[i + 1] === '{') {
+          const end = exprEnd(i + 2);
+          out += code.slice(i + 2, end - 1).trim() === 'businesses' ? 'businesses' : '$1';
+          i = end;
+        } else out += code[i++];
+      }
+      if (i < n) {
+        out += '`';
+        i++;
+      }
+    } else {
+      out += ch;
+      i++;
+    }
   }
   return out;
 }
@@ -568,6 +621,36 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
       w('function a(){ /* UPDATE businesses SET plan = 1 */ tx.update(users).set({}) }'),
     ).toEqual([]);
     expect(w('function a(){ tx.update(businesses).set({ note: "}", name: next }) }')).toEqual([]);
+  });
+
+  it('reads a maximum-length dollar-quote tag and ignores `${` inside ordinary strings', () => {
+    const w = (s: string) => planWriters(s);
+    /* A 63-character tag makes a 65-character delimiter; the `;` inside it is text. */
+    const tag = 'a'.repeat(63);
+    expect(
+      w(
+        'function a(){ sql`INSERT INTO businesses (id, note) VALUES (${i}, $' +
+          tag +
+          '$x; y$' +
+          tag +
+          '$) ON CONFLICT (id) DO UPDATE SET plan = EXCLUDED.plan` }',
+      ),
+    ).toEqual(['a']);
+    /* An unclosed `${` in a plain string is not an interpolation. */
+    expect(
+      w(
+        'function a(){ const hint = "${value"; }\nfunction b(){ tx.update(businesses).set({ plan }) }',
+      ),
+    ).toEqual(['b']);
+    expect(
+      w(
+        "function a(){ const hint = '${value'; }\nfunction b(){ tx.update(businesses).set({ plan }) }",
+      ),
+    ).toEqual(['b']);
+    /* A real interpolation inside a template, even inside SQL quotes, is still masked. */
+    expect(w("function a(){ sql`UPDATE businesses SET note = '${x}', plan = ${p}` }")).toEqual([
+      'a',
+    ]);
   });
 
   it('finds the plan assigned only by the permitted writers', () => {
