@@ -403,7 +403,7 @@ function enclosing(code: string, offset: number): string {
   if (offset > end) return '<module>';
   /* A named function-valued helper nested in the declaration owns its own writes. */
   const nested =
-    /^([ \t]+)(?:(?:async\s+)?function\*?\s+(\w+)|(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*(?::[^=]+)?=>|\w+\s*=>))/gm;
+    /^([ \t]+)(?:(?:async\s+)?function\*?\s+(\w+)|(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*(?::[^=]+)?=>\s*\{|\w+\s*=>\s*\{))/gm;
   let inner = '';
   for (const m of code.matchAll(nested)) {
     if (m.index! > offset) break;
@@ -491,6 +491,14 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
     ).toEqual(['a']);
     expect(
       w('function a(){ sql`UPDATE businesses SET note = 1 /* where */, plan = ${p}` }'),
+    ).toEqual(['a']);
+  });
+
+  it('an expression-bodied helper does not own the writes after it', () => {
+    expect(
+      planWriters(
+        'function a() {\n  const iso = (d) => d.toISOString();\n  tx.update(businesses).set({ plan: n });\n}\n',
+      ),
     ).toEqual(['a']);
   });
 
