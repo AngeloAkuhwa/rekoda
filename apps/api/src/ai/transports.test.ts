@@ -104,6 +104,20 @@ describe('the Anthropic transport', () => {
     ]);
   });
 
+  it('sends the key as X-Api-Key, the header an Anthropic-compatible gateway expects', async () => {
+    /* SDK 1.x sends `apiKey` only as `Authorization: Bearer`. The first-party API
+     * takes either, but a gateway behind AI_BASE_URL that checks only the
+     * long-standing header would answer 401 to every call. */
+    let seen: IncomingMessage['headers'] = {};
+    respond = (req, res) => {
+      seen = req.headers;
+      json(ANSWER)(req, res);
+    };
+    await transport().send(REQUEST);
+
+    expect(seen['x-api-key']).toBe('sk-test');
+  });
+
   it('FORCES the tool, so the model cannot answer with prose', async () => {
     respond = json(ANSWER);
     await transport().send(REQUEST);

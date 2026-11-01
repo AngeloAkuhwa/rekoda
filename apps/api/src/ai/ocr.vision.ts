@@ -43,6 +43,10 @@ export class VisionTextExtraction implements TextExtraction {
       /* No OpenTelemetry spans from the SDK, and none the environment can turn
        * on: a prompt or a photo is the merchant's data (invariant 4). */
       openTelemetry: false,
+      /* SDK 1.x sends `apiKey` only as `Authorization: Bearer`. Keep the
+       * long-standing header too, for an Anthropic-compatible gateway behind
+       * AI_BASE_URL that checks only that one. */
+      defaultHeaders: { 'x-api-key': apiKey },
       /* Explicit, so the SDK never reads its base-URL variable from the
        * process (final review on a98a294). */
       baseURL: baseUrl || ANTHROPIC_DEFAULT_BASE_URL,
