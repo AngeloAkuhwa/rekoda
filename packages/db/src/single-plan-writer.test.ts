@@ -33,14 +33,20 @@ const ALLOWED = [
   'packages/db/src/repos/subscriptions.ts#writeSubscriptionState',
 ];
 
+/** Runnable TypeScript or JavaScript source: not a test, not a declaration file. */
+export function isSwept(name: string): boolean {
+  return (
+    /\.(ts|tsx|mts|cts|js|mjs|cjs|jsx)$/.test(name) && !/\.(test|spec)\.|\.d\.(m|c)?ts$/.test(name)
+  );
+}
+
 function sources(dir: string): string[] {
   const out: string[] = [];
   for (const name of readdirSync(dir)) {
     if (name === 'node_modules' || name === 'dist' || name === '.next') continue;
     const path = join(dir, name);
     if (statSync(path).isDirectory()) out.push(...sources(path));
-    else if (/\.(ts|tsx|js|mjs|cjs|jsx)$/.test(name) && !/\.(test|spec)\.|\.d\.ts$/.test(name))
-      out.push(path);
+    else if (isSwept(name)) out.push(path);
   }
   return out;
 }
@@ -324,7 +330,10 @@ function planWriteOffsets(code: string): number[] {
   )) {
     const end = statementEnd(code, m.index!);
     const stmt = code.slice(m.index!, end);
-    const set = /\bON\s+CONFLICT\b[\s\S]*?\bDO\s+UPDATE\s+SET\s/i.exec(stmt);
+    const set = new RegExp(
+      String.raw`\bON${sqlWs}CONFLICT\b[\s\S]*?\bDO${sqlWs}UPDATE${sqlWs}SET${sqlWs}`,
+      'i',
+    ).exec(stmt);
     if (set && assignsPlan(stmt, set.index + set[0].length)) hits.push(m.index!);
     /* A plain insert naming the column: INSERT INTO businesses [AS b] (..., plan, ...) */
     const cols = new RegExp(
@@ -404,9 +413,17 @@ function enclosing(code: string, offset: number): string {
     if (m.index! > offset) break;
     name = m[1] ?? m[2] ?? m[3] ?? name;
     start = m.index!;
-    /* A declaration ends at the next `}` at column 0. */
-    const close = /^\}/m.exec(code.slice(m.index! + 1));
-    end = close ? m.index! + 1 + close.index : code.length;
+    /* An expression-bodied arrow ends at its `;`; any other declaration at the next `}` at column 0. */
+    const expr =
+      /^(?:export\s+)?(?:const|let|var)\s+\w+\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)\s*(?::[^=]+)?|\w+)\s*=>\s*(\{)?/.exec(
+        code.slice(m.index!),
+      );
+    if (expr && !expr[1]) {
+      end = chainEnd(code, m.index! + expr[0].length);
+    } else {
+      const close = /^\}/m.exec(code.slice(m.index! + 1));
+      end = close ? m.index! + 1 + close.index : code.length;
+    }
   }
   /* Past the end of the last declaration: module-level code, never inherited. */
   if (offset > end) return '<module>';
@@ -886,6 +903,41 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
       '}',
     ].join('\n');
     expect(planWriters(multi)).toEqual(['outer', 'outer>helper']);
+  });
+
+  it('sweeps .mts and .cts sources but not their declaration files (Codex, 1 Nov)', () => {
+    expect(isSwept('writer.cts')).toBe(true);
+    expect(isSwept('types.d.mts')).toBe(false);
+    expect(isSwept('types.d.cts')).toBe(false);
+    expect(isSwept('writer.test.mts')).toBe(false);
+  });
+
+  it('reads comments inside ON CONFLICT ... DO UPDATE SET (Codex, 1 Nov)', () => {
+    const w = (s: string) => planWriters(s);
+    expect(
+      w(
+        'function a(){ sql`INSERT INTO businesses (name) VALUES (${n}) ON /* r */ CONFLICT (id) DO UPDATE SET plan = ${p}` }',
+      ),
+    ).toEqual(['a']);
+    expect(
+      w(
+        'function a(){ sql`INSERT INTO businesses (name) VALUES (${n}) ON CONFLICT (id) DO /* r */ UPDATE /* r */ SET /* r */ plan = ${p}` }',
+      ),
+    ).toEqual(['a']);
+  });
+
+  it('a top-level expression-bodied const does not own the module code after it (Codex, 1 Nov)', () => {
+    const src = [
+      'export const allowed = (tx) => tx.update(businesses).set({ name: n });',
+      '',
+      'tx.update(businesses).set({ plan: next });',
+    ].join('\n');
+    expect(planWriters(src)).toEqual(['<module>']);
+    const own = [
+      'export const allowed = (tx) => tx.update(businesses).set({ plan: n });',
+      'const z = 1;',
+    ].join('\n');
+    expect(planWriters(own)).toEqual(['allowed']);
   });
 
   it('finds the plan assigned only by the permitted writers', () => {
