@@ -39,27 +39,76 @@ function sources(dir: string): string[] {
     if (name === 'node_modules' || name === 'dist' || name === '.next') continue;
     const path = join(dir, name);
     if (statSync(path).isDirectory()) out.push(...sources(path));
-    else if (/\.(ts|tsx)$/.test(name) && !/\.(test|spec)\.|\.d\.ts$/.test(name)) out.push(path);
+    else if (/\.(ts|tsx|js|mjs|cjs|jsx)$/.test(name) && !/\.(test|spec)\.|\.d\.ts$/.test(name))
+      out.push(path);
   }
   return out;
 }
 
-const strip = (src: string) =>
-  src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*(\/\/|--).*$/gm, '');
+/**
+ * End (exclusive) of the quoted span starting at `i`, or -1 when `text[i]` does
+ * not open one. Covers SQL/JS single and double quotes, PostgreSQL dollar
+ * quotes with or without a tag (`$$..$$`, `$body$..$body$`) and, when `js` is
+ * set, JavaScript template literals. An unterminated span runs to the end.
+ */
+function quotedEnd(text: string, i: number, js = false): number {
+  const ch = text[i];
+  if (ch === "'" || ch === '"' || (js && ch === '`')) {
+    for (let k = i + 1; k < text.length; k++) {
+      if (text[k] === '\\') k++;
+      else if (text[k] === ch) return k + 1;
+    }
+    return text.length;
+  }
+  if (ch === '$' && !/\w/.test(text[i - 1] ?? ' ')) {
+    const tag = /^\$(?:[A-Za-z_]\w*)?\$/.exec(text.slice(i, i + 64));
+    if (tag) {
+      const close = text.indexOf(tag[0], i + tag[0].length);
+      return close === -1 ? text.length : close + tag[0].length;
+    }
+  }
+  return -1;
+}
+
+/** Remove comments, leaving the contents of JavaScript strings and templates alone. */
+function stripComments(src: string): string {
+  let out = '';
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i]!;
+    if (src.startsWith('/*', i)) {
+      const close = src.indexOf('*/', i + 2);
+      i = close === -1 ? src.length : close + 2;
+    } else if (ch === "'" || ch === '"' || ch === '`') {
+      const end = quotedEnd(src, i, true);
+      out += src.slice(i, end);
+      i = end;
+    } else {
+      out += ch;
+      i++;
+    }
+  }
+  return out;
+}
+
+const strip = (src: string) => stripComments(src).replace(/^\s*(\/\/|--).*$/gm, '');
 
 /** Split on commas outside (), {}, [] and single-quoted SQL text (a doubled quote stays inside). */
-function topLevelSplit(text: string): string[] {
+function topLevelSplit(text: string, js = false): string[] {
   const parts: string[] = [];
   let depth = 0;
-  let quoted = false;
   let cur = '';
-  for (const ch of text) {
-    if (ch === "'") quoted = !quoted;
-    else if (!quoted) {
-      if ('({['.includes(ch)) depth++;
-      else if (')}]'.includes(ch)) depth--;
+  for (let i = 0; i < text.length; i++) {
+    const q = quotedEnd(text, i, js);
+    if (q !== -1) {
+      cur += text.slice(i, q);
+      i = q - 1;
+      continue;
     }
-    if (ch === ',' && depth === 0 && !quoted) {
+    const ch = text[i]!;
+    if ('({['.includes(ch)) depth++;
+    else if (')}]'.includes(ch)) depth--;
+    if (ch === ',' && depth === 0) {
       parts.push(cur);
       cur = '';
     } else cur += ch;
@@ -69,13 +118,15 @@ function topLevelSplit(text: string): string[] {
 }
 
 /** Index of the first `end` match at bracket depth 0, outside single-quoted text, from `from`; else the end. */
-function topLevelEnd(text: string, from: number, end: RegExp): number {
+function topLevelEnd(text: string, from: number, end: RegExp, js = false): number {
   let depth = 0;
-  let quoted = false;
   for (let i = from; i < text.length; i++) {
+    const q = quotedEnd(text, i, js);
+    if (q !== -1) {
+      i = q - 1;
+      continue;
+    }
     const ch = text[i]!;
-    if (ch === "'") quoted = !quoted;
-    if (quoted) continue;
     /* A keyword only ends the clause at a word boundary (not inside `effective_from`). */
     const insideWord = /\w/.test(ch) && /\w/.test(text[i - 1] ?? ' ');
     if (depth === 0 && !insideWord && end.test(text.slice(i))) return i;
@@ -110,30 +161,27 @@ function maskInterpolations(code: string): string {
 
 /** End of the SQL statement starting at `from`: a `;` or the closing backtick outside single quotes. */
 function statementEnd(code: string, from: number): number {
-  let quoted = false;
   for (let i = from; i < code.length; i++) {
-    const ch = code[i]!;
-    if (code.startsWith('$$', i)) {
-      /* PostgreSQL dollar quoting: `$$ ... $$` is text, whatever it contains. */
-      const close = code.indexOf('$$', i + 2);
-      if (close === -1) return code.length;
-      i = close + 1;
-    } else if (ch === "'") quoted = !quoted;
-    else if (!quoted && (ch === ';' || ch === '`')) return i;
+    /* Quoted text (including `$$..$$` and `$tag$..$tag$`) is text, whatever it contains. */
+    const q = quotedEnd(code, i);
+    if (q !== -1) {
+      i = q - 1;
+      continue;
+    }
+    if (code[i] === ';' || code[i] === '`') return i;
   }
   return code.length;
 }
 
 /** End of a builder chain: the first `;` outside a quoted argument. */
 function chainEnd(code: string, from: number): number {
-  let quote = '';
   for (let i = from; i < code.length; i++) {
-    const ch = code[i]!;
-    if (quote) {
-      if (ch === '\\') i++;
-      else if (ch === quote) quote = '';
-    } else if (ch === "'" || ch === '"' || ch === '`') quote = ch;
-    else if (ch === ';') return i;
+    const q = quotedEnd(code, i, true);
+    if (q !== -1) {
+      i = q - 1;
+      continue;
+    }
+    if (code[i] === ';') return i;
   }
   return code.length;
 }
@@ -141,7 +189,7 @@ function chainEnd(code: string, from: number): number {
 /** Offsets in `code` (interpolations already masked) of every statement assigning the plan or its expiry on `businesses`. */
 function planWriteOffsets(code: string): number[] {
   const hits: number[] = [];
-  const table = String.raw`(?:ONLY\s+)?(?:"?public"?\.)?"?businesses"?\*?`;
+  const table = String.raw`(?:ONLY\s+)?(?:"?public"?\.)?"?businesses"?(?:\s*\*)?`;
   const alias = String.raw`(?:\s+(?:AS\s+)?(?!(?:SET|VALUES|SELECT|DEFAULT|OVERRIDING|WITH|TABLE)\b)"?\w+"?)?`;
   const column = String.raw`"?(?:plan|plan_expires_at)"?`;
   const single = new RegExp(String.raw`^\s*(?:\w+\.)?${column}\s*=(?!=)`, 'i');
@@ -179,7 +227,10 @@ function planWriteOffsets(code: string): number[] {
    * patch variable) cannot be read here, so it counts as a write. */
   const writes = (text: string, from: number): boolean => {
     if (text[from] !== '{') return true;
-    const props = topLevelSplit(text.slice(from + 1, topLevelEnd(text, from + 1, /^\}/)));
+    const props = topLevelSplit(
+      text.slice(from + 1, topLevelEnd(text, from + 1, /^\}/, true)),
+      true,
+    );
     return props.some((p) =>
       /^\s*(?:(?:plan|planExpiresAt)\s*(?::|$)|['"](?:plan|planExpiresAt)['"]\s*:|\[|\.\.\.)/.test(
         p,
@@ -488,6 +539,35 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
       'function good(){ sql`UPDATE businesses SET plan = ${p}` }\n' +
       'function rogue(){ sql`UPDATE businesses SET plan_expires_at = ${d}` }';
     expect(planWriters(src)).toEqual(['good', 'rogue']);
+  });
+
+  it('reads tagged dollar quotes, spaced table stars, quoted braces and comment openers in strings', () => {
+    const w = (s: string) => planWriters(s);
+    expect(
+      w(
+        'function a(){ sql`INSERT INTO businesses (id, name) VALUES (${i}, $body$merchant; name$body$) ON CONFLICT (id) DO UPDATE SET plan = EXCLUDED.plan` }',
+      ),
+    ).toEqual(['a']);
+    expect(
+      w(
+        'function a(){ sql`UPDATE businesses SET name = $$WHERE hidden$$, plan = ${p} WHERE id = ${i}` }',
+      ),
+    ).toEqual(['a']);
+    expect(w('function a(){ sql`UPDATE businesses * SET plan = ${p}` }')).toEqual(['a']);
+    expect(w('function a(){ tx.update(businesses).set({ note: "}", plan: next }) }')).toEqual([
+      'a',
+    ]);
+    expect(w('function a(){ tx.update(businesses).set({ note: `}`, plan: next }) }')).toEqual([
+      'a',
+    ]);
+    expect(
+      w("function a(){ sql`UPDATE businesses SET note = '/*', plan = 'chat' /* end */` }"),
+    ).toEqual(['a']);
+    /* Comments outside strings still do not count, and a harmless update stays harmless. */
+    expect(
+      w('function a(){ /* UPDATE businesses SET plan = 1 */ tx.update(users).set({}) }'),
+    ).toEqual([]);
+    expect(w('function a(){ tx.update(businesses).set({ note: "}", name: next }) }')).toEqual([]);
   });
 
   it('finds the plan assigned only by the permitted writers', () => {
