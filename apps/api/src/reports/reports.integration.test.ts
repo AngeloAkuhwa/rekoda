@@ -43,6 +43,8 @@ import {
 import {
   conversationsRepo,
   customersRepo,
+  journalRepo,
+  openingRepo,
   jobsRepo,
   ordersRepo,
   usageRepo,
@@ -4696,6 +4698,43 @@ describe('the period comparison (N2)', () => {
       (await get(ada.auth, `?from=${today}&to=${today}`)).json(),
     );
     expect(body.spent.current).toBe(400_000);
+  });
+
+  it('reports what the ledger holds: an opening receivable is not a sale, a fee posted to expenses is spending (G-118)', async () => {
+    const { auth, businessId } = await onboard('+2348177100006');
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      businessId,
+      'CUSTOMER_G118C',
+      [],
+    );
+    await withBusiness(db, businessId, (tx) =>
+      openingRepo.recordOpeningBalances(tx, {
+        businessId,
+        asAt: lagosToday(),
+        cashK: 0,
+        bankK: 0,
+        stockK: 0,
+        receivables: [{ customerId: customer.id, amountK: 5_000_000, dueDate: null }],
+        actor: 'test',
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      journalRepo.recordJournal(tx, {
+        businessId,
+        memo: 'provider fee',
+        amountK: 50_000,
+        intoAccount: 'EXPENSES',
+        outOfAccount: 'CASH',
+        actor: 'user:1',
+      }),
+    );
+    const today = lagosToday();
+    const body = reportsCompareResponse.parse(
+      (await get(auth, `?from=${today}&to=${today}`)).json(),
+    );
+    expect(body.sales.current).toBe(0);
+    expect(body.spent.current).toBe(50_000);
   });
 
   it('stops a range that runs past today at the end of today and says so', async () => {

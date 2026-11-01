@@ -42,6 +42,23 @@ const CASH_CODES = sql.raw(
   `'${ACCOUNTS.CASH.code}', '${ACCOUNTS.BANK.code}', '${ACCOUNTS.BANK_PAYSTACK.code}'`,
 );
 
+/* Matched by chart ROLE, not code, so an account a tenant replaced under a
+ * different code keeps its postings in the report. Historical rows stay in:
+ * no active-only filter. */
+/* The cash lens by role (CASH, BANK, provider clearing), so a cash or bank
+ * account a tenant replaced under another code still counts. */
+const CASH_LENS_ROLES = sql.raw("'CASH', 'BANK', 'PAYMENT_PROVIDER_CLEARING'");
+const AR_ROLE = sql.raw("'ACCOUNTS_RECEIVABLE'");
+const CUSTOMER_CREDIT_ROLE = sql.raw("'CUSTOMER_CREDIT'");
+const CONTRACT_LIABILITY_ROLE = sql.raw("'CONTRACT_LIABILITY'");
+const REVENUE_ROLE = sql.raw("'SALES_REVENUE'");
+const VAT_ROLE = sql.raw("'VAT_PAYABLE'");
+const EXPENSES_ROLE = sql.raw("'OPERATING_EXPENSES'");
+/* The fee a provider keeps from a payout posts here, not to operating expenses
+ * (settlements.ts), and is spending all the same. */
+const FEES_ROLE = sql.raw("'PAYMENT_PROCESSING_FEES'");
+const INVENTORY_ROLE = sql.raw("'INVENTORY_ASSET'");
+
 export interface Overview {
   /** Cash that arrived this Lagos month, in kobo. */
   moneyInK: number;
@@ -806,6 +823,9 @@ export async function receiptsFor(
 export interface WindowSummary {
   /** Invoiced in the window, at issue: accrual, not cash. */
   salesK: number;
+  /** The part of `salesK` posted by hand or classified from a bank line, with no
+   * invoice behind it (G-118); the rest is invoiced. */
+  handPostedK: number;
   invoices: number;
   /** Credit notes issued in the window: sales taken back, shown beside sales
    * rather than silently netted into them (N2, OWN-44). */
@@ -847,6 +867,7 @@ export async function summaryFor(
 ): Promise<WindowSummary> {
   const rows = await tx.execute<{
     sales_k: string;
+    hand_posted_k: string;
     invoices: number;
     credited_k: string;
     money_in_k: string;
@@ -856,59 +877,131 @@ export async function summaryFor(
     cash_in_k: string;
     cash_out_k: string;
   }>(sql`
+    WITH lm AS (
+      /* Every ledger line dated inside the window, with the posting it
+       * belongs to. Amounts and dates come from here and nowhere else (G-118):
+       * the operational tables are joined only to say WHAT a posting was (a
+       * sale, a credit note, an expense), never to supply a figure. A
+       * reversal is its own posting dated when it was written, and
+       * \`reverses_id\` names the posting it undoes, so a void nets against the
+       * sale it cancels without anybody editing history. */
+      SELECT e.transaction_id, t.reverses_id, t.posting_purpose, t.source_type, t.source_id,
+             acc.code, acc.system_role, e.debit_k, e.credit_k
+      FROM ledger_entries e
+      JOIN accounts acc ON acc.id = e.account_id AND acc.business_id = e.business_id
+      JOIN ledger_transactions t
+        ON t.id = e.transaction_id AND t.business_id = e.business_id
+      WHERE e.business_id = ${businessId}::uuid
+        AND e.created_at BETWEEN ${from.toISOString()}::timestamptz
+                             AND ${to.toISOString()}::timestamptz
+    ),
+    credit_tx AS (
+      SELECT ledger_transaction_id AS id FROM credit_notes
+      WHERE business_id = ${businessId}::uuid AND ledger_transaction_id IS NOT NULL
+    ),
+    revenue_tx AS (
+      /* Postings that move sales revenue: a sale, or the reversal of one. VAT
+       * counts as sales only inside these, so a VAT remittance (which debits
+       * the VAT account alone) never reduces what was invoiced. */
+      SELECT DISTINCT transaction_id AS id FROM lm WHERE system_role = ${REVENUE_ROLE}
+    ),
+    spend_tx AS (
+      SELECT ledger_transaction_id AS id FROM expenses
+      WHERE business_id = ${businessId}::uuid AND ledger_transaction_id IS NOT NULL
+    ),
+    sale_tx AS (
+      /* A sale is known by its SHAPE: a posting that credits sales revenue or
+       * VAT. No document link is needed, so a sale posted before invoices
+       * carried one is still a sale, and an opening-balance receivable (whose
+       * posting credits equity) never is. */
+      SELECT DISTINCT transaction_id AS id FROM lm
+      WHERE system_role = ${REVENUE_ROLE} AND credit_k > 0
+        AND reverses_id IS NULL
+        AND transaction_id NOT IN (SELECT id FROM credit_tx)
+    ),
+    collection_tx AS (
+      /* A customer paying: a sale (its paid part) or a posting that clears a
+       * receivable or a customer credit with money. Opening balances credit
+       * equity, so the cash they declare is not a collection. */
+      SELECT id FROM sale_tx
+      UNION
+      SELECT DISTINCT transaction_id FROM lm
+      WHERE system_role IN (${AR_ROLE}, ${CUSTOMER_CREDIT_ROLE}, ${CONTRACT_LIABILITY_ROLE})
+        AND credit_k > 0
+    )
     SELECT
-      COALESCE((SELECT SUM(total_k) FROM invoices
-                WHERE business_id = ${businessId}::uuid
-                  AND status <> 'voided'
-                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
-                                     AND ${to.toISOString()}::timestamptz), 0)::bigint AS sales_k,
-      COALESCE((SELECT count(*) FROM invoices
-                WHERE business_id = ${businessId}::uuid
-                  AND status <> 'voided'
-                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
-                                     AND ${to.toISOString()}::timestamptz), 0)::int    AS invoices,
-      COALESCE((SELECT SUM(amount_k) FROM credit_notes
-                WHERE business_id = ${businessId}::uuid
-                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
-                                     AND ${to.toISOString()}::timestamptz), 0)::bigint AS credited_k,
-      COALESCE((SELECT SUM(amount_k) FROM payments
-                WHERE business_id = ${businessId}::uuid
-                  AND (status IS NULL
-                       OR status IN ('confirmed', 'refunded', 'partially_refunded'))
-                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
-                                     AND ${to.toISOString()}::timestamptz), 0)::bigint AS money_in_k,
-      COALESCE((SELECT SUM(amount_k) FROM refunds
-                WHERE business_id = ${businessId}::uuid
-                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
-                                     AND ${to.toISOString()}::timestamptz), 0)::bigint AS refunded_k,
-      COALESCE((SELECT SUM(amount_k) FROM expenses
-                WHERE business_id = ${businessId}::uuid
-                  AND status <> 'voided'
-                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
-                                     AND ${to.toISOString()}::timestamptz), 0)::bigint AS money_out_k,
-      COALESCE((SELECT count(*) FROM expenses
-                WHERE business_id = ${businessId}::uuid
-                  AND status <> 'voided'
-                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
-                                     AND ${to.toISOString()}::timestamptz), 0)::int    AS expenses,
-      COALESCE((SELECT SUM(e.debit_k) FROM ledger_entries e
-                JOIN accounts acc ON acc.id = e.account_id
-                WHERE e.business_id = ${businessId}::uuid
-                  AND (acc.code IN (${CASH_CODES})
-                       OR acc.system_role = 'PAYMENT_PROVIDER_CLEARING')
-                  AND e.created_at BETWEEN ${from.toISOString()}::timestamptz
-                                       AND ${to.toISOString()}::timestamptz), 0)::bigint AS cash_in_k,
-      COALESCE((SELECT SUM(e.credit_k) FROM ledger_entries e
-                JOIN accounts acc ON acc.id = e.account_id
-                WHERE e.business_id = ${businessId}::uuid
-                  AND (acc.code IN (${CASH_CODES})
-                       OR acc.system_role = 'PAYMENT_PROVIDER_CLEARING')
-                  AND e.created_at BETWEEN ${from.toISOString()}::timestamptz
-                                       AND ${to.toISOString()}::timestamptz), 0)::bigint AS cash_out_k
+      COALESCE((SELECT SUM(credit_k - debit_k) FROM lm
+                WHERE system_role IN (${REVENUE_ROLE}, ${VAT_ROLE})
+                  AND transaction_id IN (SELECT id FROM revenue_tx)
+                  AND transaction_id NOT IN (SELECT id FROM credit_tx)), 0)::bigint AS sales_k,
+      COALESCE((SELECT SUM(credit_k - debit_k) FROM lm
+                WHERE system_role IN (${REVENUE_ROLE}, ${VAT_ROLE})
+                  AND transaction_id IN (SELECT id FROM revenue_tx)
+                  AND transaction_id NOT IN (SELECT id FROM credit_tx)
+                  AND source_type IN ('journal', 'journal_draft', 'bank_classification')), 0)::bigint AS hand_posted_k,
+      /* Sales issued less sales taken back, by posting shape, so a sale voided
+       * through a reversal that carries no link to it (an invoice from before
+       * the link existed) still nets out, and the count agrees with the amount
+       * across windows. Never below zero. */
+      GREATEST(0,
+        COALESCE((SELECT count(*) FROM sale_tx s
+                  WHERE s.id NOT IN (SELECT transaction_id FROM lm
+                                     WHERE source_type IN ('journal', 'journal_draft', 'bank_classification'))), 0)
+        - COALESCE((SELECT count(DISTINCT transaction_id) FROM lm
+                    WHERE system_role = ${REVENUE_ROLE} AND debit_k > 0
+                      AND transaction_id NOT IN (SELECT id FROM credit_tx)
+                      AND source_type NOT IN ('journal', 'journal_draft', 'bank_classification')
+                      /* A reversal counts against a sale issued in this window: the
+                       * one it names, or, for an invoice from before the link
+                       * existed, the sale posted under the same source. */
+                      AND (reverses_id IN (SELECT id FROM sale_tx)
+                           OR (reverses_id IS NULL
+                               AND EXISTS (SELECT 1 FROM lm s
+                                           WHERE s.transaction_id IN (SELECT id FROM sale_tx)
+                                             AND s.source_type = lm.source_type
+                                             AND s.source_id = lm.source_id)))), 0)
+      )::int AS invoices,
+      COALESCE((SELECT SUM(debit_k - credit_k) FROM lm
+                WHERE system_role IN (${REVENUE_ROLE}, ${VAT_ROLE})
+                  AND transaction_id IN (SELECT id FROM credit_tx)), 0)::bigint AS credited_k,
+      /* Gross collections: the cash that arrived, plus any fee the provider
+       * kept (posted to expenses in the same payment confirmation, never in a hand-posted journal), less cash a collection posting moved between the merchant's own
+       * accounts, less payments undone by
+       * a reversal or chargeback, which debit receivables whatever account
+       * the money came back through. */
+      COALESCE((SELECT SUM(CASE WHEN system_role IN (${CASH_LENS_ROLES})
+                                THEN debit_k - credit_k ELSE debit_k END) FROM lm
+                WHERE (system_role IN (${CASH_LENS_ROLES})
+                       OR (system_role = ${EXPENSES_ROLE}
+                           AND posting_purpose = 'PAYMENT_CONFIRMATION'))
+                  AND transaction_id IN (SELECT id FROM collection_tx)), 0)::bigint
+        - COALESCE((SELECT SUM(debit_k) FROM lm
+                    WHERE system_role = ${AR_ROLE}
+                      AND posting_purpose IN ('REVERSAL', 'CHARGEBACK')), 0)::bigint AS money_in_k,
+      COALESCE((SELECT SUM(credit_k) FROM lm
+                WHERE (system_role IN (${CASH_LENS_ROLES}))
+                  AND posting_purpose = 'REFUND'), 0)::bigint AS refunded_k,
+      COALESCE((SELECT SUM(debit_k - credit_k) FROM lm
+                WHERE system_role IN (${EXPENSES_ROLE}, ${FEES_ROLE})), 0)::bigint
+        + COALESCE((SELECT SUM(debit_k - credit_k) FROM lm
+                    WHERE system_role = ${INVENTORY_ROLE}
+                      AND COALESCE(reverses_id, transaction_id) IN (SELECT id FROM spend_tx)), 0)::bigint AS money_out_k,
+      COALESCE((SELECT count(*) FROM expenses x
+                WHERE x.business_id = ${businessId}::uuid
+                  AND x.ledger_transaction_id IN (SELECT transaction_id FROM lm
+                                                  WHERE reverses_id IS NULL
+                                                    AND system_role IN (${EXPENSES_ROLE}, ${INVENTORY_ROLE}))
+                  AND NOT EXISTS (SELECT 1 FROM lm
+                                  WHERE lm.reverses_id = x.ledger_transaction_id)), 0)::int AS expenses,
+      COALESCE((SELECT SUM(debit_k) FROM lm
+                WHERE system_role IN (${CASH_LENS_ROLES})), 0)::bigint AS cash_in_k,
+      COALESCE((SELECT SUM(credit_k) FROM lm
+                WHERE system_role IN (${CASH_LENS_ROLES})), 0)::bigint AS cash_out_k
   `);
   const row = [...rows][0];
   return {
     salesK: Number(row?.sales_k ?? 0),
+    handPostedK: Number(row?.hand_posted_k ?? 0),
     invoices: row?.invoices ?? 0,
     creditedK: Number(row?.credited_k ?? 0),
     moneyInK: Number(row?.money_in_k ?? 0),
