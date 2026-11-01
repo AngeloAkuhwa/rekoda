@@ -135,7 +135,15 @@ export const ALLOWED: Readonly<Record<string, Entry>> = {
 /** Both spellings, any case, so a camelCase property or a SQL column is caught. */
 const MENTION = /plan_?expires/i;
 /** `SET plan_expires_at = x` or `, plan_expires_at = x` (quoted or qualified too). A `WHERE`/`AND` equality predicate, `<=`, `>=`, `!=` and `==` do not match. */
-const SQL_ASSIGNMENT = /(?:\bSET|,)\s*(?:"?\w+"?\.)?"?plan_expires_at"?\s*=(?!=)/i;
+const SQL_ASSIGNMENT = new RegExp(
+  [
+    // SET plan_expires_at = x, or , "t"."plan_expires_at" = x
+    String.raw`(?:\bSET|,)\s*(?:"?\w+"?\.)?"?plan_expires_at"?\s*=(?!=)`,
+    // SET (a, plan_expires_at) = (x, y), a tuple assignment
+    String.raw`(?:\bSET|,)\s*\([^)]*plan_expires_at[^)]*\)\s*=(?!=)`,
+  ].join('|'),
+  'i',
+);
 /** Whole-file hints that the businesses table is written: an UPDATE or an INSERT, builder or raw. */
 const UPDATE_HINT = /\.update\(\s*businesses\s*\)|\bUPDATE\s+(?:public\.)?"?businesses"?\b/i;
 const INSERT_HINT = /\.insert\(\s*businesses\s*\)|\bINSERT\s+INTO\s+(?:public\.)?"?businesses"?\b/i;
@@ -374,6 +382,22 @@ describe('checkPlanExpiryFiles (detection behaviour)', () => {
     expect(hit('x SET\n  plan = $1,\n  "plan_expires_at"=$2')).toContain('assigns plan_expires_at');
     expect(hit('SELECT 1 WHERE plan_expires_at = $1')).toBe('');
     expect(hit('SELECT 1 WHERE a = 1 AND "plan_expires_at" = $1')).toBe('');
+  });
+
+  it('catches a tuple assignment that includes the column', () => {
+    const a = {
+      ...allowed,
+      'src/reader.ts': { ...allowed['src/reader.ts'], writesOtherColumns: true },
+    };
+    const hit = (text: string) =>
+      checkPlanExpiryFiles([writer, { path: 'src/reader.ts', text }], a).join('\n');
+    expect(
+      hit('UPDATE businesses SET (retention_notified_at, plan_expires_at) = (now(), now())'),
+    ).toContain('assigns plan_expires_at');
+    expect(hit('UPDATE businesses SET a = 1, ("plan_expires_at", b) = ($1, $2)')).toContain(
+      'assigns plan_expires_at',
+    );
+    expect(hit('SELECT 1 WHERE (a, plan_expires_at) = ($1, $2)')).toBe('');
   });
 
   it('fails when a scan root cannot be read instead of treating it as empty', () => {
