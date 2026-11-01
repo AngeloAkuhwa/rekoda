@@ -140,14 +140,15 @@ const GAP = String.raw`(?:\s|--[^\n]*(?:\n|$)|/\*[\s\S]*?\*/)*`;
 const SQL_ASSIGNMENT = new RegExp(
   [
     // SET plan_expires_at = x, or , "t"."plan_expires_at" = x
-    String.raw`(?:\bSET|,)${GAP}(?:"?\w+"?\.)?"?plan_expires_at"?\s*=(?!=)`,
+    String.raw`(?:\bSET|,)${GAP}(?:"?\w+"?\.)?"?plan_expires_at"?${GAP}=(?!=)`,
     // SET (a, plan_expires_at) = (x, y), a tuple assignment
-    String.raw`(?:\bSET|,)${GAP}\([^)]*(?<![\w$])plan_expires_at(?![\w$])[^)]*\)\s*=(?!=)`,
+    String.raw`(?:\bSET|,)${GAP}\([^)]*(?<![\w$])plan_expires_at(?![\w$])[^)]*\)${GAP}=(?!=)`,
   ].join('|'),
   'i',
 );
-/** A query-builder `.set({ ..., planExpiresAt: x })`, whatever the table expression is called. */
-const BUILDER_ASSIGNMENT = /\.set\(\s*\{[^}]*plan_?expires_?at/i;
+/** A query-builder `.set({ ..., planExpiresAt: x })` or shorthand `.set({ planExpiresAt })`, whatever the table expression is called. */
+// The column must be a property KEY (first in the object, or after a comma), not a value.
+const BUILDER_ASSIGNMENT = /\.set\(\s*\{(?:[^{}]*,)?\s*plan_?expires_?at\s*[:,}]/i;
 /** Whole-file hints that the businesses table is written: an UPDATE or an INSERT, builder or raw. */
 const UPDATE_HINT = /\.update\(\s*businesses\s*\)|\bUPDATE\s+(?:public\.)?"?businesses"?\b/i;
 const INSERT_HINT = /\.insert\(\s*businesses\s*\)|\bINSERT\s+INTO\s+(?:public\.)?"?businesses"?\b/i;
@@ -461,6 +462,42 @@ describe('checkPlanExpiryFiles (detection behaviour)', () => {
       checkPlanExpiryFiles([writer, { path: 'src/reader.ts', text }], allowed).join('\n');
     expect(hit('x SET plan_expires_at == $1')).toBe('');
     expect(hit('x SET a = 1, plan_expires_at == $1')).toBe('');
+  });
+
+  it('sees a comment between the column and the equals sign', () => {
+    const a = {
+      ...allowed,
+      'src/reader.ts': { ...allowed['src/reader.ts'], writesOtherColumns: true },
+    };
+    const hit = (text: string) =>
+      checkPlanExpiryFiles([writer, { path: 'src/reader.ts', text }], a).join('\n');
+    expect(hit('UPDATE businesses SET plan_expires_at /* why */ = now()')).toContain(
+      'assigns plan_expires_at',
+    );
+    expect(hit('UPDATE businesses SET (a, plan_expires_at) -- note\n = ($1, $2)')).toContain(
+      'assigns plan_expires_at',
+    );
+    expect(hit('x SET plan_expires_at /* c */ == $1')).toBe('');
+  });
+
+  it('matches the builder property, not a value that mentions the column', () => {
+    const a = {
+      ...allowed,
+      'src/reader.ts': { ...allowed['src/reader.ts'], writesOtherColumns: true },
+    };
+    const hit = (text: string) =>
+      checkPlanExpiryFiles([writer, { path: 'src/reader.ts', text }], a).join('\n');
+    expect(hit('plan_expires_at; tx.update(other).set({ scheduledAt: planExpiresAt })')).toBe('');
+    expect(hit('plan_expires_at; tx.update(other).set({ a: planExpiresAt, b: 1 })')).toBe('');
+    expect(hit('plan_expires_at; tx.update(x).set({ planExpiresAt })')).toContain(
+      'assigns plan_expires_at',
+    );
+    expect(hit('plan_expires_at; tx.update(x).set({ a: 1, planExpiresAt })')).toContain(
+      'assigns plan_expires_at',
+    );
+    expect(
+      hit('plan_expires_at; tx.update(x).set({ a: planExpiresAt, planExpiresAt: d })'),
+    ).toContain('assigns plan_expires_at');
   });
 
   it('fails when a scan root cannot be read instead of treating it as empty', () => {
