@@ -72,6 +72,29 @@ function quotedEnd(text: string, i: number, js = false): number {
   return -1;
 }
 
+/** A `/` at `k` starts a regex literal after an operator or opening bracket, not after an operand. */
+function regexAllowed(code: string, k: number): boolean {
+  let j = k - 1;
+  while (j >= 0 && /\s/.test(code[j]!)) j--;
+  return (
+    j < 0 || /[(,=:[!&|?{};+\-*%<>~^]/.test(code[j]!) || /\breturn$/.test(code.slice(0, j + 1))
+  );
+}
+
+/** End (exclusive) of the regex literal starting at `k`: the next unescaped `/` outside a class. */
+function regexEnd(code: string, k: number): number {
+  let inClass = false;
+  for (k++; k < code.length; k++) {
+    const c = code[k];
+    if (c === '\\') k++;
+    else if (c === '\n') return k;
+    else if (c === '[') inClass = true;
+    else if (c === ']') inClass = false;
+    else if (c === '/' && !inClass) return k + 1;
+  }
+  return code.length;
+}
+
 /** Remove comments, leaving the contents of JavaScript strings and templates alone. */
 function stripComments(src: string): string {
   let out = '';
@@ -83,6 +106,11 @@ function stripComments(src: string): string {
       i = close === -1 ? src.length : close + 2;
     } else if (ch === "'" || ch === '"' || ch === '`') {
       const end = quotedEnd(src, i, true);
+      out += src.slice(i, end);
+      i = end;
+    } else if (ch === '/' && src[i + 1] !== '/' && regexAllowed(src, i)) {
+      /* A regex literal may contain `/*`; it is code, not a comment opener. */
+      const end = regexEnd(src, i);
       out += src.slice(i, end);
       i = end;
     } else {
@@ -175,27 +203,6 @@ function maskInterpolations(code: string): string {
     }
     return n;
   };
-  /* A `/` starts a regex literal after an operator or opening bracket, not after an operand. */
-  const regexAllowed = (k: number): boolean => {
-    let j = k - 1;
-    while (j >= 0 && /\s/.test(code[j]!)) j--;
-    return (
-      j < 0 || /[(,=:[!&|?{};+\-*%<>~^]/.test(code[j]!) || /\breturn$/.test(code.slice(0, j + 1))
-    );
-  };
-  /* End (exclusive) of the regex literal starting at `k`: the next unescaped `/` outside a class. */
-  const regexEnd = (k: number): number => {
-    let inClass = false;
-    for (k++; k < n; k++) {
-      const c = code[k];
-      if (c === '\\') k++;
-      else if (c === '\n') return k;
-      else if (c === '[') inClass = true;
-      else if (c === ']') inClass = false;
-      else if (c === '/' && !inClass) return k + 1;
-    }
-    return n;
-  };
   /* End (exclusive) of the expression whose `${` ended just before `k`. */
   const exprEnd = (k: number): number => {
     let depth = 1;
@@ -203,8 +210,8 @@ function maskInterpolations(code: string): string {
       const ch = code[k];
       if (ch === "'" || ch === '"') k = stringEnd(k);
       else if (ch === '`') k = templateEnd(k);
-      else if (ch === '/' && code[k + 1] !== '/' && code[k + 1] !== '*' && regexAllowed(k)) {
-        k = regexEnd(k);
+      else if (ch === '/' && code[k + 1] !== '/' && code[k + 1] !== '*' && regexAllowed(code, k)) {
+        k = regexEnd(code, k);
       } else {
         if (ch === '{') depth++;
         else if (ch === '}') depth--;
@@ -290,16 +297,22 @@ function planWriteOffsets(code: string): number[] {
   const table = String.raw`(?:ONLY\s+)?(?:"?public"?\.)?"?businesses"?(?:\s*\*)?`;
   const alias = String.raw`(?:\s+(?:AS\s+)?(?!(?:SET|VALUES|SELECT|DEFAULT|OVERRIDING|WITH|TABLE)\b)"?\w+"?)?`;
   const column = String.raw`"?(?:plan|plan_expires_at)"?`;
+  /* PostgreSQL reads a comment as whitespace, so one may sit before SET. */
+  const sqlWs = String.raw`(?:\s|/\*[\s\S]*?\*/|--[^\n]*\n)+`;
   const single = new RegExp(String.raw`^\s*(?:\w+\.)?${column}\s*=(?!=)`, 'i');
   const tuple = new RegExp(String.raw`^\s*\([^)]*\b${column}\b[^)]*\)\s*=`, 'i');
-  const assignsPlan = (text: string, from: number) =>
-    topLevelSplit(
-      stripSqlComments(
-        text.slice(from, topLevelEnd(text, from, /^(WHERE\b|RETURNING\b|FROM\b|`)/i)),
-      ),
-    ).some((a) => single.test(a) || tuple.test(a) || /^\s*\$1\s*$/.test(a));
+  const assignsPlan = (raw: string, from: number) => {
+    /* Comments go first: one holding a keyword or an apostrophe must not move the clause end. */
+    const text = stripSqlComments(raw.slice(from));
+    const clause = text.slice(0, topLevelEnd(text, 0, /^(WHERE\b|RETURNING\b|FROM\b|`)/i));
+    return topLevelSplit(clause).some(
+      (a) => single.test(a) || tuple.test(a) || /^\s*\$1\s*$/.test(a),
+    );
+  };
 
-  for (const m of code.matchAll(new RegExp(String.raw`UPDATE\s+${table}${alias}\s+SET\s`, 'gi'))) {
+  for (const m of code.matchAll(
+    new RegExp(String.raw`UPDATE\s+${table}${alias}${sqlWs}SET\s`, 'gi'),
+  )) {
     if (assignsPlan(code, m.index! + m[0].length)) hits.push(m.index!);
   }
   for (const m of code.matchAll(new RegExp(String.raw`INSERT\s+INTO\s+${table}\b`, 'gi'))) {
@@ -332,7 +345,7 @@ function planWriteOffsets(code: string): number[] {
       true,
     );
     return props.some((p) =>
-      /^\s*(?:(?:plan|planExpiresAt)\s*(?::|$)|['"](?:plan|planExpiresAt)['"]\s*:|\[|\.\.\.)/.test(
+      /^\s*(?:(?:get\s+)?(?:plan|planExpiresAt)\s*(?::|\(|$)|['"](?:plan|planExpiresAt)['"]\s*:|\[|\.\.\.)/.test(
         p,
       ),
     );
@@ -457,6 +470,28 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
     expect(w('function a(){ tx.update(businesses).set({ updatedAt, planExpiresAt }) }')).toEqual([
       'a',
     ]);
+  });
+
+  it('reads a comment before SET, a getter and a regex literal (review findings)', () => {
+    const w = (s: string) => planWriters(s);
+    expect(w('function a(){ sql`UPDATE businesses /* note */ SET plan = ${p}` }')).toEqual(['a']);
+    expect(w('function a(){ sql`UPDATE businesses -- note\n SET plan = ${p}` }')).toEqual(['a']);
+    expect(w('function a(){ tx.update(businesses).set({ get plan() { return next; } }) }')).toEqual(
+      ['a'],
+    );
+    expect(
+      w('const re = /[/*]/;\nfunction a(){ tx.update(businesses).set({ plan: next }) }'),
+    ).toEqual(['a']);
+  });
+
+  it('a SQL comment holding a keyword or apostrophe does not hide the plan assignment', () => {
+    const w = (s: string) => planWriters(s);
+    expect(
+      w("function a(){ sql`UPDATE businesses SET note = 1 -- it's from here\n, plan = ${p}` }"),
+    ).toEqual(['a']);
+    expect(
+      w('function a(){ sql`UPDATE businesses SET note = 1 /* where */, plan = ${p}` }'),
+    ).toEqual(['a']);
   });
 
   it('ignores what is not a plan assignment', () => {
