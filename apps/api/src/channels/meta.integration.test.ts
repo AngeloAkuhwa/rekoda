@@ -10599,6 +10599,25 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
         actor: 'system',
       });
     });
+    /* The answers read the ledger (G-118), so last month's sale and payment
+     * are back-dated THERE too, as the owner with the append-only guards
+     * suspended: a fixture, never a product path. */
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`SET session_replication_role = replica`);
+      await ownerDb.execute(sql`
+        UPDATE ledger_entries SET created_at = ${inLastMonth}::timestamptz
+         WHERE business_id = ${businessId}::uuid
+           AND transaction_id IN (SELECT id FROM ledger_transactions
+                                   WHERE business_id = ${businessId}::uuid
+                                     AND source_id IN ('b6-old', 'b6-old-pay'))`);
+      await ownerDb.execute(sql`
+        UPDATE ledger_transactions SET created_at = ${inLastMonth}::timestamptz
+         WHERE business_id = ${businessId}::uuid AND source_id IN ('b6-old', 'b6-old-pay')`);
+      await ownerDb.execute(sql`SET session_replication_role = origin`);
+    } finally {
+      await close();
+    }
     return {
       lastMonthLabel: lastMonth.label,
       thisMonthLabel: resolvePeriod('month', new Date()).label,
@@ -13360,7 +13379,7 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
       await reply('wamid.F3b-yes', 'yes');
       expect(stubSender.lastText).toContain(POS_QUESTION);
       expect(stubSender.lastText).not.toContain('Reply *bank*');
-      expect(stubSender.lastText).toContain('Send it again with where the money came');
+      expect(stubSender.lastText).toContain('Record it again with where the money came');
 
       await reply('wamid.F3b-bank', 'bank');
       expect(stubSender.lastText).toBe(UNCLEAR.clarification);

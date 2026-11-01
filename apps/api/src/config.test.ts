@@ -814,3 +814,37 @@ describe('REKODA_ANNUAL_BILLING', () => {
     );
   });
 });
+
+describe('REKODA_CUSTOMER_REMINDERS', () => {
+  it('is off unless set to 1, and refuses anything else', () => {
+    expect(loadConfig({ ...BASE }).customerReminders).toBe(false);
+    expect(loadConfig({ ...BASE, REKODA_CUSTOMER_REMINDERS: '0' }).customerReminders).toBe(false);
+    expect(() => loadConfig({ ...BASE, REKODA_CUSTOMER_REMINDERS: 'yes' })).toThrow(
+      'REKODA_CUSTOMER_REMINDERS',
+    );
+  });
+
+  it('refuses to boot when on without an https web URL', () => {
+    const on = { ...BASE, REKODA_CUSTOMER_REMINDERS: '1' };
+    expect(() => loadConfig(on)).toThrow('https://');
+    expect(() => loadConfig({ ...on, REKODA_WEB_URL: 'http://app.rekoda.test' })).toThrow(
+      'https://',
+    );
+    for (const bad of [
+      'https://app.rekoda.test/#top',
+      'https://app.rekoda.test/?a=1',
+      'https://app.rekoda.test/?',
+      'https://app.rekoda.test/#',
+      'https://app.rekoda.test/sign-in',
+      'https://user:pass@app.rekoda.test',
+      'https://user@app.rekoda.test',
+    ]) {
+      expect(() => loadConfig({ ...on, REKODA_WEB_URL: bad })).toThrow(
+        'no credentials, path, query or fragment',
+      );
+    }
+    expect(loadConfig({ ...on, REKODA_WEB_URL: 'https://app.rekoda.test' }).customerReminders).toBe(
+      true,
+    );
+  });
+});

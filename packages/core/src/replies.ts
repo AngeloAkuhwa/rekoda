@@ -89,8 +89,8 @@ export function confirmErasure(draftsDiscarded = 0): Reply {
   if (draftsDiscarded > 0) {
     lines.push(
       draftsDiscarded === 1
-        ? 'The entry that was waiting for your yes has been dropped. Send it again after this.'
-        : `The ${draftsDiscarded} entries waiting for your yes have been dropped. Send them again after this.`,
+        ? 'The entry that was waiting for your yes has been dropped. Record it again after this.'
+        : `The ${draftsDiscarded} entries waiting for your yes have been dropped. Record them again after this.`,
     );
   }
   lines.push('Reply *DELETE MY DATA* again to confirm, or anything else to keep it.');
@@ -600,8 +600,8 @@ export function quotaReachedForBusiness(): Reply {
 /** The platform ceiling. Not the merchant's fault, and it should not read as if it were. */
 export function busyRightNow(): Reply {
   return reply(
-    'I am very busy right now and could not read that properly. Please send it ' +
-      'again in a few minutes. Nothing was lost.',
+    'I am very busy right now and could not read that properly. Please try again ' +
+      'in a few minutes. Nothing was lost.',
   );
 }
 
@@ -680,7 +680,7 @@ export function alreadyConfirmed(): Reply {
  */
 export function draftExpired(): Reply {
   return reply(
-    'That request has expired, so I did not save anything. Send it again and ' +
+    'That request has expired, so I did not save anything. Record it again and ' +
       'I will show you a fresh preview.',
   );
 }
@@ -1376,7 +1376,7 @@ export function voiceTooLong(maxSeconds: number): Reply {
       : `${maxSeconds} seconds`;
   return reply(
     `That voice note is longer than ${limit}, which is as much as I can listen ` +
-      'to at once.\n\nPlease send it again in shorter parts and I will record ' +
+      'to at once.\n\nPlease send it in shorter parts and I will record ' +
       'every one of them.',
   );
 }
@@ -1388,7 +1388,7 @@ export function voiceTooLong(maxSeconds: number): Reply {
 export function messageTooLong(): Reply {
   return reply(
     'That message is more than I can read safely at once.\n\nPlease send it ' +
-      'again in shorter parts and I will record every one of them.',
+      'in shorter parts and I will record every one of them.',
   );
 }
 
@@ -1400,7 +1400,7 @@ export function messageTooLong(): Reply {
 export function messageNotReadSafely(): Reply {
   return reply(
     'I could not read that safely, so I have not recorded anything from it.\n\n' +
-      'Please send it again without the account or phone number.',
+      'Please try again without the account or phone number.',
   );
 }
 
@@ -1497,18 +1497,52 @@ export function salesAnswer(input: {
   salesK: number;
   invoices: number;
   moneyInK: number;
+  /** Revenue posted by hand, part of `salesK` with no invoice behind it. */
+  handPostedK?: number;
 }): Reply {
-  if (input.invoices === 0) {
+  if (input.invoices === 0 && input.salesK === 0 && input.moneyInK === 0) {
     return reply(
       `You have not recorded any sales ${inWindow(input.label)}. Tell me one the way you would ` +
         'tell a person, like "sold 2 bags to Ada for 40k".',
     );
   }
-  return reply(
-    `${input.label[0]!.toUpperCase()}${input.label.slice(1)}: ${formatKobo(input.salesK)} ` +
-      `invoiced across ${input.invoices === 1 ? 'one sale' : `${input.invoices} sales`}.\n` +
-      `${formatKobo(input.moneyInK)} of that has actually come in.`,
-  );
+  const head = input.label[0]!.toUpperCase() + input.label.slice(1);
+  const sales = input.invoices === 1 ? 'one sale' : `${input.invoices} sales`;
+  /* The sales line. A negative net is worded as a take-back, never printed as
+   * a minus, and revenue the books hold with no invoice behind it (one posted
+   * by hand) is said without pretending to a count of sales (G-118). */
+  let first: string;
+  if (input.invoices === 0 && input.salesK === 0) {
+    first = `You have not recorded any sales ${inWindow(input.label)}.`;
+  } else if (input.invoices === 0 && input.salesK < 0) {
+    first = `${head}: ${formatKobo(-input.salesK)} of earlier sales was taken back.`;
+  } else if (input.invoices === 0) {
+    first = `${head}: ${formatKobo(input.salesK)} in sales recorded in your books.`;
+  } else if (input.salesK < 0) {
+    first =
+      `${head}: ${sales} invoiced, but ${formatKobo(-input.salesK)} more of earlier sales was ` +
+      'taken back than was sold.';
+  } else if ((input.handPostedK ?? 0) > 0 && input.handPostedK! < input.salesK) {
+    /* Part of the total was posted by hand: only the rest is invoiced, so the
+     * answer does not call all of it invoiced. */
+    first =
+      `${head}: ${formatKobo(input.salesK)} in sales recorded in your books, ` +
+      `${formatKobo(input.salesK - input.handPostedK!)} of it invoiced across ${sales}.`;
+  } else {
+    first = `${head}: ${formatKobo(input.salesK)} invoiced across ${sales}.`;
+  }
+  /* The money line. Payments undone by a reversal or chargeback can outweigh
+   * what came in, and that is said even when the window has no sale of its
+   * own. A refund is reported apart from this figure. */
+  let second: string | null = null;
+  if (input.moneyInK < 0) {
+    second = `${formatKobo(-input.moneyInK)} more was taken back than came in.`;
+  } else if (input.invoices > 0 && input.salesK >= 0) {
+    second = `${formatKobo(input.moneyInK)} of that has actually come in.`;
+  } else if (input.moneyInK > 0) {
+    second = `${formatKobo(input.moneyInK)} came in.`;
+  }
+  return reply(second === null ? first : `${first}\n${second}`);
 }
 
 export function expensesAnswer(input: {
@@ -1516,9 +1550,31 @@ export function expensesAnswer(input: {
   moneyOutK: number;
   expenses: number;
 }): Reply {
-  if (input.expenses === 0) {
+  if (input.expenses === 0 && input.moneyOutK === 0) {
     return reply(
       `You have not recorded any spending ${inWindow(input.label)}. Tell me one like "fuel 12k".`,
+    );
+  }
+  /* Spending taken back in this window that was made in an earlier one. */
+  if (input.moneyOutK < 0 && input.expenses > 0) {
+    return reply(
+      `${input.label[0]!.toUpperCase()}${input.label.slice(1)}: ${input.expenses} ` +
+        `${input.expenses === 1 ? 'expense' : 'expenses'} recorded, and ${formatKobo(-input.moneyOutK)} ` +
+        'more of earlier spending was taken back than was spent.',
+    );
+  }
+  if (input.moneyOutK < 0) {
+    return reply(
+      `${input.label[0]!.toUpperCase()}${input.label.slice(1)}: ${formatKobo(-input.moneyOutK)} ` +
+        'of earlier spending was taken back.',
+    );
+  }
+  /* Spending the books hold with no entry behind it, such as a charge a
+   * provider took (G-118): the amount is real, so it is said, without
+   * pretending to a count of entries. */
+  if (input.expenses === 0) {
+    return reply(
+      `${input.label[0]!.toUpperCase()}${input.label.slice(1)}: ${formatKobo(input.moneyOutK)} spent.`,
     );
   }
   return reply(
@@ -1930,7 +1986,7 @@ export function stockList(rows: StockLine[], count: number, outOfStock: number):
 export function confirmationLapsed(what: string): Reply {
   return reply(
     `That took a little too long, so I did not save ${what}. ` +
-      'Send it again and I will show you a fresh preview.',
+      'Record it again and I will show you a fresh preview.',
   );
 }
 

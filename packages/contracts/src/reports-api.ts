@@ -1970,3 +1970,66 @@ export type CreditInvoiceResponse = z.infer<typeof creditInvoiceResponse>;
 
 export type VoidInvoiceRequest = z.infer<typeof voidInvoiceRequest>;
 export type VoidInvoiceResponse = z.infer<typeof voidInvoiceResponse>;
+
+/* ── Customer payment reminders (N1, OWN-43, OWN-62) ─────────────────────── */
+
+export const reminderChannel = z.enum(['email', 'whatsapp']);
+
+/**
+ * Ask Rekoda to send a reminder for one unpaid invoice. `channels: 'auto'` (the default) tries
+ * WhatsApp first and email as well when the customer has an address, each judged on its own.
+ */
+export const sendReminderRequest = z.object({
+  invoiceNumber: z.string().trim().min(1).max(40),
+  channels: z.union([z.literal('auto'), z.array(reminderChannel).min(1).max(2)]).default('auto'),
+  /** One per click: a repeated request with the same key never sends twice on any channel. */
+  idempotencyKey: z.string().min(8).max(90),
+  /** The merchant states, for email, that they have a lawful basis to contact this customer. */
+  attest: z.boolean().optional(),
+});
+export type SendReminderRequest = z.infer<typeof sendReminderRequest>;
+
+export const reminderStatus = z.enum(['sending', 'sent', 'blocked', 'failed', 'uncertain']);
+
+export const reminderHistoryItem = z.object({
+  id: z.string().uuid(),
+  channel: reminderChannel,
+  status: reminderStatus,
+  /** A named reason when nothing was sent. */
+  reasonCode: z.string().nullable(),
+  balanceK: z.number().int().nullable(),
+  createdAt: z.string(),
+  sentAt: z.string().nullable(),
+});
+export type ReminderHistoryItem = z.infer<typeof reminderHistoryItem>;
+
+/** One channel's own outcome. A failure on one never marks the other delivered or repeats it. */
+export const reminderChannelResult = z.object({
+  channel: reminderChannel,
+  reminder: reminderHistoryItem,
+  /** True when this key had already been used on this channel and the earlier answer is returned. */
+  replayed: z.boolean(),
+});
+export type ReminderChannelResult = z.infer<typeof reminderChannelResult>;
+
+export const sendReminderResponse = z.object({ results: z.array(reminderChannelResult) });
+export type SendReminderResponse = z.infer<typeof sendReminderResponse>;
+
+export const reminderHistoryResponse = z.object({
+  invoiceNumber: z.string(),
+  remindersStopped: z.boolean(),
+  items: z.array(reminderHistoryItem),
+});
+export type ReminderHistoryResponse = z.infer<typeof reminderHistoryResponse>;
+
+export const stopRemindersRequest = z.object({
+  invoiceNumber: z.string().trim().min(1).max(40),
+  stopped: z.boolean(),
+});
+export type StopRemindersRequest = z.infer<typeof stopRemindersRequest>;
+
+/** The public phone a reminder shows. Never the sign-in number unless the merchant says so. */
+export const publicContactRequest = z.object({ phone: z.string().trim().min(7).max(20) });
+export type PublicContactRequest = z.infer<typeof publicContactRequest>;
+
+export const reminderOptOutRequest = z.object({ token: z.string().min(40).max(200) });

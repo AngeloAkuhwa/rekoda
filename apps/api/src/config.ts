@@ -455,6 +455,12 @@ export interface ApiConfig {
    * settle a year's charge as one month. Switching back to monthly is always allowed.
    */
   annualBillingSales: boolean;
+  /**
+   * Release switch for customer payment reminders on every channel (N1, OWN-62/OWN-63). Off unless
+   * `REKODA_CUSTOMER_REMINDERS=1`, so configuring an email sender or a Meta connection never starts
+   * messaging a merchant's customers by itself; the owner turns it on after the legal sign-off.
+   */
+  customerReminders: boolean;
   /** R2. All four empty means documents are rendered but not stored. */
   r2AccountId: string;
   r2AccessKeyId: string;
@@ -1207,6 +1213,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const isProduction = isProductionEnv(env);
   const r2 = r2Settings(env);
 
+  const customerReminders = zeroOrOneFlag(env, 'REKODA_CUSTOMER_REMINDERS');
+  // A reminder email carries a signed opt-out link appended to this URL: it must be an https origin, and a
+  // path, query or fragment would put the appended route in the wrong place.
+  if (customerReminders) {
+    const base = webUrl(env);
+    const url = base === null ? null : new URL(base);
+    // URL.search and URL.hash are empty for a bare trailing `?` or `#`, so the raw text is checked too.
+    const raw = env['REKODA_WEB_URL'] ?? '';
+    if (
+      url === null ||
+      url.protocol !== 'https:' ||
+      url.pathname !== '/' ||
+      url.username !== '' ||
+      url.password !== '' ||
+      /[?#]/.test(raw)
+    ) {
+      throw new ConfigError(
+        'REKODA_CUSTOMER_REMINDERS=1 needs REKODA_WEB_URL to be an https:// origin with no credentials, path, query or fragment (the opt-out link in a reminder email)',
+      );
+    }
+  }
+
   const revealOtp = env['REKODA_REVEAL_OTP'] === '1';
   if (revealOtp && isProduction) {
     throw new ConfigError(
@@ -1448,6 +1476,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     metaWabaRegisteredInNigeria: env['META_WABA_REGISTERED_IN_NIGERIA'] !== 'false',
     planCatalogueReads: env['REKODA_PLAN_CATALOGUE_READS'] !== '0',
     annualBillingSales: zeroOrOneFlag(env, 'REKODA_ANNUAL_BILLING'),
+    customerReminders,
     r2AccountId: r2.accountId,
     r2AccessKeyId: r2.accessKeyId,
     r2SecretAccessKey: r2.secretAccessKey,
