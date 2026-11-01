@@ -134,16 +134,20 @@ export const ALLOWED: Readonly<Record<string, Entry>> = {
 
 /** Both spellings, any case, so a camelCase property or a SQL column is caught. */
 const MENTION = /plan_?expires/i;
+// Whitespace or SQL comments (line comments or block comments) between tokens.
+const GAP = String.raw`(?:\s|--[^\n]*(?:\n|$)|/\*[\s\S]*?\*/)*`;
 /** `SET plan_expires_at = x` or `, plan_expires_at = x` (quoted or qualified too). A `WHERE`/`AND` equality predicate, `<=`, `>=`, `!=` and `==` do not match. */
 const SQL_ASSIGNMENT = new RegExp(
   [
     // SET plan_expires_at = x, or , "t"."plan_expires_at" = x
-    String.raw`(?:\bSET|,)\s*(?:"?\w+"?\.)?"?plan_expires_at"?\s*=(?!=)`,
+    String.raw`(?:\bSET|,)${GAP}(?:"?\w+"?\.)?"?plan_expires_at"?\s*=(?!=)`,
     // SET (a, plan_expires_at) = (x, y), a tuple assignment
-    String.raw`(?:\bSET|,)\s*\([^)]*(?<![\w$])plan_expires_at(?![\w$])[^)]*\)\s*=(?!=)`,
+    String.raw`(?:\bSET|,)${GAP}\([^)]*(?<![\w$])plan_expires_at(?![\w$])[^)]*\)\s*=(?!=)`,
   ].join('|'),
   'i',
 );
+/** A query-builder `.set({ ..., planExpiresAt: x })`, whatever the table expression is called. */
+const BUILDER_ASSIGNMENT = /\.set\(\s*\{[^}]*plan_?expires_?at/i;
 /** Whole-file hints that the businesses table is written: an UPDATE or an INSERT, builder or raw. */
 const UPDATE_HINT = /\.update\(\s*businesses\s*\)|\bUPDATE\s+(?:public\.)?"?businesses"?\b/i;
 const INSERT_HINT = /\.insert\(\s*businesses\s*\)|\bINSERT\s+INTO\s+(?:public\.)?"?businesses"?\b/i;
@@ -186,7 +190,7 @@ export function checkPlanExpiryFiles(
       continue;
     }
     if (entry.role === 'reader' || entry.role === 'caller' || entry.role === 'definition') {
-      if (SQL_ASSIGNMENT.test(text)) {
+      if (SQL_ASSIGNMENT.test(text) || BUILDER_ASSIGNMENT.test(text)) {
         problems.push(`${path}: listed as ${entry.role} but assigns plan_expires_at in SQL.`);
       }
       if ((!entry.writesOtherColumns && UPDATE_HINT.test(text)) || INSERT_HINT.test(text)) {
@@ -416,6 +420,47 @@ describe('checkPlanExpiryFiles (detection behaviour)', () => {
     expect(hit('UPDATE businesses SET (a, "plan_expires_at") = ($1, $2)')).toContain(
       'assigns plan_expires_at',
     );
+  });
+
+  it('sees an assignment separated from SET or a comma by SQL comments', () => {
+    const a = {
+      ...allowed,
+      'src/reader.ts': { ...allowed['src/reader.ts'], writesOtherColumns: true },
+    };
+    const hit = (text: string) =>
+      checkPlanExpiryFiles([writer, { path: 'src/reader.ts', text }], a).join('\n');
+    expect(hit('UPDATE businesses SET /* why */ plan_expires_at = $1')).toContain(
+      'assigns plan_expires_at',
+    );
+    expect(hit('UPDATE businesses SET a = 1,\n -- note\n plan_expires_at = $1')).toContain(
+      'assigns plan_expires_at',
+    );
+    expect(hit('UPDATE businesses SET /* x */ (a, plan_expires_at) = ($1, $2)')).toContain(
+      'assigns plan_expires_at',
+    );
+  });
+
+  it('catches a builder assignment in a reader that updates other columns, whatever the table is called', () => {
+    const a = {
+      ...allowed,
+      'src/reader.ts': { ...allowed['src/reader.ts'], writesOtherColumns: true },
+    };
+    const hit = (text: string) =>
+      checkPlanExpiryFiles([writer, { path: 'src/reader.ts', text }], a).join('\n');
+    expect(hit('plan_expires_at; await tx.update(businesses).set({ planExpiresAt: d })')).toContain(
+      'assigns plan_expires_at',
+    );
+    expect(
+      hit('plan_expires_at; await tx.update(schema.businesses).set({ a: 1, planExpiresAt: d })'),
+    ).toContain('assigns plan_expires_at');
+    expect(hit('plan_expires_at; await tx.update(biz).set({ a: 1 })')).toBe('');
+  });
+
+  it('does not treat an == after a SET or comma prefix as an assignment', () => {
+    const hit = (text: string) =>
+      checkPlanExpiryFiles([writer, { path: 'src/reader.ts', text }], allowed).join('\n');
+    expect(hit('x SET plan_expires_at == $1')).toBe('');
+    expect(hit('x SET a = 1, plan_expires_at == $1')).toBe('');
   });
 
   it('fails when a scan root cannot be read instead of treating it as empty', () => {
