@@ -14,7 +14,8 @@
  * imported under another name or a statement assembled from fragments. Those
  * need review, and the database role grants remain the hard boundary.
  */
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -27,6 +28,12 @@ const root = fileURLToPath(new URL('../../../', import.meta.url));
  * the new row with its first plan and expiry and nothing else ever does.
  * Anything else, in these files or another, fails the sweep.
  */
+/**
+ * Migrations that already assign the plan or its expiry (applied history, never
+ * edited). A new migration doing so fails the sweep until it is named here.
+ */
+const ALLOWED_MIGRATIONS = ['0017_trial_expiry.sql'];
+
 const ALLOWED = [
   'packages/db/src/repos/identity.ts#createBusinessWithOwner',
   'packages/db/src/repos/subscriptions.ts#expireSubscription',
@@ -49,6 +56,14 @@ function sources(dir: string): string[] {
     else if (isSwept(name)) out.push(path);
   }
   return out;
+}
+
+/** SQL migrations that assign the plan or its expiry, as `file` names (a migration is one module-level script). */
+export function migrationWriters(dir: string): string[] {
+  return readdirSync(dir)
+    .filter((n) => n.endsWith('.sql'))
+    .filter((n) => planWriters(readFileSync(join(dir, n), 'utf8')).length > 0)
+    .sort();
 }
 
 /**
@@ -979,6 +994,24 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
     expect(planWriters(src)).toEqual(['writeSubscriptionState>helper']);
   });
 
+  it('sweeps SQL migrations for plan writes (Codex, 1 Nov)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mig-'));
+    writeFileSync(
+      join(dir, '0001_a.sql'),
+      "UPDATE businesses\nSET plan_expires_at = now()\nWHERE plan = 'trial';\n",
+    );
+    writeFileSync(
+      join(dir, '0002_b.sql'),
+      'ALTER TABLE businesses ADD COLUMN note text;\nUPDATE businesses SET note = plan;\n',
+    );
+    writeFileSync(
+      join(dir, '0003_c.sql'),
+      "-- UPDATE businesses SET plan = 'x'\nCREATE INDEX i ON businesses (plan, plan_expires_at);\n",
+    );
+    writeFileSync(join(dir, '0004_d.sql'), "UPDATE /* c */ businesses SET plan = 'complete';\n");
+    expect(migrationWriters(dir)).toEqual(['0001_a.sql', '0004_d.sql']);
+  });
+
   it('finds the plan assigned only by the permitted writers', () => {
     const writers = ['packages', 'apps']
       .flatMap((top) => sources(join(root, top)))
@@ -987,5 +1020,9 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
       )
       .sort();
     expect(writers).toEqual(ALLOWED);
+  });
+
+  it('finds the plan assigned in a migration only where already recorded', () => {
+    expect(migrationWriters(join(root, 'packages/db/migrations'))).toEqual(ALLOWED_MIGRATIONS);
   });
 });
