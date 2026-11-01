@@ -354,11 +354,12 @@ describe('checkPlanExpiryFiles (detection behaviour)', () => {
   });
 
   it('scans shell scripts, which can carry SQL for psql', () => {
-    const files = [
-      { path: 'scripts/x.sh', text: 'psql -c "UPDATE businesses SET plan_expires_at = now()"' },
-    ];
-    expect(SOURCE_EXT.test(files[0].path)).toBe(true);
-    expect(run([writer, reader, ...files]).join('\n')).toContain('scripts/x.sh');
+    const sh: ScannedFile = {
+      path: 'scripts/x.sh',
+      text: 'psql -c "UPDATE businesses SET plan_expires_at = now()"',
+    };
+    expect(SOURCE_EXT.test(sh.path)).toBe(true);
+    expect(run([writer, reader, sh]).join('\n')).toContain('scripts/x.sh');
   });
 
   it('catches a quoted or qualified assignment, and ignores an equality predicate', () => {
