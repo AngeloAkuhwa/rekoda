@@ -147,8 +147,13 @@ const SQL_ASSIGNMENT = new RegExp(
   'i',
 );
 /** A query-builder `.set({ ..., planExpiresAt: x })` or shorthand `.set({ planExpiresAt })`, whatever the table expression is called. */
-// The column must be a property KEY (first in the object, or after a comma), not a value.
-const BUILDER_ASSIGNMENT = /\.set\(\s*\{(?:[^{}]*,)?\s*plan_?expires_?at\s*[:,}]/i;
+// The column must be a property KEY (first in the object, or after a comma), possibly quoted and
+// possibly after JS comments, and not a value. Shorthand is a key too.
+const JS_GAP = String.raw`(?:\s|//[^\n]*(?:\n|$)|/\*[\s\S]*?\*/)*`;
+const BUILDER_ASSIGNMENT = new RegExp(
+  String.raw`\.set\(\s*\{(?:[^{}]*,)?${JS_GAP}["'\x60]?plan_?expires_?at["'\x60]?${JS_GAP}[:,}]`,
+  'i',
+);
 /** Whole-file hints that the businesses table is written: an UPDATE or an INSERT, builder or raw. */
 const UPDATE_HINT = /\.update\(\s*businesses\s*\)|\bUPDATE\s+(?:public\.)?"?businesses"?\b/i;
 const INSERT_HINT = /\.insert\(\s*businesses\s*\)|\bINSERT\s+INTO\s+(?:public\.)?"?businesses"?\b/i;
@@ -498,6 +503,28 @@ describe('checkPlanExpiryFiles (detection behaviour)', () => {
     expect(
       hit('plan_expires_at; tx.update(x).set({ a: planExpiresAt, planExpiresAt: d })'),
     ).toContain('assigns plan_expires_at');
+  });
+
+  it('recognises quoted and comment-separated builder keys', () => {
+    const a = {
+      ...allowed,
+      'src/reader.ts': { ...allowed['src/reader.ts'], writesOtherColumns: true },
+    };
+    const hit = (text: string) =>
+      checkPlanExpiryFiles([writer, { path: 'src/reader.ts', text }], a).join('\n');
+    expect(hit('plan_expires_at; tx.update(x).set({ "planExpiresAt": d })')).toContain(
+      'assigns plan_expires_at',
+    );
+    expect(hit("plan_expires_at; tx.update(x).set({ 'planExpiresAt': d })")).toContain(
+      'assigns plan_expires_at',
+    );
+    expect(hit('plan_expires_at; tx.update(x).set({ /* reason */ planExpiresAt: d })')).toContain(
+      'assigns plan_expires_at',
+    );
+    expect(hit('plan_expires_at; tx.update(x).set({ a: 1, // why\n planExpiresAt: d })')).toContain(
+      'assigns plan_expires_at',
+    );
+    expect(hit('plan_expires_at; tx.update(x).set({ scheduledAt: "planExpiresAt" })')).toBe('');
   });
 
   it('fails when a scan root cannot be read instead of treating it as empty', () => {
