@@ -125,6 +125,7 @@ function stripComments(src: string): string {
     if (src.startsWith('/*', i)) {
       const close = src.indexOf('*/', i + 2);
       i = close === -1 ? src.length : close + 2;
+      out += ' '; /* a comment still separates the tokens either side of it */
     } else if (src.startsWith('//', i)) {
       /* A line comment runs to the newline; an apostrophe in it opens no string. */
       const nl = src.indexOf('\n', i);
@@ -279,7 +280,10 @@ function maskInterpolations(code: string): string {
             expression.trim() === 'businesses'
               ? 'businesses'
               : /^\s*sql\s*`/.test(expression)
-                ? maskInterpolations(expression)
+                ? /* Its text joins the outer statement: a partial fragment such as `plan = ${x}` is a SET item. */
+                  maskInterpolations(
+                    expression.slice(expression.indexOf('`') + 1, expression.lastIndexOf('`')),
+                  )
                 : '$1';
           i = end;
         } else out += code[i++];
@@ -1041,6 +1045,21 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
     expect(
       planWriters('function a(){ db.execute(sql`${sql`UPDATE businesses SET name = ${next}`}`) }'),
     ).toEqual([]);
+  });
+
+  it('keeps token boundaries around a stripped comment and joins partial nested fragments (CodeRabbit, 1 Nov)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mig-'));
+    writeFileSync(join(dir, '0001_a.sql'), "UPDATE/* c */businesses SET plan = 'complete';\n");
+    expect(migrationWriters(dir)).toEqual(['0001_a.sql']);
+    expect(
+      planWriters('function a(){ sql`UPDATE businesses SET ${sql`plan = ${next}`}` }'),
+    ).toEqual(['a']);
+    expect(
+      planWriters('function a(){ sql`UPDATE businesses SET ${sql`name = ${next}`}` }'),
+    ).toEqual([]);
+    expect(
+      planWriters('function a(){ db.execute(sql`${sql`UPDATE businesses SET plan = ${next}`}`) }'),
+    ).toEqual(['a']);
   });
 
   it('finds the plan assigned only by the permitted writers', () => {
