@@ -44,7 +44,7 @@ export type Role = 'writer' | 'caller' | 'reader' | 'definition' | 'migration';
 export interface Entry {
   role: Role;
   why: string;
-  /** The file updates other columns of `businesses`, so the whole-file write hint is skipped (the SQL-assignment check still runs). */
+  /** The file updates other columns of `businesses`, so the UPDATE hint is skipped (the SQL-assignment and INSERT checks still run). */
   writesOtherColumns?: boolean;
 }
 
@@ -136,13 +136,11 @@ export const ALLOWED: Readonly<Record<string, Entry>> = {
 const MENTION = /plan_?expires/i;
 /** `plan_expires_at = x` (an assignment); `<=`, `>=`, `!=`, `==` do not match. */
 const SQL_ASSIGNMENT = /plan_expires_at\s*=(?!=)/i;
-/** A whole-file hint that a query builder writes the businesses table. */
-const BUILDER_WRITE = /\.(?:update|insert)\(\s*businesses\s*\)/;
-/** SQL spelling of the same hint. */
-const RAW_WRITE =
-  /\b(?:UPDATE\s+(?:public\.)?"?businesses"?|INSERT\s+INTO\s+(?:public\.)?"?businesses"?)\b/i;
+/** Whole-file hints that the businesses table is written: an UPDATE or an INSERT, builder or raw. */
+const UPDATE_HINT = /\.update\(\s*businesses\s*\)|\bUPDATE\s+(?:public\.)?"?businesses"?\b/i;
+const INSERT_HINT = /\.insert\(\s*businesses\s*\)|\bINSERT\s+INTO\s+(?:public\.)?"?businesses"?\b/i;
 
-const SOURCE_EXT = /\.(?:ts|tsx|mts|cts|js|mjs|cjs|sql)$/;
+export const SOURCE_EXT = /\.(?:ts|tsx|mts|cts|js|mjs|cjs|sql|sh)$/;
 const SKIP_DIR = new Set(['node_modules', 'dist', '.next', '.turbo', 'coverage', '.git']);
 
 /** Fixtures and specs set the column up on purpose; they are not product paths. */
@@ -183,7 +181,7 @@ export function checkPlanExpiryFiles(
       if (SQL_ASSIGNMENT.test(text)) {
         problems.push(`${path}: listed as ${entry.role} but assigns plan_expires_at in SQL.`);
       }
-      if (!entry.writesOtherColumns && (BUILDER_WRITE.test(text) || RAW_WRITE.test(text))) {
+      if ((!entry.writesOtherColumns && UPDATE_HINT.test(text)) || INSERT_HINT.test(text)) {
         problems.push(
           `${path}: listed as ${entry.role} but writes the businesses table; a writer must be reviewed and listed as one.`,
         );
@@ -342,6 +340,29 @@ describe('checkPlanExpiryFiles (detection behaviour)', () => {
       a,
     );
     expect(bad.join('\n')).toContain('assigns plan_expires_at');
+  });
+
+  it('a reader that updates other columns still fails if it gains an insert into businesses', () => {
+    const a = {
+      ...allowed,
+      'src/reader.ts': { ...allowed['src/reader.ts'], writesOtherColumns: true },
+    };
+    for (const text of [
+      'plan_expires_at; await tx.insert(businesses).values(v)',
+      'plan_expires_at; INSERT INTO businesses (id, plan_expires_at) VALUES ($1, $2)',
+    ]) {
+      expect(
+        checkPlanExpiryFiles([writer, { path: 'src/reader.ts', text }], a).join('\n'),
+      ).toContain('writes the businesses table');
+    }
+  });
+
+  it('scans shell scripts, which can carry SQL for psql', () => {
+    const files = [
+      { path: 'scripts/x.sh', text: 'psql -c "UPDATE businesses SET plan_expires_at = now()"' },
+    ];
+    expect(SOURCE_EXT.test(files[0].path)).toBe(true);
+    expect(run([writer, reader, ...files]).join('\n')).toContain('scripts/x.sh');
   });
 
   it('does not mistake a comparison for an assignment', () => {
