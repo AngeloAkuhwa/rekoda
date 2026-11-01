@@ -288,6 +288,25 @@ function statementEnd(code: string, from: number): number {
   return code.length;
 }
 
+/** End of an arrow's expression body: a `;` or `,` at bracket depth 0, or the bracket closing its container. */
+function expressionEnd(code: string, from: number): number {
+  let depth = 0;
+  for (let i = from; i < code.length; i++) {
+    const q = quotedEnd(code, i, true);
+    if (q !== -1) {
+      i = q - 1;
+      continue;
+    }
+    const ch = code[i]!;
+    if ('({['.includes(ch)) depth++;
+    else if (')}]'.includes(ch)) {
+      if (depth === 0) return i;
+      depth--;
+    } else if ((ch === ';' || ch === ',') && depth === 0) return i;
+  }
+  return code.length;
+}
+
 /** End of a builder chain: the first `;` outside a quoted argument. */
 function chainEnd(code: string, from: number): number {
   for (let i = from; i < code.length; i++) {
@@ -321,7 +340,7 @@ function planWriteOffsets(code: string): number[] {
   };
 
   for (const m of code.matchAll(
-    new RegExp(String.raw`UPDATE${sqlWs}${table}${alias}${sqlWs}SET\s`, 'gi'),
+    new RegExp(String.raw`UPDATE${sqlWs}${table}${alias}${sqlWs}SET(?=\s|/\*|--)`, 'gi'),
   )) {
     if (assignsPlan(code, m.index! + m[0].length)) hits.push(m.index!);
   }
@@ -419,7 +438,7 @@ function enclosing(code: string, offset: number): string {
         code.slice(m.index!),
       );
     if (expr && !expr[1]) {
-      end = chainEnd(code, m.index! + expr[0].length);
+      end = expressionEnd(code, m.index! + expr[0].length);
     } else {
       const close = /^\}/m.exec(code.slice(m.index! + 1));
       end = close ? m.index! + 1 + close.index : code.length;
@@ -437,7 +456,7 @@ function enclosing(code: string, offset: number): string {
     const arrowExpr = m[0].includes('=>') && !m[4];
     const close = new RegExp(`^${m[1]}\\}`, 'm').exec(code.slice(m.index! + 1));
     const nestedEnd = arrowExpr
-      ? chainEnd(code, m.index! + m[0].length)
+      ? expressionEnd(code, m.index! + m[0].length)
       : close
         ? m.index! + 1 + close.index
         : code.length;
@@ -938,6 +957,26 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
       'const z = 1;',
     ].join('\n');
     expect(planWriters(own)).toEqual(['allowed']);
+  });
+
+  it('reads a comment straight after SET, and a helper whose body holds a callback block (CodeRabbit, 1 Nov)', () => {
+    const w = (s: string) => planWriters(s);
+    expect(w('function a(){ sql`UPDATE businesses SET/* c */ plan = ${p}` }')).toEqual(['a']);
+    expect(
+      w(
+        'function a(){ sql`INSERT INTO businesses (id) VALUES (${i}) ON CONFLICT (id) DO UPDATE SET/* c */ plan = EXCLUDED.plan` }',
+      ),
+    ).toEqual(['a']);
+    const src = [
+      'export async function writeSubscriptionState() {',
+      '  const helper = (tx) =>',
+      '    tx.transaction(async (t) => {',
+      '      await t.select();',
+      '      await t.update(businesses).set({ plan: next });',
+      '    });',
+      '}',
+    ].join('\n');
+    expect(planWriters(src)).toEqual(['writeSubscriptionState>helper']);
   });
 
   it('finds the plan assigned only by the permitted writers', () => {
