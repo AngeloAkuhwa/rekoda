@@ -140,7 +140,7 @@ const SQL_ASSIGNMENT = new RegExp(
     // SET plan_expires_at = x, or , "t"."plan_expires_at" = x
     String.raw`(?:\bSET|,)\s*(?:"?\w+"?\.)?"?plan_expires_at"?\s*=(?!=)`,
     // SET (a, plan_expires_at) = (x, y), a tuple assignment
-    String.raw`(?:\bSET|,)\s*\([^)]*plan_expires_at[^)]*\)\s*=(?!=)`,
+    String.raw`(?:\bSET|,)\s*\([^)]*(?<![\w$])plan_expires_at(?![\w$])[^)]*\)\s*=(?!=)`,
   ].join('|'),
   'i',
 );
@@ -398,6 +398,24 @@ describe('checkPlanExpiryFiles (detection behaviour)', () => {
       'assigns plan_expires_at',
     );
     expect(hit('SELECT 1 WHERE (a, plan_expires_at) = ($1, $2)')).toBe('');
+  });
+
+  it('matches the whole column name inside a tuple, not a longer identifier', () => {
+    const a = {
+      ...allowed,
+      'src/reader.ts': { ...allowed['src/reader.ts'], writesOtherColumns: true },
+    };
+    const hit = (text: string) =>
+      checkPlanExpiryFiles([writer, { path: 'src/reader.ts', text }], a).join('\n');
+    expect(
+      hit('plan_expires_at; UPDATE businesses SET (a, plan_expires_at_backup) = ($1, $2)'),
+    ).toBe('');
+    expect(hit('plan_expires_at; UPDATE businesses SET (a, x_plan_expires_at) = ($1, $2)')).toBe(
+      '',
+    );
+    expect(hit('UPDATE businesses SET (a, "plan_expires_at") = ($1, $2)')).toContain(
+      'assigns plan_expires_at',
+    );
   });
 
   it('fails when a scan root cannot be read instead of treating it as empty', () => {
