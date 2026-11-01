@@ -134,8 +134,8 @@ export const ALLOWED: Readonly<Record<string, Entry>> = {
 
 /** Both spellings, any case, so a camelCase property or a SQL column is caught. */
 const MENTION = /plan_?expires/i;
-/** `plan_expires_at = x` (an assignment); `<=`, `>=`, `!=`, `==` do not match. */
-const SQL_ASSIGNMENT = /plan_expires_at\s*=(?!=)/i;
+/** `SET plan_expires_at = x` or `, plan_expires_at = x` (quoted or qualified too). A `WHERE`/`AND` equality predicate, `<=`, `>=`, `!=` and `==` do not match. */
+const SQL_ASSIGNMENT = /(?:\bSET|,)\s*(?:"?\w+"?\.)?"?plan_expires_at"?\s*=(?!=)/i;
 /** Whole-file hints that the businesses table is written: an UPDATE or an INSERT, builder or raw. */
 const UPDATE_HINT = /\.update\(\s*businesses\s*\)|\bUPDATE\s+(?:public\.)?"?businesses"?\b/i;
 const INSERT_HINT = /\.insert\(\s*businesses\s*\)|\bINSERT\s+INTO\s+(?:public\.)?"?businesses"?\b/i;
@@ -203,12 +203,8 @@ export function checkPlanExpiryFiles(
 export function collectSourceFiles(root: string, roots: readonly string[]): ScannedFile[] {
   const out: ScannedFile[] = [];
   const walk = (dir: string): void => {
-    let names: string[];
-    try {
-      names = readdirSync(dir);
-    } catch {
-      return;
-    }
+    // An unreadable root must fail the scan, never read as an empty tree.
+    const names = readdirSync(dir);
     for (const name of names) {
       if (SKIP_DIR.has(name)) continue;
       const full = join(dir, name);
@@ -363,6 +359,24 @@ describe('checkPlanExpiryFiles (detection behaviour)', () => {
     ];
     expect(SOURCE_EXT.test(files[0].path)).toBe(true);
     expect(run([writer, reader, ...files]).join('\n')).toContain('scripts/x.sh');
+  });
+
+  it('catches a quoted or qualified assignment, and ignores an equality predicate', () => {
+    const a = {
+      ...allowed,
+      'src/reader.ts': { ...allowed['src/reader.ts'], writesOtherColumns: true },
+    };
+    const hit = (text: string) =>
+      checkPlanExpiryFiles([writer, { path: 'src/reader.ts', text }], a).join('\n');
+    expect(hit('x SET "plan_expires_at" = $1')).toContain('assigns plan_expires_at');
+    expect(hit('x SET plan = $1, b.plan_expires_at = $2')).toContain('assigns plan_expires_at');
+    expect(hit('x SET\n  plan = $1,\n  "plan_expires_at"=$2')).toContain('assigns plan_expires_at');
+    expect(hit('SELECT 1 WHERE plan_expires_at = $1')).toBe('');
+    expect(hit('SELECT 1 WHERE a = 1 AND "plan_expires_at" = $1')).toBe('');
+  });
+
+  it('fails when a scan root cannot be read instead of treating it as empty', () => {
+    expect(() => collectSourceFiles(REPO_ROOT, ['no-such-root-for-g62'])).toThrow();
   });
 
   it('does not mistake a comparison for an assignment', () => {
