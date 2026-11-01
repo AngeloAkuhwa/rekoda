@@ -273,7 +273,14 @@ function maskInterpolations(code: string): string {
           i += 2;
         } else if (code[i] === '$' && code[i + 1] === '{') {
           const end = exprEnd(i + 2);
-          out += code.slice(i + 2, end - 1).trim() === 'businesses' ? 'businesses' : '$1';
+          const expression = code.slice(i + 2, end - 1);
+          /* A nested `sql` fragment is SQL the outer statement runs: scan it, do not hide it. */
+          out +=
+            expression.trim() === 'businesses'
+              ? 'businesses'
+              : /^\s*sql\s*`/.test(expression)
+                ? maskInterpolations(expression)
+                : '$1';
           i = end;
         } else out += code[i++];
       }
@@ -1025,6 +1032,15 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
       '}',
     ].join('\n');
     expect(planWriters(src)).toEqual(['writeSubscriptionState>helper']);
+  });
+
+  it('reads SQL held in a nested sql fragment inside an interpolation (CodeRabbit, 1 Nov)', () => {
+    expect(
+      planWriters('function a(){ db.execute(sql`${sql`UPDATE businesses SET plan = ${next}`}`) }'),
+    ).toEqual(['a']);
+    expect(
+      planWriters('function a(){ db.execute(sql`${sql`UPDATE businesses SET name = ${next}`}`) }'),
+    ).toEqual([]);
   });
 
   it('finds the plan assigned only by the permitted writers', () => {
