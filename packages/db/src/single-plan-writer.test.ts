@@ -61,7 +61,9 @@ function quotedEnd(text: string, i: number, js = false): number {
     return text.length;
   }
   if (ch === '$' && !/\w/.test(text[i - 1] ?? ' ')) {
-    const tag = /^\$(?:[A-Za-z_]\w*)?\$/.exec(text.slice(i, i + 65));
+    const tagRe = /\$(?:[\p{L}_][\p{L}\p{N}_]*)?\$/uy;
+    tagRe.lastIndex = i;
+    const tag = tagRe.exec(text);
     if (tag) {
       const close = text.indexOf(tag[0], i + tag[0].length);
       return close === -1 ? text.length : close + tag[0].length;
@@ -92,6 +94,26 @@ function stripComments(src: string): string {
 }
 
 const strip = (src: string) => stripComments(src).replace(/^\s*(\/\/|--).*$/gm, '');
+
+/** Replace SQL comments (`/* .. *\/`, `-- ..`) with a space, leaving quoted text alone. */
+function stripSqlComments(text: string): string {
+  let out = '';
+  for (let i = 0; i < text.length;) {
+    const q = quotedEnd(text, i);
+    if (q !== -1) {
+      out += text.slice(i, q);
+      i = q;
+    } else if (text.startsWith('/*', i)) {
+      const close = text.indexOf('*/', i + 2);
+      i = close === -1 ? text.length : close + 2;
+      out += ' ';
+    } else if (text.startsWith('--', i)) {
+      const nl = text.indexOf('\n', i);
+      i = nl === -1 ? text.length : nl;
+    } else out += text[i++];
+  }
+  return out;
+}
 
 /** Split on commas outside (), {}, [] and single-quoted SQL text (a doubled quote stays inside). */
 function topLevelSplit(text: string, js = false): string[] {
@@ -153,6 +175,27 @@ function maskInterpolations(code: string): string {
     }
     return n;
   };
+  /* A `/` starts a regex literal after an operator or opening bracket, not after an operand. */
+  const regexAllowed = (k: number): boolean => {
+    let j = k - 1;
+    while (j >= 0 && /\s/.test(code[j]!)) j--;
+    return (
+      j < 0 || /[(,=:[!&|?{};+\-*%<>~^]/.test(code[j]!) || /\breturn$/.test(code.slice(0, j + 1))
+    );
+  };
+  /* End (exclusive) of the regex literal starting at `k`: the next unescaped `/` outside a class. */
+  const regexEnd = (k: number): number => {
+    let inClass = false;
+    for (k++; k < n; k++) {
+      const c = code[k];
+      if (c === '\\') k++;
+      else if (c === '\n') return k;
+      else if (c === '[') inClass = true;
+      else if (c === ']') inClass = false;
+      else if (c === '/' && !inClass) return k + 1;
+    }
+    return n;
+  };
   /* End (exclusive) of the expression whose `${` ended just before `k`. */
   const exprEnd = (k: number): number => {
     let depth = 1;
@@ -160,7 +203,9 @@ function maskInterpolations(code: string): string {
       const ch = code[k];
       if (ch === "'" || ch === '"') k = stringEnd(k);
       else if (ch === '`') k = templateEnd(k);
-      else {
+      else if (ch === '/' && code[k + 1] !== '/' && code[k + 1] !== '*' && regexAllowed(k)) {
+        k = regexEnd(k);
+      } else {
         if (ch === '{') depth++;
         else if (ch === '}') depth--;
         k++;
@@ -249,7 +294,9 @@ function planWriteOffsets(code: string): number[] {
   const tuple = new RegExp(String.raw`^\s*\([^)]*\b${column}\b[^)]*\)\s*=`, 'i');
   const assignsPlan = (text: string, from: number) =>
     topLevelSplit(
-      text.slice(from, topLevelEnd(text, from, /^(WHERE\b|RETURNING\b|FROM\b|`)/i)),
+      stripSqlComments(
+        text.slice(from, topLevelEnd(text, from, /^(WHERE\b|RETURNING\b|FROM\b|`)/i)),
+      ),
     ).some((a) => single.test(a) || tuple.test(a) || /^\s*\$1\s*$/.test(a));
 
   for (const m of code.matchAll(new RegExp(String.raw`UPDATE\s+${table}${alias}\s+SET\s`, 'gi'))) {
@@ -328,17 +375,30 @@ function planWriteOffsets(code: string): number[] {
 function enclosing(code: string, offset: number): string {
   let name = '<module>';
   let end = -1;
+  let start = -1;
   const decl =
     /^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\*?\s+(\w+)|(?:const|let|var)\s+(\w+)|class\s+(\w+))/gm;
   for (const m of code.matchAll(decl)) {
     if (m.index! > offset) break;
     name = m[1] ?? m[2] ?? m[3] ?? name;
+    start = m.index!;
     /* A declaration ends at the next `}` at column 0. */
     const close = /^\}/m.exec(code.slice(m.index! + 1));
     end = close ? m.index! + 1 + close.index : code.length;
   }
   /* Past the end of the last declaration: module-level code, never inherited. */
-  return offset > end ? '<module>' : name;
+  if (offset > end) return '<module>';
+  /* A named function-valued helper nested in the declaration owns its own writes. */
+  const nested =
+    /^([ \t]+)(?:(?:async\s+)?function\*?\s+(\w+)|(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*(?::[^=]+)?=>|\w+\s*=>))/gm;
+  let inner = '';
+  for (const m of code.matchAll(nested)) {
+    if (m.index! > offset) break;
+    const close = new RegExp(`^${m[1]}\\}`, 'm').exec(code.slice(m.index! + 1));
+    const nestedEnd = close ? m.index! + 1 + close.index : code.length;
+    if (offset <= nestedEnd && m.index! > start) inner = m[2] ?? m[3] ?? '';
+  }
+  return inner ? `${name}>${inner}` : name;
 }
 
 /** `function` names (or `<module>`) that assign the plan or its expiry in `src`. */
@@ -651,6 +711,67 @@ describe('only the subscription writer assigns the plan and its expiry (G-62)', 
     expect(w("function a(){ sql`UPDATE businesses SET note = '${x}', plan = ${p}` }")).toEqual([
       'a',
     ]);
+  });
+
+  it('reads a dollar-quote tag longer than 63 characters and non-ASCII tags', () => {
+    const w = (s: string) => planWriters(s);
+    const tag = `$${'t'.repeat(80)}$`;
+    expect(
+      w(
+        `function a(){ sql\`INSERT INTO businesses (id) VALUES (\${i}) ON CONFLICT (id) DO UPDATE SET note = ${tag}x;y${tag}, plan = EXCLUDED.plan\` }`,
+      ),
+    ).toEqual(['a']);
+    expect(
+      w('function a(){ sql`UPDATE businesses SET note = $é$x;y$é$, plan = ${p} WHERE id = ${i}` }'),
+    ).toEqual(['a']);
+  });
+
+  it('reads SQL comments between SET and the column as whitespace', () => {
+    const w = (s: string) => planWriters(s);
+    expect(w('function a(){ sql`UPDATE businesses SET /* c */ plan = ${p}` }')).toEqual(['a']);
+    expect(
+      w('function a(){ sql`UPDATE businesses SET name = 1, /* c */ plan_expires_at = ${d}` }'),
+    ).toEqual(['a']);
+    expect(w("function a(){ sql`UPDATE businesses SET note = '/*', plan = ${p} /* */` }")).toEqual([
+      'a',
+    ]);
+    expect(w('function a(){ sql`UPDATE businesses SET /* plan = 1 */ name = ${n}` }')).toEqual([]);
+  });
+
+  it('does not credit a write in a nested helper to the allowlisted function around it', () => {
+    const src = [
+      'export function outer() {',
+      '  const helper = async (tx) => {',
+      '    await tx.update(businesses).set({ plan: next });',
+      '  };',
+      '}',
+    ].join('\n');
+    expect(planWriters(src)).toEqual(['outer>helper']);
+    const fn = [
+      'export function outer() {',
+      '  function helper(tx) {',
+      '    return tx.update(businesses).set({ plan: next });',
+      '  }',
+      '}',
+    ].join('\n');
+    expect(planWriters(fn)).toEqual(['outer>helper']);
+    const cb = [
+      'export function outer() {',
+      '  return withBusiness(async (tx) => {',
+      '    await tx.update(businesses).set({ plan: next });',
+      '  });',
+      '}',
+    ].join('\n');
+    expect(planWriters(cb)).toEqual(['outer']);
+  });
+
+  it('skips a regex literal holding a brace inside an interpolation', () => {
+    const w = (s: string) => planWriters(s);
+    expect(
+      w(
+        'function a(){ sql`UPDATE businesses SET note = ${x.replace(/}/g, `y`)}, plan = ${p} WHERE id = ${i}` }',
+      ),
+    ).toEqual(['a']);
   });
 
   it('finds the plan assigned only by the permitted writers', () => {
