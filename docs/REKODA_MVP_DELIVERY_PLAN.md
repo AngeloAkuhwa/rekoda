@@ -270,7 +270,7 @@ after timeout; worker restart; cross-tenant access; opt-out throttling.
 Behaviour: WhatsApp STOP; email unsubscribe; consistent suppression across applicable automated
 reminder channels; safe identity resolution failing closed when ambiguous; queued undispatched
 messages suppressed; suppression rechecked immediately before sending; audit history.
-Tests: STOP; unsubscribe; one channel's opt-out suppresses the others where applicable; unknown or
+Tests: STOP; unsubscribe; each opt-out suppresses only its own channel (OWN-69); unknown or
 ambiguous identity; cross-tenant attempt; opt-out after scheduling; opt-out just before dispatch;
 duplicate opt-out; worker retry after opt-out.
 
