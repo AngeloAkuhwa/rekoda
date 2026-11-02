@@ -19,7 +19,7 @@ const SCRIPT = readFileSync(new URL('./staging-readonly-check.sh', import.meta.u
  * a real `compose exec` can, and logs what it saw. `failKey` makes the
  * per-slot query for that one variable fail, as an exec that dies would.
  */
-function host({ failKey = '' } = {}) {
+function host({ failKey = '', env = { META_TRIAL_TEMPLATE: 'rekoda_trial_ending' } } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'staging-check-'));
   const dir = join(root, 'rekoda');
   const fake = join(root, 'fake');
@@ -44,7 +44,14 @@ if [ "$1" = compose ]; then
   case " $* " in
     *" exec -T api true "*) exit 0 ;;
     *" exec -T -e K=${failKey || '__none__'} "*) exit 1 ;;
-    *" exec -T -e K="*) echo SET ;;
+    *" exec -T -e K="*)
+      # Run the container-side snippet for real, against the fixture environment.
+      # argv: compose -f FILE exec -T -e K=NAME api sh -c SNIPPET
+      k="$7"; shift 10
+      env -i ${Object.entries(env)
+        .map(([key, value]) => `${key}='${value}'`)
+        .join(' ')} "$k" sh -c "$1"
+      exit $? ;;
   esac
   exit 0
 fi
@@ -80,7 +87,10 @@ test('a compose call cannot swallow the rest of the piped script', () => {
 });
 
 test('a failed per-slot query reads unknown, never UNSET', () => {
-  const h = host({ failKey: 'META_TRIAL_TEMPLATE' });
+  const h = host({
+    failKey: 'META_TRIAL_TEMPLATE',
+    env: { META_OTP_TEMPLATE: 'rekoda_otp', META_TRIAL_TEMPLATE: 'rekoda_trial_ending' },
+  });
   try {
     const out = h.go();
     assert.match(out, /META_TRIAL_TEMPLATE\s+unknown \(api query failed\)/);
@@ -104,6 +114,26 @@ test('prints presence only, never a template value', () => {
     ]) {
       assert.match(out, new RegExp(`${k}\\s+(SET|UNSET|unknown \\(api query failed\\))\\n`));
     }
+  } finally {
+    h.done();
+  }
+});
+
+test('reads set, empty and unset template variables as the API would', () => {
+  const h = host({
+    env: {
+      META_OTP_TEMPLATE: 'rekoda_otp',
+      META_BILLING_TEMPLATE: '',
+      META_TRIAL_TEMPLATE: 'x y $z',
+    },
+  });
+  try {
+    const out = h.go();
+    assert.match(out, /META_OTP_TEMPLATE\s+SET\n/);
+    assert.match(out, /META_BILLING_TEMPLATE\s+UNSET\n/);
+    assert.match(out, /META_RETENTION_TEMPLATE\s+UNSET\n/);
+    assert.match(out, /META_TRIAL_TEMPLATE\s+SET\n/);
+    assert.doesNotMatch(out, /rekoda_otp|x y/);
   } finally {
     h.done();
   }
