@@ -45,7 +45,7 @@
   resumed as #402. The merge was made on the
   owner's in-session instruction to push forward without Codex (OWN-35); that instruction covered the merge,
   not a change to the delivery order.
-- **Current item:** REM-02 (invoice reminder reliability), the one REM-02 PR is #406 (consolidated from #406 and #407; #407 closed), open, not merged. REM-01 merged as #405 (`79f9968`, 2 Nov 2026); DEPLOYED TO STAGING (`e4f58a0`); staging acceptance pending. SUB-05 merged as #404 (`def64c3`, 2 Nov 2026; it also carried the SUB-04 gap-check result); staging acceptance pending. SUB-02a merged as #402 (`920f2ac`, 2 Nov 2026). SUB-01 (#396), SUB-03r (#400) and SUB-02a are merged with staging acceptance pending; SUB-03r and SUB-02a acceptance need a person on staging (this autopilot has no staging access), see `docs/runbooks/billing-staging-walkthrough.md`. The stronger DB control is OD-37 (owner).
+- **Current item:** REM-02 (invoice reminder reliability), the one REM-02 PR is #406 (the overlapping PR #407 was closed in favour of it), open, not merged. REM-01 merged as #405 (`79f9968`, 2 Nov 2026); DEPLOYED TO STAGING (`e4f58a0`); staging acceptance pending. SUB-05 merged as #404 (`def64c3`, 2 Nov 2026; it also carried the SUB-04 gap-check result); staging acceptance pending. SUB-02a merged as #402 (`920f2ac`, 2 Nov 2026). SUB-01 (#396), SUB-03r (#400) and SUB-02a are merged with staging acceptance pending; SUB-03r and SUB-02a acceptance need a person on staging (this autopilot has no staging access), see `docs/runbooks/billing-staging-walkthrough.md`. The stronger DB control is OD-37 (owner).
 
 ## PR plan (owner, 2 Nov 2026)
 

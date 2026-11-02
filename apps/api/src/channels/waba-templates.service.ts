@@ -490,27 +490,23 @@ export class WabaTemplateService {
     tx: TenantDb,
     businessId: string,
     reserved: ReservedCustomerText,
-    error: unknown,
+    error: SendFailed,
   ): Promise<void> {
-    if (error instanceof SendFailed) {
-      /* Refund only a definite non-send (`notSent`). After a timeout or a dropped connection the
-       * message may have left, so the unit stays spent: a free send is never granted on a guess. */
-      if (error.notSent) {
-        await usageRepo.refundUnit(tx, businessId, reserved.meter, 'SERVICE_MESSAGE');
-      }
-      await wabaRepo.markWabaUnhealthy(tx, {
-        businessId,
-        connectionId: reserved.connectionId,
-        reason: error.message,
-      });
-      this.log.warn(
-        error.notSent
-          ? 'customer text send failed; unit refunded'
-          : `customer text outcome unknown; unit kept (outbound ${reserved.recordedId})`,
-      );
-      return;
+    /* Refund only a definite non-send (`notSent`). After a timeout or a dropped connection the
+     * message may have left, so the unit stays spent: a free send is never granted on a guess. */
+    if (error.notSent) {
+      await usageRepo.refundUnit(tx, businessId, reserved.meter, 'SERVICE_MESSAGE');
     }
-    await usageRepo.refundUnit(tx, businessId, reserved.meter, 'SERVICE_MESSAGE');
+    await wabaRepo.markWabaUnhealthy(tx, {
+      businessId,
+      connectionId: reserved.connectionId,
+      reason: error.message,
+    });
+    this.log.warn(
+      error.notSent
+        ? 'customer text send failed; unit refunded'
+        : `customer text outcome unknown; unit kept (outbound ${reserved.recordedId})`,
+    );
   }
 }
 
