@@ -16,6 +16,7 @@
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { ANTHROPIC_API_VERSION } from './anthropic.client.js';
 import { ANTHROPIC_DEFAULT_BASE_URL, AnthropicTransport } from './anthropic.transport.js';
 import { OPENAI_DEFAULT_BASE_URL, OpenAiTransport } from './openai.transport.js';
 import { VisionTextExtraction } from './ocr.vision.js';
@@ -102,6 +103,119 @@ describe('the Anthropic transport', () => {
     expect(bodies[0]?.system).toEqual([
       { type: 'text', text: 'You are Rekoda.', cache_control: { type: 'ephemeral' } },
     ]);
+  });
+
+  it('sends the key as X-Api-Key, the header an Anthropic-compatible gateway expects', async () => {
+    /* SDK 1.x sends `apiKey` only as `Authorization: Bearer`. The first-party API
+     * takes either, but a gateway behind AI_BASE_URL that checks only the
+     * long-standing header would answer 401 to every call. */
+    let seen: IncomingMessage['headers'] = {};
+    respond = (req, res) => {
+      seen = req.headers;
+      json(ANSWER)(req, res);
+    };
+    await transport().send(REQUEST);
+
+    expect(seen['x-api-key']).toBe('sk-test');
+  });
+
+  it('pins the API version the SDK speaks, so an SDK bump that changes it is a reviewed event', async () => {
+    /* SDK 1.0 moved the default `anthropic-version` to 2026-10-21 (a breaking
+     * change in the changelog). A gateway or a replayed fixture that expects
+     * the old value would break on a bump; this makes the change visible. */
+    let seen: IncomingMessage['headers'] = {};
+    respond = (req, res) => {
+      seen = req.headers;
+      json(ANSWER)(req, res);
+    };
+    await transport().send(REQUEST);
+
+    expect(seen['anthropic-version']).toBe('2026-10-21'); // the literal, not the constant: changing it is a reviewed event
+  });
+
+  it('never lets the process environment change the credential or the API version on the wire', async () => {
+    /* SDK 1.x reads ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY from the
+     * process. The configured key and the pinned version must win, and an
+     * ambient secret must not reach a gateway that was set up for a different
+     * one. (ANTHROPIC_CUSTOM_HEADERS is refused outright; see below.) */
+    const names = ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY'] as const;
+    const saved = Object.fromEntries(names.map((n) => [n, process.env[n]]));
+    process.env.ANTHROPIC_AUTH_TOKEN = 'ENV-TOKEN-MUST-NOT-LEAK';
+    process.env.ANTHROPIC_API_KEY = 'ENV-KEY-MUST-NOT-LEAK';
+    let seen: IncomingMessage['headers'] = {};
+    respond = (req, res) => {
+      seen = req.headers;
+      json(ANSWER)(req, res);
+    };
+    try {
+      await transport().send(REQUEST);
+    } finally {
+      for (const n of names) {
+        const v = saved[n];
+        if (v === undefined) delete process.env[n];
+        else process.env[n] = v;
+      }
+    }
+    expect(seen.authorization).toBe('Bearer sk-test');
+    expect(seen['x-api-key']).toBe('sk-test');
+    expect(seen['anthropic-version']).toBe(ANTHROPIC_API_VERSION);
+    expect(JSON.stringify(seen)).not.toContain('MUST-NOT-LEAK');
+  });
+
+  it('refuses to build either client while ANTHROPIC_CUSTOM_HEADERS is set', () => {
+    /* The SDK would add every header it names (Proxy-Authorization,
+     * anthropic-beta, ...) to every provider call. Refused, not half-honoured. */
+    const saved = process.env.ANTHROPIC_CUSTOM_HEADERS;
+    process.env.ANTHROPIC_CUSTOM_HEADERS = 'Proxy-Authorization: Basic ENV\nanthropic-beta: x';
+    try {
+      expect(() => new AnthropicTransport('sk-test', 2_000, baseUrl)).toThrow(
+        /ANTHROPIC_CUSTOM_HEADERS/,
+      );
+      expect(() => new VisionTextExtraction('sk-test', 'claude-sonnet-5', 2_000, baseUrl)).toThrow(
+        /ANTHROPIC_CUSTOM_HEADERS/,
+      );
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_CUSTOM_HEADERS;
+      else process.env.ANTHROPIC_CUSTOM_HEADERS = saved;
+    }
+  });
+
+  it('keeps the SDK logger off, whatever ANTHROPIC_LOG says', () => {
+    const saved = process.env.ANTHROPIC_LOG;
+    process.env.ANTHROPIC_LOG = 'debug';
+    try {
+      const { client } = new AnthropicTransport('sk-test', 2_000, baseUrl) as unknown as {
+        client: { logLevel?: string };
+      };
+      expect(client.logLevel).toBe('off');
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_LOG;
+      else process.env.ANTHROPIC_LOG = saved;
+    }
+  });
+
+  it('turns an authentication failure into ProviderUnreachable without echoing the key', async () => {
+    respond = json(
+      { type: 'error', error: { type: 'authentication_error', message: 'invalid key sk-test' } },
+      401,
+    );
+    const failure = await transport()
+      .send(REQUEST)
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(failure).toBeInstanceOf(ProviderUnreachable);
+    expect((failure as Error).message).toContain('401');
+    expect((failure as Error).message).not.toContain('sk-test');
+    expect(bodies).toHaveLength(1); // a bad key is not retried
+  });
+
+  it('gives up at its own timeout, once, and hands the slot back', async () => {
+    respond = () => undefined; // the provider never answers
+    const slow = new AnthropicTransport('sk-test', 150, baseUrl);
+    await expect(slow.send(REQUEST)).rejects.toBeInstanceOf(ProviderUnreachable);
+    expect(bodies).toHaveLength(1);
   });
 
   it('FORCES the tool, so the model cannot answer with prose', async () => {
