@@ -1198,6 +1198,27 @@ describe('channel-specific opt-outs (OD-34)', () => {
     expect(byChannel).toEqual({ email: 'blocked', whatsapp: 'sent' });
   });
 
+  it('a combined request after a WhatsApp STOP sends email and blocks WhatsApp', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    await stop(s);
+    const out = await new ReminderService(config, appDb, mail, consulting(s.businessId)).send(
+      s.businessId,
+      s.userId,
+      {
+        invoiceNumber: s.invoiceNumber,
+        channels: ['email', 'whatsapp'],
+        idempotencyKey: key(),
+        attest: true,
+      },
+    );
+    const byChannel = Object.fromEntries(
+      out.results.map((r) => [r.reminder.channel, r.reminder.status]),
+    );
+    expect(byChannel).toEqual({ email: 'sent', whatsapp: 'blocked' });
+    expect(await counts(s.businessId)).toEqual({ email: 0, stop: 1 });
+  });
+
   it("one merchant's unsubscribe or STOP does not change another merchant's preference", async () => {
     const a = await seed({ name: 'Merchant A' });
     const b = await seed({ name: 'Merchant B' });
