@@ -96,7 +96,12 @@ describe('reading a photographed receipt through the vision model', () => {
   it('collapses an authentication failure to the refusal, without the key, and does not retry', async () => {
     respond = (res) => {
       res.writeHead(401, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error' } }));
+      res.end(
+        JSON.stringify({
+          type: 'error',
+          error: { type: 'authentication_error', message: 'invalid key sk-ant-test' },
+        }),
+      );
     };
     const failure = await reader()
       .extract(PHOTO, 'image/jpeg')

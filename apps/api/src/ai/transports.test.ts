@@ -16,6 +16,7 @@
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { ANTHROPIC_API_VERSION } from './anthropic.client.js';
 import { ANTHROPIC_DEFAULT_BASE_URL, AnthropicTransport } from './anthropic.transport.js';
 import { OPENAI_DEFAULT_BASE_URL, OpenAiTransport } from './openai.transport.js';
 import { VisionTextExtraction } from './ocr.vision.js';
@@ -129,15 +130,25 @@ describe('the Anthropic transport', () => {
     };
     await transport().send(REQUEST);
 
-    expect(seen['anthropic-version']).toBe('2026-10-21');
+    expect(seen['anthropic-version']).toBe('2026-10-21'); // the literal, not the constant: changing it is a reviewed event
   });
 
-  it('never sends a credential from the process environment to the configured host', async () => {
-    /* SDK 1.x reads ANTHROPIC_AUTH_TOKEN (and profile or config credentials)
-     * from the process. The configured key must win, and the ambient token must
-     * not reach a gateway that was set up for a different secret. */
-    const saved = process.env.ANTHROPIC_AUTH_TOKEN;
+  it('never lets the process environment change the credential or the API version on the wire', async () => {
+    /* SDK 1.x reads ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY and
+     * ANTHROPIC_CUSTOM_HEADERS from the process; the last one replaces the SDK's
+     * own Authorization and anthropic-version. The configured key and the pinned
+     * version must win, and an ambient secret must not reach a gateway that was
+     * set up for a different one. */
+    const names = [
+      'ANTHROPIC_AUTH_TOKEN',
+      'ANTHROPIC_API_KEY',
+      'ANTHROPIC_CUSTOM_HEADERS',
+    ] as const;
+    const saved = Object.fromEntries(names.map((n) => [n, process.env[n]]));
     process.env.ANTHROPIC_AUTH_TOKEN = 'ENV-TOKEN-MUST-NOT-LEAK';
+    process.env.ANTHROPIC_API_KEY = 'ENV-KEY-MUST-NOT-LEAK';
+    process.env.ANTHROPIC_CUSTOM_HEADERS =
+      'Authorization: Bearer ENV-CUSTOM-MUST-NOT-LEAK\nanthropic-version: 1999-01-01';
     let seen: IncomingMessage['headers'] = {};
     respond = (req, res) => {
       seen = req.headers;
@@ -146,15 +157,23 @@ describe('the Anthropic transport', () => {
     try {
       await transport().send(REQUEST);
     } finally {
-      if (saved === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
-      else process.env.ANTHROPIC_AUTH_TOKEN = saved;
+      for (const n of names) {
+        const v = saved[n];
+        if (v === undefined) delete process.env[n];
+        else process.env[n] = v;
+      }
     }
     expect(seen.authorization).toBe('Bearer sk-test');
-    expect(JSON.stringify(seen)).not.toContain('ENV-TOKEN-MUST-NOT-LEAK');
+    expect(seen['x-api-key']).toBe('sk-test');
+    expect(seen['anthropic-version']).toBe(ANTHROPIC_API_VERSION);
+    expect(JSON.stringify(seen)).not.toContain('MUST-NOT-LEAK');
   });
 
   it('turns an authentication failure into ProviderUnreachable without echoing the key', async () => {
-    respond = json({ type: 'error', error: { type: 'authentication_error' } }, 401);
+    respond = json(
+      { type: 'error', error: { type: 'authentication_error', message: 'invalid key sk-test' } },
+      401,
+    );
     const failure = await transport()
       .send(REQUEST)
       .then(

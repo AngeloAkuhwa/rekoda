@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { TextExtractionUnavailable, type ExtractedText, type TextExtraction } from './ocr.js';
-import { ANTHROPIC_DEFAULT_BASE_URL } from './anthropic.transport.js';
+import { buildAnthropicClient } from './anthropic.client.js';
 
 /**
  * Hosted extraction: the vision model as the text reader (ADR 0027).
@@ -36,21 +36,7 @@ export class VisionTextExtraction implements TextExtraction {
     timeoutMs = 30_000,
     baseUrl?: string,
   ) {
-    this.client = new Anthropic({
-      apiKey,
-      timeout: timeoutMs,
-      maxRetries: 0,
-      /* No OpenTelemetry spans from the SDK, and none the environment can turn
-       * on: a prompt or a photo is the merchant's data (invariant 4). */
-      openTelemetry: false,
-      /* SDK 1.x sends `apiKey` only as `Authorization: Bearer`. Keep the
-       * long-standing header too, for an Anthropic-compatible gateway behind
-       * AI_BASE_URL that checks only that one. */
-      defaultHeaders: { 'x-api-key': apiKey },
-      /* Explicit, so the SDK never reads its base-URL variable from the
-       * process (final review on a98a294). */
-      baseURL: baseUrl || ANTHROPIC_DEFAULT_BASE_URL,
-    });
+    this.client = buildAnthropicClient(apiKey, timeoutMs, baseUrl);
   }
 
   async extract(image: Buffer, mimeType: string): Promise<ExtractedText> {
