@@ -159,7 +159,8 @@ const JS_GAP = String.raw`(?:\s|//[^\n]*(?:\n|$)|/\*(?:[^*]|\*(?!/))*\*/)*`;
  *  2. a tuple assignment `SET (a, col) = (x, y)`.
  *  3. a query-builder `.set({ ... })` where the column is a property KEY: first in the object or after a
  *     comma, possibly quoted, possibly after JS comments, shorthand included, and not a value (`x: col`).
- *     The prefix is bounded to one statement (no `;`) and 400 characters so it stays linear.
+ *     The prefix is bounded to one statement (no `;`) and 2,000 characters so it stays linear; a key later than
+ *     that in one object literal is not seen (documented limit).
  */
 function assignmentAlternatives(sql: string, key: string): { sql: string[]; builder: string } {
   return {
@@ -167,15 +168,17 @@ function assignmentAlternatives(sql: string, key: string): { sql: string[]; buil
       String.raw`(?:\bSET|,)${GAP}(?:"?\w+"?\.)?"?${sql}"?${GAP}=(?!=)`,
       String.raw`(?:\bSET|,)${GAP}\([^)]*(?<![\w$])${sql}(?![\w$])[^)]*\)${GAP}=(?!=)`,
     ],
-    builder: String.raw`\.set\(\s*\{(?:[^;]{0,400}?,)?${JS_GAP}["'\x60]?${key}["'\x60]?${JS_GAP}[:,}]`,
+    builder: String.raw`\.set\(\s*\{(?:[^;]{0,2000}?,)?${JS_GAP}["'\x60]?${key}["'\x60]?${JS_GAP}[:,}]`,
   };
 }
 const EXPIRY_ALT = assignmentAlternatives('plan_expires_at', 'plan_?expires_?at');
 const SQL_ASSIGNMENT = new RegExp(EXPIRY_ALT.sql.join('|'), 'i');
 const BUILDER_ASSIGNMENT = new RegExp(EXPIRY_ALT.builder, 'i');
 /** Whole-file hints that the businesses table is written: an UPDATE or an INSERT, builder or raw. */
-const UPDATE_HINT = /\.update\(\s*businesses\s*\)|\bUPDATE\s+(?:public\.)?"?businesses"?\b/i;
-const INSERT_HINT = /\.insert\(\s*businesses\s*\)|\bINSERT\s+INTO\s+(?:public\.)?"?businesses"?\b/i;
+const UPDATE_HINT =
+  /\.update\(\s*(?:\w+\.)*businesses\s*\)|\bUPDATE\s+(?:public\.)?"?businesses"?\b/i;
+const INSERT_HINT =
+  /\.insert\(\s*(?:\w+\.)*businesses\s*\)|\bINSERT\s+INTO\s+(?:public\.)?"?businesses"?\b/i;
 
 /**
  * Assignment pins. A file-level list cannot see a second write INSIDE a listed
@@ -845,5 +848,30 @@ describe('shared assignment patterns (review of 073f828)', () => {
     expect(counts('tx.update(b).set({ x: plan })')).toMatchObject({ plan: 0 });
     expect(counts('tx.update(b).set({ x: plan, y: z })')).toMatchObject({ plan: 0 });
     expect(counts('tx.update(b).set({ x: plan_expires_at })')).toMatchObject({ expiry: 0 });
+  });
+});
+
+describe('long builder objects and qualified table names (review of 81f18b1)', () => {
+  it('sees a plan key after a long run of other keys in one .set() object', () => {
+    const others = Array.from({ length: 60 }, (_, i) => `field${i}: value${i}`).join(', ');
+    expect(others.length).toBeGreaterThan(400);
+    expect(countAssignments(`tx.update(b).set({ ${others}, plan: x })`).plan).toBe(1);
+  });
+
+  it('counts a businesses insert or update through a qualified table name', () => {
+    const idPins = { 'src/id.ts': { plan: 0, expiry: 0, businessInserts: 1, why: 'trial insert' } };
+    const two = {
+      path: 'src/id.ts',
+      text: 'tx.insert(businesses).values(x); tx.insert(schema.businesses).values(y)',
+    };
+    expect(checkAssignmentPins([two], idPins).join('\n')).toContain('inserts into businesses 2');
+    const allowed = { 'src/r.ts': { role: 'reader' as const, why: 'reads the date for display' } };
+    const reader = {
+      path: 'src/r.ts',
+      text: 'row.planExpiresAt; tx.update(schema.businesses).set(x)',
+    };
+    expect(checkPlanExpiryFiles([reader], allowed).join('\n')).toContain(
+      'writes the businesses table',
+    );
   });
 });
