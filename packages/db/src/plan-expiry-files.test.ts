@@ -191,9 +191,9 @@ const SQL_ASSIGNMENT = new RegExp(EXPIRY_ALT.sql.join('|'), 'i');
 const BUILDER_ASSIGNMENT = new RegExp(EXPIRY_ALT.builder, 'i');
 /** Whole-file hints that the businesses table is written: an UPDATE or an INSERT, builder or raw. */
 const UPDATE_HINT =
-  /\.update\(\s*(?:\w+\.)*businesses\s*\)|\bUPDATE\s+(?:public\.)?"?businesses"?\b/i;
+  /\.update\(\s*(?:\w+\.)*businesses\s*\)|\bUPDATE\s+(?:"?public"?\s*\.\s*)?"?businesses"?(?![\w$])/i;
 const INSERT_HINT =
-  /\.insert\(\s*(?:\w+\.)*businesses\s*\)|\bINSERT\s+INTO\s+(?:public\.)?"?businesses"?\b/i;
+  /\.insert\(\s*(?:\w+\.)*businesses\s*\)|\bINSERT\s+INTO\s+(?:"?public"?\s*\.\s*)?"?businesses"?(?![\w$])/i;
 
 /**
  * Assignment pins. A file-level list cannot see a second write INSIDE a listed
@@ -939,6 +939,15 @@ describe('quoted schema-qualified businesses inserts (review of 248402c)', () =>
     expect(checkAssignmentPins([{ path: 'src/unpinned.ts', text }], {}).join('\n')).toContain(
       'src/unpinned.ts',
     );
+  });
+
+  it('counts the same quoted and spaced table forms as businesses inserts for the insert pin', () => {
+    expect(countAssignments('INSERT INTO "public"."businesses" (name) VALUES ($1)').inserts).toBe(
+      1,
+    );
+    expect(countAssignments('INSERT INTO public . businesses (name) VALUES ($1)').inserts).toBe(1);
+    expect(countAssignments('INSERT INTO "businesses" (name) VALUES ($1)').inserts).toBe(1);
+    expect(countAssignments('INSERT INTO businesses_archive (name) VALUES ($1)').inserts).toBe(0);
   });
 });
 
