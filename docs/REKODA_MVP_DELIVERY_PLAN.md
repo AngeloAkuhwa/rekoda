@@ -262,6 +262,11 @@ after timeout; worker restart; cross-tenant access; opt-out throttling.
 
 ### REM-03 Cross-channel opt-out (OWN-62)
 
+> **Superseded in part by the owner's OD-34 ruling (OWN-69, 2 Nov 2026):** the two opt-outs are
+> channel-specific and independent. An email unsubscribe never suppresses WhatsApp and a WhatsApp
+> STOP never suppresses email; "suppresses the others where applicable" below no longer applies to
+> these two controls.
+
 Behaviour: WhatsApp STOP; email unsubscribe; consistent suppression across applicable automated
 reminder channels; safe identity resolution failing closed when ambiguous; queued undispatched
 messages suppressed; suppression rechecked immediately before sending; audit history.

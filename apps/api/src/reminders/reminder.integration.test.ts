@@ -17,6 +17,7 @@ import { matchKeyFor } from '@rekoda/core/vault';
 import { unwindAllocations } from '../commands/payment-adjustment-commands.js';
 import {
   createDb,
+  customerConsentRepo,
   customersRepo,
   identity,
   issueRepo,
@@ -1101,5 +1102,113 @@ describe('the email reply-to (REM-02)', () => {
     await sendEmail(s);
     expect(mail.outbox).toHaveLength(2);
     expect(mail.outbox[1]!).not.toHaveProperty('replyTo');
+  });
+});
+
+/**
+ * REM-03 (owner ruling OD-34 / OWN-69): an email unsubscribe and a WhatsApp STOP are independent,
+ * per merchant. Neither writes the other's record, and neither is looked up for the other channel.
+ */
+describe('channel-specific opt-outs (OD-34)', () => {
+  const stopKey = (businessId: string) => ({
+    businessId,
+    channelAccountId: 'pn-rem03',
+    customerHash: 'blind-index-rem03',
+    indexKeyVersion: 'V1',
+  });
+  const counts = (businessId: string) =>
+    rows<{ email: string; stop: string }>(
+      businessId,
+      sql`SELECT (SELECT count(*) FROM customer_email_optouts)::text AS email,
+                 (SELECT count(*) FROM customer_message_optouts WHERE opted_out_at IS NOT NULL)::text AS stop`,
+    ).then(([r]) => ({ email: Number(r!.email), stop: Number(r!.stop) }));
+  /** A WhatsApp double that consults the real STOP table, as the real sender does. */
+  const consulting = (businessId: string): ReminderWhatsApp => ({
+    async sendCustomerText(_b, input) {
+      whatsappCalls.push(input);
+      const stopped = await withBusiness(appDb, businessId, (tx) =>
+        customerConsentRepo.customerOptedOut(tx, stopKey(businessId)),
+      );
+      return stopped ? { outcome: 'suppressed' } : { outcome: 'sent', unit: 'SERVICE_MESSAGE' };
+    },
+  });
+  const viaConsulting = (s: Seeded, channel: 'email' | 'whatsapp') =>
+    new ReminderService(config, appDb, mail, consulting(s.businessId))
+      .send(s.businessId, s.userId, {
+        invoiceNumber: s.invoiceNumber,
+        channels: [channel],
+        idempotencyKey: key(),
+        ...(channel === 'email' ? { attest: true } : {}),
+      })
+      .then((o) => o.results[0]!.reminder);
+  const unsubscribe = async (s: Seeded) => {
+    await approvePhone(s);
+    await sendEmail(s, { attest: true });
+    const token = /token=([^\s]+)/.exec(mail.outbox[0]!.text)![1]!;
+    expect(await service().optOut(decodeURIComponent(token))).toBe(true);
+  };
+  const stop = (s: Seeded) =>
+    withBusiness(appDb, s.businessId, (tx) =>
+      customerConsentRepo.setCustomerOptOut(tx, stopKey(s.businessId), new Date()),
+    );
+
+  it('an email unsubscribe stops email, leaves WhatsApp eligible, and writes no STOP', async () => {
+    const s = await seed();
+    await unsubscribe(s);
+    expect(await counts(s.businessId)).toEqual({ email: 1, stop: 0 });
+
+    expect(await viaConsulting(s, 'email')).toMatchObject({
+      status: 'blocked',
+      reasonCode: 'customer_opted_out',
+    });
+    expect((await viaConsulting(s, 'whatsapp')).status).toBe('sent');
+    expect(whatsappCalls).toHaveLength(1);
+  });
+
+  it('a WhatsApp STOP stops WhatsApp, leaves email eligible, and writes no unsubscribe', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    await stop(s);
+    expect(await counts(s.businessId)).toEqual({ email: 0, stop: 1 });
+
+    expect(await viaConsulting(s, 'whatsapp')).toMatchObject({
+      status: 'blocked',
+      reasonCode: 'customer_opted_out',
+    });
+    expect((await viaConsulting(s, 'email')).status).toBe('sent');
+    expect(await counts(s.businessId)).toEqual({ email: 0, stop: 1 });
+  });
+
+  it('a default dual-channel request honours each channel on its own', async () => {
+    const s = await seed();
+    await unsubscribe(s);
+    const out = await new ReminderService(config, appDb, mail, consulting(s.businessId)).send(
+      s.businessId,
+      s.userId,
+      { invoiceNumber: s.invoiceNumber, channels: ['email', 'whatsapp'], idempotencyKey: key() },
+    );
+    const byChannel = Object.fromEntries(
+      out.results.map((r) => [r.reminder.channel, r.reminder.status]),
+    );
+    expect(byChannel).toEqual({ email: 'blocked', whatsapp: 'sent' });
+  });
+
+  it("one merchant's unsubscribe or STOP does not change another merchant's preference", async () => {
+    const a = await seed({ name: 'Merchant A' });
+    const b = await seed({ name: 'Merchant B' });
+    await approvePhone(b);
+    await unsubscribe(a);
+    await stop(a);
+    expect(await counts(b.businessId)).toEqual({ email: 0, stop: 0 });
+    expect((await viaConsulting(b, 'email')).status).toBe('sent');
+    expect((await viaConsulting(b, 'whatsapp')).status).toBe('sent');
+  });
+
+  it("an unsubscribe is for that address only: another customer's email still gets a reminder", async () => {
+    const a = await seed();
+    await unsubscribe(a);
+    const other = await seed({ email: 'someone.else@customer.example.ng' });
+    await approvePhone(other);
+    expect((await viaConsulting(other, 'email')).status).toBe('sent');
   });
 });
