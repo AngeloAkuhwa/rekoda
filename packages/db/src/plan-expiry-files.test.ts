@@ -160,7 +160,7 @@ const SQL_ASSIGNMENT = new RegExp(
 /** A query-builder `.set({ ..., planExpiresAt: x })` or shorthand `.set({ planExpiresAt })`, whatever the table expression is called. */
 // The column must be a property KEY (first in the object, or after a comma), possibly quoted and
 // possibly after JS comments, and not a value. Shorthand is a key too.
-const JS_GAP = String.raw`(?:\s|//[^\n]*(?:\n|$)|/\*[\s\S]*?\*/)*`;
+const JS_GAP = String.raw`(?:\s|//[^\n]*(?:\n|$)|/\*(?:[^*]|\*(?!/))*\*/)*`;
 const BUILDER_ASSIGNMENT = new RegExp(
   String.raw`\.set\(\s*\{(?:[^{}]*,)?${JS_GAP}["'\x60]?plan_?expires_?at["'\x60]?${JS_GAP}[:,}]`,
   'i',
@@ -211,8 +211,9 @@ const ASSIGN = (col: string): string =>
   [
     String.raw`(?:\bSET|,)${GAP}(?:"?\w+"?\.)?"?${col}"?\s*=(?!=)`,
     String.raw`(?:\bSET|,)${GAP}\([^)]*(?<![\w$])${col}(?![\w$])[^)]*\)\s*=(?!=)`,
-    // a query-builder .set({ ..., col: x })
-    String.raw`\.set\(\s*\{[^}]*(?<![\w$])${col === 'plan' ? 'plan' : 'plan_?expires_?at'}\s*:`,
+    // a query-builder .set({ ..., col: x }), also shorthand `{ col }`, a quoted key, after a spread or a
+    // nested object. Bounded to the same statement (no `;`) and 400 characters, so it stays linear.
+    String.raw`\.set\(\s*\{[^;]{0,400}?(?<![\w$.])["'\x60]?${col === 'plan' ? 'plan' : 'plan_?expires_?at'}["'\x60]?\s*[:,}]`,
   ].join('|');
 
 function count(re: RegExp, text: string): number {
@@ -785,5 +786,35 @@ describe('assignment patterns stay linear on large files', () => {
     const got = countAssignments(text);
     expect(Date.now() - started).toBeLessThan(1_000);
     expect(got.plan).toBe(0);
+  });
+});
+
+describe('builder assignments and comment patterns (review of 073f828)', () => {
+  const hit = (text: string) => countAssignments(text).plan;
+
+  it('catches shorthand, spread, quoted and nested-object forms of a plan assignment', () => {
+    expect(hit('tx.update(b).set({ updatedAt: d, plan })')).toBe(1);
+    expect(hit('tx.update(b).set({ ...rest, plan })')).toBe(1);
+    expect(hit('tx.update(b).set({ "plan": x })')).toBe(1);
+    expect(hit('tx.update(b).set({ meta: { a: 1 }, plan: x })')).toBe(1);
+    expect(hit('tx.update(b).set({ u: sql`${a}`, plan: x })')).toBe(1);
+  });
+
+  it('does not read pending_plan, plan_decided_at or a later statement as a plan assignment', () => {
+    expect(hit('tx.update(b).set({ pendingPlan: x, planDecidedAt: d })')).toBe(0);
+    expect(hit('tx.update(b).set({ a: 1 });\nfoo(plan, y);')).toBe(0);
+    expect(hit('tx.update(b).set({ a: obj.plan })')).toBe(0);
+  });
+
+  it('stays linear on adjacent block comments in a builder call and on many later comments', () => {
+    const adjacent = `x.set({ ${'/* a */ '.repeat(60)}y: 1 }); plan_expires_at`;
+    const many = `${'.set({ /* note */ y: 1 });\n'.repeat(300)}${'/* z */\n'.repeat(300)}`;
+    const started = Date.now();
+    const reader: ScannedFile = { path: 'src/r.ts', text: adjacent };
+    const allowed = { 'src/r.ts': { role: 'reader' as const, why: 'reads the date for display' } };
+    checkPlanExpiryFiles([reader], allowed);
+    checkPlanExpiryFiles([{ path: 'src/r.ts', text: `${many}plan_expires_at` }], allowed);
+    countAssignments(adjacent + many);
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 });
