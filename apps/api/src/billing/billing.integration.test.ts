@@ -1015,7 +1015,7 @@ describe('the grace period', () => {
     expect(rows.find((row) => row.usageType === 'UTILITY_TEMPLATE')).toBeUndefined();
   });
 
-  /* G-120 / SUB-03r (OWN-47). A timeout or dropped connection after the request left may
+  /* SUB-03r (OWN-47). A timeout or dropped connection after the request left may
    * have delivered the notice. The claim must stay, or the next hourly pass sends it again. */
   it('does not resend a reminder whose outcome is unknown', async () => {
     await failedMerchant('+2348177100040');

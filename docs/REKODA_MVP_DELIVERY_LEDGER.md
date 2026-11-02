@@ -111,3 +111,9 @@ runs immediately before dispatch. RED first: `does not resend a reminder whose o
 failed on `main` (a second notice went out). Also added: `suppresses a reminder when the cycle is
 paid after the page was read`, `retries a reminder that definitely did not leave`. Local: billing
 suite 344 tests, typecheck, lint, prettier green. CODE COMPLETE, NOT MERGED, STAGING ACCEPTANCE PENDING.
+
+Known residual (SUB-03r, accepted under OWN-47, not a defect): a reminder day is never retried after an
+unknown outcome (a timeout, a Meta 5xx, or a process death between the claim commit and the send), so
+the day-5 reminder, the last one before the day-7 expiry, can be lost with no further warning. The
+dashboard still shows the merchant's state. If the owner wants this softened (for example one bounded
+retry for day 5, or treating clear gateway 5xx as not sent), that is a product decision, not an engineering fix.

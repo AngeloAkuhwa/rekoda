@@ -153,7 +153,9 @@ export async function sweepGracePeriods(
         } else {
           /* Unknown outcome (timeout, dropped connection, or a failure after the send): the
            * notice may have been delivered. The claim STAYS, so it is never sent twice
-           * (OWN-47); the next reminder day still goes out. No exactly-once claim is made. */
+           * (OWN-47). A LATER reminder day still goes out, but the day itself is not retried:
+           * for the day-5 reminder that means no further warning before the day-7 expiry, an
+           * accepted consequence of the no-resend rule. No exactly-once claim is made. */
           log.warn(
             `business ${row.businessId}: grace reminder day ${day} outcome unknown, not resent: ${redactForLog(reason)}`,
           );
