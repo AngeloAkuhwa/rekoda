@@ -107,9 +107,10 @@ first incomplete feature and begin work. Do not repeat a broad audit.
    payment changes respected, duplicates prevented, provider calls never hold database transactions
    open, provider timeouts handled safely, partial payments, credits, reversals and void invoices
    handled, tenant and customer relationships validated, attempts and outcomes recorded.
-3. **Cross-channel opt-out** (OWN-62): WhatsApp STOP, email unsubscribe, shared suppression across
-   applicable automated reminder channels, safe identity resolution, suppression of queued
-   undispatched reminders, dispatch-time checks, audit history.
+3. **Channel-specific opt-out** (OWN-62, OWN-69): WhatsApp STOP and email unsubscribe remain
+   independent per-merchant preferences (neither suppresses the other channel), with safe identity
+   resolution, suppression of queued undispatched reminders on the opted-out channel, dispatch-time
+   checks, audit history.
 4. **Merchant payment instructions** (OWN-64 / OD-35): merchant-configured bank details or approved
    payment link, authorization and validation, correct merchant and invoice association, accurate
    rendering, safe handling when missing or invalid.
