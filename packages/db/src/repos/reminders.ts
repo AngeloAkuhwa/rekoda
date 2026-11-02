@@ -349,3 +349,43 @@ export async function lockReminderKey(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${`reminder:${businessId}:${idempotencyKey}`}, 0))`,
   );
 }
+
+/**
+ * Serialises every reminder to one invoice on one channel, whatever its idempotency key, so two
+ * requests with different keys (a double click, a second tab) cannot both pass the in-flight check.
+ * Taken after the key lock; released with the transaction, before any provider call.
+ */
+export async function lockReminderTarget(
+  tx: TenantDb,
+  businessId: string,
+  invoiceId: string,
+  channel: 'email' | 'whatsapp',
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`reminder-target:${businessId}:${invoiceId}:${channel}`}, 0))`,
+  );
+}
+
+/**
+ * True while another reminder to this invoice on this channel is mid-send, or was handed to the
+ * provider within the last `withinSeconds` (sent or outcome unknown): a repeat inside that window
+ * is a double click or a second tab, not a new decision to chase the customer.
+ */
+export async function hasRecentReminder(
+  tx: TenantDb,
+  businessId: string,
+  invoiceId: string,
+  channel: 'email' | 'whatsapp',
+  withinSeconds: number,
+): Promise<boolean> {
+  const rows = await tx.execute<{ one: number }>(sql`
+    SELECT 1 AS one FROM invoice_reminders
+     WHERE business_id = ${businessId}::uuid AND invoice_id = ${invoiceId}::uuid
+       AND channel = ${channel}
+       AND (status = 'sending'
+            OR (status IN ('sent', 'uncertain')
+                AND created_at > now() - make_interval(secs => ${withinSeconds})))
+     LIMIT 1
+  `);
+  return [...rows].length > 0;
+}

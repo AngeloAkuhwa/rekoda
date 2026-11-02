@@ -158,6 +158,10 @@ async function seed(opts: { name?: string; email?: string | null; phone?: string
   } satisfies Seeded;
 }
 
+/** Time passes: earlier reminders are old enough that the duplicate window no longer covers them. */
+const later = (s: Seeded) =>
+  rows(s.businessId, sql`UPDATE invoice_reminders SET created_at = created_at - interval '1 hour'`);
+
 const approvePhone = (s: Seeded) => service().setPublicContact(s.businessId, '08031112222');
 
 const rows = async <T extends Record<string, unknown>>(
@@ -229,6 +233,7 @@ describe('an email reminder', () => {
     expect(mail.outbox).toHaveLength(0);
 
     expect((await sendEmail(s, { attest: true })).reminder.status).toBe('sent');
+    await later(s);
     expect((await sendEmail(s)).reminder.status).toBe('sent');
     const [count] = await rows<{ n: string }>(
       s.businessId,
@@ -313,6 +318,22 @@ describe('an email reminder', () => {
     expect(count!.n).toBe('1');
   });
 
+  it('sends one email when different keys race for the same invoice and channel (REM-02)', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => sendEmail(s, { attest: true, idempotencyKey: key() })),
+    );
+    // A double click or a second tab carries a different key each time; one reminder is in flight.
+    expect(mail.outbox).toHaveLength(1);
+    expect(results.filter((r) => r.reminder.status === 'sent')).toHaveLength(1);
+    const refused = results.filter((r) => r.reminder.status === 'blocked');
+    expect(refused).toHaveLength(4);
+    expect(new Set(refused.map((r) => r.reminder.reasonCode))).toEqual(
+      new Set(['reminder_in_flight']),
+    );
+  });
+
   it('is never resent after an unknown provider outcome, and says it could not be confirmed', async () => {
     const s = await seed();
     await approvePhone(s);
@@ -339,6 +360,7 @@ describe('an email reminder', () => {
       reasonCode: 'unexpected',
     });
 
+    await later(s);
     const refused: EmailSender = {
       available: true,
       send: async () => {
@@ -424,6 +446,7 @@ describe('the merchant attestation is for one address', () => {
     const s = await seed();
     await approvePhone(s);
     expect((await sendEmail(s, { attest: true })).reminder.status).toBe('sent');
+    await later(s);
     expect((await sendEmail(s)).reminder.status).toBe('sent');
 
     // The stored address is replaced (the old facet row is rewritten with another address).
@@ -435,12 +458,14 @@ describe('the merchant attestation is for one address', () => {
         `${s.businessId}:email`,
       )} WHERE customer_id = ${s.customerId}::uuid AND facet = 'email'`,
     );
+    await later(s);
     const changed = await sendEmail(s);
     expect(changed.reminder).toMatchObject({
       status: 'blocked',
       reasonCode: 'attestation_required',
     });
     expect(mail.outbox).toHaveLength(2);
+    await later(s);
     expect((await sendEmail(s, { attest: true })).reminder.status).toBe('sent');
     expect(mail.outbox.at(-1)!.to).toBe('someone.else@customer.example.ng');
   });
@@ -708,6 +733,7 @@ describe('both channels for one event', () => {
     await approvePhone(s);
     await event(s, { attest: true });
     await service().setPublicContact(s.businessId, '08055550000');
+    await later(s);
     await event(s);
     expect(whatsappCalls.at(-1)!.text).toContain('+2348055550000');
     expect(mail.outbox.at(-1)!.text).toContain('+2348055550000');

@@ -33,6 +33,7 @@ export type ReminderBlockReason =
   | 'allowance_exhausted'
   | 'invalid_recipient'
   | 'ambiguous_contact'
+  | 'reminder_in_flight'
   | 'email_not_configured'
   | 'send_failed';
 

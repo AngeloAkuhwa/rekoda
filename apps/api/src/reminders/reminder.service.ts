@@ -65,6 +65,9 @@ export interface ReminderWhatsApp {
  * never settled as uncertain while it is still in flight. */
 const STALE_SENDING_MINUTES = 10;
 
+/** A second reminder to the same invoice and channel inside this window, under any key, is refused. */
+const DUPLICATE_WINDOW_SECONDS = 60;
+
 /** The key was already used for a different invoice: replaying would silently skip this one. */
 export class ReminderKeyReused extends Error {
   constructor() {
@@ -252,6 +255,16 @@ export class ReminderService {
         if (prior.invoiceId !== invoice.invoiceId) throw new ReminderKeyReused();
         return { kind: 'replay', row: prior };
       }
+      /* A different key for the same invoice and channel (double click, second tab) must not send
+       * a second message while the first is going out or has just gone. */
+      await remindersRepo.lockReminderTarget(tx, businessId, invoice.invoiceId, channel);
+      const inFlight = await remindersRepo.hasRecentReminder(
+        tx,
+        businessId,
+        invoice.invoiceId,
+        channel,
+        DUPLICATE_WINDOW_SECONDS,
+      );
       const business = await remindersRepo.businessForReminder(tx, businessId);
 
       let email: string | null = null;
@@ -307,6 +320,7 @@ export class ReminderService {
       });
       if (!this.config.customerReminders) block = 'reminders_not_released';
       if (block === null && ambiguous) block = 'ambiguous_contact';
+      if (block === null && inFlight) block = 'reminder_in_flight';
       if (block === null && channel === 'email') {
         if (!this.email.available || !this.config.webUrl) block = 'email_not_configured';
       }
