@@ -178,7 +178,7 @@ function assignmentAlternatives(sql: string, key: string): { sql: string[]; buil
   // already fails the name check, and the trial insert's expiry is held by the file list.
   if (sql === 'plan') {
     sqlAlts.push(
-      String.raw`\bINSERT${GAP}INTO${GAP}(?:public\.)?"?businesses"?${GAP}\([^)]*(?<![\w$])"?plan"?(?![\w$])[^)]*\)`,
+      String.raw`\bINSERT${GAP}INTO${GAP}(?:"?public"?${GAP}\.${GAP})?"?businesses"?${GAP}\([^)]*(?<![\w$])"?plan"?(?![\w$])[^)]*\)`,
     );
     builderAlts.push(
       String.raw`\.insert\(\s*(?:\w+\.)*businesses\s*\)${JS_GAP}\.values\(${JS_GAP}\[?${JS_GAP}\{(?:[^;]{0,2000}?,${JS_GAP}\{?)?${JS_GAP}["'\x60]?plan["'\x60]?${JS_GAP}[:,}]`,
@@ -928,6 +928,17 @@ describe('plan written by a businesses insert (review of e00c46b)', () => {
       0,
     );
     expect(countAssignments('INSERT INTO businesses (pending_plan) VALUES ($1)').plan).toBe(0);
+  });
+});
+
+describe('quoted schema-qualified businesses inserts (review of 248402c)', () => {
+  it('counts plan in INSERT INTO "public"."businesses", and an unpinned file with it fails', () => {
+    const text = 'INSERT INTO "public"."businesses" ("plan") VALUES ($1)';
+    expect(countAssignments(text).plan).toBe(1);
+    expect(countAssignments('INSERT INTO public . businesses (plan) VALUES ($1)').plan).toBe(1);
+    expect(checkAssignmentPins([{ path: 'src/unpinned.ts', text }], {}).join('\n')).toContain(
+      'src/unpinned.ts',
+    );
   });
 });
 
