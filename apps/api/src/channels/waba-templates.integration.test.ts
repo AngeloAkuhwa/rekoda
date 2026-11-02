@@ -8,7 +8,8 @@
  * precedes dispatch comes back on the path that does not deliver.
  */
 import { randomBytes } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { Logger } from '@nestjs/common';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   billingRepo,
   usageRepo,
@@ -648,6 +649,63 @@ describe('no transaction is held open while Meta is called (REM-02)', () => {
     expect(outcome).toEqual({ outcome: 'sent', unit: 'SERVICE_MESSAGE' });
     expect(sender.connectionTexts).toHaveLength(1);
     expect(await used(businessId, 'SERVICE_MESSAGE')).toBe(1);
+  });
+
+  it('names the outbound row and the error class, never the text, when recording after Meta accepted it fails', async () => {
+    const { businessId, connectionId, phoneNumberId } = await seedMerchant('integrate');
+    await openWindow(businessId, connectionId, phoneNumberId);
+    const custom = serviceWith(new StubSender());
+    (custom as unknown as { customerTextSent: () => Promise<void> }).customerTextSent =
+      async () => {
+        throw new RangeError('secret db detail 08012345678');
+      };
+    const warn = vi.spyOn((custom as unknown as { log: Logger }).log, 'warn');
+
+    await custom.sendCustomerText(businessId, { to: CUSTOMER, text: 'private body text' });
+
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ id: string }>(
+        sql`SELECT id FROM conversation_messages
+            WHERE business_id = ${businessId}::uuid AND direction = 'outbound'`,
+      ),
+    );
+    const line = String(warn.mock.calls[0]?.[0]);
+    expect(line).toContain(`outbound ${[...rows][0]!.id}`);
+    expect(line).toContain('RangeError');
+    expect(line).not.toContain('private body text');
+    expect(line).not.toContain('secret db detail');
+    expect(line).not.toContain(CUSTOMER);
+  });
+
+  it('keeps the unit, names the outbound row and rethrows when the sender fails with a non-provider error', async () => {
+    const { businessId, connectionId, phoneNumberId } = await seedMerchant('integrate');
+    await openWindow(businessId, connectionId, phoneNumberId);
+    const sender = new StubSender();
+    sender.sendOnConnection = async () => {
+      throw new TypeError('body was null for 08012345678');
+    };
+    const custom = serviceWith(sender);
+    const warn = vi.spyOn((custom as unknown as { log: Logger }).log, 'warn');
+
+    await expect(
+      custom.sendCustomerText(businessId, { to: CUSTOMER, text: 'private body text' }),
+    ).rejects.toBeInstanceOf(TypeError);
+
+    /* The message may have left: nothing is refunded. */
+    expect(await used(businessId, 'SERVICE_MESSAGE')).toBe(1);
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ id: string; provider_message_id: string | null }>(
+        sql`SELECT id, provider_message_id FROM conversation_messages
+            WHERE business_id = ${businessId}::uuid AND direction = 'outbound'`,
+      ),
+    );
+    expect([...rows]).toHaveLength(1);
+    expect([...rows][0]!.provider_message_id).toBeNull();
+    const line = String(warn.mock.calls[0]?.[0]);
+    expect(line).toContain(`outbound ${[...rows][0]!.id}`);
+    expect(line).toContain('TypeError');
+    expect(line).not.toContain('private body text');
+    expect(line).not.toContain('body was null');
   });
 
   it('keeps the old single-transaction shape for a caller passing its own transaction', async () => {

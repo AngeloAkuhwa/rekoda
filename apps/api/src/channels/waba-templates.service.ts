@@ -301,7 +301,9 @@ export class WabaTemplateService {
          * outbound row stays without a provider id: a visible, possibly delivered message, never a
          * free send and never a refund for something that may have left. The error is rethrown for
          * the caller to treat as an unknown outcome. */
-        this.log.warn('customer text outcome unknown; unit kept');
+        this.log.warn(
+          `customer text outcome unknown; unit kept (outbound ${reserved.recordedId}, ${errorClass(error)})`,
+        );
         throw error;
       }
       await withBusiness(this.db, businessId, (tx) =>
@@ -313,11 +315,14 @@ export class WabaTemplateService {
       await withBusiness(this.db, businessId, (tx) =>
         this.customerTextSent(tx, businessId, reserved, providerMessageId),
       );
-    } catch {
+    } catch (error) {
       /* Meta accepted it: the message went and the unit stays spent. Only the
        * bookkeeping after it failed, and the outbound row keeps its empty
-       * provider id, so a caller is not told to send it again. */
-      this.log.warn('customer text sent; recording its provider id failed');
+       * provider id, so a caller is not told to send it again. The warning names the row (an
+       * opaque id) and the error class only: never the text, a number or the error message. */
+      this.log.warn(
+        `customer text sent; recording its provider id failed (outbound ${reserved.recordedId}, ${errorClass(error)})`,
+      );
     }
     return { outcome: 'sent', unit: 'SERVICE_MESSAGE' };
   }
@@ -510,4 +515,9 @@ function failedOutcome(error: SendFailed): SendCustomerTextOutcome {
     unit: 'SERVICE_MESSAGE',
     ...(error.notSent ? {} : { unknown: true }),
   };
+}
+
+/** The class name of a thrown value, for a log line that must not carry its message. */
+function errorClass(error: unknown): string {
+  return error instanceof Error ? error.name : 'non-Error';
 }
