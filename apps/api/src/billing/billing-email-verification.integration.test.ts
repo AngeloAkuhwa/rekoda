@@ -103,15 +103,33 @@ const sql1 = async <T extends Record<string, unknown>>(
   query: ReturnType<typeof sql>,
 ) => withBusiness(appDb, businessId, async (tx) => [...(await tx.execute<T>(query))]);
 
-/** Pretend the last request was `seconds` ago, past the cooldown. */
-const age = (businessId: string, seconds: number) =>
-  sql1(
+/**
+ * Pretend the last request was `seconds` ago, past the cooldown. Time passes for the per-address
+ * counter too (OWN-58), which only the owner may rewrite.
+ */
+const age = async (businessId: string, seconds: number): Promise<void> => {
+  await sql1(
     businessId,
     sql`UPDATE billing_email_verifications
         SET created_at = created_at - make_interval(secs => ${seconds}),
             expires_at = expires_at - make_interval(secs => ${seconds})
         WHERE business_id = ${businessId}::uuid`,
   );
+  await ageAddressCounter(seconds);
+};
+
+/** Move every request in the shared per-address counter back by `seconds` (as the owner). */
+async function ageAddressCounter(seconds: number): Promise<void> {
+  const { db: owner, close } = createDb(urls.owner, { max: 1 });
+  try {
+    await owner.execute(
+      sql`UPDATE billing_email_address_requests
+          SET created_at = created_at - make_interval(secs => ${seconds})`,
+    );
+  } finally {
+    await close();
+  }
+}
 
 async function pendingCharge(businessId: string): Promise<string> {
   const answer = await new BillingService(config, appDb).changePlan(businessId, 'chat');
@@ -445,6 +463,135 @@ describe('rate limits', () => {
     const b = await seedBusiness();
     await mailed(a, EMAIL);
     expect((await emails().requestVerification(b, OTHER)).state).toBe('sent');
+  });
+});
+
+/**
+ * OWN-58: the per-business limits alone let one person mail a stranger's inbox from many trial
+ * businesses. The same five-an-hour and sixty-second limits therefore also hold per ADDRESS, across
+ * every business, decided under a lock so concurrent requests cannot slip past, and refused with the
+ * same generic answer as a business's own limit so nothing about another tenant leaks.
+ */
+describe('rate limits per address, across businesses (OWN-58)', () => {
+  it('refuses a second business mailing the same address within the cooldown, generically', async () => {
+    const a = await seedBusiness();
+    const b = await seedBusiness();
+    await mailed(a, EMAIL);
+    const refused = await emails().requestVerification(b, EMAIL);
+    expect(Object.keys(refused).sort()).toEqual(['retryAfterSeconds', 'state']);
+    expect(refused.state).toBe('rate_limited');
+    if (refused.state === 'rate_limited') {
+      expect(refused.retryAfterSeconds).toBeGreaterThan(0);
+      expect(refused.retryAfterSeconds).toBeLessThanOrEqual(60);
+    }
+    expect(mail.outbox).toHaveLength(1);
+    /* The refused request cost the second business nothing: no link was recorded for it. */
+    const rows = await sql1<{ n: number }>(
+      b,
+      sql`SELECT count(*)::int AS n FROM billing_email_verifications WHERE business_id = ${b}::uuid`,
+    );
+    expect(rows[0]!.n).toBe(0);
+    /* Another address is not held back by this one. */
+    expect((await emails().requestVerification(b, OTHER)).state).toBe('sent');
+  });
+
+  it('allows five links an hour to one address however many businesses ask', async () => {
+    for (let i = 0; i < 5; i += 1) {
+      const business = await seedBusiness();
+      expect((await emails().requestVerification(business, EMAIL)).state).toBe('sent');
+      await ageAddressCounter(61);
+    }
+    const sixth = await seedBusiness();
+    expect(await emails().requestVerification(sixth, EMAIL)).toEqual({
+      state: 'rate_limited',
+      retryAfterSeconds: 60 * 60,
+    });
+    expect(mail.outbox).toHaveLength(5);
+  });
+
+  it('compares the address the way the mailbox does: case and spaces do not make a new address', async () => {
+    const a = await seedBusiness();
+    const b = await seedBusiness();
+    await mailed(a, EMAIL);
+    expect((await emails().requestVerification(b, '  ADA@Shop.Example.NG ')).state).toBe(
+      'rate_limited',
+    );
+  });
+
+  it('issues exactly one link when ten businesses ask for one address at the same moment', async () => {
+    const businesses = await Promise.all(Array.from({ length: 10 }, () => seedBusiness()));
+    const answers = await Promise.all(
+      businesses.map((business) => emails().requestVerification(business, EMAIL)),
+    );
+    expect(answers.filter((a) => a.state === 'sent')).toHaveLength(1);
+    expect(answers.filter((a) => a.state === 'rate_limited')).toHaveLength(9);
+    expect(mail.outbox).toHaveLength(1);
+  });
+
+  it('issues exactly one link when one business sends ten requests at once from separate sessions', async () => {
+    const business = await seedBusiness();
+    const answers = await Promise.all(
+      Array.from({ length: 10 }, () => emails().requestVerification(business, EMAIL)),
+    );
+    expect(answers.filter((a) => a.state === 'sent')).toHaveLength(1);
+    expect(mail.outbox).toHaveLength(1);
+  });
+
+  it('does not count a link that could not be mailed against the address', async () => {
+    const a = await seedBusiness();
+    const b = await seedBusiness();
+    mail.failNext = true;
+    expect((await emails().requestVerification(a, EMAIL)).state).toBe('unavailable');
+    expect((await emails().requestVerification(b, EMAIL)).state).toBe('sent');
+  });
+
+  it('keeps only hashes: no address and no business in the shared counter', async () => {
+    const a = await seedBusiness();
+    await mailed(a, EMAIL);
+    const { db: owner, close } = createDb(urls.owner, { max: 1 });
+    try {
+      const columns = await owner.execute<{ column_name: string }>(
+        sql`SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'billing_email_address_requests' ORDER BY 1`,
+      );
+      expect([...columns].map((c) => c.column_name)).toEqual([
+        'address_hash',
+        'created_at',
+        'token_hash',
+        'voided_at',
+      ]);
+      const rows = await owner.execute<{ address_hash: string }>(
+        sql`SELECT address_hash FROM billing_email_address_requests`,
+      );
+      expect([...rows].map((r) => r.address_hash)).toEqual([
+        createHash('sha256').update(EMAIL).digest('hex'),
+      ]);
+    } finally {
+      await close();
+    }
+  });
+
+  it('lets the app role count and record but not rewrite or delete, and gives the worker nothing', async () => {
+    const businessId = await seedBusiness();
+    const rows = await sql1<Record<string, boolean>>(
+      businessId,
+      sql`SELECT
+            has_table_privilege('rekoda_app', 'billing_email_address_requests', 'SELECT') AS app_select,
+            has_table_privilege('rekoda_app', 'billing_email_address_requests', 'INSERT') AS app_insert,
+            has_table_privilege('rekoda_app', 'billing_email_address_requests', 'DELETE') AS app_delete,
+            has_column_privilege('rekoda_app', 'billing_email_address_requests', 'created_at', 'UPDATE') AS app_rewrite,
+            has_column_privilege('rekoda_app', 'billing_email_address_requests', 'voided_at', 'UPDATE') AS app_void,
+            has_table_privilege('rekoda_worker', 'billing_email_address_requests',
+                                'SELECT,INSERT,UPDATE,DELETE') AS worker`,
+    );
+    expect(rows[0]).toEqual({
+      app_select: true,
+      app_insert: true,
+      app_delete: false,
+      app_rewrite: false,
+      app_void: true,
+      worker: false,
+    });
   });
 });
 

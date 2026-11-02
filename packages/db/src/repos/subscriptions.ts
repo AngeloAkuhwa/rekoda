@@ -1412,6 +1412,58 @@ export async function voidEmailVerification(
   `);
 }
 
+/**
+ * The per-ADDRESS side of the billing-email limits (OWN-58, migration 0185). The counter is
+ * platform-wide and names no business, so one inbox cannot be mailed more often than the limits
+ * allow by asking from several businesses. It is read and written inside the requesting business's
+ * transaction (the table has no tenant policy; the app role may count, record and void, nothing
+ * more). Callers take `lockEmailAddress` AFTER the business lock, the one order every caller uses.
+ */
+export async function lockEmailAddress(tx: TenantDb, addressHash: string): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`billing-email-address:${addressHash}`}, 0))`,
+  );
+}
+
+/** Requests for one address in the last hour, across businesses, by the DATABASE clock. */
+export async function recentEmailAddressRequests(
+  tx: TenantDb,
+  addressHash: string,
+): Promise<{ lastHour: number; sinceLatestMs: number | null }> {
+  const rows = await tx.execute<{ n: number; since_ms: string | number | null }>(sql`
+    SELECT count(*)::int AS n,
+           (extract(epoch FROM (clock_timestamp() - max(created_at))) * 1000)::bigint AS since_ms
+    FROM billing_email_address_requests
+    WHERE address_hash = ${addressHash}
+      AND voided_at IS NULL
+      AND created_at > clock_timestamp() - interval '1 hour'
+  `);
+  const row = [...rows][0];
+  return {
+    lastHour: Number(row?.n ?? 0),
+    sinceLatestMs: row?.since_ms == null ? null : Math.max(0, Number(row.since_ms)),
+  };
+}
+
+/** Count one mailed link against its address. */
+export async function recordEmailAddressRequest(
+  tx: TenantDb,
+  input: { addressHash: string; tokenHash: string },
+): Promise<void> {
+  await tx.execute(sql`
+    INSERT INTO billing_email_address_requests (token_hash, address_hash, created_at)
+    VALUES (${input.tokenHash}, ${input.addressHash}, clock_timestamp())
+  `);
+}
+
+/** Give the address its allowance back when the link could not be mailed. */
+export async function voidEmailAddressRequest(tx: TenantDb, tokenHash: string): Promise<void> {
+  await tx.execute(sql`
+    UPDATE billing_email_address_requests SET voided_at = clock_timestamp()
+    WHERE token_hash = ${tokenHash} AND voided_at IS NULL
+  `);
+}
+
 /** How a link's hand-over to the email provider ended (migration 0183). */
 export type EmailSendOutcome = 'accepted' | 'uncertain';
 

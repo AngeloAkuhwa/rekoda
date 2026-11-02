@@ -23,6 +23,7 @@ import {
   BILLING_EMAIL_VERIFICATION,
   billingEmailConfirmationLink,
   checkBillingEmail,
+  emailSuppressionKey,
   maskBillingEmail,
 } from '@rekoda/core';
 import { decryptFacet, encryptFacet } from '@rekoda/core/vault';
@@ -122,11 +123,28 @@ export class BillingEmailService {
         if (recent.lastHour >= maxPerHour) {
           return { state: 'rate_limited', retryAfterSeconds: 60 * 60 };
         }
-        await subscriptionsRepo.issueEmailVerification(tx, {
+        /* OWN-58: the same limits per ADDRESS, across businesses, decided under the address lock
+         * (taken after the business lock) so concurrent requests from many businesses cannot slip
+         * past. The refusal has the same shape as the business's own, naming nobody. */
+        const addressHash = emailSuppressionKey(email);
+        await subscriptionsRepo.lockEmailAddress(tx, addressHash);
+        const byAddress = await subscriptionsRepo.recentEmailAddressRequests(tx, addressHash);
+        if (byAddress.sinceLatestMs !== null && byAddress.sinceLatestMs < cooldownMs) {
+          return {
+            state: 'rate_limited',
+            retryAfterSeconds: Math.ceil((cooldownMs - byAddress.sinceLatestMs) / 1000),
+          };
+        }
+        if (byAddress.lastHour >= maxPerHour) {
+          return { state: 'rate_limited', retryAfterSeconds: 60 * 60 };
+        }
+        const issued = await subscriptionsRepo.issueEmailVerification(tx, {
           businessId,
           tokenHash,
           ttlMs: BILLING_EMAIL_VERIFICATION.ttlMs,
         });
+        if (issued)
+          await subscriptionsRepo.recordEmailAddressRequest(tx, { addressHash, tokenHash });
         return { email };
       },
     );
@@ -166,9 +184,10 @@ export class BillingEmailService {
           ? 'a billing-email confirmation was not sent: the address is suppressed'
           : 'a billing-email confirmation could not be sent',
       );
-      await withBusiness(this.db, businessId, (tx) =>
-        subscriptionsRepo.voidEmailVerification(tx, businessId, tokenHash),
-      );
+      await withBusiness(this.db, businessId, async (tx) => {
+        await subscriptionsRepo.voidEmailVerification(tx, businessId, tokenHash);
+        await subscriptionsRepo.voidEmailAddressRequest(tx, tokenHash);
+      });
       return { state: 'unavailable', reason: unusable ? 'address_unusable' : 'send_failed' };
     }
     await this.recordSendOutcome(businessId, tokenHash, 'accepted');

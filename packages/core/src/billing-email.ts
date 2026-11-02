@@ -64,9 +64,15 @@ export function checkBillingEmail(raw: string): BillingEmailCheck {
 export const BILLING_EMAIL_VERIFICATION = {
   /** How long a mailed link works. */
   ttlMs: 60 * 60 * 1000,
-  /** At most this many links may be requested for one business in an hour. */
+  /**
+   * At most this many links may be requested in an hour, for one business AND for one address
+   * across every business (OWN-58).
+   */
   maxPerHour: 5,
-  /** The wait between one request and the next, so a double click mails once. */
+  /**
+   * The wait between one request and the next, for one business and for one address, so a double
+   * click mails once.
+   */
   cooldownMs: 60 * 1000,
 } as const;
 
