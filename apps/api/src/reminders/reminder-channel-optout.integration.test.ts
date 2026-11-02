@@ -374,6 +374,31 @@ describe('an opt-out that arrives after the attempt was opened', () => {
     expect(await serviceUnitsUsed(s)).toBe(0);
   });
 
+  it('a WhatsApp STOP that commits after the gateway reserved the unit, before Meta is called, still stops the message and refunds the unit', async () => {
+    /* The narrower window inside the gateway: its consent read and unit reservation run in one
+     * transaction, and the provider is called after that commits. The STOP here commits from
+     * another connection while that transaction is still open (after its consent read), so only a
+     * re-read after the reservation commits can see it. */
+    const s = await shop();
+    const gateway = new WabaTemplateService(db, config, meta, new PrivacyGateway(db, config));
+    type Reserving = { reserveCustomerText: (...args: unknown[]) => Promise<unknown> };
+    const inner = gateway as unknown as Reserving;
+    const real = inner.reserveCustomerText.bind(gateway);
+    inner.reserveCustomerText = async (...args: unknown[]) => {
+      const reserved = await real(...args);
+      await stopWhatsApp(s);
+      return reserved;
+    };
+    const service = new ReminderService(config, db, mail, gateway);
+
+    expect(await send(s, 'whatsapp', service)).toMatchObject({
+      status: 'blocked',
+      reasonCode: 'customer_opted_out',
+    });
+    expect(meta.connectionTexts).toHaveLength(0);
+    expect(await serviceUnitsUsed(s)).toBe(0);
+  });
+
   it("a late opt-out on one channel does not stop the other channel's message", async () => {
     /* Two shops, so the first case's opt-out cannot leak into the second. */
     const s = await shop('Alpha Ltd');

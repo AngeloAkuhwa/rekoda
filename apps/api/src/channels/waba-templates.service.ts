@@ -264,6 +264,8 @@ export class WabaTemplateService {
    * transaction or row lock is held while Meta is called (REM-02):
    *   1. a short transaction checks, reserves the unit and records the
    *      outbound message, and commits;
+   *   1b. a short transaction re-reads STOP; an opted-out customer is
+   *      refunded and suppressed here, before anything leaves (REM-03);
    *   2. the provider call, with no transaction open;
    *   3. a short transaction marks it sent (and the connection healthy), or
    *      refunds the unit (and records why the connection is unhealthy).
@@ -294,6 +296,27 @@ export class WabaTemplateService {
       this.reserveCustomerText(tx, businessId, input),
     );
     if (reserved.kind === 'refused') return reserved.outcome;
+
+    /* STOP is re-read after the reservation commits, immediately before Meta is called (REM-03,
+     * OWN-69): a STOP that committed while step 1 was still open (after its consent read) is
+     * otherwise invisible to it. An opted-out customer gets nothing and the reserved unit is
+     * refunded in the same transaction; the outbound row keeps no provider id, like any other
+     * definite non-send. If the re-read itself fails, nothing has been sent: a definite failure,
+     * never an unknown outcome (the unit stays spent, as when the process dies between steps). */
+    let optedOut: boolean;
+    try {
+      optedOut = await withBusiness(this.db, businessId, async (tx) => {
+        if (!(await customerConsentRepo.customerOptedOut(tx, reserved.consent))) return false;
+        await usageRepo.refundUnit(tx, businessId, reserved.meter, 'SERVICE_MESSAGE');
+        return true;
+      });
+    } catch (error) {
+      this.log.warn(
+        `customer text not sent: consent could not be re-read (outbound ${reserved.recordedId}, ${errorClass(error)})`,
+      );
+      return { outcome: 'send_failed', unit: 'SERVICE_MESSAGE' };
+    }
+    if (optedOut) return { outcome: 'suppressed' };
 
     let providerMessageId: string | null;
     try {
@@ -408,14 +431,13 @@ export class WabaTemplateService {
     /* Consent first, before the window and before the meter (PR-135).
      * A customer who said STOP is not reachable by any route, so asking
      * about windows or spending a unit on them would both be wrong. */
-    if (
-      await customerConsentRepo.customerOptedOut(tx, {
-        businessId,
-        channelAccountId: connection.phoneNumberId,
-        customerHash: blindIndex,
-        indexKeyVersion: PARTICIPANT_INDEX_KEY_VERSION,
-      })
-    ) {
+    const consent = {
+      businessId,
+      channelAccountId: connection.phoneNumberId,
+      customerHash: blindIndex,
+      indexKeyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+    };
+    if (await customerConsentRepo.customerOptedOut(tx, consent)) {
       return refuse({ outcome: 'suppressed' });
     }
 
@@ -474,6 +496,7 @@ export class WabaTemplateService {
       meter: spent.meter,
       recordedId: recorded.id,
       connectionId: connection.id,
+      consent,
       message: {
         to,
         phoneNumberId: connection.phoneNumberId,
@@ -528,6 +551,8 @@ interface ReservedCustomerText {
   meter: Awaited<ReturnType<typeof usageRepo.reserveUnit>>['meter'];
   recordedId: string;
   connectionId: string;
+  /** The STOP lookup (opaque blind index, no raw number), re-read just before the provider call. */
+  consent: Parameters<typeof customerConsentRepo.customerOptedOut>[1];
   /** Alive only for the send: carries the raw number, the text and the merchant's token. */
   message: OutboundConnectionText;
 }
