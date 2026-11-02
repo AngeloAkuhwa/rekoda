@@ -634,6 +634,24 @@ describe('the unconfigured sender names what is missing (G-58)', () => {
     }
   });
 
+  /* SUB-03r: the grace sweep keeps its claim after an unknown outcome, so a billing notice that
+   * can never have left (nothing configured to send it) must say so, or one missed template
+   * would cost the merchant that reminder day even after the template is fixed. */
+  it('reports a billing notice with nothing configured as definitely not sent', async () => {
+    const unconfigured = new NoSenderConfigured(['META_ACCESS_TOKEN']);
+    const noTemplate = sender({ billing: null });
+    const notice = { to: '+2348000000000', daysLeft: '3', endsOn: '01/01/2027' };
+    for (const attempt of [
+      () => unconfigured.sendBillingNotice(),
+      () => noTemplate.sendBillingNotice(notice),
+    ]) {
+      const error = await attempt().catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(SendFailed);
+      expect((error as SendFailed).notSent).toBe(true);
+    }
+    expect(requests).toHaveLength(0);
+  });
+
   it('every method refuses with the same named reason', async () => {
     const sender = new NoSenderConfigured(['META_PHONE_NUMBER_ID']);
     for (const call of [

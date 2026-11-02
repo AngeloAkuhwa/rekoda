@@ -14,7 +14,7 @@
  *     and expiring is an ACT with an audit row rather than a date comparison.
  */
 import { randomBytes } from 'node:crypto';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { addMonth, GRACE_DAYS, PLAN_PRICES_K, usagePeriod } from '@rekoda/core';
 import {
   billingCancelResponse,
@@ -47,6 +47,7 @@ import { sweepRenewals } from './renewal-sweep.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { StubSender } from '../channels/sender.stub.js';
+import { SendFailed } from '../channels/sender.js';
 
 let urls: Urls;
 let app: NestFastifyApplication;
@@ -1012,6 +1013,142 @@ describe('the grace period', () => {
 
     const rows = await marginRepo.costByUsageType(workerDb, usagePeriod(new Date()));
     expect(rows.find((row) => row.usageType === 'UTILITY_TEMPLATE')).toBeUndefined();
+  });
+
+  /* SUB-03r (OWN-47). A timeout or dropped connection after the request left may
+   * have delivered the notice. The claim must stay, or the next hourly pass sends it again. */
+  it('does not resend a reminder whose outcome is unknown', async () => {
+    await failedMerchant('+2348177100040');
+    const sender = new StubSender();
+    sender.failWith(new SendFailed('timeout'));
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+    expect(sender.billingNotices).toHaveLength(0);
+
+    // The stub's one-shot failure is spent: had the claim been released, this pass would send.
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+    expect(sender.billingNotices).toHaveLength(0);
+  });
+
+  /* The sweep reads a page, then sends row by row. A merchant who pays while an earlier row
+   * is being sent must not then get a "payment failed" notice from the stale page. */
+  it('suppresses a reminder when the cycle is paid after the page was read', async () => {
+    const a = await failedMerchant('+2348177100042');
+    const b = await failedMerchant('+2348177100043');
+    const byPhone = new Map([
+      ['+2348177100042', b.businessId],
+      ['+2348177100043', a.businessId],
+    ]);
+    const sender = new StubSender();
+    const original = sender.sendBillingNotice.bind(sender);
+    let paidOther = false;
+    sender.sendBillingNotice = async (notice) => {
+      const sent = await original(notice);
+      if (!paidOther) {
+        paidOther = true;
+        const other = byPhone.get(notice.to)!;
+        await putOnPlan(
+          other,
+          'chat',
+          dayAfterFailure(1),
+          new Date(dayAfterFailure(1).getTime() + 30 * 86_400_000),
+        );
+      }
+      return sent;
+    };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+    expect(sender.billingNotices).toHaveLength(1);
+  });
+
+  /* CodeRabbit on #400: the eligibility read runs after the claim. If it throws, nothing was
+   * sent, so the claim must go back or that reminder day is lost. */
+  it('rolls the claim back when the final eligibility read fails', async () => {
+    await failedMerchant('+2348177100044');
+    const sender = new StubSender();
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+    const real = subscriptionsRepo.graceReminderEligibility;
+    const spy = vi
+      .spyOn(subscriptionsRepo, 'graceReminderEligibility')
+      .mockRejectedValueOnce(new Error('read failed'));
+    try {
+      await sweepGracePeriods(deps, dayAfterFailure(1));
+      expect(sender.billingNotices).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(subscriptionsRepo.graceReminderEligibility).toBe(real);
+
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+    expect(sender.billingNotices).toHaveLength(1);
+  });
+
+  /* CodeRabbit on #400: the opt-out flag on the page can be stale. A merchant who sent START
+   * after the page was read must still get this reminder day, not have it burnt on the old flag. */
+  it('reads STOP/START fresh, not from the page', async () => {
+    const m1 = await failedMerchant('+2348177100045');
+    const m2 = await failedMerchant('+2348177100046');
+    /* Pages run in business-id order: the first is sent to, the second is the opted-out one. */
+    const [first, second] =
+      m1.businessId < m2.businessId
+        ? [
+            { ...m1, phone: '+2348177100045' },
+            { ...m2, phone: '+2348177100046' },
+          ]
+        : [
+            { ...m2, phone: '+2348177100046' },
+            { ...m1, phone: '+2348177100045' },
+          ];
+    await identity.setOptOut(db, second.phone, new Date());
+
+    const sender = new StubSender();
+    const original = sender.sendBillingNotice.bind(sender);
+    sender.sendBillingNotice = async (notice) => {
+      const sent = await original(notice);
+      if (notice.to === first.phone) await identity.setOptOut(db, second.phone, null);
+      return sent;
+    };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+    expect(sender.billingNotices.map((n) => n.to).sort()).toEqual(
+      [first.phone, second.phone].sort(),
+    );
+  });
+
+  /* CodeRabbit on #400: a failed claim release after a definite non-delivery must not abort the
+   * pass for the merchants after it. */
+  it('keeps sweeping when a failed claim release follows a definite non-delivery', async () => {
+    await failedMerchant('+2348177100047');
+    await failedMerchant('+2348177100048');
+    const sender = new StubSender();
+    sender.failWith(new SendFailed('rejected', 429, true, true));
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+    const spy = vi
+      .spyOn(subscriptionsRepo, 'releaseGraceReminder')
+      .mockRejectedValueOnce(new Error('release failed'));
+    try {
+      await expect(sweepGracePeriods(deps, dayAfterFailure(1))).resolves.toBeDefined();
+    } finally {
+      spy.mockRestore();
+    }
+    /* The other merchant was still processed in the same pass. */
+    expect(sender.billingNotices).toHaveLength(1);
+  });
+
+  it('retries a reminder that definitely did not leave', async () => {
+    await failedMerchant('+2348177100041');
+    const sender = new StubSender();
+    sender.failWith(new SendFailed('rejected', 429, true, true));
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+    expect(sender.billingNotices).toHaveLength(0);
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+    expect(sender.billingNotices).toHaveLength(1);
   });
 
   it('sends one reminder on day 1 and none the same day twice', async () => {

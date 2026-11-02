@@ -216,7 +216,14 @@ export class MetaSender implements MessageSender {
    */
   async sendBillingNotice(notice: OutboundBillingNotice): Promise<SendResult> {
     if (!this.billingTemplate) {
-      throw new SendFailed('no billing template configured (META_BILLING_TEMPLATE)');
+      /* Nothing left: a definite non-delivery that an operator clears by setting the template
+       * (SUB-03r), so the grace sweep gives its claim back and retries. */
+      throw new SendFailed(
+        'no billing template configured (META_BILLING_TEMPLATE)',
+        null,
+        true,
+        true,
+      );
     }
     return this.post({
       messaging_product: 'whatsapp',
@@ -558,7 +565,8 @@ export class NoSenderConfigured implements MessageSender {
   }
 
   sendBillingNotice(): Promise<never> {
-    return Promise.reject(new SendFailed(this.reason));
+    /* Nothing is configured to send with, so nothing can have been sent (SUB-03r). */
+    return Promise.reject(new SendFailed(this.reason, null, true, true));
   }
 
   sendDocumentNotice(): Promise<never> {
