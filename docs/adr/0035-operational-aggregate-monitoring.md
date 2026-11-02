@@ -81,7 +81,9 @@ three classes. None weakens tenant isolation.
      needs, and never a phone, name, consent flag, financial figure, contact
      detail, message, payload or credential;
    - it is limited to named, approved scheduling operations (today: trial
-     reminders, `sweep_trial_candidates`, migration 0181); a new operation
+     reminders, `sweep_trial_candidates`, migration 0181; scheduled and bulk
+     payment reminders, `sweep_due_reminder_batches`, migration 0189, REM-05,
+     returning the batch id, business id and scheduled time only); a new operation
      needs its own function and a line here;
    - after discovery, every read of owner data and every write runs under
      `withBusiness()` on the application role, and eligibility, consent, expiry
