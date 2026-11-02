@@ -299,24 +299,29 @@ export class WabaTemplateService {
 
     /* STOP is re-read after the reservation commits, immediately before Meta is called (REM-03,
      * OWN-69): a STOP that committed while step 1 was still open (after its consent read) is
-     * otherwise invisible to it. An opted-out customer gets nothing and the reserved unit is
-     * refunded in the same transaction; the outbound row keeps no provider id, like any other
-     * definite non-send. If the re-read itself fails, nothing has been sent: a definite failure,
-     * never an unknown outcome (the unit stays spent, as when the process dies between steps). */
-    let optedOut: boolean;
+     * otherwise invisible to it. The re-read writes nothing. Unless it says the customer is still
+     * reachable, nothing is sent and the reserved unit is refunded (spec §4.3 rule 4): an opted-out
+     * customer is `suppressed`; a re-read that failed is a definite `send_failed`, never an unknown
+     * outcome. The refund is ONE statement in its own transaction and is never retried, so one
+     * reservation is refunded at most once even if a commit acknowledgement is lost; if that write
+     * itself fails the unit stays spent (the same residual as a process dying between steps). The
+     * outbound row keeps no provider id, like any other definite non-send. */
+    let reachable: boolean;
     try {
-      optedOut = await withBusiness(this.db, businessId, async (tx) => {
-        if (!(await customerConsentRepo.customerOptedOut(tx, reserved.consent))) return false;
-        await usageRepo.refundUnit(tx, businessId, reserved.meter, 'SERVICE_MESSAGE');
-        return true;
-      });
+      reachable = !(await withBusiness(this.db, businessId, (tx) =>
+        customerConsentRepo.customerOptedOut(tx, reserved.consent),
+      ));
     } catch (error) {
       this.log.warn(
         `customer text not sent: consent could not be re-read (outbound ${reserved.recordedId}, ${errorClass(error)})`,
       );
+      await this.refundOnce(businessId, reserved);
       return { outcome: 'send_failed', unit: 'SERVICE_MESSAGE' };
     }
-    if (optedOut) return { outcome: 'suppressed' };
+    if (!reachable) {
+      await this.refundOnce(businessId, reserved);
+      return { outcome: 'suppressed' };
+    }
 
     let providerMessageId: string | null;
     try {
@@ -360,6 +365,19 @@ export class WabaTemplateService {
       return { outcome: 'sent', unit: 'SERVICE_MESSAGE', providerIdUnrecorded: true };
     }
     return { outcome: 'sent', unit: 'SERVICE_MESSAGE' };
+  }
+
+  /** The single refund of a reservation that will not be sent. Never retried; a failure is logged. */
+  private async refundOnce(businessId: string, reserved: ReservedCustomerText): Promise<void> {
+    try {
+      await withBusiness(this.db, businessId, (tx) =>
+        usageRepo.refundUnit(tx, businessId, reserved.meter, 'SERVICE_MESSAGE'),
+      );
+    } catch (error) {
+      this.log.warn(
+        `customer text not sent; its unit refund was not recorded (outbound ${reserved.recordedId}, ${errorClass(error)})`,
+      );
+    }
   }
 
   /** The original shape, inside a caller's transaction (see `sendCustomerText`). */

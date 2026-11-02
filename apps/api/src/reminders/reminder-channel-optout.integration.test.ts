@@ -431,14 +431,14 @@ describe('when the dispatch-time opt-out read itself fails', () => {
    * A database handle whose `n`th transaction rejects. In a one-channel email send the calls are:
    * 1 `prepare` (writes the `sending` row), 2 the dispatch-time opt-out read, 3 `finishReminder`.
    */
-  function failingTransaction(n: number): Db {
+  function failingTransaction(...n: number[]): Db {
     let calls = 0;
     return new Proxy(db, {
       get(target, prop, receiver) {
         if (prop === 'transaction') {
           return (...args: unknown[]) => {
             calls += 1;
-            if (calls === n) return Promise.reject(new Error('database unavailable'));
+            if (n.includes(calls)) return Promise.reject(new Error('database unavailable'));
             return (target.transaction as (...a: unknown[]) => unknown).apply(target, args);
           };
         }
@@ -465,14 +465,30 @@ describe('when the dispatch-time opt-out read itself fails', () => {
     expect(mail.outbox).toHaveLength(0);
   });
 
-  it('WhatsApp: a failed STOP re-read sends nothing, is a definite failure, and keeps the reserved unit spent', async () => {
+  it('WhatsApp: a failed STOP re-read sends nothing, is a definite failure, and refunds the reserved unit once', async () => {
     /* The gateway's own transactions: 1 reserves the unit and records the outbound, 2 re-reads
-     * STOP. The unit is deliberately NOT refunded here: if that transaction committed its refund
-     * and only the acknowledgement was lost, a second refund would hand out a free unit. Under-
-     * refunding during a database fault is the conservative side; a free send never is. */
+     * STOP (reads only), 3 refunds. Nothing left, so spec §4.3 rule 4: the unit comes back. */
     const s = await shop();
     const gateway = new WabaTemplateService(
       failingTransaction(2),
+      config,
+      meta,
+      new PrivacyGateway(db, config),
+    );
+    expect(await send(s, 'whatsapp', new ReminderService(config, db, mail, gateway))).toMatchObject(
+      { status: 'failed', reasonCode: 'send_failed' },
+    );
+    expect(meta.connectionTexts).toHaveLength(0);
+    expect(await serviceUnitsUsed(s)).toBe(0);
+  });
+
+  it('WhatsApp: when the refund itself cannot be written either, nothing is sent and the refund is not retried', async () => {
+    /* One refund attempt per reservation, never two: a retried decrement after a commit whose
+     * acknowledgement was lost would hand out a free unit. The unit then stays spent, the same
+     * residual as a process that dies between the reservation and the send. */
+    const s = await shop();
+    const gateway = new WabaTemplateService(
+      failingTransaction(2, 3),
       config,
       meta,
       new PrivacyGateway(db, config),
