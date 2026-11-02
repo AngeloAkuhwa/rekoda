@@ -388,16 +388,24 @@ export class WabaTemplateService {
   }
 
   /**
-   * Every check and the one consumption, in the §4.3 order: entitlement,
-   * connection, recipient, consent, window, meter, token. A refusal consumes
-   * nothing. On success the unit is reserved and the outbound message is
-   * recorded (tokenised), ready for the provider call.
+   * The checks before the meter, in the §4.3 order: entitlement, connection, recipient, consent,
+   * window. Reads only; consumes nothing. Shared by the send and by a preview (REM-05), so a
+   * preview can never say "would send" for a reason the send itself would refuse.
    */
-  private async reserveCustomerText(
+  private async checkCustomerText(
     tx: TenantDb,
     businessId: string,
-    input: SendCustomerTextInput,
-  ): Promise<ReservedCustomerText | { kind: 'refused'; outcome: SendCustomerTextOutcome }> {
+    rawTo: string,
+  ): Promise<
+    | { kind: 'refused'; outcome: SendCustomerTextOutcome }
+    | {
+        kind: 'ok';
+        connection: NonNullable<Awaited<ReturnType<typeof wabaRepo.wabaConnectionFor>>>;
+        to: string;
+        blindIndex: string;
+        consent: Parameters<typeof customerConsentRepo.customerOptedOut>[1];
+      }
+  > {
     const refuse = (outcome: SendCustomerTextOutcome) => ({ kind: 'refused' as const, outcome });
 
     if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_INTEGRATE')) {
@@ -415,7 +423,7 @@ export class WabaTemplateService {
 
     let to: string;
     try {
-      to = normaliseParticipant(input.to);
+      to = normaliseParticipant(rawTo);
     } catch (error) {
       if (error instanceof InvalidPhoneError) return refuse({ outcome: 'invalid_recipient' });
       throw error;
@@ -449,6 +457,43 @@ export class WabaTemplateService {
       customerHash: blindIndex,
     });
     if (!open) return refuse({ outcome: 'window_closed' });
+    return { kind: 'ok', connection, to, blindIndex, consent };
+  }
+
+  /**
+   * Would a free-form text to this customer pass every check before the meter, right now? Null
+   * when it would; otherwise the refusal the send would give. Reads only (REM-05 preview). The
+   * allowance and the provider are not consulted, and the answer can change before a send.
+   */
+  async precheckCustomerText(
+    businessId: string,
+    to: string,
+  ): Promise<SendCustomerTextOutcome | null> {
+    if (!this.config.connectionKey) {
+      return { outcome: 'unavailable', reason: 'connection_key_missing' };
+    }
+    const checked = await withBusiness(this.db, businessId, (tx) =>
+      this.checkCustomerText(tx, businessId, to),
+    );
+    return checked.kind === 'refused' ? checked.outcome : null;
+  }
+
+  /**
+   * Every check and the one consumption, in the §4.3 order: entitlement,
+   * connection, recipient, consent, window, meter, token. A refusal consumes
+   * nothing. On success the unit is reserved and the outbound message is
+   * recorded (tokenised), ready for the provider call.
+   */
+  private async reserveCustomerText(
+    tx: TenantDb,
+    businessId: string,
+    input: SendCustomerTextInput,
+  ): Promise<ReservedCustomerText | { kind: 'refused'; outcome: SendCustomerTextOutcome }> {
+    const refuse = (outcome: SendCustomerTextOutcome) => ({ kind: 'refused' as const, outcome });
+
+    const checked = await this.checkCustomerText(tx, businessId, input.to);
+    if (checked.kind === 'refused') return checked;
+    const { connection, to, blindIndex, consent } = checked;
 
     const unit = 'SERVICE_MESSAGE' as const;
     const plan = await usageRepo.planFor(tx, businessId);

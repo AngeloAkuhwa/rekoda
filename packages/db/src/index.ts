@@ -62,6 +62,7 @@ export * as spendRepo from './repos/spend.js';
 export * as purchaseIdentityRepo from './repos/purchase-identity.js';
 export * as taxRepo from './repos/tax.js';
 export * as remindersRepo from './repos/reminders.js';
+export * as reminderBatchesRepo from './repos/reminder-batches.js';
 export * as returnsRepo from './repos/returns.js';
 export * as usageRepo from './repos/usage.js';
 export * as webhooksRepo from './repos/webhooks.js';

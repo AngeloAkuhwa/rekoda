@@ -41,6 +41,10 @@ import { sweepBankFeeds } from '../bank/feed-sync.js';
 import { sweepUnknownSenders } from '../channels/stranger-sweep.js';
 import { sweepGracePeriods } from '../billing/grace-sweep.js';
 import { sweepTrialNotices } from '../billing/trial-notice-sweep.js';
+import { EMAIL_SENDER, type EmailSender } from '../email/email.port.js';
+import { EmailModule } from '../email/email.module.js';
+import { sweepReminderBatches } from '../reminders/reminder-batch.service.js';
+import { ReminderService } from '../reminders/reminder.service.js';
 import { AUDIO_METADATA_PROBE, type AudioMetadataProbe } from '../ai/audio-duration.js';
 import { sweepRenewals } from '../billing/renewal-sweep.js';
 import { runRetentionPass } from '../privacy/retention-sweep.js';
@@ -241,6 +245,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private greeting = false;
   private sweepingGrace = false;
   private sweepingTrialNotices = false;
+  private sweepingReminderBatches = false;
   private sweepingRenewals = false;
   private sweepingRecurring = false;
   private sweepingDepreciation = false;
@@ -273,6 +278,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     @Inject(AUDIO_METADATA_PROBE) private readonly audioProbe: AudioMetadataProbe,
     @Inject(CommandBus) private readonly commandBus: CommandBus,
     @Inject(CatalogueSyncService) private readonly catalogueSync: CatalogueSyncService,
+    @Inject(EMAIL_SENDER) private readonly email: EmailSender,
   ) {}
 
   onModuleInit(): void {
@@ -531,6 +537,36 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     );
 
     /**
+     * Scheduled and bulk reminders (REM-05): a batch is due at a minute, so every minute. Each
+     * pass is bounded (`REMINDER_BATCH_LIMITS.sendsPerPass`) and every recipient goes through the
+     * one reminder path, which re-reads eligibility immediately before its send.
+     */
+    const batchReminders = new ReminderService(
+      this.config,
+      this.appDb,
+      this.email,
+      new WabaTemplateService(this.appDb, this.config, this.sender, this.gateway),
+    );
+    this.sweepSchedules.push(
+      scheduleSweep({
+        intervalMs: 60_000,
+        run: () => {
+          if (this.sweepingReminderBatches) return;
+          this.sweepingReminderBatches = true;
+          this.exclusively('reminder-batches', () =>
+            sweepReminderBatches({ workerDb, appDb: this.appDb, reminders: batchReminders }),
+          )
+            .catch((error: unknown) => {
+              this.log.warn(`reminder batch sweep failed: ${redactForLog(describeFailure(error))}`);
+            })
+            .finally(() => {
+              this.sweepingReminderBatches = false;
+            });
+        },
+      }),
+    );
+
+    /**
      * Renewals ride the same hourly clock as grace, and for the same reason:
      * a cycle ends at a moment, and a merchant should not keep paid features
      * for most of a day after theirs did.
@@ -772,6 +808,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     BankModule,
     CommandsModule,
     CatalogueModule,
+    EmailModule,
   ],
   providers: [JobQueue, JobRunnerLifecycle, PrivacyGateway],
   exports: [JobQueue, PrivacyGateway],

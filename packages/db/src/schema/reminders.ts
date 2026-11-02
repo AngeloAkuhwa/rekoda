@@ -5,7 +5,7 @@
  * migration, so another business's invoice or customer is unrepresentable.
  */
 import { sql } from 'drizzle-orm';
-import { bigint, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, integer, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import { businesses } from './tenancy.js';
 
 export const reminderAttestations = pgTable('reminder_attestations', {
@@ -59,4 +59,42 @@ export const invoiceReminders = pgTable('invoice_reminders', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   sentAt: timestamp('sent_at', { withTimezone: true }),
+});
+
+/** REM-05 (migration 0189): a confirmed list of invoices to remind, now or at a chosen time. */
+export const reminderBatches = pgTable('reminder_batches', {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  businessId: uuid('business_id')
+    .notNull()
+    .references(() => businesses.id),
+  channels: text('channels').notNull(),
+  attest: boolean('attest').notNull().default(false),
+  state: text('state').notNull().default('scheduled'),
+  scheduledFor: timestamp('scheduled_for', { withTimezone: true }).notNull(),
+  idempotencyKey: text('idempotency_key').notNull(),
+  itemCount: integer('item_count').notNull(),
+  createdBy: uuid('created_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  cancelledBy: uuid('cancelled_by'),
+  cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+});
+
+/** One invoice in a batch, once. Its outcome is the reminder row keyed `batch:<batch>:<item>`. */
+export const reminderBatchItems = pgTable('reminder_batch_items', {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  businessId: uuid('business_id')
+    .notNull()
+    .references(() => businesses.id),
+  batchId: uuid('batch_id').notNull(),
+  invoiceId: uuid('invoice_id').notNull(),
+  position: integer('position').notNull(),
+  state: text('state').notNull().default('pending'),
+  reasonCode: text('reason_code'),
+  claimedAt: timestamp('claimed_at', { withTimezone: true }),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
 });

@@ -33,6 +33,8 @@ import { normaliseParticipant, InvalidPhoneError } from '@rekoda/core/identity';
 import { decryptFacet } from '@rekoda/core/vault';
 import type {
   PaymentInstructionResponse,
+  ReminderBatchPreviewRequest,
+  ReminderBatchPreviewResponse,
   ReminderChannelResult,
   ReminderHistoryItem,
   ReminderHistoryResponse,
@@ -40,7 +42,7 @@ import type {
   SendReminderResponse,
 } from '@rekoda/contracts';
 import type { NotificationChannel } from '@rekoda/core';
-import { customersRepo, remindersRepo, withBusiness, type Db } from '@rekoda/db';
+import { customersRepo, remindersRepo, withBusiness, type Db, type TenantDb } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
 import {
@@ -63,6 +65,23 @@ export interface ReminderWhatsApp {
     businessId: string,
     input: SendCustomerTextInput,
   ): Promise<SendCustomerTextOutcome>;
+  /** Read-only: the refusal a send would give now, or null (REM-05 preview). Optional for doubles. */
+  precheckCustomerText?(businessId: string, to: string): Promise<SendCustomerTextOutcome | null>;
+}
+
+/**
+ * Read inside the transaction that would write a reminder's `sending` row, after its key lock: a
+ * reason refuses the reminder there (nothing is written and nothing is sent), null lets it go.
+ * Scheduled and bulk dispatch (REM-05) use it so a cancellation, or the scheduler losing the right
+ * to send, that commits before that row cannot be overtaken by the send.
+ */
+export type ReminderDispatchGuard = (tx: TenantDb) => Promise<string | null>;
+
+/** The dispatch guard refused: nothing was recorded or sent for this channel. */
+export class ReminderWithdrawn extends Error {
+  constructor(readonly reason: string) {
+    super(`reminder_withdrawn:${reason}`);
+  }
 }
 
 /** A stale `sending` row older than this is shown as uncertain, never as still sending. */
@@ -137,6 +156,7 @@ export class ReminderService {
     userId: string,
     input: SendReminderRequest,
     now: Date = new Date(),
+    options: { guard?: ReminderDispatchGuard } = {},
   ): Promise<SendReminderResponse> {
     let channels: NotificationChannel[];
     if (input.channels === 'auto') {
@@ -155,10 +175,101 @@ export class ReminderService {
         { ...input, channels: [channel], idempotencyKey: `${input.idempotencyKey}:${channel}` },
         channel,
         now,
+        options,
       );
       results.push({ channel, ...one });
     }
     return { results };
+  }
+
+  /**
+   * What a batch would do now (REM-05): for each distinct invoice, each planned channel, would it
+   * be sent and if not why not. Reads only: no reminder, attestation or meter row is written and
+   * nothing is sent. The same judgement as a send (`judge`, and for WhatsApp the gateway's own
+   * pre-meter checks), so a preview never promises what the send would refuse. Everything is read
+   * again immediately before each real send; a preview is a forecast, not a reservation.
+   */
+  async preview(
+    businessId: string,
+    input: ReminderBatchPreviewRequest,
+  ): Promise<ReminderBatchPreviewResponse> {
+    const seen = new Set<string>();
+    const duplicates = new Set<string>();
+    const numbers: string[] = [];
+    for (const n of input.invoiceNumbers) {
+      if (seen.has(n)) duplicates.add(n);
+      else {
+        seen.add(n);
+        numbers.push(n);
+      }
+    }
+    const recipients: ReminderBatchPreviewResponse['recipients'] = [];
+    for (const invoiceNumber of numbers) {
+      const judged = await withBusiness(this.db, businessId, async (tx) => {
+        const invoice = await remindersRepo.invoiceForReminder(tx, businessId, invoiceNumber);
+        if (!invoice) return null;
+        let channels: NotificationChannel[];
+        if (input.channels === 'auto') {
+          const facets = invoice.customerId
+            ? await customersRepo.identityFacetsFor(tx, businessId, invoice.customerId)
+            : [];
+          channels = planChannels('debt_reminder', 'auto', {
+            whatsapp: facets.some((f) => f.facet === 'phone'),
+            email: facets.some((f) => f.facet === 'email'),
+          });
+          if (channels.length === 0) channels = ['whatsapp'];
+        } else {
+          channels = planChannels('debt_reminder', input.channels, {
+            whatsapp: true,
+            email: true,
+          });
+        }
+        const out: Array<{
+          channel: NotificationChannel;
+          block: string | null;
+          phone: string | null;
+        }> = [];
+        for (const channel of channels) {
+          const inFlight = await remindersRepo.reminderInFlight(
+            tx,
+            businessId,
+            invoice.invoiceId,
+            channel,
+          );
+          const j = await this.judge(
+            tx,
+            businessId,
+            invoice,
+            channel,
+            input.attest === true,
+            inFlight,
+          );
+          out.push({ channel, block: j.block, phone: j.phone });
+        }
+        return { balanceK: invoice.balanceDueK, channels: out };
+      });
+      if (!judged) {
+        recipients.push({ invoiceNumber, found: false, balanceK: null, channels: [] });
+        continue;
+      }
+      const channels: ReminderBatchPreviewResponse['recipients'][number]['channels'] = [];
+      for (const c of judged.channels) {
+        let reason: string | null = c.block;
+        if (reason === null && c.channel === 'whatsapp' && this.whatsapp.precheckCustomerText) {
+          const refusal = await this.whatsapp.precheckCustomerText(businessId, c.phone!);
+          if (refusal) reason = whatsAppResult(refusal).reason ?? 'send_failed';
+        }
+        channels.push({ channel: c.channel, eligible: reason === null, reasonCode: reason });
+      }
+      recipients.push({ invoiceNumber, found: true, balanceK: judged.balanceK, channels });
+    }
+    const eligibleCount = recipients.filter((r) => r.channels.some((c) => c.eligible)).length;
+    return {
+      recipients,
+      eligibleCount,
+      excludedCount: recipients.length - eligibleCount,
+      duplicates: [...duplicates],
+    };
   }
 
   /** Which channels have an address on file for this invoice's customer. */
@@ -182,8 +293,9 @@ export class ReminderService {
     input: SendReminderRequest,
     channel: NotificationChannel,
     now: Date = new Date(),
+    options: { guard?: ReminderDispatchGuard } = {},
   ): Promise<{ reminder: ReminderHistoryItem; replayed: boolean }> {
-    const prepared = await this.prepare(businessId, userId, input, channel, now);
+    const prepared = await this.prepare(businessId, userId, input, channel, now, options.guard);
     if (prepared.kind === 'replay') return { reminder: toItem(prepared.row), replayed: true };
     if (prepared.kind === 'blocked') return { reminder: toItem(prepared.row), replayed: false };
 
@@ -278,6 +390,7 @@ export class ReminderService {
     input: SendReminderRequest,
     channel: NotificationChannel,
     now: Date,
+    guard?: ReminderDispatchGuard,
   ): Promise<Prepared> {
     return withBusiness(this.db, businessId, async (tx): Promise<Prepared> => {
       /* One key at a time: a raced repeat waits here, then finds the winner's committed row, so
@@ -296,6 +409,11 @@ export class ReminderService {
         if (prior.invoiceId !== invoice.invoiceId) throw new ReminderKeyReused();
         return { kind: 'replay', row: prior };
       }
+      /* After the replay check, so a recipient already attempted is reported, not withdrawn. */
+      if (guard) {
+        const refusal = await guard(tx);
+        if (refusal !== null) throw new ReminderWithdrawn(refusal);
+      }
       /* One reminder in flight per invoice and channel whatever the key: a raced request with
        * another key waits here, then sees the winner's `sending` row and is refused. No waiting
        * period follows a finished reminder; that is the cadence, not this guard. */
@@ -306,73 +424,14 @@ export class ReminderService {
         invoice.invoiceId,
         channel,
       );
-      const business = await remindersRepo.businessForReminder(tx, businessId);
-
-      let email: string | null = null;
-      let phone: string | null = null;
-      /* More than one stored address of the kind this channel uses: which is current is unknown,
-       * and an old one may now belong to someone else. Nothing is sent to a guess. */
-      let ambiguous = false;
-      if (invoice.customerId) {
-        const facets = await customersRepo.identityFacetsFor(tx, businessId, invoice.customerId);
-        const open = (facet: 'email' | 'phone'): string | null => {
-          const found = facets.find((f) => f.facet === facet);
-          return found
-            ? decryptFacet(found.ciphertext, this.config.vaultKey, `${businessId}:${facet}`)
-            : null;
-        };
-        email = open('email');
-        phone = open('phone');
-        const wanted = channel === 'email' ? 'email' : 'phone';
-        ambiguous = facets.filter((f) => f.facet === wanted).length > 1;
-      }
-
-      const channelAddress = channel === 'email' ? email : phone;
-      const attestation =
-        invoice.customerId && channel === 'email'
-          ? email !== null
-            ? await remindersRepo.latestAttestation(
-                tx,
-                businessId,
-                invoice.customerId,
-                'email',
-                emailSuppressionKey(email),
-              )
-            : null
-          : null;
-      const attestedAlready = attestation?.policyVersion === REMINDER_POLICY_VERSION;
-      const optedOut =
-        channel === 'email' && email !== null
-          ? await remindersRepo.emailOptedOut(tx, businessId, emailSuppressionKey(email))
-          : false;
-
-      let block: ReminderBlockReason | null = reminderBlock({
-        invoiceFound: true,
-        invoiceStatus: invoice.status,
-        balanceDueK: invoice.balanceDueK,
-        remindersStopped: invoice.remindersStoppedAt !== null,
-        hasCustomer: invoice.customerId !== null,
-        hasContact: channelAddress !== null,
-        publicContactApproved:
-          business?.publicContactPhone != null && business.publicContactApprovedAt !== null,
-        attested: attestedAlready || input.attest === true,
-        needsAttestation: channel === 'email',
-        optedOut,
-        reminderInFlight: inFlight,
-      });
-      if (!this.config.customerReminders) block = 'reminders_not_released';
-      if (block === null && ambiguous) block = 'ambiguous_contact';
-      if (block === null && channel === 'email') {
-        if (!this.email.available || !this.config.webUrl) block = 'email_not_configured';
-      }
-      if (block === null && channel === 'whatsapp') {
-        try {
-          normaliseParticipant(phone!);
-        } catch (error) {
-          if (!(error instanceof InvalidPhoneError)) throw error;
-          block = 'invalid_recipient';
-        }
-      }
+      const { business, email, phone, attestation, attestedAlready, block } = await this.judge(
+        tx,
+        businessId,
+        invoice,
+        channel,
+        input.attest === true,
+        inFlight,
+      );
 
       if (block !== null) {
         await remindersRepo.recordBlockedReminder(tx, {
@@ -431,6 +490,90 @@ export class ReminderService {
         },
       };
     });
+  }
+
+  /**
+   * The decision for one invoice on one channel, from what is committed now: the pure rule
+   * `reminderBlock` plus the release flag, an ambiguous contact, email configuration and a valid
+   * phone. Reads only. The send calls it under its locks; a preview (REM-05) calls it without them,
+   * so the two can never disagree about why a reminder would not go.
+   */
+  private async judge(
+    tx: TenantDb,
+    businessId: string,
+    invoice: remindersRepo.ReminderInvoice,
+    channel: NotificationChannel,
+    attest: boolean,
+    inFlight: boolean,
+  ) {
+    const business = await remindersRepo.businessForReminder(tx, businessId);
+
+    let email: string | null = null;
+    let phone: string | null = null;
+    /* More than one stored address of the kind this channel uses: which is current is unknown,
+     * and an old one may now belong to someone else. Nothing is sent to a guess. */
+    let ambiguous = false;
+    if (invoice.customerId) {
+      const facets = await customersRepo.identityFacetsFor(tx, businessId, invoice.customerId);
+      const open = (facet: 'email' | 'phone'): string | null => {
+        const found = facets.find((f) => f.facet === facet);
+        return found
+          ? decryptFacet(found.ciphertext, this.config.vaultKey, `${businessId}:${facet}`)
+          : null;
+      };
+      email = open('email');
+      phone = open('phone');
+      const wanted = channel === 'email' ? 'email' : 'phone';
+      ambiguous = facets.filter((f) => f.facet === wanted).length > 1;
+    }
+
+    const channelAddress = channel === 'email' ? email : phone;
+    const attestation =
+      invoice.customerId && channel === 'email'
+        ? email !== null
+          ? await remindersRepo.latestAttestation(
+              tx,
+              businessId,
+              invoice.customerId,
+              'email',
+              emailSuppressionKey(email),
+            )
+          : null
+        : null;
+    const attestedAlready = attestation?.policyVersion === REMINDER_POLICY_VERSION;
+    const optedOut =
+      channel === 'email' && email !== null
+        ? await remindersRepo.emailOptedOut(tx, businessId, emailSuppressionKey(email))
+        : false;
+
+    let block: ReminderBlockReason | null = reminderBlock({
+      invoiceFound: true,
+      invoiceStatus: invoice.status,
+      balanceDueK: invoice.balanceDueK,
+      remindersStopped: invoice.remindersStoppedAt !== null,
+      hasCustomer: invoice.customerId !== null,
+      hasContact: channelAddress !== null,
+      publicContactApproved:
+        business?.publicContactPhone != null && business.publicContactApprovedAt !== null,
+      attested: attestedAlready || attest,
+      needsAttestation: channel === 'email',
+      optedOut,
+      reminderInFlight: inFlight,
+    });
+    if (!this.config.customerReminders) block = 'reminders_not_released';
+    if (block === null && ambiguous) block = 'ambiguous_contact';
+    if (block === null && channel === 'email') {
+      if (!this.email.available || !this.config.webUrl) block = 'email_not_configured';
+    }
+    if (block === null && channel === 'whatsapp') {
+      try {
+        normaliseParticipant(phone!);
+      } catch (error) {
+        if (!(error instanceof InvalidPhoneError)) throw error;
+        block = 'invalid_recipient';
+      }
+    }
+    return { business, email, phone, attestation, attestedAlready, block };
   }
 
   /**

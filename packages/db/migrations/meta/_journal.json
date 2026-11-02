@@ -1324,6 +1324,13 @@
       "when": 1793880000000,
       "tag": "0188_validate_payment_instruction_check",
       "breakpoints": true
+    },
+    {
+      "idx": 189,
+      "version": "7",
+      "when": 1793966400000,
+      "tag": "0189_reminder_batches",
+      "breakpoints": true
     }
   ]
 }
