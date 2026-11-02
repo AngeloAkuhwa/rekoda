@@ -118,6 +118,62 @@ describe('the Anthropic transport', () => {
     expect(seen['x-api-key']).toBe('sk-test');
   });
 
+  it('pins the API version the SDK speaks, so an SDK bump that changes it is a reviewed event', async () => {
+    /* SDK 1.0 moved the default `anthropic-version` to 2026-10-21 (a breaking
+     * change in the changelog). A gateway or a replayed fixture that expects
+     * the old value would break on a bump; this makes the change visible. */
+    let seen: IncomingMessage['headers'] = {};
+    respond = (req, res) => {
+      seen = req.headers;
+      json(ANSWER)(req, res);
+    };
+    await transport().send(REQUEST);
+
+    expect(seen['anthropic-version']).toBe('2026-10-21');
+  });
+
+  it('never sends a credential from the process environment to the configured host', async () => {
+    /* SDK 1.x reads ANTHROPIC_AUTH_TOKEN (and profile or config credentials)
+     * from the process. The configured key must win, and the ambient token must
+     * not reach a gateway that was set up for a different secret. */
+    const saved = process.env.ANTHROPIC_AUTH_TOKEN;
+    process.env.ANTHROPIC_AUTH_TOKEN = 'ENV-TOKEN-MUST-NOT-LEAK';
+    let seen: IncomingMessage['headers'] = {};
+    respond = (req, res) => {
+      seen = req.headers;
+      json(ANSWER)(req, res);
+    };
+    try {
+      await transport().send(REQUEST);
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
+      else process.env.ANTHROPIC_AUTH_TOKEN = saved;
+    }
+    expect(seen.authorization).toBe('Bearer sk-test');
+    expect(JSON.stringify(seen)).not.toContain('ENV-TOKEN-MUST-NOT-LEAK');
+  });
+
+  it('turns an authentication failure into ProviderUnreachable without echoing the key', async () => {
+    respond = json({ type: 'error', error: { type: 'authentication_error' } }, 401);
+    const failure = await transport()
+      .send(REQUEST)
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(failure).toBeInstanceOf(ProviderUnreachable);
+    expect((failure as Error).message).toContain('401');
+    expect((failure as Error).message).not.toContain('sk-test');
+    expect(bodies).toHaveLength(1); // a bad key is not retried
+  });
+
+  it('gives up at its own timeout, once, and hands the slot back', async () => {
+    respond = () => undefined; // the provider never answers
+    const slow = new AnthropicTransport('sk-test', 150, baseUrl);
+    await expect(slow.send(REQUEST)).rejects.toBeInstanceOf(ProviderUnreachable);
+    expect(bodies).toHaveLength(1);
+  });
+
   it('FORCES the tool, so the model cannot answer with prose', async () => {
     respond = json(ANSWER);
     await transport().send(REQUEST);
