@@ -181,7 +181,7 @@ function assignmentAlternatives(sql: string, key: string): { sql: string[]; buil
       String.raw`\bINSERT${GAP}INTO${GAP}(?:public\.)?"?businesses"?${GAP}\([^)]*(?<![\w$])"?plan"?(?![\w$])[^)]*\)`,
     );
     builderAlts.push(
-      String.raw`\.insert\(\s*(?:\w+\.)*businesses\s*\)${JS_GAP}\.values\(\s*\[?\s*\{(?:[^;]{0,2000}?,${JS_GAP}\{?)?${JS_GAP}["'\x60]?plan["'\x60]?${JS_GAP}[:,}]`,
+      String.raw`\.insert\(\s*(?:\w+\.)*businesses\s*\)${JS_GAP}\.values\(${JS_GAP}\[?${JS_GAP}\{(?:[^;]{0,2000}?,${JS_GAP}\{?)?${JS_GAP}["'\x60]?plan["'\x60]?${JS_GAP}[:,}]`,
     );
   }
   return { sql: sqlAlts, builder: builderAlts.join('|') };
@@ -942,6 +942,20 @@ describe('array-form builder inserts (review of a1eeef8)', () => {
     expect(countAssignments("tx.insert(businesses).values({ plan: 'chat' })").plan).toBe(1);
     expect(countAssignments('tx.insert(businesses).values([{ name: a }, { name: b }])').plan).toBe(
       0,
+    );
+  });
+
+  it('counts plan when a comment sits before the array or its first row', () => {
+    expect(
+      countAssignments("tx.insert(businesses).values([/* trial row */ { plan: 'chat' }])").plan,
+    ).toBe(1);
+    expect(
+      countAssignments(
+        "tx.insert(businesses).values(/* rows */ [\n  // first\n  { plan: 'chat' }])",
+      ).plan,
+    ).toBe(1);
+    expect(countAssignments("tx.insert(businesses).values(/* row */ { plan: 'chat' })").plan).toBe(
+      1,
     );
   });
 });
