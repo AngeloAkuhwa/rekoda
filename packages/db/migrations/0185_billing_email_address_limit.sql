@@ -38,7 +38,8 @@
 --   DROP FUNCTION IF EXISTS billing_email_address_release(uuid, text);
 --   DROP FUNCTION IF EXISTS billing_email_address_claim(text, integer, integer);
 --   DROP TABLE IF EXISTS billing_email_address_requests;
---   DELETE FROM rekoda_migrations WHERE tag = '0185_billing_email_address_limit';
+--   and remove the row whose tag is '0185_billing_email_address_limit' in the migration ledger
+--   table (rekoda_migrations).
 
 CREATE TABLE IF NOT EXISTS billing_email_address_requests (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
