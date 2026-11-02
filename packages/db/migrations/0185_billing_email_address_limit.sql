@@ -36,6 +36,7 @@
 -- Rollback (if the release is rolled back, nothing needs undoing; to remove the feature entirely,
 -- after the code that calls it is gone):
 --   DROP FUNCTION IF EXISTS billing_email_address_release(uuid, text);
+--   DROP FUNCTION IF EXISTS billing_email_address_wait(text, integer, integer);
 --   DROP FUNCTION IF EXISTS billing_email_address_claim(text, integer, integer);
 --   DROP TABLE IF EXISTS billing_email_address_requests;
 --   and remove the row whose tag is '0185_billing_email_address_limit' in the migration ledger
@@ -134,6 +135,52 @@ END;
 $$;
 
 /**
+ * The wait an address would impose right now, WITHOUT counting a request: 3600 when its hourly
+ * allowance is used, the cooldown when its latest request is inside it, else 0. Lets the caller
+ * report the longer of the business's and the address's waits when the business is already
+ * refusing, so the retry guidance is never shorter than the real wait. Same fixed figures as the
+ * claim; reveals nothing the claim would not.
+ */
+CREATE OR REPLACE FUNCTION billing_email_address_wait(
+  p_address_key text,
+  p_max_per_hour integer,
+  p_cooldown_ms integer
+) RETURNS integer
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+  last_hour integer;
+  latest    timestamptz;
+BEGIN
+  IF p_address_key IS NULL OR p_address_key !~ '^[A-Za-z0-9_-]{43}$' THEN
+    RAISE EXCEPTION 'billing_email_address_wait: malformed address key';
+  END IF;
+  IF p_max_per_hour IS NULL OR p_max_per_hour < 1 OR p_max_per_hour > 100 THEN
+    RAISE EXCEPTION 'billing_email_address_wait: hourly limit out of range';
+  END IF;
+  IF p_cooldown_ms IS NULL OR p_cooldown_ms < 0 OR p_cooldown_ms > 3600000 THEN
+    RAISE EXCEPTION 'billing_email_address_wait: cooldown out of range';
+  END IF;
+  SELECT count(*) FILTER (WHERE r.created_at > clock_timestamp() - interval '1 hour')::integer,
+         max(r.created_at)
+    INTO last_hour, latest
+    FROM public.billing_email_address_requests r
+   WHERE r.address_key = p_address_key AND r.voided_at IS NULL;
+  IF last_hour >= p_max_per_hour THEN
+    RETURN 3600;
+  END IF;
+  IF latest IS NOT NULL
+     AND clock_timestamp() - latest < make_interval(secs => p_cooldown_ms / 1000.0) THEN
+    RETURN ceil(p_cooldown_ms / 1000.0)::integer;
+  END IF;
+  RETURN 0;
+END;
+$$;
+
+/**
  * Give a request back because the provider definitely refused the mail. Needs both the id the claim
  * returned and the address key, so an id alone releases nothing. A request already released, or
  * one whose outcome was unknown and therefore never released, is left as it is.
@@ -159,6 +206,9 @@ $$;
 
 REVOKE ALL ON FUNCTION billing_email_address_claim(text, integer, integer) FROM PUBLIC;
 REVOKE ALL ON FUNCTION billing_email_address_release(uuid, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION billing_email_address_wait(text, integer, integer) FROM PUBLIC;
+REVOKE ALL ON FUNCTION billing_email_address_wait(text, integer, integer) FROM rekoda_worker;
+GRANT EXECUTE ON FUNCTION billing_email_address_wait(text, integer, integer) TO rekoda_app;
 REVOKE ALL ON FUNCTION billing_email_address_claim(text, integer, integer) FROM rekoda_worker;
 REVOKE ALL ON FUNCTION billing_email_address_release(uuid, text) FROM rekoda_worker;
 GRANT EXECUTE ON FUNCTION billing_email_address_claim(text, integer, integer) TO rekoda_app;

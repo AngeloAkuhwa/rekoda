@@ -157,6 +157,23 @@ async function ageEverything(seconds: number): Promise<void> {
   );
 }
 
+/**
+ * Poll until some backend is blocked waiting for an advisory lock (the address lock), or fail.
+ * Read as the owner, which sees every backend's locks.
+ */
+async function waitUntilAddressLockIsAwaited(timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const [row] = await rowsOf<{ n: number }>(
+      ownerDb,
+      `SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`,
+    );
+    if (row!.n > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error('no request ever waited on the address lock');
+}
+
 /** Requests the shared counter currently counts. */
 const counted = async (): Promise<number> => {
   const rows = await rowsOf<{ n: number }>(
@@ -344,6 +361,23 @@ describe('retry guidance is never shorter than the real wait', () => {
     });
   });
 
+  it('reports the longer wait when the business is in its cooldown and the address used its hour', async () => {
+    const ids = await seedBusinesses(6);
+    for (const id of ids.slice(0, 5)) {
+      expect((await emails().requestVerification(id, EMAIL)).state).toBe('sent');
+      await ageEverything(61);
+    }
+    const a = ids[5]!;
+    expect((await emails().requestVerification(a, 'owner1@shop.example.ng')).state).toBe('sent');
+    /* a is inside its own 60 s cooldown AND the address has used its five this hour. */
+    expect(await emails().requestVerification(a, EMAIL)).toEqual({
+      state: 'rate_limited',
+      retryAfterSeconds: 3600,
+    });
+    /* Reporting the wait counted nothing against the address. */
+    expect(await counted()).toBe(6);
+  });
+
   it('waits for an uncommitted release instead of refusing on the row it is releasing', async () => {
     const [a, b] = await seedBusinesses(2);
     expect((await emails().requestVerification(a!, EMAIL)).state).toBe('sent');
@@ -358,9 +392,11 @@ describe('retry guidance is never shorter than the real wait', () => {
         await tx.execute(
           sql`SELECT billing_email_address_release(${row!.id}::uuid, ${row!.address_key})`,
         );
-        /* Another business asks while the release is still uncommitted. */
+        /* Another business asks while the release is still uncommitted. Commit only once that
+         * claim is seen WAITING on the address lock, so the test proves the serialisation instead
+         * of hoping a timer was long enough. */
         claim = emails().requestVerification(b!, EMAIL);
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        await waitUntilAddressLockIsAwaited();
       });
       expect((await claim!).state).toBe('sent');
     } finally {
@@ -438,6 +474,7 @@ describe('the shared counter (migration 0185)', () => {
         `DELETE FROM ${TABLE}`,
         `SELECT * FROM billing_email_address_claim('${someKey}', 5, 60000)`,
         `SELECT billing_email_address_release(gen_random_uuid(), '${someKey}')`,
+        `SELECT billing_email_address_wait('${someKey}', 5, 60000)`,
       ]) {
         expect((await pgError(rowsOf(worker, statement))).code).toBe('42501');
       }

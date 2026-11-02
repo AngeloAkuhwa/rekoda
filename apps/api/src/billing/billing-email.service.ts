@@ -123,18 +123,25 @@ export class BillingEmailService {
         }
         const recent = await subscriptionsRepo.recentEmailVerificationRequests(tx, businessId);
         const { cooldownMs, maxPerHour } = BILLING_EMAIL_VERIFICATION;
+        const addressKey = billingEmailAddressKeyFor(email, this.config.matchKey);
         /* The hourly allowance first, so the retry guidance is never shorter than the real wait. */
-        if (recent.lastHour >= maxPerHour) {
-          return { state: 'rate_limited', retryAfterSeconds: 60 * 60 };
-        }
-        if (recent.sinceLatestMs !== null && recent.sinceLatestMs < cooldownMs) {
-          return {
-            state: 'rate_limited',
-            retryAfterSeconds: Math.ceil((cooldownMs - recent.sinceLatestMs) / 1000),
-          };
+        const businessWait =
+          recent.lastHour >= maxPerHour
+            ? 60 * 60
+            : recent.sinceLatestMs !== null && recent.sinceLatestMs < cooldownMs
+              ? Math.ceil((cooldownMs - recent.sinceLatestMs) / 1000)
+              : 0;
+        if (businessWait > 0) {
+          /* The business is refusing. Report the longer of its wait and the address's, read
+           * without counting a request, so the next try is not refused again for the other limit. */
+          const addressWait = await subscriptionsRepo.billingEmailAddressWait(
+            tx,
+            addressKey,
+            BILLING_EMAIL_VERIFICATION.perAddress,
+          );
+          return { state: 'rate_limited', retryAfterSeconds: Math.max(businessWait, addressWait) };
         }
         /* Same address, any business: decided under the address lock, counted in this transaction. */
-        const addressKey = billingEmailAddressKeyFor(email, this.config.matchKey);
         const claim = await subscriptionsRepo.claimBillingEmailAddress(
           tx,
           addressKey,
