@@ -44,20 +44,20 @@ reopened. Staging acceptance (SUB-ACC) and integrated acceptance (ACCEPT-01) are
 milestones, not implementation PRs. The CI optimisation is exactly one PR, worked alongside and never
 reordering the sequence.
 
-| #   | Delivery unit                        | Planned PR | Actual PR                                               | State                                                 |
-| --- | ------------------------------------ | ---------- | ------------------------------------------------------- | ----------------------------------------------------- |
-| 1   | SUB-01 write-path guard (G-62)       | #396       | [#396](https://github.com/AngeloAkuhwa/rekoda/pull/396) | In review                                             |
-| 2   | SUB-02a OWN-58 per-address limit     | one PR     | —                                                       | Blocked: owner to confirm figures                     |
-| 3   | SUB-03r grace-reminder defect        | one PR     | —                                                       | Not started                                           |
-| 4   | SUB-04 entitlements, usage, top-ups  | one PR     | —                                                       | Not started (gap check against the SUB-04 spec first) |
-| 5   | SUB-05 billing UI                    | one PR     | —                                                       | Not started (gap check against the SUB-05 spec first) |
-| 6   | REM-01 trial reminders               | one PR     | —                                                       | Not started                                           |
-| 7   | REM-02 invoice reminder reliability  | one PR     | —                                                       | Not started                                           |
-| 8   | REM-03 cross-channel opt-out         | one PR     | —                                                       | Blocked: OD-34                                        |
-| 9   | REM-04 merchant payment instructions | one PR     | —                                                       | Not started                                           |
-| 10  | REM-05 scheduled and bulk reminders  | one PR     | —                                                       | Not started                                           |
-| 11  | REM-06 merchant reminder screens     | one PR     | —                                                       | Not started                                           |
-| 12  | CI optimisation (CI-1, supporting)   | one PR     | —                                                       | In progress: plan assessed, shards verified locally   |
+| #   | Delivery unit                        | Planned PR | Actual PR                                               | State                                                                                        |
+| --- | ------------------------------------ | ---------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| 1   | SUB-01 write-path guard (G-62)       | #396       | [#396](https://github.com/AngeloAkuhwa/rekoda/pull/396) | In review                                                                                    |
+| 2   | SUB-02a OWN-58 per-address limit     | one PR     | —                                                       | Blocked: owner to confirm figures                                                            |
+| 3   | SUB-03r grace-reminder defect        | one PR     | —                                                       | Not started                                                                                  |
+| 4   | SUB-04 entitlements, usage, top-ups  | one PR     | —                                                       | Not started (gap check against the SUB-04 spec first)                                        |
+| 5   | SUB-05 billing UI                    | one PR     | —                                                       | Not started (gap check against the SUB-05 spec first)                                        |
+| 6   | REM-01 trial reminders               | one PR     | —                                                       | Not started                                                                                  |
+| 7   | REM-02 invoice reminder reliability  | one PR     | —                                                       | Not started                                                                                  |
+| 8   | REM-03 cross-channel opt-out         | one PR     | —                                                       | Blocked: OD-34                                                                               |
+| 9   | REM-04 merchant payment instructions | one PR     | —                                                       | Not started                                                                                  |
+| 10  | REM-05 scheduled and bulk reminders  | one PR     | —                                                       | Not started                                                                                  |
+| 11  | REM-06 merchant reminder screens     | one PR     | —                                                       | Not started                                                                                  |
+| 12  | CI optimisation (CI-1, supporting)   | one PR     | [#398](https://github.com/AngeloAkuhwa/rekoda/pull/398) | In review: four shard jobs plus one aggregate check; before-and-after timing from its CI run |
 
 ## Ledger
 
