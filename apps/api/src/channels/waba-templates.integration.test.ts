@@ -745,6 +745,7 @@ describe('no transaction is held open while Meta is called (REM-02)', () => {
       unit: 'SERVICE_MESSAGE',
       providerIdUnrecorded: true,
     });
+    expect(await used(businessId, 'SERVICE_MESSAGE')).toBe(1);
   });
 
   it('names the outbound row and the error class, never the text, when recording after Meta accepted it fails', async () => {

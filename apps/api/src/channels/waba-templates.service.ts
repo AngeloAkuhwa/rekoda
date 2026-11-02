@@ -59,8 +59,8 @@ export interface SendCustomerTextInput {
 
 export type SendCustomerTextOutcome =
   /* `providerIdUnrecorded`: Meta accepted the message (it is sent, and the unit stays spent) but
-   * writing the provider message id onto the outbound row failed, so a later delivery report
-   * cannot be matched to it. Still `sent`, never a failure and never a reason to send again; a
+   * no provider message id is on the outbound row, either because Meta's 2xx carried none or
+   * because writing it failed, so a later delivery report cannot be matched to it. Still `sent`, never a failure and never a reason to send again; a
    * caller that keeps a history says the id is missing. */
   | { outcome: 'sent'; unit: 'SERVICE_MESSAGE'; providerIdUnrecorded?: true }
   | { outcome: 'not_entitled' }
@@ -350,9 +350,11 @@ export class WabaTemplateService {
     try {
       const result = await this.sender.sendOnConnection(reserved.message);
       await this.customerTextSent(tx, businessId, reserved, result.providerMessageId);
-      return result.providerMessageId
-        ? { outcome: 'sent', unit: 'SERVICE_MESSAGE' }
-        : { outcome: 'sent', unit: 'SERVICE_MESSAGE', providerIdUnrecorded: true };
+      if (!result.providerMessageId) {
+        this.log.warn(`customer text sent without a provider id (outbound ${reserved.recordedId})`);
+        return { outcome: 'sent', unit: 'SERVICE_MESSAGE', providerIdUnrecorded: true };
+      }
+      return { outcome: 'sent', unit: 'SERVICE_MESSAGE' };
     } catch (error) {
       if (error instanceof SendFailed) {
         await this.customerTextFailed(tx, businessId, reserved, error);
