@@ -264,8 +264,9 @@ export class WabaTemplateService {
    * transaction or row lock is held while Meta is called (REM-02):
    *   1. a short transaction checks, reserves the unit and records the
    *      outbound message, and commits;
-   *   1b. a short transaction re-reads STOP; an opted-out customer is
-   *      refunded and suppressed here, before anything leaves (REM-03);
+   *   1b. a short read-only transaction re-reads STOP (REM-03); an opted-out
+   *      customer is suppressed, and a failed re-read is a definite
+   *      `send_failed`; both refund the unit once, before anything leaves;
    *   2. the provider call, with no transaction open;
    *   3. a short transaction marks it sent (and the connection healthy), or
    *      refunds the unit (and records why the connection is unhealthy).
