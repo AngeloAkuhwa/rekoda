@@ -12,7 +12,7 @@
 Priority: **A** = needed before consolidated staging acceptance; **B** = before
 private beta or production; **C** = after launch.
 
-Baseline: `main` `85db593` (24 Oct 2026). This register is updated in the PR
+Historical baseline: `main` `85db593` (24 Oct 2026). Current snapshot for the status rows: `main` `7f1adec` (2 Nov 2026, completion audit). This register is updated in the PR
 that changes a row; a row says MERGED only once its PR is on `main`.
 
 **Completion audit (2 Nov 2026, `main` `7f1adec`):** the rows were not renumbered or re-statused by the audit. Its priorities are in `REKODA_PRODUCTION_ROADMAP.md` (P0 = controlled beta, P1 = public launch, P2 = after launch); merged rows remain MERGED, not STAGING ACCEPTED, until the batched staging campaign (roadmap P0-6) signs them. #397 (Anthropic SDK 1.3.0) and #396 (G-62 static guard) merged on 2 Nov 2026; the G-62 database trigger is OD-37.

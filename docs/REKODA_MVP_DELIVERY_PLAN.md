@@ -168,7 +168,7 @@ captured, duplicates safe, customer sees the correct final state.
 Approved into MVP scope by the owner on 2 Nov 2026; part of SUB-02 and delivered before SUB-03.
 Requirement: limit billing-email confirmation-link requests per email address across all businesses,
 in addition to the per-business limits already in place (five an hour and sixty seconds apart, OWN-58).
-**Figures pending owner confirmation:** OWN-58 sets figures only per business. Applying the same five
+**Open for the owner (implementation stays paused):** (1) whether a link whose hand-over to the email provider timed out (outcome unknown) counts against the per-address limit; the merged per-business limit keeps such a link counted and never resends it, and the same rule would stop a retry from bypassing the address limit, but this is not assumed. (2) **Figures pending owner confirmation:** OWN-58 sets figures only per business. Applying the same five
 an hour and sixty seconds to one address is the engineering interpretation, NOT an established product
 rule; implementation stays paused until the owner confirms or changes the figures. The address is
 compared as the mailbox compares it (trimmed, case-insensitive).
