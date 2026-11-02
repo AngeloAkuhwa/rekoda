@@ -233,13 +233,13 @@ export const PINS: Readonly<Record<string, Pin>> = {
   },
 };
 
-const ASSIGN = (col: 'plan' | 'plan_expires_at'): string => {
-  const alt =
-    col === 'plan'
-      ? assignmentAlternatives('plan', 'plan')
-      : assignmentAlternatives('plan_expires_at', 'plan_?expires_?at');
-  return [...alt.sql, alt.builder].join('|');
-};
+/* Built once, from the same factory output the listed-file checks use (EXPIRY_ALT), so the pins and
+ * those checks cannot drift. `String.prototype.match` with the `g` flag resets `lastIndex`, so
+ * sharing these global patterns is safe. */
+const PLAN_ALT = assignmentAlternatives('plan', 'plan');
+const PLAN_ASSIGN_G = new RegExp([...PLAN_ALT.sql, PLAN_ALT.builder].join('|'), 'gi');
+const EXPIRY_ASSIGN_G = new RegExp([...EXPIRY_ALT.sql, EXPIRY_ALT.builder].join('|'), 'gi');
+const INSERT_HINT_G = new RegExp(INSERT_HINT.source, 'gi');
 
 function count(re: RegExp, text: string): number {
   return (text.match(re) ?? []).length;
@@ -248,9 +248,9 @@ function count(re: RegExp, text: string): number {
 /** Assignments to `plan` and to `plan_expires_at`, and businesses inserts, in one file's text. */
 export function countAssignments(text: string): { plan: number; expiry: number; inserts: number } {
   return {
-    plan: count(new RegExp(ASSIGN('plan'), 'gi'), text),
-    expiry: count(new RegExp(ASSIGN('plan_expires_at'), 'gi'), text),
-    inserts: count(new RegExp(INSERT_HINT.source, 'gi'), text),
+    plan: count(PLAN_ASSIGN_G, text),
+    expiry: count(EXPIRY_ASSIGN_G, text),
+    inserts: count(INSERT_HINT_G, text),
   };
 }
 
