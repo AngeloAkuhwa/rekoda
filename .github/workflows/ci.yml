@@ -309,7 +309,7 @@ jobs:
       # `--` through `pnpm run` would turn it into a file filter). The config is
       # the same one `test:integration` uses. A shard that matches no test file
       # fails ("No test files found") rather than passing empty.
-      - name: ${{ matrix.step }} (shard ${{ matrix.shard }} of 2)
+      - name: ${{ matrix.step }}
         run: >-
           pnpm --filter "@rekoda/${{ matrix.suite }}" exec
           vitest run --config vitest.integration.config.ts
