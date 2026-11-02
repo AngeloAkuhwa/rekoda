@@ -339,6 +339,40 @@ export async function settleStaleSending(
   `);
 }
 
+/** Serialises reminders for one invoice and channel, whatever their idempotency keys. */
+export async function lockInvoiceChannel(
+  tx: TenantDb,
+  businessId: string,
+  invoiceId: string,
+  channel: 'email' | 'whatsapp',
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`reminder-invoice:${businessId}:${invoiceId}:${channel}`}, 0))`,
+  );
+}
+
+/**
+ * Whether another reminder for this invoice and channel is being sent right now (status
+ * `sending`). This is duplicate prevention only: it carries no interval and no business rule about
+ * how soon a customer may be reminded again. A `sending` row older than the stale limit has
+ * already been settled to `uncertain` by `settleStaleSending`, so a dead attempt cannot hold the
+ * invoice for ever. Failed, refused, sent and uncertain rows do not count.
+ */
+export async function reminderInFlight(
+  tx: TenantDb,
+  businessId: string,
+  invoiceId: string,
+  channel: 'email' | 'whatsapp',
+): Promise<boolean> {
+  const rows = await tx.execute(sql`
+    SELECT 1 FROM invoice_reminders
+     WHERE business_id = ${businessId}::uuid AND invoice_id = ${invoiceId}::uuid
+       AND channel = ${channel} AND status = 'sending'
+     LIMIT 1
+  `);
+  return [...rows].length > 0;
+}
+
 /** Serialises everything one idempotency key does, so a raced repeat finds the winner's row. */
 export async function lockReminderKey(
   tx: TenantDb,

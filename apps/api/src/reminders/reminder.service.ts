@@ -199,6 +199,7 @@ export class ReminderService {
           subject: message.subject,
           text: message.text,
           fromName: message.fromName,
+          ...(this.config.emailReplyTo ? { replyTo: this.config.emailReplyTo } : {}),
           idempotencyKey: `reminder-${reminderId}`,
         });
       } else {
@@ -252,6 +253,10 @@ export class ReminderService {
         if (prior.invoiceId !== invoice.invoiceId) throw new ReminderKeyReused();
         return { kind: 'replay', row: prior };
       }
+      /* Another key for the same invoice and channel meets this one here, one at a time, and finds
+       * the first one's committed `sending` row below. Only an attempt in flight is refused: how
+       * soon a customer may be reminded again is a business rule not yet ruled (OD-42). */
+      await remindersRepo.lockInvoiceChannel(tx, businessId, invoice.invoiceId, channel);
       const business = await remindersRepo.businessForReminder(tx, businessId);
 
       let email: string | null = null;
@@ -307,6 +312,12 @@ export class ReminderService {
       });
       if (!this.config.customerReminders) block = 'reminders_not_released';
       if (block === null && ambiguous) block = 'ambiguous_contact';
+      if (
+        block === null &&
+        (await remindersRepo.reminderInFlight(tx, businessId, invoice.invoiceId, channel))
+      ) {
+        block = 'reminder_in_flight';
+      }
       if (block === null && channel === 'email') {
         if (!this.email.available || !this.config.webUrl) block = 'email_not_configured';
       }

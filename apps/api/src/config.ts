@@ -319,6 +319,11 @@ export interface ApiConfig {
    * needs `RESEND_API_KEY` and `REKODA_EMAIL_FROM`.
    */
   emailProvider: EmailProvider;
+  /**
+   * The monitored mailbox customers' replies to a payment-reminder email reach (OWN-62 B, REM-02).
+   * Empty means none is set and the email carries no reply address. A bad value refuses to boot.
+   */
+  emailReplyTo: string;
   /** Resend API key; empty unless `emailProvider` is `resend`. Never logged. */
   resendApiKey: string;
   /** The verified sending address; empty unless `emailProvider` is `resend`. */
@@ -966,6 +971,17 @@ function emailProvider(env: NodeJS.ProcessEnv, isProduction: boolean): EmailProv
 const SENDER_ADDRESS =
   /^(?:[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?|[^<>\u0000-\u001F\u007F-\u009F\u2028\u2029,;"\\]+ <[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?>)$/;
 
+/** Optional. A set but malformed value refuses to boot, so replies never go to a typo (invariant 8). */
+function emailReplyTo(env: NodeJS.ProcessEnv): string {
+  const value = env['REKODA_EMAIL_REPLY_TO']?.trim() ?? '';
+  if (value !== '' && !SENDER_ADDRESS.test(value)) {
+    throw new ConfigError(
+      'REKODA_EMAIL_REPLY_TO must be one monitored address such as replies@example.com',
+    );
+  }
+  return value;
+}
+
 /** Resend needs a key and a verified from-address; a half-set pair refuses to boot (invariant 8). */
 function resendSettings(
   env: NodeJS.ProcessEnv,
@@ -1452,6 +1468,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     fxMode: fxMode(env, isProduction),
     emailProvider: emailProvider(env, isProduction),
     ...resendSettings(env, emailProvider(env, isProduction)),
+    emailReplyTo: emailReplyTo(env),
     operatorAuth: operatorAuth(env, isProduction),
     paystackSecretKey: env['PAYSTACK_SECRET_KEY'] ?? '',
     paystackBaseUrl: providerBaseUrl(env, 'PAYSTACK_BASE_URL', PAYSTACK_API, isProduction),

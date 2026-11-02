@@ -848,3 +848,21 @@ describe('REKODA_CUSTOMER_REMINDERS', () => {
     );
   });
 });
+
+describe('the reminder reply address (REM-02, OWN-62 B)', () => {
+  it('is empty when unset, and read when it is one address', () => {
+    expect(loadConfig({ ...BASE }).emailReplyTo).toBe('');
+    expect(
+      loadConfig({ ...BASE, REKODA_EMAIL_REPLY_TO: ' replies@example.com ' }).emailReplyTo,
+    ).toBe('replies@example.com');
+  });
+
+  it.each(['replies', 'a@b', 'a@example.com, b@example.com', 'x@example.com\r\nBcc: y@z.com'])(
+    'refuses to boot on %j rather than send replies to a typo',
+    (value) => {
+      expect(() => loadConfig({ ...BASE, REKODA_EMAIL_REPLY_TO: value })).toThrow(
+        /REKODA_EMAIL_REPLY_TO/,
+      );
+    },
+  );
+});

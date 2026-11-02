@@ -479,6 +479,214 @@ describe('the opt-out link', () => {
   });
 });
 
+describe('no duplicate while one reminder is being sent (REM-02)', () => {
+  /** A WhatsApp line whose provider call waits until the test lets it finish. */
+  function gatedLine() {
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const inCall = new Promise<void>((resolve) => (entered = resolve));
+    const line: ReminderWhatsApp = {
+      async sendCustomerText(_businessId, input) {
+        whatsappCalls.push(input);
+        entered();
+        await gate;
+        return { outcome: 'sent', unit: 'SERVICE_MESSAGE' };
+      },
+    };
+    return { line, release, inCall };
+  }
+
+  it('never has two reminders with the provider at once when five different keys race', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    let active = 0;
+    let most = 0;
+    const slow: ReminderWhatsApp = {
+      async sendCustomerText(_businessId, input) {
+        whatsappCalls.push(input);
+        active += 1;
+        most = Math.max(most, active);
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        active -= 1;
+        return { outcome: 'sent', unit: 'SERVICE_MESSAGE' };
+      },
+    };
+    const racing = new ReminderService(config, appDb, mail, slow);
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        racing.send(s.businessId, s.userId, {
+          invoiceNumber: s.invoiceNumber,
+          channels: ['whatsapp'],
+          idempotencyKey: key(),
+        }),
+      ),
+    );
+    expect(most).toBe(1);
+    const statuses = results.map((r) => r.results[0]!.reminder);
+    expect(statuses.filter((r) => r.status === 'sent')).toHaveLength(whatsappCalls.length);
+    for (const r of statuses.filter((r) => r.status === 'blocked')) {
+      expect(r.reasonCode).toBe('reminder_in_flight');
+    }
+  });
+
+  it('refuses a different key while the first is still with the provider, then allows it once that has finished', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    const { line, release, inCall } = gatedLine();
+    const first = new ReminderService(config, appDb, mail, line).send(s.businessId, s.userId, {
+      invoiceNumber: s.invoiceNumber,
+      channels: ['whatsapp'],
+      idempotencyKey: key(),
+    });
+    await inCall;
+    const during = await sendVia(s, 'whatsapp');
+    expect(during.reminder).toMatchObject({ status: 'blocked', reasonCode: 'reminder_in_flight' });
+    expect(whatsappCalls).toHaveLength(1);
+    release();
+    expect((await first).results[0]!.reminder.status).toBe('sent');
+    // Nothing is in flight now. No interval is applied: how soon a repeat may go is OD-42.
+    expect((await sendVia(s, 'whatsapp')).reminder.status).toBe('sent');
+  });
+
+  it('does not let a failed or refused attempt hold the invoice', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    whatsappOutcome = { outcome: 'send_failed', unit: 'SERVICE_MESSAGE' };
+    expect((await sendVia(s, 'whatsapp')).reminder.status).toBe('failed');
+    whatsappOutcome = { outcome: 'sent', unit: 'SERVICE_MESSAGE' };
+    expect((await sendVia(s, 'whatsapp')).reminder.status).toBe('sent');
+  });
+
+  it('does not let an attempt that died mid-send hold the invoice for ever', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    const first = await sendEmail(s, { attest: true });
+    await rows(
+      s.businessId,
+      sql`UPDATE invoice_reminders SET status = 'sending', sent_at = NULL,
+                 updated_at = now() - interval '11 minutes' WHERE id = ${first.reminder.id}::uuid`,
+    );
+    const next = await sendEmail(s);
+    expect(next.reminder.status).toBe('sent');
+    const [old] = await rows<{ status: string }>(
+      s.businessId,
+      sql`SELECT status FROM invoice_reminders WHERE id = ${first.reminder.id}::uuid`,
+    );
+    expect(old!.status).toBe('uncertain');
+  });
+
+  it('does not let one channel hold back the other', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    const { line, release, inCall } = gatedLine();
+    const first = new ReminderService(config, appDb, mail, line).send(s.businessId, s.userId, {
+      invoiceNumber: s.invoiceNumber,
+      channels: ['whatsapp'],
+      idempotencyKey: key(),
+    });
+    await inCall;
+    expect((await sendEmail(s, { attest: true })).reminder.status).toBe('sent');
+    release();
+    await first;
+  });
+
+  it('does not let one invoice hold back another', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    const { line, release, inCall } = gatedLine();
+    const first = new ReminderService(config, appDb, mail, line).send(s.businessId, s.userId, {
+      invoiceNumber: s.invoiceNumber,
+      channels: ['whatsapp'],
+      idempotencyKey: key(),
+    });
+    await inCall;
+    const second = await withBusiness(appDb, s.businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId: s.businessId,
+        customerId: s.customerId,
+        customerToken: 'CUSTOMER_X81',
+        items: [{ name: 'veil', quantity: 1, unitPriceK: 1_000_000 }],
+        subtotalK: 1_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 1_000_000,
+        paidK: 0,
+        balanceDueK: 1_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-second',
+        actor: 'system',
+      }),
+    );
+    const out = await service().send(s.businessId, s.userId, {
+      invoiceNumber: second.invoiceNumber,
+      channels: ['whatsapp'],
+      idempotencyKey: key(),
+    });
+    expect(out.results[0]!.reminder.status).toBe('sent');
+    release();
+    await first;
+  });
+});
+
+describe('an invoice that is no longer chasable (REM-02)', () => {
+  it.each(['voided', 'credited', 'paid'])('sends nothing for a %s invoice', async (status) => {
+    const s = await seed();
+    await approvePhone(s);
+    await rows(s.businessId, sql`UPDATE invoices SET status = ${status}, balance_due_k = 0`);
+    const r = await sendEmail(s, { attest: true });
+    expect(r.reminder).toMatchObject({ status: 'blocked', reasonCode: 'nothing_owing' });
+    expect(mail.outbox).toHaveLength(0);
+  });
+
+  it('sends nothing for a voided invoice that still shows a balance', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    await rows(s.businessId, sql`UPDATE invoices SET status = 'voided'`);
+    expect((await sendEmail(s, { attest: true })).reminder.reasonCode).toBe('nothing_owing');
+    expect(mail.outbox).toHaveLength(0);
+  });
+
+  it('quotes the balance left after a payment that was later reversed', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    await rows(
+      s.businessId,
+      sql`UPDATE invoices SET balance_due_k = 3000000, status = 'partially_paid'`,
+    );
+    expect((await sendEmail(s, { attest: true })).reminder.balanceK).toBe(3_000_000);
+    // The reversal puts the money back on the invoice; the next reminder quotes it.
+    await rows(s.businessId, sql`UPDATE invoices SET balance_due_k = 8000000, status = 'issued'`);
+    const again = await sendEmail(s);
+    expect(again.reminder.balanceK).toBe(8_000_000);
+    expect(mail.outbox.at(-1)!.text).toContain('80,000');
+  });
+});
+
+describe('the reply address (REM-02, OWN-62 B)', () => {
+  it('sends replies to the monitored Rekoda address when one is configured', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    const previous = config;
+    config = { ...config, emailReplyTo: 'replies@rekoda.example' };
+    try {
+      await sendEmail(s, { attest: true });
+    } finally {
+      config = previous;
+    }
+    expect(mail.outbox[0]!.replyTo).toBe('replies@rekoda.example');
+  });
+
+  it('sets no reply address when none is configured, rather than inventing one', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    await sendEmail(s, { attest: true });
+    expect(mail.outbox[0]!.replyTo).toBeUndefined();
+  });
+});
+
 describe('a WhatsApp reminder', () => {
   it('goes through the merchant line inside the window, with the public phone', async () => {
     const s = await seed();

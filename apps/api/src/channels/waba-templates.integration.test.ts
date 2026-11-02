@@ -290,6 +290,44 @@ describe('the window selects the send (§24; PR-061)', () => {
     );
   }
 
+  it('holds no database transaction open while Meta is called (REM-02)', async () => {
+    const { businessId, connectionId, phoneNumberId } = await seedMerchant('integrate');
+    await openWindowFor(businessId, connectionId, phoneNumberId);
+    const { db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 1 });
+    let openDuringSend = -1;
+    const original = sender.sendOnConnection.bind(sender);
+    sender.sendOnConnection = async (message) => {
+      const rows = await ownerDb.execute<{ n: string }>(
+        sql`SELECT count(*)::text AS n FROM pg_stat_activity
+             WHERE datname = current_database() AND pid <> pg_backend_pid()
+               AND state = 'idle in transaction'`,
+      );
+      openDuringSend = Number([...rows][0]!.n);
+      return original(message);
+    };
+    try {
+      const outcome = await service.sendCustomerText(businessId, {
+        to: '+2349098887777',
+        text: 'A reminder',
+      });
+      expect(outcome).toEqual({ outcome: 'sent', unit: 'SERVICE_MESSAGE' });
+    } finally {
+      sender.sendOnConnection = original;
+      await closeOwner();
+    }
+    expect(openDuringSend).toBe(0);
+    expect(await used(businessId, 'SERVICE_MESSAGE')).toBe(1);
+  });
+
+  it('refunds the unit and records the failure after a send the provider refused (REM-02)', async () => {
+    const { businessId, connectionId, phoneNumberId } = await seedMerchant('integrate');
+    await openWindowFor(businessId, connectionId, phoneNumberId);
+    sender.failWith(new SendFailed('stub outage', null, true));
+    const outcome = await service.sendCustomerText(businessId, { to: '+2349098887777', text: 'x' });
+    expect(outcome).toEqual({ outcome: 'send_failed', unit: 'SERVICE_MESSAGE' });
+    expect(await used(businessId, 'SERVICE_MESSAGE')).toBe(0);
+  });
+
   it('outside the window, free-form is refused BEFORE any meter: a template is the way', async () => {
     const { businessId } = await seedMerchant('integrate');
 

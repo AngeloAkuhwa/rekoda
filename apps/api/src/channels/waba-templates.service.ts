@@ -269,7 +269,15 @@ export class WabaTemplateService {
      * its own tx so the window its OWN uncommitted touch opened is
      * visible; everything this method writes then commits or rolls back
      * with the caller's work. Standalone callers keep the managed shape. */
-    const work = async (tx: TenantDb): Promise<SendCustomerTextOutcome> => {
+    type Ready = {
+      to: string;
+      connection: { id: string; phoneNumberId: string };
+      token: string;
+      unit: 'SERVICE_MESSAGE';
+      meter: Parameters<typeof usageRepo.refundUnit>[2];
+      recordedId: string;
+    };
+    const prepare = async (tx: TenantDb): Promise<SendCustomerTextOutcome | Ready> => {
       if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_INTEGRATE')) {
         return { outcome: 'not_entitled' };
       }
@@ -362,30 +370,80 @@ export class WabaTemplateService {
         },
       );
 
-      try {
-        const result = await this.sender.sendOnConnection({
-          to,
-          phoneNumberId: connection.phoneNumberId,
-          accessToken: token,
-          text: input.text,
-        });
-        await conversationsRepo.markOutboundSent(tx, recorded.id, result.providerMessageId);
-        await wabaRepo.markWabaHealthy(tx, { businessId, connectionId: connection.id });
-        return { outcome: 'sent', unit };
-      } catch (error) {
-        if (error instanceof SendFailed) {
-          await usageRepo.refundUnit(tx, businessId, spent.meter, unit);
-          await wabaRepo.markWabaUnhealthy(tx, {
-            businessId,
-            connectionId: connection.id,
-            reason: error.message,
-          });
-          this.log.warn('customer text send failed; unit refunded');
-          return { outcome: 'send_failed', unit, ...(error.notSent ? {} : { unknown: true }) };
-        }
-        throw error;
-      }
+      return {
+        to,
+        connection: { id: connection.id, phoneNumberId: connection.phoneNumberId },
+        token,
+        unit,
+        meter: spent.meter,
+        recordedId: recorded.id,
+      };
     };
-    return outerTx ? work(outerTx) : withBusiness(this.db, businessId, work);
+
+    /* The provider call is the only step that waits on the network, and it holds no transaction:
+     * a caller mid-transaction (outerTx) keeps its own, as before; a standalone caller gets one
+     * short transaction to reserve and record, the call with nothing open, then one short
+     * transaction to settle (REM-02). A crash between the two leaves the reserved unit spent and
+     * the outbound row unsent: the message may have left, so neither is rolled back. */
+    const send = (ready: Ready) =>
+      this.sender
+        .sendOnConnection({
+          to: ready.to,
+          phoneNumberId: ready.connection.phoneNumberId,
+          accessToken: ready.token,
+          text: input.text,
+        })
+        .then(
+          (result) => ({ ok: true as const, result }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
+    const settle = async (
+      tx: TenantDb,
+      ready: Ready,
+      attempt: Awaited<ReturnType<typeof send>>,
+    ): Promise<SendCustomerTextOutcome> => {
+      if (attempt.ok) {
+        await conversationsRepo.markOutboundSent(
+          tx,
+          ready.recordedId,
+          attempt.result.providerMessageId,
+        );
+        await wabaRepo.markWabaHealthy(tx, { businessId, connectionId: ready.connection.id });
+        return { outcome: 'sent', unit: ready.unit };
+      }
+      const error = attempt.error;
+      if (error instanceof SendFailed) {
+        await usageRepo.refundUnit(tx, businessId, ready.meter, ready.unit);
+        await wabaRepo.markWabaUnhealthy(tx, {
+          businessId,
+          connectionId: ready.connection.id,
+          reason: error.message,
+        });
+        this.log.warn('customer text send failed; unit refunded');
+        return {
+          outcome: 'send_failed',
+          unit: ready.unit,
+          ...(error.notSent ? {} : { unknown: true }),
+        };
+      }
+      throw error;
+    };
+
+    if (outerTx) {
+      const ready = await prepare(outerTx);
+      if (!('token' in ready)) return ready;
+      return settle(outerTx, ready, await send(ready));
+    }
+    const ready = await withBusiness(this.db, businessId, prepare);
+    if (!('token' in ready)) return ready;
+    const attempt = await send(ready);
+    if (!attempt.ok && !(attempt.error instanceof SendFailed)) {
+      /* Not a provider answer: the old single transaction rolled the reservation back with it. */
+      await withBusiness(this.db, businessId, (tx) =>
+        usageRepo.refundUnit(tx, businessId, ready.meter, ready.unit),
+      );
+      throw attempt.error;
+    }
+    return withBusiness(this.db, businessId, (tx) => settle(tx, ready, attempt));
   }
 }

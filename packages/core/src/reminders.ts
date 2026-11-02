@@ -34,6 +34,7 @@ export type ReminderBlockReason =
   | 'invalid_recipient'
   | 'ambiguous_contact'
   | 'email_not_configured'
+  | 'reminder_in_flight'
   | 'send_failed';
 
 export interface ReminderPreflight {
