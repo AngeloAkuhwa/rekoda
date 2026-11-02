@@ -16,7 +16,9 @@
  * listed writer may contain, and that nothing else assigns `plan`).
  *
  * This guard is deliberately simple and FILE-LEVEL. It does not parse anything.
- * It fails when any non-test source or SQL file mentions the column (either
+ * It fails when any non-test file under `apps`, `packages`, `scripts` or `deploy`
+ * (SCAN_ROOTS) with a `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.mjs`, `.cjs`, `.sql`
+ * or `.sh` extension (SOURCE_EXT) mentions the column (either
  * spelling) and is not on the reviewed list below, and when a listed file no
  * longer mentions it. A new writer therefore cannot appear, and a writer cannot
  * be moved or renamed, without a reviewer seeing this list change.
@@ -31,6 +33,8 @@
  *    non-writer files get two extra whole-file checks (a SQL assignment to the
  *    column, or an `.update(businesses)` / `.insert(businesses)` call), which
  *    catch the obvious cases only.
+ *  - Other directories (`.github`, `docs`, `design-system`) and other extensions
+ *    (yml, json, python) are not scanned; none touches the column today.
  *  - Test files (`*.test.*`, `*.spec.*`, `e2e/`) are not scanned: they set up
  *    fixtures. A production file given a test-looking name would escape it.
  *  - A listed writer can gain a second write only if it is not an assignment the
@@ -165,8 +169,8 @@ const JS_GAP = String.raw`(?:\s|//[^\n]*(?:\n|$)|/\*(?:[^*]|\*(?!/))*\*/)*`;
 function assignmentAlternatives(sql: string, key: string): { sql: string[]; builder: string } {
   return {
     sql: [
-      String.raw`(?:\bSET|,)${GAP}(?:"?\w+"?\.)?"?${sql}"?${GAP}=(?!=)`,
-      String.raw`(?:\bSET|,)${GAP}\([^)]*(?<![\w$])${sql}(?![\w$])[^)]*\)${GAP}=(?!=)`,
+      String.raw`(?:\bSET|,)${GAP}(?:"?\w+"?\.)?"?${sql}"?${GAP}=(?![=>])`,
+      String.raw`(?:\bSET|,)${GAP}\([^)]*(?<![\w$])${sql}(?![\w$])[^)]*\)${GAP}=(?![=>])`,
     ],
     builder: String.raw`\.set\(\s*\{(?:[^;]{0,2000}?,)?${JS_GAP}["'\x60]?${key}["'\x60]?${JS_GAP}[:,}]`,
   };
@@ -356,17 +360,19 @@ export function collectSourceFiles(root: string, roots: readonly string[]): Scan
   return out;
 }
 
+/** The directories the guard scans; the header and the two repository sweeps share it. */
+export const SCAN_ROOTS = ['apps', 'packages', 'scripts', 'deploy'] as const;
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 describe('G-62: files that may touch plan_expires_at', () => {
   it('the repository matches the reviewed list exactly', () => {
-    const files = collectSourceFiles(REPO_ROOT, ['apps', 'packages', 'scripts', 'deploy']);
+    const files = collectSourceFiles(REPO_ROOT, SCAN_ROOTS);
     expect(files.length).toBeGreaterThan(500); // the walk found the code, not an empty tree
     expect(checkPlanExpiryFiles(files)).toEqual([]);
   });
 
   it('plan and plan_expires_at are assigned only as many times as each writer is pinned for', () => {
-    const files = collectSourceFiles(REPO_ROOT, ['apps', 'packages', 'scripts', 'deploy']);
+    const files = collectSourceFiles(REPO_ROOT, SCAN_ROOTS);
     expect(checkAssignmentPins(files)).toEqual([]);
   });
 
@@ -873,5 +879,14 @@ describe('long builder objects and qualified table names (review of 81f18b1)', (
     expect(checkPlanExpiryFiles([reader], allowed).join('\n')).toContain(
       'writes the businesses table',
     );
+  });
+});
+
+describe('arrow functions are not assignments (review of 92d55de)', () => {
+  it('does not count `plan => ...` or `(plan_expires_at) => ...` after a comma', () => {
+    expect(countAssignments('run(x, plan => y)').plan).toBe(0);
+    expect(countAssignments('run(x, (plan) => y)').plan).toBe(0);
+    expect(countAssignments('run(x, (plan_expires_at) => y)').expiry).toBe(0);
+    expect(countAssignments('UPDATE businesses SET plan = $1').plan).toBe(1);
   });
 });
