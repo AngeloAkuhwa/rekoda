@@ -50,13 +50,22 @@ ls -l .git/rekoda-deploy-staging.state .git/rekoda-deploy-staging.rollback 2>&1 
 echo "== billing settings (SET/UNSET only)"
 for k in PAYSTACK_SECRET_KEY REKODA_PAYSTACK_PLATFORM_CONFIRMED REKODA_WEB_URL REKODA_ANNUAL_BILLING \
          REKODA_EMAIL_PROVIDER RESEND_API_KEY REKODA_EMAIL_FROM RESEND_WEBHOOK_SECRET \
-         META_BILLING_TEMPLATE META_TRIAL_TEMPLATE REKODA_WORKER WORKER_DATABASE_URL; do
+         REKODA_WORKER WORKER_DATABASE_URL; do
   v="$(sed -n "s/^$k=//p" .env | head -1)"
   if [ -z "$v" ]; then say "$k" UNSET; else
     case "$k" in
       PAYSTACK_SECRET_KEY) say "$k" "SET ($( [ "${v#sk_test_}" != "$v" ] && echo TEST-KEY || echo NOT-A-TEST-KEY ))" ;;
-      REKODA_PAYSTACK_PLATFORM_CONFIRMED|REKODA_ANNUAL_BILLING|REKODA_EMAIL_PROVIDER|REKODA_WEB_URL|REKODA_WORKER|META_BILLING_TEMPLATE|META_TRIAL_TEMPLATE) say "$k" "SET ($v)" ;;
+      REKODA_PAYSTACK_PLATFORM_CONFIRMED|REKODA_ANNUAL_BILLING|REKODA_EMAIL_PROVIDER|REKODA_WEB_URL|REKODA_WORKER) say "$k" "SET ($v)" ;;
       *) say "$k" SET ;;
     esac
   fi
+done
+
+# All five WhatsApp template slots the API reads (G-03; OD-41 for which approved template is the
+# trial one). Presence only: the configured names are matched against Meta's dashboard by hand.
+echo "== Meta template slots (SET/UNSET only)"
+for k in META_OTP_TEMPLATE META_BILLING_TEMPLATE META_RETENTION_TEMPLATE META_DOCUMENT_TEMPLATE \
+         META_TRIAL_TEMPLATE; do
+  v="$(sed -n "s/^$k=//p" .env | head -1)"
+  if [ -z "$v" ]; then say "$k" UNSET; else say "$k" SET; fi
 done

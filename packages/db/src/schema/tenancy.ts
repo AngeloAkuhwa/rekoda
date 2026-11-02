@@ -113,10 +113,16 @@ export const businesses = pgTable(
     lastGraceReminderDay: smallint('last_grace_reminder_day'),
     /** The last trial-reminder stage sent (1..3, core's trialNoticeDue), claimed by conditional UPDATE. */
     lastTrialNoticeStage: smallint('last_trial_notice_stage'),
-    /** The latest reminder attempt: 'sending' | 'sent' | 'unknown' | 'suppressed' | 'refused' (OWN-47; migration 0180). */
+    /**
+     * The latest reminder attempt: 'sending' | 'sent' | 'unknown' | 'suppressed' | 'refused' |
+     * 'undelivered' (OWN-47; migrations 0180, 0186). 'undelivered' is a send Meta accepted and
+     * later reported as failed; like 'unknown' it is never resent.
+     */
     trialNoticeState: text('trial_notice_state'),
     trialNoticeAttemptedAt: timestamp('trial_notice_attempted_at', { withTimezone: true }),
     trialNoticeProviderMessageId: text('trial_notice_provider_message_id'),
+    /** When a later delivery failure for that attempt was applied (REM-01; migration 0186). */
+    trialNoticeFailedAt: timestamp('trial_notice_failed_at', { withTimezone: true }),
     /**
      * The grandfathering pin (spec §30, migration 0105). Null floats on the
      * current open plan_versions row for `plan`; non-null holds the business

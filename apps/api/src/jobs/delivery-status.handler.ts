@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import { conversationsRepo, events, jobsRepo } from '@rekoda/db';
+import { conversationsRepo, events, jobsRepo, subscriptionsRepo } from '@rekoda/db';
 import type { JobContext, JobHandler } from './runner.js';
 
 /**
@@ -30,6 +30,12 @@ import type { JobContext, JobHandler } from './runner.js';
  * inbound handler then applies the dead receipt itself, under the same lock,
  * before it reads any "yes" (`reconcileDeadReceipts`), and `claimDraft` still
  * refuses a draft that is not previewed.
+ *
+ * The same receipt may instead name a trial reminder (REM-01, G-109): the sweep sends it from
+ * Rekoda's own number to the owner, so the receipt is attributed to this business, and its
+ * wamid is the one recorded when Meta accepted it. That reminder is marked 'undelivered' in the
+ * same transaction; the stage is not resent. A failure that arrives before the sweep has
+ * recorded the wamid matches nothing and is not retried: the reminder stays 'sent'.
  */
 export function deliveryStatusHandler(): JobHandler {
   const log = new Logger('DeliveryStatusJob');
@@ -53,6 +59,15 @@ export function deliveryStatusHandler(): JobHandler {
         `a preview failed after acceptance: ${moved.drafts} draft(s) retired, ` +
           `${moved.continuations} question(s) closed`,
       );
+    }
+    const reminders = await subscriptionsRepo.markTrialNoticeUndelivered(
+      tx,
+      businessId,
+      outboundMessageId,
+      new Date(),
+    );
+    if (reminders > 0) {
+      log.log(`a trial reminder failed after acceptance: ${reminders} marked undelivered`);
     }
     await events.markProcessed(tx, eventId, null, businessId);
   };
