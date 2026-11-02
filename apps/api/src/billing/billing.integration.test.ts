@@ -170,6 +170,23 @@ describe('what a new merchant sees', () => {
     expect(overview.status).toMatchObject({ state: 'expired', wasTrial: true });
   });
 
+  it('never tells a merchant who paid that their free trial ended, whatever the origin column says', async () => {
+    /* subscription_origin can be NULL for a payer: an operator move to expired clears it, and rows
+     * lapsed before migration 0167 were never backfilled. The stored plan decides (G-65, lapseOf). */
+    const { businessId, auth } = await onboard('+2348177100095');
+    await putOnPlan(
+      businessId,
+      'chat',
+      new Date(Date.now() - 40 * 86_400_000),
+      new Date(Date.now() - 86_400_000),
+    );
+    await ownerDb.execute(
+      sql`UPDATE businesses SET plan = 'expired', subscription_origin = NULL WHERE id = ${businessId}::uuid`,
+    );
+    const overview = await overviewOf(auth);
+    expect(overview.status).toMatchObject({ state: 'expired', wasTrial: false });
+  });
+
   it('reads as a trial, priced at nothing, with no packs to buy', async () => {
     const { auth } = await onboard('+2348177100002');
     const overview = await overviewOf(auth);

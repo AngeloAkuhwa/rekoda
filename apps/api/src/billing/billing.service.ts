@@ -792,7 +792,7 @@ function statusOf(
   subscription: {
     planExpiresAt: Date | null;
     paymentFailedAt: Date | null;
-    origin: string | null;
+    plan: string;
   } | null,
   now: Date,
 ): BillingStateView {
@@ -809,9 +809,16 @@ function statusOf(
     const since = subscription?.paymentFailedAt
       ? new Date(subscription.paymentFailedAt.getTime() + GRACE_DAYS * 86_400_000)
       : (subscription?.planExpiresAt ?? now);
-    /* No paid or operator cycle was ever started (`subscription_origin` is set by every one):
-     * what ended is the free trial, and the page must not call it a subscription. */
-    return { state: 'expired', since: since.toISOString(), wasTrial: !subscription?.origin };
+    /* What ended, from the STORED plan, the rule WhatsApp already uses (G-65, `usageRepo.lapseOf`):
+     * a trial past its date is still stored as `trial`; a paid plan that lapsed, or that an operator
+     * moved to expired, is stored as `expired`. `subscription_origin` is not used: it can be NULL
+     * for a merchant who paid (an operator move clears it; rows lapsed before 0167 were never
+     * backfilled), and telling a payer their free trial ended would be untrue. */
+    return {
+      state: 'expired',
+      since: since.toISOString(),
+      wasTrial: subscription?.plan === 'trial',
+    };
   }
 
   const state = billingState({

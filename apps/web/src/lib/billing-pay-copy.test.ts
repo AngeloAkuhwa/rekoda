@@ -350,6 +350,12 @@ describe('the lapsed-plan banner says what actually ended (SUB-05)', () => {
     expect(helper).toMatch(/The owner can start it again from this page\./);
   });
 
+  it('does not offer a non-owner a trial "again" (no second trial is given)', () => {
+    const helper = lapsedPlanCopy({ wasTrial: true, since: '2 November 2026', owner: false });
+    expect(helper).toMatch(/The owner can choose a plan from this page\./);
+    expect(helper).not.toMatch(/again/i);
+  });
+
   it('never says anything was deleted', () => {
     for (const wasTrial of [true, false]) {
       for (const owner of [true, false]) {

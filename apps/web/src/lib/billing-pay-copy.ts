@@ -359,6 +359,8 @@ export function lapsedPlanCopy(input: {
     ? input.wasTrial
       ? 'Choose a plan below to keep recording.'
       : 'Choose a plan below to start again.'
-    : 'The owner can start it again from this page.';
+    : input.wasTrial
+      ? 'The owner can choose a plan from this page.'
+      : 'The owner can start it again from this page.';
   return `${ended} Your books are still here and you can still read and export everything. ${next}`;
 }
