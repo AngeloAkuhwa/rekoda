@@ -149,6 +149,33 @@ touches the rows that name them, and the same sweep pass drains the queue
 (PR-136). Both tables deliberately outlive the tenant, and both are
 excluded from the function's own delete loop for that reason.
 
+## A billing email in the per-address limit counter (SUB-02a, OWN-58/OWN-66)
+
+`billing_email_address_requests` counts billing-email confirmation requests per
+address across businesses. It holds a keyed hash of the address and a time, no
+address and no business id, so a business deletion has nothing there to find.
+Rows older than a day are removed as later requests arrive (not on a timer).
+To erase one address on request, or to clear an address whose hourly allowance
+another business used up (ADR 0036, OD-39), run the one-shot command below ON THE
+API HOST, where `MATCH_KEY` already lives (never copy `MATCH_KEY` to a
+workstation; `docs/runbooks/key-rotation.md`, Custody), from the API image's
+working directory. It reads the address from a prompt (never shell history),
+derives the key in memory and deletes that key's rows as the owner. The command
+prints only the number of rows removed, or on failure only the database error
+code: it never prints the key, the address or the query. Read the owner URL the
+operator already uses for owner SQL in this runbook silently, so the password
+stays out of shell history, and unset it afterwards (in `bash`; `read -s` is not available in plain `sh`):
+
+```sh
+read -rs -p 'owner database url: ' OWNER_DATABASE_URL && export OWNER_DATABASE_URL && echo
+node --input-type=module -e "import {createInterface} from 'node:readline/promises'; import {billingEmailAddressKeyFor} from '@rekoda/core/vault'; import {createDb, sql} from '@rekoda/db'; const rl = createInterface({input: process.stdin, output: process.stderr}); const address = await rl.question('address: '); rl.close(); let close; try { const opened = createDb(process.env.OWNER_DATABASE_URL, {max: 1}); close = opened.close; const db = opened.db; const rows = await db.execute(sql\`DELETE FROM billing_email_address_requests WHERE address_key = \${billingEmailAddressKeyFor(address, process.env.MATCH_KEY)} RETURNING 1\`); console.log('rows removed:', [...rows].length); } catch (e) { console.error('failed:', e?.cause?.code ?? 'error'); process.exitCode = 1; } finally { if (close) await close(); }"
+unset OWNER_DATABASE_URL
+```
+
+The address is trimmed and lower-cased by the function. The terminal shows the
+address as it is typed; clear the screen afterwards. Never paste the address or
+a derived key into a ticket, a chat or a query log.
+
 ## The one number to watch: objects still owed
 
 `pending_object_deletions` holds deletions Rekoda has promised and not yet

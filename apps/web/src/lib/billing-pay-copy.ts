@@ -232,13 +232,16 @@ export function emailVerifyCopy(answer: BillingEmailVerifyResponse): {
         message: unavailableMessage(answer.reason),
       };
     case 'rate_limited': {
-      const minutes = Math.max(1, Math.ceil(answer.retryAfterSeconds / 60));
+      /* The limit may be this business's or the address's across businesses (SUB-02a, OWN-58);
+       * the answer is the same shape either way, so the words must be true either way: no claim
+       * about who asked or what was sent, only when to try again. */
+      const minutes = Math.ceil(answer.retryAfterSeconds / 60);
       return {
         ok: false,
         message:
-          answer.retryAfterSeconds < 60
-            ? 'A link was only just sent. Check your inbox, or ask again in a minute.'
-            : `You have asked for several links. Please try again in about ${minutes} minutes.`,
+          minutes <= 1
+            ? 'We cannot send a confirmation link to this address just yet. Please try again in a minute.'
+            : `We cannot send a confirmation link to this address just yet. Please try again in about ${minutes} minutes.`,
       };
     }
   }

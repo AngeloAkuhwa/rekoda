@@ -68,6 +68,13 @@ export const BILLING_EMAIL_VERIFICATION = {
   maxPerHour: 5,
   /** The wait between one request and the next, so a double click mails once. */
   cooldownMs: 60 * 1000,
+  /**
+   * The same address, whichever businesses ask (SUB-02a; OWN-58 owner ruling, 2 Nov 2026): at most
+   * five requests an hour per trimmed, lower-cased address across all businesses, and at least
+   * sixty seconds between them. A request whose send outcome is unknown counts; only a definite
+   * provider refusal gives it back.
+   */
+  perAddress: { maxPerHour: 5, cooldownMs: 60 * 1000 },
 } as const;
 
 /**

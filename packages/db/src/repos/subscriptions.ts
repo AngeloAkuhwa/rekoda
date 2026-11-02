@@ -1357,10 +1357,15 @@ export async function billingEmailState(
 export async function recentEmailVerificationRequests(
   tx: TenantDb,
   businessId: string,
-): Promise<{ lastHour: number; sinceLatestMs: number | null }> {
-  const rows = await tx.execute<{ n: number; since_ms: string | number | null }>(sql`
+): Promise<{ lastHour: number; sinceLatestMs: number | null; latestRevision: number | null }> {
+  const rows = await tx.execute<{
+    n: number;
+    since_ms: string | number | null;
+    latest_revision: number | null;
+  }>(sql`
     SELECT count(*) FILTER (WHERE created_at > clock_timestamp() - interval '1 hour')::int AS n,
-           (extract(epoch FROM (clock_timestamp() - max(created_at))) * 1000)::bigint AS since_ms
+           (extract(epoch FROM (clock_timestamp() - max(created_at))) * 1000)::bigint AS since_ms,
+           (array_agg(email_revision ORDER BY created_at DESC))[1] AS latest_revision
     FROM billing_email_verifications
     WHERE business_id = ${businessId}::uuid AND voided_at IS NULL
   `);
@@ -1368,6 +1373,8 @@ export async function recentEmailVerificationRequests(
   return {
     lastHour: Number(row?.n ?? 0),
     sinceLatestMs: row?.since_ms == null ? null : Math.max(0, Number(row.since_ms)),
+    /* The address revision the business's own latest link was issued for (SUB-02a). */
+    latestRevision: row?.latest_revision == null ? null : Number(row.latest_revision),
   };
 }
 
@@ -1410,6 +1417,53 @@ export async function voidEmailVerification(
     SET consumed_at = clock_timestamp(), voided_at = clock_timestamp()
     WHERE business_id = ${businessId}::uuid AND token_hash = ${tokenHash} AND consumed_at IS NULL
   `);
+}
+
+/**
+ * Decide one confirmation request for an address across every business, and count it when allowed
+ * (SUB-02a, OWN-58; migration 0185). Runs inside the caller's tenant transaction, after the
+ * business lock: the database function takes the address lock, counts by the database clock and
+ * records the request, so the count and the link commit together. The application role cannot read
+ * the counter itself; this is its only way in.
+ */
+export async function claimBillingEmailAddress(
+  tx: TenantDb,
+  addressKey: string,
+  limits: { maxPerHour: number; cooldownMs: number },
+): Promise<{ requestId: string } | { requestId: null; retryAfterSeconds: number }> {
+  const rows = await tx.execute<{ request_id: string | null; retry_after_seconds: number }>(sql`
+    SELECT request_id, retry_after_seconds
+    FROM billing_email_address_claim(${addressKey}, ${limits.maxPerHour}::int, ${limits.cooldownMs}::int)
+  `);
+  const row = [...rows][0];
+  if (!row) throw new Error('billing_email_address_claim returned no row');
+  return row.request_id !== null
+    ? { requestId: row.request_id }
+    : { requestId: null, retryAfterSeconds: Number(row.retry_after_seconds) };
+}
+
+/**
+ * The wait an address would impose right now, without counting a request (migration 0185). Used
+ * when the business itself is refusing, so the reply carries the longer of the two waits.
+ */
+export async function billingEmailAddressWait(
+  tx: TenantDb,
+  addressKey: string,
+  limits: { maxPerHour: number; cooldownMs: number },
+): Promise<number> {
+  const rows = await tx.execute<{ wait: number }>(sql`
+    SELECT billing_email_address_wait(${addressKey}, ${limits.maxPerHour}::int, ${limits.cooldownMs}::int) AS wait
+  `);
+  return Number([...rows][0]?.wait ?? 0);
+}
+
+/** Give an address request back because the provider definitely refused the mail (OWN-66). */
+export async function releaseBillingEmailAddress(
+  tx: TenantDb,
+  requestId: string,
+  addressKey: string,
+): Promise<void> {
+  await tx.execute(sql`SELECT billing_email_address_release(${requestId}::uuid, ${addressKey})`);
 }
 
 /** How a link's hand-over to the email provider ended (migration 0183). */

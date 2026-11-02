@@ -98,6 +98,9 @@ not an env change:
 > missing during one. `MATCH_KEY` is deliberately excluded: it keys a blind
 > index that cannot be recomputed without re-deriving every identity, so it
 > is treated as permanent for V1.
+> Its one short-lived use outside identity, the billing-email per-address limit
+> counter (migration 0185), simply restarts if the key ever changes: its rows
+> live a day and are counters, not records.
 
 ## Custody
 
