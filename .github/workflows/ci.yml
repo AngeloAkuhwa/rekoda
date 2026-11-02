@@ -215,17 +215,23 @@ jobs:
   # and ON CONFLICT races have no meaningful in-memory imitation, and a mock of
   # the thing under test would prove nothing. These suites FAIL rather than skip
   # when the database is absent, so a green tick here cannot mean "ran nothing".
-  integration:
-    name: Integration (PostgreSQL)
+  integration-suite:
+    name: Integration (${{ matrix.suite }} ${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
-    # A hang-guard, not a performance budget, and it has to clear the suites it
-    # guards: these two run SERIALLY (each truncates every table between tests,
-    # so parallel runs deadlock) and the pair now takes ~22 minutes on a runner
-    # - roughly 10 for the tenancy/identity suite and the rest for the API's.
-    # At 20 the cap was killing a healthy run mid-test, which reads exactly
-    # like a failure and is not one. Raised with headroom for a slow runner;
-    # a genuinely wedged job still dies well before the runner's own limit.
-    timeout-minutes: 45
+    # Each suite runs in two shards, and every shard is its own job with its own
+    # PostgreSQL service container, so no two shards share a database and the
+    # truncate-between-tests isolation is unchanged. Vitest's --shard splits the
+    # suite's test FILES between the shards; together they run every file once.
+    # fail-fast is off so one failing shard does not hide another's result.
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [db, api]
+        shard: [1, 2]
+    # A hang-guard, not a performance budget. One shard is about half a suite
+    # (the API suite alone took ~11 minutes serially), so 30 leaves headroom for a
+    # slow runner while a wedged shard still dies well before the runner's limit.
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16-alpine
@@ -293,10 +299,37 @@ jobs:
       # trust auth it needs none here.
       - name: Apply migrations
         run: pnpm --filter @rekoda/db migrate:apply
-      - name: Tenancy and identity integration tests
-        run: pnpm --filter @rekoda/db test:integration
-      - name: API integration tests
-        run: pnpm --filter @rekoda/api test:integration
+      # vitest is called directly so --shard reaches it as an option (an extra
+      # `--` through `pnpm run` would turn it into a file filter). The config is
+      # the same one `test:integration` uses. A shard that matches no test file
+      # fails ("No test files found") rather than passing empty.
+      - name: Integration tests (${{ matrix.suite }}, shard ${{ matrix.shard }} of 2)
+        run: >-
+          pnpm --filter "@rekoda/${{ matrix.suite }}" exec
+          vitest run --config vitest.integration.config.ts
+          --shard=${{ matrix.shard }}/2
+
+  # The single check named "Integration (PostgreSQL)", kept so branch rules and the
+  # runbook's required-check list need no change. It runs even when a shard failed
+  # or was cancelled (always()) and passes ONLY when every shard succeeded: a
+  # failed, cancelled or skipped shard makes the matrix result something other
+  # than "success", so this job fails and a missing run can never read as green.
+  integration:
+    name: Integration (PostgreSQL)
+    needs: integration-suite
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every integration shard passed
+        env:
+          SHARDS: ${{ needs.integration-suite.result }}
+        run: |
+          echo "integration shards: $SHARDS"
+          if [ "$SHARDS" != "success" ]; then
+            echo "An integration shard did not succeed (result: $SHARDS)." >&2
+            exit 1
+          fi
 
   # The web app's behaviour lives in routing, guards and server actions, which
   # only a real browser exercises. Runs the FULL stack against a PRODUCTION

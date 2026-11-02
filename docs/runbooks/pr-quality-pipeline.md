@@ -31,7 +31,9 @@ Evidence, then the gap each item leaves.
      staging-runbook, Node-version, UI-copy, retired-claims and OpenAPI guards;
    - `Deployment (Docker)` boots, attacks, restarts and rolls back the production stack;
    - `Migrations (foreign owner)`;
-   - `Integration (PostgreSQL)` runs the db and api suites serially;
+   - `Integration (PostgreSQL)` passes only when all four integration shards pass: the db and api
+     suites each split in two (`Integration (db 1/2)` and so on), every shard a separate job with
+     its own PostgreSQL container;
    - `End-to-end (Playwright)`.
 
    The GitGuardian app also checks each push.
