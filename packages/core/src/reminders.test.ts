@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   composeEmailReminder,
   composeWhatsAppReminder,
+  validatePaymentInstruction,
   reminderBlock,
   reminderTemplateParameters,
   senderDisplayName,
@@ -162,5 +163,72 @@ describe('the opt-out token', () => {
     expect(verifyReminderOptOut(secret, token.slice(0, -2))).toBeNull();
     expect(verifyReminderOptOut('', token)).toBeNull();
     expect(verifyReminderOptOut(secret, 'garbage')).toBeNull();
+  });
+});
+
+describe('merchant payment instructions (REM-04, OWN-64)', () => {
+  const instruction = {
+    bankName: 'GTBank',
+    accountName: 'Ada Stores Ltd',
+    accountNumber: '0123456789',
+  };
+
+  it('validates a ten-digit account number and tolerates spaces and dashes, never repairs', () => {
+    const ok = validatePaymentInstruction({ ...instruction, accountNumber: '0123 456-789' });
+    expect(ok).toEqual({ ok: true, value: instruction });
+    for (const bad of ['012345678', '01234567890', 'abcdefghij', '', '0123456789a', 12345678901]) {
+      const r = validatePaymentInstruction({ ...instruction, accountNumber: bad });
+      expect(r).toEqual({ ok: false, issues: ['account_number'] });
+    }
+  });
+
+  it('refuses a missing, oversized, control-character or markup bank or account name', () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ bankName: '' }, 'bank_name'],
+      [{ bankName: 'x'.repeat(61) }, 'bank_name'],
+      [{ bankName: 'GT\u0000Bank' }, 'bank_name'],
+      [{ accountName: '<b>Ada</b>' }, 'account_name'],
+      [{ accountName: 'A' }, 'account_name'],
+      [{ accountName: 42 }, 'account_name'],
+    ];
+    for (const [patch, issue] of cases) {
+      const r = validatePaymentInstruction({ ...instruction, ...patch });
+      expect(r).toEqual({ ok: false, issues: [issue] });
+    }
+  });
+
+  it('collapses whitespace in names', () => {
+    const r = validatePaymentInstruction({ ...instruction, accountName: '  Ada   Stores ' });
+    expect(r.ok && r.value.accountName).toBe('Ada Stores');
+  });
+
+  it('puts the approved bank details and the invoice reference in the email and the WhatsApp text', () => {
+    const withBank = { ...facts, paymentInstruction: instruction };
+    const mail = composeEmailReminder(withBank, 'u');
+    const wa = composeWhatsAppReminder(withBank);
+    for (const text of [mail.text, wa]) {
+      expect(text).toContain('₦1,500.50');
+      expect(text).toContain('Ada Stores Ltd');
+      expect(text).toContain('GTBank');
+      expect(text).toContain('0123456789');
+      expect(text).toContain('quote invoice INV-0007');
+      expect(text).toContain('+2348031234567');
+    }
+  });
+
+  it('shows no bank details when none is approved: it falls back to the phone, never invents one', () => {
+    for (const f of [facts, { ...facts, paymentInstruction: null }]) {
+      const mail = composeEmailReminder(f, 'u');
+      expect(mail.text).toContain('To pay or ask about it, contact Ada Stores on +2348031234567.');
+      expect(mail.text).not.toMatch(/account number/i);
+      expect(composeWhatsAppReminder(f)).toContain('call +2348031234567');
+      expect(composeWhatsAppReminder(f)).not.toMatch(/account number/i);
+    }
+  });
+
+  it('leaves the approved WhatsApp template parameters unchanged', () => {
+    expect(reminderTemplateParameters({ ...facts, paymentInstruction: instruction })).toEqual(
+      reminderTemplateParameters(facts),
+    );
   });
 });

@@ -1310,6 +1310,13 @@
       "when": 1793707200000,
       "tag": "0186_trial_notice_undelivered",
       "breakpoints": true
+    },
+    {
+      "idx": 187,
+      "version": "7",
+      "when": 1793793600000,
+      "tag": "0187_payment_instructions",
+      "breakpoints": true
     }
   ]
 }
