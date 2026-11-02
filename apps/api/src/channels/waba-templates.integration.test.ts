@@ -646,9 +646,53 @@ describe('no transaction is held open while Meta is called (REM-02)', () => {
 
     const outcome = await custom.sendCustomerText(businessId, { to: CUSTOMER, text: 'hello' });
 
-    expect(outcome).toEqual({ outcome: 'sent', unit: 'SERVICE_MESSAGE' });
+    expect(outcome).toEqual({
+      outcome: 'sent',
+      unit: 'SERVICE_MESSAGE',
+      providerIdUnrecorded: true,
+    });
     expect(sender.connectionTexts).toHaveLength(1);
     expect(await used(businessId, 'SERVICE_MESSAGE')).toBe(1);
+  });
+
+  it('when the real mark-sent write fails after Meta accepted: sent, flagged, unit kept, row findable, nothing resent', async () => {
+    const { businessId, connectionId, phoneNumberId } = await seedMerchant('integrate');
+    await openWindow(businessId, connectionId, phoneNumberId);
+    const sender = new StubSender();
+    const custom = serviceWith(sender);
+    /* The actual persistence step (`markOutboundSent`, an UPDATE of the outbound row) is made to
+     * fail in the database, after the stub has returned a provider message id. */
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    await ownerDb.execute(sql`
+      CREATE OR REPLACE FUNCTION test_refuse_outbound_update() RETURNS trigger AS $$
+      BEGIN RAISE EXCEPTION 'refused for test'; END $$ LANGUAGE plpgsql`);
+    await ownerDb.execute(sql`
+      CREATE TRIGGER test_refuse_outbound_update BEFORE UPDATE ON conversation_messages
+      FOR EACH ROW EXECUTE FUNCTION test_refuse_outbound_update()`);
+    try {
+      const outcome = await custom.sendCustomerText(businessId, { to: CUSTOMER, text: 'hello' });
+
+      expect(outcome).toEqual({
+        outcome: 'sent',
+        unit: 'SERVICE_MESSAGE',
+        providerIdUnrecorded: true,
+      });
+      expect(sender.connectionTexts).toHaveLength(1);
+      expect(await used(businessId, 'SERVICE_MESSAGE')).toBe(1);
+      const rows = await withBusiness(db, businessId, (tx) =>
+        tx.execute<{ provider_message_id: string | null }>(
+          sql`SELECT provider_message_id FROM conversation_messages
+              WHERE business_id = ${businessId}::uuid AND direction = 'outbound'`,
+        ),
+      );
+      expect([...rows]).toEqual([{ provider_message_id: null }]);
+    } finally {
+      await ownerDb.execute(
+        sql`DROP TRIGGER IF EXISTS test_refuse_outbound_update ON conversation_messages`,
+      );
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS test_refuse_outbound_update()`);
+      await close();
+    }
   });
 
   it('names the outbound row and the error class, never the text, when recording after Meta accepted it fails', async () => {

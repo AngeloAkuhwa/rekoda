@@ -478,7 +478,12 @@ function whatsAppResult(outcome: SendCustomerTextOutcome): {
 } {
   switch (outcome.outcome) {
     case 'sent':
-      return { status: 'sent', reason: null };
+      /* Meta accepted it, so it is sent and never resent. If the provider id could not be written
+       * onto the outbound row, say so in the history: a later delivery report cannot be matched. */
+      return {
+        status: 'sent',
+        reason: outcome.providerIdUnrecorded ? 'provider_id_unrecorded' : null,
+      };
     case 'not_entitled':
       return { status: 'blocked', reason: 'not_entitled' };
     case 'no_connection':

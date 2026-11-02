@@ -58,7 +58,11 @@ export interface SendCustomerTextInput {
 }
 
 export type SendCustomerTextOutcome =
-  | { outcome: 'sent'; unit: 'SERVICE_MESSAGE' }
+  /* `providerIdUnrecorded`: Meta accepted the message (it is sent, and the unit stays spent) but
+   * writing the provider message id onto the outbound row failed, so a later delivery report
+   * cannot be matched to it. Still `sent`, never a failure and never a reason to send again; a
+   * caller that keeps a history says the id is missing. */
+  | { outcome: 'sent'; unit: 'SERVICE_MESSAGE'; providerIdUnrecorded?: true }
   | { outcome: 'not_entitled' }
   | { outcome: 'no_connection' }
   | { outcome: 'invalid_recipient' }
@@ -323,6 +327,7 @@ export class WabaTemplateService {
       this.log.warn(
         `customer text sent; recording its provider id failed (outbound ${reserved.recordedId}, ${errorClass(error)})`,
       );
+      return { outcome: 'sent', unit: 'SERVICE_MESSAGE', providerIdUnrecorded: true };
     }
     return { outcome: 'sent', unit: 'SERVICE_MESSAGE' };
   }

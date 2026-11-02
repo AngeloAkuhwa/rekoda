@@ -533,6 +533,21 @@ describe('a WhatsApp reminder', () => {
     expect(r.reminder).toMatchObject({ status: 'uncertain', reasonCode: 'delivery_unconfirmed' });
   });
 
+  it('records a send Meta accepted but whose provider id was not recorded as sent, says so, and never resends it', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    whatsappOutcome = { outcome: 'sent', unit: 'SERVICE_MESSAGE', providerIdUnrecorded: true };
+    const idempotencyKey = key();
+    const r = await sendVia(s, 'whatsapp', { idempotencyKey });
+    expect(r.reminder).toMatchObject({ status: 'sent', reasonCode: 'provider_id_unrecorded' });
+
+    /* The same request again is the stored answer, not a second message. */
+    const again = await sendVia(s, 'whatsapp', { idempotencyKey });
+    expect(again.replayed).toBe(true);
+    expect(again.reminder).toMatchObject({ status: 'sent', reasonCode: 'provider_id_unrecorded' });
+    expect(whatsappCalls).toHaveLength(1);
+  });
+
   it('refuses a customer with no phone', async () => {
     const s = await seed({ phone: null });
     await approvePhone(s);
