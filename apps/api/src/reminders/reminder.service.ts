@@ -191,7 +191,20 @@ export class ReminderService {
     let status: 'sent' | 'failed' | 'uncertain' | 'blocked' = 'sent';
     let reason: string | null = null;
     try {
-      if (channel === 'email') {
+      /* REM-03 / OWN-69: an opt-out is per channel, and it is honoured at dispatch, not only when
+       * the attempt was opened. An email unsubscribe that commits after `prepare` but before the
+       * provider call still stops this email (WhatsApp STOP is re-read inside `sendCustomerText`
+       * at the same point). Each channel reads only its own preference: email never consults the
+       * WhatsApp STOP, and WhatsApp never consults the email opt-out. */
+      if (
+        channel === 'email' &&
+        (await withBusiness(this.db, businessId, (tx) =>
+          remindersRepo.emailOptedOut(tx, businessId, emailSuppressionKey(prepared.email!)),
+        ))
+      ) {
+        status = 'blocked';
+        reason = 'customer_opted_out';
+      } else if (channel === 'email') {
         const optOut = signReminderOptOut(
           this.optOutKey,
           businessId,
