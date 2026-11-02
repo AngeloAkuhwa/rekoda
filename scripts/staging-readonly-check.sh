@@ -69,6 +69,9 @@ done
 echo "== Meta template slots (SET/UNSET only)"
 for k in META_OTP_TEMPLATE META_BILLING_TEMPLATE META_RETENTION_TEMPLATE META_DOCUMENT_TEMPLATE \
          META_TRIAL_TEMPLATE; do
-  v="$(sed -n "s/^$k=//p" .env | head -1)"
+  # The effective value, as Compose reads it: surrounding spaces and one pair of quotes removed,
+  # so META_TRIAL_TEMPLATE="" reads as UNSET.
+  v="$(sed -n "s/^$k=//p" .env | head -1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+        -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/")"
   if [ -z "$v" ]; then say "$k" UNSET; else say "$k" SET; fi
 done
