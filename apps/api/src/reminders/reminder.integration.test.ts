@@ -1195,20 +1195,24 @@ describe('merchant payment instructions (REM-04, OWN-64)', () => {
     expect(approval!.at).not.toBeNull();
   });
 
-  it('cannot be stored half-filled or without an approval, even by a direct write', async () => {
+  it('cannot be stored half-filled, unapproved, unattributed or malformed, even by a direct write', async () => {
     const s = await seed();
-    await expect(
-      withBusiness(appDb, s.businessId, (tx) =>
-        tx.execute(sql`UPDATE businesses SET payment_account_number = '0123456789'`),
-      ),
-    ).rejects.toThrow();
-    await expect(
-      withBusiness(appDb, s.businessId, (tx) =>
-        tx.execute(
-          sql`UPDATE businesses SET payment_bank_name = 'B', payment_account_name = 'N', payment_account_number = '0123456789'`,
-        ),
-      ),
-    ).rejects.toThrow();
+    const writes = [
+      sql`UPDATE businesses SET payment_account_number = '0123456789'`,
+      sql`UPDATE businesses SET payment_bank_name = 'B', payment_account_name = 'N', payment_account_number = '0123456789'`,
+      sql`UPDATE businesses SET payment_bank_name = 'B', payment_account_name = 'N', payment_account_number = '0123456789', payment_instruction_approved_at = now()`,
+      sql`UPDATE businesses SET payment_bank_name = 'B', payment_account_name = 'N', payment_account_number = '12345', payment_instruction_approved_at = now(), payment_instruction_approved_by = ${s.userId}::uuid`,
+    ];
+    for (const write of writes) {
+      let caught: unknown;
+      await withBusiness(appDb, s.businessId, (tx) => tx.execute(write)).catch((e: unknown) => {
+        caught = e;
+      });
+      const cause = (caught as { cause?: { constraint_name?: string } } | undefined)?.cause;
+      const name =
+        cause?.constraint_name ?? (caught as { constraint_name?: string })?.constraint_name;
+      expect(name ?? String(caught)).toContain('businesses_payment_instruction_all_or_nothing');
+    }
   });
 
   it('is configurable by the owner only; the delegate may read, the accountant neither', () => {
