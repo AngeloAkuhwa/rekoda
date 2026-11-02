@@ -274,7 +274,7 @@ tenant isolation and the existing identity keys are kept (email: business and ad
 business, WhatsApp number and participant blind index). Kept from the original REM-03 scope and
 already in place: identity resolution fails closed when ambiguous (`ambiguous_contact`, a customer
 with two stored addresses is sent nothing), cross-tenant and forged opt-out tokens are refused, a
-repeated opt-out keeps its first moment, and every attempt and its outcome stay in the reminder
+repeated opt-out is accepted again without a second row (the repository keeps the first row; no test asserts its timestamp), and every attempt and its outcome stay in the reminder
 history (tests in `apps/api/src/reminders/reminder.integration.test.ts`). Queued, undispatched
 messages are REM-05's: it must dispatch through `sendOne`, and its tests include opt-out after
 scheduling and worker retry after opt-out. No cooldown (OWN-67).

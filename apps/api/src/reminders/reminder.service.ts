@@ -195,8 +195,10 @@ export class ReminderService {
      * call still stops this email (WhatsApp STOP is re-read inside `sendCustomerText` at the same
      * point). Each channel reads only its own preference: email never consults the WhatsApp STOP,
      * and WhatsApp never consults the email opt-out. The read is outside the provider's error
-     * handling: if it fails, nothing has been sent, so that is a definite non-send, never an
-     * unknown outcome. */
+     * handling: if it fails, nothing has been sent, so it is recorded as a definite non-send
+     * (`failed`), not as a provider-uncertain outcome. (If the database is still down when the
+     * attempt is finished, the row stays `sending` and the stale sweep later settles it, as on
+     * every other path.) */
     let dispatch: 'go' | 'opted_out' | 'not_checked' = 'go';
     if (channel === 'email') {
       try {
@@ -204,9 +206,13 @@ export class ReminderService {
           remindersRepo.emailOptedOut(tx, businessId, emailSuppressionKey(prepared.email!)),
         );
         if (optedOut) dispatch = 'opted_out';
-      } catch {
+      } catch (error) {
         dispatch = 'not_checked';
-        this.log.warn(`reminder ${reminderId} not sent: the opt-out could not be re-read`);
+        /* The error class only: a message could carry query text or an address. */
+        const kind = error instanceof Error ? error.constructor.name : 'unknown';
+        this.log.warn(
+          `reminder ${reminderId} not sent: the opt-out could not be re-read (${kind})`,
+        );
       }
     }
     if (dispatch === 'opted_out') {
