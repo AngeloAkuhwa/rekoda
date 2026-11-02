@@ -311,23 +311,41 @@ jobs:
 
   # The single check named "Integration (PostgreSQL)", kept so branch rules and the
   # runbook's required-check list need no change. It runs even when a shard failed
-  # or was cancelled (always()) and passes ONLY when every shard succeeded: a
-  # failed, cancelled or skipped shard makes the matrix result something other
-  # than "success", so this job fails and a missing run can never read as green.
+  # or was cancelled (always()) and passes ONLY when every shard succeeded. The
+  # matrix result alone is not trusted: a matrix leg cancelled before it got a
+  # runner has been reported to leave that result at "success". So the job also
+  # reads this run's jobs from the Actions API (latest attempt of each) and
+  # requires exactly four shard jobs, each concluded "success". A missing,
+  # skipped, cancelled or failed shard therefore can never read as green.
   integration:
     name: Integration (PostgreSQL)
     needs: integration-suite
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - name: Every integration shard passed
+      - name: Every integration shard ran and passed
         env:
           SHARDS: ${{ needs.integration-suite.result }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
         run: |
-          echo "integration shards: $SHARDS"
+          echo "integration matrix result: $SHARDS"
           if [ "$SHARDS" != "success" ]; then
             echo "An integration shard did not succeed (result: $SHARDS)." >&2
+            exit 1
+          fi
+          shards=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?filter=latest&per_page=100" \
+            --jq '[.jobs[] | select(.name | test("^Integration \\((db|api) [12]/2\\)$"))]')
+          echo "$shards" | jq -r '.[] | "\(.name): \(.status) \(.conclusion)"'
+          total=$(echo "$shards" | jq 'length')
+          passed=$(echo "$shards" | jq '[.[] | select(.conclusion == "success")] | length')
+          if [ "$total" -ne 4 ] || [ "$passed" -ne 4 ]; then
+            echo "Expected 4 integration shard jobs, all successful; found $total, $passed successful." >&2
             exit 1
           fi
 
