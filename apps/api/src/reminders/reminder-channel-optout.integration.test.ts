@@ -398,3 +398,43 @@ describe('an opt-out that arrives after the attempt was opened', () => {
     ).toBe('sent');
   });
 });
+
+describe('when the dispatch-time opt-out read itself fails', () => {
+  /**
+   * A database handle whose `n`th transaction rejects. In a one-channel email send the calls are:
+   * 1 `prepare` (writes the `sending` row), 2 the dispatch-time opt-out read, 3 `finishReminder`.
+   */
+  function failingTransaction(n: number): Db {
+    let calls = 0;
+    return new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === 'transaction') {
+          return (...args: unknown[]) => {
+            calls += 1;
+            if (calls === n) return Promise.reject(new Error('database unavailable'));
+            return (target.transaction as (...a: unknown[]) => unknown).apply(target, args);
+          };
+        }
+        const value: unknown = Reflect.get(target, prop, receiver);
+        return typeof value === 'function'
+          ? (value as (...a: unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+  }
+
+  it('records a definite non-send (failed), never "could not be confirmed", and sends nothing', async () => {
+    const s = await shop();
+    const service = new ReminderService(
+      config,
+      failingTransaction(2),
+      mail,
+      new WabaTemplateService(db, config, meta, new PrivacyGateway(db, config)),
+    );
+    expect(await send(s, 'email', service)).toMatchObject({
+      status: 'failed',
+      reasonCode: 'send_failed',
+    });
+    expect(mail.outbox).toHaveLength(0);
+  });
+});

@@ -190,62 +190,75 @@ export class ReminderService {
     const { reminderId } = prepared;
     let status: 'sent' | 'failed' | 'uncertain' | 'blocked' = 'sent';
     let reason: string | null = null;
-    try {
-      /* REM-03 / OWN-69: an opt-out is per channel, and it is honoured at dispatch, not only when
-       * the attempt was opened. An email unsubscribe that commits after `prepare` but before the
-       * provider call still stops this email (WhatsApp STOP is re-read inside `sendCustomerText`
-       * at the same point). Each channel reads only its own preference: email never consults the
-       * WhatsApp STOP, and WhatsApp never consults the email opt-out. */
-      if (
-        channel === 'email' &&
-        (await withBusiness(this.db, businessId, (tx) =>
+    /* REM-03 / OWN-69: an opt-out is per channel, and it is honoured at dispatch, not only when the
+     * attempt was opened. An email unsubscribe that commits after `prepare` but before the provider
+     * call still stops this email (WhatsApp STOP is re-read inside `sendCustomerText` at the same
+     * point). Each channel reads only its own preference: email never consults the WhatsApp STOP,
+     * and WhatsApp never consults the email opt-out. The read is outside the provider's error
+     * handling: if it fails, nothing has been sent, so that is a definite non-send, never an
+     * unknown outcome. */
+    let dispatch: 'go' | 'opted_out' | 'not_checked' = 'go';
+    if (channel === 'email') {
+      try {
+        const optedOut = await withBusiness(this.db, businessId, (tx) =>
           remindersRepo.emailOptedOut(tx, businessId, emailSuppressionKey(prepared.email!)),
-        ))
-      ) {
-        status = 'blocked';
-        reason = 'customer_opted_out';
-      } else if (channel === 'email') {
-        const optOut = signReminderOptOut(
-          this.optOutKey,
-          businessId,
-          emailSuppressionKey(prepared.email!),
         );
-        const message = composeEmailReminder(
-          prepared.facts,
-          `${this.config.webUrl}/reminders/opt-out#token=${encodeURIComponent(optOut)}`,
-        );
-        await this.email.send({
-          to: prepared.email!,
-          subject: message.subject,
-          text: message.text,
-          fromName: message.fromName,
-          ...(prepared.replyTo ? { replyTo: prepared.replyTo } : {}),
-          idempotencyKey: `reminder-${reminderId}`,
-        });
-      } else {
-        const outcome = await this.whatsapp.sendCustomerText(businessId, {
-          to: prepared.phone!,
-          text: composeWhatsAppReminder(prepared.facts),
-        });
-        ({ status, reason } = whatsAppResult(outcome));
-      }
-    } catch (error) {
-      if (error instanceof EmailSuppressedError) {
-        status = 'blocked';
-        reason = 'address_suppressed';
-      } else if (error instanceof EmailRefusedError) {
-        status = 'failed';
-        reason = 'send_failed';
-      } else {
-        /* An uncertain email, or anything unexpected: the provider may have the message. Never
-         * resent; the merchant is told it could not be confirmed. Only the failure kind is kept. */
-        status = 'uncertain';
-        reason =
-          error instanceof EmailDeliveryUncertainError ? 'delivery_unconfirmed' : 'unexpected';
-        this.log.warn(`reminder ${reminderId} outcome unknown: ${reason}`);
+        if (optedOut) dispatch = 'opted_out';
+      } catch {
+        dispatch = 'not_checked';
+        this.log.warn(`reminder ${reminderId} not sent: the opt-out could not be re-read`);
       }
     }
-
+    if (dispatch === 'opted_out') {
+      status = 'blocked';
+      reason = 'customer_opted_out';
+    } else if (dispatch === 'not_checked') {
+      status = 'failed';
+      reason = 'send_failed';
+    } else {
+      try {
+        if (channel === 'email') {
+          const optOut = signReminderOptOut(
+            this.optOutKey,
+            businessId,
+            emailSuppressionKey(prepared.email!),
+          );
+          const message = composeEmailReminder(
+            prepared.facts,
+            `${this.config.webUrl}/reminders/opt-out#token=${encodeURIComponent(optOut)}`,
+          );
+          await this.email.send({
+            to: prepared.email!,
+            subject: message.subject,
+            text: message.text,
+            fromName: message.fromName,
+            ...(prepared.replyTo ? { replyTo: prepared.replyTo } : {}),
+            idempotencyKey: `reminder-${reminderId}`,
+          });
+        } else {
+          const outcome = await this.whatsapp.sendCustomerText(businessId, {
+            to: prepared.phone!,
+            text: composeWhatsAppReminder(prepared.facts),
+          });
+          ({ status, reason } = whatsAppResult(outcome));
+        }
+      } catch (error) {
+        if (error instanceof EmailSuppressedError) {
+          status = 'blocked';
+          reason = 'address_suppressed';
+        } else if (error instanceof EmailRefusedError) {
+          status = 'failed';
+          reason = 'send_failed';
+        } else {
+          /* An uncertain email, or anything unexpected: the provider may have the message. Never
+           * resent; the merchant is told it could not be confirmed. Only the failure kind is kept. */
+          status = 'uncertain';
+          reason =
+            error instanceof EmailDeliveryUncertainError ? 'delivery_unconfirmed' : 'unexpected';
+          this.log.warn(`reminder ${reminderId} outcome unknown: ${reason}`);
+        }
+      }
+    }
     const row = await withBusiness(this.db, businessId, async (tx) => {
       await remindersRepo.finishReminder(tx, businessId, reminderId, status, reason);
       return remindersRepo.reminderByKey(tx, businessId, input.idempotencyKey);
