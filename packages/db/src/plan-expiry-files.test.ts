@@ -181,7 +181,7 @@ function assignmentAlternatives(sql: string, key: string): { sql: string[]; buil
       String.raw`\bINSERT${GAP}INTO${GAP}(?:public\.)?"?businesses"?${GAP}\([^)]*(?<![\w$])"?plan"?(?![\w$])[^)]*\)`,
     );
     builderAlts.push(
-      String.raw`\.insert\(\s*(?:\w+\.)*businesses\s*\)${JS_GAP}\.values\(\s*\{(?:[^;]{0,2000}?,)?${JS_GAP}["'\x60]?plan["'\x60]?${JS_GAP}[:,}]`,
+      String.raw`\.insert\(\s*(?:\w+\.)*businesses\s*\)${JS_GAP}\.values\(\s*\[?\s*\{(?:[^;]{0,2000}?,${JS_GAP}\{?)?${JS_GAP}["'\x60]?plan["'\x60]?${JS_GAP}[:,}]`,
     );
   }
   return { sql: sqlAlts, builder: builderAlts.join('|') };
@@ -928,5 +928,20 @@ describe('plan written by a businesses insert (review of e00c46b)', () => {
       0,
     );
     expect(countAssignments('INSERT INTO businesses (pending_plan) VALUES ($1)').plan).toBe(0);
+  });
+});
+
+describe('array-form builder inserts (review of a1eeef8)', () => {
+  it('counts plan named in any row of an array insert, and still counts the object form', () => {
+    expect(countAssignments("tx.insert(businesses).values([{ plan: 'chat' }])").plan).toBe(1);
+    expect(
+      countAssignments("tx.insert(businesses).values([{ name: a }, { name: b, plan: 'chat' }])")
+        .plan,
+    ).toBe(1);
+    expect(countAssignments('tx.insert(businesses).values([{ name: a }, { plan }])').plan).toBe(1);
+    expect(countAssignments("tx.insert(businesses).values({ plan: 'chat' })").plan).toBe(1);
+    expect(countAssignments('tx.insert(businesses).values([{ name: a }, { name: b }])').plan).toBe(
+      0,
+    );
   });
 });
