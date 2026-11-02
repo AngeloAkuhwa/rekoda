@@ -1357,10 +1357,15 @@ export async function billingEmailState(
 export async function recentEmailVerificationRequests(
   tx: TenantDb,
   businessId: string,
-): Promise<{ lastHour: number; sinceLatestMs: number | null }> {
-  const rows = await tx.execute<{ n: number; since_ms: string | number | null }>(sql`
+): Promise<{ lastHour: number; sinceLatestMs: number | null; latestRevision: number | null }> {
+  const rows = await tx.execute<{
+    n: number;
+    since_ms: string | number | null;
+    latest_revision: number | null;
+  }>(sql`
     SELECT count(*) FILTER (WHERE created_at > clock_timestamp() - interval '1 hour')::int AS n,
-           (extract(epoch FROM (clock_timestamp() - max(created_at))) * 1000)::bigint AS since_ms
+           (extract(epoch FROM (clock_timestamp() - max(created_at))) * 1000)::bigint AS since_ms,
+           (array_agg(email_revision ORDER BY created_at DESC))[1] AS latest_revision
     FROM billing_email_verifications
     WHERE business_id = ${businessId}::uuid AND voided_at IS NULL
   `);
@@ -1368,6 +1373,8 @@ export async function recentEmailVerificationRequests(
   return {
     lastHour: Number(row?.n ?? 0),
     sinceLatestMs: row?.since_ms == null ? null : Math.max(0, Number(row.since_ms)),
+    /* The address revision the business's own latest link was issued for (SUB-02a). */
+    latestRevision: row?.latest_revision == null ? null : Number(row.latest_revision),
   };
 }
 

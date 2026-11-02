@@ -107,8 +107,6 @@ export class BillingEmailService {
         await subscriptionsRepo.lockBusiness(tx, businessId);
         let state = await subscriptionsRepo.billingEmailState(tx, businessId);
         let email = state.sealed ? this.open(businessId, state.sealed) : null;
-        /* A request that names a different address than the one already kept. */
-        const switching = given !== null && given !== email;
         if (given && given !== email) {
           await subscriptionsRepo.setBillingEmailSealed(
             tx,
@@ -134,12 +132,15 @@ export class BillingEmailService {
               ? Math.ceil((cooldownMs - recent.sinceLatestMs) / 1000)
               : 0;
         if (businessWait > 0) {
-          /* The business is refusing. For the address it already keeps, report the longer of its
-           * wait and the address's (read without counting), so the next try is not refused again
-           * for the other limit. For a NEW address typed during the cooldown, report only the
-           * business's own wait: otherwise typing addresses would be a free probe of whether other
-           * businesses used them (ADR 0036). */
-          const addressWait = switching
+          /* The business is refusing. Only when its own latest link was issued for the address it
+           * keeps now (it asked for this address itself, and paid a request for it) is the
+           * address's wait folded in, read without counting, so the next try is not refused again
+           * for the other limit. An address switched to during the cooldown, in one step or two
+           * (switch, then ask again), gets only the business's own wait: otherwise typing
+           * addresses would be a free probe of whether other businesses used them (ADR 0036). */
+          const ownAddress =
+            recent.latestRevision !== null && recent.latestRevision === state.revision;
+          const addressWait = !ownAddress
             ? 0
             : await subscriptionsRepo.billingEmailAddressWait(
                 tx,

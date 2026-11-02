@@ -401,6 +401,23 @@ describe('retry guidance is never shorter than the real wait', () => {
     expect(await counted()).toBe(6);
   });
 
+  it('reveals nothing in two steps either: switch to a new address, then ask again', async () => {
+    const ids = await seedBusinesses(6);
+    for (const id of ids.slice(0, 5)) {
+      expect((await emails().requestVerification(id, EMAIL)).state).toBe('sent');
+      await ageEverything(61);
+    }
+    const a = ids[5]!;
+    expect((await emails().requestVerification(a, 'owner1@shop.example.ng')).state).toBe('sent');
+    /* Inside its cooldown, a switches to the used-up address (refused, but the address is kept)
+     * and asks again without naming one. a never asked for EMAIL itself, so it learns nothing. */
+    expect((await emails().requestVerification(a, EMAIL)).state).toBe('rate_limited');
+    const again = await emails().requestVerification(a, undefined);
+    expect(again.state).toBe('rate_limited');
+    if (again.state === 'rate_limited') expect(again.retryAfterSeconds).toBeLessThanOrEqual(60);
+    expect(await counted()).toBe(6);
+  });
+
   it('waits for an uncommitted release instead of refusing on the row it is releasing', async () => {
     const [a, b] = await seedBusinesses(2);
     expect((await emails().requestVerification(a!, EMAIL)).state).toBe('sent');
