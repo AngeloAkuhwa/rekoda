@@ -710,6 +710,43 @@ describe('no transaction is held open while Meta is called (REM-02)', () => {
     }
   });
 
+  it('flags a send Meta accepted (2xx) without returning a message id as sent with the id unrecorded', async () => {
+    const { businessId, connectionId, phoneNumberId } = await seedMerchant('integrate');
+    await openWindow(businessId, connectionId, phoneNumberId);
+    const sender = new StubSender();
+    sender.sendOnConnection = async () => ({ providerMessageId: null });
+
+    const outcome = await serviceWith(sender).sendCustomerText(businessId, {
+      to: CUSTOMER,
+      text: 'hello',
+    });
+
+    expect(outcome).toEqual({
+      outcome: 'sent',
+      unit: 'SERVICE_MESSAGE',
+      providerIdUnrecorded: true,
+    });
+    expect(await used(businessId, 'SERVICE_MESSAGE')).toBe(1);
+  });
+
+  it('flags a 2xx with no message id the same way for a caller passing its own transaction', async () => {
+    const { businessId, connectionId, phoneNumberId } = await seedMerchant('integrate');
+    await openWindow(businessId, connectionId, phoneNumberId);
+    const sender = new StubSender();
+    sender.sendOnConnection = async () => ({ providerMessageId: null });
+    const custom = serviceWith(sender);
+
+    const outcome = await withBusiness(db, businessId, (tx) =>
+      custom.sendCustomerText(businessId, { to: CUSTOMER, text: 'hello' }, tx),
+    );
+
+    expect(outcome).toEqual({
+      outcome: 'sent',
+      unit: 'SERVICE_MESSAGE',
+      providerIdUnrecorded: true,
+    });
+  });
+
   it('names the outbound row and the error class, never the text, when recording after Meta accepted it fails', async () => {
     const { businessId, connectionId, phoneNumberId } = await seedMerchant('integrate');
     await openWindow(businessId, connectionId, phoneNumberId);

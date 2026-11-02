@@ -329,6 +329,13 @@ export class WabaTemplateService {
       );
       return { outcome: 'sent', unit: 'SERVICE_MESSAGE', providerIdUnrecorded: true };
     }
+    if (!providerMessageId) {
+      /* Meta answered 2xx (it accepted the message) but returned no message id: the message is
+       * sent and the unit stays spent, but no delivery report can be matched to the row. Said
+       * the same way as a failed id write, so the history shows the id is missing. */
+      this.log.warn(`customer text sent without a provider id (outbound ${reserved.recordedId})`);
+      return { outcome: 'sent', unit: 'SERVICE_MESSAGE', providerIdUnrecorded: true };
+    }
     return { outcome: 'sent', unit: 'SERVICE_MESSAGE' };
   }
 
@@ -343,7 +350,9 @@ export class WabaTemplateService {
     try {
       const result = await this.sender.sendOnConnection(reserved.message);
       await this.customerTextSent(tx, businessId, reserved, result.providerMessageId);
-      return { outcome: 'sent', unit: 'SERVICE_MESSAGE' };
+      return result.providerMessageId
+        ? { outcome: 'sent', unit: 'SERVICE_MESSAGE' }
+        : { outcome: 'sent', unit: 'SERVICE_MESSAGE', providerIdUnrecorded: true };
     } catch (error) {
       if (error instanceof SendFailed) {
         await this.customerTextFailed(tx, businessId, reserved, error);
