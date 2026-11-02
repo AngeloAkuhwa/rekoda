@@ -167,13 +167,24 @@ const JS_GAP = String.raw`(?:\s|//[^\n]*(?:\n|$)|/\*(?:[^*]|\*(?!/))*\*/)*`;
  *     that in one object literal is not seen (documented limit).
  */
 function assignmentAlternatives(sql: string, key: string): { sql: string[]; builder: string } {
-  return {
-    sql: [
-      String.raw`(?:\bSET|,)${GAP}(?:"?\w+"?\.)?"?${sql}"?${GAP}=(?![=>])`,
-      String.raw`(?:\bSET|,)${GAP}\([^)]*(?<![\w$])${sql}(?![\w$])[^)]*\)${GAP}=(?![=>])`,
-    ],
-    builder: String.raw`\.set\(\s*\{(?:[^;]{0,2000}?,)?${JS_GAP}["'\x60]?${key}["'\x60]?${JS_GAP}[:,}]`,
-  };
+  const sqlAlts = [
+    String.raw`(?:\bSET|,)${GAP}(?:"?\w+"?\.)?"?${sql}"?${GAP}=(?![=>])`,
+    String.raw`(?:\bSET|,)${GAP}\([^)]*(?<![\w$])${sql}(?![\w$])[^)]*\)${GAP}=(?![=>])`,
+  ];
+  const builderAlts = [
+    String.raw`\.set\(\s*\{(?:[^;]{0,2000}?,)?${JS_GAP}["'\x60]?${key}["'\x60]?${JS_GAP}[:,}]`,
+  ];
+  // A businesses INSERT that names `plan` writes it too. Only for `plan`: a new file inserting the expiry
+  // already fails the name check, and the trial insert's expiry is held by the file list.
+  if (sql === 'plan') {
+    sqlAlts.push(
+      String.raw`\bINSERT${GAP}INTO${GAP}(?:public\.)?"?businesses"?${GAP}\([^)]*(?<![\w$])"?plan"?(?![\w$])[^)]*\)`,
+    );
+    builderAlts.push(
+      String.raw`\.insert\(\s*(?:\w+\.)*businesses\s*\)${JS_GAP}\.values\(\s*\{(?:[^;]{0,2000}?,)?${JS_GAP}["'\x60]?plan["'\x60]?${JS_GAP}[:,}]`,
+    );
+  }
+  return { sql: sqlAlts, builder: builderAlts.join('|') };
 }
 const EXPIRY_ALT = assignmentAlternatives('plan_expires_at', 'plan_?expires_?at');
 const SQL_ASSIGNMENT = new RegExp(EXPIRY_ALT.sql.join('|'), 'i');
@@ -897,5 +908,25 @@ describe('multi-dot test file names (review of 550bd19)', () => {
     expect(isTestFile('src/a.spec.d.ts')).toBe(true);
     expect(isTestFile('src/a.ts')).toBe(false);
     expect(isTestFile('src/contest.d.ts')).toBe(false);
+  });
+});
+
+describe('plan written by a businesses insert (review of e00c46b)', () => {
+  it('counts a SQL or builder insert into businesses that names plan', () => {
+    expect(countAssignments('INSERT INTO businesses (name, plan) VALUES ($1, $2)').plan).toBe(1);
+    expect(countAssignments("tx.insert(businesses).values({ name: n, plan: 'chat' })").plan).toBe(
+      1,
+    );
+    expect(countAssignments('tx.insert(schema.businesses).values({ plan })').plan).toBe(1);
+  });
+
+  it('does not count an insert that leaves plan to the column default, or names pending_plan', () => {
+    expect(
+      countAssignments('INSERT INTO businesses (name, owner_user_id) VALUES ($1, $2)').plan,
+    ).toBe(0);
+    expect(countAssignments('tx.insert(businesses).values({ id, name, planExpiresAt })').plan).toBe(
+      0,
+    );
+    expect(countAssignments('INSERT INTO businesses (pending_plan) VALUES ($1)').plan).toBe(0);
   });
 });
