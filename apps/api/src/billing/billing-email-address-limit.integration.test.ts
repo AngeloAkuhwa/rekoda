@@ -361,7 +361,24 @@ describe('retry guidance is never shorter than the real wait', () => {
     });
   });
 
-  it('reports the longer wait when the business is in its cooldown and the address used its hour', async () => {
+  it('reports the longer wait when the business is in its cooldown and its address used its hour', async () => {
+    const ids = await seedBusinesses(5);
+    for (const id of ids.slice(0, 4)) {
+      expect((await emails().requestVerification(id, EMAIL)).state).toBe('sent');
+      await ageEverything(61);
+    }
+    const a = ids[4]!;
+    /* a's own request is the address's fifth this hour, and a is now inside its own cooldown. */
+    expect((await emails().requestVerification(a, EMAIL)).state).toBe('sent');
+    expect(await emails().requestVerification(a, undefined)).toEqual({
+      state: 'rate_limited',
+      retryAfterSeconds: 3600,
+    });
+    /* Reporting the wait counted nothing against the address. */
+    expect(await counted()).toBe(5);
+  });
+
+  it('reveals nothing about a NEW address while the business is in its own cooldown', async () => {
     const ids = await seedBusinesses(6);
     for (const id of ids.slice(0, 5)) {
       expect((await emails().requestVerification(id, EMAIL)).state).toBe('sent');
@@ -369,12 +386,18 @@ describe('retry guidance is never shorter than the real wait', () => {
     }
     const a = ids[5]!;
     expect((await emails().requestVerification(a, 'owner1@shop.example.ng')).state).toBe('sent');
-    /* a is inside its own 60 s cooldown AND the address has used its five this hour. */
-    expect(await emails().requestVerification(a, EMAIL)).toEqual({
-      state: 'rate_limited',
-      retryAfterSeconds: 3600,
-    });
-    /* Reporting the wait counted nothing against the address. */
+    /* Inside its cooldown, a types an address another business used up, then one nobody used.
+     * Both answers must be a's own wait: switching addresses during the cooldown is not a free
+     * probe of other businesses' use. */
+    const used = await emails().requestVerification(a, EMAIL);
+    const fresh = await emails().requestVerification(a, 'nobody@shop.example.ng');
+    expect(used.state).toBe('rate_limited');
+    expect(fresh.state).toBe('rate_limited');
+    if (used.state === 'rate_limited' && fresh.state === 'rate_limited') {
+      expect(used.retryAfterSeconds).toBeLessThanOrEqual(60);
+      expect(fresh.retryAfterSeconds).toBeLessThanOrEqual(60);
+    }
+    expect(mail.outbox).toHaveLength(6);
     expect(await counted()).toBe(6);
   });
 

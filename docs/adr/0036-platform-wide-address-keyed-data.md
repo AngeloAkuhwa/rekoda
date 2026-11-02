@@ -54,6 +54,10 @@ hold:
     hour (it is refused with no request of its own).
   - From suppression: whether the address has bounced or complained.
 
+  The signal costs a real request every time: a business inside its own cooldown that types a NEW
+  address is told only its own wait, so it cannot probe addresses for free. Only for the address it
+  already keeps is the address's wait folded into the answer.
+
   No business, count, time or identity is revealed. The refusal is the same shape as a business's
   own, and its retry time is fixed (60 s or 3600 s), never "N seconds since another business
   asked". Any cross-business limit gives at least this signal.
