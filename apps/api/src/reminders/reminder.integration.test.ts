@@ -1122,7 +1122,12 @@ describe('channel-specific opt-outs (OD-34)', () => {
       sql`SELECT (SELECT count(*) FROM customer_email_optouts)::text AS email,
                  (SELECT count(*) FROM customer_message_optouts WHERE opted_out_at IS NOT NULL)::text AS stop`,
     ).then(([r]) => ({ email: Number(r!.email), stop: Number(r!.stop) }));
-  /** A WhatsApp double that consults the real STOP table, as the real sender does. */
+  /**
+   * A WhatsApp double that reads the STOP table with a fixed key. It proves the reminder service
+   * never lets a STOP touch the email path; it does NOT prove the production sender's key
+   * derivation, which `waba-templates.integration.test.ts` and `customer-consent.integration.test.ts`
+   * cover (STOP ingestion and template-send suppression).
+   */
   const consulting = (businessId: string): ReminderWhatsApp => ({
     async sendCustomerText(_b, input) {
       whatsappCalls.push(input);
@@ -1165,7 +1170,7 @@ describe('channel-specific opt-outs (OD-34)', () => {
     expect(whatsappCalls).toHaveLength(1);
   });
 
-  it('a WhatsApp STOP stops WhatsApp, leaves email eligible, and writes no unsubscribe', async () => {
+  it('a recorded STOP is read only by the WhatsApp check: email stays eligible and no unsubscribe is written', async () => {
     const s = await seed();
     await approvePhone(s);
     await stop(s);
@@ -1204,11 +1209,41 @@ describe('channel-specific opt-outs (OD-34)', () => {
     expect((await viaConsulting(b, 'whatsapp')).status).toBe('sent');
   });
 
-  it("an unsubscribe is for that address only: another customer's email still gets a reminder", async () => {
+  it('an unsubscribe is for that address only: another customer of the same merchant still gets a reminder', async () => {
     const a = await seed();
     await unsubscribe(a);
-    const other = await seed({ email: 'someone.else@customer.example.ng' });
-    await approvePhone(other);
-    expect((await viaConsulting(other, 'email')).status).toBe('sent');
+    const other = await customersRepo.createCustomerWithIdentities(appDb, a.businessId, 'X82', [
+      {
+        facet: 'email',
+        ciphertext: encryptFacet(
+          'someone.else@customer.example.ng',
+          config.vaultKey,
+          `${a.businessId}:email`,
+        ),
+        matchKey: null,
+      },
+    ]);
+    const sale = await withBusiness(appDb, a.businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId: a.businessId,
+        customerId: other.id,
+        customerToken: 'CUSTOMER_X82',
+        items: [{ name: 'gown', quantity: 1, unitPriceK: 8_000_000 }],
+        subtotalK: 8_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 8_000_000,
+        paidK: 0,
+        balanceDueK: 8_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: `draft-other-${seq}`,
+        actor: 'system',
+      }),
+    );
+    const second = { ...a, invoiceNumber: sale.invoiceNumber, invoiceId: sale.invoiceId };
+    expect((await viaConsulting(second, 'email')).status).toBe('sent');
+    expect((await viaConsulting(a, 'email')).status).toBe('blocked');
   });
 });
