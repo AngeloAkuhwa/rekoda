@@ -19,6 +19,7 @@ import { addMonth, GRACE_DAYS, PLAN_PRICES_K, usagePeriod } from '@rekoda/core';
 import {
   billingCancelResponse,
   billingOverviewResponse,
+  usageMeterResponse,
   billingQuoteResponse,
 } from '@rekoda/contracts';
 import {
@@ -160,6 +161,36 @@ describe('the guardrail', () => {
 });
 
 describe('what a new merchant sees', () => {
+  it('says a trial that ran out without a payment ended as a trial, not as a subscription', async () => {
+    const { businessId, auth } = await onboard('+2348177100094');
+    await withBusiness(ownerDb, businessId, (tx) =>
+      tx.execute(
+        sql`UPDATE businesses SET plan_expires_at = now() - interval '1 day' WHERE id = ${businessId}::uuid`,
+      ),
+    );
+    const overview = await overviewOf(auth);
+    expect(overview.status).toMatchObject({ state: 'expired', wasTrial: true });
+  });
+
+  it('never tells a merchant who paid that their free trial ended, whatever the origin column says', async () => {
+    /* subscription_origin can be NULL for a payer: an operator move to expired clears it, and rows
+     * lapsed before migration 0167 were never backfilled. The stored plan decides (G-65, lapseOf). */
+    const { businessId, auth } = await onboard('+2348177100095');
+    await putOnPlan(
+      businessId,
+      'chat',
+      new Date(Date.now() - 40 * 86_400_000),
+      new Date(Date.now() - 86_400_000),
+    );
+    await withBusiness(ownerDb, businessId, (tx) =>
+      tx.execute(
+        sql`UPDATE businesses SET plan = 'expired', subscription_origin = NULL WHERE id = ${businessId}::uuid`,
+      ),
+    );
+    const overview = await overviewOf(auth);
+    expect(overview.status).toMatchObject({ state: 'expired', wasTrial: false });
+  });
+
   it('reads as a trial, priced at nothing, with no packs to buy', async () => {
     const { auth } = await onboard('+2348177100002');
     const overview = await overviewOf(auth);
@@ -1231,6 +1262,8 @@ describe('the grace period', () => {
     const overview = await overviewOf(auth);
     expect(overview.plan).toBe('expired');
     expect(overview.status.state).toBe('expired');
+    /* A paid plan that lapsed is not a trial that ended: the page words them differently. */
+    expect(overview.status).toMatchObject({ wasTrial: false });
 
     // And it stops sweeping: an expired merchant is not reminded forever.
     expect(await sweepGracePeriods(deps, dayAfterFailure(GRACE_DAYS + 1))).toEqual({
@@ -1363,6 +1396,36 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
       pinned: (await overviewOf(pinnedAuth)).priceK,
       fresh: (await overviewOf(freshAuth)).priceK,
     }).toEqual({ pinned: 990_000, fresh: 1_490_000 });
+  });
+
+  it('the dashboard meter quotes the same ceiling as the billing page (SUB-05)', async () => {
+    /* A merchant who joins after Chat v2 goes on sale is metered at v2's allowance. The dashboard
+     * meter reads /v1/payments/usage; if it worked its ceiling out from the code constants it would
+     * show v1's 400 while the meter enforces 300. */
+    await planCatalogueRepo.publishPlanVersion(ownerDb, {
+      planId: 'chat',
+      name: 'Rekoda Chat',
+      seats: 1,
+      effectiveFrom: new Date(),
+      entitlements: ['REKODA_CHAT'],
+      allowances: { AI_ACTIONS: 300, DOCUMENT_GENERATION: 100 },
+      prices: [{ currency: 'NGN', billingInterval: 'monthly', amountMinor: 1_490_000 }],
+    });
+    const { businessId, auth } = await onboard('+2348177100093');
+    await putOnPlan(businessId, 'chat', new Date(), new Date(Date.now() + 30 * 86_400_000));
+
+    const billing = await overviewOf(auth);
+    const meter = usageMeterResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/payments/usage', headers: auth })).json(),
+    );
+    expect(billing.units.find((row) => row.unit === 'AI_ACTIONS')?.allowance).toBe(300);
+    for (const row of billing.units) {
+      const dashboard = meter.units.find((u) => u.unit === row.unit);
+      expect({ unit: row.unit, allowance: dashboard?.allowance }).toEqual({
+        unit: row.unit,
+        allowance: row.allowance,
+      });
+    }
   });
 
   it('the data path and the constant path quote one another exactly', async () => {

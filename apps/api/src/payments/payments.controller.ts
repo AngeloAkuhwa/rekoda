@@ -21,7 +21,7 @@ import {
   ServiceUnavailableException,
   UseGuards,
 } from '@nestjs/common';
-import { usagePeriod } from '@rekoda/core';
+import { USAGE_UNITS, usagePeriod } from '@rekoda/core';
 import {
   submitMerchantKeyRequest,
   type SubmitMerchantKeyResponse,
@@ -35,6 +35,8 @@ import type {
 import { settleRepo, usageRepo, withBusiness, type Db } from '@rekoda/db';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
+import { meterAllowances } from '../billing/plan-terms.js';
+import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
 import { PaymentConnectionsService } from './connections.service.js';
 
@@ -44,6 +46,7 @@ export class PaymentsController {
   constructor(
     @Inject(PaymentConnectionsService) private readonly connections: PaymentConnectionsService,
     @Inject(DB) private readonly db: Db,
+    @Inject(CONFIG) private readonly config: ApiConfig,
   ) {}
 
   @Get('connection')
@@ -166,19 +169,36 @@ export class PaymentsController {
     return { resolved: true };
   }
 
-  /** This month's meter, so the dashboard can show usage without guessing. */
+  /**
+   * This month's meter, so the dashboard can show usage without guessing. Each unit's ceiling comes
+   * from the same source the billing page and the meter use (meterAllowances: the business's
+   * catalogue version and held add-ons), never from code constants in the browser (SUB-05).
+   */
   @Get('usage')
   async usage(@Req() request: AuthedRequest): Promise<{
     period: string;
     plan: string;
-    units: Array<{ unit: string; used: number; bonus: number }>;
+    units: Array<{ unit: string; used: number; allowance: number; bonus: number }>;
   }> {
     const businessId = request.auth!.businessId;
-    const period = usagePeriod(new Date());
-    return withBusiness(this.db, businessId, async (tx) => ({
-      period,
-      plan: await usageRepo.planFor(tx, businessId),
-      units: await usageRepo.usageFor(tx, businessId, period),
-    }));
+    const now = new Date();
+    const period = usagePeriod(now);
+    return withBusiness(this.db, businessId, async (tx) => {
+      const plan = await usageRepo.planFor(tx, businessId, now);
+      const counters = new Map(
+        (await usageRepo.usageFor(tx, businessId, period)).map((row) => [row.unit, row]),
+      );
+      const allowances = await meterAllowances(this.config, tx, businessId, plan, now);
+      return {
+        period,
+        plan,
+        units: USAGE_UNITS.map((unit) => ({
+          unit,
+          used: counters.get(unit)?.used ?? 0,
+          allowance: allowances[unit],
+          bonus: counters.get(unit)?.bonus ?? 0,
+        })),
+      };
+    });
   }
 }
