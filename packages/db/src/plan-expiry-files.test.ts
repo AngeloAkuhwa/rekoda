@@ -283,7 +283,7 @@ const SKIP_DIR = new Set(['node_modules', 'dist', '.next', '.turbo', 'coverage',
 
 /** Fixtures and specs set the column up on purpose; they are not product paths. */
 export function isTestFile(path: string): boolean {
-  return /\.(?:test|spec)\.[a-z]+$/.test(path) || path.split('/').includes('e2e');
+  return /\.(?:test|spec)(?:\.[a-z]+)+$/.test(path) || path.split('/').includes('e2e');
 }
 
 export interface ScannedFile {
@@ -888,5 +888,14 @@ describe('arrow functions are not assignments (review of 92d55de)', () => {
     expect(countAssignments('run(x, (plan) => y)').plan).toBe(0);
     expect(countAssignments('run(x, (plan_expires_at) => y)').expiry).toBe(0);
     expect(countAssignments('UPDATE businesses SET plan = $1').plan).toBe(1);
+  });
+});
+
+describe('multi-dot test file names (review of 550bd19)', () => {
+  it('treats foo.test.d.ts and foo.spec.d.ts as test files, not product source', () => {
+    expect(isTestFile('src/a.test.d.ts')).toBe(true);
+    expect(isTestFile('src/a.spec.d.ts')).toBe(true);
+    expect(isTestFile('src/a.ts')).toBe(false);
+    expect(isTestFile('src/contest.d.ts')).toBe(false);
   });
 });
