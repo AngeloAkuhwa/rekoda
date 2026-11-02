@@ -147,24 +147,32 @@ const MENTION = /plan_?expires/i;
 // Whitespace or SQL comments (line comments or block comments) between tokens. A block comment ends at the
 // FIRST `*/`: a lazy `[\s\S]*?` can extend past it, and on a large file that backtracks combinatorially.
 const GAP = String.raw`(?:\s|--[^\n]*(?:\n|$)|/\*(?:[^*]|\*(?!/))*\*/)*`;
-/** `SET plan_expires_at = x` or `, plan_expires_at = x` (quoted or qualified too). A `WHERE`/`AND` equality predicate, `<=`, `>=`, `!=` and `==` do not match. */
-const SQL_ASSIGNMENT = new RegExp(
-  [
-    // SET plan_expires_at = x, or , "t"."plan_expires_at" = x
-    String.raw`(?:\bSET|,)${GAP}(?:"?\w+"?\.)?"?plan_expires_at"?${GAP}=(?!=)`,
-    // SET (a, plan_expires_at) = (x, y), a tuple assignment
-    String.raw`(?:\bSET|,)${GAP}\([^)]*(?<![\w$])plan_expires_at(?![\w$])[^)]*\)${GAP}=(?!=)`,
-  ].join('|'),
-  'i',
-);
-/** A query-builder `.set({ ..., planExpiresAt: x })` or shorthand `.set({ planExpiresAt })`, whatever the table expression is called. */
-// The column must be a property KEY (first in the object, or after a comma), possibly quoted and
-// possibly after JS comments, and not a value. Shorthand is a key too.
+// The same, for JS and TS: `//` line comments and block comments, ended at the first `*/`.
 const JS_GAP = String.raw`(?:\s|//[^\n]*(?:\n|$)|/\*(?:[^*]|\*(?!/))*\*/)*`;
-const BUILDER_ASSIGNMENT = new RegExp(
-  String.raw`\.set\(\s*\{(?:[^{}]*,)?${JS_GAP}["'\x60]?plan_?expires_?at["'\x60]?${JS_GAP}[:,}]`,
-  'i',
-);
+
+/**
+ * The three ways a column is assigned, built once and shared by the listed-file checks and the assignment
+ * pins so the two cannot drift. `sql` is the column name as it appears in SQL, `key` as an object key
+ * (either spelling).
+ *  1. `SET col = x` or `, "t"."col" = x`, with SQL comments allowed before the column and before `=`.
+ *     A `WHERE`/`AND` equality predicate, `<=`, `>=`, `!=` and `==` do not match.
+ *  2. a tuple assignment `SET (a, col) = (x, y)`.
+ *  3. a query-builder `.set({ ... })` where the column is a property KEY: first in the object or after a
+ *     comma, possibly quoted, possibly after JS comments, shorthand included, and not a value (`x: col`).
+ *     The prefix is bounded to one statement (no `;`) and 400 characters so it stays linear.
+ */
+function assignmentAlternatives(sql: string, key: string): { sql: string[]; builder: string } {
+  return {
+    sql: [
+      String.raw`(?:\bSET|,)${GAP}(?:"?\w+"?\.)?"?${sql}"?${GAP}=(?!=)`,
+      String.raw`(?:\bSET|,)${GAP}\([^)]*(?<![\w$])${sql}(?![\w$])[^)]*\)${GAP}=(?!=)`,
+    ],
+    builder: String.raw`\.set\(\s*\{(?:[^;]{0,400}?,)?${JS_GAP}["'\x60]?${key}["'\x60]?${JS_GAP}[:,}]`,
+  };
+}
+const EXPIRY_ALT = assignmentAlternatives('plan_expires_at', 'plan_?expires_?at');
+const SQL_ASSIGNMENT = new RegExp(EXPIRY_ALT.sql.join('|'), 'i');
+const BUILDER_ASSIGNMENT = new RegExp(EXPIRY_ALT.builder, 'i');
 /** Whole-file hints that the businesses table is written: an UPDATE or an INSERT, builder or raw. */
 const UPDATE_HINT = /\.update\(\s*businesses\s*\)|\bUPDATE\s+(?:public\.)?"?businesses"?\b/i;
 const INSERT_HINT = /\.insert\(\s*businesses\s*\)|\bINSERT\s+INTO\s+(?:public\.)?"?businesses"?\b/i;
@@ -207,14 +215,13 @@ export const PINS: Readonly<Record<string, Pin>> = {
   },
 };
 
-const ASSIGN = (col: string): string =>
-  [
-    String.raw`(?:\bSET|,)${GAP}(?:"?\w+"?\.)?"?${col}"?\s*=(?!=)`,
-    String.raw`(?:\bSET|,)${GAP}\([^)]*(?<![\w$])${col}(?![\w$])[^)]*\)\s*=(?!=)`,
-    // a query-builder .set({ ..., col: x }), also shorthand `{ col }`, a quoted key, after a spread or a
-    // nested object. Bounded to the same statement (no `;`) and 400 characters, so it stays linear.
-    String.raw`\.set\(\s*\{[^;]{0,400}?(?<![\w$.])["'\x60]?${col === 'plan' ? 'plan' : 'plan_?expires_?at'}["'\x60]?\s*[:,}]`,
-  ].join('|');
+const ASSIGN = (col: 'plan' | 'plan_expires_at'): string => {
+  const alt =
+    col === 'plan'
+      ? assignmentAlternatives('plan', 'plan')
+      : assignmentAlternatives('plan_expires_at', 'plan_?expires_?at');
+  return [...alt.sql, alt.builder].join('|');
+};
 
 function count(re: RegExp, text: string): number {
   return (text.match(re) ?? []).length;
@@ -816,5 +823,27 @@ describe('builder assignments and comment patterns (review of 073f828)', () => {
     checkPlanExpiryFiles([{ path: 'src/r.ts', text: `${many}plan_expires_at` }], allowed);
     countAssignments(adjacent + many);
     expect(Date.now() - started).toBeLessThan(1_000);
+  });
+});
+
+describe('shared assignment patterns (review of 073f828)', () => {
+  const counts = (text: string) => countAssignments(text);
+
+  it('sees SQL comments between the column and the equals sign, for both columns', () => {
+    expect(counts('UPDATE businesses SET plan /* why */ = $1').plan).toBe(1);
+    expect(counts('UPDATE businesses SET plan_expires_at -- why\n = $1').expiry).toBe(1);
+  });
+
+  it('sees quoted, shorthand and commented keys for both columns', () => {
+    expect(counts("tx.update(b).set({ 'plan_expires_at': x })").expiry).toBe(1);
+    expect(counts('tx.update(b).set({ plan_expires_at })').expiry).toBe(1);
+    expect(counts('tx.update(b).set({ /* why */ plan_expires_at: x })').expiry).toBe(1);
+    expect(counts('tx.update(b).set({ /* why */ plan: x })').plan).toBe(1);
+  });
+
+  it('does not read a VALUE named plan or plan_expires_at as a key', () => {
+    expect(counts('tx.update(b).set({ x: plan })')).toMatchObject({ plan: 0 });
+    expect(counts('tx.update(b).set({ x: plan, y: z })')).toMatchObject({ plan: 0 });
+    expect(counts('tx.update(b).set({ x: plan_expires_at })')).toMatchObject({ expiry: 0 });
   });
 });
