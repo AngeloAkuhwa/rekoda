@@ -91,6 +91,9 @@ describe('reading a photographed receipt through the vision model', () => {
     await reader().extract(PHOTO, 'image/jpeg');
     expect(lastHeaders['x-api-key']).toBe('sk-ant-test');
     expect(lastHeaders.authorization).toBeUndefined();
+    // API version 2026-10-21 answers 400 to any sampling parameter.
+    const sent = JSON.parse(lastBody) as Record<string, unknown>;
+    for (const key of ['temperature', 'top_p', 'top_k']) expect(sent, key).not.toHaveProperty(key);
     expect(lastHeaders['anthropic-version']).toBe('2026-10-21');
   });
 

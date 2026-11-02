@@ -134,6 +134,14 @@ describe('the Anthropic transport', () => {
     expect(seen.authorization).toBeUndefined();
   });
 
+  it('sends no sampling parameters, which API version 2026-10-21 refuses with a 400', async () => {
+    respond = json(ANSWER);
+    await transport().send(REQUEST);
+    for (const key of ['temperature', 'top_p', 'top_k']) {
+      expect(bodies[0], key).not.toHaveProperty(key);
+    }
+  });
+
   it('pins the API version the SDK speaks, so an SDK bump that changes it is a reviewed event', async () => {
     /* SDK 1.0 moved the default `anthropic-version` to 2026-10-21 (a breaking
      * change in the changelog). A gateway or a replayed fixture that expects
