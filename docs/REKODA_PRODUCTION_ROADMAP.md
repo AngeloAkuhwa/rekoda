@@ -55,7 +55,7 @@ Central Admin UI; supplier identity unification and supplier page (G-33); cart s
 
 ## Assessment 2: full public launch
 
-**Not before P0 and P1 are done: realistically two to three months, dominated by external parties (Paystack, Meta App Review, tax advice).** Required in addition to the beta list: Paystack confirmation and a successful real-money drill with refund and dispute handling verified (P1-1, P1-2), the subscription lifecycle proven on staging and with a real provider (P1-3), the database control on plan state (P1-4), key rotation (P1-5), enforced retention and erasure plus complete audit rows (P1-6), sign-in resilience (P1-7), App Review (P1-8), tax and legal sign-off (P1-9), verified monitoring and on-call (P1-10), load testing (P1-11). Production deployment needs the owner's explicit instruction at that point.
+**Not before P0 and P1 are done: realistically two to three months, dominated by external parties (Paystack, Meta App Review, tax advice).** Required in addition to the beta list: Paystack confirmation and a successful real-money drill with refund and dispute handling verified (P1-1, P1-2), the subscription lifecycle proven on staging and with a real provider (P1-3), the database control on plan state (P1-4), key rotation (P1-5), enforced retention and erasure plus complete audit rows (P1-6), sign-in resilience (P1-7), App Review (P1-8), tax and legal sign-off (P1-9), verified monitoring and on-call (P1-10), load testing (P1-11), and an explicit owner ruling on point-in-time recovery: WAL archiving built, or the nightly-dump-only risk accepted in writing for public launch (P0-2, OD-7, `docs/safety-review.md` G12). Production deployment needs the owner's explicit instruction at that point.
 
 ## Critical path
 
