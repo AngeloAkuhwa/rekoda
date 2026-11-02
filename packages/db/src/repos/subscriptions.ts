@@ -2003,6 +2003,7 @@ export async function markTrialNoticeUndelivered(
           trial_notice_failed_at = ${now.toISOString()}::timestamptz, updated_at = now()
       WHERE id = ${businessId}::uuid
         AND trial_notice_provider_message_id = ${providerMessageId}
+        -- 'unknown' is defensive: an unknown attempt never records a wamid, so only 'sent' matches today.
         AND trial_notice_state IN ('sent', 'unknown')
       RETURNING 1
     )

@@ -36,7 +36,8 @@ import type { JobContext, JobHandler } from './runner.js';
  * owner's phone has exactly one membership (`resolveBusiness`; otherwise it is stored with no
  * business and no job runs), and its wamid is the one recorded when Meta accepted it. That
  * reminder is marked 'undelivered' in the same transaction; the stage is not resent. If this job
- * dies, `reconcileDeadReceipts` applies the same update. A failure that arrives before the sweep
+ * dies, `reconcileDeadReceipts` applies the same update the next time that owner writes in (an
+ * owner who never writes back keeps 'sent'). A failure that arrives before the sweep
  * has recorded the wamid matches nothing and is not retried: the reminder stays 'sent'.
  */
 export function deliveryStatusHandler(): JobHandler {
