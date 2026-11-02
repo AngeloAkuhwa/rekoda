@@ -40,6 +40,19 @@ into the current delivery scope.
 7. Do not invent product or financial rules. Ask the owner when a decision is required.
 8. Do not perform live payments, real customer messaging or production deployment without explicit
    authorization.
+9. **PR freshness (owner, 2 Nov 2026; permanent).** Keep every open PR current with `origin/main`:
+   - Fetch `origin/main` and compare before starting work on a PR, before requesting review, and
+     again immediately before merging. If `main` has moved, synchronise and rerun the required
+     checks on the exact final head; checks from an earlier head never count.
+   - While a PR is open, check for new `main` commits periodically, and after any other PR merges
+     assess at once whether the remaining open PRs need updating.
+   - Synchronise with a normal merge from `origin/main`. Rebase or force-push only a private branch
+     where rewriting is safe, never a shared one. Resolve conflicts by reading both changes and
+     keeping the intent of each; never overwrite another contributor's work.
+   - A PR that is already up to date is left alone: no empty or synchronisation-only commits and no
+     synchronisation-only PRs.
+   - Every handoff report states, per open PR: base SHA, PR head SHA, synchronisation status and the
+     latest CI result on that head.
 
 ### A2. Priority 0: establish the current state
 
