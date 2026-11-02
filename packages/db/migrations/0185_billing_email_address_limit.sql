@@ -12,7 +12,8 @@
 --   * neither application role may touch it directly. `rekoda_app` reaches it only through the two
 --     SECURITY DEFINER functions below, from inside the request's tenant transaction; `rekoda_worker`
 --     has no access at all;
---   * rows are useful for one hour and are pruned after a day.
+--   * rows are useful for one hour; each later claim removes rows older than a day (its own
+--     address's, and up to 100 others'), so old rows go as new requests arrive, not on a timer.
 --
 -- Owner rulings encoded by the caller's figures: at most 5 requests an hour per address and at least
 -- 60 seconds between requests. A request is counted when its link is issued, in the same

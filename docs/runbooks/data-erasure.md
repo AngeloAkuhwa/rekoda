@@ -154,10 +154,19 @@ excluded from the function's own delete loop for that reason.
 `billing_email_address_requests` counts billing-email confirmation requests per
 address across businesses. It holds a keyed hash of the address and a time, no
 address and no business id, so a business deletion has nothing there to find.
-Rows are pruned after a day by the counter itself. To erase one address sooner
-on request, derive its key with the service's `MATCH_KEY`
-(`billingEmailAddressKeyFor(address, MATCH_KEY)` in `@rekoda/core/vault`; the
-address is trimmed and lower-cased first) and delete as the owner:
+Rows older than a day are removed as later requests arrive (not on a timer).
+To erase one address on request, or to clear an address whose hourly allowance
+another business used up (ADR 0036, OD-39), derive its key ON THE API HOST,
+where `MATCH_KEY` already lives (never copy `MATCH_KEY` to a workstation;
+`docs/runbooks/key-rotation.md`, Custody). From the API image's working
+directory, with the address read from a prompt so it never enters shell
+history:
+
+```sh
+node -e "const rl=require('node:readline').createInterface({input:process.stdin,output:process.stderr});rl.question('address: ',a=>{import('@rekoda/core/vault').then(v=>{console.log(v.billingEmailAddressKeyFor(a,process.env.MATCH_KEY));rl.close();});});"
+```
+
+The address is trimmed and lower-cased by the function. Then, as the owner:
 
 ```sql
 DELETE FROM billing_email_address_requests WHERE address_key = '<key>';

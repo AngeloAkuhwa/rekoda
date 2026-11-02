@@ -194,7 +194,9 @@ describe('billing email and confirmation wording', () => {
         /you have asked|several links|was only just sent|check your inbox/i,
       );
       expect(message).not.toMatch(/\b1 minutes\b/);
-      expect(message).toMatch(/cannot send another confirmation link just yet/);
+      expect(message).toMatch(/cannot send a confirmation link to this address just yet/);
+      /* "another" would imply this merchant was already sent one. */
+      expect(message).not.toMatch(/\banother\b/);
     }
     expect(emailVerifyCopy({ state: 'rate_limited', retryAfterSeconds: 60 }).message).toMatch(
       /in a minute\./,

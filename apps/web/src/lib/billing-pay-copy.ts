@@ -240,8 +240,8 @@ export function emailVerifyCopy(answer: BillingEmailVerifyResponse): {
         ok: false,
         message:
           minutes <= 1
-            ? 'We cannot send another confirmation link just yet. Please try again in a minute.'
-            : `We cannot send another confirmation link just yet. Please try again in about ${minutes} minutes.`,
+            ? 'We cannot send a confirmation link to this address just yet. Please try again in a minute.'
+            : `We cannot send a confirmation link to this address just yet. Please try again in about ${minutes} minutes.`,
       };
     }
   }

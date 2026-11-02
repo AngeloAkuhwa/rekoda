@@ -1435,7 +1435,7 @@ export async function claimBillingEmailAddress(
     : { requestId: null, retryAfterSeconds: Number(row.retry_after_seconds) };
 }
 
-/** Give an address request back because the provider definitely refused the mail (OWN-58 ruling 2). */
+/** Give an address request back because the provider definitely refused the mail (OWN-66). */
 export async function releaseBillingEmailAddress(
   tx: TenantDb,
   requestId: string,

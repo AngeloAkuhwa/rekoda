@@ -168,7 +168,7 @@ export class BillingEmailService {
     } catch (error) {
       if (error instanceof EmailDeliveryUncertainError) {
         /* The mail may have gone. The link stays valid and counted, for the business and for the
-         * address (OWN-58 ruling 2); nothing is resent under a new token, and the merchant is told
+         * address (OWN-66); nothing is resent under a new token, and the merchant is told
          * the truth instead of "it failed". */
         this.log.warn(
           'a billing-email confirmation may or may not have been sent: outcome unknown',

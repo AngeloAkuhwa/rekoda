@@ -3,7 +3,7 @@
  *
  * The per-business limit (five an hour, sixty seconds apart) stops one merchant mailing one inbox
  * too often. It does nothing about many businesses asking for the same inbox: N businesses could
- * mail 5×N links an hour to one person. The owner ruled on 2 Nov 2026 (OWN-58 amendment):
+ * mail 5×N links an hour to one person. The owner ruled on 2 Nov 2026 (OWN-66):
  *
  *   - at most 5 requests an hour per normalised address, across all businesses, and at least
  *     60 seconds between requests;
@@ -223,7 +223,7 @@ describe('one address, many businesses (SUB-02a, OWN-58)', () => {
   });
 });
 
-describe('how a send outcome counts against the address (OWN-58 ruling 2)', () => {
+describe('how a send outcome counts against the address (OWN-66 ruling 2)', () => {
   it('gives the request back when the provider definitely refused the mail', async () => {
     const [a, b] = await seedBusinesses(2);
     mail.failNext = true;
@@ -281,6 +281,34 @@ describe('how a send outcome counts against the address (OWN-58 ruling 2)', () =
   });
 });
 
+describe('the per-business limits still hold on their own (OWN-58)', () => {
+  /* Each request names a NEW address, so the address limit never applies and only the business's
+   * own limits can refuse. Without this, the address limit (same figures) would hide a broken
+   * per-business check. */
+  const address = (i: number) => `owner${i}@shop.example.ng`;
+
+  it('keeps the 60-second cooldown per business when the address changes', async () => {
+    const [a] = await seedBusinesses(1);
+    expect((await emails().requestVerification(a!, address(1))).state).toBe('sent');
+    const answer = await emails().requestVerification(a!, address(2));
+    expect(answer.state).toBe('rate_limited');
+    expect(mail.outbox).toHaveLength(1);
+  });
+
+  it('keeps five an hour per business across five different addresses', async () => {
+    const [a] = await seedBusinesses(1);
+    for (let i = 1; i <= 5; i += 1) {
+      expect((await emails().requestVerification(a!, address(i))).state).toBe('sent');
+      await ageEverything(61);
+    }
+    expect(await emails().requestVerification(a!, address(6))).toEqual({
+      state: 'rate_limited',
+      retryAfterSeconds: 3600,
+    });
+    expect(mail.outbox).toHaveLength(5);
+  });
+});
+
 describe('the refusal reveals nothing about another business', () => {
   it('has exactly the shape of a business hitting its own cooldown', async () => {
     const [a, b] = await seedBusinesses(2);
@@ -321,7 +349,9 @@ describe('the shared counter (migration 0185)', () => {
     const rows = await rowsOf(ownerDb, `SELECT * FROM ${TABLE}`);
     expect(rows).toHaveLength(1);
     const dump = JSON.stringify(rows).toLowerCase();
-    expect(dump).not.toContain('ada');
+    /* Not 'ada' alone: a random uuid or key can contain those hex letters. */
+    expect(dump).not.toContain('@');
+    expect(dump).not.toContain('ada@shop');
     expect(dump).not.toContain('shop.example');
     expect(dump).not.toContain(a!);
   });
@@ -343,6 +373,9 @@ describe('the shared counter (migration 0185)', () => {
     await asRole(urls.worker, async (worker) => {
       for (const statement of [
         `SELECT * FROM ${TABLE}`,
+        `INSERT INTO ${TABLE} (address_key) VALUES ('${someKey}')`,
+        `UPDATE ${TABLE} SET voided_at = now()`,
+        `DELETE FROM ${TABLE}`,
         `SELECT * FROM billing_email_address_claim('${someKey}', 5, 60000)`,
         `SELECT billing_email_address_release(gen_random_uuid(), '${someKey}')`,
       ]) {
@@ -377,6 +410,21 @@ describe('the shared counter (migration 0185)', () => {
     );
     expect(await counted()).toBe(1);
     expect((await emails().requestVerification(b!, EMAIL)).state).toBe('rate_limited');
+  });
+
+  it('removes a stale row when a later request is decided', async () => {
+    const [a, b] = await seedBusinesses(2);
+    expect((await emails().requestVerification(a!, EMAIL)).state).toBe('sent');
+    await ageEverything(25 * 60 * 60);
+    expect(await counted()).toBe(1);
+    expect((await emails().requestVerification(b!, 'chidi@shop.example.ng')).state).toBe('sent');
+    const rows = await rowsOf<{ old: number; fresh: number }>(
+      ownerDb,
+      `SELECT count(*) FILTER (WHERE created_at < now() - interval '1 day')::int AS old,
+              count(*) FILTER (WHERE created_at >= now() - interval '1 day')::int AS fresh
+       FROM ${TABLE}`,
+    );
+    expect(rows[0]).toEqual({ old: 0, fresh: 1 });
   });
 
   it('lets an address be erased by computing its key', async () => {
