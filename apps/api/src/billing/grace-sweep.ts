@@ -94,45 +94,34 @@ export async function sweepGracePeriods(
        * across a reminder day delays that warning to the next pass instead
        * of cancelling it; the claim keeps it to one send. */
       const day = state.reminderDue;
-      const claimed = await withBusiness(deps.appDb, row.businessId, (tx) =>
-        subscriptionsRepo.claimGraceReminder(tx, row.businessId, day),
-      );
-      if (!claimed) continue;
-
-      /* STOP is a fact and it is checked before every proactive send. The claim
-       * still stands: an opted-out merchant is not owed the same message
-       * tomorrow, and the dashboard tells them where they stand. */
-      if (row.ownerOptedOut) {
-        result.reminded += 1;
-        continue;
-      }
-
-      /* The page was read earlier. A cycle paid, a plan expired or a STOP received since then
-       * means this notice is stale: the claim stays (nothing is retried) and nothing is sent. */
-      let eligible: boolean;
+      /* The claim and the final eligibility read share ONE transaction. The page was read
+       * earlier, so a cycle paid, a plan expired or a STOP received since then makes this
+       * notice stale; that outcome keeps the claim (nothing is retried). If the read itself
+       * throws, the transaction rolls the claim back with it, so a failed read can neither
+       * lose the reminder day nor leave a claim stranded. The claim commits before the Meta
+       * call, and no lock is held across it. */
+      let outcome: 'skipped' | 'opted-out' | 'ineligible' | 'send';
       try {
-        eligible = await withBusiness(deps.appDb, row.businessId, (tx) =>
-          subscriptionsRepo.graceReminderStillEligible(tx, row.businessId),
-        );
-      } catch (checkError) {
-        /* Nothing was sent, so the claim goes back; otherwise a failed read would lose this
-         * reminder day. A failed release is logged, not thrown, so one business cannot abort
-         * the pass for the rest. */
+        outcome = await withBusiness(deps.appDb, row.businessId, async (tx) => {
+          if (!(await subscriptionsRepo.claimGraceReminder(tx, row.businessId, day))) {
+            return 'skipped';
+          }
+          /* STOP is a fact and it is checked before every proactive send. The claim still
+           * stands: an opted-out merchant is not owed the same message tomorrow, and the
+           * dashboard tells them where they stand. */
+          if (row.ownerOptedOut) return 'opted-out';
+          return (await subscriptionsRepo.graceReminderStillEligible(tx, row.businessId))
+            ? 'send'
+            : 'ineligible';
+        });
+      } catch (claimError) {
         log.warn(
-          `business ${row.businessId}: grace eligibility check failed: ${redactForLog(String(checkError))}`,
+          `business ${row.businessId}: grace claim rolled back, will retry: ${redactForLog(String(claimError))}`,
         );
-        try {
-          await withBusiness(deps.appDb, row.businessId, (tx) =>
-            subscriptionsRepo.releaseGraceReminder(tx, row.businessId, day),
-          );
-        } catch (releaseError) {
-          log.warn(
-            `business ${row.businessId}: grace claim not released: ${redactForLog(String(releaseError))}`,
-          );
-        }
         continue;
       }
-      if (!eligible) continue;
+      if (outcome === 'opted-out') result.reminded += 1;
+      if (outcome !== 'send') continue;
 
       try {
         await deps.sender.sendBillingNotice({

@@ -1066,7 +1066,7 @@ describe('the grace period', () => {
 
   /* CodeRabbit on #400: the eligibility read runs after the claim. If it throws, nothing was
    * sent, so the claim must go back or that reminder day is lost. */
-  it('gives the claim back when the final eligibility read fails', async () => {
+  it('rolls the claim back when the final eligibility read fails', async () => {
     await failedMerchant('+2348177100044');
     const sender = new StubSender();
     const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
