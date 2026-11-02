@@ -164,11 +164,11 @@ derives the key in memory and deletes that key's rows as the owner. The command
 prints only the number of rows removed, or on failure only the database error
 code: it never prints the key, the address or the query. Read the owner URL the
 operator already uses for owner SQL in this runbook silently, so the password
-stays out of shell history, and unset it afterwards:
+stays out of shell history, and unset it afterwards (in `bash`; `read -s` is not available in plain `sh`):
 
 ```sh
 read -rs -p 'owner database url: ' OWNER_DATABASE_URL && export OWNER_DATABASE_URL && echo
-node --input-type=module -e "import {createInterface} from 'node:readline/promises'; import {billingEmailAddressKeyFor} from '@rekoda/core/vault'; import {createDb, sql} from '@rekoda/db'; const rl = createInterface({input: process.stdin, output: process.stderr}); const address = await rl.question('address: '); rl.close(); const {db, close} = createDb(process.env.OWNER_DATABASE_URL, {max: 1}); try { const rows = await db.execute(sql\`DELETE FROM billing_email_address_requests WHERE address_key = \${billingEmailAddressKeyFor(address, process.env.MATCH_KEY)} RETURNING 1\`); console.log('rows removed:', [...rows].length); } catch (e) { console.error('failed:', e?.cause?.code ?? 'error'); process.exitCode = 1; } finally { await close(); }"
+node --input-type=module -e "import {createInterface} from 'node:readline/promises'; import {billingEmailAddressKeyFor} from '@rekoda/core/vault'; import {createDb, sql} from '@rekoda/db'; const rl = createInterface({input: process.stdin, output: process.stderr}); const address = await rl.question('address: '); rl.close(); let close; try { const opened = createDb(process.env.OWNER_DATABASE_URL, {max: 1}); close = opened.close; const db = opened.db; const rows = await db.execute(sql\`DELETE FROM billing_email_address_requests WHERE address_key = \${billingEmailAddressKeyFor(address, process.env.MATCH_KEY)} RETURNING 1\`); console.log('rows removed:', [...rows].length); } catch (e) { console.error('failed:', e?.cause?.code ?? 'error'); process.exitCode = 1; } finally { if (close) await close(); }"
 unset OWNER_DATABASE_URL
 ```
 
