@@ -13,7 +13,9 @@
  *   - A skipped message is never recorded or reported as delivered. An opted-out owner is
  *     counted as opted out and nothing is claimed; a send Meta definitively refused gives
  *     its claim back; one whose outcome cannot be told (timeout, crash) is recorded as
- *     'unknown' and NOT resent. No exactly-once delivery is claimed (OWN-47).
+ *     'unknown' and NOT resent; one Meta accepted and later reported as failed is marked
+ *     'undelivered' by the `delivery.status` job (REM-01) and is NOT resent either. No
+ *     exactly-once delivery is claimed (OWN-47).
  *   - Eligibility is checked twice: at the claim, and again by a final check immediately
  *     before the Meta request (plan, trial end against the current clock, consent). A
  *     message found ineligible there is recorded 'suppressed', never retried. No lock is
@@ -142,8 +144,8 @@ export async function sweepTrialNotices(
       const due = trialNoticeDue(row.trialEndsAt, clock());
       if (due === null) continue;
       /* The listing carries the latest attempt: a stage that is not newer than it has
-       * already been handled (sent, unknown, suppressed, refused or in flight). Skipping it
-       * here saves a tenant transaction per business per hour for the rest of the window,
+       * already been handled (sent, unknown, undelivered, suppressed, refused or in flight).
+       * Skipping it here saves a tenant transaction per business per hour for the rest of the window,
        * and keeps an opted-out owner from being counted again for a notice that is not
        * owed. The claim still guards the stage if this snapshot is stale. */
       if (row.attempt !== null && row.attempt.stage >= due.stage) continue;

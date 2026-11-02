@@ -249,9 +249,10 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
 
     /* A failed-receipt job that exhausted its retries is dead and will never
      * run; apply it here, under the lock and before any "yes" is read, so the
-     * preview it names is never left confirmable (G-20). */
+     * preview it names is never left confirmable (G-20), and a trial reminder
+     * it names reads 'undelivered' (REM-01). */
     const reconciled = await conversationsRepo.reconcileDeadReceipts(tx, businessId);
-    if (reconciled > 0) log.warn(`applied ${reconciled} failed-preview receipt(s) from dead jobs`);
+    if (reconciled > 0) log.warn(`applied ${reconciled} failed receipt(s) from dead jobs`);
 
     const event = await events.eventForBusiness(tx, eventId, businessId);
     if (!event) {

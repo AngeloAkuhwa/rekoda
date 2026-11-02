@@ -1785,7 +1785,7 @@ export interface TrialBusiness {
   /** The latest reminder attempt on record (OWN-47), if any. */
   attempt: {
     stage: number;
-    state: 'sending' | 'sent' | 'unknown' | 'suppressed' | 'refused';
+    state: 'sending' | 'sent' | 'unknown' | 'suppressed' | 'refused' | 'undelivered';
     at: Date;
   } | null;
 }
@@ -1812,7 +1812,8 @@ export async function trialsEndingWithin(
     id: string;
     plan_expires_at: Date | string;
     last_trial_notice_stage: number | null;
-    trial_notice_state: 'sending' | 'sent' | 'unknown' | 'suppressed' | 'refused' | null;
+    trial_notice_state:
+      'sending' | 'sent' | 'unknown' | 'suppressed' | 'refused' | 'undelivered' | null;
     trial_notice_attempted_at: Date | string | null;
   }>(sql`
     SELECT id, plan_expires_at, last_trial_notice_stage, trial_notice_state, trial_notice_attempted_at
@@ -1856,7 +1857,7 @@ export async function claimTrialNotice(
     UPDATE businesses
     SET last_trial_notice_stage = ${stage}, trial_notice_state = 'sending',
         trial_notice_attempted_at = now(), trial_notice_provider_message_id = NULL,
-        updated_at = now()
+        trial_notice_failed_at = NULL, updated_at = now()
     WHERE id = ${businessId}::uuid
       AND plan = 'trial'
       AND plan_expires_at > ${asOf.toISOString()}::timestamptz
@@ -1976,6 +1977,39 @@ export async function markTrialNoticeRefused(
     WHERE id = ${businessId}::uuid AND last_trial_notice_stage = ${stage}
       AND trial_notice_state = 'sending'
   `);
+}
+
+/**
+ * Meta accepted this business's latest reminder and later reported its delivery as FAILED
+ * (REM-01; migration 0186). Moves 'sent' to 'undelivered' only when the failed
+ * receipt names THIS business's latest attempt (`providerMessageId` is the wamid Meta returned
+ * for it), so a receipt for another business's message, an older stage or an unrelated message
+ * changes nothing. The stage stays claimed: an undelivered stage is never resent, and the next
+ * milestone is still owed. Idempotent: a duplicate receipt matches no row and returns 0.
+ *
+ * Isolation holds when called through `withBusiness()` on the application role (RLS pins
+ * the tenant); the `id` predicate makes it explicit.
+ */
+export async function markTrialNoticeUndelivered(
+  tx: TenantDb,
+  businessId: string,
+  providerMessageId: string,
+  now: Date,
+): Promise<number> {
+  const rows = await tx.execute<{ moved: number }>(sql`
+    WITH moved AS (
+      UPDATE businesses
+      SET trial_notice_state = 'undelivered',
+          trial_notice_failed_at = ${now.toISOString()}::timestamptz, updated_at = now()
+      WHERE id = ${businessId}::uuid
+        AND trial_notice_provider_message_id = ${providerMessageId}
+        -- 'unknown' is defensive: an unknown attempt never records a wamid, so only 'sent' matches today.
+        AND trial_notice_state IN ('sent', 'unknown')
+      RETURNING 1
+    )
+    SELECT count(*)::int AS moved FROM moved
+  `);
+  return Number([...rows][0]?.moved ?? 0);
 }
 
 /**
