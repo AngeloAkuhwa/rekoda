@@ -362,6 +362,8 @@ describe('an opt-out that arrives after the attempt was opened', () => {
     expect(mail.outbox).toHaveLength(0);
   });
 
+  /* This STOP lands before the gateway's own consent read, so the reservation check refuses it;
+   * the narrower window after the reservation commits is the next test. */
   it('a WhatsApp STOP stops the WhatsApp message at dispatch and spends no unit', async () => {
     const s = await shop();
     const reminder = await send(
@@ -461,5 +463,24 @@ describe('when the dispatch-time opt-out read itself fails', () => {
       reasonCode: 'send_failed',
     });
     expect(mail.outbox).toHaveLength(0);
+  });
+
+  it('WhatsApp: a failed STOP re-read sends nothing, is a definite failure, and keeps the reserved unit spent', async () => {
+    /* The gateway's own transactions: 1 reserves the unit and records the outbound, 2 re-reads
+     * STOP. The unit is deliberately NOT refunded here: if that transaction committed its refund
+     * and only the acknowledgement was lost, a second refund would hand out a free unit. Under-
+     * refunding during a database fault is the conservative side; a free send never is. */
+    const s = await shop();
+    const gateway = new WabaTemplateService(
+      failingTransaction(2),
+      config,
+      meta,
+      new PrivacyGateway(db, config),
+    );
+    expect(await send(s, 'whatsapp', new ReminderService(config, db, mail, gateway))).toMatchObject(
+      { status: 'failed', reasonCode: 'send_failed' },
+    );
+    expect(meta.connectionTexts).toHaveLength(0);
+    expect(await serviceUnitsUsed(s)).toBe(1);
   });
 });
