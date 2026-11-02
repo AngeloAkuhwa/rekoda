@@ -109,9 +109,29 @@ export async function sweepGracePeriods(
 
       /* The page was read earlier. A cycle paid, a plan expired or a STOP received since then
        * means this notice is stale: the claim stays (nothing is retried) and nothing is sent. */
-      const eligible = await withBusiness(deps.appDb, row.businessId, (tx) =>
-        subscriptionsRepo.graceReminderStillEligible(tx, row.businessId),
-      );
+      let eligible: boolean;
+      try {
+        eligible = await withBusiness(deps.appDb, row.businessId, (tx) =>
+          subscriptionsRepo.graceReminderStillEligible(tx, row.businessId),
+        );
+      } catch (checkError) {
+        /* Nothing was sent, so the claim goes back; otherwise a failed read would lose this
+         * reminder day. A failed release is logged, not thrown, so one business cannot abort
+         * the pass for the rest. */
+        log.warn(
+          `business ${row.businessId}: grace eligibility check failed: ${redactForLog(String(checkError))}`,
+        );
+        try {
+          await withBusiness(deps.appDb, row.businessId, (tx) =>
+            subscriptionsRepo.releaseGraceReminder(tx, row.businessId, day),
+          );
+        } catch (releaseError) {
+          log.warn(
+            `business ${row.businessId}: grace claim not released: ${redactForLog(String(releaseError))}`,
+          );
+        }
+        continue;
+      }
       if (!eligible) continue;
 
       try {

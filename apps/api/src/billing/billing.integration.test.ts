@@ -14,7 +14,7 @@
  *     and expiring is an ACT with an audit row rather than a date comparison.
  */
 import { randomBytes } from 'node:crypto';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { addMonth, GRACE_DAYS, PLAN_PRICES_K, usagePeriod } from '@rekoda/core';
 import {
   billingCancelResponse,
@@ -1059,6 +1059,28 @@ describe('the grace period', () => {
       return sent;
     };
     const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+    expect(sender.billingNotices).toHaveLength(1);
+  });
+
+  /* CodeRabbit on #400: the eligibility read runs after the claim. If it throws, nothing was
+   * sent, so the claim must go back or that reminder day is lost. */
+  it('gives the claim back when the final eligibility read fails', async () => {
+    await failedMerchant('+2348177100044');
+    const sender = new StubSender();
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+    const real = subscriptionsRepo.graceReminderStillEligible;
+    const spy = vi
+      .spyOn(subscriptionsRepo, 'graceReminderStillEligible')
+      .mockRejectedValueOnce(new Error('read failed'));
+    try {
+      await sweepGracePeriods(deps, dayAfterFailure(1));
+      expect(sender.billingNotices).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(subscriptionsRepo.graceReminderStillEligible).toBe(real);
 
     await sweepGracePeriods(deps, dayAfterFailure(1));
     expect(sender.billingNotices).toHaveLength(1);
