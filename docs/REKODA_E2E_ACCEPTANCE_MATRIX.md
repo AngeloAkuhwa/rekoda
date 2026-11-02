@@ -1,0 +1,42 @@
+# Rekoda end-to-end acceptance matrix
+
+> 2 November 2026. Two kinds of evidence exist and must not be confused:
+> **CI browser journeys** (Playwright against a local stack with provider
+> doubles, run on every PR) and **staging acceptance** (the owner exercising the
+> deployed staging system, recorded in the register). This matrix lists both.
+> **No journey below has passed end to end against a real provider, and no
+> journey merged since mid-October has been staging-accepted.** The owner's
+> batched acceptance campaign (decided 19 October) has not run.
+
+Legend: CI = passes in CI on test doubles. STAGING = needs the owner on staging
+(test mode where a provider is involved). LIVE = needs a live provider or real
+money and is not authorised for engineering.
+
+| Journey                                                           | CI browser test                                                           | Staging acceptance                         | Live provider                                 | Needed                                       |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------ | --------------------------------------------- | -------------------------------------------- |
+| Sign up, OTP, session, roles                                      | `onboarding.spec.ts` (30)                                                 | pending                                    | OTP over WhatsApp needs the approved template | STAGING + LIVE                               |
+| Team invite, seat limit, role screens, removal                    | `team.spec.ts` (1)                                                        | pending                                    | none                                          | STAGING                                      |
+| WhatsApp merchant chat (sale, expense, purchase, who owes me)     | none (integration only)                                                   | pending                                    | Meta production, AI provider                  | STAGING + LIVE                               |
+| Sales, invoices, receipts, partial payment                        | `populated-month.spec.ts`, `overpayment.spec.ts` (9)                      | pending                                    | none                                          | STAGING                                      |
+| Expenses, purchases, bills                                        | integration only; purchase-to-shelf in `stock.spec.ts`                    | pending                                    | none                                          | STAGING                                      |
+| Customer and supplier identity                                    | integration only                                                          | pending                                    | none                                          | STAGING (supplier page is not built)         |
+| Stock and catalogue                                               | `stock.spec.ts`, `storefront.spec.ts` (3)                                 | pending                                    | none                                          | STAGING                                      |
+| Storefront order to unpaid invoice                                | `storefront.spec.ts`                                                      | pending                                    | Paystack for paid checkout                    | STAGING + LIVE                               |
+| Public API with a key                                             | integration only                                                          | G-77 accepted 27 Sep 2026 (owner-reported) | none                                          | re-check after later changes                 |
+| Bank statement import and reconciliation                          | `bank.spec.ts` (2)                                                        | pending                                    | Mono live is blocked externally               | STAGING (CSV) + LIVE (feeds)                 |
+| Close, statements, reports, exports                               | `reports.spec.ts` (9)                                                     | pending                                    | R2 and WhatsApp delivery                      | STAGING + LIVE                               |
+| Privacy, tenant isolation, roles, authorization                   | integration suites (RLS, roles)                                           | pending                                    | none                                          | STAGING spot check                           |
+| Document, OCR and voice                                           | integration only                                                          | pending                                    | OpenAI and Anthropic (paid)                   | LIVE (owner-run G-07)                        |
+| Trial and subscription: first purchase                            | `billing-journey.spec.ts` (4, stand-in Paystack)                          | pending                                    | Paystack                                      | STAGING (test mode) + LIVE                   |
+| Trial and subscription: failure, grace, refund                    | `billing-journey-lifecycle.spec.ts` (4), `refunds.spec.ts` (3)            | pending                                    | Paystack                                      | STAGING + LIVE                               |
+| Trial Day 0/7/13/14, expiry boundary, upgrade before/after expiry | unit and integration with a controlled clock; welcome state in Playwright | pending                                    | Meta templates for reminders                  | STAGING with a controlled clock              |
+| Renewal, cancellation, reactivation, packs, annual (flag on)      | integration only; no browser journey                                      | pending                                    | Paystack                                      | STAGING + LIVE; browser journeys not written |
+| AI launch evaluation                                              | oracle tests only                                                         | owner-run live eval pending                | Anthropic/OpenAI                              | LIVE                                         |
+| Paystack provider acceptance                                      | fixtures and published samples                                            | n/a                                        | **required**                                  | LIVE (G-05, §47)                             |
+| Deployment, backup, restore                                       | clean-checkout compose boot in CI; restore drill in CI                    | host not live; off-box restore never run   | n/a                                           | STAGING + infrastructure                     |
+| Legal pages and production config                                 | legal-gate unit test; boot refuses unset facts                            | pending                                    | n/a                                           | owner supplies company facts (G-04)          |
+
+Browser coverage gaps recorded in the register (G-28): non-stock exports,
+deliberate desktop-width coverage of the other journeys, paid checkout, part-paid
+receipt, stock after a sale and stocktake are not covered. The WhatsApp chat
+engine has no browser equivalent; it is covered by integration tests only.

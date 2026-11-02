@@ -1,0 +1,62 @@
+# Rekoda production roadmap
+
+> 2 November 2026. Derived from the gap register, the launch backlog and the
+> completion audit documents (`REKODA_PRODUCT_FEATURE_INVENTORY.md`,
+> `REKODA_E2E_ACCEPTANCE_MATRIX.md`, `REKODA_SUBSCRIPTION_COMPLETION_AUDIT.md`).
+> It invents no owner decision. **Estimates are engineering judgement, not
+> commitments:** they assume one engineer working with an AI pair at the pace the
+> repository shows (a focused slice in one to three days including review), and
+> they exclude external lead times, which no one on the team controls.
+
+## Workstreams
+
+- **Engineering** (code the team writes), **Test gaps** (automated tests missing),
+  **Staging acceptance** (owner exercises staging), **Provider** (Meta, Paystack,
+  Mono, Resend, Anthropic, OpenAI), **Infrastructure and operations**, **Owner,
+  legal and tax** (decisions only the owner or professionals can make).
+
+## P0: blocks any real user (controlled beta)
+
+| #    | Item                                                                                                 | Workstream      | Depends on                                                        | Acceptance                                                                                                        | Estimate                      |
+| ---- | ---------------------------------------------------------------------------------------------------- | --------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| P0-1 | Production host, DNS, secrets, auto-deploy gate (G-01)                                               | Infra, owner    | owner provides host and secrets                                   | production stack boots; `/health` over HTTPS; deploy needs explicit owner approval                                | 2 to 4 days after host exists |
+| P0-2 | Backups enabled, off-box destination, one restore drill (G-02, OD-7)                                 | Infra, owner    | owner picks destination                                           | nightly encrypted dump off box; restore into a clean database proven; PITR gap recorded as accepted risk or built | 2 to 3 days                   |
+| P0-3 | Production WhatsApp number and approved templates: OTP, billing, retention, document, trial (G-03)   | Provider, owner | Meta business verification and review                             | OTP delivered to a real phone; templates approved                                                                 | external: typically weeks     |
+| P0-4 | Company facts for the legal pages (G-04)                                                             | Owner, legal    | corporate records                                                 | production web boots with pages populated                                                                         | owner                         |
+| P0-5 | Branch protection and required checks on `main` (G-09)                                               | Infra, owner    | none                                                              | verified in repository settings                                                                                   | hours                         |
+| P0-6 | Batched staging acceptance campaign of the merged queue (G-61 through G-118)                         | Staging         | latest `main` deployed to staging (the 29 Oct deploy was skipped) | owner signs each row; failures become gaps                                                                        | 3 to 5 days of owner time     |
+| P0-7 | Live AI evaluation, owner-run (G-07, unblocked by G-59)                                              | Provider, owner | Anthropic key and spend approval                                  | report meets the stated gate; SDK 1.x accepted by the live API                                                    | 1 day                         |
+| P0-8 | Decide the beta billing mode: operator-set plans, no card collection (see assessment)                | Owner           | none                                                              | written in owner decisions                                                                                        | decision                      |
+| P0-9 | Launch configuration: annual sales on (`REKODA_ANNUAL_BILLING`, catalogue reads), as OWN-40 requires | Infra           | P0-1                                                              | annual purchase accepted on staging in Paystack test mode                                                         | half a day                    |
+
+## P1: before public launch
+
+| #     | Item                                                                                                                                                                                                       | Workstream         | Depends on                 | Acceptance                                                                       | Estimate              |
+| ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | -------------------------- | -------------------------------------------------------------------------------- | --------------------- |
+| P1-1  | Paystack written platform-model confirmation (§47) then one controlled real-money drill (G-05)                                                                                                             | Provider, owner    | Paystack                   | twelve questions answered in writing; drill booked, receipted, settled, refunded | external, then 2 days |
+| P1-2  | Provider verification of refund, reversal, dispute events (G-06)                                                                                                                                           | Provider           | P1-1                       | live envelopes match fixtures                                                    | 1 to 2 days           |
+| P1-3  | Subscription lifecycle certification: staging run in Paystack test mode, browser journeys for renewal, cancel, reactivation, packs, annual; explicit "subscription money never enters merchant books" test | Test gaps          | P0-6                       | all stages in the audit table reach TESTED and STAGING ACCEPTED                  | 4 to 6 days           |
+| P1-4  | Database control on `plan` and `plan_expires_at` (trigger with a transaction flag)                                                                                                                         | Engineering, owner | owner call; fixture helper | direct update refused outside the writer; migration with rollback                | 3 to 4 days           |
+| P1-5  | Key rotation and boot enrolment (G-13, G-14)                                                                                                                                                               | Engineering        | none                       | rotation runbook proven on a copy                                                | 4 to 6 days           |
+| P1-6  | Retention and erasure enforced (G-15, G-19, G-55); audit rows for exports, operator reads, business creation (G-37, G-50)                                                                                  | Engineering        | none                       | published retention figures enforced by a sweep and tested                       | 5 to 8 days           |
+| P1-7  | Sign-in resilience: absolute session lifetime, sign out everywhere (G-25); a second OTP channel decision                                                                                                   | Engineering, owner | owner call on SMS          | single point of failure removed or accepted in writing                           | 3 to 5 days           |
+| P1-8  | Meta App Review for Embedded Signup permissions (W0)                                                                                                                                                       | Provider           | P0-3                       | permissions granted                                                              | external              |
+| P1-9  | Tax, fiscalisation and accounting sign-off (G-47); Rekoda's own subscription VAT treatment                                                                                                                 | Owner, legal, tax  | professionals              | written advice recorded; labels match                                            | external              |
+| P1-10 | Monitoring and on-call: alerts verified end to end, runbooks exercised                                                                                                                                     | Infra              | P0-1                       | a forced failure pages the owner                                                 | 2 to 3 days           |
+| P1-11 | Load and abuse testing of webhooks, OTP and storefront (G-96, G-53 included)                                                                                                                               | Test gaps          | P0-1                       | stated limits hold                                                               | 3 to 4 days           |
+
+## P2: after launch
+
+Central Admin UI; supplier identity unification and supplier page (G-33); cart stock hold (G-34); apply a customer credit to invoices (G-52); CG4 delivery verification (G-29); NestJS 12 and a dependency-vulnerability gate (G-42, G-70); card-on-file or auto-debit renewal; add-ons sold end to end (OWN-41 excluded them); scheduled and bulk customer reminders; Mono live feeds.
+
+## Assessment 1: controlled private beta
+
+**Possible after P0 (roughly 3 to 4 weeks of engineering and owner time, gated by Meta template approval).** A beta of a small, named group of merchants who accept an unfinished edge: the trial, the chat, the books and the dashboard work; plans are set by the operator through the single audited writer, and **no card payments are taken** (so §47 and the Paystack drill are not on the beta path, and the paid-checkout code stays dark). Conditions: a real host with working restore (P0-1, P0-2), the OTP template approved so merchants can sign in (P0-3), the legal facts filled (P0-4), staging acceptance of the merged queue (P0-6), the live AI evaluation passed (P0-7), and a support routine for the API-only operator tools. Residual risks accepted for beta: no DB-level plan control, key rotation not built, retention figures not enforced, single OTP channel.
+
+## Assessment 2: full public launch
+
+**Not before P0 and P1 are done: realistically two to three months, dominated by external parties (Paystack, Meta App Review, tax advice).** Required in addition to the beta list: Paystack confirmation and a successful real-money drill with refund and dispute handling verified (P1-1, P1-2), the subscription lifecycle proven on staging and with a real provider (P1-3), the database control on plan state (P1-4), key rotation (P1-5), enforced retention and erasure plus complete audit rows (P1-6), sign-in resilience (P1-7), App Review (P1-8), tax and legal sign-off (P1-9), verified monitoring and on-call (P1-10), load testing (P1-11). Production deployment needs the owner's explicit instruction at that point.
+
+## Critical path
+
+Owner-held external items start first because they are the long poles: Meta business verification, template submission and App Review; the written Paystack answers; tax advice; the production host decision. In parallel, engineering finishes the P0 items (backups enabled, annual sales configured, staging redeploy), the owner runs the batched staging acceptance, then the live AI evaluation. Beta opens when P0 is signed. P1 engineering runs during the beta; public launch opens when P1-1 and P1-9 (the external ones) clear and the lifecycle certification passes.
