@@ -9,8 +9,9 @@
 ## Priority 0: current state (2 Nov 2026)
 
 - **`main`:** `283ae06` (#397) at the start of the audit; then `7f1adec` (#396, SUB-01) and
-  `cc369c5` (#398, CI-1, parent `7f1adec`), the latest `main` commit when this was written (re-check
-  before relying on it). Migration head `0184_invoice_reminders.sql` (185 files). No migration is open
+  `cc369c5` (#398, CI-1, parent `7f1adec`), then `4bea81e` (#399, docs) and `cefb6ee` (#400, SUB-03r,
+  2 Nov 2026, squash). `cefb6ee` was the latest `main` commit when this line was updated (re-check
+  before relying on it; the docs PR that records it follows it). Migration head `0184_invoice_reminders.sql` (185 files). No migration is open
   in a PR.
 - **Staging deployments (2 Nov):** the Deploy staging workflow, which starts after a successful `main`
   CI run, deployed `7f1adec` (run 41377619526) and then `cc369c5` (run 41378727482), both green. A
@@ -37,7 +38,12 @@
   paused until the owner confirms the per-address figures) → 4. SUB-03r (grace-reminder residual) → 5.
   SUB-04 and SUB-05 gap checks against already-merged implementations, with a PR only for gaps found → 6. SUB-ACC (subscription staging
   acceptance) → 7. REM-01 to REM-06 → 8. ACCEPT-01. The ledger records progress; it sets no priority.
-- **Current item:** SUB-01 (#396) is merged (`7f1adec`); checks and review are complete, staging acceptance is pending, and the stronger DB control is OD-37 (owner). Next: SUB-02a, blocked until the owner confirms the per-address figures and the uncertain-send rule.
+- **Sequencing exception (2 Nov 2026):** SUB-03r (#400) merged before SUB-02a (order 3) because SUB-02a is
+  paused until the owner confirms the per-address figures, which the plan allows ("paused until the owner
+  confirms"); the order itself is unchanged and SUB-02a stays next once unblocked. The merge was made on the
+  owner's in-session instruction to push forward without Codex (OWN-35); that instruction covered the merge,
+  not a change to the delivery order.
+- **Current item:** SUB-01 (#396) and SUB-03r (#400) are merged; staging acceptance is pending for both, and the stronger DB control is OD-37 (owner). Next: SUB-02a, blocked until the owner confirms the per-address figures and the uncertain-send rule.
 
 ## PR plan (owner, 2 Nov 2026)
 
