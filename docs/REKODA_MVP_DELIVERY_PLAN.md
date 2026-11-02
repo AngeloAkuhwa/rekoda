@@ -350,7 +350,7 @@ tenant-isolation, data-integrity or unauthorized-messaging defect remains.
 
 ## Part D: PR structure and per-PR scope (owner delivery guide, 2 Nov 2026)
 
-Working target: **12 PRs** for the remaining work. Each feature ships as one substantial, focused PR
+Working target: **12 PRs**, counted as the whole sequence in the table below from #396 (already merged) to the CI PR; the one-time governance documentation PR makes 13 in total, and acceptance runs are milestones, not PRs. Each feature ships as one substantial, focused PR
 with its implementation, tests, migrations and supporting changes; a split is proposed only for a
 genuine technical or safety reason, explained before another PR is opened. One implementation PR is
 active at a time; the CI optimisation is the only supporting PR run alongside and never delays the
