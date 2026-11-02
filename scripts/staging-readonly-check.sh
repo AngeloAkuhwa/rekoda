@@ -73,12 +73,14 @@ echo "== Meta template slots in the running api (SET/UNSET only)"
 if dc exec -T api true >/dev/null 2>&1; then
   for k in META_OTP_TEMPLATE META_BILLING_TEMPLATE META_RETENTION_TEMPLATE META_DOCUMENT_TEMPLATE \
            META_TRIAL_TEMPLATE; do
-    if dc exec -T -e "K=$k" api sh -c 'eval "v=\${$K:-}"; [ -n "$v" ]' >/dev/null 2>&1; then
-      say "$k" SET
-    else
-      say "$k" UNSET
-    fi
+    # The container answers SET or UNSET itself; anything else (a failed exec, a container that
+    # stopped mid-loop) is reported as unknown, never as UNSET.
+    r="$(dc exec -T -e "K=$k" api sh -c 'eval "v=\${$K:-}"; if [ -n "$v" ]; then echo SET; else echo UNSET; fi' 2>/dev/null)"
+    case "$r" in
+      SET|UNSET) say "$k" "$r" ;;
+      *) say "$k" "unknown (api query failed)" ;;
+    esac
   done
 else
-  say "Meta template slots" "unknown (api container not running)"
+  say "Meta template slots" "unknown (cannot exec into the api container)"
 fi
