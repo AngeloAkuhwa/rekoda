@@ -1412,6 +1412,38 @@ export async function voidEmailVerification(
   `);
 }
 
+/**
+ * Decide one confirmation request for an address across every business, and count it when allowed
+ * (SUB-02a, OWN-58; migration 0185). Runs inside the caller's tenant transaction, after the
+ * business lock: the database function takes the address lock, counts by the database clock and
+ * records the request, so the count and the link commit together. The application role cannot read
+ * the counter itself; this is its only way in.
+ */
+export async function claimBillingEmailAddress(
+  tx: TenantDb,
+  addressKey: string,
+  limits: { maxPerHour: number; cooldownMs: number },
+): Promise<{ requestId: string } | { requestId: null; retryAfterSeconds: number }> {
+  const rows = await tx.execute<{ request_id: string | null; retry_after_seconds: number }>(sql`
+    SELECT request_id, retry_after_seconds
+    FROM billing_email_address_claim(${addressKey}, ${limits.maxPerHour}::int, ${limits.cooldownMs}::int)
+  `);
+  const row = [...rows][0];
+  if (!row) throw new Error('billing_email_address_claim returned no row');
+  return row.request_id !== null
+    ? { requestId: row.request_id }
+    : { requestId: null, retryAfterSeconds: Number(row.retry_after_seconds) };
+}
+
+/** Give an address request back because the provider definitely refused the mail (OWN-58 ruling 2). */
+export async function releaseBillingEmailAddress(
+  tx: TenantDb,
+  requestId: string,
+  addressKey: string,
+): Promise<void> {
+  await tx.execute(sql`SELECT billing_email_address_release(${requestId}::uuid, ${addressKey})`);
+}
+
 /** How a link's hand-over to the email provider ended (migration 0183). */
 export type EmailSendOutcome = 'accepted' | 'uncertain';
 

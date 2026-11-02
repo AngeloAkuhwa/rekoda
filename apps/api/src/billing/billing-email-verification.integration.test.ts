@@ -103,15 +103,29 @@ const sql1 = async <T extends Record<string, unknown>>(
   query: ReturnType<typeof sql>,
 ) => withBusiness(appDb, businessId, async (tx) => [...(await tx.execute<T>(query))]);
 
-/** Pretend the last request was `seconds` ago, past the cooldown. */
-const age = (businessId: string, seconds: number) =>
-  sql1(
+/**
+ * Pretend the last request was `seconds` ago, past the cooldown. Time moves for both limits: the
+ * business's own links and the per-address counter (SUB-02a, OWN-58), which only the owner can
+ * reach. Moving one clock and not the other would test a moment that cannot happen.
+ */
+async function age(businessId: string, seconds: number): Promise<void> {
+  await sql1(
     businessId,
     sql`UPDATE billing_email_verifications
         SET created_at = created_at - make_interval(secs => ${seconds}),
             expires_at = expires_at - make_interval(secs => ${seconds})
         WHERE business_id = ${businessId}::uuid`,
   );
+  const { db: owner, close } = createDb(urls.owner, { max: 1 });
+  try {
+    await owner.execute(
+      sql`UPDATE billing_email_address_requests
+          SET created_at = created_at - make_interval(secs => ${seconds})`,
+    );
+  } finally {
+    await close();
+  }
+}
 
 async function pendingCharge(businessId: string): Promise<string> {
   const answer = await new BillingService(config, appDb).changePlan(businessId, 'chat');

@@ -211,6 +211,25 @@ export function contactKeyFor(normalisedValue: string, hexMatchKey: string): str
     .digest('base64url');
 }
 
+/**
+ * The key the billing-email confirmation limit per address is counted under (SUB-02a, OWN-58).
+ *
+ * Global by design, like `contactKeyFor`: the owner's rule limits one ADDRESS across every
+ * business, so the same address must give the same key whichever business asks. What keeps that
+ * from becoming the forbidden cross-business correlation table is what is stored beside it:
+ * nothing. The counter row holds this key and a timestamp, no business id, and is pruned within a
+ * day. The address is normalised as the mailbox compares it (trimmed, lower-cased), and the
+ * `billing-email-address:` prefix keeps it out of every other keyspace.
+ */
+export function billingEmailAddressKeyFor(address: string, hexMatchKey: string): string {
+  const key = keyBuffer(hexMatchKey, 'MATCH_KEY');
+  const normalised = address.trim().toLowerCase();
+  if (!normalised) throw new VaultError('cannot derive an address key from an empty value');
+  return createHmac('sha256', key)
+    .update(`billing-email-address:${normalised.length}:${normalised}`, 'utf8')
+    .digest('base64url');
+}
+
 /** Constant-time compare of two match keys. */
 export function matchKeyEquals(a: string, b: string): boolean {
   const ab = Buffer.from(a);

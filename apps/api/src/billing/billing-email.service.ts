@@ -15,6 +15,12 @@
  *   - The address is never written to logs or audit rows.
  *
  * Every write takes the business lock first, the order every billing path uses.
+ *
+ * Two limits apply to a request, both by the database clock and both decided before any link is
+ * recorded: the business's own (five an hour, sixty seconds apart) and the address's across every
+ * business (SUB-02a, OWN-58: the same figures per trimmed, lower-cased address). A refusal from
+ * either has the same shape. The address limit counts a request whose send outcome is unknown; only
+ * a definite provider refusal gives it back.
  */
 import { EmailSuppressedError } from '../email/suppressing.sender.js';
 import { createHash, randomBytes } from 'node:crypto';
@@ -25,7 +31,7 @@ import {
   checkBillingEmail,
   maskBillingEmail,
 } from '@rekoda/core';
-import { decryptFacet, encryptFacet } from '@rekoda/core/vault';
+import { billingEmailAddressKeyFor, decryptFacet, encryptFacet } from '@rekoda/core/vault';
 import type {
   BillingEmailConfirmResponse,
   BillingEmailStatusResponse,
@@ -93,7 +99,11 @@ export class BillingEmailService {
     const prepared = await withBusiness(
       this.db,
       businessId,
-      async (tx): Promise<BillingEmailVerifyResponse | { email: string }> => {
+      async (
+        tx,
+      ): Promise<
+        BillingEmailVerifyResponse | { email: string; addressKey: string; addressRequestId: string }
+      > => {
         await subscriptionsRepo.lockBusiness(tx, businessId);
         let state = await subscriptionsRepo.billingEmailState(tx, businessId);
         let email = state.sealed ? this.open(businessId, state.sealed) : null;
@@ -122,12 +132,22 @@ export class BillingEmailService {
         if (recent.lastHour >= maxPerHour) {
           return { state: 'rate_limited', retryAfterSeconds: 60 * 60 };
         }
+        /* Same address, any business: decided under the address lock, counted in this transaction. */
+        const addressKey = billingEmailAddressKeyFor(email, this.config.matchKey);
+        const claim = await subscriptionsRepo.claimBillingEmailAddress(
+          tx,
+          addressKey,
+          BILLING_EMAIL_VERIFICATION.perAddress,
+        );
+        if (claim.requestId === null) {
+          return { state: 'rate_limited', retryAfterSeconds: claim.retryAfterSeconds };
+        }
         await subscriptionsRepo.issueEmailVerification(tx, {
           businessId,
           tokenHash,
           ttlMs: BILLING_EMAIL_VERIFICATION.ttlMs,
         });
-        return { email };
+        return { email, addressKey, addressRequestId: claim.requestId };
       },
     );
     if ('state' in prepared) return prepared;
@@ -147,8 +167,9 @@ export class BillingEmailService {
       await this.sendWithOneSafeRetry(message);
     } catch (error) {
       if (error instanceof EmailDeliveryUncertainError) {
-        /* The mail may have gone. The link stays valid and counted; nothing is resent under a new
-         * token, and the merchant is told the truth instead of "it failed". */
+        /* The mail may have gone. The link stays valid and counted, for the business and for the
+         * address (OWN-58 ruling 2); nothing is resent under a new token, and the merchant is told
+         * the truth instead of "it failed". */
         this.log.warn(
           'a billing-email confirmation may or may not have been sent: outcome unknown',
         );
@@ -159,16 +180,22 @@ export class BillingEmailService {
           retryAfterSeconds: Math.ceil(BILLING_EMAIL_VERIFICATION.cooldownMs / 1000),
         };
       }
-      /* The address is not logged. A definite refusal gives the allowance back. */
+      /* The address is not logged. A definite refusal gives the allowance back, the business's and
+       * the address's, in one transaction. */
       const unusable = error instanceof EmailSuppressedError;
       this.log.warn(
         unusable
           ? 'a billing-email confirmation was not sent: the address is suppressed'
           : 'a billing-email confirmation could not be sent',
       );
-      await withBusiness(this.db, businessId, (tx) =>
-        subscriptionsRepo.voidEmailVerification(tx, businessId, tokenHash),
-      );
+      await withBusiness(this.db, businessId, async (tx) => {
+        await subscriptionsRepo.voidEmailVerification(tx, businessId, tokenHash);
+        await subscriptionsRepo.releaseBillingEmailAddress(
+          tx,
+          prepared.addressRequestId,
+          prepared.addressKey,
+        );
+      });
       return { state: 'unavailable', reason: unusable ? 'address_unusable' : 'send_failed' };
     }
     await this.recordSendOutcome(businessId, tokenHash, 'accepted');

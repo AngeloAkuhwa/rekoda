@@ -183,6 +183,26 @@ describe('billing email and confirmation wording', () => {
       /a minute/,
     );
   });
+  it('words a limit refusal so it is true whoever asked (SUB-02a: the limit can be another business)', () => {
+    /* The per-address refusal has the same shape as the business's own, by design, so the page
+     * cannot know who used the allowance. It must not claim this merchant asked, or that a link
+     * reached them. */
+    for (const retryAfterSeconds of [1, 20, 59, 60, 61, 600, 3600]) {
+      const { ok, message } = emailVerifyCopy({ state: 'rate_limited', retryAfterSeconds });
+      expect(ok).toBe(false);
+      expect(message).not.toMatch(
+        /you have asked|several links|was only just sent|check your inbox/i,
+      );
+      expect(message).not.toMatch(/\b1 minutes\b/);
+      expect(message).toMatch(/cannot send another confirmation link just yet/);
+    }
+    expect(emailVerifyCopy({ state: 'rate_limited', retryAfterSeconds: 60 }).message).toMatch(
+      /in a minute\./,
+    );
+    expect(emailVerifyCopy({ state: 'rate_limited', retryAfterSeconds: 61 }).message).toMatch(
+      /about 2 minutes/,
+    );
+  });
   it('says an uncertain send may or may not have arrived, and never that it failed or was sent', () => {
     const { ok, message } = emailVerifyCopy({
       state: 'delivery_uncertain',

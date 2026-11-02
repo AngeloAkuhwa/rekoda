@@ -149,6 +149,22 @@ touches the rows that name them, and the same sweep pass drains the queue
 (PR-136). Both tables deliberately outlive the tenant, and both are
 excluded from the function's own delete loop for that reason.
 
+## A billing email in the per-address limit counter (SUB-02a, OWN-58/OWN-66)
+
+`billing_email_address_requests` counts billing-email confirmation requests per
+address across businesses. It holds a keyed hash of the address and a time, no
+address and no business id, so a business deletion has nothing there to find.
+Rows are pruned after a day by the counter itself. To erase one address sooner
+on request, derive its key with the service's `MATCH_KEY`
+(`billingEmailAddressKeyFor(address, MATCH_KEY)` in `@rekoda/core/vault`; the
+address is trimmed and lower-cased first) and delete as the owner:
+
+```sql
+DELETE FROM billing_email_address_requests WHERE address_key = '<key>';
+```
+
+Never paste the address itself into a ticket or a query log; only the key.
+
 ## The one number to watch: objects still owed
 
 `pending_object_deletions` holds deletions Rekoda has promised and not yet
