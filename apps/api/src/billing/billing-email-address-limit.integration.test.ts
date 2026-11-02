@@ -81,8 +81,12 @@ async function seedBusiness(): Promise<string> {
     businessType: null,
     ownerUserId: user.id,
   });
+  seededBusinessIds.push(business.id);
   return business.id;
 }
+
+/** Every business this file has seeded, so time can be moved per business. */
+const seededBusinessIds: string[] = [];
 
 const seedBusinesses = async (n: number): Promise<string[]> => {
   const ids: string[] = [];
@@ -137,12 +141,16 @@ const linksFor = async (businessId: string): Promise<number> =>
 /** Move every recorded request back in time, per business and per address, as the owner. */
 async function ageEverything(seconds: number): Promise<void> {
   const secs = Number(seconds);
-  await rowsOf(
-    ownerDb,
-    `UPDATE billing_email_verifications
-     SET created_at = created_at - make_interval(secs => ${secs}),
-         expires_at = expires_at - make_interval(secs => ${secs})`,
-  );
+  for (const businessId of seededBusinessIds) {
+    await withBusiness(appDb, businessId, async (tx) => {
+      await tx.execute(
+        sql`UPDATE billing_email_verifications
+            SET created_at = created_at - make_interval(secs => ${secs}),
+                expires_at = expires_at - make_interval(secs => ${secs})
+            WHERE business_id = ${businessId}::uuid`,
+      );
+    });
+  }
   await rowsOf(
     ownerDb,
     `UPDATE ${TABLE} SET created_at = created_at - make_interval(secs => ${secs})`,
