@@ -144,9 +144,18 @@ export async function sweepGracePeriods(
         if (error instanceof SendFailed && error.notSent) {
           /* The message DEFINITELY did not leave (no template configured, or Meta refused
            * it), so the claim goes BACK and the next hourly pass retries that day. */
-          await withBusiness(deps.appDb, row.businessId, (tx) =>
-            subscriptionsRepo.releaseGraceReminder(tx, row.businessId, day),
-          );
+          try {
+            await withBusiness(deps.appDb, row.businessId, (tx) =>
+              subscriptionsRepo.releaseGraceReminder(tx, row.businessId, day),
+            );
+          } catch (releaseError) {
+            /* Logged, not thrown: one failed release must not abort the pass for the merchants
+             * after this one. That reminder day then stays claimed (a missed reminder, never a
+             * duplicate); recovering it durably would need a separate reconciliation job. */
+            log.warn(
+              `business ${row.businessId}: grace claim not released: ${redactForLog(String(releaseError))}`,
+            );
+          }
           log.warn(
             `business ${row.businessId}: grace reminder not delivered: ${redactForLog(reason)}`,
           );

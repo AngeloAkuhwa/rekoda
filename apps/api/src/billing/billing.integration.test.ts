@@ -1119,6 +1119,26 @@ describe('the grace period', () => {
     );
   });
 
+  /* CodeRabbit on #400: a failed claim release after a definite non-delivery must not abort the
+   * pass for the merchants after it. */
+  it('keeps sweeping when a failed claim release follows a definite non-delivery', async () => {
+    await failedMerchant('+2348177100047');
+    await failedMerchant('+2348177100048');
+    const sender = new StubSender();
+    sender.failWith(new SendFailed('rejected', 429, true, true));
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+    const spy = vi
+      .spyOn(subscriptionsRepo, 'releaseGraceReminder')
+      .mockRejectedValueOnce(new Error('release failed'));
+    try {
+      await expect(sweepGracePeriods(deps, dayAfterFailure(1))).resolves.toBeDefined();
+    } finally {
+      spy.mockRestore();
+    }
+    /* The other merchant was still processed in the same pass. */
+    expect(sender.billingNotices).toHaveLength(1);
+  });
+
   it('retries a reminder that definitely did not leave', async () => {
     await failedMerchant('+2348177100041');
     const sender = new StubSender();
