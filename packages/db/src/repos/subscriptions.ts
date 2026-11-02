@@ -1981,6 +1981,31 @@ export async function claimGraceReminder(
  * as it was: it is the record of why this happened.
  */
 /**
+ * The final eligibility check, immediately before a grace reminder is dispatched (SUB-03r).
+ *
+ * The sweep reads its page of businesses, then claims and sends row by row, so a renewal paid,
+ * a plan expired or a STOP received in between would otherwise still get a "your payment
+ * failed" notice. True only while the renewal is still unpaid on a live paid plan and the
+ * owner has not opted out. No lock is held across the Meta call; the residual in-flight race
+ * is the same one the trial reminders state.
+ */
+export async function graceReminderStillEligible(
+  tx: TenantDb,
+  businessId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    SELECT b.id
+    FROM businesses b
+    JOIN users u ON u.id = b.owner_user_id
+    WHERE b.id = ${businessId}::uuid
+      AND b.payment_failed_at IS NOT NULL
+      AND b.plan NOT IN ('trial', 'expired')
+      AND u.opted_out_at IS NULL
+  `);
+  return [...rows].length === 1;
+}
+
+/**
  * Give a claimed reminder day back after a failed send.
  *
  * Set to day - 1 rather than NULL: NULL would reopen EARLIER days too, and

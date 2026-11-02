@@ -107,6 +107,13 @@ export async function sweepGracePeriods(
         continue;
       }
 
+      /* The page was read earlier. A cycle paid, a plan expired or a STOP received since then
+       * means this notice is stale: the claim stays (nothing is retried) and nothing is sent. */
+      const eligible = await withBusiness(deps.appDb, row.businessId, (tx) =>
+        subscriptionsRepo.graceReminderStillEligible(tx, row.businessId),
+      );
+      if (!eligible) continue;
+
       try {
         await deps.sender.sendBillingNotice({
           to: row.ownerPhone,
@@ -127,19 +134,24 @@ export async function sweepGracePeriods(
         );
         result.reminded += 1;
       } catch (error) {
-        /* The claim goes BACK. Burning it on a failed send meant a Meta outage
-         * on day five silenced that day's warning forever, and the merchant's
-         * last memory of Rekoda before the day-seven cutoff was silence. The
-         * next hourly pass re-claims the day, so the reminder lands as soon as
-         * the channel recovers; a still-missing template costs one warn line
-         * per business per pass, which is the log doing its job. */
-        await withBusiness(deps.appDb, row.businessId, (tx) =>
-          subscriptionsRepo.releaseGraceReminder(tx, row.businessId, day),
-        );
         const reason = error instanceof SendFailed ? error.message : String(error);
-        log.warn(
-          `business ${row.businessId}: grace reminder not delivered: ${redactForLog(reason)}`,
-        );
+        if (error instanceof SendFailed && error.notSent) {
+          /* The message DEFINITELY did not leave (no template configured, or Meta refused
+           * it), so the claim goes BACK and the next hourly pass retries that day. */
+          await withBusiness(deps.appDb, row.businessId, (tx) =>
+            subscriptionsRepo.releaseGraceReminder(tx, row.businessId, day),
+          );
+          log.warn(
+            `business ${row.businessId}: grace reminder not delivered: ${redactForLog(reason)}`,
+          );
+        } else {
+          /* Unknown outcome (timeout, dropped connection, or a failure after the send): the
+           * notice may have been delivered. The claim STAYS, so it is never sent twice
+           * (OWN-47); the next reminder day still goes out. No exactly-once claim is made. */
+          log.warn(
+            `business ${row.businessId}: grace reminder day ${day} outcome unknown, not resent: ${redactForLog(reason)}`,
+          );
+        }
       }
     }
     if (rows.length < PAGE) break;

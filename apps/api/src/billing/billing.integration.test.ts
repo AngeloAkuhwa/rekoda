@@ -47,6 +47,7 @@ import { sweepRenewals } from './renewal-sweep.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { StubSender } from '../channels/sender.stub.js';
+import { SendFailed } from '../channels/sender.js';
 
 let urls: Urls;
 let app: NestFastifyApplication;
@@ -1012,6 +1013,67 @@ describe('the grace period', () => {
 
     const rows = await marginRepo.costByUsageType(workerDb, usagePeriod(new Date()));
     expect(rows.find((row) => row.usageType === 'UTILITY_TEMPLATE')).toBeUndefined();
+  });
+
+  /* G-120 / SUB-03r (OWN-47). A timeout or dropped connection after the request left may
+   * have delivered the notice. The claim must stay, or the next hourly pass sends it again. */
+  it('does not resend a reminder whose outcome is unknown', async () => {
+    await failedMerchant('+2348177100040');
+    const sender = new StubSender();
+    sender.failWith(new SendFailed('timeout'));
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+    expect(sender.billingNotices).toHaveLength(0);
+
+    // The stub's one-shot failure is spent: had the claim been released, this pass would send.
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+    expect(sender.billingNotices).toHaveLength(0);
+  });
+
+  /* The sweep reads a page, then sends row by row. A merchant who pays while an earlier row
+   * is being sent must not then get a "payment failed" notice from the stale page. */
+  it('suppresses a reminder when the cycle is paid after the page was read', async () => {
+    const a = await failedMerchant('+2348177100042');
+    const b = await failedMerchant('+2348177100043');
+    const byPhone = new Map([
+      ['+2348177100042', b.businessId],
+      ['+2348177100043', a.businessId],
+    ]);
+    const sender = new StubSender();
+    const original = sender.sendBillingNotice.bind(sender);
+    let paidOther = false;
+    sender.sendBillingNotice = async (notice) => {
+      const sent = await original(notice);
+      if (!paidOther) {
+        paidOther = true;
+        const other = byPhone.get(notice.to)!;
+        await putOnPlan(
+          other,
+          'chat',
+          dayAfterFailure(1),
+          new Date(dayAfterFailure(1).getTime() + 30 * 86_400_000),
+        );
+      }
+      return sent;
+    };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+    expect(sender.billingNotices).toHaveLength(1);
+  });
+
+  it('retries a reminder that definitely did not leave', async () => {
+    await failedMerchant('+2348177100041');
+    const sender = new StubSender();
+    sender.failWith(new SendFailed('rejected', 429, true, true));
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+    expect(sender.billingNotices).toHaveLength(0);
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+    expect(sender.billingNotices).toHaveLength(1);
   });
 
   it('sends one reminder on day 1 and none the same day twice', async () => {
