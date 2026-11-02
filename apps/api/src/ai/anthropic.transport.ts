@@ -5,9 +5,9 @@ import {
   type ModelRequest,
   type ModelTransport,
 } from './transport.js';
+import { buildAnthropicClient } from './anthropic.client.js';
 
-/** Anthropic's own endpoint: what an unset AI_BASE_URL means, whatever the environment holds. */
-export const ANTHROPIC_DEFAULT_BASE_URL = 'https://api.anthropic.com';
+export { ANTHROPIC_DEFAULT_BASE_URL } from './anthropic.client.js';
 
 /**
  * The real client.
@@ -29,25 +29,7 @@ export class AnthropicTransport implements ModelTransport {
   private readonly client: Anthropic;
 
   constructor(apiKey: string, timeoutMs = 20_000, baseUrl?: string) {
-    /**
-     * `maxRetries: 0` — the job runner already owns retry, with backoff and a
-     * dead-letter state. Two retry layers means a merchant waits through both,
-     * and a call the SDK silently retried is a call we were billed for twice
-     * and recorded once.
-     */
-    this.client = new Anthropic({
-      apiKey,
-      timeout: timeoutMs,
-      maxRetries: 0,
-      /* No OpenTelemetry spans from the SDK, and none the environment can turn
-       * on: a prompt or a photo is the merchant's data (invariant 4). */
-      openTelemetry: false,
-      /* Injectable for the same reason the OpenAI client's is, and the
-       * Paystack adapter's: the properties worth asserting here are about
-       * what goes over the wire. Always explicit: left out, the SDK reads
-       * ANTHROPIC_BASE_URL from the process (final review on a98a294). */
-      baseURL: baseUrl || ANTHROPIC_DEFAULT_BASE_URL,
-    });
+    this.client = buildAnthropicClient(apiKey, timeoutMs, baseUrl);
   }
 
   async send(request: ModelRequest): Promise<ModelReply> {

@@ -13,6 +13,7 @@ import { TextExtractionUnavailable } from './ocr.js';
 let server: Server;
 let baseUrl: string;
 let lastBody: string;
+let lastHeaders: import('node:http').IncomingHttpHeaders;
 let requests: number;
 let respond: (res: import('node:http').ServerResponse) => void;
 
@@ -35,6 +36,7 @@ beforeAll(async () => {
     req.on('data', (c: Buffer) => chunks.push(c));
     req.on('end', () => {
       requests += 1;
+      lastHeaders = req.headers;
       lastBody = Buffer.concat(chunks).toString('utf8');
       respond(res);
     });
@@ -83,6 +85,37 @@ describe('reading a photographed receipt through the vision model', () => {
     expect(sent.system).toContain('verbatim');
     const image = sent.messages[0]?.content.find((b) => b.type === 'image');
     expect(image?.source?.data).toBe(PHOTO.toString('base64'));
+  });
+
+  it('authenticates with X-Api-Key, as the transport does, for a gateway that checks only that header', async () => {
+    await reader().extract(PHOTO, 'image/jpeg');
+    expect(lastHeaders['x-api-key']).toBe('sk-ant-test');
+    expect(lastHeaders.authorization).toBeUndefined();
+    // API version 2026-10-21 answers 400 to any sampling parameter.
+    const sent = JSON.parse(lastBody) as Record<string, unknown>;
+    for (const key of ['temperature', 'top_p', 'top_k']) expect(sent, key).not.toHaveProperty(key);
+    expect(lastHeaders['anthropic-version']).toBe('2026-10-21');
+  });
+
+  it('collapses an authentication failure to the refusal, without the key, and does not retry', async () => {
+    respond = (res) => {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          type: 'error',
+          error: { type: 'authentication_error', message: 'invalid key sk-ant-test' },
+        }),
+      );
+    };
+    const failure = await reader()
+      .extract(PHOTO, 'image/jpeg')
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(failure).toBeInstanceOf(TextExtractionUnavailable);
+    expect((failure as Error).message).not.toContain('sk-ant-test');
+    expect(requests).toBe(1);
   });
 
   it('refuses a type the vision API cannot take, before any bytes leave', async () => {
