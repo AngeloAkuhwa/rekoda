@@ -14,8 +14,7 @@ ALTER TABLE businesses
   ADD COLUMN IF NOT EXISTS payment_instruction_approved_at timestamptz,
   ADD COLUMN IF NOT EXISTS payment_instruction_approved_by uuid;
 
--- Plain ADD CONSTRAINT: every existing row has all five
--- new columns NULL, so the check passes trivially and the scan is over a small table.
+-- Added NOT VALID (no table scan under the lock); 0188 validates it in its own transaction.
 ALTER TABLE businesses
   ADD CONSTRAINT businesses_payment_instruction_all_or_nothing CHECK (
     (payment_bank_name IS NULL AND payment_account_name IS NULL AND payment_account_number IS NULL
@@ -25,4 +24,4 @@ ALTER TABLE businesses
        AND payment_account_number IS NOT NULL AND payment_account_number ~ '^[0-9]{10}$'
        AND payment_instruction_approved_at IS NOT NULL
        AND payment_instruction_approved_by IS NOT NULL)
-  );
+  ) NOT VALID;
