@@ -10,7 +10,14 @@
 > Part B (feature specifications), Part C (technical lead mandate).
 >
 > Amendment (owner, 2 Nov 2026): OWN-58 (billing-email confirmation limit per address) is approved
-> into MVP scope as SUB-02a, delivered after SUB-01 and before SUB-03.
+> into MVP scope as SUB-02a. The per-address figures are NOT yet confirmed (see SUB-02a); its
+> implementation stays paused until the owner confirms them.
+>
+> **Agreed delivery order (owner, 2 Nov 2026):** (1) SUB-01 (#396); (2) SUB-02 monthly and annual
+> checkout; (3) SUB-02a OWN-58; (4) SUB-03 residual grace-reminder fix (SUB-03r; the merged SUB-03
+> lifecycle work is separate); (5) remaining subscription and billing work (SUB-04, SUB-05 gaps if
+> any); (6) subscription staging acceptance; (7) customer reminders (REM-01 to REM-06), then
+> integrated acceptance (ACCEPT-01).
 >
 > Note on timing: the Anthropic SDK upgrade (#379), listed below as outside the MVP, was already
 > merged as #397 (`283ae06`) under the owner's earlier direction, before this directive arrived. No
@@ -58,8 +65,8 @@ first incomplete feature and begin work. Do not repeat a broad audit.
    price of 10. Exit: monthly and annual test-mode purchases work end to end; unverified, duplicated
    or incorrect payments cannot activate a subscription.
    - **2a. Billing-email confirmation limit per address (SUB-02a, OWN-58)**, approved into MVP scope
-     by the owner on 2 Nov 2026. Delivered after SUB-01 merges and before SUB-03; part of SUB-02's
-     completion. Exit: the per-address limit holds across businesses under concurrency, is merged
+     by the owner on 2 Nov 2026. Delivered after SUB-02 and before the SUB-03 residual fix; part of
+     SUB-02's completion. Per-address figures pending owner confirmation. Exit: the per-address limit holds across businesses under concurrency, is merged
      with green CI and review, and is verified on staging.
 3. **Subscription lifecycle**: trial creation and expiry, trial usage and metering, paid conversion
    after verified payment, active, renewal through a new payment, grace, grace expiry, expired,
@@ -161,8 +168,10 @@ captured, duplicates safe, customer sees the correct final state.
 Approved into MVP scope by the owner on 2 Nov 2026; part of SUB-02 and delivered before SUB-03.
 Requirement: limit billing-email confirmation-link requests per email address across all businesses,
 in addition to the per-business limits already in place (five an hour and sixty seconds apart, OWN-58).
-The per-address limit applies the same figures to one address, compared as the mailbox compares it
-(trimmed, case-insensitive).
+**Figures pending owner confirmation:** OWN-58 sets figures only per business. Applying the same five
+an hour and sixty seconds to one address is the engineering interpretation, NOT an established product
+rule; implementation stays paused until the owner confirms or changes the figures. The address is
+compared as the mailbox compares it (trimmed, case-insensitive).
 Behaviour: enforced server side by the database clock; decided under a lock so concurrent requests
 from one or many businesses or browser sessions cannot exceed it; a refused request records no link
 and sends no mail; a link that could not be mailed does not count; the refusal has the same generic
