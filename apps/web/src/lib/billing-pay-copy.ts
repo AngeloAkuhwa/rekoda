@@ -342,3 +342,23 @@ export function payHeading(kind: BillingChargeView['kind']): string {
 /** Shown when the saved billing email could not be read, so the form is not mistaken for "none on file". */
 export const BILLING_EMAIL_UNREAD_COPY =
   'We could not check the billing email on file just now. If you type one below it replaces the saved one.';
+
+/**
+ * The banner for a plan that has ended (SUB-05). A free trial that ran out is called a trial, never a
+ * subscription, and neither wording implies the merchant's records went anywhere.
+ */
+export function lapsedPlanCopy(input: {
+  wasTrial: boolean;
+  since: string;
+  owner: boolean;
+}): string {
+  const ended = input.wasTrial
+    ? `Your free trial ended on ${input.since}.`
+    : `Your subscription stopped on ${input.since}.`;
+  const next = input.owner
+    ? input.wasTrial
+      ? 'Choose a plan below to keep recording.'
+      : 'Choose a plan below to start again.'
+    : 'The owner can start it again from this page.';
+  return `${ended} Your books are still here and you can still read and export everything. ${next}`;
+}

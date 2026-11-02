@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { allowanceFor, USAGE_UNITS, type UsageUnit } from '@rekoda/core';
+import { USAGE_UNITS, type UsageUnit } from '@rekoda/core';
 import { Money } from '@/components/ui/Money';
 import { MoneyBadge } from '@/components/ui/MoneyBadge';
 import { requireSessionWithToken } from '@/server/guards';
@@ -76,7 +76,9 @@ export default async function DashboardPage() {
     return {
       unit,
       used: row?.used ?? 0,
-      allowance: allowanceFor(usage.plan, unit) + (row?.bonus ?? 0),
+      /* The server's ceiling (catalogue version and held add-ons) plus bought packs: the same
+       * figures the meter enforces and the billing page shows, never constants (SUB-05). */
+      allowance: (row?.allowance ?? 0) + (row?.bonus ?? 0),
     };
   }).filter((m) => m.allowance > 0);
 

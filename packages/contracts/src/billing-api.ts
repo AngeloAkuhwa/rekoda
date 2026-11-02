@@ -18,7 +18,12 @@ export const billingStateView = z.discriminatedUnion('state', [
     endsAt: isoDate,
     daysLeft: z.number().int().nonnegative(),
   }),
-  z.object({ state: z.literal('expired'), since: isoDate }),
+  z.object({
+    state: z.literal('expired'),
+    since: isoDate,
+    /** True when what ended was a free trial that was never paid for, not a subscription. */
+    wasTrial: z.boolean(),
+  }),
   /** A trial has no cycle and no card. It ends; it does not lapse. */
   z.object({ state: z.literal('trial'), endsAt: isoDate.nullable() }),
 ]);

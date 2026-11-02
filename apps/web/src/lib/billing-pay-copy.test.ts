@@ -1,6 +1,7 @@
 import type { BillingChargeView } from '@rekoda/contracts';
 import { describe, expect, it } from 'vitest';
 import {
+  lapsedPlanCopy,
   checkoutInputProblem,
   checkoutRefusalCopy,
   confirmCopy,
@@ -330,6 +331,32 @@ describe('trialStripAudience', () => {
   it('never a business that is not on a trial', () => {
     for (const plan of ['chat', 'integrate', 'complete', 'expired']) {
       expect(trialStripAudience(plan, 'owner')).toBe(false);
+    }
+  });
+});
+
+describe('the lapsed-plan banner says what actually ended (SUB-05)', () => {
+  it('calls a trial that ran out a trial, never a subscription', () => {
+    const owner = lapsedPlanCopy({ wasTrial: true, since: '2 November 2026', owner: true });
+    expect(owner).toMatch(/^Your free trial ended on 2 November 2026\./);
+    expect(owner).not.toMatch(/subscription/i);
+    expect(owner).toMatch(/Your books are still here/);
+    expect(owner).toMatch(/Choose a plan below/);
+  });
+
+  it('calls a paid plan that lapsed a subscription', () => {
+    const helper = lapsedPlanCopy({ wasTrial: false, since: '2 November 2026', owner: false });
+    expect(helper).toMatch(/^Your subscription stopped on 2 November 2026\./);
+    expect(helper).toMatch(/The owner can start it again from this page\./);
+  });
+
+  it('never says anything was deleted', () => {
+    for (const wasTrial of [true, false]) {
+      for (const owner of [true, false]) {
+        expect(lapsedPlanCopy({ wasTrial, since: '1 May 2026', owner })).not.toMatch(
+          /delet|lost|gone/i,
+        );
+      }
     }
   });
 });

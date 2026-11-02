@@ -32,6 +32,7 @@ import { heldBy } from '@/lib/capabilities';
 import { chargeStatusLabel } from '@/lib/charge-status';
 import {
   BILLING_EMAIL_UNREAD_COPY,
+  lapsedPlanCopy,
   lastPaymentFailed,
   payHeading,
   pendingCharge,
@@ -183,11 +184,11 @@ export default async function BillingPage({
 
       {overview.status.state === 'expired' ? (
         <div className="rk-attention-strip" role="status">
-          Your subscription stopped on {lagosDate(overview.status.since)}. Your books are still here
-          and you can still read and export everything.{' '}
-          {owner
-            ? 'Choose a plan below to start again.'
-            : 'The owner can start it again from this page.'}
+          {lapsedPlanCopy({
+            wasTrial: overview.status.wasTrial,
+            since: lagosDate(overview.status.since),
+            owner,
+          })}
         </div>
       ) : null}
 

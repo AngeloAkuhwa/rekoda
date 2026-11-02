@@ -79,6 +79,8 @@ export const usageMeterResponse = z.object({
     z.object({
       unit: z.string(),
       used: z.number().int().nonnegative(),
+      /** The plan's ceiling for this unit from the server (catalogue version and held add-ons). */
+      allowance: z.number().int().nonnegative(),
       bonus: z.number().int().nonnegative(),
     }),
   ),

@@ -789,7 +789,11 @@ function notAppliedReason(reason: string | null): 'plan_changed' | 'period_ended
 
 function statusOf(
   plan: string,
-  subscription: { planExpiresAt: Date | null; paymentFailedAt: Date | null } | null,
+  subscription: {
+    planExpiresAt: Date | null;
+    paymentFailedAt: Date | null;
+    origin: string | null;
+  } | null,
   now: Date,
 ): BillingStateView {
   if (plan === 'trial') {
@@ -805,7 +809,9 @@ function statusOf(
     const since = subscription?.paymentFailedAt
       ? new Date(subscription.paymentFailedAt.getTime() + GRACE_DAYS * 86_400_000)
       : (subscription?.planExpiresAt ?? now);
-    return { state: 'expired', since: since.toISOString() };
+    /* No paid or operator cycle was ever started (`subscription_origin` is set by every one):
+     * what ended is the free trial, and the page must not call it a subscription. */
+    return { state: 'expired', since: since.toISOString(), wasTrial: !subscription?.origin };
   }
 
   const state = billingState({
@@ -820,7 +826,7 @@ function statusOf(
   /* Grace has run out and the sweep has not caught up yet. Paid features
    * still work for the hour or so until it does, but telling a merchant they
    * are active would be reassuring them about something about to stop. */
-  return { state: 'expired', since: state.since.toISOString() };
+  return { state: 'expired', since: state.since.toISOString(), wasTrial: false };
 }
 
 /**
