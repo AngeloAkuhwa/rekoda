@@ -123,14 +123,15 @@ export class BillingEmailService {
         }
         const recent = await subscriptionsRepo.recentEmailVerificationRequests(tx, businessId);
         const { cooldownMs, maxPerHour } = BILLING_EMAIL_VERIFICATION;
+        /* The hourly allowance first, so the retry guidance is never shorter than the real wait. */
+        if (recent.lastHour >= maxPerHour) {
+          return { state: 'rate_limited', retryAfterSeconds: 60 * 60 };
+        }
         if (recent.sinceLatestMs !== null && recent.sinceLatestMs < cooldownMs) {
           return {
             state: 'rate_limited',
             retryAfterSeconds: Math.ceil((cooldownMs - recent.sinceLatestMs) / 1000),
           };
-        }
-        if (recent.lastHour >= maxPerHour) {
-          return { state: 'rate_limited', retryAfterSeconds: 60 * 60 };
         }
         /* Same address, any business: decided under the address lock, counted in this transaction. */
         const addressKey = billingEmailAddressKeyFor(email, this.config.matchKey);

@@ -101,13 +101,15 @@ BEGIN
     FROM public.billing_email_address_requests r
    WHERE r.address_key = p_address_key AND r.voided_at IS NULL;
 
+  -- The hourly allowance first: when it is used up, the wait is the hour, even inside the cooldown,
+  -- so the retry guidance is never shorter than the real wait.
+  IF last_hour >= p_max_per_hour THEN
+    RETURN QUERY SELECT NULL::uuid, 3600;
+    RETURN;
+  END IF;
   IF latest IS NOT NULL
      AND clock_timestamp() - latest < make_interval(secs => p_cooldown_ms / 1000.0) THEN
     RETURN QUERY SELECT NULL::uuid, ceil(p_cooldown_ms / 1000.0)::integer;
-    RETURN;
-  END IF;
-  IF last_hour >= p_max_per_hour THEN
-    RETURN QUERY SELECT NULL::uuid, 3600;
     RETURN;
   END IF;
 
@@ -146,6 +148,9 @@ SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
+  -- The same address lock as the claim, so a claim decided while a release is uncommitted waits for
+  -- it instead of refusing on a row that is being given back.
+  PERFORM pg_advisory_xact_lock(hashtextextended('billing-email-address:' || p_address_key, 0));
   UPDATE public.billing_email_address_requests
      SET voided_at = clock_timestamp()
    WHERE id = p_request_id AND address_key = p_address_key AND voided_at IS NULL;

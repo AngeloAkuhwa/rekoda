@@ -309,6 +309,58 @@ describe('the per-business limits still hold on their own (OWN-58)', () => {
   });
 });
 
+describe('retry guidance is never shorter than the real wait', () => {
+  it('says an hour, not a minute, when the address used its five and the latest is under 60 s old', async () => {
+    const ids = await seedBusinesses(6);
+    for (const [i, id] of ids.slice(0, 5).entries()) {
+      expect((await emails().requestVerification(id, EMAIL)).state).toBe('sent');
+      if (i < 4) await ageEverything(61);
+    }
+    expect(await emails().requestVerification(ids[5]!, EMAIL)).toEqual({
+      state: 'rate_limited',
+      retryAfterSeconds: 3600,
+    });
+  });
+
+  it('says an hour, not a minute, when the business used its five and the latest is under 60 s old', async () => {
+    const [a] = await seedBusinesses(1);
+    for (let i = 1; i <= 5; i += 1) {
+      expect((await emails().requestVerification(a!, `owner${i}@shop.example.ng`)).state).toBe(
+        'sent',
+      );
+      if (i < 5) await ageEverything(61);
+    }
+    expect(await emails().requestVerification(a!, 'owner6@shop.example.ng')).toEqual({
+      state: 'rate_limited',
+      retryAfterSeconds: 3600,
+    });
+  });
+
+  it('waits for an uncommitted release instead of refusing on the row it is releasing', async () => {
+    const [a, b] = await seedBusinesses(2);
+    expect((await emails().requestVerification(a!, EMAIL)).state).toBe('sent');
+    const [row] = await rowsOf<{ id: string; address_key: string }>(
+      ownerDb,
+      `SELECT id, address_key FROM ${TABLE}`,
+    );
+    const { db: releaser, close } = createDb(urls.app, { max: 1 });
+    try {
+      let claim: Promise<{ state: string }> | undefined;
+      await releaser.transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT billing_email_address_release(${row!.id}::uuid, ${row!.address_key})`,
+        );
+        /* Another business asks while the release is still uncommitted. */
+        claim = emails().requestVerification(b!, EMAIL);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      });
+      expect((await claim!).state).toBe('sent');
+    } finally {
+      await close();
+    }
+  });
+});
+
 describe('the refusal reveals nothing about another business', () => {
   it('has exactly the shape of a business hitting its own cooldown', async () => {
     const [a, b] = await seedBusinesses(2);
