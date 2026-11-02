@@ -5,10 +5,9 @@ import {
   type ModelRequest,
   type ModelTransport,
 } from './transport.js';
+import { buildAnthropicClient } from './anthropic.client.js';
 
-import { ANTHROPIC_DEFAULT_BASE_URL, buildAnthropicClient } from './anthropic.client.js';
-
-export { ANTHROPIC_DEFAULT_BASE_URL };
+export { ANTHROPIC_DEFAULT_BASE_URL } from './anthropic.client.js';
 
 /**
  * The real client.

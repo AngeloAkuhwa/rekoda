@@ -26,19 +26,30 @@ export const ANTHROPIC_API_VERSION = '2026-10-21';
  *   Anthropic-compatible gateway behind AI_BASE_URL that checks only that
  *   header; `Authorization` and `anthropic-version` are repeated there because
  *   the SDK lets ANTHROPIC_CUSTOM_HEADERS from the process replace its own
- *   copies, and a credential from the environment must never reach the
- *   configured host.
+ *   copies; that variable is refused outright (below), so neither a credential
+ *   nor any other header from the environment reaches the configured host.
  */
 export function buildAnthropicClient(
   apiKey: string,
   timeoutMs: number,
   baseUrl?: string,
 ): Anthropic {
+  /* The SDK adds every header named in ANTHROPIC_CUSTOM_HEADERS to every request.
+   * Pinning covers the credential and the version, not an arbitrary extra header
+   * (`Proxy-Authorization`, `anthropic-beta`), so its presence is refused rather
+   * than half-honoured: a bad configuration value fails closed (invariant 8). */
+  if (process.env.ANTHROPIC_CUSTOM_HEADERS) {
+    throw new Error(
+      'ANTHROPIC_CUSTOM_HEADERS is set; Rekoda refuses ambient headers on provider calls. Unset it.',
+    );
+  }
   return new Anthropic({
     apiKey,
     timeout: timeoutMs,
     maxRetries: 0,
     openTelemetry: false,
+    // No SDK logging, whatever ANTHROPIC_LOG says: at debug it would print request bodies (invariant 4).
+    logLevel: 'off',
     baseURL: baseUrl || ANTHROPIC_DEFAULT_BASE_URL,
     defaultHeaders: {
       'x-api-key': apiKey,

@@ -134,21 +134,14 @@ describe('the Anthropic transport', () => {
   });
 
   it('never lets the process environment change the credential or the API version on the wire', async () => {
-    /* SDK 1.x reads ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY and
-     * ANTHROPIC_CUSTOM_HEADERS from the process; the last one replaces the SDK's
-     * own Authorization and anthropic-version. The configured key and the pinned
-     * version must win, and an ambient secret must not reach a gateway that was
-     * set up for a different one. */
-    const names = [
-      'ANTHROPIC_AUTH_TOKEN',
-      'ANTHROPIC_API_KEY',
-      'ANTHROPIC_CUSTOM_HEADERS',
-    ] as const;
+    /* SDK 1.x reads ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY from the
+     * process. The configured key and the pinned version must win, and an
+     * ambient secret must not reach a gateway that was set up for a different
+     * one. (ANTHROPIC_CUSTOM_HEADERS is refused outright; see below.) */
+    const names = ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY'] as const;
     const saved = Object.fromEntries(names.map((n) => [n, process.env[n]]));
     process.env.ANTHROPIC_AUTH_TOKEN = 'ENV-TOKEN-MUST-NOT-LEAK';
     process.env.ANTHROPIC_API_KEY = 'ENV-KEY-MUST-NOT-LEAK';
-    process.env.ANTHROPIC_CUSTOM_HEADERS =
-      'Authorization: Bearer ENV-CUSTOM-MUST-NOT-LEAK\nanthropic-version: 1999-01-01';
     let seen: IncomingMessage['headers'] = {};
     respond = (req, res) => {
       seen = req.headers;
@@ -167,6 +160,38 @@ describe('the Anthropic transport', () => {
     expect(seen['x-api-key']).toBe('sk-test');
     expect(seen['anthropic-version']).toBe(ANTHROPIC_API_VERSION);
     expect(JSON.stringify(seen)).not.toContain('MUST-NOT-LEAK');
+  });
+
+  it('refuses to build either client while ANTHROPIC_CUSTOM_HEADERS is set', () => {
+    /* The SDK would add every header it names (Proxy-Authorization,
+     * anthropic-beta, ...) to every provider call. Refused, not half-honoured. */
+    const saved = process.env.ANTHROPIC_CUSTOM_HEADERS;
+    process.env.ANTHROPIC_CUSTOM_HEADERS = 'Proxy-Authorization: Basic ENV\nanthropic-beta: x';
+    try {
+      expect(() => new AnthropicTransport('sk-test', 2_000, baseUrl)).toThrow(
+        /ANTHROPIC_CUSTOM_HEADERS/,
+      );
+      expect(() => new VisionTextExtraction('sk-test', 'claude-sonnet-5', 2_000, baseUrl)).toThrow(
+        /ANTHROPIC_CUSTOM_HEADERS/,
+      );
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_CUSTOM_HEADERS;
+      else process.env.ANTHROPIC_CUSTOM_HEADERS = saved;
+    }
+  });
+
+  it('keeps the SDK logger off, whatever ANTHROPIC_LOG says', () => {
+    const saved = process.env.ANTHROPIC_LOG;
+    process.env.ANTHROPIC_LOG = 'debug';
+    try {
+      const { client } = new AnthropicTransport('sk-test', 2_000, baseUrl) as unknown as {
+        client: { logLevel?: string };
+      };
+      expect(client.logLevel).toBe('off');
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_LOG;
+      else process.env.ANTHROPIC_LOG = saved;
+    }
   });
 
   it('turns an authentication failure into ProviderUnreachable without echoing the key', async () => {
