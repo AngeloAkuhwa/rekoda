@@ -1984,25 +1984,27 @@ export async function claimGraceReminder(
  * The final eligibility check, immediately before a grace reminder is dispatched (SUB-03r).
  *
  * The sweep reads its page of businesses, then claims and sends row by row, so a renewal paid,
- * a plan expired or a STOP received in between would otherwise still get a "your payment
- * failed" notice. True only while the renewal is still unpaid on a live paid plan and the
- * owner has not opted out. No lock is held across the Meta call; the residual in-flight race
- * is the same one the trial reminders state.
+ * a plan expired or a STOP/START received in between would otherwise act on stale facts. This
+ * reads them fresh, in the caller's transaction: 'send' only while the renewal is still unpaid
+ * on a live paid plan and the owner has not opted out; 'opted-out' when the owner has (the day
+ * stays claimed, they are not owed it tomorrow); 'ineligible' for anything else. No lock is held
+ * across the Meta call; the residual in-flight race is the one the trial reminders state.
  */
-export async function graceReminderStillEligible(
+export async function graceReminderEligibility(
   tx: TenantDb,
   businessId: string,
-): Promise<boolean> {
-  const rows = await tx.execute<{ id: string }>(sql`
-    SELECT b.id
+): Promise<'send' | 'opted-out' | 'ineligible'> {
+  const rows = await tx.execute<{ opted_out_at: string | null }>(sql`
+    SELECT u.opted_out_at
     FROM businesses b
     JOIN users u ON u.id = b.owner_user_id
     WHERE b.id = ${businessId}::uuid
       AND b.payment_failed_at IS NOT NULL
       AND b.plan NOT IN ('trial', 'expired')
-      AND u.opted_out_at IS NULL
   `);
-  return [...rows].length === 1;
+  const row = [...rows][0];
+  if (!row) return 'ineligible';
+  return row.opted_out_at === null ? 'send' : 'opted-out';
 }
 
 /**

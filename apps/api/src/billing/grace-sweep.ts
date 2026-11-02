@@ -106,13 +106,10 @@ export async function sweepGracePeriods(
           if (!(await subscriptionsRepo.claimGraceReminder(tx, row.businessId, day))) {
             return 'skipped';
           }
-          /* STOP is a fact and it is checked before every proactive send. The claim still
-           * stands: an opted-out merchant is not owed the same message tomorrow, and the
-           * dashboard tells them where they stand. */
-          if (row.ownerOptedOut) return 'opted-out';
-          return (await subscriptionsRepo.graceReminderStillEligible(tx, row.businessId))
-            ? 'send'
-            : 'ineligible';
+          /* STOP/START is read fresh here, not from the page: an opted-out merchant keeps the
+           * claimed day (not owed the same message tomorrow), and one who has since opted back in
+           * is not skipped on a stale flag. */
+          return subscriptionsRepo.graceReminderEligibility(tx, row.businessId);
         });
       } catch (claimError) {
         log.warn(

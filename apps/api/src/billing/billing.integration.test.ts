@@ -1070,9 +1070,9 @@ describe('the grace period', () => {
     await failedMerchant('+2348177100044');
     const sender = new StubSender();
     const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
-    const real = subscriptionsRepo.graceReminderStillEligible;
+    const real = subscriptionsRepo.graceReminderEligibility;
     const spy = vi
-      .spyOn(subscriptionsRepo, 'graceReminderStillEligible')
+      .spyOn(subscriptionsRepo, 'graceReminderEligibility')
       .mockRejectedValueOnce(new Error('read failed'));
     try {
       await sweepGracePeriods(deps, dayAfterFailure(1));
@@ -1080,10 +1080,43 @@ describe('the grace period', () => {
     } finally {
       spy.mockRestore();
     }
-    expect(subscriptionsRepo.graceReminderStillEligible).toBe(real);
+    expect(subscriptionsRepo.graceReminderEligibility).toBe(real);
 
     await sweepGracePeriods(deps, dayAfterFailure(1));
     expect(sender.billingNotices).toHaveLength(1);
+  });
+
+  /* CodeRabbit on #400: the opt-out flag on the page can be stale. A merchant who sent START
+   * after the page was read must still get this reminder day, not have it burnt on the old flag. */
+  it('reads STOP/START fresh, not from the page', async () => {
+    const m1 = await failedMerchant('+2348177100045');
+    const m2 = await failedMerchant('+2348177100046');
+    /* Pages run in business-id order: the first is sent to, the second is the opted-out one. */
+    const [first, second] =
+      m1.businessId < m2.businessId
+        ? [
+            { ...m1, phone: '+2348177100045' },
+            { ...m2, phone: '+2348177100046' },
+          ]
+        : [
+            { ...m2, phone: '+2348177100046' },
+            { ...m1, phone: '+2348177100045' },
+          ];
+    await identity.setOptOut(db, second.phone, new Date());
+
+    const sender = new StubSender();
+    const original = sender.sendBillingNotice.bind(sender);
+    sender.sendBillingNotice = async (notice) => {
+      const sent = await original(notice);
+      if (notice.to === first.phone) await identity.setOptOut(db, second.phone, null);
+      return sent;
+    };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+    expect(sender.billingNotices.map((n) => n.to).sort()).toEqual(
+      [first.phone, second.phone].sort(),
+    );
   });
 
   it('retries a reminder that definitely did not leave', async () => {
