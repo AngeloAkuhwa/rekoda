@@ -451,6 +451,26 @@ describe('failure and retry', () => {
     expect(after.counts.sent).toBe(1);
   });
 
+  it('a worker that died before the send, then an opt-out: the retry re-reads it and sends nothing', async () => {
+    const s = await shop(1);
+    const batch = await confirm(s);
+    const reminders = reminderService();
+    reminders.send = () => Promise.reject(new Error('worker killed before the send'));
+    expect((await sweep(reminders)).errored).toBe(1);
+    await withBusiness(db, s.businessId, (tx) =>
+      remindersRepo.recordEmailOptOut(tx, s.businessId, emailSuppressionKey(s.invoices[0]!.email)),
+    );
+    const later = new Date(Date.now() + REMINDER_BATCH_LIMITS.staleClaimMs + 60_000);
+    await sweep(reminderService(), later);
+    expect(mail.attempts).toBe(0);
+    const after = await batches().get(s.businessId, batch.id);
+    expect(after.items[0]!.reminders[0]).toMatchObject({
+      status: 'blocked',
+      reasonCode: 'customer_opted_out',
+    });
+    expect(after.state).toBe('completed');
+  });
+
   it('a timeout is recorded as uncertain and never resent', async () => {
     const s = await shop(1);
     const batch = await confirm(s);
