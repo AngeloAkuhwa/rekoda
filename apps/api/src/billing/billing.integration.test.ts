@@ -163,8 +163,10 @@ describe('the guardrail', () => {
 describe('what a new merchant sees', () => {
   it('says a trial that ran out without a payment ended as a trial, not as a subscription', async () => {
     const { businessId, auth } = await onboard('+2348177100094');
-    await ownerDb.execute(
-      sql`UPDATE businesses SET plan_expires_at = now() - interval '1 day' WHERE id = ${businessId}::uuid`,
+    await withBusiness(ownerDb, businessId, (tx) =>
+      tx.execute(
+        sql`UPDATE businesses SET plan_expires_at = now() - interval '1 day' WHERE id = ${businessId}::uuid`,
+      ),
     );
     const overview = await overviewOf(auth);
     expect(overview.status).toMatchObject({ state: 'expired', wasTrial: true });
@@ -180,8 +182,10 @@ describe('what a new merchant sees', () => {
       new Date(Date.now() - 40 * 86_400_000),
       new Date(Date.now() - 86_400_000),
     );
-    await ownerDb.execute(
-      sql`UPDATE businesses SET plan = 'expired', subscription_origin = NULL WHERE id = ${businessId}::uuid`,
+    await withBusiness(ownerDb, businessId, (tx) =>
+      tx.execute(
+        sql`UPDATE businesses SET plan = 'expired', subscription_origin = NULL WHERE id = ${businessId}::uuid`,
+      ),
     );
     const overview = await overviewOf(auth);
     expect(overview.status).toMatchObject({ state: 'expired', wasTrial: false });
