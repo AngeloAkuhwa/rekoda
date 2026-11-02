@@ -37,6 +37,9 @@
 
 Working target: **12 PRs** for the remaining delivery units, one implementation PR active at a time.
 Per-PR scope and acceptance: `REKODA_MVP_DELIVERY_PLAN.md` Part D.
+Additionally, one one-time documentation-only governance PR (owner, 2 Nov 2026) lands the MVP
+plan, PR structure, mandate, audit documents and this ledger right after #396 merges: 13 PRs in
+total, not a 13th implementation priority, and it does not delay the next implementation work.
 Each feature ships in one substantial, focused PR with its tests, migrations, UI and supporting
 changes; a feature is split only for a genuine technical or safety reason, explained before the extra
 PR is opened. SUB-02 checkout and the original SUB-03 lifecycle work are already merged and are not
