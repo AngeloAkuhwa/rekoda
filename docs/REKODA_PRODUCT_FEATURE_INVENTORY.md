@@ -2,7 +2,7 @@
 
 > **Audit date:** 2 November 2026. **Code baseline:** `main` at `baefd3e`.
 > Merged after the baseline and reflected only where stated: #397 (Anthropic SDK 1.3.0, superseding
-> Dependabot #379; `283ae06`) and #396 (G-62 plan-writer guard; `PENDING396`).
+> Dependabot #379; `283ae06`) and #396 (G-62 plan-writer guard; `7f1adec`).
 >
 > **Evidence used:**
 >

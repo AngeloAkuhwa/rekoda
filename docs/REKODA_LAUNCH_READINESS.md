@@ -41,7 +41,7 @@ PENDING until the remaining hardening train is merged and deployed, then one coo
 the whole queue (`HANDOFF.md`), including the paid live AI evaluation (G-07). CI or a deployment is never
 "STAGING ACCEPTED".
 
-**Completion audit baseline (2 Nov 2026, `main` `PENDING396`).** A full engineering-readiness audit
+**Completion audit baseline (2 Nov 2026, `main` `7f1adec`).** A full engineering-readiness audit
 is recorded in four companion documents: `REKODA_PRODUCT_FEATURE_INVENTORY.md` (what is complete,
 partial and not built, on the status ladder from NOT STARTED to LIVE VERIFIED),
 `REKODA_E2E_ACCEPTANCE_MATRIX.md` (CI browser journeys versus staging acceptance; no journey merged
