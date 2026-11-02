@@ -14,12 +14,15 @@ import { emailSuppressionKey } from '@rekoda/core';
 import { signReminderOptOut } from '@rekoda/core/reminders';
 import { encryptFacet } from '@rekoda/core/vault';
 import { matchKeyFor } from '@rekoda/core/vault';
+import { unwindAllocations } from '../commands/payment-adjustment-commands.js';
 import {
   createDb,
   customersRepo,
   identity,
   issueRepo,
+  settleRepo,
   sql,
+  subscriptionsRepo,
   withBusiness,
   type Db,
 } from '@rekoda/db';
@@ -192,6 +195,20 @@ const sendVia = async (
 const sendEmail = (s: Seeded, extra: { attest?: boolean; idempotencyKey?: string } = {}) =>
   sendVia(s, 'email', extra);
 
+/** A payment the merchant records against the invoice, through the real posting path. */
+const pay = (s: Seeded, amountK: number) =>
+  withBusiness(appDb, s.businessId, (tx) =>
+    settleRepo.recordMerchantPayment(tx, {
+      businessId: s.businessId,
+      invoiceId: s.invoiceId,
+      amountK,
+      method: 'transfer',
+      sourceType: 'dashboard',
+      sourceId: s.invoiceNumber,
+      actor: 'owner',
+    }),
+  );
+
 describe('an email reminder', () => {
   it('names the merchant, quotes the balance and phone, and links an opt-out', async () => {
     const s = await seed();
@@ -262,15 +279,12 @@ describe('an email reminder', () => {
   it('sends nothing for an invoice that is already paid, and quotes the current balance otherwise', async () => {
     const s = await seed();
     await approvePhone(s);
-    await rows(
-      s.businessId,
-      sql`UPDATE invoices SET balance_due_k = 3000000, status = 'partially_paid'`,
-    );
+    await pay(s, 5_000_000);
     const part = await sendEmail(s, { attest: true });
     expect(part.reminder.balanceK).toBe(3_000_000);
     expect(mail.outbox.at(-1)!.text).toContain('30,000');
 
-    await rows(s.businessId, sql`UPDATE invoices SET balance_due_k = 0, status = 'paid'`);
+    await pay(s, 3_000_000);
     const paid = await sendEmail(s);
     expect(paid.reminder).toMatchObject({ status: 'blocked', reasonCode: 'nothing_owing' });
     expect(mail.outbox).toHaveLength(1);
@@ -690,17 +704,28 @@ describe('both channels for one event', () => {
     expect(mail.outbox).toHaveLength(0);
   });
 
-  it('sends nothing on either channel once the invoice is paid before dispatch', async () => {
+  it('sends nothing on either channel once a real payment settles the invoice in full', async () => {
     const s = await seed();
     await approvePhone(s);
-    await rows(s.businessId, sql`UPDATE invoices SET balance_due_k = 0, status = 'paid'`);
+    await pay(s, 8_000_000);
     const out = await event(s, { attest: true });
-    expect(out.results.map((r) => r.reminder.reasonCode)).toEqual([
-      'nothing_owing',
-      'nothing_owing',
+    expect(out.results.map((r) => [r.channel, r.reminder.status, r.reminder.reasonCode])).toEqual([
+      ['whatsapp', 'blocked', 'nothing_owing'],
+      ['email', 'blocked', 'nothing_owing'],
     ]);
     expect(whatsappCalls).toHaveLength(0);
     expect(mail.outbox).toHaveLength(0);
+  });
+
+  it('imposes no waiting period: a finished event does not hold the next one', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    await event(s, { attest: true });
+    const again = byChannel(await event(s));
+    expect(again['whatsapp']).toMatchObject({ status: 'sent' });
+    expect(again['email']).toMatchObject({ status: 'sent' });
+    expect(whatsappCalls).toHaveLength(2);
+    expect(mail.outbox).toHaveLength(2);
   });
 
   it("shows the merchant's changed public phone on the next event, never the old one", async () => {
@@ -734,5 +759,332 @@ describe('tenancy', () => {
     );
     // B has no approved phone, so B's own request is refused on B's facts, not A's.
     expect((await sendEmail(b, { attest: true })).reminder.reasonCode).toBe('no_public_contact');
+  });
+});
+
+/** An email sender that stays "with the provider" until released, so an overlap is deterministic. */
+function gatedSender() {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let sends = 0;
+  let inside = 0;
+  let maxInside = 0;
+  const sender: EmailSender = {
+    available: true,
+    send: async () => {
+      sends += 1;
+      inside += 1;
+      maxInside = Math.max(maxInside, inside);
+      entered();
+      await gate;
+      inside -= 1;
+    },
+  };
+  return { sender, release, started, stats: () => ({ sends, maxInside }) };
+}
+
+describe('one reminder in flight per invoice and channel, whatever the key (REM-02)', () => {
+  it('refuses a different key while the first is with the provider, and sends once it has settled', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    const gated = gatedSender();
+    const first = sendVia(s, 'email', { attest: true, sender: gated.sender });
+    await gated.started;
+
+    // Five more requests, each with its own key, arrive while the first is still in flight.
+    const during = await Promise.all(
+      Array.from({ length: 5 }, () => sendVia(s, 'email', { attest: true, sender: gated.sender })),
+    );
+    expect(during.map((r) => [r.reminder.status, r.reminder.reasonCode])).toEqual(
+      Array(5).fill(['blocked', 'reminder_in_flight']),
+    );
+    expect(gated.stats()).toEqual({ sends: 1, maxInside: 1 });
+
+    gated.release();
+    expect((await first).reminder.status).toBe('sent');
+
+    // No waiting period follows: the next request is judged on its own facts and goes.
+    expect((await sendEmail(s)).reminder.status).toBe('sent');
+    expect(mail.outbox).toHaveLength(1);
+  });
+
+  it('never has two reminders with the provider at once when different keys race', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    const gated = gatedSender();
+    const raced = Promise.all(
+      Array.from({ length: 6 }, () => sendVia(s, 'email', { attest: true, sender: gated.sender })),
+    );
+    await gated.started;
+    // Let every loser reach its refusal while the winner is held at the provider.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    gated.release();
+    const results = await raced;
+    expect(gated.stats()).toEqual({ sends: 1, maxInside: 1 });
+    expect(results.filter((r) => r.reminder.status === 'sent')).toHaveLength(1);
+    expect(results.filter((r) => r.reminder.reasonCode === 'reminder_in_flight')).toHaveLength(5);
+    const [attested] = await rows<{ n: string }>(
+      s.businessId,
+      sql`SELECT count(*)::text AS n FROM reminder_attestations`,
+    );
+    expect(attested!.n).toBe('1');
+  });
+
+  it('holds only its own channel: WhatsApp goes while an email is in flight', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    const gated = gatedSender();
+    const email = sendVia(s, 'email', { attest: true, sender: gated.sender });
+    await gated.started;
+    expect((await sendVia(s, 'whatsapp')).reminder.status).toBe('sent');
+    gated.release();
+    await email;
+  });
+
+  it('holds only its own invoice', async () => {
+    const a = await seed();
+    await approvePhone(a);
+    const gated = gatedSender();
+    const first = sendVia(a, 'email', { attest: true, sender: gated.sender });
+    await gated.started;
+    const other = await withBusiness(appDb, a.businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId: a.businessId,
+        customerId: a.customerId,
+        customerToken: 'CUSTOMER_X81',
+        items: [{ name: 'shoes', quantity: 1, unitPriceK: 1_000_000 }],
+        subtotalK: 1_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 1_000_000,
+        paidK: 0,
+        balanceDueK: 1_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-second-invoice',
+        actor: 'system',
+      }),
+    );
+    const second = await service().send(a.businessId, a.userId, {
+      invoiceNumber: other.invoiceNumber,
+      channels: ['email'],
+      idempotencyKey: key(),
+      attest: true,
+    });
+    expect(second.results[0]!.reminder.status).toBe('sent');
+    gated.release();
+    await first;
+  });
+
+  it('does not let a failed, refused or uncertain attempt hold the invoice', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    mail.failNext = true;
+    expect((await sendEmail(s, { attest: true })).reminder.status).toBe('uncertain');
+    // An unknown outcome is never resent by the system; the merchant's own new request is a new
+    // decision, judged on the facts it carries, with no waiting period invented here.
+    expect((await sendEmail(s)).reminder.status).toBe('sent');
+    expect(mail.outbox).toHaveLength(1);
+  });
+
+  it('holds while a live attempt is unsettled, and releases when a dead one is settled as uncertain', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    const first = await sendVia(s, 'whatsapp');
+    // The process died after the provider call: the row is left `sending`.
+    await rows(
+      s.businessId,
+      sql`UPDATE invoice_reminders SET status = 'sending', sent_at = NULL
+           WHERE id = ${first.reminder.id}::uuid`,
+    );
+    expect((await sendVia(s, 'whatsapp')).reminder.reasonCode).toBe('reminder_in_flight');
+    expect(whatsappCalls).toHaveLength(1);
+
+    // Past the stale threshold the dead attempt settles to uncertain (never resent) and stops
+    // holding the invoice.
+    await rows(
+      s.businessId,
+      sql`UPDATE invoice_reminders SET updated_at = now() - interval '11 minutes'
+           WHERE id = ${first.reminder.id}::uuid`,
+    );
+    expect((await sendVia(s, 'whatsapp')).reminder.status).toBe('sent');
+    const [settled] = await rows<{ status: string }>(
+      s.businessId,
+      sql`SELECT status FROM invoice_reminders WHERE id = ${first.reminder.id}::uuid`,
+    );
+    expect(settled!.status).toBe('uncertain');
+    expect(whatsappCalls).toHaveLength(2);
+  });
+});
+
+describe('the balance is read under the payment lock (REM-02)', () => {
+  it('waits for a payment being posted, then refuses the invoice it settled', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let posted!: () => void;
+    const lockTaken = new Promise<void>((resolve) => (posted = resolve));
+    const payment = withBusiness(appDb, s.businessId, async (tx) => {
+      await settleRepo.recordMerchantPayment(tx, {
+        businessId: s.businessId,
+        invoiceId: s.invoiceId,
+        amountK: 8_000_000,
+        method: 'transfer',
+        sourceType: 'dashboard',
+        sourceId: s.invoiceNumber,
+        actor: 'owner',
+      });
+      posted();
+      await held;
+    });
+    await lockTaken;
+
+    let settled = false;
+    const reminder = sendEmail(s, { attest: true }).finally(() => (settled = true));
+    /* Until the reminder is seen waiting on a lock (or has finished without waiting, which is the
+     * bug), the payment stays uncommitted. */
+    for (let i = 0; i < 100 && !settled; i += 1) {
+      const [waiting] = [
+        ...(await appDb.execute<{ n: number }>(
+          sql`SELECT count(*)::int AS n FROM pg_stat_activity
+               WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+        )),
+      ];
+      if (waiting!.n > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    release();
+    await payment;
+
+    const { reminder: row } = await reminder;
+    expect(row).toMatchObject({ status: 'blocked', reasonCode: 'nothing_owing', balanceK: 0 });
+    expect(mail.outbox).toHaveLength(0);
+  });
+});
+
+describe('void, credit and reversal (REM-02)', () => {
+  it('refuses a voided invoice', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    const voided = await withBusiness(appDb, s.businessId, (tx) =>
+      issueRepo.voidInvoice(tx, s.businessId, s.invoiceNumber, 'wrong customer', 'owner'),
+    );
+    expect(voided.outcome).toBe('voided');
+    for (const channel of ['whatsapp', 'email'] as const) {
+      expect((await sendVia(s, channel, { attest: true })).reminder).toMatchObject({
+        status: 'blocked',
+        reasonCode: 'nothing_owing',
+      });
+    }
+    expect(whatsappCalls).toHaveLength(0);
+    expect(mail.outbox).toHaveLength(0);
+  });
+
+  it('refuses an invoice a credit note has fully credited', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    await pay(s, 3_000_000);
+    const credited = await withBusiness(appDb, s.businessId, (tx) =>
+      issueRepo.issueCreditNote(tx, {
+        businessId: s.businessId,
+        invoiceNumber: s.invoiceNumber,
+        amountK: 8_000_000,
+        reason: 'goods returned',
+        actor: 'owner',
+      }),
+    );
+    expect(credited.outcome).toBe('credited');
+    const [invoice] = await rows<{ status: string }>(
+      s.businessId,
+      sql`SELECT status FROM invoices`,
+    );
+    expect(invoice!.status).toBe('credited');
+    for (const channel of ['whatsapp', 'email'] as const) {
+      expect((await sendVia(s, channel, { attest: true })).reminder).toMatchObject({
+        status: 'blocked',
+        reasonCode: 'nothing_owing',
+      });
+    }
+    expect(whatsappCalls).toHaveLength(0);
+    expect(mail.outbox).toHaveLength(0);
+  });
+
+  it('quotes the remaining balance after a partial payment', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    await pay(s, 3_000_000);
+    const r = await sendVia(s, 'whatsapp');
+    expect(r.reminder).toMatchObject({ status: 'sent', balanceK: 5_000_000 });
+    expect(whatsappCalls[0]!.text).toContain('50,000');
+  });
+
+  it('quotes the reopened balance once a reversal reopens it', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    expect((await sendVia(s, 'whatsapp')).reminder.status).toBe('sent');
+    const paid = await pay(s, 8_000_000);
+    expect((await sendVia(s, 'whatsapp')).reminder.reasonCode).toBe('nothing_owing');
+
+    const reopened = await withBusiness(appDb, s.businessId, (tx) =>
+      unwindAllocations(tx, {
+        businessId: s.businessId,
+        paymentId: paid.paymentId,
+        amountK: 8_000_000,
+        reason: 'transfer reversed by the bank',
+        sourceType: 'payment_reversal',
+        sourceId: 'reversal-test-1',
+      }),
+    );
+    expect(reopened.invoicesReopened).toEqual([s.invoiceNumber]);
+
+    const again = await sendVia(s, 'whatsapp');
+    expect(again.reminder).toMatchObject({ status: 'sent', balanceK: 8_000_000 });
+    expect(whatsappCalls).toHaveLength(2);
+  });
+});
+
+describe('the email reply-to (REM-02)', () => {
+  const setBillingEmail = async (s: Seeded, address: string, verified: boolean) => {
+    await withBusiness(appDb, s.businessId, (tx) =>
+      subscriptionsRepo.setBillingEmailSealed(
+        tx,
+        s.businessId,
+        encryptFacet(address, config.vaultKey, `billing-email:${s.businessId}`),
+        new Date(),
+      ),
+    );
+    if (verified) {
+      await rows(s.businessId, sql`UPDATE businesses SET billing_email_verified_at = now()`);
+    }
+  };
+
+  it("sends replies to the merchant's verified billing email", async () => {
+    const s = await seed();
+    await approvePhone(s);
+    await setBillingEmail(s, 'owner@adaeze.example.ng', true);
+    expect((await sendEmail(s, { attest: true })).reminder.status).toBe('sent');
+    expect(mail.outbox[0]!.replyTo).toBe('owner@adaeze.example.ng');
+    // Still sent from Rekoda's own address under the merchant's display name.
+    expect(mail.outbox[0]!.fromName).toBe('Adaeze Fabrics via Rekoda');
+  });
+
+  it('leaves the reply-to out when the billing email is not verified, or there is none', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    await sendEmail(s, { attest: true });
+    expect(mail.outbox[0]!).not.toHaveProperty('replyTo');
+
+    await setBillingEmail(s, 'unproven@adaeze.example.ng', false);
+    await sendEmail(s);
+    expect(mail.outbox).toHaveLength(2);
+    expect(mail.outbox[1]!).not.toHaveProperty('replyTo');
   });
 });

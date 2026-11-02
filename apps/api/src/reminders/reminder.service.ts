@@ -2,10 +2,12 @@
  * Sending one payment reminder to a merchant's own customer (N1 slice A, OWN-43, OWN-62).
  *
  * The order is the safety:
- *   1. one transaction re-reads the invoice and its balance, the contact, the opt-out and the
- *      merchant's attestation, decides with the pure rule `reminderBlock`, and either records a
- *      named refusal or records a `sending` row, atomically;
- *   2. only after that commits is the provider called, with no lock held;
+ *   1. one transaction re-reads the invoice and its balance under a row lock (so a payment being
+ *      posted is waited for), takes the per-invoice-and-channel lock, reads the contact, the
+ *      opt-out and the merchant's attestation, checks nothing else is in flight, decides with the pure rule
+ *      `reminderBlock`, and either records a named refusal or records a `sending` row, atomically;
+ *   2. only after that commits is the provider called, with no transaction or lock held (the
+ *      WhatsApp door commits its own reservation before Meta is called, REM-02);
  *   3. the outcome moves the row forward exactly once.
  * A crash between 2 and 3 leaves a visible `sending` row, and a repeat of the same key returns it
  * instead of sending again. An unknown provider outcome is `uncertain` and is never resent.
@@ -86,6 +88,8 @@ type Prepared =
       reminderId: string;
       email: string | null;
       phone: string | null;
+      /** The merchant's verified billing email, for replies; null when none is verified. */
+      replyTo: string | null;
       facts: Parameters<typeof composeEmailReminder>[0];
     };
 
@@ -199,6 +203,7 @@ export class ReminderService {
           subject: message.subject,
           text: message.text,
           fromName: message.fromName,
+          ...(prepared.replyTo ? { replyTo: prepared.replyTo } : {}),
           idempotencyKey: `reminder-${reminderId}`,
         });
       } else {
@@ -245,13 +250,27 @@ export class ReminderService {
       await remindersRepo.lockReminderKey(tx, businessId, input.idempotencyKey);
       await remindersRepo.settleStaleSending(tx, businessId, STALE_SENDING_MINUTES);
 
-      const invoice = await remindersRepo.invoiceForReminder(tx, businessId, input.invoiceNumber);
+      /* FOR SHARE: a payment being posted holds this row FOR UPDATE, so this waits for it and
+       * decides on the committed balance; and no payment lands until this decision commits. */
+      const invoice = await remindersRepo.invoiceForReminder(tx, businessId, input.invoiceNumber, {
+        lock: 'share',
+      });
       if (!invoice) throw new ReminderInvoiceNotFound();
       const prior = await remindersRepo.reminderByKey(tx, businessId, input.idempotencyKey);
       if (prior) {
         if (prior.invoiceId !== invoice.invoiceId) throw new ReminderKeyReused();
         return { kind: 'replay', row: prior };
       }
+      /* One reminder in flight per invoice and channel whatever the key: a raced request with
+       * another key waits here, then sees the winner's `sending` row and is refused. No waiting
+       * period follows a finished reminder; that is the cadence, not this guard. */
+      await remindersRepo.lockReminderInvoiceChannel(tx, businessId, invoice.invoiceId, channel);
+      const inFlight = await remindersRepo.reminderInFlight(
+        tx,
+        businessId,
+        invoice.invoiceId,
+        channel,
+      );
       const business = await remindersRepo.businessForReminder(tx, businessId);
 
       let email: string | null = null;
@@ -304,6 +323,7 @@ export class ReminderService {
         attested: attestedAlready || input.attest === true,
         needsAttestation: channel === 'email',
         optedOut,
+        reminderInFlight: inFlight,
       });
       if (!this.config.customerReminders) block = 'reminders_not_released';
       if (block === null && ambiguous) block = 'ambiguous_contact';
@@ -364,6 +384,7 @@ export class ReminderService {
         reminderId: started,
         email,
         phone,
+        replyTo: channel === 'email' ? this.replyTo(businessId, business!) : null,
         facts: {
           businessName: business!.name,
           publicPhone: business!.publicContactPhone!,
@@ -374,6 +395,28 @@ export class ReminderService {
         },
       };
     });
+  }
+
+  /**
+   * Where a customer's reply goes: the merchant's billing email, and only once its mailbox has been
+   * proven (a changed address clears the proof). Otherwise none, and a reply reaches Rekoda's own
+   * sending address. Opened here, held only for the send, never logged.
+   */
+  private replyTo(businessId: string, business: remindersRepo.ReminderBusiness): string | null {
+    if (business.billingEmailVerifiedAt === null || business.billingEmailSealed === null) {
+      return null;
+    }
+    try {
+      return decryptFacet(
+        business.billingEmailSealed,
+        this.config.vaultKey,
+        `billing-email:${businessId}`,
+      );
+    } catch {
+      /* A seal this key cannot open is a reply-to left out, never a reminder refused. */
+      this.log.warn('reminder reply-to omitted: billing email could not be opened');
+      return null;
+    }
   }
 
   async history(businessId: string, invoiceNumber: string): Promise<ReminderHistoryResponse> {
