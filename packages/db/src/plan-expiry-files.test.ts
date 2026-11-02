@@ -7,6 +7,14 @@
  * It was fixed in #281 by routing every plan change through
  * `subscriptions.writeSubscriptionState`.
  *
+ * INVARIANT PROTECTED: a business's `plan` and `plan_expires_at` are assigned
+ * only by (1) `subscriptions.writeSubscriptionState`, the single statement that
+ * moves a business onto a plan together with the rest of the cycle, (2) the
+ * lapse transition to 'expired' in the same file, and (3) the trial insert in
+ * `identity.createBusinessWithOwner`. Two checks hold it: the FILE LIST below
+ * (who may mention the expiry) and the ASSIGNMENT PINS (how many writes each
+ * listed writer may contain, and that nothing else assigns `plan`).
+ *
  * This guard is deliberately simple and FILE-LEVEL. It does not parse anything.
  * It fails when any non-test source or SQL file mentions the column (either
  * spelling) and is not on the reviewed list below, and when a listed file no
@@ -25,9 +33,11 @@
  *    catch the obvious cases only.
  *  - Test files (`*.test.*`, `*.spec.*`, `e2e/`) are not scanned: they set up
  *    fixtures. A production file given a test-looking name would escape it.
- *  - A listed writer can gain a second write inside the same file. The behaviour
- *    is held by the integration tests (`operator-plan-change`, `subscriptions`),
- *    not by this test.
+ *  - A listed writer can gain a second write only if it is not an assignment the
+ *    patterns know: the pins catch a new `plan` or `plan_expires_at` assignment,
+ *    not a new write to another cycle column (`pending_plan`, `plan_version_id`).
+ *    Behaviour is held by the integration tests (`operator-plan-change`,
+ *    `subscriptions`), not by this test.
  * The stronger alternative, a database trigger that refuses a change to the
  * column unless the transaction opted in through the single writer, is
  * recorded in the G-62 row as a follow-up. It needs a migration on the
@@ -134,8 +144,9 @@ export const ALLOWED: Readonly<Record<string, Entry>> = {
 
 /** Both spellings, any case, so a camelCase property or a SQL column is caught. */
 const MENTION = /plan_?expires/i;
-// Whitespace or SQL comments (line comments or block comments) between tokens.
-const GAP = String.raw`(?:\s|--[^\n]*(?:\n|$)|/\*[\s\S]*?\*/)*`;
+// Whitespace or SQL comments (line comments or block comments) between tokens. A block comment ends at the
+// FIRST `*/`: a lazy `[\s\S]*?` can extend past it, and on a large file that backtracks combinatorially.
+const GAP = String.raw`(?:\s|--[^\n]*(?:\n|$)|/\*(?:[^*]|\*(?!/))*\*/)*`;
 /** `SET plan_expires_at = x` or `, plan_expires_at = x` (quoted or qualified too). A `WHERE`/`AND` equality predicate, `<=`, `>=`, `!=` and `==` do not match. */
 const SQL_ASSIGNMENT = new RegExp(
   [
@@ -157,6 +168,100 @@ const BUILDER_ASSIGNMENT = new RegExp(
 /** Whole-file hints that the businesses table is written: an UPDATE or an INSERT, builder or raw. */
 const UPDATE_HINT = /\.update\(\s*businesses\s*\)|\bUPDATE\s+(?:public\.)?"?businesses"?\b/i;
 const INSERT_HINT = /\.insert\(\s*businesses\s*\)|\bINSERT\s+INTO\s+(?:public\.)?"?businesses"?\b/i;
+
+/**
+ * Assignment pins. A file-level list cannot see a second write INSIDE a listed
+ * writer, and the expiry name alone does not cover `plan` (the lapse to
+ * 'expired' assigns `plan` without touching the date). So the number of
+ * assignments each file may contain is pinned; any other file must have none.
+ * Changing a pin is a reviewed decision, like adding a writer.
+ */
+export interface Pin {
+  /** SQL or builder assignments to `plan`. */
+  plan: number;
+  /** SQL or builder assignments to `plan_expires_at`. */
+  expiry: number;
+  /** `.insert(businesses)` or `INSERT INTO businesses` statements. */
+  businessInserts: number;
+  why: string;
+}
+
+export const PINS: Readonly<Record<string, Pin>> = {
+  'packages/db/src/repos/subscriptions.ts': {
+    plan: 2,
+    expiry: 1,
+    businessInserts: 0,
+    why: 'writeSubscriptionState (plan and date together) and the lapse to expired (plan only, guarded on the previous plan).',
+  },
+  'packages/db/migrations/0017_trial_expiry.sql': {
+    plan: 0,
+    expiry: 1,
+    businessInserts: 0,
+    why: 'one-off backfill of the trial expiry for rows that existed then (applied; immutable).',
+  },
+  'packages/db/src/repos/identity.ts': {
+    plan: 0,
+    expiry: 0,
+    businessInserts: 1,
+    why: 'createBusinessWithOwner: the one insert, which starts the trial clock; the plan comes from the column default.',
+  },
+};
+
+const ASSIGN = (col: string): string =>
+  [
+    String.raw`(?:\bSET|,)${GAP}(?:"?\w+"?\.)?"?${col}"?\s*=(?!=)`,
+    String.raw`(?:\bSET|,)${GAP}\([^)]*(?<![\w$])${col}(?![\w$])[^)]*\)\s*=(?!=)`,
+    // a query-builder .set({ ..., col: x })
+    String.raw`\.set\(\s*\{[^}]*(?<![\w$])${col === 'plan' ? 'plan' : 'plan_?expires_?at'}\s*:`,
+  ].join('|');
+
+function count(re: RegExp, text: string): number {
+  return (text.match(re) ?? []).length;
+}
+
+/** Assignments to `plan` and to `plan_expires_at`, and businesses inserts, in one file's text. */
+export function countAssignments(text: string): { plan: number; expiry: number; inserts: number } {
+  return {
+    plan: count(new RegExp(ASSIGN('plan'), 'gi'), text),
+    expiry: count(new RegExp(ASSIGN('plan_expires_at'), 'gi'), text),
+    inserts: count(new RegExp(INSERT_HINT.source, 'gi'), text),
+  };
+}
+
+/** Every non-test file against the pins. A file with no pin must assign neither column. */
+export function checkAssignmentPins(
+  files: readonly ScannedFile[],
+  pins: Readonly<Record<string, Pin>> = PINS,
+): string[] {
+  const problems: string[] = [];
+  const seen = new Set<string>();
+  for (const f of files) {
+    if (isTestFile(f.path) || f.path.includes('/migrations/meta/')) continue;
+    const pin = pins[f.path];
+    if (pin) seen.add(f.path);
+    const got = countAssignments(f.text);
+    const want = pin ?? { plan: 0, expiry: 0, businessInserts: 0 };
+    if (got.plan !== want.plan) {
+      problems.push(`${f.path}: assigns plan ${got.plan} time(s), pinned at ${want.plan} (G-62).`);
+    }
+    if (got.expiry !== want.expiry) {
+      problems.push(
+        `${f.path}: assigns plan_expires_at ${got.expiry} time(s), pinned at ${want.expiry} (G-62).`,
+      );
+    }
+    // Inserts are pinned only where a pin exists: other files are covered by the reader/caller checks.
+    if (pin && got.inserts !== pin.businessInserts) {
+      problems.push(
+        `${f.path}: inserts into businesses ${got.inserts} time(s), pinned at ${pin.businessInserts} (G-62).`,
+      );
+    }
+  }
+  for (const path of Object.keys(pins)) {
+    if (!seen.has(path))
+      problems.push(`${path}: pinned but not found (moved or renamed). Update PINS.`);
+  }
+  return problems;
+}
 
 export const SOURCE_EXT = /\.(?:ts|tsx|mts|cts|js|mjs|cjs|sql|sh)$/;
 const SKIP_DIR = new Set(['node_modules', 'dist', '.next', '.turbo', 'coverage', '.git']);
@@ -247,6 +352,11 @@ describe('G-62: files that may touch plan_expires_at', () => {
     const files = collectSourceFiles(REPO_ROOT, ['apps', 'packages', 'scripts', 'deploy']);
     expect(files.length).toBeGreaterThan(500); // the walk found the code, not an empty tree
     expect(checkPlanExpiryFiles(files)).toEqual([]);
+  });
+
+  it('plan and plan_expires_at are assigned only as many times as each writer is pinned for', () => {
+    const files = collectSourceFiles(REPO_ROOT, ['apps', 'packages', 'scripts', 'deploy']);
+    expect(checkAssignmentPins(files)).toEqual([]);
   });
 
   it('every entry explains itself', () => {
@@ -576,5 +686,104 @@ describe('checkPlanExpiryFiles (detection behaviour)', () => {
     expect(isTestFile('apps/web/e2e/b.ts')).toBe(true);
     expect(isTestFile('a/contest.ts')).toBe(false);
     expect(isTestFile('a/b.ts')).toBe(false);
+  });
+});
+
+describe('checkAssignmentPins (detection behaviour)', () => {
+  const pins = {
+    'src/writer.ts': { plan: 2, expiry: 1, businessInserts: 0, why: 'the pinned writer' },
+  };
+  const WRITER = [
+    'UPDATE businesses SET plan = $1, plan_expires_at = $2 WHERE id = $3;',
+    "UPDATE businesses SET plan = 'expired' WHERE id = $1;",
+  ].join('\n');
+  const run = (files: ScannedFile[]) => checkAssignmentPins(files, pins);
+  const writer: ScannedFile = { path: 'src/writer.ts', text: WRITER };
+
+  it('passes when the writer holds exactly its pinned assignments', () => {
+    expect(run([writer, { path: 'src/other.ts', text: 'SELECT plan FROM businesses' }])).toEqual(
+      [],
+    );
+  });
+
+  it('flags a new file that assigns plan alone, which the expiry-name check cannot see', () => {
+    const out = run([writer, { path: 'src/new.ts', text: "UPDATE businesses SET plan = 'chat'" }]);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toContain('src/new.ts');
+  });
+
+  it('flags a builder assignment of plan in a new file', () => {
+    const out = run([writer, { path: 'src/new.ts', text: "tx.update(b).set({ plan: 'chat' })" }]);
+    expect(out.join('\n')).toContain('src/new.ts');
+  });
+
+  it('flags a second write added INSIDE the pinned writer', () => {
+    const grown = {
+      ...writer,
+      text: `${WRITER}\nUPDATE businesses SET plan = 'chat' WHERE id = $1;`,
+    };
+    const out = run([grown]);
+    expect(out.join('\n')).toContain('assigns plan 3 time(s), pinned at 2');
+  });
+
+  it('flags a new expiry assignment inside the pinned writer', () => {
+    const grown = { ...writer, text: `${WRITER}\nUPDATE businesses SET plan_expires_at = now();` };
+    expect(run([grown]).join('\n')).toContain('assigns plan_expires_at 2 time(s), pinned at 1');
+  });
+
+  it('flags a writer that lost one of its writes, so a pin cannot rot', () => {
+    const shrunk = { ...writer, text: WRITER.split('\n')[0] ?? '' };
+    expect(run([shrunk]).join('\n')).toContain('assigns plan 1 time(s), pinned at 2');
+  });
+
+  it('flags a pinned file that has moved', () => {
+    expect(run([{ path: 'src/moved.ts', text: WRITER }]).join('\n')).toContain(
+      'src/writer.ts: pinned but not found',
+    );
+  });
+
+  it('does not mistake pending_plan, plan_decided_at or a plan predicate for assigning plan', () => {
+    const readers = [
+      "UPDATE businesses SET pending_plan = 'chat', plan_decided_at = now() WHERE plan = 'trial'",
+      'UPDATE businesses SET plan_version_id = $1 WHERE id = $2 AND plan = $3',
+      'SELECT id FROM businesses WHERE plan = $1 AND plan_expires_at > now()',
+    ].join('\n');
+    expect(run([writer, { path: 'src/ok.ts', text: readers }])).toEqual([]);
+  });
+
+  it('catches a tuple assignment of plan and a quoted one', () => {
+    const out = run([
+      writer,
+      { path: 'src/a.ts', text: 'UPDATE businesses SET (plan, updated_at) = ($1, now())' },
+      { path: 'src/b.ts', text: 'UPDATE businesses SET "plan" = $1' },
+    ]);
+    expect(out.some((m) => m.startsWith('src/a.ts'))).toBe(true);
+    expect(out.some((m) => m.startsWith('src/b.ts'))).toBe(true);
+  });
+
+  it('ignores test files', () => {
+    expect(
+      run([writer, { path: 'src/x.test.ts', text: "UPDATE businesses SET plan = 'chat'" }]),
+    ).toEqual([]);
+  });
+
+  it('pins the insert count where a pin names one', () => {
+    const idPins = { 'src/id.ts': { plan: 0, expiry: 0, businessInserts: 1, why: 'trial insert' } };
+    const one = { path: 'src/id.ts', text: 'tx.insert(businesses).values(x)' };
+    expect(checkAssignmentPins([one], idPins)).toEqual([]);
+    const two = { ...one, text: `${one.text}; tx.insert(businesses).values(y)` };
+    expect(checkAssignmentPins([two], idPins).join('\n')).toContain('inserts into businesses 2');
+  });
+});
+
+describe('assignment patterns stay linear on large files', () => {
+  it('scans a 300 KB file with many block comments in well under a second', () => {
+    // Consecutive block comments after a comma: with a lazy comment pattern this hung (50 repeats never finished).
+    const chunk = ', /* a */ /* b */ /* c */ /* d */ z;\n';
+    const text = chunk.repeat(6_000);
+    const started = Date.now();
+    const got = countAssignments(text);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(got.plan).toBe(0);
   });
 });
