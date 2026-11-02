@@ -20,6 +20,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { RouteConfig } from '@nestjs/platform-fastify';
 import {
   publicContactRequest,
   reminderOptOutRequest,
@@ -106,6 +107,14 @@ export class RemindersController {
   }
 }
 
+/**
+ * The opt-out's own per-IP limit (REM-02), tighter than the global one in `main.ts`. A customer
+ * clicks the link once or twice; anything faster is someone guessing at tokens. It is the global
+ * plugin's route config, so it keeps the global key (the visitor, not the hop), allow list and
+ * error body, and replaces the global ceiling on this route only.
+ */
+export const REMINDER_OPT_OUT_RATE_LIMIT = { max: 10, timeWindow: '1 minute' } as const;
+
 /** Public: a customer following the link in a reminder email. No session; the signed token is the proof. */
 @Controller('v1/public/reminders')
 export class PublicReminderOptOutController {
@@ -113,6 +122,7 @@ export class PublicReminderOptOutController {
 
   @Post('opt-out')
   @HttpCode(200)
+  @RouteConfig({ rateLimit: REMINDER_OPT_OUT_RATE_LIMIT })
   async optOut(@Body() body: unknown): Promise<{ optedOut: true }> {
     const parsed = reminderOptOutRequest.safeParse(body);
     /* One answer for a bad, forged or foreign token, so the route cannot be used to probe. */
