@@ -7,7 +7,7 @@
  * opted out or already bought a plan, and a failed send retried rather than lost.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createDb, identity, sql, withBusiness, type Db } from '@rekoda/db';
+import { createDb, identity, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { TRIAL_DAYS } from '@rekoda/core';
 import { SendFailed } from '../channels/sender.js';
@@ -810,5 +810,43 @@ describe('trial reminders', () => {
 
     expect(later).toMatchObject({ sent: 0, optedOut: 0 });
     expect(sender.trialNotices).toHaveLength(1);
+  });
+});
+
+describe('a later delivery failure (REM-01)', () => {
+  const undelivered = (tenant: string, businessId: string, wamid: string) =>
+    withBusiness(appDb, tenant, (tx) =>
+      subscriptionsRepo.markTrialNoticeUndelivered(tx, businessId, wamid, new Date()),
+    );
+
+  it('moves only the matching sent reminder, once, and never crosses tenants', async () => {
+    const a = await seedTrial();
+    const b = await seedTrial();
+    await sweep(new StubSender(), at(7));
+    /* Two senders' stubs name the same id, so the wamid alone cannot pick a business. */
+    await ownerDb.execute(
+      sql`UPDATE businesses SET trial_notice_provider_message_id = 'wamid.SAME' WHERE id IN (${a.id}::uuid, ${b.id}::uuid)`,
+    );
+
+    expect(await undelivered(a.id, b.id, 'wamid.SAME')).toBe(0);
+    expect((await stateOf(b.id)).state).toBe('sent');
+    expect(await undelivered(a.id, a.id, 'wamid.OTHER')).toBe(0);
+    expect((await stateOf(a.id)).state).toBe('sent');
+
+    expect(await undelivered(a.id, a.id, 'wamid.SAME')).toBe(1);
+    expect(await undelivered(a.id, a.id, 'wamid.SAME')).toBe(0);
+    expect(await stateOf(a.id)).toMatchObject({ stage: 1, state: 'undelivered' });
+    expect((await stateOf(b.id)).state).toBe('sent');
+  });
+
+  it('leaves a suppressed or refused stage as it is', async () => {
+    const { id } = await seedTrial();
+    for (const state of ['suppressed', 'refused', 'sending']) {
+      await ownerDb.execute(
+        sql`UPDATE businesses SET last_trial_notice_stage = 1, trial_notice_state = ${state}, trial_notice_attempted_at = now(), trial_notice_provider_message_id = 'wamid.X' WHERE id = ${id}::uuid`,
+      );
+      expect(await undelivered(id, id, 'wamid.X')).toBe(0);
+      expect((await stateOf(id)).state).toBe(state);
+    }
   });
 });

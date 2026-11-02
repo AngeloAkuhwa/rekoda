@@ -18,6 +18,7 @@ import {
 } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { commandDrafts, conversationMessages, conversations } from '../schema/ops.js';
+import { markTrialNoticeUndelivered } from './subscriptions.js';
 
 export type Channel = 'meta' | 'twilio' | 'simulator';
 export type Direction = 'inbound' | 'outbound';
@@ -863,7 +864,7 @@ export async function markPreviewUndelivered(
 /**
  * A `delivery.status` job that exhausted its retries is dead, and nothing
  * else would ever apply its receipt: the preview it names would stay
- * confirmable (G-20). Called under the business's inbound lock before any
+ * confirmable (G-20), and a trial reminder it names would stay 'sent' (REM-01). Called under the business's inbound lock before any
  * "yes" is read, this applies every such dead receipt exactly once (its event
  * is then marked processed, which is also what takes it out of the next
  * call) and returns how many receipts it applied.
@@ -883,6 +884,9 @@ export async function reconcileDeadReceipts(tx: TenantDb, businessId: string): P
   let applied = 0;
   for (const receipt of [...dead]) {
     await markPreviewUndelivered(tx, businessId, receipt.wamid);
+    // The live job also applies a failed receipt to a trial reminder it names (REM-01); a dead
+    // job must not lose that, or the reminder would read 'sent' while its receipt reads applied.
+    await markTrialNoticeUndelivered(tx, businessId, receipt.wamid, new Date());
     await tx.execute(sql`
       UPDATE external_events SET processed_at = now(),
              error = 'applied after the receipt job died'

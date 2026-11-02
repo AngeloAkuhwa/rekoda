@@ -6,7 +6,9 @@
 set -u
 API_URL="${API_URL:-https://staging-api.myrekoda.com}"
 cd /opt/rekoda 2>/dev/null || { echo "FAIL not in /opt/rekoda"; exit 1; }
-dc() { docker compose -f docker-compose.prod.yml "$@"; }
+# stdin is closed for every compose call: the script is usually piped in over ssh (`bash -s`), and
+# a `compose exec` left on that stdin can swallow the unread rest of the script.
+dc() { docker compose -f docker-compose.prod.yml "$@" </dev/null; }
 say() { printf '%-34s %s\n' "$1" "$2"; }
 
 echo "== release identity"
@@ -34,6 +36,9 @@ echo "== migration 0181 (the OD-33 discovery function)"
 echo "== migration 0183 (billing email send outcome column)"
 { dc exec -T postgres sh -c 'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-rekoda}" -Atc "select column_name from information_schema.columns where table_name = '"'"'billing_email_verifications'"'"' and column_name = '"'"'send_outcome'"'"'"' 2>/dev/null || echo "could not query (check the postgres user/db names)"; } | awk 'NF{f=1;print} END{if(!f)print "MISSING"}'
 
+echo "== migration 0186 (trial reminder delivery failure column)"
+{ dc exec -T postgres sh -c 'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-rekoda}" -Atc "select column_name from information_schema.columns where table_name = '"'"'businesses'"'"' and column_name = '"'"'trial_notice_failed_at'"'"'"' 2>/dev/null || echo "could not query (check the postgres user/db names)"; } | awk 'NF{f=1;print} END{if(!f)print "MISSING"}'
+
 echo "== recent errors (last 30 minutes; counts only, no log text is printed)"
 for c in api worker; do
   n="$(dc logs --since 30m "$c" 2>&1 | grep -ciE '"level":(50|60)|ERROR|FATAL|migration')"
@@ -50,13 +55,34 @@ ls -l .git/rekoda-deploy-staging.state .git/rekoda-deploy-staging.rollback 2>&1 
 echo "== billing settings (SET/UNSET only)"
 for k in PAYSTACK_SECRET_KEY REKODA_PAYSTACK_PLATFORM_CONFIRMED REKODA_WEB_URL REKODA_ANNUAL_BILLING \
          REKODA_EMAIL_PROVIDER RESEND_API_KEY REKODA_EMAIL_FROM RESEND_WEBHOOK_SECRET \
-         META_BILLING_TEMPLATE META_TRIAL_TEMPLATE REKODA_WORKER WORKER_DATABASE_URL; do
+         REKODA_WORKER WORKER_DATABASE_URL; do
   v="$(sed -n "s/^$k=//p" .env | head -1)"
   if [ -z "$v" ]; then say "$k" UNSET; else
     case "$k" in
       PAYSTACK_SECRET_KEY) say "$k" "SET ($( [ "${v#sk_test_}" != "$v" ] && echo TEST-KEY || echo NOT-A-TEST-KEY ))" ;;
-      REKODA_PAYSTACK_PLATFORM_CONFIRMED|REKODA_ANNUAL_BILLING|REKODA_EMAIL_PROVIDER|REKODA_WEB_URL|REKODA_WORKER|META_BILLING_TEMPLATE|META_TRIAL_TEMPLATE) say "$k" "SET ($v)" ;;
+      REKODA_PAYSTACK_PLATFORM_CONFIRMED|REKODA_ANNUAL_BILLING|REKODA_EMAIL_PROVIDER|REKODA_WEB_URL|REKODA_WORKER) say "$k" "SET ($v)" ;;
       *) say "$k" SET ;;
     esac
   fi
 done
+
+# All five WhatsApp template slots the API reads (G-03; OD-41 for which approved template is the
+# trial one). Presence only: the configured names are matched against Meta's dashboard by hand.
+# Asked of the running api container, not parsed from .env, so quoting, inline comments and
+# defaults resolve exactly as the API sees them. Each value is only tested for emptiness, never
+# printed.
+echo "== Meta template slots in the running api (SET/UNSET only)"
+if dc exec -T api true >/dev/null 2>&1; then
+  for k in META_OTP_TEMPLATE META_BILLING_TEMPLATE META_RETENTION_TEMPLATE META_DOCUMENT_TEMPLATE \
+           META_TRIAL_TEMPLATE; do
+    # The container answers SET or UNSET itself; anything else (a failed exec, a container that
+    # stopped mid-loop) is reported as unknown, never as UNSET.
+    r="$(dc exec -T -e "K=$k" api sh -c 'eval "v=\${$K:-}"; if [ -n "$v" ]; then echo SET; else echo UNSET; fi' 2>/dev/null)"
+    case "$r" in
+      SET|UNSET) say "$k" "$r" ;;
+      *) say "$k" "unknown (api query failed)" ;;
+    esac
+  done
+else
+  say "Meta template slots" "unknown (cannot exec into the api container)"
+fi

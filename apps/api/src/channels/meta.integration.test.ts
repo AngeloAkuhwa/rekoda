@@ -29,7 +29,14 @@ import {
   suppliersRepo,
 } from '@rekoda/db';
 import { placeCatalogueOrderWork, validateCatalogueOrderWork } from '../commands/order-commands.js';
-import { PLAN_ALLOWANCES, allowanceFor, replies, resolvePeriod, usagePeriod } from '@rekoda/core';
+import {
+  PLAN_ALLOWANCES,
+  TRIAL_DAYS,
+  allowanceFor,
+  replies,
+  resolvePeriod,
+  usagePeriod,
+} from '@rekoda/core';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -73,6 +80,7 @@ import { CommandBus } from '../commands/command-bus.service.js';
 import { RiskPolicyService } from '../risk/risk-policy.service.js';
 import { SecurityMetrics } from './security-metrics.service.js';
 import { meterAllowance } from '../billing/plan-terms.js';
+import { sweepTrialNotices } from '../billing/trial-notice-sweep.js';
 
 const APP_SECRET = 'meta-app-secret-for-tests';
 const VERIFY_TOKEN = 'meta-verify-token-for-tests';
@@ -2666,6 +2674,145 @@ describe('what happens after the 200', () => {
     // sale twice is the failure this whole path exists to prevent.
     const queued = await withBusiness(db, business.id, (tx) => jobsRepo.jobsForBusiness(tx));
     expect(queued).toHaveLength(1);
+  });
+});
+
+describe('a trial reminder Meta later reports as failed (REM-01, G-109)', () => {
+  /* Rekoda's own number sends the reminder to the OWNER, so Meta's receipt names the
+   * owner as `recipient_id` on PNID: the same attribution an owner's own message gets. */
+  const DAY = 86_400_000;
+  const start = new Date('2026-11-02T09:00:00Z');
+  const at = (days: number): Date => new Date(start.getTime() + days * DAY);
+  let ownerDb: Db;
+  let closeOwnerDb: () => Promise<void>;
+
+  beforeAll(() => {
+    ({ db: ownerDb, close: closeOwnerDb } = createDb(urls.owner, { max: 2 }));
+  });
+  afterAll(async () => {
+    await closeOwnerDb?.();
+  });
+
+  async function seedTrial(phone: string, name: string): Promise<string> {
+    const user = await identity.upsertUserByPhone(db, phone);
+    const business = await identity.createBusinessWithOwner(db, {
+      name,
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    const expiry = new Date(start.getTime() + TRIAL_DAYS * DAY);
+    await ownerDb.execute(
+      sql`UPDATE businesses SET plan = 'trial', plan_expires_at = ${expiry.toISOString()}::timestamptz WHERE id = ${business.id}::uuid`,
+    );
+    return business.id;
+  }
+
+  async function noticeOf(id: string) {
+    const rows = await ownerDb.execute<{
+      stage: number | null;
+      state: string | null;
+      wamid: string | null;
+      failed_at: string | null;
+    }>(sql`
+      SELECT last_trial_notice_stage AS stage, trial_notice_state AS state,
+             trial_notice_provider_message_id AS wamid,
+             trial_notice_failed_at::text AS failed_at
+      FROM businesses WHERE id = ${id}::uuid
+    `);
+    return [...rows][0]!;
+  }
+
+  const sweep = (sender: StubSender, now: Date) =>
+    sweepTrialNotices(
+      { workerDb, appDb: db, sender, templateConfigured: true, fxNairaPerUsd: 1500 },
+      now,
+    );
+
+  /** Run the queue dry, so a receipt's job has certainly been handled. */
+  async function drain(): Promise<void> {
+    const runner = buildRunner(workerDb, db, deps);
+    while (await runner.runOnce()) {
+      /* keep going */
+    }
+  }
+
+  it('marks the reminder undelivered, and the receipt processed', async () => {
+    const id = await seedTrial('+2348031230001', 'Trial Fail Ltd');
+    const sender = new StubSender();
+    await sweep(sender, at(7));
+    const sent = await noticeOf(id);
+    expect(sent).toMatchObject({ stage: 1, state: 'sent' });
+
+    await post(statusPayload('2348031230001', sent.wamid!, 'failed'));
+    await drain();
+
+    const after = await noticeOf(id);
+    expect(after).toMatchObject({ stage: 1, state: 'undelivered', wamid: sent.wamid });
+    expect(after.failed_at).not.toBeNull();
+    expect(await events.unprocessedEvents(workerDb, 'meta')).toHaveLength(0);
+  });
+
+  it("changes nothing for an unrelated wamid or another business's wamid", async () => {
+    const a = await seedTrial('+2348031230002', 'Trial A Ltd');
+    const b = await seedTrial('+2348031230003', 'Trial B Ltd');
+    const sender = new StubSender();
+    await sweep(sender, at(7));
+    const beforeA = await noticeOf(a);
+    const beforeB = await noticeOf(b);
+    expect(beforeA.state).toBe('sent');
+    expect(beforeB.state).toBe('sent');
+    expect(beforeA.wamid).not.toBe(beforeB.wamid);
+
+    /* Attributed to A, naming B's reminder: A's wamid does not match, and B is never
+     * reached from A's tenant. */
+    await post(statusPayload('2348031230002', beforeB.wamid!, 'failed'));
+    await post(statusPayload('2348031230002', 'wamid.UNRELATED', 'failed'));
+    await drain();
+
+    expect(await noticeOf(a)).toEqual(beforeA);
+    expect(await noticeOf(b)).toEqual(beforeB);
+  });
+
+  it('applies a duplicate failed receipt once', async () => {
+    const id = await seedTrial('+2348031230004', 'Trial Dup Ltd');
+    await sweep(new StubSender(), at(7));
+    const { wamid } = await noticeOf(id);
+
+    await post(statusPayload('2348031230004', wamid!, 'failed'));
+    await drain();
+    const first = await noticeOf(id);
+    expect(first.state).toBe('undelivered');
+
+    await post(statusPayload('2348031230004', wamid!, 'failed'));
+    await drain();
+    expect(await noticeOf(id)).toEqual(first);
+    const jobs = await withBusiness(db, id, (tx) => jobsRepo.jobsForBusiness(tx));
+    expect(jobs.filter((job) => job.kind === 'delivery.status')).toHaveLength(1);
+  });
+
+  it('does not resend the failed stage, and still sends the next one', async () => {
+    const id = await seedTrial('+2348031230005', 'Trial Next Ltd');
+    const sender = new StubSender();
+    await sweep(sender, at(7));
+    const { wamid } = await noticeOf(id);
+    await post(statusPayload('2348031230005', wamid!, 'failed'));
+    await drain();
+    expect((await noticeOf(id)).state).toBe('undelivered');
+
+    await sweep(sender, at(7) /* same day */);
+    await sweep(sender, at(9));
+    expect(sender.trialNotices).toHaveLength(1);
+
+    await sweep(sender, at(12));
+    expect(sender.trialNotices.map((n) => n.daysLeft)).toEqual(['7', '2']);
+    const next = await noticeOf(id);
+    expect(next).toMatchObject({ stage: 2, state: 'sent', failed_at: null });
+    expect(next.wamid).not.toBe(wamid);
+
+    /* A late receipt for the stage-1 message does not touch the stage-2 record. */
+    await post(statusPayload('2348031230005', wamid!, 'failed'));
+    await drain();
+    expect(await noticeOf(id)).toEqual(next);
   });
 });
 
