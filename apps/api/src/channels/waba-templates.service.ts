@@ -483,8 +483,9 @@ export class WabaTemplateService {
   }
 
   /**
-   * §4.3 rule 4: refunded on every path that does not deliver. A SendFailed
-   * is also health signal (its message carries status codes, never content).
+   * §4.3 rule 4: refunded only on a definite non-send (`notSent`); after an unknown outcome
+   * the unit stays spent, because the message may have left. A SendFailed is also a health
+   * signal (its message carries status codes, never content).
    */
   private async customerTextFailed(
     tx: TenantDb,
