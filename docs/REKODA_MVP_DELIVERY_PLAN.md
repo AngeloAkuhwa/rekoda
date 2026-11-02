@@ -9,6 +9,9 @@
 > Recorded verbatim in substance from the owner's three documents: Part A (delivery sequence),
 > Part B (feature specifications), Part C (technical lead mandate).
 >
+> Amendment (owner, 2 Nov 2026): OWN-58 (billing-email confirmation limit per address) is approved
+> into MVP scope as SUB-02a, delivered after SUB-01 and before SUB-03.
+>
 > Note on timing: the Anthropic SDK upgrade (#379), listed below as outside the MVP, was already
 > merged as #397 (`283ae06`) under the owner's earlier direction, before this directive arrived. No
 > further work on it is planned.
@@ -54,6 +57,10 @@ first incomplete feature and begin work. Do not repeat a broad audit.
    activation, lost or interrupted checkout recovery. Annual pricing: 12 months of service for the
    price of 10. Exit: monthly and annual test-mode purchases work end to end; unverified, duplicated
    or incorrect payments cannot activate a subscription.
+   - **2a. Billing-email confirmation limit per address (SUB-02a, OWN-58)**, approved into MVP scope
+     by the owner on 2 Nov 2026. Delivered after SUB-01 merges and before SUB-03; part of SUB-02's
+     completion. Exit: the per-address limit holds across businesses under concurrency, is merged
+     with green CI and review, and is verified on staging.
 3. **Subscription lifecycle**: trial creation and expiry, trial usage and metering, paid conversion
    after verified payment, active, renewal through a new payment, grace, grace expiry, expired,
    cancellation and reactivation where supported, plan changes, top-up purchase and exactly-once
@@ -148,6 +155,28 @@ browser success; failed payment; abandoned checkout; duplicate webhook; delayed 
 verification; payment associated with another customer or tenant; lost checkout-link recovery.
 Complete when: both journeys work in Paystack test mode, verification is authoritative, billing email
 captured, duplicates safe, customer sees the correct final state.
+
+### SUB-02a Billing-email confirmation limit per address (OWN-58)
+
+Approved into MVP scope by the owner on 2 Nov 2026; part of SUB-02 and delivered before SUB-03.
+Requirement: limit billing-email confirmation-link requests per email address across all businesses,
+in addition to the per-business limits already in place (five an hour and sixty seconds apart, OWN-58).
+The per-address limit applies the same figures to one address, compared as the mailbox compares it
+(trimmed, case-insensitive).
+Behaviour: enforced server side by the database clock; decided under a lock so concurrent requests
+from one or many businesses or browser sessions cannot exceed it; a refused request records no link
+and sends no mail; a link that could not be mailed does not count; the refusal has the same generic
+shape as a business's own limit and reveals no other business, address or count beyond retry
+guidance; the shared counter stores only hashes (no address in clear text, no business id), the
+application role cannot rewrite or delete it, the worker role has no access; erasure is possible by
+hashing the address; the migration is additive and its rollback or forward-recovery is documented.
+Tests: a second business within the cooldown is refused; five an hour per address however many
+businesses ask; case and whitespace do not make a new address; ten businesses at once issue exactly
+one link; ten concurrent requests from one business issue exactly one link; a failed send does not
+count; the refusal reveals nothing about another tenant; database privileges as stated; the existing
+per-business limits still hold.
+Complete when: implemented, tested, reviewed, merged with exact-head green CI, migration verified on
+staging, and the limit observed on staging.
 
 ### SUB-03 Subscription lifecycle (#281, #283, #355)
 
