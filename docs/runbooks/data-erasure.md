@@ -160,18 +160,21 @@ another business used up (ADR 0036, OD-39), run the one-shot command below ON TH
 API HOST, where `MATCH_KEY` already lives (never copy `MATCH_KEY` to a
 workstation; `docs/runbooks/key-rotation.md`, Custody), from the API image's
 working directory. It reads the address from a prompt (never shell history),
-derives the key in memory and deletes that key's rows as the owner. It prints
-only the number of rows removed: neither the key nor the address is ever shown,
-logged or written down, so no address-to-key mapping exists anywhere outside
-the process. `OWNER_DATABASE_URL` is the owner credential the operator already
-uses for owner SQL in this runbook, set for this one command only.
+derives the key in memory and deletes that key's rows as the owner. The command
+prints only the number of rows removed, or on failure only the database error
+code: it never prints the key, the address or the query. Read the owner URL the
+operator already uses for owner SQL in this runbook silently, so the password
+stays out of shell history, and unset it afterwards:
 
 ```sh
-OWNER_DATABASE_URL='<owner url>' node --input-type=module -e "import {createInterface} from 'node:readline/promises'; import {billingEmailAddressKeyFor} from '@rekoda/core/vault'; import {createDb, sql} from '@rekoda/db'; const rl = createInterface({input: process.stdin, output: process.stderr}); const address = await rl.question('address: '); rl.close(); const {db, close} = createDb(process.env.OWNER_DATABASE_URL, {max: 1}); const rows = await db.execute(sql\`DELETE FROM billing_email_address_requests WHERE address_key = \${billingEmailAddressKeyFor(address, process.env.MATCH_KEY)} RETURNING 1\`); console.log('rows removed:', [...rows].length); await close();"
+read -rs -p 'owner database url: ' OWNER_DATABASE_URL && export OWNER_DATABASE_URL && echo
+node --input-type=module -e "import {createInterface} from 'node:readline/promises'; import {billingEmailAddressKeyFor} from '@rekoda/core/vault'; import {createDb, sql} from '@rekoda/db'; const rl = createInterface({input: process.stdin, output: process.stderr}); const address = await rl.question('address: '); rl.close(); const {db, close} = createDb(process.env.OWNER_DATABASE_URL, {max: 1}); try { const rows = await db.execute(sql\`DELETE FROM billing_email_address_requests WHERE address_key = \${billingEmailAddressKeyFor(address, process.env.MATCH_KEY)} RETURNING 1\`); console.log('rows removed:', [...rows].length); } catch (e) { console.error('failed:', e?.cause?.code ?? 'error'); process.exitCode = 1; } finally { await close(); }"
+unset OWNER_DATABASE_URL
 ```
 
-The address is trimmed and lower-cased by the function. Never paste the address
-or a derived key into a ticket, a chat or a query log.
+The address is trimmed and lower-cased by the function. The terminal shows the
+address as it is typed; clear the screen afterwards. Never paste the address or
+a derived key into a ticket, a chat or a query log.
 
 ## The one number to watch: objects still owed
 
