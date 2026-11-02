@@ -66,12 +66,19 @@ done
 
 # All five WhatsApp template slots the API reads (G-03; OD-41 for which approved template is the
 # trial one). Presence only: the configured names are matched against Meta's dashboard by hand.
-echo "== Meta template slots (SET/UNSET only)"
-for k in META_OTP_TEMPLATE META_BILLING_TEMPLATE META_RETENTION_TEMPLATE META_DOCUMENT_TEMPLATE \
-         META_TRIAL_TEMPLATE; do
-  # The effective value, as Compose reads it: surrounding spaces and one pair of quotes removed,
-  # so META_TRIAL_TEMPLATE="" reads as UNSET.
-  v="$(sed -n "s/^$k=//p" .env | head -1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
-        -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/")"
-  if [ -z "$v" ]; then say "$k" UNSET; else say "$k" SET; fi
-done
+# Asked of the running api container, not parsed from .env, so quoting, inline comments and
+# defaults resolve exactly as the API sees them. Each value is only tested for emptiness, never
+# printed.
+echo "== Meta template slots in the running api (SET/UNSET only)"
+if dc exec -T api true >/dev/null 2>&1; then
+  for k in META_OTP_TEMPLATE META_BILLING_TEMPLATE META_RETENTION_TEMPLATE META_DOCUMENT_TEMPLATE \
+           META_TRIAL_TEMPLATE; do
+    if dc exec -T -e "K=$k" api sh -c 'eval "v=\${$K:-}"; [ -n "$v" ]' >/dev/null 2>&1; then
+      say "$k" SET
+    else
+      say "$k" UNSET
+    fi
+  done
+else
+  say "Meta template slots" "unknown (api container not running)"
+fi
