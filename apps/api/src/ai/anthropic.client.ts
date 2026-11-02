@@ -21,13 +21,13 @@ export const ANTHROPIC_API_VERSION = '2026-10-21';
  *   (invariant 4); no spans from the SDK, whatever the environment says.
  * - `baseURL` always explicit, so the SDK never reads ANTHROPIC_BASE_URL or a
  *   profile host from the process.
- * - Authentication headers are pinned in `defaultHeaders`. SDK 1.x sends
- *   `apiKey` only as `Authorization: Bearer`, so `X-Api-Key` is added for an
- *   Anthropic-compatible gateway behind AI_BASE_URL that checks only that
- *   header; `Authorization` and `anthropic-version` are repeated there because
- *   the SDK lets ANTHROPIC_CUSTOM_HEADERS from the process replace its own
- *   copies; that variable is refused outright (below), so neither a credential
- *   nor any other header from the environment reaches the configured host.
+ * - One credential per request: the key travels only as `X-Api-Key`, the
+ *   header SDK 0.x sent and both the Anthropic API and Anthropic-compatible
+ *   gateways behind AI_BASE_URL accept. SDK 1.x would send `apiKey` as
+ *   `Authorization: Bearer`; `authorization: null` removes that header.
+ *   `anthropic-version` is pinned. ANTHROPIC_CUSTOM_HEADERS is refused outright
+ *   (below), so no credential or other header from the environment reaches the
+ *   configured host.
  */
 export function buildAnthropicClient(
   apiKey: string,
@@ -53,7 +53,9 @@ export function buildAnthropicClient(
     baseURL: baseUrl || ANTHROPIC_DEFAULT_BASE_URL,
     defaultHeaders: {
       'x-api-key': apiKey,
-      authorization: `Bearer ${apiKey}`,
+      // One credential per request, exactly as SDK 0.x sent it: SDK 1.x would add
+      // `Authorization: Bearer` too; null removes it (and any ambient token).
+      authorization: null,
       'anthropic-version': ANTHROPIC_API_VERSION,
     },
   });

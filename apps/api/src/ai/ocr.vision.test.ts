@@ -90,6 +90,7 @@ describe('reading a photographed receipt through the vision model', () => {
   it('authenticates with X-Api-Key, as the transport does, for a gateway that checks only that header', async () => {
     await reader().extract(PHOTO, 'image/jpeg');
     expect(lastHeaders['x-api-key']).toBe('sk-ant-test');
+    expect(lastHeaders.authorization).toBeUndefined();
     expect(lastHeaders['anthropic-version']).toBe('2026-10-21');
   });
 

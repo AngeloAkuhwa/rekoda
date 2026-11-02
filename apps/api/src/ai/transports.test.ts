@@ -119,6 +119,21 @@ describe('the Anthropic transport', () => {
     expect(seen['x-api-key']).toBe('sk-test');
   });
 
+  it('sends exactly one credential: X-Api-Key, and no Authorization header', async () => {
+    /* SDK 1.x adds `Authorization: Bearer <key>` by default. Two credential
+     * headers to a gateway is one more place a secret can be logged; the 0.x
+     * wire format (X-Api-Key only) works for the API and for gateways. */
+    let seen: IncomingMessage['headers'] = {};
+    respond = (req, res) => {
+      seen = req.headers;
+      json(ANSWER)(req, res);
+    };
+    await transport().send(REQUEST);
+
+    expect(seen['x-api-key']).toBe('sk-test');
+    expect(seen.authorization).toBeUndefined();
+  });
+
   it('pins the API version the SDK speaks, so an SDK bump that changes it is a reviewed event', async () => {
     /* SDK 1.0 moved the default `anthropic-version` to 2026-10-21 (a breaking
      * change in the changelog). A gateway or a replayed fixture that expects
@@ -156,7 +171,7 @@ describe('the Anthropic transport', () => {
         else process.env[n] = v;
       }
     }
-    expect(seen.authorization).toBe('Bearer sk-test');
+    expect(seen.authorization).toBeUndefined();
     expect(seen['x-api-key']).toBe('sk-test');
     expect(seen['anthropic-version']).toBe(ANTHROPIC_API_VERSION);
     expect(JSON.stringify(seen)).not.toContain('MUST-NOT-LEAK');
