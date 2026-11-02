@@ -165,6 +165,38 @@ async function shop(name = 'Adaeze Fabrics'): Promise<Shop> {
   return { businessId, userId: user.id, invoiceNumber: sale.invoiceNumber, phoneNumberId };
 }
 
+/** A second customer of the same merchant, reachable by email only, with their own unpaid invoice. */
+async function anotherCustomer(s: Shop, email: string): Promise<Shop> {
+  seq += 1;
+  const customer = await customersRepo.createCustomerWithIdentities(db, s.businessId, 'X82', [
+    {
+      facet: 'email',
+      ciphertext: encryptFacet(email, config.vaultKey, `${s.businessId}:email`),
+      matchKey: null,
+    },
+  ]);
+  const sale = await withBusiness(db, s.businessId, (tx) =>
+    issueRepo.issueSale(tx, {
+      businessId: s.businessId,
+      customerId: customer.id,
+      customerToken: 'CUSTOMER_X82',
+      items: [{ name: 'wrapper', quantity: 1, unitPriceK: 2_000_000 }],
+      subtotalK: 2_000_000,
+      discountK: 0,
+      deliveryFeeK: 0,
+      vatK: 0,
+      totalK: 2_000_000,
+      paidK: 0,
+      balanceDueK: 2_000_000,
+      method: 'transfer',
+      sourceType: 'chat',
+      sourceId: `draft-${seq}`,
+      actor: 'system',
+    }),
+  );
+  return { ...s, invoiceNumber: sale.invoiceNumber };
+}
+
 function customerHash(businessId: string, phoneNumberId: string): string {
   return participantIndexFor(config.matchKey, {
     businessId,
@@ -219,19 +251,31 @@ const serviceUnitsUsed = async (s: Shop) => {
 };
 
 describe('an email unsubscribe (OWN-69)', () => {
-  it('stops reminder email for that merchant and address, and leaves WhatsApp reminders eligible', async () => {
+  it('through the real signed link: stops reminder email for that merchant and address, and leaves WhatsApp reminders eligible', async () => {
     const s = await shop();
-    await unsubscribeEmail(s);
+    expect((await send(s, 'email')).status).toBe('sent');
+    const token = /token=([^\s]+)/.exec(mail.outbox[0]!.text)![1]!;
+    expect(await reminders().optOut(decodeURIComponent(token))).toBe(true);
 
     expect(await send(s, 'email')).toMatchObject({
       status: 'blocked',
       reasonCode: 'customer_opted_out',
     });
-    expect(mail.outbox).toHaveLength(0);
+    expect(mail.outbox).toHaveLength(1);
 
     expect((await send(s, 'whatsapp')).status).toBe('sent');
     expect(meta.connectionTexts).toHaveLength(1);
     expect(meta.connectionTexts[0]!.to).toBe(PHONE);
+  });
+
+  it('covers that address only: another customer of the same merchant, at another address, still gets email', async () => {
+    const s = await shop();
+    await unsubscribeEmail(s);
+    const other = await anotherCustomer(s, 'chidi@customer.example.ng');
+
+    expect((await send(s, 'email')).status).toBe('blocked');
+    expect((await send(other, 'email')).status).toBe('sent');
+    expect(mail.outbox.map((m) => m.to)).toEqual(['chidi@customer.example.ng']);
   });
 });
 

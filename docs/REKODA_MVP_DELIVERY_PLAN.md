@@ -271,8 +271,15 @@ Behaviour: each channel checks only its own opt-out; the check is re-read at dis
 before the provider call, not only when the attempt opens; every reminder path (individual now,
 scheduled and bulk in REM-05) dispatches through `ReminderService.sendOne`, so it inherits the check;
 tenant isolation and the existing identity keys are kept (email: business and address hash; STOP:
-business, WhatsApp number and participant blind index). No cooldown (OWN-67).
-Tests: email unsubscribe blocks email but not WhatsApp; STOP blocks WhatsApp but not email; both
+business, WhatsApp number and participant blind index). Kept from the original REM-03 scope and
+already in place: identity resolution fails closed when ambiguous (`ambiguous_contact`, a customer
+with two stored addresses is sent nothing), cross-tenant and forged opt-out tokens are refused, a
+repeated opt-out keeps its first moment, and every attempt and its outcome stay in the reminder
+history (tests in `apps/api/src/reminders/reminder.integration.test.ts`). Queued, undispatched
+messages are REM-05's: it must dispatch through `sendOne`, and its tests include opt-out after
+scheduling and worker retry after opt-out. No cooldown (OWN-67).
+Tests: email unsubscribe (through the signed link) blocks email but not WhatsApp, and only for that
+address; STOP blocks WhatsApp but not email; both
 channels in one event; per-merchant isolation; an opt-out committed after the attempt opened and
 before dispatch is honoured on its own channel and not on the other.
 
