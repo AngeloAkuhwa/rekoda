@@ -39,7 +39,7 @@ import { meterAllowance } from '../billing/plan-terms.js';
 import { DB } from '../db/db.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { MESSAGE_SENDER } from './sender.tokens.js';
-import { SendFailed, type MessageSender } from './sender.js';
+import { SendFailed, type MessageSender, type OutboundConnectionText } from './sender.js';
 
 export interface SendTemplateInput {
   to: string;
@@ -58,7 +58,11 @@ export interface SendCustomerTextInput {
 }
 
 export type SendCustomerTextOutcome =
-  | { outcome: 'sent'; unit: 'SERVICE_MESSAGE' }
+  /* `providerIdUnrecorded`: Meta accepted the message (it is sent, and the unit stays spent) but
+   * no provider message id is on the outbound row, either because Meta's 2xx carried none or
+   * because writing it failed, so a later delivery report cannot be matched to it. Still `sent`, never a failure and never a reason to send again; a
+   * caller that keeps a history says the id is missing. */
+  | { outcome: 'sent'; unit: 'SERVICE_MESSAGE'; providerIdUnrecorded?: true }
   | { outcome: 'not_entitled' }
   | { outcome: 'no_connection' }
   | { outcome: 'invalid_recipient' }
@@ -255,6 +259,18 @@ export class WabaTemplateService {
    * goes as a SERVICE_MESSAGE; outside it, Meta rejects free-form (131047)
    * and the refusal here says so BEFORE anything is consumed — choosing a
    * template instead is the caller's next move, priced by its own unit.
+   *
+   * Standalone (no `outerTx`), it is three steps so that no database
+   * transaction or row lock is held while Meta is called (REM-02):
+   *   1. a short transaction checks, reserves the unit and records the
+   *      outbound message, and commits;
+   *   2. the provider call, with no transaction open;
+   *   3. a short transaction marks it sent (and the connection healthy), or
+   *      refunds the unit (and records why the connection is unhealthy).
+   * A process that dies between 1 and 3 leaves the unit spent and the
+   * outbound row without a provider id: a visible, undelivered message,
+   * never a silent free send. An error that is not a definite provider
+   * refusal (`SendFailed`) is an unknown outcome and refunds nothing.
    */
   async sendCustomerText(
     businessId: string,
@@ -265,127 +281,266 @@ export class WabaTemplateService {
       return { outcome: 'unavailable', reason: 'connection_key_missing' };
     }
 
-    /* A caller mid-transaction (the customer-message job, PR-090) passes
-     * its own tx so the window its OWN uncommitted touch opened is
-     * visible; everything this method writes then commits or rolls back
-     * with the caller's work. Standalone callers keep the managed shape. */
-    const work = async (tx: TenantDb): Promise<SendCustomerTextOutcome> => {
-      if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_INTEGRATE')) {
-        return { outcome: 'not_entitled' };
-      }
+    /* A caller mid-transaction (the customer-message job, PR-090, and the
+     * chat payment-details delivery) passes its own tx so the window its OWN
+     * uncommitted touch opened is visible; everything this method writes
+     * then commits or rolls back with the caller's work. That shape cannot
+     * release the caller's transaction around the provider call, so it keeps
+     * the original single-transaction sequence: the lock is the caller's,
+     * held for the length of its own job. */
+    if (outerTx) return this.customerTextWithin(outerTx, businessId, input);
 
-      /* UNHEALTHY still sends, deliberately: the send IS the health
-       * check, and a connection that could only recover through a send
-       * the gate refuses would be down forever after one bad minute.
-       * PENDING_SIGNUP and REVOKED refuse, as they do at the ingress. */
-      const connection = await wabaRepo.wabaConnectionFor(tx, businessId);
-      if (!connection || (connection.status !== 'CONNECTED' && connection.status !== 'UNHEALTHY')) {
-        return { outcome: 'no_connection' };
-      }
+    const reserved = await withBusiness(this.db, businessId, (tx) =>
+      this.reserveCustomerText(tx, businessId, input),
+    );
+    if (reserved.kind === 'refused') return reserved.outcome;
 
-      let to: string;
-      try {
-        to = normaliseParticipant(input.to);
-      } catch (error) {
-        if (error instanceof InvalidPhoneError) return { outcome: 'invalid_recipient' };
+    let providerMessageId: string | null;
+    try {
+      ({ providerMessageId } = await this.sender.sendOnConnection(reserved.message));
+    } catch (error) {
+      if (!(error instanceof SendFailed)) {
+        /* Not a provider answer: the sender can fail after the request has gone (for example while
+         * reading Meta's reply), so the message may have been accepted. The unit stays spent and the
+         * outbound row stays without a provider id: a visible, possibly delivered message, never a
+         * free send and never a refund for something that may have left. The error is rethrown for
+         * the caller to treat as an unknown outcome. */
+        this.log.warn(
+          `customer text outcome unknown; unit kept (outbound ${reserved.recordedId}, ${errorClass(error)})`,
+        );
         throw error;
       }
+      await withBusiness(this.db, businessId, (tx) =>
+        this.customerTextFailed(tx, businessId, reserved, error),
+      );
+      return failedOutcome(error);
+    }
+    try {
+      await withBusiness(this.db, businessId, (tx) =>
+        this.customerTextSent(tx, businessId, reserved, providerMessageId),
+      );
+    } catch (error) {
+      /* Meta accepted it: the message went and the unit stays spent. Only the
+       * bookkeeping after it failed, and the outbound row keeps its empty
+       * provider id, so a caller is not told to send it again. The warning names the row (an
+       * opaque id) and the error class only: never the text, a number or the error message. */
+      this.log.warn(
+        `customer text sent; recording its provider id failed (outbound ${reserved.recordedId}, ${errorClass(error)})`,
+      );
+      return { outcome: 'sent', unit: 'SERVICE_MESSAGE', providerIdUnrecorded: true };
+    }
+    if (!providerMessageId) {
+      /* Meta answered 2xx (it accepted the message) but returned no message id: the message is
+       * sent and the unit stays spent, but no delivery report can be matched to the row. Said
+       * the same way as a failed id write, so the history shows the id is missing. */
+      this.log.warn(`customer text sent without a provider id (outbound ${reserved.recordedId})`);
+      return { outcome: 'sent', unit: 'SERVICE_MESSAGE', providerIdUnrecorded: true };
+    }
+    return { outcome: 'sent', unit: 'SERVICE_MESSAGE' };
+  }
 
-      const blindIndex = participantIndexFor(this.config.matchKey, {
+  /** The original shape, inside a caller's transaction (see `sendCustomerText`). */
+  private async customerTextWithin(
+    tx: TenantDb,
+    businessId: string,
+    input: SendCustomerTextInput,
+  ): Promise<SendCustomerTextOutcome> {
+    const reserved = await this.reserveCustomerText(tx, businessId, input);
+    if (reserved.kind === 'refused') return reserved.outcome;
+    try {
+      const result = await this.sender.sendOnConnection(reserved.message);
+      await this.customerTextSent(tx, businessId, reserved, result.providerMessageId);
+      if (!result.providerMessageId) {
+        this.log.warn(`customer text sent without a provider id (outbound ${reserved.recordedId})`);
+        return { outcome: 'sent', unit: 'SERVICE_MESSAGE', providerIdUnrecorded: true };
+      }
+      return { outcome: 'sent', unit: 'SERVICE_MESSAGE' };
+    } catch (error) {
+      if (error instanceof SendFailed) {
+        await this.customerTextFailed(tx, businessId, reserved, error);
+        return failedOutcome(error);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Every check and the one consumption, in the §4.3 order: entitlement,
+   * connection, recipient, consent, window, meter, token. A refusal consumes
+   * nothing. On success the unit is reserved and the outbound message is
+   * recorded (tokenised), ready for the provider call.
+   */
+  private async reserveCustomerText(
+    tx: TenantDb,
+    businessId: string,
+    input: SendCustomerTextInput,
+  ): Promise<ReservedCustomerText | { kind: 'refused'; outcome: SendCustomerTextOutcome }> {
+    const refuse = (outcome: SendCustomerTextOutcome) => ({ kind: 'refused' as const, outcome });
+
+    if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_INTEGRATE')) {
+      return refuse({ outcome: 'not_entitled' });
+    }
+
+    /* UNHEALTHY still sends, deliberately: the send IS the health
+     * check, and a connection that could only recover through a send
+     * the gate refuses would be down forever after one bad minute.
+     * PENDING_SIGNUP and REVOKED refuse, as they do at the ingress. */
+    const connection = await wabaRepo.wabaConnectionFor(tx, businessId);
+    if (!connection || (connection.status !== 'CONNECTED' && connection.status !== 'UNHEALTHY')) {
+      return refuse({ outcome: 'no_connection' });
+    }
+
+    let to: string;
+    try {
+      to = normaliseParticipant(input.to);
+    } catch (error) {
+      if (error instanceof InvalidPhoneError) return refuse({ outcome: 'invalid_recipient' });
+      throw error;
+    }
+
+    const blindIndex = participantIndexFor(this.config.matchKey, {
+      businessId,
+      channelAccountId: connection.phoneNumberId,
+      keyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+      normalisedParticipant: to,
+    });
+
+    /* Consent first, before the window and before the meter (PR-135).
+     * A customer who said STOP is not reachable by any route, so asking
+     * about windows or spending a unit on them would both be wrong. */
+    if (
+      await customerConsentRepo.customerOptedOut(tx, {
         businessId,
         channelAccountId: connection.phoneNumberId,
-        keyVersion: PARTICIPANT_INDEX_KEY_VERSION,
-        normalisedParticipant: to,
-      });
-
-      /* Consent first, before the window and before the meter (PR-135).
-       * A customer who said STOP is not reachable by any route, so asking
-       * about windows or spending a unit on them would both be wrong. */
-      if (
-        await customerConsentRepo.customerOptedOut(tx, {
-          businessId,
-          channelAccountId: connection.phoneNumberId,
-          customerHash: blindIndex,
-          indexKeyVersion: PARTICIPANT_INDEX_KEY_VERSION,
-        })
-      ) {
-        return { outcome: 'suppressed' };
-      }
-
-      /* The selection itself: the window answers BEFORE the meter moves.
-       * A closed window consumed nothing (§4.3 rule 4) — it redirects. */
-      const open = await wabaRepo.serviceWindowOpen(tx, {
-        businessId,
-        wabaConnectionId: connection.id,
         customerHash: blindIndex,
-      });
-      if (!open) return { outcome: 'window_closed' };
+        indexKeyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+      })
+    ) {
+      return refuse({ outcome: 'suppressed' });
+    }
 
-      const unit = 'SERVICE_MESSAGE' as const;
-      const plan = await usageRepo.planFor(tx, businessId);
-      const period = usagePeriod(new Date());
-      const spent = await usageRepo.reserveUnit(
-        tx,
+    /* The selection itself: the window answers BEFORE the meter moves.
+     * A closed window consumed nothing (§4.3 rule 4) — it redirects. */
+    const open = await wabaRepo.serviceWindowOpen(tx, {
+      businessId,
+      wabaConnectionId: connection.id,
+      customerHash: blindIndex,
+    });
+    if (!open) return refuse({ outcome: 'window_closed' });
+
+    const unit = 'SERVICE_MESSAGE' as const;
+    const plan = await usageRepo.planFor(tx, businessId);
+    const period = usagePeriod(new Date());
+    const spent = await usageRepo.reserveUnit(
+      tx,
+      businessId,
+      period,
+      unit,
+      await meterAllowance(this.config, tx, businessId, plan, unit),
+    );
+    if (!spent.granted) return refuse({ outcome: 'allowance_exhausted', unit });
+
+    const token = connection.accessTokenCipher
+      ? decryptFacet(
+          connection.accessTokenCipher,
+          this.config.connectionKey,
+          `${businessId}:waba_token`,
+        )
+      : null;
+    if (!token) {
+      await usageRepo.refundUnit(tx, businessId, spent.meter, unit);
+      return refuse({ outcome: 'unavailable', reason: 'token_missing' });
+    }
+
+    /* Stored TOKENISED, before the send — same two disciplines as every
+     * message in the estate: the history never holds a real name, and an
+     * undelivered reply is a visible debt. */
+    const tokenised = await this.gateway.tokenise(businessId, input.text);
+    const recorded = await conversationsRepo.recordOutbound(
+      tx,
+      { businessId, channel: 'meta', kind: 'text', body: tokenised.text },
+      {
+        kind: 'CUSTOMER',
         businessId,
-        period,
-        unit,
-        await meterAllowance(this.config, tx, businessId, plan, unit),
-      );
-      if (!spent.granted) return { outcome: 'allowance_exhausted', unit };
+        channel: 'meta',
+        channelAccountId: connection.phoneNumberId,
+        participantBlindIndex: blindIndex,
+        participantIndexKeyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+      },
+    );
 
-      const token = connection.accessTokenCipher
-        ? decryptFacet(
-            connection.accessTokenCipher,
-            this.config.connectionKey,
-            `${businessId}:waba_token`,
-          )
-        : null;
-      if (!token) {
-        await usageRepo.refundUnit(tx, businessId, spent.meter, unit);
-        return { outcome: 'unavailable', reason: 'token_missing' };
-      }
-
-      /* Stored TOKENISED, before the send — same two disciplines as every
-       * message in the estate: the history never holds a real name, and an
-       * undelivered reply is a visible debt. */
-      const tokenised = await this.gateway.tokenise(businessId, input.text);
-      const recorded = await conversationsRepo.recordOutbound(
-        tx,
-        { businessId, channel: 'meta', kind: 'text', body: tokenised.text },
-        {
-          kind: 'CUSTOMER',
-          businessId,
-          channel: 'meta',
-          channelAccountId: connection.phoneNumberId,
-          participantBlindIndex: blindIndex,
-          participantIndexKeyVersion: PARTICIPANT_INDEX_KEY_VERSION,
-        },
-      );
-
-      try {
-        const result = await this.sender.sendOnConnection({
-          to,
-          phoneNumberId: connection.phoneNumberId,
-          accessToken: token,
-          text: input.text,
-        });
-        await conversationsRepo.markOutboundSent(tx, recorded.id, result.providerMessageId);
-        await wabaRepo.markWabaHealthy(tx, { businessId, connectionId: connection.id });
-        return { outcome: 'sent', unit };
-      } catch (error) {
-        if (error instanceof SendFailed) {
-          await usageRepo.refundUnit(tx, businessId, spent.meter, unit);
-          await wabaRepo.markWabaUnhealthy(tx, {
-            businessId,
-            connectionId: connection.id,
-            reason: error.message,
-          });
-          this.log.warn('customer text send failed; unit refunded');
-          return { outcome: 'send_failed', unit, ...(error.notSent ? {} : { unknown: true }) };
-        }
-        throw error;
-      }
+    return {
+      kind: 'reserved',
+      meter: spent.meter,
+      recordedId: recorded.id,
+      connectionId: connection.id,
+      message: {
+        to,
+        phoneNumberId: connection.phoneNumberId,
+        accessToken: token,
+        text: input.text,
+      },
     };
-    return outerTx ? work(outerTx) : withBusiness(this.db, businessId, work);
   }
+
+  private async customerTextSent(
+    tx: TenantDb,
+    businessId: string,
+    reserved: ReservedCustomerText,
+    providerMessageId: string | null,
+  ): Promise<void> {
+    await conversationsRepo.markOutboundSent(tx, reserved.recordedId, providerMessageId);
+    await wabaRepo.markWabaHealthy(tx, { businessId, connectionId: reserved.connectionId });
+  }
+
+  /**
+   * §4.3 rule 4: refunded only on a definite non-send (`notSent`); after an unknown outcome
+   * the unit stays spent, because the message may have left. A SendFailed is also a health
+   * signal (its message carries status codes, never content).
+   */
+  private async customerTextFailed(
+    tx: TenantDb,
+    businessId: string,
+    reserved: ReservedCustomerText,
+    error: SendFailed,
+  ): Promise<void> {
+    /* Refund only a definite non-send (`notSent`). After a timeout or a dropped connection the
+     * message may have left, so the unit stays spent: a free send is never granted on a guess. */
+    if (error.notSent) {
+      await usageRepo.refundUnit(tx, businessId, reserved.meter, 'SERVICE_MESSAGE');
+    }
+    await wabaRepo.markWabaUnhealthy(tx, {
+      businessId,
+      connectionId: reserved.connectionId,
+      reason: error.message,
+    });
+    this.log.warn(
+      error.notSent
+        ? 'customer text send failed; unit refunded'
+        : `customer text outcome unknown; unit kept (outbound ${reserved.recordedId})`,
+    );
+  }
+}
+
+/** A customer text whose unit is reserved and whose outbound row is recorded, not yet sent. */
+interface ReservedCustomerText {
+  kind: 'reserved';
+  meter: Awaited<ReturnType<typeof usageRepo.reserveUnit>>['meter'];
+  recordedId: string;
+  connectionId: string;
+  /** Alive only for the send: carries the raw number, the text and the merchant's token. */
+  message: OutboundConnectionText;
+}
+
+function failedOutcome(error: SendFailed): SendCustomerTextOutcome {
+  return {
+    outcome: 'send_failed',
+    unit: 'SERVICE_MESSAGE',
+    ...(error.notSent ? {} : { unknown: true }),
+  };
+}
+
+/** The class name of a thrown value, for a log line that must not carry its message. */
+function errorClass(error: unknown): string {
+  return error instanceof Error ? error.name : 'non-Error';
 }

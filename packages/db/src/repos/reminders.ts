@@ -23,13 +23,24 @@ export interface ReminderBusiness {
   publicContactPhone: string | null;
   publicContactApprovedAt: Date | null;
   billingEmailVerifiedAt: Date | null;
+  /** The merchant's billing email, still sealed; opening it is the caller's. Null when none. */
+  billingEmailSealed: string | null;
 }
 
-/** The invoice a reminder names, read fresh. Money is read here and nowhere else in this flow. */
+/**
+ * The invoice a reminder names, read fresh. Money is read here and nowhere else in this flow.
+ *
+ * `lock: 'share'` (REM-02) is for the send path: the invoice row is read `FOR SHARE`, so a payment
+ * being posted (which takes the same row `FOR UPDATE` in `settle.ts`) is waited for and its
+ * committed balance is what the reminder decides on, and no payment can land on the invoice until
+ * the reminder's decision has committed. It is the only row lock the reminder takes, and the
+ * payment path takes no reminder lock, so the two cannot deadlock.
+ */
 export async function invoiceForReminder(
   tx: TenantDb,
   businessId: string,
   invoiceNumber: string,
+  options: { lock?: 'share' } = {},
 ): Promise<ReminderInvoice | null> {
   const rows = await tx.execute<{
     id: string;
@@ -49,6 +60,7 @@ export async function invoiceForReminder(
       ON c.business_id = i.business_id AND c.token = i.snapshot_json ->> 'customerToken'
     WHERE i.business_id = ${businessId}::uuid AND upper(i.invoice_number) = upper(${invoiceNumber})
     LIMIT 1
+    ${options.lock === 'share' ? sql`FOR SHARE OF i` : sql``}
   `);
   const row = [...rows][0];
   if (!row) return null;
@@ -73,8 +85,10 @@ export async function businessForReminder(
     public_contact_phone: string | null;
     public_contact_approved_at: Date | null;
     billing_email_verified_at: Date | null;
+    billing_email_sealed: string | null;
   }>(sql`
-    SELECT name, public_contact_phone, public_contact_approved_at, billing_email_verified_at
+    SELECT name, public_contact_phone, public_contact_approved_at, billing_email_verified_at,
+           billing_email_sealed
     FROM businesses WHERE id = ${businessId}::uuid
   `);
   const row = [...rows][0];
@@ -86,6 +100,7 @@ export async function businessForReminder(
       row.public_contact_approved_at === null ? null : new Date(row.public_contact_approved_at),
     billingEmailVerifiedAt:
       row.billing_email_verified_at === null ? null : new Date(row.billing_email_verified_at),
+    billingEmailSealed: row.billing_email_sealed,
   };
 }
 
@@ -348,4 +363,44 @@ export async function lockReminderKey(
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${`reminder:${businessId}:${idempotencyKey}`}, 0))`,
   );
+}
+
+/**
+ * One reminder in flight per invoice and channel, whatever the idempotency key (REM-02): serialises
+ * every request for this invoice on this channel, so a raced second request waits for the first to
+ * commit its `sending` row and then sees it. Taken after the invoice's `FOR SHARE` read; nothing that holds
+ * this lock waits on a payment.
+ */
+export async function lockReminderInvoiceChannel(
+  tx: TenantDb,
+  businessId: string,
+  invoiceId: string,
+  channel: 'email' | 'whatsapp',
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`reminder-invoice:${businessId}:${invoiceId}:${channel}`}, 0))`,
+  );
+}
+
+/**
+ * Whether another attempt on this invoice and channel is still `sending` (REM-02): its provider
+ * call may be in flight, or the process that made it died before settling. A `sending` row older
+ * than the stale threshold has already been settled to `uncertain` by `settleStaleSending`, so only
+ * a live or very recent attempt answers true. This is concurrency control only: a `sent`,
+ * `uncertain`, `failed` or `blocked` row never holds anything, and no time since the last reminder
+ * is measured (when to remind again is the reminder cadence, not this guard).
+ */
+export async function reminderInFlight(
+  tx: TenantDb,
+  businessId: string,
+  invoiceId: string,
+  channel: 'email' | 'whatsapp',
+): Promise<boolean> {
+  const rows = await tx.execute<{ one: number }>(sql`
+    SELECT 1 AS one FROM invoice_reminders
+     WHERE business_id = ${businessId}::uuid AND invoice_id = ${invoiceId}::uuid
+       AND channel = ${channel} AND status = 'sending'
+     LIMIT 1
+  `);
+  return [...rows].length > 0;
 }

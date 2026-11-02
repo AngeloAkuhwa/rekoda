@@ -22,6 +22,7 @@ const ready: ReminderPreflight = {
   needsAttestation: true,
   attested: true,
   optedOut: false,
+  reminderInFlight: false,
 };
 
 describe('reminderBlock', () => {
@@ -41,6 +42,7 @@ describe('reminderBlock', () => {
     [{ publicContactApproved: false }, 'no_public_contact'],
     [{ optedOut: true }, 'customer_opted_out'],
     [{ attested: false }, 'attestation_required'],
+    [{ reminderInFlight: true }, 'reminder_in_flight'],
   ] as const)('refuses %j with %s', (change, reason) => {
     expect(reminderBlock({ ...ready, ...change })).toBe(reason);
   });
@@ -51,6 +53,24 @@ describe('reminderBlock', () => {
 
   it('names the stop and the opt-out before the attestation, so a customer who left is never asked about', () => {
     expect(reminderBlock({ ...ready, optedOut: true, attested: false })).toBe('customer_opted_out');
+  });
+});
+
+describe('one reminder in flight per invoice and channel (REM-02)', () => {
+  it('names every reason a merchant can act on before the in-flight hold', () => {
+    expect(reminderBlock({ ...ready, reminderInFlight: true, invoiceStatus: 'paid' })).toBe(
+      'nothing_owing',
+    );
+    expect(reminderBlock({ ...ready, reminderInFlight: true, optedOut: true })).toBe(
+      'customer_opted_out',
+    );
+    expect(reminderBlock({ ...ready, reminderInFlight: true, attested: false })).toBe(
+      'attestation_required',
+    );
+  });
+
+  it('imposes no waiting period: with nothing in flight the reminder may go', () => {
+    expect(reminderBlock({ ...ready, reminderInFlight: false })).toBeNull();
   });
 });
 

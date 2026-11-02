@@ -34,7 +34,11 @@ export type ReminderBlockReason =
   | 'invalid_recipient'
   | 'ambiguous_contact'
   | 'email_not_configured'
-  | 'send_failed';
+  | 'send_failed'
+  /* REM-02: another reminder to this invoice on this channel is still with the provider (status
+   * `sending`), whatever idempotency key the new request carries. This is concurrency control, not
+   * a waiting period: once that attempt has settled, a new request is judged on its own. */
+  | 'reminder_in_flight';
 
 export interface ReminderPreflight {
   invoiceFound: boolean;
@@ -49,6 +53,8 @@ export interface ReminderPreflight {
   attested: boolean;
   needsAttestation: boolean;
   optedOut: boolean;
+  /** Another attempt on this invoice and channel is still `sending`. */
+  reminderInFlight: boolean;
 }
 
 /** The first reason, in the order a merchant can act on them, or null when the reminder may go. */
@@ -63,6 +69,7 @@ export function reminderBlock(p: ReminderPreflight): ReminderBlockReason | null 
   if (!p.publicContactApproved) return 'no_public_contact';
   if (p.optedOut) return 'customer_opted_out';
   if (p.needsAttestation && !p.attested) return 'attestation_required';
+  if (p.reminderInFlight) return 'reminder_in_flight';
   return null;
 }
 
