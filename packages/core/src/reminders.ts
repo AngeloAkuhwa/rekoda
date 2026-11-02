@@ -84,9 +84,60 @@ export function senderDisplayName(businessName: string): string {
   return `${cleaned || 'Your supplier'} via Rekoda`;
 }
 
+/**
+ * The bank account a merchant has chosen and approved for customers to pay into (REM-04, OWN-64).
+ * Rekoda never invents one: a reminder carries this only when the merchant entered it and approved
+ * it, and otherwise falls back to the merchant's public phone.
+ */
+export interface PaymentInstruction {
+  bankName: string;
+  accountName: string;
+  /** A ten-digit Nigerian account number (NUBAN). */
+  accountNumber: string;
+}
+
+export type PaymentInstructionIssue = 'bank_name' | 'account_name' | 'account_number';
+
+// eslint-disable-next-line no-control-regex
+const CONTROL_OR_MARKUP = /[\u0000-\u001f\u007f-\u009f\u2028\u2029<>]/;
+
+function cleanText(value: unknown, min: number, max: number): string | null {
+  if (typeof value !== 'string') return null;
+  const collapsed = value.replace(/\s+/g, ' ').trim();
+  if (collapsed.length < min || collapsed.length > max) return null;
+  if (CONTROL_OR_MARKUP.test(collapsed)) return null;
+  return collapsed;
+}
+
+/**
+ * Validates merchant-entered bank details. Spaces and dashes in the account number are tolerated
+ * (people type `0123 456 789`); anything else that is not ten digits is refused, never repaired.
+ */
+export function validatePaymentInstruction(input: {
+  bankName: unknown;
+  accountName: unknown;
+  accountNumber: unknown;
+}): { ok: true; value: PaymentInstruction } | { ok: false; issues: PaymentInstructionIssue[] } {
+  const issues: PaymentInstructionIssue[] = [];
+  const bankName = cleanText(input.bankName, 2, 60);
+  if (bankName === null) issues.push('bank_name');
+  const accountName = cleanText(input.accountName, 2, 80);
+  if (accountName === null) issues.push('account_name');
+  const digits =
+    typeof input.accountNumber === 'string' ? input.accountNumber.replace(/[\s-]/g, '') : '';
+  if (!/^[0-9]{10}$/.test(digits)) issues.push('account_number');
+  if (issues.length > 0) return { ok: false, issues };
+  return {
+    ok: true,
+    value: { bankName: bankName!, accountName: accountName!, accountNumber: digits },
+  };
+}
+
 export interface ReminderFacts {
   businessName: string;
   publicPhone: string;
+  /** Approved by the merchant; null means the reminder points to the public phone only. */
+  paymentInstruction?: PaymentInstruction | null;
   invoiceNumber: string;
   balanceDueK: number;
   dueDate: Date | null;
@@ -111,6 +162,17 @@ function dueSentence(facts: ReminderFacts): string {
   return late === 1 ? 'is one day overdue' : `is ${late} days overdue`;
 }
 
+/** How to pay, in one sentence, for the free-text channels. Only merchant-approved details. */
+function howToPay(facts: ReminderFacts, contact: string): string {
+  const i = facts.paymentInstruction;
+  if (!i) return `To pay or ask about it, ${contact}.`;
+  const owing = formatKobo(facts.balanceDueK as Kobo);
+  return (
+    `To pay, transfer ${owing} to ${i.accountName}, ${i.bankName}, account number ` +
+    `${i.accountNumber}, and quote invoice ${facts.invoiceNumber}. To ask about it, ${contact}.`
+  );
+}
+
 export interface EmailReminder {
   fromName: string;
   subject: string;
@@ -132,7 +194,7 @@ export function composeEmailReminder(facts: ReminderFacts, optOutUrl: string): E
       `This is a reminder from ${facts.businessName} about invoice ${facts.invoiceNumber}. ` +
       `The balance of ${owing} ${dueSentence(facts)}.\n\n` +
       `If you have already paid, please ignore this message and accept our thanks. ` +
-      `To pay or ask about it, contact ${facts.businessName} on ${facts.publicPhone}.\n\n` +
+      `${howToPay(facts, `contact ${facts.businessName} on ${facts.publicPhone}`)}\n\n` +
       `This message was sent by Rekoda on behalf of ${facts.businessName}. Rekoda is not the ` +
       `creditor and does not hold your money.\n\n` +
       `Do not want these reminders from ${facts.businessName}? Stop them here: ${optOutUrl}\n`,
@@ -145,8 +207,8 @@ export function composeWhatsAppReminder(facts: ReminderFacts): string {
   return (
     `Hello, a reminder from ${facts.businessName} about invoice ${facts.invoiceNumber}: ` +
     `the balance of ${owing} ${dueSentence(facts)}. If you have already paid, please ignore ` +
-    `this message. To pay or ask about it, call ${facts.publicPhone}. Reply STOP to stop ` +
-    `these reminders.`
+    `this message. ${howToPay(facts, `call ${facts.publicPhone}`)} ` +
+    `Reply STOP to stop these reminders.`
   );
 }
 

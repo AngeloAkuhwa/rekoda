@@ -330,3 +330,74 @@ describe('who may download an export', () => {
     expect(aimedExport.body).not.toContain(theirs.businessId);
   });
 });
+
+describe('who may decide where a customer is told to pay (REM-04, OWN-64)', () => {
+  const URL = '/v1/reminders/payment-instruction';
+  const valid = {
+    bankName: 'GTBank',
+    accountName: 'Matrix Ltd',
+    accountNumber: '0123456789',
+    approve: true,
+  };
+  const put = (headers: Record<string, string>, payload: unknown) =>
+    app.inject({ method: 'PUT', url: URL, payload: payload as object, headers });
+  const del = (headers: Record<string, string>) =>
+    app.inject({ method: 'DELETE', url: URL, headers });
+
+  it('refuses an accountant and an anonymous caller on every verb, and changes nothing', async () => {
+    const { accountant, owner } = await team('0110');
+    expect((await get(URL, accountant)).statusCode).toBe(403);
+    expect((await put(accountant, valid)).statusCode).toBe(403);
+    expect((await del(accountant)).statusCode).toBe(403);
+    expect((await get(URL)).statusCode).toBe(401);
+    expect((await put({}, valid)).statusCode).toBe(401);
+    expect((await del({})).statusCode).toBe(401);
+    expect((await get(URL, owner)).json()).toEqual({ instruction: null });
+  });
+
+  it('lets a delegate read it but never save or clear it', async () => {
+    const { delegate, owner } = await team('0111');
+    expect((await put(owner, valid)).statusCode).toBe(200);
+    const read = await get(URL, delegate);
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toEqual({
+      instruction: { bankName: 'GTBank', accountName: 'Matrix Ltd', accountNumber: '0123456789' },
+    });
+    expect((await put(delegate, { ...valid, accountNumber: '9999999999' })).statusCode).toBe(403);
+    expect((await del(delegate)).statusCode).toBe(403);
+    expect((await get(URL, owner)).json()).toMatchObject({
+      instruction: { accountNumber: '0123456789' },
+    });
+  });
+
+  it('needs the owner to approve explicitly, and refuses details that do not validate', async () => {
+    const { owner } = await team('0112');
+    const { approve: _omitted, ...withoutApproval } = valid;
+    expect((await put(owner, withoutApproval)).statusCode).toBe(400);
+    expect((await put(owner, { ...valid, approve: false })).statusCode).toBe(400);
+    const bad = await put(owner, { ...valid, accountNumber: '12345' });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json()).toMatchObject({ error: 'invalid_payment_instruction' });
+    expect((await get(URL, owner)).json()).toEqual({ instruction: null });
+  });
+
+  it('lets the owner save, replace and remove it', async () => {
+    const { owner } = await team('0113');
+    expect((await put(owner, valid)).statusCode).toBe(200);
+    const replaced = await put(owner, {
+      ...valid,
+      bankName: 'Access Bank',
+      accountNumber: '0987 654 321',
+    });
+    expect(replaced.statusCode).toBe(200);
+    expect(replaced.json()).toEqual({
+      instruction: {
+        bankName: 'Access Bank',
+        accountName: 'Matrix Ltd',
+        accountNumber: '0987654321',
+      },
+    });
+    expect((await del(owner)).json()).toEqual({ instruction: null });
+    expect((await get(URL, owner)).json()).toEqual({ instruction: null });
+  });
+});
