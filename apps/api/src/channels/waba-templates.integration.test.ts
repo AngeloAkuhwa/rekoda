@@ -596,11 +596,26 @@ describe('no transaction is held open while Meta is called (REM-02)', () => {
     expect([...rows]).toEqual([{ provider_message_id: 'wamid.CTX1' }]);
   });
 
-  it('refunds the unit in its own short transaction when the provider refuses', async () => {
+  it('keeps the unit when the provider outcome is unknown (a timeout), and reports it unknown', async () => {
+    const { businessId, connectionId, phoneNumberId } = await seedMerchant('integrate');
+    await openWindow(businessId, connectionId, phoneNumberId);
+    const sender = new StubSender();
+    sender.failWith(new SendFailed('meta /pn/messages timed out'));
+
+    const outcome = await serviceWith(sender).sendCustomerText(businessId, {
+      to: CUSTOMER,
+      text: 'hello',
+    });
+
+    expect(outcome).toEqual({ outcome: 'send_failed', unit: 'SERVICE_MESSAGE', unknown: true });
+    expect(await used(businessId, 'SERVICE_MESSAGE')).toBe(1);
+  });
+
+  it('refunds the unit in its own short transaction when the provider definitely refuses', async () => {
     const { businessId, connectionId, phoneNumberId } = await seedMerchant('integrate');
     await openWindow(businessId, connectionId, phoneNumberId);
     const observing = new ObservingSender(businessId, async () => {
-      throw new SendFailed('meta /pn/messages failed with 500');
+      throw new SendFailed('meta /pn/messages failed with 400', null, true);
     });
 
     const outcome = await serviceWith(observing).sendCustomerText(businessId, {
@@ -608,7 +623,7 @@ describe('no transaction is held open while Meta is called (REM-02)', () => {
       text: 'hello',
     });
 
-    expect(outcome).toEqual({ outcome: 'send_failed', unit: 'SERVICE_MESSAGE', unknown: true });
+    expect(outcome).toEqual({ outcome: 'send_failed', unit: 'SERVICE_MESSAGE' });
     expect(observing.observed?.usageRowUpdated).toBe(true);
     expect(await used(businessId, 'SERVICE_MESSAGE')).toBe(0);
     const row = await withBusiness(db, businessId, (tx) =>
