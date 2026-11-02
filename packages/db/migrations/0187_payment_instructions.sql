@@ -22,6 +22,7 @@ ALTER TABLE businesses
        AND payment_instruction_approved_at IS NULL AND payment_instruction_approved_by IS NULL)
     OR
     (payment_bank_name IS NOT NULL AND payment_account_name IS NOT NULL
-       AND payment_account_number ~ '^[0-9]{10}$' AND payment_instruction_approved_at IS NOT NULL
+       AND payment_account_number IS NOT NULL AND payment_account_number ~ '^[0-9]{10}$'
+       AND payment_instruction_approved_at IS NOT NULL
        AND payment_instruction_approved_by IS NOT NULL)
   );

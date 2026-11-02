@@ -1201,6 +1201,7 @@ describe('merchant payment instructions (REM-04, OWN-64)', () => {
       sql`UPDATE businesses SET payment_account_number = '0123456789'`,
       sql`UPDATE businesses SET payment_bank_name = 'B', payment_account_name = 'N', payment_account_number = '0123456789'`,
       sql`UPDATE businesses SET payment_bank_name = 'B', payment_account_name = 'N', payment_account_number = '0123456789', payment_instruction_approved_at = now()`,
+      sql`UPDATE businesses SET payment_bank_name = 'B', payment_account_name = 'N', payment_account_number = NULL, payment_instruction_approved_at = now(), payment_instruction_approved_by = ${s.userId}::uuid`,
       sql`UPDATE businesses SET payment_bank_name = 'B', payment_account_name = 'N', payment_account_number = '12345', payment_instruction_approved_at = now(), payment_instruction_approved_by = ${s.userId}::uuid`,
     ];
     for (const write of writes) {
