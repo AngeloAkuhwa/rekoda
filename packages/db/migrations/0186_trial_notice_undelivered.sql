@@ -4,7 +4,7 @@
 -- 0180 records the latest attempt and, when Meta accepted it, the wamid it returned
 -- (trial_notice_provider_message_id). A delivery failure arrives later, as a `failed` status receipt
 -- naming that wamid; the `delivery.status` job applies it under the business's tenant pin
--- (subscriptionsRepo.markTrialNoticeUndelivered), moving 'sent' (or 'unknown') to 'undelivered' only
+-- (subscriptionsRepo.markTrialNoticeUndelivered), moving 'sent' to 'undelivered' only
 -- when the wamid matches this business's latest attempt. The stage stays claimed: like 'unknown', an
 -- undelivered stage is NOT resent (OWN-47, no exactly-once claim), and the next milestone is still
 -- owed because the claim compares stages, not states.
@@ -17,7 +17,9 @@
 --
 -- Safe on a populated table and re-runnable: the new CHECK is a superset of the old one, so every
 -- existing row satisfies it. It is swapped in one ALTER (no window without a constraint), added NOT
--- VALID and validated separately so the scan does not hold an exclusive lock. Expand-only: the
+-- VALID and then validated. The migrator sends the file as one implicit transaction, so the ALTERs'
+-- exclusive lock is held through the validation scan; `businesses` has one row per merchant, so the
+-- scan is short. Expand-only: the
 -- previous release never writes 'undelivered' and ignores the new column.
 -- Rollback (after the code that writes 'undelivered' is gone):
 --   UPDATE businesses SET trial_notice_state = 'sent' WHERE trial_notice_state = 'undelivered';

@@ -1981,7 +1981,7 @@ export async function markTrialNoticeRefused(
 
 /**
  * Meta accepted this business's latest reminder and later reported its delivery as FAILED
- * (REM-01; migration 0186). Moves 'sent' (or 'unknown') to 'undelivered' only when the failed
+ * (REM-01; migration 0186). Moves 'sent' to 'undelivered' only when the failed
  * receipt names THIS business's latest attempt (`providerMessageId` is the wamid Meta returned
  * for it), so a receipt for another business's message, an older stage or an unrelated message
  * changes nothing. The stage stays claimed: an undelivered stage is never resent, and the next

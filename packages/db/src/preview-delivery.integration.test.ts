@@ -369,6 +369,52 @@ describe('a receipt job that died still unsees its preview (G-20)', () => {
     );
     expect(second).toBe(0);
   });
+
+  it('also marks a trial reminder the dead receipt names as undelivered (REM-01)', async () => {
+    const businessId = await seedBusiness();
+    const wamid = `wamid.trial-${businessId.slice(0, 8)}`;
+    const state = async () =>
+      [
+        ...(await withBusiness(app, businessId, (tx) =>
+          tx.execute<{ state: string | null }>(
+            sql`SELECT trial_notice_state AS state FROM businesses WHERE id = ${businessId}::uuid`,
+          ),
+        )),
+      ][0]?.state;
+    await withBusiness(app, businessId, (tx) =>
+      tx.execute(sql`UPDATE businesses
+                        SET last_trial_notice_stage = 1, trial_notice_state = 'sent',
+                            trial_notice_attempted_at = now(),
+                            trial_notice_provider_message_id = ${wamid}
+                      WHERE id = ${businessId}::uuid`),
+    );
+    const event = await withBusiness(app, businessId, (tx) =>
+      tx.execute<{ id: string }>(sql`
+        INSERT INTO external_events (provider, event_type, external_id, payload, business_id, signature_valid)
+        VALUES ('meta', 'status.failed', ${`st-${wamid}`}, '{}'::jsonb, ${businessId}::uuid, 1)
+        RETURNING id`),
+    );
+    const eventId = [...event][0]!.id;
+    await withBusiness(app, businessId, async (tx) => {
+      const job = await jobsRepo.enqueue(tx, {
+        businessId,
+        kind: 'delivery.status',
+        payload: { eventId, outboundMessageId: wamid },
+        singletonKey: eventId,
+        maxAttempts: 12,
+      });
+      await tx.execute(
+        sql`UPDATE jobs SET state = 'dead', attempts = 12 WHERE id = ${job!.id}::uuid`,
+      );
+    });
+
+    expect(await state()).toBe('sent');
+    const applied = await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.reconcileDeadReceipts(tx, businessId),
+    );
+    expect(applied).toBe(1);
+    expect(await state()).toBe('undelivered');
+  });
 });
 
 describe('the claim exemption needs the stored command to agree (G-20)', () => {

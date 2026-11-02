@@ -32,10 +32,12 @@ import type { JobContext, JobHandler } from './runner.js';
  * refuses a draft that is not previewed.
  *
  * The same receipt may instead name a trial reminder (REM-01, G-109): the sweep sends it from
- * Rekoda's own number to the owner, so the receipt is attributed to this business, and its
- * wamid is the one recorded when Meta accepted it. That reminder is marked 'undelivered' in the
- * same transaction; the stage is not resent. A failure that arrives before the sweep has
- * recorded the wamid matches nothing and is not retried: the reminder stays 'sent'.
+ * Rekoda's own number to the owner, so the receipt is attributed to this business when the
+ * owner's phone has exactly one membership (`resolveBusiness`; otherwise it is stored with no
+ * business and no job runs), and its wamid is the one recorded when Meta accepted it. That
+ * reminder is marked 'undelivered' in the same transaction; the stage is not resent. If this job
+ * dies, `reconcileDeadReceipts` applies the same update. A failure that arrives before the sweep
+ * has recorded the wamid matches nothing and is not retried: the reminder stays 'sent'.
  */
 export function deliveryStatusHandler(): JobHandler {
   const log = new Logger('DeliveryStatusJob');
