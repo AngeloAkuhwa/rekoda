@@ -6,7 +6,9 @@
 set -u
 API_URL="${API_URL:-https://staging-api.myrekoda.com}"
 cd /opt/rekoda 2>/dev/null || { echo "FAIL not in /opt/rekoda"; exit 1; }
-dc() { docker compose -f docker-compose.prod.yml "$@"; }
+# stdin is closed for every compose call: the script is usually piped in over ssh (`bash -s`), and
+# a `compose exec` left on that stdin can swallow the unread rest of the script.
+dc() { docker compose -f docker-compose.prod.yml "$@" </dev/null; }
 say() { printf '%-34s %s\n' "$1" "$2"; }
 
 echo "== release identity"
