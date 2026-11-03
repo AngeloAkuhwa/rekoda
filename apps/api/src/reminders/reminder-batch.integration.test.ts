@@ -14,10 +14,16 @@
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { emailSuppressionKey } from '@rekoda/core';
-import { encryptFacet, matchKeyFor } from '@rekoda/core/vault';
+import {
+  encryptFacet,
+  matchKeyFor,
+  participantIndexFor,
+  PARTICIPANT_INDEX_KEY_VERSION,
+} from '@rekoda/core/vault';
 import {
   billingRepo,
   createDb,
+  customerConsentRepo,
   customersRepo,
   identity,
   issueRepo,
@@ -25,6 +31,7 @@ import {
   remindersRepo,
   settleRepo,
   sql,
+  wabaRepo,
   withBusiness,
   type Db,
 } from '@rekoda/db';
@@ -106,8 +113,7 @@ const sweep = (reminders: ReminderService = reminderService(), at?: Date) =>
 interface Shop {
   businessId: string;
   ownerId: string;
-  /** invoice number → customer email */
-  invoices: Array<{ number: string; id: string; email: string }>;
+  invoices: Array<{ number: string; id: string; email: string; phone: string; customerId: string }>;
 }
 
 let seq = 0;
@@ -167,7 +173,13 @@ async function shop(n: number, name = 'Adaeze Fabrics', withPhone = false): Prom
     const found = await withBusiness(db, businessId, (tx) =>
       remindersRepo.invoiceForReminder(tx, businessId, sale.invoiceNumber),
     );
-    invoices.push({ number: sale.invoiceNumber, id: found!.invoiceId, email });
+    invoices.push({
+      number: sale.invoiceNumber,
+      id: found!.invoiceId,
+      email,
+      phone,
+      customerId: customer.id,
+    });
   }
   await reminderService().setPublicContact(businessId, '08031112222');
   return { businessId, ownerId: user.id, invoices };
@@ -501,8 +513,11 @@ describe('failure and retry', () => {
     expect(after.counts).toMatchObject({ notSent: 3, pending: 2 });
     expect(after.state).toBe('scheduled');
 
-    /* The provider recovers: the remaining two go, the refused three are not retried. */
-    await sweep();
+    /* Paused: an immediate pass claims nothing. */
+    expect((await sweep()).dispatched).toBe(0);
+    /* After the pause the provider has recovered: the remaining two go; the refused three are not
+     * retried. */
+    await sweep(reminderService(), new Date(Date.now() + REMINDER_BATCH_LIMITS.pauseMs + 60_000));
     after = await batches().get(s.businessId, batch.id);
     expect(after.counts).toMatchObject({ sent: 2, notSent: 3, pending: 0 });
     expect(after.state).toBe('completed');
@@ -511,11 +526,227 @@ describe('failure and retry', () => {
   it('two overlapping passes send each recipient exactly once', async () => {
     const s = await shop(6);
     const batch = await confirm(s);
-    const [one, two] = await Promise.all([sweep(), sweep()]);
+    /* Each send takes a moment, so both passes are claiming at the same time. */
+    class Slow extends MockEmailSender {
+      override async send(m: OutboundEmail): Promise<void> {
+        await new Promise((r) => setTimeout(r, 40));
+        return super.send(m);
+      }
+    }
+    const slow = new Slow();
+    mail = slow;
+    const [one, two] = await Promise.all([
+      sweep(reminderService(slow)),
+      sweep(reminderService(slow)),
+    ]);
+    expect(one.dispatched).toBeGreaterThan(0);
+    expect(two.dispatched).toBeGreaterThan(0);
     expect(one.dispatched + two.dispatched).toBe(6);
     expect(mail.outbox).toHaveLength(6);
     expect(new Set(mail.outbox.map((m) => m.to)).size).toBe(6);
     expect((await batches().get(s.businessId, batch.id)).counts.sent).toBe(6);
+  });
+});
+
+describe('review fixes', () => {
+  it('an outage that only times out (uncertain) also pauses the batch, and nothing is resent', async () => {
+    const s = await shop(5);
+    const batch = await confirm(s);
+    mail.uncertainNext = 10;
+    const pass = await sweep();
+    expect(pass.paused).toBe(1);
+    expect(mail.attempts).toBe(REMINDER_BATCH_LIMITS.failuresBeforePause);
+    const after = await batches().get(s.businessId, batch.id);
+    expect(after.counts).toMatchObject({ uncertain: 3, pending: 2 });
+  });
+
+  it('the email attestation is recorded at confirmation, for the address then on file, by the confirming user', async () => {
+    const s = await shop(1);
+    const before = new Date();
+    await confirm(s);
+    const rows = await withBusiness(db, s.businessId, (tx) =>
+      tx.execute<{ by: string; at: Date; hash: string }>(
+        sql`SELECT attested_by_user_id AS by, attested_at AS at, address_hash AS hash FROM reminder_attestations`,
+      ),
+    );
+    expect([...rows]).toHaveLength(1);
+    const [row] = [...rows];
+    expect(row!.by).toBe(s.ownerId);
+    expect(row!.hash).toBe(emailSuppressionKey(s.invoices[0]!.email));
+    expect(new Date(row!.at).getTime()).toBeGreaterThanOrEqual(before.getTime() - 1_000);
+    expect(mail.attempts).toBe(0);
+  });
+
+  it('an address changed after confirmation is never emailed on the old attestation', async () => {
+    const s = await shop(1);
+    const batch = await confirm(s);
+    const c = s.invoices[0]!;
+    await customersRepo.eraseFacet(db, s.businessId, c.customerId, 'email');
+    await customersRepo.addIdentityFacet(db, s.businessId, c.customerId, {
+      facet: 'email',
+      ciphertext: encryptFacet('someone.else@example.ng', config.vaultKey, `${s.businessId}:email`),
+      matchKey: null,
+    });
+    await sweep();
+    expect(mail.attempts).toBe(0);
+    const after = await batches().get(s.businessId, batch.id);
+    expect(after.items[0]!.reminders[0]).toMatchObject({
+      status: 'blocked',
+      reasonCode: 'attestation_required',
+    });
+  });
+
+  it('a recipient whose send keeps failing unexpectedly is skipped after the bound and the batch finishes', async () => {
+    const s = await shop(1);
+    const batch = await confirm(s);
+    const broken = reminderService();
+    broken.send = () => Promise.reject(new Error('cannot open this contact'));
+    let at = Date.now();
+    for (let i = 0; i < REMINDER_BATCH_LIMITS.maxAttempts; i += 1) {
+      expect((await sweep(broken, new Date(at))).errored).toBe(1);
+      at += REMINDER_BATCH_LIMITS.staleClaimMs + 60_000;
+    }
+    await sweep(broken, new Date(at));
+    const after = await batches().get(s.businessId, batch.id);
+    expect(after.items[0]).toMatchObject({ state: 'skipped', reasonCode: 'dispatch_error' });
+    expect(after.state).toBe('completed');
+    expect(mail.attempts).toBe(0);
+  });
+
+  it('a worker that died after its "sending" row committed is never resent on reclaim', async () => {
+    const s = await shop(1);
+    const batch = await confirm(s);
+    /* The send gets as far as the reminder's own committed `sending` row, then the process dies. */
+    const dying = reminderService();
+    type Preparing = { prepare: (...args: unknown[]) => Promise<unknown> };
+    const inner = dying as unknown as Preparing;
+    const realPrepare = inner.prepare.bind(dying);
+    inner.prepare = async (...args: unknown[]) => {
+      await realPrepare(...args);
+      throw new Error('process died after the sending row');
+    };
+    expect((await sweep(dying)).errored).toBe(1);
+    const later = new Date(Date.now() + REMINDER_BATCH_LIMITS.staleClaimMs + 60_000);
+    await sweep(reminderService(), later);
+    expect(mail.attempts).toBe(0);
+    const after = await batches().get(s.businessId, batch.id);
+    expect(['sending', 'uncertain']).toContain(after.items[0]!.reminders[0]!.status);
+    expect(after.counts.uncertain).toBe(1);
+  });
+
+  it('cancelling stops a recipient a dead worker left claimed with nothing sent', async () => {
+    const s = await shop(2);
+    const batch = await confirm(s);
+    const dead = reminderService();
+    dead.send = () => Promise.reject(new Error('worker killed before the send'));
+    await sweep(dead);
+    const cancelled = await batches().cancel(
+      s.businessId,
+      s.ownerId,
+      batch.id,
+      new Date(Date.now() + REMINDER_BATCH_LIMITS.staleClaimMs + 60_000),
+    );
+    expect(cancelled.cancelledCount).toBe(2);
+    const after = await batches().get(s.businessId, batch.id);
+    expect(after.items.map((i) => i.state)).toEqual(['cancelled', 'cancelled']);
+  });
+
+  it('the same key with different channels or attestation is refused, not replayed', async () => {
+    const s = await shop(1);
+    const k = key();
+    await confirm(s, { idempotencyKey: k });
+    await expect(
+      batches().create(s.businessId, s.ownerId, {
+        invoiceNumbers: numbers(s),
+        channels: ['whatsapp'],
+        idempotencyKey: k,
+        attest: true,
+        confirm: true,
+      }),
+    ).rejects.toBeInstanceOf(BatchKeyReused);
+  });
+
+  it('a WhatsApp STOP after scheduling stops that recipient on WhatsApp and spends no unit', async () => {
+    const s = await shop(2, 'Adaeze Fabrics', true);
+    const phoneNumberId = 'pn-batch-1';
+    const token = 'EAAB-merchant-waba-token';
+    const connected = await withBusiness(db, s.businessId, (tx) =>
+      wabaRepo.connectWaba(tx, {
+        businessId: s.businessId,
+        wabaId: 'waba-batch-1',
+        phoneNumberId,
+        accessTokenCipher: encryptFacet(token, config.connectionKey, `${s.businessId}:waba_token`),
+        tokenTail: token.slice(-4),
+      }),
+    );
+    if (connected.outcome !== 'connected') throw new Error('fixture: WABA connect failed');
+    const hashOf = (phone: string) =>
+      participantIndexFor(config.matchKey, {
+        businessId: s.businessId,
+        channelAccountId: phoneNumberId,
+        keyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+        normalisedParticipant: phone,
+      });
+    for (const inv of s.invoices) {
+      await withBusiness(db, s.businessId, (tx) =>
+        wabaRepo.touchServiceWindow(tx, {
+          businessId: s.businessId,
+          wabaConnectionId: connected.id,
+          customerHash: hashOf(inv.phone),
+        }),
+      );
+    }
+    const batch = await batches().create(s.businessId, s.ownerId, {
+      invoiceNumbers: numbers(s),
+      channels: ['whatsapp'],
+      idempotencyKey: key(),
+      confirm: true,
+    });
+    await withBusiness(db, s.businessId, (tx) =>
+      customerConsentRepo.setCustomerOptOut(
+        tx,
+        {
+          businessId: s.businessId,
+          channelAccountId: phoneNumberId,
+          customerHash: hashOf(s.invoices[0]!.phone),
+          indexKeyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+        },
+        new Date(),
+      ),
+    );
+    await sweep();
+    const after = await batches().get(s.businessId, batch.id);
+    expect(after.items[0]!.reminders[0]).toMatchObject({
+      status: 'blocked',
+      reasonCode: 'customer_opted_out',
+    });
+    expect(after.items[1]!.reminders[0]!.status).toBe('sent');
+    expect(meta.connectionTexts.map((t) => t.to)).toEqual([s.invoices[1]!.phone]);
+    const used = await withBusiness(db, s.businessId, (tx) =>
+      tx.execute<{ used: number }>(
+        sql`SELECT used FROM usage_counters WHERE unit = 'SERVICE_MESSAGE'`,
+      ),
+    );
+    expect([...used][0]?.used ?? 0).toBe(1);
+  });
+
+  it('discovery returns the earliest-scheduled batch first', async () => {
+    const s = await shop(2);
+    const later = await confirm(s, {
+      invoiceNumbers: [numbers(s)[0]!],
+      scheduledFor: new Date(Date.now() + 120_000).toISOString(),
+    });
+    const sooner = await confirm(s, {
+      invoiceNumbers: [numbers(s)[1]!],
+      scheduledFor: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const due = await reminderBatchesRepo.dueBatches(
+      workerDb,
+      new Date(Date.now() + 600_000),
+      10,
+      null,
+    );
+    expect(due.map((d) => d.batchId)).toEqual([sooner.id, later.id]);
   });
 });
 
@@ -561,7 +792,7 @@ describe('tenancy and discovery', () => {
         (e: { cause?: { message?: string } }) => e.cause?.message ?? String(e),
       );
     expect(
-      await denied(db.execute(sql`SELECT * FROM sweep_due_reminder_batches(now(), 10, NULL)`)),
+      await denied(db.execute(sql`SELECT * FROM sweep_due_reminder_batches(now(), 10, NULL, NULL)`)),
     ).toMatch(/permission denied/);
     expect(await denied(workerDb.execute(sql`SELECT * FROM reminder_batches`))).toMatch(
       /permission denied/,

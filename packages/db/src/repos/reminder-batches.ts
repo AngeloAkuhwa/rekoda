@@ -29,6 +29,7 @@ export interface BatchRow {
   createdAt: Date;
   cancelledAt: Date | null;
   completedAt: Date | null;
+  pausedUntil: Date | null;
 }
 
 export interface BatchCounts {
@@ -67,6 +68,7 @@ type RawBatch = {
   created_at: Date;
   cancelled_at: Date | null;
   completed_at: Date | null;
+  paused_until: Date | null;
 };
 
 const toBatch = (r: RawBatch): BatchRow => ({
@@ -80,10 +82,11 @@ const toBatch = (r: RawBatch): BatchRow => ({
   createdAt: new Date(r.created_at),
   cancelledAt: r.cancelled_at ? new Date(r.cancelled_at) : null,
   completedAt: r.completed_at ? new Date(r.completed_at) : null,
+  pausedUntil: r.paused_until ? new Date(r.paused_until) : null,
 });
 
 const BATCH_COLUMNS = sql`b.id, b.channels, b.attest, b.state, b.scheduled_for, b.item_count,
-  b.created_by, b.created_at, b.cancelled_at, b.completed_at`;
+  b.created_by, b.created_at, b.cancelled_at, b.completed_at, b.paused_until`;
 
 /** Invoice ids for these numbers in this business; numbers it does not have are simply absent. */
 export async function invoiceIdsByNumber(
@@ -309,6 +312,7 @@ export async function cancelBatch(
   batchId: string,
   userId: string,
   now: Date,
+  staleBefore: Date,
 ): Promise<
   { outcome: 'cancelled'; cancelledCount: number } | { outcome: 'not_cancellable' } | null
 > {
@@ -320,23 +324,37 @@ export async function cancelBatch(
   const row = [...locked][0];
   if (!row) return null;
   if (row.state !== 'scheduled') return { outcome: 'not_cancellable' };
-  const cancelled = await tx.execute<{ id: string }>(sql`
-    UPDATE reminder_batch_items
-    SET state = 'cancelled', reason_code = 'batch_cancelled', finished_at = ${now.toISOString()}::timestamptz
-    WHERE business_id = ${businessId} AND batch_id = ${batchId} AND state = 'pending'
-    RETURNING id
+  /* Pending recipients, and recipients a dead worker left claimed whose send never wrote a
+   * reminder row (so nothing was sent): both are cancelled. A live claim is left to the guard. */
+  const cancelled = await tx.execute<{ n: string }>(sql`
+    WITH stopped AS (
+      UPDATE reminder_batch_items i
+      SET state = 'cancelled', reason_code = 'batch_cancelled', finished_at = ${now.toISOString()}::timestamptz
+      WHERE i.business_id = ${businessId} AND i.batch_id = ${batchId}
+        AND (i.state = 'pending'
+             OR (i.state = 'dispatching' AND i.claimed_at < ${staleBefore.toISOString()}::timestamptz
+                 AND NOT EXISTS (
+                   SELECT 1 FROM invoice_reminders r
+                   WHERE r.business_id = i.business_id
+                     AND r.idempotency_key IN ('batch:' || i.batch_id || ':' || i.id || ':whatsapp',
+                                               'batch:' || i.batch_id || ':' || i.id || ':email'))))
+      RETURNING 1
+    )
+    SELECT count(*)::text AS n FROM stopped
   `);
   await tx.execute(sql`
     UPDATE reminder_batches
     SET state = 'cancelled', cancelled_at = ${now.toISOString()}::timestamptz, cancelled_by = ${userId}
     WHERE business_id = ${businessId} AND id = ${batchId}
   `);
-  return { outcome: 'cancelled', cancelledCount: [...cancelled].length };
+  return { outcome: 'cancelled', cancelledCount: Number([...cancelled][0]!.n) };
 }
 
 export interface ClaimedItem {
   itemId: string;
   invoiceNumber: string;
+  /** Claims including this one; above the bound the item is skipped, not sent. */
+  attempts: number;
   batch: BatchRow;
 }
 
@@ -357,11 +375,12 @@ export async function claimNextItem(
     SELECT ${BATCH_COLUMNS} FROM reminder_batches b
     WHERE b.business_id = ${businessId} AND b.id = ${batchId}
       AND b.state = 'scheduled' AND b.scheduled_for <= ${now.toISOString()}::timestamptz
+      AND (b.paused_until IS NULL OR b.paused_until <= ${now.toISOString()}::timestamptz)
     FOR SHARE
   `);
   const batch = [...batches][0];
   if (!batch) return null;
-  const claimed = await tx.execute<{ id: string; invoice_number: string }>(sql`
+  const claimed = await tx.execute<{ id: string; invoice_number: string; attempts: number }>(sql`
     WITH next AS (
       SELECT i.id FROM reminder_batch_items i
       WHERE i.business_id = ${businessId} AND i.batch_id = ${batchId}
@@ -371,14 +390,19 @@ export async function claimNextItem(
       FOR UPDATE SKIP LOCKED
     )
     UPDATE reminder_batch_items i
-    SET state = 'dispatching', claimed_at = ${now.toISOString()}::timestamptz
+    SET state = 'dispatching', claimed_at = ${now.toISOString()}::timestamptz, attempts = i.attempts + 1
     FROM next, invoices inv
     WHERE i.id = next.id AND inv.business_id = i.business_id AND inv.id = i.invoice_id
-    RETURNING i.id, inv.invoice_number
+    RETURNING i.id, inv.invoice_number, i.attempts
   `);
   const item = [...claimed][0];
   if (!item) return null;
-  return { itemId: item.id, invoiceNumber: item.invoice_number, batch: toBatch(batch) };
+  return {
+    itemId: item.id,
+    invoiceNumber: item.invoice_number,
+    attempts: Number(item.attempts),
+    batch: toBatch(batch),
+  };
 }
 
 /** Moves a claimed recipient on exactly once; a recipient no longer `dispatching` is left alone. */
@@ -399,14 +423,16 @@ export async function finishItem(
   return [...rows].length > 0;
 }
 
-/**
- * Puts a claimed recipient back without an attempt (the pass is stopping early, for example after
- * repeated provider failures). Its send never started, so it is simply pending again.
- */
-export async function releaseItem(tx: TenantDb, businessId: string, itemId: string): Promise<void> {
+/** No recipient of this batch is claimed before `until` (repeated provider failures). */
+export async function pauseBatch(
+  tx: TenantDb,
+  businessId: string,
+  batchId: string,
+  until: Date,
+): Promise<void> {
   await tx.execute(sql`
-    UPDATE reminder_batch_items SET state = 'pending', claimed_at = NULL
-    WHERE business_id = ${businessId} AND id = ${itemId} AND state = 'dispatching'
+    UPDATE reminder_batches SET paused_until = ${until.toISOString()}::timestamptz
+    WHERE business_id = ${businessId} AND id = ${batchId} AND state = 'scheduled'
   `);
 }
 
@@ -450,7 +476,8 @@ export async function dispatchAllowed(
   const state = [...rows][0]?.state;
   if (state !== 'scheduled') return 'batch_cancelled';
   const member = await tx.execute<{ role: string }>(sql`
-    SELECT role FROM memberships WHERE business_id = ${businessId} AND user_id = ${userId}
+    SELECT role FROM memberships
+    WHERE business_id = ${businessId} AND user_id = ${userId} AND active
   `);
   const role = [...member][0]?.role;
   return role === 'owner' || role === 'delegate' ? 'ok' : 'scheduler_not_authorised';
@@ -464,11 +491,12 @@ export async function dueBatches(
   workerDb: Db,
   asOf: Date,
   pageSize: number,
-  afterId: string | null,
+  after: { scheduledFor: Date; batchId: string } | null,
 ): Promise<Array<{ batchId: string; businessId: string; scheduledFor: Date }>> {
   const rows = await workerDb.execute<{ id: string; business_id: string; scheduled_for: Date }>(
     sql`SELECT id, business_id, scheduled_for
-        FROM sweep_due_reminder_batches(${asOf.toISOString()}::timestamptz, ${pageSize}, ${afterId}::uuid)`,
+        FROM sweep_due_reminder_batches(${asOf.toISOString()}::timestamptz, ${pageSize},
+          ${after ? after.scheduledFor.toISOString() : null}::timestamptz, ${after ? after.batchId : null}::uuid)`,
   );
   return [...rows].map((r) => ({
     batchId: r.id,

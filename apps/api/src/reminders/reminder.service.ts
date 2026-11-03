@@ -272,6 +272,55 @@ export class ReminderService {
     };
   }
 
+  /**
+   * The merchant's email attestation for a confirmed batch (REM-05, OWN-62(A), OWN-65), recorded AT
+   * CONFIRMATION in the caller's transaction (the one that writes the batch): one row per customer,
+   * bound to the address on file now, by the confirming user, timestamped now. Dispatch then sends
+   * no attestation of its own, so an address added or changed after confirmation has no attestation
+   * and that email is refused (`attestation_required`) rather than sent to an address the merchant
+   * never confirmed. A customer with no address, or with two (ambiguous), is attested for nothing.
+   */
+  async attestForBatch(
+    tx: TenantDb,
+    businessId: string,
+    userId: string,
+    invoiceNumbers: string[],
+  ): Promise<void> {
+    const done = new Set<string>();
+    for (const invoiceNumber of invoiceNumbers) {
+      const invoice = await remindersRepo.invoiceForReminder(tx, businessId, invoiceNumber);
+      const customerId = invoice?.customerId ?? null;
+      if (!customerId || done.has(customerId)) continue;
+      done.add(customerId);
+      const facets = (await customersRepo.identityFacetsFor(tx, businessId, customerId)).filter(
+        (f) => f.facet === 'email',
+      );
+      if (facets.length !== 1) continue;
+      const email = decryptFacet(
+        facets[0]!.ciphertext,
+        this.config.vaultKey,
+        `${businessId}:email`,
+      );
+      const addressHash = emailSuppressionKey(email);
+      const prior = await remindersRepo.latestAttestation(
+        tx,
+        businessId,
+        customerId,
+        'email',
+        addressHash,
+      );
+      if (prior?.policyVersion === REMINDER_POLICY_VERSION) continue;
+      await remindersRepo.recordAttestation(tx, {
+        businessId,
+        customerId,
+        channel: 'email',
+        addressHash,
+        policyVersion: REMINDER_POLICY_VERSION,
+        userId,
+      });
+    }
+  }
+
   /** Which channels have an address on file for this invoice's customer. */
   private async onFile(businessId: string, invoiceNumber: string) {
     return withBusiness(this.db, businessId, async (tx) => {

@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS reminder_batches (
   cancelled_by     uuid REFERENCES users(id),
   cancelled_at     timestamptz,
   completed_at     timestamptz,
+  -- Set when a pass stopped on repeated provider failures: no recipient is claimed before it.
+  paused_until     timestamptz,
   CONSTRAINT reminder_batches_tenant_id_ux UNIQUE (business_id, id),
   CONSTRAINT reminder_batches_cancel_ck CHECK ((state = 'cancelled') = (cancelled_at IS NOT NULL))
 );
@@ -57,6 +59,8 @@ CREATE TABLE IF NOT EXISTS reminder_batch_items (
                  CHECK (state IN ('pending', 'dispatching', 'done', 'cancelled', 'skipped')),
   reason_code  text CHECK (reason_code IS NULL OR length(reason_code) <= 60),
   claimed_at   timestamptz,
+  -- Claims made; a recipient whose send keeps failing unexpectedly is skipped after a bound.
+  attempts     integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
   finished_at  timestamptz,
   CONSTRAINT reminder_batch_items_batch_fk
     FOREIGN KEY (business_id, batch_id) REFERENCES reminder_batches (business_id, id),
@@ -88,10 +92,11 @@ REVOKE DELETE ON reminder_batch_items FROM rekoda_app;
 REVOKE ALL ON reminder_batch_items FROM rekoda_worker;
 
 -- ID-only discovery of due batches. Scheduling inputs only (a clock reading, a page size, a keyset
--- cursor); returns no merchant data. EXECUTE for rekoda_worker only.
+-- cursor, earliest first); returns no merchant data. EXECUTE for rekoda_worker only.
 CREATE OR REPLACE FUNCTION sweep_due_reminder_batches(
   as_of timestamptz,
   page_size integer,
+  after_scheduled_for timestamptz,
   after_id uuid
 ) RETURNS TABLE (
   id uuid,
@@ -107,11 +112,11 @@ AS $$
   FROM public.reminder_batches b
   WHERE b.state = 'scheduled'
     AND b.scheduled_for <= as_of
-    AND (after_id IS NULL OR b.id > after_id)
-  ORDER BY b.id
+    AND (after_id IS NULL OR (b.scheduled_for, b.id) > (after_scheduled_for, after_id))
+  ORDER BY b.scheduled_for, b.id
   LIMIT least(greatest(page_size, 1), 1000)
 $$;
 
-REVOKE ALL ON FUNCTION sweep_due_reminder_batches(timestamptz, integer, uuid) FROM PUBLIC;
-REVOKE ALL ON FUNCTION sweep_due_reminder_batches(timestamptz, integer, uuid) FROM rekoda_app;
-GRANT EXECUTE ON FUNCTION sweep_due_reminder_batches(timestamptz, integer, uuid) TO rekoda_worker;
+REVOKE ALL ON FUNCTION sweep_due_reminder_batches(timestamptz, integer, timestamptz, uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION sweep_due_reminder_batches(timestamptz, integer, timestamptz, uuid) FROM rekoda_app;
+GRANT EXECUTE ON FUNCTION sweep_due_reminder_batches(timestamptz, integer, timestamptz, uuid) TO rekoda_worker;

@@ -41,6 +41,10 @@ export const REMINDER_BATCH_LIMITS = {
   failuresBeforePause: 3,
   /** A recipient claimed this long ago with no finish belonged to a worker that died. */
   staleClaimMs: 15 * 60_000,
+  /** How long a paused batch waits before its next recipient is claimed. */
+  pauseMs: 10 * 60_000,
+  /** Claims of one recipient after which an unexpected repeated error skips it (never a send). */
+  maxAttempts: 3,
 } as const;
 
 export class BatchUnknownInvoices extends Error {
@@ -132,7 +136,7 @@ export class ReminderBatchService {
       const ids = await reminderBatchesRepo.invoiceIdsByNumber(tx, businessId, numbers);
       const unknown = numbers.filter((n) => !ids.has(n));
       if (unknown.length > 0) throw new BatchUnknownInvoices(unknown);
-      return reminderBatchesRepo.createBatch(tx, {
+      const made = await reminderBatchesRepo.createBatch(tx, {
         businessId,
         channels,
         attest: input.attest === true,
@@ -141,13 +145,27 @@ export class ReminderBatchService {
         createdBy: userId,
         invoiceIds: numbers.map((n) => ids.get(n)!),
       });
+      /* The attestation is the merchant's act at confirmation, bound to the addresses on file now,
+       * written in the same transaction as the batch (OWN-62(A), OWN-65). */
+      if (made.created && input.attest === true && channels !== 'whatsapp') {
+        await this.reminders.attestForBatch(tx, businessId, userId, numbers);
+      }
+      return made;
     });
     const batch = await this.get(businessId, id);
     if (!created) {
       /* A replay must be the same request; a different list under the same key is refused. */
+      const stored = await withBusiness(this.db, businessId, (tx) =>
+        reminderBatchesRepo.batchById(tx, businessId, id),
+      );
       const same =
         batch.items.length === numbers.length &&
-        batch.items.every((item, i) => item.invoiceNumber === numbers[i]);
+        batch.items.every((item, i) => item.invoiceNumber === numbers[i]) &&
+        stored!.channels === channels &&
+        stored!.attest === (input.attest === true) &&
+        (input.scheduledFor === undefined ||
+          stored!.scheduledFor.getTime() === scheduledFor.getTime() ||
+          scheduledFor.getTime() === now.getTime());
       if (!same) throw new BatchKeyReused();
       return { ...batch, replayed: true };
     }
@@ -196,7 +214,14 @@ export class ReminderBatchService {
     now: Date = new Date(),
   ): Promise<CancelReminderBatchResponse> {
     const result = await withBusiness(this.db, businessId, (tx) =>
-      reminderBatchesRepo.cancelBatch(tx, businessId, batchId, userId, now),
+      reminderBatchesRepo.cancelBatch(
+        tx,
+        businessId,
+        batchId,
+        userId,
+        now,
+        new Date(now.getTime() - REMINDER_BATCH_LIMITS.staleClaimMs),
+      ),
     );
     if (!result) throw new BatchNotFound();
     const batch = await this.get(businessId, batchId);
@@ -243,7 +268,7 @@ export interface ReminderBatchSweepResult {
   withdrawn: number;
   /** Batches that finished this pass. */
   completed: number;
-  /** Batches whose pass stopped after repeated failures; their remaining recipients wait. */
+  /** Batches paused after repeated undelivered sends; their remaining recipients wait `pauseMs`. */
   paused: number;
   /** Recipients left claimed after an unexpected error; reclaimed later with the same key. */
   errored: number;
@@ -269,13 +294,14 @@ export async function sweepReminderBatches(
     errored: 0,
   };
   let budget: number = REMINDER_BATCH_LIMITS.sendsPerPass;
-  let after: string | null = null;
+  let after: { scheduledFor: Date; batchId: string } | null = null;
 
   for (;;) {
     if (budget <= 0) break;
     const due = await reminderBatchesRepo.dueBatches(deps.workerDb, clock(), 200, after);
     if (due.length === 0) break;
-    after = due[due.length - 1]!.batchId;
+    const last = due[due.length - 1]!;
+    after = { scheduledFor: last.scheduledFor, batchId: last.batchId };
 
     for (const { batchId, businessId } of due) {
       let failuresInARow = 0;
@@ -310,6 +336,27 @@ export async function sweepReminderBatches(
         }
 
         const { itemId, invoiceNumber, batch } = claimed;
+        if (claimed.attempts > REMINDER_BATCH_LIMITS.maxAttempts) {
+          /* The same unexpected error keeps stopping this recipient (for example a contact that
+           * cannot be opened). It is skipped with a reason, never sent, so the batch can finish.
+           * Its send replays a reminder row if an earlier attempt wrote one. */
+          try {
+            await withBusiness(deps.appDb, businessId, (tx) =>
+              reminderBatchesRepo.finishItem(
+                tx,
+                businessId,
+                itemId,
+                'skipped',
+                'dispatch_error',
+                clock(),
+              ),
+            );
+          } catch (error) {
+            log.warn(`batch ${batchId}: recipient skip not recorded: ${errorClass(error)}`);
+            break;
+          }
+          continue;
+        }
         let finish: { state: 'done' | 'skipped' | 'cancelled'; reason: string | null };
         let allFailed = false;
         try {
@@ -320,7 +367,8 @@ export async function sweepReminderBatches(
               invoiceNumber,
               channels: fromStored(batch.channels),
               idempotencyKey: reminderBatchesRepo.batchItemKey(batchId, itemId),
-              ...(batch.attest ? { attest: true } : {}),
+              /* No attestation here: the batch's was recorded at confirmation for the addresses
+               * then on file, and `prepare` finds it; a changed address has none and is refused. */
             },
             clock(),
             {
@@ -336,8 +384,13 @@ export async function sweepReminderBatches(
             },
           );
           finish = { state: 'done', reason: null };
+          /* Not delivered on any channel because the provider refused or could not confirm it (a
+           * rate limit, an outage, a timeout). A named refusal (opted out, paid) is not a failure. */
           allFailed =
-            sent.results.length > 0 && sent.results.every((r) => r.reminder.status === 'failed');
+            sent.results.length > 0 &&
+            sent.results.every(
+              (r) => r.reminder.status === 'failed' || r.reminder.status === 'uncertain',
+            );
           result.dispatched += 1;
         } catch (error) {
           if (error instanceof ReminderWithdrawn) {
@@ -378,7 +431,19 @@ export async function sweepReminderBatches(
           /* The provider keeps refusing (a rate limit, an outage): stop this batch until the next
            * pass rather than spend every remaining recipient on the same refusal. */
           result.paused += 1;
-          log.warn(`batch ${batchId}: paused after ${failuresInARow} failed sends in a row`);
+          log.warn(`batch ${batchId}: paused after ${failuresInARow} undelivered sends in a row`);
+          try {
+            await withBusiness(deps.appDb, businessId, (tx) =>
+              reminderBatchesRepo.pauseBatch(
+                tx,
+                businessId,
+                batchId,
+                new Date(clock().getTime() + REMINDER_BATCH_LIMITS.pauseMs),
+              ),
+            );
+          } catch (error) {
+            log.warn(`batch ${batchId}: pause not recorded: ${errorClass(error)}`);
+          }
           break;
         }
       }

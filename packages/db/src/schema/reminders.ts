@@ -80,6 +80,7 @@ export const reminderBatches = pgTable('reminder_batches', {
   cancelledBy: uuid('cancelled_by'),
   cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
   completedAt: timestamp('completed_at', { withTimezone: true }),
+  pausedUntil: timestamp('paused_until', { withTimezone: true }),
 });
 
 /** One invoice in a batch, once. Its outcome is the reminder row keyed `batch:<batch>:<item>`. */
@@ -96,5 +97,6 @@ export const reminderBatchItems = pgTable('reminder_batch_items', {
   state: text('state').notNull().default('pending'),
   reasonCode: text('reason_code'),
   claimedAt: timestamp('claimed_at', { withTimezone: true }),
+  attempts: integer('attempts').notNull().default(0),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
 });
