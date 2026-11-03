@@ -7,7 +7,7 @@
  * the Paystack link, and the same page as an accountant sees it. Same stack: Rekoda's real API,
  * worker and database, with Paystack itself a stand-in (e2e/support/fake-paystack.mjs). An overdue
  * renewal is put in the database directly, as the renewal sweep would write it, because the clock
- * and the sweep are not what is under test here; billing.integration.test.ts covers the sweep.
+ * and the sweep are not what is under test here; billing-renewal.integration.test.ts covers the sweep.
  * Real Paystack test mode is a staging step, not claimed here.
  */
 import { createHmac, randomBytes } from 'node:crypto';

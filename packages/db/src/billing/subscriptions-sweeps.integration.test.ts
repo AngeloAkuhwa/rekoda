@@ -110,7 +110,7 @@ describe('the sweeps', () => {
     // grace clock, in one step. This pins that a payable renewal for the cycle
     // keeps the business out of the due set; re-selection of a grace business
     // whose renewals went stale (and the failed-renewal no-spin case) is covered
-    // in stale-charge.integration.test.ts (G-104).
+    // in stale-charge-exceptions.integration.test.ts (G-104).
     await inTenant(businessId, async (tx) => {
       await subscriptionsRepo.openCharge(tx, {
         businessId,

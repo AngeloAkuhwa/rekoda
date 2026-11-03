@@ -15,122 +15,27 @@
  */
 // The checkout recovery suite. Split by concern; the rest of this suite is in billing-checkout-
 // replacement.integration.test.ts, billing-checkout-guards.integration.test.ts.
-import { createHash, randomBytes } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ServiceUnavailableException } from '@nestjs/common';
 import { attemptReference } from '@rekoda/core';
-import type { BillingCheckoutResponse } from '@rekoda/contracts';
-import { createDb, identity, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
-import { loadConfig, type ApiConfig } from '../config.js';
-import { StubPaymentProvider } from '../payments/provider.stub.js';
-import { BillingService } from './billing.service.js';
-import { BillingCheckoutService } from './billing-checkout.service.js';
+import { sql, subscriptionsRepo, withBusiness } from '@rekoda/db';
 
-const RUN_SALT = randomBytes(16).toString('hex');
-const testKey = (label: string): string =>
-  createHash('sha256').update(`${label}:${process.pid}:${RUN_SALT}`).digest('hex');
+import {
+  appDb,
+  provider,
+  plans,
+  checkouts,
+  seedBusiness,
+  EMAIL,
+  pendingCharge,
+  ready,
+  attemptsOf,
+  liveCount,
+  chargeCount,
+  useCheckoutRecoveryHarness,
+} from './checkout-recovery.fixtures.js';
 
-let urls: Urls;
-let appDb: Db;
-let closeApp: () => Promise<void>;
-let config: ApiConfig;
-let provider: StubPaymentProvider;
-
-beforeAll(async () => {
-  urls = requireUrls();
-  await migrate(urls);
-  ({ db: appDb, close: closeApp } = createDb(urls.app, { max: 6 }));
-  process.env['DATABASE_URL'] = urls.app;
-  process.env['OTP_PEPPER'] = testKey('pepper');
-  process.env['REKODA_API_SECRET'] = testKey('secret');
-  process.env['VAULT_KEY'] = testKey('vault');
-  process.env['MATCH_KEY'] = testKey('match');
-  config = { ...loadConfig(), paystackSecretKey: 'sk_test_x', paystackPlatformConfirmed: true };
-
-  provider = new StubPaymentProvider();
-  originalInitialize = provider.initializeTransaction.bind(provider);
-  originalVerify = provider.verifyTransaction.bind(provider);
-});
-
-afterAll(async () => {
-  await closeApp?.();
-});
-
-/** The stub's own initialise, kept so a test that wraps it cannot leak into the next. */
-let originalInitialize: StubPaymentProvider['initializeTransaction'];
-let originalVerify: StubPaymentProvider['verifyTransaction'];
-
-beforeEach(async () => {
-  await truncateAll(urls);
-  provider.reset();
-  provider.initializeTransaction = originalInitialize;
-  provider.verifyTransaction = originalVerify;
-  provider.modelPaystackReferences();
-});
-
-const plans = () => new BillingService(config, appDb);
-const checkouts = () => new BillingCheckoutService(config, appDb, provider);
-
-let seq = 0;
-async function seedBusiness(): Promise<string> {
-  seq += 1;
-  const user = await identity.upsertUserByPhone(appDb, `+23481730${String(seq).padStart(4, '0')}`);
-  const business = await identity.createBusinessWithOwner(appDb, {
-    name: 'Recovery Ltd',
-    businessType: null,
-    ownerUserId: user.id,
-  });
-  return business.id;
-}
-
-const EMAIL = 'ada@shop.example.ng';
-
-/** A first purchase of Chat: one pending charge, owed. */
-async function pendingCharge(businessId: string): Promise<{ reference: string; amountK: number }> {
-  const answer = await plans().changePlan(businessId, 'chat');
-  if (answer.state !== 'payment_required') throw new Error('a first purchase should be payable');
-  return { reference: answer.reference, amountK: answer.amountK };
-}
-
-const ready = (answer: BillingCheckoutResponse) => {
-  if (answer.state !== 'ready') throw new Error(`expected a ready checkout, got ${answer.state}`);
-  return answer;
-};
-
-interface AttemptSummary {
-  no: number;
-  ref: string;
-  status: string;
-  url: string | null;
-}
-const attemptsOf = (businessId: string): Promise<AttemptSummary[]> =>
-  withBusiness(appDb, businessId, async (tx) => {
-    const rows = await tx.execute<{
-      no: number;
-      ref: string;
-      status: string;
-      url: string | null;
-    }>(sql`
-      SELECT attempt_no AS no, provider_reference AS ref, status, checkout_url AS url
-      FROM subscription_charge_attempts WHERE business_id = ${businessId}::uuid
-      ORDER BY attempt_no
-    `);
-    return [...rows].map((r) => ({ no: Number(r.no), ref: r.ref, status: r.status, url: r.url }));
-  });
-
-const liveCount = async (businessId: string): Promise<number> =>
-  (await attemptsOf(businessId)).filter((a) =>
-    ['initializing', 'active', 'ambiguous'].includes(a.status),
-  ).length;
-
-const chargeCount = (businessId: string): Promise<number> =>
-  withBusiness(appDb, businessId, async (tx) => {
-    const rows = await tx.execute<{ n: number }>(sql`
-      SELECT count(*)::int AS n FROM subscription_charges WHERE business_id = ${businessId}::uuid
-    `);
-    return Number([...rows][0]!.n);
-  });
+useCheckoutRecoveryHarness();
 
 const ageAttempts = (businessId: string, seconds: number): Promise<void> =>
   withBusiness(appDb, businessId, async (tx) => {
