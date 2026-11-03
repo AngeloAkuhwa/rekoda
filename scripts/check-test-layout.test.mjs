@@ -17,7 +17,7 @@ test('accepts the four recognised layers in their places', () => {
 
 test('rejects an unknown suffix, a stray spec and a stray mjs test', () => {
   const r = run([
-    f('packages/core/src/a.int.test.ts'),
+    f('packages/core/src/a.test.js'),
     f('apps/api/src/b.spec.ts'),
     f('apps/web/src/c.test.mjs'),
     f('apps/web/e2e/d.test.ts'),
