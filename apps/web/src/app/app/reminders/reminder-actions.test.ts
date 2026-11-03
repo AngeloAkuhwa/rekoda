@@ -193,8 +193,8 @@ describe('a reminder write whose answer is lost', () => {
         idempotencyKey: INTENT,
       }),
     );
-    expect(state.error).toMatch(/Nothing was scheduled/);
-    expect(state.error).toMatch(/Pick a new time/);
+    expect(state.error).toMatch(/Nothing new was scheduled/);
+    expect(state.error).toMatch(/list of batches/);
   });
 
   it('a first Confirm for a future time is a normal create, never replay-only', async () => {

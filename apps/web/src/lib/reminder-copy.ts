@@ -317,7 +317,7 @@ export function batchRefusal(code: string): string {
     case 'idempotency_key_reused':
       return 'A batch was already made from an earlier press with different choices, so this one was not made. Check your list of batches, then pick the invoices again if you still need them.';
     case 'idempotency_key_unknown':
-      return 'The time you chose has passed, and no batch was made for it. Nothing was scheduled. Pick a new time.';
+      return 'The time you chose has passed, and no batch was found for your earlier press. Nothing new was scheduled. Check your list of batches, then pick a new time if you still need these reminders.';
     default:
       return 'That did not go through. Nothing was scheduled.';
   }

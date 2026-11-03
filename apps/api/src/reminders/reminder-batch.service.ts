@@ -150,6 +150,9 @@ export class ReminderBatchService {
     const channels = toStored(input.channels);
 
     const { id, created } = await withBusiness(this.db, businessId, async (tx) => {
+      /* A replay-only retry waits for a Confirm still writing under this key, then looks. */
+      if (input.replayOnly === true)
+        await reminderBatchesRepo.lockBatchKey(tx, businessId, input.idempotencyKey);
       const prior = await reminderBatchesRepo.batchByKey(tx, businessId, input.idempotencyKey);
       if (prior) return { id: prior.id, created: false };
       if (input.replayOnly === true) throw new BatchKeyUnknown();

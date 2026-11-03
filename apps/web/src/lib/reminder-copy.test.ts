@@ -485,8 +485,8 @@ describe('held-key refusals say what happened and what to do (REM-06)', () => {
   it('a retry after the chosen time that finds no earlier batch says nothing was scheduled', () => {
     const text = batchRefusal('idempotency_key_unknown');
     expect(text).toMatch(/time you chose has passed/);
-    expect(text).toMatch(/no batch was made for it/);
-    expect(text).toMatch(/Nothing was scheduled/);
-    expect(text).toMatch(/Pick a new time/);
+    expect(text).toMatch(/no batch was found/);
+    expect(text).toMatch(/Nothing new was scheduled/);
+    expect(text).toMatch(/list of batches/);
   });
 });
