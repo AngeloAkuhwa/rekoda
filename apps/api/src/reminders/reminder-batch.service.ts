@@ -65,6 +65,13 @@ export class BatchKeyReused extends Error {
   }
 }
 
+/** A replay-only retry named a key no batch was made under; nothing was created. */
+export class BatchKeyUnknown extends Error {
+  constructor() {
+    super('idempotency_key_unknown');
+  }
+}
+
 /** Customer reminders are not released on this deployment (`REKODA_CUSTOMER_REMINDERS`). */
 export class BatchRemindersNotReleased extends Error {
   constructor() {
@@ -143,8 +150,12 @@ export class ReminderBatchService {
     const channels = toStored(input.channels);
 
     const { id, created } = await withBusiness(this.db, businessId, async (tx) => {
+      /* A replay-only retry waits for a Confirm still writing under this key, then looks. */
+      if (input.replayOnly === true)
+        await reminderBatchesRepo.lockBatchKey(tx, businessId, input.idempotencyKey);
       const prior = await reminderBatchesRepo.batchByKey(tx, businessId, input.idempotencyKey);
       if (prior) return { id: prior.id, created: false };
+      if (input.replayOnly === true) throw new BatchKeyUnknown();
       const ids = await reminderBatchesRepo.invoiceIdsByNumber(tx, businessId, numbers);
       const unknown = numbers.filter((n) => !ids.has(reminderBatchesRepo.invoiceKey(n)));
       if (unknown.length > 0) throw new BatchUnknownInvoices(unknown);
@@ -221,7 +232,10 @@ export class ReminderBatchService {
         businessId,
         batches.map((b) => b.id),
       );
-      return { batches: batches.map((b) => summary(b, counts.get(b.id))) };
+      return {
+        batches: batches.map((b) => summary(b, counts.get(b.id))),
+        released: this.config.customerReminders,
+      };
     });
   }
 

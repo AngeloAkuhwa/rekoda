@@ -430,6 +430,18 @@ jobs:
           DATABASE_URL: postgres://rekoda@127.0.0.1:5432/rekoda_journey
           APP_DATABASE_URL: postgres://rekoda_app@127.0.0.1:5432/rekoda_journey
           WORKER_DATABASE_URL: postgres://rekoda_worker@127.0.0.1:5432/rekoda_journey
+      # The reminder screens run their own API too (reminders released, mail kept in memory by
+      # the mock sender), with a random vault key the spec seals a customer address with, so
+      # they get a database of their own as well.
+      - name: Create a separate database for the reminder screens
+        run: psql postgres://rekoda@127.0.0.1:5432/postgres -c 'CREATE DATABASE rekoda_reminders'
+      - name: Run the reminder screens (mock email)
+        run: pnpm --filter @rekoda/web e2e:reminders
+        env:
+          REKODA_CHROME: ''
+          DATABASE_URL: postgres://rekoda@127.0.0.1:5432/rekoda_reminders
+          APP_DATABASE_URL: postgres://rekoda_app@127.0.0.1:5432/rekoda_reminders
+          WORKER_DATABASE_URL: postgres://rekoda_worker@127.0.0.1:5432/rekoda_reminders
       - uses: actions/upload-artifact@v7
         if: failure()
         with:

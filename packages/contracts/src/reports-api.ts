@@ -2118,6 +2118,12 @@ export const createReminderBatchRequest = z.object({
   idempotencyKey: z.string().min(8).max(90),
   attest: z.boolean().optional(),
   confirm: z.literal(true),
+  /**
+   * A retry of a Confirm whose answer was lost: replay the batch this key already made, or refuse
+   * with `idempotency_key_unknown`. Never creates, so a retry made after the scheduled time has
+   * passed cannot become an immediate send.
+   */
+  replayOnly: z.boolean().optional(),
 });
 export type CreateReminderBatchRequest = z.infer<typeof createReminderBatchRequest>;
 
@@ -2170,6 +2176,12 @@ export type ReminderBatchResponse = z.infer<typeof reminderBatchResponse>;
 
 export const reminderBatchListResponse = z.object({
   batches: z.array(reminderBatchSummary).max(50),
+  /**
+   * Whether customer reminders are switched on for this deployment (`REKODA_CUSTOMER_REMINDERS`).
+   * When false nothing is sent or scheduled, and a screen says so before the merchant starts.
+   * An older API that does not send it reads as not released: the safe answer while containers are replaced.
+   */
+  released: z.boolean().default(false),
 });
 export type ReminderBatchListResponse = z.infer<typeof reminderBatchListResponse>;
 

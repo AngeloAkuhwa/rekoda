@@ -173,6 +173,24 @@ import {
   type SetupStateResponse,
   type UsageMeterResponse,
   type VerifyOtpResponse,
+  cancelReminderBatchResponse,
+  paymentInstructionResponse,
+  reminderBatchListResponse,
+  reminderBatchPreviewResponse,
+  reminderBatchResponse,
+  reminderHistoryResponse,
+  sendReminderResponse,
+  type CancelReminderBatchResponse,
+  type CreateReminderBatchRequest,
+  type PaymentInstructionRequest,
+  type PaymentInstructionResponse,
+  type ReminderBatchListResponse,
+  type ReminderBatchPreviewRequest,
+  type ReminderBatchPreviewResponse,
+  type ReminderBatchResponse,
+  type ReminderHistoryResponse,
+  type SendReminderRequest,
+  type SendReminderResponse,
 } from '@rekoda/contracts';
 
 /**
@@ -232,7 +250,7 @@ export class ApiUnexpectedStatus extends Error {
 }
 
 interface CallOptions {
-  method: 'GET' | 'POST' | 'DELETE';
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE';
   path: string;
   body?: unknown;
   headers?: Record<string, string>;
@@ -1523,4 +1541,216 @@ export async function reminderOptOut(token: string): Promise<'done' | 'invalid'>
     expect: [200, 404, 400],
   });
   return status === 200 ? 'done' : 'invalid';
+}
+
+/* ── customer payment reminders, from the dashboard (REM-06) ──────────────
+ *
+ * Every rule is the API's: these calls carry the merchant's request and parse
+ * the answer against the shared contract. A 403 (a role that cannot do this)
+ * surfaces as ApiForbidden, which the actions turn into a sentence. */
+
+/** The `message` or `error` code Nest puts on a refusal body, when there is one. */
+function refusalCode(json: unknown): string | null {
+  if (typeof json !== 'object' || json === null) return null;
+  const body = json as { message?: unknown; error?: unknown };
+  if (typeof body.error === 'string' && body.error.includes('_')) return body.error;
+  if (typeof body.message === 'string') return body.message;
+  return null;
+}
+
+export type SendReminderOutcome =
+  | { state: 'sent'; response: SendReminderResponse }
+  | { state: 'not_found' }
+  | { state: 'key_reused' }
+  | { state: 'invalid' };
+
+export async function sendReminder(
+  sessionToken: string,
+  body: SendReminderRequest,
+): Promise<SendReminderOutcome> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reminders/send',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400, 404, 409],
+  });
+  if (status === 404) return { state: 'not_found' };
+  if (status === 409) return { state: 'key_reused' };
+  if (status === 400) return { state: 'invalid' };
+  return { state: 'sent', response: sendReminderResponse.parse(json) };
+}
+
+/** One invoice's reminders, newest first. Null when this business has no such invoice. */
+export async function reminderHistory(
+  sessionToken: string,
+  invoiceNumber: string,
+): Promise<ReminderHistoryResponse | null> {
+  const { status, json } = await call({
+    method: 'GET',
+    path: `/v1/reminders/history?invoiceNumber=${encodeURIComponent(invoiceNumber)}`,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400, 404],
+  });
+  return status === 200 ? reminderHistoryResponse.parse(json) : null;
+}
+
+/** Stop (or resume) reminders for one invoice. False when the invoice is not this business's. */
+export async function setRemindersStopped(
+  sessionToken: string,
+  invoiceNumber: string,
+  stopped: boolean,
+): Promise<boolean> {
+  const { status } = await call({
+    method: 'POST',
+    path: '/v1/reminders/stop',
+    body: { invoiceNumber, stopped },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400, 404],
+  });
+  return status === 200;
+}
+
+/** The public business phone a reminder shows. False when the API refused the number. */
+export async function savePublicContact(sessionToken: string, phone: string): Promise<boolean> {
+  const { status } = await call({
+    method: 'PUT',
+    path: '/v1/reminders/public-contact',
+    body: { phone },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200;
+}
+
+export async function paymentInstruction(
+  sessionToken: string,
+): Promise<PaymentInstructionResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/reminders/payment-instruction',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return paymentInstructionResponse.parse(json);
+}
+
+export type SavePaymentInstructionOutcome =
+  { state: 'saved'; response: PaymentInstructionResponse } | { state: 'invalid'; issues: string[] };
+
+export async function savePaymentInstruction(
+  sessionToken: string,
+  body: PaymentInstructionRequest,
+): Promise<SavePaymentInstructionOutcome> {
+  const { status, json } = await call({
+    method: 'PUT',
+    path: '/v1/reminders/payment-instruction',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  if (status === 400) {
+    const issues =
+      typeof json === 'object' &&
+      json !== null &&
+      Array.isArray((json as { issues?: unknown }).issues)
+        ? ((json as { issues: unknown[] }).issues.filter((i) => typeof i === 'string') as string[])
+        : [];
+    return { state: 'invalid', issues };
+  }
+  return { state: 'saved', response: paymentInstructionResponse.parse(json) };
+}
+
+export async function clearPaymentInstruction(sessionToken: string): Promise<void> {
+  await call({
+    method: 'DELETE',
+    path: '/v1/reminders/payment-instruction',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+}
+
+/** Who would be reminded and who is left out, and why. Writes and sends nothing. */
+export async function previewReminderBatch(
+  sessionToken: string,
+  body: ReminderBatchPreviewRequest,
+): Promise<ReminderBatchPreviewResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reminders/batches/preview',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? reminderBatchPreviewResponse.parse(json) : null;
+}
+
+export type CreateReminderBatchOutcome =
+  | { state: 'created'; batch: ReminderBatchResponse }
+  | { state: 'unknown_invoices'; invoiceNumbers: string[] }
+  | { state: 'refused'; code: string };
+
+/** The merchant's confirmation. Schedules the batch; sends nothing in this request. */
+export async function createReminderBatch(
+  sessionToken: string,
+  body: CreateReminderBatchRequest,
+): Promise<CreateReminderBatchOutcome> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reminders/batches',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 201, 400, 409],
+  });
+  if (status === 400 || status === 409) {
+    const code = refusalCode(json) ?? 'invalid';
+    if (code === 'invoice_not_found') {
+      const numbers = (json as { invoiceNumbers?: unknown }).invoiceNumbers;
+      return {
+        state: 'unknown_invoices',
+        invoiceNumbers: Array.isArray(numbers)
+          ? numbers.filter((n): n is string => typeof n === 'string')
+          : [],
+      };
+    }
+    return { state: 'refused', code };
+  }
+  return { state: 'created', batch: reminderBatchResponse.parse(json) };
+}
+
+export async function reminderBatches(sessionToken: string): Promise<ReminderBatchListResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/reminders/batches',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return reminderBatchListResponse.parse(json);
+}
+
+/** One batch and its recipients. Null when it is not this business's (or not a batch at all). */
+export async function reminderBatch(
+  sessionToken: string,
+  batchId: string,
+): Promise<ReminderBatchResponse | null> {
+  const { status, json } = await call({
+    method: 'GET',
+    path: `/v1/reminders/batches/${encodeURIComponent(batchId)}`,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 404],
+  });
+  return status === 200 ? reminderBatchResponse.parse(json) : null;
+}
+
+export async function cancelReminderBatch(
+  sessionToken: string,
+  batchId: string,
+): Promise<CancelReminderBatchResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: `/v1/reminders/batches/${encodeURIComponent(batchId)}/cancel`,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 404],
+  });
+  return status === 200 ? cancelReminderBatchResponse.parse(json) : null;
 }

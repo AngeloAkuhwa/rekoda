@@ -48,8 +48,8 @@ export default async function DebtorsPage() {
             <p className="rk-fineprint">
               <Money kobo={debtors.totalK} /> outstanding across{' '}
               {debtors.count === 1 ? 'one invoice' : `${debtors.count} invoices`}. Record a payment
-              on the <a href="/app/invoices">invoices page</a>, or send a reminder from WhatsApp
-              with <strong>remind about INV-…</strong>
+              on the <a href="/app/invoices">invoices page</a>, or remind customers on the{' '}
+              <a href="/app/reminders">reminders page</a>.
             </p>
             <div className="rk-table-scroll">
               <table className="rk-table">
@@ -60,6 +60,9 @@ export default async function DebtorsPage() {
                     <th>Due</th>
                     <th>Late by</th>
                     <th className="rk-num">Balance</th>
+                    <th>
+                      <span className="rk-sr-only">Reminders</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -75,6 +78,14 @@ export default async function DebtorsPage() {
                       </td>
                       <td className="rk-num">
                         <Money kobo={row.balanceDueK} />
+                      </td>
+                      <td>
+                        <a
+                          href={`/app/reminders/invoice?number=${encodeURIComponent(row.invoiceNumber)}`}
+                          aria-label={`Reminders for ${row.invoiceNumber}`}
+                        >
+                          Reminders
+                        </a>
                       </td>
                     </tr>
                   ))}

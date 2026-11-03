@@ -66,6 +66,7 @@ __pycache__/
 
 # Playwright
 apps/web/test-results/
+apps/web/test-results-reminders/
 apps/web/playwright-report/
 Rekoda_Canonical_Development_Reference_Bundle.zip
 

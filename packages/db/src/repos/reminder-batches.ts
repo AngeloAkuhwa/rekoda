@@ -151,9 +151,7 @@ export async function createBatch(
   },
 ): Promise<{ id: string; created: boolean }> {
   /* One key at a time, so two raced confirmations cannot both insert. */
-  await tx.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtext('reminder_batch:' || ${input.businessId}::text || ':' || ${input.idempotencyKey}))`,
-  );
+  await lockBatchKey(tx, input.businessId, input.idempotencyKey);
   const existing = await batchByKey(tx, input.businessId, input.idempotencyKey);
   if (existing) return { id: existing.id, created: false };
 
@@ -175,6 +173,17 @@ export async function createBatch(
     )}
   `);
   return { id, created: true };
+}
+
+/** Serialises work on one key: a replay-only lookup waits for a Confirm still writing under it. */
+export async function lockBatchKey(
+  tx: TenantDb,
+  businessId: string,
+  idempotencyKey: string,
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext('reminder_batch:' || ${businessId}::text || ':' || ${idempotencyKey}))`,
+  );
 }
 
 /** The batch this merchant key created, or null. */

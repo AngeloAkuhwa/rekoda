@@ -55,7 +55,9 @@ const browserLaunch =
 export default defineConfig({
   testDir: './e2e',
   // The paid-plan journey needs its own API and a Paystack stand-in: playwright.journey.config.ts.
-  testIgnore: /billing-journey.*\.spec\.ts/,
+  // The reminder screens need reminders released and a mock email sender:
+  // playwright.reminders.config.ts.
+  testIgnore: [/billing-journey.*\.spec\.ts/, /reminders\.spec\.ts/],
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 0,

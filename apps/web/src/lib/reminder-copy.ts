@@ -1,0 +1,462 @@
+/**
+ * What the reminder screens say (REM-06), in one place so every screen says it
+ * the same way and a unit test can hold each sentence.
+ *
+ * The API names every reason a reminder did not go with a code (packages/core
+ * `reminderBlock`, `ReminderService` and the batch worker). A merchant never
+ * reads a code: each one maps to a plain sentence with the next step where
+ * there is one, and an unknown code falls back to a sentence that claims
+ * nothing it does not know. Nothing here computes money; balances arrive in
+ * kobo from the API and are rendered by `Money`.
+ */
+
+import { batchIntentScope } from './intent-key';
+
+export type ReminderChannel = 'email' | 'whatsapp';
+export type ReminderStatus = 'sending' | 'sent' | 'blocked' | 'failed' | 'uncertain';
+export type ChannelChoice = 'auto' | 'whatsapp' | 'email' | 'both';
+
+/** How a status reads at a glance. Neutral tones only: a reminder not sent is not a failure. */
+export type Tone = 'ok' | 'neutral' | 'attention';
+
+export function channelName(channel: ReminderChannel): string {
+  return channel === 'email' ? 'Email' : 'WhatsApp';
+}
+
+const onChannel = (channel?: ReminderChannel) =>
+  channel === 'email' ? ' by email' : channel === 'whatsapp' ? ' on WhatsApp' : '';
+
+/**
+ * Why a reminder was not sent, or will not be, as a sentence a merchant can act on. `channel`
+ * sharpens the wording where the reason belongs to one channel.
+ */
+export function reminderReason(code: string | null, channel?: ReminderChannel): string {
+  switch (code) {
+    case 'reminders_not_released':
+      return 'Reminders are not switched on for your business yet, so nothing was sent.';
+    case 'invoice_not_found':
+      return 'There is no invoice with this number in your books.';
+    case 'nothing_owing':
+      return 'Nothing is owed on this invoice any more, so there is nothing to remind about.';
+    case 'reminders_stopped':
+      return 'You stopped reminders for this invoice. Resume them on its reminders page to send one.';
+    case 'no_customer':
+      return 'This invoice is not linked to a customer, so there is nobody to remind.';
+    case 'no_contact':
+      return channel === 'email'
+        ? 'You do not have an email address for this customer.'
+        : channel === 'whatsapp'
+          ? 'You do not have a WhatsApp number for this customer.'
+          : 'You do not have a way to reach this customer.';
+    case 'no_public_contact':
+      return 'Add the business phone customers can call, in Settings. Every reminder shows it.';
+    case 'attestation_required':
+      return 'Before Rekoda emails a customer for you, tick the box to confirm you have a lawful reason to contact them about this debt.';
+    case 'customer_opted_out':
+      return `This customer asked not to get reminders${onChannel(channel)}, so none will be sent there.`;
+    case 'address_suppressed':
+      return 'This email address cannot take mail from Rekoda (it bounced before, or the customer marked it as unwanted).';
+    case 'not_entitled':
+      return 'Your plan does not include this message. See the billing page for what does.';
+    case 'window_closed_no_template':
+      return 'WhatsApp only lets a business message a customer who wrote to it in the last 24 hours. This customer has not, so nothing was sent on WhatsApp.';
+    case 'template_not_configured':
+    case 'template_not_approved':
+      return 'The WhatsApp reminder message is not approved yet, so nothing was sent on WhatsApp.';
+    case 'no_whatsapp_connection':
+      return 'Your business WhatsApp is not connected yet, so nothing was sent on WhatsApp.';
+    case 'allowance_exhausted':
+      return 'You have used the messages your plan includes for now, so nothing was sent. Your billing page shows what your plan allows.';
+    case 'invalid_recipient':
+      return 'The number or address on file for this customer does not look right, so nothing was sent.';
+    case 'ambiguous_contact':
+      return 'This customer has more than one contact of this kind on file, so Rekoda did not guess which to use.';
+    case 'email_not_configured':
+      return 'Email reminders are not set up yet, so nothing was sent by email.';
+    case 'send_failed':
+      return 'It could not be sent, so nothing was delivered. You can try again.';
+    case 'reminder_in_flight':
+      return 'Another reminder for this invoice is still being sent. Look again in a minute.';
+    case 'delivery_unconfirmed':
+    case 'unexpected':
+      return 'We could not confirm delivery, so we will not send it again automatically.';
+    case 'batch_cancelled':
+      return 'Cancelled before it was sent.';
+    case 'scheduler_not_authorised':
+      return 'The person who scheduled this can no longer send reminders, so it was not sent.';
+    case 'dispatch_error':
+      return 'Rekoda tried several times and could not send this one, so it stopped trying.';
+    default:
+      return 'This reminder was not sent.';
+  }
+}
+
+/** One channel's reminder, as a short label and a tone. */
+export function reminderStatusLabel(status: ReminderStatus): { label: string; tone: Tone } {
+  switch (status) {
+    case 'sent':
+      return { label: 'Sent', tone: 'ok' };
+    case 'sending':
+      return { label: 'Sending', tone: 'neutral' };
+    case 'uncertain':
+      return { label: 'Could not be confirmed', tone: 'attention' };
+    case 'blocked':
+    case 'failed':
+      return { label: 'Not sent', tone: 'neutral' };
+  }
+}
+
+/** The sentence under a status, or null when the label says everything. */
+export function reminderStatusDetail(
+  status: ReminderStatus,
+  reasonCode: string | null,
+  channel?: ReminderChannel,
+): string | null {
+  if (status === 'sent') return null;
+  if (status === 'sending') return 'Rekoda is sending this now.';
+  if (status === 'uncertain') return reminderReason('delivery_unconfirmed');
+  return reminderReason(reasonCode, channel);
+}
+
+export interface BatchItemView {
+  invoiceNumber: string;
+  state: 'pending' | 'dispatching' | 'done' | 'cancelled' | 'skipped';
+  reasonCode: string | null;
+  reminders: Array<{
+    channel: ReminderChannel;
+    status: ReminderStatus;
+    reasonCode: string | null;
+    sentAt: string | null;
+  }>;
+}
+
+/**
+ * One recipient of a batch, read as the merchant needs it. Once a send has been attempted the
+ * reminder rows are the truth (the contract says so); before that, the batch's own state is.
+ */
+export function batchItemStatus(item: BatchItemView): {
+  label: string;
+  tone: Tone;
+  detail: string | null;
+} {
+  if (item.state === 'pending') {
+    return { label: 'Waiting to send', tone: 'neutral', detail: null };
+  }
+  if (item.state === 'dispatching') {
+    return { label: 'Sending', tone: 'neutral', detail: 'Rekoda is sending this now.' };
+  }
+  if (item.state === 'cancelled') {
+    return { label: 'Cancelled', tone: 'neutral', detail: 'Cancelled before it was sent.' };
+  }
+  const rows = item.reminders;
+  if (rows.some((r) => r.status === 'sent')) {
+    return { label: 'Sent', tone: 'ok', detail: null };
+  }
+  if (rows.some((r) => r.status === 'uncertain')) {
+    return {
+      label: 'Could not be confirmed',
+      tone: 'attention',
+      detail: reminderReason('delivery_unconfirmed'),
+    };
+  }
+  if (rows.some((r) => r.status === 'sending')) {
+    return { label: 'Sending', tone: 'neutral', detail: 'Rekoda is sending this now.' };
+  }
+  const first = rows[0];
+  return {
+    label: 'Not sent',
+    tone: 'neutral',
+    detail: first
+      ? reminderReason(first.reasonCode, first.channel)
+      : reminderReason(item.reasonCode),
+  };
+}
+
+/**
+ * A batch's overall state. A scheduled batch whose time has come is due: it may be sending, or
+ * waiting (paused after provider failures, or reminders switched off), so it never claims "sending".
+ */
+export function batchStateLabel(
+  state: 'scheduled' | 'completed' | 'cancelled',
+  scheduledFor: string,
+  now: Date,
+): string {
+  if (state === 'cancelled') return 'Cancelled';
+  if (state === 'completed') return 'Finished';
+  return new Date(scheduledFor).getTime() > now.getTime() ? 'Scheduled' : 'Due to send';
+}
+
+/**
+ * What a scheduled batch past its time says. A passed time does not show a send has started
+ * (reminders may be switched off, or the sender delayed), so it claims only what the record does.
+ */
+export const BATCH_DUE_NOTE =
+  'The send time has passed and the batch is not finished. It goes out when Rekoda next sends, and each invoice is checked again first. If reminders are switched off, it waits.';
+
+/** The channels a batch or a request uses, in words. */
+export function channelsLabel(channels: 'auto' | ReminderChannel[]): string {
+  if (channels === 'auto') return 'WhatsApp, and email where you have an address';
+  const set = new Set(channels);
+  if (set.has('whatsapp') && set.has('email')) return 'WhatsApp and email';
+  return set.has('email') ? 'Email only' : 'WhatsApp only';
+}
+
+/** The same, as a phrase inside a sentence ("will be reminded by email only"). */
+export function channelsPhrase(channels: 'auto' | ReminderChannel[]): string {
+  if (channels === 'auto') return 'on WhatsApp, and by email where you have an address';
+  const set = new Set(channels);
+  if (set.has('whatsapp') && set.has('email')) return 'on WhatsApp and by email';
+  return set.has('email') ? 'by email only' : 'on WhatsApp only';
+}
+
+/** The form's channel choice as the API's `channels` value. */
+export function channelsFromChoice(choice: string): 'auto' | ReminderChannel[] | null {
+  switch (choice) {
+    case 'auto':
+      return 'auto';
+    case 'whatsapp':
+      return ['whatsapp'];
+    case 'email':
+      return ['email'];
+    case 'both':
+      return ['whatsapp', 'email'];
+    default:
+      return null;
+  }
+}
+
+/** True when the choice can send email, so the merchant's attestation applies. */
+export function choiceMayEmail(choice: string): boolean {
+  return choice === 'auto' || choice === 'email' || choice === 'both';
+}
+
+/** The furthest ahead a batch may be scheduled (the API's `maxScheduleAheadMs`, 30 days). */
+export const SCHEDULE_AHEAD_DAYS = 30;
+
+/**
+ * A `datetime-local` value, read as Lagos time (UTC+1 all year, no daylight saving), as the ISO
+ * instant the API takes. Null for anything that is not a well-formed local date and time.
+ */
+export function lagosLocalToIso(local: string): string | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(local.trim());
+  if (!m) return null;
+  const [, y, mo, d, h, mi] = m;
+  const instant = new Date(`${y}-${mo}-${d}T${h}:${mi}:00+01:00`);
+  if (Number.isNaN(instant.getTime())) return null;
+  /* Reject a day the calendar does not have (31 Nov), which Date would roll forward. */
+  const back = new Date(instant.getTime() + 3_600_000);
+  if (
+    back.getUTCFullYear() !== Number(y) ||
+    back.getUTCMonth() + 1 !== Number(mo) ||
+    back.getUTCDate() !== Number(d)
+  ) {
+    return null;
+  }
+  return instant.toISOString().replace('.000Z', 'Z');
+}
+
+/** A moment as a `datetime-local` value in Lagos time, for the picker's default, min and max. */
+export function lagosLocalInput(at: Date): string {
+  return new Date(at.getTime() + 3_600_000).toISOString().slice(0, 16);
+}
+
+/**
+ * The intention a Confirm press holds its key under: the selection the preview was made for, not
+ * the picker's state, which the merchant may have changed while the preview was on its way.
+ */
+export function planIntentScope(plan: {
+  invoiceNumbers: string[];
+  choice: string;
+  scheduledFor?: string;
+}): string {
+  return batchIntentScope(plan.invoiceNumbers, plan.choice, planAtInput(plan.scheduledFor));
+}
+
+/**
+ * The send time a Confirm form posts: the one the preview was made for, never the picker's live
+ * value, which the merchant may have changed while the preview was on its way. Empty for "now".
+ */
+export function planAtInput(scheduledFor: string | undefined): string {
+  return scheduledFor ? lagosLocalInput(new Date(scheduledFor)) : '';
+}
+
+/**
+ * Checks a chosen send time before it reaches the API, so the merchant hears about it in words.
+ * Returns the problem as a sentence, or null when the time is usable.
+ */
+export function scheduleProblem(iso: string | null, now: Date): string | null {
+  if (iso === null) return 'Pick a date and a time to send.';
+  const at = new Date(iso).getTime();
+  if (at <= now.getTime()) return 'Pick a time later than now, or choose Send now.';
+  if (at > now.getTime() + SCHEDULE_AHEAD_DAYS * 24 * 3_600_000) {
+    return `Pick a time within the next ${SCHEDULE_AHEAD_DAYS} days.`;
+  }
+  return null;
+}
+
+/** `4 Nov 2026, 09:00`, in Lagos time, the way the registers write a day. */
+export function lagosDateTime(iso: string): string {
+  return new Date(iso).toLocaleString('en-NG', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+    timeZone: 'Africa/Lagos',
+  });
+}
+
+/** A refusal from creating a batch, as a sentence. */
+export function batchRefusal(code: string): string {
+  switch (code) {
+    case 'reminders_not_released':
+      return reminderReason('reminders_not_released').replace(', so nothing was sent', '');
+    case 'scheduled_for_out_of_range':
+      return `Pick a time within the next ${SCHEDULE_AHEAD_DAYS} days.`;
+    case 'idempotency_key_reused':
+      return 'A batch was already made from an earlier press with different choices, so this one was not made. Check your list of batches, then pick the invoices again if you still need them.';
+    case 'idempotency_key_unknown':
+      return 'The time you chose has passed, and no batch was found for your earlier press. Nothing new was scheduled. Check your list of batches, then pick a new time if you still need these reminders.';
+    default:
+      return 'That did not go through. Nothing was scheduled.';
+  }
+}
+
+/** What the API found wrong with bank details, field by field. */
+export function paymentInstructionIssue(issue: string): string {
+  switch (issue) {
+    case 'bank_name':
+      return 'Enter the bank name, 2 to 60 characters.';
+    case 'account_name':
+      return 'Enter the account name as the bank shows it, 2 to 80 characters.';
+    case 'account_number':
+      return 'An account number is 10 digits.';
+    default:
+      return 'Check the bank details and try again.';
+  }
+}
+
+/**
+ * The ten digits a merchant typed, with the spaces and dashes people use removed, or null when
+ * what is left is not ten digits. Mirrors the API's rule; the API still decides.
+ */
+export function accountNumberDigits(raw: string): string | null {
+  const digits = raw.replace(/[\s-]/g, '');
+  return /^[0-9]{10}$/.test(digits) ? digits : null;
+}
+
+/** The plural the screens need, for counts that come from the API. */
+export function invoicesCount(n: number): string {
+  return n === 1 ? '1 invoice' : `${n} invoices`;
+}
+
+/**
+ * A reason in a preview, where nothing has been attempted yet: the same sentence as
+ * `reminderReason`, said about what will happen rather than what happened.
+ */
+export function previewReason(code: string | null, channel?: ReminderChannel): string {
+  return reminderReason(code, channel)
+    .replace(/so nothing was sent( on WhatsApp| by email)?/, (_m, on: string | undefined) =>
+      on ? `so it cannot be sent${on} now` : 'so it cannot be sent now',
+    )
+    .replace('so nothing was delivered', 'so it cannot be delivered now')
+    .replace('This reminder was not sent.', 'This reminder cannot be sent now.');
+}
+
+/**
+ * What the merchant reads when Confirm finds a problem the preview did not (for example the chosen
+ * time passed while they were reading). Always says nothing was scheduled.
+ */
+export function confirmProblem(read: {
+  error?: string;
+  fields?: { invoices?: string; when?: string; attest?: string };
+}): string {
+  const problem = read.fields?.when ?? read.fields?.invoices ?? read.error;
+  /* "This attempt": an earlier confirmation may have gone through with its answer lost, so the
+   * screen never claims that no batch exists; the list below shows what was scheduled. */
+  const tail =
+    'This attempt did not schedule a new batch. Reload the page and check the list for any you already confirmed.';
+  return problem ? `${problem} ${tail}` : `That did not go through. ${tail}`;
+}
+
+/**
+ * A reminder write whose answer was lost. It may have been done, and nothing on the screen can
+ * show it yet (the page was not refreshed), so the merchant is sent to a reload. The key is held
+ * in session storage, which a reload keeps, so a retry after it replays rather than repeats.
+ */
+export const REMINDER_OUTCOME_UNKNOWN =
+  'We could not confirm whether that went through. It may have. Reload the page and check before you try again.';
+
+/**
+ * A settings change whose answer was lost. Saving or removing bank details and the business phone
+ * carries no idempotency key, so no replay is promised: the owner checks what is saved first.
+ */
+export const SETTINGS_OUTCOME_UNKNOWN =
+  'We could not confirm whether that change was saved. Reload the page and check your settings before you try again.';
+
+/** After the bank details are removed. A reminder already past the send check keeps what it read. */
+export const PAYMENT_INSTRUCTION_REMOVED =
+  'Removed. New reminders ask customers to call your business phone to pay, and are sent only while a business phone is saved. A reminder already being sent may still show the removed account.';
+
+/** A read (the preview) that could not reach Rekoda. It writes nothing, so it says so. */
+export const REMINDER_READ_UNREACHABLE =
+  'Rekoda could not be reached just now. Nothing was scheduled. Try again in a moment.';
+
+/**
+ * What stopping cannot undo. Each channel is guarded on its own, so an email and a WhatsApp
+ * reminder for the same invoice can both be past the guard when the merchant presses Stop.
+ */
+export const REMINDERS_IN_FLIGHT_NOTE =
+  'Any reminder already being sent, on WhatsApp or by email, may still go out.';
+
+/**
+ * What Stop does, before it is pressed. The stop is read at each send (`reminders_stopped`): a
+ * reminder reached while stopped is finished as blocked, not kept for later. One the sender reaches
+ * only after a resume is judged then, so the copy speaks of the check, not of the due time.
+ */
+export const STOP_EXPLAINER =
+  'Stopping blocks every reminder for this invoice, including ones already scheduled. Rekoda checks just before each send, and a reminder it reaches while reminders are stopped is skipped, not sent later. The invoice and what is owed do not change.';
+
+/** The invoice page once reminders are stopped. */
+export const STOPPED_NOTE =
+  'No new reminder is sent for this invoice until you resume them. Rekoda checks just before each send, and a scheduled reminder it reaches while reminders are stopped is skipped, not sent later.';
+
+/**
+ * Under a batch preview. Every picked invoice is kept in the batch and judged again at its own
+ * send, so one left out now (no contact yet, outside the WhatsApp window) can still be reminded.
+ */
+export const LEFT_OUT_RECHECK_NOTE =
+  'Left-out invoices stay in the batch. Rekoda checks each one again just before sending: one paid in the meantime is not chased, and one that can be reminded by then is reminded.';
+
+/** After a batch is cancelled: what is stopped, and what cancelling cannot reach. */
+export function cancelledNote(cancelledCount: number): string {
+  return `Cancelled. ${invoicesCount(cancelledCount)} will not be reminded. Anything already sent stays sent. ${REMINDERS_IN_FLIGHT_NOTE}`;
+}
+
+/** A reminder action the API refused for this member's role. */
+export function reminderAccessRefusal(): string {
+  return 'Your access to this business does not include this action. Ask the business owner if it should.';
+}
+
+/** Which new-batch area to show: the switched-off notice always wins, then nothing owed, then the form. */
+export function newBatchView(
+  released: boolean,
+  remindable: number,
+): 'not_released' | 'nothing_owed' | 'form' {
+  if (!released) return 'not_released';
+  return remindable === 0 ? 'nothing_owed' : 'form';
+}
+
+/** What the merchant reads while customer reminders are switched off. */
+export function remindersOffNotice(): string {
+  return (
+    'Reminders are not switched on for your business yet, so nothing can be sent or scheduled now. ' +
+    'Reminders you already scheduled are kept. Each one is checked again just before it is sent, so ' +
+    'none should go out while reminders are off, though one already being sent may still finish. Once they ' +
+    'are switched on, a batch whose time has passed may go out then, not at the time you chose, and ' +
+    'only if it still passes the usual checks (nothing goes for a paid invoice, or on a channel the ' +
+    'customer opted out of). ' +
+    'To stop one, open it from the list and cancel it. Your invoices and records are unaffected.'
+  );
+}

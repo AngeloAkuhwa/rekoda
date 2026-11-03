@@ -43,6 +43,7 @@ import { AllMembers, Roles, RolesGuard } from '../auth/roles.guard.js';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import {
   BatchKeyReused,
+  BatchKeyUnknown,
   BatchNotFound,
   BatchRemindersNotReleased,
   BatchScheduleOutOfRange,
@@ -100,6 +101,7 @@ export class RemindersController {
         throw new BadRequestException('scheduled_for_out_of_range');
       }
       if (error instanceof BatchKeyReused) throw new ConflictException('idempotency_key_reused');
+      if (error instanceof BatchKeyUnknown) throw new ConflictException('idempotency_key_unknown');
       if (error instanceof BatchRemindersNotReleased) {
         throw new ConflictException('reminders_not_released');
       }
