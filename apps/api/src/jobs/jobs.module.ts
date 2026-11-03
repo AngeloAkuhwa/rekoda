@@ -554,7 +554,12 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
           if (this.sweepingReminderBatches) return;
           this.sweepingReminderBatches = true;
           this.exclusively('reminder-batches', () =>
-            sweepReminderBatches({ workerDb, appDb: this.appDb, reminders: batchReminders }),
+            sweepReminderBatches({
+              workerDb,
+              appDb: this.appDb,
+              reminders: batchReminders,
+              released: this.config.customerReminders,
+            }),
           )
             .catch((error: unknown) => {
               this.log.warn(`reminder batch sweep failed: ${redactForLog(describeFailure(error))}`);

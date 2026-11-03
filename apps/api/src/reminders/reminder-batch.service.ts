@@ -279,6 +279,11 @@ export interface ReminderBatchSweepDeps {
   /** `rekoda_app`: every claim and finish runs under a tenant pin. */
   appDb: Db;
   reminders: ReminderService;
+  /**
+   * `REKODA_CUSTOMER_REMINDERS`. While false the pass claims nothing, so a batch scheduled before
+   * reminders were switched off is kept, not consumed as refusals, and goes once they are back on.
+   */
+  released: boolean;
 }
 
 export interface ReminderBatchSweepResult {
@@ -313,6 +318,7 @@ export async function sweepReminderBatches(
     paused: 0,
     errored: 0,
   };
+  if (!deps.released) return result;
   let budget: number = REMINDER_BATCH_LIMITS.sendsPerPass;
   let after: { scheduledFor: Date; batchId: string } | null = null;
 

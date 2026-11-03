@@ -107,8 +107,8 @@ const reminderService = (email: EmailSender = mail, cfg: ApiConfig = config) =>
   );
 const batches = (reminders: ReminderService = reminderService(), cfg: ApiConfig = config) =>
   new ReminderBatchService(cfg, db, reminders);
-const sweep = (reminders: ReminderService = reminderService(), at?: Date) =>
-  sweepReminderBatches({ workerDb, appDb: db, reminders }, at);
+const sweep = (reminders: ReminderService = reminderService(), at?: Date, released = true) =>
+  sweepReminderBatches({ workerDb, appDb: db, reminders, released }, at);
 
 interface Shop {
   businessId: string;
@@ -784,6 +784,19 @@ describe('review fixes', () => {
       attest: true,
     });
     expect(theirs.recipients[0]!.alsoScheduled).toBe(false);
+  });
+
+  it('while customer reminders are switched off, a scheduled batch is kept, not consumed, and goes once they are back on', async () => {
+    const s = await shop(2);
+    const batch = await confirm(s);
+    const off = { ...config, customerReminders: false };
+    const pass = await sweep(reminderService(mail, off), undefined, false);
+    expect(pass.dispatched + pass.withdrawn).toBe(0);
+    expect(await count(s, 'invoice_reminders')).toBe(0);
+    expect((await batches().get(s.businessId, batch.id)).counts.pending).toBe(2);
+    await sweep();
+    expect(mail.outbox).toHaveLength(2);
+    expect((await batches().get(s.businessId, batch.id)).state).toBe('completed');
   });
 
   it('discovery returns the earliest-scheduled batch first', async () => {
