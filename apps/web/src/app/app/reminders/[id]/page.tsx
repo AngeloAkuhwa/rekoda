@@ -18,6 +18,7 @@ import { AppNav } from '../../AppNav';
 import { SignOutButton } from '../../SignOutButton';
 import { StatusText } from '../StatusText';
 import { CancelBatchForm } from './CancelBatchForm';
+import { ReleaseHeldBatchKeys } from './ReleaseHeldBatchKeys';
 import styles from '../reminders.module.css';
 
 export const metadata: Metadata = {
@@ -38,6 +39,7 @@ export default async function ReminderBatchPage({ params }: { params: Promise<{ 
 
   return (
     <section className="rk-container rk-dash">
+      {batch ? <ReleaseHeldBatchKeys /> : null}
       <header className="rk-dash-head">
         <div>
           <p className="rk-eyebrow">Reminders</p>

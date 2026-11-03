@@ -144,7 +144,9 @@ test('the owner sets the business phone and bank details, and a bad account numb
   await expect(
     page.getByText('None yet. Without them, a reminder asks customers to call your business phone'),
   ).toBeVisible();
-  await expect(page.getByText('reminders are sent only once a business phone is saved above')).toBeVisible();
+  await expect(
+    page.getByText('reminders are sent only once a business phone is saved above'),
+  ).toBeVisible();
   await shot(page, info, 'settings-empty');
 
   await page.getByLabel('Bank', { exact: true }).fill('GTBank');
@@ -302,6 +304,13 @@ test('a batch is previewed with exclusions explained, confirmed for later, then 
     '₦12,500',
   );
   await shot(page, info, 'batch-preview');
+  /* While the merchant is on the form, the previewed selection's key is held for a retry (one
+   * is held for each selection passed through while picking; each is its own intention). */
+  const heldBatchKeys = () =>
+    page.evaluate(() =>
+      Object.keys(window.sessionStorage).filter((k) => k.startsWith('rk:intent:batch:')),
+    );
+  expect((await heldBatchKeys()).length).toBeGreaterThan(0);
 
   // Confirm needs the lawful-basis box for email; the preview stays on screen.
   await page.getByRole('button', { name: 'Confirm and schedule' }).click();
@@ -314,6 +323,8 @@ test('a batch is previewed with exclusions explained, confirmed for later, then 
 
   await expect(page).toHaveURL(/\/app\/reminders\/[0-9a-f-]{36}$/);
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('2 invoices, scheduled');
+  /* The batch exists: its key is released, so the same selection later is a new batch. */
+  await expect.poll(heldBatchKeys).toHaveLength(0);
   const items = page.getByRole('list', { name: 'Recipients' });
   await expect(items.getByRole('listitem')).toHaveCount(2);
   await expect(items.getByRole('listitem').filter({ hasText: reachable })).toContainText(

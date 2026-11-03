@@ -17,5 +17,6 @@ aaf444e10fdf4f21fd498a507cb6760233ff6086:apps/web/src/lib/billing-pay-copy.test.
 
 # Test fixture in the REM-06 reminder-action tests: a fixed UUID used as a form's idempotency key
 # (the same value record-payment-action.test.ts uses as CLIENT_REF), matched only because the
-# constant was named KEY. Never a credential; the live constant is now named INTENT.
+# constant was named KEY. Never a credential. Unlike the entries above, the live line carries no
+# inline gitleaks:allow: the constant is now named INTENT, which the rule does not match.
 584058544eb68ed7c75eb6b9d523fe7d0cdb120e:apps/web/src/app/app/reminders/reminder-actions.test.ts:generic-api-key:48

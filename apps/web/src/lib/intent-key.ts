@@ -12,6 +12,8 @@
  */
 
 export interface KeyStore {
+  readonly length?: number;
+  key?(index: number): string | null;
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
   removeItem(key: string): void;
@@ -71,6 +73,26 @@ export function releaseIntentKey(store: KeyStore | null, scope: string): void {
     store?.removeItem(PREFIX + scope);
   } catch {
     /* Nothing held, or storage refused: the TTL ends it anyway. */
+  }
+}
+
+/**
+ * Releases every held key whose scope starts with `prefix`. A batch page calls it for `batch:`:
+ * Confirm redirects there once a batch exists, and a merchant reaches it to cancel one, so the
+ * same selection made again afterwards is a new batch rather than a replay of the old one.
+ * A lost answer leaves the merchant on the form, where the held key still protects the retry.
+ */
+export function releaseIntentScopes(store: KeyStore | null, prefix: string): void {
+  try {
+    if (!store || typeof store.length !== 'number' || !store.key) return;
+    const held: string[] = [];
+    for (let i = 0; i < store.length; i += 1) {
+      const name = store.key(i);
+      if (name?.startsWith(PREFIX + prefix)) held.push(name);
+    }
+    for (const name of held) store.removeItem(name);
+  } catch {
+    /* Storage refused: the TTL ends the held keys anyway. */
   }
 }
 

@@ -6,12 +6,22 @@
  * could go to the customer again. The key is kept in session storage per intention instead.
  */
 import { describe, expect, it } from 'vitest';
-import { batchIntentScope, heldIntentKey, releaseIntentKey, type KeyStore } from './intent-key';
+import {
+  batchIntentScope,
+  heldIntentKey,
+  releaseIntentKey,
+  releaseIntentScopes,
+  type KeyStore,
+} from './intent-key';
 
 function memoryStore(): KeyStore & { data: Map<string, string> } {
   const data = new Map<string, string>();
   return {
     data,
+    get length() {
+      return data.size;
+    },
+    key: (i) => [...data.keys()][i] ?? null,
     getItem: (k) => data.get(k) ?? null,
     setItem: (k, v) => void data.set(k, v),
     removeItem: (k) => void data.delete(k),
@@ -87,5 +97,17 @@ describe('a reminder key held across a remount', () => {
     expect(batchIntentScope(['INV-1'], 'auto', '2026-11-10T09:30')).not.toBe(
       batchIntentScope(['INV-1'], 'auto', ''),
     );
+  });
+
+  it('reaching a batch page releases every held batch key, so the same selection later is a new batch', () => {
+    const store = memoryStore();
+    const scope = batchIntentScope(['INV-1'], 'whatsapp', '2026-11-10T18:00');
+    const first = heldIntentKey(store, scope, 1_000, TTL, fresh);
+    const single = heldIntentKey(store, 'remind:INV-9', 1_000, TTL, fresh);
+    /* Confirm redirected to the batch page (or the merchant opened it to cancel). */
+    releaseIntentScopes(store, 'batch:');
+    expect(heldIntentKey(store, scope, 2_000, TTL, fresh)).not.toBe(first);
+    /* A single send's held key is a different intention and is left alone. */
+    expect(heldIntentKey(store, 'remind:INV-9', 2_000, TTL, fresh)).toBe(single);
   });
 });
