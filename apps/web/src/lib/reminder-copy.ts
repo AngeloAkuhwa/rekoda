@@ -10,6 +10,8 @@
  * kobo from the API and are rendered by `Money`.
  */
 
+import { batchIntentScope } from './intent-key';
+
 export type ReminderChannel = 'email' | 'whatsapp';
 export type ReminderStatus = 'sending' | 'sent' | 'blocked' | 'failed' | 'uncertain';
 export type ChannelChoice = 'auto' | 'whatsapp' | 'email' | 'both';
@@ -259,6 +261,18 @@ export function lagosLocalInput(at: Date): string {
 }
 
 /**
+ * The intention a Confirm press holds its key under: the selection the preview was made for, not
+ * the picker's state, which the merchant may have changed while the preview was on its way.
+ */
+export function planIntentScope(plan: {
+  invoiceNumbers: string[];
+  choice: string;
+  scheduledFor?: string;
+}): string {
+  return batchIntentScope(plan.invoiceNumbers, plan.choice, planAtInput(plan.scheduledFor));
+}
+
+/**
  * The send time a Confirm form posts: the one the preview was made for, never the picker's live
  * value, which the merchant may have changed while the preview was on its way. Empty for "now".
  */
@@ -365,11 +379,12 @@ export function confirmProblem(read: {
 }
 
 /**
- * A reminder write whose answer was lost. It may have been done; the same press again is a replay
- * (one idempotency key per intention), so the merchant is told it is safe to repeat.
+ * A reminder write whose answer was lost. It may have been done, and nothing on the screen can
+ * show it yet (the page was not refreshed), so the merchant is sent to a reload. The key is held
+ * in session storage, which a reload keeps, so a retry after it replays rather than repeats.
  */
 export const REMINDER_OUTCOME_UNKNOWN =
-  'We could not confirm whether that went through. It may have. Check what is shown below before you try again.';
+  'We could not confirm whether that went through. It may have. Reload the page and check before you try again.';
 
 /**
  * A settings change whose answer was lost. Saving or removing bank details and the business phone

@@ -447,3 +447,26 @@ describe('review fixes, round 8 (REM-06): no promise the data cannot keep', () =
     expect(PAYMENT_INSTRUCTION_REMOVED).toMatch(/business phone/);
   });
 });
+
+describe('review fixes, round 9 (REM-06)', () => {
+  it('an unconfirmed reminder action sends the merchant to a reload, never to a stale screen', async () => {
+    const { REMINDER_OUTCOME_UNKNOWN } = await import('./reminder-copy');
+    expect(REMINDER_OUTCOME_UNKNOWN).toMatch(/reload the page/i);
+    expect(REMINDER_OUTCOME_UNKNOWN).not.toMatch(/shown below/i);
+  });
+
+  it('a confirm holds its key under the selection the preview was made for', async () => {
+    const { planIntentScope } = await import('./reminder-copy');
+    const { batchIntentScope } = await import('./intent-key');
+    expect(
+      planIntentScope({
+        invoiceNumbers: ['INV-2', 'INV-1'],
+        choice: 'email',
+        scheduledFor: '2026-11-10T08:30:00Z',
+      }),
+    ).toBe(batchIntentScope(['INV-1', 'INV-2'], 'email', '2026-11-10T09:30'));
+    expect(planIntentScope({ invoiceNumbers: ['INV-1'], choice: 'auto' })).toBe(
+      batchIntentScope(['INV-1'], 'auto', ''),
+    );
+  });
+});

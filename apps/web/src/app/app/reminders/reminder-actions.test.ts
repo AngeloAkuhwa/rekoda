@@ -45,12 +45,20 @@ vi.mock('@/server/api', () => {
 });
 
 const api = await import('@/server/api');
-const { clearPaymentInstructionAction, createBatchAction, previewBatchAction, sendReminderAction } =
-  await import('./actions');
+const {
+  clearPaymentInstructionAction,
+  createBatchAction,
+  previewBatchAction,
+  savePaymentInstructionAction,
+  savePublicContactAction,
+  sendReminderAction,
+} = await import('./actions');
 const sendReminder = vi.mocked(api.sendReminder);
 const createReminderBatch = vi.mocked(api.createReminderBatch);
 const previewReminderBatch = vi.mocked(api.previewReminderBatch);
 const clearPaymentInstruction = vi.mocked(api.clearPaymentInstruction);
+const savePaymentInstruction = vi.mocked(api.savePaymentInstruction);
+const savePublicContact = vi.mocked(api.savePublicContact);
 
 const INTENT = '6c0e7f1a-2b3d-4c5e-8f90-a1b2c3d4e5f6';
 
@@ -149,5 +157,24 @@ describe('a reminder write whose answer is lost', () => {
     const state = await clearPaymentInstructionAction({}, form({}));
     expect(state.error).toMatch(/check your settings/i);
     expect(state.error).not.toMatch(/never|twice/i);
+  });
+
+  it('every settings change whose answer is lost asks the owner to check the settings', async () => {
+    savePaymentInstruction.mockRejectedValue(new api.ApiUnavailable('cannot reach the Rekoda API'));
+    savePublicContact.mockRejectedValue(new api.ApiUnavailable('cannot reach the Rekoda API'));
+    const bank = await savePaymentInstructionAction(
+      {},
+      form({
+        bankName: 'GTBank',
+        accountName: 'Ada Stores',
+        accountNumber: '0123456789',
+        approve: 'yes',
+      }),
+    );
+    const phone = await savePublicContactAction({}, form({ publicPhone: '08031234567' }));
+    expect(savePaymentInstruction).toHaveBeenCalledOnce();
+    expect(savePublicContact).toHaveBeenCalledOnce();
+    expect(bank.error).toMatch(/check your settings/i);
+    expect(phone.error).toMatch(/check your settings/i);
   });
 });

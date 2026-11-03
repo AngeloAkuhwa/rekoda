@@ -20,6 +20,7 @@ import {
   LEFT_OUT_RECHECK_NOTE,
   lagosLocalToIso,
   planAtInput,
+  planIntentScope,
   previewReason,
   reminderReason,
   type ChannelChoice,
@@ -181,7 +182,14 @@ export function NewBatchForm({
           className="rk-form"
           noValidate
           /* The hold restarts at the press, so a preview read for a while still keeps this key. */
-          onSubmit={() => touchIntentKey(browserKeyStore(), scope, plan.idempotencyKey, Date.now())}
+          onSubmit={() =>
+            touchIntentKey(
+              browserKeyStore(),
+              planIntentScope(plan),
+              plan.idempotencyKey,
+              Date.now(),
+            )
+          }
         >
           {plan.invoiceNumbers.map((n) => (
             <input key={n} type="hidden" name="invoice" value={n} />
