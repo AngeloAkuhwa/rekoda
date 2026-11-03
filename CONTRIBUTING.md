@@ -117,10 +117,19 @@ feature-to-test index is `docs/TEST_MAP.md`.
 | Layer       | File name                       | Lives                                                 | Needs                                                                                                                 | Run with                                                                                                                                                     |
 | ----------- | ------------------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Unit        | `<subject>.test.ts(x)`          | next to the code it tests                             | nothing                                                                                                               | `pnpm test`                                                                                                                                                  |
-| Integration | `<subject>.integration.test.ts` | next to the code it tests (db: in the feature folder) | PostgreSQL                                                                                                            | `pnpm test:integration` per package                                                                                                                          |
+| Integration | `<subject>.integration.test.ts` | next to the code it tests (db: in the feature folder) | PostgreSQL                                                                                                            | `pnpm test:integration` in `apps/api` and `packages/db` only (the packages with an integration runner)                                                       |
 | End to end  | `<journey>.spec.ts`             | `apps/web/e2e/` only                                  | PostgreSQL and production builds of the API and web app (Playwright applies migrations and starts the servers itself) | `pnpm --filter @rekoda/web e2e`, plus `e2e:journey` (the `billing-journey*` specs) and `e2e:reminders` (`reminders.spec.ts`), which the default run excludes |
 | Script      | `<script>.test.mjs`             | `scripts/`, beside the script                         | node only                                                                                                             | `node --test scripts/<file>`                                                                                                                                 |
 
+- **End-to-end databases.** The three Playwright suites use separate databases.
+  `e2e` uses `rekoda`. `e2e:journey` needs a fresh database (CI creates
+  `rekoda_journey`) rather than one the main suite has already enrolled.
+  `e2e:reminders` needs `rekoda_reminders` (create it first: the development
+  Compose file does not), and before a second local run you must drop and
+  recreate it, because the API rejects a new vault key when the database
+  already holds a different enrolled fingerprint. Set `DATABASE_URL`,
+  `APP_DATABASE_URL` and (for journey) `WORKER_DATABASE_URL` to point at them,
+  as `.github/workflows/ci.yml` does.
 - **Which layer.** Pure rules (`@rekoda/core`, zod contracts, copy, parsing)
   are unit tests. Anything that depends on SQL, RLS, locks, `ON CONFLICT`,
   transactions or an HTTP route is an integration test, because a mock of the

@@ -55,6 +55,14 @@ export function check(files, mapText, exists = existsSync) {
         `${path}: outside src/ of an app or package, apps/web/e2e/ and scripts/ (the runners find tests only there)`,
       );
     }
+    if (/\.integration\.test\./.test(path) && !/^(apps\/api|packages\/db)\/src\//.test(path)) {
+      errors.push(
+        `${path}: integration tests run only in apps/api and packages/db (the only packages with an integration runner)`,
+      );
+    }
+    if (path.startsWith('scripts/') && !/\.test\.mjs$/.test(path)) {
+      errors.push(`${path}: scripts/ holds .test.mjs files only (CI runs them with node --test)`);
+    }
     if (/\.test\.tsx$/.test(path) && !path.startsWith('apps/web/')) {
       errors.push(`${path}: .test.tsx runs only in apps/web (other unit configs match *.test.ts)`);
     }

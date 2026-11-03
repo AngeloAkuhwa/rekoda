@@ -138,3 +138,22 @@ test('the command line reads paths with non-ASCII names, which git quotes by def
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('integration tests live only where an integration runner exists, and scripts hold .test.mjs only', () => {
+  const r = run([
+    f('apps/api/src/billing/a.integration.test.ts'),
+    f('packages/db/src/billing/b.integration.test.ts'),
+    f('apps/web/src/lib/c.integration.test.ts'),
+    f('packages/core/src/d.integration.test.ts'),
+    f('scripts/e.test.ts'),
+    f('scripts/f.test.mjs'),
+  ]);
+  const text = r.errors.join('\n');
+  assert.equal(r.errors.length, 3);
+  assert.match(
+    text,
+    /apps\/web\/src\/lib\/c\.integration\.test\.ts: integration tests run only in apps\/api and packages\/db/,
+  );
+  assert.match(text, /packages\/core\/src\/d\.integration\.test\.ts: integration tests run only/);
+  assert.match(text, /scripts\/e\.test\.ts: scripts\/ holds \.test\.mjs files only/);
+});
