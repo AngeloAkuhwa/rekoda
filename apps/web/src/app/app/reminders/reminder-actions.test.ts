@@ -10,7 +10,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('server-only', () => ({}));
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
-vi.mock('next/navigation', () => ({ redirect: vi.fn() }));
+vi.mock('next/navigation', () => ({
+  /* As Next does: a redirect is thrown, and it must leave the action untouched. */
+  redirect: vi.fn((to: string) => {
+    throw Object.assign(new Error('NEXT_REDIRECT'), { digest: `NEXT_REDIRECT;replace;${to}` });
+  }),
+}));
 vi.mock('@/server/session-cookies', () => ({ readSessionToken: vi.fn(async () => 'tok') }));
 vi.mock('@/server/api', () => {
   class ApiForbidden extends Error {}
@@ -45,7 +50,7 @@ const sendReminder = vi.mocked(api.sendReminder);
 const createReminderBatch = vi.mocked(api.createReminderBatch);
 const previewReminderBatch = vi.mocked(api.previewReminderBatch);
 
-const KEY = '6c0e7f1a-2b3d-4c5e-8f90-a1b2c3d4e5f6';
+const INTENT = '6c0e7f1a-2b3d-4c5e-8f90-a1b2c3d4e5f6';
 
 function form(fields: Record<string, string>): FormData {
   const data = new FormData();
@@ -64,7 +69,7 @@ describe('a reminder write whose answer is lost', () => {
     sendReminder.mockRejectedValue(new api.ApiUnavailable('cannot reach the Rekoda API'));
     const state = await sendReminderAction(
       {},
-      form({ invoiceNumber: 'INV-2026-000001', channels: 'whatsapp', idempotencyKey: KEY }),
+      form({ invoiceNumber: 'INV-2026-000001', channels: 'whatsapp', idempotencyKey: INTENT }),
     );
     expect(state.error).toMatch(/could not confirm/i);
     expect(state.error).toMatch(/not .*twice|never .*twice/i);
@@ -76,7 +81,7 @@ describe('a reminder write whose answer is lost', () => {
     sendReminder.mockRejectedValue(new api.ApiUnexpectedStatus('/v1/reminders', 502));
     const state = await sendReminderAction(
       {},
-      form({ invoiceNumber: 'INV-2026-000001', channels: 'whatsapp', idempotencyKey: KEY }),
+      form({ invoiceNumber: 'INV-2026-000001', channels: 'whatsapp', idempotencyKey: INTENT }),
     );
     expect(state.error).toMatch(/could not confirm/i);
     expect(state.settled).toBeUndefined();
@@ -90,7 +95,7 @@ describe('a reminder write whose answer is lost', () => {
         invoice: 'INV-2026-000001',
         channels: 'whatsapp',
         when: 'now',
-        idempotencyKey: KEY,
+        idempotencyKey: INTENT,
       }),
     );
     expect(state.error).toMatch(/could not confirm/i);
@@ -104,5 +109,34 @@ describe('a reminder write whose answer is lost', () => {
     );
     expect(state.error).toMatch(/nothing was scheduled/i);
     expect(state.error).not.toMatch(/may have/i);
+  });
+
+  it('an answer the contract cannot read is treated as unconfirmed, not a crashed page', async () => {
+    const parse = Object.assign(new Error('invalid response'), { name: 'ZodError' });
+    sendReminder.mockRejectedValue(parse);
+    const state = await sendReminderAction(
+      {},
+      form({ invoiceNumber: 'INV-2026-000001', channels: 'whatsapp', idempotencyKey: INTENT }),
+    );
+    expect(state.error).toMatch(/could not confirm/i);
+    expect(state.settled).toBeUndefined();
+  });
+
+  it('a confirmed batch still redirects to its page: the wrapper never swallows a redirect', async () => {
+    createReminderBatch.mockResolvedValue({
+      state: 'created',
+      batch: { id: '11111111-2222-4333-8444-555555555555' },
+    } as never);
+    await expect(
+      createBatchAction(
+        {},
+        form({
+          invoice: 'INV-2026-000001',
+          channels: 'whatsapp',
+          when: 'now',
+          idempotencyKey: INTENT,
+        }),
+      ),
+    ).rejects.toMatchObject({ digest: expect.stringContaining('NEXT_REDIRECT') });
   });
 });

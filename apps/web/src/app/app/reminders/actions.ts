@@ -40,6 +40,8 @@ import {
   reminderAccessRefusal,
   REMINDER_OUTCOME_UNKNOWN,
   REMINDERS_IN_FLIGHT_NOTE,
+  STOPPED_NOTE,
+  cancelledNote,
   REMINDER_READ_UNREACHABLE,
 } from '@/lib/reminder-copy';
 
@@ -64,7 +66,12 @@ function guarded<S, A extends unknown[]>(
       return await fn(...args);
     } catch (error) {
       if (error instanceof ApiForbidden) return { error: reminderAccessRefusal() } as S;
-      if (error instanceof ApiUnavailable || error instanceof ApiUnexpectedStatus) {
+      /* A response the contract cannot read (ZodError) arrived after the API acted, too. */
+      if (
+        error instanceof ApiUnavailable ||
+        error instanceof ApiUnexpectedStatus ||
+        (error instanceof Error && error.name === 'ZodError')
+      ) {
         return { error: lost } as S;
       }
       return viewOnlyRefusal(error) as S;
@@ -229,7 +236,7 @@ const cancelBatchActionGuarded = guarded(
       done:
         outcome.cancelledCount === 0
           ? 'Cancelled. Every reminder in it had already been sent or stopped.'
-          : `Cancelled. ${invoicesCount(outcome.cancelledCount)} will not be reminded. Anything already sent stays sent.`,
+          : cancelledNote(outcome.cancelledCount),
     };
   },
 );
@@ -314,7 +321,7 @@ const stopRemindersActionGuarded = guarded(
     revalidatePath('/app/reminders/invoice');
     return {
       done: stopped
-        ? `Reminders for ${invoiceNumber} are stopped. No new reminder will be sent for it until you resume them. ${REMINDERS_IN_FLIGHT_NOTE}`
+        ? `Reminders for ${invoiceNumber} are stopped. ${STOPPED_NOTE} ${REMINDERS_IN_FLIGHT_NOTE}`
         : `Reminders for ${invoiceNumber} are back on.`,
     };
   },
@@ -373,7 +380,7 @@ const clearPaymentInstructionActionGuarded = guarded(
     await clearPaymentInstruction(token);
     revalidatePath('/app/settings');
     return {
-      done: 'Removed. Reminders now ask customers to call your business phone to pay, and none is sent until a business phone is saved.',
+      done: 'Removed. Reminders now ask customers to call your business phone to pay. Reminders are sent only while a business phone is saved.',
     };
   },
 );

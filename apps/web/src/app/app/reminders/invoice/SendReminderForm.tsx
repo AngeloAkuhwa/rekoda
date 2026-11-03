@@ -1,7 +1,13 @@
 'use client';
 
-import { useActionState, useEffect, useMemo, useState } from 'react';
+import { useActionState, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/Button';
+import {
+  browserKeyStore,
+  heldIntentKey,
+  INTENT_KEY_TTL_MS,
+  releaseIntentKey,
+} from '@/lib/intent-key';
 import { choiceMayEmail, type ChannelChoice } from '@/lib/reminder-copy';
 import { sendReminderAction, type SendFormState } from '../actions';
 import { ChannelChoices } from '../ChannelChoices';
@@ -12,15 +18,29 @@ import styles from '../reminders.module.css';
  * One reminder, now. The key is per INTENTION, as on the payment form: a second press of the
  * same request (a dropped response, an impatient tap) carries the same key and the API sends
  * nothing twice; once an answer settles, the next press is a new reminder with a new key.
+ * The key is held in session storage per invoice, so a form remounted by the error boundary after
+ * the browser lost the answer keeps the key the lost press used.
  */
 export function SendReminderForm({ invoiceNumber }: { invoiceNumber: string }) {
   const [state, action, sending] = useActionState<SendFormState, FormData>(sendReminderAction, {});
   const [choice, setChoice] = useState<ChannelChoice>('auto');
   const [generation, setGeneration] = useState(0);
-  const key = useMemo(() => crypto.randomUUID(), [generation]);
+  const scope = `remind:${invoiceNumber}`;
+  /* A usable key before hydration (a full form post still carries one), replaced on mount by the
+   * key held for this invoice. */
+  const [key, setKey] = useState(() => crypto.randomUUID());
   useEffect(() => {
-    if (state.settled) setGeneration((g) => g + 1);
-  }, [state]);
+    setKey(
+      heldIntentKey(browserKeyStore(), scope, Date.now(), INTENT_KEY_TTL_MS, () =>
+        crypto.randomUUID(),
+      ),
+    );
+  }, [scope, generation]);
+  useEffect(() => {
+    if (!state.settled) return;
+    releaseIntentKey(browserKeyStore(), scope);
+    setGeneration((g) => g + 1);
+  }, [state, scope]);
   const attestError = state.fields?.attest;
 
   return (

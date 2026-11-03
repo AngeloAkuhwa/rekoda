@@ -4,12 +4,19 @@ import { useActionState, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Money } from '@/components/ui/Money';
 import {
+  batchIntentScope,
+  browserKeyStore,
+  heldIntentKey,
+  INTENT_KEY_TTL_MS,
+} from '@/lib/intent-key';
+import {
   channelName,
   channelsFromChoice,
   channelsPhrase,
   choiceMayEmail,
   invoicesCount,
   lagosDateTime,
+  LEFT_OUT_RECHECK_NOTE,
   lagosLocalToIso,
   planAtInput,
   previewReason,
@@ -58,6 +65,18 @@ export function NewBatchForm({
   const [when, setWhen] = useState<'now' | 'later'>('now');
   const [at, setAt] = useState('');
   const [editing, setEditing] = useState(true);
+  /* One key per exact selection, held in session storage: if the error boundary remounts this
+   * form after the browser lost a Confirm answer, picking the same invoices, channels and time
+   * again carries the same key, and the API replays the batch it made instead of making another. */
+  const scope = batchIntentScope([...picked], choice, when === 'later' ? at : '');
+  const [intentKey, setIntentKey] = useState('');
+  useEffect(() => {
+    setIntentKey(
+      heldIntentKey(browserKeyStore(), scope, Date.now(), INTENT_KEY_TTL_MS, () =>
+        crypto.randomUUID(),
+      ),
+    );
+  }, [scope]);
   const summaryRef = useRef<HTMLHeadingElement>(null);
   /* Which answer is newest: a Confirm refusal keeps the preview it was made from, and a fresh
    * preview after "Change the selection" replaces both. */
@@ -102,7 +121,7 @@ export function NewBatchForm({
           Check before you confirm
         </h3>
         <p className={styles.summary}>
-          <strong>{invoicesCount(result.eligibleCount)}</strong> will be reminded{' '}
+          <strong>{invoicesCount(result.eligibleCount)}</strong> can be reminded{' '}
           {channelsPhrase(channelsFromChoice(plan.choice)!)},{' '}
           {scheduledFor ? `on ${lagosDateTime(scheduledFor)}` : 'as soon as you confirm'}.
           {result.excludedCount > 0 ? (
@@ -112,8 +131,9 @@ export function NewBatchForm({
               {result.excludedCount === 1 ? 'is' : 'are'} left out; the reason is beside each.
             </>
           ) : null}{' '}
-          Rekoda checks every invoice again just before sending, so one paid in the meantime is not
-          chased.
+          {result.excludedCount > 0
+            ? LEFT_OUT_RECHECK_NOTE
+            : 'Rekoda checks every invoice again just before sending, so one paid in the meantime is not chased.'}
         </p>
         {result.duplicates.length > 0 ? (
           <p className={styles.note}>
@@ -207,8 +227,8 @@ export function NewBatchForm({
                 {confirming
                   ? 'Confirming…'
                   : scheduledFor
-                    ? `Confirm and schedule ${invoicesCount(result.eligibleCount)}`
-                    : `Confirm and send ${invoicesCount(result.eligibleCount)}`}
+                    ? 'Confirm and schedule'
+                    : 'Confirm and send'}
               </Button>
             ) : null}
             <Button type="button" variant="secondary" onClick={() => setEditing(true)}>
@@ -225,6 +245,7 @@ export function NewBatchForm({
   const invoicesError = picked.size === 0 ? previewState.fields?.invoices : undefined;
   return (
     <form action={preview} className="rk-form" noValidate>
+      {intentKey ? <input type="hidden" name="idempotencyKey" value={intentKey} /> : null}
       <fieldset
         className={styles.group}
         aria-describedby={invoicesError ? 'batchInvoicesError' : undefined}

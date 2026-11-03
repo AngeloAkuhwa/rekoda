@@ -14,3 +14,8 @@
 # Test fixture for the confirmation-token fragment parser (a made-up 30-character string, not a credential);
 # the live line is now a repeated letter with an inline gitleaks:allow.
 aaf444e10fdf4f21fd498a507cb6760233ff6086:apps/web/src/lib/billing-pay-copy.test.ts:generic-api-key:192
+
+# Test fixture in the REM-06 reminder-action tests: a fixed UUID used as a form's idempotency key
+# (the same value record-payment-action.test.ts uses as CLIENT_REF), matched only because the
+# constant was named KEY. Never a credential; the live constant is now named INTENT.
+584058544eb68ed7c75eb6b9d523fe7d0cdb120e:apps/web/src/app/app/reminders/reminder-actions.test.ts:generic-api-key:48

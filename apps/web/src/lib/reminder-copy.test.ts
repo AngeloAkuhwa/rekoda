@@ -175,7 +175,7 @@ describe('batch recipients', () => {
 
 describe('batch state and channels', () => {
   const now = new Date('2026-11-03T12:00:00Z');
-  it('shows a due scheduled batch as sending', () => {
+  it('shows a due scheduled batch as due to send, never as sending', () => {
     expect(batchStateLabel('scheduled', '2026-11-04T12:00:00Z', now)).toBe('Scheduled');
     expect(batchStateLabel('scheduled', '2026-11-03T11:00:00Z', now)).toBe('Due to send');
     expect(batchStateLabel('completed', '2026-11-03T11:00:00Z', now)).toBe('Finished');
@@ -282,7 +282,7 @@ describe('review fixes (REM-06)', () => {
       );
       expect(text).not.toMatch(/was sent|was delivered/);
     }
-    expect(previewReason('reminders_not_released')).toContain('will not be sent');
+    expect(previewReason('reminders_not_released')).toContain('cannot be sent now');
   });
 
   it('a send failure does not blame a provider that may never have been asked', () => {
@@ -310,7 +310,7 @@ describe('review fixes, round 2 (REM-06)', () => {
 
   it('the preview never uses the past-tense fallback', () => {
     expect(previewReason('a_code_nobody_knows')).not.toMatch(/was not sent/);
-    expect(previewReason(null)).toMatch(/will not be sent/);
+    expect(previewReason(null)).toMatch(/cannot be sent now/);
   });
 
   it('the new-batch area shows the switched-off notice whenever reminders are not released, even with invoices to remind', () => {
@@ -390,5 +390,30 @@ describe('review fixes, round 6 (REM-06)', () => {
     expect(REMINDERS_IN_FLIGHT_NOTE).not.toMatch(/^One /);
     expect(REMINDERS_IN_FLIGHT_NOTE).toMatch(/WhatsApp/);
     expect(REMINDERS_IN_FLIGHT_NOTE).toMatch(/email/);
+  });
+});
+
+describe('review fixes, round 7 (REM-06): what stopping and leaving out really do', () => {
+  it('stopping says a scheduled reminder that comes due is skipped, never held for later', async () => {
+    const { STOP_EXPLAINER, STOPPED_NOTE } = await import('./reminder-copy');
+    for (const text of [STOP_EXPLAINER, STOPPED_NOTE]) {
+      expect(text).not.toMatch(/holds?\b/i);
+      expect(text).toMatch(/skipped, not sent later/);
+    }
+  });
+
+  it('a left-out invoice is described as checked again at send time, not as never sent', async () => {
+    const { LEFT_OUT_RECHECK_NOTE } = await import('./reminder-copy');
+    expect(previewReason('reminders_not_released')).not.toMatch(/will not be sent/);
+    expect(previewReason('window_closed_no_template', 'whatsapp')).not.toMatch(/will not be sent/);
+    expect(previewReason('reminders_not_released')).toMatch(/cannot be sent now/);
+    expect(LEFT_OUT_RECHECK_NOTE).toMatch(/checks .* again/i);
+    expect(LEFT_OUT_RECHECK_NOTE).toMatch(/reminded/);
+  });
+
+  it('a cancellation does not promise to stop a reminder already being sent', async () => {
+    const { cancelledNote, REMINDERS_IN_FLIGHT_NOTE } = await import('./reminder-copy');
+    expect(cancelledNote(2)).toContain(REMINDERS_IN_FLIGHT_NOTE);
+    expect(cancelledNote(2)).toMatch(/2 invoices/);
   });
 });

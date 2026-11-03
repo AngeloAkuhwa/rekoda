@@ -77,8 +77,8 @@ export default async function SettingsPage() {
             <h3 className={styles.sub}>Bank details for customers</h3>
             {instruction ? null : (
               <p className="rk-fineprint">
-                None yet. Without them, a reminder asks customers to call your business phone, so
-                save a business phone above or reminders cannot be sent.
+                None yet. Without them, a reminder asks customers to call your business phone.
+                Either way, reminders are sent only once a business phone is saved above.
               </p>
             )}
             <PaymentInstructionForm current={instruction} />
@@ -102,8 +102,8 @@ export default async function SettingsPage() {
               </dl>
             ) : (
               <p className="rk-fineprint">
-                No bank details yet. A reminder then asks customers to call the business phone, and
-                none is sent until the owner has saved one.
+                No bank details yet. A reminder then asks customers to call the business phone.
+                Either way, reminders are sent only once the owner has saved a business phone.
               </p>
             )}
             <p className="rk-fineprint">

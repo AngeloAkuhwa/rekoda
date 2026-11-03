@@ -342,10 +342,10 @@ export function invoicesCount(n: number): string {
 export function previewReason(code: string | null, channel?: ReminderChannel): string {
   return reminderReason(code, channel)
     .replace(/so nothing was sent( on WhatsApp| by email)?/, (_m, on: string | undefined) =>
-      on ? `so it will not be sent${on}` : 'so it will not be sent',
+      on ? `so it cannot be sent${on} now` : 'so it cannot be sent now',
     )
-    .replace('so nothing was delivered', 'so it will not be delivered')
-    .replace('This reminder was not sent.', 'This reminder will not be sent.');
+    .replace('so nothing was delivered', 'so it cannot be delivered now')
+    .replace('This reminder was not sent.', 'This reminder cannot be sent now.');
 }
 
 /**
@@ -381,6 +381,29 @@ export const REMINDER_READ_UNREACHABLE =
  */
 export const REMINDERS_IN_FLIGHT_NOTE =
   'Any reminder already being sent, on WhatsApp or by email, may still go out.';
+
+/**
+ * What Stop does, before it is pressed. A scheduled reminder that comes due while the invoice is
+ * stopped is finished as blocked (`reminders_stopped`), not kept for later, so this says so.
+ */
+export const STOP_EXPLAINER =
+  'Stopping blocks every reminder for this invoice, including ones already scheduled. A scheduled reminder that comes due while reminders are stopped is skipped, not sent later. The invoice and what is owed do not change.';
+
+/** The invoice page once reminders are stopped. */
+export const STOPPED_NOTE =
+  'No new reminder is sent for this invoice until you resume them. A scheduled reminder that comes due meanwhile is skipped, not sent later.';
+
+/**
+ * Under a batch preview. Every picked invoice is kept in the batch and judged again at its own
+ * send, so one left out now (no contact yet, outside the WhatsApp window) can still be reminded.
+ */
+export const LEFT_OUT_RECHECK_NOTE =
+  'Left-out invoices stay in the batch. Rekoda checks each one again just before sending: one paid in the meantime is not chased, and one that can be reminded by then is reminded.';
+
+/** After a batch is cancelled: what is stopped, and what cancelling cannot reach. */
+export function cancelledNote(cancelledCount: number): string {
+  return `Cancelled. ${invoicesCount(cancelledCount)} will not be reminded. Anything already sent stays sent. ${REMINDERS_IN_FLIGHT_NOTE}`;
+}
 
 /** A reminder action the API refused for this member's role. */
 export function reminderAccessRefusal(): string {

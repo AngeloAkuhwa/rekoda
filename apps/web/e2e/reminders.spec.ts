@@ -144,7 +144,7 @@ test('the owner sets the business phone and bank details, and a bad account numb
   await expect(
     page.getByText('None yet. Without them, a reminder asks customers to call your business phone'),
   ).toBeVisible();
-  await expect(page.getByText('save a business phone above or reminders cannot be sent')).toBeVisible();
+  await expect(page.getByText('reminders are sent only once a business phone is saved above')).toBeVisible();
   await shot(page, info, 'settings-empty');
 
   await page.getByLabel('Bank', { exact: true }).fill('GTBank');
@@ -283,12 +283,14 @@ test('a batch is previewed with exclusions explained, confirmed for later, then 
   await page.getByRole('button', { name: 'Preview reminders' }).click();
 
   await expect(page.getByRole('heading', { name: 'Check before you confirm' })).toBeFocused();
-  await expect(page.locator('p', { hasText: 'will be reminded' })).toContainText(
-    '1 invoice will be reminded by email only, on',
+  await expect(page.locator('p', { hasText: 'can be reminded' })).toContainText(
+    '1 invoice can be reminded by email only, on',
   );
-  await expect(page.locator('p', { hasText: 'will be reminded' })).toContainText(
+  await expect(page.locator('p', { hasText: 'can be reminded' })).toContainText(
     '1 invoice is left out; the reason is beside each.',
   );
+  /* A left-out invoice stays in the batch and is judged again at its own send: the page says so. */
+  await expect(page.getByText('Left-out invoices stay in the batch.')).toBeVisible();
   const recipients = page.getByRole('list', { name: 'Who would be reminded' });
   await expect(recipients.getByRole('listitem').filter({ hasText: reachable })).toContainText(
     'Will be reminded',
@@ -302,13 +304,13 @@ test('a batch is previewed with exclusions explained, confirmed for later, then 
   await shot(page, info, 'batch-preview');
 
   // Confirm needs the lawful-basis box for email; the preview stays on screen.
-  await page.getByRole('button', { name: 'Confirm and schedule 1 invoice' }).click();
+  await page.getByRole('button', { name: 'Confirm and schedule' }).click();
   await expect(
     page.getByRole('alert').filter({ hasText: 'Tick the box to confirm' }),
   ).toBeVisible();
   await expect(recipients).toBeVisible();
   await page.getByRole('checkbox', { name: /lawful reason/ }).check();
-  await page.getByRole('button', { name: 'Confirm and schedule 1 invoice' }).click();
+  await page.getByRole('button', { name: 'Confirm and schedule' }).click();
 
   await expect(page).toHaveURL(/\/app\/reminders\/[0-9a-f-]{36}$/);
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('2 invoices, scheduled');
@@ -377,7 +379,7 @@ test('an accountant reads reminders but is offered no action and is refused one;
   await page.getByRole('radio', { name: /^Email only/ }).check();
   await page.getByRole('button', { name: 'Preview reminders' }).click();
   await page.getByRole('checkbox', { name: /lawful reason/ }).check();
-  await page.getByRole('button', { name: 'Confirm and schedule 1 invoice' }).click();
+  await page.getByRole('button', { name: 'Confirm and schedule' }).click();
   await expect(page).toHaveURL(/\/app\/reminders\/[0-9a-f-]{36}$/);
   const batchUrl = page.url();
   const batchId = batchUrl.split('/').pop()!;
