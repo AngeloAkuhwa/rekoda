@@ -66,9 +66,15 @@ export default defineConfig({
   timeout: 90_000,
   globalTimeout: 15 * 60_000,
   reporter: process.env.CI ? 'list' : 'line',
+  /* Not test-results/, which CI uploads when a run fails: the error context Playwright writes there
+   * holds a snapshot of the page, with the same customer details. The failure itself is still
+   * printed in the job log. */
+  outputDir: 'test-results-reminders',
   use: {
     baseURL: `http://127.0.0.1:${WEB_PORT}`,
-    trace: 'retain-on-failure',
+    /* Off, unlike the other suites: this one types customer names, an email address and phone
+     * numbers, and a trace would carry them. */
+    trace: 'off',
   },
   projects: [
     { name: 'mobile', use: { viewport: { width: 390, height: 844 }, ...browserLaunch } },
