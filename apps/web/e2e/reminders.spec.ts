@@ -140,7 +140,11 @@ test('the owner sets the business phone and bank details, and a bad account numb
   await onboard(page);
   await page.goto('/app/settings');
   await expect(page.getByRole('heading', { name: 'Payment reminders' })).toBeVisible();
-  await expect(page.getByText('None yet. Without them, reminders ask customers')).toBeVisible();
+  /* With no bank details and no business phone, the page must say a reminder cannot be sent yet. */
+  await expect(
+    page.getByText('None yet. Without them, a reminder asks customers to call your business phone'),
+  ).toBeVisible();
+  await expect(page.getByText('save a business phone above or reminders cannot be sent')).toBeVisible();
   await shot(page, info, 'settings-empty');
 
   await page.getByLabel('Bank', { exact: true }).fill('GTBank');

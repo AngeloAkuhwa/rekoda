@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { reminderBatchListResponse } from './reports-api';
+import { reminderBatchListResponse } from './reports-api.js';
 
 describe('reminderBatchListResponse', () => {
   it('reads an older API answer with no released field as not released', () => {
