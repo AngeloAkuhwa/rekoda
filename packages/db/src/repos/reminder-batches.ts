@@ -177,6 +177,7 @@ export async function createBatch(
   return { id, created: true };
 }
 
+/** The batch this merchant key created, or null. */
 export async function batchByKey(
   tx: TenantDb,
   businessId: string,
@@ -190,6 +191,7 @@ export async function batchByKey(
   return row ? toBatch(row) : null;
 }
 
+/** One batch of this business, or null (another business's id reads as null under RLS). */
 export async function batchById(
   tx: TenantDb,
   businessId: string,
@@ -225,6 +227,7 @@ const REMINDER_JOIN = sql`
    AND r.idempotency_key IN ('batch:' || i.batch_id || ':' || i.id || ':whatsapp',
                              'batch:' || i.batch_id || ':' || i.id || ':email')`;
 
+/** Per-batch recipient counts by summary outcome, computed in SQL. */
 export async function batchCounts(
   tx: TenantDb,
   businessId: string,
@@ -272,6 +275,7 @@ export async function batchCounts(
   return out;
 }
 
+/** A batch's recipients in order, each with its reminder rows (the per-channel outcome). */
 export async function batchItems(
   tx: TenantDb,
   businessId: string,
@@ -314,6 +318,7 @@ export async function batchItems(
   }));
 }
 
+/** The business's most recent batches, newest first, at most 50. */
 export async function recentBatches(
   tx: TenantDb,
   businessId: string,

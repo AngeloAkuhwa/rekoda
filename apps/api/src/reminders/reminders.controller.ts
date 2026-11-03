@@ -107,12 +107,14 @@ export class RemindersController {
     }
   }
 
+  /** Recent batches and their counts. Any member may read. */
   @Get('batches')
   @AllMembers()
   async listBatches(@Req() request: AuthedRequest): Promise<ReminderBatchListResponse> {
     return this.batches.list(request.auth!.businessId);
   }
 
+  /** One batch with its recipients. Any member may read; another business's id is not found. */
   @Get('batches/:id')
   @AllMembers()
   async getBatch(

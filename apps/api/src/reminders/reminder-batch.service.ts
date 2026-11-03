@@ -80,6 +80,7 @@ export class BatchNotFound extends Error {
 
 type Channels = CreateReminderBatchRequest['channels'];
 
+/** The stored channel plan for a request's channels. */
 const toStored = (channels: Channels): reminderBatchesRepo.BatchChannels => {
   if (channels === 'auto') return 'auto';
   const set = new Set(channels);
@@ -87,6 +88,7 @@ const toStored = (channels: Channels): reminderBatchesRepo.BatchChannels => {
   return set.has('email') ? 'email' : 'whatsapp';
 };
 
+/** The request form of a stored channel plan. */
 const fromStored = (stored: reminderBatchesRepo.BatchChannels): Channels => {
   if (stored === 'auto') return 'auto';
   if (stored === 'both') return ['whatsapp', 'email'];
@@ -112,6 +114,7 @@ export class ReminderBatchService {
     @Inject(ReminderService) private readonly reminders: ReminderService,
   ) {}
 
+  /** What a batch would do now; reads and decides, writes and sends nothing. */
   preview(
     businessId: string,
     input: ReminderBatchPreviewRequest,
@@ -185,6 +188,7 @@ export class ReminderBatchService {
     return batch;
   }
 
+  /** One batch with its recipients and per-channel outcomes. */
   async get(businessId: string, batchId: string): Promise<ReminderBatchResponse> {
     return withBusiness(this.db, businessId, async (tx) => {
       const batch = await reminderBatchesRepo.batchById(tx, businessId, batchId);
@@ -208,6 +212,7 @@ export class ReminderBatchService {
     });
   }
 
+  /** The business's recent batches with their counts. */
   async list(businessId: string): Promise<ReminderBatchListResponse> {
     return withBusiness(this.db, businessId, async (tx) => {
       const batches = await reminderBatchesRepo.recentBatches(tx, businessId, 50);
@@ -220,6 +225,7 @@ export class ReminderBatchService {
     });
   }
 
+  /** Stop a scheduled batch: recipients not yet dispatched are cancelled. */
   async cancel(
     businessId: string,
     userId: string,
@@ -247,6 +253,7 @@ export class ReminderBatchService {
   }
 }
 
+/** The wire summary of a batch and its SQL counts. */
 function summary(
   batch: reminderBatchesRepo.BatchRow,
   counts: reminderBatchesRepo.BatchCounts | undefined,
