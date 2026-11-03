@@ -8,6 +8,7 @@ import {
   browserKeyStore,
   heldIntentKey,
   INTENT_KEY_TTL_MS,
+  touchIntentKey,
 } from '@/lib/intent-key';
 import {
   channelName,
@@ -175,7 +176,13 @@ export function NewBatchForm({
           })}
         </ul>
 
-        <form action={confirm} className="rk-form" noValidate>
+        <form
+          action={confirm}
+          className="rk-form"
+          noValidate
+          /* The hold restarts at the press, so a preview read for a while still keeps this key. */
+          onSubmit={() => touchIntentKey(browserKeyStore(), scope, plan.idempotencyKey, Date.now())}
+        >
           {plan.invoiceNumbers.map((n) => (
             <input key={n} type="hidden" name="invoice" value={n} />
           ))}
@@ -244,7 +251,12 @@ export function NewBatchForm({
   /* Gone once something is picked: an error about an empty selection is stale after that. */
   const invoicesError = picked.size === 0 ? previewState.fields?.invoices : undefined;
   return (
-    <form action={preview} className="rk-form" noValidate>
+    <form
+      action={preview}
+      className="rk-form"
+      noValidate
+      onSubmit={() => touchIntentKey(browserKeyStore(), scope, intentKey, Date.now())}
+    >
       {intentKey ? <input type="hidden" name="idempotencyKey" value={intentKey} /> : null}
       <fieldset
         className={styles.group}
@@ -364,7 +376,9 @@ export function NewBatchForm({
       ) : null}
 
       <div className={styles.actions}>
-        <Button type="submit" disabled={previewing}>
+        {/* Disabled until the held key is in place: a preview posted before hydration would carry
+         * a key nothing holds. */}
+        <Button type="submit" disabled={previewing || !intentKey}>
           {previewing ? 'Checking…' : 'Preview reminders'}
         </Button>
       </div>

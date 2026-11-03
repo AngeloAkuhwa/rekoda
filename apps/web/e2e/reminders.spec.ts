@@ -200,8 +200,13 @@ test('the owner sets the business phone and bank details, and a bad account numb
   await expect(saved).toBeVisible();
   await page.getByRole('button', { name: 'Stop showing bank details' }).click();
   await expect(
-    page.getByRole('status').filter({ hasText: 'Removed. Reminders now ask customers to call' }),
+    page.getByRole('status').filter({
+      hasText: 'Removed. New reminders ask customers to call your business phone',
+    }),
   ).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Removed.' })).toContainText(
+    'A reminder already being sent may still show the removed account.',
+  );
   await expect(saved).toHaveCount(0);
 });
 
@@ -292,7 +297,9 @@ test('a batch is previewed with exclusions explained, confirmed for later, then 
     '1 invoice is left out; the reason is beside each.',
   );
   /* A left-out invoice stays in the batch and is judged again at its own send: the page says so. */
-  await expect(page.getByText('Left-out invoices stay in the batch.')).toBeVisible();
+  await expect(page.locator('p', { hasText: 'can be reminded' })).toContainText(
+    'Left-out invoices stay in the batch. Rekoda checks each one again just before sending: one paid in the meantime is not chased, and one that can be reminded by then is reminded.',
+  );
   const recipients = page.getByRole('list', { name: 'Who would be reminded' });
   await expect(recipients.getByRole('listitem').filter({ hasText: reachable })).toContainText(
     'Will be reminded',
@@ -322,6 +329,7 @@ test('a batch is previewed with exclusions explained, confirmed for later, then 
   await page.getByRole('button', { name: 'Confirm and schedule' }).click();
 
   await expect(page).toHaveURL(/\/app\/reminders\/[0-9a-f-]{36}$/);
+  const firstBatchUrl = page.url();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('2 invoices, scheduled');
   /* The batch exists: its key is released, so the same selection later is a new batch. */
   await expect.poll(heldBatchKeys).toHaveLength(0);
@@ -354,6 +362,18 @@ test('a batch is previewed with exclusions explained, confirmed for later, then 
 
   await page.goto('/app/reminders');
   await expect(page.getByRole('list', { name: 'Reminder batches' })).toContainText('Cancelled');
+
+  /* The same selection again, minutes later, is a new batch: never a replay of the cancelled one. */
+  await page.getByRole('button', { name: 'Select all 2 invoices' }).click();
+  await page.getByRole('radio', { name: /^Email only/ }).check();
+  await page.getByRole('radio', { name: /^At a time you choose/ }).check();
+  await page.getByLabel('Date and time to send').fill(tomorrowTen());
+  await page.getByRole('button', { name: 'Preview reminders' }).click();
+  await page.getByRole('checkbox', { name: /lawful reason/ }).check();
+  await page.getByRole('button', { name: 'Confirm and schedule' }).click();
+  await expect(page).toHaveURL(/\/app\/reminders\/[0-9a-f-]{36}$/);
+  expect(page.url()).not.toBe(firstBatchUrl);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('2 invoices, scheduled');
 });
 
 test('an accountant reads reminders but is offered no action and is refused one; a helper cannot change bank details', async ({

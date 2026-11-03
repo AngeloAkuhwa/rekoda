@@ -369,7 +369,18 @@ export function confirmProblem(read: {
  * (one idempotency key per intention), so the merchant is told it is safe to repeat.
  */
 export const REMINDER_OUTCOME_UNKNOWN =
-  'We could not confirm whether that went through. It may have. Press it again: Rekoda never does the same request twice.';
+  'We could not confirm whether that went through. It may have. Check what is shown below before you try again.';
+
+/**
+ * A settings change whose answer was lost. Saving or removing bank details and the business phone
+ * carries no idempotency key, so no replay is promised: the owner checks what is saved first.
+ */
+export const SETTINGS_OUTCOME_UNKNOWN =
+  'We could not confirm whether that change was saved. Reload the page and check your settings before you try again.';
+
+/** After the bank details are removed. A reminder already past the send check keeps what it read. */
+export const PAYMENT_INSTRUCTION_REMOVED =
+  'Removed. New reminders ask customers to call your business phone to pay, and are sent only while a business phone is saved. A reminder already being sent may still show the removed account.';
 
 /** A read (the preview) that could not reach Rekoda. It writes nothing, so it says so. */
 export const REMINDER_READ_UNREACHABLE =
@@ -383,15 +394,16 @@ export const REMINDERS_IN_FLIGHT_NOTE =
   'Any reminder already being sent, on WhatsApp or by email, may still go out.';
 
 /**
- * What Stop does, before it is pressed. A scheduled reminder that comes due while the invoice is
- * stopped is finished as blocked (`reminders_stopped`), not kept for later, so this says so.
+ * What Stop does, before it is pressed. The stop is read at each send (`reminders_stopped`): a
+ * reminder reached while stopped is finished as blocked, not kept for later. One the sender reaches
+ * only after a resume is judged then, so the copy speaks of the check, not of the due time.
  */
 export const STOP_EXPLAINER =
-  'Stopping blocks every reminder for this invoice, including ones already scheduled. A scheduled reminder that comes due while reminders are stopped is skipped, not sent later. The invoice and what is owed do not change.';
+  'Stopping blocks every reminder for this invoice, including ones already scheduled. Rekoda checks just before each send, and a reminder it reaches while reminders are stopped is skipped, not sent later. The invoice and what is owed do not change.';
 
 /** The invoice page once reminders are stopped. */
 export const STOPPED_NOTE =
-  'No new reminder is sent for this invoice until you resume them. A scheduled reminder that comes due meanwhile is skipped, not sent later.';
+  'No new reminder is sent for this invoice until you resume them. Rekoda checks just before each send, and a scheduled reminder it reaches while reminders are stopped is skipped, not sent later.';
 
 /**
  * Under a batch preview. Every picked invoice is kept in the batch and judged again at its own

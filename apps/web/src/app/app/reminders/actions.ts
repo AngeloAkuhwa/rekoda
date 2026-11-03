@@ -39,6 +39,8 @@ import {
   confirmProblem,
   reminderAccessRefusal,
   REMINDER_OUTCOME_UNKNOWN,
+  SETTINGS_OUTCOME_UNKNOWN,
+  PAYMENT_INSTRUCTION_REMOVED,
   REMINDERS_IN_FLIGHT_NOTE,
   STOPPED_NOTE,
   cancelledNote,
@@ -371,6 +373,7 @@ const savePaymentInstructionActionGuarded = guarded(
     revalidatePath('/app/settings');
     return { done: 'Saved. Reminders from now on ask customers to pay into this account.' };
   },
+  SETTINGS_OUTCOME_UNKNOWN,
 );
 
 const clearPaymentInstructionActionGuarded = guarded(
@@ -380,9 +383,10 @@ const clearPaymentInstructionActionGuarded = guarded(
     await clearPaymentInstruction(token);
     revalidatePath('/app/settings');
     return {
-      done: 'Removed. Reminders now ask customers to call your business phone to pay. Reminders are sent only while a business phone is saved.',
+      done: PAYMENT_INSTRUCTION_REMOVED,
     };
   },
+  SETTINGS_OUTCOME_UNKNOWN,
 );
 
 const savePublicContactActionGuarded = guarded(
@@ -403,6 +407,7 @@ const savePublicContactActionGuarded = guarded(
     revalidatePath('/app/settings');
     return { done: 'Saved. Every reminder from now on shows this number.' };
   },
+  SETTINGS_OUTCOME_UNKNOWN,
 );
 
 /* Plain async exports: a `use server` module exports async functions and nothing else. */

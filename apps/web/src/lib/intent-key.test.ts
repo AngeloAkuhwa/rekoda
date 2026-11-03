@@ -11,6 +11,7 @@ import {
   heldIntentKey,
   releaseIntentKey,
   releaseIntentScopes,
+  touchIntentKey,
   type KeyStore,
 } from './intent-key';
 
@@ -109,5 +110,21 @@ describe('a reminder key held across a remount', () => {
     expect(heldIntentKey(store, scope, 2_000, TTL, fresh)).not.toBe(first);
     /* A single send's held key is a different intention and is left alone. */
     expect(heldIntentKey(store, 'remind:INV-9', 2_000, TTL, fresh)).toBe(single);
+  });
+
+  it('a press long after the form opened restarts the hold, so its retry keeps the key', () => {
+    const store = memoryStore();
+    /* The form mounted at t=0 and sat open for longer than the hold. */
+    const key = heldIntentKey(store, 'remind:INV-1', 0, TTL, fresh);
+    const pressedAt = TTL + 60_000;
+    touchIntentKey(store, 'remind:INV-1', key, pressedAt);
+    /* The answer is lost; the boundary remounts the form a moment later. */
+    expect(heldIntentKey(store, 'remind:INV-1', pressedAt + 5_000, TTL, fresh)).toBe(key);
+  });
+
+  it('touching never holds a value that is not a key', () => {
+    const store = memoryStore();
+    touchIntentKey(store, 'remind:INV-1', '', 1_000);
+    expect(store.data.size).toBe(0);
   });
 });

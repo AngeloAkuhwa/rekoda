@@ -45,10 +45,12 @@ vi.mock('@/server/api', () => {
 });
 
 const api = await import('@/server/api');
-const { createBatchAction, previewBatchAction, sendReminderAction } = await import('./actions');
+const { clearPaymentInstructionAction, createBatchAction, previewBatchAction, sendReminderAction } =
+  await import('./actions');
 const sendReminder = vi.mocked(api.sendReminder);
 const createReminderBatch = vi.mocked(api.createReminderBatch);
 const previewReminderBatch = vi.mocked(api.previewReminderBatch);
+const clearPaymentInstruction = vi.mocked(api.clearPaymentInstruction);
 
 const INTENT = '6c0e7f1a-2b3d-4c5e-8f90-a1b2c3d4e5f6';
 
@@ -72,7 +74,7 @@ describe('a reminder write whose answer is lost', () => {
       form({ invoiceNumber: 'INV-2026-000001', channels: 'whatsapp', idempotencyKey: INTENT }),
     );
     expect(state.error).toMatch(/could not confirm/i);
-    expect(state.error).toMatch(/not .*twice|never .*twice/i);
+    expect(state.error).toMatch(/check/i);
     /* Not settled: the form keeps the same key, so a second press replays rather than resends. */
     expect(state.settled).toBeUndefined();
   });
@@ -138,5 +140,14 @@ describe('a reminder write whose answer is lost', () => {
         }),
       ),
     ).rejects.toMatchObject({ digest: expect.stringContaining('NEXT_REDIRECT') });
+  });
+
+  it('a settings removal whose answer is lost asks the owner to check, promising no replay', async () => {
+    clearPaymentInstruction.mockRejectedValue(
+      new api.ApiUnavailable('cannot reach the Rekoda API'),
+    );
+    const state = await clearPaymentInstructionAction({}, form({}));
+    expect(state.error).toMatch(/check your settings/i);
+    expect(state.error).not.toMatch(/never|twice/i);
   });
 });

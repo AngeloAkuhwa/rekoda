@@ -417,3 +417,33 @@ describe('review fixes, round 7 (REM-06): what stopping and leaving out really d
     expect(cancelledNote(2)).toMatch(/2 invoices/);
   });
 });
+
+describe('review fixes, round 8 (REM-06): no promise the data cannot keep', () => {
+  it('an unconfirmed reminder action asks the merchant to look before trying again', async () => {
+    const { REMINDER_OUTCOME_UNKNOWN } = await import('./reminder-copy');
+    expect(REMINDER_OUTCOME_UNKNOWN).toMatch(/could not confirm/i);
+    expect(REMINDER_OUTCOME_UNKNOWN).not.toMatch(/never|twice|cannot run/i);
+    expect(REMINDER_OUTCOME_UNKNOWN).toMatch(/check/i);
+  });
+
+  it('an unconfirmed settings change asks the owner to check the settings, with no replay promise', async () => {
+    const { SETTINGS_OUTCOME_UNKNOWN } = await import('./reminder-copy');
+    expect(SETTINGS_OUTCOME_UNKNOWN).toMatch(/could not confirm/i);
+    expect(SETTINGS_OUTCOME_UNKNOWN).toMatch(/settings/i);
+    expect(SETTINGS_OUTCOME_UNKNOWN).not.toMatch(/never|twice|safe/i);
+  });
+
+  it('stopping is described by the check made at each send, not by when a reminder was due', async () => {
+    const { STOP_EXPLAINER, STOPPED_NOTE } = await import('./reminder-copy');
+    for (const text of [STOP_EXPLAINER, STOPPED_NOTE]) {
+      expect(text).toMatch(/just before (each|it) sends?/i);
+      expect(text).not.toMatch(/comes due/);
+    }
+  });
+
+  it('removing bank details warns that a reminder already being sent may still show them', async () => {
+    const { PAYMENT_INSTRUCTION_REMOVED } = await import('./reminder-copy');
+    expect(PAYMENT_INSTRUCTION_REMOVED).toMatch(/already being sent/);
+    expect(PAYMENT_INSTRUCTION_REMOVED).toMatch(/business phone/);
+  });
+});

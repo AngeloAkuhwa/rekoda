@@ -7,6 +7,7 @@ import {
   heldIntentKey,
   INTENT_KEY_TTL_MS,
   releaseIntentKey,
+  touchIntentKey,
 } from '@/lib/intent-key';
 import { choiceMayEmail, type ChannelChoice } from '@/lib/reminder-copy';
 import { sendReminderAction, type SendFormState } from '../actions';
@@ -26,9 +27,10 @@ export function SendReminderForm({ invoiceNumber }: { invoiceNumber: string }) {
   const [choice, setChoice] = useState<ChannelChoice>('auto');
   const [generation, setGeneration] = useState(0);
   const scope = `remind:${invoiceNumber}`;
-  /* A usable key before hydration (a full form post still carries one), replaced on mount by the
-   * key held for this invoice. */
-  const [key, setKey] = useState(() => crypto.randomUUID());
+  /* Empty until mounted: the key comes from session storage, so Send stays disabled until it is
+   * there. A press before hydration would post a key nothing holds, and a lost answer to it could
+   * not be retried under the same key. */
+  const [key, setKey] = useState('');
   useEffect(() => {
     setKey(
       heldIntentKey(browserKeyStore(), scope, Date.now(), INTENT_KEY_TTL_MS, () =>
@@ -44,9 +46,15 @@ export function SendReminderForm({ invoiceNumber }: { invoiceNumber: string }) {
   const attestError = state.fields?.attest;
 
   return (
-    <form action={action} className="rk-form" noValidate>
+    <form
+      action={action}
+      className="rk-form"
+      noValidate
+      /* The hold restarts at the press, so a form left open for a while still keeps this key. */
+      onSubmit={() => touchIntentKey(browserKeyStore(), scope, key, Date.now())}
+    >
       <input type="hidden" name="invoiceNumber" value={invoiceNumber} />
-      <input type="hidden" name="idempotencyKey" value={key} />
+      {key ? <input type="hidden" name="idempotencyKey" value={key} /> : null}
       <ChannelChoices name="channels" value={choice} onChange={setChoice} idPrefix="one" />
       {choiceMayEmail(choice) ? (
         <div>
@@ -99,7 +107,7 @@ export function SendReminderForm({ invoiceNumber }: { invoiceNumber: string }) {
       ) : null}
 
       <div className={styles.actions}>
-        <Button type="submit" disabled={sending}>
+        <Button type="submit" disabled={sending || !key}>
           {sending ? 'Sending…' : 'Send a reminder now'}
         </Button>
       </div>

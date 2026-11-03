@@ -67,6 +67,25 @@ export function heldIntentKey(
   return key;
 }
 
+/**
+ * Restarts the hold at the moment of a press. The hold otherwise counts from when the form first
+ * drew the key, so a form left open past the TTL would lose the key of the press whose answer was
+ * lost. Anything that is not a key is never held.
+ */
+export function touchIntentKey(
+  store: KeyStore | null,
+  scope: string,
+  key: string,
+  now: number,
+): void {
+  if (!KEY.test(key)) return;
+  try {
+    store?.setItem(PREFIX + scope, JSON.stringify({ key, at: now }));
+  } catch {
+    /* Not held; the press still carries its key. */
+  }
+}
+
 /** The intention is settled: the next press is a new one and gets a new key. */
 export function releaseIntentKey(store: KeyStore | null, scope: string): void {
   try {
