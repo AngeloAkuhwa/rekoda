@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import { createReminderBatchRequest } from './reports-api.js';
 
+const INTENT = '6c0e7f1a-2b3d-4c5e-8f90-a1b2c3d4e5f6';
+
 const base = {
   invoiceNumbers: ['INV-2026-000001'],
   channels: 'auto' as const,
-  idempotencyKey: '6c0e7f1a-2b3d-4c5e-8f90-a1b2c3d4e5f6',
+  idempotencyKey: INTENT,
   confirm: true as const,
 };
 

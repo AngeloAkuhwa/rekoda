@@ -20,3 +20,8 @@ aaf444e10fdf4f21fd498a507cb6760233ff6086:apps/web/src/lib/billing-pay-copy.test.
 # constant was named KEY. Never a credential. Unlike the entries above, the live line carries no
 # inline gitleaks:allow: the constant is now named INTENT, which the rule does not match.
 584058544eb68ed7c75eb6b9d523fe7d0cdb120e:apps/web/src/app/app/reminders/reminder-actions.test.ts:generic-api-key:48
+
+# Test fixture in the REM-06 replayOnly contract test: a fixed UUID used as an idempotency key,
+# matched only because it was written inline against `idempotencyKey`. Never a credential. The live
+# line now reads the constant INTENT, which the rule does not match.
+06e0457e7c624ae5f053f8033d79b7e7e15e0f8f:packages/contracts/src/reminder-batch-create.test.ts:generic-api-key:8
