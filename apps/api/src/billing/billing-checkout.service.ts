@@ -49,6 +49,7 @@ import { decryptFacet, encryptFacet } from '@rekoda/core/vault';
 import type { BillingCheckoutResponse } from '@rekoda/contracts';
 import { subscriptionsRepo, withBusiness, type Db, type TenantDb } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
+import { chargeGate } from './paystack-key.js';
 import { DB } from '../db/db.module.js';
 import { isCustomCycle } from './billing.service.js';
 import { PAYMENT_PROVIDER, type PaymentProviderPort } from '../payments/provider.port.js';
@@ -133,13 +134,12 @@ export class BillingCheckoutService {
   ): Promise<BillingCheckoutResponse> {
     const now = options.now ?? new Date();
     const restart = options.restart === true;
-    /* A missing key degrades honestly, and a live key waits for the written
-     * Paystack confirmation (§47), exactly as opening a charge does. */
-    const key = this.config.paystackSecretKey;
-    if (!key) return { state: 'unavailable', reason: 'payments_not_configured' };
-    if (key.startsWith('sk_live') && !this.config.paystackPlatformConfirmed) {
-      return { state: 'unavailable', reason: 'awaiting_platform_confirmation' };
-    }
+    /* The same §47 gate that opening a charge uses (paystack-key.ts): a missing
+     * or unrecognised key degrades honestly, a live key waits for the written
+     * Paystack confirmation, and a test key proceeds. Decided before anything
+     * is read, written or sent to Paystack. */
+    const gate = chargeGate(this.config);
+    if (!gate.ok) return { state: 'unavailable', reason: gate.reason };
 
     /* A bad address is refused before anything is read or written. */
     let given: string | null = null;

@@ -128,7 +128,15 @@ const justEndedYear = () => new Date(Date.now() - 367 * DAY);
 const justEndedMonth = () => new Date(Date.now() - 35 * DAY);
 
 const billing = () =>
-  new BillingService({ ...config, paystackPlatformConfirmed: true, annualBillingSales: true }, db);
+  new BillingService(
+    {
+      ...config,
+      paystackSecretKey: 'sk_test_x',
+      paystackPlatformConfirmed: true,
+      annualBillingSales: true,
+    },
+    db,
+  );
 
 const overviewOf = async (auth: Record<string, string>) =>
   billingOverviewResponse.parse(

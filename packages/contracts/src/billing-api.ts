@@ -383,7 +383,14 @@ export const billingPlanChangeResponse = z.discriminatedUnion('state', [
   }),
   z.object({
     state: z.literal('unavailable'),
-    reason: z.enum(['awaiting_platform_confirmation', 'no_cycle', 'cycle_ended', 'support_review']),
+    reason: z.enum([
+      'awaiting_platform_confirmation',
+      /** The platform Paystack key is missing or of a shape Rekoda does not recognise (§47 gate). */
+      'payments_not_configured',
+      'no_cycle',
+      'cycle_ended',
+      'support_review',
+    ]),
   }),
 ]);
 

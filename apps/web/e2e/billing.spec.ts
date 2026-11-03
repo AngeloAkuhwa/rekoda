@@ -77,9 +77,10 @@ test('a plan change shows what it costs before it is confirmed', async ({ page }
 
   await page.getByRole('button', { name: 'Confirm and pay' }).click();
 
-  // Card payments are gated until the platform model is confirmed (spec §47).
-  // The merchant is told plainly, and nothing was charged.
-  await expect(page).toHaveURL(/problem=awaiting_platform_confirmation/);
+  // This suite's API has no Paystack key, so a paid change is refused before any
+  // charge is opened (the §47 gate fails closed). The merchant is told plainly,
+  // and nothing was charged.
+  await expect(page).toHaveURL(/problem=payments_not_configured/);
   await expect(page.getByText('Nothing was charged', { exact: false })).toBeVisible();
   await expect(page.getByText('Free trial', { exact: true })).toBeVisible();
 });
@@ -115,9 +116,9 @@ test('a new merchant can see yearly prices and a yearly quote before paying', as
     page.getByText('₦99,000 today for twelve months of service', { exact: false }),
   ).toBeVisible();
 
-  // Card payments are still gated (spec §47): nothing is charged, and the merchant is told.
+  // No Paystack key in this suite, so the gate refuses: nothing is charged, and the merchant is told.
   await page.getByRole('button', { name: 'Confirm and pay' }).click();
-  await expect(page).toHaveURL(/problem=awaiting_platform_confirmation/);
+  await expect(page).toHaveURL(/problem=payments_not_configured/);
   await expect(page.getByText('Nothing was charged', { exact: false })).toBeVisible();
 });
 

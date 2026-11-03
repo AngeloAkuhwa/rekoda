@@ -137,7 +137,10 @@ async function putOnPlan(businessId: string, plan: string, cycleStart: Date, ren
 /** The same service the controller uses, with spec §47 confirmed. */
 function confirmedBilling(): BillingService {
   const config = app.get<ApiConfig>(CONFIG);
-  return new BillingService({ ...config, paystackPlatformConfirmed: true }, db);
+  return new BillingService(
+    { ...config, paystackSecretKey: 'sk_test_x', paystackPlatformConfirmed: true },
+    db,
+  );
 }
 
 const overviewOf = async (auth: Record<string, string>) =>
@@ -214,14 +217,99 @@ describe('what a new merchant sees', () => {
   });
 });
 
+/*
+ * §47 by key kind (owner ruling on Option B, 3 Nov 2026). The platform-confirmation flag means the
+ * written Paystack confirmation was received: it gates every LIVE-key charge and is irrelevant to a
+ * TEST key. A missing or unrecognised key fails closed. Every refusal happens before a charge row
+ * exists, so each case also reads the charges table.
+ */
+describe('the §47 charge gate, by Paystack key kind', () => {
+  const billingWith = (paystackSecretKey: string, paystackPlatformConfirmed: boolean) =>
+    new BillingService(
+      { ...app.get<ApiConfig>(CONFIG), paystackSecretKey, paystackPlatformConfirmed },
+      db,
+    );
+  const chargesOf = (businessId: string) =>
+    withBusiness(db, businessId, (tx) => subscriptionsRepo.chargesFor(tx, businessId));
+  const onPlan = async (phone: string, plan: string) => {
+    const { businessId } = await onboard(phone);
+    await putOnPlan(businessId, plan, new Date(), new Date(Date.now() + 30 * 86_400_000));
+    return businessId;
+  };
+
+  it('opens a plan charge with a test key while §47 is not confirmed', async () => {
+    const { businessId } = await onboard('+2348177100201');
+    const answer = await billingWith('sk_test_x', false).changePlan(businessId, 'chat');
+    expect(answer.state).toBe('payment_required');
+    const charges = await chargesOf(businessId);
+    expect(charges.count).toBe(1);
+    expect(charges.rows[0]?.status).toBe('pending');
+  });
+
+  it('opens a pack charge with a test key while §47 is not confirmed', async () => {
+    const businessId = await onPlan('+2348177100202', 'complete');
+    const answer = await billingWith('sk_test_x', false).buyPack(businessId, 'documents_50');
+    expect(answer.state).toBe('payment_required');
+    expect((await chargesOf(businessId)).count).toBe(1);
+  });
+
+  it('refuses a live-key plan or pack charge until §47 is confirmed, opening nothing', async () => {
+    const trial = (await onboard('+2348177100203')).businessId;
+    const billing = billingWith('sk_live_x', false);
+    expect(await billing.changePlan(trial, 'chat')).toEqual({
+      state: 'unavailable',
+      reason: 'awaiting_platform_confirmation',
+    });
+    expect(await chargesOf(trial)).toEqual({ rows: [], count: 0 });
+
+    const paying = await onPlan('+2348177100204', 'complete');
+    expect(await billing.buyPack(paying, 'documents_50')).toEqual({
+      state: 'unavailable',
+      reason: 'awaiting_platform_confirmation',
+    });
+    expect(await chargesOf(paying)).toEqual({ rows: [], count: 0 });
+  });
+
+  it('opens a live-key plan or pack charge once §47 is confirmed', async () => {
+    const billing = billingWith('sk_live_x', true);
+    const trial = (await onboard('+2348177100205')).businessId;
+    expect((await billing.changePlan(trial, 'chat')).state).toBe('payment_required');
+    const paying = await onPlan('+2348177100206', 'complete');
+    expect((await billing.buyPack(paying, 'documents_50')).state).toBe('payment_required');
+  });
+
+  it('fails closed for a missing or unrecognised key even with §47 confirmed, opening nothing', async () => {
+    let n = 207;
+    for (const key of ['', 'sk_livex', 'pk_test_x', 'garbage']) {
+      const billing = billingWith(key, true);
+      const trial = (await onboard(`+2348177100${n++}`)).businessId;
+      expect(await billing.changePlan(trial, 'chat'), `plan/${key}`).toEqual({
+        state: 'unavailable',
+        reason: 'payments_not_configured',
+      });
+      expect(await chargesOf(trial)).toEqual({ rows: [], count: 0 });
+
+      const paying = await onPlan(`+2348177100${n++}`, 'complete');
+      expect(await billing.buyPack(paying, 'documents_50'), `pack/${key}`).toEqual({
+        state: 'unavailable',
+        reason: 'payments_not_configured',
+      });
+      expect(await chargesOf(paying)).toEqual({ rows: [], count: 0 });
+    }
+  });
+});
+
 describe('paying, and the gate in front of it', () => {
-  it('refuses a paid change without opening a charge while §47 stands', async () => {
+  it('refuses a paid change over HTTP without opening a charge when no Paystack key is set', async () => {
+    /* The suite's app boots with no PAYSTACK_SECRET_KEY. A live key without the
+     * §47 confirmation is refused the same way, with its own reason: see
+     * "the §47 charge gate, by Paystack key kind" above. */
     const { businessId, auth } = await onboard('+2348177100004');
     const answer = (await post('/v1/billing/plan', { plan: 'chat' }, auth)).json() as {
       state: string;
       reason?: string;
     };
-    expect(answer).toEqual({ state: 'unavailable', reason: 'awaiting_platform_confirmation' });
+    expect(answer).toEqual({ state: 'unavailable', reason: 'payments_not_configured' });
 
     // Nothing to clean up when the gate lifts.
     const charges = await withBusiness(db, businessId, (tx) =>
