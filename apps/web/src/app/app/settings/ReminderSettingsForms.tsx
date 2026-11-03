@@ -1,6 +1,6 @@
 'use client';
 
-import { useActionState, useEffect, useState } from 'react';
+import { useActionState, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
 import {
@@ -38,7 +38,26 @@ export function PaymentInstructionForm({
   /* A saved message describes the saved account; once a field is edited it would describe an
    * account that is not saved, so it is hidden until the next save answers. */
   const [edited, setEdited] = useState(false);
-  useEffect(() => setEdited(false), [state]);
+  /* Only the action that answered last may speak: a save and a removal make opposite statements
+   * about where customers pay, and both must never show at once. */
+  const [last, setLast] = useState<'save' | 'clear' | null>(null);
+  const firstSave = useRef(true);
+  const firstClear = useRef(true);
+  useEffect(() => {
+    if (firstSave.current) {
+      firstSave.current = false;
+      return;
+    }
+    setEdited(false);
+    setLast('save');
+  }, [state]);
+  useEffect(() => {
+    if (firstClear.current) {
+      firstClear.current = false;
+      return;
+    }
+    setLast('clear');
+  }, [clearState]);
   const [bankName, setBankName] = useState(current?.bankName ?? '');
   const [accountName, setAccountName] = useState(current?.accountName ?? '');
   const [accountNumber, setAccountNumber] = useState(current?.accountNumber ?? '');
@@ -125,9 +144,15 @@ export function PaymentInstructionForm({
             {state.error}
           </p>
         ) : null}
-        {state.done && !edited ? (
+        {last === 'save' && state.done && !edited ? (
           <p className="rk-fineprint" role="status">
             {state.done}
+          </p>
+        ) : null}
+        {/* Here, not in the removal form, which unmounts once nothing is saved. */}
+        {last === 'clear' && clearState.done ? (
+          <p className="rk-fineprint" role="status">
+            {clearState.done}
           </p>
         ) : null}
         <div className={styles.actions}>
@@ -141,11 +166,6 @@ export function PaymentInstructionForm({
           {clearState.error ? (
             <p className="rk-fineprint" role="alert">
               {clearState.error}
-            </p>
-          ) : null}
-          {clearState.done ? (
-            <p className="rk-fineprint" role="status">
-              {clearState.done}
             </p>
           ) : null}
           <div>

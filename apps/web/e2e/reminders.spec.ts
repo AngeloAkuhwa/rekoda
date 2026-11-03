@@ -178,6 +178,23 @@ test('the owner sets the business phone and bank details, and a bad account numb
     page.getByRole('status').filter({ hasText: 'Every reminder from now on shows this number' }),
   ).toBeVisible();
   await shot(page, info, 'settings-saved');
+
+  // Save, then remove, without reloading: only the last answer may speak. Two statements about
+  // where customers pay must never show together.
+  await page.getByLabel('Bank', { exact: true }).fill('GTBank');
+  await page.getByLabel('Account name').fill('Ada Fabrics Ltd');
+  await page.getByLabel('Account number').fill('0123456789');
+  await page.getByRole('checkbox', { name: /This is my business account/ }).check();
+  await page.getByRole('button', { name: 'Save bank details' }).click();
+  const saved = page
+    .getByRole('status')
+    .filter({ hasText: 'ask customers to pay into this account' });
+  await expect(saved).toBeVisible();
+  await page.getByRole('button', { name: 'Stop showing bank details' }).click();
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Removed. Reminders now ask customers to call' }),
+  ).toBeVisible();
+  await expect(saved).toHaveCount(0);
 });
 
 test('the owner reminds one invoice by email, reads its history, and stops and resumes reminders', async ({
