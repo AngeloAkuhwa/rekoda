@@ -23,7 +23,7 @@ test('rejects an unknown suffix, a stray spec and a stray mjs test', () => {
     f('apps/web/e2e/d.test.ts'),
   ]);
   assert.equal(r.errors.length, 4);
-  assert.match(r.errors.join('\n'), /a\.int\.test\.ts: unrecognised/);
+  assert.match(r.errors.join('\n'), /a\.test\.js: unrecognised/);
   assert.match(r.errors.join('\n'), /b\.spec\.ts: \.spec files belong/);
   assert.match(r.errors.join('\n'), /c\.test\.mjs: \.test\.mjs belongs/);
   assert.match(r.errors.join('\n'), /d\.test\.ts: apps\/web\/e2e\/ holds/);
