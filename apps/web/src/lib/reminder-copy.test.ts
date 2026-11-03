@@ -328,6 +328,9 @@ describe('review fixes, round 2 (REM-06)', () => {
     /* Never a promise that every held reminder goes: the send checks still apply. */
     expect(text).not.toMatch(/will go once/);
     expect(text).toMatch(/usual checks/);
+    /* Opt-outs are per channel (OWN-69): the notice must not imply one stops the other. */
+    expect(text).toMatch(/on a channel the customer opted out of/);
+    expect(text).not.toMatch(/customer who opted out is skipped/);
   });
 });
 

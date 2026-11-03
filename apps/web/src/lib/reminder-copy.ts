@@ -368,7 +368,8 @@ export function remindersOffNotice(): string {
   return (
     'Reminders are not switched on for your business yet, so nothing can be sent or scheduled now. ' +
     'Reminders you already scheduled are kept. Once reminders are switched on, each one is sent when ' +
-    'due if it still passes the usual checks (a paid invoice or a customer who opted out is skipped). ' +
+    'due if it still passes the usual checks (nothing goes for a paid invoice, or on a channel the ' +
+    'customer opted out of). ' +
     'You can cancel any of them below. Your invoices and records are unaffected.'
   );
 }
