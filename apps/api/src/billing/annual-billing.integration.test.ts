@@ -11,20 +11,13 @@
  *
  * Each test reads the stored subscription and the charge rows, not only an HTTP status.
  */
+// The annual billing suite (OWN-40, G-110). Split by concern; the rest of this suite is in annual-
+// billing-switching.integration.test.ts.
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { addInterval, annualPriceK, PLAN_PRICES_K } from '@rekoda/core';
 import { billingOverviewResponse } from '@rekoda/contracts';
-import {
-  billingRepo,
-  createDb,
-  issueRepo,
-  planCatalogueRepo,
-  sql,
-  subscriptionsRepo,
-  withBusiness,
-  type Db,
-} from '@rekoda/db';
+import { createDb, issueRepo, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import {
   migrate,
   requireUrls,
@@ -41,11 +34,9 @@ let urls: Urls;
 let app: NestFastifyApplication;
 let db: Db;
 let workerDb: Db;
-let ownerDb: Db;
 let config: ApiConfig;
 let closeDb: () => Promise<void>;
 let closeWorker: () => Promise<void>;
-let closeOwner: () => Promise<void>;
 
 beforeAll(async () => {
   urls = requireUrls();
@@ -67,7 +58,6 @@ beforeAll(async () => {
 
   ({ db, close: closeDb } = createDb(urls.app, { max: 4 }));
   ({ db: workerDb, close: closeWorker } = createDb(urls.worker, { max: 4 }));
-  ({ db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 2 }));
   config = app.get<ApiConfig>(CONFIG);
 });
 
@@ -75,7 +65,6 @@ afterAll(async () => {
   await app?.close();
   await closeDb?.();
   await closeWorker?.();
-  await closeOwner?.();
 });
 
 beforeEach(async () => {
@@ -120,9 +109,6 @@ async function onboard() {
 const anchorOf = (start: Date) => new Date(start.getTime() + 3_600_000).getUTCDate();
 /** An annual cycle whose year ended about a day ago, so the sweep (which prices at the real clock) finds it due. */
 const justEndedYear = () => new Date(Date.now() - 366 * DAY);
-/** A monthly cycle whose month ended a few days ago. */
-const justEndedMonth = () => new Date(Date.now() - 35 * DAY);
-
 const billing = () =>
   new BillingService(
     {
@@ -426,403 +412,5 @@ describe('renewing a year', () => {
     const sub = await subOf(businessId);
     expect(sub?.renewalAnchorDay).toBe(29);
     expect(sub?.planExpiresAt?.toISOString()).toBe('2029-02-28T09:00:00.000Z');
-  });
-});
-
-describe('switching between monthly and annual', () => {
-  it('annual to monthly waits for the renewal: the year already paid is kept whole', async () => {
-    const { businessId } = await onboard();
-    const start = justEndedYear();
-    const anchor = anchorOf(start);
-    await putOnPlan(businessId, 'chat', 'annual', start);
-    const renewsAt = addInterval(start, 'annual', anchor);
-
-    const answer = await billing().switchInterval(
-      businessId,
-      'monthly',
-      new Date(renewsAt.getTime() - 100 * DAY),
-    );
-    expect(answer).toEqual({
-      state: 'scheduled',
-      interval: 'monthly',
-      effectiveAt: renewsAt.toISOString(),
-    });
-    const parked = await subOf(businessId);
-    expect(parked?.billingInterval).toBe('annual');
-    expect(parked?.pendingBillingInterval).toBe('monthly');
-    expect(parked?.planExpiresAt?.toISOString()).toBe(renewsAt.toISOString());
-
-    await sweepRenewals({ workerDb, appDb: db, config });
-    const [charge] = await chargesOf(businessId);
-    expect(charge).toMatchObject({ kind: 'renewal', amountK: CHAT_MONTHLY });
-    expect(charge?.billingInterval).toBe('monthly');
-    expect(charge?.periodEnd?.toISOString()).toBe(
-      addInterval(renewsAt, 'monthly', anchor).toISOString(),
-    );
-
-    await pay(businessId, charge!.reference, new Date());
-    const after = await subOf(businessId);
-    expect(after?.billingInterval).toBe('monthly');
-    expect(after?.pendingBillingInterval).toBeNull();
-    expect(after?.planExpiresAt?.toISOString()).toBe(
-      addInterval(renewsAt, 'monthly', anchor).toISOString(),
-    );
-  });
-
-  it('monthly to annual waits for the renewal, then bills ten months for twelve', async () => {
-    const { businessId } = await onboard();
-    const start = justEndedMonth();
-    const anchor = anchorOf(start);
-    await putOnPlan(businessId, 'chat', 'monthly', start);
-    const renewsAt = addInterval(start, 'monthly', anchor);
-
-    const answer = await billing().switchInterval(
-      businessId,
-      'annual',
-      new Date(renewsAt.getTime() - 10 * DAY),
-    );
-    expect(answer.state).toBe('scheduled');
-    expect((await subOf(businessId))?.billingInterval).toBe('monthly');
-
-    await sweepRenewals({ workerDb, appDb: db, config });
-    const [charge] = await chargesOf(businessId);
-    expect(charge).toMatchObject({ kind: 'renewal', amountK: CHAT_ANNUAL });
-    expect(charge?.billingInterval).toBe('annual');
-
-    await pay(businessId, charge!.reference, new Date());
-    const after = await subOf(businessId);
-    expect(after?.billingInterval).toBe('annual');
-    expect(after?.planExpiresAt?.toISOString()).toBe(
-      addInterval(renewsAt, 'annual', anchor).toISOString(),
-    );
-  });
-
-  it('choosing the interval already in force undoes a switch that was waiting', async () => {
-    const { businessId } = await onboard();
-    await putOnPlan(businessId, 'chat', 'monthly', new Date());
-    await billing().switchInterval(businessId, 'annual');
-    expect((await subOf(businessId))?.pendingBillingInterval).toBe('annual');
-
-    expect(await billing().switchInterval(businessId, 'monthly')).toEqual({
-      state: 'undone',
-      interval: 'monthly',
-    });
-    expect((await subOf(businessId))?.pendingBillingInterval).toBeNull();
-    expect(await billing().switchInterval(businessId, 'monthly')).toEqual({
-      state: 'unchanged',
-      interval: 'monthly',
-    });
-  });
-
-  it('a renewal already raised before the switch is retired and re-raised at the new price', async () => {
-    const { businessId } = await onboard();
-    const start = justEndedMonth();
-    await putOnPlan(businessId, 'chat', 'monthly', start);
-
-    await sweepRenewals({ workerDb, appDb: db, config });
-    const [first] = await chargesOf(businessId);
-    expect(first?.amountK).toBe(CHAT_MONTHLY);
-
-    await billing().switchInterval(businessId, 'annual');
-    await sweepRenewals({ workerDb, appDb: db, config });
-
-    const rows = await chargesOf(businessId);
-    const live = rows.filter((c) => c.status === 'pending' && c.supersededAt === null);
-    expect(live).toHaveLength(1);
-    expect(live[0]).toMatchObject({ amountK: CHAT_ANNUAL, kind: 'renewal' });
-    expect(live[0]?.billingInterval).toBe('annual');
-    expect(rows.find((c) => c.reference === first!.reference)?.supersededAt).not.toBeNull();
-  });
-
-  it('a mid-cycle upgrade keeps a yearly switch that was scheduled before it', async () => {
-    const { businessId } = await onboard();
-    await putOnPlan(businessId, 'chat', 'monthly', new Date(Date.now() - 10 * DAY));
-    await billing().switchInterval(businessId, 'annual');
-
-    const answer = await billing().changePlan(businessId, 'complete', new Date());
-    if (answer.state !== 'payment_required') throw new Error(`got ${answer.state}`);
-    expect(await pay(businessId, answer.reference, new Date())).toBe('applied');
-
-    const after = await subOf(businessId);
-    expect(after?.plan).toBe('complete');
-    // The upgrade kept the cycle it landed in, so the confirmed yearly choice still waits for renewal.
-    expect(after?.billingInterval).toBe('monthly');
-    expect(after?.pendingBillingInterval).toBe('annual');
-  });
-
-  it('a renewal link sent before a switch stops being payable the moment the switch is saved', async () => {
-    const { businessId } = await onboard();
-    await putOnPlan(businessId, 'chat', 'monthly', new Date(Date.now() - 35 * DAY));
-    await sweepRenewals({ workerDb, appDb: db, config });
-    const [monthly] = await chargesOf(businessId);
-    expect(monthly?.supersededAt).toBeNull();
-
-    await billing().switchInterval(businessId, 'annual');
-
-    const rows = await chargesOf(businessId);
-    expect(rows.find((c) => c.reference === monthly!.reference)?.supersededAt).not.toBeNull();
-  });
-
-  it('undoing a downgrade does not revive a renewal that an interval switch made stale', async () => {
-    const { businessId } = await onboard();
-    await putOnPlan(businessId, 'complete', 'monthly', new Date(Date.now() - 35 * DAY));
-    await sweepRenewals({ workerDb, appDb: db, config });
-    const [first] = await chargesOf(businessId);
-
-    await billing().changePlan(businessId, 'chat'); // schedule a downgrade
-    await billing().switchInterval(businessId, 'annual'); // a later decision: first is stale
-    await billing().changePlan(businessId, 'complete'); // undo the downgrade
-
-    const rows = await chargesOf(businessId);
-    expect(rows.find((c) => c.reference === first!.reference)?.supersededAt).not.toBeNull();
-    expect((await subOf(businessId))?.pendingBillingInterval).toBe('annual');
-  });
-
-  it('a cancelled plan has no renewal to switch at, but a switch already waiting can still be undone', async () => {
-    const { businessId } = await onboard();
-    await putOnPlan(businessId, 'chat', 'monthly', new Date(Date.now() - 10 * DAY));
-
-    await billing().cancelPlan(businessId);
-    expect(await billing().switchInterval(businessId, 'annual')).toEqual({
-      state: 'unavailable',
-      reason: 'cancelling',
-    });
-    expect((await subOf(businessId))?.pendingBillingInterval).toBeNull();
-
-    // A switch chosen BEFORE the cancellation may still be taken back.
-    const other = await onboard();
-    await putOnPlan(other.businessId, 'chat', 'monthly', new Date(Date.now() - 10 * DAY));
-    await billing().switchInterval(other.businessId, 'annual');
-    await billing().cancelPlan(other.businessId);
-    // Asking again for the same switch is not "scheduled": there is no renewal to take effect at.
-    expect(await billing().switchInterval(other.businessId, 'annual')).toEqual({
-      state: 'unavailable',
-      reason: 'cancelling',
-    });
-    expect((await billing().switchInterval(other.businessId, 'monthly')).state).toBe('undone');
-  });
-
-  it('a trial or lapsed merchant has no cycle to switch', async () => {
-    const { businessId } = await onboard();
-    expect(await billing().switchInterval(businessId, 'annual')).toEqual({
-      state: 'unavailable',
-      reason: 'no_cycle',
-    });
-  });
-});
-
-describe('changing plan inside an annual cycle', () => {
-  it('sends an upgrade to support review: no proration is invented and nothing is opened', async () => {
-    const { businessId } = await onboard();
-    const start = new Date(Date.now() - 100 * DAY);
-    await putOnPlan(businessId, 'chat', 'annual', start);
-    const now = new Date();
-
-    const quote = await billing().quote(businessId, 'complete', now);
-    expect(quote).toMatchObject({ kind: 'upgrade', supportReview: true, amountK: 0 });
-
-    const answer = await billing().changePlan(businessId, 'complete', now);
-    expect(answer).toEqual({ state: 'unavailable', reason: 'support_review' });
-    expect(await chargesOf(businessId)).toHaveLength(0);
-    expect((await subOf(businessId))?.plan).toBe('chat');
-  });
-
-  it('a downgrade waits for the renewal and renews on the same interval at the cheaper annual price', async () => {
-    const { businessId } = await onboard();
-    const start = justEndedYear();
-    const anchor = anchorOf(start);
-    await putOnPlan(businessId, 'complete', 'annual', start);
-    const renewsAt = addInterval(start, 'annual', anchor);
-
-    const answer = await billing().changePlan(businessId, 'chat', new Date());
-    expect(answer).toEqual({
-      state: 'scheduled',
-      plan: 'chat',
-      effectiveAt: renewsAt.toISOString(),
-    });
-    expect((await subOf(businessId))?.plan).toBe('complete');
-
-    await sweepRenewals({ workerDb, appDb: db, config });
-    const [charge] = await chargesOf(businessId);
-    expect(charge).toMatchObject({ kind: 'renewal', plan: 'chat', amountK: CHAT_ANNUAL });
-    expect(charge?.billingInterval).toBe('annual');
-    await pay(businessId, charge!.reference, new Date());
-    const after = await subOf(businessId);
-    expect(after).toMatchObject({ plan: 'chat', billingInterval: 'annual', pendingPlan: null });
-  });
-
-  it('an operator re-posting the identical annual cycle keeps it annual and provider-bought', async () => {
-    const { businessId } = await onboard();
-    const start = new Date(Date.now() - 100 * DAY);
-    await putOnPlan(businessId, 'chat', 'annual', start);
-    const before = await subOf(businessId);
-
-    await billingRepo.setPlan(db, {
-      businessId,
-      plan: 'chat',
-      expiresAt: before!.planExpiresAt!,
-      actor: 'operator:test',
-    });
-    const after = await subOf(businessId);
-    expect(after?.planExpiresAt?.toISOString()).toBe(before?.planExpiresAt?.toISOString());
-    expect(after?.origin).toBe('provider');
-    // The cycle is still a year long, so the next renewal must still bill a year.
-    expect(after?.billingInterval).toBe('annual');
-  });
-
-  it('an operator move resets the interval to monthly: an arrangement is not a provider year', async () => {
-    const { businessId } = await onboard();
-    await putOnPlan(businessId, 'chat', 'annual', new Date());
-    await billing().switchInterval(businessId, 'monthly');
-
-    await billingRepo.setPlan(db, {
-      businessId,
-      plan: 'integrate',
-      expiresAt: new Date(Date.now() + 30 * DAY),
-      actor: 'operator:test',
-    });
-    const sub = await subOf(businessId);
-    expect(sub?.plan).toBe('integrate');
-    expect(sub?.billingInterval).toBe('monthly');
-    expect(sub?.pendingBillingInterval).toBeNull();
-  });
-});
-
-describe('review of #340: three ways a year could be mispriced or misapplied', () => {
-  it('a catalogue version with only a monthly price still sells a year at ten months, never at zero', async () => {
-    const { businessId } = await onboard();
-    /* A version published without an annual row is legal; the approved rule is monthly x 10. */
-    await planCatalogueRepo.publishPlanVersion(ownerDb, {
-      planId: 'chat',
-      name: 'Rekoda Chat',
-      seats: 1,
-      effectiveFrom: new Date(Date.now() - 40 * DAY),
-      entitlements: ['REKODA_CHAT'],
-      allowances: { AI_ACTIONS: 300, DOCUMENT_GENERATION: 100 },
-      prices: [{ currency: 'NGN', billingInterval: 'monthly', amountMinor: 1_490_000 }],
-    });
-
-    const quote = await billing().quote(businessId, 'chat', new Date(), 'annual');
-    expect(quote).toMatchObject({ kind: 'first_purchase', amountK: 14_900_000 });
-
-    /* The plan table is fed from the same catalogue, so it cannot show a different price. */
-    const overview = await billing().overview(businessId);
-    expect(overview.planPrices.find((row) => row.plan === 'chat')).toEqual({
-      plan: 'chat',
-      monthlyK: 1_490_000,
-      annualK: 14_900_000,
-    });
-
-    /* A merchant pinned to that version who switches to yearly is renewed at a payable price. */
-    const other = await onboard();
-    await putOnPlan(other.businessId, 'chat', 'monthly', new Date(Date.now() - 35 * DAY));
-    await billing().switchInterval(other.businessId, 'annual');
-    await sweepRenewals({ workerDb, appDb: db, config });
-    const [renewal] = await chargesOf(other.businessId);
-    expect(renewal).toMatchObject({ kind: 'renewal', amountK: 14_900_000 });
-    expect(renewal?.billingInterval).toBe('annual');
-  });
-
-  it('undoing a cancellation does not bring back a renewal link an interval switch withdrew', async () => {
-    const { businessId } = await onboard();
-    await putOnPlan(businessId, 'chat', 'monthly', new Date(Date.now() - 35 * DAY));
-
-    /* A monthly renewal is raised for the cycle that just ended... */
-    await sweepRenewals({ workerDb, appDb: db, config });
-    const [monthly] = await chargesOf(businessId);
-    expect(monthly).toMatchObject({ kind: 'renewal', amountK: CHAT_MONTHLY });
-
-    /* ...the owner switches to yearly, cancels, then undoes the cancellation (a switch
-     * cannot be started while a cancellation is waiting). */
-    await billing().switchInterval(businessId, 'annual');
-    await billing().cancelPlan(businessId);
-    await billing().changePlan(businessId, 'chat');
-
-    /* The yearly choice stands and the monthly link stays withdrawn. */
-    expect((await subOf(businessId))?.pendingBillingInterval).toBe('annual');
-    const after = await chargesOf(businessId);
-    expect(after.find((c) => c.reference === monthly!.reference)?.supersededAt).not.toBeNull();
-
-    /* The sweep raises the yearly renewal in its place. */
-    await sweepRenewals({ workerDb, appDb: db, config });
-    const live = (await chargesOf(businessId)).filter(
-      (c) => c.status === 'pending' && c.supersededAt === null && c.kind === 'renewal',
-    );
-    expect(live).toHaveLength(1);
-    expect(live[0]?.billingInterval).toBe('annual');
-    expect(live[0]?.amountK).toBe(CHAT_ANNUAL);
-  });
-
-  it('undoing a downgrade after the sweep replaced the renewal and a switch to yearly keeps the monthly link retired', async () => {
-    const { businessId } = await onboard();
-    await putOnPlan(businessId, 'complete', 'monthly', new Date(Date.now() - 35 * DAY));
-    await sweepRenewals({ workerDb, appDb: db, config });
-    const [first] = await chargesOf(businessId);
-
-    await billing().changePlan(businessId, 'chat'); // schedule a downgrade
-    await sweepRenewals({ workerDb, appDb: db, config }); // replaces the first renewal
-    await billing().switchInterval(businessId, 'annual');
-    await billing().changePlan(businessId, 'complete'); // undo the downgrade
-
-    const rows = await chargesOf(businessId);
-    expect(rows.find((c) => c.reference === first!.reference)?.supersededAt).not.toBeNull();
-    expect((await subOf(businessId))?.pendingBillingInterval).toBe('annual');
-    await sweepRenewals({ workerDb, appDb: db, config });
-    const live = (await chargesOf(businessId)).filter(
-      (c) => c.status === 'pending' && c.supersededAt === null && c.kind === 'renewal',
-    );
-    expect(live).toHaveLength(1);
-    expect(live[0]?.billingInterval).toBe('annual');
-  });
-
-  it('paying a yearly link after the switch was undone leaves monthly waiting for the next renewal', async () => {
-    const { businessId } = await onboard();
-    await putOnPlan(businessId, 'chat', 'monthly', new Date(Date.now() - 35 * DAY));
-    await billing().switchInterval(businessId, 'annual');
-    await sweepRenewals({ workerDb, appDb: db, config });
-    const [yearly] = await chargesOf(businessId);
-    expect(yearly?.billingInterval).toBe('annual');
-
-    // The merchant changes their mind and goes back to monthly; the yearly link is withdrawn.
-    await billing().switchInterval(businessId, 'monthly');
-    expect((await subOf(businessId))?.pendingBillingInterval).toBeNull();
-
-    // They pay it anyway: they get the year they paid for, and monthly is what they chose next.
-    expect(await pay(businessId, yearly!.reference, new Date())).toBe('applied');
-    const after = await subOf(businessId);
-    expect(after?.billingInterval).toBe('annual');
-    expect(after?.pendingBillingInterval).toBe('monthly');
-  });
-
-  it('a switch never strands an open upgrade payment: the upgrade still applies and the switch survives', async () => {
-    const { businessId } = await onboard();
-    await putOnPlan(businessId, 'chat', 'monthly', new Date(Date.now() - 10 * DAY));
-    const upgrade = await billing().changePlan(businessId, 'complete', new Date());
-    if (upgrade.state !== 'payment_required') throw new Error(`got ${upgrade.state}`);
-
-    await billing().switchInterval(businessId, 'annual');
-
-    expect(await pay(businessId, upgrade.reference, new Date())).toBe('applied');
-    const after = await subOf(businessId);
-    expect(after?.plan).toBe('complete');
-    expect(after?.pendingBillingInterval).toBe('annual');
-  });
-
-  it('paying a renewal link that a switch withdrew still buys what it was priced for, and ends grace', async () => {
-    const { businessId } = await onboard();
-    await putOnPlan(businessId, 'chat', 'monthly', new Date(Date.now() - 35 * DAY));
-    await sweepRenewals({ workerDb, appDb: db, config });
-    const [monthly] = await chargesOf(businessId);
-    expect((await subOf(businessId))?.paymentFailedAt).not.toBeNull();
-
-    await billing().switchInterval(businessId, 'annual');
-
-    /* The merchant pays the link they were sent before switching: they get the month they paid for. */
-    expect(await pay(businessId, monthly!.reference, new Date())).toBe('applied');
-    const after = await subOf(businessId);
-    expect(after?.paymentFailedAt).toBeNull();
-    expect(after?.billingInterval).toBe('monthly');
-    // The confirmed yearly choice still waits for the next renewal.
-    expect(after?.pendingBillingInterval).toBe('annual');
   });
 });

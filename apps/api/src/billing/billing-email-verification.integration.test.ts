@@ -9,6 +9,8 @@
  * never reaches the audit trail; a live key waits for the proof and a test key
  * does not.
  */
+// The billing email verification suite. Split by concern; the rest of this suite is in billing-
+// email-live-payment.integration.test.ts.
 import { createHash, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDb, identity, sql, withBusiness, type Db } from '@rekoda/db';
@@ -22,8 +24,6 @@ import {
 } from '../email/email.port.js';
 import { EmailSuppressedError } from '../email/suppressing.sender.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
-import { BillingService } from './billing.service.js';
-import { BillingCheckoutService } from './billing-checkout.service.js';
 import { BillingEmailService } from './billing-email.service.js';
 
 const RUN_SALT = randomBytes(16).toString('hex');
@@ -67,9 +67,6 @@ beforeEach(async () => {
 
 const emails = (sender: MockEmailSender | NoEmailSender = mail, cfg: ApiConfig = config) =>
   new BillingEmailService(cfg, appDb, sender);
-const checkouts = (cfg: ApiConfig = config) => new BillingCheckoutService(cfg, appDb, provider);
-const liveConfig = (): ApiConfig => ({ ...config, paystackSecretKey: 'sk_live_x' });
-
 let seq = 0;
 async function seedBusiness(): Promise<string> {
   seq += 1;
@@ -125,12 +122,6 @@ async function age(businessId: string, seconds: number): Promise<void> {
   } finally {
     await close();
   }
-}
-
-async function pendingCharge(businessId: string): Promise<string> {
-  const answer = await new BillingService(config, appDb).changePlan(businessId, 'chat');
-  if (answer.state !== 'payment_required') throw new Error('a first purchase should be payable');
-  return answer.reference;
 }
 
 describe('who may touch the verification evidence', () => {
@@ -552,295 +543,5 @@ describe('changing the address', () => {
       state: 'already_verified',
     });
     expect((await emails().status(businessId)).verified).toBe(true);
-  });
-});
-
-describe('a live payment', () => {
-  it('waits for the mailbox to be proven, and starts nothing at Paystack', async () => {
-    const businessId = await seedBusiness();
-    const reference = await pendingCharge(businessId);
-    const answer = await checkouts(liveConfig()).checkout(businessId, reference, EMAIL);
-    expect(answer).toEqual({
-      state: 'requires_billing_email_verification',
-      maskedEmail: 'a**@shop.example.ng',
-    });
-    expect(provider.initialized).toHaveLength(0);
-    /* The address was saved, so the page can go straight to "send me the link". */
-    expect((await emails().status(businessId)).maskedEmail).toBe('a**@shop.example.ng');
-  });
-
-  it('proceeds once the mailbox is proven', async () => {
-    const businessId = await seedBusiness();
-    const reference = await pendingCharge(businessId);
-    await checkouts(liveConfig()).checkout(businessId, reference, EMAIL);
-    await emails().confirm(businessId, await mailed(businessId));
-    const answer = await checkouts(liveConfig()).checkout(businessId, reference, undefined);
-    expect(answer.state).toBe('ready');
-    expect(provider.initialized).toHaveLength(1);
-  });
-
-  it('keeps the proof when the same address is re-submitted at checkout', async () => {
-    const businessId = await seedBusiness();
-    const reference = await pendingCharge(businessId);
-    await checkouts(liveConfig()).checkout(businessId, reference, EMAIL);
-    await emails().confirm(businessId, await mailed(businessId));
-    expect((await checkouts(liveConfig()).checkout(businessId, reference, EMAIL)).state).toBe(
-      'ready',
-    );
-  });
-
-  it('asks again when a different address is given at checkout', async () => {
-    const businessId = await seedBusiness();
-    const reference = await pendingCharge(businessId);
-    await checkouts(liveConfig()).checkout(businessId, reference, EMAIL);
-    await emails().confirm(businessId, await mailed(businessId));
-    const answer = await checkouts(liveConfig()).checkout(businessId, reference, OTHER);
-    expect(answer).toMatchObject({ state: 'requires_billing_email_verification' });
-    expect(provider.initialized).toHaveLength(0);
-  });
-
-  it('does not hand back the old link for a different address', async () => {
-    const businessId = await seedBusiness();
-    const reference = await pendingCharge(businessId);
-    /* A link started under the old address while the mailbox was proven. */
-    await checkouts().checkout(businessId, reference, EMAIL);
-    await emails().confirm(businessId, await mailed(businessId));
-    const first = await checkouts(liveConfig()).checkout(businessId, reference, undefined);
-    expect(first.state).toBe('ready');
-
-    const answer = await checkouts(liveConfig()).checkout(businessId, reference, OTHER);
-    expect(answer).toMatchObject({
-      state: 'requires_billing_email_verification',
-      maskedEmail: 'c****@shop.example.ng',
-    });
-    expect((await emails().status(businessId)).verified).toBe(false);
-  });
-
-  it('does not hand back the old link once the address was changed by asking for a link', async () => {
-    const businessId = await seedBusiness();
-    const reference = await pendingCharge(businessId);
-    await checkouts().checkout(businessId, reference, EMAIL);
-    await emails().confirm(businessId, await mailed(businessId));
-    expect((await checkouts(liveConfig()).checkout(businessId, reference, undefined)).state).toBe(
-      'ready',
-    );
-
-    /* The address changes through the verification route, not through checkout. */
-    await age(businessId, 61);
-    await emails().requestVerification(businessId, OTHER);
-
-    /* No address given, and none needed: the one on file is the new, unproven one. */
-    expect(await checkouts(liveConfig()).checkout(businessId, reference, undefined)).toMatchObject({
-      state: 'requires_billing_email_verification',
-    });
-
-    /* Proven, the old session still is not reused: it was started for the other address. */
-    await emails().confirm(businessId, tokenFrom(mail.outbox.at(-1)!));
-    const initialisedBefore = provider.initialized.length;
-    const answer = await checkouts(liveConfig()).checkout(businessId, reference, undefined);
-    expect(answer.state).toBe('ready');
-    expect(provider.initialized).toHaveLength(initialisedBefore + 1);
-    expect(provider.initialized.at(-1)!.customerEmail).toBe(OTHER);
-  });
-
-  it('holds back a link when the address changes while the provider is answering', async () => {
-    const businessId = await seedBusiness();
-    const reference = await pendingCharge(businessId);
-    /* Proven under the first address; no session yet. */
-    await emails().confirm(businessId, await mailed(businessId, EMAIL));
-    await age(businessId, 61);
-    const realInitialize = provider.initializeTransaction.bind(provider);
-    let release!: () => void;
-    let entered!: () => void;
-    const providerEntered = new Promise<void>((resolve) => (entered = resolve));
-    const gate = new Promise<void>((resolve) => (release = resolve));
-    provider.initializeTransaction = async (input) => {
-      entered();
-      await gate;
-      return realInitialize(input);
-    };
-    try {
-      const pending = checkouts(liveConfig()).checkout(businessId, reference, undefined);
-      await providerEntered;
-      await emails().requestVerification(businessId, OTHER);
-      release();
-      expect(await pending).toMatchObject({ state: 'requires_billing_email_verification' });
-    } finally {
-      provider.initializeTransaction = realInitialize;
-    }
-  });
-
-  it('does not reuse a session from before revisions were recorded once the address changed', async () => {
-    const businessId = await seedBusiness();
-    const reference = await pendingCharge(businessId);
-    await checkouts().checkout(businessId, reference, EMAIL);
-    /* Make the session look like one created before migration 0174. */
-    await sql1(
-      businessId,
-      sql`UPDATE subscription_charge_attempts SET email_revision = NULL
-          WHERE business_id = ${businessId}::uuid`,
-    );
-    await emails().confirm(businessId, await mailed(businessId));
-    await age(businessId, 61);
-    await emails().requestVerification(businessId, OTHER);
-    await emails().confirm(businessId, tokenFrom(mail.outbox.at(-1)!));
-
-    const answer = await checkouts(liveConfig()).checkout(businessId, reference, undefined);
-    expect(answer.state).toBe('ready');
-    expect(provider.initialized.at(-1)!.customerEmail).toBe(OTHER);
-  });
-
-  it('does not hand back a cached link on a live key while the mailbox is unproven', async () => {
-    const businessId = await seedBusiness();
-    const reference = await pendingCharge(businessId);
-    /* A session started under a test key, never proven. */
-    expect((await checkouts().checkout(businessId, reference, EMAIL)).state).toBe('ready');
-
-    const answer = await checkouts(liveConfig()).checkout(businessId, reference, undefined);
-    expect(answer).toMatchObject({
-      state: 'requires_billing_email_verification',
-      maskedEmail: 'a**@shop.example.ng',
-    });
-  });
-
-  it('does not give a waiting request the sibling link for a different address', async () => {
-    const businessId = await seedBusiness();
-    const reference = await pendingCharge(businessId);
-    const realInitialize = provider.initializeTransaction.bind(provider);
-    let release!: () => void;
-    let entered!: () => void;
-    const providerEntered = new Promise<void>((resolve) => (entered = resolve));
-    const gate = new Promise<void>((resolve) => (release = resolve));
-    let first = true;
-    provider.initializeTransaction = async (input) => {
-      if (first) {
-        first = false;
-        entered();
-        await gate;
-      }
-      return realInitialize(input);
-    };
-    try {
-      const a = checkouts().checkout(businessId, reference, EMAIL);
-      await providerEntered;
-      const b = checkouts().checkout(businessId, reference, OTHER, { siblingWaitMs: 5_000 });
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      release();
-      const [first_, second] = await Promise.all([a, b]);
-      expect(first_.state).toBe('ready');
-      expect(second.state).toBe('ready');
-      if (first_.state === 'ready' && second.state === 'ready') {
-        expect(second.checkoutUrl).not.toBe(first_.checkoutUrl);
-      }
-      expect(provider.initialized.at(-1)!.customerEmail).toBe(OTHER);
-      expect((await emails().status(businessId)).maskedEmail).toBe('c****@shop.example.ng');
-    } finally {
-      provider.initializeTransaction = realInitialize;
-    }
-  });
-
-  it('does not hand out an adopted pre-attempts link on a live key while the mailbox is unproven', async () => {
-    const businessId = await seedBusiness();
-    const reference = await pendingCharge(businessId);
-    /* An address on file but never proven, and a link stored before attempts existed. */
-    await emails().requestVerification(businessId, EMAIL);
-    await sql1(
-      businessId,
-      sql`UPDATE subscription_charges
-          SET checkout_url = 'https://checkout.stub/legacy', checkout_started_at = now()
-          WHERE business_id = ${businessId}::uuid AND reference = ${reference}`,
-    );
-    const answer = await checkouts(liveConfig()).checkout(businessId, reference, undefined);
-    expect(answer).toMatchObject({ state: 'requires_billing_email_verification' });
-    expect(provider.initialized).toHaveLength(0);
-  });
-
-  it('replaces a session from before revisions were recorded on a live key once the mailbox is proven', async () => {
-    const businessId = await seedBusiness();
-    const reference = await pendingCharge(businessId);
-    await checkouts().checkout(businessId, reference, EMAIL);
-    await emails().confirm(businessId, await mailed(businessId));
-    await sql1(
-      businessId,
-      sql`UPDATE subscription_charge_attempts SET email_revision = NULL
-          WHERE business_id = ${businessId}::uuid`,
-    );
-    const before = provider.initialized.length;
-
-    const first = await checkouts(liveConfig()).checkout(businessId, reference, undefined);
-    expect(first.state).toBe('ready');
-    expect(provider.initialized).toHaveLength(before + 1);
-    const revisions = await sql1<{ email_revision: number | null; status: string }>(
-      businessId,
-      sql`SELECT email_revision, status FROM subscription_charge_attempts
-          WHERE business_id = ${businessId}::uuid AND status = 'active'`,
-    );
-    expect(revisions).toHaveLength(1);
-    expect(revisions[0]!.email_revision).not.toBeNull();
-    const modes = await sql1<{ provider_live: boolean | null }>(
-      businessId,
-      sql`SELECT provider_live FROM subscription_charge_attempts
-          WHERE business_id = ${businessId}::uuid AND status = 'active'`,
-    );
-    expect(modes[0]!.provider_live).toBe(true);
-
-    /* And it is not replaced again: the new session carries its revision. */
-    expect((await checkouts(liveConfig()).checkout(businessId, reference, undefined)).state).toBe(
-      'ready',
-    );
-    expect(provider.initialized).toHaveLength(before + 1);
-  });
-
-  it('does not present a test-key link as a ready live checkout once the mailbox is proven', async () => {
-    const businessId = await seedBusiness();
-    const reference = await pendingCharge(businessId);
-    const first = await checkouts().checkout(businessId, reference, EMAIL);
-    expect(first.state).toBe('ready');
-    await emails().confirm(businessId, await mailed(businessId));
-    const before = provider.initialized.length;
-
-    const answer = await checkouts(liveConfig()).checkout(businessId, reference, undefined);
-    expect(answer.state).toBe('ready');
-    if (first.state === 'ready' && answer.state === 'ready') {
-      expect(answer.checkoutUrl).not.toBe(first.checkoutUrl);
-    }
-    expect(provider.initialized).toHaveLength(before + 1);
-    /* And the live session is then reused, not replaced again. */
-    expect((await checkouts(liveConfig()).checkout(businessId, reference, undefined)).state).toBe(
-      'ready',
-    );
-    expect(provider.initialized).toHaveLength(before + 1);
-  });
-
-  it('does not present a live-key link under a test key either', async () => {
-    const businessId = await seedBusiness();
-    const reference = await pendingCharge(businessId);
-    await emails().confirm(businessId, await mailed(businessId, EMAIL));
-    const first = await checkouts(liveConfig()).checkout(businessId, reference, undefined);
-    expect(first.state).toBe('ready');
-    const before = provider.initialized.length;
-
-    const answer = await checkouts().checkout(businessId, reference, undefined);
-    expect(answer.state).toBe('ready');
-    if (first.state === 'ready' && answer.state === 'ready') {
-      expect(answer.checkoutUrl).not.toBe(first.checkoutUrl);
-    }
-    expect(provider.initialized).toHaveLength(before + 1);
-  });
-
-  it('starts a fresh session for a different address on a test key', async () => {
-    const businessId = await seedBusiness();
-    const reference = await pendingCharge(businessId);
-    const first = await checkouts().checkout(businessId, reference, EMAIL);
-    expect(first.state).toBe('ready');
-    const second = await checkouts().checkout(businessId, reference, OTHER);
-    expect(second.state).toBe('ready');
-    expect(provider.initialized.map((i) => i.customerEmail)).toEqual([EMAIL, OTHER]);
-  });
-
-  it('does not make a test key wait', async () => {
-    const businessId = await seedBusiness();
-    const reference = await pendingCharge(businessId);
-    expect((await checkouts().checkout(businessId, reference, EMAIL)).state).toBe('ready');
   });
 });
