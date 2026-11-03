@@ -799,6 +799,15 @@ describe('review fixes', () => {
     expect((await batches().get(s.businessId, batch.id)).state).toBe('completed');
   });
 
+  it('the batch list says whether customer reminders are switched on, so a screen can say so first', async () => {
+    const s = await shop(1);
+    expect((await batches().list(s.businessId)).released).toBe(true);
+    const off = { ...config, customerReminders: false };
+    expect((await batches(reminderService(mail, off), off).list(s.businessId)).released).toBe(
+      false,
+    );
+  });
+
   it('discovery returns the earliest-scheduled batch first', async () => {
     const s = await shop(2);
     const later = await confirm(s, {

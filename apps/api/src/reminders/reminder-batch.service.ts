@@ -221,7 +221,10 @@ export class ReminderBatchService {
         businessId,
         batches.map((b) => b.id),
       );
-      return { batches: batches.map((b) => summary(b, counts.get(b.id))) };
+      return {
+        batches: batches.map((b) => summary(b, counts.get(b.id))),
+        released: this.config.customerReminders,
+      };
     });
   }
 

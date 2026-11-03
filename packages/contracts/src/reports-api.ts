@@ -2170,6 +2170,11 @@ export type ReminderBatchResponse = z.infer<typeof reminderBatchResponse>;
 
 export const reminderBatchListResponse = z.object({
   batches: z.array(reminderBatchSummary).max(50),
+  /**
+   * Whether customer reminders are switched on for this deployment (`REKODA_CUSTOMER_REMINDERS`).
+   * When false nothing is sent or scheduled, and a screen says so before the merchant starts.
+   */
+  released: z.boolean(),
 });
 export type ReminderBatchListResponse = z.infer<typeof reminderBatchListResponse>;
 

@@ -35,7 +35,7 @@ export const metadata: Metadata = {
 export default async function RemindersPage() {
   const { identity, token } = await requireSessionWithToken();
   const mayAct = canRecordTrade(identity.role);
-  const [{ batches }, debtors] = await Promise.all([
+  const [{ batches, released }, debtors] = await Promise.all([
     reminderBatches(token),
     reportsDebtors(token, true),
   ]);
@@ -68,7 +68,12 @@ export default async function RemindersPage() {
             confirm. Each reminder names your business, quotes what is still owed and tells the
             customer how to pay you.
           </p>
-          {remindable.length === 0 ? (
+          {!released ? (
+            <p className={`rk-dash-empty-line ${styles.spaced}`}>
+              Reminders are not switched on for your business yet, so nothing can be sent or
+              scheduled. Your invoices and records are unaffected.
+            </p>
+          ) : remindable.length === 0 ? (
             <p className={`rk-dash-empty-line ${styles.spaced}`}>
               Nobody owes you anything right now. Invoices with a balance appear here to remind the
               moment they are issued.
