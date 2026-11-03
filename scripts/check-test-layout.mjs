@@ -8,10 +8,15 @@
  *   3. a `.test.mjs` lives only in `scripts/`;
  *   4. every file path named in docs/TEST_MAP.md exists.
  *
- * Layout debt (reported; fails only with --strict):
  *   5. no test file sits directly in `packages/db/src/` (feature folders);
- *   6. no test file is longer than 600 lines.
- * `--strict` is switched on in CI once the debt is cleared.
+ *   6. the size ratchet, against scripts/test-layout-baseline.json:
+ *      - a test file over 600 lines that is not in the baseline fails;
+ *      - a baselined file that grows past its recorded size fails;
+ *      - a baselined file now at 600 lines or fewer, or no longer present,
+ *        fails until its baseline entry is removed (the baseline only shrinks).
+ *
+ * Layout debt (reported; fails only with --strict): a baselined file still
+ * over 600 lines. `--strict` is switched on in CI once the baseline is empty.
  *
  *   node scripts/check-test-layout.mjs [--strict]
  */
@@ -20,6 +25,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 const MAX_LINES = 600;
+const BASELINE = 'scripts/test-layout-baseline.json';
 // Any tracked file that looks like a test, whatever its extension, so an unknown
 // suffix (a.test.js) reaches check() and is rejected there instead of vanishing.
 const TEST_FILE = /\.(test|spec)\.[cm]?[jt]sx?$/;
@@ -39,8 +45,12 @@ export function countLines(text) {
 // config includes `src/**`, Playwright's testDir is apps/web/e2e, and scripts/ has its own runner.
 const TEST_HOME = /^(apps|packages)\/[^/]+\/src\/|^apps\/web\/e2e\/|^scripts\//;
 
-/** Pure: the findings for a list of `{ path, lines }` and the map text. */
-export function check(files, mapText, exists = existsSync) {
+/**
+ * Pure: the findings for a list of `{ path, lines }`, the map text and the size
+ * baseline (`{ path: lines }`, the oversized files that existed when the ratchet
+ * was introduced).
+ */
+export function check(files, mapText, exists = existsSync, baseline = {}) {
   const errors = [];
   const debt = [];
   for (const { path, lines } of files) {
@@ -77,10 +87,31 @@ export function check(files, mapText, exists = existsSync) {
       errors.push(`${path}: .test.mjs belongs in scripts/`);
     }
     if (/^packages\/db\/src\/[^/]+$/.test(path)) {
-      debt.push(`${path}: sits directly in packages/db/src/; move it into a feature folder`);
+      errors.push(`${path}: sits directly in packages/db/src/; move it into a feature folder`);
     }
-    if (lines > MAX_LINES)
+    const allowed = Object.hasOwn(baseline, path) ? baseline[path] : undefined;
+    if (allowed === undefined) {
+      if (lines > MAX_LINES) {
+        errors.push(
+          `${path}: ${lines} lines (over ${MAX_LINES}); split it by concern (only files in ${BASELINE} may be larger)`,
+        );
+      }
+    } else if (lines > allowed) {
+      errors.push(
+        `${path}: grew from ${allowed} to ${lines} lines; it is over ${MAX_LINES} already, so split it instead of adding to it`,
+      );
+    } else if (lines <= MAX_LINES) {
+      errors.push(
+        `${path}: now ${lines} lines, within ${MAX_LINES}; remove its entry from ${BASELINE}`,
+      );
+    } else {
       debt.push(`${path}: ${lines} lines (over ${MAX_LINES}); split by concern`);
+    }
+  }
+  const present = new Set(files.map((x) => x.path));
+  for (const path of Object.keys(baseline)) {
+    if (!present.has(path))
+      errors.push(`${BASELINE}: ${path} is not a test file any more; remove it`);
   }
   for (const m of mapText.matchAll(/`([\w@./\[\]-]+\.(?:test|spec)\.(?:ts|tsx|mjs))`/g)) {
     if (!exists(m[1])) errors.push(`docs/TEST_MAP.md: ${m[1]} does not exist`);
@@ -97,7 +128,13 @@ function main() {
     path,
     lines: countLines(readFileSync(path, 'utf8')),
   }));
-  const { errors, debt } = check(files, readFileSync('docs/TEST_MAP.md', 'utf8'));
+  const baseline = existsSync(BASELINE) ? JSON.parse(readFileSync(BASELINE, 'utf8')).oversized : {};
+  const { errors, debt } = check(
+    files,
+    readFileSync('docs/TEST_MAP.md', 'utf8'),
+    existsSync,
+    baseline,
+  );
   for (const e of errors) console.error(`ERROR ${e}`);
   for (const d of debt) console.error(`${strict ? 'ERROR' : 'warn '} ${d}`);
   console.log(
