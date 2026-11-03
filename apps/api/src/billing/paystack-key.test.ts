@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { chargeGate, paystackKeyKind } from './paystack-key.js';
 
 /*
- * §47 (ADR 0024, owner ruling on Option B, 3 Nov 2026): REKODA_PAYSTACK_PLATFORM_CONFIRMED means the
+ * §47 (ADR 0024, OWN-70, 3 Nov 2026): REKODA_PAYSTACK_PLATFORM_CONFIRMED means the
  * written Paystack platform confirmation was received. It is required for every live-key charge and
  * is irrelevant to a test key, whose money is never real. A key Rekoda does not recognise is neither:
  * it fails closed.

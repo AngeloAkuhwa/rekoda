@@ -1,6 +1,6 @@
 /**
  * Which Paystack world a platform secret key belongs to, and whether a Rekoda charge may be opened
- * with it (spec §47, ADR 0024; owner ruling on Option B, 3 Nov 2026).
+ * with it (spec §47, ADR 0024; OWN-70, 3 Nov 2026).
  *
  * `REKODA_PAYSTACK_PLATFORM_CONFIRMED` means one thing: the written Paystack platform-model
  * confirmation has been received. It therefore gates every LIVE-key charge, and is irrelevant to a

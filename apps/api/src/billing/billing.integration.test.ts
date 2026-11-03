@@ -218,7 +218,7 @@ describe('what a new merchant sees', () => {
 });
 
 /*
- * §47 by key kind (owner ruling on Option B, 3 Nov 2026). The platform-confirmation flag means the
+ * §47 by key kind (OWN-70, 3 Nov 2026). The platform-confirmation flag means the
  * written Paystack confirmation was received: it gates every LIVE-key charge and is irrelevant to a
  * TEST key. A missing or unrecognised key fails closed. Every refusal happens before a charge row
  * exists, so each case also reads the charges table.
