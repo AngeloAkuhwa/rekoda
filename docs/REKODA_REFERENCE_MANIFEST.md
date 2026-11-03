@@ -98,8 +98,8 @@ PR #234 (`fix/autonomous-control-plane-activation-hardening`, final SHA
 | Artifact                                                              | Role                                                                                                                     |
 | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `packages/db/migrations/0000`–`0151`                                  | The schema as it actually is; 152 files, contiguous                                                                      |
-| `packages/db/src/rls-invariants.integration.test.ts`                  | Makes the RLS exemption register executable                                                                              |
-| `packages/db/src/golden-fixture.integration.test.ts`                  | Proves the accounting ties for the golden business (spec §32)                                                            |
+| `packages/db/src/tenancy/rls-invariants.integration.test.ts`          | Makes the RLS exemption register executable                                                                              |
+| `packages/db/src/ledger/golden-fixture.integration.test.ts`           | Proves the accounting ties for the golden business (spec §32)                                                            |
 | `design-system/rekoda/MASTER.md`                                      | Token source of truth; generates `apps/web/src/styles/tokens.css`                                                        |
 | `scripts/check-boundaries.mjs`                                        | Enforces the AI and persistence boundaries in CI                                                                         |
 | `scripts/check-retired-claims.mjs`                                    | Keeps retired architecture claims off current surfaces                                                                   |

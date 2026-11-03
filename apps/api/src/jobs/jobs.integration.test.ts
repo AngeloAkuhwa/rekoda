@@ -1,7 +1,7 @@
 /**
  * The runner, against a real PostgreSQL (MASTER-PLAN 4.4 #3).
  *
- * `packages/db/src/jobs.integration.test.ts` proves the queue's SQL. This file
+ * `packages/db/src/ops/jobs.integration.test.ts` proves the queue's SQL. This file
  * proves the thing built on top of it: that a handler runs pinned to its job's
  * tenant, that its writes and its completion are one transaction, and that a
  * handler which throws leaves nothing behind.

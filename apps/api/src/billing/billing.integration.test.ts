@@ -3,7 +3,7 @@
  * shape → the grace sweep that runs beside it (ADR 0024).
  *
  * The arithmetic itself is proven in packages/core/src/billing.test.ts and
- * the storage in packages/db/src/subscriptions.integration.test.ts. What this
+ * the storage in packages/db/src/billing/subscriptions.integration.test.ts. What this
  * suite pins is everything between them, and three claims in particular:
  *
  *   - §47 refuses a paid change BEFORE opening a charge, so lifting the gate

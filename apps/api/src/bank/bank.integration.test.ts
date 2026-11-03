@@ -2,7 +2,7 @@
  * The bank surface, end to end.
  *
  * The parsing is proven in packages/core/src/bank-statement.test.ts and the
- * storage in packages/db/src/bank.integration.test.ts. What this pins is the
+ * storage in packages/db/src/bank/bank.integration.test.ts. What this pins is the
  * border: that a stranger is refused, that an unreadable file arrives as an
  * outcome the page can explain rather than a status code, and that a
  * merchant's lines reach that merchant and nobody else.

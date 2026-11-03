@@ -1,7 +1,7 @@
 /**
  * Fixtures for the backup scripts (G-02). They use a stand-in dump command, so
  * they need only bash and openssl; the real pg_dump -> pg_restore round trip is
- * proven by packages/db/src/recovery-drill.integration.test.ts.
+ * proven by packages/db/src/ops/recovery-drill.integration.test.ts.
  * Run with `node --test scripts/backup-scripts.test.mjs`.
  */
 import assert from 'node:assert/strict';

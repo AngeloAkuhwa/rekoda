@@ -1,7 +1,7 @@
 /**
  * The reports surface, end to end: session guard → SQL → contract shape.
  *
- * The NUMBERS are proven in packages/db/src/reports.integration.test.ts
+ * The NUMBERS are proven in packages/db/src/ledger/reports.integration.test.ts
  * against hand arithmetic; what this suite pins is the wiring — that the
  * endpoints exist, refuse strangers, scope to the session's tenant, and
  * answer in exactly the shape the web tier's zod contracts will parse.
@@ -2481,7 +2481,7 @@ describe('comparing against the month before', () => {
 /**
  * Withdrawing an invoice, over the wire.
  *
- * The ledger claim is proven in packages/db/src/issue.integration.test.ts.
+ * The ledger claim is proven in packages/db/src/documents/issue.integration.test.ts.
  * What this pins is the border: who may ask, what a bad ask gets, and that a
  * refusal comes back as an ANSWER the register can render rather than an
  * error the merchant has to interpret.
@@ -2585,7 +2585,7 @@ describe('voiding an invoice', () => {
 /**
  * The shelf against the books, end to end.
  *
- * The arithmetic is proven in packages/db/src/stocktake.integration.test.ts;
+ * The arithmetic is proven in packages/db/src/stock/stocktake.integration.test.ts;
  * what this pins is that the two figures reach the page that shows them, that
  * the endpoint refuses a stranger, and that nothing it posts is computed from
  * anything the caller sent.
@@ -2779,7 +2779,7 @@ describe('counting the shelf', () => {
  * Closing a month, end to end.
  *
  * The refusal is proven against the database in
- * packages/db/src/close.integration.test.ts. What this pins is the wiring:
+ * packages/db/src/ledger/close.integration.test.ts. What this pins is the wiring:
  * that the endpoints exist, refuse strangers, scope to the session's tenant,
  * and that a closed month reaches the page which is supposed to show it.
  */
@@ -2941,7 +2941,7 @@ describe('closing a month', () => {
 /**
  * A correction written by hand, end to end.
  *
- * The posting itself is proven in packages/db/src/journal.integration.test.ts.
+ * The posting itself is proven in packages/db/src/ledger/journal.integration.test.ts.
  * What this pins is the border: that the endpoint refuses a stranger, that
  * every refusal arrives as an outcome rather than a 500, and that a
  * correction reaches the statements it is supposed to move.

@@ -1,0 +1,1164 @@
+/**
+ * The booking engine (docs/payments-v1.md §16–25), against real PostgreSQL.
+ *
+ * These are the §37 money outcomes at the storage layer: exact payment,
+ * partial, overpaid, money against a settled invoice, money with no
+ * obligation — and the two invariants that make the rest safe to operate:
+ * the ledger balances from a database READ-BACK (not from the objects that
+ * were about to be written), and one Rekoda reference books exactly once.
+ */
+import { randomBytes } from 'node:crypto';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { sql } from 'drizzle-orm';
+import { paymentReference } from '@rekoda/core';
+import { createDb, withBusiness, type Db, type TenantDb } from '../client.js';
+import {
+  chargesRepo,
+  identity,
+  issueRepo,
+  ordersRepo,
+  paymentsHub,
+  reportsRepo,
+  settleRepo,
+} from '../index.js';
+import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+
+let urls: Urls;
+let db: Db;
+let closeDb: () => Promise<void>;
+
+beforeAll(async () => {
+  urls = requireUrls();
+  await migrate(urls);
+  ({ db, close: closeDb } = createDb(urls.app, { max: 8 }));
+});
+
+afterAll(async () => {
+  await closeDb?.();
+});
+
+beforeEach(async () => {
+  await truncateAll(urls);
+});
+
+async function seedBusiness(): Promise<string> {
+  const user = await identity.upsertUserByPhone(db, '+2348120000001');
+  const business = await identity.createBusinessWithOwner(db, {
+    name: 'Ada Fashion',
+    businessType: null,
+    ownerUserId: user.id,
+  });
+  return business.id;
+}
+
+/** An unpaid ₦150,000 invoice and a live intent covering its balance. */
+async function seedObligation(businessId: string, expectedAmountK = 15_000_000) {
+  return withBusiness(db, businessId, async (tx) => {
+    const sale = await issueRepo.issueSale(tx, {
+      businessId,
+      customerId: null,
+      customerToken: 'CUSTOMER_7K2',
+      items: [{ name: 'wig', quantity: 3, unitPriceK: 5_000_000 }],
+      subtotalK: 15_000_000,
+      discountK: 0,
+      deliveryFeeK: 0,
+      vatK: 0,
+      totalK: 15_000_000,
+      paidK: 0,
+      balanceDueK: 15_000_000,
+      method: 'transfer',
+      sourceType: 'chat',
+      sourceId: 'draft-1',
+      actor: 'system',
+    });
+    const intent = await paymentsHub.createIntent(tx, {
+      businessId,
+      reference: paymentReference(new Date(), (n) => randomBytes(n)),
+      expectedAmountK,
+      providerType: 'paystack',
+      invoiceId: sale.invoiceId,
+    });
+    return { sale, intent };
+  });
+}
+
+function book(
+  tx: TenantDb,
+  businessId: string,
+  intent: paymentsHub.IntentRow,
+  confirmedAmountK: number,
+  overrides: Partial<settleRepo.BookVerifiedPaymentInput> = {},
+) {
+  return settleRepo.bookVerifiedPayment(tx, {
+    businessId,
+    intent: {
+      id: intent.id,
+      reference: intent.reference,
+      invoiceId: intent.invoiceId,
+      customerId: intent.customerId,
+    },
+    confirmedAmountK,
+    currency: 'NGN',
+    providerType: 'paystack',
+    providerRef: `pst-${randomBytes(4).toString('hex')}`,
+    providerStatus: 'success',
+    providerFeeK: 0,
+    feePolicy: 'merchant_bearing',
+    method: 'transfer',
+    actor: 'test',
+    eventId: 'event-1',
+    ...overrides,
+  });
+}
+
+async function one<T extends Record<string, unknown>>(
+  businessId: string,
+  query: ReturnType<typeof sql>,
+): Promise<T | undefined> {
+  const rows = await withBusiness(db, businessId, (tx) => tx.execute(query));
+  return [...rows][0] as T | undefined;
+}
+
+describe('booking outcomes (§21–25)', () => {
+  it('books an exact payment: verified payment, paid invoice, receipt, balanced ledger, MATCHED', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+
+    const booked = await withBusiness(db, businessId, (tx) =>
+      book(tx, businessId, intent, 15_000_000, { providerFeeK: 225_000 }),
+    );
+
+    expect(booked.reconciliation).toBe('matched');
+    expect(booked.allocatedK).toBe(15_000_000);
+    expect(booked.receiptNumber).toMatch(/^RCT-/);
+    expect(booked.invoiceStatus).toBe('paid');
+
+    const payment = await one<{ verified: number; status: string; settlement_amount_k: number }>(
+      businessId,
+      sql`SELECT verified, status, settlement_amount_k::bigint AS settlement_amount_k FROM payments`,
+    );
+    // VERIFIED — the provider confirmed it server-side (ADR 0014).
+    expect(payment?.verified).toBe(1);
+    expect(payment?.status).toBe('confirmed');
+    // ₦150,000 gross − ₦2,250 fee: the fee came out of settlement…
+    expect(Number(payment?.settlement_amount_k)).toBe(14_775_000);
+
+    // …and NEVER out of revenue. Read back from the database, not the input.
+    const revenue = await one<{ credit: number }>(
+      businessId,
+      sql`SELECT coalesce(sum(e.credit_k), 0)::bigint AS credit
+           FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+           WHERE a.code = '4000'`,
+    );
+    expect(Number(revenue?.credit)).toBe(15_000_000);
+
+    const balance = await one<{ d: number; c: number }>(
+      businessId,
+      sql`SELECT coalesce(sum(debit_k), 0)::bigint AS d, coalesce(sum(credit_k), 0)::bigint AS c FROM ledger_entries`,
+    );
+    expect(Number(balance?.d)).toBe(Number(balance?.c));
+
+    const recon = await one<{ status: string }>(
+      businessId,
+      sql`SELECT status FROM reconciliations`,
+    );
+    expect(recon?.status).toBe('MATCHED');
+  });
+
+  it('NEVER lets ₦90,000 mark a ₦150,000 invoice paid — partial stays partial', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+
+    const booked = await withBusiness(db, businessId, (tx) =>
+      book(tx, businessId, intent, 9_000_000),
+    );
+
+    expect(booked.reconciliation).toBe('partial_match');
+    expect(booked.invoiceStatus).toBe('partially_paid');
+
+    const invoice = await one<{ status: string; balance_due_k: number }>(
+      businessId,
+      sql`SELECT status, balance_due_k::bigint AS balance_due_k FROM invoices`,
+    );
+    expect(invoice?.status).toBe('partially_paid');
+    // The balance stays owed — the books do not forgive ₦60,000.
+    expect(Number(invoice?.balance_due_k)).toBe(6_000_000);
+  });
+
+  it('books an overpayment in full: invoice settles, the excess becomes a credit', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+
+    const booked = await withBusiness(db, businessId, (tx) =>
+      book(tx, businessId, intent, 20_000_000),
+    );
+
+    expect(booked.reconciliation).toBe('overpaid');
+    expect(booked.allocatedK).toBe(15_000_000);
+    expect(booked.invoiceStatus).toBe('paid');
+
+    // The excess ₦50,000 appears ONLY here, negative, for a human to resolve.
+    const recon = await one<{ status: string; outstanding_k: number }>(
+      businessId,
+      sql`SELECT status, outstanding_k::bigint AS outstanding_k FROM reconciliations`,
+    );
+    expect(recon?.status).toBe('EXCEPTION');
+    expect(Number(recon?.outstanding_k)).toBe(-5_000_000);
+
+    /*
+     * The ledger holds the GROSS, and this assertion is a correction (PR-137).
+     *
+     * It previously read `toBe(15_000_000)` and was described as booking the
+     * overpayment "conservatively". It was not conservative: ₦50,000 of money
+     * the customer really paid sat in the `payments` row and appeared in no
+     * account, so the merchant's cash read low and the credit they owed the
+     * customer existed nowhere a statement could find it. Conservative would
+     * be recognising the liability, which is what now happens.
+     */
+    const bank = await one<{ d: number }>(
+      businessId,
+      sql`SELECT coalesce(sum(e.debit_k), 0)::bigint AS d
+           FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+           WHERE a.code = '1010'`,
+    );
+    expect(Number(bank?.d)).toBe(20_000_000);
+
+    // The excess is a liability to the customer, not a silent difference.
+    const credit = await one<{ c: number }>(
+      businessId,
+      sql`SELECT coalesce(sum(e.credit_k), 0)::bigint AS c
+           FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+           WHERE a.system_role = 'CUSTOMER_CREDIT'`,
+    );
+    expect(Number(credit?.c)).toBe(5_000_000);
+  });
+
+  it('flags money against an already-settled invoice as duplicate — nothing downstream fires', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+
+    await withBusiness(db, businessId, (tx) => book(tx, businessId, intent, 15_000_000));
+    // The first intent settles (as the processing job would record it) …
+    await withBusiness(db, businessId, (tx) =>
+      paymentsHub.advanceIntent(tx, intent.id, 'succeeded'),
+    );
+    // … and a second, distinct intent against the SAME invoice confirms later.
+    const second = await withBusiness(db, businessId, async (tx) =>
+      paymentsHub.createIntent(tx, {
+        businessId,
+        reference: paymentReference(new Date(), (n) => randomBytes(n)),
+        expectedAmountK: 15_000_000,
+        providerType: 'paystack',
+        invoiceId: intent.invoiceId,
+      }),
+    );
+    const booked = await withBusiness(db, businessId, (tx) =>
+      book(tx, businessId, second, 15_000_000),
+    );
+
+    expect(booked.reconciliation).toBe('duplicate');
+    expect(booked.receiptNumber).toBeNull();
+
+    const receipts = await one<{ n: number }>(
+      businessId,
+      sql`SELECT count(*)::int AS n FROM receipts`,
+    );
+    expect(receipts?.n).toBe(1); // still exactly one
+
+    const paidTwice = await one<{ paid_k: number }>(
+      businessId,
+      sql`SELECT paid_k::bigint AS paid_k FROM invoices`,
+    );
+    expect(Number(paidTwice?.paid_k)).toBe(15_000_000); // not 30,000,000
+  });
+
+  it('refuses to book one Rekoda reference twice — the backstop under the backstops', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+
+    await withBusiness(db, businessId, (tx) => book(tx, businessId, intent, 15_000_000));
+    await expect(
+      withBusiness(db, businessId, (tx) => book(tx, businessId, intent, 15_000_000)),
+    ).rejects.toBeInstanceOf(settleRepo.AlreadyBooked);
+  });
+
+  it('records money with no obligation as requires_review, allocating nothing', async () => {
+    const businessId = await seedBusiness();
+    const intent = await withBusiness(db, businessId, (tx) =>
+      paymentsHub.createIntent(tx, {
+        businessId,
+        reference: paymentReference(new Date(), (n) => randomBytes(n)),
+        expectedAmountK: 5_000_000,
+        providerType: 'paystack',
+      }),
+    );
+
+    const booked = await withBusiness(db, businessId, (tx) =>
+      book(tx, businessId, intent, 5_000_000),
+    );
+
+    expect(booked.reconciliation).toBe('requires_review');
+    expect(booked.receiptNumber).toBeNull();
+    expect(booked.ledgerTransactionId).toBeNull();
+    // The payment row exists — the money is real — but the books wait.
+    const n = await one<{ n: number }>(businessId, sql`SELECT count(*)::int AS n FROM payments`);
+    expect(n?.n).toBe(1);
+  });
+});
+
+describe('a payment larger than the invoice (PR-137)', () => {
+  /**
+   * The invariant the two audits disagreed about, settled here.
+   *
+   * Before this, `bookVerifiedPayment` clamped the posting to `allocatedK`
+   * while recording the full `confirmedAmountK` on the payment row. The two
+   * differed by exactly the overpayment, and that difference was money the
+   * ledger never saw: cash understated, and the credit owed to the customer
+   * absent from every statement. The reconciliation row already called it
+   * `overpaid`; only the books did not.
+   */
+  async function overpay(businessId: string, invoiceTotalK: number, paidK: number) {
+    const { sale, intent } = await withBusiness(db, businessId, async (tx) => {
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_OVER',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: invoiceTotalK }],
+        subtotalK: invoiceTotalK,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: invoiceTotalK,
+        paidK: 0,
+        balanceDueK: invoiceTotalK,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: `over-${invoiceTotalK}-${paidK}`,
+        actor: 'system',
+      });
+      const intent = await paymentsHub.createIntent(tx, {
+        businessId,
+        reference: paymentReference(new Date(), (n) => randomBytes(n)),
+        expectedAmountK: invoiceTotalK,
+        providerType: 'paystack',
+        invoiceId: sale.invoiceId,
+      });
+      return { sale, intent };
+    });
+    const booked = await withBusiness(db, businessId, (tx) => book(tx, businessId, intent, paidK));
+    return { sale, intent, booked };
+  }
+
+  const ledgerByRole = (businessId: string) =>
+    withBusiness(db, businessId, (tx) =>
+      tx.execute<{ system_role: string; dr: number; cr: number }>(sql`
+        SELECT a.system_role, SUM(e.debit_k)::int AS dr, SUM(e.credit_k)::int AS cr
+          FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+         WHERE e.business_id = ${businessId}::uuid
+         GROUP BY a.system_role`),
+    );
+
+  it('puts the whole payment on the books, with the excess as a customer credit', async () => {
+    const businessId = await seedBusiness();
+    const { booked } = await overpay(businessId, 1_000_000, 1_200_000);
+
+    expect(booked.allocatedK).toBe(1_000_000);
+
+    const roles = new Map([...(await ledgerByRole(businessId))].map((r) => [r.system_role, r]));
+    /* The money side shows ₦12,000 because ₦12,000 arrived. */
+    expect(roles.get('BANK')?.dr).toBe(1_200_000);
+    /* The receivable is cleared by what it was owed, and no more. */
+    expect(roles.get('ACCOUNTS_RECEIVABLE')?.cr).toBe(1_000_000);
+    /* And the difference is a liability, not a rounding. */
+    expect(roles.get('CUSTOMER_CREDIT')?.cr).toBe(200_000);
+  });
+
+  it('records the same figure on the payment row and in the ledger', async () => {
+    const businessId = await seedBusiness();
+    await overpay(businessId, 1_000_000, 1_200_000);
+
+    /* The heart of the defect: these two used to differ silently. */
+    const paid = await one<{ amount_k: string }>(
+      businessId,
+      sql`SELECT amount_k FROM payments WHERE business_id = ${businessId}::uuid`,
+    );
+    const roles = new Map([...(await ledgerByRole(businessId))].map((r) => [r.system_role, r]));
+    expect(Number(paid?.amount_k)).toBe(roles.get('BANK')!.dr);
+  });
+
+  it('leaves the ledger balanced, as every posting must', async () => {
+    const businessId = await seedBusiness();
+    await overpay(businessId, 1_000_000, 1_200_000);
+
+    const totals = await one<{ dr: number; cr: number }>(
+      businessId,
+      sql`SELECT SUM(debit_k)::int AS dr, SUM(credit_k)::int AS cr
+            FROM ledger_entries WHERE business_id = ${businessId}::uuid`,
+    );
+    expect(totals?.dr).toBe(totals?.cr);
+  });
+
+  it('still flags the overpayment for a human', async () => {
+    const businessId = await seedBusiness();
+    await overpay(businessId, 1_000_000, 1_200_000);
+
+    /* Posting the money does not decide what to do with it. The exception
+     * stays: the merchant chooses refund or credit-against-next-order. */
+    const row = await one<{ status: string; reason: string; outstanding_k: string }>(
+      businessId,
+      sql`SELECT status, reason, outstanding_k FROM reconciliations
+           WHERE business_id = ${businessId}::uuid`,
+    );
+    expect(row?.status).toBe('EXCEPTION');
+    expect(row?.reason).toBe('overpaid');
+    expect(Number(row?.outstanding_k)).toBe(-200_000);
+  });
+
+  it('an exact payment creates no credit at all', async () => {
+    const businessId = await seedBusiness();
+    await overpay(businessId, 1_000_000, 1_000_000);
+
+    const roles = new Map([...(await ledgerByRole(businessId))].map((r) => [r.system_role, r]));
+    expect(roles.get('BANK')?.dr).toBe(1_000_000);
+    expect(roles.has('CUSTOMER_CREDIT')).toBe(false);
+  });
+
+  it('an underpayment is untouched by any of this', async () => {
+    const businessId = await seedBusiness();
+    const { booked } = await overpay(businessId, 1_000_000, 400_000);
+
+    expect(booked.allocatedK).toBe(400_000);
+    const roles = new Map([...(await ledgerByRole(businessId))].map((r) => [r.system_role, r]));
+    expect(roles.get('BANK')?.dr).toBe(400_000);
+    expect(roles.has('CUSTOMER_CREDIT')).toBe(false);
+  });
+});
+
+describe('the exception queue (§35): resolving', () => {
+  /** Book an overpayment, returning the id of the EXCEPTION row it left behind. */
+  async function seedException(businessId: string): Promise<string> {
+    const { intent } = await seedObligation(businessId);
+    await withBusiness(db, businessId, (tx) => book(tx, businessId, intent, 20_000_000));
+    const recon = await one<{ id: string }>(
+      businessId,
+      sql`SELECT id FROM reconciliations WHERE status = 'EXCEPTION'`,
+    );
+    if (!recon) throw new Error('seed did not produce an exception');
+    return recon.id;
+  }
+
+  it('resolves exactly once: first call wins, the second finds nothing left to resolve', async () => {
+    const businessId = await seedBusiness();
+    const exceptionId = await seedException(businessId);
+
+    const first = await withBusiness(db, businessId, (tx) =>
+      settleRepo.resolveException(tx, businessId, exceptionId, 'user:owner-1'),
+    );
+    expect(first).toBe(true);
+
+    const row = await one<{ resolved_by: string | null; resolved_at: Date | null }>(
+      businessId,
+      sql`SELECT resolved_by, resolved_at FROM reconciliations WHERE id = ${exceptionId}::uuid`,
+    );
+    expect(row?.resolved_by).toBe('user:owner-1');
+    expect(row?.resolved_at).not.toBeNull();
+
+    // A double-tap (or a second reviewer) changes nothing and says so.
+    const second = await withBusiness(db, businessId, (tx) =>
+      settleRepo.resolveException(tx, businessId, exceptionId, 'user:owner-2'),
+    );
+    expect(second).toBe(false);
+    const after = await one<{ resolved_by: string | null }>(
+      businessId,
+      sql`SELECT resolved_by FROM reconciliations WHERE id = ${exceptionId}::uuid`,
+    );
+    expect(after?.resolved_by).toBe('user:owner-1');
+  });
+
+  it('NEVER resolves across tenants: another business holding the id changes nothing', async () => {
+    const businessId = await seedBusiness();
+    const exceptionId = await seedException(businessId);
+
+    const otherUser = await identity.upsertUserByPhone(db, '+2348120000002');
+    const other = await identity.createBusinessWithOwner(db, {
+      name: 'Bode Spares',
+      businessType: null,
+      ownerUserId: otherUser.id,
+    });
+
+    const resolved = await withBusiness(db, other.id, (tx) =>
+      settleRepo.resolveException(tx, other.id, exceptionId, 'user:intruder'),
+    );
+    expect(resolved).toBe(false);
+
+    const row = await one<{ resolved_at: Date | null }>(
+      businessId,
+      sql`SELECT resolved_at FROM reconciliations WHERE id = ${exceptionId}::uuid`,
+    );
+    expect(row?.resolved_at).toBeNull();
+  });
+
+  it('refuses a MATCHED reconciliation — only exceptions are reviewable', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    await withBusiness(db, businessId, (tx) => book(tx, businessId, intent, 15_000_000));
+    const matched = await one<{ id: string }>(
+      businessId,
+      sql`SELECT id FROM reconciliations WHERE status = 'MATCHED'`,
+    );
+
+    const resolved = await withBusiness(db, businessId, (tx) =>
+      settleRepo.resolveException(tx, businessId, matched!.id, 'user:owner-1'),
+    );
+    expect(resolved).toBe(false);
+  });
+
+  it('drops out of the overview count and gains a resolvedAt in the readback once reviewed', async () => {
+    const businessId = await seedBusiness();
+    const exceptionId = await seedException(businessId);
+
+    const before = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.overviewFor(tx, businessId),
+    );
+    expect(before.exceptionsOpen).toBe(1);
+
+    await withBusiness(db, businessId, (tx) =>
+      settleRepo.resolveException(tx, businessId, exceptionId, 'user:owner-1'),
+    );
+
+    const after = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.overviewFor(tx, businessId),
+    );
+    expect(after.exceptionsOpen).toBe(0);
+
+    // The readback keeps the row — reviewed, not erased.
+    const readback = await withBusiness(db, businessId, (tx) => settleRepo.reconciliationsFor(tx));
+    const row = readback.find((r) => r.id === exceptionId);
+    expect(row?.status).toBe('EXCEPTION');
+    expect(row?.resolvedAt).not.toBeNull();
+  });
+});
+
+describe('settlement stamping (§26–28)', () => {
+  it('moves pending → settled with the settlement date, exactly once', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    await withBusiness(db, businessId, (tx) => book(tx, businessId, intent, 15_000_000));
+
+    const first = await withBusiness(db, businessId, (tx) =>
+      settleRepo.markSettlements(
+        tx,
+        businessId,
+        [intent.reference],
+        'settled',
+        '2026-08-19T04:00:00.000Z',
+      ),
+    );
+    expect(first).toBe(1);
+
+    const row = await one<{ settlement_status: string; settled_at: Date | null }>(
+      businessId,
+      sql`SELECT settlement_status, settled_at FROM payments`,
+    );
+    expect(row?.settlement_status).toBe('settled');
+    expect(row?.settled_at).not.toBeNull();
+
+    // Re-polling the same batch is a no-op, not a rewrite.
+    const second = await withBusiness(db, businessId, (tx) =>
+      settleRepo.markSettlements(
+        tx,
+        businessId,
+        [intent.reference],
+        'settled',
+        '2026-08-20T04:00:00.000Z',
+      ),
+    );
+    expect(second).toBe(0);
+  });
+
+  it('a failed batch marks failed and NEVER stamps a settled date', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    await withBusiness(db, businessId, (tx) => book(tx, businessId, intent, 15_000_000));
+
+    const stamped = await withBusiness(db, businessId, (tx) =>
+      settleRepo.markSettlements(tx, businessId, [intent.reference], 'failed', null),
+    );
+    expect(stamped).toBe(1);
+
+    const row = await one<{ settlement_status: string; settled_at: Date | null }>(
+      businessId,
+      sql`SELECT settlement_status, settled_at FROM payments`,
+    );
+    expect(row?.settlement_status).toBe('failed');
+    expect(row?.settled_at).toBeNull();
+  });
+
+  it('another tenant stamping the same reference changes nothing', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    await withBusiness(db, businessId, (tx) => book(tx, businessId, intent, 15_000_000));
+
+    const otherUser = await identity.upsertUserByPhone(db, '+2348120000003');
+    const other = await identity.createBusinessWithOwner(db, {
+      name: 'Bode Spares',
+      businessType: null,
+      ownerUserId: otherUser.id,
+    });
+    const stamped = await withBusiness(db, other.id, (tx) =>
+      settleRepo.markSettlements(tx, other.id, [intent.reference], 'settled', null),
+    );
+    expect(stamped).toBe(0);
+
+    const row = await one<{ settlement_status: string }>(
+      businessId,
+      sql`SELECT settlement_status FROM payments`,
+    );
+    expect(row?.settlement_status).toBe('pending');
+  });
+});
+
+/**
+ * A payment the MERCHANT reported: cash at the counter, a transfer they saw
+ * land (ADR 0014). Real money and a real receipt, distinguishable forever
+ * from one a provider confirmed.
+ */
+describe('recording a merchant-reported payment', () => {
+  /** Just the invoice. No intent: nobody asked a provider for this money. */
+  async function seedUnpaidInvoice(businessId: string) {
+    return withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_7K2',
+        items: [{ name: 'wig', quantity: 3, unitPriceK: 5_000_000 }],
+        subtotalK: 15_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 15_000_000,
+        paidK: 0,
+        balanceDueK: 15_000_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'draft-1',
+        actor: 'system',
+      }),
+    );
+  }
+
+  /* Each recorded payment is its own confirmation and carries its own draft
+   * id, as the chat flow does: one draft, one yes, one attestation. */
+  let paySeq = 0;
+  const record = (businessId: string, invoiceId: string, amountK: number) =>
+    withBusiness(db, businessId, (tx) =>
+      settleRepo.recordMerchantPayment(tx, {
+        businessId,
+        invoiceId,
+        amountK,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: `draft-pay-${++paySeq}`,
+        actor: 'system',
+      }),
+    );
+
+  it('allocates a part payment and leaves the balance owing', async () => {
+    const businessId = await seedBusiness();
+    const sale = await seedUnpaidInvoice(businessId);
+
+    const recorded = await record(businessId, sale.invoiceId, 6_000_000);
+
+    expect(recorded.amountK).toBe(6_000_000);
+    expect(recorded.balanceDueK).toBe(9_000_000);
+    expect(recorded.invoiceStatus).toBe('partially_paid');
+    expect(recorded.receiptNumber).toMatch(/^RCT-/);
+  });
+
+  it('settles the invoice when the payment covers the balance', async () => {
+    const businessId = await seedBusiness();
+    const sale = await seedUnpaidInvoice(businessId);
+
+    const recorded = await record(businessId, sale.invoiceId, 15_000_000);
+
+    expect(recorded.balanceDueK).toBe(0);
+    expect(recorded.invoiceStatus).toBe('paid');
+  });
+
+  it('keeps the ledger balanced and takes the receivable down by the payment', async () => {
+    const businessId = await seedBusiness();
+    const sale = await seedUnpaidInvoice(businessId);
+
+    await record(businessId, sale.invoiceId, 6_000_000);
+
+    const entries = await withBusiness(db, businessId, (tx) =>
+      issueRepo.ledgerEntriesFor(tx, businessId),
+    );
+    const debits = entries.reduce((n, e) => n + e.debitK, 0);
+    const credits = entries.reduce((n, e) => n + e.creditK, 0);
+    expect(debits).toBe(credits);
+
+    const arCredit = entries
+      .filter((e) => e.account === 'ACCOUNTS_RECEIVABLE')
+      .reduce((n, e) => n + e.creditK, 0);
+    expect(arCredit).toBe(6_000_000);
+    const cashDebit = entries.filter((e) => e.account === 'CASH').reduce((n, e) => n + e.debitK, 0);
+    expect(cashDebit).toBe(6_000_000);
+  });
+
+  it('books RECORDED, never verified: no provider vouched for this', async () => {
+    const businessId = await seedBusiness();
+    const sale = await seedUnpaidInvoice(businessId);
+
+    await record(businessId, sale.invoiceId, 6_000_000);
+
+    const { rows: payments } = await withBusiness(db, businessId, (tx) =>
+      settleRepo.paymentsFor(tx),
+    );
+    expect(payments).toHaveLength(1);
+    expect(payments[0]?.verified).toBe(0);
+    expect(payments[0]?.amountK).toBe(6_000_000);
+  });
+
+  it('two part payments accumulate rather than overwrite', async () => {
+    const businessId = await seedBusiness();
+    const sale = await seedUnpaidInvoice(businessId);
+
+    await record(businessId, sale.invoiceId, 6_000_000);
+    const second = await record(businessId, sale.invoiceId, 4_000_000);
+
+    expect(second.balanceDueK).toBe(5_000_000);
+    const entries = await withBusiness(db, businessId, (tx) =>
+      issueRepo.ledgerEntriesFor(tx, businessId),
+    );
+    expect(entries.reduce((n, e) => n + e.debitK, 0)).toBe(
+      entries.reduce((n, e) => n + e.creditK, 0),
+    );
+  });
+
+  it('refuses an invoice that is already settled rather than crediting nothing', async () => {
+    const businessId = await seedBusiness();
+    const sale = await seedUnpaidInvoice(businessId);
+    await record(businessId, sale.invoiceId, 15_000_000);
+
+    await expect(record(businessId, sale.invoiceId, 2_000_000)).rejects.toBeInstanceOf(
+      settleRepo.AlreadySettled,
+    );
+  });
+
+  /**
+   * The balance moved between the merchant's preview and this write. Nothing
+   * is posted: applying what fits and dropping the rest would leave real
+   * money with no story, and only the merchant knows where the excess goes.
+   */
+  it('refuses with the exact excess when the invoice owes less than reported', async () => {
+    const businessId = await seedBusiness();
+    const sale = await seedUnpaidInvoice(businessId);
+    await record(businessId, sale.invoiceId, 10_000_000);
+
+    await expect(record(businessId, sale.invoiceId, 8_000_000)).rejects.toMatchObject({
+      invoiceNumber: sale.invoiceNumber,
+      balanceDueK: 5_000_000,
+      excessK: 3_000_000,
+    });
+
+    // And nothing moved: the refusal is a refusal, not a partial write.
+    const { rows: payments } = await withBusiness(db, businessId, (tx) =>
+      settleRepo.paymentsFor(tx),
+    );
+    expect(payments).toHaveLength(1);
+  });
+});
+
+/**
+ * The payments register, and who can count it.
+ *
+ * `paymentsFor` reads the pinned tenant's payments and then counts the table
+ * with NO business filter at all: `SELECT count(*) FROM payments`, relying
+ * entirely on row-level security to scope it. That is the codebase's normal
+ * bargain, but it is worth one test of its own, because the failure is quiet
+ * and it is not the rows that leak. A merchant would see their own five
+ * payments under a count of two hundred, which is a number about somebody
+ * else's business.
+ */
+describe('one merchant counting their payments', () => {
+  async function businessNamed(phone: string): Promise<string> {
+    const user = await identity.upsertUserByPhone(db, phone);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'A shop',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    return business.id;
+  }
+
+  async function payOnce(businessId: string, amountK: number) {
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_7K2',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: amountK }],
+        subtotalK: amountK,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: amountK,
+        paidK: 0,
+        balanceDueK: amountK,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: `draft-${amountK}`,
+        actor: 'system',
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      settleRepo.recordMerchantPayment(tx, {
+        businessId,
+        invoiceId: sale.invoiceId,
+        amountK,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: `draft-pay-${amountK}`,
+        actor: 'user:1',
+      }),
+    );
+  }
+
+  it('counts only its own, never the other tenant’s', async () => {
+    const mine = await businessNamed('+2348120000071');
+    const theirs = await businessNamed('+2348120000072');
+
+    await payOnce(mine, 1_000_000);
+    for (const amountK of [2_000_000, 3_000_000, 4_000_000]) await payOnce(theirs, amountK);
+
+    const seen = await withBusiness(db, mine, (tx) => settleRepo.paymentsFor(tx));
+    expect(seen.rows).toHaveLength(1);
+    /* The claim that matters: not three, and not four. */
+    expect(seen.count).toBe(1);
+    expect(seen.rows[0]?.amountK).toBe(1_000_000);
+  });
+
+  it('puts the newest payment first, which is the one being asked about', async () => {
+    const businessId = await businessNamed('+2348120000073');
+    await payOnce(businessId, 1_000_000);
+    await payOnce(businessId, 9_000_000);
+
+    /* Oldest-first with a cap meant a busy merchant opened "has my money
+     * arrived" and saw only payments they had stopped caring about. */
+    const seen = await withBusiness(db, businessId, (tx) => settleRepo.paymentsFor(tx));
+    expect(seen.rows[0]?.amountK).toBe(9_000_000);
+    expect(seen.count).toBe(2);
+  });
+});
+
+describe('the verification knows its try (§6.5; PR-055)', () => {
+  it('a connection-known confirmation records a SUCCEEDED attempt and links it', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId, 15_000_000);
+    const connection = await withBusiness(db, businessId, (tx) =>
+      paymentsHub.upsertConnection(tx, { businessId, providerType: 'paystack' }),
+    );
+
+    await withBusiness(db, businessId, (tx) =>
+      book(tx, businessId, intent, 15_000_000, {
+        paymentConnectionId: connection.id,
+        providerRef: 'pst-linked-1',
+      }),
+    );
+
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{
+        attempt_id: string | null;
+        status: string;
+        provider_attempt_id: string;
+      }>(sql`
+        SELECT v.payment_attempt_id AS attempt_id, a.status, a.provider_attempt_id
+        FROM payment_verifications v
+        JOIN payment_attempts a ON a.id = v.payment_attempt_id
+        WHERE v.business_id = ${businessId}::uuid AND v.source = 'PROVIDER_VERIFIED'
+      `),
+    );
+    const row = [...rows][0];
+    expect(row).toBeTruthy();
+    expect(row!.status).toBe('SUCCEEDED');
+    expect(row!.provider_attempt_id).toBe('pst-linked-1');
+  });
+
+  it('a confirmation with no known connection still verifies, attempt-less and honest', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId, 15_000_000);
+    await withBusiness(db, businessId, (tx) =>
+      book(tx, businessId, intent, 15_000_000, { providerRef: 'pst-bare-1' }),
+    );
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ payment_attempt_id: string | null }>(sql`
+        SELECT payment_attempt_id FROM payment_verifications
+        WHERE business_id = ${businessId}::uuid AND source = 'PROVIDER_VERIFIED'
+      `),
+    );
+    expect([...rows][0]!.payment_attempt_id).toBeNull();
+  });
+});
+
+describe('an order processing fee becomes ACTUAL at settlement (G-116, OWN-42)', () => {
+  const TOTAL_K = 15_000_000;
+
+  /** An order with its ESTIMATED processing charge and the invoice it became. */
+  async function seedOrderWithEstimate(businessId: string, tag = 'g116') {
+    return withBusiness(db, businessId, async (tx) => {
+      const order = await ordersRepo.placeOrder(tx, {
+        businessId,
+        customerId: null,
+        lines: [
+          { productId: null, name: 'wig', quantity: 3, unitPriceK: 5_000_000, lineTotalK: TOTAL_K },
+        ],
+        totalK: TOTAL_K,
+        sourceType: 'chat',
+        sourceId: `${tag}-order`,
+      });
+      const charge = await chargesRepo.recordCharge(tx, {
+        businessId,
+        orderId: order.id,
+        type: 'PAYMENT_PROCESSING',
+        label: 'Payment charge',
+        amountMinor: 300_000,
+        beneficiary: 'PROVIDER',
+        economicBearer: 'MERCHANT',
+      });
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_7K2',
+        items: [{ name: 'wig', quantity: 3, unitPriceK: 5_000_000 }],
+        subtotalK: TOTAL_K,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: TOTAL_K,
+        paidK: 0,
+        balanceDueK: TOTAL_K,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: `${tag}-draft`,
+        actor: 'system',
+      });
+      // What the checkout does: the order becomes its invoice.
+      await ordersRepo.markOrder(tx, businessId, order.id, 'placed', 'validated', sale.invoiceId);
+      return { orderId: order.id, chargeId: charge.id, invoiceId: sale.invoiceId };
+    });
+  }
+
+  async function payFor(
+    businessId: string,
+    seeded: { orderId: string; invoiceId: string },
+    amountK: number,
+    providerFeeK: number,
+    /** Production intents carry the invoice only; the order link is the
+     * invoice. Pass true to also set the intent's own order id. */
+    withOrderId = false,
+  ) {
+    return withBusiness(db, businessId, async (tx) => {
+      const intent = await paymentsHub.createIntent(tx, {
+        businessId,
+        reference: paymentReference(new Date(), (n) => randomBytes(n)),
+        expectedAmountK: amountK,
+        providerType: 'paystack',
+        invoiceId: seeded.invoiceId,
+        ...(withOrderId ? { orderId: seeded.orderId } : {}),
+      });
+      await book(tx, businessId, intent, amountK, {
+        providerFeeK,
+        eventId: `event-${intent.reference}`,
+      });
+      // A confirmed intent is terminal, which frees the invoice for the next one.
+      await paymentsHub.advanceIntent(tx, intent.id, 'succeeded');
+      return intent.reference;
+    });
+  }
+
+  const settle = (businessId: string, refs: string[], status: 'settled' | 'held' = 'settled') =>
+    withBusiness(db, businessId, (tx) =>
+      settleRepo.markSettlements(tx, businessId, refs, status, '2026-08-19T04:00:00.000Z'),
+    );
+
+  const charge = async (businessId: string, orderId: string) => {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      chargesRepo.chargesForOrder(tx, businessId, orderId),
+    );
+    return rows.find((c) => c.type === 'PAYMENT_PROCESSING')!;
+  };
+
+  it('stays ESTIMATED when the payment is booked, and resolves to the stated provider fee once the payout settles', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    const ref = await payFor(businessId, seeded, TOTAL_K, 225_000);
+
+    // Authorisation alone proves no final fee.
+    expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ESTIMATED');
+    expect((await charge(businessId, seeded.orderId)).amountMinor).toBe(300_000);
+
+    await settle(businessId, [ref]);
+    const after = await charge(businessId, seeded.orderId);
+    expect(after.actualOrEstimated).toBe('ACTUAL');
+    expect(after.amountMinor).toBe(225_000);
+
+    // The estimate is kept in a traceable record, never silently overwritten.
+    const audit = await one<{
+      old_value: { amountMinor: number };
+      new_value: { amountMinor: number };
+    }>(
+      businessId,
+      sql`SELECT old_value, new_value FROM audit_events WHERE entity = 'payment_charge' AND action = 'resolved_actual'`,
+    );
+    expect(audit?.old_value.amountMinor).toBe(300_000);
+    expect(audit?.new_value.amountMinor).toBe(225_000);
+
+    // Re-polling the same payout resolves nothing a second time.
+    await settle(businessId, [ref]);
+    expect(
+      Number(
+        (
+          await one<{ n: number }>(
+            businessId,
+            sql`SELECT count(*)::int AS n FROM audit_events WHERE action = 'resolved_actual'`,
+          )
+        )?.n,
+      ),
+    ).toBe(1);
+  });
+
+  it('a part-paid order resolves once, with each payment fee counted once', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    const first = await payFor(businessId, seeded, 10_000_000, 150_000);
+    const second = await payFor(businessId, seeded, 5_000_000, 75_000);
+
+    await settle(businessId, [first]);
+    // One payout in, the order still part-settled: nothing is final yet.
+    expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ESTIMATED');
+
+    await settle(businessId, [second]);
+    const done = await charge(businessId, seeded.orderId);
+    expect(done.actualOrEstimated).toBe('ACTUAL');
+    expect(done.amountMinor).toBe(225_000);
+  });
+
+  it('an order not yet fully paid keeps its estimate even when a payment has settled', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    const first = await payFor(businessId, seeded, 10_000_000, 150_000);
+
+    await settle(businessId, [first]);
+    expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ESTIMATED');
+  });
+
+  it('a held payout is not final, so the estimate stands', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    const ref = await payFor(businessId, seeded, TOTAL_K, 225_000);
+
+    await settle(businessId, [ref], 'held');
+    expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ESTIMATED');
+  });
+
+  it('an intent that names the order directly, with no invoice link on the order, still resolves', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(sql`UPDATE orders SET invoice_id = NULL WHERE id = ${seeded.orderId}::uuid`),
+    );
+    const ref = await payFor(businessId, seeded, TOTAL_K, 225_000, true);
+    await settle(businessId, [ref]);
+    expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ACTUAL');
+  });
+
+  it('a payment with no stated fee never finalises the charge at zero', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    const ref = await payFor(businessId, seeded, TOTAL_K, 0, true);
+    await settle(businessId, [ref]);
+    const after = await charge(businessId, seeded.orderId);
+    expect(after.actualOrEstimated).toBe('ESTIMATED');
+    expect(after.amountMinor).toBe(300_000);
+  });
+
+  it('an invoice reopened by a part-refund keeps the estimate until it is paid again', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    const ref = await payFor(businessId, seeded, TOTAL_K, 225_000, true);
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(
+        sql`UPDATE invoices SET balance_due_k = 1000000, paid_k = paid_k - 1000000 WHERE id = ${seeded.invoiceId}::uuid`,
+      ),
+    );
+    await settle(businessId, [ref]);
+    expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ESTIMATED');
+  });
+
+  it('a cash payment that closes the invoice after the provider payout settled resolves the charge', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    const ref = await payFor(businessId, seeded, 10_000_000, 150_000);
+    await settle(businessId, [ref]);
+    expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ESTIMATED');
+
+    await withBusiness(db, businessId, (tx) =>
+      settleRepo.recordMerchantPayment(tx, {
+        businessId,
+        invoiceId: seeded.invoiceId,
+        amountK: 5_000_000,
+        method: 'cash',
+        actor: 'test',
+        sourceType: 'chat',
+        sourceId: 'cash-1',
+      }),
+    );
+    const after = await charge(businessId, seeded.orderId);
+    expect(after.actualOrEstimated).toBe('ACTUAL');
+    expect(after.amountMinor).toBe(150_000);
+  });
+
+  it('a settled payment whose stored fee is NULL keeps the estimate and writes no resolution', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    const ref = await payFor(businessId, seeded, TOTAL_K, 225_000);
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(sql`UPDATE payments SET provider_fee_k = NULL`),
+    );
+    await settle(businessId, [ref]);
+    const after = await charge(businessId, seeded.orderId);
+    expect(after.actualOrEstimated).toBe('ESTIMATED');
+    expect(after.amountMinor).toBe(300_000);
+    const audits = await one<{ n: number }>(
+      businessId,
+      sql`SELECT count(*)::int AS n FROM audit_events WHERE action = 'resolved_actual'`,
+    );
+    expect(Number(audits?.n)).toBe(0);
+  });
+
+  it('a payout covering two orders resolves each from its own payments only', async () => {
+    const businessId = await seedBusiness();
+    const a = await seedOrderWithEstimate(businessId, 'a');
+    const b = await seedOrderWithEstimate(businessId, 'b');
+    const refA = await payFor(businessId, a, TOTAL_K, 225_000);
+    const refB = await payFor(businessId, b, TOTAL_K, 180_000);
+
+    await settle(businessId, [refA, refB]);
+    expect((await charge(businessId, a.orderId)).amountMinor).toBe(225_000);
+    expect((await charge(businessId, b.orderId)).amountMinor).toBe(180_000);
+    expect((await charge(businessId, a.orderId)).actualOrEstimated).toBe('ACTUAL');
+    expect((await charge(businessId, b.orderId)).actualOrEstimated).toBe('ACTUAL');
+  });
+
+  it('a payment first held and later settled resolves the charge at the later settlement', async () => {
+    const businessId = await seedBusiness();
+    const seeded = await seedOrderWithEstimate(businessId);
+    const ref = await payFor(businessId, seeded, TOTAL_K, 225_000);
+
+    await settle(businessId, [ref], 'held');
+    expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ESTIMATED');
+    await settle(businessId, [ref]);
+    expect((await charge(businessId, seeded.orderId)).actualOrEstimated).toBe('ACTUAL');
+  });
+});

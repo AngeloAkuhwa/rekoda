@@ -295,7 +295,7 @@ reviews:
         PostgreSQL migrations, transactions and concurrent writes.
         - Migrations are append-only: never edit an applied migration; add the next number and its
           meta/_journal.json entry. A new business-owned table needs RLS and a tenant policy, or an entry in
-          the exemption register enforced by packages/db/src/rls-invariants.integration.test.ts. Composite
+          the exemption register enforced by packages/db/src/tenancy/rls-invariants.integration.test.ts. Composite
           tenant foreign keys follow the 0132 to 0147 pattern.
         - A migration must be safe to apply before the new code serves traffic: no destructive change that
           the running release still reads.

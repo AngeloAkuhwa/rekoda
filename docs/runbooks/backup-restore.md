@@ -143,7 +143,7 @@ automated one that runs on every push and proves the part that actually
 matters: that a real `pg_dump -Fc` followed by `pg_restore` produces a
 database whose books still tie.
 
-`packages/db/src/recovery-drill.integration.test.ts` seeds a business whose
+`packages/db/src/ops/recovery-drill.integration.test.ts` seeds a business whose
 ledger balances and whose paid invoice carries its payment, allocation and
 receipt, takes a real custom-format dump, restores it into a fresh scratch
 database with the actual binaries, and then interrogates the RESTORED copy:
