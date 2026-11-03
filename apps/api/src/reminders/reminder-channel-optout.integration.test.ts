@@ -14,7 +14,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { emailSuppressionKey } from '@rekoda/core';
+import { emailSuppressionKey, usagePeriod } from '@rekoda/core';
 import {
   encryptFacet,
   matchKeyFor,
@@ -30,6 +30,7 @@ import {
   issueRepo,
   remindersRepo,
   sql,
+  usageRepo,
   wabaRepo,
   withBusiness,
   type Db,
@@ -241,6 +242,22 @@ const send = async (
   return out.results[0]!.reminder;
 };
 
+/** Seed a known positive SERVICE_MESSAGE count, so a refund test can tell one refund from two:
+ * the refund clamps at zero, so from a fresh counter a second refund would be invisible. */
+const seedServiceUnits = async (s: Shop, n: number) => {
+  await withBusiness(db, s.businessId, async (tx) => {
+    const spent = await usageRepo.reserveUnit(
+      tx,
+      s.businessId,
+      usagePeriod(new Date()),
+      'SERVICE_MESSAGE',
+      1000,
+      n,
+    );
+    if (!spent.granted) throw new Error('fixture: seeding the service-message count failed');
+  });
+};
+
 const serviceUnitsUsed = async (s: Shop) => {
   const rows = await withBusiness(db, s.businessId, (tx) =>
     tx.execute<{ used: number }>(
@@ -382,6 +399,7 @@ describe('an opt-out that arrives after the attempt was opened', () => {
      * another connection while that transaction is still open (after its consent read), so only a
      * re-read after the reservation commits can see it. */
     const s = await shop();
+    await seedServiceUnits(s, 3);
     const gateway = new WabaTemplateService(db, config, meta, new PrivacyGateway(db, config));
     type Reserving = { reserveCustomerText: (...args: unknown[]) => Promise<unknown> };
     const inner = gateway as unknown as Reserving;
@@ -398,7 +416,7 @@ describe('an opt-out that arrives after the attempt was opened', () => {
       reasonCode: 'customer_opted_out',
     });
     expect(meta.connectionTexts).toHaveLength(0);
-    expect(await serviceUnitsUsed(s)).toBe(0);
+    expect(await serviceUnitsUsed(s)).toBe(3);
   });
 
   it("a late opt-out on one channel does not stop the other channel's message", async () => {
@@ -469,6 +487,7 @@ describe('when the dispatch-time opt-out read itself fails', () => {
     /* The gateway's own transactions: 1 reserves the unit and records the outbound, 2 re-reads
      * STOP (reads only), 3 refunds. Nothing left, so spec §4.3 rule 4: the unit comes back. */
     const s = await shop();
+    await seedServiceUnits(s, 3);
     const gateway = new WabaTemplateService(
       failingTransaction(2),
       config,
@@ -479,7 +498,7 @@ describe('when the dispatch-time opt-out read itself fails', () => {
       { status: 'failed', reasonCode: 'send_failed' },
     );
     expect(meta.connectionTexts).toHaveLength(0);
-    expect(await serviceUnitsUsed(s)).toBe(0);
+    expect(await serviceUnitsUsed(s)).toBe(3);
   });
 
   it('WhatsApp: when the refund itself cannot be written either, nothing is sent and the refund is not retried', async () => {
@@ -487,6 +506,7 @@ describe('when the dispatch-time opt-out read itself fails', () => {
      * acknowledgement was lost would hand out a free unit. The unit then stays spent, the same
      * residual as a process that dies between the reservation and the send. */
     const s = await shop();
+    await seedServiceUnits(s, 3);
     const gateway = new WabaTemplateService(
       failingTransaction(2, 3),
       config,
@@ -497,6 +517,6 @@ describe('when the dispatch-time opt-out read itself fails', () => {
       { status: 'failed', reasonCode: 'send_failed' },
     );
     expect(meta.connectionTexts).toHaveLength(0);
-    expect(await serviceUnitsUsed(s)).toBe(1);
+    expect(await serviceUnitsUsed(s)).toBe(4);
   });
 });

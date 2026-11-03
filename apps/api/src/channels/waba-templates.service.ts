@@ -72,7 +72,9 @@ export type SendCustomerTextOutcome =
   | { outcome: 'window_closed' }
   /* The customer asked this shop to stop. Not a failure and not a
    * redirect: there is no template, no window and no retry that makes it
-   * sendable, and nothing is metered for a message nobody may receive. */
+   * sendable. Nothing stays metered for a message nobody may receive: a STOP that
+   * lands after the unit was reserved gets the unit refunded once (it stays
+   * spent only if that refund write itself fails). */
   | { outcome: 'suppressed' }
   | { outcome: 'allowance_exhausted'; unit: 'SERVICE_MESSAGE' }
   /* `unknown`: the provider may have accepted the message (a timeout or a dropped connection),
