@@ -134,6 +134,11 @@ jobs:
         run: node scripts/check-retired-claims.mjs
       # Every PR that touches a route can silently make the published
       # reference wrong, and a developer builds against that reference.
+      # Test files follow one layout (CONTRIBUTING, "Where tests go"). Layout debt
+      # is reported, not failed, until the db and billing moves land (--strict).
+      - name: Test layout
+        if: steps.ws.outputs.present == 'true'
+        run: node --test scripts/check-test-layout.test.mjs && node scripts/check-test-layout.mjs
       - name: The API reference describes the API
         if: steps.ws.outputs.present == 'true'
         run: node scripts/check-openapi.mjs
