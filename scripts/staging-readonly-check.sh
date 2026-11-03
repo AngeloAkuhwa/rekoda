@@ -39,6 +39,45 @@ echo "== migration 0183 (billing email send outcome column)"
 echo "== migration 0186 (trial reminder delivery failure column)"
 { dc exec -T postgres sh -c 'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-rekoda}" -Atc "select column_name from information_schema.columns where table_name = '"'"'businesses'"'"' and column_name = '"'"'trial_notice_failed_at'"'"'"' 2>/dev/null || echo "could not query (check the postgres user/db names)"; } | awk 'NF{f=1;print} END{if(!f)print "MISSING"}'
 
+# Annual-billing migrations (SUB-02/SUB-02a certification needs all of them). One read-only
+# query per migration, asked of the postgres container in a read-only session
+# (default_transaction_read_only=on, so even a mistaken statement could not write). The query
+# answers t or f; anything else (a failed exec, a refused connection, a wrong user or database
+# name) is reported as "unknown", never as MISSING and never with the client's error text, which
+# can name the database user: psql's stderr is discarded.
+mig_sql() { # label, boolean SQL
+  r="$(dc exec -T -e PGOPTIONS='-c default_transaction_read_only=on' -e "Q=$2" postgres sh -c \
+    'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-rekoda}" -v ON_ERROR_STOP=1 -Atc "$Q"' 2>/dev/null)"
+  case "$r" in
+    t) say "$1" "APPLIED" ;;
+    f) say "$1" "MISSING" ;;
+    *) say "$1" "unknown (query failed; check the postgres user/db names)" ;;
+  esac
+}
+mig_cols() { # label, table.column ... (APPLIED only when every column exists)
+  label="$1"; shift
+  list=""; n=0
+  for tc in "$@"; do
+    list="${list:+$list, }('${tc%%.*}', '${tc#*.}')"; n=$((n + 1))
+  done
+  mig_sql "$label" "select count(*) = $n from information_schema.columns where table_schema = 'public' and (table_name, column_name) in ($list)"
+}
+
+echo "== annual-billing migrations (APPLIED / MISSING / unknown; read-only)"
+mig_cols "0171 billing_interval" businesses.billing_interval businesses.pending_billing_interval \
+  subscription_charges.billing_interval
+mig_cols "0172 billing checkout columns" businesses.billing_email_sealed businesses.billing_email_set_at \
+  subscription_charges.checkout_url subscription_charges.checkout_started_at
+mig_sql  "0173 checkout attempts table" "select to_regclass('public.subscription_charge_attempts') is not null"
+mig_cols "0174 billing email verification" businesses.billing_email_verified_at \
+  businesses.billing_email_revision subscription_charge_attempts.email_revision \
+  subscription_charge_attempts.provider_live
+mig_sql  "0174 verification table" "select to_regclass('public.billing_email_verifications') is not null"
+mig_cols "0175 reserved meters" external_events.reserved_meters
+mig_cols "0182 charge applied period" subscription_charges.applied_period_start \
+  subscription_charges.applied_period_end
+mig_sql  "0185 address claim function" "select exists (select 1 from pg_proc where proname = 'billing_email_address_claim')"
+
 echo "== recent errors (last 30 minutes; counts only, no log text is printed)"
 for c in api worker; do
   n="$(dc logs --since 30m "$c" 2>&1 | grep -ciE '"level":(50|60)|ERROR|FATAL|migration')"
