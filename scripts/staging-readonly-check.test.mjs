@@ -19,7 +19,11 @@ const SCRIPT = readFileSync(new URL('./staging-readonly-check.sh', import.meta.u
  * a real `compose exec` can, and logs what it saw. `failKey` makes the
  * per-slot query for that one variable fail, as an exec that dies would.
  */
-function host({ failKey = '', env = { META_TRIAL_TEMPLATE: 'rekoda_trial_ending' } } = {}) {
+function host({
+  failKey = '',
+  env = { META_TRIAL_TEMPLATE: 'rekoda_trial_ending' },
+  migrations = 'applied',
+} = {}) {
   const root = mkdtempSync(join(tmpdir(), 'staging-check-'));
   const dir = join(root, 'rekoda');
   const fake = join(root, 'fake');
@@ -43,6 +47,19 @@ if [ "$1" = compose ]; then
   echo "compose $* stdin=$n" >> "${join(fake, 'calls.log')}"
   case " $* " in
     *" exec -T api true "*) exit 0 ;;
+    *" -e Q="*)
+      # A migration query: answer from the fixture. "fail" writes a client error that names a
+      # database user, as psql does, to prove it never reaches the output.
+      case "${migrations}" in
+        applied) echo t ;;
+        missing) echo f ;;
+        noledger) case "$*" in *rekoda_migrations*) echo f ;; *) echo t ;; esac ;;
+        ledgeronly) case "$*" in *rekoda_migrations*) echo t ;; *) echo f ;; esac ;;
+        noaddr) case "$*" in *billing_email_address_requests*|*rekoda_migrations*) echo f ;; *) echo t ;; esac ;;
+        partial) case "$*" in *billing_interval*) echo f ;; *) echo t ;; esac ;;
+        fail) echo "psql: FATAL: password authentication failed for user leakyuser" >&2; exit 2 ;;
+      esac
+      exit 0 ;;
     *" exec -T -e K=${failKey || '__none__'} "*) exit 1 ;;
     *" exec -T -e K="*)
       # Run the container-side snippet for real, against the fixture environment.
@@ -68,7 +85,12 @@ echo image:test`,
     });
     return r.stdout;
   };
-  return { go, script, done: () => rmSync(root, { recursive: true, force: true }) };
+  return {
+    go,
+    script,
+    calls: () => readFileSync(join(fake, 'calls.log'), 'utf8').split('\n'),
+    done: () => rmSync(root, { recursive: true, force: true }),
+  };
 }
 
 test('a compose call cannot swallow the rest of the piped script', () => {
@@ -136,5 +158,95 @@ test('reads set, empty and unset template variables as the API would', () => {
     assert.doesNotMatch(out, /rekoda_otp|x y/);
   } finally {
     h.done();
+  }
+});
+
+test('reports migration 0171 APPLIED when its columns exist', () => {
+  const h = host({ migrations: 'applied' });
+  try {
+    const out = h.go();
+    assert.match(out, /== annual-billing migrations/);
+    assert.match(out, /0171 billing_interval\s+APPLIED\n/);
+    for (const l of ['0172', '0173', '0174', '0175', '0182', '0185']) {
+      assert.match(out, new RegExp(`${l} .*APPLIED\\n`));
+    }
+  } finally {
+    h.done();
+  }
+});
+
+test('reports migration 0171 MISSING when a column is absent, others unaffected', () => {
+  const h = host({ migrations: 'partial' });
+  try {
+    const out = h.go();
+    assert.match(out, /0171 billing_interval\s+MISSING\n/);
+    assert.match(out, /0172 billing checkout columns\s+APPLIED\n/);
+  } finally {
+    h.done();
+  }
+});
+
+test('a failed migration query reads unknown, never MISSING, and leaks no client error text', () => {
+  const h = host({ migrations: 'fail' });
+  try {
+    const out = h.go();
+    assert.match(out, /0171 billing_interval\s+unknown \(query failed/);
+    assert.doesNotMatch(out, /0171 billing_interval\s+MISSING/);
+    assert.doesNotMatch(out, /leakyuser|password authentication|FATAL: /);
+  } finally {
+    h.done();
+  }
+});
+
+test('migration queries are read-only: read-only session, select-only SQL', () => {
+  const h = host();
+  try {
+    h.go();
+    const qs = h.calls().filter((l) => l.includes(' -e Q='));
+    assert.ok(qs.length >= 8, 'every migration is asked');
+    for (const l of qs) {
+      assert.match(l, /PGOPTIONS=-c default_transaction_read_only=on/);
+      const q = l.slice(l.indexOf(' -e Q=') + 6).toLowerCase();
+      assert.match(q, /^select /);
+      assert.doesNotMatch(q, /\b(insert|update|delete|alter|create|drop|truncate|grant)\b/);
+    }
+  } finally {
+    h.done();
+  }
+});
+
+test('0185 is APPLIED only when its table and all three functions are asked for, MISSING when the table is absent', () => {
+  const h = host({ migrations: 'noaddr' });
+  try {
+    const out = h.go();
+    assert.match(out, /0185 address limit objects\s+MISSING\n/);
+    const q = h.calls().find((l) => l.includes('billing_email_address_claim')) ?? '';
+    for (const fn of ['claim', 'wait', 'release'])
+      assert.match(q, new RegExp(`billing_email_address_${fn}`));
+    assert.match(q, /billing_email_address_requests/);
+  } finally {
+    h.done();
+  }
+});
+
+test('objects without a ledger tag read INCOMPLETE, a tag without objects reads INCONSISTENT', () => {
+  const noLedger = host({ migrations: 'noledger' });
+  const ledgerOnly = host({ migrations: 'ledgeronly' });
+  try {
+    const out = noLedger.go();
+    assert.match(
+      out,
+      /0171 billing_interval\s+INCOMPLETE \(objects exist, migration not recorded\)\n/,
+    );
+    assert.doesNotMatch(out, /0171 billing_interval\s+APPLIED/);
+    const q = noLedger.calls().find((l) => l.includes('rekoda_migrations')) ?? '';
+    assert.match(q, /tag = '0171_billing_interval'/);
+    assert.match(
+      ledgerOnly.go(),
+      /0171 billing_interval\s+INCONSISTENT \(recorded, objects missing\)\n/,
+    );
+  } finally {
+    noLedger.done();
+    ledgerOnly.done();
   }
 });
