@@ -17,7 +17,9 @@ export function ReleaseHeldBatchKeys() {
     try {
       const url = new URL(window.location.href);
       url.searchParams.delete('new');
-      window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash);
+      /* `null`, as Next documents: the router then adopts the new address. Passing its own
+       * history state back would bypass it, and a later refresh could restore new=1. */
+      window.history.replaceState(null, '', url.pathname + url.search + url.hash);
     } catch {
       /* The address keeps `new=1`; the marker is already spent, so a revisit releases nothing. */
     }

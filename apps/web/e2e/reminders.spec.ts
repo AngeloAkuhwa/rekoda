@@ -355,6 +355,9 @@ test('a batch is previewed with exclusions explained, confirmed for later, then 
   await expect(page.getByRole('status')).toContainText(
     'Cancelled. 2 invoices will not be reminded.',
   );
+  /* The Confirm marker stays spent through the cancel's refresh: the address must not regain
+   * new=1, or going Back here later would release another Confirm's held key. */
+  await expect(page).not.toHaveURL(/new=1/);
   await page.reload();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('2 invoices, cancelled');
   await expect(items.getByRole('listitem').first()).toContainText('Cancelled');
