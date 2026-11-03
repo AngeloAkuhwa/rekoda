@@ -329,7 +329,8 @@ export function previewReason(code: string | null, channel?: ReminderChannel): s
     .replace(/so nothing was sent( on WhatsApp| by email)?/, (_m, on: string | undefined) =>
       on ? `so it will not be sent${on}` : 'so it will not be sent',
     )
-    .replace('so nothing was delivered', 'so it will not be delivered');
+    .replace('so nothing was delivered', 'so it will not be delivered')
+    .replace('This reminder was not sent.', 'This reminder will not be sent.');
 }
 
 /**
@@ -341,12 +342,32 @@ export function confirmProblem(read: {
   fields?: { invoices?: string; when?: string; attest?: string };
 }): string {
   const problem = read.fields?.when ?? read.fields?.invoices ?? read.error;
-  return problem
-    ? `${problem} Nothing was scheduled.`
-    : 'That did not go through. Nothing was scheduled.';
+  /* "This attempt": an earlier confirmation may have gone through with its answer lost, so the
+   * screen never claims that no batch exists; the list below shows what was scheduled. */
+  const tail =
+    'This attempt did not schedule a new batch. Check the list below for any you already confirmed.';
+  return problem ? `${problem} ${tail}` : `That did not go through. ${tail}`;
 }
 
 /** A reminder action the API refused for this member's role. */
 export function reminderAccessRefusal(): string {
   return 'Your access to this business does not include this action. Ask the business owner if it should.';
+}
+
+/** Which new-batch area to show: the switched-off notice always wins, then nothing owed, then the form. */
+export function newBatchView(
+  released: boolean,
+  remindable: number,
+): 'not_released' | 'nothing_owed' | 'form' {
+  if (!released) return 'not_released';
+  return remindable === 0 ? 'nothing_owed' : 'form';
+}
+
+/** What the merchant reads while customer reminders are switched off. */
+export function remindersOffNotice(): string {
+  return (
+    'Reminders are not switched on for your business yet, so nothing can be sent or scheduled now. ' +
+    'Reminders you already scheduled are kept and will go once reminders are switched on; you can ' +
+    'cancel any of them below. Your invoices and records are unaffected.'
+  );
 }

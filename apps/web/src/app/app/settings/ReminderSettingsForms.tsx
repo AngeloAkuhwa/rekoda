@@ -85,6 +85,7 @@ export function PaymentInstructionForm({
             }}
             maxLength={60}
             autoComplete="off"
+            readOnly={busy}
             placeholder="GTBank"
           />
         </Field>
@@ -104,6 +105,7 @@ export function PaymentInstructionForm({
             }}
             maxLength={80}
             autoComplete="off"
+            readOnly={busy}
           />
         </Field>
         <Field id="piNumber" label="Account number" hint="10 digits." error={f.accountNumber}>
@@ -118,6 +120,7 @@ export function PaymentInstructionForm({
             inputMode="numeric"
             maxLength={14}
             autoComplete="off"
+            readOnly={busy}
           />
         </Field>
         <div>

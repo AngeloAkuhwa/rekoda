@@ -5,6 +5,8 @@ import {
   batchRefusal,
   batchStateLabel,
   confirmProblem,
+  newBatchView,
+  remindersOffNotice,
   previewReason,
   reminderAccessRefusal,
   channelsFromChoice,
@@ -256,14 +258,14 @@ describe('review fixes (REM-06)', () => {
       fields: { when: 'That time has already passed. Pick a later time.' },
     });
     expect(msg).toContain('That time has already passed');
-    expect(msg).toContain('Nothing was scheduled');
+    expect(msg).toContain('did not schedule a new batch');
     expect(
       confirmProblem({ fields: { invoices: 'Pick at least one invoice to remind.' } }),
-    ).toContain('Nothing was scheduled');
+    ).toContain('did not schedule a new batch');
     expect(confirmProblem({ error: 'Pick how to send the reminders.' })).toContain(
       'Pick how to send the reminders.',
     );
-    expect(confirmProblem({})).toContain('Nothing was scheduled');
+    expect(confirmProblem({})).toContain('did not schedule a new batch');
   });
 
   it('a preview speaks about what will happen, never as if something was already attempted', () => {
@@ -293,5 +295,35 @@ describe('review fixes (REM-06)', () => {
     const text = reminderAccessRefusal();
     expect(text).not.toMatch(/view only/);
     expect(text).toMatch(/owner/);
+  });
+});
+
+describe('review fixes, round 2 (REM-06)', () => {
+  it('a Confirm-time problem never rules out an earlier confirmation that did go through', () => {
+    const msg = confirmProblem({
+      fields: { when: 'That time has already passed. Pick a later time.' },
+    });
+    expect(msg).not.toMatch(/Nothing was scheduled/);
+    expect(msg).toMatch(/did not schedule a new batch/);
+    expect(msg).toMatch(/list/);
+  });
+
+  it('the preview never uses the past-tense fallback', () => {
+    expect(previewReason('a_code_nobody_knows')).not.toMatch(/was not sent/);
+    expect(previewReason(null)).toMatch(/will not be sent/);
+  });
+
+  it('the new-batch area shows the switched-off notice whenever reminders are not released, even with invoices to remind', () => {
+    expect(newBatchView(false, 5)).toBe('not_released');
+    expect(newBatchView(false, 0)).toBe('not_released');
+    expect(newBatchView(true, 0)).toBe('nothing_owed');
+    expect(newBatchView(true, 3)).toBe('form');
+  });
+
+  it('the switched-off notice says scheduled batches are kept and can be cancelled', () => {
+    const text = remindersOffNotice();
+    expect(text).toMatch(/not switched on/);
+    expect(text).toMatch(/already scheduled/);
+    expect(text).toMatch(/cancel/);
   });
 });

@@ -16,6 +16,12 @@ import { defineConfig } from '@playwright/test';
  * It needs a database of its own (CI creates `rekoda_reminders`): the vault key below is random
  * per run, and the spec seals a customer's email address with it the way the API would.
  */
+/* Both or neither: one override alone would migrate one database and run the API on another. */
+if (Boolean(process.env.APP_DATABASE_URL) !== Boolean(process.env.DATABASE_URL)) {
+  throw new Error(
+    'Set DATABASE_URL (owner) and APP_DATABASE_URL (rekoda_app) together for the reminder suite, or neither.',
+  );
+}
 const DATABASE_URL =
   process.env.APP_DATABASE_URL ?? 'postgres://rekoda_app@127.0.0.1:5432/rekoda_reminders';
 const OWNER_DATABASE_URL =

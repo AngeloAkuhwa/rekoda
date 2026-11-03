@@ -10,6 +10,8 @@ import {
   invoicesCount,
   lagosDateTime,
   lagosLocalInput,
+  newBatchView,
+  remindersOffNotice,
 } from '@/lib/reminder-copy';
 import { Button } from '@/components/ui/Button';
 import { AppNav } from '../AppNav';
@@ -68,12 +70,9 @@ export default async function RemindersPage() {
             confirm. Each reminder names your business, quotes what is still owed and tells the
             customer how to pay you.
           </p>
-          {!released ? (
-            <p className={`rk-dash-empty-line ${styles.spaced}`}>
-              Reminders are not switched on for your business yet, so nothing can be sent or
-              scheduled. Your invoices and records are unaffected.
-            </p>
-          ) : remindable.length === 0 ? (
+          {newBatchView(released, remindable.length) === 'not_released' ? (
+            <p className={`rk-dash-empty-line ${styles.spaced}`}>{remindersOffNotice()}</p>
+          ) : newBatchView(released, remindable.length) === 'nothing_owed' ? (
             <p className={`rk-dash-empty-line ${styles.spaced}`}>
               Nobody owes you anything right now. Invoices with a balance appear here to remind the
               moment they are issued.
