@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { check, countLines, discover } from './check-test-layout.mjs';
@@ -66,7 +67,7 @@ test('rejects .test.tsx outside apps/web and a top-level tests/ tree', () => {
   assert.equal(r.errors.length, 3);
   assert.match(text, /b\.test\.tsx: .test.tsx runs only in apps\/web/);
   assert.match(text, /c\.test\.tsx: .test.tsx runs only in apps\/web/);
-  assert.match(text, /tests\/d\.test\.ts: .* top-level/);
+  assert.match(text, /tests\/d\.test\.ts: outside src\//);
 });
 
 test('discovers candidates whatever their suffix, so a.test.js is not filtered away', () => {
@@ -94,11 +95,45 @@ test('the command line fails on an unknown suffix and runs from a path with a sp
     writeFileSync(join(root, 'docs/TEST_MAP.md'), '');
     writeFileSync(join(root, 'packages/core/src/a.test.js'), 'x\n');
     sh('git init -q . && git add -A');
-    const script = new URL('./check-test-layout.mjs', import.meta.url).pathname;
+    const script = fileURLToPath(new URL('./check-test-layout.mjs', import.meta.url));
     const r = spawnSync('node', [script], { cwd: root, encoding: 'utf8' });
     assert.equal(r.status, 1, r.stdout + r.stderr);
     assert.match(r.stderr, /a\.test\.js: unrecognised test file suffix/);
     assert.match(r.stdout, /1 test files, 1 errors/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects a test outside a directory the runners discover (src/ or apps/web/e2e/)', () => {
+  const r = run([
+    f('apps/api/tests/a.test.ts'),
+    f('packages/core/test/b.test.ts'),
+    f('apps/web/src/lib/c.test.ts'),
+    f('apps/web/e2e/d.spec.ts'),
+    f('scripts/e.test.mjs'),
+  ]);
+  assert.equal(r.errors.length, 2);
+  assert.match(r.errors.join('\n'), /apps\/api\/tests\/a\.test\.ts: .*src\//);
+  assert.match(r.errors.join('\n'), /packages\/core\/test\/b\.test\.ts: .*src\//);
+});
+
+test('the command line reads paths with non-ASCII names, which git quotes by default', () => {
+  const root = mkdtempSync(join(tmpdir(), 'layout nonascii '));
+  try {
+    const sh = (cmd) => {
+      const r = spawnSync('bash', ['-c', cmd], { cwd: root, encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+    };
+    mkdirSync(join(root, 'docs'));
+    mkdirSync(join(root, 'apps/api/src'), { recursive: true });
+    writeFileSync(join(root, 'docs/TEST_MAP.md'), '');
+    writeFileSync(join(root, 'apps/api/src/état.test.js'), 'x\n');
+    sh('git init -q . && git add -A');
+    const script = fileURLToPath(new URL('./check-test-layout.mjs', import.meta.url));
+    const r = spawnSync('node', [script], { cwd: root, encoding: 'utf8' });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /état\.test\.js: unrecognised test file suffix/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

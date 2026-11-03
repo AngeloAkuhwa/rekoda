@@ -35,8 +35,9 @@ export function countLines(text) {
   return text.split('\n').length - (text.endsWith('\n') ? 1 : 0);
 }
 
-// Where a test may live: a workspace (apps/*, packages/*) or scripts/.
-const TEST_HOME = /^(apps|packages)\/[^/]+\/|^scripts\//;
+// Where a test may live: a directory the runners discover. Every workspace unit and integration
+// config includes `src/**`, Playwright's testDir is apps/web/e2e, and scripts/ has its own runner.
+const TEST_HOME = /^(apps|packages)\/[^/]+\/src\/|^apps\/web\/e2e\/|^scripts\//;
 
 /** Pure: the findings for a list of `{ path, lines }` and the map text. */
 export function check(files, mapText, exists = existsSync) {
@@ -50,7 +51,9 @@ export function check(files, mapText, exists = existsSync) {
       /\.test\.mjs$/.test(path);
     if (!ok) errors.push(`${path}: unrecognised test file suffix`);
     if (!TEST_HOME.test(path)) {
-      errors.push(`${path}: outside apps/*, packages/* and scripts/ (no top-level test tree)`);
+      errors.push(
+        `${path}: outside src/ of an app or package, apps/web/e2e/ and scripts/ (the runners find tests only there)`,
+      );
     }
     if (/\.test\.tsx$/.test(path) && !path.startsWith('apps/web/')) {
       errors.push(`${path}: .test.tsx runs only in apps/web (other unit configs match *.test.ts)`);
@@ -78,7 +81,7 @@ export function check(files, mapText, exists = existsSync) {
 function main() {
   const strict = process.argv.includes('--strict');
   const listed = discover(
-    execFileSync('git', ['ls-files'], { encoding: 'utf8', maxBuffer: 64e6 }).split('\n'),
+    execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8', maxBuffer: 64e6 }).split('\0'),
   ).filter((p) => existsSync(p));
   const files = listed.map((path) => ({
     path,
