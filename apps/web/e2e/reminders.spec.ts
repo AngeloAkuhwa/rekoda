@@ -15,7 +15,8 @@ import { expect, test, type Browser, type Page, type TestInfo } from '@playwrigh
 import postgres from 'postgres';
 import { encryptFacet } from '@rekoda/core/vault';
 
-const OWNER_DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://rekoda@127.0.0.1:5432/rekoda';
+const OWNER_DATABASE_URL =
+  process.env.DATABASE_URL ?? 'postgres://rekoda@127.0.0.1:5432/rekoda_reminders';
 const sql = postgres(OWNER_DATABASE_URL, { max: 2, onnotice: () => {} });
 const VAULT_KEY = process.env.REKODA_E2E_VAULT_KEY!;
 const API_URL = process.env.REKODA_E2E_API_URL!;

@@ -32,6 +32,13 @@ export function PaymentInstructionForm({
   const f = state.fields ?? {};
   /* Controlled, so a refused save keeps what the owner typed: React resets an uncontrolled form
    * after its action returns, which would wipe the account number they are correcting. */
+  /* One decision at a time: a save and a removal must never both be in flight, or whichever
+   * finished last would decide the account customers are told to pay into. */
+  const busy = saving || clearing;
+  /* A saved message describes the saved account; once a field is edited it would describe an
+   * account that is not saved, so it is hidden until the next save answers. */
+  const [edited, setEdited] = useState(false);
+  useEffect(() => setEdited(false), [state]);
   const [bankName, setBankName] = useState(current?.bankName ?? '');
   const [accountName, setAccountName] = useState(current?.accountName ?? '');
   const [accountNumber, setAccountNumber] = useState(current?.accountNumber ?? '');
@@ -53,7 +60,10 @@ export function PaymentInstructionForm({
             name="bankName"
             className="rk-input"
             value={bankName}
-            onChange={(e) => setBankName(e.target.value)}
+            onChange={(e) => {
+              setBankName(e.target.value);
+              setEdited(true);
+            }}
             maxLength={60}
             autoComplete="off"
             placeholder="GTBank"
@@ -69,7 +79,10 @@ export function PaymentInstructionForm({
             name="accountName"
             className="rk-input"
             value={accountName}
-            onChange={(e) => setAccountName(e.target.value)}
+            onChange={(e) => {
+              setAccountName(e.target.value);
+              setEdited(true);
+            }}
             maxLength={80}
             autoComplete="off"
           />
@@ -79,7 +92,10 @@ export function PaymentInstructionForm({
             name="accountNumber"
             className="rk-input"
             value={accountNumber}
-            onChange={(e) => setAccountNumber(e.target.value)}
+            onChange={(e) => {
+              setAccountNumber(e.target.value);
+              setEdited(true);
+            }}
             inputMode="numeric"
             maxLength={14}
             autoComplete="off"
@@ -109,13 +125,13 @@ export function PaymentInstructionForm({
             {state.error}
           </p>
         ) : null}
-        {state.done ? (
+        {state.done && !edited ? (
           <p className="rk-fineprint" role="status">
             {state.done}
           </p>
         ) : null}
         <div className={styles.actions}>
-          <Button type="submit" disabled={saving}>
+          <Button type="submit" disabled={busy}>
             {saving ? 'Saving…' : 'Save bank details'}
           </Button>
         </div>
@@ -133,7 +149,7 @@ export function PaymentInstructionForm({
             </p>
           ) : null}
           <div>
-            <Button type="submit" variant="secondary" disabled={clearing}>
+            <Button type="submit" variant="secondary" disabled={busy}>
               {clearing ? 'Removing…' : 'Stop showing bank details'}
             </Button>
           </div>

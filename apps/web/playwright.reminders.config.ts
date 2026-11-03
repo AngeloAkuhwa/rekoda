@@ -16,8 +16,10 @@ import { defineConfig } from '@playwright/test';
  * It needs a database of its own (CI creates `rekoda_reminders`): the vault key below is random
  * per run, and the spec seals a customer's email address with it the way the API would.
  */
-const DATABASE_URL = process.env.APP_DATABASE_URL ?? 'postgres://rekoda_app@127.0.0.1:5432/rekoda';
-const OWNER_DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://rekoda@127.0.0.1:5432/rekoda';
+const DATABASE_URL =
+  process.env.APP_DATABASE_URL ?? 'postgres://rekoda_app@127.0.0.1:5432/rekoda_reminders';
+const OWNER_DATABASE_URL =
+  process.env.DATABASE_URL ?? 'postgres://rekoda@127.0.0.1:5432/rekoda_reminders';
 const API_PORT = 3121;
 const WEB_PORT = 3120;
 

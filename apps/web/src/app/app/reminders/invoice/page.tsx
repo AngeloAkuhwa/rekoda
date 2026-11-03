@@ -75,8 +75,8 @@ export default async function InvoiceRemindersPage({
               </p>
             ) : (
               <p className={styles.summary}>
-                This invoice is not on your list of unpaid invoices, so a reminder would most likely
-                be refused because nothing is owed.
+                The balance for this invoice is not shown here. Rekoda reads it just before sending,
+                and never reminds a customer about an invoice that is paid.
               </p>
             )}
             {!mayAct ? (
