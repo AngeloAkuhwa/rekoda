@@ -730,6 +730,36 @@ describe('review fixes', () => {
     expect([...used][0]?.used ?? 0).toBe(1);
   });
 
+  it('confirms invoice numbers in any letter case, as the preview reads them, and keeps one per invoice', async () => {
+    const s = await shop(1);
+    const n = numbers(s)[0]!;
+    const preview = await batches().preview(s.businessId, {
+      invoiceNumbers: [n.toLowerCase(), n],
+      channels: ['email'],
+      attest: true,
+    });
+    expect(preview.recipients).toHaveLength(1);
+    expect(preview.duplicates).toEqual([n]);
+    const batch = await confirm(s, { invoiceNumbers: [n.toLowerCase(), n] });
+    expect(batch.itemCount).toBe(1);
+    expect(batch.items.map((i) => i.invoiceNumber)).toEqual([n]);
+  });
+
+  it('the preview flags an invoice already waiting in another scheduled batch (no cooldown is imposed, OWN-67)', async () => {
+    const s = await shop(2);
+    await confirm(s, {
+      invoiceNumbers: [numbers(s)[0]!],
+      scheduledFor: new Date(Date.now() + 600_000).toISOString(),
+    });
+    const preview = await batches().preview(s.businessId, {
+      invoiceNumbers: numbers(s),
+      channels: ['email'],
+      attest: true,
+    });
+    expect(preview.recipients.map((r) => r.alsoScheduled)).toEqual([true, false]);
+    expect(preview.eligibleCount).toBe(2);
+  });
+
   it('discovery returns the earliest-scheduled batch first', async () => {
     const s = await shop(2);
     const later = await confirm(s, {

@@ -93,7 +93,16 @@ const fromStored = (stored: reminderBatchesRepo.BatchChannels): Channels => {
   return [stored];
 };
 
-const distinct = (numbers: string[]): string[] => [...new Set(numbers)];
+/** Distinct by the case-insensitive invoice key, keeping the first spelling. */
+const distinct = (numbers: string[]): string[] => {
+  const seen = new Set<string>();
+  return numbers.filter((n) => {
+    const k = reminderBatchesRepo.invoiceKey(n);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+};
 
 @Injectable()
 export class ReminderBatchService {
@@ -134,7 +143,7 @@ export class ReminderBatchService {
       const prior = await reminderBatchesRepo.batchByKey(tx, businessId, input.idempotencyKey);
       if (prior) return { id: prior.id, created: false };
       const ids = await reminderBatchesRepo.invoiceIdsByNumber(tx, businessId, numbers);
-      const unknown = numbers.filter((n) => !ids.has(n));
+      const unknown = numbers.filter((n) => !ids.has(reminderBatchesRepo.invoiceKey(n)));
       if (unknown.length > 0) throw new BatchUnknownInvoices(unknown);
       const made = await reminderBatchesRepo.createBatch(tx, {
         businessId,
@@ -143,7 +152,7 @@ export class ReminderBatchService {
         scheduledFor,
         idempotencyKey: input.idempotencyKey,
         createdBy: userId,
-        invoiceIds: numbers.map((n) => ids.get(n)!),
+        invoiceIds: numbers.map((n) => ids.get(reminderBatchesRepo.invoiceKey(n))!.id),
       });
       /* The attestation is the merchant's act at confirmation, bound to the addresses on file now,
        * written in the same transaction as the batch (OWN-62(A), OWN-65). */
@@ -160,7 +169,11 @@ export class ReminderBatchService {
       );
       const same =
         batch.items.length === numbers.length &&
-        batch.items.every((item, i) => item.invoiceNumber === numbers[i]) &&
+        batch.items.every(
+          (item, i) =>
+            reminderBatchesRepo.invoiceKey(item.invoiceNumber) ===
+            reminderBatchesRepo.invoiceKey(numbers[i]!),
+        ) &&
         stored!.channels === channels &&
         stored!.attest === (input.attest === true) &&
         (input.scheduledFor === undefined ||

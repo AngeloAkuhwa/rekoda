@@ -42,7 +42,14 @@ import type {
   SendReminderResponse,
 } from '@rekoda/contracts';
 import type { NotificationChannel } from '@rekoda/core';
-import { customersRepo, remindersRepo, withBusiness, type Db, type TenantDb } from '@rekoda/db';
+import {
+  customersRepo,
+  reminderBatchesRepo,
+  remindersRepo,
+  withBusiness,
+  type Db,
+  type TenantDb,
+} from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
 import {
@@ -196,10 +203,12 @@ export class ReminderService {
     const seen = new Set<string>();
     const duplicates = new Set<string>();
     const numbers: string[] = [];
+    /* Invoice numbers are matched case-insensitively, as the send matches them. */
     for (const n of input.invoiceNumbers) {
-      if (seen.has(n)) duplicates.add(n);
+      const k = n.toUpperCase();
+      if (seen.has(k)) duplicates.add(n);
       else {
-        seen.add(n);
+        seen.add(k);
         numbers.push(n);
       }
     }
@@ -246,10 +255,25 @@ export class ReminderService {
           );
           out.push({ channel, block: j.block, phone: j.phone });
         }
-        return { balanceK: invoice.balanceDueK, channels: out };
+        return {
+          invoiceNumber: invoice.invoiceNumber,
+          balanceK: invoice.balanceDueK,
+          channels: out,
+          alsoScheduled: await reminderBatchesRepo.invoiceAlsoScheduled(
+            tx,
+            businessId,
+            invoice.invoiceId,
+          ),
+        };
       });
       if (!judged) {
-        recipients.push({ invoiceNumber, found: false, balanceK: null, channels: [] });
+        recipients.push({
+          invoiceNumber,
+          found: false,
+          balanceK: null,
+          channels: [],
+          alsoScheduled: false,
+        });
         continue;
       }
       const channels: ReminderBatchPreviewResponse['recipients'][number]['channels'] = [];
@@ -261,7 +285,13 @@ export class ReminderService {
         }
         channels.push({ channel: c.channel, eligible: reason === null, reasonCode: reason });
       }
-      recipients.push({ invoiceNumber, found: true, balanceK: judged.balanceK, channels });
+      recipients.push({
+        invoiceNumber: judged.invoiceNumber,
+        found: true,
+        balanceK: judged.balanceK,
+        channels,
+        alsoScheduled: judged.alsoScheduled,
+      });
     }
     const eligibleCount = recipients.filter((r) => r.channels.some((c) => c.eligible)).length;
     return {

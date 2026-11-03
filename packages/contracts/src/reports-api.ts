@@ -2087,6 +2087,11 @@ export const reminderPreviewRecipient = z.object({
   /** The balance read now, in kobo; it is read again immediately before each send. */
   balanceK: z.number().int().nullable(),
   channels: z.array(reminderPreviewChannel),
+  /**
+   * This invoice is already waiting in another scheduled batch. Not a refusal (there is no
+   * cooldown, OWN-67): the merchant sees it before confirming a second reminder.
+   */
+  alsoScheduled: z.boolean(),
 });
 
 /**

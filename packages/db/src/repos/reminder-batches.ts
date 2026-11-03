@@ -88,22 +88,50 @@ const toBatch = (r: RawBatch): BatchRow => ({
 const BATCH_COLUMNS = sql`b.id, b.channels, b.attest, b.state, b.scheduled_for, b.item_count,
   b.created_by, b.created_at, b.cancelled_at, b.completed_at, b.paused_until`;
 
-/** Invoice ids for these numbers in this business; numbers it does not have are simply absent. */
+/** The key an invoice number is matched on: invoice numbers are matched case-insensitively. */
+export const invoiceKey = (invoiceNumber: string): string => invoiceNumber.toUpperCase();
+
+/**
+ * Invoices for these numbers in this business, keyed by `invoiceKey` (the same case-insensitive
+ * match as the reminder path's `invoiceForReminder`); numbers it does not have are absent.
+ */
 export async function invoiceIdsByNumber(
   tx: TenantDb,
   businessId: string,
   invoiceNumbers: string[],
-): Promise<Map<string, string>> {
+): Promise<Map<string, { id: string; invoiceNumber: string }>> {
   if (invoiceNumbers.length === 0) return new Map();
   const rows = await tx.execute<{ id: string; invoice_number: string }>(sql`
     SELECT id, invoice_number FROM invoices
     WHERE business_id = ${businessId}
-      AND invoice_number IN (${sql.join(
-        invoiceNumbers.map((n) => sql`${n}`),
+      AND upper(invoice_number) IN (${sql.join(
+        invoiceNumbers.map((n) => sql`upper(${n})`),
         sql`, `,
       )})
   `);
-  return new Map([...rows].map((r) => [r.invoice_number, r.id]));
+  return new Map(
+    [...rows].map((r) => [
+      invoiceKey(r.invoice_number),
+      { id: r.id, invoiceNumber: r.invoice_number },
+    ]),
+  );
+}
+
+/** Is this invoice waiting (not yet dispatched) in a scheduled batch? */
+export async function invoiceAlsoScheduled(
+  tx: TenantDb,
+  businessId: string,
+  invoiceId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ yes: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM reminder_batch_items i
+      JOIN reminder_batches b ON b.business_id = i.business_id AND b.id = i.batch_id
+      WHERE i.business_id = ${businessId} AND i.invoice_id = ${invoiceId}
+        AND i.state IN ('pending', 'dispatching') AND b.state = 'scheduled'
+    ) AS yes
+  `);
+  return [...rows][0]?.yes === true;
 }
 
 /**
