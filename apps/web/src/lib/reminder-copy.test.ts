@@ -324,7 +324,9 @@ describe('review fixes, round 2 (REM-06)', () => {
     const text = remindersOffNotice();
     expect(text).toMatch(/not switched on/);
     expect(text).toMatch(/already scheduled/);
-    expect(text).toMatch(/none is sent while reminders are off/);
+    expect(text).toMatch(/checked again just before it is sent/);
+    expect(text).toMatch(/one already being sent may still finish/);
+    expect(text).not.toMatch(/none is sent while reminders are off/);
     expect(text).toMatch(/not at the time you chose/);
     expect(text).toMatch(/open it from the list and cancel/);
     expect(text).not.toMatch(/cancel any of them below/);

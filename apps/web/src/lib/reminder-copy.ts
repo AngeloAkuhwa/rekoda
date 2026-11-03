@@ -452,7 +452,8 @@ export function newBatchView(
 export function remindersOffNotice(): string {
   return (
     'Reminders are not switched on for your business yet, so nothing can be sent or scheduled now. ' +
-    'Reminders you already scheduled are kept, but none is sent while reminders are off. Once they ' +
+    'Reminders you already scheduled are kept. Each one is checked again just before it is sent, so ' +
+    'none should go out while reminders are off, though one already being sent may still finish. Once they ' +
     'are switched on, a batch whose time has passed may go out then, not at the time you chose, and ' +
     'only if it still passes the usual checks (nothing goes for a paid invoice, or on a channel the ' +
     'customer opted out of). ' +
