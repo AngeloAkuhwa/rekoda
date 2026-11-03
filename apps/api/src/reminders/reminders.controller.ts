@@ -10,6 +10,7 @@ import {
   Body,
   ConflictException,
   Controller,
+  Delete,
   Get,
   HttpCode,
   Inject,
@@ -22,10 +23,12 @@ import {
 } from '@nestjs/common';
 import { RouteConfig } from '@nestjs/platform-fastify';
 import {
+  paymentInstructionRequest,
   publicContactRequest,
   reminderOptOutRequest,
   sendReminderRequest,
   stopRemindersRequest,
+  type PaymentInstructionResponse,
   type ReminderHistoryResponse,
   type SendReminderResponse,
 } from '@rekoda/contracts';
@@ -104,6 +107,48 @@ export class RemindersController {
       throw new BadRequestException('invalid_phone');
     }
     return { saved: true };
+  }
+
+  /** The bank details a reminder asks customers to pay into. Owner and delegate may read them. */
+  @Get('payment-instruction')
+  @Roles('owner', 'delegate')
+  async paymentInstruction(@Req() request: AuthedRequest): Promise<PaymentInstructionResponse> {
+    return this.reminders.paymentInstruction(request.auth!.businessId);
+  }
+
+  /**
+   * Saving is the owner approving this destination for reminders (`approve: true` is required by
+   * the contract). Only the owner: it decides where customers send money.
+   */
+  @Put('payment-instruction')
+  @Roles('owner')
+  async setPaymentInstruction(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<PaymentInstructionResponse> {
+    const parsed = paymentInstructionRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('payment_instruction_and_approval_required');
+    const result = await this.reminders.setPaymentInstruction(
+      request.auth!.businessId,
+      request.auth!.userId,
+      parsed.data,
+    );
+    if (!result.ok)
+      throw new BadRequestException({
+        error: 'invalid_payment_instruction',
+        issues: result.issues,
+      });
+    return this.reminders.paymentInstruction(request.auth!.businessId);
+  }
+
+  @Delete('payment-instruction')
+  @Roles('owner')
+  @HttpCode(200)
+  async clearPaymentInstruction(
+    @Req() request: AuthedRequest,
+  ): Promise<PaymentInstructionResponse> {
+    await this.reminders.clearPaymentInstruction(request.auth!.businessId);
+    return { instruction: null };
   }
 }
 

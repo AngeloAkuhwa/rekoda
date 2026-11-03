@@ -93,6 +93,14 @@ export const businesses = pgTable(
     /** The public phone a reminder shows, never the sign-in number (migration 0184, N1); reminders wait for its approval. */
     publicContactPhone: text('public_contact_phone'),
     publicContactApprovedAt: timestamp('public_contact_approved_at', { withTimezone: true }),
+    /** The merchant's own approved bank details for customers to pay into (migration 0187, REM-04); all or none. */
+    paymentBankName: text('payment_bank_name'),
+    paymentAccountName: text('payment_account_name'),
+    paymentAccountNumber: text('payment_account_number'),
+    paymentInstructionApprovedAt: timestamp('payment_instruction_approved_at', {
+      withTimezone: true,
+    }),
+    paymentInstructionApprovedBy: uuid('payment_instruction_approved_by'),
     /**
      * When the subscription was last DECIDED (migration 0162, G-104): an
      * operator move, a settled plan charge, a scheduled plan change. A plan

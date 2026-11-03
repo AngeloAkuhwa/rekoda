@@ -12,6 +12,9 @@ import { createHash, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { emailSuppressionKey } from '@rekoda/core';
 import { signReminderOptOut } from '@rekoda/core/reminders';
+import 'reflect-metadata';
+import { ROLES_KEY } from '../auth/roles.guard.js';
+import { RemindersController } from './reminders.controller.js';
 import { encryptFacet } from '@rekoda/core/vault';
 import { matchKeyFor } from '@rekoda/core/vault';
 import { unwindAllocations } from '../commands/payment-adjustment-commands.js';
@@ -1266,5 +1269,123 @@ describe('channel-specific opt-outs (OD-34)', () => {
     const second = { ...a, invoiceNumber: sale.invoiceNumber, invoiceId: sale.invoiceId };
     expect((await viaConsulting(second, 'email')).status).toBe('sent');
     expect((await viaConsulting(a, 'email')).status).toBe('blocked');
+  });
+});
+
+describe('merchant payment instructions (REM-04, OWN-64)', () => {
+  const bank = {
+    bankName: 'GTBank',
+    accountName: 'Adaeze Fabrics Ltd',
+    accountNumber: '0123456789',
+  };
+  const save = (s: Seeded, input = bank) =>
+    service().setPaymentInstruction(s.businessId, s.userId, input);
+
+  it('puts the approved account, the invoice reference and the CURRENT balance in the email and the WhatsApp text', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    expect(await save(s)).toEqual({ ok: true });
+    await pay(s, 3_000_000);
+
+    expect((await sendEmail(s, { attest: true })).reminder.status).toBe('sent');
+    expect((await sendVia(s, 'whatsapp')).reminder.status).toBe('sent');
+    const email = mail.outbox[0]!.text;
+    const wa = whatsappCalls[0]!.text;
+    for (const text of [email, wa]) {
+      expect(text).toContain('50,000');
+      expect(text).toContain('Adaeze Fabrics Ltd');
+      expect(text).toContain('GTBank');
+      expect(text).toContain('0123456789');
+      expect(text).toContain(`quote invoice ${s.invoiceNumber}`);
+    }
+  });
+
+  it('shows no account when none was approved: the phone only, nothing invented', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    expect((await sendEmail(s, { attest: true })).reminder.status).toBe('sent');
+    expect(mail.outbox[0]!.text).not.toMatch(/account number/i);
+    expect(mail.outbox[0]!.text).toContain('+2348031112222');
+  });
+
+  it('stores nothing for invalid details and keeps the previous approved account', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    await save(s);
+    for (const bad of [
+      { ...bank, accountNumber: '12345' },
+      { ...bank, bankName: '' },
+      { ...bank, accountName: '<script>' },
+    ]) {
+      const r = await save(s, bad);
+      expect(r.ok).toBe(false);
+    }
+    expect((await service().paymentInstruction(s.businessId)).instruction).toEqual(bank);
+  });
+
+  it('replaces on update and falls back to the phone after removal', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    await save(s);
+    await save(s, {
+      bankName: 'Access Bank',
+      accountName: 'Ada O.',
+      accountNumber: '0987 654 321',
+    });
+    await sendEmail(s, { attest: true });
+    expect(mail.outbox[0]!.text).toContain('Access Bank');
+    expect(mail.outbox[0]!.text).toContain('0987654321');
+    expect(mail.outbox[0]!.text).not.toContain('0123456789');
+
+    await service().clearPaymentInstruction(s.businessId);
+    expect((await service().paymentInstruction(s.businessId)).instruction).toBeNull();
+    await sendEmail(s);
+    expect(mail.outbox[1]!.text).not.toMatch(/account number/i);
+  });
+
+  it("never carries one business's account to another business's customer, and records who approved it", async () => {
+    const a = await seed({ name: 'Alpha Ltd' });
+    const b = await seed({ name: 'Beta Ltd' });
+    await approvePhone(a);
+    await approvePhone(b);
+    await save(a);
+    await sendEmail(b, { attest: true });
+    expect(mail.outbox[0]!.text).not.toContain('0123456789');
+    expect((await service().paymentInstruction(b.businessId)).instruction).toBeNull();
+    const [approval] = await rows<{ by: string; at: Date | null }>(
+      a.businessId,
+      sql`SELECT payment_instruction_approved_by::text AS by, payment_instruction_approved_at AS at FROM businesses`,
+    );
+    expect(approval!.by).toBe(a.userId);
+    expect(approval!.at).not.toBeNull();
+  });
+
+  it('cannot be stored half-filled, unapproved, unattributed or malformed, even by a direct write', async () => {
+    const s = await seed();
+    const writes = [
+      sql`UPDATE businesses SET payment_account_number = '0123456789'`,
+      sql`UPDATE businesses SET payment_bank_name = 'B', payment_account_name = 'N', payment_account_number = '0123456789'`,
+      sql`UPDATE businesses SET payment_bank_name = 'B', payment_account_name = 'N', payment_account_number = '0123456789', payment_instruction_approved_at = now()`,
+      sql`UPDATE businesses SET payment_bank_name = 'B', payment_account_name = 'N', payment_account_number = NULL, payment_instruction_approved_at = now(), payment_instruction_approved_by = ${s.userId}::uuid`,
+      sql`UPDATE businesses SET payment_bank_name = 'B', payment_account_name = 'N', payment_account_number = '12345', payment_instruction_approved_at = now(), payment_instruction_approved_by = ${s.userId}::uuid`,
+    ];
+    for (const write of writes) {
+      let caught: unknown;
+      await withBusiness(appDb, s.businessId, (tx) => tx.execute(write)).catch((e: unknown) => {
+        caught = e;
+      });
+      const cause = (caught as { cause?: { constraint_name?: string } } | undefined)?.cause;
+      const name =
+        cause?.constraint_name ?? (caught as { constraint_name?: string })?.constraint_name;
+      expect(name ?? String(caught)).toContain('businesses_payment_instruction_all_or_nothing');
+    }
+  });
+
+  it('is configurable by the owner only; the delegate may read, the accountant neither', () => {
+    const roles = (name: keyof RemindersController) =>
+      Reflect.getMetadata(ROLES_KEY, RemindersController.prototype[name]) as string[];
+    expect(roles('setPaymentInstruction')).toEqual(['owner']);
+    expect(roles('clearPaymentInstruction')).toEqual(['owner']);
+    expect(roles('paymentInstruction')).toEqual(['owner', 'delegate']);
   });
 });

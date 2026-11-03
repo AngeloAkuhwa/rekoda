@@ -1310,6 +1310,20 @@
       "when": 1793707200000,
       "tag": "0186_trial_notice_undelivered",
       "breakpoints": true
+    },
+    {
+      "idx": 187,
+      "version": "7",
+      "when": 1793793600000,
+      "tag": "0187_payment_instructions",
+      "breakpoints": true
+    },
+    {
+      "idx": 188,
+      "version": "7",
+      "when": 1793880000000,
+      "tag": "0188_validate_payment_instruction_check",
+      "breakpoints": true
     }
   ]
 }

@@ -24,12 +24,15 @@ import {
   composeWhatsAppReminder,
   reminderBlock,
   signReminderOptOut,
+  validatePaymentInstruction,
   verifyReminderOptOut,
+  type PaymentInstructionIssue,
   type ReminderBlockReason,
 } from '@rekoda/core/reminders';
 import { normaliseParticipant, InvalidPhoneError } from '@rekoda/core/identity';
 import { decryptFacet } from '@rekoda/core/vault';
 import type {
+  PaymentInstructionResponse,
   ReminderChannelResult,
   ReminderHistoryItem,
   ReminderHistoryResponse,
@@ -388,6 +391,7 @@ export class ReminderService {
         facts: {
           businessName: business!.name,
           publicPhone: business!.publicContactPhone!,
+          paymentInstruction: business!.paymentInstruction,
           invoiceNumber: invoice.invoiceNumber,
           balanceDueK: invoice.balanceDueK,
           dueDate: invoice.dueDate,
@@ -459,6 +463,35 @@ export class ReminderService {
       remindersRepo.setPublicContact(tx, businessId, normalised, now),
     );
     return true;
+  }
+
+  /** The merchant's approved bank details, or null when none. */
+  async paymentInstruction(businessId: string): Promise<PaymentInstructionResponse> {
+    const business = await withBusiness(this.db, businessId, (tx) =>
+      remindersRepo.businessForReminder(tx, businessId),
+    );
+    return { instruction: business?.paymentInstruction ?? null };
+  }
+
+  /** Returns the issues for details that do not validate; nothing is stored then. */
+  async setPaymentInstruction(
+    businessId: string,
+    userId: string,
+    input: { bankName: string; accountName: string; accountNumber: string },
+    now = new Date(),
+  ): Promise<{ ok: true } | { ok: false; issues: PaymentInstructionIssue[] }> {
+    const checked = validatePaymentInstruction(input);
+    if (!checked.ok) return checked;
+    await withBusiness(this.db, businessId, (tx) =>
+      remindersRepo.setPaymentInstruction(tx, businessId, checked.value, userId, now),
+    );
+    return { ok: true };
+  }
+
+  async clearPaymentInstruction(businessId: string): Promise<void> {
+    await withBusiness(this.db, businessId, (tx) =>
+      remindersRepo.clearPaymentInstruction(tx, businessId),
+    );
   }
 
   /** The signed link in a reminder email. Idempotent; a bad or forged token changes nothing. */

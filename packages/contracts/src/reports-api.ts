@@ -2034,4 +2034,23 @@ export type StopRemindersRequest = z.infer<typeof stopRemindersRequest>;
 export const publicContactRequest = z.object({ phone: z.string().trim().min(7).max(20) });
 export type PublicContactRequest = z.infer<typeof publicContactRequest>;
 
+/**
+ * The bank account a customer is asked to pay into (REM-04, OWN-64). `approve` must be literally
+ * true: saving is the merchant approving this destination for use in reminders.
+ */
+export const paymentInstructionRequest = z.object({
+  bankName: z.string().max(120),
+  accountName: z.string().max(160),
+  accountNumber: z.string().max(30),
+  approve: z.literal(true),
+});
+export type PaymentInstructionRequest = z.infer<typeof paymentInstructionRequest>;
+
+export const paymentInstructionResponse = z.object({
+  instruction: z
+    .object({ bankName: z.string(), accountName: z.string(), accountNumber: z.string() })
+    .nullable(),
+});
+export type PaymentInstructionResponse = z.infer<typeof paymentInstructionResponse>;
+
 export const reminderOptOutRequest = z.object({ token: z.string().min(40).max(200) });

@@ -25,6 +25,8 @@ export interface ReminderBusiness {
   billingEmailVerifiedAt: Date | null;
   /** The merchant's billing email, still sealed; opening it is the caller's. Null when none. */
   billingEmailSealed: string | null;
+  /** The merchant's approved bank details (REM-04), or null: a reminder then points to the public phone. */
+  paymentInstruction: StoredPaymentInstruction | null;
 }
 
 /**
@@ -86,9 +88,14 @@ export async function businessForReminder(
     public_contact_approved_at: Date | null;
     billing_email_verified_at: Date | null;
     billing_email_sealed: string | null;
+    payment_bank_name: string | null;
+    payment_account_name: string | null;
+    payment_account_number: string | null;
+    payment_instruction_approved_at: Date | null;
   }>(sql`
     SELECT name, public_contact_phone, public_contact_approved_at, billing_email_verified_at,
-           billing_email_sealed
+           billing_email_sealed, payment_bank_name, payment_account_name, payment_account_number,
+           payment_instruction_approved_at
     FROM businesses WHERE id = ${businessId}::uuid
   `);
   const row = [...rows][0];
@@ -101,7 +108,54 @@ export async function businessForReminder(
     billingEmailVerifiedAt:
       row.billing_email_verified_at === null ? null : new Date(row.billing_email_verified_at),
     billingEmailSealed: row.billing_email_sealed,
+    /* Only a complete, approved instruction counts; the CHECK in 0187 makes that all or none. */
+    paymentInstruction:
+      row.payment_bank_name !== null &&
+      row.payment_account_name !== null &&
+      row.payment_account_number !== null &&
+      row.payment_instruction_approved_at !== null
+        ? {
+            bankName: row.payment_bank_name,
+            accountName: row.payment_account_name,
+            accountNumber: row.payment_account_number,
+          }
+        : null,
   };
+}
+
+export interface StoredPaymentInstruction {
+  bankName: string;
+  accountName: string;
+  accountNumber: string;
+}
+
+/** Saves the merchant's approved bank details, replacing any earlier ones. */
+export async function setPaymentInstruction(
+  tx: TenantDb,
+  businessId: string,
+  value: StoredPaymentInstruction,
+  approvedBy: string,
+  at: Date,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE businesses
+       SET payment_bank_name = ${value.bankName},
+           payment_account_name = ${value.accountName},
+           payment_account_number = ${value.accountNumber},
+           payment_instruction_approved_at = ${at.toISOString()}::timestamptz,
+           payment_instruction_approved_by = ${approvedBy}::uuid
+     WHERE id = ${businessId}::uuid
+  `);
+}
+
+/** Removes the instruction; reminders fall back to the public phone. */
+export async function clearPaymentInstruction(tx: TenantDb, businessId: string): Promise<void> {
+  await tx.execute(sql`
+    UPDATE businesses
+       SET payment_bank_name = NULL, payment_account_name = NULL, payment_account_number = NULL,
+           payment_instruction_approved_at = NULL, payment_instruction_approved_by = NULL
+     WHERE id = ${businessId}::uuid
+  `);
 }
 
 export async function setPublicContact(
