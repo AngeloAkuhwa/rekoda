@@ -72,7 +72,7 @@ export function reminderReason(code: string | null, channel?: ReminderChannel): 
     case 'email_not_configured':
       return 'Email reminders are not set up yet, so nothing was sent by email.';
     case 'send_failed':
-      return 'The message service did not accept it, so nothing was delivered. You can try again.';
+      return 'It could not be sent, so nothing was delivered. You can try again.';
     case 'reminder_in_flight':
       return 'Another reminder for this invoice is still being sent. Look again in a minute.';
     case 'delivery_unconfirmed':
@@ -170,7 +170,10 @@ export function batchItemStatus(item: BatchItemView): {
   };
 }
 
-/** A batch's overall state. A scheduled batch whose time has come is being sent. */
+/**
+ * A batch's overall state. A scheduled batch whose time has come is due: it may be sending, or
+ * waiting (paused after provider failures, or reminders switched off), so it never claims "sending".
+ */
 export function batchStateLabel(
   state: 'scheduled' | 'completed' | 'cancelled',
   scheduledFor: string,
@@ -178,7 +181,7 @@ export function batchStateLabel(
 ): string {
   if (state === 'cancelled') return 'Cancelled';
   if (state === 'completed') return 'Finished';
-  return new Date(scheduledFor).getTime() > now.getTime() ? 'Scheduled' : 'Sending';
+  return new Date(scheduledFor).getTime() > now.getTime() ? 'Scheduled' : 'Due to send';
 }
 
 /** The channels a batch or a request uses, in words. */
@@ -315,4 +318,35 @@ export function accountNumberDigits(raw: string): string | null {
 /** The plural the screens need, for counts that come from the API. */
 export function invoicesCount(n: number): string {
   return n === 1 ? '1 invoice' : `${n} invoices`;
+}
+
+/**
+ * A reason in a preview, where nothing has been attempted yet: the same sentence as
+ * `reminderReason`, said about what will happen rather than what happened.
+ */
+export function previewReason(code: string | null, channel?: ReminderChannel): string {
+  return reminderReason(code, channel)
+    .replace(/so nothing was sent( on WhatsApp| by email)?/, (_m, on: string | undefined) =>
+      on ? `so it will not be sent${on}` : 'so it will not be sent',
+    )
+    .replace('so nothing was delivered', 'so it will not be delivered');
+}
+
+/**
+ * What the merchant reads when Confirm finds a problem the preview did not (for example the chosen
+ * time passed while they were reading). Always says nothing was scheduled.
+ */
+export function confirmProblem(read: {
+  error?: string;
+  fields?: { invoices?: string; when?: string; attest?: string };
+}): string {
+  const problem = read.fields?.when ?? read.fields?.invoices ?? read.error;
+  return problem
+    ? `${problem} Nothing was scheduled.`
+    : 'That did not go through. Nothing was scheduled.';
+}
+
+/** A reminder action the API refused for this member's role. */
+export function reminderAccessRefusal(): string {
+  return 'Your access to this business does not include this action. Ask the business owner if it should.';
 }

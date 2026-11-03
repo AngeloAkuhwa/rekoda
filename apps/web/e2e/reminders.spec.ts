@@ -29,7 +29,9 @@ test.afterAll(async () => {
 /** Distinct from the other specs' ranges so runs never collide. */
 const RUN = String(Math.floor(Math.random() * 900) + 100);
 let seq = 0;
-const freshPhone = () => `0816${RUN}${String(1000 + seq++).slice(-4)}`;
+/* The desktop project draws from its own half of the range, so the two viewports never share a phone. */
+const freshPhone = () =>
+  `0816${RUN}${String(1000 + seq++ + (test.info().project.name === 'desktop' ? 500 : 0)).slice(-4)}`;
 
 async function shot(page: Page, info: TestInfo, name: string) {
   if (!SHOTS) return;

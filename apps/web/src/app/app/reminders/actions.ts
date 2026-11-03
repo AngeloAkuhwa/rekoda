@@ -3,7 +3,11 @@
 import { randomUUID } from 'node:crypto';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
-import { REMINDER_BATCH_MAX, type ReminderBatchPreviewResponse } from '@rekoda/contracts';
+import {
+  REMINDER_BATCH_MAX,
+  reminderBatchPreviewResponse,
+  type ReminderBatchPreviewResponse,
+} from '@rekoda/contracts';
 import {
   cancelReminderBatch,
   clearPaymentInstruction,
@@ -14,6 +18,7 @@ import {
   sendReminder,
   setRemindersStopped,
   viewOnlyRefusal,
+  ApiForbidden,
 } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 import {
@@ -29,6 +34,8 @@ import {
   reminderStatusLabel,
   scheduleProblem,
   type ChannelChoice,
+  confirmProblem,
+  reminderAccessRefusal,
 } from '@/lib/reminder-copy';
 
 const EXPIRED = 'Your session expired. Sign in again.';
@@ -42,6 +49,7 @@ function guarded<S, A extends unknown[]>(
     try {
       return await fn(...args);
     } catch (error) {
+      if (error instanceof ApiForbidden) return { error: reminderAccessRefusal() } as S;
       return viewOnlyRefusal(error) as S;
     }
   };
@@ -130,7 +138,9 @@ const createBatchActionGuarded = guarded(
     const token = await readSessionToken();
     if (!token) return { error: EXPIRED };
     const read = readPlan(formData, new Date());
-    if (!('plan' in read) || !read.plan) return read;
+    /* Shown in the confirm step, which renders `error` only: a field problem found now (the time
+     * passed while the merchant read the preview) must not vanish, or they would think it went. */
+    if (!('plan' in read) || !read.plan) return { error: confirmProblem(read as BatchFormState) };
     const { plan } = read;
     const attest = formData.get('attest') === 'yes';
     if (choiceMayEmail(plan.choice) && !attest) {
@@ -167,7 +177,8 @@ function previewFrom(formData: FormData): { preview: ReminderBatchPreviewRespons
   try {
     const raw = String(formData.get('previewJson') ?? '');
     if (!raw) return null;
-    return { preview: JSON.parse(raw) as ReminderBatchPreviewResponse };
+    const parsed = reminderBatchPreviewResponse.safeParse(JSON.parse(raw));
+    return parsed.success ? { preview: parsed.data } : null;
   } catch {
     return null;
   }
@@ -250,7 +261,7 @@ const sendReminderActionGuarded = guarded(
       };
     }
     if (outcome.state === 'invalid') return { error: 'That did not go through. Nothing was sent.' };
-    revalidatePath(`/app/reminders/invoice/${encodeURIComponent(invoiceNumber)}`);
+    revalidatePath('/app/reminders/invoice');
     return {
       settled: true,
       results: outcome.response.results.map((r) => {
@@ -282,7 +293,7 @@ const stopRemindersActionGuarded = guarded(
     if (!(await setRemindersStopped(token, invoiceNumber, stopped))) {
       return { error: 'There is no invoice with this number. Nothing was changed.' };
     }
-    revalidatePath(`/app/reminders/invoice/${encodeURIComponent(invoiceNumber)}`);
+    revalidatePath('/app/reminders/invoice');
     return {
       done: stopped
         ? `Reminders for ${invoiceNumber} are stopped. Nothing more will be sent for it until you resume them.`

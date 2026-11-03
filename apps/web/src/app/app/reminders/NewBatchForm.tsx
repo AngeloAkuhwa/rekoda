@@ -11,6 +11,7 @@ import {
   invoicesCount,
   lagosDateTime,
   lagosLocalToIso,
+  previewReason,
   reminderReason,
   type ChannelChoice,
 } from '@/lib/reminder-copy';
@@ -138,7 +139,7 @@ export function NewBatchForm({
                   r.channels.map((c) => (
                     <p key={c.channel} className={styles.channelLine}>
                       <strong>{channelName(c.channel)}:</strong>{' '}
-                      {c.eligible ? 'will send' : reminderReason(c.reasonCode, c.channel)}
+                      {c.eligible ? 'will send' : previewReason(c.reasonCode, c.channel)}
                     </p>
                   ))
                 )}

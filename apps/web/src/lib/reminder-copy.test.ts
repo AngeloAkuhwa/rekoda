@@ -4,6 +4,9 @@ import {
   batchItemStatus,
   batchRefusal,
   batchStateLabel,
+  confirmProblem,
+  previewReason,
+  reminderAccessRefusal,
   channelsFromChoice,
   channelsLabel,
   channelsPhrase,
@@ -172,7 +175,7 @@ describe('batch state and channels', () => {
   const now = new Date('2026-11-03T12:00:00Z');
   it('shows a due scheduled batch as sending', () => {
     expect(batchStateLabel('scheduled', '2026-11-04T12:00:00Z', now)).toBe('Scheduled');
-    expect(batchStateLabel('scheduled', '2026-11-03T11:00:00Z', now)).toBe('Sending');
+    expect(batchStateLabel('scheduled', '2026-11-03T11:00:00Z', now)).toBe('Due to send');
     expect(batchStateLabel('completed', '2026-11-03T11:00:00Z', now)).toBe('Finished');
     expect(batchStateLabel('cancelled', '2026-11-04T12:00:00Z', now)).toBe('Cancelled');
   });
@@ -244,5 +247,51 @@ describe('refusals and bank details', () => {
     expect(paymentInstructionIssue('account_number')).toMatch(/10 digits/);
     expect(paymentInstructionIssue('bank_name')).toMatch(/bank name/);
     expect(paymentInstructionIssue('account_name')).toMatch(/account name/);
+  });
+});
+
+describe('review fixes (REM-06)', () => {
+  it('a problem found at Confirm is said plainly, with nothing scheduled', () => {
+    const msg = confirmProblem({
+      fields: { when: 'That time has already passed. Pick a later time.' },
+    });
+    expect(msg).toContain('That time has already passed');
+    expect(msg).toContain('Nothing was scheduled');
+    expect(
+      confirmProblem({ fields: { invoices: 'Pick at least one invoice to remind.' } }),
+    ).toContain('Nothing was scheduled');
+    expect(confirmProblem({ error: 'Pick how to send the reminders.' })).toContain(
+      'Pick how to send the reminders.',
+    );
+    expect(confirmProblem({})).toContain('Nothing was scheduled');
+  });
+
+  it('a preview speaks about what will happen, never as if something was already attempted', () => {
+    for (const code of [
+      'reminders_not_released',
+      'email_not_configured',
+      'window_closed_no_template',
+      'no_whatsapp_connection',
+      'customer_opted_out',
+    ]) {
+      const text = previewReason(
+        code,
+        code.includes('whatsapp') || code.includes('window') ? 'whatsapp' : 'email',
+      );
+      expect(text).not.toMatch(/was sent|was delivered/);
+    }
+    expect(previewReason('reminders_not_released')).toContain('will not be sent');
+  });
+
+  it('a send failure does not blame a provider that may never have been asked', () => {
+    const text = reminderReason('send_failed');
+    expect(text).not.toMatch(/service did not accept/);
+    expect(text).toContain('nothing was delivered');
+  });
+
+  it('a refused action is explained without assuming the member is view only', () => {
+    const text = reminderAccessRefusal();
+    expect(text).not.toMatch(/view only/);
+    expect(text).toMatch(/owner/);
   });
 });
