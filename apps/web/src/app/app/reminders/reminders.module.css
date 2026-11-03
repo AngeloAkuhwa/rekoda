@@ -1,0 +1,306 @@
+/* The reminder screens (REM-06). Tokens only; the dashboard's low motion tier. */
+
+.group {
+  border: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: var(--rk-space-2);
+  min-width: 0;
+}
+.group legend {
+  font-weight: 600;
+  margin-bottom: var(--rk-space-2);
+  padding: 0;
+}
+.groupHint {
+  font-size: var(--rk-text-sm);
+  color: var(--rk-text-muted);
+  margin-top: calc(-1 * var(--rk-space-1));
+}
+.groupError {
+  font-size: var(--rk-text-sm);
+  color: var(--rk-danger);
+  font-weight: 600;
+}
+
+/* One invoice per row, the whole row a target: a phone has no pointer. */
+.pickList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px dashed var(--rk-border);
+}
+.pickList li {
+  border-bottom: 1px dashed var(--rk-border);
+}
+.pick {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--rk-space-3);
+  min-height: 52px;
+  padding-block: var(--rk-space-2);
+  cursor: pointer;
+}
+.pick input,
+.choice input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--rk-accent);
+  cursor: pointer;
+}
+.pickMeta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.pickNumber {
+  font-family: var(--rk-font-mono);
+  font-size: var(--rk-text-sm);
+  overflow-wrap: anywhere;
+}
+.pickSub {
+  font-size: var(--rk-text-xs);
+  color: var(--rk-text-muted);
+}
+.pickAmount {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  text-align: right;
+}
+
+.choices {
+  display: grid;
+  gap: var(--rk-space-1);
+}
+.choice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--rk-space-3);
+  min-height: 44px;
+  padding-block: var(--rk-space-2);
+  cursor: pointer;
+}
+.choice input {
+  margin-top: 2px;
+}
+.choiceText {
+  display: grid;
+  gap: 2px;
+}
+.choiceSub {
+  font-size: var(--rk-text-sm);
+  color: var(--rk-text-muted);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rk-space-3);
+  align-items: center;
+}
+
+/* The lawful-basis confirmation: a sunk panel so it reads as the merchant's own statement. */
+.attest {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--rk-space-3);
+  align-items: start;
+  padding: var(--rk-space-4);
+  background: var(--rk-surface-sunk);
+  border: 1px solid var(--rk-border);
+  border-radius: var(--rk-radius-md);
+  cursor: pointer;
+  line-height: 1.5;
+}
+.attest input {
+  width: 20px;
+  height: 20px;
+  margin: 2px 0 0;
+  accent-color: var(--rk-accent);
+}
+.attest[data-invalid='true'] {
+  border-color: var(--rk-danger);
+}
+
+/* Recipients and history: a list rather than a table, because each row carries a sentence. */
+.rows {
+  list-style: none;
+  margin: var(--rk-space-3) 0 0;
+  padding: 0;
+  border-top: 1px dashed var(--rk-border);
+}
+.row {
+  display: grid;
+  gap: var(--rk-space-1);
+  padding-block: var(--rk-space-3);
+  border-bottom: 1px dashed var(--rk-border);
+}
+.rowHead {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--rk-space-2) var(--rk-space-4);
+  align-items: baseline;
+}
+.rowTitle {
+  font-family: var(--rk-font-mono);
+  font-size: var(--rk-text-sm);
+  overflow-wrap: anywhere;
+}
+.rowDetail {
+  font-size: var(--rk-text-sm);
+  color: var(--rk-text-muted);
+  line-height: 1.55;
+  max-width: 64ch;
+}
+.channelLine {
+  font-size: var(--rk-text-sm);
+  line-height: 1.55;
+  max-width: 64ch;
+}
+.channelLine strong {
+  font-weight: 600;
+}
+
+/* A status is a word first; the colour only repeats it (no colour-only meaning). */
+.status {
+  font-size: var(--rk-text-sm);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.status[data-tone='ok'] {
+  color: var(--rk-verified);
+}
+.status[data-tone='neutral'] {
+  color: var(--rk-text-muted);
+}
+.status[data-tone='attention'] {
+  color: var(--rk-attention);
+}
+
+/* Counts strip on a batch. Figures come from the API's SQL counts. */
+.counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rk-space-2) var(--rk-space-5);
+  margin: var(--rk-space-3) 0 0;
+  padding: 0;
+}
+.counts div {
+  display: grid;
+  gap: 2px;
+}
+.counts dt {
+  font-size: var(--rk-text-xs);
+  color: var(--rk-text-muted);
+}
+.counts dd {
+  margin: 0;
+  font-size: var(--rk-text-lg);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.summary {
+  margin-top: var(--rk-space-3);
+  font-size: var(--rk-text-base);
+  line-height: 1.6;
+  max-width: 64ch;
+}
+
+.note {
+  margin-top: var(--rk-space-3);
+  padding: var(--rk-space-3) var(--rk-space-4);
+  background: var(--rk-surface-sunk);
+  border-radius: var(--rk-radius-md);
+  font-size: var(--rk-text-sm);
+  line-height: 1.55;
+}
+
+.saved {
+  display: grid;
+  gap: 2px;
+  margin-top: var(--rk-space-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The preview arriving: a short fade from already-visible content, nothing more. */
+.reveal {
+  animation: rk-reminder-reveal var(--rk-dur-base) var(--rk-ease) both;
+}
+@keyframes rk-reminder-reveal {
+  from {
+    opacity: 0.4;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    animation: none;
+  }
+}
+
+/* Batch list: the link is the row's action, with a real target. */
+.batchLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--rk-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.spaced {
+  margin-top: var(--rk-space-4);
+}
+.openRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--rk-space-3);
+  align-items: center;
+}
+
+.sub {
+  margin-top: var(--rk-space-6);
+  font-size: var(--rk-text-lg);
+}
+.facts {
+  display: grid;
+  gap: var(--rk-space-3);
+  margin: var(--rk-space-4) 0 0;
+}
+.facts div {
+  display: grid;
+  gap: 2px;
+}
+.facts dt {
+  font-size: var(--rk-text-sm);
+  color: var(--rk-text-muted);
+}
+.facts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+a.rowTitle {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--rk-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* Step two of a batch, set apart from the card's introduction. */
+.step {
+  margin-top: var(--rk-space-6);
+}

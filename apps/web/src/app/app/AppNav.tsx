@@ -22,6 +22,8 @@ const TABS = [
   /* Beside the money-in pages: who still owes is the question a merchant
      asks right after "what came in". */
   { key: 'debtors', href: '/app/debtors', label: 'Debtors' },
+  /* Straight after Debtors: reminding is what a merchant does next with that list (REM-06). */
+  { key: 'reminders', href: '/app/reminders', label: 'Reminders' },
   { key: 'expenses', href: '/app/expenses', label: 'Expenses' },
   { key: 'stock', href: '/app/stock', label: 'Stock' },
   /* The catalogue a merchant's BUYERS browse, so it belongs to Integrate.

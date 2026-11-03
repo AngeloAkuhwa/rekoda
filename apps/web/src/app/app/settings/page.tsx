@@ -1,10 +1,12 @@
 import type { Metadata } from 'next';
-import { businessSettings } from '@/server/api';
+import { businessSettings, paymentInstruction } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
-import { isOwner } from '@/lib/permissions';
+import { canRecordTrade, isOwner } from '@/lib/permissions';
 import { AppNav } from '../AppNav';
 import { SignOutButton } from '../SignOutButton';
 import { SettingsForm } from './SettingsForm';
+import { PaymentInstructionForm, PublicContactForm } from './ReminderSettingsForms';
+import styles from '../reminders/reminders.module.css';
 import { heldBy } from '@/lib/capabilities';
 
 export const metadata: Metadata = {
@@ -24,6 +26,11 @@ export default async function SettingsPage() {
   const { identity, token } = await requireSessionWithToken();
   const owner = isOwner(identity.role);
   const settings = owner ? await businessSettings(token) : null;
+  /* The owner and a helper may read where reminders ask customers to pay; only the owner may
+   * change it (REM-04). An accountant is not asked: the API would refuse the read. */
+  const instruction = canRecordTrade(identity.role)
+    ? (await paymentInstruction(token)).instruction
+    : null;
 
   return (
     <section className="rk-container rk-dash">
@@ -52,6 +59,58 @@ export default async function SettingsPage() {
           <p className="rk-fineprint">
             Only the owner can change the business name, CAC number or TIN. Everything else about
             your access is on the team page.
+          </p>
+        )}
+      </div>
+
+      <div className="rk-card" id="reminders">
+        <h2>Payment reminders</h2>
+        <p className="rk-fineprint">
+          What your customers see in a reminder: the phone to call and, if you add them, the bank
+          details to pay into. Rekoda never makes these up and never holds the money; customers pay
+          you directly.
+        </p>
+        {owner ? (
+          <>
+            <h3 className={styles.sub}>Business phone</h3>
+            <PublicContactForm />
+            <h3 className={styles.sub}>Bank details for customers</h3>
+            {instruction ? null : (
+              <p className="rk-fineprint">
+                None yet. Without them, reminders ask customers to call your business phone to pay.
+              </p>
+            )}
+            <PaymentInstructionForm current={instruction} />
+          </>
+        ) : canRecordTrade(identity.role) ? (
+          <>
+            {instruction ? (
+              <dl className={styles.facts}>
+                <div>
+                  <dt>Bank</dt>
+                  <dd>{instruction.bankName}</dd>
+                </div>
+                <div>
+                  <dt>Account name</dt>
+                  <dd>{instruction.accountName}</dd>
+                </div>
+                <div>
+                  <dt>Account number</dt>
+                  <dd className="rk-mono">{instruction.accountNumber}</dd>
+                </div>
+              </dl>
+            ) : (
+              <p className="rk-fineprint">
+                No bank details yet, so reminders ask customers to call the business phone to pay.
+              </p>
+            )}
+            <p className="rk-fineprint">
+              Only the owner can change the bank details or the business phone reminders show.
+            </p>
+          </>
+        ) : (
+          <p className="rk-fineprint">
+            Only the owner can set the business phone and bank details reminders show.
           </p>
         )}
       </div>
