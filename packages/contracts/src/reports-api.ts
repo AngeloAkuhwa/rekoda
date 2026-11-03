@@ -2054,3 +2054,129 @@ export const paymentInstructionResponse = z.object({
 export type PaymentInstructionResponse = z.infer<typeof paymentInstructionResponse>;
 
 export const reminderOptOutRequest = z.object({ token: z.string().min(40).max(200) });
+
+/* ── Scheduled and bulk reminders (REM-05, OWN-43) ──────────────────────── */
+
+/** At most this many invoices in one batch (engineering default, OD-43). */
+export const REMINDER_BATCH_MAX = 100;
+
+const batchChannels = z
+  .union([z.literal('auto'), z.array(reminderChannel).min(1).max(2)])
+  .default('auto');
+
+/** Which invoices, on which channels: the same channel rule as one reminder. */
+export const reminderBatchPreviewRequest = z.object({
+  invoiceNumbers: z.array(z.string().trim().min(1).max(40)).min(1).max(REMINDER_BATCH_MAX),
+  channels: batchChannels,
+  /** Judge email as if the merchant will attest at confirmation. */
+  attest: z.boolean().optional(),
+});
+export type ReminderBatchPreviewRequest = z.infer<typeof reminderBatchPreviewRequest>;
+
+/** One channel of one invoice in a preview: would it be sent now, and if not, why not. */
+export const reminderPreviewChannel = z.object({
+  channel: reminderChannel,
+  eligible: z.boolean(),
+  reasonCode: z.string().nullable(),
+});
+
+export const reminderPreviewRecipient = z.object({
+  invoiceNumber: z.string(),
+  /** False when this business has no invoice with this number. */
+  found: z.boolean(),
+  /** The balance read now, in kobo; it is read again immediately before each send. */
+  balanceK: z.number().int().nullable(),
+  channels: z.array(reminderPreviewChannel),
+  /**
+   * This invoice is already waiting in another scheduled batch. Not a refusal (there is no
+   * cooldown, OWN-67): the merchant sees it before confirming a second reminder.
+   */
+  alsoScheduled: z.boolean(),
+});
+
+/**
+ * A preview reads and decides; it writes nothing and sends nothing. Every figure is the server's.
+ * `duplicates` lists invoice numbers that appeared more than once and will be reminded once.
+ */
+export const reminderBatchPreviewResponse = z.object({
+  recipients: z.array(reminderPreviewRecipient),
+  /** Invoices with at least one channel that would be sent now. */
+  eligibleCount: z.number().int().nonnegative(),
+  excludedCount: z.number().int().nonnegative(),
+  duplicates: z.array(z.string()),
+});
+export type ReminderBatchPreviewResponse = z.infer<typeof reminderBatchPreviewResponse>;
+
+/**
+ * Confirm a batch. `confirm` must be literally true: this is the merchant's explicit go-ahead after
+ * the preview. `scheduledFor` absent means as soon as possible.
+ */
+export const createReminderBatchRequest = z.object({
+  invoiceNumbers: z.array(z.string().trim().min(1).max(40)).min(1).max(REMINDER_BATCH_MAX),
+  channels: batchChannels,
+  scheduledFor: z.string().datetime({ offset: true }).optional(),
+  idempotencyKey: z.string().min(8).max(90),
+  attest: z.boolean().optional(),
+  confirm: z.literal(true),
+});
+export type CreateReminderBatchRequest = z.infer<typeof createReminderBatchRequest>;
+
+export const reminderBatchState = z.enum(['scheduled', 'completed', 'cancelled']);
+
+/**
+ * One recipient's state. `pending` and `dispatching` are the batch's own; once a send has been
+ * attempted, `reminders` holds each channel's reminder history row and its status is the truth.
+ */
+export const reminderBatchItem = z.object({
+  invoiceNumber: z.string(),
+  state: z.enum(['pending', 'dispatching', 'done', 'cancelled', 'skipped']),
+  reasonCode: z.string().nullable(),
+  reminders: z.array(
+    z.object({
+      channel: reminderChannel,
+      status: reminderStatus,
+      reasonCode: z.string().nullable(),
+      sentAt: z.string().nullable(),
+    }),
+  ),
+});
+
+export const reminderBatchSummary = z.object({
+  id: z.string().uuid(),
+  state: reminderBatchState,
+  channels: batchChannels,
+  scheduledFor: z.string(),
+  createdAt: z.string(),
+  cancelledAt: z.string().nullable(),
+  completedAt: z.string().nullable(),
+  itemCount: z.number().int().nonnegative(),
+  /** Counts from SQL over the recipients' current states and reminder outcomes. */
+  counts: z.object({
+    pending: z.number().int().nonnegative(),
+    sent: z.number().int().nonnegative(),
+    notSent: z.number().int().nonnegative(),
+    uncertain: z.number().int().nonnegative(),
+    cancelled: z.number().int().nonnegative(),
+  }),
+});
+export type ReminderBatchSummary = z.infer<typeof reminderBatchSummary>;
+
+export const reminderBatchResponse = reminderBatchSummary.extend({
+  items: z.array(reminderBatchItem),
+  /** True when this idempotency key had already created the batch and it is returned unchanged. */
+  replayed: z.boolean().optional(),
+});
+export type ReminderBatchResponse = z.infer<typeof reminderBatchResponse>;
+
+export const reminderBatchListResponse = z.object({
+  batches: z.array(reminderBatchSummary).max(50),
+});
+export type ReminderBatchListResponse = z.infer<typeof reminderBatchListResponse>;
+
+export const cancelReminderBatchResponse = z.object({
+  outcome: z.enum(['cancelled', 'not_cancellable']),
+  /** Recipients stopped before dispatch by this cancellation. */
+  cancelledCount: z.number().int().nonnegative(),
+  batch: reminderBatchSummary,
+});
+export type CancelReminderBatchResponse = z.infer<typeof cancelReminderBatchResponse>;

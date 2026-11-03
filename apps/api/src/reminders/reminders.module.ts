@@ -6,6 +6,7 @@ import { DbModule } from '../db/db.module.js';
 import { EmailModule } from '../email/email.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { RepliesModule } from '../replies/replies.module.js';
+import { ReminderBatchService } from './reminder-batch.service.js';
 import { ReminderService, REMINDER_WHATSAPP } from './reminder.service.js';
 import { PublicReminderOptOutController, RemindersController } from './reminders.controller.js';
 
@@ -20,6 +21,7 @@ import { PublicReminderOptOutController, RemindersController } from './reminders
     WabaTemplateService,
     { provide: REMINDER_WHATSAPP, useExisting: WabaTemplateService },
     ReminderService,
+    ReminderBatchService,
   ],
 })
 export class RemindersModule {}
