@@ -15,7 +15,7 @@ export type PaystackKeyKind = 'test' | 'live' | 'missing' | 'unrecognised';
 const TEST_KEY = /^sk_test_\S+$/;
 const LIVE_KEY = /^sk_live_\S+$/;
 
-/** Classifies a platform secret key by its exact prefix; anything else is `unrecognised`. */
+/** Classifies a platform secret key as `test`, `live`, `missing` (empty) or `unrecognised` (any other shape). */
 export function paystackKeyKind(key: string): PaystackKeyKind {
   if (key === '') return 'missing';
   if (TEST_KEY.test(key)) return 'test';
