@@ -43,7 +43,11 @@ beforeEach(async () => {
   await truncateAll(urls);
 });
 
-const config = { planCatalogueReads: false, paystackPlatformConfirmed: true };
+const config = {
+  planCatalogueReads: false,
+  paystackSecretKey: 'sk_test_x',
+  paystackPlatformConfirmed: true,
+};
 const billing = () => new BillingService(config as never, appDb);
 
 let seq = 0;

@@ -544,4 +544,33 @@ describe('what may be paid', () => {
     expect(provider.initialized).toEqual([]);
     expect((await rowOf(businessId)).sealed).toBeNull();
   });
+
+  it('never reaches Paystack with a key it does not recognise, even with §47 confirmed', async () => {
+    const businessId = await seedBusiness();
+    const { reference } = await pendingCharge(businessId);
+
+    for (const key of ['sk_livex', 'pk_live_x', 'garbage']) {
+      expect(
+        await checkouts({ paystackSecretKey: key, paystackPlatformConfirmed: true }).checkout(
+          businessId,
+          reference,
+          'a@shop.ng',
+        ),
+        key,
+      ).toEqual({ state: 'unavailable', reason: 'payments_not_configured' });
+    }
+    expect(provider.initialized).toEqual([]);
+    expect((await rowOf(businessId)).sealed).toBeNull();
+  });
+
+  it('opens checkout for a test key without the §47 confirmation', async () => {
+    const businessId = await seedBusiness();
+    const { reference } = await pendingCharge(businessId);
+    const answer = await checkouts({
+      paystackSecretKey: 'sk_test_x',
+      paystackPlatformConfirmed: false,
+    }).checkout(businessId, reference, 'a@shop.ng');
+    expect(answer.state).toBe('ready');
+    expect(provider.initialized).toHaveLength(1);
+  });
 });

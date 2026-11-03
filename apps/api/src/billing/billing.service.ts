@@ -52,6 +52,7 @@ import {
   type TenantDb,
 } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
+import { chargeGate } from './paystack-key.js';
 import { DB } from '../db/db.module.js';
 
 /** Midnight of the Lagos day (UTC+1, no DST) holding this moment. */
@@ -433,11 +434,12 @@ export class BillingService {
         return { state: 'applied' as const, plan: to };
       }
 
-      /* §47. Refused BEFORE a charge exists, so lifting the gate leaves
-       * nothing behind to reconcile. */
-      if (!this.config.paystackPlatformConfirmed) {
-        return { state: 'unavailable' as const, reason: 'awaiting_platform_confirmation' as const };
-      }
+      /* §47, by key kind (paystack-key.ts): a live key waits for the written
+       * confirmation, a test key does not, and a missing or unrecognised key
+       * opens nothing. Refused BEFORE a charge exists, so lifting the gate
+       * leaves nothing behind to reconcile. */
+      const gate = chargeGate(this.config);
+      if (!gate.ok) return { state: 'unavailable' as const, reason: gate.reason };
 
       /* Only now, on the path that opens a charge: a scheduled change or an undo
        * (above) can revive a pending charge, so retiring earlier would flag a
@@ -573,9 +575,9 @@ export class BillingService {
       if (!offered.some((candidate) => candidate.id === pack.id)) {
         return { state: 'unavailable' as const, reason: 'not_available_on_plan' };
       }
-      if (!this.config.paystackPlatformConfirmed) {
-        return { state: 'unavailable' as const, reason: 'awaiting_platform_confirmation' };
-      }
+      /* §47, by key kind, exactly as a plan charge (paystack-key.ts). */
+      const gate = chargeGate(this.config);
+      if (!gate.ok) return { state: 'unavailable' as const, reason: gate.reason };
 
       const reference = addOnReference(now, randomBytes);
       const opened = await subscriptionsRepo.openCharge(tx, {

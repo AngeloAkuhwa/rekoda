@@ -275,7 +275,11 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
     await operator(businessId, 'chat');
     await standardCycle(businessId, 'chat');
     const billing = new BillingService(
-      { planCatalogueReads: false, paystackPlatformConfirmed: true } as never,
+      {
+        planCatalogueReads: false,
+        paystackSecretKey: 'sk_test_x',
+        paystackPlatformConfirmed: true,
+      } as never,
       appDb,
     );
     const first = await billing.changePlan(businessId, 'complete');
@@ -325,7 +329,11 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
   it('a stale first purchase does not hold its cycle: the retry gets a fresh payable charge', async () => {
     const businessId = await seedBusiness();
     const billing = new BillingService(
-      { planCatalogueReads: false, paystackPlatformConfirmed: true } as never,
+      {
+        planCatalogueReads: false,
+        paystackSecretKey: 'sk_test_x',
+        paystackPlatformConfirmed: true,
+      } as never,
       appDb,
     );
     const first = await billing.changePlan(businessId, 'chat');
@@ -395,7 +403,11 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
       subscriptionsRepo.schedulePlanChange(tx, businessId, 'expired'),
     );
     const billing = new BillingService(
-      { planCatalogueReads: false, paystackPlatformConfirmed: true } as never,
+      {
+        planCatalogueReads: false,
+        paystackSecretKey: 'sk_test_x',
+        paystackPlatformConfirmed: true,
+      } as never,
       appDb,
     );
     const answer = await billing.changePlan(businessId, 'complete'); // the UI's undo
@@ -624,7 +636,11 @@ describe('a paid but unapplied charge is an operator exception (OD-30)', () => {
     /* The merchant's own billing view must not call this payment applied: the money arrived and
      * the plan did not move (the return page keys its "your plan is active" on this). */
     const overview = await new BillingService(
-      { planCatalogueReads: false, paystackPlatformConfirmed: true } as never,
+      {
+        planCatalogueReads: false,
+        paystackSecretKey: 'sk_test_x',
+        paystackPlatformConfirmed: true,
+      } as never,
       appDb,
     ).overview(businessId);
     expect(overview.charges.find((c) => c.reference === 'RKD-SUB-OPS-1')).toMatchObject({

@@ -124,7 +124,15 @@ const justEndedYear = () => new Date(Date.now() - 366 * DAY);
 const justEndedMonth = () => new Date(Date.now() - 35 * DAY);
 
 const billing = () =>
-  new BillingService({ ...config, paystackPlatformConfirmed: true, annualBillingSales: true }, db);
+  new BillingService(
+    {
+      ...config,
+      paystackSecretKey: 'sk_test_x',
+      paystackPlatformConfirmed: true,
+      annualBillingSales: true,
+    },
+    db,
+  );
 
 const overviewOf = async (auth: Record<string, string>) =>
   billingOverviewResponse.parse(
@@ -175,7 +183,12 @@ async function putOnPlan(
 describe('annual billing is off until it is switched on', () => {
   const off = () =>
     new BillingService(
-      { ...config, paystackPlatformConfirmed: true, annualBillingSales: false },
+      {
+        ...config,
+        paystackSecretKey: 'sk_test_x',
+        paystackPlatformConfirmed: true,
+        annualBillingSales: false,
+      },
       db,
     );
 
@@ -201,7 +214,12 @@ describe('the annual switch and the catalogue', () => {
     const { businessId } = await onboard();
     await putOnPlan(businessId, 'complete', 'annual', new Date(Date.now() - 10 * DAY));
     const off = new BillingService(
-      { ...config, paystackPlatformConfirmed: true, annualBillingSales: false },
+      {
+        ...config,
+        paystackSecretKey: 'sk_test_x',
+        paystackPlatformConfirmed: true,
+        annualBillingSales: false,
+      },
       db,
     );
     // The subscriber keeps their own interval; asking for annual again is not a new sale.
@@ -220,6 +238,7 @@ describe('the annual switch and the catalogue', () => {
     const noCatalogue = new BillingService(
       {
         ...config,
+        paystackSecretKey: 'sk_test_x',
         paystackPlatformConfirmed: true,
         annualBillingSales: true,
         planCatalogueReads: false,

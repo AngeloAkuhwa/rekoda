@@ -96,6 +96,8 @@ function cycleEnded(renewsAt: string): boolean {
 const PROBLEMS: Record<string, string> = {
   awaiting_platform_confirmation:
     'Card payments are not switched on yet. Nothing was charged. Message upgrade on WhatsApp and we will move you across by hand.',
+  payments_not_configured:
+    'Payments are not available right now. Nothing was charged. Message upgrade on WhatsApp and we will help.',
   not_available_on_plan: 'That pack is not part of your plan. Nothing was charged.',
   unknown_pack: 'That pack does not exist. Nothing was charged.',
   no_cycle: 'That change did not go through. Nothing was charged.',
