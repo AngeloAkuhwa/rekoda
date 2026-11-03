@@ -15,6 +15,8 @@ import { defineConfig } from '@playwright/test';
  *
  * It needs a database of its own (CI creates `rekoda_reminders`): the vault key below is random
  * per run, and the spec seals a customer's email address with it the way the API would.
+ * Before a second local run, drop and recreate `rekoda_reminders`: the API rejects a new key when
+ * the database already holds a different enrolled fingerprint.
  */
 /* Both or neither (an empty value counts as unset, here and in the fallbacks below): one override
  * alone would migrate one database and run the API on another. */

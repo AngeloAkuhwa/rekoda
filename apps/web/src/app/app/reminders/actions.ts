@@ -296,7 +296,7 @@ const stopRemindersActionGuarded = guarded(
     revalidatePath('/app/reminders/invoice');
     return {
       done: stopped
-        ? `Reminders for ${invoiceNumber} are stopped. Nothing more will be sent for it until you resume them.`
+        ? `Reminders for ${invoiceNumber} are stopped. No new reminder will be sent for it until you resume them. One already being sent may still go out.`
         : `Reminders for ${invoiceNumber} are back on.`,
     };
   },
@@ -355,7 +355,7 @@ const clearPaymentInstructionActionGuarded = guarded(
     await clearPaymentInstruction(token);
     revalidatePath('/app/settings');
     return {
-      done: 'Removed. Reminders now ask customers to call your business phone to pay.',
+      done: 'Removed. Reminders now ask customers to call your business phone to pay, and none is sent until a business phone is saved.',
     };
   },
 );

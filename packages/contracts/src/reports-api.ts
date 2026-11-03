@@ -2173,8 +2173,9 @@ export const reminderBatchListResponse = z.object({
   /**
    * Whether customer reminders are switched on for this deployment (`REKODA_CUSTOMER_REMINDERS`).
    * When false nothing is sent or scheduled, and a screen says so before the merchant starts.
+   * An older API that does not send it reads as not released: the safe answer while containers are replaced.
    */
-  released: z.boolean(),
+  released: z.boolean().default(false),
 });
 export type ReminderBatchListResponse = z.infer<typeof reminderBatchListResponse>;
 

@@ -132,7 +132,7 @@ export default async function InvoiceRemindersPage({
               <h2>{history.remindersStopped ? 'Reminders are stopped' : 'Stop reminders'}</h2>
               <p className="rk-fineprint">
                 {history.remindersStopped
-                  ? 'Nothing is sent for this invoice, including reminders already scheduled, until you resume them.'
+                  ? 'No new reminder is sent for this invoice, including scheduled ones, until you resume them. One already being sent may still go out.'
                   : 'Stopping holds every reminder for this invoice, including ones already scheduled, until you resume them. The invoice and what is owed do not change.'}
               </p>
               <StopRemindersForm

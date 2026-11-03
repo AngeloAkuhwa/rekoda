@@ -341,3 +341,19 @@ describe('review fixes, round 3 (REM-06)', () => {
     expect(text).toMatch(/billing page/);
   });
 });
+
+describe('review fixes, round 4 (REM-06)', () => {
+  it('writes Lagos midnight as 00, never 24', () => {
+    const text = lagosDateTime('2026-11-03T23:15:00Z');
+    expect(text).toMatch(/00:15/);
+    expect(text).not.toMatch(/24:15/);
+  });
+});
+
+describe('review fixes, round 4 copy (REM-06)', () => {
+  it('a batch past its time does not claim it is sending', async () => {
+    const { BATCH_DUE_NOTE } = await import('./reminder-copy');
+    expect(BATCH_DUE_NOTE).not.toMatch(/Sending now/);
+    expect(BATCH_DUE_NOTE).toMatch(/switched off/);
+  });
+});

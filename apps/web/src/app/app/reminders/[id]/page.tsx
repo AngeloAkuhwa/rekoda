@@ -4,6 +4,7 @@ import { requireSessionWithToken } from '@/server/guards';
 import { heldBy } from '@/lib/capabilities';
 import { canRecordTrade } from '@/lib/permissions';
 import {
+  BATCH_DUE_NOTE,
   batchItemStatus,
   batchStateLabel,
   channelName,
@@ -73,7 +74,7 @@ export default async function ReminderBatchPage({ params }: { params: Promise<{ 
                   ? `Finished on ${lagosDateTime(batch.completedAt)}.`
                   : new Date(batch.scheduledFor).getTime() > now.getTime()
                     ? `Sends on ${lagosDateTime(batch.scheduledFor)}.`
-                    : 'Sending now. Rekoda checks each invoice again just before it sends.'}
+                    : BATCH_DUE_NOTE}
             </p>
             <dl className={styles.counts}>
               <div>

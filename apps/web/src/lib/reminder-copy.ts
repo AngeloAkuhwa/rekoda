@@ -184,6 +184,13 @@ export function batchStateLabel(
   return new Date(scheduledFor).getTime() > now.getTime() ? 'Scheduled' : 'Due to send';
 }
 
+/**
+ * What a scheduled batch past its time says. A passed time does not show a send has started
+ * (reminders may be switched off, or the sender delayed), so it claims only what the record does.
+ */
+export const BATCH_DUE_NOTE =
+  'The send time has passed and the batch is not finished. It goes out when Rekoda next sends, and each invoice is checked again first. If reminders are switched off, it waits.';
+
 /** The channels a batch or a request uses, in words. */
 export function channelsLabel(channels: 'auto' | ReminderChannel[]): string {
   if (channels === 'auto') return 'WhatsApp, and email where you have an address';
@@ -273,7 +280,7 @@ export function lagosDateTime(iso: string): string {
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
-    hour12: false,
+    hourCycle: 'h23',
     timeZone: 'Africa/Lagos',
   });
 }
