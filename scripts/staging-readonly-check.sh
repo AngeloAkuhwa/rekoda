@@ -45,38 +45,48 @@ echo "== migration 0186 (trial reminder delivery failure column)"
 # answers t or f; anything else (a failed exec, a refused connection, a wrong user or database
 # name) is reported as "unknown", never as MISSING and never with the client's error text, which
 # can name the database user: psql's stderr is discarded.
-mig_sql() { # label, boolean SQL
-  r="$(dc exec -T -e PGOPTIONS='-c default_transaction_read_only=on' -e "Q=$2" postgres sh -c \
-    'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-rekoda}" -v ON_ERROR_STOP=1 -Atc "$Q"' 2>/dev/null)"
-  case "$r" in
-    t) say "$1" "APPLIED" ;;
-    f) say "$1" "MISSING" ;;
+mig_q() { # boolean SQL: prints t, f or nothing (query failed)
+  dc exec -T -e PGOPTIONS='-c default_transaction_read_only=on' -e "Q=$1" postgres sh -c \
+    'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-rekoda}" -v ON_ERROR_STOP=1 -Atc "$Q"' 2>/dev/null
+}
+# The runner (packages/db/src/migrate.ts) runs a migration's SQL and then records its tag in
+# rekoda_migrations as a separate statement, so a stop between the two leaves the objects without
+# the tag and the next run would fail on them. Both are read: objects and tag agree = APPLIED or
+# MISSING; objects without the tag = INCOMPLETE; the tag without objects = INCONSISTENT.
+mig_sql() { # label, ledger tag, boolean SQL
+  o="$(mig_q "$3")"
+  l="$(mig_q "select exists (select 1 from rekoda_migrations where tag = '$2')")"
+  case "$o:$l" in
+    t:t) say "$1" "APPLIED" ;;
+    f:f) say "$1" "MISSING" ;;
+    t:f) say "$1" "INCOMPLETE (objects exist, migration not recorded)" ;;
+    f:t) say "$1" "INCONSISTENT (recorded, objects missing)" ;;
     *) say "$1" "unknown (query failed; check the postgres user/db names)" ;;
   esac
 }
-mig_cols() { # label, table.column ... (APPLIED only when every column exists)
-  label="$1"; shift
+mig_cols() { # label, ledger tag, table.column ... (objects present only when every column exists)
+  label="$1"; tag="$2"; shift 2
   list=""; n=0
   for tc in "$@"; do
     list="${list:+$list, }('${tc%%.*}', '${tc#*.}')"; n=$((n + 1))
   done
-  mig_sql "$label" "select count(*) = $n from information_schema.columns where table_schema = 'public' and (table_name, column_name) in ($list)"
+  mig_sql "$label" "$tag" "select count(*) = $n from information_schema.columns where table_schema = 'public' and (table_name, column_name) in ($list)"
 }
 
-echo "== annual-billing migrations (APPLIED / MISSING / unknown; read-only)"
-mig_cols "0171 billing_interval" businesses.billing_interval businesses.pending_billing_interval \
-  subscription_charges.billing_interval
-mig_cols "0172 billing checkout columns" businesses.billing_email_sealed businesses.billing_email_set_at \
-  subscription_charges.checkout_url subscription_charges.checkout_started_at
-mig_sql  "0173 checkout attempts table" "select to_regclass('public.subscription_charge_attempts') is not null"
-mig_cols "0174 billing email verification" businesses.billing_email_verified_at \
-  businesses.billing_email_revision subscription_charge_attempts.email_revision \
-  subscription_charge_attempts.provider_live
-mig_sql  "0174 verification table" "select to_regclass('public.billing_email_verifications') is not null"
-mig_cols "0175 reserved meters" external_events.reserved_meters
-mig_cols "0182 charge applied period" subscription_charges.applied_period_start \
+echo "== annual-billing migrations (APPLIED / MISSING / INCOMPLETE / INCONSISTENT / unknown; read-only)"
+mig_cols "0171 billing_interval" 0171_billing_interval businesses.billing_interval \
+  businesses.pending_billing_interval subscription_charges.billing_interval
+mig_cols "0172 billing checkout columns" 0172_billing_checkout businesses.billing_email_sealed \
+  businesses.billing_email_set_at subscription_charges.checkout_url subscription_charges.checkout_started_at
+mig_sql  "0173 checkout attempts table" 0173_checkout_attempts "select to_regclass('public.subscription_charge_attempts') is not null"
+mig_cols "0174 billing email verification" 0174_billing_email_verification \
+  businesses.billing_email_verified_at businesses.billing_email_revision \
+  subscription_charge_attempts.email_revision subscription_charge_attempts.provider_live
+mig_sql  "0174 verification table" 0174_billing_email_verification "select to_regclass('public.billing_email_verifications') is not null"
+mig_cols "0175 reserved meters" 0175_reserved_meters external_events.reserved_meters
+mig_cols "0182 charge applied period" 0182_charge_applied_period subscription_charges.applied_period_start \
   subscription_charges.applied_period_end
-mig_sql  "0185 address limit objects" "select to_regclass('public.billing_email_address_requests') is not null and (select count(*) = 3 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and ((p.proname = 'billing_email_address_claim' and oidvectortypes(p.proargtypes) = 'text, integer, integer') or (p.proname = 'billing_email_address_wait' and oidvectortypes(p.proargtypes) = 'text, integer, integer') or (p.proname = 'billing_email_address_release' and oidvectortypes(p.proargtypes) = 'uuid, text')))"
+mig_sql  "0185 address limit objects" 0185_billing_email_address_limit "select to_regclass('public.billing_email_address_requests') is not null and (select count(*) = 3 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and ((p.proname = 'billing_email_address_claim' and oidvectortypes(p.proargtypes) = 'text, integer, integer') or (p.proname = 'billing_email_address_wait' and oidvectortypes(p.proargtypes) = 'text, integer, integer') or (p.proname = 'billing_email_address_release' and oidvectortypes(p.proargtypes) = 'uuid, text')))"
 
 echo "== recent errors (last 30 minutes; counts only, no log text is printed)"
 for c in api worker; do

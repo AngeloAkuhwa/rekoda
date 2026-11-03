@@ -53,7 +53,9 @@ if [ "$1" = compose ]; then
       case "${migrations}" in
         applied) echo t ;;
         missing) echo f ;;
-        noaddr) case "$*" in *billing_email_address_requests*) echo f ;; *) echo t ;; esac ;;
+        noledger) case "$*" in *rekoda_migrations*) echo f ;; *) echo t ;; esac ;;
+        ledgeronly) case "$*" in *rekoda_migrations*) echo t ;; *) echo f ;; esac ;;
+        noaddr) case "$*" in *billing_email_address_requests*|*rekoda_migrations*) echo f ;; *) echo t ;; esac ;;
         partial) case "$*" in *billing_interval*) echo f ;; *) echo t ;; esac ;;
         fail) echo "psql: FATAL: password authentication failed for user leakyuser" >&2; exit 2 ;;
       esac
@@ -224,5 +226,27 @@ test('0185 is APPLIED only when its table and all three functions are asked for,
     assert.match(q, /billing_email_address_requests/);
   } finally {
     h.done();
+  }
+});
+
+test('objects without a ledger tag read INCOMPLETE, a tag without objects reads INCONSISTENT', () => {
+  const noLedger = host({ migrations: 'noledger' });
+  const ledgerOnly = host({ migrations: 'ledgeronly' });
+  try {
+    const out = noLedger.go();
+    assert.match(
+      out,
+      /0171 billing_interval\s+INCOMPLETE \(objects exist, migration not recorded\)\n/,
+    );
+    assert.doesNotMatch(out, /0171 billing_interval\s+APPLIED/);
+    const q = noLedger.calls().find((l) => l.includes('rekoda_migrations')) ?? '';
+    assert.match(q, /tag = '0171_billing_interval'/);
+    assert.match(
+      ledgerOnly.go(),
+      /0171 billing_interval\s+INCONSISTENT \(recorded, objects missing\)\n/,
+    );
+  } finally {
+    noLedger.done();
+    ledgerOnly.done();
   }
 });
