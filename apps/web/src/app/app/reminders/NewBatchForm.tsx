@@ -11,6 +11,7 @@ import {
   invoicesCount,
   lagosDateTime,
   lagosLocalToIso,
+  planAtInput,
   previewReason,
   reminderReason,
   type ChannelChoice,
@@ -160,7 +161,7 @@ export function NewBatchForm({
           ))}
           <input type="hidden" name="channels" value={plan.choice} />
           <input type="hidden" name="when" value={scheduledFor ? 'later' : 'now'} />
-          <input type="hidden" name="at" value={scheduledFor ? at : ''} />
+          <input type="hidden" name="at" value={planAtInput(plan.scheduledFor)} />
           <input type="hidden" name="idempotencyKey" value={plan.idempotencyKey} />
           <input type="hidden" name="previewJson" value={JSON.stringify(result)} />
 
@@ -318,6 +319,7 @@ export function NewBatchForm({
               min={nowInput}
               max={maxInput}
               value={at}
+              disabled={previewing}
               onChange={(e) => setAt(e.target.value)}
               aria-invalid={whenError ? true : undefined}
               aria-describedby={whenError ? 'batchWhenError' : undefined}

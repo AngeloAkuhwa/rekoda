@@ -259,6 +259,14 @@ export function lagosLocalInput(at: Date): string {
 }
 
 /**
+ * The send time a Confirm form posts: the one the preview was made for, never the picker's live
+ * value, which the merchant may have changed while the preview was on its way. Empty for "now".
+ */
+export function planAtInput(scheduledFor: string | undefined): string {
+  return scheduledFor ? lagosLocalInput(new Date(scheduledFor)) : '';
+}
+
+/**
  * Checks a chosen send time before it reaches the API, so the merchant hears about it in words.
  * Returns the problem as a sentence, or null when the time is usable.
  */
@@ -355,6 +363,24 @@ export function confirmProblem(read: {
     'This attempt did not schedule a new batch. Reload the page and check the list for any you already confirmed.';
   return problem ? `${problem} ${tail}` : `That did not go through. ${tail}`;
 }
+
+/**
+ * A reminder write whose answer was lost. It may have been done; the same press again is a replay
+ * (one idempotency key per intention), so the merchant is told it is safe to repeat.
+ */
+export const REMINDER_OUTCOME_UNKNOWN =
+  'We could not confirm whether that went through. It may have. Press it again: Rekoda never does the same request twice.';
+
+/** A read (the preview) that could not reach Rekoda. It writes nothing, so it says so. */
+export const REMINDER_READ_UNREACHABLE =
+  'Rekoda could not be reached just now. Nothing was scheduled. Try again in a moment.';
+
+/**
+ * What stopping cannot undo. Each channel is guarded on its own, so an email and a WhatsApp
+ * reminder for the same invoice can both be past the guard when the merchant presses Stop.
+ */
+export const REMINDERS_IN_FLIGHT_NOTE =
+  'Any reminder already being sent, on WhatsApp or by email, may still go out.';
 
 /** A reminder action the API refused for this member's role. */
 export function reminderAccessRefusal(): string {

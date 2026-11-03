@@ -19,6 +19,8 @@ import {
   setRemindersStopped,
   viewOnlyRefusal,
   ApiForbidden,
+  ApiUnavailable,
+  ApiUnexpectedStatus,
 } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 import {
@@ -36,20 +38,35 @@ import {
   type ChannelChoice,
   confirmProblem,
   reminderAccessRefusal,
+  REMINDER_OUTCOME_UNKNOWN,
+  REMINDERS_IN_FLIGHT_NOTE,
+  REMINDER_READ_UNREACHABLE,
 } from '@/lib/reminder-copy';
 
 const EXPIRED = 'Your session expired. Sign in again.';
 const KEY = /^[0-9a-f-]{36}$/i;
 
-/** Wraps an action so a role the API refuses reads as a sentence, never a crashed page. */
+/**
+ * Wraps an action so a role the API refuses, or an answer that never arrived, reads as a sentence,
+ * never a crashed page.
+ *
+ * A lost answer must not throw: the dashboard's error boundary would remount the form, a new
+ * idempotency key would be drawn, and a send the API had already committed could go to the
+ * customer a second time. Answered here, the form stays mounted with its key, so the retry replays.
+ * `lost` is what to say then: a write may have happened; a read wrote nothing.
+ */
 function guarded<S, A extends unknown[]>(
   fn: (...args: A) => Promise<S>,
+  lost: string = REMINDER_OUTCOME_UNKNOWN,
 ): (...args: A) => Promise<S> {
   return async (...args: A) => {
     try {
       return await fn(...args);
     } catch (error) {
       if (error instanceof ApiForbidden) return { error: reminderAccessRefusal() } as S;
+      if (error instanceof ApiUnavailable || error instanceof ApiUnexpectedStatus) {
+        return { error: lost } as S;
+      }
       return viewOnlyRefusal(error) as S;
     }
   };
@@ -130,6 +147,7 @@ const previewBatchActionGuarded = guarded(
     if (!preview) return { error: 'That did not go through. Nothing was scheduled.' };
     return { plan, preview };
   },
+  REMINDER_READ_UNREACHABLE,
 );
 
 /** The merchant's explicit go-ahead. Schedules the batch and opens it; sends nothing here. */
@@ -296,7 +314,7 @@ const stopRemindersActionGuarded = guarded(
     revalidatePath('/app/reminders/invoice');
     return {
       done: stopped
-        ? `Reminders for ${invoiceNumber} are stopped. No new reminder will be sent for it until you resume them. One already being sent may still go out.`
+        ? `Reminders for ${invoiceNumber} are stopped. No new reminder will be sent for it until you resume them. ${REMINDERS_IN_FLIGHT_NOTE}`
         : `Reminders for ${invoiceNumber} are back on.`,
     };
   },

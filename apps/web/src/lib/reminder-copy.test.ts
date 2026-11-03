@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   accountNumberDigits,
   batchItemStatus,
@@ -348,6 +348,20 @@ describe('review fixes, round 4 (REM-06)', () => {
     expect(text).toMatch(/00:15/);
     expect(text).not.toMatch(/24:15/);
   });
+
+  it('fixes the hour cycle itself, not only on engines that already render 00', () => {
+    /* Some engines map `hour12: false` to h24 and print 24:15; this one does not, so the string
+     * alone cannot catch a return to `hour12`. The options passed are what decide it. */
+    const spy = vi.spyOn(Date.prototype, 'toLocaleString');
+    try {
+      lagosDateTime('2026-11-03T23:15:00Z');
+      const options = spy.mock.calls[0]?.[1];
+      expect(options).toMatchObject({ hourCycle: 'h23', timeZone: 'Africa/Lagos' });
+      expect(options).not.toHaveProperty('hour12');
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 describe('review fixes, round 4 copy (REM-06)', () => {
@@ -355,5 +369,26 @@ describe('review fixes, round 4 copy (REM-06)', () => {
     const { BATCH_DUE_NOTE } = await import('./reminder-copy');
     expect(BATCH_DUE_NOTE).not.toMatch(/Sending now/);
     expect(BATCH_DUE_NOTE).toMatch(/switched off/);
+  });
+});
+
+describe('review fixes, round 5 (REM-06)', () => {
+  it('the confirm step sends back the previewed time, not whatever the picker holds now', async () => {
+    const { planAtInput, lagosLocalToIso: parse } = await import('./reminder-copy');
+    /* 09:30 Lagos on 10 Nov 2026, the time a preview was made for. */
+    const previewed = '2026-11-10T08:30:00Z';
+    expect(planAtInput(previewed)).toBe('2026-11-10T09:30');
+    /* What Confirm posts is parsed back by readPlan to exactly the previewed instant. */
+    expect(parse(planAtInput(previewed))).toBe(previewed);
+    expect(planAtInput(undefined)).toBe('');
+  });
+});
+
+describe('review fixes, round 6 (REM-06)', () => {
+  it('stopping says reminders on more than one channel may already be on their way', async () => {
+    const { REMINDERS_IN_FLIGHT_NOTE } = await import('./reminder-copy');
+    expect(REMINDERS_IN_FLIGHT_NOTE).not.toMatch(/^One /);
+    expect(REMINDERS_IN_FLIGHT_NOTE).toMatch(/WhatsApp/);
+    expect(REMINDERS_IN_FLIGHT_NOTE).toMatch(/email/);
   });
 });

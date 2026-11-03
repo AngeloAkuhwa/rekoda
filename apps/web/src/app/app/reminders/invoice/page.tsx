@@ -9,6 +9,7 @@ import {
   lagosDateTime,
   reminderStatusDetail,
   reminderStatusLabel,
+  REMINDERS_IN_FLIGHT_NOTE,
 } from '@/lib/reminder-copy';
 import { AppNav } from '../../AppNav';
 import { SignOutButton } from '../../SignOutButton';
@@ -132,7 +133,7 @@ export default async function InvoiceRemindersPage({
               <h2>{history.remindersStopped ? 'Reminders are stopped' : 'Stop reminders'}</h2>
               <p className="rk-fineprint">
                 {history.remindersStopped
-                  ? 'No new reminder is sent for this invoice, including scheduled ones, until you resume them. One already being sent may still go out.'
+                  ? `No new reminder is sent for this invoice, including scheduled ones, until you resume them. ${REMINDERS_IN_FLIGHT_NOTE}`
                   : 'Stopping holds every reminder for this invoice, including ones already scheduled, until you resume them. The invoice and what is owed do not change.'}
               </p>
               <StopRemindersForm
