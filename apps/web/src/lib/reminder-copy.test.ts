@@ -305,7 +305,7 @@ describe('review fixes, round 2 (REM-06)', () => {
     });
     expect(msg).not.toMatch(/Nothing was scheduled/);
     expect(msg).toMatch(/did not schedule a new batch/);
-    expect(msg).toMatch(/list/);
+    expect(msg).toMatch(/Reload the page/);
   });
 
   it('the preview never uses the past-tense fallback', () => {
@@ -325,5 +325,16 @@ describe('review fixes, round 2 (REM-06)', () => {
     expect(text).toMatch(/not switched on/);
     expect(text).toMatch(/already scheduled/);
     expect(text).toMatch(/cancel/);
+    /* Never a promise that every held reminder goes: the send checks still apply. */
+    expect(text).not.toMatch(/will go once/);
+    expect(text).toMatch(/usual checks/);
+  });
+});
+
+describe('review fixes, round 3 (REM-06)', () => {
+  it('the allowance message neither assumes a monthly reset nor offers more messages', () => {
+    const text = reminderReason('allowance_exhausted');
+    expect(text).not.toMatch(/this month|Add more/);
+    expect(text).toMatch(/billing page/);
   });
 });

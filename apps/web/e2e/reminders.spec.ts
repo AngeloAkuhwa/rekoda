@@ -16,7 +16,7 @@ import postgres from 'postgres';
 import { encryptFacet } from '@rekoda/core/vault';
 
 const OWNER_DATABASE_URL =
-  process.env.DATABASE_URL ?? 'postgres://rekoda@127.0.0.1:5432/rekoda_reminders';
+  process.env.DATABASE_URL || 'postgres://rekoda@127.0.0.1:5432/rekoda_reminders';
 const sql = postgres(OWNER_DATABASE_URL, { max: 2, onnotice: () => {} });
 const VAULT_KEY = process.env.REKODA_E2E_VAULT_KEY!;
 const API_URL = process.env.REKODA_E2E_API_URL!;
@@ -171,7 +171,9 @@ test('the owner sets the business phone and bank details, and a bad account numb
 
   await page.getByLabel('Business phone for customers').fill('12');
   await page.getByRole('button', { name: 'Save phone' }).click();
-  await expect(page.getByRole('alert').filter({ hasText: 'Enter a phone number' })).toBeVisible();
+  await expect(
+    page.getByRole('alert').filter({ hasText: 'Enter the phone number customers should call' }),
+  ).toBeVisible();
   await page.getByLabel('Business phone for customers').fill('0803 123 4567');
   await page.getByRole('button', { name: 'Save phone' }).click();
   await expect(
@@ -422,7 +424,8 @@ test('an accountant reads reminders but is offered no action and is refused one;
   await page.goto(batchUrl);
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('1 invoice, scheduled');
 
-  // A trial has one seat besides the owner: the accountant makes way for a helper.
+  // Seat limits are the plan's business, not this test's: the accountant is removed first so the
+  // helper's invitation is about roles, not seats.
   await page.goto('/app/team');
   const e164 = `+234${accountantPhone.slice(1)}`;
   await page.getByRole('button', { name: `Remove ${e164}` }).click();

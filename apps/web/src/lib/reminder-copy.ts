@@ -64,7 +64,7 @@ export function reminderReason(code: string | null, channel?: ReminderChannel): 
     case 'no_whatsapp_connection':
       return 'Your business WhatsApp is not connected yet, so nothing was sent on WhatsApp.';
     case 'allowance_exhausted':
-      return 'You have used the messages included in your plan this month. Add more on the billing page.';
+      return 'You have used the messages your plan includes for now, so nothing was sent. Your billing page shows what your plan allows.';
     case 'invalid_recipient':
       return 'The number or address on file for this customer does not look right, so nothing was sent.';
     case 'ambiguous_contact':
@@ -345,7 +345,7 @@ export function confirmProblem(read: {
   /* "This attempt": an earlier confirmation may have gone through with its answer lost, so the
    * screen never claims that no batch exists; the list below shows what was scheduled. */
   const tail =
-    'This attempt did not schedule a new batch. Check the list below for any you already confirmed.';
+    'This attempt did not schedule a new batch. Reload the page and check the list for any you already confirmed.';
   return problem ? `${problem} ${tail}` : `That did not go through. ${tail}`;
 }
 
@@ -367,7 +367,8 @@ export function newBatchView(
 export function remindersOffNotice(): string {
   return (
     'Reminders are not switched on for your business yet, so nothing can be sent or scheduled now. ' +
-    'Reminders you already scheduled are kept and will go once reminders are switched on; you can ' +
-    'cancel any of them below. Your invoices and records are unaffected.'
+    'Reminders you already scheduled are kept. Once reminders are switched on, each one is sent when ' +
+    'due if it still passes the usual checks (a paid invoice or a customer who opted out is skipped). ' +
+    'You can cancel any of them below. Your invoices and records are unaffected.'
   );
 }

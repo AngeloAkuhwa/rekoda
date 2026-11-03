@@ -366,12 +366,12 @@ const savePublicContactActionGuarded = guarded(
     if (!token) return { error: EXPIRED };
     const phone = String(formData.get('publicPhone') ?? '').trim();
     if (phone.length < 7 || phone.length > 20) {
-      return { fields: { publicPhone: 'Enter a phone number, for example 0803 123 4567.' } };
+      return { fields: { publicPhone: 'Enter the phone number customers should call.' } };
     }
     if (!(await savePublicContact(token, phone))) {
       return {
         fields: {
-          publicPhone: 'That does not look like a phone number. Try it as 0803 123 4567.',
+          publicPhone: 'That does not look like a phone number. Check it and try again.',
         },
       };
     }
