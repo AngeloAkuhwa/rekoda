@@ -10,7 +10,9 @@ import {
   batchIntentScope,
   heldIntentKey,
   releaseIntentKey,
-  releaseIntentScopes,
+  heldIntentMeta,
+  markPendingConfirm,
+  releaseConfirmedBatch,
   touchIntentKey,
   type KeyStore,
 } from './intent-key';
@@ -100,16 +102,36 @@ describe('a reminder key held across a remount', () => {
     );
   });
 
-  it('reaching a batch page releases every held batch key, so the same selection later is a new batch', () => {
+  it('only the batch a Confirm landed on releases its key; opening another batch releases nothing', () => {
     const store = memoryStore();
-    const scope = batchIntentScope(['INV-1'], 'whatsapp', '2026-11-10T18:00');
-    const first = heldIntentKey(store, scope, 1_000, TTL, fresh);
-    const single = heldIntentKey(store, 'remind:INV-9', 1_000, TTL, fresh);
-    /* Confirm redirected to the batch page (or the merchant opened it to cancel). */
-    releaseIntentScopes(store, 'batch:');
-    expect(heldIntentKey(store, scope, 2_000, TTL, fresh)).not.toBe(first);
-    /* A single send's held key is a different intention and is left alone. */
-    expect(heldIntentKey(store, 'remind:INV-9', 2_000, TTL, fresh)).toBe(single);
+    const confirmed = batchIntentScope(['INV-1'], 'whatsapp', '2026-11-10T18:00');
+    const unresolved = batchIntentScope(['INV-2'], 'email', '');
+    const confirmedKey = heldIntentKey(store, confirmed, 1_000, TTL, fresh);
+    const unresolvedKey = heldIntentKey(store, unresolved, 1_000, TTL, fresh);
+    /* A lost Confirm answer for `unresolved`: nothing is pending, so opening some other batch
+     * page keeps its key for the retry. */
+    releaseConfirmedBatch(store);
+    expect(heldIntentKey(store, unresolved, 2_000, TTL, fresh)).toBe(unresolvedKey);
+    /* Confirm for `confirmed` landed on its batch page: only that key goes. */
+    markPendingConfirm(store, confirmed);
+    releaseConfirmedBatch(store);
+    expect(heldIntentKey(store, confirmed, 3_000, TTL, fresh)).not.toBe(confirmedKey);
+    expect(heldIntentKey(store, unresolved, 3_000, TTL, fresh)).toBe(unresolvedKey);
+    /* The marker is spent: a later visit releases nothing more. */
+    const again = heldIntentKey(store, confirmed, 3_000, TTL, fresh);
+    releaseConfirmedBatch(store);
+    expect(heldIntentKey(store, confirmed, 4_000, TTL, fresh)).toBe(again);
+  });
+
+  it('a press holds what was asked for with its key, so a remounted form can restore it', () => {
+    const store = memoryStore();
+    const key = heldIntentKey(store, 'remind:INV-1', 1_000, TTL, fresh);
+    touchIntentKey(store, 'remind:INV-1', key, 2_000, 'whatsapp');
+    expect(heldIntentKey(store, 'remind:INV-1', 3_000, TTL, fresh)).toBe(key);
+    expect(heldIntentMeta(store, 'remind:INV-1', 3_000, TTL)).toBe('whatsapp');
+    /* Nothing pressed yet, or the hold has lapsed: nothing to restore. */
+    expect(heldIntentMeta(store, 'remind:INV-2', 3_000, TTL)).toBeNull();
+    expect(heldIntentMeta(store, 'remind:INV-1', 2_000 + TTL + 1, TTL)).toBeNull();
   });
 
   it('a press long after the form opened restarts the hold, so its retry keeps the key', () => {

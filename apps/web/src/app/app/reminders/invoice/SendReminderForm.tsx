@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/Button';
 import {
   browserKeyStore,
   heldIntentKey,
+  heldIntentMeta,
   INTENT_KEY_TTL_MS,
   releaseIntentKey,
   touchIntentKey,
@@ -32,11 +33,15 @@ export function SendReminderForm({ invoiceNumber }: { invoiceNumber: string }) {
    * not be retried under the same key. */
   const [key, setKey] = useState('');
   useEffect(() => {
-    setKey(
-      heldIntentKey(browserKeyStore(), scope, Date.now(), INTENT_KEY_TTL_MS, () =>
-        crypto.randomUUID(),
-      ),
-    );
+    const store = browserKeyStore();
+    const now = Date.now();
+    setKey(heldIntentKey(store, scope, now, INTENT_KEY_TTL_MS, () => crypto.randomUUID()));
+    /* A press whose answer was lost asked for a channel choice; show it again, so the retry is
+     * the same request under the same key and never adds a channel the merchant did not pick. */
+    const asked = heldIntentMeta(store, scope, now, INTENT_KEY_TTL_MS);
+    if (asked === 'auto' || asked === 'whatsapp' || asked === 'email' || asked === 'both') {
+      setChoice(asked);
+    }
   }, [scope, generation]);
   useEffect(() => {
     if (!state.settled) return;
@@ -51,7 +56,7 @@ export function SendReminderForm({ invoiceNumber }: { invoiceNumber: string }) {
       className="rk-form"
       noValidate
       /* The hold restarts at the press, so a form left open for a while still keeps this key. */
-      onSubmit={() => touchIntentKey(browserKeyStore(), scope, key, Date.now())}
+      onSubmit={() => touchIntentKey(browserKeyStore(), scope, key, Date.now(), choice)}
     >
       <input type="hidden" name="invoiceNumber" value={invoiceNumber} />
       {key ? <input type="hidden" name="idempotencyKey" value={key} /> : null}

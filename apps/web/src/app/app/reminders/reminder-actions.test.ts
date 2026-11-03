@@ -147,7 +147,12 @@ describe('a reminder write whose answer is lost', () => {
           idempotencyKey: INTENT,
         }),
       ),
-    ).rejects.toMatchObject({ digest: expect.stringContaining('NEXT_REDIRECT') });
+    ).rejects.toMatchObject({
+      /* `new=1` marks the landing as a Confirm's, so only that selection's held key is released. */
+      digest: expect.stringMatching(
+        /^NEXT_REDIRECT;replace;\/app\/reminders\/[0-9a-f-]{36}\?new=1$/,
+      ),
+    });
   });
 
   it('a settings removal whose answer is lost asks the owner to check, promising no replay', async () => {

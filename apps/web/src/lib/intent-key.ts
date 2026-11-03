@@ -77,10 +77,15 @@ export function touchIntentKey(
   scope: string,
   key: string,
   now: number,
+  /** What the press asked for (a channel choice), so a remounted form can show it again. */
+  meta?: string,
 ): void {
   if (!KEY.test(key)) return;
   try {
-    store?.setItem(PREFIX + scope, JSON.stringify({ key, at: now }));
+    store?.setItem(
+      PREFIX + scope,
+      JSON.stringify(meta === undefined ? { key, at: now } : { key, at: now, meta }),
+    );
   } catch {
     /* Not held; the press still carries its key. */
   }
@@ -96,22 +101,52 @@ export function releaseIntentKey(store: KeyStore | null, scope: string): void {
 }
 
 /**
- * Releases every held key whose scope starts with `prefix`. A batch page calls it for `batch:`:
- * Confirm redirects there once a batch exists, and a merchant reaches it to cancel one, so the
- * same selection made again afterwards is a new batch rather than a replay of the old one.
- * A lost answer leaves the merchant on the form, where the held key still protects the retry.
+ * What the last press under this scope asked for, while its key is still held; null otherwise.
+ * A form remounted after a lost answer restores it, so the retry repeats the same request under
+ * the same key instead of a different one (a channel choice reset to its default).
  */
-export function releaseIntentScopes(store: KeyStore | null, prefix: string): void {
+export function heldIntentMeta(
+  store: KeyStore | null,
+  scope: string,
+  now: number,
+  ttlMs: number,
+): string | null {
   try {
-    if (!store || typeof store.length !== 'number' || !store.key) return;
-    const held: string[] = [];
-    for (let i = 0; i < store.length; i += 1) {
-      const name = store.key(i);
-      if (name?.startsWith(PREFIX + prefix)) held.push(name);
-    }
-    for (const name of held) store.removeItem(name);
+    const raw = store?.getItem(PREFIX + scope);
+    if (!raw) return null;
+    const held = JSON.parse(raw) as { key?: unknown; at?: unknown; meta?: unknown };
+    if (typeof held.key !== 'string' || !KEY.test(held.key)) return null;
+    if (typeof held.at !== 'number' || now - held.at > ttlMs) return null;
+    return typeof held.meta === 'string' ? held.meta : null;
   } catch {
-    /* Storage refused: the TTL ends the held keys anyway. */
+    return null;
+  }
+}
+
+const PENDING_CONFIRM = `${PREFIX}pending-confirm`;
+
+/** A Confirm press is on its way for this batch selection. */
+export function markPendingConfirm(store: KeyStore | null, scope: string): void {
+  try {
+    store?.setItem(PENDING_CONFIRM, scope);
+  } catch {
+    /* Not marked: the held key simply lives out its TTL. */
+  }
+}
+
+/**
+ * Called by a batch page reached from a Confirm redirect: the batch exists, so the key held for
+ * that selection is released and the same selection made again later is a new batch. Only the
+ * pending selection is released; a lost answer for another selection keeps its key for the retry.
+ */
+export function releaseConfirmedBatch(store: KeyStore | null): void {
+  try {
+    const scope = store?.getItem(PENDING_CONFIRM);
+    if (!scope) return;
+    store?.removeItem(PREFIX + scope);
+    store?.removeItem(PENDING_CONFIRM);
+  } catch {
+    /* Storage refused: the TTL ends the held key anyway. */
   }
 }
 

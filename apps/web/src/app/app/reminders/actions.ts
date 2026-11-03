@@ -195,7 +195,8 @@ const createBatchActionGuarded = guarded(
     }
     if (outcome.state === 'refused') return { error: batchRefusal(outcome.code) };
     revalidatePath('/app/reminders');
-    redirect(`/app/reminders/${outcome.batch.id}`);
+    /* `new=1`: this landing follows a Confirm, so the page releases that selection's held key. */
+    redirect(`/app/reminders/${outcome.batch.id}?new=1`);
   },
 );
 

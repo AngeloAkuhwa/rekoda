@@ -31,15 +31,23 @@ export const metadata: Metadata = {
  * recipient's line is its reminder rows once a send was attempted, so the page shows what the
  * books show and never infers delivery.
  */
-export default async function ReminderBatchPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function ReminderBatchPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ new?: string | string[] }>;
+}) {
   const { id } = await params;
+  /* Reached from a Confirm redirect, not by opening a batch from the list. */
+  const landedFromConfirm = (await searchParams).new === '1';
   const { identity, token } = await requireSessionWithToken();
   const batch = await reminderBatch(token, id);
   const now = new Date();
 
   return (
     <section className="rk-container rk-dash">
-      {batch ? <ReleaseHeldBatchKeys /> : null}
+      {batch && landedFromConfirm ? <ReleaseHeldBatchKeys /> : null}
       <header className="rk-dash-head">
         <div>
           <p className="rk-eyebrow">Reminders</p>

@@ -326,13 +326,16 @@ test('a batch is previewed with exclusions explained, confirmed for later, then 
   ).toBeVisible();
   await expect(recipients).toBeVisible();
   await page.getByRole('checkbox', { name: /lawful reason/ }).check();
+  const heldBefore = (await heldBatchKeys()).length;
   await page.getByRole('button', { name: 'Confirm and schedule' }).click();
 
+  /* The Confirm redirect lands with new=1, which the page spends and removes from the address. */
   await expect(page).toHaveURL(/\/app\/reminders\/[0-9a-f-]{36}$/);
   const firstBatchUrl = page.url();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('2 invoices, scheduled');
-  /* The batch exists: its key is released, so the same selection later is a new batch. */
-  await expect.poll(heldBatchKeys).toHaveLength(0);
+  /* The batch exists: its selection's key is released, and only that one, so the same
+   * selection later is a new batch while other held selections keep theirs. */
+  await expect.poll(async () => (await heldBatchKeys()).length).toBe(heldBefore - 1);
   const items = page.getByRole('list', { name: 'Recipients' });
   await expect(items.getByRole('listitem')).toHaveCount(2);
   await expect(items.getByRole('listitem').filter({ hasText: reachable })).toContainText(
