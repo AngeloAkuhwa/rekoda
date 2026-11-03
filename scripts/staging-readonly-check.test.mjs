@@ -53,6 +53,7 @@ if [ "$1" = compose ]; then
       case "${migrations}" in
         applied) echo t ;;
         missing) echo f ;;
+        noaddr) case "$*" in *billing_email_address_requests*) echo f ;; *) echo t ;; esac ;;
         partial) case "$*" in *billing_interval*) echo f ;; *) echo t ;; esac ;;
         fail) echo "psql: FATAL: password authentication failed for user leakyuser" >&2; exit 2 ;;
       esac
@@ -207,6 +208,20 @@ test('migration queries are read-only: read-only session, select-only SQL', () =
       assert.match(q, /^select /);
       assert.doesNotMatch(q, /\b(insert|update|delete|alter|create|drop|truncate|grant)\b/);
     }
+  } finally {
+    h.done();
+  }
+});
+
+test('0185 is APPLIED only when its table and all three functions are asked for, MISSING when the table is absent', () => {
+  const h = host({ migrations: 'noaddr' });
+  try {
+    const out = h.go();
+    assert.match(out, /0185 address limit objects\s+MISSING\n/);
+    const q = h.calls().find((l) => l.includes('billing_email_address_claim')) ?? '';
+    for (const fn of ['claim', 'wait', 'release'])
+      assert.match(q, new RegExp(`billing_email_address_${fn}`));
+    assert.match(q, /billing_email_address_requests/);
   } finally {
     h.done();
   }

@@ -40,7 +40,7 @@ echo "== migration 0186 (trial reminder delivery failure column)"
 { dc exec -T postgres sh -c 'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-rekoda}" -Atc "select column_name from information_schema.columns where table_name = '"'"'businesses'"'"' and column_name = '"'"'trial_notice_failed_at'"'"'"' 2>/dev/null || echo "could not query (check the postgres user/db names)"; } | awk 'NF{f=1;print} END{if(!f)print "MISSING"}'
 
 # Annual-billing migrations (SUB-02/SUB-02a certification needs all of them). One read-only
-# query per migration, asked of the postgres container in a read-only session
+# query per status line (0174 has two lines, columns and table, so a partial 0174 shows), asked of the postgres container in a read-only session
 # (default_transaction_read_only=on, so even a mistaken statement could not write). The query
 # answers t or f; anything else (a failed exec, a refused connection, a wrong user or database
 # name) is reported as "unknown", never as MISSING and never with the client's error text, which
@@ -76,7 +76,7 @@ mig_sql  "0174 verification table" "select to_regclass('public.billing_email_ver
 mig_cols "0175 reserved meters" external_events.reserved_meters
 mig_cols "0182 charge applied period" subscription_charges.applied_period_start \
   subscription_charges.applied_period_end
-mig_sql  "0185 address claim function" "select exists (select 1 from pg_proc where proname = 'billing_email_address_claim')"
+mig_sql  "0185 address limit objects" "select to_regclass('public.billing_email_address_requests') is not null and (select count(*) = 3 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and ((p.proname = 'billing_email_address_claim' and oidvectortypes(p.proargtypes) = 'text, integer, integer') or (p.proname = 'billing_email_address_wait' and oidvectortypes(p.proargtypes) = 'text, integer, integer') or (p.proname = 'billing_email_address_release' and oidvectortypes(p.proargtypes) = 'uuid, text')))"
 
 echo "== recent errors (last 30 minutes; counts only, no log text is printed)"
 for c in api worker; do
