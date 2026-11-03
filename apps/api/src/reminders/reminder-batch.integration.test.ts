@@ -792,7 +792,9 @@ describe('tenancy and discovery', () => {
         (e: { cause?: { message?: string } }) => e.cause?.message ?? String(e),
       );
     expect(
-      await denied(db.execute(sql`SELECT * FROM sweep_due_reminder_batches(now(), 10, NULL, NULL)`)),
+      await denied(
+        db.execute(sql`SELECT * FROM sweep_due_reminder_batches(now(), 10, NULL, NULL)`),
+      ),
     ).toMatch(/permission denied/);
     expect(await denied(workerDb.execute(sql`SELECT * FROM reminder_batches`))).toMatch(
       /permission denied/,
