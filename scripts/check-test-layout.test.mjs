@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { check } from './check-test-layout.mjs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { check, countLines, discover } from './check-test-layout.mjs';
 
 const f = (path, lines = 10) => ({ path, lines });
 const run = (files, map = '', exists = () => true) => check(files, map, exists);
@@ -48,4 +52,54 @@ test('the real repository has no hard-rule errors', async () => {
   const { execFileSync } = await import('node:child_process');
   const out = execFileSync('node', ['scripts/check-test-layout.mjs'], { encoding: 'utf8' });
   assert.match(out, /0 errors/);
+});
+
+test('rejects .test.tsx outside apps/web and a top-level tests/ tree', () => {
+  const r = run([
+    f('apps/web/src/lib/a.test.tsx'),
+    f('apps/api/src/billing/b.test.tsx'),
+    f('packages/db/src/billing/c.test.tsx'),
+    f('tests/d.test.ts'),
+    f('apps/api/src/e.test.ts'),
+  ]);
+  const text = r.errors.join('\n');
+  assert.equal(r.errors.length, 3);
+  assert.match(text, /b\.test\.tsx: .test.tsx runs only in apps\/web/);
+  assert.match(text, /c\.test\.tsx: .test.tsx runs only in apps\/web/);
+  assert.match(text, /tests\/d\.test\.ts: .* top-level/);
+});
+
+test('discovers candidates whatever their suffix, so a.test.js is not filtered away', () => {
+  const paths = ['packages/core/src/a.test.js', 'x/y.spec.mts', 'src/readme.md', 'src/testing.ts'];
+  assert.deepEqual(discover(paths), ['packages/core/src/a.test.js', 'x/y.spec.mts']);
+});
+
+test('counts lines, not the empty entry after a final newline', () => {
+  assert.equal(countLines('a\nb\n'), 2);
+  assert.equal(countLines('a\nb'), 2);
+  assert.equal(countLines(''), 0);
+  const body = `${'x\n'.repeat(600)}`;
+  assert.equal(run([f('apps/api/src/z.test.ts', countLines(body))]).debt.length, 0);
+});
+
+test('the command line fails on an unknown suffix and runs from a path with a space', () => {
+  const root = mkdtempSync(join(tmpdir(), 'layout cli '));
+  try {
+    const sh = (cmd) => {
+      const r = spawnSync('bash', ['-c', cmd], { cwd: root, encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+    };
+    mkdirSync(join(root, 'docs'));
+    mkdirSync(join(root, 'packages/core/src'), { recursive: true });
+    writeFileSync(join(root, 'docs/TEST_MAP.md'), '');
+    writeFileSync(join(root, 'packages/core/src/a.test.js'), 'x\n');
+    sh('git init -q . && git add -A');
+    const script = new URL('./check-test-layout.mjs', import.meta.url).pathname;
+    const r = spawnSync('node', [script], { cwd: root, encoding: 'utf8' });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /a\.test\.js: unrecognised test file suffix/);
+    assert.match(r.stdout, /1 test files, 1 errors/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

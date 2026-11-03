@@ -17,9 +17,26 @@
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 const MAX_LINES = 600;
-const TEST_FILE = /\.(test|spec)\.(ts|tsx|mjs)$/;
+// Any tracked file that looks like a test, whatever its extension, so an unknown
+// suffix (a.test.js) reaches check() and is rejected there instead of vanishing.
+const TEST_FILE = /\.(test|spec)\.[cm]?[jt]sx?$/;
+
+/** Pure: the test candidates among tracked paths. */
+export function discover(paths) {
+  return paths.filter((p) => TEST_FILE.test(p));
+}
+
+/** Pure: lines in a file, not counting the empty entry after a final newline. */
+export function countLines(text) {
+  if (text === '') return 0;
+  return text.split('\n').length - (text.endsWith('\n') ? 1 : 0);
+}
+
+// Where a test may live: a workspace (apps/*, packages/*) or scripts/.
+const TEST_HOME = /^(apps|packages)\/[^/]+\/|^scripts\//;
 
 /** Pure: the findings for a list of `{ path, lines }` and the map text. */
 export function check(files, mapText, exists = existsSync) {
@@ -32,6 +49,12 @@ export function check(files, mapText, exists = existsSync) {
       /\.spec\.ts$/.test(path) ||
       /\.test\.mjs$/.test(path);
     if (!ok) errors.push(`${path}: unrecognised test file suffix`);
+    if (!TEST_HOME.test(path)) {
+      errors.push(`${path}: outside apps/*, packages/* and scripts/ (no top-level test tree)`);
+    }
+    if (/\.test\.tsx$/.test(path) && !path.startsWith('apps/web/')) {
+      errors.push(`${path}: .test.tsx runs only in apps/web (other unit configs match *.test.ts)`);
+    }
     const inE2e = path.startsWith('apps/web/e2e/');
     if (/\.spec\./.test(path) && !inE2e)
       errors.push(`${path}: .spec files belong in apps/web/e2e/`);
@@ -54,12 +77,12 @@ export function check(files, mapText, exists = existsSync) {
 
 function main() {
   const strict = process.argv.includes('--strict');
-  const listed = execFileSync('git', ['ls-files'], { encoding: 'utf8', maxBuffer: 64e6 })
-    .split('\n')
-    .filter((p) => TEST_FILE.test(p) && existsSync(p));
+  const listed = discover(
+    execFileSync('git', ['ls-files'], { encoding: 'utf8', maxBuffer: 64e6 }).split('\n'),
+  ).filter((p) => existsSync(p));
   const files = listed.map((path) => ({
     path,
-    lines: readFileSync(path, 'utf8').split('\n').length,
+    lines: countLines(readFileSync(path, 'utf8')),
   }));
   const { errors, debt } = check(files, readFileSync('docs/TEST_MAP.md', 'utf8'));
   for (const e of errors) console.error(`ERROR ${e}`);
@@ -71,4 +94,4 @@ function main() {
   process.exit(errors.length || (strict && debt.length) ? 1 : 0);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
