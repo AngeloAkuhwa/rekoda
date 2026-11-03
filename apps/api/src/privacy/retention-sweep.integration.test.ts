@@ -2,7 +2,7 @@
  * The retention sweep, end to end (ADR 0024, /privacy#retention).
  *
  * The storage and the privileged delete function are proven in
- * packages/db/src/retention.integration.test.ts. What this pins is the chain
+ * packages/db/src/privacy/retention.integration.test.ts. What this pins is the chain
  * between the two stages, and one property above all:
  *
  *   a warning that could not be delivered leaves the account unclaimed, and

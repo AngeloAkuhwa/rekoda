@@ -1,6 +1,6 @@
 # RLS exemption register
 
-> **Reset note (10 September 2026).** The baseline below names migration head `0130`; the estate is at `0149`. The register is enforced in both directions by `packages/db/src/rls-invariants.integration.test.ts` against the live catalogue, so the test, not this text, is the authority on which exemptions exist today (five: `sessions`, `magic_links`, `retention_deletions`, `platform_cost_events`, `migration_manifest_items`).
+> **Reset note (10 September 2026).** The baseline below names migration head `0130`; the estate is at `0149`. The register is enforced in both directions by `packages/db/src/tenancy/rls-invariants.integration.test.ts` against the live catalogue, so the test, not this text, is the authority on which exemptions exist today (five: `sessions`, `magic_links`, `retention_deletions`, `platform_cost_events`, `migration_manifest_items`).
 
 Every table that carries `business_id` and does **not** have a tenant policy, with
 the reason it does not, the control that stands in its place, and the credential
@@ -15,7 +15,7 @@ is the whole point of keeping the list.
 `external_events`, was the sixth and is now closed. It is kept below rather than
 deleted, because the reason it was open is the useful part.
 
-**This register is enforced.** `packages/db/src/rls-invariants.integration.test.ts`
+**This register is enforced.** `packages/db/src/tenancy/rls-invariants.integration.test.ts`
 carries the live exemptions as an `EXEMPT` map and fails if a table with
 `business_id` has no policy and no entry here — and fails the other way too, if an
 entry here has since gained a policy and no longer needs one. That second

@@ -3,7 +3,7 @@
  * that raises them → the register they land in.
  *
  * The date arithmetic is proven in packages/core/src/recurring.test.ts and
- * the claim in packages/db/src/recurring.integration.test.ts. What this suite
+ * the claim in packages/db/src/documents/recurring.integration.test.ts. What this suite
  * pins is everything between them, and three claims in particular:
  *
  *   - a schedule anchored on the 31st produces exactly one entry in February,
