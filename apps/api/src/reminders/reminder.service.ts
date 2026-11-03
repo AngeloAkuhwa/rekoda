@@ -205,8 +205,9 @@ export class ReminderService {
     const numbers: string[] = [];
     /* Invoice numbers are matched case-insensitively, as the send matches them. */
     for (const n of input.invoiceNumbers) {
-      const k = n.toUpperCase();
-      if (seen.has(k)) duplicates.add(n);
+      const k = reminderBatchesRepo.invoiceKey(n);
+      /* Reported by key, the form invoice numbers are issued in, so it matches a recipient's. */
+      if (seen.has(k)) duplicates.add(k);
       else {
         seen.add(k);
         numbers.push(n);

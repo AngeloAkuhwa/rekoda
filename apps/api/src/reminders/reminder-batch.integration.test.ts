@@ -739,7 +739,16 @@ describe('review fixes', () => {
       attest: true,
     });
     expect(preview.recipients).toHaveLength(1);
+    expect(preview.recipients[0]!.invoiceNumber).toBe(n);
     expect(preview.duplicates).toEqual([n]);
+    /* The other order too: the duplicate is still reported in the stored form. */
+    const reversed = await batches().preview(s.businessId, {
+      invoiceNumbers: [n, n.toLowerCase()],
+      channels: ['email'],
+      attest: true,
+    });
+    expect(reversed.recipients.map((r) => r.invoiceNumber)).toEqual([n]);
+    expect(reversed.duplicates).toEqual([n]);
     const batch = await confirm(s, { invoiceNumbers: [n.toLowerCase(), n] });
     expect(batch.itemCount).toBe(1);
     expect(batch.items.map((i) => i.invoiceNumber)).toEqual([n]);
@@ -758,6 +767,23 @@ describe('review fixes', () => {
     });
     expect(preview.recipients.map((r) => r.alsoScheduled)).toEqual([true, false]);
     expect(preview.eligibleCount).toBe(2);
+    /* Once that batch is cancelled the invoice is no longer waiting anywhere. */
+    const waiting = (await batches().list(s.businessId)).batches[0]!;
+    await batches().cancel(s.businessId, s.ownerId, waiting.id);
+    const after = await batches().preview(s.businessId, {
+      invoiceNumbers: numbers(s),
+      channels: ['email'],
+      attest: true,
+    });
+    expect(after.recipients.map((r) => r.alsoScheduled)).toEqual([false, false]);
+    /* Another business's batch never shows here. */
+    const other = await shop(1, 'Beta Ltd');
+    const theirs = await batches().preview(other.businessId, {
+      invoiceNumbers: numbers(other),
+      channels: ['email'],
+      attest: true,
+    });
+    expect(theirs.recipients[0]!.alsoScheduled).toBe(false);
   });
 
   it('discovery returns the earliest-scheduled batch first', async () => {
