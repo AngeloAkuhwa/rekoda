@@ -90,6 +90,8 @@ export interface BatchPlan {
   scheduledFor?: string;
   /** One per previewed intention: a second press of Confirm creates nothing twice. */
   idempotencyKey: string;
+  /** Confirm only: the chosen time has passed, so this press may only replay an earlier one. */
+  timePassed?: boolean;
 }
 
 export interface BatchFormState {
@@ -100,7 +102,12 @@ export interface BatchFormState {
   preview?: ReminderBatchPreviewResponse;
 }
 
-function readPlan(formData: FormData, now: Date): BatchFormState | { plan: BatchPlan } {
+function readPlan(
+  formData: FormData,
+  now: Date,
+  /** Confirm: a time that has passed is not refused here; the API is asked to replay, never create. */
+  confirming = false,
+): BatchFormState | { plan: BatchPlan } {
   const invoiceNumbers = [
     ...new Set(
       formData
@@ -117,10 +124,16 @@ function readPlan(formData: FormData, now: Date): BatchFormState | { plan: Batch
     fields.invoices = `Pick at most ${REMINDER_BATCH_MAX} invoices at a time.`;
   }
   let scheduledFor: string | undefined;
+  let timePassed = false;
   if (when === 'later') {
     const iso = lagosLocalToIso(String(formData.get('at') ?? ''));
     const problem = scheduleProblem(iso, now);
-    if (problem) fields.when = problem;
+    if (confirming && iso !== null && new Date(iso).getTime() <= now.getTime()) {
+      /* The time passed since the preview, possibly while a lost Confirm answer was in doubt. The
+       * API is asked only to replay the batch that key made; it creates nothing. */
+      scheduledFor = iso;
+      timePassed = true;
+    } else if (problem) fields.when = problem;
     else scheduledFor = iso!;
   }
   if (channelsFromChoice(choice) === null) return { error: 'Pick how to send the reminders.' };
@@ -132,6 +145,7 @@ function readPlan(formData: FormData, now: Date): BatchFormState | { plan: Batch
       choice,
       ...(scheduledFor ? { scheduledFor } : {}),
       idempotencyKey: KEY.test(key) ? key : randomUUID(),
+      ...(timePassed ? { timePassed: true } : {}),
     },
   };
 }
@@ -164,7 +178,7 @@ const createBatchActionGuarded = guarded(
   async (_prev: BatchFormState, formData: FormData): Promise<BatchFormState> => {
     const token = await readSessionToken();
     if (!token) return { error: EXPIRED };
-    const read = readPlan(formData, new Date());
+    const read = readPlan(formData, new Date(), true);
     /* Shown in the confirm step, which renders `error` only: a field problem found now (the time
      * passed while the merchant read the preview) must not vanish, or they would think it went. */
     if (!('plan' in read) || !read.plan) return { error: confirmProblem(read as BatchFormState) };
@@ -187,6 +201,7 @@ const createBatchActionGuarded = guarded(
       idempotencyKey: plan.idempotencyKey,
       ...(choiceMayEmail(plan.choice) ? { attest: true } : {}),
       confirm: true,
+      ...(plan.timePassed ? { replayOnly: true } : {}),
     });
     if (outcome.state === 'unknown_invoices') {
       return {
@@ -195,8 +210,9 @@ const createBatchActionGuarded = guarded(
     }
     if (outcome.state === 'refused') return { error: batchRefusal(outcome.code) };
     revalidatePath('/app/reminders');
-    /* `new=1`: this landing follows a Confirm, so the page releases that selection's held key. */
-    redirect(`/app/reminders/${outcome.batch.id}?new=1`);
+    /* `new=<key>`: this landing follows that Confirm, so the page releases the selection holding
+     * exactly this key and no other. */
+    redirect(`/app/reminders/${outcome.batch.id}?new=${plan.idempotencyKey}`);
   },
 );
 
@@ -284,7 +300,8 @@ const sendReminderActionGuarded = guarded(
     if (outcome.state === 'not_found') return { error: 'There is no invoice with this number.' };
     if (outcome.state === 'key_reused') {
       return {
-        error: 'That press was already used for another reminder. Try again.',
+        error:
+          'An earlier press of this form was for a different reminder, so this one was not sent. That earlier reminder may already have gone: check the history on this page, then try again if you still need to send.',
         settled: true,
       };
     }

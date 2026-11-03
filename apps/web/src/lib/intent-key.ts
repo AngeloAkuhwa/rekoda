@@ -123,31 +123,40 @@ export function heldIntentMeta(
   }
 }
 
-const PENDING_CONFIRM = `${PREFIX}pending-confirm`;
-
-/** A Confirm press is on its way for this batch selection. */
-export function markPendingConfirm(store: KeyStore | null, scope: string): void {
-  try {
-    store?.setItem(PENDING_CONFIRM, scope);
-  } catch {
-    /* Not marked: the held key simply lives out its TTL. */
-  }
-}
-
 /**
- * Called by a batch page reached from a Confirm redirect: the batch exists, so the key held for
- * that selection is released and the same selection made again later is a new batch. Only the
- * pending selection is released; a lost answer for another selection keeps its key for the retry.
+ * The batch page reached from a Confirm names the key that Confirm carried. The batch exists, so
+ * whichever selection holds exactly that key is released and the same selection made again later
+ * is a new batch. A key is matched, never a slot: a landing revisited later (Back to a cached
+ * page) names a key that is already gone and releases nothing, so it cannot release the key of a
+ * different Confirm still waiting for its answer.
  */
-export function releaseConfirmedBatch(store: KeyStore | null): void {
+export function releaseHeldKey(store: KeyStore | null, key: string): void {
+  if (!KEY.test(key)) return;
   try {
-    const scope = store?.getItem(PENDING_CONFIRM);
-    if (!scope) return;
-    store?.removeItem(PREFIX + scope);
-    store?.removeItem(PENDING_CONFIRM);
+    const length = store?.length;
+    if (!store || typeof length !== 'number' || !store.key) return;
+    const names: string[] = [];
+    for (let i = 0; i < length; i += 1) {
+      const name = store.key(i);
+      if (name?.startsWith(PREFIX)) names.push(name);
+    }
+    for (const name of names) {
+      const raw = store.getItem(name);
+      if (!raw) continue;
+      try {
+        if ((JSON.parse(raw) as { key?: unknown }).key === key) store.removeItem(name);
+      } catch {
+        /* Damaged entry: left to its TTL. */
+      }
+    }
   } catch {
     /* Storage refused: the TTL ends the held key anyway. */
   }
+}
+
+/** Whether a string is shaped like one of our idempotency keys (the landing's address carries it). */
+export function isIntentKey(value: string): boolean {
+  return KEY.test(value);
 }
 
 /** A batch's intention is its exact selection: which invoices (in any order), how and when. */

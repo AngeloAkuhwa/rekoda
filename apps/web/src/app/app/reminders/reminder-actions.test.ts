@@ -148,11 +148,74 @@ describe('a reminder write whose answer is lost', () => {
         }),
       ),
     ).rejects.toMatchObject({
-      /* `new=1` marks the landing as a Confirm's, so only that selection's held key is released. */
-      digest: expect.stringMatching(
-        /^NEXT_REDIRECT;replace;\/app\/reminders\/[0-9a-f-]{36}\?new=1$/,
-      ),
+      /* The landing names the key this Confirm carried, so only the selection holding it is released. */
+      digest: `NEXT_REDIRECT;replace;/app/reminders/11111111-2222-4333-8444-555555555555?new=${INTENT}`,
     });
+  });
+
+  it('a retried Confirm whose time has passed asks the API to replay, never to create', async () => {
+    createReminderBatch.mockResolvedValue({
+      state: 'created',
+      batch: { id: '11111111-2222-4333-8444-555555555555' },
+    } as never);
+    const past = new Date(Date.now() - 2 * 3_600_000);
+    const lagos = new Date(past.getTime() + 3_600_000).toISOString().slice(0, 16);
+    await expect(
+      createBatchAction(
+        {},
+        form({
+          invoice: 'INV-2026-000001',
+          channels: 'whatsapp',
+          when: 'later',
+          at: lagos,
+          idempotencyKey: INTENT,
+        }),
+      ),
+    ).rejects.toMatchObject({ digest: expect.stringContaining(`?new=${INTENT}`) });
+    expect(createReminderBatch).toHaveBeenCalledTimes(1);
+    expect(createReminderBatch.mock.calls[0]![1]).toMatchObject({
+      idempotencyKey: INTENT,
+      replayOnly: true,
+    });
+  });
+
+  it('a retried Confirm whose time has passed and whose key made no batch says nothing was scheduled', async () => {
+    createReminderBatch.mockResolvedValue({ state: 'refused', code: 'idempotency_key_unknown' });
+    const past = new Date(Date.now() - 2 * 3_600_000);
+    const lagos = new Date(past.getTime() + 3_600_000).toISOString().slice(0, 16);
+    const state = await createBatchAction(
+      {},
+      form({
+        invoice: 'INV-2026-000001',
+        channels: 'whatsapp',
+        when: 'later',
+        at: lagos,
+        idempotencyKey: INTENT,
+      }),
+    );
+    expect(state.error).toMatch(/Nothing was scheduled/);
+    expect(state.error).toMatch(/Pick a new time/);
+  });
+
+  it('a first Confirm for a future time is a normal create, never replay-only', async () => {
+    createReminderBatch.mockResolvedValue({
+      state: 'created',
+      batch: { id: '11111111-2222-4333-8444-555555555555' },
+    } as never);
+    const future = new Date(Date.now() + 3 * 3_600_000 + 3_600_000).toISOString().slice(0, 16);
+    await expect(
+      createBatchAction(
+        {},
+        form({
+          invoice: 'INV-2026-000001',
+          channels: 'whatsapp',
+          when: 'later',
+          at: future,
+          idempotencyKey: INTENT,
+        }),
+      ),
+    ).rejects.toBeDefined();
+    expect(createReminderBatch.mock.calls[0]![1]).not.toHaveProperty('replayOnly');
   });
 
   it('a settings removal whose answer is lost asks the owner to check, promising no replay', async () => {

@@ -49,6 +49,7 @@ import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { ReminderService } from './reminder.service.js';
 import {
   BatchKeyReused,
+  BatchKeyUnknown,
   BatchNotFound,
   BatchRemindersNotReleased,
   BatchScheduleOutOfRange,
@@ -194,6 +195,7 @@ const confirm = (
     scheduledFor: string;
     idempotencyKey: string;
     userId: string;
+    replayOnly: boolean;
   }> = {},
   service = batches(),
   now?: Date,
@@ -208,6 +210,7 @@ const confirm = (
       attest: true,
       confirm: true,
       ...(extra.scheduledFor ? { scheduledFor: extra.scheduledFor } : {}),
+      ...(extra.replayOnly ? { replayOnly: true } : {}),
     },
     now,
   );
@@ -319,6 +322,36 @@ describe('confirmation and scheduling', () => {
     await expect(
       confirm(s, { idempotencyKey: k, invoiceNumbers: [numbers(s)[0]!] }),
     ).rejects.toBeInstanceOf(BatchKeyReused);
+  });
+
+  it('a retry after the scheduled time has passed replays the batch its key made, and never creates or sends', async () => {
+    const s = await shop(2);
+    const k = key();
+    const at = new Date(Date.now() + 3_600_000);
+    const first = await confirm(s, { idempotencyKey: k, scheduledFor: at.toISOString() });
+    /* The Confirm answer was lost; two hours on, the merchant presses it again. */
+    const later = new Date(Date.now() + 7_200_000);
+    const retry = await confirm(
+      s,
+      { idempotencyKey: k, scheduledFor: at.toISOString(), replayOnly: true },
+      batches(),
+      later,
+    );
+    expect(retry.id).toBe(first.id);
+    expect(retry.replayed).toBe(true);
+    expect(await count(s, 'reminder_batches')).toBe(1);
+    expect(mail.attempts).toBe(0);
+  });
+
+  it('a replay-only retry whose key made no batch is refused: nothing is created and nothing goes out, even for a past time', async () => {
+    const s = await shop(2);
+    const past = new Date(Date.now() - 3_600_000);
+    await expect(
+      confirm(s, { idempotencyKey: key(), scheduledFor: past.toISOString(), replayOnly: true }),
+    ).rejects.toBeInstanceOf(BatchKeyUnknown);
+    expect(await count(s, 'reminder_batches')).toBe(0);
+    expect((await sweep()).dispatched).toBe(0);
+    expect(mail.attempts).toBe(0);
   });
 
   it('refuses an unknown invoice number, a time too far ahead, and an unreleased deployment, writing nothing', async () => {

@@ -8,7 +8,6 @@ import {
   browserKeyStore,
   heldIntentKey,
   INTENT_KEY_TTL_MS,
-  markPendingConfirm,
   touchIntentKey,
 } from '@/lib/intent-key';
 import {
@@ -186,7 +185,6 @@ export function NewBatchForm({
           onSubmit={() => {
             const store = browserKeyStore();
             touchIntentKey(store, planIntentScope(plan), plan.idempotencyKey, Date.now());
-            markPendingConfirm(store, planIntentScope(plan));
           }}
         >
           {plan.invoiceNumbers.map((n) => (

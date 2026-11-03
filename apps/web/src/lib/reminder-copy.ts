@@ -315,7 +315,9 @@ export function batchRefusal(code: string): string {
     case 'scheduled_for_out_of_range':
       return `Pick a time within the next ${SCHEDULE_AHEAD_DAYS} days.`;
     case 'idempotency_key_reused':
-      return 'These reminders were already submitted with different choices. Preview them again to start over.';
+      return 'A batch was already made from an earlier press with different choices, so this one was not made. Check your list of batches, then pick the invoices again if you still need them.';
+    case 'idempotency_key_unknown':
+      return 'The time you chose has passed, and no batch was made for it. Nothing was scheduled. Pick a new time.';
     default:
       return 'That did not go through. Nothing was scheduled.';
   }
@@ -450,9 +452,10 @@ export function newBatchView(
 export function remindersOffNotice(): string {
   return (
     'Reminders are not switched on for your business yet, so nothing can be sent or scheduled now. ' +
-    'Reminders you already scheduled are kept. Once reminders are switched on, each one is sent when ' +
-    'due if it still passes the usual checks (nothing goes for a paid invoice, or on a channel the ' +
+    'Reminders you already scheduled are kept, but none is sent while reminders are off. Once they ' +
+    'are switched on, a batch whose time has passed may go out then, not at the time you chose, and ' +
+    'only if it still passes the usual checks (nothing goes for a paid invoice, or on a channel the ' +
     'customer opted out of). ' +
-    'You can cancel any of them below. Your invoices and records are unaffected.'
+    'To stop one, open it from the list and cancel it. Your invoices and records are unaffected.'
   );
 }

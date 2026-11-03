@@ -18,6 +18,7 @@ import { AppNav } from '../../AppNav';
 import { SignOutButton } from '../../SignOutButton';
 import { StatusText } from '../StatusText';
 import { CancelBatchForm } from './CancelBatchForm';
+import { isIntentKey } from '@/lib/intent-key';
 import { ReleaseHeldBatchKeys } from './ReleaseHeldBatchKeys';
 import styles from '../reminders.module.css';
 
@@ -39,15 +40,17 @@ export default async function ReminderBatchPage({
   searchParams: Promise<{ new?: string | string[] }>;
 }) {
   const { id } = await params;
-  /* Reached from a Confirm redirect, not by opening a batch from the list. */
-  const landedFromConfirm = (await searchParams).new === '1';
+  /* Reached from a Confirm redirect, not by opening a batch from the list: `new` is the key that
+   * Confirm carried, and only the selection holding that key is released. */
+  const landedKey = (await searchParams).new;
+  const confirmedKey = typeof landedKey === 'string' && isIntentKey(landedKey) ? landedKey : null;
   const { identity, token } = await requireSessionWithToken();
   const batch = await reminderBatch(token, id);
   const now = new Date();
 
   return (
     <section className="rk-container rk-dash">
-      {batch && landedFromConfirm ? <ReleaseHeldBatchKeys /> : null}
+      {batch && confirmedKey ? <ReleaseHeldBatchKeys confirmedKey={confirmedKey} /> : null}
       <header className="rk-dash-head">
         <div>
           <p className="rk-eyebrow">Reminders</p>

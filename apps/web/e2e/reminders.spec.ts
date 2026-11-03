@@ -329,7 +329,7 @@ test('a batch is previewed with exclusions explained, confirmed for later, then 
   const heldBefore = (await heldBatchKeys()).length;
   await page.getByRole('button', { name: 'Confirm and schedule' }).click();
 
-  /* The Confirm redirect lands with new=1, which the page spends and removes from the address. */
+  /* The Confirm redirect lands with new=<its key>, which the page spends and removes from the address. */
   await expect(page).toHaveURL(/\/app\/reminders\/[0-9a-f-]{36}$/);
   const firstBatchUrl = page.url();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('2 invoices, scheduled');
@@ -356,8 +356,8 @@ test('a batch is previewed with exclusions explained, confirmed for later, then 
     'Cancelled. 2 invoices will not be reminded.',
   );
   /* The Confirm marker stays spent through the cancel's refresh: the address must not regain
-   * new=1, or going Back here later would release another Confirm's held key. */
-  await expect(page).not.toHaveURL(/new=1/);
+   * the key, so a shared link carries nothing. */
+  await expect(page).not.toHaveURL(/new=/);
   await page.reload();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('2 invoices, cancelled');
   await expect(items.getByRole('listitem').first()).toContainText('Cancelled');

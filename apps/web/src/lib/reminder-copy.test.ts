@@ -320,11 +320,14 @@ describe('review fixes, round 2 (REM-06)', () => {
     expect(newBatchView(true, 3)).toBe('form');
   });
 
-  it('the switched-off notice says scheduled batches are kept and can be cancelled', () => {
+  it('the switched-off notice says scheduled batches are kept, may go late, and can be cancelled from their page', () => {
     const text = remindersOffNotice();
     expect(text).toMatch(/not switched on/);
     expect(text).toMatch(/already scheduled/);
-    expect(text).toMatch(/cancel/);
+    expect(text).toMatch(/none is sent while reminders are off/);
+    expect(text).toMatch(/not at the time you chose/);
+    expect(text).toMatch(/open it from the list and cancel/);
+    expect(text).not.toMatch(/cancel any of them below/);
     /* Never a promise that every held reminder goes: the send checks still apply. */
     expect(text).not.toMatch(/will go once/);
     expect(text).toMatch(/usual checks/);
@@ -468,5 +471,22 @@ describe('review fixes, round 9 (REM-06)', () => {
     expect(planIntentScope({ invoiceNumbers: ['INV-1'], choice: 'auto' })).toBe(
       batchIntentScope(['INV-1'], 'auto', ''),
     );
+  });
+});
+
+describe('held-key refusals say what happened and what to do (REM-06)', () => {
+  it('a batch key that was already used says an earlier batch may exist and where to look', () => {
+    const text = batchRefusal('idempotency_key_reused');
+    expect(text).toMatch(/already made/);
+    expect(text).toMatch(/list of batches/);
+    expect(text).not.toMatch(/Preview them again/);
+  });
+
+  it('a retry after the chosen time that finds no earlier batch says nothing was scheduled', () => {
+    const text = batchRefusal('idempotency_key_unknown');
+    expect(text).toMatch(/time you chose has passed/);
+    expect(text).toMatch(/no batch was made for it/);
+    expect(text).toMatch(/Nothing was scheduled/);
+    expect(text).toMatch(/Pick a new time/);
   });
 });

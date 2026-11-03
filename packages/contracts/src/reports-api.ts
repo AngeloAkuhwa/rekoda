@@ -2118,6 +2118,12 @@ export const createReminderBatchRequest = z.object({
   idempotencyKey: z.string().min(8).max(90),
   attest: z.boolean().optional(),
   confirm: z.literal(true),
+  /**
+   * A retry of a Confirm whose answer was lost: replay the batch this key already made, or refuse
+   * with `idempotency_key_unknown`. Never creates, so a retry made after the scheduled time has
+   * passed cannot become an immediate send.
+   */
+  replayOnly: z.boolean().optional(),
 });
 export type CreateReminderBatchRequest = z.infer<typeof createReminderBatchRequest>;
 

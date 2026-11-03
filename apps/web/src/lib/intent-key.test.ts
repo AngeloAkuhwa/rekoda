@@ -11,8 +11,7 @@ import {
   heldIntentKey,
   releaseIntentKey,
   heldIntentMeta,
-  markPendingConfirm,
-  releaseConfirmedBatch,
+  releaseHeldKey,
   touchIntentKey,
   type KeyStore,
 } from './intent-key';
@@ -102,25 +101,49 @@ describe('a reminder key held across a remount', () => {
     );
   });
 
-  it('only the batch a Confirm landed on releases its key; opening another batch releases nothing', () => {
+  it('a landing releases the selection holding the key it names, and nothing else', () => {
     const store = memoryStore();
     const confirmed = batchIntentScope(['INV-1'], 'whatsapp', '2026-11-10T18:00');
     const unresolved = batchIntentScope(['INV-2'], 'email', '');
     const confirmedKey = heldIntentKey(store, confirmed, 1_000, TTL, fresh);
     const unresolvedKey = heldIntentKey(store, unresolved, 1_000, TTL, fresh);
-    /* A lost Confirm answer for `unresolved`: nothing is pending, so opening some other batch
-     * page keeps its key for the retry. */
-    releaseConfirmedBatch(store);
-    expect(heldIntentKey(store, unresolved, 2_000, TTL, fresh)).toBe(unresolvedKey);
-    /* Confirm for `confirmed` landed on its batch page: only that key goes. */
-    markPendingConfirm(store, confirmed);
-    releaseConfirmedBatch(store);
+    releaseHeldKey(store, confirmedKey);
     expect(heldIntentKey(store, confirmed, 3_000, TTL, fresh)).not.toBe(confirmedKey);
     expect(heldIntentKey(store, unresolved, 3_000, TTL, fresh)).toBe(unresolvedKey);
-    /* The marker is spent: a later visit releases nothing more. */
-    const again = heldIntentKey(store, confirmed, 3_000, TTL, fresh);
-    releaseConfirmedBatch(store);
-    expect(heldIntentKey(store, confirmed, 4_000, TTL, fresh)).toBe(again);
+  });
+
+  it('Back to an earlier landing cannot release the key of a later Confirm whose answer was lost', () => {
+    const store = memoryStore();
+    const landed = batchIntentScope(['INV-1'], 'whatsapp', '');
+    const lost = batchIntentScope(['INV-2'], 'whatsapp', '');
+    const landedKey = heldIntentKey(store, landed, 1_000, TTL, fresh);
+    releaseHeldKey(store, landedKey); /* the first landing */
+    const lostKey = heldIntentKey(
+      store,
+      lost,
+      2_000,
+      TTL,
+      fresh,
+    ); /* Confirm pressed, answer lost */
+    releaseHeldKey(store, landedKey); /* Back to the cached first landing re-runs its release */
+    /* The same selection again carries the same key, so the API replays the batch it made. */
+    expect(heldIntentKey(store, lost, 3_000, TTL, fresh)).toBe(lostKey);
+  });
+
+  it('a value that is not a key releases nothing, and a store that cannot list is left to its TTL', () => {
+    const store = memoryStore();
+    const scope = batchIntentScope(['INV-1'], 'auto', '');
+    const key = heldIntentKey(store, scope, 1_000, TTL, fresh);
+    releaseHeldKey(store, '1');
+    releaseHeldKey(store, 'not-a-key');
+    releaseHeldKey(null, key);
+    const noList: KeyStore = {
+      getItem: store.getItem,
+      setItem: store.setItem,
+      removeItem: store.removeItem,
+    };
+    releaseHeldKey(noList, key);
+    expect(heldIntentKey(store, scope, 2_000, TTL, fresh)).toBe(key);
   });
 
   it('a press holds what was asked for with its key, so a remounted form can restore it', () => {
