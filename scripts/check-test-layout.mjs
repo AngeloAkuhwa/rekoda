@@ -61,7 +61,9 @@ export function check(files, mapText, exists = existsSync) {
       );
     }
     if (path.startsWith('scripts/') && !/\.test\.mjs$/.test(path)) {
-      errors.push(`${path}: scripts/ holds .test.mjs files only (CI runs them with node --test)`);
+      errors.push(
+        `${path}: scripts/ holds .test.mjs files only; CI runs only the script tests .github/workflows/ci.yml names, so add a new one there`,
+      );
     }
     if (/\.test\.tsx$/.test(path) && !path.startsWith('apps/web/')) {
       errors.push(`${path}: .test.tsx runs only in apps/web (other unit configs match *.test.ts)`);
