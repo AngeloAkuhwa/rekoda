@@ -109,6 +109,32 @@ findings are fixed, no review thread is unresolved, and the docs match the
 code. Angelo merges, except for the MVP Autopilot's own closeout PRs under
 OWN-26 and the playbook's merge gates.
 
+## Where tests go
+
+One rule set, enforced by `scripts/check-test-layout.mjs` (a CI step). The
+feature-to-test index is `docs/TEST_MAP.md`.
+
+| Layer       | File name                       | Lives                                                 | Needs           | Run with                            |
+| ----------- | ------------------------------- | ----------------------------------------------------- | --------------- | ----------------------------------- |
+| Unit        | `<subject>.test.ts(x)`          | next to the code it tests                             | nothing         | `pnpm test`                         |
+| Integration | `<subject>.integration.test.ts` | next to the code it tests (db: in the feature folder) | PostgreSQL      | `pnpm test:integration` per package |
+| End to end  | `<journey>.spec.ts`             | `apps/web/e2e/` only                                  | the running app | `pnpm --filter @rekoda/web e2e`     |
+| Script      | `<script>.test.mjs`             | `scripts/`, beside the script                         | node only       | `node --test scripts/<file>`        |
+
+- **Which layer.** Pure rules (`@rekoda/core`, zod contracts, copy, parsing)
+  are unit tests. Anything that depends on SQL, RLS, locks, `ON CONFLICT`,
+  transactions or an HTTP route is an integration test, because a mock of the
+  thing under test proves nothing. A browser journey is e2e.
+- **Where.** Beside the code, in the feature's folder. In `packages/db` the
+  folder is the feature (`billing/`, `ledger/`, `tenancy/` ...), not `src/`
+  itself. Never create a top-level `tests/` tree.
+- **Name.** `<feature>-<concern>`, for example `billing/plan-change`. A suffix
+  other than the three above is rejected.
+- **Size.** Split a test file at about 600 lines, by concern. The check warns
+  above that; it does not fail yet.
+- **Keep the map.** When you rename or move a test, update `docs/TEST_MAP.md`;
+  the check fails on a path that no longer exists.
+
 ## Tests
 
 `packages/core` is the most-tested code in the repo: every money/ledger
