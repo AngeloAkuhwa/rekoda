@@ -13,6 +13,7 @@
  */
 import { createHmac, randomBytes } from 'node:crypto';
 import { expect, test, type APIRequestContext, type Browser, type Page } from '@playwright/test';
+import { addInterval } from '@rekoda/core';
 import postgres from 'postgres';
 
 const OWNER_DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://rekoda@127.0.0.1:5432/rekoda';
@@ -126,6 +127,13 @@ async function renewalOverdue(
   const amountK = interval === 'annual' ? 9_900_000 : 990_000;
   const renewal = mintReference();
   await sql.begin(async (tx) => {
+    // One instant for the renewal date, and the cycle's end taken from the product's own
+    // Lagos-calendar rule (not Postgres interval arithmetic, which is UTC and can differ by a
+    // day near a month end or a Lagos midnight). The same anchor day is written to the business.
+    const [{ at: renewalAt, day: anchorDay }] = await tx<{ at: Date; day: number }[]>`
+      SELECT now() - interval '2 days' AS at,
+             extract(day FROM (now() - interval '2 days') AT TIME ZONE 'Africa/Lagos')::int AS day`;
+    const periodEnd = addInterval(renewalAt, interval, anchorDay);
     await tx`UPDATE subscription_charges
              SET period_start = now() - (${cycle}::interval + interval '2 days'),
                  period_end = now() - interval '2 days',
@@ -138,15 +146,13 @@ async function renewalOverdue(
                (business_id, kind, plan, quantity, amount_k, provider, reference,
                 period_start, period_end, billing_interval, created_at)
              VALUES (${businessId}::uuid, 'renewal', 'chat', 1, ${amountK}, 'paystack', ${renewal},
-                     now() - interval '2 days', now() - interval '2 days' + ${cycle}::interval,
-                     ${interval}, now() - interval '2 days')`;
+                     ${renewalAt}, ${periodEnd}, ${interval}, ${renewalAt})`;
     // The cycle renews on the renewal date's Lagos day of the month, as one that really began
     // back then would: a renewal keeps that anchor whenever it is paid.
     await tx`UPDATE businesses
-             SET plan_expires_at = now() - interval '2 days',
-                 payment_failed_at = now() - interval '2 days',
-                 renewal_anchor_day =
-                   extract(day FROM (now() - interval '2 days') AT TIME ZONE 'Africa/Lagos')::int,
+             SET plan_expires_at = ${renewalAt},
+                 payment_failed_at = ${renewalAt},
+                 renewal_anchor_day = ${anchorDay},
                  cycle_started_at = cycle_started_at - (${cycle}::interval + interval '2 days'),
                  plan_decided_at = plan_decided_at - (${cycle}::interval + interval '2 days')
              WHERE id = ${businessId}::uuid`;
