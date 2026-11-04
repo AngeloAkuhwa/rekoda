@@ -26,6 +26,9 @@ export function host({
   health = null,
   journal = null,
   ledger = null,
+  services = null,
+  logs = '',
+  webCode = '200',
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'staging-check-'));
   const dir = join(root, 'rekoda');
@@ -63,6 +66,15 @@ if [ "$1" = compose ]; then
   echo "compose $* stdin=$n" >> "${join(fake, 'calls.log')}"
   case " $* " in
     *" exec -T api true "*) exit 0 ;;
+    *" ps -a "*)
+      ${services === null ? 'exit 0' : `printf '%s\\n' ${services.map((l) => `'${l}'`).join(' ')}; exit 0`} ;;
+    *" logs "*)
+      ${logs === 'fail' ? 'exit 1' : `printf '%s\\n' '${logs}'; exit 0`} ;;
+    *" exec -T api sh -c "*)
+      # A container-side query with no -e: run it against the api fixture environment.
+      shift 8
+      env -i ${envLine(env)} sh -c "$1"
+      exit $? ;;
     *" ps -q "*)
       svc="\${@: -1}"
       case "$svc" in
@@ -121,7 +133,7 @@ echo image:test`,
       ? 'echo ok'
       : `case "$*" in *"/health"*) ${
           health === 'fail' ? 'exit 22' : `printf '%s' '${fill(health)}'`
-        } ;; *) echo 200 ;; esac`,
+        } ;; *) echo '${webCode}' ;; esac`,
   );
   const script = SCRIPT.replaceAll('/opt/rekoda', dir);
   const run2 = (body = script, extra = {}) =>
@@ -188,7 +200,21 @@ export const healthy = (over = {}) =>
     health: `{"status":"ok","database":"up","migrations":${TAGS.length},"release":"staging-{sha7}","commit":"{sha7}"}`,
     journal: TAGS,
     ledger: TAGS,
-    env: { ...SLOTS, REKODA_CUSTOMER_REMINDERS: '1' },
+    env: {
+      ...SLOTS,
+      REKODA_CUSTOMER_REMINDERS: '1',
+      // not a credential: a low-entropy stand-in, findable if printed.
+      PAYSTACK_SECRET_KEY: 'sk_test_qqqqqqqqqqqqqqqq',
+    },
+    services: [
+      'postgres|running|healthy|0',
+      'api|running|healthy|0',
+      'worker|running|healthy|0',
+      'web|running|healthy|0',
+      'caddy|running||0',
+      'migrate|exited||0',
+      'edge-check|exited||0',
+    ],
     workerEnv: { REKODA_CUSTOMER_REMINDERS: '1' },
     ...over,
   });

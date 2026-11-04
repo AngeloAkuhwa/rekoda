@@ -261,8 +261,8 @@ test('an applied tag this checkout does not carry is listed, not ignored', () =>
 
 test('missing configuration is flagged: no EXPECT_SHA, live or absent key, platform flag set, slot unset, invalid reminders', () => {
   const h = healthy({
-    dotenv: 'REKODA_RELEASE=staging-{sha7}\nREKODA_PAYSTACK_PLATFORM_CONFIRMED=1\n',
-    env: { META_OTP_TEMPLATE: 'a' },
+    dotenv: 'REKODA_RELEASE=staging-{sha7}\n',
+    env: { META_OTP_TEMPLATE: 'a', REKODA_PAYSTACK_PLATFORM_CONFIRMED: '1' },
     workerEnv: { REKODA_CUSTOMER_REMINDERS: '' },
     images: { api: 'rekoda-app:staging-{sha7}', web: 'rekoda-web:staging-{sha7}' },
   });
@@ -278,7 +278,7 @@ test('missing configuration is flagged: no EXPECT_SHA, live or absent key, platf
     );
     assert.match(
       out,
-      /REKODA_PAYSTACK_PLATFORM_CONFIRMED\s+SET \(1; OWN-70: it stays UNSET on staging\)\n/,
+      /REKODA_PAYSTACK_PLATFORM_CONFIRMED\s+SET \(OWN-70: it stays UNSET on staging\)\n/,
     );
     assert.match(out, /META_TRIAL_TEMPLATE\s+UNSET\n/);
     assert.match(out, /REKODA_CUSTOMER_REMINDERS \(api\)\s+OFF \(unset; the default is off\)\n/);
@@ -301,13 +301,13 @@ test('missing configuration is flagged: no EXPECT_SHA, live or absent key, platf
 
 test('a live Paystack key on staging is flagged without printing it', () => {
   const h = healthy({
-    dotenv: 'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_live_zzzzzzzzzzzzzzzz\n',
+    env: { ...SLOTS, PAYSTACK_SECRET_KEY: 'sk_live_zzzzzzzzzzzzzzzz' },
   });
   try {
     const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
     assert.match(
       out,
-      /PAYSTACK_SECRET_KEY\s+SET \(NOT-A-TEST-KEY; staging must run an sk_test_ key\)\n/,
+      /PAYSTACK_SECRET_KEY\s+SET \(NOT-A-TEST-KEY: a live key; staging must run an sk_test_ key\)\n/,
     );
     assert.doesNotMatch(out, /zzzzzzzz|sk_live_/);
   } finally {
@@ -412,7 +412,11 @@ test('a migration whose tag is recorded but whose objects are gone reads INCONSI
 
 test('reminders set to 0 read OFF (0) and, like the default, are not flagged', () => {
   const h = healthy({
-    env: { ...SLOTS, REKODA_CUSTOMER_REMINDERS: '0' },
+    env: {
+      ...SLOTS,
+      PAYSTACK_SECRET_KEY: 'sk_test_qqqqqqqqqqqqqqqq',
+      REKODA_CUSTOMER_REMINDERS: '0',
+    },
     workerEnv: { REKODA_CUSTOMER_REMINDERS: '0' },
   });
   try {
@@ -420,6 +424,72 @@ test('reminders set to 0 read OFF (0) and, like the default, are not flagged', (
     assert.match(r.stdout, /REKODA_CUSTOMER_REMINDERS \(api\)\s+OFF \(0\)\n/);
     assert.match(r.stdout, /REKODA_CUSTOMER_REMINDERS \(worker\)\s+OFF \(0\)\n/);
     assert.equal(r.status, 0, r.stdout);
+  } finally {
+    h.done();
+  }
+});
+
+test('a broken web tier, an unhealthy or missing service, or a failed job can never read OK', () => {
+  const svc = (over) =>
+    [
+      'postgres|running|healthy|0',
+      'api|running|healthy|0',
+      'worker|running|healthy|0',
+      'web|running|healthy|0',
+      'caddy|running||0',
+      'migrate|exited||0',
+      'edge-check|exited||0',
+    ]
+      .map((l) => over[l.split('|')[0]] ?? l)
+      .filter((l) => l !== 'gone');
+  const cases = [
+    [{ webCode: '502' }, /web status\s+502\n/],
+    [{ webCode: '000' }, /web status\s+unknown \(no answer\)\n/],
+    [
+      { services: svc({ worker: 'worker|running|unhealthy|0' }) },
+      /service worker\s+running, unhealthy\n/,
+    ],
+    [{ services: svc({ caddy: 'gone' }) }, /service caddy\s+MISSING\n/],
+    [{ services: svc({ api: 'api|restarting||1' }) }, /service api\s+restarting\n/],
+    [{ services: svc({ migrate: 'migrate|exited||1' }) }, /job migrate\s+exited 1\n/],
+    [{ services: [] }, /services\s+unknown \(compose ps failed\)\n/],
+    [
+      {
+        images: {
+          api: 'rekoda-app:staging-{sha7}',
+          worker: 'rekoda-app:staging-{sha7}',
+          web: 'rekoda-web:old',
+        },
+      },
+      /web image is the \.env release\s+NO/,
+    ],
+    [{ logs: '{"level":50,"msg":"x"}' }, /error-level lines in api\s+1\n/],
+    [{ logs: 'fail' }, /error-level lines in api\s+unknown \(cannot read logs\)\n/],
+  ];
+  for (const [over, line] of cases) {
+    const h = healthy(over);
+    try {
+      const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+      assert.match(r.stdout, line, JSON.stringify(over));
+      assert.match(attention(r.stdout), line, `${JSON.stringify(over)} is under attention`);
+      assert.equal(r.status, 1, JSON.stringify(over));
+    } finally {
+      h.done();
+    }
+  }
+});
+
+test('the healthy services and jobs read as expected and are not flagged', () => {
+  const h = healthy();
+  try {
+    const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    for (const s of ['postgres', 'api', 'worker', 'web'])
+      assert.match(out, new RegExp(`service ${s}\\s+running, healthy\\n`));
+    assert.match(out, /service caddy\s+running\n/);
+    assert.match(out, /job migrate\s+exited \(0\)\n/);
+    assert.match(out, /web status\s+200\n/);
+    assert.match(out, /web image is the \.env release\s+yes\n/);
+    assert.match(out, /error-level lines in worker\s+0\n/);
   } finally {
     h.done();
   }

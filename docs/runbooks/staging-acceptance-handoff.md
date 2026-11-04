@@ -27,15 +27,15 @@ Never use a real card or real money, never message a real customer, and never to
 ## 1. After Deploy staging run 41890201057 (`b8baf24`)
 
 That run finished green: its "Staging answers with this commit" step got status ok, database up,
-and commit and release `staging-b8baf24` from `/health`. Three things are still unverified, and an
+commit `b8baf24` and release `staging-b8baf24` from `/health`. Four things are still unverified, and an
 operator must check each:
 
-| Check                                                                   | Why                                                                      |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| The host checkout is `b8baf24…` with 0 tracked modifications            | The deploy ran from this checkout                                        |
-| The api and worker run the same image, `rekoda-app:staging-b8baf24`     | A stale worker applies payments and sends reminders with old code        |
-| The applied migrations are exactly the 190 in the journal, 0000 to 0189 | The deploy refuses fewer migrations, but nothing has read the list since |
-| Every compose service is running and healthy; no error-like log lines   | `/health` covers the api only                                            |
+| Check                                                                                                                                                                                      | Why                                                                      |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| The host checkout is `b8baf24…` with 0 tracked modifications                                                                                                                               | The deploy ran from this checkout                                        |
+| The api and worker run the same image, `rekoda-app:staging-b8baf24`; the web runs `rekoda-web:staging-b8baf24`                                                                             | A stale worker applies payments and sends reminders with old code        |
+| The applied migrations are exactly the 190 in the journal, 0000 to 0189                                                                                                                    | The deploy refuses fewer migrations, but nothing has read the list since |
+| postgres, api, worker, web and caddy are running (and healthy where they have a healthcheck); migrate and edge-check did not exit with an error; no error-level log lines; the web answers | `/health` covers the api only                                            |
 
 If `main` has moved on and a newer deploy is green, use that commit instead of `b8baf24`.
 
@@ -71,7 +71,7 @@ only as `APPLIED`:
   dropped by hand);
 - `unknown`: the check could not run.
 
-The ledger lines compare tags only. A migration outside 0171 to 0189 whose objects were removed by
+The ledger lines compare tags only. A migration without its own object check (only 0171–0175, 0181–0183, 0185–0189 have one) whose objects were removed by
 hand would still count as applied there, so a `degraded` `/health` is worth reporting even when
 `not applied` reads `none`.
 
@@ -94,8 +94,8 @@ The script prints:
 - the `/health` JSON;
 - image tags;
 - the release label;
-- the values of `REKODA_WEB_URL`, `REKODA_ANNUAL_BILLING`, `REKODA_EMAIL_PROVIDER` and
-  `REKODA_WORKER`;
+- the values of `REKODA_WEB_URL`, `REKODA_ANNUAL_BILLING` and `REKODA_EMAIL_PROVIDER`;
+- service states and log-line counts (never log text);
 - migration tags;
 - disk and memory figures.
 
@@ -104,23 +104,28 @@ a user or password in it, remove it before sharing and report it as a defect in 
 
 ### How to read it
 
-| Line                                                     | Expected for acceptance                              | If not                                                                                                         |
-| -------------------------------------------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `checkout matches EXPECT_SHA`                            | `yes`                                                | The host is not at that commit: see "If the commit does not match" below                                       |
-| `api and worker image`                                   | `SAME`                                               | Stop: a worker on another image is a deploy defect                                                             |
-| `api image is the .env release`                          | `yes`                                                | As above                                                                                                       |
-| `served commit matches EXPECT_SHA`                       | `yes`                                                | As above                                                                                                       |
-| `served release is staging-<commit>`                     | `yes`                                                | As above                                                                                                       |
-| `served status`, `served database`                       | `ok`, `up`                                           | `degraded` usually means a migration is missing; read the ledger lines below                                   |
-| `0171` … `0189` lines                                    | every one `APPLIED`                                  | `MISSING`, `INCOMPLETE` or `INCONSISTENT`: stop and tell the owner; do not run SQL by hand                     |
-| `expected migrations` / `applied migrations`             | `190` / `190`                                        | `not applied` names the missing tags; `applied but not in this checkout` names extras                          |
-| `PAYSTACK_SECRET_KEY`                                    | `SET (TEST-KEY)`                                     | Set an `sk_test_` key (owner); never a live key on staging                                                     |
-| `REKODA_PAYSTACK_PLATFORM_CONFIRMED`                     | `UNSET` (OWN-70)                                     | Unset it; a test key does not need it                                                                          |
-| `REKODA_WORKER`, `WORKER_DATABASE_URL`                   | `SET`                                                | Payments are not applied and reminders are not sent                                                            |
-| `REKODA_WEB_URL`                                         | `SET (https://staging.myrekoda.com)`                 | Paystack cannot send the merchant back, and email links break                                                  |
-| `REKODA_EMAIL_PROVIDER`, `RESEND_*`, `REKODA_EMAIL_FROM` | Resend set up, or the approved mock (owner's choice) | Billing-email steps cannot be walked                                                                           |
-| `META_*_TEMPLATE`                                        | `SET` for every slot the journey uses                | That message is held, not sent. SET means configured, not approved by Meta: check approval in WhatsApp Manager |
-| `REKODA_CUSTOMER_REMINDERS (api)` / `(worker)`           | `OFF` until §4 step 4, then `ON (1)` in both         | `INVALID` means the process refuses to boot with that value                                                    |
+| Line                                                     | Expected for acceptance                                                                                      | If not                                                                                                                                                                                                        |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `checkout matches EXPECT_SHA`                            | `yes`                                                                                                        | The host is not at that commit: see "If the commit does not match" above                                                                                                                                      |
+| `api and worker image`                                   | `SAME`                                                                                                       | Stop: a worker on another image is a deploy defect                                                                                                                                                            |
+| `api image is the .env release`                          | `yes`                                                                                                        | As above                                                                                                                                                                                                      |
+| `web image is the .env release`                          | `yes`                                                                                                        | As above                                                                                                                                                                                                      |
+| `service postgres` … `service caddy`                     | `running` (and `healthy` where a healthcheck exists)                                                         | A service that is down, restarting or unhealthy: stop and tell the owner                                                                                                                                      |
+| `job migrate`, `job edge-check`                          | `exited (0)` or `not present`                                                                                | `exited 1` (or another code): the migration or edge check failed; stop and tell the owner                                                                                                                     |
+| `web status`                                             | a 2xx or 3xx code                                                                                            | The web tier is not answering: stop and tell the owner                                                                                                                                                        |
+| `error-level lines in api` / `in worker`                 | `0`                                                                                                          | Ask the owner to read those log lines on the host (the check prints counts only). The `(info)` count also matches ordinary lines that mention a migration, so it is read by hand, not judged                  |
+| `served commit matches EXPECT_SHA`                       | `yes`                                                                                                        | As above                                                                                                                                                                                                      |
+| `served release is staging-<commit>`                     | `yes`                                                                                                        | As above                                                                                                                                                                                                      |
+| `served status`, `served database`                       | `ok`, `up`                                                                                                   | `degraded` usually means a migration is missing; read the ledger lines below                                                                                                                                  |
+| `0171` … `0189` lines                                    | every one `APPLIED`                                                                                          | `MISSING`, `INCOMPLETE` or `INCONSISTENT`: stop and tell the owner; do not run SQL by hand                                                                                                                    |
+| `expected migrations` / `applied migrations`             | `190` / `190`                                                                                                | `not applied` names the missing tags; `applied but not in this checkout` names extras                                                                                                                         |
+| `PAYSTACK_SECRET_KEY`                                    | `SET (TEST-KEY)`                                                                                             | Set an `sk_test_` key (owner); never a live key on staging                                                                                                                                                    |
+| `REKODA_PAYSTACK_PLATFORM_CONFIRMED`                     | `UNSET` (OWN-70)                                                                                             | Unset it; a test key does not need it                                                                                                                                                                         |
+| `WORKER_DATABASE_URL`                                    | `SET`                                                                                                        | The worker cannot claim jobs: payments are not applied and reminders are not sent. (`REKODA_WORKER` is set per service by the compose file, `0` on the api and `1` on the worker, so `.env` does not show it) |
+| `REKODA_WEB_URL`                                         | `SET (https://staging.myrekoda.com)`                                                                         | Paystack cannot send the merchant back, and email links break                                                                                                                                                 |
+| `REKODA_EMAIL_PROVIDER`, `RESEND_*`, `REKODA_EMAIL_FROM` | Resend set up, or the approved mock (owner's choice)                                                         | Billing-email steps cannot be walked                                                                                                                                                                          |
+| `META_*_TEMPLATE`                                        | `SET` for every slot the journey uses (an unused slot reads `UNSET` under attention; that alone is expected) | That message is held, not sent. SET means configured, not approved by Meta: check approval in WhatsApp Manager                                                                                                |
+| `REKODA_CUSTOMER_REMINDERS (api)` / `(worker)`           | `OFF` until §4 step 4, then `ON (1)` in both                                                                 | `INVALID` means the process refuses to boot with that value                                                                                                                                                   |
 
 ## 3. Staging prerequisites still outstanding (4 Nov 2026)
 

@@ -198,6 +198,19 @@ async function storedInstants(
   };
 }
 
+/** The stored `created_at` of every ledger entry of one posting. */
+async function entryInstants(businessId: string, ledgerTransactionId: string): Promise<string[]> {
+  const rows = await withBusiness(db, businessId, (tx) =>
+    tx.execute<{ created: Date }>(sql`
+      SELECT created_at AS created
+      FROM ledger_entries
+      WHERE business_id = ${businessId}::uuid
+        AND transaction_id = ${ledgerTransactionId}::uuid
+    `),
+  );
+  return [...rows].map((r) => new Date(r.created).toISOString());
+}
+
 describe('the document year at the turn of the year in Lagos', () => {
   it('numbers an invoice and its receipt by the Lagos year of the sale', async () => {
     const businessId = await seedBusiness();
@@ -319,6 +332,10 @@ describe('the document year at the turn of the year in Lagos', () => {
         expense: at.toISOString(),
         posting: at.toISOString(),
       });
+      // Each ledger line too: statement periods filter on the entries' own created_at.
+      const entries = await entryInstants(businessId, recorded.ledgerTransactionId);
+      expect(entries.length).toBeGreaterThan(0);
+      expect(new Set(entries)).toEqual(new Set([at.toISOString()]));
     }
 
     const other = await seedBusiness('+2348100000902');

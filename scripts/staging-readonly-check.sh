@@ -26,10 +26,12 @@ flag() { say "$1" "$2"; ATTN="${ATTN}$(printf '%-34s %s' "$1" "$2")"$'\n'; }
 echo "== release identity"
 HEAD_SHA="$(git rev-parse HEAD 2>/dev/null)"
 say "checkout HEAD" "${HEAD_SHA:-unknown}"
-mods="$(git --no-optional-locks status --porcelain --untracked-files=no | wc -l)"
-if [ "$mods" -eq 0 ]; then say "tracked modifications" "0"; else flag "tracked modifications" "$mods"; fi
+if st="$(git --no-optional-locks status --porcelain --untracked-files=no 2>/dev/null)"; then
+  mods="$(printf '%s' "$st" | grep -c .)"
+  if [ "$mods" -eq 0 ]; then say "tracked modifications" "0"; else flag "tracked modifications" "$mods"; fi
+else flag "tracked modifications" "unknown (git status failed)"; fi
 RELEASE="$(sed -n 's/^REKODA_RELEASE=//p' .env 2>/dev/null | head -1)"
-say ".env REKODA_RELEASE" "${RELEASE:-UNSET}"
+if [ -n "$RELEASE" ]; then say ".env REKODA_RELEASE" "$RELEASE"; else flag ".env REKODA_RELEASE" "UNSET"; fi
 EXPECT="${EXPECT_SHA:-}"
 case "$EXPECT" in
   "") flag "EXPECT_SHA" "not given (pass EXPECT_SHA=<sha> to compare with a commit)" ;;
@@ -61,6 +63,10 @@ if [ -n "$RELEASE" ] && [ -n "${IMG[api]}" ]; then
   if [ "${IMG[api]}" = "rekoda-app:$RELEASE" ]; then say "api image is the .env release" "yes"
   else flag "api image is the .env release" "NO (expected rekoda-app:$RELEASE)"; fi
 fi
+if [ -n "$RELEASE" ] && [ -n "${IMG[web]}" ]; then
+  if [ "${IMG[web]}" = "rekoda-web:$RELEASE" ]; then say "web image is the .env release" "yes"
+  else flag "web image is the .env release" "NO (expected rekoda-web:$RELEASE)"; fi
+fi
 
 echo "== health (API)"
 HEALTH="$(curl -fsS --max-time 15 "$API_URL/health" 2>/dev/null)"
@@ -87,10 +93,37 @@ if [ -n "$HEALTH" ]; then
   else flag "served release is staging-<commit>" "NO"; fi
 fi
 echo "== web"
-say "web status" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://staging.myrekoda.com/ || true)"
+code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://staging.myrekoda.com/ 2>/dev/null)"
+case "$code" in
+  2??|3??) say "web status" "$code" ;;
+  ""|000) flag "web status" "unknown (no answer)" ;;
+  *) flag "web status" "$code" ;;
+esac
 
+# Every long-running service must be running, and healthy where it has a healthcheck
+# (docker-compose.prod.yml: postgres, api, worker and web do; caddy does not). The one-off jobs
+# (migrate, edge-check) must not have exited with an error.
 echo "== services"
-dc ps -a --format 'table {{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null
+SERVICES="$(dc ps -a --format '{{.Service}}|{{.State}}|{{.Health}}|{{.ExitCode}}' 2>/dev/null)"
+if [ -z "$SERVICES" ]; then
+  flag "services" "unknown (compose ps failed)"
+else
+  for svc in postgres api worker web caddy; do
+    line="$(printf '%s\n' "$SERVICES" | grep "^$svc|" | head -1)"
+    IFS='|' read -r _ state health _ <<<"$line"
+    if [ -z "$line" ]; then flag "service $svc" "MISSING"
+    elif [ "$state" != running ]; then flag "service $svc" "${state:-unknown}"
+    elif [ -n "$health" ] && [ "$health" != healthy ]; then flag "service $svc" "running, $health"
+    else say "service $svc" "running${health:+, $health}"; fi
+  done
+  for svc in migrate edge-check; do
+    line="$(printf '%s\n' "$SERVICES" | grep "^$svc|" | head -1)"
+    IFS='|' read -r _ state _ code <<<"$line"
+    if [ -z "$line" ]; then say "job $svc" "not present"
+    elif [ "$state" = exited ] && [ "$code" != 0 ]; then flag "job $svc" "exited $code"
+    else say "job $svc" "$state${code:+ ($code)}"; fi
+  done
+fi
 
 # Annual-billing migrations (SUB-02/SUB-02a certification needs all of them). One read-only
 # query per status line (0174 has two lines, columns and table, so a partial 0174 shows), asked of the postgres container in a read-only session
@@ -179,10 +212,15 @@ if [ -n "$H_MIG" ] && [ "$n_expected" -gt 0 ]; then
   else flag "/health migrations = expected" "NO ($H_MIG served, $n_expected expected)"; fi
 fi
 
+# Counts only, never log text. Lines logged at error or fatal level (pino 50 or 60) are judged;
+# the wider count (any line mentioning ERROR, FATAL or migration) is informational, read by hand.
 echo "== recent errors (last 30 minutes; counts only, no log text is printed)"
 for c in api worker; do
-  n="$(dc logs --since 30m "$c" 2>&1 | grep -ciE '"level":(50|60)|ERROR|FATAL|migration')"
-  say "error-like lines in $c" "${n:-unknown}"
+  if logs="$(dc logs --since 30m "$c" 2>/dev/null)"; then
+    n="$(printf '%s\n' "$logs" | grep -cE '"level":(50|60)')"
+    if [ "$n" -eq 0 ]; then say "error-level lines in $c" "0"; else flag "error-level lines in $c" "$n"; fi
+    say "error-like lines in $c (info)" "$(printf '%s\n' "$logs" | grep -ciE '"level":(50|60)|ERROR|FATAL|migration')"
+  else flag "error-level lines in $c" "unknown (cannot read logs)"; fi
 done
 
 echo "== resources"
@@ -193,27 +231,37 @@ echo "== deploy markers"
 ls -l .git/rekoda-deploy-staging.state .git/rekoda-deploy-staging.rollback 2>&1 | cut -c1-200
 
 echo "== billing settings (SET/UNSET only)"
-for k in PAYSTACK_SECRET_KEY REKODA_PAYSTACK_PLATFORM_CONFIRMED REKODA_WEB_URL REKODA_ANNUAL_BILLING \
+for k in REKODA_WEB_URL REKODA_ANNUAL_BILLING \
          REKODA_EMAIL_PROVIDER RESEND_API_KEY REKODA_EMAIL_FROM RESEND_WEBHOOK_SECRET \
-         REKODA_WORKER WORKER_DATABASE_URL; do
+         WORKER_DATABASE_URL; do
   v="$(sed -n "s/^$k=//p" .env | head -1)"
-  if [ -z "$v" ]; then
-    case "$k" in
-      # Staging's paid test journeys need a test key; OWN-70 keeps the platform flag UNSET.
-      PAYSTACK_SECRET_KEY) flag "$k" "UNSET (staging test payments need an sk_test_ key)" ;;
-      *) say "$k" UNSET ;;
-    esac
+  if [ -z "$v" ]; then say "$k" UNSET
   else
     case "$k" in
-      PAYSTACK_SECRET_KEY)
-        if [ "${v#sk_test_}" != "$v" ]; then say "$k" "SET (TEST-KEY)"
-        else flag "$k" "SET (NOT-A-TEST-KEY; staging must run an sk_test_ key)"; fi ;;
-      REKODA_PAYSTACK_PLATFORM_CONFIRMED) flag "$k" "SET ($v; OWN-70: it stays UNSET on staging)" ;;
-      REKODA_ANNUAL_BILLING|REKODA_EMAIL_PROVIDER|REKODA_WEB_URL|REKODA_WORKER) say "$k" "SET ($v)" ;;
+      REKODA_ANNUAL_BILLING|REKODA_EMAIL_PROVIDER|REKODA_WEB_URL) say "$k" "SET ($v)" ;;
       *) say "$k" SET ;;
     esac
   fi
 done
+
+# The Paystack key kind and the OWN-70 platform flag, asked of the running api (as it resolved
+# them, whatever the .env spelling), classified inside the container: the key is never printed.
+# Staging runs a TEST key and leaves the flag UNSET (OWN-70; #418: a test key needs no flag).
+echo "== Paystack settings in the running api (classification only)"
+r="$(dc exec -T api sh -c 'v="${PAYSTACK_SECRET_KEY:-}"; case "$v" in "") echo UNSET ;; sk_test_?*) echo TEST ;; sk_live_?*) echo LIVE ;; *) echo OTHER ;; esac' 2>/dev/null)"
+case "$r" in
+  TEST) say "PAYSTACK_SECRET_KEY" "SET (TEST-KEY)" ;;
+  UNSET) flag "PAYSTACK_SECRET_KEY" "UNSET (staging test payments need an sk_test_ key)" ;;
+  LIVE) flag "PAYSTACK_SECRET_KEY" "SET (NOT-A-TEST-KEY: a live key; staging must run an sk_test_ key)" ;;
+  OTHER) flag "PAYSTACK_SECRET_KEY" "SET (NOT-A-TEST-KEY: unrecognised, so payments fail closed)" ;;
+  *) flag "PAYSTACK_SECRET_KEY" "unknown (cannot exec into the api container)" ;;
+esac
+r="$(dc exec -T api sh -c 'if [ -n "${REKODA_PAYSTACK_PLATFORM_CONFIRMED:-}" ]; then echo SET; else echo UNSET; fi' 2>/dev/null)"
+case "$r" in
+  UNSET) say "REKODA_PAYSTACK_PLATFORM_CONFIRMED" "UNSET" ;;
+  SET) flag "REKODA_PAYSTACK_PLATFORM_CONFIRMED" "SET (OWN-70: it stays UNSET on staging)" ;;
+  *) flag "REKODA_PAYSTACK_PLATFORM_CONFIRMED" "unknown (cannot exec into the api container)" ;;
+esac
 
 # All five WhatsApp template slots the API reads (G-03; OD-41 for which approved template is the
 # trial one). Presence only: the configured names are matched against Meta's dashboard by hand.

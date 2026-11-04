@@ -13,7 +13,7 @@
   (`packages/db/migrations/meta/_journal.json` lists 190 tags).
 - **Staging deployment:** Deploy staging run 41890201057 deployed `b8baf24`, green. Its
   "Staging answers with this commit" step passed: `/health` reported status ok, database up, and
-  commit and release `staging-b8baf24`. The previous green deploy was run 41841049324 (`5a3608c`,
+  commit `b8baf24` and release `staging-b8baf24`. The previous green deploy was run 41841049324 (`5a3608c`,
   #426). This is DEPLOYED, not STAGING ACCEPTED.
 - **Not verified, NEEDS OPERATOR EVIDENCE:** host health beyond that step, the api and worker
   images, and the applied migration list on the host. The last figure on record is 183
