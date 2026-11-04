@@ -463,7 +463,9 @@ export const commandDrafts = pgTable(
     /**
      * Why a draft was retired for a reason other than the merchant's own
      * answer (migration 0170, G-20): `preview_not_delivered` when its preview
-     * never reached the merchant. Null otherwise.
+     * never reached the merchant; `inbound_message_failed` (migration 0190,
+     * OWN-74) when an earlier message of the merchant's was never processed.
+     * Null otherwise.
      */
     retiredReason: text('retired_reason'),
     /**

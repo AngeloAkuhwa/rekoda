@@ -294,6 +294,34 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       return;
     }
 
+    /* OWN-74: an answer waits for every earlier message still live, even one backing off after
+     * a failure that `hasEarlierLiveJob` lets a request pass. If that message never succeeds it
+     * dies and is reconciled above before this answer is read, so a lost "cancel" is never
+     * overtaken by a "yes" sent while it retried. */
+    const answerRoute = typeof inbound.text === 'string' ? routeMessage(inbound.text) : null;
+    const answerKind =
+      answerRoute?.route === 'deterministic' &&
+      ['affirm', 'deny', 'cancel', 'unsure'].includes(answerRoute.intent.kind)
+        ? answerRoute.intent.kind
+        : null;
+    if (answerKind && (await jobsRepo.hasEarlierLiveJobByArrival(tx, jobId))) {
+      throw new JobDeferred();
+    }
+    /* OWN-74: the merchant is told that a waiting request was withdrawn. A "yes", "no" or
+     * "cancel" is told by its own answer below; any other message is told here, first. */
+    if (
+      lost.drafts > 0 &&
+      answerKind !== 'affirm' &&
+      answerKind !== 'deny' &&
+      answerKind !== 'cancel'
+    ) {
+      await deps.replySender.send(tx, {
+        businessId,
+        to: inbound.from,
+        reply: replies.earlierMessageLostNo(),
+      });
+    }
+
     /**
      * A voice note becomes a sentence; everything else that is not text says
      * so honestly.
@@ -2355,9 +2383,6 @@ async function confirmPendingDraft(
      * the stored question no longer gates (rules changed since). */
     return replies.nothingToConfirm();
   }
-  /* The last thing the merchant was shown expired (G-23): this "yes" is
-   * about it. Say so, and never fall through to an older preview behind it,
-   * which the merchant is not looking at. Nothing is metered or claimed. */
   /* The last thing the merchant was shown was withdrawn because an earlier message of theirs
    * was never processed (owner ruling, 4 Nov 2026): this "yes" is about it. Nothing is claimed
    * or metered, nothing older is reached behind it, and the merchant is told to send it again. */
@@ -2367,6 +2392,9 @@ async function confirmPendingDraft(
     }
     return replies.earlierMessageLostYes();
   }
+  /* The last thing the merchant was shown expired (G-23): this "yes" is
+   * about it. Say so, and never fall through to an older preview behind it,
+   * which the merchant is not looking at. Nothing is metered or claimed. */
   if (latest?.state === 'expired') {
     /* A retry, its "yes" sent inside the window but overtaken by a later
      * message that closed it: nothing executes, and exactly the units an

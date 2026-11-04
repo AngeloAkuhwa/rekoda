@@ -908,8 +908,13 @@ export const INBOUND_MESSAGE_FAILED = 'inbound_message_failed';
  * by a later "yes". Called under the business's inbound lock before any answer is read, this
  * retires every draft still pending that was created before the job went dead, as `superseded`
  * with reason `inbound_message_failed`, so the next "yes" or "no" can tell the merchant to send
- * it again. Inbound jobs for a business run in order, so every such draft was waiting when the
- * lost message's turn came; a draft written after the death is a later message's, and stays.
+ * it again.
+ *
+ * Which drafts: those still pending and inside their confirmation window whose own message
+ * reached Rekoda before the lost one did (by each message's webhook event, `external_events`
+ * `created_at`). A draft from a message that arrived later, including one that passed the lost
+ * message while it was backing off, is that later message's and stays. A draft whose window has
+ * closed is left for `expireStaleDrafts`, so a "yes" to it is still told it expired (G-23).
  *
  * Each dead message is applied exactly once: its event is then marked processed, which is also
  * what takes it out of the next call, as `reconcileDeadReceipts` does for receipts. The event's
@@ -938,14 +943,21 @@ export async function reconcileDeadInboundMessages(
       UPDATE command_drafts d
          SET state = 'superseded', retired_reason = ${INBOUND_MESSAGE_FAILED},
              updated_at = clock_timestamp()
-        FROM jobs j
+        FROM conversation_messages m, external_events lost
        WHERE d.business_id = ${businessId}::uuid
          AND d.state = 'pending'
-         AND j.business_id = ${businessId}::uuid
-         AND j.kind = 'inbound.message'
-         AND j.state = 'dead'
-         AND j.payload->>'eventId' = ${message.event_id}
-         AND d.created_at <= j.updated_at
+         AND d.expires_at > clock_timestamp()
+         AND m.business_id = ${businessId}::uuid
+         AND m.id = d.conversation_message_id
+         AND lost.business_id = ${businessId}::uuid
+         AND lost.id = ${message.event_id}::uuid
+         AND coalesce(
+               (SELECT src.created_at FROM external_events src
+                 WHERE src.business_id = ${businessId}::uuid
+                   AND src.provider = lost.provider
+                   AND src.external_id = m.provider_message_id
+                 LIMIT 1),
+               m.created_at) < lost.created_at
       RETURNING d.id`);
     drafts += [...retired].length;
     await tx.execute(sql`

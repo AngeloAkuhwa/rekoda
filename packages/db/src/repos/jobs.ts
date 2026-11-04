@@ -185,6 +185,32 @@ export async function hasEarlierLiveJob(
 }
 
 /**
+ * Whether an earlier job of the same kind and business, by arrival, is still `pending` or
+ * `running`, INCLUDING one backing off after a failure (owner ruling OWN-74, 4 Nov 2026).
+ *
+ * `hasEarlierLiveJob` lets a newer message pass a sibling that is backing off, so a request is
+ * not held up for the ~30 s a failing one retries. An answer must not pass it: if that sibling is
+ * the merchant's "cancel" or a correction and it never succeeds, a "yes" sent during its backoff
+ * would confirm the draft it was about. So the inbound handler defers a "yes", "no", "cancel" or
+ * "yes?" while this is true; the sibling then either succeeds or dies, and a dead one is
+ * reconciled (`reconcileDeadInboundMessages`) before the answer is read.
+ */
+export async function hasEarlierLiveJobByArrival(tx: TenantDb, jobId: string): Promise<boolean> {
+  const rows = await tx.execute(sql`
+    SELECT 1
+    FROM jobs j, jobs me
+    WHERE me.id = ${jobId}::uuid
+      AND j.business_id = me.business_id
+      AND j.kind = me.kind
+      AND j.id <> me.id
+      AND j.state IN ('pending', 'running')
+      AND (j.created_at, j.id) < (me.created_at, me.id)
+    LIMIT 1
+  `);
+  return [...rows].length > 0;
+}
+
+/**
  * Put a claimed job back in the queue without charging it an attempt.
  *
  * Stepping aside for an older sibling is not a failure: `markFailed` would

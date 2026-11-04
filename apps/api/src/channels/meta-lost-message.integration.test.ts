@@ -22,6 +22,7 @@ import {
 } from './meta-webhook.fixtures.js';
 import {
   AN_EXPENSE,
+  drain,
   draftStates,
   footprint,
   plain,
@@ -117,3 +118,73 @@ describe.each<Death>(['markFailed', 'reclaimStalled'])(
     });
   },
 );
+
+describe('an inbound message that fails and backs off before it dies (markFailed with retries)', () => {
+  /** Fail the waiting inbound job's first attempt and leave it backing off for a minute. */
+  async function failOnceAndBackOff(businessId: string) {
+    await workerDb.execute(sql`
+      UPDATE jobs SET max_attempts = 2
+       WHERE business_id = ${businessId}::uuid AND kind = 'inbound.message' AND state = 'pending'`);
+    const job = await jobsRepo.claimNext(workerDb, 'failing-worker');
+    expect(job?.kind).toBe('inbound.message');
+    expect((await jobsRepo.markFailed(workerDb, job!, 'handler failed', 60_000)).state).toBe(
+      'pending',
+    );
+    return job!.id;
+  }
+  /** Bring the backing-off job due and fail its last attempt: it dies. */
+  async function failLastAttempt(jobId: string) {
+    await workerDb.execute(sql`UPDATE jobs SET run_at = now() WHERE id = ${jobId}::uuid`);
+    const job = await jobsRepo.claimNext(workerDb, 'failing-worker-2');
+    expect(job?.id).toBe(jobId);
+    expect((await jobsRepo.markFailed(workerDb, job!, 'handler failed', 0)).state).toBe('dead');
+  }
+
+  it('a "yes" sent while the lost "cancel" retries waits for it, and then confirms nothing', async () => {
+    const business = await seedMerchant();
+    await say('wamid.backoff-1', AN_EXPENSE, 'bought fuel 20k cash');
+    await queueOnly('wamid.backoff-cancel', 'cancel');
+    const cancel = await failOnceAndBackOff(business.id);
+
+    /* The yes arrives during the backoff: it must not pass the cancel and book the expense. */
+    await plain('wamid.backoff-yes', 'yes');
+    expect((await footprint(business.id)).expenses).toBe(0);
+
+    await failLastAttempt(cancel);
+    await workerDb.execute(sql`
+      UPDATE jobs SET run_at = now()
+       WHERE business_id = ${business.id}::uuid AND state = 'pending'`);
+    await drain();
+    expect(stubSender.lastText).toBe(replies.earlierMessageLostYes().text);
+    expect((await footprint(business.id)).expenses).toBe(0);
+  });
+
+  it('a request sent while the lost message retried keeps its own draft when that message dies', async () => {
+    const business = await seedMerchant();
+    await queueOnly('wamid.passing-question', 'cancel');
+    const lost = await failOnceAndBackOff(business.id);
+
+    /* A new request passes the backing-off message (requests are not held for its retries). */
+    await say('wamid.passing-request', AN_EXPENSE, 'bought fuel 20k cash');
+    expect(stubSender.lastText).toContain('Expense: fuel for generator');
+    await failLastAttempt(lost);
+
+    /* It reached Rekoda after the lost message, so it is not withdrawn: the yes confirms it. */
+    await plain('wamid.passing-yes', 'yes');
+    expect((await footprint(business.id)).expenses).toBe(1);
+  });
+
+  it('tells the merchant on a message that is not an answer, too', async () => {
+    const business = await seedMerchant();
+    await say('wamid.notice-1', AN_EXPENSE, 'bought fuel 20k cash');
+    await queueOnly('wamid.notice-cancel', 'cancel');
+    const lost = await failOnceAndBackOff(business.id);
+    await failLastAttempt(lost);
+
+    await plain('wamid.notice-help', 'help');
+    expect(stubSender.sent.map((s) => s.text)).toContain(replies.earlierMessageLostNo().text);
+    expect(await draftStates(business.id)).toEqual([
+      { state: 'superseded', reason: 'inbound_message_failed' },
+    ]);
+  });
+});
