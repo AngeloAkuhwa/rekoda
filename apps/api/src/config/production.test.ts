@@ -9,7 +9,7 @@
  * value outside production keeps working.
  */
 import { describe, expect, it } from 'vitest';
-import { loadConfig, trustedProxies } from './config.js';
+import { loadConfig, trustedProxies } from '../config.js';
 
 const BASE = {
   DATABASE_URL: 'postgres://x@127.0.0.1:5432/x',
