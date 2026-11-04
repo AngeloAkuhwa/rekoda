@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { check, countLines, discover } from './check-test-layout.mjs';
+import { check, checkBaselineChange, countLines, discover } from './check-test-layout.mjs';
 
 const f = (path, lines = 10) => ({ path, lines });
 const run = (files, map = '', exists = () => true) => check(files, map, exists);
@@ -208,4 +208,63 @@ test('integration tests live only where an integration runner exists, and script
   );
   assert.match(text, /packages\/core\/src\/d\.integration\.test\.ts: integration tests run only/);
   assert.match(text, /scripts\/e\.test\.ts: scripts\/ holds \.test\.mjs files only/);
+});
+
+test('baseline change: an added entry and a raised entry fail; lowered and removed entries pass', () => {
+  const base = { 'a.test.ts': 900, 'b.test.ts': 800, 'c.test.ts': 700 };
+  const next = { 'a.test.ts': 901, 'b.test.ts': 750, 'd.test.ts': 601 };
+  const errors = checkBaselineChange(base, next);
+  assert.equal(errors.length, 2);
+  assert.match(errors.join('\n'), /a\.test\.ts was raised from 900 to 901/);
+  assert.match(errors.join('\n'), /d\.test\.ts was added/);
+  assert.deepEqual(checkBaselineChange(base, { 'b.test.ts': 800 }), []);
+});
+
+test('the command line compares the baseline with --base-ref and fails closed on an unknown ref', () => {
+  const root = mkdtempSync(join(tmpdir(), 'layout base '));
+  try {
+    const sh = (cmd) => {
+      const r = spawnSync('bash', ['-c', cmd], { cwd: root, encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+    };
+    const script = fileURLToPath(new URL('./check-test-layout.mjs', import.meta.url));
+    const cli = (...args) => spawnSync('node', [script, ...args], { cwd: root, encoding: 'utf8' });
+    const big = (n) => 'x\n'.repeat(n);
+    const baseline = (oversized) =>
+      writeFileSync(join(root, 'scripts/test-layout-baseline.json'), JSON.stringify({ oversized }));
+    mkdirSync(join(root, 'docs'));
+    mkdirSync(join(root, 'scripts'));
+    mkdirSync(join(root, 'apps/api/src'), { recursive: true });
+    writeFileSync(join(root, 'docs/TEST_MAP.md'), '');
+    writeFileSync(join(root, 'apps/api/src/a.test.ts'), big(700));
+    baseline({ 'apps/api/src/a.test.ts': 700 });
+    sh(
+      'git init -q . && git add -A && git -c user.name=t -c user.email=t@t commit -qm base && git tag base',
+    );
+
+    // A new 650-line file listed in the baseline passes without the target branch, fails with it.
+    writeFileSync(join(root, 'apps/api/src/b.test.ts'), big(650));
+    baseline({ 'apps/api/src/a.test.ts': 700, 'apps/api/src/b.test.ts': 650 });
+    sh('git add -A');
+    assert.equal(cli().status, 0);
+    const added = cli('--base-ref', 'base');
+    assert.equal(added.status, 1);
+    assert.match(added.stderr, /b\.test\.ts was added/);
+
+    // Raising an entry so a file can grow fails too.
+    rmSync(join(root, 'apps/api/src/b.test.ts'));
+    writeFileSync(join(root, 'apps/api/src/a.test.ts'), big(720));
+    baseline({ 'apps/api/src/a.test.ts': 720 });
+    sh('git add -A');
+    const raised = cli('--base-ref', 'base');
+    assert.equal(raised.status, 1);
+    assert.match(raised.stderr, /a\.test\.ts was raised from 700 to 720/);
+
+    // A ref the checkout does not have is an error, not a silent pass.
+    const unknown = cli('--base-ref', 'no-such-ref');
+    assert.notEqual(unknown.status, 0);
+    assert.match(unknown.stderr, /not a commit this checkout has/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

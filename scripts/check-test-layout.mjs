@@ -15,10 +15,14 @@
  *      - a baselined file now at 600 lines or fewer, or no longer present,
  *        fails until its baseline entry is removed (the baseline only shrinks).
  *
+ *   7. with `--base-ref <ref>` (CI passes the pull request's target branch), the
+ *      baseline itself may not gain an entry or raise one compared with that
+ *      ref's copy, so the ratchet cannot be loosened by editing its own file.
+ *
  * Layout debt (reported; fails only with --strict): a baselined file still
  * over 600 lines. `--strict` is switched on in CI once the baseline is empty.
  *
- *   node scripts/check-test-layout.mjs [--strict]
+ *   node scripts/check-test-layout.mjs [--strict] [--base-ref <ref>]
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -119,6 +123,47 @@ export function check(files, mapText, exists = existsSync, baseline = {}) {
   return { errors, debt };
 }
 
+/**
+ * Pure: a proposed baseline against the target branch's. Entries may be removed or
+ * lowered; an added entry or a raised value would let a file grow, so both fail.
+ */
+export function checkBaselineChange(base, next) {
+  const errors = [];
+  for (const [path, lines] of Object.entries(next)) {
+    if (!Object.hasOwn(base, path)) {
+      errors.push(
+        `${BASELINE}: ${path} was added; the baseline only shrinks, so split the file instead`,
+      );
+    } else if (lines > base[path]) {
+      errors.push(
+        `${BASELINE}: ${path} was raised from ${base[path]} to ${lines}; the baseline only shrinks, so split the file instead`,
+      );
+    }
+  }
+  return errors;
+}
+
+/** The target branch's baseline, or null when that branch has none yet. Fails closed on an unreadable ref. */
+function baselineAt(ref) {
+  try {
+    execFileSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], {
+      stdio: 'ignore',
+    });
+  } catch {
+    throw new Error(`--base-ref ${ref} is not a commit this checkout has; fetch it first`);
+  }
+  let text;
+  try {
+    text = execFileSync('git', ['show', `${ref}:${BASELINE}`], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return null;
+  }
+  return JSON.parse(text).oversized;
+}
+
 function main() {
   const strict = process.argv.includes('--strict');
   const listed = discover(
@@ -135,6 +180,13 @@ function main() {
     existsSync,
     baseline,
   );
+  const at = process.argv.indexOf('--base-ref');
+  if (at !== -1) {
+    const ref = process.argv[at + 1];
+    if (!ref) throw new Error('--base-ref needs a ref');
+    const base = baselineAt(ref);
+    if (base !== null) errors.push(...checkBaselineChange(base, baseline));
+  }
   for (const e of errors) console.error(`ERROR ${e}`);
   for (const d of debt) console.error(`${strict ? 'ERROR' : 'warn '} ${d}`);
   console.log(
