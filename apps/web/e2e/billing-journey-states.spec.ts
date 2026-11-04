@@ -3,8 +3,9 @@
  *
  * Complements billing-journey.spec.ts (the first purchase and plan management) and
  * billing-journey-lifecycle.spec.ts (declines, late payments, refunds, a lapse): a renewal that is
- * overdue and waiting to be paid, a yearly subscriber, a checkout recovered after the merchant lost
- * the Paystack link, and the same page as an accountant sees it. Same stack: Rekoda's real API,
+ * overdue and waiting to be paid, the same renewal paid (monthly and yearly), a yearly subscriber,
+ * a checkout recovered after the merchant lost the Paystack link, and the same page as an
+ * accountant sees it. Same stack: Rekoda's real API,
  * worker and database, with Paystack itself a stand-in (e2e/support/fake-paystack.mjs). An overdue
  * renewal is put in the database directly, as the renewal sweep would write it, because the clock
  * and the sweep are not what is under test here; billing-renewal.integration.test.ts covers the sweep.
@@ -111,6 +112,66 @@ const lagosDate = (at: Date) =>
     year: 'numeric',
   });
 
+/**
+ * The paid cycle ended two days ago and the renewal sweep raised the next cycle's charge, starting
+ * the grace clock at the renewal date. Written as the sweep writes it, in one transaction so the
+ * in-process sweep never sees a due cycle without its charge. Returns the renewal's reference.
+ */
+async function renewalOverdue(
+  businessId: string,
+  paid: string,
+  interval: 'monthly' | 'annual' = 'monthly',
+): Promise<string> {
+  const cycle = interval === 'annual' ? '1 year' : '1 month';
+  const amountK = interval === 'annual' ? 9_900_000 : 990_000;
+  const renewal = mintReference();
+  await sql.begin(async (tx) => {
+    await tx`UPDATE subscription_charges
+             SET period_start = now() - (${cycle}::interval + interval '2 days'),
+                 period_end = now() - interval '2 days',
+                 applied_period_start = now() - (${cycle}::interval + interval '2 days'),
+                 applied_period_end = now() - interval '2 days',
+                 created_at = created_at - (${cycle}::interval + interval '2 days'),
+                 paid_at = paid_at - (${cycle}::interval + interval '2 days')
+             WHERE reference = ${paid}`;
+    await tx`INSERT INTO subscription_charges
+               (business_id, kind, plan, quantity, amount_k, provider, reference,
+                period_start, period_end, billing_interval, created_at)
+             VALUES (${businessId}::uuid, 'renewal', 'chat', 1, ${amountK}, 'paystack', ${renewal},
+                     now() - interval '2 days', now() - interval '2 days' + ${cycle}::interval,
+                     ${interval}, now() - interval '2 days')`;
+    await tx`UPDATE businesses
+             SET plan_expires_at = now() - interval '2 days',
+                 payment_failed_at = now() - interval '2 days',
+                 cycle_started_at = cycle_started_at - (${cycle}::interval + interval '2 days'),
+                 plan_decided_at = plan_decided_at - (${cycle}::interval + interval '2 days')
+             WHERE id = ${businessId}::uuid`;
+  });
+  return renewal;
+}
+
+/** Pay the renewal the billing page is asking for, from its pay card. */
+async function payRenewal(page: Page, request: APIRequestContext) {
+  await page.goto('/app/billing');
+  const pay = page.locator('#pay');
+  await expect(pay.getByRole('heading', { name: 'Pay for your plan' })).toBeVisible();
+  if (await pay.locator('#payBillingEmail').count()) {
+    await pay.locator('#payBillingEmail').fill('ada@shop.example.ng');
+  }
+  await pay.getByRole('button', { name: 'Pay with Paystack' }).click();
+  await expect(page.getByRole('heading', { name: 'Fake Paystack checkout' })).toBeVisible();
+  const attempt = (await page.locator('[data-ref]').textContent())!.trim();
+  await payAndReturn(page, request, attempt);
+}
+
+/** The subscription columns a paid renewal must restore. */
+const subscriptionOf = async (businessId: string) => {
+  const [state] = await sql<{ ends: Date; failed: Date | null; plan: string; interval: string }[]>`
+    SELECT plan_expires_at AS ends, payment_failed_at AS failed, plan, billing_interval AS interval
+    FROM businesses WHERE id = ${businessId}::uuid`;
+  return state!;
+};
+
 const row = (page: Page, reference: string) => page.getByRole('row').filter({ hasText: reference });
 const historyRows = (page: Page) =>
   page
@@ -132,32 +193,7 @@ test('a renewal that is due and not yet paid shows the grace period and asks for
   const first = await openPaystack(page);
   await payAndReturn(page, request, first);
 
-  // The paid month ended two days ago and the renewal sweep raised the next month's charge,
-  // starting the grace clock at the renewal date. Written as the sweep writes it, in one
-  // transaction so the in-process sweep never sees a due cycle without its charge.
-  const renewal = mintReference();
-  await sql.begin(async (tx) => {
-    await tx`UPDATE subscription_charges
-             SET period_start = now() - interval '1 month 2 days',
-                 period_end = now() - interval '2 days',
-                 applied_period_start = now() - interval '1 month 2 days',
-                 applied_period_end = now() - interval '2 days',
-                 created_at = created_at - interval '1 month 2 days',
-                 paid_at = paid_at - interval '1 month 2 days'
-             WHERE reference = ${first}`;
-    await tx`INSERT INTO subscription_charges
-               (business_id, kind, plan, quantity, amount_k, provider, reference,
-                period_start, period_end, billing_interval, created_at)
-             VALUES (${businessId}::uuid, 'renewal', 'chat', 1, 990000, 'paystack', ${renewal},
-                     now() - interval '2 days', now() - interval '2 days' + interval '1 month',
-                     'monthly', now() - interval '2 days')`;
-    await tx`UPDATE businesses
-             SET plan_expires_at = now() - interval '2 days',
-                 payment_failed_at = now() - interval '2 days',
-                 cycle_started_at = cycle_started_at - interval '1 month 2 days',
-                 plan_decided_at = plan_decided_at - interval '1 month 2 days'
-             WHERE id = ${businessId}::uuid`;
-  });
+  const renewal = await renewalOverdue(businessId, first);
   const [clock] = await sql<{ failed: Date }[]>`
     SELECT payment_failed_at AS failed FROM businesses WHERE id = ${businessId}::uuid`;
   // Seven days of grace from the renewal date: five of them are left.
@@ -242,6 +278,74 @@ test('a yearly subscriber sees the price a year, a renewal a year out, and the o
   await expect(
     page.getByRole('button', { name: 'Switch to yearly at my next renewal' }),
   ).toHaveCount(0);
+  await noHorizontalScroll(page);
+});
+
+test('a merchant in grace pays the renewal from the billing page, and the plan runs a month from the renewal date', async ({
+  page,
+  request,
+}) => {
+  const businessId = await onboard(page, `Ada Renews ${RUN}-${seq}`);
+  await page.goto('/app/billing?to=chat');
+  await page.getByRole('button', { name: 'Confirm and pay' }).click();
+  const first = await openPaystack(page);
+  await payAndReturn(page, request, first);
+  const renewal = await renewalOverdue(businessId, first);
+  const [due] = await sql<{ end: Date }[]>`
+    SELECT period_end AS end FROM subscription_charges WHERE reference = ${renewal}`;
+
+  await payRenewal(page, request);
+
+  // The renewal buys the month it was raised for, from the renewal date, not from today: paying
+  // two days late does not move the anchor, and it gives no extra days either.
+  const after = await subscriptionOf(businessId);
+  expect(after).toMatchObject({ plan: 'chat', failed: null, interval: 'monthly' });
+  expect(after.ends.getTime()).toBe(due!.end.getTime());
+
+  await page.goto('/app/billing');
+  await expect(page.getByText(/renewal is due/)).toHaveCount(0);
+  await expect(page.getByText(/Grace period ends/)).toHaveCount(0);
+  await expect(page.getByText(`Renews on ${lagosDate(after.ends)}.`, { exact: true })).toBeVisible();
+  await expect(page.locator('#pay')).toHaveCount(0);
+  await expect(row(page, renewal)).toContainText('Renewal · Rekoda Chat');
+  await expect(row(page, renewal).getByRole('cell', { name: 'Paid' })).toBeVisible();
+  await expect(row(page, first).getByRole('cell', { name: 'Paid' })).toBeVisible();
+  await expect(historyRows(page)).toHaveCount(2);
+  await noHorizontalScroll(page);
+});
+
+test('a yearly subscriber whose year has ended pays the yearly renewal, and the plan runs another year', async ({
+  page,
+  request,
+}) => {
+  const businessId = await onboard(page, `Ada Renews Yearly ${RUN}-${seq}`);
+  await page.goto('/app/billing?to=chat&interval=annual');
+  await page.getByRole('button', { name: 'Confirm and pay' }).click();
+  const first = await openPaystack(page);
+  await payAndReturn(page, request, first);
+  const renewal = await renewalOverdue(businessId, first, 'annual');
+  const [due] = await sql<{ end: Date }[]>`
+    SELECT period_end AS end FROM subscription_charges WHERE reference = ${renewal}`;
+
+  // The pay card asks for a year at the yearly price, never a month.
+  await page.goto('/app/billing');
+  await expect(page.locator('#pay')).toContainText('₦99,000 for renewal · Rekoda Chat');
+  await payRenewal(page, request);
+
+  const after = await subscriptionOf(businessId);
+  expect(after).toMatchObject({ plan: 'chat', failed: null, interval: 'annual' });
+  expect(after.ends.getTime()).toBe(due!.end.getTime());
+  const daysAhead = (after.ends.getTime() - Date.now()) / 86_400_000;
+  expect(daysAhead).toBeGreaterThan(360);
+  expect(daysAhead).toBeLessThan(366);
+
+  await page.goto('/app/billing');
+  await expect(page.locator('.rk-plan-current')).toHaveText('Rekoda Chat · ₦99,000 a year');
+  await expect(page.getByText(/renewal is due/)).toHaveCount(0);
+  await expect(page.getByText(`Renews on ${lagosDate(after.ends)}.`, { exact: true })).toBeVisible();
+  await expect(row(page, renewal)).toContainText('Renewal · Rekoda Chat · Yearly');
+  await expect(row(page, renewal).getByRole('cell', { name: 'Paid' })).toBeVisible();
+  await expect(historyRows(page)).toHaveCount(2);
   await noHorizontalScroll(page);
 });
 
