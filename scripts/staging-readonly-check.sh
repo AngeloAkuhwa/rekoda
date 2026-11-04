@@ -82,6 +82,9 @@ for c in api worker; do
     flag ".env older than the $c container" "unknown (cannot read .env or the container creation time)"
   elif [ "$ENV_MTIME" -gt "$c_epoch" ]; then
     flag ".env older than the $c container" "NO (.env written after $c was created; it runs the settings of its creation until recreated)"
+  elif [ "$ENV_MTIME" -eq "$c_epoch" ]; then
+    # Whole seconds only: an edit in the same second as the creation cannot be ordered.
+    flag ".env older than the $c container" "unknown (.env written in the same second $c was created)"
   else say ".env older than the $c container" "yes"; fi
 done
 

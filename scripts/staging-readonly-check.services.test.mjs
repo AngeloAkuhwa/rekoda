@@ -5,6 +5,8 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { utimesSync } from 'node:fs';
+import { join } from 'node:path';
 import { HEALTHY_DOTENV, SLOTS, attention, healthy } from './staging-readonly-check.fixtures.mjs';
 
 const BARE_ENV = 'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\n';
@@ -268,5 +270,20 @@ test('only the stale container is flagged, an unreadable creation time is unknow
     assert.equal(r.status, 1, r.stdout);
   } finally {
     unreadable.done();
+  }
+});
+
+test('an .env written in the same second its container was created reads unknown, never yes', () => {
+  // Whole seconds cannot order an edit made in the creation's own second, so it is not a pass.
+  const h = healthy({ created: { api: '2001-01-01T00:00:00.900Z' } });
+  try {
+    const second = new Date('2001-01-01T00:00:00Z');
+    utimesSync(join(h.dir, '.env'), second, second);
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(r.stdout.match(envLine('api'))[1], /^unknown \(\.env written in the same second/);
+    assert.equal(r.stdout.match(envLine('worker'))[1], 'yes');
+    assert.equal(r.status, 1, r.stdout);
+  } finally {
+    h.done();
   }
 });

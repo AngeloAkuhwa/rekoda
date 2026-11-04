@@ -171,6 +171,7 @@ echo image:test`,
     run2,
     sha,
     script,
+    dir,
     calls: () => readFileSync(join(fake, 'calls.log'), 'utf8').split('\n'),
     done: () => rmSync(root, { recursive: true, force: true }),
   };
