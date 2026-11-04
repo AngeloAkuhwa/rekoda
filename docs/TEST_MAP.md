@@ -428,6 +428,7 @@ change a feature and want to know what to run.
 | unit        | `apps/api/src/health/health.test.ts`                            |
 | unit        | `apps/api/src/health/ops-alerts.test.ts`                        |
 | unit        | `apps/api/src/jobs/sweep-schedule.test.ts`                      |
+| unit        | `apps/api/src/http/client-address.test.ts`                      |
 | unit        | `apps/api/src/http/rate-limit-exempt.test.ts`                   |
 | unit        | `packages/core/src/ops-alerts.test.ts`                          |
 | unit        | `packages/core/src/risk.test.ts`                                |
@@ -452,7 +453,6 @@ change a feature and want to know what to run.
 | integration | `packages/db/src/payments/provenance-classifier.integration.test.ts` |
 | integration | `packages/db/src/payments/provenance-writers.integration.test.ts`    |
 | unit        | `apps/api/src/api/public/sale-event-id.test.ts`                      |
-| unit        | `apps/api/src/client-address.test.ts`                                |
 | unit        | `apps/api/src/config.production.test.ts`                             |
 | unit        | `apps/api/src/config.test.ts`                                        |
 | unit        | `apps/web/src/app/app/export/[kind]/route.test.ts`                   |

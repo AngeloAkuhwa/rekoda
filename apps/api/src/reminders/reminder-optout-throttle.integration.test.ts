@@ -10,7 +10,7 @@ import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { migrate, requireUrls, truncateAll } from '@rekoda/db/testing';
-import { CLIENT_ADDRESS_HEADER } from '../client-address.js';
+import { CLIENT_ADDRESS_HEADER } from '../http/client-address.js';
 import { REMINDER_OPT_OUT_RATE_LIMIT } from './reminders.controller.js';
 
 const WEB = '10.20.0.21';

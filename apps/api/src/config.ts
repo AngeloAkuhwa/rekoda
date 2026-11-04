@@ -12,7 +12,7 @@ import {
   parseTrustedWeb,
   universalProblem,
   type Range,
-} from './client-address.js';
+} from './http/client-address.js';
 import { MONO_API, PAYSTACK_API, nonPublicReason } from './endpoints.js';
 
 export interface ApiConfig {

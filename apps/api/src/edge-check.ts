@@ -8,7 +8,7 @@
  * the job exiting 0 having checked nothing, and Caddy would take that as a
  * pass. Nothing imports this file; the rule lives in edge-proxies.ts.
  */
-import { parseEdgeProxies } from './client-address.js';
+import { parseEdgeProxies } from './http/client-address.js';
 import { edgeProxyProblem } from './edge-proxies.js';
 
 const raw = process.env['REKODA_EDGE_PROXIES'];
