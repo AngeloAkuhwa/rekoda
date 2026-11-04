@@ -70,7 +70,13 @@ fi
 
 echo "== health (API)"
 HEALTH="$(curl -fsS --max-time 15 "$API_URL/health" 2>/dev/null)"
-if [ -n "$HEALTH" ]; then echo "$HEALTH"; else flag "/health" "FAIL (no answer)"; fi
+rc=$?
+# A transfer that failed after part of a body arrived (a timeout mid-answer) is not an answer:
+# what was captured is discarded, so no field below can pass on it.
+if [ "$rc" -ne 0 ] && [ -n "$HEALTH" ]; then
+  HEALTH=""
+  flag "/health" "unknown (transfer failed after a partial answer, curl exit $rc)"
+elif [ -n "$HEALTH" ]; then echo "$HEALTH"; else flag "/health" "FAIL (no answer)"; fi
 echo
 # One field of the /health JSON (a string or a number); empty when absent. /health serves only
 # status, database, migrations, release and commit, none of them secret.
@@ -264,7 +270,8 @@ for k in REKODA_WEB_URL REKODA_ANNUAL_BILLING \
       # running api and worker are asked below as well, in case the containers predate an edit).
       REKODA_EMAIL_PROVIDER) if [ "$v" = resend ]; then say "$k" "SET (resend)"
                              else flag "$k" "SET (not resend; staging needs resend)"; fi ;;
-      REKODA_ANNUAL_BILLING) case "$v" in 0|1) say "$k" "SET ($v)" ;; *) say "$k" "SET (not 0 or 1)" ;; esac ;;
+      # Only 0 or 1 boots (zeroOrOneFlag); anything else would refuse at the next restart.
+      REKODA_ANNUAL_BILLING) case "$v" in 0|1) say "$k" "SET ($v)" ;; *) flag "$k" "SET (not 0 or 1; the process refuses to boot with it)" ;; esac ;;
       *) say "$k" SET ;;
     esac
   fi

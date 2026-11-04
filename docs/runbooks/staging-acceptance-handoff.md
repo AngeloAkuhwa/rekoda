@@ -35,7 +35,7 @@ operator must check each:
 | The host checkout is `b8baf24…` with 0 tracked modifications                                                                                                                                  | The deploy ran from this checkout                                        |
 | The api and worker run the same image, `rekoda-app:staging-b8baf24`; the web runs `rekoda-web:staging-b8baf24`                                                                                | A stale worker applies payments and sends reminders with old code        |
 | The applied migrations match the deployed checkout's journal, with no missing or extra tags (for `b8baf24`: 190, 0000 to 0189)                                                                | The deploy refuses fewer migrations, but nothing has read the list since |
-| postgres, api, worker, web and caddy are running (and healthy where they have a healthcheck); migrate and edge-check exited 0 (or are not present); no error-level log lines; the web answers | `/health` covers the api only                                            |
+| postgres, api, worker, web and caddy are running (and healthy where they have a healthcheck); migrate and edge-check exited 0 (or are not present); no error-level lines in the api or worker logs (the check counts only those two; postgres, web and caddy logs are not read); the web answers | `/health` covers the api only                                            |
 
 If `main` has moved on and a newer deploy is green, use that commit instead of `b8baf24`.
 

@@ -3,7 +3,7 @@
 | Field         | Value                                                                                                                            |
 | ------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | Purpose       | The one list of Rekoda's documents: what each is, whether it is authoritative, what it supersedes, and when it was last verified |
-| Last verified | 10 Sep 2026 against `main` `7155a2b` plus the reset branch; rows added 2 Nov 2026 verified against `main` `cc369c5`              |
+| Last verified | 10 Sep 2026 against `main` `7155a2b` plus the reset branch; rows added 2 Nov 2026 verified against `main` `cc369c5`; where a row gives its own date (the `runbooks/*` row: 4 Nov 2026 against `b8baf24` for the files it names), that date is authoritative for that row              |
 | Replaces      | The 25 August 2026 bundle manifest (spec v1.6.6, "120-PR index"), which is superseded by this file                               |
 
 > A new session should read this file, then follow the reading order in §5.

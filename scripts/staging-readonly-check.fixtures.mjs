@@ -30,6 +30,7 @@ export function host({
   logs = '',
   webCode = '200',
   webExit = 0,
+  healthExit = 0,
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'staging-check-'));
   const dir = join(root, 'rekoda');
@@ -135,7 +136,7 @@ echo image:test`,
     health === null
       ? 'echo ok'
       : `case "$*" in *"/health"*) ${
-          health === 'fail' ? 'exit 22' : `printf '%s' '${fill(health)}'`
+          health === 'fail' ? 'exit 22' : `printf '%s' '${fill(health)}'; exit ${healthExit}`
         } ;; *) echo '${webCode}'; exit ${webExit} ;; esac`,
   );
   const script = SCRIPT.replaceAll('/opt/rekoda', dir);

@@ -468,3 +468,20 @@ test('a /health that answers without a migrations count reads unknown, never a s
     h.done();
   }
 });
+
+test('a /health transfer that fails after a partial answer reads unknown, never a pass on what arrived', () => {
+  // The fake curl prints the full healthy body and then exits 28, as a timeout mid-transfer does.
+  const h = healthy({ healthExit: 28 });
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(
+      r.stdout,
+      /\/health\s+unknown \(transfer failed after a partial answer, curl exit 28\)\n/,
+    );
+    assert.match(attention(r.stdout), /\/health/);
+    assert.doesNotMatch(r.stdout, /served status\s+ok\n/);
+    assert.equal(r.status, 1, r.stdout);
+  } finally {
+    h.done();
+  }
+});

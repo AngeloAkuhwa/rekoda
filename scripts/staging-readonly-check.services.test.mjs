@@ -202,7 +202,12 @@ test('the web URL and annual billing are classified, never printed', () => {
   try {
     const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
     assert.match(r.stdout, /REKODA_WEB_URL\s+SET\n/);
-    assert.match(r.stdout, /REKODA_ANNUAL_BILLING\s+SET \(not 0 or 1\)\n/);
+    assert.match(
+      r.stdout,
+      /REKODA_ANNUAL_BILLING\s+SET \(not 0 or 1; the process refuses to boot with it\)\n/,
+    );
+    assert.match(attention(r.stdout), /REKODA_ANNUAL_BILLING/);
+    assert.equal(r.status, 1, r.stdout);
     assert.doesNotMatch(r.stdout, /pppppppp|staging\.invalid|yes-please/);
   } finally {
     h.done();
