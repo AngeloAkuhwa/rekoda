@@ -453,8 +453,15 @@ change a feature and want to know what to run.
 | integration | `packages/db/src/payments/provenance-classifier.integration.test.ts` |
 | integration | `packages/db/src/payments/provenance-writers.integration.test.ts`    |
 | unit        | `apps/api/src/api/public/sale-event-id.test.ts`                      |
-| unit        | `apps/api/src/config.production.test.ts`                             |
-| unit        | `apps/api/src/config.test.ts`                                        |
+| unit        | `apps/api/src/config/ai-provider.test.ts`                            |
+| unit        | `apps/api/src/config/command-bus.test.ts`                            |
+| unit        | `apps/api/src/config/feature-flags.test.ts`                          |
+| unit        | `apps/api/src/config/fx.test.ts`                                     |
+| unit        | `apps/api/src/config/hardening.test.ts`                              |
+| unit        | `apps/api/src/config/media.test.ts`                                  |
+| unit        | `apps/api/src/config/numeric.test.ts`                                |
+| unit        | `apps/api/src/config/production.test.ts`                             |
+| unit        | `apps/api/src/config/trust.test.ts`                                  |
 | unit        | `apps/web/src/app/app/export/[kind]/route.test.ts`                   |
 | unit        | `apps/web/src/app/og.test.tsx`                                       |
 | unit        | `apps/web/src/components/legal/LegalPage.test.tsx`                   |
