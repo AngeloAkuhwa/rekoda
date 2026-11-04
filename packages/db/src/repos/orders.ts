@@ -118,10 +118,15 @@ export interface CreateQuoteInput {
   /** One-shot key from the form, deduped by `orders_external_ux`. */
   clientRef: string | null;
   sourceId: string;
+  /**
+   * The instant the quote is issued: its number's Lagos year and its stored
+   * `created_at`. Callers leave it to the clock; the year-boundary test passes one.
+   */
+  issuedAt?: Date;
 }
 
 export async function createQuote(tx: TenantDb, input: CreateQuoteInput): Promise<PlacedOrder> {
-  const at = new Date();
+  const at = input.issuedAt ?? new Date();
   const quoteNumber = await nextDocumentNumber(tx, input.businessId, 'quote', lagosYear(at));
 
   const rows = await tx
@@ -311,13 +316,18 @@ export interface CreatePurchaseOrderInput {
   /** One-shot key from the form, deduped by `orders_external_ux`. */
   clientRef: string | null;
   sourceId: string;
+  /**
+   * The instant the purchase order is issued: its number's Lagos year and its
+   * stored `created_at`. Callers leave it to the clock; the year-boundary test passes one.
+   */
+  issuedAt?: Date;
 }
 
 export async function createPurchaseOrder(
   tx: TenantDb,
   input: CreatePurchaseOrderInput,
 ): Promise<PlacedOrder> {
-  const at = new Date();
+  const at = input.issuedAt ?? new Date();
   const poNumber = await nextDocumentNumber(tx, input.businessId, 'purchase_order', lagosYear(at));
 
   const rows = await tx
