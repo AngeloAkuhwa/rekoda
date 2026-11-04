@@ -319,12 +319,15 @@ test('a live Paystack key on staging is flagged without printing it', () => {
     env: { ...SLOTS, PAYSTACK_SECRET_KEY: 'sk_live_zzzzzzzzzzzzzzzz' },
   });
   try {
-    const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    const out = r.stdout;
     assert.match(
       out,
       /PAYSTACK_SECRET_KEY\s+SET \(NOT-A-TEST-KEY: a live key; staging must run an sk_test_ key\)\n/,
     );
     assert.doesNotMatch(out, /zzzzzzzz|sk_live_/);
+    assert.match(attention(out), /PAYSTACK_SECRET_KEY/);
+    assert.equal(r.status, 1, out);
   } finally {
     h.done();
   }
@@ -434,8 +437,9 @@ test('reminders set to 0 read OFF (0) and, like the default, are not flagged', (
       ...SLOTS,
       PAYSTACK_SECRET_KEY: 'sk_test_qqqqqqqqqqqqqqqq',
       REKODA_CUSTOMER_REMINDERS: '0',
+      REKODA_EMAIL_PROVIDER: 'resend',
     },
-    workerEnv: { REKODA_CUSTOMER_REMINDERS: '0' },
+    workerEnv: { REKODA_CUSTOMER_REMINDERS: '0', REKODA_EMAIL_PROVIDER: 'resend' },
   });
   try {
     const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });

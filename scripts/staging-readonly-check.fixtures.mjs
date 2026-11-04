@@ -205,6 +205,7 @@ export const healthy = (over = {}) =>
     env: {
       ...SLOTS,
       REKODA_CUSTOMER_REMINDERS: '1',
+      REKODA_EMAIL_PROVIDER: 'resend',
       // not a credential: a low-entropy stand-in, findable if printed.
       PAYSTACK_SECRET_KEY: 'sk_test_qqqqqqqqqqqqqqqq',
     },
@@ -217,7 +218,7 @@ export const healthy = (over = {}) =>
       'migrate|exited||0',
       'edge-check|exited||0',
     ],
-    workerEnv: { REKODA_CUSTOMER_REMINDERS: '1' },
+    workerEnv: { REKODA_CUSTOMER_REMINDERS: '1', REKODA_EMAIL_PROVIDER: 'resend' },
     ...over,
   });
 /** The attention section of an output; fails when the script never printed it. */

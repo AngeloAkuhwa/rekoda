@@ -55,7 +55,7 @@ test('a broken web tier, an unhealthy or missing service, or a failed job can ne
           'REKODA_EMAIL_PROVIDER=none',
         ),
       },
-      /REKODA_EMAIL_PROVIDER\s+SET \(none; staging needs resend\)\n/,
+      /REKODA_EMAIL_PROVIDER\s+SET \(not resend; staging needs resend\)\n/,
     ],
     [{ services: svc({ api: 'api|restarting||1' }) }, /service api\s+restarting\n/],
     [{ services: svc({ migrate: 'migrate|exited||1' }) }, /job migrate\s+exited 1\n/],
@@ -112,10 +112,16 @@ test('the healthy services and jobs read as expected and are not flagged', () =>
 });
 
 test('reminders on in one service and off in the other are flagged; both off or both on are not', () => {
-  const mixed = healthy({ workerEnv: { REKODA_CUSTOMER_REMINDERS: '0' } });
+  const mixed = healthy({
+    workerEnv: { REKODA_CUSTOMER_REMINDERS: '0', REKODA_EMAIL_PROVIDER: 'resend' },
+  });
   const off = healthy({
-    env: { ...SLOTS, PAYSTACK_SECRET_KEY: 'sk_test_qqqqqqqqqqqqqqqq' },
-    workerEnv: {},
+    env: {
+      ...SLOTS,
+      PAYSTACK_SECRET_KEY: 'sk_test_qqqqqqqqqqqqqqqq',
+      REKODA_EMAIL_PROVIDER: 'resend',
+    },
+    workerEnv: { REKODA_EMAIL_PROVIDER: 'resend' },
   });
   try {
     const r = mixed.run2(undefined, { EXPECT_SHA: mixed.sha.slice(0, 7) });
@@ -156,6 +162,48 @@ test('a platform flag set to anything is flagged, and a value other than 1 says 
     const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
     assert.match(out, /REKODA_PAYSTACK_PLATFORM_CONFIRMED\s+SET to a value other than 1/);
     assert.match(attention(out), /REKODA_PAYSTACK_PLATFORM_CONFIRMED/);
+  } finally {
+    h.done();
+  }
+});
+
+test('the email provider the running containers use is judged, not only the .env line', () => {
+  // .env says resend, but the containers were not recreated after an edit and still run another.
+  const stale = healthy({
+    env: {
+      ...SLOTS,
+      PAYSTACK_SECRET_KEY: 'sk_test_qqqqqqqqqqqqqqqq',
+      REKODA_CUSTOMER_REMINDERS: '1',
+      REKODA_EMAIL_PROVIDER: 'none',
+    },
+    workerEnv: { REKODA_CUSTOMER_REMINDERS: '1' },
+  });
+  try {
+    const r = stale.run2(undefined, { EXPECT_SHA: stale.sha.slice(0, 7) });
+    assert.match(r.stdout, /REKODA_EMAIL_PROVIDER\s+SET \(resend\)\n/);
+    assert.match(r.stdout, /REKODA_EMAIL_PROVIDER \(api\)\s+not resend \(staging needs resend\)\n/);
+    assert.match(r.stdout, /REKODA_EMAIL_PROVIDER \(worker\)\s+UNSET \(staging needs resend\)\n/);
+    assert.match(attention(r.stdout), /REKODA_EMAIL_PROVIDER \(api\)/);
+    assert.match(attention(r.stdout), /REKODA_EMAIL_PROVIDER \(worker\)/);
+    assert.doesNotMatch(r.stdout, /REKODA_EMAIL_PROVIDER[^\n]*\bnone\b/);
+    assert.equal(r.status, 1, r.stdout);
+  } finally {
+    stale.done();
+  }
+});
+
+test('the web URL and annual billing are classified, never printed', () => {
+  const h = healthy({
+    dotenv: HEALTHY_DOTENV.replace(
+      'REKODA_WEB_URL=https://staging.invalid',
+      'REKODA_WEB_URL=https://user:pppppppp@staging.invalid',
+    ).concat('REKODA_ANNUAL_BILLING=yes-please\n'),
+  });
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(r.stdout, /REKODA_WEB_URL\s+SET\n/);
+    assert.match(r.stdout, /REKODA_ANNUAL_BILLING\s+SET \(not 0 or 1\)\n/);
+    assert.doesNotMatch(r.stdout, /pppppppp|staging\.invalid|yes-please/);
   } finally {
     h.done();
   }

@@ -255,10 +255,12 @@ for k in REKODA_WEB_URL REKODA_ANNUAL_BILLING \
     esac
   else
     case "$k" in
-      # Staging's billing-email journeys send through Resend, so any other provider needs attention.
-      REKODA_EMAIL_PROVIDER) if [ "$v" = resend ]; then say "$k" "SET ($v)"
-                             else flag "$k" "SET ($v; staging needs resend)"; fi ;;
-      REKODA_ANNUAL_BILLING|REKODA_WEB_URL) say "$k" "SET ($v)" ;;
+      # Classified, never printed: a URL can carry credentials and the output is shared. Staging's
+      # billing-email journeys send through Resend, so any other provider needs attention (the
+      # running api and worker are asked below as well, in case the containers predate an edit).
+      REKODA_EMAIL_PROVIDER) if [ "$v" = resend ]; then say "$k" "SET (resend)"
+                             else flag "$k" "SET (not resend; staging needs resend)"; fi ;;
+      REKODA_ANNUAL_BILLING) case "$v" in 0|1) say "$k" "SET ($v)" ;; *) say "$k" "SET (not 0 or 1)" ;; esac ;;
       *) say "$k" SET ;;
     esac
   fi
@@ -329,6 +331,19 @@ if [ -n "${REM[api]}" ] && [ -n "${REM[worker]}" ]; then
   if [ "${REM[api]}" = "${REM[worker]}" ]; then say "reminders api and worker" "SAME (${REM[api]})"
   else flag "reminders api and worker" "DIFFERENT (api ${REM[api]}, worker ${REM[worker]})"; fi
 fi
+
+# The email provider each running container resolved: an .env edited without recreating the
+# containers is not what they send with. Classified inside the container; only resend passes.
+echo "== email provider in the running api and worker (classification only)"
+for c in api worker; do
+  r="$(dc exec -T -e K=REKODA_EMAIL_PROVIDER "$c" sh -c 'eval "v=\${$K-__unset__}"; case "$v" in __unset__) echo UNSET ;; resend) echo RESEND ;; *) echo OTHER ;; esac' 2>/dev/null)"
+  case "$r" in
+    RESEND) say "REKODA_EMAIL_PROVIDER ($c)" "resend" ;;
+    UNSET) flag "REKODA_EMAIL_PROVIDER ($c)" "UNSET (staging needs resend)" ;;
+    OTHER) flag "REKODA_EMAIL_PROVIDER ($c)" "not resend (staging needs resend)" ;;
+    *) flag "REKODA_EMAIL_PROVIDER ($c)" "unknown (cannot exec into the $c container)" ;;
+  esac
+done
 
 echo "== attention (anything above that is not as expected or could not be checked)"
 # The last line is the verdict, and so is the exit status: 0 only when nothing needs attention.
