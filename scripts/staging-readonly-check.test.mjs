@@ -444,6 +444,7 @@ test('reminders set to 0 read OFF (0) and, like the default, are not flagged', (
   }
 });
 
+const BARE_ENV = 'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\n';
 test('a broken web tier, an unhealthy or missing service, or a failed job can never read OK', () => {
   const svc = (over) =>
     [
@@ -472,30 +473,9 @@ test('a broken web tier, an unhealthy or missing service, or a failed job can ne
       { services: svc({ migrate: 'migrate|created||0' }) },
       /job migrate\s+created \(not exited 0\)\n/,
     ],
-    [
-      { dotenv: 'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\n' },
-      /REKODA_WEB_URL\s+UNSET \(required on staging\)\n/,
-    ],
-    [
-      { dotenv: 'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\n' },
-      /REKODA_EMAIL_PROVIDER\s+UNSET \(required on staging\)\n/,
-    ],
-    [
-      { dotenv: 'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\n' },
-      /RESEND_API_KEY\s+UNSET \(required on staging\)\n/,
-    ],
-    [
-      { dotenv: 'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\n' },
-      /REKODA_EMAIL_FROM\s+UNSET \(required on staging\)\n/,
-    ],
-    [
-      { dotenv: 'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\n' },
-      /RESEND_WEBHOOK_SECRET\s+UNSET \(required on staging\)\n/,
-    ],
-    [
-      { dotenv: 'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\n' },
-      /WORKER_DATABASE_URL\s+UNSET \(required on staging\)\n/,
-    ],
+    ...['REKODA_WEB_URL', 'REKODA_EMAIL_PROVIDER', 'RESEND_API_KEY', 'REKODA_EMAIL_FROM']
+      .concat(['RESEND_WEBHOOK_SECRET', 'WORKER_DATABASE_URL'])
+      .map((k) => [{ dotenv: BARE_ENV }, new RegExp(`${k}\\s+UNSET \\(required on staging\\)\\n`)]),
     [
       { services: svc({ worker: 'worker|running|unhealthy|0' }) },
       /service worker\s+running, unhealthy\n/,
