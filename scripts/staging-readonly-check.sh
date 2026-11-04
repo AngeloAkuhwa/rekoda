@@ -67,18 +67,20 @@ if [ -n "$RELEASE" ] && [ -n "${IMG[web]}" ]; then
   if [ "${IMG[web]}" = "rekoda-web:$RELEASE" ]; then say "web image is the .env release" "yes"
   else flag "web image is the .env release" "NO (expected rekoda-web:$RELEASE)"; fi
 fi
-# A container reads .env when it is created, so an .env edited afterwards (a rotated key, a new
-# provider) is not what it runs until it is recreated. Compared by time, so no value is read:
-# every setting below is judged as .env states it, and this says whether the containers agree.
+# A container reads .env when it is created (env_file is resolved then), and a restart,
+# a crash restart or a reboot does not re-read it. So an .env written after the container's
+# creation (a rotated key, a new provider) is not what it runs until it is recreated. Compared by
+# time, so no value is read. A deploy rewrites the REKODA_RELEASE line even when it is unchanged,
+# so a same-commit redeploy or an aborted deploy also reads NO here (see the handoff runbook).
 ENV_MTIME="$(stat -c %Y .env 2>/dev/null)"
 for c in api worker; do
   id="$(dc ps -q "$c" 2>/dev/null)"
-  started="$([ -n "$id" ] && docker inspect -f '{{.State.StartedAt}}' "$id" 2>/dev/null)"
-  s_epoch="$([ -n "$started" ] && date -d "$started" +%s 2>/dev/null)"
-  if [ -z "$ENV_MTIME" ] || [ -z "$s_epoch" ]; then
-    flag ".env older than the $c container" "unknown (cannot read .env or the container start time)"
-  elif [ "$ENV_MTIME" -gt "$s_epoch" ]; then
-    flag ".env older than the $c container" "NO (.env changed after $c started; it runs the old settings until recreated)"
+  created="$([ -n "$id" ] && docker inspect -f '{{.Created}}' "$id" 2>/dev/null)"
+  c_epoch="$([ -n "$created" ] && date -d "$created" +%s 2>/dev/null)"
+  if [ -z "$ENV_MTIME" ] || [ -z "$c_epoch" ]; then
+    flag ".env older than the $c container" "unknown (cannot read .env or the container creation time)"
+  elif [ "$ENV_MTIME" -gt "$c_epoch" ]; then
+    flag ".env older than the $c container" "NO (.env written after $c was created; it runs the settings of its creation until recreated)"
   else say ".env older than the $c container" "yes"; fi
 done
 

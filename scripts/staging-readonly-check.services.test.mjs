@@ -229,22 +229,44 @@ test('an empty annual-billing assignment is flagged, as the process refuses to b
   }
 });
 
-test('an .env changed after the api and worker started is flagged, so a rotated key is not trusted', () => {
-  // The containers started long before this .env was written: they run whatever it said then.
-  const h = healthy({ startedAt: '2000-01-01T00:00:00Z' });
+const envLine = (c) => new RegExp(`\\.env older than the ${c} container\\s+(\\S.*)\\n`);
+
+test('an .env written after the containers were created is flagged, even when they restarted since', () => {
+  // Created long before this .env; the fake's start time is new, as after `docker compose
+  // restart`, which does not re-read .env. The creation time decides.
+  const old = '2000-01-01T00:00:00Z';
+  const h = healthy({ created: { api: old, worker: old } });
   try {
     const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
-    for (const c of ['api', 'worker'])
-      assert.match(
-        r.stdout,
-        new RegExp(
-          `\\.env older than the ${c} container\\s+NO \\(\\.env changed after ${c} started`,
-        ),
-      );
-    assert.match(attention(r.stdout), /\.env older than the api container/);
+    for (const c of ['api', 'worker']) {
+      assert.match(r.stdout.match(envLine(c))[1], /^NO \(\.env written after \w+ was created/);
+      assert.match(attention(r.stdout), new RegExp(`\\.env older than the ${c} container`));
+    }
     assert.doesNotMatch(r.stdout, /rrrrrrrr|pppppppp|whsec_/);
     assert.equal(r.status, 1, r.stdout);
   } finally {
     h.done();
+  }
+});
+
+test('only the stale container is flagged, a missing creation time is unknown, and a fresh one reads yes', () => {
+  const stale = healthy({ created: { worker: '2000-01-01T00:00:00Z' } });
+  try {
+    const r = stale.run2(undefined, { EXPECT_SHA: stale.sha.slice(0, 7) });
+    assert.equal(r.stdout.match(envLine('api'))[1], 'yes');
+    assert.match(r.stdout.match(envLine('worker'))[1], /^NO /);
+    assert.doesNotMatch(attention(r.stdout), /\.env older than the api container/);
+    assert.equal(r.status, 1, r.stdout);
+  } finally {
+    stale.done();
+  }
+  const unreadable = healthy({ created: { api: 'not a time' } });
+  try {
+    const r = unreadable.run2(undefined, { EXPECT_SHA: unreadable.sha.slice(0, 7) });
+    assert.match(r.stdout.match(envLine('api'))[1], /^unknown /);
+    assert.equal(r.stdout.match(envLine('worker'))[1], 'yes');
+    assert.equal(r.status, 1, r.stdout);
+  } finally {
+    unreadable.done();
   }
 });

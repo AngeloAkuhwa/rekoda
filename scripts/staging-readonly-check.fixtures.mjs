@@ -31,8 +31,10 @@ export function host({
   webCode = '200',
   webExit = 0,
   healthExit = 0,
-  // A container start time later than any .env this fixture writes, unless a test says otherwise.
-  startedAt = '2999-01-01T00:00:00Z',
+  // Container creation times later than any .env this fixture writes, unless a test says
+  // otherwise. A missing service has no creation time. The start time is always new: a restart
+  // resets it, and it must never be what decides.
+  created = {},
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'staging-check-'));
   const dir = join(root, 'rekoda');
@@ -124,7 +126,15 @@ ${Object.keys(images)
   exit 0
 fi
 if [ "$1" = inspect ]; then
-  case "$*" in *StartedAt*) echo '${startedAt}'; exit 0 ;; esac
+  case "$*" in *StartedAt*) echo '2999-06-01T00:00:00Z'; exit 0 ;; esac
+  case "$*" in *Created*)
+    case "\${@: -1}" in
+${['api', 'worker']
+  .map((svc) => `      id-${svc}) echo '${created[svc] ?? '2999-01-01T00:00:00.123456789Z'}' ;;`)
+  .join('\n')}
+    esac
+    exit 0 ;;
+  esac
   case "\${@: -1}" in
 ${Object.entries(images)
   .map(([svc, image]) => `    id-${svc}) echo '${fill(image)}' ;;`)
