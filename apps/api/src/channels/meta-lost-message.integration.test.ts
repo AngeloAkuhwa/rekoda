@@ -17,6 +17,7 @@ import {
   messagePayload,
   post,
   stubSender,
+  stubStt,
   useMetaWebhookHarness,
   workerDb,
 } from './meta-webhook.fixtures.js';
@@ -29,6 +30,7 @@ import {
   say,
   seedMerchant,
 } from './meta-preview-expiry.fixtures.js';
+import { arrangeAudio, voicePayload } from './meta-voice-note.fixtures.js';
 
 useMetaWebhookHarness();
 
@@ -132,9 +134,15 @@ describe('an inbound message that fails and backs off before it dies (markFailed
     );
     return job!.id;
   }
-  /** Bring the backing-off job due and fail its last attempt: it dies. */
-  async function failLastAttempt(jobId: string) {
-    await workerDb.execute(sql`UPDATE jobs SET run_at = now() WHERE id = ${jobId}::uuid`);
+  /**
+   * Bring the backing-off job due and fail its last attempt: it dies. Any other waiting job is
+   * put out of reach first, so a deferred answer whose half-second wait has passed cannot be
+   * claimed in its place.
+   */
+  async function failLastAttempt(businessId: string, jobId: string) {
+    await workerDb.execute(sql`
+      UPDATE jobs SET run_at = CASE WHEN id = ${jobId}::uuid THEN now() ELSE now() + interval '1 hour' END
+       WHERE business_id = ${businessId}::uuid AND state = 'pending'`);
     const job = await jobsRepo.claimNext(workerDb, 'failing-worker-2');
     expect(job?.id).toBe(jobId);
     expect((await jobsRepo.markFailed(workerDb, job!, 'handler failed', 0)).state).toBe('dead');
@@ -150,7 +158,29 @@ describe('an inbound message that fails and backs off before it dies (markFailed
     await plain('wamid.backoff-yes', 'yes');
     expect((await footprint(business.id)).expenses).toBe(0);
 
-    await failLastAttempt(cancel);
+    await failLastAttempt(business.id, cancel);
+    await workerDb.execute(sql`
+      UPDATE jobs SET run_at = now()
+       WHERE business_id = ${business.id}::uuid AND state = 'pending'`);
+    await drain();
+    expect(stubSender.lastText).toBe(replies.earlierMessageLostYes().text);
+    expect((await footprint(business.id)).expenses).toBe(0);
+  });
+
+  it('a spoken "yes" sent while the lost "cancel" retries waits for it too, and confirms nothing', async () => {
+    const business = await seedMerchant();
+    await say('wamid.voice-backoff-1', AN_EXPENSE, 'bought fuel 20k cash');
+    await queueOnly('wamid.voice-backoff-cancel', 'cancel');
+    const cancel = await failOnceAndBackOff(business.id);
+
+    /* The answer is a voice note: it is not heard until it is transcribed, so it waits unheard. */
+    arrangeAudio(1);
+    stubStt.answerWith({ text: 'yes', seconds: 1, confidence: 0.95 });
+    await post(voicePayload('2348031234567', 'wamid.voice-backoff-yes'));
+    await drain();
+    expect((await footprint(business.id)).expenses).toBe(0);
+
+    await failLastAttempt(business.id, cancel);
     await workerDb.execute(sql`
       UPDATE jobs SET run_at = now()
        WHERE business_id = ${business.id}::uuid AND state = 'pending'`);
@@ -167,7 +197,7 @@ describe('an inbound message that fails and backs off before it dies (markFailed
     /* A new request passes the backing-off message (requests are not held for its retries). */
     await say('wamid.passing-request', AN_EXPENSE, 'bought fuel 20k cash');
     expect(stubSender.lastText).toContain('Expense: fuel for generator');
-    await failLastAttempt(lost);
+    await failLastAttempt(business.id, lost);
 
     /* It reached Rekoda after the lost message, so it is not withdrawn: the yes confirms it. */
     await plain('wamid.passing-yes', 'yes');
@@ -179,7 +209,7 @@ describe('an inbound message that fails and backs off before it dies (markFailed
     await say('wamid.notice-1', AN_EXPENSE, 'bought fuel 20k cash');
     await queueOnly('wamid.notice-cancel', 'cancel');
     const lost = await failOnceAndBackOff(business.id);
-    await failLastAttempt(lost);
+    await failLastAttempt(business.id, lost);
 
     await plain('wamid.notice-help', 'help');
     expect(stubSender.sent.map((s) => s.text)).toContain(replies.earlierMessageLostNo().text);

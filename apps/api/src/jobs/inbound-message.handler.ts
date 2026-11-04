@@ -297,14 +297,18 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     /* OWN-74: an answer waits for every earlier message still live, even one backing off after
      * a failure that `hasEarlierLiveJob` lets a request pass. If that message never succeeds it
      * dies and is reconciled above before this answer is read, so a lost "cancel" is never
-     * overtaken by a "yes" sent while it retried. */
+     * overtaken by a "yes" sent while it retried. A voice note may say "yes" too and is not
+     * heard until it is transcribed, so it waits the same way, before any provider is paid. */
     const answerRoute = typeof inbound.text === 'string' ? routeMessage(inbound.text) : null;
     const answerKind =
       answerRoute?.route === 'deterministic' &&
       ['affirm', 'deny', 'cancel', 'unsure'].includes(answerRoute.intent.kind)
         ? answerRoute.intent.kind
         : null;
-    if (answerKind && (await jobsRepo.hasEarlierLiveJobByArrival(tx, jobId))) {
+    if (
+      (answerKind || isVoiceNote(inbound)) &&
+      (await jobsRepo.hasEarlierLiveJobByArrival(tx, jobId))
+    ) {
       throw new JobDeferred();
     }
     /* OWN-74: the merchant is told that a waiting request was withdrawn. A "yes", "no" or
