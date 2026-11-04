@@ -257,11 +257,6 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * every draft pending then is retired here, under the lock and before any "yes" is read, so
      * a lost "cancel" can never be overtaken by a later "yes". Counts only, never content. */
     const lost = await conversationsRepo.reconcileDeadInboundMessages(tx, businessId);
-    if (lost.messages > 0) {
-      log.warn(
-        `retired ${lost.drafts} draft(s) behind ${lost.messages} inbound message(s) whose job died`,
-      );
-    }
 
     const event = await events.eventForBusiness(tx, eventId, businessId);
     if (!event) {
@@ -311,8 +306,16 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     ) {
       throw new JobDeferred();
     }
-    /* OWN-74: the merchant is told that a waiting request was withdrawn. A "yes", "no" or
-     * "cancel" is told by its own answer below; any other message is told here, first. */
+    /* Logged only once this run is going ahead: a deferral rolls the retirement back. */
+    if (lost.messages > 0) {
+      log.warn(
+        `retired ${lost.drafts} draft(s) behind ${lost.messages} inbound message(s) whose job died`,
+      );
+    }
+    /* OWN-74: the merchant is told that a waiting request was withdrawn. A typed "yes", "no" or
+     * "cancel" is told by its own answer below; any other message is told here, first. A voice
+     * note is told here too, before it is heard, so it is told even if it cannot be transcribed;
+     * a spoken "yes" or "no" then also gets its own answer. */
     if (
       lost.drafts > 0 &&
       answerKind !== 'affirm' &&

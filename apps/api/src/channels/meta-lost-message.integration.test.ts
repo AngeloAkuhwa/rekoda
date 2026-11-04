@@ -30,7 +30,7 @@ import {
   say,
   seedMerchant,
 } from './meta-preview-expiry.fixtures.js';
-import { arrangeAudio, voicePayload } from './meta-voice-note.fixtures.js';
+import { arrangeAudio, voicePayload, voiceUsed } from './meta-voice-note.fixtures.js';
 
 useMetaWebhookHarness();
 
@@ -179,13 +179,21 @@ describe('an inbound message that fails and backs off before it dies (markFailed
     await post(voicePayload('2348031234567', 'wamid.voice-backoff-yes'));
     await drain();
     expect((await footprint(business.id)).expenses).toBe(0);
+    /* It waits before any provider is paid: nothing transcribed, no voice seconds metered. */
+    expect(stubStt.calls).toHaveLength(0);
+    expect(await voiceUsed(business.id)).toBe(0);
+    const sentBefore = stubSender.sent.length;
 
     await failLastAttempt(business.id, cancel);
     await workerDb.execute(sql`
       UPDATE jobs SET run_at = now()
        WHERE business_id = ${business.id}::uuid AND state = 'pending'`);
     await drain();
-    expect(stubSender.lastText).toBe(replies.earlierMessageLostYes().text);
+    /* Told before it is heard (so a note that cannot be transcribed is told too), then answered. */
+    expect(stubSender.sent.slice(sentBefore).map((s) => s.text)).toEqual([
+      replies.earlierMessageLostNo().text,
+      replies.earlierMessageLostYes().text,
+    ]);
     expect((await footprint(business.id)).expenses).toBe(0);
   });
 

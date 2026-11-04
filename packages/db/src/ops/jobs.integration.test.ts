@@ -288,7 +288,7 @@ describe('a worker that dies mid-job', () => {
     const raw = await workerDb.execute<{ row: string }>(
       sql`SELECT row_to_json(j)::text AS row FROM jobs j WHERE business_id = ${businessId}::uuid`,
     );
-    expect([...raw][0]?.row).not.toMatch(/sk_live_|xxxxxxxx|provider said/);
+    expect([...raw][0]?.row).not.toMatch(/sk_live_|xxxxxxxx|provider said|2348040000001/);
   });
 
   it('does not reclaim a job whose worker is still alive', async () => {
