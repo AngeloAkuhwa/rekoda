@@ -11,16 +11,16 @@ If one of these is missing, the matching step below shows a plain "not switched 
 charges nothing, except `REKODA_WEB_URL`: without it checkout still opens, but Paystack cannot send
 the merchant back to Rekoda afterwards. They live in the staging host's env file, never in source or chat.
 
-| Setting                                                                                        | Needed for                                                                                      |
-| ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `PAYSTACK_SECRET_KEY=sk_test_...` (a TEST key)                                                 | opening Paystack checkout and verifying a payment                                               |
-| `REKODA_PAYSTACK_PLATFORM_CONFIRMED=1`                                                         | "Confirm and pay" opens a payment instead of "card payments are not switched on"                |
-| `REKODA_WEB_URL=https://staging.myrekoda.com`                                                  | Paystack sending the merchant back to `/app/billing/return`, and the emailed confirmation link  |
-| Paystack dashboard (test mode) webhook URL `https://<api host>/webhooks/paystack`              | the payment being confirmed and applied                                                         |
-| `REKODA_WORKER=1` with `WORKER_DATABASE_URL` (or the separate worker process running)          | applying a verified payment and sending reminders                                               |
-| `REKODA_ANNUAL_BILLING=1`                                                                      | the Yearly option (only once every process is annual-aware)                                     |
-| `REKODA_EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, `REKODA_EMAIL_FROM`, `RESEND_WEBHOOK_SECRET` | the billing-email confirmation mail (a TEST Paystack key does not wait for it; a LIVE key does) |
-| `META_BILLING_TEMPLATE` (approved)                                                             | grace-period WhatsApp reminders; without it they are held, not sent                             |
+| Setting                                                                                        | Needed for                                                                                                                                                                                        |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PAYSTACK_SECRET_KEY=sk_test_...` (a TEST key)                                                 | opening Paystack checkout and verifying a payment                                                                                                                                                 |
+| `REKODA_PAYSTACK_PLATFORM_CONFIRMED` **left UNSET** (OWN-70)                                   | nothing on staging: since #418 a TEST key opens checkout without it. Setting it would claim the written §47 confirmation has been received; it stays unset on staging and production until it has |
+| `REKODA_WEB_URL=https://staging.myrekoda.com`                                                  | Paystack sending the merchant back to `/app/billing/return`, and the emailed confirmation link                                                                                                    |
+| Paystack dashboard (test mode) webhook URL `https://<api host>/webhooks/paystack`              | the payment being confirmed and applied                                                                                                                                                           |
+| `REKODA_WORKER=1` with `WORKER_DATABASE_URL` (or the separate worker process running)          | applying a verified payment and sending reminders                                                                                                                                                 |
+| `REKODA_ANNUAL_BILLING=1`                                                                      | the Yearly option (only once every process is annual-aware)                                                                                                                                       |
+| `REKODA_EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, `REKODA_EMAIL_FROM`, `RESEND_WEBHOOK_SECRET` | the billing-email confirmation mail (a TEST Paystack key does not wait for it; a LIVE key does)                                                                                                   |
+| `META_BILLING_TEMPLATE` (approved)                                                             | grace-period WhatsApp reminders; without it they are held, not sent                                                                                                                               |
 
 ## 1. The journey (sign up, trial, pay, manage)
 

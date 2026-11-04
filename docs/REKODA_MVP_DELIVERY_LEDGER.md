@@ -6,6 +6,38 @@
 > Acceptance pending, Complete. **Merged is not complete; deployed without acceptance is acceptance
 > pending.** Nothing below is STAGING ACCEPTED yet.
 
+## Priority 0: current state (4 Nov 2026, supersedes the 2 Nov block below)
+
+- **`main`:** `b8baf24` (#427, 4 Nov 2026, squash). `main` CI run 41888917354 green.
+- **Migration head on `main`:** `0189_reminder_batches.sql`; 190 migration files, 0000 to 0189
+  (`packages/db/migrations/meta/_journal.json` lists 190 tags).
+- **Staging deployment:** Deploy staging run 41890201057 deployed `b8baf24`, green. Its
+  "Staging answers with this commit" step passed: `/health` reported status ok, database up, and
+  commit and release `staging-b8baf24`. The previous green deploy was run 41841049324 (`5a3608c`,
+  #426). This is DEPLOYED, not STAGING ACCEPTED.
+- **Not verified, NEEDS OPERATOR EVIDENCE:** host health beyond that step, the api and worker
+  images, and the applied migration list on the host. The last figure on record is 183
+  (owner-reported, 25 Oct). The read-only check (`scripts/staging-readonly-check.sh`) reports all
+  three; no run of it is recorded.
+- **Meta templates (reconciled 4 Nov 2026).** These are three different facts, and only the first
+  is known from the repository:
+  - **Slots in code:** five (`META_OTP_TEMPLATE`, `META_BILLING_TEMPLATE`,
+    `META_RETENTION_TEMPLATE`, `META_DOCUMENT_TEMPLATE`, `META_TRIAL_TEMPLATE`, each with a
+    `_LOCALE`). Source: `apps/api/src/config.ts`.
+  - **Configured on staging:** UNKNOWN, NEEDS OPERATOR EVIDENCE (the read-only check prints SET or
+    UNSET per slot).
+  - **Approved by Meta:** the owner stated on 2 Nov 2026 that four templates are approved and
+    configured on staging. That is not verified in the repository. The names, categories and
+    statuses must be read in WhatsApp Manager. G-03 in the launch-readiness register keeps the
+    production approval open. Which approved template, if any, is the trial template is OD-41(b).
+  - **Delivered:** the staging transport has been live-exercised (text and media; J2 passed
+    26 Sep 2026). Delivery through each template on staging is NEEDS OPERATOR EVIDENCE.
+  - A configured slot is not an approved template, and an approved template is not a delivered
+    message.
+- **SUB-ACC:** Not started. There is no SUB-ACC deployment of its own: it runs on whatever staging
+  serves when it starts (now `b8baf24`). The `cc369c5` reference below is the 2 Nov deploy, not
+  the current one.
+
 ## Priority 0: current state (2 Nov 2026)
 
 - **`main`:** `283ae06` (#397) at the start of the audit; then `7f1adec` (#396, SUB-01) and
@@ -176,9 +208,10 @@ here is LIVE PROVIDER VERIFIED or PRODUCTION READY. Launch verdict: NOT READY
 - Independent read-only reviews: 0 BLOCKING / 0 IMPORTANT recorded for each merged item; REM-05's
   two IMPORTANT findings (pause did not trigger on timeouts; attestation recorded at dispatch) were
   fixed before its PR with RED tests; REM-06's IMPORTANT findings (a Confirm-time problem not shown; stale ledger rows; keys lost across a remount) were fixed in its PR, and its independent reviews are recorded in its row; review completion is not approval or merge.
-- Migrations: 0000 to 0189 (0189 is REM-05, expand-only). Applied by CI on each head. The Deploy staging run for REM-05
-  (41565857377, `d11ed34`) succeeded, so staging should have 0000 to 0189; the applied list on the
-  host has not been read from this session (no staging access).
+- Migrations: 0000 to 0189 (190 files; 0189 is REM-05, expand-only). Applied by CI on each head. The latest Deploy staging run
+  (41890201057, `b8baf24`, 4 Nov 2026) succeeded, and the deploy refuses a commit that carries fewer migrations than staging has
+  applied; the applied list on the host is NEEDS OPERATOR EVIDENCE (`scripts/staging-readonly-check.sh` now reports expected
+  against applied, by tag).
 - Known accepted residuals: provider in-flight window (no lock across provider I/O, REM-02); a unit
   refund write that itself fails leaves the unit spent (REM-03); `outerTx` path rollback (N1-A).
 
