@@ -50,10 +50,16 @@ import {
 useMetaWebhookHarness();
 
 describe('Chat entitlement on fixed commands (G-65)', () => {
+  // Kept identical to the copy in meta-chat-entitlement-2.integration.test.ts,
+  // meta-chat-entitlement-3.integration.test.ts. It writes the plan, which the G-62 guard
+  // allows only in test files. Change them together.
   async function moveToPlan(businessId: string, plan: 'chat' | 'integrate' | 'complete') {
     await billingRepo.setPlan(db, { businessId, plan, expiresAt: null, actor: 'operator:g65' });
   }
 
+  // Kept identical to the copy in meta-chat-entitlement-2.integration.test.ts,
+  // meta-chat-entitlement-3.integration.test.ts. It writes the plan, which the G-62 guard
+  // allows only in test files. Change them together.
   async function lapse(businessId: string) {
     await billingRepo.setPlan(db, {
       businessId,
@@ -65,6 +71,9 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
 
   let seq = 0;
 
+  // Kept identical to the copy in meta-chat-entitlement-2.integration.test.ts,
+  // meta-chat-entitlement-3.integration.test.ts. It advances this suite's own counter, so it
+  // stays beside that counter. Change them together.
   async function send(text: string, command?: Record<string, unknown>) {
     if (command) stubTransport.replyWith(command);
     await post(messagePayload(OWNER, `wamid.G65-${++seq}`, text));
@@ -77,6 +86,10 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
    * Everything a Chat command could have to show for itself: an open
    * ₦80,000 invoice whose customer has an email (so payment details can
    * mint), an active payment connection, and a stored document to resend.
+   *
+   * Kept identical to the copy in meta-chat-entitlement-2.integration.test.ts. It calls a
+   * repository financial writer, which scripts/check-boundaries.mjs allows only in the command
+   * layer and in test files, so it cannot move to a fixtures module. Change them together.
    */
   async function seedBooks(businessId: string): Promise<string> {
     const config = deps.config;
@@ -382,7 +395,12 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
     await expectOnlyReplies(business.id, before, 1);
   });
 
-  /** A paid plan that lapsed: the renewal path stores it as `expired` itself. */
+  /**
+   * A paid plan that lapsed: the renewal path stores it as `expired` itself.
+   *
+   * Kept identical to the copy in meta-chat-entitlement-2.integration.test.ts. It writes the
+   * plan, which the G-62 guard allows only in test files. Change them together.
+   */
   async function lapsePaid(businessId: string) {
     await billingRepo.setPlan(db, {
       businessId,

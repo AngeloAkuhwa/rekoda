@@ -40,10 +40,16 @@ import {
 useMetaWebhookHarness();
 
 describe('Chat entitlement on fixed commands (G-65)', () => {
+  // Kept identical to the copy in meta-chat-entitlement-1.integration.test.ts,
+  // meta-chat-entitlement-2.integration.test.ts. It writes the plan, which the G-62 guard
+  // allows only in test files. Change them together.
   async function moveToPlan(businessId: string, plan: 'chat' | 'integrate' | 'complete') {
     await billingRepo.setPlan(db, { businessId, plan, expiresAt: null, actor: 'operator:g65' });
   }
 
+  // Kept identical to the copy in meta-chat-entitlement-1.integration.test.ts,
+  // meta-chat-entitlement-2.integration.test.ts. It writes the plan, which the G-62 guard
+  // allows only in test files. Change them together.
   async function lapse(businessId: string) {
     await billingRepo.setPlan(db, {
       businessId,
@@ -55,6 +61,9 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
 
   let seq = 0;
 
+  // Kept identical to the copy in meta-chat-entitlement-1.integration.test.ts,
+  // meta-chat-entitlement-2.integration.test.ts. It advances this suite's own counter, so it
+  // stays beside that counter. Change them together.
   async function send(text: string, command?: Record<string, unknown>) {
     if (command) stubTransport.replyWith(command);
     await post(messagePayload(OWNER, `wamid.G65-${++seq}`, text));
