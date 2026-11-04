@@ -290,6 +290,7 @@ fi
 # the process refuse to boot (apps/api/src/config.ts, zeroOrOneFlag). Asked of each running
 # container; the classification is printed, not the raw value. This script never changes it.
 echo "== customer reminders in the running api and worker (effective value)"
+declare -A REM
 for c in api worker; do
   r="$(dc exec -T -e K=REKODA_CUSTOMER_REMINDERS "$c" sh -c 'eval "v=\${$K-__unset__}"; case "$v" in __unset__) echo UNSET ;; 0) echo 0 ;; 1) echo 1 ;; *) echo OTHER ;; esac' 2>/dev/null)"
   case "$r" in
@@ -299,7 +300,14 @@ for c in api worker; do
     OTHER) flag "REKODA_CUSTOMER_REMINDERS ($c)" "INVALID (not 0 or 1; the process refuses to boot with it)" ;;
     *) flag "REKODA_CUSTOMER_REMINDERS ($c)" "unknown (cannot exec into the $c container)" ;;
   esac
+  # OFF whether unset or 0: what matters is whether reminders run.
+  case "$r" in UNSET|0) REM[$c]=OFF ;; 1) REM[$c]=ON ;; *) REM[$c]="" ;; esac
 done
+# The api queues reminders and the worker sends them; both off or both on is consistent.
+if [ -n "${REM[api]}" ] && [ -n "${REM[worker]}" ]; then
+  if [ "${REM[api]}" = "${REM[worker]}" ]; then say "reminders api and worker" "SAME (${REM[api]})"
+  else flag "reminders api and worker" "DIFFERENT (api ${REM[api]}, worker ${REM[worker]})"; fi
+fi
 
 echo "== attention (anything above that is not as expected or could not be checked)"
 # The last line is the verdict, and so is the exit status: 0 only when nothing needs attention.

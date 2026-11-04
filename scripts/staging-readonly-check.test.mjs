@@ -192,10 +192,16 @@ test('a healthy host at EXPECT_SHA: every check passes and attention reads none'
     ]) {
       assert.match(out, new RegExp(`${l}\\s+APPLIED\\n`));
     }
-    assert.match(out, /expected migrations\s+5 \(last 0189_reminder_batches\)\n/);
-    assert.match(out, /applied migrations\s+5 \(last 0189_reminder_batches\)\n/);
+    assert.match(
+      out,
+      new RegExp(`expected migrations\\s+${TAGS.length} \\(last 0189_reminder_batches\\)\\n`),
+    );
+    assert.match(
+      out,
+      new RegExp(`applied migrations\\s+${TAGS.length} \\(last 0189_reminder_batches\\)\\n`),
+    );
     assert.match(out, /not applied\s+none\n/);
-    assert.match(out, /\/health migrations = expected\s+yes \(5\)\n/);
+    assert.match(out, new RegExp(`/health migrations = expected\\s+yes \\(${TAGS.length}\\)\\n`));
     assert.match(out, /REKODA_CUSTOMER_REMINDERS \(api\)\s+ON \(1\)\n/);
     assert.match(out, /REKODA_CUSTOMER_REMINDERS \(worker\)\s+ON \(1\)\n/);
     assert.match(out, /PAYSTACK_SECRET_KEY\s+SET \(TEST-KEY\)\n/);
@@ -225,16 +231,25 @@ test('a missing migration is named, its object check reads MISSING, and /health 
   const h = healthy({
     ledger: TAGS.filter((t) => t !== '0189_reminder_batches'),
     migrations: 'no0189',
-    health:
-      '{"status":"degraded","database":"up","migrations":4,"release":"staging-{sha7}","commit":"{sha7}"}',
+    health: `{"status":"degraded","database":"up","migrations":${TAGS.length - 1},"release":"staging-{sha7}","commit":"{sha7}"}`,
   });
   try {
     const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
     assert.match(out, /0189 reminder batch tables\s+MISSING\n/);
     assert.match(out, /0187 payment instruction columns\s+APPLIED\n/);
-    assert.match(out, /applied migrations\s+4 \(last 0188_validate_payment_instruction_check\)\n/);
+    assert.match(
+      out,
+      new RegExp(
+        `applied migrations\\s+${TAGS.length - 1} \\(last 0188_validate_payment_instruction_check\\)\\n`,
+      ),
+    );
     assert.match(out, /not applied\s+0189_reminder_batches\n/);
-    assert.match(out, /\/health migrations = expected\s+NO \(4 served, 5 expected\)\n/);
+    assert.match(
+      out,
+      new RegExp(
+        `/health migrations = expected\\s+NO \\(${TAGS.length - 1} served, ${TAGS.length} expected\\)\\n`,
+      ),
+    );
     const a = attention(out);
     for (const l of [
       'served status',
@@ -492,5 +507,25 @@ test('the healthy services and jobs read as expected and are not flagged', () =>
     assert.match(out, /error-level lines in worker\s+0\n/);
   } finally {
     h.done();
+  }
+});
+
+test('reminders on in one service and off in the other are flagged; both off or both on are not', () => {
+  const mixed = healthy({ workerEnv: { REKODA_CUSTOMER_REMINDERS: '0' } });
+  const off = healthy({
+    env: { ...SLOTS, PAYSTACK_SECRET_KEY: 'sk_test_qqqqqqqqqqqqqqqq' },
+    workerEnv: {},
+  });
+  try {
+    const r = mixed.run2(undefined, { EXPECT_SHA: mixed.sha.slice(0, 7) });
+    assert.match(r.stdout, /reminders api and worker\s+DIFFERENT \(api ON, worker OFF\)\n/);
+    assert.match(attention(r.stdout), /reminders api and worker\s+DIFFERENT/);
+    assert.equal(r.status, 1);
+    const o = off.run2(undefined, { EXPECT_SHA: off.sha.slice(0, 7) });
+    assert.match(o.stdout, /reminders api and worker\s+SAME \(OFF\)\n/);
+    assert.equal(o.status, 0, o.stdout);
+  } finally {
+    mixed.done();
+    off.done();
   }
 });

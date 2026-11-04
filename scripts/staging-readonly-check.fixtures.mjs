@@ -172,8 +172,18 @@ echo image:test`,
   };
 }
 
+/** Every tag the script checks by objects, plus the first: the healthy ledger agrees with its own per-tag answers. */
 export const TAGS = [
   '0000_init',
+  '0171_billing_interval',
+  '0172_billing_checkout',
+  '0173_checkout_attempts',
+  '0174_billing_email_verification',
+  '0175_reserved_meters',
+  '0181_sweep_trial_candidates',
+  '0182_charge_applied_period',
+  '0183_email_verification_send_outcome',
+  '0185_billing_email_address_limit',
   '0186_trial_notice_undelivered',
   '0187_payment_instructions',
   '0188_validate_payment_instruction_check',
