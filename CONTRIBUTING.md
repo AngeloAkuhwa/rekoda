@@ -143,7 +143,7 @@ feature-to-test index is `docs/TEST_MAP.md`.
   its tests live in `src/config/`. The only tests allowed directly in
   `apps/api/src/` are the ones `API_ROOT_TESTS` in
   `scripts/check-test-layout.mjs` names, each with its reason (today the
-  `edge-check` pair, whose modules stay at the root under owner ruling D2); the
+  `edge-check` pair, whose modules stay at the root under owner ruling OWN-71); the
   check fails on any other. Never create a top-level `tests/` tree.
 - **Name.** `<feature>-<concern>`, for example `billing/plan-change`. A suffix
   other than the three above is rejected.

@@ -56,9 +56,9 @@ export function countLines(text) {
  */
 export const API_ROOT_TESTS = {
   'apps/api/src/edge-check.test.ts':
-    'tests edge-check.ts, which stays at the root (owner ruling D2, 4 Nov 2026): docker-compose.prod.yml runs dist/edge-check.js',
+    'tests edge-check.ts, which stays at the root (owner ruling OWN-71, 4 Nov 2026): docker-compose.prod.yml runs dist/edge-check.js',
   'apps/api/src/edge-proxies.test.ts':
-    'tests edge-proxies.ts, the rule edge-check.ts runs, kept beside it at the root (owner ruling D2, 4 Nov 2026)',
+    'tests edge-proxies.ts, the rule edge-check.ts runs, kept beside it at the root (owner ruling OWN-71, 4 Nov 2026)',
 };
 
 // Where a test may live: a directory the runners discover. Every workspace unit and integration
