@@ -342,6 +342,11 @@ export const jobs = pgTable(
     lockedAt: timestamp('locked_at', { withTimezone: true }),
     lockedBy: text('locked_by'),
     lastError: text('last_error'),
+    /**
+     * Why the latest attempt failed, as a fixed category (migration 0190): `handler_error`,
+     * `lease_expired`, or `lease_expired_after_handler_error`. Never error text or payload.
+     */
+    failureCategory: text('failure_category'),
     createdAt: createdAt(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

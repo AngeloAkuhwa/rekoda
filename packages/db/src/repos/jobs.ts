@@ -369,6 +369,7 @@ export async function markFailed(
       locked_at  = NULL,
       locked_by  = NULL,
       last_error = ${error},
+      failure_category = 'handler_error',
       updated_at = now()
     WHERE id = ${job.id}::uuid
       AND (${claimedBy ?? null}::text IS NULL OR locked_by = ${claimedBy ?? null})
@@ -401,12 +402,16 @@ export async function reclaimStalled(db: Db, olderThanMs = 300_000): Promise<num
       state      = CASE WHEN attempts > max_attempts THEN 'dead' ELSE 'pending' END,
       locked_at  = NULL,
       locked_by  = NULL,
-      -- An expired lease says the worker stopped answering, not why, so the message is neutral
-      -- and an earlier recorded failure (from markFailed) is kept beside it.
+      -- An expired lease says the worker stopped answering, not why, so the message is neutral.
+      -- A dead job's error is fixed text (owner ruling, 4 Nov 2026): no earlier attempt's error
+      -- text is carried into it. That an earlier attempt's handler failed survives only as the
+      -- sanitised category beside it.
       last_error = CASE WHEN attempts > max_attempts
                      THEN 'reclaimed past the last attempt: its lease expired'
-                          || coalesce(' (earlier: ' || last_error || ')', '')
                      ELSE coalesce(last_error, 'reclaimed: lease expired before the worker finished') END,
+      failure_category = CASE WHEN failure_category IN ('handler_error', 'lease_expired_after_handler_error')
+                              THEN 'lease_expired_after_handler_error'
+                              ELSE 'lease_expired' END,
       updated_at = now()
     WHERE state = 'running'
       AND locked_at < now() - make_interval(secs => ${olderThanMs / 1000})
@@ -421,6 +426,8 @@ export interface JobRow {
   state: string;
   attempts: number;
   lastError: string | null;
+  /** The latest failure's fixed category (migration 0190), never error text. */
+  failureCategory: string | null;
 }
 
 /** A tenant's own view of its queue — for the dashboard and for tests. */
@@ -433,6 +440,7 @@ export async function jobsForBusiness(tx: TenantDb, kind?: string): Promise<JobR
       state: jobs.state,
       attempts: jobs.attempts,
       lastError: jobs.lastError,
+      failureCategory: jobs.failureCategory,
     })
     .from(jobs)
     .where(where)

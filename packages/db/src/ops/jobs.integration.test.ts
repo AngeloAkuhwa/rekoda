@@ -253,17 +253,22 @@ describe('a worker that dies mid-job', () => {
     const rows = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ state: 'dead', attempts: 3 });
-    expect(rows[0]?.lastError).toMatch(/^reclaimed past the last attempt: its lease expired/);
+    expect(rows[0]).toMatchObject({
+      lastError: 'reclaimed past the last attempt: its lease expired',
+      failureCategory: 'lease_expired',
+    });
     expect(await jobsRepo.claimNext(workerDb, 'worker-4')).toBeNull();
   });
 
-  it('keeps an earlier recorded failure when a later stalled run sends the job to dead', async () => {
+  it('a dead job never carries an earlier error text, only its sanitised category', async () => {
     const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
     await enqueue(businessId, { maxAttempts: 2 });
     const first = await jobsRepo.claimNext(workerDb, 'worker-1');
-    expect((await jobsRepo.markFailed(workerDb, first!, 'provider timed out', 0)).state).toBe(
-      'pending',
-    );
+    // What a provider might echo back: a token and a phone number. None of it may survive.
+    const sensitive = 'provider said: token sk_live_secretsecret for +2348040000001';
+    expect((await jobsRepo.markFailed(workerDb, first!, sensitive, 0)).state).toBe('pending');
+    const [failed] = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
+    expect(failed?.failureCategory).toBe('handler_error');
     for (const worker of ['worker-2', 'worker-3']) {
       const job = await jobsRepo.claimNext(workerDb, worker);
       await workerDb.execute(
@@ -275,8 +280,13 @@ describe('a worker that dies mid-job', () => {
     expect(row).toMatchObject({
       state: 'dead',
       attempts: 3,
-      lastError: 'reclaimed past the last attempt: its lease expired (earlier: provider timed out)',
+      lastError: 'reclaimed past the last attempt: its lease expired',
+      failureCategory: 'lease_expired_after_handler_error',
     });
+    const raw = await workerDb.execute<{ row: string }>(
+      sql`SELECT row_to_json(j)::text AS row FROM jobs j WHERE business_id = ${businessId}::uuid`,
+    );
+    expect([...raw][0]?.row).not.toMatch(/sk_live_|secretsecret|provider said/);
   });
 
   it('does not reclaim a job whose worker is still alive', async () => {
