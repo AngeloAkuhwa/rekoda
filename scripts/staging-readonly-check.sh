@@ -260,7 +260,10 @@ for k in REKODA_WEB_URL REKODA_ANNUAL_BILLING \
     # Staging runs the production compose file with a separate worker, Resend email and the web
     # app, so everything here is required except annual billing, which is optional.
     case "$k" in
-      REKODA_ANNUAL_BILLING) say "$k" UNSET ;;
+      # An empty assignment (REKODA_ANNUAL_BILLING=) reaches the process as "", which it refuses
+      # to boot with; only a line that is absent is unset.
+      REKODA_ANNUAL_BILLING) if grep -q "^$k=" .env; then flag "$k" "SET but empty (the process refuses to boot with it)"
+                             else say "$k" UNSET; fi ;;
       *) flag "$k" "UNSET (required on staging)" ;;
     esac
   else

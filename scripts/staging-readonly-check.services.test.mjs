@@ -213,3 +213,18 @@ test('the web URL and annual billing are classified, never printed', () => {
     h.done();
   }
 });
+
+test('an empty annual-billing assignment is flagged, as the process refuses to boot with it', () => {
+  const h = healthy({ dotenv: HEALTHY_DOTENV.concat('REKODA_ANNUAL_BILLING=\n') });
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(
+      r.stdout,
+      /REKODA_ANNUAL_BILLING\s+SET but empty \(the process refuses to boot with it\)\n/,
+    );
+    assert.match(attention(r.stdout), /REKODA_ANNUAL_BILLING/);
+    assert.equal(r.status, 1, r.stdout);
+  } finally {
+    h.done();
+  }
+});
