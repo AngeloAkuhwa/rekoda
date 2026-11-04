@@ -2,42 +2,95 @@
 # Read-only staging check (billing directive, 26 Oct 2026). Changes nothing and prints no secret value:
 # environment settings are reported as SET or UNSET only. Run it on the staging host from /opt/rekoda:
 #   ssh <deploy-user>@<host> 'bash -s' < scripts/staging-readonly-check.sh
-# Optional: EXPECT_SHA=<40-char sha> to compare the running release with a commit.
+# Optional, and expected after a deploy: EXPECT_SHA=<sha> (7 to 40 hex characters, for example the
+# deploy run's commit) to compare the checkout, the served commit and the images with that commit:
+#   ssh <deploy-user>@<host> 'EXPECT_SHA=b8baf24 bash -s' < scripts/staging-readonly-check.sh
+# Every check that is not as expected is repeated under "== attention" at the end; a check that
+# could not be made reads "unknown", never as a pass. The last line is RESULT: OK (exit 0) or
+# RESULT: ATTENTION (exit 1). Migration lines read APPLIED, MISSING (not applied: neither objects
+# nor ledger tag), INCOMPLETE (objects without the tag), INCONSISTENT (the tag without its
+# objects) or unknown; only APPLIED is a pass. Nothing is written, restarted or sent.
 set -u
+# One collation for every sort and comm below, whatever the host's locale.
+export LC_ALL=C
 API_URL="${API_URL:-https://staging-api.myrekoda.com}"
 cd /opt/rekoda 2>/dev/null || { echo "FAIL not in /opt/rekoda"; exit 1; }
 # stdin is closed for every compose call: the script is usually piped in over ssh (`bash -s`), and
 # a `compose exec` left on that stdin can swallow the unread rest of the script.
 dc() { docker compose -f docker-compose.prod.yml "$@" </dev/null; }
 say() { printf '%-34s %s\n' "$1" "$2"; }
+ATTN=""
+# say, and also list the line under "== attention" (anything not as expected, or not checkable).
+flag() { say "$1" "$2"; ATTN="${ATTN}$(printf '%-34s %s' "$1" "$2")"$'\n'; }
 
 echo "== release identity"
-say "checkout HEAD" "$(git rev-parse HEAD)"
-say "tracked modifications" "$(git --no-optional-locks status --porcelain --untracked-files=no | wc -l)"
-say ".env REKODA_RELEASE" "$(sed -n 's/^REKODA_RELEASE=//p' .env)"
-[ -n "${EXPECT_SHA:-}" ] && say "matches EXPECT_SHA" "$([ "$(git rev-parse HEAD)" = "$EXPECT_SHA" ] && echo yes || echo NO)"
+HEAD_SHA="$(git rev-parse HEAD 2>/dev/null)"
+say "checkout HEAD" "${HEAD_SHA:-unknown}"
+mods="$(git --no-optional-locks status --porcelain --untracked-files=no | wc -l)"
+if [ "$mods" -eq 0 ]; then say "tracked modifications" "0"; else flag "tracked modifications" "$mods"; fi
+RELEASE="$(sed -n 's/^REKODA_RELEASE=//p' .env 2>/dev/null | head -1)"
+say ".env REKODA_RELEASE" "${RELEASE:-UNSET}"
+EXPECT="${EXPECT_SHA:-}"
+case "$EXPECT" in
+  "") flag "EXPECT_SHA" "not given (pass EXPECT_SHA=<sha> to compare with a commit)" ;;
+  *[!0-9a-f]*) flag "EXPECT_SHA" "not a lowercase hex commit; comparisons skipped"; EXPECT="" ;;
+  *) if [ "${#EXPECT}" -lt 7 ] || [ "${#EXPECT}" -gt 40 ]; then
+       flag "EXPECT_SHA" "must be 7 to 40 characters; comparisons skipped"; EXPECT=""
+     else say "EXPECT_SHA" "$EXPECT"; fi ;;
+esac
+# A short EXPECT_SHA matches the full commit it abbreviates.
+if [ -n "$EXPECT" ]; then
+  case "$HEAD_SHA" in
+    "$EXPECT"*) say "checkout matches EXPECT_SHA" "yes" ;;
+    *) flag "checkout matches EXPECT_SHA" "NO" ;;
+  esac
+fi
+declare -A IMG
 for c in api worker web; do
   id="$(dc ps -q "$c" 2>/dev/null)"
-  say "image of $c" "$([ -n "$id" ] && docker inspect -f '{{.Config.Image}}' "$id" || echo MISSING)"
+  IMG[$c]="$([ -n "$id" ] && docker inspect -f '{{.Config.Image}}' "$id" 2>/dev/null)"
+  if [ -n "${IMG[$c]}" ]; then say "image of $c" "${IMG[$c]}"; else flag "image of $c" "MISSING"; fi
 done
+# The api and the worker run one image (docker-compose.prod.yml); the deploy tags it with the
+# release, so both should be rekoda-app:<REKODA_RELEASE>.
+if [ -n "${IMG[api]}" ] && [ -n "${IMG[worker]}" ]; then
+  if [ "${IMG[api]}" = "${IMG[worker]}" ]; then say "api and worker image" "SAME"
+  else flag "api and worker image" "DIFFERENT"; fi
+else flag "api and worker image" "unknown (a container is missing)"; fi
+if [ -n "$RELEASE" ] && [ -n "${IMG[api]}" ]; then
+  if [ "${IMG[api]}" = "rekoda-app:$RELEASE" ]; then say "api image is the .env release" "yes"
+  else flag "api image is the .env release" "NO (expected rekoda-app:$RELEASE)"; fi
+fi
 
 echo "== health (API)"
-curl -fsS --max-time 15 "$API_URL/health" || echo "FAIL /health"
+HEALTH="$(curl -fsS --max-time 15 "$API_URL/health" 2>/dev/null)"
+if [ -n "$HEALTH" ]; then echo "$HEALTH"; else flag "/health" "FAIL (no answer)"; fi
 echo
+# One field of the /health JSON (a string or a number); empty when absent. /health serves only
+# status, database, migrations, release and commit, none of them secret.
+hfield() { printf '%s' "$HEALTH" | sed -n 's/.*"'"$1"'":"\{0,1\}\([^",}]*\).*/\1/p' | head -1; }
+H_STATUS="$(hfield status)"; H_DB="$(hfield database)"; H_MIG="$(hfield migrations)"
+H_COMMIT="$(hfield commit)"; H_RELEASE="$(hfield release)"
+if [ -n "$HEALTH" ]; then
+  if [ "$H_STATUS" = ok ]; then say "served status" "ok"; else flag "served status" "${H_STATUS:-unknown}"; fi
+  if [ "$H_DB" = up ]; then say "served database" "up"; else flag "served database" "${H_DB:-unknown}"; fi
+  say "served commit" "${H_COMMIT:-unknown}"
+  say "served release" "${H_RELEASE:-unknown}"
+  # The deploy workflow's own rule: the served commit is an abbreviation (7+ characters) of the
+  # deployed commit, and the release is staging-<that abbreviation>.
+  if [ -n "$EXPECT" ]; then
+    if [ "${#H_COMMIT}" -ge 7 ] && { case "$EXPECT" in "$H_COMMIT"*) true ;; *) case "$H_COMMIT" in "$EXPECT"*) true ;; *) false ;; esac ;; esac; }; then
+      say "served commit matches EXPECT_SHA" "yes"
+    else flag "served commit matches EXPECT_SHA" "NO"; fi
+  fi
+  if [ -n "$H_COMMIT" ] && [ "$H_RELEASE" = "staging-$H_COMMIT" ]; then say "served release is staging-<commit>" "yes"
+  else flag "served release is staging-<commit>" "NO"; fi
+fi
 echo "== web"
 say "web status" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://staging.myrekoda.com/ || true)"
 
 echo "== services"
 dc ps -a --format 'table {{.Service}}\t{{.State}}\t{{.Health}}' 2>/dev/null
-
-echo "== migration 0181 (the OD-33 discovery function)"
-{ dc exec -T postgres sh -c 'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-rekoda}" -Atc "select proname, prosecdef from pg_proc where proname = '"'"'sweep_trial_candidates'"'"'"' 2>/dev/null || echo "could not query (check the postgres user/db names)"; } | awk 'NF{f=1;print} END{if(!f)print "MISSING"}'
-
-echo "== migration 0183 (billing email send outcome column)"
-{ dc exec -T postgres sh -c 'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-rekoda}" -Atc "select column_name from information_schema.columns where table_name = '"'"'billing_email_verifications'"'"' and column_name = '"'"'send_outcome'"'"'"' 2>/dev/null || echo "could not query (check the postgres user/db names)"; } | awk 'NF{f=1;print} END{if(!f)print "MISSING"}'
-
-echo "== migration 0186 (trial reminder delivery failure column)"
-{ dc exec -T postgres sh -c 'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-rekoda}" -Atc "select column_name from information_schema.columns where table_name = '"'"'businesses'"'"' and column_name = '"'"'trial_notice_failed_at'"'"'"' 2>/dev/null || echo "could not query (check the postgres user/db names)"; } | awk 'NF{f=1;print} END{if(!f)print "MISSING"}'
 
 # Annual-billing migrations (SUB-02/SUB-02a certification needs all of them). One read-only
 # query per status line (0174 has two lines, columns and table, so a partial 0174 shows), asked of the postgres container in a read-only session
@@ -58,10 +111,10 @@ mig_sql() { # label, ledger tag, boolean SQL
   l="$(mig_q "select exists (select 1 from rekoda_migrations where tag = '$2')")"
   case "$o:$l" in
     t:t) say "$1" "APPLIED" ;;
-    f:f) say "$1" "MISSING" ;;
-    t:f) say "$1" "INCOMPLETE (objects exist, migration not recorded)" ;;
-    f:t) say "$1" "INCONSISTENT (recorded, objects missing)" ;;
-    *) say "$1" "unknown (query failed; check the postgres user/db names)" ;;
+    f:f) flag "$1" "MISSING" ;;
+    t:f) flag "$1" "INCOMPLETE (objects exist, migration not recorded)" ;;
+    f:t) flag "$1" "INCONSISTENT (recorded, objects missing)" ;;
+    *) flag "$1" "unknown (query failed; check the postgres user/db names)" ;;
   esac
 }
 mig_cols() { # label, ledger tag, table.column ... (objects present only when every column exists)
@@ -88,6 +141,44 @@ mig_cols "0182 charge applied period" 0182_charge_applied_period subscription_ch
   subscription_charges.applied_period_end
 mig_sql  "0185 address limit objects" 0185_billing_email_address_limit "select to_regclass('public.billing_email_address_requests') is not null and (select count(*) = 3 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and ((p.proname = 'billing_email_address_claim' and oidvectortypes(p.proargtypes) = 'text, integer, integer') or (p.proname = 'billing_email_address_wait' and oidvectortypes(p.proargtypes) = 'text, integer, integer') or (p.proname = 'billing_email_address_release' and oidvectortypes(p.proargtypes) = 'uuid, text')))"
 
+echo "== trial-reminder migrations 0181, 0183, 0186 (APPLIED / MISSING / INCOMPLETE / INCONSISTENT / unknown; read-only)"
+mig_sql  "0181 trial sweep function" 0181_sweep_trial_candidates "select exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'sweep_trial_candidates' and p.prosecdef)"
+mig_cols "0183 email send outcome column" 0183_email_verification_send_outcome billing_email_verifications.send_outcome
+mig_cols "0186 trial notice failure column" 0186_trial_notice_undelivered businesses.trial_notice_failed_at
+
+echo "== reminder migrations 0187-0189 (APPLIED / MISSING / INCOMPLETE / INCONSISTENT / unknown; read-only)"
+mig_sql  "0187 payment instruction columns" 0187_payment_instructions "select (select count(*) = 5 from information_schema.columns where table_schema = 'public' and table_name = 'businesses' and column_name in ('payment_bank_name', 'payment_account_name', 'payment_account_number', 'payment_instruction_approved_at', 'payment_instruction_approved_by')) and exists (select 1 from pg_constraint where conname = 'businesses_payment_instruction_all_or_nothing' and conrelid = 'public.businesses'::regclass)"
+mig_sql  "0188 payment check validated" 0188_validate_payment_instruction_check "select coalesce((select convalidated from pg_constraint where conname = 'businesses_payment_instruction_all_or_nothing' and conrelid = 'public.businesses'::regclass), false)"
+mig_sql  "0189 reminder batch tables" 0189_reminder_batches "select to_regclass('public.reminder_batches') is not null and to_regclass('public.reminder_batch_items') is not null"
+
+# Every migration this checkout carries (its journal) against every tag the database has
+# recorded. Tags are file names, not data, so the missing and unexpected ones are listed by name.
+echo "== migration ledger (expected by this checkout vs applied; read-only)"
+JOURNAL=packages/db/migrations/meta/_journal.json
+EXPECTED_TAGS="$(grep -o '"tag": *"[^"]*"' "$JOURNAL" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/' | sort)"
+APPLIED_TAGS="$(dc exec -T -e PGOPTIONS='-c default_transaction_read_only=on' -e "Q=select tag from rekoda_migrations order by tag" postgres sh -c \
+  'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-rekoda}" -v ON_ERROR_STOP=1 -Atc "$Q"' 2>/dev/null)"
+APPLIED_OK=$?
+n_expected="$(printf '%s' "$EXPECTED_TAGS" | grep -c .)"
+if [ "$n_expected" -gt 0 ]; then say "expected migrations" "$n_expected (last $(printf '%s\n' "$EXPECTED_TAGS" | tail -1))"
+else flag "expected migrations" "unknown (cannot read $JOURNAL)"; fi
+if [ "$APPLIED_OK" -ne 0 ] || [ -z "$APPLIED_TAGS" ]; then
+  flag "applied migrations" "unknown (query failed; check the postgres user/db names)"
+else
+  n_applied="$(printf '%s\n' "$APPLIED_TAGS" | grep -c .)"
+  say "applied migrations" "$n_applied (last $(printf '%s\n' "$APPLIED_TAGS" | sort | tail -1))"
+  if [ "$n_expected" -gt 0 ]; then
+    missing="$(comm -23 <(printf '%s\n' "$EXPECTED_TAGS") <(printf '%s\n' "$APPLIED_TAGS" | sort) | paste -sd' ' -)"
+    extra="$(comm -13 <(printf '%s\n' "$EXPECTED_TAGS") <(printf '%s\n' "$APPLIED_TAGS" | sort) | paste -sd' ' -)"
+    if [ -z "$missing" ]; then say "not applied" "none"; else flag "not applied" "$missing"; fi
+    if [ -z "$extra" ]; then say "applied but not in this checkout" "none"; else flag "applied but not in this checkout" "$extra"; fi
+  fi
+fi
+if [ -n "$H_MIG" ] && [ "$n_expected" -gt 0 ]; then
+  if [ "$H_MIG" = "$n_expected" ]; then say "/health migrations = expected" "yes ($H_MIG)"
+  else flag "/health migrations = expected" "NO ($H_MIG served, $n_expected expected)"; fi
+fi
+
 echo "== recent errors (last 30 minutes; counts only, no log text is printed)"
 for c in api worker; do
   n="$(dc logs --since 30m "$c" 2>&1 | grep -ciE '"level":(50|60)|ERROR|FATAL|migration')"
@@ -106,10 +197,19 @@ for k in PAYSTACK_SECRET_KEY REKODA_PAYSTACK_PLATFORM_CONFIRMED REKODA_WEB_URL R
          REKODA_EMAIL_PROVIDER RESEND_API_KEY REKODA_EMAIL_FROM RESEND_WEBHOOK_SECRET \
          REKODA_WORKER WORKER_DATABASE_URL; do
   v="$(sed -n "s/^$k=//p" .env | head -1)"
-  if [ -z "$v" ]; then say "$k" UNSET; else
+  if [ -z "$v" ]; then
     case "$k" in
-      PAYSTACK_SECRET_KEY) say "$k" "SET ($( [ "${v#sk_test_}" != "$v" ] && echo TEST-KEY || echo NOT-A-TEST-KEY ))" ;;
-      REKODA_PAYSTACK_PLATFORM_CONFIRMED|REKODA_ANNUAL_BILLING|REKODA_EMAIL_PROVIDER|REKODA_WEB_URL|REKODA_WORKER) say "$k" "SET ($v)" ;;
+      # Staging's paid test journeys need a test key; OWN-70 keeps the platform flag UNSET.
+      PAYSTACK_SECRET_KEY) flag "$k" "UNSET (staging test payments need an sk_test_ key)" ;;
+      *) say "$k" UNSET ;;
+    esac
+  else
+    case "$k" in
+      PAYSTACK_SECRET_KEY)
+        if [ "${v#sk_test_}" != "$v" ]; then say "$k" "SET (TEST-KEY)"
+        else flag "$k" "SET (NOT-A-TEST-KEY; staging must run an sk_test_ key)"; fi ;;
+      REKODA_PAYSTACK_PLATFORM_CONFIRMED) flag "$k" "SET ($v; OWN-70: it stays UNSET on staging)" ;;
+      REKODA_ANNUAL_BILLING|REKODA_EMAIL_PROVIDER|REKODA_WEB_URL|REKODA_WORKER) say "$k" "SET ($v)" ;;
       *) say "$k" SET ;;
     esac
   fi
@@ -128,10 +228,40 @@ if dc exec -T api true >/dev/null 2>&1; then
     # stopped mid-loop) is reported as unknown, never as UNSET.
     r="$(dc exec -T -e "K=$k" api sh -c 'eval "v=\${$K:-}"; if [ -n "$v" ]; then echo SET; else echo UNSET; fi' 2>/dev/null)"
     case "$r" in
-      SET|UNSET) say "$k" "$r" ;;
-      *) say "$k" "unknown (api query failed)" ;;
+      SET) say "$k" "$r" ;;
+      UNSET) flag "$k" "$r" ;;
+      *) flag "$k" "unknown (api query failed)" ;;
     esac
   done
 else
-  say "Meta template slots" "unknown (cannot exec into the api container)"
+  flag "Meta template slots" "unknown (cannot exec into the api container)"
+fi
+
+# Customer payment reminders (N1, REM-01..06) run only with REKODA_CUSTOMER_REMINDERS=1, and the
+# api and the worker each read it. Absent or 0 is off (the default); 1 is on; anything else makes
+# the process refuse to boot (apps/api/src/config.ts, zeroOrOneFlag). Asked of each running
+# container; the classification is printed, not the raw value. This script never changes it.
+echo "== customer reminders in the running api and worker (effective value)"
+for c in api worker; do
+  r="$(dc exec -T -e K=REKODA_CUSTOMER_REMINDERS "$c" sh -c 'eval "v=\${$K-__unset__}"; case "$v" in __unset__) echo UNSET ;; 0) echo 0 ;; 1) echo 1 ;; *) echo OTHER ;; esac' 2>/dev/null)"
+  case "$r" in
+    UNSET) say "REKODA_CUSTOMER_REMINDERS ($c)" "OFF (unset; the default is off)" ;;
+    0) say "REKODA_CUSTOMER_REMINDERS ($c)" "OFF (0)" ;;
+    1) say "REKODA_CUSTOMER_REMINDERS ($c)" "ON (1)" ;;
+    OTHER) flag "REKODA_CUSTOMER_REMINDERS ($c)" "INVALID (not 0 or 1; the process refuses to boot with it)" ;;
+    *) flag "REKODA_CUSTOMER_REMINDERS ($c)" "unknown (cannot exec into the $c container)" ;;
+  esac
+done
+
+echo "== attention (anything above that is not as expected or could not be checked)"
+# The last line is the verdict, and so is the exit status: 0 only when nothing needs attention.
+# A missing, incomplete or inconsistent migration, a mismatched commit or image, or a check that
+# could not be made all land here, so none of them can end in "OK".
+if [ -z "$ATTN" ]; then
+  echo "none"
+  echo "RESULT: OK (every check above is as expected)"
+else
+  printf '%s' "$ATTN"
+  echo "RESULT: ATTENTION ($(printf '%s' "$ATTN" | grep -c .) item(s) above need a look)"
+  exit 1
 fi
