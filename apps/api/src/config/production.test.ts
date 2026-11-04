@@ -10,14 +10,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { loadConfig, trustedProxies } from '../config.js';
-
-const BASE = {
-  DATABASE_URL: 'postgres://x@127.0.0.1:5432/x',
-  OTP_PEPPER: 'p'.repeat(40),
-  REKODA_API_SECRET: 's'.repeat(40),
-  VAULT_KEY: 'a'.repeat(64),
-  MATCH_KEY: 'b'.repeat(64),
-} as NodeJS.ProcessEnv;
+import { BASE } from './env.fixtures.js';
 
 /** A production environment that boots: the compose file's trust values. */
 const PROD = {
