@@ -88,6 +88,13 @@ export interface RecordPurchaseInput {
   /** The vaulted supplier this purchase came from (migration 0050), when
    * the mention resolved to one. A reference, never a name. */
   supplierId?: string | null;
+  /**
+   * When the purchase happened, as for an expense: the posting's date, the
+   * expense row's `created_at`, and the bill's number year, `billed_on` and
+   * `created_at`, all from this one instant. Unset (every live caller) keeps
+   * the clock, exactly as before; the year-boundary test passes one.
+   */
+  recordedAt?: Date;
 }
 
 export interface RecordedSpend {
@@ -187,7 +194,10 @@ export async function recordPurchase(
      * carries none, so it never collides. */
     /* Not injective if either part held a colon; today the source types are
      * fixed words and the ids are uuids, so it cannot collide. */
-    { postingKey: `purchase:${input.sourceType}:${input.sourceId}` },
+    {
+      postingKey: `purchase:${input.sourceType}:${input.sourceId}`,
+      ...(input.recordedAt ? { occurredAt: input.recordedAt } : {}),
+    },
   );
 
   const rows = await tx
@@ -206,6 +216,7 @@ export async function recordPurchase(
       sourceId: input.sourceId,
       supplierId: input.supplierId ?? null,
       ledgerTransactionId,
+      ...(input.recordedAt ? { createdAt: input.recordedAt } : {}),
     })
     .returning({ id: expenses.id });
   const row = rows[0];
@@ -217,7 +228,7 @@ export async function recordPurchase(
   const owedK = input.amountK - input.paidK;
   let billNumber: string | null = null;
   if (owedK > 0) {
-    const now = new Date();
+    const now = input.recordedAt ?? new Date();
     billNumber = await nextDocumentNumber(tx, input.businessId, 'bill', lagosYear(now));
     await tx.insert(bills).values({
       businessId: input.businessId,
@@ -230,6 +241,7 @@ export async function recordPurchase(
       ledgerTransactionId,
       sourceType: input.sourceType,
       sourceId: input.sourceId,
+      ...(input.recordedAt ? { createdAt: input.recordedAt } : {}),
     });
   }
 
