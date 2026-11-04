@@ -253,8 +253,30 @@ describe('a worker that dies mid-job', () => {
     const rows = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ state: 'dead', attempts: 3 });
-    expect(rows[0]?.lastError).toMatch(/died on every attempt/);
+    expect(rows[0]?.lastError).toMatch(/^reclaimed past the last attempt: its lease expired/);
     expect(await jobsRepo.claimNext(workerDb, 'worker-4')).toBeNull();
+  });
+
+  it('keeps an earlier recorded failure when a later stalled run sends the job to dead', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    await enqueue(businessId, { maxAttempts: 2 });
+    const first = await jobsRepo.claimNext(workerDb, 'worker-1');
+    expect((await jobsRepo.markFailed(workerDb, first!, 'provider timed out', 0)).state).toBe(
+      'pending',
+    );
+    for (const worker of ['worker-2', 'worker-3']) {
+      const job = await jobsRepo.claimNext(workerDb, worker);
+      await workerDb.execute(
+        sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
+      );
+      expect(await jobsRepo.reclaimStalled(workerDb, 300_000)).toBe(1);
+    }
+    const [row] = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
+    expect(row).toMatchObject({
+      state: 'dead',
+      attempts: 3,
+      lastError: 'reclaimed past the last attempt: its lease expired (earlier: provider timed out)',
+    });
   });
 
   it('does not reclaim a job whose worker is still alive', async () => {

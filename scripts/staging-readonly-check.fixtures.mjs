@@ -186,13 +186,14 @@ export const SLOTS = {
   META_DOCUMENT_TEMPLATE: 'd',
   META_TRIAL_TEMPLATE: 'e',
 };
+/** The healthy host's .env. Not a credential: low-entropy stand-ins whose only job is to be findable if printed. */
+export const HEALTHY_DOTENV =
+  'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\nRESEND_API_KEY=rrrrrrrrrrrrrrrr\nWORKER_DATABASE_URL=postgres://u:wwwwwwww@db/rekoda\n' +
+  'REKODA_WEB_URL=https://staging.invalid\nREKODA_EMAIL_PROVIDER=resend\nREKODA_EMAIL_FROM=billing@staging.invalid\nRESEND_WEBHOOK_SECRET=whsec_vvvvvvvvvvvvvvvv\n';
 /** A staging host where every check passes. */
 export const healthy = (over = {}) =>
   host({
-    dotenv:
-      // not a credential: low-entropy stand-ins whose only job is to be findable if printed.
-      'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\nRESEND_API_KEY=rrrrrrrrrrrrrrrr\nWORKER_DATABASE_URL=postgres://u:wwwwwwww@db/rekoda\n' +
-      'REKODA_WEB_URL=https://staging.invalid\nREKODA_EMAIL_PROVIDER=resend\nREKODA_EMAIL_FROM=billing@staging.invalid\nRESEND_WEBHOOK_SECRET=whsec_vvvvvvvvvvvvvvvv\n',
+    dotenv: HEALTHY_DOTENV,
     images: {
       api: 'rekoda-app:staging-{sha7}',
       worker: 'rekoda-app:staging-{sha7}',

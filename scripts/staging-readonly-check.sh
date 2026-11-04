@@ -104,9 +104,10 @@ case "$code" in
   *) flag "web status" "$code" ;;
 esac
 
-# Every long-running service must be running, and healthy where it has a healthcheck
-# (docker-compose.prod.yml: postgres, api, worker and web do; caddy does not). The one-off jobs
-# (migrate, edge-check) must have exited 0 or be absent; any other state needs attention.
+# Every long-running service must be running. postgres, api, worker and web have a healthcheck in
+# docker-compose.prod.yml, so they must read healthy (an empty health result is not a pass); caddy
+# has none. The one-off jobs (migrate, edge-check) must have exited 0 or be absent; any other state
+# needs attention.
 echo "== services"
 SERVICES="$(dc ps -a --format '{{.Service}}|{{.State}}|{{.Health}}|{{.ExitCode}}' 2>/dev/null)"
 if [ -z "$SERVICES" ]; then
@@ -117,6 +118,7 @@ else
     IFS='|' read -r _ state health _ <<<"$line"
     if [ -z "$line" ]; then flag "service $svc" "MISSING"
     elif [ "$state" != running ]; then flag "service $svc" "${state:-unknown}"
+    elif [ "$svc" != caddy ] && [ "$health" != healthy ]; then flag "service $svc" "running, ${health:-no health result}"
     elif [ -n "$health" ] && [ "$health" != healthy ]; then flag "service $svc" "running, $health"
     else say "service $svc" "running${health:+, $health}"; fi
   done
@@ -253,7 +255,10 @@ for k in REKODA_WEB_URL REKODA_ANNUAL_BILLING \
     esac
   else
     case "$k" in
-      REKODA_ANNUAL_BILLING|REKODA_EMAIL_PROVIDER|REKODA_WEB_URL) say "$k" "SET ($v)" ;;
+      # Staging's billing-email journeys send through Resend, so any other provider needs attention.
+      REKODA_EMAIL_PROVIDER) if [ "$v" = resend ]; then say "$k" "SET ($v)"
+                             else flag "$k" "SET ($v; staging needs resend)"; fi ;;
+      REKODA_ANNUAL_BILLING|REKODA_WEB_URL) say "$k" "SET ($v)" ;;
       *) say "$k" SET ;;
     esac
   fi

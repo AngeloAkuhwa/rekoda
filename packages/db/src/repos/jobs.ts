@@ -401,9 +401,12 @@ export async function reclaimStalled(db: Db, olderThanMs = 300_000): Promise<num
       state      = CASE WHEN attempts > max_attempts THEN 'dead' ELSE 'pending' END,
       locked_at  = NULL,
       locked_by  = NULL,
+      -- An expired lease says the worker stopped answering, not why, so the message is neutral
+      -- and an earlier recorded failure (from markFailed) is kept beside it.
       last_error = CASE WHEN attempts > max_attempts
-                     THEN 'reclaimed: the worker died on every attempt, including the one past the last'
-                     ELSE coalesce(last_error, 'reclaimed: worker did not finish') END,
+                     THEN 'reclaimed past the last attempt: its lease expired'
+                          || coalesce(' (earlier: ' || last_error || ')', '')
+                     ELSE coalesce(last_error, 'reclaimed: lease expired before the worker finished') END,
       updated_at = now()
     WHERE state = 'running'
       AND locked_at < now() - make_interval(secs => ${olderThanMs / 1000})
