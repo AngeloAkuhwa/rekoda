@@ -67,6 +67,20 @@ if [ -n "$RELEASE" ] && [ -n "${IMG[web]}" ]; then
   if [ "${IMG[web]}" = "rekoda-web:$RELEASE" ]; then say "web image is the .env release" "yes"
   else flag "web image is the .env release" "NO (expected rekoda-web:$RELEASE)"; fi
 fi
+# A container reads .env when it is created, so an .env edited afterwards (a rotated key, a new
+# provider) is not what it runs until it is recreated. Compared by time, so no value is read:
+# every setting below is judged as .env states it, and this says whether the containers agree.
+ENV_MTIME="$(stat -c %Y .env 2>/dev/null)"
+for c in api worker; do
+  id="$(dc ps -q "$c" 2>/dev/null)"
+  started="$([ -n "$id" ] && docker inspect -f '{{.State.StartedAt}}' "$id" 2>/dev/null)"
+  s_epoch="$([ -n "$started" ] && date -d "$started" +%s 2>/dev/null)"
+  if [ -z "$ENV_MTIME" ] || [ -z "$s_epoch" ]; then
+    flag ".env older than the $c container" "unknown (cannot read .env or the container start time)"
+  elif [ "$ENV_MTIME" -gt "$s_epoch" ]; then
+    flag ".env older than the $c container" "NO (.env changed after $c started; it runs the old settings until recreated)"
+  else say ".env older than the $c container" "yes"; fi
+done
 
 echo "== health (API)"
 HEALTH="$(curl -fsS --max-time 15 "$API_URL/health" 2>/dev/null)"

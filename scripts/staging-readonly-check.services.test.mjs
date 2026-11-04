@@ -228,3 +228,23 @@ test('an empty annual-billing assignment is flagged, as the process refuses to b
     h.done();
   }
 });
+
+test('an .env changed after the api and worker started is flagged, so a rotated key is not trusted', () => {
+  // The containers started long before this .env was written: they run whatever it said then.
+  const h = healthy({ startedAt: '2000-01-01T00:00:00Z' });
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    for (const c of ['api', 'worker'])
+      assert.match(
+        r.stdout,
+        new RegExp(
+          `\\.env older than the ${c} container\\s+NO \\(\\.env changed after ${c} started`,
+        ),
+      );
+    assert.match(attention(r.stdout), /\.env older than the api container/);
+    assert.doesNotMatch(r.stdout, /rrrrrrrr|pppppppp|whsec_/);
+    assert.equal(r.status, 1, r.stdout);
+  } finally {
+    h.done();
+  }
+});

@@ -31,6 +31,8 @@ export function host({
   webCode = '200',
   webExit = 0,
   healthExit = 0,
+  // A container start time later than any .env this fixture writes, unless a test says otherwise.
+  startedAt = '2999-01-01T00:00:00Z',
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'staging-check-'));
   const dir = join(root, 'rekoda');
@@ -122,6 +124,7 @@ ${Object.keys(images)
   exit 0
 fi
 if [ "$1" = inspect ]; then
+  case "$*" in *StartedAt*) echo '${startedAt}'; exit 0 ;; esac
   case "\${@: -1}" in
 ${Object.entries(images)
   .map(([svc, image]) => `    id-${svc}) echo '${fill(image)}' ;;`)
