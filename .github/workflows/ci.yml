@@ -134,11 +134,23 @@ jobs:
         run: node scripts/check-retired-claims.mjs
       # Every PR that touches a route can silently make the published
       # reference wrong, and a developer builds against that reference.
-      # Test files follow one layout (CONTRIBUTING, "Where tests go"). Layout debt
-      # is reported, not failed, until the db and billing moves land (--strict).
+      # Test files follow one layout (CONTRIBUTING, "Where tests go"). Oversized
+      # files are held by a size ratchet (scripts/test-layout-baseline.json). On a
+      # pull request the target branch's baseline is fetched so the baseline file
+      # cannot gain or raise an entry. The remaining baselined files are reported,
+      # not failed, until the baseline is empty (--strict).
       - name: Test layout
         if: steps.ws.outputs.present == 'true'
-        run: node --test scripts/check-test-layout.test.mjs && node scripts/check-test-layout.mjs
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          node --test scripts/check-test-layout.test.mjs
+          if [ -n "$BASE_REF" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_REF"
+            node scripts/check-test-layout.mjs --base-ref FETCH_HEAD
+          else
+            node scripts/check-test-layout.mjs
+          fi
       - name: The API reference describes the API
         if: steps.ws.outputs.present == 'true'
         run: node scripts/check-openapi.mjs

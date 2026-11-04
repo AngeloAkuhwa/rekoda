@@ -140,8 +140,13 @@ feature-to-test index is `docs/TEST_MAP.md`.
   itself. Never create a top-level `tests/` tree.
 - **Name.** `<feature>-<concern>`, for example `billing/plan-change`. A suffix
   other than the three above is rejected.
-- **Size.** Split a test file at about 600 lines, by concern. The check warns
-  above that; it does not fail yet.
+- **Size.** Split a test file at about 600 lines, by concern. The check fails
+  on a new test file over 600 lines. The files that were already larger are
+  listed in `scripts/test-layout-baseline.json` with their size then. One of
+  them may not go past its recorded size, and once it is split to 600 lines or
+  fewer its entry must be removed. On a pull request the check also fails if
+  the baseline gains an entry or raises one compared with the target branch:
+  split the file instead.
 - **Keep the map.** When you rename or move a test, update `docs/TEST_MAP.md`;
   the check fails on a path that no longer exists.
 

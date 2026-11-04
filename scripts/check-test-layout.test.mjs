@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { check, countLines, discover } from './check-test-layout.mjs';
+import { check, checkBaselineChange, countLines, discover } from './check-test-layout.mjs';
 
 const f = (path, lines = 10) => ({ path, lines });
 const run = (files, map = '', exists = () => true) => check(files, map, exists);
@@ -34,10 +34,61 @@ test('rejects an unknown suffix, a stray spec and a stray mjs test', () => {
   assert.match(r.errors.join('\n'), /d\.test\.ts: apps\/web\/e2e\/ holds/);
 });
 
-test('reports a loose db test and an oversized file as debt, not errors', () => {
-  const r = run([f('packages/db/src/usage.integration.test.ts', 700)]);
-  assert.equal(r.errors.length, 0);
-  assert.equal(r.debt.length, 2);
+test('fails on a test loose in packages/db/src/ (Phase 1 cleared that debt)', () => {
+  const r = run([f('packages/db/src/usage.integration.test.ts')]);
+  assert.deepEqual(r.errors, [
+    'packages/db/src/usage.integration.test.ts: sits directly in packages/db/src/; move it into a feature folder',
+  ]);
+});
+
+const big = (files, baseline) => check(files, '', () => true, baseline);
+
+test('size ratchet: a new file over 600 lines fails', () => {
+  const r = big([f('apps/api/src/billing/new.integration.test.ts', 601)], {});
+  assert.equal(r.errors.length, 1);
+  assert.match(
+    r.errors[0],
+    /new\.integration\.test\.ts: 601 lines \(over 600\); split it by concern/,
+  );
+  assert.equal(r.debt.length, 0);
+});
+
+test('size ratchet: a baselined file at or under its recorded size is debt, not an error', () => {
+  const path = 'apps/api/src/reports/reports.integration.test.ts';
+  for (const lines of [4773, 4000]) {
+    const r = big([f(path, lines)], { [path]: 4773 });
+    assert.deepEqual(r.errors, []);
+    assert.equal(r.debt.length, 1);
+  }
+});
+
+test('size ratchet: a baselined file that grows fails', () => {
+  const path = 'apps/api/src/reports/reports.integration.test.ts';
+  const r = big([f(path, 4774)], { [path]: 4773 });
+  assert.equal(r.errors.length, 1);
+  assert.match(r.errors[0], /grew from 4773 to 4774 lines/);
+});
+
+test('size ratchet: a baselined file split to 600 lines or fewer must leave the baseline', () => {
+  const path = 'apps/api/src/reports/reports.integration.test.ts';
+  const r = big([f(path, 600)], { [path]: 4773 });
+  assert.equal(r.errors.length, 1);
+  assert.match(r.errors[0], /now 600 lines, within 600; remove its entry/);
+});
+
+test('size ratchet: a baseline entry for a file that no longer exists fails', () => {
+  const r = big([], { 'apps/api/src/gone.integration.test.ts': 900 });
+  assert.deepEqual(r.errors, [
+    'scripts/test-layout-baseline.json: apps/api/src/gone.integration.test.ts is not a test file any more; remove it',
+  ]);
+});
+
+test('the committed baseline only lists files over 600 lines', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { oversized } = JSON.parse(readFileSync('scripts/test-layout-baseline.json', 'utf8'));
+  for (const [path, lines] of Object.entries(oversized)) {
+    assert.ok(Number.isInteger(lines) && lines > 600, `${path}: ${lines}`);
+  }
 });
 
 test('fails on a TEST_MAP path that no longer exists', () => {
@@ -80,7 +131,8 @@ test('counts lines, not the empty entry after a final newline', () => {
   assert.equal(countLines('a\nb'), 2);
   assert.equal(countLines(''), 0);
   const body = `${'x\n'.repeat(600)}`;
-  assert.equal(run([f('apps/api/src/z.test.ts', countLines(body))]).debt.length, 0);
+  const r = run([f('apps/api/src/z.test.ts', countLines(body))]);
+  assert.deepEqual(r, { errors: [], debt: [] });
 });
 
 test('the command line fails on an unknown suffix and runs from a path with a space', () => {
@@ -156,4 +208,63 @@ test('integration tests live only where an integration runner exists, and script
   );
   assert.match(text, /packages\/core\/src\/d\.integration\.test\.ts: integration tests run only/);
   assert.match(text, /scripts\/e\.test\.ts: scripts\/ holds \.test\.mjs files only/);
+});
+
+test('baseline change: an added entry and a raised entry fail; lowered and removed entries pass', () => {
+  const base = { 'a.test.ts': 900, 'b.test.ts': 800, 'c.test.ts': 700 };
+  const next = { 'a.test.ts': 901, 'b.test.ts': 750, 'd.test.ts': 601 };
+  const errors = checkBaselineChange(base, next);
+  assert.equal(errors.length, 2);
+  assert.match(errors.join('\n'), /a\.test\.ts was raised from 900 to 901/);
+  assert.match(errors.join('\n'), /d\.test\.ts was added/);
+  assert.deepEqual(checkBaselineChange(base, { 'b.test.ts': 800 }), []);
+});
+
+test('the command line compares the baseline with --base-ref and fails closed on an unknown ref', () => {
+  const root = mkdtempSync(join(tmpdir(), 'layout base '));
+  try {
+    const sh = (cmd) => {
+      const r = spawnSync('bash', ['-c', cmd], { cwd: root, encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+    };
+    const script = fileURLToPath(new URL('./check-test-layout.mjs', import.meta.url));
+    const cli = (...args) => spawnSync('node', [script, ...args], { cwd: root, encoding: 'utf8' });
+    const big = (n) => 'x\n'.repeat(n);
+    const baseline = (oversized) =>
+      writeFileSync(join(root, 'scripts/test-layout-baseline.json'), JSON.stringify({ oversized }));
+    mkdirSync(join(root, 'docs'));
+    mkdirSync(join(root, 'scripts'));
+    mkdirSync(join(root, 'apps/api/src'), { recursive: true });
+    writeFileSync(join(root, 'docs/TEST_MAP.md'), '');
+    writeFileSync(join(root, 'apps/api/src/a.test.ts'), big(700));
+    baseline({ 'apps/api/src/a.test.ts': 700 });
+    sh(
+      'git init -q . && git add -A && git -c user.name=t -c user.email=t@t commit -qm base && git tag base',
+    );
+
+    // A new 650-line file listed in the baseline passes without the target branch, fails with it.
+    writeFileSync(join(root, 'apps/api/src/b.test.ts'), big(650));
+    baseline({ 'apps/api/src/a.test.ts': 700, 'apps/api/src/b.test.ts': 650 });
+    sh('git add -A');
+    assert.equal(cli().status, 0);
+    const added = cli('--base-ref', 'base');
+    assert.equal(added.status, 1);
+    assert.match(added.stderr, /b\.test\.ts was added/);
+
+    // Raising an entry so a file can grow fails too.
+    rmSync(join(root, 'apps/api/src/b.test.ts'));
+    writeFileSync(join(root, 'apps/api/src/a.test.ts'), big(720));
+    baseline({ 'apps/api/src/a.test.ts': 720 });
+    sh('git add -A');
+    const raised = cli('--base-ref', 'base');
+    assert.equal(raised.status, 1);
+    assert.match(raised.stderr, /a\.test\.ts was raised from 700 to 720/);
+
+    // A ref the checkout does not have is an error, not a silent pass.
+    const unknown = cli('--base-ref', 'no-such-ref');
+    assert.notEqual(unknown.status, 0);
+    assert.match(unknown.stderr, /not a commit this checkout has/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
