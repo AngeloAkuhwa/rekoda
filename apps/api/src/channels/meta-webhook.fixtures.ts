@@ -210,11 +210,11 @@ export function messagePayload(
   };
 }
 
-/** A delivery receipt: same envelope, `statuses` instead of `messages`. */
 export function invoiceCount(businessId: string): Promise<number> {
   return withBusiness(db, businessId, (tx) => issueRepo.invoiceCount(tx));
 }
 
+/** A delivery receipt: same envelope, `statuses` instead of `messages`. */
 export function statusPayload(recipientId: string, wamid: string, status: string) {
   return {
     object: 'whatsapp_business_account',
