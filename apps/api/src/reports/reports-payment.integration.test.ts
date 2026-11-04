@@ -16,14 +16,6 @@ import { app, db, onboard, post, useReportsHarness } from './reports.fixtures.js
 useReportsHarness();
 
 /**
- * The record an accountant asks for by name.
- *
- * Written since M1 by five repos and read by nothing until now, which is why
- * the assertion that matters here is not the shape: it is that a real trail,
- * built from a real sale and a real withdrawal, comes out as sentences a
- * person can check and carries no token from the sale that produced it.
- */
-/**
  * Recording money that came in, from the dashboard.
  *
  * This existed only on WhatsApp. What matters here is that the receipt is
