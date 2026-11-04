@@ -321,14 +321,24 @@ test('api root: the rule leaves other packages and deeper api folders alone', ()
 test('api root: every approved exception is a tracked test whose module sits beside it at the root', async () => {
   const { execFileSync } = await import('node:child_process');
   const { existsSync } = await import('node:fs');
-  const tracked = new Set(execFileSync('git', ['ls-files'], { encoding: 'utf8' }).split('\n'));
+  // Resolved from this file, not the working directory, so the test runs from anywhere.
+  const repo = fileURLToPath(new URL('..', import.meta.url));
+  const tracked = new Set(
+    execFileSync('git', ['ls-files'], { cwd: repo, encoding: 'utf8' }).split('\n'),
+  );
   const entries = Object.entries(API_ROOT_TESTS);
-  assert.equal(entries.length, 2, 'the list only shrinks; a new exception needs its reason here');
+  assert.ok(entries.length <= 2, 'the list only shrinks; a new exception needs its reason here');
   for (const [path, reason] of entries) {
     assert.match(path, /^apps\/api\/src\/[^/]+\.test\.ts$/, path);
-    assert.ok(tracked.has(path) && existsSync(path), `${path} is not a tracked test any more`);
+    assert.ok(
+      tracked.has(path) && existsSync(join(repo, path)),
+      `${path} is not a tracked test any more`,
+    );
     const module = path.replace(/\.test\.ts$/, '.ts');
-    assert.ok(existsSync(module), `${path}: ${module} has left the root, so its test should too`);
+    assert.ok(
+      existsSync(join(repo, module)),
+      `${path}: ${module} has left the root, so its test should too`,
+    );
     assert.ok(reason.length > 20, `${path}: give the reason it stays`);
   }
 });
