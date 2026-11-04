@@ -8,7 +8,6 @@
     "apps/api/src/auth/auth.integration.test.ts": 1195,
     "apps/api/src/bank/bank.integration.test.ts": 2158,
     "apps/api/src/catalogue/catalogue.integration.test.ts": 679,
-    "apps/api/src/channels/meta.integration.test.ts": 17548,
     "apps/api/src/channels/meta.sender.test.ts": 672,
     "apps/api/src/channels/waba-templates.integration.test.ts": 824,
     "apps/api/src/commands/sale-commands.integration.test.ts": 1475,
