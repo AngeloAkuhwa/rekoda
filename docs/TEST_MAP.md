@@ -319,6 +319,7 @@ change a feature and want to know what to run.
 | integration | `apps/api/src/channels/meta-g68-final-review.integration.test.ts`     |
 | integration | `apps/api/src/channels/meta-g68-review.integration.test.ts`           |
 | integration | `apps/api/src/channels/meta-invoices.integration.test.ts`             |
+| integration | `apps/api/src/channels/meta-lost-message.integration.test.ts`         |
 | integration | `apps/api/src/channels/meta-order-ingress.integration.test.ts`        |
 | integration | `apps/api/src/channels/meta-pidgin-continuations.integration.test.ts` |
 | integration | `apps/api/src/channels/meta-plan-example.integration.test.ts`         |
@@ -391,6 +392,7 @@ change a feature and want to know what to run.
 | unit        | `packages/core/src/messaging.test.ts`                                 |
 | unit        | `packages/core/src/notification-policy.test.ts`                       |
 | unit        | `packages/core/src/reminders.test.ts`                                 |
+| unit        | `packages/core/src/replies-links.test.ts`                             |
 | unit        | `packages/core/src/replies.test.ts`                                   |
 | unit        | `packages/core/src/request-kind.test.ts`                              |
 | unit        | `packages/core/src/router.test.ts`                                    |
