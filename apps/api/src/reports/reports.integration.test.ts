@@ -278,7 +278,7 @@ describe('the audit trail', () => {
    */
   it('resolves the actor to a role and a phone tail, not a uuid', async () => {
     const { auth, businessId } = await onboard('+2348177000043');
-    await withBusiness(db, businessId, (tx) =>
+    const { invoiceNumber } = await withBusiness(db, businessId, (tx) =>
       issueRepo.issueSale(tx, {
         businessId,
         customerId: null,
@@ -297,7 +297,8 @@ describe('the audit trail', () => {
         actor: 'system',
       }),
     );
-    await voidInvoice('INV-2026-000001', 'wrong', auth);
+    // The number the sale was given, not a literal: it is issued now, in the current Lagos year.
+    await voidInvoice(invoiceNumber, 'wrong', auth);
 
     const trail = reportsAuditResponse.parse(
       (await app.inject({ method: 'GET', url: '/v1/reports/audit', headers: auth })).json(),
