@@ -2,8 +2,9 @@
 # Read-only staging check (billing directive, 26 Oct 2026). Changes nothing and prints no secret value:
 # environment settings are reported as SET or UNSET only. Run it on the staging host from /opt/rekoda:
 #   ssh <deploy-user>@<host> 'bash -s' < scripts/staging-readonly-check.sh
-# Optional, and expected after a deploy: EXPECT_SHA=<sha> (7 to 40 hex characters, for example the
-# deploy run's commit) to compare the checkout, the served commit and the images with that commit:
+# Needed for RESULT: OK: EXPECT_SHA=<sha> (7 to 40 hex characters, for example the deploy run's
+# commit) compares the checkout, the served commit and the images with that commit. Without it the
+# script still runs as a diagnostic, but flags the missing value and ends in RESULT: ATTENTION:
 #   ssh <deploy-user>@<host> 'EXPECT_SHA=b8baf24 bash -s' < scripts/staging-readonly-check.sh
 # Every check that is not as expected is repeated under "== attention" at the end; a check that
 # could not be made reads "unknown", never as a pass. The last line is RESULT: OK (exit 0) or
