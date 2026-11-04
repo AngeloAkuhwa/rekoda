@@ -20,9 +20,29 @@ import {
   useMetaWebhookHarness,
   workerDb,
 } from './meta-webhook.fixtures.js';
-import { seedCommerceMerchant, ordersOf, runUntilFailed } from './meta-catalogue-order.fixtures.js';
+import { seedCommerceMerchant, ordersOf } from './meta-catalogue-order.fixtures.js';
 
 useMetaWebhookHarness();
+
+/** Run the queue until a job has failed with `reason`, so the test is never vacuous. */
+async function runUntilFailed(businessId: string, reason: string): Promise<number> {
+  const runner = buildRunner(workerDb, db, deps);
+  const { db: jobsDb, close: closeJobs } = createDb(urls.owner, { max: 1 });
+  try {
+    for (let pass = 0; pass < 20; pass++) {
+      const [row] = [
+        ...(await jobsDb.execute<{ n: number }>(sql`
+            SELECT count(*)::int AS n FROM jobs WHERE business_id = ${businessId}::uuid
+               AND last_error LIKE ${`%${reason}%`}`)),
+      ];
+      if (Number(row?.n) > 0) return Number(row?.n);
+      await runner.runOnce();
+    }
+    return 0;
+  } finally {
+    await closeJobs();
+  }
+}
 
 describe('a catalogue cart becomes an order (spec §3.2; W3, PR-087)', () => {
   it('prices the cart off the merchant’s own rows, never off the message', async () => {

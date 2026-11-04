@@ -6,7 +6,7 @@
  * webhook.fixtures.ts.
  */
 import { describe, expect, it } from 'vitest';
-import { createDb, events, jobsRepo, stockRepo, withBusiness, sql } from '@rekoda/db';
+import { createDb, events, jobsRepo, stockRepo, withBusiness, sql, type Db } from '@rekoda/db';
 import { replies } from '@rekoda/core';
 import { buildRunner } from '../jobs/jobs.module.js';
 import {
@@ -32,7 +32,6 @@ import {
   states,
   footprint,
   used,
-  runRetriesNow,
   previewFlags,
   lastWamid,
   receipt,
@@ -41,6 +40,11 @@ import {
 } from './meta-preview-expiry.fixtures.js';
 
 useMetaWebhookHarness();
+
+/** Make every job still waiting for this business due now. */
+const runRetriesNow = (owner: Db, businessId: string) =>
+  owner.execute(sql`
+      UPDATE jobs SET run_at = now() WHERE business_id = ${businessId}::uuid AND state <> 'done'`);
 
 /**
  * A preview has a time limit (G-23, migration 0153).

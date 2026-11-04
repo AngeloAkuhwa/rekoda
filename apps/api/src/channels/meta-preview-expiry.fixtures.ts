@@ -2,7 +2,7 @@
  * Shared helpers for the meta-preview-expiry suites, split from meta.integration.test.ts.
  * The helpers that hold state or write the plan stay in each suite.
  */
-import { createDb, identity, usageRepo, withBusiness, sql, type Db } from '@rekoda/db';
+import { identity, usageRepo, withBusiness, sql } from '@rekoda/db';
 import { replies, usagePeriod } from '@rekoda/core';
 import { buildRunner } from '../jobs/jobs.module.js';
 import {
@@ -13,7 +13,6 @@ import {
   statusPayload,
   stubSender,
   stubTransport,
-  urls,
   workerDb,
 } from './meta-webhook.fixtures.js';
 import type { InjectedResponse } from './meta-webhook.fixtures.js';
@@ -124,45 +123,6 @@ export async function used(businessId: string) {
     orders: rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0,
   };
 }
-
-/**
- * Attempt 1 of the next "yes" meters, claims, then fails issuing (a
- * fail-once trigger on invoices): the job rolls back and is retried later,
- * so other messages can be handled before it. Test-scoped, on the owner.
- */
-export async function withFirstInvoiceFailing(run: (owner: Db) => Promise<void>) {
-  const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
-  try {
-    await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g23_once`);
-    await ownerDb.execute(sql`
-        CREATE OR REPLACE FUNCTION g23_fail_once() RETURNS trigger
-          SECURITY DEFINER AS $$
-        BEGIN
-          IF nextval('g23_once') = 1 THEN RAISE EXCEPTION 'g23: first attempt fails'; END IF;
-          RETURN NEW;
-        END $$ LANGUAGE plpgsql`);
-    await ownerDb.execute(sql`
-        CREATE TRIGGER g23_fail_once BEFORE INSERT ON invoices
-          FOR EACH ROW EXECUTE FUNCTION g23_fail_once()`);
-    await run(ownerDb);
-  } finally {
-    await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g23_fail_once ON invoices`);
-    await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g23_fail_once()`);
-    await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g23_once`);
-    await close();
-  }
-}
-
-/** Push every job still waiting for this business an hour out. */
-export const holdRetries = (owner: Db, businessId: string) =>
-  owner.execute(sql`
-      UPDATE jobs SET run_at = now() + interval '1 hour'
-       WHERE business_id = ${businessId}::uuid AND state <> 'done'`);
-
-/** Make every job still waiting for this business due now. */
-export const runRetriesNow = (owner: Db, businessId: string) =>
-  owner.execute(sql`
-      UPDATE jobs SET run_at = now() WHERE business_id = ${businessId}::uuid AND state <> 'done'`);
 
 /* G-20: WhatsApp ACCEPTING a preview is not the merchant receiving it. A
  * delivery that fails after acceptance comes back as a `failed` status

@@ -6,7 +6,7 @@
  * webhook.fixtures.ts.
  */
 import { describe, expect, it } from 'vitest';
-import { createDb, catalogueRepo, stockRepo, withBusiness, sql } from '@rekoda/db';
+import { createDb, catalogueRepo, stockRepo, withBusiness, sql, type Db } from '@rekoda/db';
 import { replies } from '@rekoda/core';
 import { buildRunner } from '../jobs/jobs.module.js';
 import { customersRepo, reportsRepo } from '@rekoda/db';
@@ -33,12 +33,48 @@ import {
   states,
   footprint,
   used,
-  withFirstInvoiceFailing,
-  holdRetries,
-  runRetriesNow,
 } from './meta-preview-expiry.fixtures.js';
 
 useMetaWebhookHarness();
+
+/**
+ * Attempt 1 of the next "yes" meters, claims, then fails issuing (a
+ * fail-once trigger on invoices): the job rolls back and is retried later,
+ * so other messages can be handled before it. Test-scoped, on the owner.
+ */
+async function withFirstInvoiceFailing(run: (owner: Db) => Promise<void>) {
+  const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+  try {
+    await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g23_once`);
+    await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g23_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF nextval('g23_once') = 1 THEN RAISE EXCEPTION 'g23: first attempt fails'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+    await ownerDb.execute(sql`
+        CREATE TRIGGER g23_fail_once BEFORE INSERT ON invoices
+          FOR EACH ROW EXECUTE FUNCTION g23_fail_once()`);
+    await run(ownerDb);
+  } finally {
+    await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g23_fail_once ON invoices`);
+    await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g23_fail_once()`);
+    await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g23_once`);
+    await close();
+  }
+}
+
+/** Push every job still waiting for this business an hour out. */
+const holdRetries = (owner: Db, businessId: string) =>
+  owner.execute(sql`
+      UPDATE jobs SET run_at = now() + interval '1 hour'
+       WHERE business_id = ${businessId}::uuid AND state <> 'done'`);
+
+/** Make every job still waiting for this business due now. */
+const runRetriesNow = (owner: Db, businessId: string) =>
+  owner.execute(sql`
+      UPDATE jobs SET run_at = now() WHERE business_id = ${businessId}::uuid AND state <> 'done'`);
 
 /**
  * A preview has a time limit (G-23, migration 0153).
