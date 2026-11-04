@@ -123,23 +123,25 @@ a user or password in it, remove it before sharing and report it as a defect in 
 | `REKODA_PAYSTACK_PLATFORM_CONFIRMED`                     | `UNSET` (OWN-70)                                                                                             | Unset it; a test key does not need it                                                                                                                                                                         |
 | `WORKER_DATABASE_URL`                                    | `SET`                                                                                                        | The worker cannot claim jobs: payments are not applied and reminders are not sent. (`REKODA_WORKER` is set per service by the compose file, `0` on the api and `1` on the worker, so `.env` does not show it) |
 | `REKODA_WEB_URL`                                         | `SET (https://staging.myrekoda.com)`                                                                         | Paystack cannot send the merchant back, and email links break                                                                                                                                                 |
-| `REKODA_EMAIL_PROVIDER`, `RESEND_*`, `REKODA_EMAIL_FROM` | Resend set up, or the approved mock (owner's choice)                                                         | Billing-email steps cannot be walked                                                                                                                                                                          |
+| `REKODA_EMAIL_PROVIDER`, `RESEND_*`, `REKODA_EMAIL_FROM` | `SET (resend)` with the Resend values `SET`                                                                  | Billing-email steps cannot be walked. The `mock` provider is not an option: staging runs `NODE_ENV=production`, which refuses it at boot                                                                      |
 | `META_*_TEMPLATE`                                        | `SET` for every slot the journey uses (an unused slot reads `UNSET` under attention; that alone is expected) | That message is held, not sent. SET means configured, not approved by Meta: check approval in WhatsApp Manager                                                                                                |
 | `REKODA_CUSTOMER_REMINDERS (api)` / `(worker)`           | `OFF` until §4 step 4, then `ON (1)` in both                                                                 | `INVALID` means the process refuses to boot with that value                                                                                                                                                   |
 
 ## 3. Staging prerequisites still outstanding (4 Nov 2026)
 
-| Prerequisite                                                                                                   | Needed by                                   | Who          | Evidence                                                                |
-| -------------------------------------------------------------------------------------------------------------- | ------------------------------------------- | ------------ | ----------------------------------------------------------------------- |
-| The read-only check output, with no unexpected attention lines                                                 | everything below                            | Operator     | The pasted output (§2)                                                  |
-| Paystack TEST key and the test-mode webhook URL                                                                | walkthrough 6–12, 15, 18; A5 4, 5, 7, 8, 10 | Owner        | Check reads `SET (TEST-KEY)`; one test charge reaches Paid exactly once |
-| `REKODA_PAYSTACK_PLATFORM_CONFIRMED` left UNSET                                                                | the same steps                              | Owner        | Check reads `UNSET`                                                     |
-| `REKODA_ANNUAL_BILLING=1`                                                                                      | walkthrough 4, 14; A5 5                     | Owner        | Check reads `SET (1)`                                                   |
-| Resend sending domain, or the approved mock                                                                    | walkthrough 7; A5 6, 11, 13                 | Owner        | One confirmation email delivered to an inbox the tester controls        |
-| Meta test number, and a test phone that messaged it within 24 hours                                            | A5 3, 11, 13, 14, 16                        | Owner        | One delivered in-window message, with its message id                    |
-| Template approval for each slot in use (`META_BILLING_TEMPLATE` for grace, `META_TRIAL_TEMPLATE` per OD-41(b)) | walkthrough 17, 19; A5 3, 9, 10             | Owner + Meta | Status APPROVED in WhatsApp Manager, with the name and locale recorded  |
-| Payment instructions saved in Settings by the owner                                                            | A5 15                                       | Owner        | A reminder showing account, balance and invoice reference               |
-| `REKODA_CUSTOMER_REMINDERS=1` on staging only, set at §4 step 4                                                | A5 11–17                                    | Owner        | Check reads `ON (1)` in api and worker                                  |
+| Prerequisite                                                                                                                             | Needed by                                   | Who          | Evidence                                                                |
+| ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- | ------------ | ----------------------------------------------------------------------- |
+| The read-only check output, with no unexpected attention lines                                                                           | everything below                            | Operator     | The pasted output (§2)                                                  |
+| WhatsApp sign-in on the Meta test number: `META_ACCESS_TOKEN` and an approved `META_OTP_TEMPLATE`, and tester phones that can receive it | walkthrough 1, 20, 21; A5 1                 | Owner        | A code received on a tester phone                                       |
+| Five or six test businesses, each signed up with its own tester phone (walkthrough 20–21)                                                | walkthrough 20, 21                          | Tester       | The businesses listed by name and phone in the result notes             |
+| Paystack TEST key and the test-mode webhook URL                                                                                          | walkthrough 6–12, 15, 18; A5 4, 5, 7, 8, 10 | Owner        | Check reads `SET (TEST-KEY)`; one test charge reaches Paid exactly once |
+| `REKODA_PAYSTACK_PLATFORM_CONFIRMED` left UNSET                                                                                          | the same steps                              | Owner        | Check reads `UNSET`                                                     |
+| `REKODA_ANNUAL_BILLING=1`                                                                                                                | walkthrough 4, 14; A5 5                     | Owner        | Check reads `SET (1)`                                                   |
+| Resend with a verified sending domain (`runbooks/email-setup.md`); emails only to inboxes the tester controls                            | walkthrough 7, 20, 21; A5 6, 11, 13         | Owner        | One confirmation email delivered to a tester inbox                      |
+| Meta test number, and a test phone that messaged it within 24 hours                                                                      | A5 3, 11, 13, 14, 16                        | Owner        | One delivered in-window message, with its message id                    |
+| Template approval for each slot in use (`META_BILLING_TEMPLATE` for grace, `META_TRIAL_TEMPLATE` per OD-41(b))                           | walkthrough 17, 19; A5 3, 9, 10             | Owner + Meta | Status APPROVED in WhatsApp Manager, with the name and locale recorded  |
+| Payment instructions saved in Settings by the owner                                                                                      | A5 15                                       | Owner        | A reminder showing account, balance and invoice reference               |
+| `REKODA_CUSTOMER_REMINDERS=1` on staging only, set at §4 step 4                                                                          | A5 11–17                                    | Owner        | Check reads `ON (1)` in api and worker                                  |
 
 ## 4. Order
 
@@ -148,22 +150,54 @@ a user or password in it, remove it before sharing and report it as a defect in 
 2. **Owner decisions** that the journeys need (§5).
 3. **SUB-ACC.** Run `runbooks/billing-staging-walkthrough.md` steps 1–23 on desktop and mobile, and
    fill its §4 result table with the date, tester and notes for each step.
-   - Steps 17 and 22 need an operator to move a test business's dates on staging. That is test data
-     only, never a production row.
+   - Steps 17, 19 and 22 need an operator to move a test business's dates or to make a send fail.
+     **No procedure exists for that yet** (no ops endpoint, no runbook); do not improvise SQL or host
+     changes. Until engineering writes a staging-only procedure, or the owner rules these steps
+     automated-evidence-only (walkthrough §5 lists their tests), record them as BLOCKED, not FAIL.
+   - While `META_BILLING_TEMPLATE` is not approved, steps 17 and 19 show the grace reminders held, not
+     sent. Record that as the observed result.
 4. **Switch reminders on.** The owner sets `REKODA_CUSTOMER_REMINDERS=1` in staging's `.env` and recreates the
    api and worker so they read it (`runbooks/deploy.md`: `dc up -d --wait`). Then re-run the check:
    both containers must read `ON (1)`.
-5. **ACCEPT-01.** Run the 17 A5 journeys (`REKODA_MVP_DELIVERY_PLAN.md` §A5). Journeys 1–10 reuse
-   SUB-ACC's evidence where it covers them; 11–17 are the reminder journeys. Record for each:
+5. **ACCEPT-01.** Run the 17 A5 journeys (`REKODA_MVP_DELIVERY_PLAN.md` §A5) with the plan in §4a,
+   and fill its result table. Record for each:
    - environment;
    - deployed commit;
    - migration status (the check's ledger lines);
    - the case;
    - expected result;
    - actual result;
-   - PASS or FAIL.
+   - a safe payment or provider reference where one exists (never a key or a card number);
+   - known limitations;
+   - PASS, FAIL or BLOCKED (with the reason).
 6. **Record the results** in the ledger rows SUB-ACC and ACCEPT-01. A journey is PASS only with that
    evidence. A green CI run or deploy is not a pass.
+
+## 4a. ACCEPT-01 plan and result table
+
+Test data for every reminder journey (11–17): test customers whose only contacts are a tester's own
+phone and inbox. Never a real customer. The customer's phone must have messaged the Meta test number
+within 24 hours, or the WhatsApp reminder is refused (`window_closed_no_template`).
+
+| #   | Journey                               | How                                                                                                                                                                    | Expected                                                                                   | Result (date, commit, migrations, reference, PASS/FAIL/BLOCKED) |
+| --- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------- |
+| 1   | A new customer starts a trial         | Walkthrough 1–2                                                                                                                                                        | Sign-up by WhatsApp code; "Free trial" with 14 days in words                               |                                                                 |
+| 2   | Trial state and expiry                | Walkthrough 2 and 22                                                                                                                                                   | Days left correct; after expiry "Your free trial ended on …", records readable             | BLOCKED until the date-move procedure exists (§4 step 3)        |
+| 3   | Trial communication                   | After OD-41(b): a trial business reaching 7, 2 and 1 days left                                                                                                         | One reminder per stage through the named template; none twice                              | BLOCKED on OD-41(b) and the date-move procedure                 |
+| 4   | Monthly purchase                      | Walkthrough 5–10                                                                                                                                                       | Paid once, plan active until the named date, history row Paid                              |                                                                 |
+| 5   | Annual purchase                       | From a fresh trial: choose Yearly, a plan, "Confirm and pay", pay with a Paystack TEST card                                                                            | Ten months' price charged once; plan active for twelve months; history row Paid            |                                                                 |
+| 6   | Billing email captured                | Walkthrough 6–7 (and 20–21 for the per-address limit)                                                                                                                  | Address saved; with Resend, one confirmation email in the tester inbox                     |                                                                 |
+| 7   | Payment verified server-side          | Walkthrough 8–10; then the owner confirms in the Paystack test dashboard that the reference is the one the history row shows                                           | "Payment received" only after verification; the same reference on both sides               |                                                                 |
+| 8   | Entitlement activated once            | Walkthrough 10–11 and 15                                                                                                                                               | A resent webhook changes nothing; a pack's units appear once                               |                                                                 |
+| 9   | Trial reminders stop after paying     | A trial business pays before its next reminder stage                                                                                                                   | No trial reminder after the payment                                                        | BLOCKED on OD-41(b) and the date-move procedure                 |
+| 10  | Renewal, grace and expiry             | Walkthrough 17–18 and 22; a renewal paid before expiry (an operator moves the paid-to date near, then the merchant pays)                                               | Renewal paid: period extended, no grace. Unpaid: 7-day grace, then read-only, records kept | BLOCKED until the date-move procedure exists                    |
+| 11  | An eligible invoice gets a reminder   | The merchant issues an unpaid invoice to a test customer and sends a reminder (Reminders screen)                                                                       | One reminder on WhatsApp (in the 24-hour window) and/or email; the history shows it sent   |                                                                 |
+| 12  | Payment before dispatch suppresses it | Schedule a reminder; before it is due, the merchant records the payment by hand (a merchant cannot connect a Paystack TEST key on staging: production mode refuses it) | The scheduled reminder is not sent; the history shows why                                  |                                                                 |
+| 13  | STOP and unsubscribe                  | The test customer's phone sends STOP to the Meta test number; the tester inbox uses the email's unsubscribe link                                                       | WhatsApp stops only WhatsApp, email stops only email, for that merchant (OWN-69)           |                                                                 |
+| 14  | Queued reminders respect opt-out      | Schedule a reminder, then opt the customer out (13) before it is due                                                                                                   | The queued reminder is not sent                                                            |                                                                 |
+| 15  | Payment instructions render           | The owner saves payment instructions in Settings; send a reminder (11)                                                                                                 | The reminder shows the account, the balance and the invoice reference                      |                                                                 |
+| 16  | Scheduled and bulk reminders          | With two or three test customers: a scheduled reminder, then a bulk send, each previewed and confirmed; cancel one                                                     | Each sent once at its time; the cancelled one not sent; per-recipient status shown         |                                                                 |
+| 17  | Duplicate jobs and retries are safe   | Resend one billing webhook from the Paystack test dashboard (as walkthrough 11)                                                                                        | Nothing changes; worker-level duplicates and retries are covered by automated tests only   | Partly BLOCKED: no staging procedure forces a job retry         |
 
 ## 5. Owner decisions before the affected journeys
 

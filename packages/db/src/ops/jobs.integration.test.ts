@@ -227,6 +227,26 @@ describe('a worker that dies mid-job', () => {
     expect(reclaimed?.attempts).toBe(2);
   });
 
+  it('sends a job that has spent its last attempt killing its worker to dead, not back to the queue', async () => {
+    /* A handler that crashes its process every time (an OOM, a segfault) never reaches
+     * markFailed, so only the reclaim can stop it. Without this it is reclaimed every five
+     * minutes for ever, repeating any provider call it made before dying. */
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    await enqueue(businessId, { maxAttempts: 2 });
+    for (const worker of ['worker-1', 'worker-2']) {
+      const job = await jobsRepo.claimNext(workerDb, worker);
+      expect(job?.attempts).toBeLessThanOrEqual(2);
+      await workerDb.execute(
+        sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
+      );
+      expect(await jobsRepo.reclaimStalled(workerDb, 300_000)).toBe(1);
+    }
+    const rows = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ state: 'dead', attempts: 2 });
+    expect(await jobsRepo.claimNext(workerDb, 'worker-3')).toBeNull();
+  });
+
   it('does not reclaim a job whose worker is still alive', async () => {
     const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
     await enqueue(businessId);

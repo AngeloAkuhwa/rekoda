@@ -61,14 +61,20 @@ Use a phone you control. On mobile and on a laptop-sized window.
 
 - A receipt or invoice document for your Rekoda subscription payment (Paystack emails its own receipt;
   the tax treatment of Rekoda's own subscription needs the owner's legal review).
-- Trial reminders on days 7, 11 to 12, 13 and 14, and a reminder before renewal (they need approved
-  Meta templates).
+- A Day 0 welcome or a trial-ended message, and a reminder before renewal. Trial reminders at 7, 2 and
+  1 days left are built (REM-01, OWN-56) but send only through an approved `META_TRIAL_TEMPLATE`
+  (OD-41(b)).
 - A screen for staff to refund a subscription payment (refunds are done by an operator by hand).
 
 ## 4. Result table (fill in on staging)
 
-| #   | Date | Tester | Desktop | Mobile | Notes |
-| --- | ---- | ------ | ------- | ------ | ----- |
+Record every step with the deployed commit and the read-only check's migration lines from that day
+(`runbooks/staging-acceptance-handoff.md`). A payment reference is safe to record; a key or card number
+never is. A step that needs an operator date move or a forced failure (17, 19, 22) is BLOCKED until a
+staging-only procedure exists; do not improvise one.
+
+| #   | Date | Tester | Commit | Migrations | Expected | Actual | Reference | Desktop | Mobile | PASS / FAIL / BLOCKED | Notes |
+| --- | ---- | ------ | ------ | ---------- | -------- | ------ | --------- | ------- | ------ | --------------------- | ----- |
 
 ## 5. Automated evidence per step (status as of 2 Nov 2026; browser evidence for steps 15 to 18 updated 4 Nov 2026)
 

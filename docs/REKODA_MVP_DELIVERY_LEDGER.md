@@ -221,7 +221,7 @@ here is LIVE PROVIDER VERIFIED or PRODUCTION READY. Launch verdict: NOT READY
 - Needs a person with staging access (this autopilot has none: proxy 403): host health and served
   SHA; `scripts/staging-readonly-check.sh` (template slots SET/UNSET, migrations); Paystack test-mode
   keys; Meta test number with a customer who has messaged in the last 24 hours; a Resend sending
-  domain or the mock provider; `REKODA_CUSTOMER_REMINDERS=1` on staging only; the owner's approved
+  domain (not the mock provider, which staging's NODE_ENV=production refuses at boot); `REKODA_CUSTOMER_REMINDERS=1` on staging only; the owner's approved
   payment instruction and public phone.
 - Journeys to run: the 17 in plan §A5, each recorded with environment, deployed SHA, migration status,
   case, expected, actual, pass or fail.
