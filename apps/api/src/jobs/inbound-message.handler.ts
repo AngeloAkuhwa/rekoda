@@ -253,6 +253,15 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * it names reads 'undelivered' (REM-01). */
     const reconciled = await conversationsRepo.reconcileDeadReceipts(tx, businessId);
     if (reconciled > 0) log.warn(`applied ${reconciled} failed receipt(s) from dead jobs`);
+    /* An earlier inbound message whose job died was never processed (owner ruling, 4 Nov 2026):
+     * every draft pending then is retired here, under the lock and before any "yes" is read, so
+     * a lost "cancel" can never be overtaken by a later "yes". Counts only, never content. */
+    const lost = await conversationsRepo.reconcileDeadInboundMessages(tx, businessId);
+    if (lost.messages > 0) {
+      log.warn(
+        `retired ${lost.drafts} draft(s) behind ${lost.messages} inbound message(s) whose job died`,
+      );
+    }
 
     const event = await events.eventForBusiness(tx, eventId, businessId);
     if (!event) {
@@ -1591,6 +1600,10 @@ async function deterministicReply(
       const lapsed = expiredAnswer(latest.command, latest.previewed, 'no');
       if (lapsed) return lapsed;
     }
+    /* The request this "no" is about was withdrawn because an earlier message was lost. */
+    if (latest?.retiredReason === conversationsRepo.INBOUND_MESSAGE_FAILED) {
+      return replies.earlierMessageLostNo();
+    }
     const closedQuestion =
       latest?.state === 'abandoned'
         ? await conversationsRepo.closeRetiredDraft(tx, businessId, latest.id)
@@ -2345,6 +2358,15 @@ async function confirmPendingDraft(
   /* The last thing the merchant was shown expired (G-23): this "yes" is
    * about it. Say so, and never fall through to an older preview behind it,
    * which the merchant is not looking at. Nothing is metered or claimed. */
+  /* The last thing the merchant was shown was withdrawn because an earlier message of theirs
+   * was never processed (owner ruling, 4 Nov 2026): this "yes" is about it. Nothing is claimed
+   * or metered, nothing older is reached behind it, and the merchant is told to send it again. */
+  if (latest?.retiredReason === conversationsRepo.INBOUND_MESSAGE_FAILED) {
+    if (retrying) {
+      await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
+    }
+    return replies.earlierMessageLostYes();
+  }
   if (latest?.state === 'expired') {
     /* A retry, its "yes" sent inside the window but overtaken by a later
      * message that closed it: nothing executes, and exactly the units an

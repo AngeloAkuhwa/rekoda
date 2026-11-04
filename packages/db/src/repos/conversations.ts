@@ -897,6 +897,67 @@ export async function reconcileDeadReceipts(tx: TenantDb, businessId: string): P
   return applied;
 }
 
+/** Why `reconcileDeadInboundMessages` retired a draft (migration 0190). */
+export const INBOUND_MESSAGE_FAILED = 'inbound_message_failed';
+
+/**
+ * An inbound message whose job is dead was never processed (owner ruling, 4 Nov 2026, PR #428):
+ * whether its handler failed on every attempt (`markFailed`) or its worker stopped answering on
+ * every attempt (`reclaimStalled`), nothing will ever run it again. It may have been the
+ * merchant's "cancel" or a correction, so a draft that was pending then must never be confirmed
+ * by a later "yes". Called under the business's inbound lock before any answer is read, this
+ * retires every draft still pending that was created before the job went dead, as `superseded`
+ * with reason `inbound_message_failed`, so the next "yes" or "no" can tell the merchant to send
+ * it again. Inbound jobs for a business run in order, so every such draft was waiting when the
+ * lost message's turn came; a draft written after the death is a later message's, and stays.
+ *
+ * Each dead message is applied exactly once: its event is then marked processed, which is also
+ * what takes it out of the next call, as `reconcileDeadReceipts` does for receipts. The event's
+ * error is fixed text; nothing of the job's error or the message is copied anywhere.
+ */
+export async function reconcileDeadInboundMessages(
+  tx: TenantDb,
+  businessId: string,
+): Promise<{ messages: number; drafts: number }> {
+  const dead = await tx.execute<{ event_id: string }>(sql`
+    SELECT e.id AS event_id
+      FROM jobs j
+      JOIN external_events e ON e.id = CASE
+             WHEN j.payload->>'eventId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+             THEN (j.payload->>'eventId')::uuid END
+     WHERE j.business_id = ${businessId}::uuid
+       AND j.kind = 'inbound.message'
+       AND j.state = 'dead'
+       AND e.business_id = ${businessId}::uuid
+       AND e.processed_at IS NULL
+     ORDER BY j.updated_at, j.id`);
+  let messages = 0;
+  let drafts = 0;
+  for (const message of [...dead]) {
+    const retired = await tx.execute<{ id: string }>(sql`
+      UPDATE command_drafts d
+         SET state = 'superseded', retired_reason = ${INBOUND_MESSAGE_FAILED},
+             updated_at = clock_timestamp()
+        FROM jobs j
+       WHERE d.business_id = ${businessId}::uuid
+         AND d.state = 'pending'
+         AND j.business_id = ${businessId}::uuid
+         AND j.kind = 'inbound.message'
+         AND j.state = 'dead'
+         AND j.payload->>'eventId' = ${message.event_id}
+         AND d.created_at <= j.updated_at
+      RETURNING d.id`);
+    drafts += [...retired].length;
+    await tx.execute(sql`
+      UPDATE external_events SET processed_at = now(),
+             error = 'not processed: its job died; drafts pending then were retired'
+       WHERE id = ${message.event_id}::uuid AND business_id = ${businessId}::uuid
+         AND processed_at IS NULL`);
+    messages += 1;
+  }
+  return { messages, drafts };
+}
+
 /**
  * Close every confirmation window that has lapsed for this business (G-23).
  *
@@ -1089,6 +1150,8 @@ export interface LatestDraft {
   requestedBy: string | null;
   /** When its state last changed. */
   updatedAt: Date;
+  /** Why it was retired other than by the merchant's own answer (0170, 0190), or null. */
+  retiredReason: string | null;
 }
 
 async function newestDraft(
@@ -1105,6 +1168,7 @@ async function newestDraft(
       previewed: commandDrafts.previewed,
       requestedBy: commandDrafts.requestedBy,
       updatedAt: commandDrafts.updatedAt,
+      retiredReason: commandDrafts.retiredReason,
     })
     .from(commandDrafts)
     .where(

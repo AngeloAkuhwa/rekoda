@@ -686,6 +686,27 @@ export function draftExpired(): Reply {
 }
 
 /**
+ * A "yes" after an earlier message of the merchant's could not be processed (owner ruling,
+ * 4 Nov 2026): the request that was waiting for it was withdrawn, because the lost message may
+ * have changed or cancelled it. Nothing was saved; the merchant records it again (never "send it
+ * again", which the router reads as the resend command, G-86).
+ */
+export function earlierMessageLostYes(): Reply {
+  return reply(
+    'I could not read one of your earlier messages, so I did not save the request that was ' +
+      'waiting for your yes. Record it again and I will show you a fresh preview.',
+  );
+}
+
+/** The same for a "no": the waiting request is already withdrawn, so nothing is cancelled. */
+export function earlierMessageLostNo(): Reply {
+  return reply(
+    'I could not read one of your earlier messages, so the request that was waiting was not ' +
+      'saved. If you still want it, record it again.',
+  );
+}
+
+/**
  * A "yes" that reached Rekoda before the preview now waiting for it was
  * written (G-23). It cannot be the merchant's agreement to that preview, so
  * nothing is saved; but a preview IS waiting, so "nothing is waiting" would be
