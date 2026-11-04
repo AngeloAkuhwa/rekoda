@@ -137,7 +137,14 @@ feature-to-test index is `docs/TEST_MAP.md`.
   thing under test proves nothing. A browser journey is e2e.
 - **Where.** Beside the code, in the feature's folder. In `packages/db` the
   folder is the feature (`billing/`, `ledger/`, `tenancy/` ...), not `src/`
-  itself. Never create a top-level `tests/` tree.
+  itself. In `apps/api` the same holds: `src/` itself holds the process entry
+  points and config, and a test goes in the folder it tests (`http/`,
+  `billing/` ...). `config.ts` stays at `src/` because many files import it;
+  its tests live in `src/config/`. The only tests allowed directly in
+  `apps/api/src/` are the ones `API_ROOT_TESTS` in
+  `scripts/check-test-layout.mjs` names, each with its reason (today the
+  `edge-check` pair, whose modules stay at the root under owner ruling D2); the
+  check fails on any other. Never create a top-level `tests/` tree.
 - **Name.** `<feature>-<concern>`, for example `billing/plan-change`. A suffix
   other than the three above is rejected.
 - **Size.** Split a test file at about 600 lines, by concern. The check fails
