@@ -317,21 +317,13 @@ test('a cancelled plan can be kept before it ends, and a cancellation left to ru
   // what is under test; billing.integration.test.ts runs the sweep's cancelled branch.
   await cancel();
   expect(await pendingOf()).toBe('expired');
-  await sql.begin(async (tx) => {
-    await tx`UPDATE subscription_charges
-             SET period_start = period_start - interval '32 days',
-                 period_end = period_end - interval '32 days',
-                 applied_period_start = applied_period_start - interval '32 days',
-                 applied_period_end = applied_period_end - interval '32 days',
-                 created_at = created_at - interval '32 days',
-                 paid_at = paid_at - interval '32 days'
-             WHERE business_id = ${businessId}::uuid`;
-    await tx`UPDATE businesses
-             SET plan = 'expired', pending_plan = NULL, plan_decided_at = clock_timestamp(),
-                 plan_expires_at = plan_expires_at - interval '32 days',
-                 cycle_started_at = cycle_started_at - interval '32 days'
-             WHERE id = ${businessId}::uuid AND pending_plan = 'expired'`;
-  });
+  // Only the plan columns move. The settled payment row is left exactly as it was: a paid charge
+  // is a record of money received, and a stopped plan never rewrites it.
+  await sql`UPDATE businesses
+            SET plan = 'expired', pending_plan = NULL, plan_decided_at = clock_timestamp(),
+                plan_expires_at = plan_expires_at - interval '32 days',
+                cycle_started_at = cycle_started_at - interval '32 days'
+            WHERE id = ${businessId}::uuid AND pending_plan = 'expired'`;
 
   const [ended] = await sql<{ ends: Date }[]>`
     SELECT plan_expires_at AS ends FROM businesses WHERE id = ${businessId}::uuid`;
