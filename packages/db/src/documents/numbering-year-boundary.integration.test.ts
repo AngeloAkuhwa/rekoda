@@ -4,9 +4,11 @@
  * A document is numbered with the Lagos year of the instant it is issued (`lagosYear` in
  * @rekoda/core): Lagos is UTC+1 all year, so 23:00 UTC on 31 December is already the new year.
  * The pure rule is pinned in packages/core/src/reconciliation.test.ts and the order writer in
- * packages/db/src/stock/orders.integration.test.ts. This proves that each writer that takes an
- * issue instant passes it through: one millisecond before the boundary is the old year, the
- * boundary itself is the new one, and the new year's counter starts again at one.
+ * packages/db/src/stock/orders.integration.test.ts. This proves that the invoice, receipt,
+ * credit-note and journal writers pass their issue instant through: one millisecond before the
+ * boundary is the old year, the boundary itself is the new one, and the new year's counter starts
+ * again at one. (The receipt for a verified payment, settle.ts, takes `bookedAt` the same way and
+ * is not pinned here; quote, purchase order and bill take the clock and cannot be.)
  *
  * The instants are passed in. No clock is faked or moved: the database and the test process both
  * keep the real date, and the year comes only from the instant each writer was given.

@@ -52,19 +52,10 @@ describe("the plan's own example, end to end", () => {
   };
 
   /**
-   * Post a message and DRAIN the queue, which is what a real worker does.
-   *
-   * A single `runOnce()` was enough until issuing began enqueuing a render
-   * job: the runner takes the oldest due job, so the render would be claimed
-   * ahead of the next inbound message and the conversation would silently stop
-   * advancing. The test failed in exactly that way, which is the right way for
-   * it to fail.
-   */
-  /**
    * The numbers the books gave this business's one sale, read back rather than written as
    * literals. A sale confirmed now is numbered in the current Lagos year, so a literal year here
-   * would fail from 1 January 2027 with nothing broken. The year itself is pinned at the Lagos boundary in
-   * packages/db/src/documents/numbering-year-boundary.integration.test.ts.
+   * would fail from 1 January 2027 with nothing broken. The year itself is pinned at the Lagos
+   * boundary in packages/db/src/documents/numbering-year-boundary.integration.test.ts.
    */
   async function issuedNumbers(
     businessId: string,
@@ -81,6 +72,15 @@ describe("the plan's own example, end to end", () => {
     return { invoice, receipt };
   }
 
+  /**
+   * Post a message and DRAIN the queue, which is what a real worker does.
+   *
+   * A single `runOnce()` was enough until issuing began enqueuing a render
+   * job: the runner takes the oldest due job, so the render would be claimed
+   * ahead of the next inbound message and the conversation would silently stop
+   * advancing. The test failed in exactly that way, which is the right way for
+   * it to fail.
+   */
   async function send(text: string, wamid: string) {
     await post(messagePayload('2348031234567', wamid, text));
     const runner = buildRunner(workerDb, db, deps);

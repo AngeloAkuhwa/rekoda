@@ -77,7 +77,8 @@ export function addedLines(diff) {
   const files = new Map();
   let current = null;
   for (const line of diff.split('\n')) {
-    const file = /^\+\+\+ b\/(.+)$/.exec(line);
+    // git ends the path with a TAB when it contains a space; quoting is switched off in main().
+    const file = /^\+\+\+ b\/(.+?)\t?$/.exec(line);
     if (file) {
       current = file[1];
       files.set(current, new Set());
@@ -114,6 +115,8 @@ function main() {
       throw new Error(`--base-ref ${ref} is not a commit this checkout has; fetch it first`);
     }
     const diff = git([
+      '-c',
+      'core.quotePath=false',
       'diff',
       '--unified=0',
       '--no-color',

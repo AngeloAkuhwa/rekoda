@@ -103,3 +103,12 @@ test('reads added line numbers from a unified=0 diff', () => {
   assert.deepEqual([...added.get('a.integration.test.ts')], [11, 12, 22]);
   assert.equal(added.has('gone.fixtures.ts'), false);
 });
+
+test('reads a path with a space, which git ends with a tab', () => {
+  const diff = [
+    '+++ b/apps/api/src/a b.integration.test.ts\t',
+    '@@ -0,0 +1 @@',
+    "+expect(a).toBe('INV-2026-000001');",
+  ].join('\n');
+  assert.deepEqual([...addedLines(diff).keys()], ['apps/api/src/a b.integration.test.ts']);
+});
