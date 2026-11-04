@@ -385,18 +385,25 @@ export async function markFailed(
  *
  * A crashed process leaves its row `running` forever, and nothing else will
  * ever touch it — the claim query only looks at `pending`. The attempt has
- * already been counted at the claim, so a job whose last attempt killed its
- * worker goes `dead` here instead of back to `pending`: a handler that crashes
- * its process every time never reaches `markFailed`, and without this it would
- * be reclaimed for ever, repeating any provider call it made before dying.
+ * already been counted at the claim. A handler that crashes its process every
+ * time never reaches `markFailed`, so without a bound here it would be
+ * reclaimed for ever, repeating any provider call it made before dying.
+ *
+ * The bound is one run past `max_attempts`: a job whose last attempt died with
+ * its worker gets exactly one more run, which sees `attempt >= maxAttempts` and
+ * takes the handler's last-attempt path (the payment-event handler turns an
+ * unread refund or dispute into a merchant exception there, never a silent dead
+ * job). Only if that run dies too does the job go `dead` here.
  */
 export async function reclaimStalled(db: Db, olderThanMs = 300_000): Promise<number> {
   const rows = await db.execute<{ id: string }>(sql`
     UPDATE jobs SET
-      state      = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'pending' END,
+      state      = CASE WHEN attempts > max_attempts THEN 'dead' ELSE 'pending' END,
       locked_at  = NULL,
       locked_by  = NULL,
-      last_error = coalesce(last_error, 'reclaimed: worker did not finish'),
+      last_error = CASE WHEN attempts > max_attempts
+                     THEN 'reclaimed: the worker died on every attempt, including the one past the last'
+                     ELSE coalesce(last_error, 'reclaimed: worker did not finish') END,
       updated_at = now()
     WHERE state = 'running'
       AND locked_at < now() - make_interval(secs => ${olderThanMs / 1000})

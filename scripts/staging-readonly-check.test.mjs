@@ -478,7 +478,14 @@ test('a broken web tier, an unhealthy or missing service, or a failed job can ne
       },
       /web image is the \.env release\s+NO/,
     ],
-    [{ logs: '{"level":50,"msg":"x"}' }, /error-level lines in api\s+1\n/],
+    [
+      { logs: '[Nest] 1  - 11/04/2026, 7:00:00 PM   \x1b[31mERROR\x1b[39m [JobRunner] job failed' },
+      /error-level lines in api\s+1\n/,
+    ],
+    [
+      { logs: '[Nest] 1  - 11/04/2026, 7:00:00 PM   FATAL [Main] boot' },
+      /error-level lines in api\s+1\n/,
+    ],
     [{ logs: 'fail' }, /error-level lines in api\s+unknown \(cannot read logs\)\n/],
   ];
   for (const [over, line] of cases) {
@@ -527,5 +534,35 @@ test('reminders on in one service and off in the other are flagged; both off or 
   } finally {
     mixed.done();
     off.done();
+  }
+});
+
+test('ordinary Nest lines at LOG or WARN level are not counted as errors', () => {
+  const h = healthy({
+    logs: '[Nest] 1  - 11/04/2026, 7:00:00 PM     LOG [Bootstrap] Rekoda API listening',
+  });
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(r.stdout, /error-level lines in api\s+0\n/);
+    assert.equal(r.status, 0, r.stdout);
+  } finally {
+    h.done();
+  }
+});
+
+test('a platform flag set to anything is flagged, and a value other than 1 says the api ignores it', () => {
+  const h = healthy({
+    env: {
+      ...SLOTS,
+      PAYSTACK_SECRET_KEY: 'sk_test_qqqqqqqqqqqqqqqq',
+      REKODA_PAYSTACK_PLATFORM_CONFIRMED: '0',
+    },
+  });
+  try {
+    const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(out, /REKODA_PAYSTACK_PLATFORM_CONFIRMED\s+SET to a value other than 1/);
+    assert.match(attention(out), /REKODA_PAYSTACK_PLATFORM_CONFIRMED/);
+  } finally {
+    h.done();
   }
 });

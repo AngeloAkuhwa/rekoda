@@ -69,9 +69,11 @@ if [ "$1" = compose ]; then
     *" ps -a "*)
       ${services === null ? 'exit 0' : `printf '%s\\n' ${services.map((l) => `'${l}'`).join(' ')}; exit 0`} ;;
     *" logs "*)
-      ${logs === 'fail' ? 'exit 1' : `printf '%s\\n' '${logs}'; exit 0`} ;;
+      # Nest writes errors to stderr, which compose passes through on its own stderr.
+      ${logs === 'fail' ? 'exit 1' : `printf '%s\\n' '${logs}' >&2; exit 0`} ;;
     *" exec -T api sh -c "*)
       # A container-side query with no -e: run it against the api fixture environment.
+      # argv: compose -f FILE exec -T api sh -c SNIPPET, so the snippet is the 9th argument.
       shift 8
       env -i ${envLine(env)} sh -c "$1"
       exit $? ;;

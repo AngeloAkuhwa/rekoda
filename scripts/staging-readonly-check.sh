@@ -212,12 +212,16 @@ if [ -n "$H_MIG" ] && [ "$n_expected" -gt 0 ]; then
   else flag "/health migrations = expected" "NO ($H_MIG served, $n_expected expected)"; fi
 fi
 
-# Counts only, never log text. Lines logged at error or fatal level (pino 50 or 60) are judged;
-# the wider count (any line mentioning ERROR, FATAL or migration) is informational, read by hand.
+# Counts only, never log text. The api and worker log through Nest's console logger
+# (`[Nest] <pid>  - <time>   ERROR [Context] …`), which writes errors to stderr and may colour
+# the level, so both streams are read and colour codes stripped. Lines at ERROR or FATAL level
+# (or a JSON logger's error/fatal) are judged; the wider count (any line mentioning ERROR, FATAL
+# or migration) is informational, read by hand.
 echo "== recent errors (last 30 minutes; counts only, no log text is printed)"
 for c in api worker; do
-  if logs="$(dc logs --since 30m "$c" 2>/dev/null)"; then
-    n="$(printf '%s\n' "$logs" | grep -cE '"level":(50|60)')"
+  if logs="$(dc logs --no-color --since 30m "$c" 2>&1)"; then
+    logs="$(printf '%s\n' "$logs" | sed 's/\x1b\[[0-9;]*m//g')"
+    n="$(printf '%s\n' "$logs" | grep -cE '\[Nest\].*[[:space:]](ERROR|FATAL)[[:space:]]|"level":("error"|"fatal"|50|60)')"
     if [ "$n" -eq 0 ]; then say "error-level lines in $c" "0"; else flag "error-level lines in $c" "$n"; fi
     say "error-like lines in $c (info)" "$(printf '%s\n' "$logs" | grep -ciE '"level":(50|60)|ERROR|FATAL|migration')"
   else flag "error-level lines in $c" "unknown (cannot read logs)"; fi
@@ -256,10 +260,11 @@ case "$r" in
   OTHER) flag "PAYSTACK_SECRET_KEY" "SET (NOT-A-TEST-KEY: unrecognised, so payments fail closed)" ;;
   *) flag "PAYSTACK_SECRET_KEY" "unknown (cannot exec into the api container)" ;;
 esac
-r="$(dc exec -T api sh -c 'if [ -n "${REKODA_PAYSTACK_PLATFORM_CONFIRMED:-}" ]; then echo SET; else echo UNSET; fi' 2>/dev/null)"
+r="$(dc exec -T api sh -c 'v="${REKODA_PAYSTACK_PLATFORM_CONFIRMED:-}"; case "$v" in "") echo UNSET ;; 1) echo SET ;; *) echo OTHER ;; esac' 2>/dev/null)"
 case "$r" in
   UNSET) say "REKODA_PAYSTACK_PLATFORM_CONFIRMED" "UNSET" ;;
   SET) flag "REKODA_PAYSTACK_PLATFORM_CONFIRMED" "SET (OWN-70: it stays UNSET on staging)" ;;
+  OTHER) flag "REKODA_PAYSTACK_PLATFORM_CONFIRMED" "SET to a value other than 1 (the api honours only 1; OWN-70: leave it UNSET)" ;;
   *) flag "REKODA_PAYSTACK_PLATFORM_CONFIRMED" "unknown (cannot exec into the api container)" ;;
 esac
 

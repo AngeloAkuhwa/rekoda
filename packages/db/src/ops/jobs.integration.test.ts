@@ -227,24 +227,34 @@ describe('a worker that dies mid-job', () => {
     expect(reclaimed?.attempts).toBe(2);
   });
 
-  it('sends a job that has spent its last attempt killing its worker to dead, not back to the queue', async () => {
+  it('gives a job whose last attempt killed its worker one more run, then sends it to dead', async () => {
     /* A handler that crashes its process every time (an OOM, a segfault) never reaches
-     * markFailed, so only the reclaim can stop it. Without this it is reclaimed every five
-     * minutes for ever, repeating any provider call it made before dying. */
+     * markFailed, so only the reclaim can stop it; without a bound it is reclaimed every five
+     * minutes for ever, repeating any provider call it made before dying. The one run past
+     * max_attempts is the handler's last-attempt path (attempt >= maxAttempts), which the
+     * payment-event handler relies on to raise a merchant exception rather than die silently. */
     const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
     await enqueue(businessId, { maxAttempts: 2 });
-    for (const worker of ['worker-1', 'worker-2']) {
+    for (const [worker, attempt] of [
+      ['worker-1', 1],
+      ['worker-2', 2],
+      ['worker-3', 3],
+    ] as const) {
       const job = await jobsRepo.claimNext(workerDb, worker);
-      expect(job?.attempts).toBeLessThanOrEqual(2);
+      expect(job?.attempts).toBe(attempt);
       await workerDb.execute(
         sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
       );
       expect(await jobsRepo.reclaimStalled(workerDb, 300_000)).toBe(1);
+      const [row] = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
+      // After the last attempt (2) the job is still runnable once more; after the run past it, dead.
+      expect(row?.state).toBe(attempt > 2 ? 'dead' : 'pending');
     }
     const rows = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ state: 'dead', attempts: 2 });
-    expect(await jobsRepo.claimNext(workerDb, 'worker-3')).toBeNull();
+    expect(rows[0]).toMatchObject({ state: 'dead', attempts: 3 });
+    expect(rows[0]?.lastError).toMatch(/died on every attempt/);
+    expect(await jobsRepo.claimNext(workerDb, 'worker-4')).toBeNull();
   });
 
   it('does not reclaim a job whose worker is still alive', async () => {
