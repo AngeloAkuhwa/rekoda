@@ -214,7 +214,11 @@ else
     if [ -z "$extra" ]; then say "applied but not in this checkout" "none"; else flag "applied but not in this checkout" "$extra"; fi
   fi
 fi
-if [ -n "$H_MIG" ] && [ "$n_expected" -gt 0 ]; then
+# /health serves a migrations count; a /health that answers without one is a check not made.
+# (No answer at all is already flagged above; zero expected migrations is flagged with the journal.)
+if [ -n "$HEALTH" ] && [ -z "$H_MIG" ]; then
+  flag "/health migrations = expected" "unknown (/health served no migrations field)"
+elif [ -n "$H_MIG" ] && [ "$n_expected" -gt 0 ]; then
   if [ "$H_MIG" = "$n_expected" ]; then say "/health migrations = expected" "yes ($H_MIG)"
   else flag "/health migrations = expected" "NO ($H_MIG served, $n_expected expected)"; fi
 fi

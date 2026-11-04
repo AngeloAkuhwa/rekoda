@@ -450,3 +450,21 @@ test('reminders set to 0 read OFF (0) and, like the default, are not flagged', (
     h.done();
   }
 });
+
+test('a /health that answers without a migrations count reads unknown, never a silent pass', () => {
+  const h = healthy({
+    health: '{"status":"ok","database":"up","release":"staging-{sha7}","commit":"{sha7}"}',
+  });
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(
+      r.stdout,
+      /\/health migrations = expected\s+unknown \(\/health served no migrations field\)\n/,
+    );
+    assert.match(attention(r.stdout), /\/health migrations = expected/);
+    assert.match(r.stdout, /RESULT: ATTENTION/);
+    assert.equal(r.status, 1, r.stdout);
+  } finally {
+    h.done();
+  }
+});
