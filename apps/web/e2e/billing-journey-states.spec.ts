@@ -140,9 +140,13 @@ async function renewalOverdue(
              VALUES (${businessId}::uuid, 'renewal', 'chat', 1, ${amountK}, 'paystack', ${renewal},
                      now() - interval '2 days', now() - interval '2 days' + ${cycle}::interval,
                      ${interval}, now() - interval '2 days')`;
+    // The cycle renews on the renewal date's Lagos day of the month, as one that really began
+    // back then would: a renewal keeps that anchor whenever it is paid.
     await tx`UPDATE businesses
              SET plan_expires_at = now() - interval '2 days',
                  payment_failed_at = now() - interval '2 days',
+                 renewal_anchor_day =
+                   extract(day FROM (now() - interval '2 days') AT TIME ZONE 'Africa/Lagos')::int,
                  cycle_started_at = cycle_started_at - (${cycle}::interval + interval '2 days'),
                  plan_decided_at = plan_decided_at - (${cycle}::interval + interval '2 days')
              WHERE id = ${businessId}::uuid`;
@@ -300,12 +304,14 @@ test('a merchant in grace pays the renewal from the billing page, and the plan r
   // two days late does not move the anchor, and it gives no extra days either.
   const after = await subscriptionOf(businessId);
   expect(after).toMatchObject({ plan: 'chat', failed: null, interval: 'monthly' });
-  expect(after.ends.getTime()).toBe(due!.end.getTime());
+  expect(lagosDate(after.ends)).toBe(lagosDate(due!.end));
 
   await page.goto('/app/billing');
   await expect(page.getByText(/renewal is due/)).toHaveCount(0);
   await expect(page.getByText(/Grace period ends/)).toHaveCount(0);
-  await expect(page.getByText(`Renews on ${lagosDate(after.ends)}.`, { exact: true })).toBeVisible();
+  await expect(
+    page.getByText(`Renews on ${lagosDate(after.ends)}.`, { exact: true }),
+  ).toBeVisible();
   await expect(page.locator('#pay')).toHaveCount(0);
   await expect(row(page, renewal)).toContainText('Renewal · Rekoda Chat');
   await expect(row(page, renewal).getByRole('cell', { name: 'Paid' })).toBeVisible();
@@ -334,15 +340,18 @@ test('a yearly subscriber whose year has ended pays the yearly renewal, and the 
 
   const after = await subscriptionOf(businessId);
   expect(after).toMatchObject({ plan: 'chat', failed: null, interval: 'annual' });
-  expect(after.ends.getTime()).toBe(due!.end.getTime());
+  // A year from the renewal date, not from the day it was paid.
+  expect(lagosDate(after.ends)).toBe(lagosDate(due!.end));
   const daysAhead = (after.ends.getTime() - Date.now()) / 86_400_000;
   expect(daysAhead).toBeGreaterThan(360);
-  expect(daysAhead).toBeLessThan(366);
+  expect(daysAhead).toBeLessThan(365);
 
   await page.goto('/app/billing');
   await expect(page.locator('.rk-plan-current')).toHaveText('Rekoda Chat · ₦99,000 a year');
   await expect(page.getByText(/renewal is due/)).toHaveCount(0);
-  await expect(page.getByText(`Renews on ${lagosDate(after.ends)}.`, { exact: true })).toBeVisible();
+  await expect(
+    page.getByText(`Renews on ${lagosDate(after.ends)}.`, { exact: true }),
+  ).toBeVisible();
   await expect(row(page, renewal)).toContainText('Renewal · Rekoda Chat · Yearly');
   await expect(row(page, renewal).getByRole('cell', { name: 'Paid' })).toBeVisible();
   await expect(historyRows(page)).toHaveCount(2);

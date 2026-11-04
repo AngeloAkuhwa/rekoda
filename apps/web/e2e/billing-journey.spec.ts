@@ -301,7 +301,9 @@ test('a cancelled plan can be kept before it ends, and a cancellation left to ru
   // Keeping it takes the cancellation back: same plan, same renewal date, nothing scheduled.
   await page.getByRole('button', { name: 'Keep my subscription' }).click();
   await expect(
-    page.getByText('Done. Your plan carries on as it is, and the change you scheduled is cancelled.'),
+    page.getByText(
+      'Done. Your plan carries on as it is, and the change you scheduled is cancelled.',
+    ),
   ).toBeVisible();
   await expect(page.getByText(/^Cancelled: your plan runs to/)).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Keep my subscription' })).toHaveCount(0);
