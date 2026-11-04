@@ -71,12 +71,11 @@ Use a phone you control. On mobile and on a laptop-sized window.
 Record every step with the deployed commit and the read-only check's migration lines from that day
 (`runbooks/staging-acceptance-handoff.md`). A payment reference is safe to record; a key or card number
 never is. A step that needs an operator date move or a forced failure (17, 18, 19, 22) is BLOCKED until the owner
-chooses a G-119 route: (A) a staging-only procedure, after which it runs like any other step, or (B)
-automated evidence only, after which its result is `AUTOMATED (G-119 B)` with its §5 tests in Notes
-and an empty Actual column (no staging result). Do not improvise a procedure.
+rules on G-119 and that ruling's recording rule is written here. Never record a §5 automated test as
+a staging result, and do not improvise a procedure.
 
-| #   | Date | Tester | Commit | Migrations | Expected | Actual | Reference | Desktop | Mobile | PASS / FAIL / BLOCKED / AUTOMATED | Notes |
-| --- | ---- | ------ | ------ | ---------- | -------- | ------ | --------- | ------- | ------ | --------------------------------- | ----- |
+| #   | Date | Tester | Commit | Migrations | Expected | Actual | Reference | Desktop | Mobile | PASS / FAIL / BLOCKED | Notes |
+| --- | ---- | ------ | ------ | ---------- | -------- | ------ | --------- | ------- | ------ | --------------------- | ----- |
 
 ## 5. Automated evidence per step (status as of 2 Nov 2026; browser evidence for steps 15 to 18 updated 4 Nov 2026)
 
