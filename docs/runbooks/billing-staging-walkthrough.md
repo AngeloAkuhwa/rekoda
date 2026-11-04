@@ -70,7 +70,7 @@ Use a phone you control. On mobile and on a laptop-sized window.
 
 Record every step with the deployed commit and the read-only check's migration lines from that day
 (`runbooks/staging-acceptance-handoff.md`). A payment reference is safe to record; a key or card number
-never is. A step that needs an operator date move or a forced failure (17, 19, 22) is BLOCKED until a
+never is. A step that needs an operator date move or a forced failure (17, 18, 19, 22) is BLOCKED until a
 staging-only procedure exists; do not improvise one.
 
 | #   | Date | Tester | Commit | Migrations | Expected | Actual | Reference | Desktop | Mobile | PASS / FAIL / BLOCKED | Notes |

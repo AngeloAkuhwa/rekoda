@@ -249,7 +249,7 @@ test('an .env written after the containers were created is flagged, even when th
   }
 });
 
-test('only the stale container is flagged, a missing creation time is unknown, and a fresh one reads yes', () => {
+test('only the stale container is flagged, an unreadable creation time is unknown, and a fresh one reads yes', () => {
   const stale = healthy({ created: { worker: '2000-01-01T00:00:00Z' } });
   try {
     const r = stale.run2(undefined, { EXPECT_SHA: stale.sha.slice(0, 7) });

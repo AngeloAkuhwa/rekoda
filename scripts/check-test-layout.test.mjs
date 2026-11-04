@@ -327,7 +327,9 @@ test('api root: every approved exception is a tracked test whose module sits bes
     execFileSync('git', ['ls-files'], { cwd: repo, encoding: 'utf8' }).split('\n'),
   );
   const entries = Object.entries(API_ROOT_TESTS);
-  assert.ok(entries.length <= 2, 'the list only shrinks; a new exception needs its reason here');
+  // OWN-71 approves only the edge-check pair; the set may shrink, never swap in another test.
+  const own71 = new Set(['apps/api/src/edge-check.test.ts', 'apps/api/src/edge-proxies.test.ts']);
+  for (const [path] of entries) assert.ok(own71.has(path), `${path} is not an OWN-71 exception`);
   for (const [path, reason] of entries) {
     assert.match(path, /^apps\/api\/src\/[^/]+\.test\.ts$/, path);
     assert.ok(
