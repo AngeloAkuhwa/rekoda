@@ -3,8 +3,9 @@
  *
  * Complements billing-journey.spec.ts (the first purchase and plan management) and
  * billing-journey-lifecycle.spec.ts (declines, late payments, refunds, a lapse): a renewal that is
- * overdue and waiting to be paid, a yearly subscriber, a checkout recovered after the merchant lost
- * the Paystack link, and the same page as an accountant sees it. Same stack: Rekoda's real API,
+ * overdue and waiting to be paid, the same renewal paid (monthly and yearly), a yearly subscriber,
+ * a checkout recovered after the merchant lost the Paystack link, and the same page as an
+ * accountant sees it. Same stack: Rekoda's real API,
  * worker and database, with Paystack itself a stand-in (e2e/support/fake-paystack.mjs). An overdue
  * renewal is put in the database directly, as the renewal sweep would write it, because the clock
  * and the sweep are not what is under test here; billing-renewal.integration.test.ts covers the sweep.
@@ -12,6 +13,7 @@
  */
 import { createHmac, randomBytes } from 'node:crypto';
 import { expect, test, type APIRequestContext, type Browser, type Page } from '@playwright/test';
+import { addInterval } from '@rekoda/core';
 import postgres from 'postgres';
 
 const OWNER_DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://rekoda@127.0.0.1:5432/rekoda';
@@ -111,6 +113,98 @@ const lagosDate = (at: Date) =>
     year: 'numeric',
   });
 
+/**
+ * A merchant whose first paid cycle ended two days ago and whose renewal the sweep has raised,
+ * starting the grace clock at the renewal date. The history is created in that state, as a
+ * business that really paid back then would hold it: the first purchase is inserted already
+ * settled and already applied for the cycle it bought, and is never rewritten afterwards (a settled
+ * charge is financial truth, so no fixture edits one). Only the renewal's payment happens in the
+ * browser. One transaction, so the in-process sweep never sees a due cycle without its charge.
+ * Returns the references of the first purchase and of the renewal.
+ */
+async function renewalOverdue(
+  businessId: string,
+  interval: 'monthly' | 'annual' = 'monthly',
+): Promise<{ first: string; renewal: string }> {
+  const cycle = interval === 'annual' ? '1 year' : '1 month';
+  const amountK = interval === 'annual' ? 9_900_000 : 990_000;
+  const first = mintReference();
+  const renewal = mintReference();
+  await sql.begin(async (tx) => {
+    // One instant for the renewal date, and every cycle edge taken from the product's own
+    // Lagos-calendar rule (not Postgres interval arithmetic, which is UTC and can differ by a
+    // day near a month end or a Lagos midnight). The same anchor day is written to the business.
+    const [{ at: renewalAt, day: anchorDay }] = await tx<{ at: Date; day: number }[]>`
+      SELECT now() - interval '2 days' AS at,
+             extract(day FROM (now() - interval '2 days') AT TIME ZONE 'Africa/Lagos')::int AS day`;
+    const periodEnd = addInterval(renewalAt, interval, anchorDay);
+    // The first cycle began one cycle before the renewal date and was paid on its first day.
+    const [{ at: firstStart }] = await tx<{ at: Date }[]>`
+      SELECT ${renewalAt}::timestamptz - ${cycle}::interval AS at`;
+    await tx`INSERT INTO subscription_charges
+               (business_id, kind, plan, quantity, amount_k, status, provider, reference,
+                provider_reference, period_start, period_end, billing_interval, created_at,
+                paid_at, paid_amount_k, applied_period_start, applied_period_end)
+             VALUES (${businessId}::uuid, 'first_purchase', 'chat', 1, ${amountK}, 'paid',
+                     'paystack', ${first}, ${'fake_' + first}, ${firstStart}, ${renewalAt},
+                     ${interval}, ${firstStart}, ${firstStart}, ${amountK}, ${firstStart},
+                     ${renewalAt})`;
+    await tx`INSERT INTO subscription_charges
+               (business_id, kind, plan, quantity, amount_k, provider, reference,
+                period_start, period_end, billing_interval, created_at)
+             VALUES (${businessId}::uuid, 'renewal', 'chat', 1, ${amountK}, 'paystack', ${renewal},
+                     ${renewalAt}, ${periodEnd}, ${interval}, ${renewalAt})`;
+    // The subscription the first purchase left behind, with the renewal date in the past: a
+    // renewal keeps that anchor whenever it is paid.
+    await tx`UPDATE businesses
+             SET plan = 'chat',
+                 plan_version_id = (SELECT id FROM plan_versions WHERE plan_id = 'chat'
+                                    ORDER BY version DESC LIMIT 1),
+                 plan_expires_at = ${renewalAt},
+                 cycle_started_at = ${firstStart},
+                 renewal_anchor_day = ${anchorDay},
+                 billing_interval = ${interval},
+                 pending_plan = NULL,
+                 pending_billing_interval = NULL,
+                 subscription_origin = 'provider',
+                 payment_failed_at = ${renewalAt},
+                 last_grace_reminder_day = NULL,
+                 ever_paid_at = ${firstStart},
+                 plan_decided_at = ${firstStart}
+             WHERE id = ${businessId}::uuid`;
+  });
+  return { first, renewal };
+}
+
+/** Pay the renewal the billing page is asking for, from its pay card. */
+async function payRenewal(page: Page, request: APIRequestContext) {
+  await page.goto('/app/billing');
+  const pay = page.locator('#pay');
+  await expect(pay.getByRole('heading', { name: 'Pay for your plan' })).toBeVisible();
+  if (await pay.locator('#payBillingEmail').count()) {
+    await pay.locator('#payBillingEmail').fill('ada@shop.example.ng');
+  }
+  await pay.getByRole('button', { name: 'Pay with Paystack' }).click();
+  await expect(page.getByRole('heading', { name: 'Fake Paystack checkout' })).toBeVisible();
+  const attempt = (await page.locator('[data-ref]').textContent())!.trim();
+  await payAndReturn(page, request, attempt);
+}
+
+/** The subscription columns a paid renewal must restore. */
+const subscriptionOf = async (businessId: string) => {
+  const [state] = await sql<{ ends: Date; failed: Date | null; plan: string; interval: string }[]>`
+    SELECT plan_expires_at AS ends, payment_failed_at AS failed, plan, billing_interval AS interval
+    FROM businesses WHERE id = ${businessId}::uuid`;
+  return state!;
+};
+
+/** The cycle the renewal payment actually bought, as settlement recorded it (migration 0182). */
+const appliedEndOf = async (reference: string) => {
+  const [charge] = await sql<{ end: Date | null }[]>`
+    SELECT applied_period_end AS end FROM subscription_charges WHERE reference = ${reference}`;
+  return charge!.end;
+};
+
 const row = (page: Page, reference: string) => page.getByRole('row').filter({ hasText: reference });
 const historyRows = (page: Page) =>
   page
@@ -124,40 +218,9 @@ const noHorizontalScroll = async (page: Page) =>
 
 test('a renewal that is due and not yet paid shows the grace period and asks for the payment, never calling it failed', async ({
   page,
-  request,
 }) => {
   const businessId = await onboard(page, `Ada Grace ${RUN}-${seq}`);
-  await page.goto('/app/billing?to=chat');
-  await page.getByRole('button', { name: 'Confirm and pay' }).click();
-  const first = await openPaystack(page);
-  await payAndReturn(page, request, first);
-
-  // The paid month ended two days ago and the renewal sweep raised the next month's charge,
-  // starting the grace clock at the renewal date. Written as the sweep writes it, in one
-  // transaction so the in-process sweep never sees a due cycle without its charge.
-  const renewal = mintReference();
-  await sql.begin(async (tx) => {
-    await tx`UPDATE subscription_charges
-             SET period_start = now() - interval '1 month 2 days',
-                 period_end = now() - interval '2 days',
-                 applied_period_start = now() - interval '1 month 2 days',
-                 applied_period_end = now() - interval '2 days',
-                 created_at = created_at - interval '1 month 2 days',
-                 paid_at = paid_at - interval '1 month 2 days'
-             WHERE reference = ${first}`;
-    await tx`INSERT INTO subscription_charges
-               (business_id, kind, plan, quantity, amount_k, provider, reference,
-                period_start, period_end, billing_interval, created_at)
-             VALUES (${businessId}::uuid, 'renewal', 'chat', 1, 990000, 'paystack', ${renewal},
-                     now() - interval '2 days', now() - interval '2 days' + interval '1 month',
-                     'monthly', now() - interval '2 days')`;
-    await tx`UPDATE businesses
-             SET plan_expires_at = now() - interval '2 days',
-                 payment_failed_at = now() - interval '2 days',
-                 cycle_started_at = cycle_started_at - interval '1 month 2 days',
-                 plan_decided_at = plan_decided_at - interval '1 month 2 days'
-             WHERE id = ${businessId}::uuid`;
-  });
+  const { first, renewal } = await renewalOverdue(businessId);
   const [clock] = await sql<{ failed: Date }[]>`
     SELECT payment_failed_at AS failed FROM businesses WHERE id = ${businessId}::uuid`;
   // Seven days of grace from the renewal date: five of them are left.
@@ -242,6 +305,75 @@ test('a yearly subscriber sees the price a year, a renewal a year out, and the o
   await expect(
     page.getByRole('button', { name: 'Switch to yearly at my next renewal' }),
   ).toHaveCount(0);
+  await noHorizontalScroll(page);
+});
+
+test('a merchant in grace pays the renewal from the billing page, and the plan runs a month from the renewal date', async ({
+  page,
+  request,
+}) => {
+  const businessId = await onboard(page, `Ada Renews ${RUN}-${seq}`);
+  const { first, renewal } = await renewalOverdue(businessId);
+  const [due] = await sql<{ end: Date }[]>`
+    SELECT period_end AS end FROM subscription_charges WHERE reference = ${renewal}`;
+
+  await payRenewal(page, request);
+
+  // The renewal buys the month it was raised for, from the renewal date, not from today: paying
+  // two days late does not move the anchor, and it gives no extra days either.
+  const after = await subscriptionOf(businessId);
+  expect(after).toMatchObject({ plan: 'chat', failed: null, interval: 'monthly' });
+  expect(lagosDate(after.ends)).toBe(lagosDate(due!.end));
+  // Settlement recorded the cycle it applied, and that exact instant is the subscription's expiry.
+  expect((await appliedEndOf(renewal))?.getTime()).toBe(after.ends.getTime());
+
+  await page.goto('/app/billing');
+  await expect(page.getByText(/renewal is due/)).toHaveCount(0);
+  await expect(page.getByText(/Grace period ends/)).toHaveCount(0);
+  await expect(
+    page.getByText(`Renews on ${lagosDate(after.ends)}.`, { exact: true }),
+  ).toBeVisible();
+  await expect(page.locator('#pay')).toHaveCount(0);
+  await expect(row(page, renewal)).toContainText('Renewal · Rekoda Chat');
+  await expect(row(page, renewal).getByRole('cell', { name: 'Paid' })).toBeVisible();
+  await expect(row(page, first).getByRole('cell', { name: 'Paid' })).toBeVisible();
+  await expect(historyRows(page)).toHaveCount(2);
+  await noHorizontalScroll(page);
+});
+
+test('a yearly subscriber whose year has ended pays the yearly renewal, and the plan runs another year', async ({
+  page,
+  request,
+}) => {
+  const businessId = await onboard(page, `Ada Renews Yearly ${RUN}-${seq}`);
+  const { first, renewal } = await renewalOverdue(businessId, 'annual');
+  const [due] = await sql<{ end: Date }[]>`
+    SELECT period_end AS end FROM subscription_charges WHERE reference = ${renewal}`;
+
+  // The pay card asks for a year at the yearly price, never a month.
+  await page.goto('/app/billing');
+  await expect(page.locator('#pay')).toContainText('₦99,000 for renewal · Rekoda Chat');
+  await payRenewal(page, request);
+
+  const after = await subscriptionOf(businessId);
+  expect(after).toMatchObject({ plan: 'chat', failed: null, interval: 'annual' });
+  // A year from the renewal date, not from the day it was paid.
+  expect(lagosDate(after.ends)).toBe(lagosDate(due!.end));
+  // Settlement recorded the cycle it applied, and that exact instant is the subscription's expiry.
+  expect((await appliedEndOf(renewal))?.getTime()).toBe(after.ends.getTime());
+  const daysAhead = (after.ends.getTime() - Date.now()) / 86_400_000;
+  expect(daysAhead).toBeGreaterThan(360);
+  expect(daysAhead).toBeLessThan(365);
+
+  await page.goto('/app/billing');
+  await expect(page.locator('.rk-plan-current')).toHaveText('Rekoda Chat · ₦99,000 a year');
+  await expect(page.getByText(/renewal is due/)).toHaveCount(0);
+  await expect(
+    page.getByText(`Renews on ${lagosDate(after.ends)}.`, { exact: true }),
+  ).toBeVisible();
+  await expect(row(page, renewal)).toContainText('Renewal · Rekoda Chat · Yearly');
+  await expect(row(page, renewal).getByRole('cell', { name: 'Paid' })).toBeVisible();
+  await expect(historyRows(page)).toHaveCount(2);
   await noHorizontalScroll(page);
 });
 

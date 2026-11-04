@@ -1,7 +1,8 @@
 /**
  * The complete first purchase, in a real browser: a new merchant picks a plan, pays on a
  * (stand-in) Paystack page, is sent back to Rekoda, sees the plan switch on, and a replayed
- * webhook changes nothing. Billing journeys 1 to 13 of the owner's list, against Rekoda's real
+ * webhook changes nothing; then managing the plan, and a cancellation taken back and one left to
+ * run. Billing journeys 1 to 13 of the owner's list, against Rekoda's real
  * API, worker and database; only Paystack itself is a stand-in (e2e/support/fake-paystack.mjs).
  * The real Paystack test-mode run is a staging acceptance step, not claimed here.
  */
@@ -262,6 +263,90 @@ test('a paying merchant upgrades, schedules a downgrade and a yearly switch, buy
   await page.locator('summary', { hasText: 'Cancel my subscription' }).click();
   await page.getByRole('button', { name: 'Cancel my subscription' }).click();
   await expect(page.getByRole('button', { name: 'Keep my subscription' })).toBeVisible();
+});
+
+test('a cancelled plan can be kept before it ends, and a cancellation left to run stops the plan with no charge', async ({
+  page,
+  request,
+}) => {
+  const businessId = await onboard(page, `Ada Cancels ${RUN}-${seq}`);
+  await page.goto('/app/billing?to=chat');
+  await page.getByRole('button', { name: 'Confirm and pay' }).click();
+  const paid = await payWaiting(page, request);
+  await page.goto('/app/billing');
+  const renews = page.getByText(/^Renews on .+\.$/);
+  const renewsBefore = (await renews.textContent())!;
+  const pendingOf = async () => {
+    const [state] = await sql<{ pending: string | null }[]>`
+      SELECT pending_plan AS pending FROM businesses WHERE id = ${businessId}::uuid`;
+    return state!.pending;
+  };
+
+  // Cancelling stops the next charge and keeps the month already paid for.
+  const cancel = async () => {
+    await page.locator('summary', { hasText: 'Cancel my subscription' }).click();
+    await page.getByRole('button', { name: 'Cancel my subscription' }).click();
+    await expect(page.getByRole('button', { name: 'Keep my subscription' })).toBeVisible();
+  };
+  await cancel();
+  await expect(
+    page.getByText(
+      'Cancelled: your plan runs to the end of what you paid for, then stops without charging.',
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(page.locator('.rk-plan-current')).toContainText('Rekoda Chat');
+  expect(await pendingOf()).toBe('expired');
+
+  // Keeping it takes the cancellation back: same plan, same renewal date, nothing scheduled.
+  await page.getByRole('button', { name: 'Keep my subscription' }).click();
+  await expect(
+    page.getByText(
+      'Done. Your plan carries on as it is, and the change you scheduled is cancelled.',
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(page.getByText(/^Cancelled: your plan runs to/)).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Keep my subscription' })).toHaveCount(0);
+  await expect(renews).toHaveText(renewsBefore);
+  expect(await pendingOf()).toBeNull();
+
+  // Cancelled again and left to run: the paid month ends and the renewal sweep stops the plan.
+  // The plan columns are written here as `expireSubscription(…, 'cancelled')` sets them (its
+  // audit row is left out: nothing here reads it), because the hourly sweep and the clock are not
+  // what is under test; billing.integration.test.ts runs the sweep's cancelled branch.
+  await cancel();
+  expect(await pendingOf()).toBe('expired');
+  // Only the plan columns move. The settled payment row is left exactly as it was: a paid charge
+  // is a record of money received, and a stopped plan never rewrites it.
+  await sql`UPDATE businesses
+            SET plan = 'expired', pending_plan = NULL, plan_decided_at = clock_timestamp(),
+                plan_expires_at = plan_expires_at - interval '32 days',
+                cycle_started_at = cycle_started_at - interval '32 days'
+            WHERE id = ${businessId}::uuid AND pending_plan = 'expired'`;
+
+  const [ended] = await sql<{ ends: Date }[]>`
+    SELECT plan_expires_at AS ends FROM businesses WHERE id = ${businessId}::uuid`;
+  await page.goto('/app/billing');
+  await expect(page.getByText(/Your subscription stopped on/)).toBeVisible();
+  // It stopped on the last day paid for, not on the day the page was read.
+  await expect(
+    page.getByText(
+      `Stopped ${ended!.ends.toLocaleDateString('en-GB', { timeZone: 'Africa/Lagos', day: 'numeric', month: 'short', year: 'numeric' })}.`,
+      { exact: true },
+    ),
+  ).toBeVisible();
+  // A cancellation is not a missed payment: the page offers no grace period and no renewal to
+  // pay, and nothing on the way here (cancel, keep, cancel) raised a charge.
+  await expect(page.getByText(/renewal is due/)).toHaveCount(0);
+  await expect(page.getByText(/Grace period ends/)).toHaveCount(0);
+  await expect(page.locator('#pay')).toHaveCount(0);
+  const [facts] = await sql<{ charges: number }[]>`
+    SELECT count(*)::int AS charges FROM subscription_charges WHERE business_id = ${businessId}::uuid`;
+  expect(facts).toEqual({ charges: 1 });
+  await expect(
+    page.getByRole('row').filter({ hasText: paid }).getByRole('cell', { name: 'Paid' }),
+  ).toBeVisible();
 });
 
 test('coming back to the payment page with a reference that is not yours shows nothing', async ({

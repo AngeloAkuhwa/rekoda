@@ -295,6 +295,18 @@ describe('trial reminders', () => {
     try {
       const result = await sweep(sender, at(12));
       expect(result.sent).toBe(1);
+      /* The claim stamps the attempt with the database clock (`now()`), while this sweep runs on
+       * the pinned `at(12)`. Put the attempt at the sweep's own instant, so the 30 minute stale
+       * rule below is measured on one clock. Left on the real clock, the attempt stops looking
+       * stale once the real date passes `at(12, 3_600_000)` minus 30 minutes (14 Nov 2026,
+       * 09:30 UTC), and this test would start failing with no code change. Written on the same
+       * tenant-scoped path the claim itself writes it on. */
+      await withBusiness(appDb, id, (tx) =>
+        tx.execute(
+          sql`UPDATE businesses SET trial_notice_attempted_at = ${at(12).toISOString()}::timestamptz
+              WHERE id = ${id}::uuid`,
+        ),
+      );
       /* A later pass (past the 30 minute stale rule) must not send it again. */
       await sweep(sender, at(12, 3_600_000));
     } finally {
