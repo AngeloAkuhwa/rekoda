@@ -48,7 +48,13 @@ useMetaWebhookHarness();
  * (G-61) behave exactly as before.
  */
 describe('a short reply continues what Rekoda just asked (Build 6)', () => {
-  /** One sale of ₦150,000 last month (₦60,000 paid), one of ₦40,000 this month. */
+  /**
+   * One sale of ₦150,000 last month (₦60,000 paid), one of ₦40,000 this month.
+   *
+   * Kept identical to the copy in meta-continuations-2.integration.test.ts. It calls repository
+   * financial writers, which scripts/check-boundaries.mjs allows only in the command layer
+   * and in test files, so it cannot move to a shared fixture module. Change both together.
+   */
   async function seedTwoMonths(businessId: string) {
     const lastMonth = resolvePeriod('last_month', new Date());
     const inLastMonth = new Date(lastMonth.from.getTime() + 2 * 86_400_000).toISOString();
