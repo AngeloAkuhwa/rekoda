@@ -93,9 +93,13 @@ if [ -n "$HEALTH" ]; then
   else flag "served release is staging-<commit>" "NO"; fi
 fi
 echo "== web"
+# curl prints the status code even when the transfer then fails (a timeout after the headers), so a
+# failed transfer is unknown whatever code it printed.
 code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://staging.myrekoda.com/ 2>/dev/null)"
+rc=$?
 case "$code" in
-  2??|3??) say "web status" "$code" ;;
+  2??|3??) if [ "$rc" -eq 0 ]; then say "web status" "$code"
+           else flag "web status" "unknown (transfer failed, curl exit $rc, after code $code)"; fi ;;
   ""|000) flag "web status" "unknown (no answer)" ;;
   *) flag "web status" "$code" ;;
 esac
@@ -120,8 +124,9 @@ else
     line="$(printf '%s\n' "$SERVICES" | grep "^$svc|" | head -1)"
     IFS='|' read -r _ state _ code <<<"$line"
     if [ -z "$line" ]; then say "job $svc" "not present"
-    elif [ "$state" = exited ] && [ "$code" != 0 ]; then flag "job $svc" "exited $code"
-    else say "job $svc" "$state${code:+ ($code)}"; fi
+    elif [ "$state" = exited ] && [ "$code" = 0 ]; then say "job $svc" "exited (0)"
+    elif [ "$state" = exited ]; then flag "job $svc" "exited ${code:-unknown}"
+    else flag "job $svc" "${state:-unknown} (not finished)"; fi
   done
 fi
 
@@ -239,7 +244,13 @@ for k in REKODA_WEB_URL REKODA_ANNUAL_BILLING \
          REKODA_EMAIL_PROVIDER RESEND_API_KEY REKODA_EMAIL_FROM RESEND_WEBHOOK_SECRET \
          WORKER_DATABASE_URL; do
   v="$(sed -n "s/^$k=//p" .env | head -1)"
-  if [ -z "$v" ]; then say "$k" UNSET
+  if [ -z "$v" ]; then
+    # Staging runs the production compose file with a separate worker, Resend email and the web
+    # app, so everything here is required except annual billing, which is optional.
+    case "$k" in
+      REKODA_ANNUAL_BILLING) say "$k" UNSET ;;
+      *) flag "$k" "UNSET (required on staging)" ;;
+    esac
   else
     case "$k" in
       REKODA_ANNUAL_BILLING|REKODA_EMAIL_PROVIDER|REKODA_WEB_URL) say "$k" "SET ($v)" ;;

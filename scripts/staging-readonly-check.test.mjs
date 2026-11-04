@@ -461,6 +461,22 @@ test('a broken web tier, an unhealthy or missing service, or a failed job can ne
     [{ webCode: '502' }, /web status\s+502\n/],
     [{ webCode: '000' }, /web status\s+unknown \(no answer\)\n/],
     [
+      { webCode: '200', webExit: 28 },
+      /web status\s+unknown \(transfer failed, curl exit 28, after code 200\)\n/,
+    ],
+    [
+      { services: svc({ 'edge-check': 'edge-check|running||0' }) },
+      /job edge-check\s+running \(not finished\)\n/,
+    ],
+    [
+      { services: svc({ migrate: 'migrate|created||0' }) },
+      /job migrate\s+created \(not finished\)\n/,
+    ],
+    [
+      { dotenv: 'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\n' },
+      /RESEND_WEBHOOK_SECRET\s+UNSET \(required on staging\)\n/,
+    ],
+    [
       { services: svc({ worker: 'worker|running|unhealthy|0' }) },
       /service worker\s+running, unhealthy\n/,
     ],
@@ -509,6 +525,8 @@ test('the healthy services and jobs read as expected and are not flagged', () =>
       assert.match(out, new RegExp(`service ${s}\\s+running, healthy\\n`));
     assert.match(out, /service caddy\s+running\n/);
     assert.match(out, /job migrate\s+exited \(0\)\n/);
+    assert.match(out, /REKODA_ANNUAL_BILLING\s+UNSET\n/);
+    assert.doesNotMatch(attention(out), /REKODA_ANNUAL_BILLING|WORKER_DATABASE_URL/);
     assert.match(out, /web status\s+200\n/);
     assert.match(out, /web image is the \.env release\s+yes\n/);
     assert.match(out, /error-level lines in worker\s+0\n/);

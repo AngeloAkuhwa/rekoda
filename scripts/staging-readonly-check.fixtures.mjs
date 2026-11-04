@@ -29,6 +29,7 @@ export function host({
   services = null,
   logs = '',
   webCode = '200',
+  webExit = 0,
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'staging-check-'));
   const dir = join(root, 'rekoda');
@@ -135,7 +136,7 @@ echo image:test`,
       ? 'echo ok'
       : `case "$*" in *"/health"*) ${
           health === 'fail' ? 'exit 22' : `printf '%s' '${fill(health)}'`
-        } ;; *) echo '${webCode}' ;; esac`,
+        } ;; *) echo '${webCode}'; exit ${webExit} ;; esac`,
   );
   const script = SCRIPT.replaceAll('/opt/rekoda', dir);
   const run2 = (body = script, extra = {}) =>
@@ -150,20 +151,7 @@ echo image:test`,
         ...extra,
       },
     });
-  const go = (body = script, extra = {}) => {
-    const r = spawnSync('bash', ['-s'], {
-      cwd: dir,
-      input: body,
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        PATH: `${fake}:${process.env.PATH}`,
-        API_URL: 'https://x.invalid',
-        ...extra,
-      },
-    });
-    return r.stdout;
-  };
+  const go = (body = script, extra = {}) => run2(body, extra).stdout;
   return {
     go,
     run2,
@@ -203,7 +191,8 @@ export const healthy = (over = {}) =>
   host({
     dotenv:
       // not a credential: low-entropy stand-ins whose only job is to be findable if printed.
-      'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\nRESEND_API_KEY=rrrrrrrrrrrrrrrr\nWORKER_DATABASE_URL=postgres://u:wwwwwwww@db/rekoda\n',
+      'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\nRESEND_API_KEY=rrrrrrrrrrrrrrrr\nWORKER_DATABASE_URL=postgres://u:wwwwwwww@db/rekoda\n' +
+      'REKODA_WEB_URL=https://staging.invalid\nREKODA_EMAIL_PROVIDER=resend\nREKODA_EMAIL_FROM=billing@staging.invalid\nRESEND_WEBHOOK_SECRET=whsec_vvvvvvvvvvvvvvvv\n',
     images: {
       api: 'rekoda-app:staging-{sha7}',
       worker: 'rekoda-app:staging-{sha7}',
@@ -230,4 +219,9 @@ export const healthy = (over = {}) =>
     workerEnv: { REKODA_CUSTOMER_REMINDERS: '1' },
     ...over,
   });
-export const attention = (out) => out.slice(out.indexOf('== attention'));
+/** The attention section of an output; fails when the script never printed it. */
+export const attention = (out) => {
+  const at = out.indexOf('== attention');
+  assert.notEqual(at, -1, 'the output has no "== attention" section');
+  return out.slice(at);
+};
