@@ -6,8 +6,6 @@ import { expect } from 'vitest';
 import { identity, withBusiness, sql } from '@rekoda/db';
 import { replies } from '@rekoda/core';
 import { buildRunner } from '../jobs/jobs.module.js';
-import { customersRepo, issueRepo, paymentsHub } from '@rekoda/db';
-import { encryptFacet, matchKeyFor } from '@rekoda/core/vault';
 import { db, deps, intentsProvider, stubSender, workerDb } from './meta-webhook.fixtures.js';
 
 export const OWNER = '2348031234567';
@@ -84,63 +82,6 @@ export async function expectNoFailedJob() {
          WHERE kind = 'inbound.message' AND state <> 'done' AND last_error IS NOT NULL`)),
   ];
   expect(row?.failed).toBe('0');
-}
-
-/**
- * Everything a Chat command could have to show for itself: an open
- * ₦80,000 invoice whose customer has an email (so payment details can
- * mint), an active payment connection, and a stored document to resend.
- */
-export async function seedBooks(businessId: string): Promise<string> {
-  const config = deps.config;
-  const customer = await customersRepo.createCustomerWithIdentities(db, businessId, 'X81', [
-    {
-      facet: 'phone',
-      ciphertext: encryptFacet('+2348039998888', config.vaultKey, `${businessId}:phone`),
-      matchKey: matchKeyFor(businessId, 'phone', '+2348039998888', config.matchKey),
-    },
-    {
-      facet: 'email',
-      ciphertext: encryptFacet('adaeze@example.com', config.vaultKey, `${businessId}:email`),
-      matchKey: null,
-    },
-  ]);
-  return withBusiness(db, businessId, async (tx) => {
-    const connection = await paymentsHub.upsertConnection(tx, {
-      businessId,
-      providerType: 'paystack',
-      settlementAccountLast4: '4821',
-    });
-    await paymentsHub.setConnectionState(tx, connection.id, {
-      status: 'active',
-      externalSubaccountId: 'ACCT_g65',
-    });
-    const sale = await issueRepo.issueSale(tx, {
-      businessId,
-      customerId: customer.id,
-      customerToken: 'CUSTOMER_X81',
-      items: [{ name: 'gown', quantity: 1, unitPriceK: 8_000_000 }],
-      subtotalK: 8_000_000,
-      discountK: 0,
-      deliveryFeeK: 0,
-      vatK: 0,
-      totalK: 8_000_000,
-      paidK: 0,
-      balanceDueK: 8_000_000,
-      method: 'transfer',
-      sourceType: 'chat',
-      sourceId: 'g65-seed',
-      actor: 'system',
-    });
-    await issueRepo.recordDocument(tx, {
-      businessId,
-      kind: 'invoice_pdf',
-      storageKey: 'test/g65-unguessable',
-      refNumber: sale.invoiceNumber,
-      bytes: 1234,
-    });
-    return sale.invoiceNumber;
-  });
 }
 
 /** Every row a Chat command or a yes could write, counted. */

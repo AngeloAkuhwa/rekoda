@@ -6,10 +6,10 @@
  * in meta-webhook.fixtures.ts.
  */
 import { describe, expect, it } from 'vitest';
-import { identity, withBusiness, sql } from '@rekoda/db';
-import { replies } from '@rekoda/core';
-import { customersRepo, spendRepo } from '@rekoda/db';
-import { db, stubSender, useMetaWebhookHarness } from './meta-webhook.fixtures.js';
+import { createDb, identity, withBusiness, sql } from '@rekoda/db';
+import { replies, resolvePeriod } from '@rekoda/core';
+import { issueRepo, settleRepo, spendRepo } from '@rekoda/db';
+import { db, stubSender, urls, useMetaWebhookHarness } from './meta-webhook.fixtures.js';
 import {
   OWNER,
   DELEGATE,
@@ -25,7 +25,6 @@ import {
   say,
   reply,
   modelCalls,
-  seedTwoMonths,
   continuations,
   footprint,
   draftStates,
@@ -49,6 +48,86 @@ useMetaWebhookHarness();
  * (G-61) behave exactly as before.
  */
 describe('a short reply continues what Rekoda just asked (Build 6)', () => {
+  /** One sale of ₦150,000 last month (₦60,000 paid), one of ₦40,000 this month. */
+  async function seedTwoMonths(businessId: string) {
+    const lastMonth = resolvePeriod('last_month', new Date());
+    const inLastMonth = new Date(lastMonth.from.getTime() + 2 * 86_400_000).toISOString();
+    await withBusiness(db, businessId, async (tx) => {
+      const old = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: null,
+        items: [{ name: 'wig', quantity: 3, unitPriceK: 5_000_000 }],
+        subtotalK: 15_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 15_000_000,
+        paidK: 0,
+        balanceDueK: 15_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'b6-old',
+        actor: 'system',
+      });
+      await settleRepo.recordMerchantPayment(tx, {
+        businessId,
+        invoiceId: old.invoiceId,
+        amountK: 6_000_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'b6-old-pay',
+        actor: 'system',
+      });
+      await tx.execute(sql`
+        UPDATE invoices SET created_at = ${inLastMonth}::timestamptz
+         WHERE business_id = ${businessId}::uuid AND id = ${old.invoiceId}::uuid`);
+      await tx.execute(sql`
+        UPDATE payments SET created_at = ${inLastMonth}::timestamptz
+         WHERE business_id = ${businessId}::uuid`);
+      await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: null,
+        items: [{ name: 'bag', quantity: 1, unitPriceK: 4_000_000 }],
+        subtotalK: 4_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 4_000_000,
+        paidK: 0,
+        balanceDueK: 4_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'b6-new',
+        actor: 'system',
+      });
+    });
+    /* The answers read the ledger (G-118), so last month's sale and payment
+     * are back-dated THERE too, as the owner with the append-only guards
+     * suspended: a fixture, never a product path. */
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`SET session_replication_role = replica`);
+      await ownerDb.execute(sql`
+        UPDATE ledger_entries SET created_at = ${inLastMonth}::timestamptz
+         WHERE business_id = ${businessId}::uuid
+           AND transaction_id IN (SELECT id FROM ledger_transactions
+                                   WHERE business_id = ${businessId}::uuid
+                                     AND source_id IN ('b6-old', 'b6-old-pay'))`);
+      await ownerDb.execute(sql`
+        UPDATE ledger_transactions SET created_at = ${inLastMonth}::timestamptz
+         WHERE business_id = ${businessId}::uuid AND source_id IN ('b6-old', 'b6-old-pay')`);
+      await ownerDb.execute(sql`SET session_replication_role = origin`);
+    } finally {
+      await close();
+    }
+    return {
+      lastMonthLabel: lastMonth.label,
+      thisMonthLabel: resolvePeriod('month', new Date()).label,
+    };
+  }
+
   it('"How much did I sell?", "Which period?", "Last month." answers for last month, with no model', async () => {
     const business = await seedMerchant();
     const { lastMonthLabel } = await seedTwoMonths(business.id);
@@ -448,76 +527,5 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
     await reply('wamid.B6-g61no-yes', 'yes');
     expect(stubSender.lastText).not.toContain('did it come from your bank account');
     expect(await footprint(business.id)).toMatchObject({ expenses: 0, postings: 0 });
-  });
-
-  it('a G-61 retired purchase question stays retired, and "bank" never records the purchase', async () => {
-    const business = await seedMerchant();
-    await say('wamid.B6-g61-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
-    await say('wamid.B6-g61-pos', POS_PURCHASE, 'I bought 10 cartons for 100k, paid by POS');
-    expect(stubSender.lastText).toContain(
-      'did it come from your bank account or from physical cash?',
-    );
-    expect(await draftStates(business.id)).toEqual([
-      'Query:superseded',
-      'RecordPurchase:abandoned',
-    ]);
-    /* The period question did not survive the purchase; the funding
-     * question it asked is now the open one (G-68 Phase 2). */
-    expect((await continuations(business.id)).map((c) => c.state)).toEqual(['superseded', 'open']);
-
-    /* A yes still asks the retired question again (G-61), unchanged. */
-    await reply('wamid.B6-g61-yes', 'yes');
-    expect(stubSender.lastText).toContain(
-      'did it come from your bank account or from physical cash?',
-    );
-    expect((await draftStates(business.id))[1]).toBe('RecordPurchase:abandoned');
-
-    /* "bank" answers the open funding question (G-68 Phase 2, the work
-     * Build 6 left for it): a FRESH preview of the rebuilt purchase, no
-     * model, and never the old purchase executed. Nothing is written
-     * until a normal yes. */
-    await reply('wamid.B6-g61-bank', 'bank');
-    expect(modelCalls()).toBe(0);
-    expect(stubSender.lastText).toContain('Paid in full by transfer');
-    expect(await footprint(business.id)).toMatchObject({ expenses: 0, postings: 0 });
-    /* Answered once: the retired question is closed by its rebuild. */
-    expect((await draftStates(business.id))[1]).toBe('RecordPurchase:superseded');
-    expect((await draftStates(business.id))[2]).toBe('RecordPurchase:pending');
-  });
-
-  it('a question between the two erasure asks breaks the pair: nothing is erased', async () => {
-    const business = await seedMerchant();
-    const customer = await customersRepo.createCustomerWithIdentities(
-      db,
-      business.id,
-      'CUSTOMER_T9',
-      [{ facet: 'phone', ciphertext: 'sealed-phone', matchKey: 'mk-b6-erase' }],
-    );
-    const facets = () =>
-      withBusiness(db, business.id, (tx) =>
-        customersRepo.identityFacetsFor(tx, business.id, customer.id),
-      );
-
-    await reply('wamid.B6-del1', 'delete my data');
-    expect(stubSender.lastText).toContain('Reply *DELETE MY DATA* again');
-
-    /* Anything in between keeps the data, a question to the books included. */
-    await say('wamid.B6-del-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
-    expect(stubSender.lastText).toBe(WHICH_PERIOD);
-
-    /* Inside the window, but no longer the second of a pair: a new first ask. */
-    await reply('wamid.B6-del2', 'delete my data');
-    expect(stubSender.lastText).toContain('Reply *DELETE MY DATA* again');
-    expect(await facets()).toHaveLength(1);
-  });
-
-  it('a correction after only a question is a new request, not a correction', async () => {
-    const business = await seedMerchant();
-    await say('wamid.B6-corr-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
-    await say('wamid.B6-corr-sale', A_SALE, 'sorry, 3 wigs not 4');
-
-    expect(stubSender.lastText).not.toContain(replies.correctionTaken().text);
-    /* The question's draft was not superseded as if it had been corrected. */
-    expect(await draftStates(business.id)).toEqual(['Query:pending', 'RecordSale:pending']);
   });
 });

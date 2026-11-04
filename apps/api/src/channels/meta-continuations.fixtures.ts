@@ -2,17 +2,15 @@
  * Shared helpers for the meta-continuations suites, split from meta.integration.test.ts.
  * The helpers that hold state or write the plan stay in each suite.
  */
-import { createDb, identity, withBusiness, sql } from '@rekoda/db';
-import { replies, resolvePeriod } from '@rekoda/core';
+import { identity, withBusiness, sql } from '@rekoda/db';
+import { replies } from '@rekoda/core';
 import { buildRunner } from '../jobs/jobs.module.js';
-import { issueRepo, settleRepo } from '@rekoda/db';
 import {
   db,
   deps,
   messagePayload,
   post,
   stubTransport,
-  urls,
   workerDb,
 } from './meta-webhook.fixtures.js';
 
@@ -99,86 +97,6 @@ export async function reply(wamid: string, text: string, from = OWNER) {
 }
 
 export const modelCalls = () => stubTransport.requests.length;
-
-/** One sale of ₦150,000 last month (₦60,000 paid), one of ₦40,000 this month. */
-export async function seedTwoMonths(businessId: string) {
-  const lastMonth = resolvePeriod('last_month', new Date());
-  const inLastMonth = new Date(lastMonth.from.getTime() + 2 * 86_400_000).toISOString();
-  await withBusiness(db, businessId, async (tx) => {
-    const old = await issueRepo.issueSale(tx, {
-      businessId,
-      customerId: null,
-      customerToken: null,
-      items: [{ name: 'wig', quantity: 3, unitPriceK: 5_000_000 }],
-      subtotalK: 15_000_000,
-      discountK: 0,
-      deliveryFeeK: 0,
-      vatK: 0,
-      totalK: 15_000_000,
-      paidK: 0,
-      balanceDueK: 15_000_000,
-      method: 'transfer',
-      sourceType: 'chat',
-      sourceId: 'b6-old',
-      actor: 'system',
-    });
-    await settleRepo.recordMerchantPayment(tx, {
-      businessId,
-      invoiceId: old.invoiceId,
-      amountK: 6_000_000,
-      method: 'cash',
-      sourceType: 'chat',
-      sourceId: 'b6-old-pay',
-      actor: 'system',
-    });
-    await tx.execute(sql`
-        UPDATE invoices SET created_at = ${inLastMonth}::timestamptz
-         WHERE business_id = ${businessId}::uuid AND id = ${old.invoiceId}::uuid`);
-    await tx.execute(sql`
-        UPDATE payments SET created_at = ${inLastMonth}::timestamptz
-         WHERE business_id = ${businessId}::uuid`);
-    await issueRepo.issueSale(tx, {
-      businessId,
-      customerId: null,
-      customerToken: null,
-      items: [{ name: 'bag', quantity: 1, unitPriceK: 4_000_000 }],
-      subtotalK: 4_000_000,
-      discountK: 0,
-      deliveryFeeK: 0,
-      vatK: 0,
-      totalK: 4_000_000,
-      paidK: 0,
-      balanceDueK: 4_000_000,
-      method: 'transfer',
-      sourceType: 'chat',
-      sourceId: 'b6-new',
-      actor: 'system',
-    });
-  });
-  /* The answers read the ledger (G-118), so last month's sale and payment
-   * are back-dated THERE too, as the owner with the append-only guards
-   * suspended: a fixture, never a product path. */
-  const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
-  try {
-    await ownerDb.execute(sql`SET session_replication_role = replica`);
-    await ownerDb.execute(sql`
-        UPDATE ledger_entries SET created_at = ${inLastMonth}::timestamptz
-         WHERE business_id = ${businessId}::uuid
-           AND transaction_id IN (SELECT id FROM ledger_transactions
-                                   WHERE business_id = ${businessId}::uuid
-                                     AND source_id IN ('b6-old', 'b6-old-pay'))`);
-    await ownerDb.execute(sql`
-        UPDATE ledger_transactions SET created_at = ${inLastMonth}::timestamptz
-         WHERE business_id = ${businessId}::uuid AND source_id IN ('b6-old', 'b6-old-pay')`);
-    await ownerDb.execute(sql`SET session_replication_role = origin`);
-  } finally {
-    await close();
-  }
-  return {
-    lastMonthLabel: lastMonth.label,
-    thisMonthLabel: resolvePeriod('month', new Date()).label,
-  };
-}
 
 export async function continuations(businessId: string) {
   const rows = await withBusiness(db, businessId, (tx) =>

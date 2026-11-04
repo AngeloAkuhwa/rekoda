@@ -1,7 +1,7 @@
 /**
  * Webhook ingress, end to end (MASTER-PLAN §5.3.1).
  *
- * Meta webhook suite: Chat entitlement on fixed commands (G-65) (part 1 of 2). Split by concern
+ * Meta webhook suite: Chat entitlement on fixed commands (G-65) (part 1 of 3). Split by concern
  * from meta.integration.test.ts; the shared app, stubs and payload helpers are in meta-
  * webhook.fixtures.ts.
  */
@@ -10,7 +10,8 @@ import { createDb, identity, jobsRepo, withBusiness, sql } from '@rekoda/db';
 import { replies } from '@rekoda/core';
 import { truncateAll } from '@rekoda/db/testing';
 import { buildRunner } from '../jobs/jobs.module.js';
-import { billingRepo, issueRepo } from '@rekoda/db';
+import { billingRepo, customersRepo, issueRepo, paymentsHub } from '@rekoda/db';
+import { encryptFacet, matchKeyFor } from '@rekoda/core/vault';
 import {
   db,
   deps,
@@ -37,7 +38,6 @@ import {
   seedMerchant,
   drain,
   expectNoFailedJob,
-  seedBooks,
   footprint,
   expectOnlyReplies,
   draftStates,
@@ -71,6 +71,63 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
     await drain();
     await expectNoFailedJob();
     return stubSender.lastText ?? '';
+  }
+
+  /**
+   * Everything a Chat command could have to show for itself: an open
+   * ₦80,000 invoice whose customer has an email (so payment details can
+   * mint), an active payment connection, and a stored document to resend.
+   */
+  async function seedBooks(businessId: string): Promise<string> {
+    const config = deps.config;
+    const customer = await customersRepo.createCustomerWithIdentities(db, businessId, 'X81', [
+      {
+        facet: 'phone',
+        ciphertext: encryptFacet('+2348039998888', config.vaultKey, `${businessId}:phone`),
+        matchKey: matchKeyFor(businessId, 'phone', '+2348039998888', config.matchKey),
+      },
+      {
+        facet: 'email',
+        ciphertext: encryptFacet('adaeze@example.com', config.vaultKey, `${businessId}:email`),
+        matchKey: null,
+      },
+    ]);
+    return withBusiness(db, businessId, async (tx) => {
+      const connection = await paymentsHub.upsertConnection(tx, {
+        businessId,
+        providerType: 'paystack',
+        settlementAccountLast4: '4821',
+      });
+      await paymentsHub.setConnectionState(tx, connection.id, {
+        status: 'active',
+        externalSubaccountId: 'ACCT_g65',
+      });
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: customer.id,
+        customerToken: 'CUSTOMER_X81',
+        items: [{ name: 'gown', quantity: 1, unitPriceK: 8_000_000 }],
+        subtotalK: 8_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 8_000_000,
+        paidK: 0,
+        balanceDueK: 8_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'g65-seed',
+        actor: 'system',
+      });
+      await issueRepo.recordDocument(tx, {
+        businessId,
+        kind: 'invoice_pdf',
+        storageKey: 'test/g65-unguessable',
+        refNumber: sale.invoiceNumber,
+        bytes: 1234,
+      });
+      return sale.invoiceNumber;
+    });
   }
 
   it.each(CHAT_COMMANDS)(
@@ -335,13 +392,6 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
     });
   }
 
-  async function sendFrom(from: string, text: string) {
-    await post(messagePayload(from, `wamid.G65-${++seq}`, text));
-    await drain();
-    await expectNoFailedJob();
-    return stubSender.lastText ?? '';
-  }
-
   it('a lapsed paid plan is told its plan ended, never that a free trial did', async () => {
     const business = await seedMerchant();
     await seedBooks(business.id);
@@ -482,61 +532,5 @@ describe('Chat entitlement on fixed commands (G-65)', () => {
     expect(await send('Ada bought 3 wigs for 300k', A_SALE)).toContain('Reply *yes*');
     expect(await send('yes')).toContain('INV-');
     expect(await invoiceCount(business.id)).toBe(1);
-  });
-
-  it('a lapsed plan keeps a resumed read, as it keeps records', async () => {
-    const business = await seedMerchant();
-    expect(await send('how much did I sell?', HOW_MUCH_DID_I_SELL)).toBe(
-      replies.whichPeriod('sales').text,
-    );
-    await lapse(business.id);
-    const requests = stubTransport.requests.length;
-    const before = await footprint(business.id);
-
-    const said = await send('last month');
-    expect(said).not.toBe(LAPSED);
-    expect(said).not.toBe(FREE_FORM_REFUSED);
-    expect(said).toMatch(/sales/i);
-    expect(stubTransport.requests).toHaveLength(requests);
-    expect((await footprint(business.id)).ai_actions).toBe(before.ai_actions);
-  });
-
-  it('a view-only member on Integrate meets the plan before the role', async () => {
-    const business = await seedMerchant();
-    const invoiceNumber = await seedBooks(business.id);
-    const accountant = await identity.upsertUserByPhone(db, '+2348039990001');
-    await identity.addMembership(db, business.id, accountant.id, 'accountant');
-    await moveToPlan(business.id, 'integrate');
-    const before = await footprint(business.id);
-    const mark = sendMark();
-
-    expect(await sendFrom('2348039990001', `remind ${invoiceNumber}`)).toBe(REFUSED);
-    expect(await sendFrom('2348039990001', 'payment details')).toBe(REFUSED);
-    expect(beyondTheMerchant(mark)).toMatchObject({ documents: 0, customerTexts: 0, mints: 0 });
-    await expectOnlyReplies(business.id, before, 2);
-
-    // On a Chat plan the same member is refused by role, as before.
-    await moveToPlan(business.id, 'chat');
-    expect(await sendFrom('2348039990001', 'payment details')).toBe(replies.viewOnlyRole().text);
-  });
-
-  /**
-   * Pinned: a yes after the plan lapsed, with a resumed read since the
-   * preview, is refused before Build 6's read pointer runs. Nothing moves:
-   * not the read, not the preview, not a meter.
-   */
-  it('a lapsed yes after a resumed read is refused and changes nothing', async () => {
-    const business = await seedMerchant();
-    await send('Ada bought 3 wigs for 300k', A_SALE);
-    await send('how much did I sell?', HOW_MUCH_DID_I_SELL);
-    await send('last month');
-    await lapse(business.id);
-    const states = await draftStates(business.id);
-    const before = await footprint(business.id);
-
-    expect(await send('yes')).toBe(YES_LAPSED);
-
-    expect(await draftStates(business.id)).toEqual(states);
-    await expectOnlyReplies(business.id, before, 1);
   });
 });

@@ -282,6 +282,7 @@ change a feature and want to know what to run.
 | integration | `apps/api/src/channels/meta-catalogue-order-2.integration.test.ts`    |
 | integration | `apps/api/src/channels/meta-chat-entitlement-1.integration.test.ts`   |
 | integration | `apps/api/src/channels/meta-chat-entitlement-2.integration.test.ts`   |
+| integration | `apps/api/src/channels/meta-chat-entitlement-3.integration.test.ts`   |
 | integration | `apps/api/src/channels/meta-consent-trial.integration.test.ts`        |
 | integration | `apps/api/src/channels/meta-continuations-1.integration.test.ts`      |
 | integration | `apps/api/src/channels/meta-continuations-2.integration.test.ts`      |
