@@ -106,7 +106,7 @@ esac
 
 # Every long-running service must be running, and healthy where it has a healthcheck
 # (docker-compose.prod.yml: postgres, api, worker and web do; caddy does not). The one-off jobs
-# (migrate, edge-check) must not have exited with an error.
+# (migrate, edge-check) must have exited 0 or be absent; any other state needs attention.
 echo "== services"
 SERVICES="$(dc ps -a --format '{{.Service}}|{{.State}}|{{.Health}}|{{.ExitCode}}' 2>/dev/null)"
 if [ -z "$SERVICES" ]; then
@@ -126,7 +126,7 @@ else
     if [ -z "$line" ]; then say "job $svc" "not present"
     elif [ "$state" = exited ] && [ "$code" = 0 ]; then say "job $svc" "exited (0)"
     elif [ "$state" = exited ]; then flag "job $svc" "exited ${code:-unknown}"
-    else flag "job $svc" "${state:-unknown} (not finished)"; fi
+    else flag "job $svc" "${state:-unknown} (not exited 0)"; fi
   done
 fi
 

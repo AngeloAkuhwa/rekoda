@@ -369,7 +369,7 @@ test('no secret value reaches the output: keys, connection strings and .env valu
   const h = healthy();
   try {
     const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
-    assert.doesNotMatch(out, /qqqqqqqq|rrrrrrrr|wwwwwwww|postgres:\/\//);
+    assert.doesNotMatch(out, /qqqqqqqq|rrrrrrrr|wwwwwwww|vvvvvvvv|whsec_|postgres:\/\//);
     assert.match(out, /RESEND_API_KEY\s+SET\n/);
     assert.match(out, /WORKER_DATABASE_URL\s+SET\n/);
   } finally {
@@ -466,15 +466,35 @@ test('a broken web tier, an unhealthy or missing service, or a failed job can ne
     ],
     [
       { services: svc({ 'edge-check': 'edge-check|running||0' }) },
-      /job edge-check\s+running \(not finished\)\n/,
+      /job edge-check\s+running \(not exited 0\)\n/,
     ],
     [
       { services: svc({ migrate: 'migrate|created||0' }) },
-      /job migrate\s+created \(not finished\)\n/,
+      /job migrate\s+created \(not exited 0\)\n/,
+    ],
+    [
+      { dotenv: 'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\n' },
+      /REKODA_WEB_URL\s+UNSET \(required on staging\)\n/,
+    ],
+    [
+      { dotenv: 'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\n' },
+      /REKODA_EMAIL_PROVIDER\s+UNSET \(required on staging\)\n/,
+    ],
+    [
+      { dotenv: 'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\n' },
+      /RESEND_API_KEY\s+UNSET \(required on staging\)\n/,
+    ],
+    [
+      { dotenv: 'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\n' },
+      /REKODA_EMAIL_FROM\s+UNSET \(required on staging\)\n/,
     ],
     [
       { dotenv: 'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\n' },
       /RESEND_WEBHOOK_SECRET\s+UNSET \(required on staging\)\n/,
+    ],
+    [
+      { dotenv: 'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\n' },
+      /WORKER_DATABASE_URL\s+UNSET \(required on staging\)\n/,
     ],
     [
       { services: svc({ worker: 'worker|running|unhealthy|0' }) },
