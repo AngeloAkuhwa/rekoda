@@ -60,7 +60,13 @@ import {
   useAdjustmentsHarness,
 } from './adjustments.fixtures.js';
 
-/** An unpaid invoice with a live intent, the normal way in. */
+/**
+ * An unpaid invoice with a live intent, the normal way in.
+ *
+ * Kept identical in every adjustments*.integration.test.ts suite. It calls issueSale(), a
+ * repository financial writer that scripts/check-boundaries.mjs allows only in the command
+ * layer and in test files, so it cannot move to adjustments.fixtures.ts. Change them together.
+ */
 async function seedObligation(businessId: string, totalK = 15_000_000, expectedK = totalK) {
   return withBusiness(appDb, businessId, async (tx) => {
     const sale = await issueRepo.issueSale(tx, {

@@ -17,23 +17,14 @@ import {
   receivePurchaseOrderResponse,
   reportsExpensesResponse,
   reportsInvoicesResponse,
-  reportsStatementsResponse,
 } from '@rekoda/contracts';
 import { usageRepo, issueRepo, stockRepo, withBusiness } from '@rekoda/db';
 import { app, db, onboard, post, useReportsHarness } from './reports.fixtures.js';
+import { PO, PO_TOTAL_K, openPo, books } from './reports-purchase-orders.fixtures.js';
 
 useReportsHarness();
 
 describe('purchase orders, and what receiving one does', () => {
-  const PO = {
-    items: [
-      { name: 'Ankara bale', quantity: 10, unitPriceK: 500_000 },
-      { name: 'Thread spools', quantity: 5, unitPriceK: 20_000 },
-    ],
-  };
-
-  const PO_TOTAL_K = 5_100_000;
-
   it('creates a request that posts nothing, and lists it apart from everything', async () => {
     const { auth } = await onboard('+2348177000220');
     const created = createPurchaseOrderResponse.parse(
@@ -59,45 +50,6 @@ describe('purchase orders, and what receiving one does', () => {
     expect(register.orders).toEqual([]);
     expect(register.quotes).toEqual([]);
   });
-
-  /* G-61: receiving a PO funds the paid part from the account the merchant
-   * chose, and a paid receive with no account is refused before anything. */
-  // Kept identical to the copy in reports-purchase-orders-2.integration.test.ts,
-  // reports-purchase-orders-3.integration.test.ts. It belongs to this describe block's own
-  // setup, which each part keeps as it was. Change them together.
-  async function openPo(auth: Record<string, string>) {
-    const created = createPurchaseOrderResponse.parse(
-      (await post('/v1/reports/purchase-orders', { ...PO, clientRef: randomUUID() }, auth)).json(),
-    );
-    if (created.outcome !== 'created') throw new Error('purchase order not created');
-    return created.poNumber;
-  }
-
-  // Kept identical to the copy in reports-purchase-orders-2.integration.test.ts,
-  // reports-purchase-orders-3.integration.test.ts. It belongs to this describe block's own
-  // setup, which each part keeps as it was. Change them together.
-  async function books(auth: Record<string, string>) {
-    const st = reportsStatementsResponse.parse(
-      (await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth })).json(),
-    );
-    const asset = (code: string) =>
-      st.balanceSheet.assets.find((l) => l.code === code)?.amountK ?? 0;
-    const liability = (code: string) =>
-      st.balanceSheet.liabilities.find((l) => l.code === code)?.amountK ?? 0;
-    const spend = reportsExpensesResponse.parse(
-      (await app.inject({ method: 'GET', url: '/v1/reports/expenses', headers: auth })).json(),
-    );
-    return {
-      cash: asset('1000'),
-      bank: asset('1020'),
-      payable: spend.payableK,
-      cashOutK: st.cashflow.outK,
-      balanced: st.balanceSheet.balanced,
-      method: spend.entries[0]?.method ?? null,
-      entries: spend.entries.length,
-      ap: liability('2000'),
-    };
-  }
 
   for (const c of [
     {

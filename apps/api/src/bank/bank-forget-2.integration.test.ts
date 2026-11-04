@@ -12,7 +12,7 @@
 import { describe, expect, it } from 'vitest';
 import { importStatementResponse } from '@rekoda/contracts';
 import { lagosDay } from '@rekoda/core';
-import { bankRepo, closeRepo, sql, withBusiness, type TenantDb } from '@rekoda/db';
+import { bankRepo, closeRepo, withBusiness, type TenantDb } from '@rekoda/db';
 import { confirmReconciliationWork, prepareClassification } from '../commands/bank-commands.js';
 import { postJournalWork } from '../commands/ledger-commands.js';
 import {
@@ -31,6 +31,7 @@ import {
   stillWaiting,
   useBankHarness,
 } from './bank.fixtures.js';
+import { forget, linesOn, matchCount, forgetAudits } from './bank-forget.fixtures.js';
 
 useBankHarness();
 
@@ -43,56 +44,6 @@ useBankHarness();
  * classify the fresh line, and one physical movement was booked twice.
  */
 describe('forgetting a statement day (G-97)', () => {
-  // Kept identical to the copy in bank-forget-1.integration.test.ts. It belongs to this
-  // describe block's own setup, which each part keeps as it was. Change them together.
-  const forget = async (auth: Record<string, string>, postedOn: string) =>
-    (await post('/v1/bank/statement/forget', { postedOn }, auth)).json() as Record<string, unknown>;
-
-  /**
-   * The day's lines, as the database holds them.
-   *
-   * Kept identical to the copy in bank-forget-1.integration.test.ts. It belongs to this
-   * describe block's own setup, which each part keeps as it was. Change them together.
-   */
-  async function linesOn(businessId: string, postedOn: string) {
-    const rows = await withBusiness(db, businessId, (tx) =>
-      tx.execute<{ id: string }>(sql`
-        SELECT id FROM bank_statement_lines
-        WHERE business_id = ${businessId}::uuid AND posted_on = ${postedOn}::date ORDER BY id
-      `),
-    );
-    return [...rows].map((r) => r.id);
-  }
-
-  // Kept identical to the copy in bank-forget-1.integration.test.ts. It belongs to this
-  // describe block's own setup, which each part keeps as it was. Change them together.
-  async function matchCount(businessId: string) {
-    const [row] = await withBusiness(db, businessId, (tx) =>
-      tx.execute<{ n: number }>(sql`
-        SELECT count(*)::int AS n FROM bank_line_matches WHERE business_id = ${businessId}::uuid
-      `),
-    );
-    return row!.n;
-  }
-
-  /**
-   * The forget audit rows, stored values as written.
-   *
-   * Kept identical to the copy in bank-forget-1.integration.test.ts. It belongs to this
-   * describe block's own setup, which each part keeps as it was. Change them together.
-   */
-  async function forgetAudits(businessId: string) {
-    const rows = await withBusiness(db, businessId, (tx) =>
-      tx.execute<{ entity_id: string; new_value: Record<string, unknown> }>(sql`
-        SELECT entity_id, new_value FROM audit_events
-        WHERE business_id = ${businessId}::uuid AND entity = 'bank_statement'
-          AND action = 'forgotten'
-        ORDER BY created_at, id
-      `),
-    );
-    return [...rows];
-  }
-
   /** The classify door's own work, in a transaction the test holds open. */
   async function classifyIn(tx: TenantDb, businessId: string, lineId: string) {
     const prepared = await prepareClassification(tx, {

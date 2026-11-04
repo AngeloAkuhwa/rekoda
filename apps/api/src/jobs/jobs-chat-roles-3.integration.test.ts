@@ -14,7 +14,7 @@
 // jobs.fixtures.ts.
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { createDb, identity, sql, withBusiness } from '@rekoda/db';
+import { createDb, sql, withBusiness } from '@rekoda/db';
 import { replies } from '@rekoda/core';
 import { storedEventId } from '@rekoda/db/testing';
 import { buildRunner } from './jobs.module.js';
@@ -33,73 +33,11 @@ import {
   workerDb,
   useJobsHarness,
 } from './jobs.fixtures.js';
+import { memberOf, saysOverChat, A_SALE, A_SALES_QUESTION } from './jobs-chat-roles.fixtures.js';
 
 useJobsHarness();
 
 describe('the chat surface enforces roles', () => {
-  /**
-   * The dashboard has RolesGuard; chat has only this handler. An accountant
-   * is inside the tenant, so RLS passes every row — the refusal below is the
-   * only thing standing between a view-only member and the books.
-   *
-   * Kept identical to the copy in jobs-chat-roles-1.integration.test.ts,
-   * jobs-chat-roles-2.integration.test.ts. It belongs to this describe block's own setup, which
-   * each part keeps as it was. Change them together.
-   */
-  async function memberOf(
-    businessId: string,
-    phone: string,
-    role: 'accountant' | 'delegate',
-  ): Promise<void> {
-    await identity.inviteMember(appDb, businessId, phone, role, 3, 'user:test-owner');
-  }
-
-  // Kept identical to the copy in jobs-chat-roles-1.integration.test.ts,
-  // jobs-chat-roles-2.integration.test.ts. It belongs to this describe block's own setup, which
-  // each part keeps as it was. Change them together.
-  async function saysOverChat(businessId: string, phone: string, text: string): Promise<string> {
-    const externalId = `wamid.${randomBytes(8).toString('hex')}`;
-    const waId = phone.replace('+', '');
-    const body = {
-      object: 'whatsapp_business_account',
-      entry: [
-        {
-          id: 'WABA',
-          changes: [
-            {
-              field: 'messages',
-              value: {
-                messaging_product: 'whatsapp',
-                metadata: { display_phone_number: '15550001', phone_number_id: 'PNID' },
-                contacts: [{ profile: { name: 'X' }, wa_id: waId }],
-                messages: [
-                  {
-                    id: externalId,
-                    from: waId,
-                    timestamp: '1700000000',
-                    type: 'text',
-                    text: { body: text },
-                  },
-                ],
-              },
-            },
-          ],
-        },
-      ],
-    };
-    const recorded = await recordPinned({
-      provider: 'meta',
-      eventType: 'message.text',
-      externalId,
-      payload: sealPayload(body, config.vaultKey, 'meta', externalId),
-      businessId,
-    });
-    await enqueue(businessId, 'inbound.message', { eventId: storedEventId(recorded) });
-    const runner = buildRunner(workerDb, appDb, deps);
-    await runner.runOnce();
-    return stubSender.sent[stubSender.sent.length - 1]?.text ?? '';
-  }
-
   /**
    * What a refused message must leave untouched (G-57).
    *
@@ -137,27 +75,6 @@ describe('the chat surface enforces roles', () => {
       await close();
     }
   }
-
-  const A_SALE = {
-    intent: 'RecordSale',
-    customer: { kind: 'none' },
-    items: [{ name: 'rice', quantity: 1, unitPrice: 20_000 }],
-    statedTotal: 20_000,
-    reportedPayment: 20_000,
-    paymentMethod: 'cash',
-    discount: null,
-    deliveryFee: null,
-    dueDescription: null,
-  };
-
-  const A_SALES_QUESTION = {
-    intent: 'Query',
-    topic: 'sales_summary',
-    customer: null,
-    period: 'month',
-    periodText: null,
-    format: 'chat',
-  };
 
   /**
    * L, M: a job that fails after deciding is retried, and the retry must not
@@ -203,6 +120,9 @@ describe('the chat surface enforces roles', () => {
     }
   }
 
+  /* Owner decision on G-57, with Codex: a unit taken just before midnight
+   * at a month's end (Lagos time) and refused on a retry after it goes back
+   * to THAT month, exactly once, and the new month is never touched. */
   it('refunds the original month once when a retry crosses the month boundary (G-57)', async () => {
     const businessId = await seedBusiness('Role Gate Month Ltd', '+2348140010047');
     /* A paid plan meters by calendar month, which is what this test is about. */
@@ -313,6 +233,9 @@ describe('the chat surface enforces roles', () => {
     }
   });
 
+  /* Final review B on 5f98eec: the non-command refund was skipped on a
+   * retry. A question whose first reply failed, and whose retry then finds
+   * the provider down, delivered nothing, so it must cost nothing. */
   it('refunds a question whose retry finds the provider down (G-57)', async () => {
     const businessId = await seedBusiness('Role Gate Retry Down Ltd', '+2348140010045');
     await memberOf(businessId, '+2348140010046', 'accountant');
