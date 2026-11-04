@@ -7,6 +7,9 @@
 > commitments:** they assume one engineer working with an AI pair at the pace the
 > repository shows (a focused slice in one to three days including review), and
 > they exclude external lead times, which no one on the team controls.
+>
+> **Updated 4 November 2026:** P1-3 records the billing browser journeys added in #426 (CI
+> evidence on a stand-in Paystack, not staging acceptance).
 
 ## Workstreams
 

@@ -70,14 +70,14 @@ Use a phone you control. On mobile and on a laptop-sized window.
 | #   | Date | Tester | Desktop | Mobile | Notes |
 | --- | ---- | ------ | ------- | ------ | ----- |
 
-## 5. Automated evidence per step (status as of 2 Nov 2026)
+## 5. Automated evidence per step (status as of 2 Nov 2026; browser evidence for steps 15 to 18 updated 4 Nov 2026)
 
 Every step in sections 1 and 2 is **MERGED code with automated tests and STAGING ACCEPTANCE PENDING**: the
 result table in section 4 is empty, so no step has been walked on staging, and nothing here is live provider
 verified. The files below exercise the area of each step; they are where to look, not a claim that a test
 asserts the exact wording on screen.
 
-Checks behind this section: file names and test titles were read from the repository tree on 29 Oct 2026 (steps 1 to 18) and 2 Nov 2026 (steps 19 to 23); the browser journeys in steps 15 to 18 were added and run locally on 4 Nov 2026. No
+Checks behind this section: file names and test titles were read from the repository tree on 29 Oct 2026 (steps 1 to 18) and 2 Nov 2026 (steps 19 to 23); steps 15 to 18 were extended on 4 Nov 2026 with the cancel, keep and stop journey and the renewal-paid journeys (pull request #426, which records the local run). No
 test was run for this documentation change, and no staging environment was reached.
 
 | Steps | Area                                               | Automated tests that exercise it                                                                                                                                                                                                                                                                                                                                                                                                                                           | Staging walk |

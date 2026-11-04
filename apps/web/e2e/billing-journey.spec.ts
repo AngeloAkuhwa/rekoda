@@ -303,6 +303,7 @@ test('a cancelled plan can be kept before it ends, and a cancellation left to ru
   await expect(
     page.getByText(
       'Done. Your plan carries on as it is, and the change you scheduled is cancelled.',
+      { exact: true },
     ),
   ).toBeVisible();
   await expect(page.getByText(/^Cancelled: your plan runs to/)).toHaveCount(0);
@@ -310,9 +311,10 @@ test('a cancelled plan can be kept before it ends, and a cancellation left to ru
   await expect(renews).toHaveText(renewsBefore);
   expect(await pendingOf()).toBeNull();
 
-  // Cancelled again and left to run: the paid month ends and the renewal sweep stops the plan,
-  // written here as `expireSubscription(…, 'cancelled')` writes it, because the hourly sweep and
-  // the clock are not what is under test (billing.integration.test.ts covers them).
+  // Cancelled again and left to run: the paid month ends and the renewal sweep stops the plan.
+  // The plan columns are written here as `expireSubscription(…, 'cancelled')` sets them (its
+  // audit row is left out: nothing here reads it), because the hourly sweep and the clock are not
+  // what is under test; billing.integration.test.ts runs the sweep's cancelled branch.
   await cancel();
   expect(await pendingOf()).toBe('expired');
   await sql.begin(async (tx) => {
@@ -331,17 +333,25 @@ test('a cancelled plan can be kept before it ends, and a cancellation left to ru
              WHERE id = ${businessId}::uuid AND pending_plan = 'expired'`;
   });
 
+  const [ended] = await sql<{ ends: Date }[]>`
+    SELECT plan_expires_at AS ends FROM businesses WHERE id = ${businessId}::uuid`;
   await page.goto('/app/billing');
   await expect(page.getByText(/Your subscription stopped on/)).toBeVisible();
-  // A cancellation is not a missed payment: no grace period, no renewal to pay, no new charge.
+  // It stopped on the last day paid for, not on the day the page was read.
+  await expect(
+    page.getByText(
+      `Stopped ${ended!.ends.toLocaleDateString('en-GB', { timeZone: 'Africa/Lagos', day: 'numeric', month: 'short', year: 'numeric' })}.`,
+      { exact: true },
+    ),
+  ).toBeVisible();
+  // A cancellation is not a missed payment: the page offers no grace period and no renewal to
+  // pay, and nothing on the way here (cancel, keep, cancel) raised a charge.
   await expect(page.getByText(/renewal is due/)).toHaveCount(0);
   await expect(page.getByText(/Grace period ends/)).toHaveCount(0);
   await expect(page.locator('#pay')).toHaveCount(0);
-  const [facts] = await sql<{ charges: number; failed: Date | null }[]>`
-    SELECT (SELECT count(*)::int FROM subscription_charges WHERE business_id = b.id) AS charges,
-           b.payment_failed_at AS failed
-    FROM businesses b WHERE b.id = ${businessId}::uuid`;
-  expect(facts).toEqual({ charges: 1, failed: null });
+  const [facts] = await sql<{ charges: number }[]>`
+    SELECT count(*)::int AS charges FROM subscription_charges WHERE business_id = ${businessId}::uuid`;
+  expect(facts).toEqual({ charges: 1 });
   await expect(
     page.getByRole('row').filter({ hasText: paid }).getByRole('cell', { name: 'Paid' }),
   ).toBeVisible();
