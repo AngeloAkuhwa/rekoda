@@ -156,14 +156,15 @@ a user or password in it, remove it before sharing and report it as a defect in 
    - Steps 17, 18, 19 and 22 need an operator to move a test business's dates or to make a send fail
      (step 18 needs a plan already past its paid-to date).
      **No procedure exists for that yet** (no ops endpoint, no runbook); do not improvise SQL or host
-     changes. Until engineering writes a staging-only procedure, or the owner rules these steps
-     automated-evidence-only (walkthrough §5 lists their tests), record them as BLOCKED, not FAIL.
-   - Once steps 17 and 19 can run on staging (a staging-only procedure exists), and while
-     `META_BILLING_TEMPLATE` is not approved, they show the grace reminders held, not sent. Record that
-     as the observed result. An automated-evidence-only ruling does not make them runnable: keep them
-     BLOCKED and cite the automated tests separately.
+     changes. Record them as BLOCKED, not FAIL, until the owner chooses a G-119 route. Under route (A),
+     a staging-only procedure, they run on staging like any other step. Under route (B), automated
+     evidence only, record each as accepted on automated evidence and cite its walkthrough §5 tests;
+     that is not a staging observation, so leave the observed-result column empty.
+   - When steps 17 and 19 run on staging (route A) while `META_BILLING_TEMPLATE` is not approved, they
+     show the grace reminders held, not sent. Record that as the observed result. Under route (B) no
+     such staging result exists.
 4. **Switch reminders on.** The owner sets `REKODA_CUSTOMER_REMINDERS=1` in staging's `.env` and recreates the
-   api and worker so they read it (`dc up -d --wait --force-recreate api worker`, the form `runbooks/deploy.md` uses for the api and worker). Then re-run the check:
+   api and worker so they read it (`dc up -d --wait --force-recreate api worker`, as in `runbooks/deploy.md` "Rotate a database password"). Then re-run the check:
    both containers must read `ON (1)`.
 5. **ACCEPT-01.** Run the 17 A5 journeys (`REKODA_MVP_DELIVERY_PLAN.md` §A5) with the plan in §4a,
    and fill its result table. Record for each:
