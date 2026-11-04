@@ -17,7 +17,7 @@
  * rule is Caddy's alone, because Caddy alone publishes a port.
  */
 import ipaddr from 'ipaddr.js';
-import { parseEdgeProxies, universalProblem } from './client-address.js';
+import { parseEdgeProxies, universalProblem } from './http/client-address.js';
 
 /**
  * The edge network's gateway, pinned in docker-compose.prod.yml (a test holds

@@ -10,8 +10,8 @@ import { bootChecks, isEntrypoint, type Db } from '@rekoda/db';
 import { MAX_IMAGE_BYTES } from '@rekoda/core';
 import { publicApi } from '@rekoda/contracts';
 import { CONFIG, loadConfig, trustedProxies, type ApiConfig } from './config.js';
-import { clientAddress, rateLimitKey } from './client-address.js';
-import { isRateLimitExempt } from './rate-limit-exempt.js';
+import { clientAddress, rateLimitKey } from './http/client-address.js';
+import { isRateLimitExempt } from './http/rate-limit-exempt.js';
 
 /**
  * The most a webhook body may be, in bytes.

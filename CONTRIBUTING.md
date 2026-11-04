@@ -149,6 +149,14 @@ feature-to-test index is `docs/TEST_MAP.md`.
   split the file instead.
 - **Keep the map.** When you rename or move a test, update `docs/TEST_MAP.md`;
   the check fails on a path that no longer exists.
+- **Document years.** A document is numbered with the Lagos year it is issued
+  in (`INV-2026-000001`), so an integration test that issues one now and
+  asserts a literal year fails on 1 January. Assert the number the test issued
+  (what the writer returned, or read it back). Where the year really is fixed,
+  because the test passed the issue instant in or the number was never issued,
+  put `// fixed date: <why>` or `// not issued: <why>` on that block.
+  `scripts/check-test-years.mjs` (a CI step) fails on a new unannotated
+  literal in an `*.integration.test.ts` or `*.fixtures.ts` file.
 
 ## Tests
 

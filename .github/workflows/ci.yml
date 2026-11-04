@@ -151,6 +151,21 @@ jobs:
           else
             node scripts/check-test-layout.mjs
           fi
+      # A document is numbered with the Lagos year it is issued in, so an integration test that
+      # issues one now and asserts a literal year fails on 1 January. New literals need a
+      # `// fixed date:` or `// not issued:` note; lines already on the base branch are not read.
+      - name: Test document years
+        if: steps.ws.outputs.present == 'true'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          node --test scripts/check-test-years.test.mjs
+          if [ -n "$BASE_REF" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_REF"
+            node scripts/check-test-years.mjs --base-ref FETCH_HEAD
+          else
+            node scripts/check-test-years.mjs
+          fi
       - name: The API reference describes the API
         if: steps.ws.outputs.present == 'true'
         run: node scripts/check-openapi.mjs

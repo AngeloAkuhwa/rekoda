@@ -52,6 +52,27 @@ describe("the plan's own example, end to end", () => {
   };
 
   /**
+   * The numbers the books gave this business's one sale, read back rather than written as
+   * literals. A sale confirmed now is numbered in the current Lagos year, so a literal year here
+   * would fail from 1 January 2027 with nothing broken. The year itself is pinned at the Lagos
+   * boundary in packages/db/src/documents/numbering-year-boundary.integration.test.ts.
+   */
+  async function issuedNumbers(
+    businessId: string,
+  ): Promise<{ invoice: string; receipt: string | null }> {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ invoice: string; receipt: string | null }>(sql`
+        SELECT (SELECT invoice_number FROM invoices WHERE business_id = ${businessId}::uuid) AS invoice,
+               (SELECT receipt_number FROM receipts WHERE business_id = ${businessId}::uuid) AS receipt`),
+    );
+    const { invoice, receipt } = [...rows][0]!;
+    expect(invoice).toMatch(/^INV-\d{4}-000001$/);
+    // One sale, one moment: the receipt that came with it carries the same year.
+    if (receipt !== null) expect(receipt).toBe(`RCT-${invoice.slice(4, 8)}-000001`);
+    return { invoice, receipt };
+  }
+
+  /**
    * Post a message and DRAIN the queue, which is what a real worker does.
    *
    * A single `runOnce()` was enough until issuing began enqueuing a render
@@ -123,7 +144,8 @@ describe("the plan's own example, end to end", () => {
 
     expect(stubSender.lastText).toMatch(/Saved ✅ INV-\d{4}-000001 for ₦150,000/);
     // The bus path names the receipt too (G-48), from the run's own result.
-    expect(stubSender.lastText).toContain('Receipt RCT-2026-000001 is on its way.');
+    const { invoice, receipt } = await issuedNumbers(business.id);
+    expect(stubSender.lastText).toContain(`Receipt ${receipt} is on its way.`);
     expect(await invoiceCount(business.id)).toBe(1);
 
     const claims = await withBusiness(db, business.id, (tx) =>
@@ -137,8 +159,8 @@ describe("the plan's own example, end to end", () => {
     expect(claim?.command_name).toBe('RecordSale');
     expect(claim?.key).toMatch(/^draft:/);
     expect(claim?.response_snapshot).toMatchObject({
-      invoiceNumber: 'INV-2026-000001',
-      receiptNumber: 'RCT-2026-000001',
+      invoiceNumber: invoice,
+      receiptNumber: receipt,
     });
   });
 
@@ -156,7 +178,8 @@ describe("the plan's own example, end to end", () => {
       issueRepo.documentsFor(tx, business.id),
     );
     expect(stored).toHaveLength(1);
-    expect(stored[0]).toMatchObject({ kind: 'receipt_pdf', refNumber: 'RCT-2026-000001' });
+    const { receipt } = await issuedNumbers(business.id);
+    expect(stored[0]).toMatchObject({ kind: 'receipt_pdf', refNumber: receipt });
 
     // The key is unguessable — a sequential one would let anyone holding one
     // document's URL walk the merchant's whole sales history by counting.
@@ -186,13 +209,14 @@ describe("the plan's own example, end to end", () => {
 
     // Named so a merchant can find it again in three weeks, not by a uuid.
     // Money was taken with the sale, so it is the receipt (G-48, journey C5).
-    expect(sent.filename).toBe('RCT-2026-000001.pdf');
+    const { invoice, receipt } = await issuedNumbers(business.id);
+    expect(sent.filename).toBe(`${receipt}.pdf`);
     expect(sent.contentType).toBe('application/pdf');
     expect(sent.to).toBe('+2348031234567');
     // The merchant-recorded caption, naming the invoice it was paid against.
     // Never "confirmed": nobody verified this money with a provider (ADR 0014).
     expect(sent.caption).toBe(
-      'Receipt RCT-2026-000001 for ₦100,000 on INV-2026-000001 is attached. ' +
+      `Receipt ${receipt} for ₦100,000 on ${invoice} is attached. ` +
         'Forward it to your customer.',
     );
     expect(sent.caption).not.toMatch(/confirm|verif/i);
@@ -218,7 +242,9 @@ describe("the plan's own example, end to end", () => {
     expect(stubSender.lastText).toMatch(/Saved ✅ INV-\d{4}-000001 for ₦150,000/);
     expect(stubSender.lastText).not.toContain('Receipt');
     expect(stubSender.documents).toHaveLength(1);
-    expect(stubSender.lastDocument!.filename).toBe('INV-2026-000001.pdf');
+    const { invoice, receipt } = await issuedNumbers(business.id);
+    expect(receipt).toBeNull();
+    expect(stubSender.lastDocument!.filename).toBe(`${invoice}.pdf`);
     const receipts = await withBusiness(db, business.id, (tx) =>
       tx.execute<{ n: number }>(
         sql`SELECT count(*)::int AS n FROM receipts WHERE business_id = ${business.id}::uuid`,
@@ -228,7 +254,7 @@ describe("the plan's own example, end to end", () => {
   });
 
   it('the yes for a paid sale names the receipt that follows', async () => {
-    await seedMerchant('+2348031234567', 'Ada Fashion');
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
     stubTransport.replyWith(THE_SALE);
     await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.SALE');
     await post(messagePayload('2348031234567', 'wamid.YES', 'yes'));
@@ -236,9 +262,10 @@ describe("the plan's own example, end to end", () => {
     const runner = buildRunner(workerDb, db, deps);
     expect(await runner.runOnce()).toBe(true);
 
+    const { invoice, receipt } = await issuedNumbers(business.id);
     expect(stubSender.lastText).toBe(
-      'Saved ✅ INV-2026-000001 for ₦150,000.\n₦50,000 still owed.\n' +
-        'Receipt RCT-2026-000001 is on its way.',
+      `Saved ✅ ${invoice} for ₦150,000.\n₦50,000 still owed.\n` +
+        `Receipt ${receipt} is on its way.`,
     );
   });
 

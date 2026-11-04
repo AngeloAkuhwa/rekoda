@@ -49,7 +49,7 @@ beforeAll(async () => {
   process.env['REKODA_RATE_LIMIT_MAX'] = String(LIMIT);
   process.env['REKODA_TRUSTED_PROXIES'] = CADDY;
   process.env['REKODA_TRUSTED_WEB'] = WEB;
-  const { createApp } = await import('./main.js');
+  const { createApp } = await import('../main.js');
   app = await createApp();
   await app.init();
   await app.getHttpAdapter().getInstance().ready();
