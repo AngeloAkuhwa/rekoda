@@ -121,6 +121,29 @@ describe.each<Death>(['markFailed', 'reclaimStalled'])(
   },
 );
 
+describe('a lost message whose draft window closes before the next message is read', () => {
+  it('a "yes" sent inside the window still confirms nothing once the window has closed', async () => {
+    const business = await seedMerchant();
+    await say('wamid.window-1', AN_EXPENSE, 'bought fuel 20k cash');
+    await queueOnly('wamid.window-cancel', 'cancel');
+    await killInboundJob(business.id, 'markFailed');
+
+    /* The "yes" reaches Rekoda inside the window, but is read only after the window has closed:
+     * it is judged at its arrival, so the lost "cancel" before it must still have withdrawn it. */
+    await post(messagePayload('2348031234567', 'wamid.window-yes', 'yes'));
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        UPDATE command_drafts SET expires_at = clock_timestamp()
+         WHERE business_id = ${business.id}::uuid AND state = 'pending'`),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await drain();
+
+    expect((await footprint(business.id)).expenses).toBe(0);
+    expect(stubSender.lastText).toBe(replies.earlierMessageLostYes().text);
+  });
+});
+
 describe('an inbound message that fails and backs off before it dies (markFailed with retries)', () => {
   /** Fail the waiting inbound job's first attempt and leave it backing off for a minute. */
   async function failOnceAndBackOff(businessId: string) {

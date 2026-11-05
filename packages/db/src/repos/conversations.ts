@@ -910,11 +910,14 @@ export const INBOUND_MESSAGE_FAILED = 'inbound_message_failed';
  * with reason `inbound_message_failed`, so the next "yes" or "no" can tell the merchant to send
  * it again.
  *
- * Which drafts: those still pending and inside their confirmation window whose own message
- * reached Rekoda before the lost one did (by each message's webhook event, `external_events`
- * `created_at`). A draft from a message that arrived later, including one that passed the lost
- * message while it was backing off, is that later message's and stays. A draft whose window has
- * closed is left for `expireStaleDrafts`, so a "yes" to it is still told it expired (G-23).
+ * Which drafts: those still pending whose own message reached Rekoda before the lost one did (by
+ * each message's webhook event, `external_events` `created_at`) and whose confirmation window was
+ * still open when the lost message arrived. Like every message, the lost one is judged at its
+ * arrival (G-23), not when this runs: a window that closed only afterwards still counts, because
+ * a later "yes" sent inside that window would otherwise confirm the draft. A draft from a message
+ * that arrived later, including one that passed the lost message while it was backing off, is
+ * that later message's and stays. A draft already expired when the lost message arrived is left
+ * for `expireStaleDrafts`, so a "yes" to it is still told it expired.
  *
  * Each dead message is applied exactly once: its event is then marked processed, which is also
  * what takes it out of the next call, as `reconcileDeadReceipts` does for receipts. The event's
@@ -946,7 +949,7 @@ export async function reconcileDeadInboundMessages(
         FROM conversation_messages m, external_events lost
        WHERE d.business_id = ${businessId}::uuid
          AND d.state = 'pending'
-         AND d.expires_at > clock_timestamp()
+         AND d.expires_at > lost.created_at
          AND m.business_id = ${businessId}::uuid
          AND m.id = d.conversation_message_id
          AND lost.business_id = ${businessId}::uuid

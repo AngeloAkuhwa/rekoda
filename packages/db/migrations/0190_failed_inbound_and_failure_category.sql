@@ -14,7 +14,10 @@
 --    handler had already failed). No error text, payload or provider response is ever stored here.
 --
 -- Expand-only: one nullable column with a CHECK, and one more value allowed by an existing CHECK.
--- Both tables keep their grants and RLS policies.
+-- Both tables keep their grants and RLS policies. Both CHECKs are added NOT VALID and are not
+-- validated here: the migration runs in one transaction, so a VALIDATE would scan `jobs` and
+-- `command_drafts` under the ACCESS EXCLUSIVE lock the ADD took. Every existing row already passes
+-- (the column is new, and the reasons are a superset of the old ones), and new writes are checked.
 
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS failure_category text;
 
@@ -23,11 +26,9 @@ ALTER TABLE jobs
   CHECK (failure_category IS NULL
          OR failure_category IN ('handler_error', 'lease_expired', 'lease_expired_after_handler_error'))
   NOT VALID;
-ALTER TABLE jobs VALIDATE CONSTRAINT jobs_failure_category_ck;
 
 ALTER TABLE command_drafts DROP CONSTRAINT command_drafts_retired_reason_ck;
 ALTER TABLE command_drafts
   ADD CONSTRAINT command_drafts_retired_reason_ck
   CHECK (retired_reason IS NULL OR retired_reason IN ('preview_not_delivered', 'inbound_message_failed'))
   NOT VALID;
-ALTER TABLE command_drafts VALIDATE CONSTRAINT command_drafts_retired_reason_ck;
