@@ -906,9 +906,9 @@ export const INBOUND_MESSAGE_FAILED = 'inbound_message_failed';
  * every attempt (`reclaimStalled`), nothing will ever run it again. It may have been the
  * merchant's "cancel" or a correction, so a draft that was pending then must never be confirmed
  * by a later "yes". Called under the business's inbound lock before any answer is read, this
- * retires every draft still pending that was created before the job went dead, as `superseded`
- * with reason `inbound_message_failed`, so the next "yes" or "no" can tell the merchant to send
- * it again.
+ * retires every pending draft whose message reached Rekoda before the lost one (and whose window
+ * was then open), as `superseded` with reason `inbound_message_failed`, so the next "yes" or
+ * "no" can tell the merchant to record it again.
  *
  * Which drafts: those still pending whose own message reached Rekoda before the lost one did (by
  * each message's webhook event, `external_events` `created_at`) and whose confirmation window was
