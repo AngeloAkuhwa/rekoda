@@ -172,6 +172,8 @@ echo image:test`,
     sha,
     script,
     dir,
+    /** Stage a new file in the checkout: a tracked change that `git status` reports. */
+    dirty: () => run('echo changed > tracked-change && git add tracked-change'),
     calls: () => readFileSync(join(fake, 'calls.log'), 'utf8').split('\n'),
     done: () => rmSync(root, { recursive: true, force: true }),
   };
@@ -205,6 +207,8 @@ export const SLOTS = {
 export const HEALTHY_DOTENV =
   'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\nRESEND_API_KEY=rrrrrrrrrrrrrrrr\nWORKER_DATABASE_URL=postgres://u:wwwwwwww@db/rekoda\n' +
   'REKODA_WEB_URL=https://staging.invalid\nREKODA_EMAIL_PROVIDER=resend\nREKODA_EMAIL_FROM=billing@staging.invalid\nRESEND_WEBHOOK_SECRET=whsec_vvvvvvvvvvvvvvvv\n';
+/** The healthy host's /health body ({sha7} is filled in by `host`). */
+export const HEALTHY_HEALTH = `{"status":"ok","database":"up","migrations":${TAGS.length},"release":"staging-{sha7}","commit":"{sha7}"}`;
 /** A staging host where every check passes. */
 export const healthy = (over = {}) =>
   host({
@@ -214,7 +218,7 @@ export const healthy = (over = {}) =>
       worker: 'rekoda-app:staging-{sha7}',
       web: 'rekoda-web:staging-{sha7}',
     },
-    health: `{"status":"ok","database":"up","migrations":${TAGS.length},"release":"staging-{sha7}","commit":"{sha7}"}`,
+    health: HEALTHY_HEALTH,
     journal: TAGS,
     ledger: TAGS,
     env: {

@@ -7,7 +7,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { utimesSync } from 'node:fs';
 import { join } from 'node:path';
-import { HEALTHY_DOTENV, SLOTS, attention, healthy } from './staging-readonly-check.fixtures.mjs';
+import {
+  HEALTHY_DOTENV,
+  HEALTHY_HEALTH,
+  SLOTS,
+  attention,
+  healthy,
+} from './staging-readonly-check.fixtures.mjs';
 
 const BARE_ENV = 'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\n';
 test('a broken web tier, an unhealthy or missing service, or a failed job can never read OK', () => {
@@ -283,6 +289,79 @@ test('an .env written in the same second its container was created reads unknown
     assert.match(r.stdout.match(envLine('api'))[1], /^unknown \(\.env written in the same second/);
     assert.equal(r.stdout.match(envLine('worker'))[1], 'yes');
     assert.equal(r.status, 1, r.stdout);
+  } finally {
+    h.done();
+  }
+});
+
+/* Each release-identity and /health check below must be able to fail the run: a branch that only
+ * printed would leave a dirty checkout, a degraded database, a release that is not the served
+ * commit or an unusable EXPECT_SHA reading as a pass (independent review of #428). */
+test('release identity and /health problems each need attention and exit 1', () => {
+  const cases = [
+    { what: 'a tracked change', line: /tracked modifications\s+1\n/, dirty: true },
+    {
+      what: '.env without a release',
+      over: { dotenv: HEALTHY_DOTENV.replace(/^REKODA_RELEASE=[^\n]*\n/, '') },
+      line: /\.env REKODA_RELEASE\s+UNSET\n/,
+    },
+    {
+      what: 'an uppercase EXPECT_SHA',
+      expect: 'ABCDEF0',
+      line: /EXPECT_SHA\s+not a lowercase hex commit/,
+    },
+    {
+      what: 'a six-character EXPECT_SHA',
+      expect: 'abcdef',
+      line: /EXPECT_SHA\s+must be 7 to 40 characters/,
+    },
+    {
+      what: 'a database that is not up',
+      over: { health: HEALTHY_HEALTH.replace('"database":"up"', '"database":"down"') },
+      line: /served database\s+down\n/,
+    },
+    {
+      what: 'a release that is not the served commit',
+      over: {
+        health: HEALTHY_HEALTH.replace('"release":"staging-{sha7}"', '"release":"staging-0000000"'),
+      },
+      line: /served release is staging-<commit>\s+NO\n/,
+    },
+  ];
+  for (const { what, over = {}, expect, line, dirty = false } of cases) {
+    const h = healthy(over);
+    try {
+      if (dirty) h.dirty();
+      const r = h.run2(undefined, { EXPECT_SHA: expect ?? h.sha.slice(0, 7) });
+      assert.match(attention(r.stdout), line, what);
+      assert.equal(r.status, 1, what);
+      assert.doesNotMatch(r.stdout, /RESULT: OK/, what);
+    } finally {
+      h.done();
+    }
+  }
+});
+
+test('a quoted-empty or comment-only .env value reads UNSET, as compose resolves it', () => {
+  for (const line of ['RESEND_API_KEY=""', "RESEND_API_KEY=''", 'RESEND_API_KEY= # set later']) {
+    const h = healthy({ dotenv: HEALTHY_DOTENV.replace(/^RESEND_API_KEY=[^\n]*$/m, line) });
+    try {
+      const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+      assert.match(attention(r.stdout), /RESEND_API_KEY\s+UNSET \(required on staging\)/, line);
+      assert.equal(r.status, 1, line);
+    } finally {
+      h.done();
+    }
+  }
+  /* A quoted value that is set still reads SET, and its value is never printed. */
+  const h = healthy({
+    dotenv: HEALTHY_DOTENV.replace(/^RESEND_API_KEY=([^\n]*)$/m, 'RESEND_API_KEY="$1"'),
+  });
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(r.stdout, /RESEND_API_KEY\s+SET\n/);
+    assert.doesNotMatch(r.stdout, /rrrrrrrrrrrrrrrr/);
+    assert.equal(r.status, 0, r.stdout);
   } finally {
     h.done();
   }

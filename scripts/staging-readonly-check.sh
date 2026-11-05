@@ -275,14 +275,18 @@ echo "== billing settings (SET/UNSET only)"
 for k in REKODA_WEB_URL REKODA_ANNUAL_BILLING \
          REKODA_EMAIL_PROVIDER RESEND_API_KEY REKODA_EMAIL_FROM RESEND_WEBHOOK_SECRET \
          WORKER_DATABASE_URL; do
-  v="$(sed -n "s/^$k=//p" .env | head -1)"
+  # Read as compose resolves it: an unquoted " # comment" is dropped and one pair of surrounding
+  # quotes is removed, so KEY="" and KEY= # later read empty (independent review of #428).
+  v="$(sed -n "s/^$k=//p" .env 2>/dev/null | head -1 |
+       sed -e '/^["'"'"']/!s/[[:space:]][[:space:]]*#.*$//' \
+           -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/")"
   if [ -z "$v" ]; then
     # Staging runs the production compose file with a separate worker, Resend email and the web
     # app, so everything here is required except annual billing, which is optional.
     case "$k" in
       # An empty assignment (REKODA_ANNUAL_BILLING=) reaches the process as "", which it refuses
       # to boot with; only a line that is absent is unset.
-      REKODA_ANNUAL_BILLING) if grep -q "^$k=" .env; then flag "$k" "SET but empty (the process refuses to boot with it)"
+      REKODA_ANNUAL_BILLING) if grep -q "^$k=" .env 2>/dev/null; then flag "$k" "SET but empty (the process refuses to boot with it)"
                              else say "$k" UNSET; fi ;;
       *) flag "$k" "UNSET (required on staging)" ;;
     esac
