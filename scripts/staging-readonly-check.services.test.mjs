@@ -379,3 +379,27 @@ test('a quoted-empty or comment-only .env value reads UNSET, as compose resolves
     h.done();
   }
 });
+
+test('a key written twice in .env reads as its LAST line, as compose resolves it', () => {
+  /* Compose keeps the last assignment, so a set key emptied further down reaches the container
+   * empty: it must read UNSET, never SET from the first line (independent review on #428). */
+  const emptied = healthy({ dotenv: `${HEALTHY_DOTENV.replace(/\n?$/, '\n')}RESEND_API_KEY=\n` });
+  try {
+    const r = emptied.run2(undefined, { EXPECT_SHA: emptied.sha.slice(0, 7) });
+    assert.match(attention(r.stdout), /RESEND_API_KEY\s+UNSET \(required on staging\)/);
+    assert.equal(r.status, 1, r.stdout);
+  } finally {
+    emptied.done();
+  }
+  /* And the other way round: an empty line overridden by a later value reads SET. */
+  const filled = healthy({
+    dotenv: HEALTHY_DOTENV.replace(/^(RESEND_API_KEY=[^\n]*)$/m, 'RESEND_API_KEY=\n$1'),
+  });
+  try {
+    const r = filled.run2(undefined, { EXPECT_SHA: filled.sha.slice(0, 7) });
+    assert.match(r.stdout, /RESEND_API_KEY\s+SET\n/);
+    assert.equal(r.status, 0, r.stdout);
+  } finally {
+    filled.done();
+  }
+});

@@ -31,7 +31,7 @@ if st="$(git --no-optional-locks status --porcelain --untracked-files=no 2>/dev/
   mods="$(printf '%s' "$st" | grep -c .)"
   if [ "$mods" -eq 0 ]; then say "tracked modifications" "0"; else flag "tracked modifications" "$mods"; fi
 else flag "tracked modifications" "unknown (git status failed)"; fi
-RELEASE="$(sed -n 's/^REKODA_RELEASE=//p' .env 2>/dev/null | head -1)"
+RELEASE="$(sed -n 's/^REKODA_RELEASE=//p' .env 2>/dev/null | tail -n 1)"
 if [ -n "$RELEASE" ]; then say ".env REKODA_RELEASE" "$RELEASE"; else flag ".env REKODA_RELEASE" "UNSET"; fi
 EXPECT="${EXPECT_SHA:-}"
 case "$EXPECT" in
@@ -275,12 +275,13 @@ echo "== billing settings (SET/UNSET only)"
 for k in REKODA_WEB_URL REKODA_ANNUAL_BILLING \
          REKODA_EMAIL_PROVIDER RESEND_API_KEY REKODA_EMAIL_FROM RESEND_WEBHOOK_SECRET \
          WORKER_DATABASE_URL; do
-  # Read as compose resolves it: whitespace before an opening quote, trailing whitespace and a CRLF
+  # Read as compose resolves it: the LAST line for the key wins (compose keeps the last
+  # assignment), whitespace before an opening quote, trailing whitespace and a CRLF
   # line end are dropped, a comment is
   # dropped (" # c" after an unquoted value; "#c" or " # c" after the closing quote of a quoted
   # one) and one pair of surrounding quotes is removed, so KEY="", KEY= # later, KEY="" # later,
   # KEY=""#later, KEY= "" and KEY= (spaces only) all read empty (independent review and CodeRabbit on #428).
-  v="$(sed -n "s/^$k=//p" .env 2>/dev/null | head -1 |
+  v="$(sed -n "s/^$k=//p" .env 2>/dev/null | tail -n 1 |
        sed -e 's/^[[:space:]]*\(["'"'"']\)/\1/' -e 's/[[:space:]]*$//' \
            -e '/^["'"'"']/!s/[[:space:]][[:space:]]*#.*$//' \
            -e 's/^\("[^"]*"\)[[:space:]]*#.*$/\1/' \
