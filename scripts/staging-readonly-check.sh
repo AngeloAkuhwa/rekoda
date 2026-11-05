@@ -275,10 +275,13 @@ echo "== billing settings (SET/UNSET only)"
 for k in REKODA_WEB_URL REKODA_ANNUAL_BILLING \
          REKODA_EMAIL_PROVIDER RESEND_API_KEY REKODA_EMAIL_FROM RESEND_WEBHOOK_SECRET \
          WORKER_DATABASE_URL; do
-  # Read as compose resolves it: an unquoted " # comment" is dropped and one pair of surrounding
-  # quotes is removed, so KEY="" and KEY= # later read empty (independent review of #428).
+  # Read as compose resolves it: a " # comment" is dropped (after an unquoted value, or after the
+  # closing quote of a quoted one) and one pair of surrounding quotes is removed, so KEY="",
+  # KEY= # later and KEY="" # later all read empty (independent review and CodeRabbit on #428).
   v="$(sed -n "s/^$k=//p" .env 2>/dev/null | head -1 |
        sed -e '/^["'"'"']/!s/[[:space:]][[:space:]]*#.*$//' \
+           -e 's/^\("[^"]*"\)[[:space:]][[:space:]]*#.*$/\1/' \
+           -e "s/^\('[^']*'\)[[:space:]][[:space:]]*#.*\$/\1/" \
            -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/")"
   if [ -z "$v" ]; then
     # Staging runs the production compose file with a separate worker, Resend email and the web

@@ -343,7 +343,13 @@ test('release identity and /health problems each need attention and exit 1', () 
 });
 
 test('a quoted-empty or comment-only .env value reads UNSET, as compose resolves it', () => {
-  for (const line of ['RESEND_API_KEY=""', "RESEND_API_KEY=''", 'RESEND_API_KEY= # set later']) {
+  for (const line of [
+    'RESEND_API_KEY=""',
+    "RESEND_API_KEY=''",
+    'RESEND_API_KEY= # set later',
+    'RESEND_API_KEY="" # set later',
+    "RESEND_API_KEY='' # set later",
+  ]) {
     const h = healthy({ dotenv: HEALTHY_DOTENV.replace(/^RESEND_API_KEY=[^\n]*$/m, line) });
     try {
       const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
@@ -355,7 +361,7 @@ test('a quoted-empty or comment-only .env value reads UNSET, as compose resolves
   }
   /* A quoted value that is set still reads SET, and its value is never printed. */
   const h = healthy({
-    dotenv: HEALTHY_DOTENV.replace(/^RESEND_API_KEY=([^\n]*)$/m, 'RESEND_API_KEY="$1"'),
+    dotenv: HEALTHY_DOTENV.replace(/^RESEND_API_KEY=([^\n]*)$/m, 'RESEND_API_KEY="$1" # rotated'),
   });
   try {
     const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
