@@ -253,10 +253,6 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * it names reads 'undelivered' (REM-01). */
     const reconciled = await conversationsRepo.reconcileDeadReceipts(tx, businessId);
     if (reconciled > 0) log.warn(`applied ${reconciled} failed receipt(s) from dead jobs`);
-    /* An earlier inbound message whose job died was never processed (owner ruling, 4 Nov 2026):
-     * every draft pending then is retired here, under the lock and before any "yes" is read, so
-     * a lost "cancel" can never be overtaken by a later "yes". Counts only, never content. */
-    const lost = await conversationsRepo.reconcileDeadInboundMessages(tx, businessId);
 
     const event = await events.eventForBusiness(tx, eventId, businessId);
     if (!event) {
@@ -291,7 +287,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
 
     /* OWN-74: an answer waits for every earlier message still live, even one backing off after
      * a failure that `hasEarlierLiveJob` lets a request pass. If that message never succeeds it
-     * dies and is reconciled above before this answer is read, so a lost "cancel" is never
+     * dies and is reconciled below before this answer is read, so a lost "cancel" is never
      * overtaken by a "yes" sent while it retried. A voice note may say "yes" too and is not
      * heard until it is transcribed, so it waits the same way, before any provider is paid. */
     const answerRoute = typeof inbound.text === 'string' ? routeMessage(inbound.text) : null;
@@ -306,7 +302,17 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     ) {
       throw new JobDeferred();
     }
-    /* Logged only once this run is going ahead: a deferral rolls the retirement back. */
+    /* An earlier inbound message whose job died was never processed (owner ruling, 4 Nov 2026):
+     * every draft pending then is retired here, under the lock and before any "yes" is read, so
+     * a lost "cancel" can never be overtaken by a later "yes".
+     * It runs AFTER the wait above, never before: the two are separate reads, and an earlier job
+     * can die between them (the runner commits `dead` after the failed handler's rollback has
+     * released the lock; `reclaimStalled` can mark it dead at any time). Read first, the wait
+     * would see it dead and let the answer go ahead while the reconcile had seen it live and
+     * retired nothing. In this order a job the wait saw live defers the answer, and one it saw
+     * dead (a terminal state) is dead for the reconcile too. Counts only, never content. */
+    const lost = await conversationsRepo.reconcileDeadInboundMessages(tx, businessId);
+    /* Logged only once this run is going ahead. */
     if (lost.messages > 0) {
       log.warn(
         `retired ${lost.drafts} draft(s) behind ${lost.messages} inbound message(s) whose job died`,
