@@ -156,9 +156,11 @@ a user or password in it, remove it before sharing and report it as a defect in 
    - Steps 17, 18, 19 and 22 need an operator to move a test business's dates or to make a send fail
      (step 18 needs a plan already past its paid-to date).
      **No procedure exists for that yet** (no ops endpoint, no runbook); do not improvise SQL or host
-     changes. Record them as BLOCKED, not FAIL, until the owner rules on G-119 and that ruling's
-     recording rule is written here. Never record an automated test (walkthrough §5) as a staging
-     result.
+     changes. The owner chose G-119 route A (OWN-77, 5 Nov 2026): a staging-only, test-business-only,
+     audited procedure will be built, and these steps then run on staging with the observed result
+     recorded. Record them as BLOCKED, not FAIL, until that procedure is merged and deployed to
+     staging. Never record an automated test (walkthrough §5) as a staging result; it is supporting
+     evidence only.
    - If steps 17 and 19 later run on staging while `META_BILLING_TEMPLATE` is not approved, they show
      the grace reminders held, not sent. Record that in the Actual column.
 4. **Switch reminders on.** The owner sets `REKODA_CUSTOMER_REMINDERS=1` in staging's `.env` and recreates the
