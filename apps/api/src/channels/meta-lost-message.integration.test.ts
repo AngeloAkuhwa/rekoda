@@ -235,6 +235,36 @@ describe('an inbound message that fails and backs off before it dies (markFailed
     expect((await footprint(business.id)).expenses).toBe(1);
   });
 
+  it('a "yes" that answers a newer request still tells the merchant the older one was withdrawn', async () => {
+    const business = await seedMerchant();
+    await say('wamid.older-1', AN_EXPENSE, 'bought fuel 20k cash');
+    await queueOnly('wamid.older-cancel', 'cancel');
+    const lost = await failOnceAndBackOff(business.id);
+
+    /* A new request passes the backing-off message, so two drafts wait: the older one, pending
+     * when the lost message arrived, and this one, sent after it. */
+    await say(
+      'wamid.older-newer',
+      { ...AN_EXPENSE, description: 'printer paper', amount: 5_000 },
+      'bought printer paper 5k cash',
+    );
+    expect(stubSender.lastText).toContain('printer paper');
+    await failLastAttempt(business.id, lost);
+    const sentBefore = stubSender.sent.length;
+
+    /* The yes confirms the newer request, which its own answer reports. The older one is
+     * withdrawn, and the merchant must be told so: a withdrawal is never silent. */
+    await plain('wamid.older-yes', 'yes');
+    expect((await footprint(business.id)).expenses).toBe(1);
+    expect(await draftStates(business.id)).toContainEqual({
+      state: 'superseded',
+      reason: 'inbound_message_failed',
+    });
+    const told = stubSender.sent.slice(sentBefore).map((s) => s.text);
+    expect(told).toContain(replies.earlierMessageLostNo().text);
+    expect(told).toHaveLength(2);
+  });
+
   it('tells the merchant on a message that is not an answer, too', async () => {
     const business = await seedMerchant();
     await say('wamid.notice-1', AN_EXPENSE, 'bought fuel 20k cash');

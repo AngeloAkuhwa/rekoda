@@ -313,9 +313,11 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       );
     }
     /* OWN-74: the merchant is told that a waiting request was withdrawn. A typed "yes", "no" or
-     * "cancel" is told by its own answer below; any other message is told here, first. A voice
-     * note is told here too, before it is heard, so it is told even if it cannot be transcribed;
-     * a spoken "yes" or "no" then also gets its own answer. */
+     * "cancel" is told by its own answer when that answer is about the withdrawn request; when it
+     * is not (it answered a newer request, or returned before reaching it), the notice follows
+     * the answer below, so a withdrawal is never silent. Any other message is told here, first.
+     * A voice note is told here too, before it is heard, so it is told even if it cannot be
+     * transcribed; a spoken "yes" or "no" then also gets its own answer. */
     if (
       lost.drafts > 0 &&
       answerKind !== 'affirm' &&
@@ -817,6 +819,19 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       }
     }
 
+    /* OWN-74: a typed answer that did not itself report the withdrawn request (see above). */
+    if (
+      lost.drafts > 0 &&
+      (answerKind === 'affirm' || answerKind === 'deny' || answerKind === 'cancel') &&
+      !outcome.toldEarlierMessageLost
+    ) {
+      await deps.replySender.send(tx, {
+        businessId,
+        to: inbound.from,
+        reply: replies.earlierMessageLostNo(),
+      });
+    }
+
     await events.markProcessed(tx, eventId, null, businessId);
     log.debug(`answered an inbound message routed as ${route.route}`);
   };
@@ -855,6 +870,9 @@ type RebuildOutcome = {
    * answer it (Codex review of 0e9bf52). Given back only when the reply
    * that replaced it was an identity re-ask nobody received. */
   retiredContinuation?: string;
+  /** OWN-74: this message's answer was itself the notice that a waiting request was withdrawn
+   * behind a lost message, so the handler sends no second one. */
+  toldEarlierMessageLost?: boolean;
 };
 
 /** A recording somebody made with the microphone button, not an attached file. */
@@ -1637,6 +1655,7 @@ async function deterministicReply(
     }
     /* The request this "no" is about was withdrawn because an earlier message was lost. */
     if (latest?.retiredReason === conversationsRepo.INBOUND_MESSAGE_FAILED) {
+      if (ctx.outcome) ctx.outcome.toldEarlierMessageLost = true;
       return replies.earlierMessageLostNo();
     }
     const closedQuestion =
@@ -2397,6 +2416,7 @@ async function confirmPendingDraft(
     if (retrying) {
       await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
     }
+    if (sender.outcome) sender.outcome.toldEarlierMessageLost = true;
     return replies.earlierMessageLostYes();
   }
   /* The last thing the merchant was shown expired (G-23): this "yes" is
