@@ -1,6 +1,6 @@
 # Staging acceptance handoff (operator)
 
-> **Status:** RUNBOOK, 4 Nov 2026. It sets the order in which staging is verified and accepted for
+> **Status:** RUNBOOK, 4 Nov 2026 (G-119 / OWN-77 text updated 5 Nov 2026). It sets the order in which staging is verified and accepted for
 > the MVP. It records no result: nothing here is STAGING ACCEPTED until the result tables named below
 > hold dated evidence. Sources:
 >
@@ -226,6 +226,8 @@ within 24 hours, or the WhatsApp reminder is refused (`window_closed_no_template
 - §2 output;
 - §3 prerequisites;
 - OD-41(b);
+- the OWN-77 (G-119 route A) date-move and forced-failure procedure, not yet built (PR B): it blocks
+  walkthrough steps 17, 18, 19 and 22 and ACCEPT-01 journeys 2, 3, 9 and 10;
 - SUB-ACC and ACCEPT-01 themselves.
 
 **Production only.** None of these is needed for staging, and nothing in this runbook does them:

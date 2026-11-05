@@ -70,8 +70,9 @@ Use a phone you control. On mobile and on a laptop-sized window.
 
 Record every step with the deployed commit and the read-only check's migration lines from that day
 (`runbooks/staging-acceptance-handoff.md`). A payment reference is safe to record; a key or card number
-never is. A step that needs an operator date move or a forced failure (17, 18, 19, 22) is BLOCKED until the owner
-rules on G-119 and that ruling's recording rule is written here. Never record a §5 automated test as
+never is. A step that needs an operator date move or a forced failure (17, 18, 19, 22) is BLOCKED until the OWN-77
+(G-119 route A) procedure is merged and deployed to staging; then run it on staging and record
+the observed result here. Never record a §5 automated test as
 a staging result, and do not improvise a procedure.
 
 | #   | Date | Tester | Commit | Migrations | Expected | Actual | Reference | Desktop | Mobile | PASS / FAIL / BLOCKED | Notes |

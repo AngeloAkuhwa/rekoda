@@ -34,7 +34,8 @@
     26 Sep 2026). Delivery through each template on staging is NEEDS OPERATOR EVIDENCE.
   - A configured slot is not an approved template, and an approved template is not a delivered
     message.
-- **SUB-ACC:** Not started. There is no SUB-ACC deployment of its own: it runs on whatever staging
+- **SUB-ACC:** Not started; walkthrough steps 17, 18, 19 and 22 are BLOCKED until the OWN-77
+  procedure (PR B) is merged and deployed to staging. There is no SUB-ACC deployment of its own: it runs on whatever staging
   serves when it starts (now `b8baf24`). The `cc369c5` reference below is the 2 Nov deploy, not
   the current one.
 
