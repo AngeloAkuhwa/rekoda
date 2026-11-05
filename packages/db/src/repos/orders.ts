@@ -125,6 +125,11 @@ export interface CreateQuoteInput {
   issuedAt?: Date;
 }
 
+/**
+ * Issues a dashboard quote: the next quote number for the Lagos year of
+ * `issuedAt` (or now), the order row stored with that same instant, and its
+ * lines. Returns the order id and its quote number.
+ */
 export async function createQuote(tx: TenantDb, input: CreateQuoteInput): Promise<PlacedOrder> {
   const at = input.issuedAt ?? new Date();
   const quoteNumber = await nextDocumentNumber(tx, input.businessId, 'quote', lagosYear(at));
@@ -323,6 +328,11 @@ export interface CreatePurchaseOrderInput {
   issuedAt?: Date;
 }
 
+/**
+ * Issues a purchase order: the next purchase-order number for the Lagos year
+ * of `issuedAt` (or now), the order row stored with that same instant, and
+ * its lines. Returns the order id and its purchase-order number.
+ */
 export async function createPurchaseOrder(
   tx: TenantDb,
   input: CreatePurchaseOrderInput,

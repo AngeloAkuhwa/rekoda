@@ -17,6 +17,7 @@ import {
 
 const BARE_ENV = 'REKODA_RELEASE=staging-{sha7}\nPAYSTACK_SECRET_KEY=sk_test_qqqqqqqqqqqqqqqq\n';
 test('a broken web tier, an unhealthy or missing service, or a failed job can never read OK', () => {
+  /** The healthy service table with rows replaced by name from `over`; the value 'gone' drops a row. */
   const svc = (over) =>
     [
       'postgres|running|healthy|0',

@@ -167,6 +167,13 @@ export async function recordExpense(
   return { expenseId: row.id, ledgerTransactionId, owedK: 0, billNumber: null };
 }
 
+/**
+ * Records one stock purchase as one financial event: a balanced ledger
+ * posting keyed on its source, the stock expense row and, when part of it is
+ * owed, a supplier bill numbered for the Lagos year of the same instant.
+ * `recordedAt` (or now) is used for every one of those dates. A paid part with
+ * no cash or transfer method is refused before anything is written.
+ */
 export async function recordPurchase(
   tx: TenantDb,
   input: RecordPurchaseInput,

@@ -186,6 +186,11 @@ function baselineAt(ref) {
   return JSON.parse(text).oversized;
 }
 
+/**
+ * CLI entry point: checks every tracked test file against TEST_MAP and the
+ * oversized-file baseline, and with `--base-ref` refuses a baseline that grew.
+ * Exits 1 on any error, or on layout debt when `--strict` is passed.
+ */
 function main() {
   const strict = process.argv.includes('--strict');
   const listed = discover(

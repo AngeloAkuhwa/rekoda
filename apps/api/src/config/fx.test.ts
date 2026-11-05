@@ -14,6 +14,7 @@ import { BASE } from './env.fixtures.js';
  * never applied and every naira cost became zero.
  */
 describe('the planning FX rate', () => {
+  /** A config loader over BASE with the FX variable set to `value`, or removed when undefined. */
   const withRate = (value: string | undefined) => {
     const env = { ...BASE } as NodeJS.ProcessEnv;
     if (value === undefined) delete env['PLANNING_FX_NGN_PER_USD'];
