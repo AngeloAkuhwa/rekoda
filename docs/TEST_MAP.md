@@ -356,6 +356,7 @@ change a feature and want to know what to run.
 | integration | `apps/api/src/reminders/reminder.integration.test.ts`                 |
 | integration | `apps/api/src/replies/reply.integration.test.ts`                      |
 | integration | `packages/db/src/channels/continuations.integration.test.ts`          |
+| integration | `packages/db/src/channels/dead-inbound-reconcile.integration.test.ts` |
 | integration | `packages/db/src/channels/draft-expiry.integration.test.ts`           |
 | integration | `packages/db/src/channels/email-suppressions.integration.test.ts`     |
 | integration | `packages/db/src/channels/waba.integration.test.ts`                   |
