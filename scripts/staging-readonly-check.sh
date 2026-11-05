@@ -275,12 +275,13 @@ echo "== billing settings (SET/UNSET only)"
 for k in REKODA_WEB_URL REKODA_ANNUAL_BILLING \
          REKODA_EMAIL_PROVIDER RESEND_API_KEY REKODA_EMAIL_FROM RESEND_WEBHOOK_SECRET \
          WORKER_DATABASE_URL; do
-  # Read as compose resolves it: trailing whitespace and a CRLF line end are dropped, a comment is
+  # Read as compose resolves it: whitespace before an opening quote, trailing whitespace and a CRLF
+  # line end are dropped, a comment is
   # dropped (" # c" after an unquoted value; "#c" or " # c" after the closing quote of a quoted
   # one) and one pair of surrounding quotes is removed, so KEY="", KEY= # later, KEY="" # later,
-  # KEY=""#later and KEY= (spaces only) all read empty (independent review and CodeRabbit on #428).
+  # KEY=""#later, KEY= "" and KEY= (spaces only) all read empty (independent review and CodeRabbit on #428).
   v="$(sed -n "s/^$k=//p" .env 2>/dev/null | head -1 |
-       sed -e 's/[[:space:]]*$//' \
+       sed -e 's/^[[:space:]]*\(["'"'"']\)/\1/' -e 's/[[:space:]]*$//' \
            -e '/^["'"'"']/!s/[[:space:]][[:space:]]*#.*$//' \
            -e 's/^\("[^"]*"\)[[:space:]]*#.*$/\1/' \
            -e "s/^\('[^']*'\)[[:space:]]*#.*\$/\1/" \

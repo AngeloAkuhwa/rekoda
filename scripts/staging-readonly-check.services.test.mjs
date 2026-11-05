@@ -354,6 +354,8 @@ test('a quoted-empty or comment-only .env value reads UNSET, as compose resolves
     'RESEND_API_KEY="" ',
     'RESEND_API_KEY=""\r',
     'RESEND_API_KEY=   ',
+    'RESEND_API_KEY= ""',
+    "RESEND_API_KEY=  '' # set later",
   ]) {
     const h = healthy({ dotenv: HEALTHY_DOTENV.replace(/^RESEND_API_KEY=[^\n]*$/m, line) });
     try {
