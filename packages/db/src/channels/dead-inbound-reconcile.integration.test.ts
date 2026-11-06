@@ -344,6 +344,38 @@ describe('stampInboundArrival', () => {
     expect([...rows].map((r) => r.same)).toEqual([true, true]);
   });
 
+  it('an earlier ingress that fails releases the lock: the later message completes and nothing of the failed one is left', async () => {
+    const businessId = await seedBusiness();
+    let fail!: () => void;
+    const failing = new Promise<void>(
+      (_, reject) => (fail = () => reject(new Error('ingress died'))),
+    );
+    let markStamped!: () => void;
+    const stamped = new Promise<void>((r) => (markStamped = r));
+
+    /* The earlier message is stamped, then its transaction fails before it commits anything. */
+    const first = ingest(businessId, 'first', failing, markStamped);
+    const firstOutcome = first.then(
+      () => 'committed',
+      () => 'rolled back',
+    );
+    await stamped;
+    const second = ingest(businessId, 'second');
+    const secondState = settled(second);
+    await pause(300);
+    expect(secondState.done).toBe(false);
+
+    fail();
+    expect(await firstOutcome).toBe('rolled back');
+    const b = await second;
+    /* No deadlock, and the failed message left no event or job: Meta's retry will record it afresh. */
+    expect(await earlier(businessId, b.jobId)).toBe(false);
+    const rows = await owner.execute<{ jobs: number; events: number }>(sql`
+      SELECT (SELECT count(*)::int FROM jobs WHERE business_id = ${businessId}::uuid) AS jobs,
+             (SELECT count(*)::int FROM external_events WHERE business_id = ${businessId}::uuid) AS events`);
+    expect([...rows][0]).toEqual({ jobs: 1, events: 1 });
+  });
+
   it('never makes another business wait', async () => {
     const a = await seedBusiness();
     const b = await seedBusiness();

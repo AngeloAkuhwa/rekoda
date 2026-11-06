@@ -215,8 +215,10 @@ describe('a worker that dies mid-job', () => {
     expect(await jobsRepo.claimNext(workerDb, 'worker-2')).toBeNull();
 
     // Age the lock rather than waiting five minutes for it.
-    await workerDb.execute(
-      sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(
+        sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
+      ),
     );
 
     expect(await jobsRepo.reclaimStalled(workerDb, 300_000)).toBe(1);
@@ -242,8 +244,10 @@ describe('a worker that dies mid-job', () => {
     ] as const) {
       const job = await jobsRepo.claimNext(workerDb, worker);
       expect(job?.attempts).toBe(attempt);
-      await workerDb.execute(
-        sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
+      await withBusiness(appDb, businessId, (tx) =>
+        tx.execute(
+          sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
+        ),
       );
       expect(await jobsRepo.reclaimStalled(workerDb, 300_000)).toBe(1);
       const [row] = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
@@ -273,8 +277,10 @@ describe('a worker that dies mid-job', () => {
     expect(failed?.failureCategory).toBe('handler_error');
     for (const worker of ['worker-2', 'worker-3']) {
       const job = await jobsRepo.claimNext(workerDb, worker);
-      await workerDb.execute(
-        sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
+      await withBusiness(appDb, businessId, (tx) =>
+        tx.execute(
+          sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
+        ),
       );
       expect(await jobsRepo.reclaimStalled(workerDb, 300_000)).toBe(1);
     }

@@ -42,14 +42,25 @@ async function queueOnly(wamid: string, text: string) {
 }
 
 /**
+ * A test-setup statement on `jobs`, run as the business it belongs to (`withBusiness`, so RLS applies
+ * as in production) rather than through the worker pool's cross-tenant reach.
+ */
+function asTenant(businessId: string, statement: ReturnType<typeof sql>) {
+  return withBusiness(db, businessId, (tx) => tx.execute(statement));
+}
+
+/**
  * Kill the one waiting inbound job by the real repository path. One attempt is allowed, so
  * `markFailed` ends it at once; `reclaimStalled` gives it the one extra run past the last
  * attempt, and the job dies when that run's lease expires too.
  */
 async function killInboundJob(businessId: string, death: Death) {
-  await workerDb.execute(sql`
+  await asTenant(
+    businessId,
+    sql`
     UPDATE jobs SET max_attempts = 1
-     WHERE business_id = ${businessId}::uuid AND kind = 'inbound.message' AND state = 'pending'`);
+     WHERE business_id = ${businessId}::uuid AND kind = 'inbound.message' AND state = 'pending'`,
+  );
   const runs = death === 'markFailed' ? 1 : 2;
   for (let run = 1; run <= runs; run++) {
     const job = await jobsRepo.claimNext(workerDb, `dying-worker-${run}`);
@@ -57,7 +68,8 @@ async function killInboundJob(businessId: string, death: Death) {
     if (death === 'markFailed') {
       expect((await jobsRepo.markFailed(workerDb, job!, 'handler failed', 0)).state).toBe('dead');
     } else {
-      await workerDb.execute(
+      await asTenant(
+        businessId,
         sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
       );
       expect(await jobsRepo.reclaimStalled(workerDb, 300_000)).toBe(1);
@@ -147,9 +159,12 @@ describe('a lost message whose draft window closes before the next message is re
 describe('an inbound message that fails and backs off before it dies (markFailed with retries)', () => {
   /** Fail the waiting inbound job's first attempt and leave it backing off for a minute. */
   async function failOnceAndBackOff(businessId: string) {
-    await workerDb.execute(sql`
+    await asTenant(
+      businessId,
+      sql`
       UPDATE jobs SET max_attempts = 2
-       WHERE business_id = ${businessId}::uuid AND kind = 'inbound.message' AND state = 'pending'`);
+       WHERE business_id = ${businessId}::uuid AND kind = 'inbound.message' AND state = 'pending'`,
+    );
     const job = await jobsRepo.claimNext(workerDb, 'failing-worker');
     expect(job?.kind).toBe('inbound.message');
     expect((await jobsRepo.markFailed(workerDb, job!, 'handler failed', 60_000)).state).toBe(
@@ -163,9 +178,12 @@ describe('an inbound message that fails and backs off before it dies (markFailed
    * claimed in its place.
    */
   async function failLastAttempt(businessId: string, jobId: string) {
-    await workerDb.execute(sql`
+    await asTenant(
+      businessId,
+      sql`
       UPDATE jobs SET run_at = CASE WHEN id = ${jobId}::uuid THEN now() ELSE now() + interval '1 hour' END
-       WHERE business_id = ${businessId}::uuid AND state = 'pending'`);
+       WHERE business_id = ${businessId}::uuid AND state = 'pending'`,
+    );
     const job = await jobsRepo.claimNext(workerDb, 'failing-worker-2');
     expect(job?.id).toBe(jobId);
     expect((await jobsRepo.markFailed(workerDb, job!, 'handler failed', 0)).state).toBe('dead');
@@ -182,9 +200,12 @@ describe('an inbound message that fails and backs off before it dies (markFailed
     expect((await footprint(business.id)).expenses).toBe(0);
 
     await failLastAttempt(business.id, cancel);
-    await workerDb.execute(sql`
+    await asTenant(
+      business.id,
+      sql`
       UPDATE jobs SET run_at = now()
-       WHERE business_id = ${business.id}::uuid AND state = 'pending'`);
+       WHERE business_id = ${business.id}::uuid AND state = 'pending'`,
+    );
     await drain();
     expect(stubSender.lastText).toBe(replies.earlierMessageLostYes().text);
     expect((await footprint(business.id)).expenses).toBe(0);
@@ -208,9 +229,12 @@ describe('an inbound message that fails and backs off before it dies (markFailed
     const sentBefore = stubSender.sent.length;
 
     await failLastAttempt(business.id, cancel);
-    await workerDb.execute(sql`
+    await asTenant(
+      business.id,
+      sql`
       UPDATE jobs SET run_at = now()
-       WHERE business_id = ${business.id}::uuid AND state = 'pending'`);
+       WHERE business_id = ${business.id}::uuid AND state = 'pending'`,
+    );
     await drain();
     /* Told before it is heard (so a note that cannot be transcribed is told too), then answered. */
     expect(stubSender.sent.slice(sentBefore).map((s) => s.text)).toEqual([
