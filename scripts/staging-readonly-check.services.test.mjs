@@ -380,3 +380,25 @@ test('a quoted-empty or comment-only .env value reads UNSET, as compose resolves
     h.done();
   }
 });
+
+test('a key assigned twice in .env reads its last assignment, as compose does', () => {
+  /* Set, then emptied later: compose sees it empty, so it is UNSET and needs attention. */
+  const emptied = healthy({ dotenv: HEALTHY_DOTENV.concat('RESEND_API_KEY=\n') });
+  try {
+    const r = emptied.run2(undefined, { EXPECT_SHA: emptied.sha.slice(0, 7) });
+    assert.match(attention(r.stdout), /RESEND_API_KEY\s+UNSET \(required on staging\)/);
+    assert.equal(r.status, 1);
+  } finally {
+    emptied.done();
+  }
+  /* 1 then 0: the containers receive 0, so that is what is reported. */
+  const flipped = healthy({
+    dotenv: HEALTHY_DOTENV.concat('REKODA_ANNUAL_BILLING=1\nREKODA_ANNUAL_BILLING=0\n'),
+  });
+  try {
+    const r = flipped.run2(undefined, { EXPECT_SHA: flipped.sha.slice(0, 7) });
+    assert.match(r.stdout, /REKODA_ANNUAL_BILLING\s+SET \(0\)\n/);
+  } finally {
+    flipped.done();
+  }
+});

@@ -938,6 +938,17 @@ export async function reconcileDeadInboundMessages(
        AND j.state = 'dead'
        AND e.business_id = ${businessId}::uuid
        AND e.processed_at IS NULL
+       /* Not while a message that arrived before it is still live (Codex on d57258b): a newer
+        * request may pass a sibling backing off, and consuming the lost message then would leave
+        * the draft that earlier message goes on to create out of reach, confirmable by a later
+        * "yes". The lost message waits; the first run after every earlier message has finished
+        * (done or dead) applies it, and that draft is then one it retires. */
+       AND NOT EXISTS (
+         SELECT 1 FROM jobs o
+          WHERE o.business_id = j.business_id
+            AND o.kind = 'inbound.message'
+            AND o.state IN ('pending', 'running')
+            AND (o.created_at, o.id) < (j.created_at, j.id))
      ORDER BY j.updated_at, j.id`);
   let messages = 0;
   let drafts = 0;

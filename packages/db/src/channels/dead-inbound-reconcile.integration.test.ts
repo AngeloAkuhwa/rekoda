@@ -170,6 +170,28 @@ describe('reconcileDeadInboundMessages', () => {
     expect(event.error).toBe('not processed: its job died; drafts pending then were retired');
   });
 
+  it('waits while a message that arrived before the lost one is still live', async () => {
+    const businessId = await seedBusiness();
+    const before = await draftFrom(businessId, 'before', at(0), at(600));
+    /* An earlier message still backing off when the lost one died. */
+    const earlier = await inboundJob(businessId, 'earlier', at(5), 'pending');
+    const lost = await inboundJob(businessId, 'lost', at(10), 'dead');
+
+    /* A newer message runs first (it may pass a sibling backing off): the lost one waits. */
+    expect(await reconcile(businessId)).toEqual({ messages: 0, drafts: 0 });
+    expect(await draftState(before)).toEqual(STILL_PENDING);
+    expect((await eventRow(lost.eventId)).processed_at).toBeNull();
+
+    /* The earlier message then succeeds and records its own draft, from before the lost one. */
+    const fromEarlier = await draftFrom(businessId, 'from-earlier', at(5), at(605));
+    await owner.execute(sql`UPDATE jobs SET state = 'done' WHERE id = ${earlier.jobId}::uuid`);
+
+    /* Now the lost message is applied, and it reaches that draft too. */
+    expect(await reconcile(businessId)).toEqual({ messages: 1, drafts: 2 });
+    expect(await draftState(before)).toEqual(RETIRED);
+    expect(await draftState(fromEarlier)).toEqual(RETIRED);
+  });
+
   it('applies each dead message exactly once', async () => {
     const businessId = await seedBusiness();
     await draftFrom(businessId, 'first', at(0), at(600));

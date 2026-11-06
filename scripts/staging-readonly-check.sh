@@ -31,7 +31,7 @@ if st="$(git --no-optional-locks status --porcelain --untracked-files=no 2>/dev/
   mods="$(printf '%s' "$st" | grep -c .)"
   if [ "$mods" -eq 0 ]; then say "tracked modifications" "0"; else flag "tracked modifications" "$mods"; fi
 else flag "tracked modifications" "unknown (git status failed)"; fi
-RELEASE="$(sed -n 's/^REKODA_RELEASE=//p' .env 2>/dev/null | head -1)"
+RELEASE="$(sed -n 's/^REKODA_RELEASE=//p' .env 2>/dev/null | tail -1)"
 if [ -n "$RELEASE" ]; then say ".env REKODA_RELEASE" "$RELEASE"; else flag ".env REKODA_RELEASE" "UNSET"; fi
 EXPECT="${EXPECT_SHA:-}"
 case "$EXPECT" in
@@ -280,7 +280,8 @@ for k in REKODA_WEB_URL REKODA_ANNUAL_BILLING \
   # dropped (" # c" after an unquoted value; "#c" or " # c" after the closing quote of a quoted
   # one) and one pair of surrounding quotes is removed, so KEY="", KEY= # later, KEY="" # later,
   # KEY=""#later, KEY= "" and KEY= (spaces only) all read empty (independent review and CodeRabbit on #428).
-  v="$(sed -n "s/^$k=//p" .env 2>/dev/null | head -1 |
+  # A key assigned twice reads its LAST assignment, as compose's dotenv parser keeps (Codex on #428).
+  v="$(sed -n "s/^$k=//p" .env 2>/dev/null | tail -1 |
        sed -e 's/^[[:space:]]*\(["'"'"']\)/\1/' -e 's/[[:space:]]*$//' \
            -e '/^["'"'"']/!s/[[:space:]][[:space:]]*#.*$//' \
            -e 's/^\("[^"]*"\)[[:space:]]*#.*$/\1/' \
