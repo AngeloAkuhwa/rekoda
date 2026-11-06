@@ -199,7 +199,15 @@ export async function hasEarlierLiveJob(
  * instant exactly: the only producer (`MetaService`) records the event and enqueues the job in one
  * transaction, and both columns default to `now()`, the transaction's start. A new producer must
  * keep that, or this must compare the events' `created_at` instead (pinned in
- * `apps/api/src/channels/meta-webhook-ingress.integration.test.ts`).
+ * `apps/api/src/channels/meta-webhook-ingress.integration.test.ts`; the db suite
+ * `dead-inbound-reconcile.integration.test.ts` stamps both columns with one supplied instant and
+ * so relies on that invariant rather than proving it).
+ *
+ * Accepted limitation: `now()` is the transaction START, not its commit. A webhook transaction that
+ * starts earlier but commits later is invisible to a later message's check, and ties on one instant
+ * break on the random job id. So this is arrival order up to commit-visibility races, the same
+ * window `hasEarlierLiveJob` already has; closing it needs the ingress to take the business inbound
+ * lock, which is outside #428.
  */
 export async function hasEarlierLiveJobByArrival(tx: TenantDb, jobId: string): Promise<boolean> {
   const rows = await tx.execute(sql`
