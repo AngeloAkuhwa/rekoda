@@ -28,6 +28,11 @@ export interface EnqueueInput {
   /** Delay before the job first becomes claimable. */
   delayMs?: number;
   maxAttempts?: number;
+  /**
+   * The job's `created_at`, from `stampInboundArrival`, so an inbound message's job and its
+   * webhook event carry the one arrival instant taken under the ingress lock. Unset: `now()`.
+   */
+  arrivedAt?: string;
 }
 
 export interface ClaimedJob {
@@ -58,6 +63,9 @@ export async function enqueue(q: Queryable, input: EnqueueInput): Promise<{ id: 
       singletonKey: input.singletonKey ?? null,
       runAt,
       ...(input.maxAttempts === undefined ? {} : { maxAttempts: input.maxAttempts }),
+      ...(input.arrivedAt === undefined
+        ? {}
+        : { createdAt: sql`${input.arrivedAt}::timestamptz` as unknown as Date }),
     })
     /**
      * The conflict target has to name the index PREDICATE as well as its
@@ -136,6 +144,30 @@ export async function serializeBusiness(
 }
 
 /**
+ * The arrival instant of an inbound message, taken under its business's ingress lock (OWN-74).
+ *
+ * `hasEarlierLiveJobByArrival` can only defer an answer behind an earlier message it can SEE. With
+ * arrival stamped as `now()`, the transaction's start, an ingress transaction that began first but
+ * committed late was invisible to a later "yes" processed in between: it ordered earlier, yet the
+ * "yes" confirmed the draft it may have cancelled, and if it then died nothing could retire that
+ * draft (CodeRabbit on #428). So an ingress transaction first serializes on `(business, 'ingress')`
+ * and only then reads `clock_timestamp()`. A message stamped earlier than another took the lock
+ * first and so committed before the other was even stamped: by the time any job runs, every
+ * message that arrived before it is visible. The lock is held only for the event and job inserts,
+ * never across a handler, so it does not slow the webhook's answer to Meta.
+ *
+ * Returned as text and written back with `::timestamptz`, keeping PostgreSQL's microseconds (a
+ * JavaScript `Date` would round to the millisecond and could tie two messages).
+ */
+export async function stampInboundArrival(tx: TenantDb, businessId: string): Promise<string> {
+  await serializeBusiness(tx, businessId, 'ingress');
+  const rows = await tx.execute<{ at: string }>(sql`SELECT clock_timestamp()::text AS at`);
+  const at = [...rows][0]?.at;
+  if (!at) throw new Error('stampInboundArrival: no clock reading');
+  return at;
+}
+
+/**
  * Is an older live job of the same kind still ahead of this one?
  *
  * The advisory lock above guarantees exclusion, not order: between claiming a
@@ -196,18 +228,13 @@ export async function hasEarlierLiveJob(
  * reconciled (`reconcileDeadInboundMessages`) before the answer is read.
  *
  * "Arrival" is the job's `created_at`. For `inbound.message` that is the webhook event's arrival
- * instant exactly: the only producer (`MetaService`) records the event and enqueues the job in one
- * transaction, and both columns default to `now()`, the transaction's start. A new producer must
- * keep that, or this must compare the events' `created_at` instead (pinned in
- * `apps/api/src/channels/meta-webhook-ingress.integration.test.ts`; the db suite
- * `dead-inbound-reconcile.integration.test.ts` stamps both columns with one supplied instant and
- * so relies on that invariant rather than proving it).
- *
- * Accepted limitation: `now()` is the transaction START, not its commit. A webhook transaction that
- * starts earlier but commits later is invisible to a later message's check, and ties on one instant
- * break on the random job id. So this is arrival order up to commit-visibility races, the same
- * window `hasEarlierLiveJob` already has; closing it needs the ingress to take the business inbound
- * lock, which is outside #428.
+ * instant exactly: the only producer (`MetaService`) stamps both rows with one
+ * `stampInboundArrival` reading, taken under the business's ingress lock, in the transaction that
+ * writes them. So a message stamped earlier is always committed, and visible here, before a later
+ * one is even stamped; there is no window in which an earlier message's uncommitted ingress hides
+ * it from this check. A new producer must stamp the same way (pinned in
+ * `apps/api/src/channels/meta-webhook-ingress.integration.test.ts` and
+ * `packages/db/src/channels/dead-inbound-reconcile.integration.test.ts`).
  */
 export async function hasEarlierLiveJobByArrival(tx: TenantDb, jobId: string): Promise<boolean> {
   const rows = await tx.execute(sql`

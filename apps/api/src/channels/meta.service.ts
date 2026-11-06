@@ -66,15 +66,21 @@ export class MetaIngressService {
      * that could never be answered: recorded (so Meta's retry deduplicates
      * to nothing) with no job (so no handler ever opens it). A crash between
      * two statements in one transaction leaves nothing instead.
+     *
+     * Both rows carry one arrival instant taken under the business's ingress
+     * lock, so a message that arrived earlier is always committed before a
+     * later one is processed (OWN-74; `jobsRepo.stampInboundArrival`).
      */
     if (businessId) {
       return withBusiness(this.db, businessId, async (tx) => {
+        const arrivedAt = await jobsRepo.stampInboundArrival(tx, businessId);
         const recorded = await events.recordEvent(tx, {
           provider: 'meta',
           eventType: `message.${event.messageType}`,
           externalId: event.externalId,
           payload: sealPayload(payload, this.config.vaultKey, 'meta', event.externalId),
           businessId,
+          arrivedAt,
         });
         if (!recorded.isNew) {
           this.log.debug(`ignored a duplicate Meta event ${redactForLog(event.externalId)}`);
@@ -85,6 +91,7 @@ export class MetaIngressService {
           kind: JobKind.InboundMessage,
           payload: { eventId: recorded.id },
           singletonKey: recorded.id,
+          arrivedAt,
         });
         return { isNew: true };
       });

@@ -18,6 +18,7 @@ import { sql } from 'drizzle-orm';
 import {
   conversationsRepo,
   createDb,
+  events,
   identity,
   jobsRepo,
   withBusiness,
@@ -271,5 +272,91 @@ describe('hasEarlierLiveJobByArrival', () => {
       VALUES (${a}::uuid, 'document.render', '{}'::jsonb, 'pending', ${at(0).toISOString()}::timestamptz)`);
     const me = await inboundJob(a, 'me', at(10), 'running');
     expect(await earlier(a, me.jobId)).toBe(false);
+  });
+});
+
+describe('stampInboundArrival', () => {
+  /** One webhook ingress as `MetaService` does it: stamp under the lock, then event and job. */
+  async function ingest(
+    businessId: string,
+    note: string,
+    hold?: Promise<void>,
+    stamped?: () => void,
+  ) {
+    return withBusiness(app, businessId, async (tx) => {
+      const arrivedAt = await jobsRepo.stampInboundArrival(tx, businessId);
+      stamped?.();
+      if (hold) await hold;
+      const recorded = await events.recordEvent(tx, {
+        provider: 'meta',
+        eventType: 'message.text',
+        externalId: `wamid.INGRESS.${businessId.slice(0, 8)}.${note}`,
+        payload: {},
+        businessId,
+        arrivedAt,
+      });
+      if (!recorded.isNew) throw new Error('duplicate event in test');
+      const job = await jobsRepo.enqueue(tx, {
+        businessId,
+        kind: 'inbound.message',
+        payload: { eventId: recorded.id },
+        singletonKey: recorded.id,
+        arrivedAt,
+      });
+      return { jobId: job!.id, eventId: recorded.id };
+    });
+  }
+  const earlier = (businessId: string, jobId: string) =>
+    withBusiness(app, businessId, (tx) => jobsRepo.hasEarlierLiveJobByArrival(tx, jobId));
+  const settled = (p: Promise<unknown>) => {
+    const state = { done: false };
+    void p.then(() => (state.done = true));
+    return state;
+  };
+  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it('a message stamped while an earlier one is uncommitted waits for it, and orders after it', async () => {
+    const businessId = await seedBusiness();
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let markStamped!: () => void;
+    const stamped = new Promise<void>((r) => (markStamped = r));
+
+    /* The earlier message has its arrival instant but has not committed. */
+    const first = ingest(businessId, 'first', held, markStamped);
+    await stamped;
+    const second = ingest(businessId, 'second');
+    const secondState = settled(second);
+    await pause(300);
+    /* Without the lock the later message would commit here, ordered after an invisible one. */
+    expect(secondState.done).toBe(false);
+
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    /* The later message's check sees the earlier one; the earlier one sees nothing ahead. */
+    expect(await earlier(businessId, b.jobId)).toBe(true);
+    expect(await earlier(businessId, a.jobId)).toBe(false);
+    /* Each job carries its event's arrival instant exactly. */
+    const rows = await owner.execute<{ same: boolean }>(sql`
+      SELECT j.created_at = e.created_at AS same
+        FROM jobs j JOIN external_events e ON e.id = (j.payload->>'eventId')::uuid
+       WHERE j.business_id = ${businessId}::uuid`);
+    expect([...rows].map((r) => r.same)).toEqual([true, true]);
+  });
+
+  it('never makes another business wait', async () => {
+    const a = await seedBusiness();
+    const b = await seedBusiness();
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let markStamped!: () => void;
+    const stamped = new Promise<void>((r) => (markStamped = r));
+
+    const first = ingest(a, 'a-first', held, markStamped);
+    await stamped;
+    /* B's ingress completes while A's is still open. */
+    await ingest(b, 'b-only');
+    release();
+    await first;
   });
 });

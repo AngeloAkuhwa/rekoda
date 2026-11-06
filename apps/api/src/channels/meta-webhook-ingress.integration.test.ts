@@ -398,8 +398,8 @@ describe('what happens after the 200', () => {
 
   /* `hasEarlierLiveJobByArrival` orders answers by the job's `created_at` and is described as
    * webhook arrival order (OWN-74). That holds because this, the only producer of
-   * `inbound.message` jobs, writes the event and the job in one transaction and both columns
-   * default to `now()`, the transaction's start: the two instants are the same value. */
+   * `inbound.message` jobs, stamps the event and the job with one `stampInboundArrival` reading
+   * in the transaction that writes them: the two instants are the same value. */
   it('stamps the queued job with its webhook event’s arrival instant', async () => {
     const business = await seedMerchant('+2348031234567', 'Ada Fashion');
     await post(messagePayload('2348031234567', 'wamid.ARRIVAL.1'));

@@ -41,6 +41,11 @@ export interface IncomingEvent {
    * outbound message is the exception: it is queued, and its job marks it.
    */
   processed?: boolean;
+  /**
+   * The row's `created_at`, from `jobsRepo.stampInboundArrival`, for an inbound message whose job
+   * must carry the same arrival instant (OWN-74). Unset: `now()`.
+   */
+  arrivedAt?: string;
 }
 
 /**
@@ -96,6 +101,9 @@ export async function recordEvent(q: Queryable, event: IncomingEvent): Promise<R
       // Only signed events are ever persisted; see the note in the controller.
       signatureValid: 1,
       ...(event.processed ? { processedAt: new Date() } : {}),
+      ...(event.arrivedAt === undefined
+        ? {}
+        : { createdAt: sql`${event.arrivedAt}::timestamptz` as unknown as Date }),
     })
     .onConflictDoNothing({
       target: [externalEvents.provider, externalEvents.externalId],
