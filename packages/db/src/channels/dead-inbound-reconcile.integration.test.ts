@@ -178,19 +178,24 @@ describe('reconcileDeadInboundMessages', () => {
     const earlier = await inboundJob(businessId, 'earlier', at(5), 'pending');
     const lost = await inboundJob(businessId, 'lost', at(10), 'dead');
 
-    /* A newer message runs first (it may pass a sibling backing off): the lost one waits. */
-    expect(await reconcile(businessId)).toEqual({ messages: 0, drafts: 0, continuations: 0 });
-    expect(await draftState(before)).toEqual(STILL_PENDING);
+    /* A newer message runs first (it may pass a sibling backing off). What is already waiting is
+     * retired now, so that newer message cannot correct or supersede it first; the lost message
+     * itself stays open for the earlier message's draft. */
+    expect(await reconcile(businessId)).toEqual({ messages: 0, drafts: 1, continuations: 0 });
+    expect(await draftState(before)).toEqual(RETIRED);
     expect((await eventRow(lost.eventId)).processed_at).toBeNull();
+    /* Another run in the meantime retires nothing twice. */
+    expect(await reconcile(businessId)).toEqual({ messages: 0, drafts: 0, continuations: 0 });
 
     /* The earlier message then succeeds and records its own draft, from before the lost one. */
     const fromEarlier = await draftFrom(businessId, 'from-earlier', at(5), at(605));
     await owner.execute(sql`UPDATE jobs SET state = 'done' WHERE id = ${earlier.jobId}::uuid`);
 
-    /* Now the lost message is applied, and it reaches that draft too. */
-    expect(await reconcile(businessId)).toEqual({ messages: 1, drafts: 2, continuations: 0 });
+    /* Now the lost message is closed, and it reaches that draft too. */
+    expect(await reconcile(businessId)).toEqual({ messages: 1, drafts: 1, continuations: 0 });
     expect(await draftState(before)).toEqual(RETIRED);
     expect(await draftState(fromEarlier)).toEqual(RETIRED);
+    expect((await eventRow(lost.eventId)).processed_at).not.toBeNull();
   });
 
   it('applies each dead message exactly once', async () => {

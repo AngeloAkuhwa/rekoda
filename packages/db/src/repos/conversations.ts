@@ -920,16 +920,31 @@ export const INBOUND_MESSAGE_FAILED = 'inbound_message_failed';
  * that later message's and stays. A draft already expired when the lost message arrived is left
  * for `expireStaleDrafts`, so a "yes" to it is still told it expired.
  *
- * Each dead message is applied exactly once: its event is then marked processed, which is also
- * what takes it out of the next call, as `reconcileDeadReceipts` does for receipts. The event's
+ * A dead message is closed once: its event is then marked processed, which is also what takes it
+ * out of the next call, as `reconcileDeadReceipts` does for receipts. While a message that arrived
+ * before it is still live it is retired against on every run but left open (`held`), and
+ * `messages` counts only the ones closed. The event's
  * error is fixed text; nothing of the job's error or the message is copied anywhere.
  */
 export async function reconcileDeadInboundMessages(
   tx: TenantDb,
   businessId: string,
 ): Promise<{ messages: number; drafts: number; continuations: number }> {
-  const dead = await tx.execute<{ event_id: string }>(sql`
-    SELECT e.id AS event_id
+  const dead = await tx.execute<{ event_id: string; held: boolean }>(sql`
+    SELECT e.id AS event_id,
+           /* Held open while a message that arrived before it is still live (Codex on d57258b): a
+            * newer request may pass a sibling backing off, and that earlier message may go on to
+            * draft. The drafts and questions behind the lost message are retired on every run
+            * regardless (independent review of a802742: deferring the retirement let a correction
+            * supersede the draft first, silently), but the event is only marked processed once
+            * every earlier message has finished, so a run after that still reaches the draft the
+            * earlier message created. Retiring again is idempotent: only still-open rows move. */
+           EXISTS (
+             SELECT 1 FROM jobs o
+              WHERE o.business_id = j.business_id
+                AND o.kind = 'inbound.message'
+                AND o.state IN ('pending', 'running')
+                AND (o.created_at, o.id) < (j.created_at, j.id)) AS held
       FROM jobs j
       JOIN external_events e ON e.id = CASE
              WHEN j.payload->>'eventId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
@@ -939,17 +954,6 @@ export async function reconcileDeadInboundMessages(
        AND j.state = 'dead'
        AND e.business_id = ${businessId}::uuid
        AND e.processed_at IS NULL
-       /* Not while a message that arrived before it is still live (Codex on d57258b): a newer
-        * request may pass a sibling backing off, and consuming the lost message then would leave
-        * the draft that earlier message goes on to create out of reach, confirmable by a later
-        * "yes". The lost message waits; the first run after every earlier message has finished
-        * (done or dead) applies it, and that draft is then one it retires. */
-       AND NOT EXISTS (
-         SELECT 1 FROM jobs o
-          WHERE o.business_id = j.business_id
-            AND o.kind = 'inbound.message'
-            AND o.state IN ('pending', 'running')
-            AND (o.created_at, o.id) < (j.created_at, j.id))
      ORDER BY j.updated_at, j.id`);
   let messages = 0;
   let drafts = 0;
@@ -1002,6 +1006,7 @@ export async function reconcileDeadInboundMessages(
                m.created_at) < lost.created_at
       RETURNING c.id`);
     continuations += [...closed].length;
+    if (message.held) continue;
     await tx.execute(sql`
       UPDATE external_events SET processed_at = now(),
              error = 'not processed: its job died; drafts pending then were retired'
