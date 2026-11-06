@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  HEALTHY_DOTENV,
   SCRIPT,
   SLOTS,
   TAGS,
@@ -309,6 +310,20 @@ test('missing configuration is flagged: no EXPECT_SHA, live or absent key, platf
       assert.ok(a.includes(l), `${l} is under attention`);
     // Off by default is the expected state before the reminder journeys, so it is not flagged.
     assert.ok(!a.includes('REKODA_CUSTOMER_REMINDERS (api)'));
+  } finally {
+    h.done();
+  }
+});
+
+test('a key assigned twice in .env is read from its LAST line, as compose resolves it (Codex on #428)', () => {
+  const h = healthy({
+    dotenv:
+      HEALTHY_DOTENV +
+      'REKODA_ANNUAL_BILLING=1\nREKODA_ANNUAL_BILLING=0\nREKODA_RELEASE=staging-{sha7}\n',
+  });
+  try {
+    const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(out, /REKODA_ANNUAL_BILLING\s+SET \(0\)\n/);
   } finally {
     h.done();
   }

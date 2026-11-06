@@ -16,6 +16,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import {
+  continuationsRepo,
   conversationsRepo,
   createDb,
   events,
@@ -161,7 +162,7 @@ describe('reconcileDeadInboundMessages', () => {
     /* Arrived after the lost message (it passed it while it backed off): that message's own. */
     const after = await draftFrom(businessId, 'after', at(20), at(620));
 
-    expect(await reconcile(businessId)).toEqual({ messages: 1, drafts: 1 });
+    expect(await reconcile(businessId)).toEqual({ messages: 1, drafts: 1, continuations: 0 });
     expect(await draftState(before)).toEqual(RETIRED);
     expect(await draftState(after)).toEqual(STILL_PENDING);
     /* The event is closed with fixed text: nothing of the job's error or the message. */
@@ -196,11 +197,11 @@ describe('reconcileDeadInboundMessages', () => {
     const businessId = await seedBusiness();
     await draftFrom(businessId, 'first', at(0), at(600));
     await inboundJob(businessId, 'lost', at(10), 'dead');
-    expect(await reconcile(businessId)).toEqual({ messages: 1, drafts: 1 });
+    expect(await reconcile(businessId)).toEqual({ messages: 1, drafts: 1, continuations: 0 });
 
     /* A draft recorded afterwards from an earlier-arriving message must not be swept by a re-run. */
     const late = await draftFrom(businessId, 'late', at(5), at(605));
-    expect(await reconcile(businessId)).toEqual({ messages: 0, drafts: 0 });
+    expect(await reconcile(businessId)).toEqual({ messages: 0, drafts: 0, continuations: 0 });
     expect(await draftState(late)).toEqual(STILL_PENDING);
   });
 
@@ -212,7 +213,7 @@ describe('reconcileDeadInboundMessages', () => {
     const openThen = await draftFrom(businessId, 'open', at(1), at(11));
     await inboundJob(businessId, 'lost', at(10), 'dead');
 
-    expect(await reconcile(businessId)).toEqual({ messages: 1, drafts: 1 });
+    expect(await reconcile(businessId)).toEqual({ messages: 1, drafts: 1, continuations: 0 });
     expect(await draftState(closedThen)).toEqual(STILL_PENDING);
     expect(await draftState(openThen)).toEqual(RETIRED);
   });
@@ -225,7 +226,7 @@ describe('reconcileDeadInboundMessages', () => {
     );
     await inboundJob(businessId, 'lost', at(10), 'dead');
 
-    expect(await reconcile(businessId)).toEqual({ messages: 1, drafts: 0 });
+    expect(await reconcile(businessId)).toEqual({ messages: 1, drafts: 0, continuations: 0 });
     expect(await draftState(confirmed)).toEqual({ state: 'confirmed', retired_reason: null });
   });
 
@@ -235,10 +236,98 @@ describe('reconcileDeadInboundMessages', () => {
     const live = await inboundJob(businessId, 'retrying', at(10), 'pending');
     const done = await inboundJob(businessId, 'done', at(11), 'done');
 
-    expect(await reconcile(businessId)).toEqual({ messages: 0, drafts: 0 });
+    expect(await reconcile(businessId)).toEqual({ messages: 0, drafts: 0, continuations: 0 });
     expect(await draftState(draft)).toEqual(STILL_PENDING);
     expect((await eventRow(live.eventId)).processed_at).toBeNull();
     expect((await eventRow(done.eventId)).processed_at).toBeNull();
+  });
+
+  it('keeps a dead message open while an earlier message is still live, then applies it (Codex on #428)', async () => {
+    const businessId = await seedBusiness();
+    /* An earlier message backing off after a failed attempt: a newer ordinary message may pass it. */
+    const backingOff = await inboundJob(businessId, 'backing-off', at(0), 'pending');
+    await owner.execute(sql`UPDATE jobs SET attempts = 1 WHERE id = ${backingOff.jobId}::uuid`);
+    const lost = await inboundJob(businessId, 'lost', at(10), 'dead');
+
+    /* Consuming the dead event now would leave the earlier message free to draft afterwards,
+     * with nothing left to retire that draft. */
+    expect(await reconcile(businessId)).toEqual({ messages: 0, drafts: 0, continuations: 0 });
+    expect((await eventRow(lost.eventId)).processed_at).toBeNull();
+
+    /* The earlier message succeeds and drafts: that draft is from before the lost message. */
+    const late = await draftFrom(businessId, 'late-draft', at(5), at(605));
+    await owner.execute(sql`UPDATE jobs SET state = 'done' WHERE id = ${backingOff.jobId}::uuid`);
+
+    expect(await reconcile(businessId)).toEqual({ messages: 1, drafts: 1, continuations: 0 });
+    expect(await draftState(late)).toEqual(RETIRED);
+    expect((await eventRow(lost.eventId)).processed_at).not.toBeNull();
+  });
+
+  it('a live message that arrived after the dead one does not hold it back', async () => {
+    const businessId = await seedBusiness();
+    const before = await draftFrom(businessId, 'before', at(0), at(600));
+    await inboundJob(businessId, 'lost', at(10), 'dead');
+    await inboundJob(businessId, 'newer', at(20), 'pending');
+
+    expect(await reconcile(businessId)).toEqual({ messages: 1, drafts: 1, continuations: 0 });
+    expect(await draftState(before)).toEqual(RETIRED);
+  });
+
+  it('closes an open question asked before the lost message, and leaves later and read-only ones (Codex on #428)', async () => {
+    const businessId = await seedBusiness();
+    const userRows = await owner.execute<{ user_id: string }>(
+      sql`SELECT user_id FROM memberships WHERE business_id = ${businessId}::uuid LIMIT 1`,
+    );
+    const userId = [...userRows][0]!.user_id;
+    const ask = async (note: string, arrivedAt: Date, state: Record<string, unknown>) => {
+      const wamid = `wamid.ASK.${businessId.slice(0, 8)}.${note}`;
+      await eventAt(businessId, wamid, arrivedAt);
+      await withBusiness(app, businessId, async (tx: TenantDb) => {
+        const message = await conversationsRepo.recordInbound(tx, {
+          businessId,
+          channel: 'meta',
+          kind: 'text',
+          body: `msg ${note}`,
+          providerMessageId: wamid,
+        });
+        if (state['expects'] === 'funding_source') {
+          const draft = await conversationsRepo.recordDraft(tx, {
+            businessId,
+            conversationMessageId: message.id,
+            intent: 'RecordPurchase',
+            command: { intent: 'RecordPurchase', amount: 180_000, paymentMethod: 'pos' },
+            model: null,
+          });
+          await conversationsRepo.retireDraft(tx, businessId, draft.id);
+          state = { ...state, draftId: draft.id };
+        }
+        await continuationsRepo.openContinuation(tx, {
+          businessId,
+          userId,
+          sourceMessageId: message.id,
+          state: state as never,
+          expiresAt: at(900),
+        });
+      });
+    };
+    const open = async () => {
+      const rows = await owner.execute<{ expects: string | null; kind: string; state: string }>(
+        sql`SELECT kind, expects, state FROM conversation_continuations
+             WHERE business_id = ${businessId}::uuid ORDER BY insertion_seq`,
+      );
+      return [...rows].map((r) => `${r.kind}:${r.expects ?? '-'}:${r.state}`);
+    };
+    await ask('funding', at(0), { kind: 'clarification', expects: 'funding_source' });
+    await inboundJob(businessId, 'lost', at(10), 'dead');
+
+    const result = await reconcile(businessId);
+    expect(result).toEqual({ messages: 1, drafts: 0, continuations: 1 });
+    expect(await open()).toEqual(['clarification:funding_source:superseded']);
+
+    /* An answerable question opened after the lost message is that later message's own. */
+    await ask('after', at(20), { kind: 'clarification', expects: 'funding_source' });
+    expect(await reconcile(businessId)).toEqual({ messages: 0, drafts: 0, continuations: 0 });
+    expect((await open())[1]).toBe('clarification:funding_source:open');
   });
 
   it('never reaches another business, in either direction', async () => {
@@ -249,12 +338,12 @@ describe('reconcileDeadInboundMessages', () => {
     const bLost = await inboundJob(b, 'b-lost', at(10), 'dead');
 
     /* A's reconcile sees no dead message of its own, and does not close B's. */
-    expect(await reconcile(a)).toEqual({ messages: 0, drafts: 0 });
+    expect(await reconcile(a)).toEqual({ messages: 0, drafts: 0, continuations: 0 });
     expect(await draftState(aDraft)).toEqual(STILL_PENDING);
     expect((await eventRow(bLost.eventId)).processed_at).toBeNull();
 
     /* B's own reconcile retires only B's draft. */
-    expect(await reconcile(b)).toEqual({ messages: 1, drafts: 1 });
+    expect(await reconcile(b)).toEqual({ messages: 1, drafts: 1, continuations: 0 });
     expect(await draftState(bDraft)).toEqual(RETIRED);
     expect(await draftState(aDraft)).toEqual(STILL_PENDING);
   });

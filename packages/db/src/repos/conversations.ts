@@ -908,7 +908,8 @@ export const INBOUND_MESSAGE_FAILED = 'inbound_message_failed';
  * by a later "yes". Called under the business's inbound lock before any answer is read, this
  * retires every pending draft whose message reached Rekoda before the lost one (and whose window
  * was then open), as `superseded` with reason `inbound_message_failed`, so the next "yes" or
- * "no" can tell the merchant to record it again.
+ * "no" can tell the merchant to record it again. Open clarification questions asked before the
+ * lost message are closed the same way (`continuations`).
  *
  * Which drafts: those still pending whose own message reached Rekoda before the lost one did (by
  * each message's webhook event, `external_events` `created_at`) and whose confirmation window was
@@ -926,7 +927,7 @@ export const INBOUND_MESSAGE_FAILED = 'inbound_message_failed';
 export async function reconcileDeadInboundMessages(
   tx: TenantDb,
   businessId: string,
-): Promise<{ messages: number; drafts: number }> {
+): Promise<{ messages: number; drafts: number; continuations: number }> {
   const dead = await tx.execute<{ event_id: string }>(sql`
     SELECT e.id AS event_id
       FROM jobs j
@@ -952,6 +953,7 @@ export async function reconcileDeadInboundMessages(
      ORDER BY j.updated_at, j.id`);
   let messages = 0;
   let drafts = 0;
+  let continuations = 0;
   for (const message of [...dead]) {
     const retired = await tx.execute<{ id: string }>(sql`
       UPDATE command_drafts d
@@ -974,6 +976,32 @@ export async function reconcileDeadInboundMessages(
                m.created_at) < lost.created_at
       RETURNING d.id`);
     drafts += [...retired].length;
+    /* A question Rekoda asked (a purchase's funding source, a period, a choice) is answerable
+     * state too, though its draft is `abandoned`, not `pending`: a lost "cancel" must not leave
+     * it open for a later "cash" to rebuild and a "yes" to confirm (Codex on #428). Same rule as
+     * the drafts: asked by a message that arrived before the lost one, window open at its arrival.
+     * Read-only follow-ups (`query`) move no money and are left alone. */
+    const closed = await tx.execute<{ id: string }>(sql`
+      UPDATE conversation_continuations c
+         SET state = 'superseded', updated_at = clock_timestamp()
+        FROM conversation_messages m, external_events lost
+       WHERE c.business_id = ${businessId}::uuid
+         AND c.state = 'open'
+         AND c.kind = 'clarification'
+         AND c.expires_at > lost.created_at
+         AND m.business_id = ${businessId}::uuid
+         AND m.id = c.source_message_id
+         AND lost.business_id = ${businessId}::uuid
+         AND lost.id = ${message.event_id}::uuid
+         AND coalesce(
+               (SELECT src.created_at FROM external_events src
+                 WHERE src.business_id = ${businessId}::uuid
+                   AND src.provider = lost.provider
+                   AND src.external_id = m.provider_message_id
+                 LIMIT 1),
+               m.created_at) < lost.created_at
+      RETURNING c.id`);
+    continuations += [...closed].length;
     await tx.execute(sql`
       UPDATE external_events SET processed_at = now(),
              error = 'not processed: its job died; drafts pending then were retired'
@@ -981,7 +1009,7 @@ export async function reconcileDeadInboundMessages(
          AND processed_at IS NULL`);
     messages += 1;
   }
-  return { messages, drafts };
+  return { messages, drafts, continuations };
 }
 
 /**

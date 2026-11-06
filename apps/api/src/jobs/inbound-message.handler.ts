@@ -309,7 +309,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     /* Logged only once this run is going ahead: a deferral rolls the retirement back. */
     if (lost.messages > 0) {
       log.warn(
-        `retired ${lost.drafts} draft(s) behind ${lost.messages} inbound message(s) whose job died`,
+        `retired ${lost.drafts} draft(s) and ${lost.continuations} question(s) behind ${lost.messages} inbound message(s) whose job died`,
       );
     }
     /* OWN-74: the merchant is told that a waiting request was withdrawn. A typed "yes", "no" or
@@ -319,7 +319,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * A voice note is told here too, before it is heard, so it is told even if it cannot be
      * transcribed; a spoken "yes" or "no" then also gets its own answer. */
     if (
-      lost.drafts > 0 &&
+      (lost.drafts > 0 || lost.continuations > 0) &&
       answerKind !== 'affirm' &&
       answerKind !== 'deny' &&
       answerKind !== 'cancel'
@@ -821,7 +821,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
 
     /* OWN-74: a typed answer that did not itself report the withdrawn request (see above). */
     if (
-      lost.drafts > 0 &&
+      (lost.drafts > 0 || lost.continuations > 0) &&
       (answerKind === 'affirm' || answerKind === 'deny' || answerKind === 'cancel') &&
       !outcome.toldEarlierMessageLost
     ) {
