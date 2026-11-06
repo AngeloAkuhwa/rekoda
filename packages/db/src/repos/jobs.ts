@@ -158,9 +158,29 @@ export async function serializeBusiness(
  *
  * Returned as text and written back with `::timestamptz`, keeping PostgreSQL's microseconds (a
  * JavaScript `Date` would round to the millisecond and could tie two messages).
+ *
+ * The wait for the lock is bounded (`INGRESS_LOCK_TIMEOUT_MS`, CodeRabbit on `3fa1f4e`): each
+ * waiting webhook holds a connection from the shared application pool, so an ingress that stalled
+ * while holding the lock must not let one business's queued messages starve every other
+ * business's webhooks. A wait past the bound fails with `lock_not_available`; the transaction rolls
+ * back having written nothing, the controller answers Meta non-200, and Meta redelivers the
+ * message, which is then stamped in its turn. Ordering is unchanged: a message is only ever stamped
+ * while holding the lock. The bound applies to this one lock; it is reset before the inserts.
  */
-export async function stampInboundArrival(tx: TenantDb, businessId: string): Promise<string> {
+export const INGRESS_LOCK_TIMEOUT_MS = 2_000;
+
+export async function stampInboundArrival(
+  tx: TenantDb,
+  businessId: string,
+  options: { lockTimeoutMs?: number } = {},
+): Promise<string> {
+  const timeoutMs = options.lockTimeoutMs ?? INGRESS_LOCK_TIMEOUT_MS;
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('stampInboundArrival: lockTimeoutMs must be a positive integer');
+  }
+  await tx.execute(sql.raw(`SET LOCAL lock_timeout = '${timeoutMs}ms'`));
   await serializeBusiness(tx, businessId, 'ingress');
+  await tx.execute(sql`SET LOCAL lock_timeout TO DEFAULT`);
   const rows = await tx.execute<{ at: string }>(sql`SELECT clock_timestamp()::text AS at`);
   const at = [...rows][0]?.at;
   if (!at) throw new Error('stampInboundArrival: no clock reading');

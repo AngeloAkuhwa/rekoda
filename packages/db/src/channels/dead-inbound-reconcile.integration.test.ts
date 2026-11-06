@@ -376,6 +376,43 @@ describe('stampInboundArrival', () => {
     expect([...rows][0]).toEqual({ jobs: 1, events: 1 });
   });
 
+  it('bounds the wait: a message that cannot get the lock in time writes nothing and can be redelivered', async () => {
+    const businessId = await seedBusiness();
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let markStamped!: () => void;
+    const stamped = new Promise<void>((r) => (markStamped = r));
+    const first = ingest(businessId, 'first', held, markStamped);
+    await stamped;
+
+    /* A short bound so the test does not wait the production two seconds. */
+    const blocked = withBusiness(app, businessId, (tx) =>
+      jobsRepo.stampInboundArrival(tx, businessId, { lockTimeoutMs: 200 }),
+    );
+    await expect(blocked).rejects.toMatchObject({ cause: { code: '55P03' } });
+
+    release();
+    await first;
+    /* Meta's redelivery is stamped normally once the lock is free, after the first message. */
+    const again = await ingest(businessId, 'redelivered');
+    expect(await earlier(businessId, again.jobId)).toBe(true);
+    const rows = await owner.execute<{ n: number }>(
+      sql`SELECT count(*)::int AS n FROM jobs WHERE business_id = ${businessId}::uuid`,
+    );
+    expect([...rows][0]!.n).toBe(2);
+  });
+
+  it('refuses a lock bound that is not a positive whole number of milliseconds', async () => {
+    const businessId = await seedBusiness();
+    for (const lockTimeoutMs of [0, -1, 1.5]) {
+      await expect(
+        withBusiness(app, businessId, (tx) =>
+          jobsRepo.stampInboundArrival(tx, businessId, { lockTimeoutMs }),
+        ),
+      ).rejects.toThrow(/positive integer/);
+    }
+  });
+
   it('never makes another business wait', async () => {
     const a = await seedBusiness();
     const b = await seedBusiness();
