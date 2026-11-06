@@ -107,11 +107,24 @@ export class MetaWebhookController {
 
     const events = extractInboundEvents(parsed.data);
     let failed = 0;
+    /* A sender's messages are stored in the order Meta sent them (OWN-74). Once one fails, the
+     * rest of that sender's messages in this body wait for the redelivery below: storing a later
+     * "yes" ahead of an earlier "cancel" that could not be stored would stamp them out of order.
+     * Other senders' events carry on, and the ones that did land deduplicate on redelivery. */
+    const blocked = new Set<string>();
+    const orderKey = (event: (typeof events)[number]) =>
+      event.kind === 'message' ? `${event.phoneNumberId ?? ''}|${event.from}` : null;
     for (const event of events) {
+      const key = orderKey(event);
+      if (key !== null && blocked.has(key)) {
+        failed += 1;
+        continue;
+      }
       try {
         await this.ingress.accept(event, parsed.data);
       } catch (error) {
         failed += 1;
+        if (key !== null) blocked.add(key);
         this.log.error(
           `failed to accept a Meta event: ${redactForLog(String((error as Error)?.message ?? error))}`,
         );
