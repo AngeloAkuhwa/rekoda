@@ -194,6 +194,12 @@ export async function hasEarlierLiveJob(
  * would confirm the draft it was about. So the inbound handler defers a "yes", "no", "cancel" or
  * "yes?" while this is true; the sibling then either succeeds or dies, and a dead one is
  * reconciled (`reconcileDeadInboundMessages`) before the answer is read.
+ *
+ * "Arrival" is the job's `created_at`. For `inbound.message` that is the webhook event's arrival
+ * instant exactly: the only producer (`MetaService`) records the event and enqueues the job in one
+ * transaction, and both columns default to `now()`, the transaction's start. A new producer must
+ * keep that, or this must compare the events' `created_at` instead (pinned in
+ * `apps/api/src/channels/meta-webhook-ingress.integration.test.ts`).
  */
 export async function hasEarlierLiveJobByArrival(tx: TenantDb, jobId: string): Promise<boolean> {
   const rows = await tx.execute(sql`

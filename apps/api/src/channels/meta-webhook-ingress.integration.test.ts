@@ -396,6 +396,24 @@ describe('what happens after the 200', () => {
     expect(queued[0]).toMatchObject({ kind: 'inbound.message', state: 'pending' });
   });
 
+  /* `hasEarlierLiveJobByArrival` orders answers by the job's `created_at` and is described as
+   * webhook arrival order (OWN-74). That holds because this, the only producer of
+   * `inbound.message` jobs, writes the event and the job in one transaction and both columns
+   * default to `now()`, the transaction's start: the two instants are the same value. */
+  it('stamps the queued job with its webhook event’s arrival instant', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(messagePayload('2348031234567', 'wamid.ARRIVAL.1'));
+    await post(messagePayload('2348031234567', 'wamid.ARRIVAL.2'));
+
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ same: boolean }>(sql`
+        SELECT j.created_at = e.created_at AS same
+          FROM jobs j JOIN external_events e ON e.id = (j.payload->>'eventId')::uuid
+         WHERE j.kind = 'inbound.message'`),
+    );
+    expect([...rows].map((r) => r.same)).toEqual([true, true]);
+  });
+
   it('runs that job and closes the event out', async () => {
     const business = await seedMerchant('+2348031234567', 'Ada Fashion');
     await post(messagePayload('2348031234567', 'wamid.QUEUED'));
