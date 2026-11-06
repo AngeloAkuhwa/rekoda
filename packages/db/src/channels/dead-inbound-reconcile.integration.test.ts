@@ -179,7 +179,7 @@ describe('reconcileDeadInboundMessages', () => {
     const lost = await inboundJob(businessId, 'lost', at(10), 'dead');
 
     /* A newer message runs first (it may pass a sibling backing off): the lost one waits. */
-    expect(await reconcile(businessId)).toEqual({ messages: 0, drafts: 0 });
+    expect(await reconcile(businessId)).toEqual({ messages: 0, drafts: 0, continuations: 0 });
     expect(await draftState(before)).toEqual(STILL_PENDING);
     expect((await eventRow(lost.eventId)).processed_at).toBeNull();
 
@@ -188,7 +188,7 @@ describe('reconcileDeadInboundMessages', () => {
     await owner.execute(sql`UPDATE jobs SET state = 'done' WHERE id = ${earlier.jobId}::uuid`);
 
     /* Now the lost message is applied, and it reaches that draft too. */
-    expect(await reconcile(businessId)).toEqual({ messages: 1, drafts: 2 });
+    expect(await reconcile(businessId)).toEqual({ messages: 1, drafts: 2, continuations: 0 });
     expect(await draftState(before)).toEqual(RETIRED);
     expect(await draftState(fromEarlier)).toEqual(RETIRED);
   });
@@ -240,27 +240,6 @@ describe('reconcileDeadInboundMessages', () => {
     expect(await draftState(draft)).toEqual(STILL_PENDING);
     expect((await eventRow(live.eventId)).processed_at).toBeNull();
     expect((await eventRow(done.eventId)).processed_at).toBeNull();
-  });
-
-  it('keeps a dead message open while an earlier message is still live, then applies it (Codex on #428)', async () => {
-    const businessId = await seedBusiness();
-    /* An earlier message backing off after a failed attempt: a newer ordinary message may pass it. */
-    const backingOff = await inboundJob(businessId, 'backing-off', at(0), 'pending');
-    await owner.execute(sql`UPDATE jobs SET attempts = 1 WHERE id = ${backingOff.jobId}::uuid`);
-    const lost = await inboundJob(businessId, 'lost', at(10), 'dead');
-
-    /* Consuming the dead event now would leave the earlier message free to draft afterwards,
-     * with nothing left to retire that draft. */
-    expect(await reconcile(businessId)).toEqual({ messages: 0, drafts: 0, continuations: 0 });
-    expect((await eventRow(lost.eventId)).processed_at).toBeNull();
-
-    /* The earlier message succeeds and drafts: that draft is from before the lost message. */
-    const late = await draftFrom(businessId, 'late-draft', at(5), at(605));
-    await owner.execute(sql`UPDATE jobs SET state = 'done' WHERE id = ${backingOff.jobId}::uuid`);
-
-    expect(await reconcile(businessId)).toEqual({ messages: 1, drafts: 1, continuations: 0 });
-    expect(await draftState(late)).toEqual(RETIRED);
-    expect((await eventRow(lost.eventId)).processed_at).not.toBeNull();
   });
 
   it('a live message that arrived after the dead one does not hold it back', async () => {
