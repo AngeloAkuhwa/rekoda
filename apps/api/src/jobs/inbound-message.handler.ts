@@ -299,8 +299,17 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * separate") is an answer too: it cannot be told from a new request before it is read, so while
      * a clarification is open it waits behind an earlier live message the same way (CodeRabbit on
      * #428). With no question open, requests are not held up. */
+    /* "cash", "bank", "same" or "separate" can answer a question whose continuation is no longer
+     * open: a bare "same" or "separate" still answers a purchase held for its identity question
+     * after another message retired that question's continuation (G-81). Those words wait on
+     * their own, so a held purchase is never rebuilt past a retrying "cancel" (CodeRabbit on #428).
+     * They are never a new request on their own, so nothing else is held up. */
+    const answerWords =
+      typeof inbound.text === 'string' &&
+      (fundingSourceAnswer(inbound.text) !== null || purchaseIdentityAnswer(inbound.text) !== null);
     const mayAnswer =
       Boolean(answerKind) ||
+      answerWords ||
       isVoiceNote(inbound) ||
       (await continuationsRepo.hasOpenClarification(tx, businessId, event.receivedAt));
     if (mayAnswer && (await jobsRepo.hasEarlierLiveJobByArrival(tx, jobId))) {

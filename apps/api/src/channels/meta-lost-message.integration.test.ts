@@ -10,7 +10,7 @@
  * meta-webhook.fixtures.ts.
  */
 import { describe, expect, it } from 'vitest';
-import { jobsRepo, withBusiness, sql } from '@rekoda/db';
+import { withBusiness, sql } from '@rekoda/db';
 import { replies } from '@rekoda/core';
 import {
   db,
@@ -19,7 +19,6 @@ import {
   stubSender,
   stubStt,
   useMetaWebhookHarness,
-  workerDb,
 } from './meta-webhook.fixtures.js';
 import {
   AN_EXPENSE,
@@ -32,65 +31,17 @@ import {
 } from './meta-preview-expiry.fixtures.js';
 import { arrangeAudio, voicePayload, voiceUsed } from './meta-voice-note.fixtures.js';
 import { POS_PURCHASE } from './meta-continuations.fixtures.js';
+import {
+  asTenant,
+  failLastAttempt,
+  failOnceAndBackOff,
+  inboundEventsProcessed,
+  killInboundJob,
+  queueOnly,
+  type Death,
+} from './meta-lost-message.fixtures.js';
 
 useMetaWebhookHarness();
-
-type Death = 'markFailed' | 'reclaimStalled';
-
-/** Deliver a message to the queue without running it, so its job can be killed. */
-async function queueOnly(wamid: string, text: string) {
-  await post(messagePayload('2348031234567', wamid, text));
-}
-
-/**
- * A test-setup statement on `jobs`, run as the business it belongs to (`withBusiness`, so RLS applies
- * as in production) rather than through the worker pool's cross-tenant reach.
- */
-function asTenant(businessId: string, statement: ReturnType<typeof sql>) {
-  return withBusiness(db, businessId, (tx) => tx.execute(statement));
-}
-
-/**
- * Kill the one waiting inbound job by the real repository path. One attempt is allowed, so
- * `markFailed` ends it at once; `reclaimStalled` gives it the one extra run past the last
- * attempt, and the job dies when that run's lease expires too.
- */
-async function killInboundJob(businessId: string, death: Death) {
-  await asTenant(
-    businessId,
-    sql`
-    UPDATE jobs SET max_attempts = 1
-     WHERE business_id = ${businessId}::uuid AND kind = 'inbound.message' AND state = 'pending'`,
-  );
-  const runs = death === 'markFailed' ? 1 : 2;
-  for (let run = 1; run <= runs; run++) {
-    const job = await jobsRepo.claimNext(workerDb, `dying-worker-${run}`);
-    expect(job?.kind).toBe('inbound.message');
-    if (death === 'markFailed') {
-      expect((await jobsRepo.markFailed(workerDb, job!, 'handler failed', 0)).state).toBe('dead');
-    } else {
-      await asTenant(
-        businessId,
-        sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
-      );
-      expect(await jobsRepo.reclaimStalled(workerDb, 300_000)).toBe(1);
-    }
-  }
-  const [row] = await withBusiness(db, businessId, (tx) =>
-    jobsRepo.jobsForBusiness(tx, 'inbound.message'),
-  ).then((rows) => rows.filter((r) => r.state === 'dead'));
-  expect(row?.state).toBe('dead');
-}
-
-const inboundEventsProcessed = async (businessId: string) =>
-  [
-    ...(await withBusiness(db, businessId, (tx) =>
-      tx.execute<{ processed: boolean }>(sql`
-        SELECT processed_at IS NOT NULL AS processed FROM external_events
-         WHERE business_id = ${businessId}::uuid AND event_type LIKE 'message.%'
-         ORDER BY created_at`),
-    )),
-  ].map((r) => r.processed);
 
 describe.each<Death>(['markFailed', 'reclaimStalled'])(
   'an inbound message whose job died by %s',
@@ -207,38 +158,6 @@ describe('a lost message whose draft window closes before the next message is re
 });
 
 describe('an inbound message that fails and backs off before it dies (markFailed with retries)', () => {
-  /** Fail the waiting inbound job's first attempt and leave it backing off for a minute. */
-  async function failOnceAndBackOff(businessId: string) {
-    await asTenant(
-      businessId,
-      sql`
-      UPDATE jobs SET max_attempts = 2
-       WHERE business_id = ${businessId}::uuid AND kind = 'inbound.message' AND state = 'pending'`,
-    );
-    const job = await jobsRepo.claimNext(workerDb, 'failing-worker');
-    expect(job?.kind).toBe('inbound.message');
-    expect((await jobsRepo.markFailed(workerDb, job!, 'handler failed', 60_000)).state).toBe(
-      'pending',
-    );
-    return job!.id;
-  }
-  /**
-   * Bring the backing-off job due and fail its last attempt: it dies. Any other waiting job is
-   * put out of reach first, so a deferred answer whose half-second wait has passed cannot be
-   * claimed in its place.
-   */
-  async function failLastAttempt(businessId: string, jobId: string) {
-    await asTenant(
-      businessId,
-      sql`
-      UPDATE jobs SET run_at = CASE WHEN id = ${jobId}::uuid THEN now() ELSE now() + interval '1 hour' END
-       WHERE business_id = ${businessId}::uuid AND state = 'pending'`,
-    );
-    const job = await jobsRepo.claimNext(workerDb, 'failing-worker-2');
-    expect(job?.id).toBe(jobId);
-    expect((await jobsRepo.markFailed(workerDb, job!, 'handler failed', 0)).state).toBe('dead');
-  }
-
   it('a "yes" sent while the lost "cancel" retries waits for it, and then confirms nothing', async () => {
     const business = await seedMerchant();
     await say('wamid.backoff-1', AN_EXPENSE, 'bought fuel 20k cash');
@@ -303,7 +222,10 @@ describe('an inbound message that fails and backs off before it dies (markFailed
 
     /* The answer arrives during the backoff: it must not rebuild the purchase from a question the
      * lost "cancel" may have withdrawn. */
+    const sentBefore = stubSender.sent.length;
     await plain('wamid.fund-cash', 'cash');
+    /* Waiting, unanswered: no purchase preview while the cancel retries. */
+    expect(stubSender.sent.length).toBe(sentBefore);
     await failLastAttempt(business.id, cancel);
     await asTenant(
       business.id,
@@ -315,6 +237,9 @@ describe('an inbound message that fails and backs off before it dies (markFailed
 
     /* Nothing is left confirmable: the later yes books no purchase. */
     await plain('wamid.fund-yes', 'yes');
+    const told = stubSender.sent.slice(sentBefore).map((s) => s.text);
+    expect(told[0]).toBe(replies.earlierMessageLostNo().text);
+    expect(told.join('\n')).not.toContain('Please check this before I save it');
     const after = await footprint(business.id);
     expect(after.expenses).toBe(0);
     expect(after.postings).toBe(0);
