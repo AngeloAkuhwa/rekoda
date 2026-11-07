@@ -205,6 +205,43 @@ describe('a customer replies to a WhatsApp reminder (OWN-83)', () => {
     expect(noticesTo(s.ownerPhone)).toHaveLength(1);
   });
 
+  it('a busy shop: a reply still matches when many newer reminders went to other customers', async () => {
+    const s = await shop('PN-RR-13');
+    await reminded(s);
+    // 55 newer WhatsApp reminders on the same invoice's business, each to a different customer.
+    for (let i = 0; i < 55; i += 1) {
+      const other = await customersRepo.createCustomerWithIdentities(db, s.businessId, `O${i}`, [
+        {
+          facet: 'phone',
+          ciphertext: encryptFacet(
+            `+23490977${String(10000 + i)}`,
+            deps.config.vaultKey,
+            `${s.businessId}:phone`,
+          ),
+          matchKey: null,
+        },
+      ]);
+      await withBusiness(db, s.businessId, async (tx) => {
+        const id = await remindersRepo.startReminder(tx, {
+          businessId: s.businessId,
+          invoiceId: s.invoiceId,
+          customerId: other.id,
+          channel: 'whatsapp',
+          idempotencyKey: `busy-${i}-${s.businessId.slice(0, 8)}`,
+          balanceK: 4_500_000,
+          attestationId: null,
+          userId: s.ownerId,
+        });
+        await remindersRepo.finishReminder(tx, s.businessId, id!, 'sent', null);
+        await tx.execute(
+          sql`UPDATE invoice_reminders SET sent_at = now() + make_interval(secs => ${i + 1}) WHERE id = ${id}::uuid`,
+        );
+      });
+    }
+    await reply('PN-RR-13', 'wamid.RR.13', 'I will pay');
+    expect(noticesTo(s.ownerPhone)).toHaveLength(1);
+  });
+
   it('a later reminder answered again is told again', async () => {
     const s = await shop('PN-RR-3');
     await reminded(s);

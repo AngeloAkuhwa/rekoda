@@ -461,44 +461,58 @@ export async function reminderInFlight(
 
 /* ── a customer's WhatsApp reply to a reminder (OWN-83) ─────────────────────────────────────── */
 
-/** A WhatsApp reminder that went out recently: the candidates a customer's reply may answer. */
+/**
+ * A customer's newest WhatsApp reminder in the window: the candidate a reply may answer, with the
+ * customer's phone numbers still sealed (opening and comparing them is the caller's).
+ */
 export interface SentWhatsAppReminder {
   id: string;
   invoiceNumber: string;
   customerId: string;
   sentAt: Date;
+  sealedPhones: string[];
 }
 
 /**
- * The business's WhatsApp reminders sent in the last `withinDays` days, newest first, at most
- * `limit`. Only `sent` ones: a reminder that never reached the customer cannot be replied to.
+ * For every customer this business sent a WhatsApp reminder to in the last `withinDays` days, that
+ * customer's newest one, newest first, with their sealed phone facets. One query and no cap on the
+ * number of customers, so a busy shop's older reminder is still found. Only `sent` ones: a reminder
+ * that never reached the customer cannot be replied to.
  */
 export async function recentSentWhatsAppReminders(
   tx: TenantDb,
   businessId: string,
-  opts: { withinDays: number; limit: number },
+  opts: { withinDays: number },
 ): Promise<SentWhatsAppReminder[]> {
   const rows = await tx.execute<{
     id: string;
     invoice_number: string;
     customer_id: string;
     sent_at: Date;
+    phones: string[] | null;
   }>(sql`
-    SELECT r.id, i.invoice_number, r.customer_id, r.sent_at
-      FROM invoice_reminders r
-      JOIN invoices i ON i.business_id = r.business_id AND i.id = r.invoice_id
-     WHERE r.business_id = ${businessId}::uuid
-       AND r.channel = 'whatsapp' AND r.status = 'sent'
-       AND r.customer_id IS NOT NULL AND r.sent_at IS NOT NULL
-       AND r.sent_at > now() - make_interval(days => ${opts.withinDays})
-     ORDER BY r.sent_at DESC, r.id DESC
-     LIMIT ${opts.limit}
+    SELECT newest.id, newest.invoice_number, newest.customer_id, newest.sent_at,
+           ARRAY(SELECT ci.ciphertext FROM customer_identities ci
+                  WHERE ci.business_id = ${businessId}::uuid
+                    AND ci.customer_id = newest.customer_id AND ci.facet = 'phone') AS phones
+      FROM (
+        SELECT DISTINCT ON (r.customer_id) r.id, i.invoice_number, r.customer_id, r.sent_at
+          FROM invoice_reminders r
+          JOIN invoices i ON i.business_id = r.business_id AND i.id = r.invoice_id
+         WHERE r.business_id = ${businessId}::uuid
+           AND r.channel = 'whatsapp' AND r.status = 'sent'
+           AND r.customer_id IS NOT NULL AND r.sent_at IS NOT NULL
+           AND r.sent_at > now() - make_interval(days => ${opts.withinDays})
+         ORDER BY r.customer_id, r.sent_at DESC, r.id DESC
+      ) newest
+     ORDER BY newest.sent_at DESC, newest.id DESC
   `);
   return [...rows].map((r) => ({
     id: r.id,
     invoiceNumber: r.invoice_number,
     customerId: r.customer_id,
     sentAt: new Date(r.sent_at),
+    sealedPhones: r.phones ?? [],
   }));
 }
 

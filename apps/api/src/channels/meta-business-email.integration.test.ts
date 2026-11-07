@@ -125,6 +125,16 @@ describe('"my email is X" on WhatsApp (OWN-83)', () => {
     expect(mail.outbox.at(-1)!.to).toBe('new@adaeze.example.ng');
   });
 
+  it('asked again within the cooldown, it says no email was sent, never that one was', async () => {
+    await seedOwner();
+    const mail = new MockEmailSender();
+    await say(mail, OWNER, 'wamid.BE11', `my email is ${ADDRESS}`);
+    await say(mail, OWNER, 'wamid.BE12', `my email is ${ADDRESS}`);
+    expect(mail.outbox).toHaveLength(1);
+    expect(stubSender.lastText).toContain('so none was sent');
+    expect(stubSender.lastText).not.toMatch(/we sent/i);
+  });
+
   it('refuses an address that is not usable, and sends nothing', async () => {
     const businessId = await seedOwner();
     const mail = new MockEmailSender();

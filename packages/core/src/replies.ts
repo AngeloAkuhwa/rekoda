@@ -635,7 +635,9 @@ export function businessEmailInvalid(): Reply {
 
 export function businessEmailTryLater(minutes: number): Reply {
   const wait = minutes <= 1 ? 'a minute' : `${minutes} minutes`;
-  return reply(`We sent a link a moment ago. Please try again in ${wait}.`);
+  return reply(
+    `Too many confirmation emails have been asked for just now, so none was sent. Please try again in ${wait}.`,
+  );
 }
 
 export function businessEmailUnavailable(): Reply {
@@ -645,11 +647,12 @@ export function businessEmailUnavailable(): Reply {
   );
 }
 
-/** The address cannot take mail from Rekoda (an earlier bounce or complaint). */
+/** The address cannot take mail from Rekoda (an earlier bounce or spam complaint; which is not said). */
 export function businessEmailUndeliverable(): Reply {
   return reply(
-    'Mail to that address has bounced before, so we cannot send the confirmation link there. ' +
-      'Please send a different email address.',
+    'That address cannot receive email from Rekoda (an earlier message to it bounced or was ' +
+      'reported as unwanted), so we cannot send the confirmation link there. Please send a ' +
+      'different email address.',
   );
 }
 

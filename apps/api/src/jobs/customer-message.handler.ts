@@ -36,7 +36,6 @@ import {
   catalogueRepo,
   conversationsRepo,
   customerConsentRepo,
-  customersRepo,
   entitlementsRepo,
   events,
   identity,
@@ -289,14 +288,12 @@ interface HandoffOptions {
 
 /** How far back a customer's WhatsApp message is read as a reply to a reminder (OWN-83). */
 const REMINDER_REPLY_WINDOW_DAYS = 7;
-/** At most this many recent reminders are compared; the newest that matches wins. */
-const REMINDER_REPLY_CANDIDATES = 50;
-
 /**
  * The WhatsApp reminder this customer's message answers: the newest one this business sent in the
  * last seven days to the same number, compared exactly as the send normalised it. Null when there
- * is none. Reads this business's rows only (RLS and the explicit business id); a number is
- * compared in memory, never stored or logged.
+ * is none. Every customer reminded in the window is considered (one query, no cap), so a busy
+ * shop does not miss a reply. Reads this business's rows only (RLS and the explicit business id);
+ * a number is compared in memory, never stored or logged.
  */
 async function reminderThisAnswers(
   tx: TenantDb,
@@ -306,29 +303,18 @@ async function reminderThisAnswers(
 ): Promise<remindersRepo.SentWhatsAppReminder | null> {
   const recent = await remindersRepo.recentSentWhatsAppReminders(tx, businessId, {
     withinDays: REMINDER_REPLY_WINDOW_DAYS,
-    limit: REMINDER_REPLY_CANDIDATES,
   });
-  const phones = new Map<string, string[]>();
   for (const reminder of recent) {
-    let numbers = phones.get(reminder.customerId);
-    if (!numbers) {
-      const facets = await customersRepo.identityFacetsFor(tx, businessId, reminder.customerId);
-      numbers = [];
-      for (const facet of facets) {
-        if (facet.facet !== 'phone') continue;
-        try {
-          numbers.push(
-            normaliseParticipant(
-              decryptFacet(facet.ciphertext, deps.config.vaultKey, `${businessId}:phone`),
-            ),
-          );
-        } catch {
-          /* A seal this key cannot open, or a number that will not normalise: not a match. */
-        }
+    for (const sealed of reminder.sealedPhones) {
+      try {
+        const number = normaliseParticipant(
+          decryptFacet(sealed, deps.config.vaultKey, `${businessId}:phone`),
+        );
+        if (number === participant) return reminder;
+      } catch {
+        /* A seal this key cannot open, or a number that will not normalise: not a match. */
       }
-      phones.set(reminder.customerId, numbers);
     }
-    if (numbers.includes(participant)) return reminder;
   }
   return null;
 }
