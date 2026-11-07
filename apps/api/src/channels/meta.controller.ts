@@ -108,18 +108,21 @@ export class MetaWebhookController {
 
     const events = extractInboundEvents(parsed.data);
     let failed = 0;
-    /* Messages are stored in the order Meta sent them (OWN-74). A message that failed for a
-     * business the ingress knows (refused by its lane, or failed while being stored) holds back
-     * only that business's later messages, and its lane does that, in this body and in later
-     * webhooks alike (`IngressSequencer`); other businesses' messages in the body are stored. A
-     * message that failed before its business was known cannot be scoped, so the rest of the
-     * messages in this body wait for the redelivery below, whoever sent them: a later "yes"
-     * stored ahead of an earlier "cancel" would be stamped first. Status receipts carry on.
-     * Messages that did land deduplicate on redelivery. */
+    /* Messages of this body are tried in the order they appear in it (OWN-74). A message that
+     * failed for a business the ingress knows (refused by its lane, or failed while being stored)
+     * holds back only that business's later messages, and its lane does that, in this body and in
+     * later webhooks alike (`IngressSequencer`); other businesses' messages in the body are stored.
+     * A message that failed before its business was known cannot be scoped: it may belong to any
+     * business, so the rest of the messages in this body are not stored, whoever sent them, and
+     * wait for the redelivery below (an accepted, temporary cross-business delay; G-122 item 9).
+     * Each of them is held in its own business's lane meanwhile, so a later webhook of that
+     * business is not stored ahead of it. Status receipts carry on. Messages that did land
+     * deduplicate on redelivery. */
     let messageFailed = false;
     for (const event of events) {
       if (messageFailed && event.kind === 'message') {
         failed += 1;
+        await this.ingress.holdBack(event).catch(() => undefined);
         continue;
       }
       try {

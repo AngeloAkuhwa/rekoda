@@ -7,7 +7,7 @@ import { CONFIG, type ApiConfig } from '../config.js';
 import { DB, WORKER_DB } from '../db/db.module.js';
 import { JobKind } from '../jobs/queue.service.js';
 import { sealPayload } from '../privacy/payload-vault.js';
-import { IngressFenced, IngressSequencer } from './ingress-sequencer.js';
+import { IngressRefused, IngressSequencer, IngressStoreFailed } from './ingress-sequencer.js';
 
 /**
  * Turns an inbound Meta event into a durable, de-duplicated row.
@@ -104,9 +104,15 @@ export class MetaIngressService {
           }),
         );
       } catch (error) {
-        /* A message stored before the fence went up is not new work: Meta is redelivering a body
-         * that also carries the fenced message, and acknowledging it changes nothing. */
-        if (error instanceof IngressFenced && (await this.isStored(businessId, event.externalId))) {
+        /* A message already stored is not new work, however this attempt failed (fenced behind
+         * another, refused as busy, timed out waiting, or its own duplicate write failed on the
+         * lock): Meta is redelivering it, acknowledging it changes nothing, and leaving it
+         * outstanding would hold the business's later messages back for nothing. If the check
+         * itself fails, the original failure stands and Meta redelivers. */
+        if (
+          (error instanceof IngressRefused || error instanceof IngressStoreFailed) &&
+          (await this.isStored(businessId, event.externalId).catch(() => false))
+        ) {
           this.sequencer.settle(businessId, event.externalId);
           return { isNew: false };
         }
@@ -271,6 +277,27 @@ export class MetaIngressService {
       });
       return { isNew: true };
     });
+  }
+
+  /**
+   * A message the controller did not try, because an earlier message of its webhook body failed
+   * before its business was known (that one may belong to any business, so nothing after it is
+   * stored). It is not stored here either; if its business resolves and it is not already stored,
+   * the business's lane holds it as outstanding, so a later webhook of the same business cannot
+   * be stored ahead of it before Meta redelivers the body. Messages to a merchant's own WABA do
+   * not use the lane. Best effort: the caller ignores a failure, and Meta redelivers regardless.
+   */
+  async holdBack(event: InboundEvent): Promise<void> {
+    if (event.kind !== 'message') return;
+    if (event.phoneNumberId) {
+      if (await this.routeMerchantWaba(event.phoneNumberId)) return;
+      if (this.config.metaPhoneNumberId && event.phoneNumberId !== this.config.metaPhoneNumberId) {
+        return;
+      }
+    }
+    const businessId = await this.resolveBusiness(event.from);
+    if (!businessId || (await this.isStored(businessId, event.externalId))) return;
+    this.sequencer.hold(businessId, event.externalId);
   }
 
   /** Whether this message is already stored for the business (a redelivery). */

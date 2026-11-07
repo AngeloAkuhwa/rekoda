@@ -358,6 +358,18 @@ describe('IngressSequencer', () => {
     expect(await sequencer.run('b1', 'next', async () => 'next')).toBe('next');
   });
 
+  it('a message held back without being tried fences the later ones of its business only', async () => {
+    const { sequencer } = lane();
+    sequencer.hold('b1', 'skipped-cancel');
+    await expect(sequencer.run('b1', 'yes', async () => 1)).rejects.toBeInstanceOf(IngressFenced);
+    expect(await sequencer.run('b2', 'other', async () => 'other')).toBe('other');
+    const stored: string[] = [];
+    await sequencer.run('b1', 'skipped-cancel', async () => stored.push('skipped-cancel'));
+    await sequencer.run('b1', 'yes', async () => stored.push('yes'));
+    expect(stored).toEqual(['skipped-cancel', 'yes']);
+    expect(sequencer.outstanding('b1')).toBe(0);
+  });
+
   it('refuses bounds that are not positive whole numbers', () => {
     for (const bad of [0, -1, 1.5, Number.NaN]) {
       expect(() => new IngressSequencer({ waitMs: bad, maxWaiting: 1, fenceMs: 1 })).toThrow();
