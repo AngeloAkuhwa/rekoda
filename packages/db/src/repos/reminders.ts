@@ -22,9 +22,6 @@ export interface ReminderBusiness {
   name: string;
   publicContactPhone: string | null;
   publicContactApprovedAt: Date | null;
-  billingEmailVerifiedAt: Date | null;
-  /** The merchant's billing email, still sealed; opening it is the caller's. Null when none. */
-  billingEmailSealed: string | null;
   /** The merchant's approved bank details (REM-04), or null: a reminder then points to the public phone. */
   paymentInstruction: StoredPaymentInstruction | null;
 }
@@ -86,15 +83,13 @@ export async function businessForReminder(
     name: string;
     public_contact_phone: string | null;
     public_contact_approved_at: Date | null;
-    billing_email_verified_at: Date | null;
-    billing_email_sealed: string | null;
     payment_bank_name: string | null;
     payment_account_name: string | null;
     payment_account_number: string | null;
     payment_instruction_approved_at: Date | null;
   }>(sql`
-    SELECT name, public_contact_phone, public_contact_approved_at, billing_email_verified_at,
-           billing_email_sealed, payment_bank_name, payment_account_name, payment_account_number,
+    SELECT name, public_contact_phone, public_contact_approved_at,
+           payment_bank_name, payment_account_name, payment_account_number,
            payment_instruction_approved_at
     FROM businesses WHERE id = ${businessId}::uuid
   `);
@@ -105,9 +100,6 @@ export async function businessForReminder(
     publicContactPhone: row.public_contact_phone,
     publicContactApprovedAt:
       row.public_contact_approved_at === null ? null : new Date(row.public_contact_approved_at),
-    billingEmailVerifiedAt:
-      row.billing_email_verified_at === null ? null : new Date(row.billing_email_verified_at),
-    billingEmailSealed: row.billing_email_sealed,
     /* Only a complete, approved instruction counts; the CHECK in 0187 makes that all or none. */
     paymentInstruction:
       row.payment_bank_name !== null &&
