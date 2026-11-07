@@ -105,6 +105,7 @@ describe('an answer sent while an earlier "cancel" retries waits for it (OWN-74)
           kind: 'clarification',
           expects: 'choice',
           topic: 'debtors',
+          // not issued: list options name invoice numbers; no invoice is issued here
           options: [
             { ordinal: 1, ref: { kind: 'invoice', invoiceNumber: 'INV-2026-000001' } },
             { ordinal: 2, ref: { kind: 'invoice', invoiceNumber: 'INV-2026-000002' } },
@@ -122,6 +123,7 @@ describe('an answer sent while an earlier "cancel" retries waits for it (OWN-74)
     await cancelDies(business.id, cancel);
     const told = sentSince(before);
     expect(told[0]).toBe(LOST);
+    // not issued: the option seeded above, never an issued invoice
     expect(told).not.toContain(replies.optionChosen('INV-2026-000002').text);
     expect((await continuations(business.id)).map((c) => c.state)).toEqual(['superseded']);
   });
