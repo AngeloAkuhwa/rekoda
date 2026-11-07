@@ -450,6 +450,32 @@ test('0190 is checked by its objects too: a recorded tag with its constraint gon
   }
 });
 
+test('a checkout whose journal predates 0190 is not flagged for it (Qodo on #428)', () => {
+  const older = TAGS.filter((t) => !t.startsWith('0190_'));
+  const h = healthy({
+    journal: older,
+    ledger: older,
+    health: `{"status":"ok","database":"up","migrations":${older.length},"release":"staging-{sha7}","commit":"{sha7}"}`,
+  });
+  try {
+    const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(out, /0190 job failure category and inbound failure\s+not in this checkout/);
+    assert.doesNotMatch(out, /0190 job failure category and inbound failure\s+MISSING/);
+    assert.doesNotMatch(attention(out), /0190/);
+  } finally {
+    h.done();
+  }
+});
+
+test('the 0190 object check asks for the new retired reason, not only the constraint name (Qodo on #428)', () => {
+  const line =
+    SCRIPT.split('\n').find((l) => l.includes('0190_failed_inbound_and_failure_category "')) ?? '';
+  assert.match(line, /pg_get_constraintdef/);
+  assert.match(line, /inbound_message_failed/);
+  assert.match(line, /conrelid = 'public\.jobs'::regclass/);
+  assert.match(line, /conrelid = 'public\.command_drafts'::regclass/);
+});
+
 test('a migration whose tag is recorded but whose objects are gone reads INCONSISTENT, never APPLIED', () => {
   // The disposable-database case: 0187's constraint dropped, its ledger tag kept. The ledger
   // still lists 0187 as applied by tag, so only the objects check can catch it.
