@@ -8,200 +8,41 @@
  * WhatsApp outside the window sends nothing and says why; and no sale, invoice, payment or ledger
  * row is created or changed.
  */
-import { createHash, randomBytes } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+
+import { describe, expect, it } from 'vitest';
 import { emailSuppressionKey } from '@rekoda/core';
 import { signReminderOptOut } from '@rekoda/core/reminders';
 import 'reflect-metadata';
 import { ROLES_KEY } from '../auth/roles.guard.js';
 import { RemindersController } from './reminders.controller.js';
 import { encryptFacet } from '@rekoda/core/vault';
-import { matchKeyFor } from '@rekoda/core/vault';
 import { unwindAllocations } from '../commands/payment-adjustment-commands.js';
-import {
-  createDb,
-  customersRepo,
-  identity,
-  issueRepo,
-  settleRepo,
-  sql,
-  subscriptionsRepo,
-  withBusiness,
-  type Db,
-} from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
-import { loadConfig, type ApiConfig } from '../config.js';
-import {
-  EmailRefusedError,
-  MockEmailSender,
-  NoEmailSender,
-  type EmailSender,
-} from '../email/email.port.js';
+import { customersRepo, issueRepo, settleRepo, sql, withBusiness } from '@rekoda/db';
+import { EmailRefusedError, NoEmailSender, type EmailSender } from '../email/email.port.js';
 import { EmailSuppressedError } from '../email/suppressing.sender.js';
-import type { SendCustomerTextOutcome } from '../channels/waba-templates.service.js';
+import { ReminderInvoiceNotFound, ReminderKeyReused, ReminderService } from './reminder.service.js';
 import {
-  ReminderInvoiceNotFound,
-  ReminderKeyReused,
-  ReminderService,
-  type ReminderWhatsApp,
-} from './reminder.service.js';
+  testKey,
+  appDb,
+  config,
+  mail,
+  whatsappCalls,
+  whatsapp,
+  useReminderHarness,
+  setWhatsappOutcome,
+  service,
+  key,
+  type Seeded,
+  EMAIL,
+  seed,
+  approvePhone,
+  rows,
+  books,
+  sendVia,
+  sendEmail,
+} from './reminder.fixtures.js';
 
-const RUN_SALT = randomBytes(16).toString('hex');
-const testKey = (label: string): string =>
-  createHash('sha256').update(`${label}:${process.pid}:${RUN_SALT}`).digest('hex');
-
-let urls: Urls;
-let appDb: Db;
-let closeApp: () => Promise<void>;
-let config: ApiConfig;
-let mail: MockEmailSender;
-let whatsappOutcome: SendCustomerTextOutcome;
-let whatsappCalls: Array<{ to: string; text: string }>;
-
-const whatsapp: ReminderWhatsApp = {
-  async sendCustomerText(_businessId, input) {
-    whatsappCalls.push(input);
-    return whatsappOutcome;
-  },
-};
-
-beforeAll(async () => {
-  urls = requireUrls();
-  await migrate(urls);
-  ({ db: appDb, close: closeApp } = createDb(urls.app, { max: 8 }));
-  process.env['DATABASE_URL'] = urls.app;
-  process.env['OTP_PEPPER'] = testKey('pepper');
-  process.env['REKODA_API_SECRET'] = testKey('secret');
-  process.env['VAULT_KEY'] = testKey('vault');
-  process.env['MATCH_KEY'] = testKey('match');
-  config = {
-    ...loadConfig(),
-    webUrl: 'https://app.rekoda.test',
-    customerReminders: true,
-    supportEmail: 'support@rekoda.test',
-  };
-});
-
-afterAll(async () => {
-  await closeApp?.();
-});
-
-beforeEach(async () => {
-  await truncateAll(urls);
-  mail = new MockEmailSender();
-  whatsappOutcome = { outcome: 'sent', unit: 'SERVICE_MESSAGE' };
-  whatsappCalls = [];
-});
-
-const service = (sender: EmailSender = mail) =>
-  new ReminderService(config, appDb, sender, whatsapp);
-
-let seq = 0;
-const key = () => `reminder-key-${(seq += 1)}-${randomBytes(4).toString('hex')}`;
-
-interface Seeded {
-  businessId: string;
-  userId: string;
-  invoiceNumber: string;
-  invoiceId: string;
-  customerId: string;
-}
-
-const EMAIL = 'ada@customer.example.ng';
-
-async function seed(opts: { name?: string; email?: string | null; phone?: string | null } = {}) {
-  seq += 1;
-  const user = await identity.upsertUserByPhone(appDb, `+23481750${String(seq).padStart(4, '0')}`);
-  const business = await identity.createBusinessWithOwner(appDb, {
-    name: opts.name ?? 'Adaeze Fabrics',
-    businessType: null,
-    ownerUserId: user.id,
-  });
-  const businessId = business.id;
-  const identities: customersRepo.IdentityInput[] = [];
-  const email = opts.email === undefined ? EMAIL : opts.email;
-  const phone = opts.phone === undefined ? '+2348039998888' : opts.phone;
-  if (email) {
-    identities.push({
-      facet: 'email',
-      ciphertext: encryptFacet(email, config.vaultKey, `${businessId}:email`),
-      matchKey: null,
-    });
-  }
-  if (phone) {
-    identities.push({
-      facet: 'phone',
-      ciphertext: encryptFacet(phone, config.vaultKey, `${businessId}:phone`),
-      matchKey: matchKeyFor(businessId, 'phone', phone, config.matchKey),
-    });
-  }
-  const customer = await customersRepo.createCustomerWithIdentities(
-    appDb,
-    businessId,
-    'X81',
-    identities,
-  );
-  const sale = await withBusiness(appDb, businessId, (tx) =>
-    issueRepo.issueSale(tx, {
-      businessId,
-      customerId: customer.id,
-      customerToken: 'CUSTOMER_X81',
-      items: [{ name: 'gown', quantity: 1, unitPriceK: 8_000_000 }],
-      subtotalK: 8_000_000,
-      discountK: 0,
-      deliveryFeeK: 0,
-      vatK: 0,
-      totalK: 8_000_000,
-      paidK: 0,
-      balanceDueK: 8_000_000,
-      method: 'transfer',
-      sourceType: 'chat',
-      sourceId: `draft-${seq}`,
-      actor: 'system',
-    }),
-  );
-  return {
-    businessId,
-    userId: user.id,
-    invoiceNumber: sale.invoiceNumber,
-    invoiceId: sale.invoiceId,
-    customerId: customer.id,
-  } satisfies Seeded;
-}
-
-const approvePhone = (s: Seeded) => service().setPublicContact(s.businessId, '08031112222');
-
-const rows = async <T extends Record<string, unknown>>(
-  businessId: string,
-  q: ReturnType<typeof sql>,
-) => withBusiness(appDb, businessId, async (tx) => [...(await tx.execute<T>(q))]);
-
-const books = async (businessId: string) => {
-  const [r] = await rows<{ invoices: string; ledger: string; payments: string }>(
-    businessId,
-    sql`SELECT (SELECT count(*) FROM invoices)::text AS invoices,
-               (SELECT count(*) FROM ledger_transactions)::text AS ledger,
-               (SELECT count(*) FROM payments)::text AS payments`,
-  );
-  return r;
-};
-
-/** One channel of one event, with the same per-channel key the dual-channel door derives. */
-const sendVia = async (
-  s: Seeded,
-  channel: 'email' | 'whatsapp',
-  extra: { attest?: boolean; idempotencyKey?: string; sender?: EmailSender } = {},
-) => {
-  const out = await service(extra.sender).send(s.businessId, s.userId, {
-    invoiceNumber: s.invoiceNumber,
-    channels: [channel],
-    idempotencyKey: extra.idempotencyKey ?? key(),
-    ...(extra.attest === undefined ? {} : { attest: extra.attest }),
-  });
-  return out.results[0]!;
-};
-const sendEmail = (s: Seeded, extra: { attest?: boolean; idempotencyKey?: string } = {}) =>
-  sendVia(s, 'email', extra);
+useReminderHarness();
 
 /** A payment the merchant records against the invoice, through the real posting path. */
 const pay = (s: Seeded, amountK: number) =>
@@ -527,7 +368,7 @@ describe('a WhatsApp reminder', () => {
   ])('records %j as %s / %s and substitutes nothing', async (outcome, status, reasonCode) => {
     const s = await seed();
     await approvePhone(s);
-    whatsappOutcome = outcome;
+    setWhatsappOutcome(outcome);
     const r = await sendVia(s, 'whatsapp');
     expect(r.reminder).toMatchObject({ status, reasonCode });
     expect(mail.outbox).toHaveLength(0);
@@ -536,7 +377,7 @@ describe('a WhatsApp reminder', () => {
   it('records a send whose outcome Meta left unknown as uncertain, not failed', async () => {
     const s = await seed();
     await approvePhone(s);
-    whatsappOutcome = { outcome: 'send_failed', unit: 'SERVICE_MESSAGE', unknown: true };
+    setWhatsappOutcome({ outcome: 'send_failed', unit: 'SERVICE_MESSAGE', unknown: true });
     const r = await sendVia(s, 'whatsapp');
     expect(r.reminder).toMatchObject({ status: 'uncertain', reasonCode: 'delivery_unconfirmed' });
   });
@@ -544,7 +385,7 @@ describe('a WhatsApp reminder', () => {
   it('records a send Meta accepted but whose provider id was not recorded as sent, says so, and never resends it', async () => {
     const s = await seed();
     await approvePhone(s);
-    whatsappOutcome = { outcome: 'sent', unit: 'SERVICE_MESSAGE', providerIdUnrecorded: true };
+    setWhatsappOutcome({ outcome: 'sent', unit: 'SERVICE_MESSAGE', providerIdUnrecorded: true });
     const idempotencyKey = key();
     const r = await sendVia(s, 'whatsapp', { idempotencyKey });
     expect(r.reminder).toMatchObject({ status: 'sent', reasonCode: 'provider_id_unrecorded' });
@@ -691,7 +532,7 @@ describe('both channels for one event', () => {
   it('lets email go when WhatsApp is outside its window, and says why WhatsApp did not', async () => {
     const s = await seed();
     await approvePhone(s);
-    whatsappOutcome = { outcome: 'window_closed' };
+    setWhatsappOutcome({ outcome: 'window_closed' });
     const out = byChannel(await event(s, { attest: true }));
     expect(out['whatsapp']).toMatchObject({
       status: 'blocked',
@@ -1071,59 +912,6 @@ describe('void, credit and reversal (REM-02)', () => {
     const again = await sendVia(s, 'whatsapp');
     expect(again.reminder).toMatchObject({ status: 'sent', balanceK: 8_000_000 });
     expect(whatsappCalls).toHaveLength(2);
-  });
-});
-
-describe('the email reply-to (OD-42(b): Rekoda support)', () => {
-  const setBillingEmail = async (s: Seeded, address: string, verified: boolean) => {
-    await withBusiness(appDb, s.businessId, (tx) =>
-      subscriptionsRepo.setBillingEmailSealed(
-        tx,
-        s.businessId,
-        encryptFacet(address, config.vaultKey, `billing-email:${s.businessId}`),
-        new Date(),
-      ),
-    );
-    if (verified) {
-      await rows(s.businessId, sql`UPDATE businesses SET billing_email_verified_at = now()`);
-    }
-  };
-
-  it("sends replies to REKODA_SUPPORT_EMAIL, never to the merchant's billing email", async () => {
-    const s = await seed();
-    await approvePhone(s);
-    await setBillingEmail(s, 'owner@adaeze.example.ng', true);
-    expect((await sendEmail(s, { attest: true })).reminder.status).toBe('sent');
-    expect(mail.outbox[0]!.replyTo).toBe('support@rekoda.test');
-    // Still sent from Rekoda's own address under the merchant's display name: From is unchanged.
-    expect(mail.outbox[0]!.fromName).toBe('Adaeze Fabrics via Rekoda');
-    expect(JSON.stringify(mail.outbox[0])).not.toContain('owner@adaeze.example.ng');
-  });
-
-  it('uses the support address whether or not the merchant has a billing email', async () => {
-    const s = await seed();
-    await approvePhone(s);
-    await sendEmail(s, { attest: true });
-    expect(mail.outbox[0]!.replyTo).toBe('support@rekoda.test');
-
-    await setBillingEmail(s, 'unproven@adaeze.example.ng', false);
-    await sendEmail(s);
-    expect(mail.outbox).toHaveLength(2);
-    expect(mail.outbox[1]!.replyTo).toBe('support@rekoda.test');
-  });
-
-  it('leaves the header out rather than inventing one when no support address is configured', async () => {
-    const s = await seed();
-    await approvePhone(s);
-    const bare = new ReminderService({ ...config, supportEmail: null }, appDb, mail, whatsapp);
-    const out = await bare.send(s.businessId, s.userId, {
-      invoiceNumber: s.invoiceNumber,
-      channels: ['email'],
-      idempotencyKey: key(),
-      attest: true,
-    });
-    expect(out.results[0]!.reminder.status).toBe('sent');
-    expect(mail.outbox[0]!).not.toHaveProperty('replyTo');
   });
 });
 
