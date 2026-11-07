@@ -12,14 +12,18 @@
 -- Rollback: a normal release rollback (docs/runbooks/deploy.md) keeps this schema and its rows;
 -- the older code ignores them, and the rows are what stops a second notice for a reminder already
 -- told. An exceptional manual rollback is allowed only if those rows are kept, and is otherwise
--- not done. With the API, worker and migration jobs stopped:
---   CREATE TABLE reminder_reply_notices_kept AS SELECT * FROM reminder_reply_notices;
+-- not done. RLS is forced, so the copy and the restore run as a superuser or a BYPASSRLS role
+-- (otherwise they see no rows), and the copy, which has no RLS, is closed to the application
+-- roles in the same transaction. With the API, worker and migration jobs stopped:
+--   BEGIN; CREATE TABLE reminder_reply_notices_kept AS SELECT * FROM reminder_reply_notices;
+--   REVOKE ALL ON reminder_reply_notices_kept FROM PUBLIC, rekoda_app, rekoda_worker; COMMIT;
+--   check that the copy has as many rows as the table, then
 --   DROP TABLE reminder_reply_notices; DROP INDEX invoice_reminders_whatsapp_sent_ix;
 --   ALTER TABLE invoice_reminders DROP CONSTRAINT invoice_reminders_tenant_id_ux;
 -- then remove this migration's ledger entry, only after every statement succeeded. Before any
--- release that uses 0192 restarts: migrate, then
+-- release that uses 0192 restarts: migrate, then (same role)
 --   INSERT INTO reminder_reply_notices SELECT * FROM reminder_reply_notices_kept
---     ON CONFLICT DO NOTHING; DROP TABLE reminder_reply_notices_kept;
+--     ON CONFLICT DO NOTHING; check the row counts match; DROP TABLE reminder_reply_notices_kept;
 
 -- The tenant-scoped key a child row references, so a notice can only name a reminder of its own
 -- business (the composite foreign key idiom of 0132 onwards).
