@@ -26,6 +26,7 @@ No migration was needed for OD-39's limit: it already serialises on an advisory 
 2. Billing template `{{3}}` = billing link, mirroring the trial template, per the brief's "URL parameter". If Meta's `rekoda_billing_grace_notice` puts the link elsewhere (a button, or not at all), the parameter list in `template-slots.ts` and `meta.sender.ts` must change before that slot is set on staging; Meta refuses a mismatch (132000).
 3. OD-42(b) under OWN-83: the reply window is seven days; one notice per reminder; the notice names the invoice only (no customer name, number or message); the WhatsApp command forms are listed in `packages/core/src/router-business-email.test.ts`. Rekoda has no conversation inbox (G-124), and the notice says so.
 4. OD-39 erasure never searches other businesses: the operator names each business.
+5. OD-46 RULED (OWN-84, 7 Nov 2026): the reply notice is at-least-once. A crash after Meta accepted it and before the job's transaction committed repeats it once; a duplicate is accepted, a lost notice is not. Pinned by "OD-46, at-least-once" in `meta-reminder-reply.integration.test.ts`. OD-44 (a renewal blocked before it was initiated) stays deferred to PR B (OWN-76) and nothing in PR A assumes an answer.
 
 ## Owner actions (not engineering)
 

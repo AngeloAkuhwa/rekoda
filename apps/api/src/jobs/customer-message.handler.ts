@@ -278,6 +278,11 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
     }
     /* Last, after everything else this job does, so little after it can roll the record back
      * once the business has been told. Recorded only when it was delivered. */
+    /* AT-LEAST-ONCE (OD-46, ruled OWN-84). The notice is sent, then recorded in this job's
+     * transaction. A crash after Meta accepted it but before the commit leaves no record, so the
+     * retried job or the customer's next message tells the business again: a duplicate notice is
+     * accepted, a lost one is not. Do not "fix" this by recording a claim before sending; that
+     * makes an uncertain send unrecoverable. Pinned by meta-reminder-reply.integration.test.ts. */
     if (tellBusiness) {
       let told = await tellBusinessOfReminderReply(tx, deps, businessId, answered.invoiceNumber);
       if (told === 'reminder reply: business told') {

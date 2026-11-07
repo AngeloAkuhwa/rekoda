@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import {
   billingRepo,
   conversationsRepo,
+  createDb,
   customersRepo,
   identity,
   issueRepo,
@@ -25,6 +26,7 @@ import {
   messagePayload,
   post,
   stubSender,
+  urls,
   useMetaWebhookHarness,
   workerDb,
 } from './meta-webhook.fixtures.js';
@@ -224,6 +226,55 @@ describe('a customer replies to a WhatsApp reminder (OWN-83)', () => {
     expect(await noticeRows(s.businessId)).toHaveLength(1);
     await reply('PN-RR-12', 'wamid.RR.12C', 'still there?');
     expect(noticesTo(s.ownerPhone)).toHaveLength(1);
+  });
+
+  it('OD-46, at-least-once: a crash after the notice left but before it was recorded repeats it once, never loses it', async () => {
+    const s = await shop('PN-RR-46');
+    await reminded(s);
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      // The record insert fails once: Meta has accepted the notice (the stub keeps what it was
+      // given) but the job's transaction rolls back, as a crash before commit would.
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS od46_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION od46_fail_once() RETURNS trigger SECURITY DEFINER AS $$
+        BEGIN
+          IF nextval('od46_once') = 1 THEN
+            RAISE EXCEPTION 'od46: crash after send, before the record';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER od46_fail_once BEFORE INSERT ON reminder_reply_notices
+          FOR EACH ROW EXECUTE FUNCTION od46_fail_once()`);
+
+      expect(
+        (await post(messagePayload(CUSTOMER_WA, 'wamid.RR.46A', 'I will pay', 'PN-RR-46')))
+          .statusCode,
+      ).toBe(200);
+      await buildRunner(workerDb, db, deps).runOnce();
+      // The notice left, and nothing was recorded.
+      expect(noticesTo(s.ownerPhone)).toHaveLength(1);
+      expect(await noticeRows(s.businessId)).toHaveLength(0);
+
+      // The job is retried: the business is told again (the accepted duplicate), now recorded.
+      await ownerDb.execute(sql`
+        UPDATE jobs SET run_at = now() WHERE business_id = ${s.businessId}::uuid AND state <> 'done'`);
+      while (await buildRunner(workerDb, db, deps).runOnce()) {
+        /* drain the retry */
+      }
+      expect(noticesTo(s.ownerPhone)).toHaveLength(2);
+      expect(await noticeRows(s.businessId)).toHaveLength(1);
+
+      // A duplicate happens once at most: later messages tell nothing more.
+      await reply('PN-RR-46', 'wamid.RR.46B', 'hello?');
+      expect(noticesTo(s.ownerPhone)).toHaveLength(2);
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS od46_fail_once ON reminder_reply_notices`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS od46_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS od46_once`);
+      await close();
+    }
   });
 
   it('waits for the owner’s 24-hour window: not sent, not spent, then told once they write', async () => {
