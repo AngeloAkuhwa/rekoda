@@ -43,6 +43,16 @@ describe('template names and languages', () => {
     expect(config.metaBillingTemplateLocale).toBe('en');
   });
 
+  it('treats an empty language as unset: en, as a copied .env.example has it', () => {
+    const config = loadConfig({
+      ...BASE,
+      META_TRIAL_TEMPLATE_LOCALE: '',
+      META_OTP_TEMPLATE_LOCALE: '',
+    });
+    expect(config.metaTrialTemplateLocale).toBe('en');
+    expect(config.metaOtpTemplateLocale).toBe('en');
+  });
+
   it('boots with every slot unset (the sender refuses those messages, it never sends free text)', () => {
     const config = loadConfig({ ...BASE });
     expect(config.metaTrialTemplate).toBeNull();
@@ -65,7 +75,7 @@ describe('template names and languages', () => {
 
   it.each([
     ['META_TRIAL_TEMPLATE_LOCALE', 'english'],
-    ['META_TRIAL_TEMPLATE_LOCALE', ''],
+    ['META_TRIAL_TEMPLATE_LOCALE', ' en'],
     ['META_OTP_TEMPLATE_LOCALE', 'en-US'],
     ['META_RETENTION_TEMPLATE_LOCALE', 'EN'],
   ])('refuses a malformed %s (%j)', (key, value) => {

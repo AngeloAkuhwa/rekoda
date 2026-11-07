@@ -442,3 +442,40 @@ test('a /health that answers but is not ok, or whose database is not up, needs a
     }
   }
 });
+
+test('REKODA_SUPPORT_EMAIL is reported per container, and flagged only when reminders are ON without it (OD-42(b))', () => {
+  const noSupport = { ...SLOTS };
+  delete noSupport.REKODA_SUPPORT_EMAIL;
+  const h = healthy({
+    workerEnv: { ...noSupport, REKODA_CUSTOMER_REMINDERS: '1', REKODA_EMAIL_PROVIDER: 'resend' },
+  });
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(r.stdout, /REKODA_SUPPORT_EMAIL \(api\)\s+SET\n/);
+    assert.match(r.stdout, /REKODA_SUPPORT_EMAIL \(worker\)\s+UNSET \(reminders are ON/);
+    assert.ok(attention(r.stdout).includes('REKODA_SUPPORT_EMAIL (worker)'));
+    assert.doesNotMatch(r.stdout, /support@staging\.invalid/);
+    assert.equal(r.status, 1);
+  } finally {
+    h.done();
+  }
+  const off = healthy({
+    env: {
+      ...noSupport,
+      PAYSTACK_SECRET_KEY: 'sk_test_qqqqqqqqqqqqqqqq',
+      REKODA_EMAIL_PROVIDER: 'resend',
+    },
+    workerEnv: { ...noSupport, REKODA_EMAIL_PROVIDER: 'resend' },
+  });
+  try {
+    const r = off.run2(undefined, { EXPECT_SHA: off.sha.slice(0, 7) });
+    assert.match(
+      r.stdout,
+      /REKODA_SUPPORT_EMAIL \(api\)\s+UNSET \(needed before reminders are switched on\)\n/,
+    );
+    assert.ok(!attention(r.stdout).includes('REKODA_SUPPORT_EMAIL'));
+    assert.equal(r.status, 0, r.stdout);
+  } finally {
+    off.done();
+  }
+});

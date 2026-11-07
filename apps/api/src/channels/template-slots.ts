@@ -147,8 +147,9 @@ export function templateConfigProblems(env: NodeJS.ProcessEnv): TemplateConfigPr
         problem: 'must be a Meta template name (lowercase letters, digits and underscores)',
       });
     }
+    // Empty is unset (the default, en), as for the template name: a copied .env.example boots.
     const locale = env[slot.localeEnv];
-    if (locale !== undefined && !TEMPLATE_LOCALE.test(locale)) {
+    if (locale !== undefined && locale !== '' && !TEMPLATE_LOCALE.test(locale)) {
       problems.push({
         env: slot.localeEnv,
         problem: 'must be a Meta language code such as en or en_US',

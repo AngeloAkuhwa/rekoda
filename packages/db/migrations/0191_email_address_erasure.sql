@@ -80,4 +80,5 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION email_address_erase(text, text, text, boolean) FROM PUBLIC;
+REVOKE ALL ON FUNCTION email_address_erase(text, text, text, boolean) FROM rekoda_worker;
 GRANT EXECUTE ON FUNCTION email_address_erase(text, text, text, boolean) TO rekoda_app;

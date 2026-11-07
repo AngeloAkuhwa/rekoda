@@ -12,7 +12,16 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { Reflector } from '@nestjs/core';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { billingEmailAddressKeyFor, encryptFacet } from '@rekoda/core/vault';
-import { createDb, identity, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
+import {
+  createDb,
+  customersRepo,
+  identity,
+  issueRepo,
+  sql,
+  subscriptionsRepo,
+  withBusiness,
+  type Db,
+} from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../config.js';
 import { MockEmailSender } from '../email/email.port.js';
@@ -90,6 +99,20 @@ async function seedBusiness(): Promise<string> {
 
 const rowsOf = async <T extends Record<string, unknown>>(db: Db, statement: string): Promise<T[]> =>
   [...(await db.execute<T>(sql.raw(statement)))] as T[];
+
+/** Wait until some backend is blocked on an advisory lock (read as the owner). */
+async function waitForBlockedAdvisoryLock(timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const [row] = await rowsOf<{ n: number }>(
+      ownerDb,
+      "SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted",
+    );
+    if (row!.n > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error('the erasure never waited on the address lock');
+}
 
 const counterRows = async (address = EMAIL): Promise<number> => {
   const key = billingEmailAddressKeyFor(address, config.matchKey);
@@ -223,17 +246,28 @@ describe('the shared counter (OWN-58, OWN-66)', () => {
     expect(receipts.map((r) => r.counter_rows_removed)).toEqual([1, 0]);
   });
 
-  it('waits for a concurrent claim of the same address, so the two never interleave', async () => {
-    const ids = [await seedBusiness(), await seedBusiness(), await seedBusiness()];
-    const runs = await Promise.all([
-      ...ids.map((id) => emails().requestVerification(id, EMAIL)),
-      erasure().erase({ address: EMAIL, reason: 'limit_cleared' }, OPERATOR),
-    ]);
-    const sent = runs.slice(0, 3).filter((r) => 'state' in r && r.state === 'sent').length;
-    // Whatever the order, the counter holds exactly the claims that committed after the erasure.
-    expect(await counterRows()).toBeLessThanOrEqual(sent);
-    expect(sent).toBeGreaterThanOrEqual(1);
-    expect(sent).toBeLessThanOrEqual(2);
+  it('waits for an uncommitted claim of the same address, then removes it (the claim lock)', async () => {
+    const key = billingEmailAddressKeyFor(EMAIL, config.matchKey);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let claimed!: () => void;
+    const claimOpen = new Promise<void>((resolve) => (claimed = resolve));
+    const claim = appDb.transaction(async (tx) => {
+      await subscriptionsRepo.claimBillingEmailAddress(tx, key, {
+        maxPerHour: 5,
+        cooldownMs: 60_000,
+      });
+      claimed();
+      await held; // keep the claim, and its address lock, uncommitted
+    });
+    await claimOpen;
+    const erasing = erasure().erase({ address: EMAIL, reason: 'limit_cleared' }, OPERATOR);
+    // Without the advisory lock the erasure would finish now, missing the uncommitted row.
+    await waitForBlockedAdvisoryLock();
+    release();
+    await claim;
+    expect((await erasing).counterRowsRemoved).toBe(1);
+    expect(await counterRows()).toBe(0);
   });
 });
 
@@ -318,20 +352,49 @@ describe("a named business's billing email", () => {
   it('keeps financial records, suppressions and opt-outs', async () => {
     const a = await seedBusiness();
     await setAddress(a, EMAIL);
+    const customer = await customersRepo.createCustomerWithIdentities(appDb, a, 'X91', []);
+    await withBusiness(appDb, a, async (tx) => {
+      await issueRepo.issueSale(tx, {
+        businessId: a,
+        customerId: customer.id,
+        customerToken: 'CUSTOMER_X91',
+        items: [{ name: 'gown', quantity: 1, unitPriceK: 5_000_000 }],
+        subtotalK: 5_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 5_000_000,
+        paidK: 0,
+        balanceDueK: 5_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-erasure',
+        actor: 'system',
+      });
+      await tx.execute(
+        sql`INSERT INTO customer_email_optouts (business_id, address_hash)
+            VALUES (${a}::uuid, ${createHash('sha256').update(EMAIL).digest('hex')})`,
+      );
+    });
     await rowsOf(
       ownerDb,
       `INSERT INTO email_suppressions (address_hash, reason) VALUES ('${createHash('sha256').update(EMAIL).digest('hex')}', 'bounced')`,
     );
     const counts = async () =>
-      rowsOf<{ suppressions: number; ledger: number; invoices: number }>(
+      rowsOf<{ suppressions: number; optouts: number; ledger: number; invoices: number }>(
         ownerDb,
         `SELECT (SELECT count(*)::int FROM email_suppressions) AS suppressions,
+                (SELECT count(*)::int FROM customer_email_optouts) AS optouts,
                 (SELECT count(*)::int FROM ledger_entries) AS ledger,
                 (SELECT count(*)::int FROM invoices) AS invoices`,
       );
-    const before = await counts();
+    const [before] = await counts();
+    expect(before!.invoices).toBe(1);
+    expect(before!.ledger).toBeGreaterThan(0);
+    expect(before!.optouts).toBe(1);
     await erasure().erase({ address: EMAIL, reason: 'erasure_request', businessId: a }, OPERATOR);
-    expect(await counts()).toEqual(before);
+    expect(await counts()).toEqual([before]);
+    expect((await billingEmailState(a)).sealed).toBeNull();
   });
 
   it('commits nothing when the erasure fails part-way, so it can be retried', async () => {

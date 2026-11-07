@@ -78,11 +78,17 @@ test('EXPECT_WEB_URL is compared inside each container: the agreed origin passes
     assert.doesNotMatch(r.stdout, /other\.invalid/);
     // A malformed EXPECT_WEB_URL is refused, never placed in the container command.
     const bad = h.run2(undefined, { EXPECT_WEB_URL: 'https://x.invalid/"; rm -rf /' });
+    // A value whose FIRST line is a valid origin is refused too, never spliced into the command.
+    const multi = h.run2(undefined, { EXPECT_WEB_URL: 'https://x.invalid\n"; touch /tmp/pwned' });
+    assert.match(
+      multi.stdout,
+      /EXPECT_WEB_URL\s+not an https origin with no path; comparison skipped/,
+    );
     assert.match(
       bad.stdout,
       /EXPECT_WEB_URL\s+not an https origin with no path; comparison skipped/,
     );
-    assert.doesNotMatch(h.calls().join('\n'), /rm -rf/);
+    assert.doesNotMatch(h.calls().join('\n'), /rm -rf|pwned/);
   } finally {
     h.done();
   }

@@ -359,7 +359,7 @@ META_TRIAL_TEMPLATE required rekoda_trial_ending en"
 # accepted, because it is compared inside the container.
 EXPECT_WEB="${EXPECT_WEB_URL:-}"
 EXPECT_WEB="${EXPECT_WEB%/}"
-if [ -n "$EXPECT_WEB" ] && ! printf '%s' "$EXPECT_WEB" | grep -Eq '^https://[A-Za-z0-9.-]+(:[0-9]+)?$'; then
+if [ -n "$EXPECT_WEB" ] && ! [[ "$EXPECT_WEB" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?$ ]]; then
   flag "EXPECT_WEB_URL" "not an https origin with no path; comparison skipped"; EXPECT_WEB=""
 fi
 echo "== Meta template slots in the running api and worker (configuration only, not Meta approval)"
@@ -428,6 +428,17 @@ if [ -n "${REM[api]}" ] && [ -n "${REM[worker]}" ]; then
   if [ "${REM[api]}" = "${REM[worker]}" ]; then say "reminders api and worker" "SAME (${REM[api]})"
   else flag "reminders api and worker" "DIFFERENT (api ${REM[api]}, worker ${REM[worker]})"; fi
 fi
+# A reminder email's Reply-To is Rekoda support (OD-42(b)); a process with reminders on and no
+# REKODA_SUPPORT_EMAIL refuses to boot. Presence only, asked of each container; never printed.
+for c in api worker; do
+  r="$(dc exec -T -e K=REKODA_SUPPORT_EMAIL "$c" sh -c 'eval "v=\${$K:-}"; if [ -n "$v" ]; then echo SET; else echo UNSET; fi' 2>/dev/null)"
+  case "$r:${REM[$c]:-}" in
+    SET:*) say "REKODA_SUPPORT_EMAIL ($c)" "SET" ;;
+    UNSET:ON) flag "REKODA_SUPPORT_EMAIL ($c)" "UNSET (reminders are ON: the process refuses to boot without it)" ;;
+    UNSET:*) say "REKODA_SUPPORT_EMAIL ($c)" "UNSET (needed before reminders are switched on)" ;;
+    *) flag "REKODA_SUPPORT_EMAIL ($c)" "unknown ($c query failed)" ;;
+  esac
+done
 
 # The email provider each running container resolved: an .env edited without recreating the
 # containers is not what they send with. Classified inside the container; only resend passes.

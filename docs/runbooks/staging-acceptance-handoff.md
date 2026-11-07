@@ -168,9 +168,11 @@ a user or password in it, remove it before sharing and report it as a defect in 
      every row; a step with no staging evidence of its own is not PASS.
    - If steps 17 and 19 later run on staging while `META_BILLING_TEMPLATE` is not approved, they show
      the grace reminders held, not sent. Record that in the Actual column.
-4. **Switch reminders on.** The owner sets `REKODA_CUSTOMER_REMINDERS=1` in staging's `.env` and recreates the
+4. **Switch reminders on.** The owner sets `REKODA_SUPPORT_EMAIL=<the support address the owner names>` (OD-42(b): the
+   Reply-To of reminder emails; with reminders on and this unset the api and worker refuse to boot) and
+   `REKODA_CUSTOMER_REMINDERS=1` in staging's `.env`, and recreates the
    api and worker so they read it (`dc up -d --wait --force-recreate api worker`, as in `runbooks/deploy.md` "Rotate a database password"). Then re-run the check:
-   both containers must read `ON (1)`.
+   both containers must read `ON (1)`, and `REKODA_SUPPORT_EMAIL (api)` / `(worker)` must read `SET`.
 5. **ACCEPT-01.** Run the 17 A5 journeys (`REKODA_MVP_DELIVERY_PLAN.md` §A5) with the plan in §4a,
    and fill its result table. Record for each:
    - environment;

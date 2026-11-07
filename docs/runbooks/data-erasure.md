@@ -187,6 +187,12 @@ POST /v1/ops/privacy/email-erasure
   would resume mail to someone who bounced, complained or opted out), customer identity facets
   (lane 1, `EraseData`), and every invoice, receipt and ledger row.
 
+- One narrow window remains: a confirmation request that committed its link just before the erasure
+  still hands that one mail to the provider after it (the send follows the commit). The link in it
+  is already void (the erasure moved the revision on), so it proves nothing; nothing re-sends
+  afterwards, and no job or sweep re-sets a billing email. Erase again only if a new request was
+  made after this one.
+
 Check after the fact, as the owner:
 
 ```sql

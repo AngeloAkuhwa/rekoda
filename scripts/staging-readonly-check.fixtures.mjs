@@ -212,6 +212,8 @@ export const SLOTS = {
   META_TRIAL_TEMPLATE: 'rekoda_trial_ending',
   META_TRIAL_TEMPLATE_LOCALE: 'en',
   REKODA_WEB_URL: 'https://staging.invalid',
+  // The reminder Reply-To (OD-42(b)); a healthy host with reminders on carries it.
+  REKODA_SUPPORT_EMAIL: 'support@staging.invalid',
 };
 /** The healthy host's .env. Not a credential: low-entropy stand-ins whose only job is to be findable if printed. */
 export const HEALTHY_DOTENV =
