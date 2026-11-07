@@ -104,6 +104,15 @@ async function seedBusiness(): Promise<string> {
 const rowsOf = async <T extends Record<string, unknown>>(db: Db, statement: string): Promise<T[]> =>
   [...(await db.execute<T>(sql.raw(statement)))] as T[];
 
+/** A tenant-owned read, under the business's own scope (invariant 3), never as the owner role. */
+const tenantRowsOf = <T extends Record<string, unknown>>(
+  businessId: string,
+  statement: string,
+): Promise<T[]> =>
+  withBusiness(appDb, businessId, async (tx) => [
+    ...(await tx.execute<T>(sql.raw(statement))),
+  ]) as Promise<T[]>;
+
 /** Wait until some backend is blocked on an advisory lock (read as the owner). */
 async function waitForBlockedAdvisoryLock(timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -295,8 +304,8 @@ describe("a named business's billing email", () => {
     // The link mailed before the erasure can no longer prove anything.
     expect((await emails().confirm(a, decodeURIComponent(token))).state).not.toBe('verified');
 
-    const audit = await rowsOf<{ action: string; actor: string; new_value: unknown }>(
-      ownerDb,
+    const audit = await tenantRowsOf<{ action: string; actor: string; new_value: unknown }>(
+      a,
       `SELECT action, actor, new_value FROM audit_events WHERE business_id = '${a}' AND action = 'billing_email_erased'`,
     );
     expect(audit).toEqual([
@@ -311,14 +320,19 @@ describe("a named business's billing email", () => {
       { billing_email_cleared: true, reason: 'erasure_request', operator: OPERATOR },
     ]);
 
-    // Nowhere the erasure wrote does the address appear.
-    const written = await rowsOf<{ dump: string }>(
+    // Nowhere the erasure wrote does the address appear: the shared receipts (not tenant-owned),
+    // then the business's own audit trail under its scope.
+    const receipts = await rowsOf<{ dump: string }>(
       ownerDb,
-      `SELECT (SELECT coalesce(string_agg(row_to_json(e)::text, ''), '') FROM email_address_erasures e)
-            || (SELECT coalesce(string_agg(row_to_json(x)::text, ''), '') FROM audit_events x
-                WHERE x.business_id = '${a}') AS dump`,
+      `SELECT coalesce(string_agg(row_to_json(e)::text, ''), '') AS dump FROM email_address_erasures e`,
     );
-    expect(written[0]!.dump.toLowerCase()).not.toContain('ada@');
+    const trail = await tenantRowsOf<{ dump: string }>(
+      a,
+      `SELECT coalesce(string_agg(row_to_json(x)::text, ''), '') AS dump FROM audit_events x
+        WHERE x.business_id = '${a}'`,
+    );
+    expect(receipts[0]!.dump.toLowerCase()).not.toContain('ada@');
+    expect(trail[0]!.dump.toLowerCase()).not.toContain('ada@');
   });
 
   it('is left alone when it is a different address; the counter is still erased', async () => {
@@ -434,14 +448,21 @@ describe("a named business's billing email", () => {
       ownerDb,
       `INSERT INTO email_suppressions (address_hash, reason) VALUES ('${createHash('sha256').update(EMAIL).digest('hex')}', 'bounced')`,
     );
-    const counts = async () =>
-      rowsOf<{ suppressions: number; optouts: number; ledger: number; invoices: number }>(
+    // The shared suppression list is not tenant-owned; the business's own records are read under
+    // its scope.
+    const counts = async () => {
+      const [shared] = await rowsOf<{ suppressions: number }>(
         ownerDb,
-        `SELECT (SELECT count(*)::int FROM email_suppressions) AS suppressions,
-                (SELECT count(*)::int FROM customer_email_optouts) AS optouts,
+        'SELECT count(*)::int AS suppressions FROM email_suppressions',
+      );
+      const [own] = await tenantRowsOf<{ optouts: number; ledger: number; invoices: number }>(
+        a,
+        `SELECT (SELECT count(*)::int FROM customer_email_optouts) AS optouts,
                 (SELECT count(*)::int FROM ledger_entries) AS ledger,
                 (SELECT count(*)::int FROM invoices) AS invoices`,
       );
+      return [{ ...shared!, ...own! }];
+    };
     const [before] = await counts();
     expect(before!.invoices).toBe(1);
     expect(before!.ledger).toBeGreaterThan(0);
