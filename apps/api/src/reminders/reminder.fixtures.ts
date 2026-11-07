@@ -99,7 +99,8 @@ export interface Seeded {
 
 export const EMAIL = 'ada@customer.example.ng';
 
-export async function seed(
+export async function seedWith(
+  issueSale: typeof issueRepo.issueSale,
   opts: { name?: string; email?: string | null; phone?: string | null } = {},
 ) {
   seq += 1;
@@ -133,8 +134,10 @@ export async function seed(
     'X81',
     identities,
   );
+  // The sale is issued through a writer the TEST FILE passes in: financial
+  // writers stay out of fixtures (check-boundaries exempts only *.test.ts).
   const sale = await withBusiness(appDb, businessId, (tx) =>
-    issueRepo.issueSale(tx, {
+    issueSale(tx, {
       businessId,
       customerId: customer.id,
       customerToken: 'CUSTOMER_X81',

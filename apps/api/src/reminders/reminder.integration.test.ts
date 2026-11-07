@@ -34,13 +34,15 @@ import {
   key,
   type Seeded,
   EMAIL,
-  seed,
+  seedWith,
   approvePhone,
   rows,
   books,
   sendVia,
   sendEmail,
 } from './reminder.fixtures.js';
+
+const seed = (opts?: Parameters<typeof seedWith>[1]) => seedWith(issueRepo.issueSale, opts);
 
 useReminderHarness();
 

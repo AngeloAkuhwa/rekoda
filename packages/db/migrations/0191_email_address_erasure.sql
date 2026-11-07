@@ -27,7 +27,7 @@
 -- Rollback (after the code that calls it is gone):
 --   DROP FUNCTION IF EXISTS email_address_erase(text, text, text, boolean);
 --   DROP TABLE IF EXISTS email_address_erasures;
---   and remove the row whose tag is '0191_email_address_erasure' from rekoda_migrations.
+--   and delete the row tagged '0191_email_address_erasure' in the migration ledger table (rekoda_migrations).
 
 CREATE TABLE IF NOT EXISTS email_address_erasures (
   id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),

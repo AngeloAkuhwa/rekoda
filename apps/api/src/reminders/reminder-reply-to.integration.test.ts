@@ -2,6 +2,7 @@
  * The Reply-To of a customer reminder email (OD-42(b), option B): Rekoda support, from
  * REKODA_SUPPORT_EMAIL, whatever the merchant has on file. Split from reminder.integration.test.ts.
  */
+import { issueRepo } from '@rekoda/db';
 import { describe, expect, it } from 'vitest';
 import { encryptFacet } from '@rekoda/core/vault';
 import { sql, subscriptionsRepo, withBusiness } from '@rekoda/db';
@@ -13,12 +14,14 @@ import {
   key,
   mail,
   rows,
-  seed,
+  seedWith,
   sendEmail,
   useReminderHarness,
   whatsapp,
   type Seeded,
 } from './reminder.fixtures.js';
+
+const seed = (opts?: Parameters<typeof seedWith>[1]) => seedWith(issueRepo.issueSale, opts);
 
 useReminderHarness();
 
