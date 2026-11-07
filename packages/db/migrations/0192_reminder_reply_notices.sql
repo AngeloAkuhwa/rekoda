@@ -11,10 +11,15 @@
 --
 -- Rollback: a normal release rollback (docs/runbooks/deploy.md) keeps this schema and its rows;
 -- the older code ignores them, and the rows are what stops a second notice for a reminder already
--- told. Only an exceptional manual rollback, with the API, worker and migration jobs stopped, runs:
--- DROP TABLE reminder_reply_notices; DROP INDEX invoice_reminders_whatsapp_sent_ix; then
--- ALTER TABLE invoice_reminders DROP CONSTRAINT invoice_reminders_tenant_id_ux; and removes this
--- migration's ledger entry only after all three succeeded, migrating again before any restart.
+-- told. An exceptional manual rollback is allowed only if those rows are kept, and is otherwise
+-- not done. With the API, worker and migration jobs stopped:
+--   CREATE TABLE reminder_reply_notices_kept AS SELECT * FROM reminder_reply_notices;
+--   DROP TABLE reminder_reply_notices; DROP INDEX invoice_reminders_whatsapp_sent_ix;
+--   ALTER TABLE invoice_reminders DROP CONSTRAINT invoice_reminders_tenant_id_ux;
+-- then remove this migration's ledger entry, only after every statement succeeded. Before any
+-- release that uses 0192 restarts: migrate, then
+--   INSERT INTO reminder_reply_notices SELECT * FROM reminder_reply_notices_kept
+--     ON CONFLICT DO NOTHING; DROP TABLE reminder_reply_notices_kept;
 
 -- The tenant-scoped key a child row references, so a notice can only name a reminder of its own
 -- business (the composite foreign key idiom of 0132 onwards).
