@@ -247,15 +247,18 @@ describe('a held purchase withdrawn by a lost message stays withdrawn (OWN-74)',
       expect(stubSender.sent.length).toBe(afterSeparate);
 
       /* Any other answer the held purchase took, and a "yes": none resumes it. */
-      await reply(`wamid.${tag}-same`, 'same');
-      await reply(`wamid.${tag}-cash`, 'cash');
-      await reply(`wamid.${tag}-yes`, 'yes');
+      const replied: Record<string, number> = {};
+      for (const word of ['same', 'cash', 'yes']) {
+        const at = stubSender.sent.length;
+        await reply(`wamid.${tag}-${word}`, word);
+        replied[word] = stubSender.sent.length - at;
+      }
       const later = sentSince(afterSeparate).join('\n');
       expect(later).not.toContain(SEPARATE_LEAD);
       expect(later).not.toContain(REASK);
       expect(later).not.toContain(SAME_DONE);
-      /* Each answer was replied to, and none as if the question were still open. */
-      expect(sentSince(afterSeparate).length).toBeGreaterThanOrEqual(3);
+      /* Each answer is replied to, and none as if the question were still open. */
+      expect(replied).toEqual({ same: 1, cash: 1, yes: 1 });
       expect(later).not.toContain('Saved ✅');
       expect(await purchaseDrafts(business.id)).toEqual(drafts);
       const withdrawn = await purchaseFootprint(business.id);
