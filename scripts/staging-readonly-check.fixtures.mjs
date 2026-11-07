@@ -31,6 +31,9 @@ export function host({
   webCode = '200',
   webExit = 0,
   healthExit = 0,
+  // The api container refuses a container-side query (`exec -T api sh -c`), as a stopped or
+  // restarting container does, so nothing it resolved can be read.
+  apiQueryFails = false,
   // Container creation times later than any .env this fixture writes, unless a test says
   // otherwise. A missing service has no creation time. The start time is always new: a restart
   // resets it, and it must never be what decides.
@@ -78,6 +81,7 @@ if [ "$1" = compose ]; then
       # Nest writes errors to stderr, which compose passes through on its own stderr.
       ${logs === 'fail' ? 'exit 1' : `printf '%s\\n' '${logs}' >&2; exit 0`} ;;
     *" exec -T api sh -c "*)
+      ${apiQueryFails ? 'exit 1' : ':'}
       # A container-side query with no -e: run it against the api fixture environment.
       # argv: compose -f FILE exec -T api sh -c SNIPPET, so the snippet is the 9th argument.
       shift 8

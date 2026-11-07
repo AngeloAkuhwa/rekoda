@@ -402,3 +402,42 @@ test('a key assigned twice in .env reads its last assignment, as compose does', 
     flipped.done();
   }
 });
+
+test('a Paystack key the running api cannot be asked for reads unknown, needs attention, and the host value is never used (#428)', () => {
+  /* The host .env says a test key; the container's own value is what counts, and it cannot be read. */
+  const h = healthy({
+    dotenv: HEALTHY_DOTENV + 'PAYSTACK_SECRET_KEY=sk_test_hosthosthosthost\n',
+    apiQueryFails: true,
+  });
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    const out = r.stdout;
+    assert.match(out, /PAYSTACK_SECRET_KEY\s+unknown \(cannot exec into the api container\)\n/);
+    assert.doesNotMatch(out, /PAYSTACK_SECRET_KEY\s+SET \(TEST-KEY\)/);
+    assert.doesNotMatch(out, /hosthost|sk_test_/);
+    assert.match(attention(out), /PAYSTACK_SECRET_KEY/);
+    assert.match(out, /RESULT: ATTENTION/);
+    assert.equal(r.status, 1, out);
+  } finally {
+    h.done();
+  }
+});
+
+test('a /health that answers but is not ok, or whose database is not up, needs attention on its own (#428)', () => {
+  for (const [health, line] of [
+    [HEALTHY_HEALTH.replace('"status":"ok"', '"status":"degraded"'), /served status\s+degraded\n/],
+    [HEALTHY_HEALTH.replace('"database":"up"', '"database":"down"'), /served database\s+down\n/],
+    [HEALTHY_HEALTH.replace('"status":"ok",', ''), /served status\s+unknown\n/],
+  ]) {
+    const h = healthy({ health });
+    try {
+      const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+      assert.match(r.stdout, line);
+      assert.match(attention(r.stdout), /served (status|database)/);
+      assert.match(r.stdout, /RESULT: ATTENTION/);
+      assert.equal(r.status, 1, r.stdout);
+    } finally {
+      h.done();
+    }
+  }
+});
