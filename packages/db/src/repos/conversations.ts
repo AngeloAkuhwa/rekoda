@@ -890,7 +890,9 @@ export async function reconcileDeadReceipts(tx: TenantDb, businessId: string): P
     // job must not lose that, or the reminder would read 'sent' while its receipt reads applied.
     await markTrialNoticeUndelivered(tx, businessId, receipt.wamid, new Date());
     // Likewise a reminder-reply notice it names (OWN-83): due again, not lost with the job.
-    await markReminderReplyNoticeUndelivered(tx, businessId, receipt.wamid);
+    await markReminderReplyNoticeUndelivered(tx, businessId, receipt.wamid, {
+      waitForRecord: false,
+    });
     await tx.execute(sql`
       UPDATE external_events SET processed_at = now(),
              error = 'applied after the receipt job died'

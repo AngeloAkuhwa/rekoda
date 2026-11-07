@@ -24,8 +24,11 @@
 --   ALTER TABLE invoice_reminders DROP CONSTRAINT invoice_reminders_tenant_id_ux;
 -- then remove this migration's ledger entry, only after every statement succeeded. Before any
 -- release that uses 0192 restarts: migrate, then (same role)
---   INSERT INTO reminder_reply_notices SELECT * FROM reminder_reply_notices_kept
---     ON CONFLICT DO NOTHING; check the row counts match; DROP TABLE reminder_reply_notices_kept;
+--   INSERT INTO reminder_reply_notices SELECT k.* FROM reminder_reply_notices_kept k
+--    WHERE EXISTS (SELECT 1 FROM invoice_reminders r
+--                   WHERE r.business_id = k.business_id AND r.id = k.reminder_id)
+--     ON CONFLICT DO NOTHING; check every surviving reminder's notice is back;
+--   DROP TABLE reminder_reply_notices_kept;
 
 -- The tenant-scoped key a child row references, so a notice can only name a reminder of its own
 -- business (the composite foreign key idiom of 0132 onwards).

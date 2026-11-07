@@ -525,6 +525,23 @@ export async function reminderReplyNoticeDue(
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtext(${`reminder-reply-notice:${businessId}:${reminderId}`}))`,
   );
+  /* A failed receipt for this notice whose `delivery.status` job died is applied here too, so the
+   * customer's next message retries even if the owner has not written since (the full
+   * `reconcileDeadReceipts` runs only on the owner's next message, under the inbound lock). Only
+   * the notice is touched and the receipt's event stays open, so that reconciliation still applies
+   * the rest of the receipt later. A notice re-sent since carries a new Meta id and is not matched. */
+  await tx.execute(sql`
+    UPDATE reminder_reply_notices n SET undelivered_at = now()
+      FROM jobs j
+      JOIN external_events e ON e.id = CASE
+             WHEN j.payload->>'eventId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+             THEN (j.payload->>'eventId')::uuid END
+     WHERE n.business_id = ${businessId}::uuid AND n.reminder_id = ${reminderId}::uuid
+       AND n.undelivered_at IS NULL
+       AND j.business_id = ${businessId}::uuid AND e.business_id = ${businessId}::uuid
+       AND j.kind = 'delivery.status' AND j.state = 'dead' AND e.processed_at IS NULL
+       AND n.provider_message_id = j.payload->>'outboundMessageId'
+  `);
   /* Due when never told, or when Meta later reported the notice failed (`undelivered_at`). */
   const rows = await tx.execute<{ one: number }>(sql`
     SELECT 1 AS one FROM reminder_reply_notices
@@ -579,8 +596,12 @@ export async function markReminderReplyNoticeUndelivered(
   tx: TenantDb,
   businessId: string,
   providerMessageId: string,
+  /* A live receipt can race the send it names, so it waits for the notice to be recorded. A
+   * dead job's receipt arrived long before (`reconcileDeadReceipts`), and taking this
+   * business-wide lock there would hold it across the merchant's model calls. */
+  opts: { waitForRecord: boolean } = { waitForRecord: true },
 ): Promise<number> {
-  await lockReminderReplyNotices(tx, businessId);
+  if (opts.waitForRecord) await lockReminderReplyNotices(tx, businessId);
   const rows = await tx.execute<{ id: string }>(sql`
     UPDATE reminder_reply_notices SET undelivered_at = now()
      WHERE business_id = ${businessId}::uuid AND provider_message_id = ${providerMessageId}

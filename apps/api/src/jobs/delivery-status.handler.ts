@@ -79,7 +79,9 @@ export function deliveryStatusHandler(): JobHandler {
       log.log(`a trial reminder failed after acceptance: ${reminders} marked undelivered`);
     }
     /* A reminder-reply notice (OWN-83) Meta accepted and then failed: due again, so the customer's
-     * next message tells the business once more. */
+     * next message tells the business once more. This waits for a customer job still recording
+     * that notice (its business-wide notice lock), holding the inbound lock meanwhile: bounded by
+     * that job's Meta send. */
     const replyNotices = await remindersRepo.markReminderReplyNoticeUndelivered(
       tx,
       businessId,

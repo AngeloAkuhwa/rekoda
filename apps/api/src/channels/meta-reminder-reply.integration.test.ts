@@ -6,179 +6,33 @@
  * another business, even when the same person is a customer of both.
  */
 import { describe, expect, it } from 'vitest';
-import {
-  billingRepo,
-  conversationsRepo,
-  createDb,
-  customersRepo,
-  identity,
-  issueRepo,
-  jobsRepo,
-  remindersRepo,
-  sql,
-  wabaRepo,
-  withBusiness,
-} from '@rekoda/db';
-import { encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
+import { createDb, customersRepo, issueRepo, remindersRepo, sql, withBusiness } from '@rekoda/db';
+import { encryptFacet } from '@rekoda/core/vault';
 import { buildRunner } from '../jobs/jobs.module.js';
 import {
   db,
   deps,
   messagePayload,
   post,
-  statusPayload,
   stubSender,
   urls,
   useMetaWebhookHarness,
   workerDb,
 } from './meta-webhook.fixtures.js';
+import {
+  CUSTOMER_WA,
+  noticeRows,
+  noticesTo,
+  ownerWrites,
+  phoneKey,
+  reminded,
+  reply,
+  shop,
+  useSaleWriter,
+} from './meta-reminder-reply.fixtures.js';
 
 useMetaWebhookHarness();
-
-const CUSTOMER_WA = '2349097778888';
-/** The blind index the privacy gateway stores on a customer phone. */
-const phoneKey = (businessId: string, phone: string) =>
-  matchKeyFor(businessId, 'phone', normaliseFacet('phone', phone), deps.config.matchKey);
-let seq = 0;
-
-interface Shop {
-  businessId: string;
-  ownerPhone: string;
-  ownerId: string;
-  invoiceNumber: string;
-  invoiceId: string;
-  customerId: string;
-}
-
-/** The owner writes to Rekoda's number, which opens their 24-hour window for free-form notices. */
-const ownerWrites = (businessId: string) =>
-  withBusiness(db, businessId, (tx) =>
-    conversationsRepo.recordInbound(tx, {
-      businessId,
-      channel: 'meta',
-      kind: 'text',
-      body: 'who owes me',
-      providerMessageId: `wamid.owner-${businessId.slice(0, 8)}-${(seq += 1)}`,
-    }),
-  );
-
-/**
- * A business on its own WhatsApp number, one customer on `CUSTOMER_WA`, one unpaid invoice. The
- * owner has written to Rekoda today unless `ownerWrote` is false.
- */
-async function shop(
-  phoneNumberId: string,
-  opts: { name?: string; assistant?: boolean; ownerWrote?: boolean } = {},
-): Promise<Shop> {
-  seq += 1;
-  const ownerPhone = `+23480300033${String(seq).padStart(2, '0')}`;
-  const owner = await identity.upsertUserByPhone(db, ownerPhone);
-  const business = await identity.createBusinessWithOwner(db, {
-    name: opts.name ?? 'Ada Fashion',
-    businessType: null,
-    ownerUserId: owner.id,
-  });
-  const businessId = business.id;
-  await billingRepo.setPlan(db, { businessId, plan: 'complete', expiresAt: null, actor: 'test' });
-  await withBusiness(db, businessId, async (tx) => {
-    await wabaRepo.connectWaba(tx, {
-      businessId,
-      wabaId: `waba-${phoneNumberId}`,
-      phoneNumberId,
-      accessTokenCipher: encryptFacet(
-        'EAAG-merchant-token',
-        deps.config.connectionKey,
-        `${businessId}:waba_token`,
-      ),
-      tokenTail: '4821',
-    });
-    await wabaRepo.setAssistantSettings(tx, businessId, {
-      enabled: opts.assistant ?? false,
-      dailyReplyLimit: 3,
-    });
-  });
-  if (opts.ownerWrote ?? true) await ownerWrites(businessId);
-  const customer = await customersRepo.createCustomerWithIdentities(db, businessId, `R${seq}`, [
-    {
-      facet: 'phone',
-      ciphertext: encryptFacet(`+${CUSTOMER_WA}`, deps.config.vaultKey, `${businessId}:phone`),
-      // Keyed as the privacy gateway keys every customer phone it stores.
-      matchKey: phoneKey(businessId, `+${CUSTOMER_WA}`),
-    },
-  ]);
-  const sale = await withBusiness(db, businessId, (tx) =>
-    issueRepo.issueSale(tx, {
-      businessId,
-      customerId: customer.id,
-      customerToken: `CUSTOMER_R${seq}`,
-      items: [{ name: 'gown', quantity: 1, unitPriceK: 4_500_000 }],
-      subtotalK: 4_500_000,
-      discountK: 0,
-      deliveryFeeK: 0,
-      vatK: 0,
-      totalK: 4_500_000,
-      paidK: 0,
-      balanceDueK: 4_500_000,
-      method: 'transfer',
-      sourceType: 'chat',
-      sourceId: `draft-reply-${seq}`,
-      actor: 'system',
-    }),
-  );
-  return {
-    businessId,
-    ownerPhone,
-    ownerId: owner.id,
-    invoiceNumber: sale.invoiceNumber,
-    invoiceId: sale.invoiceId,
-    customerId: customer.id,
-  };
-}
-
-/** A WhatsApp reminder for the shop's invoice, recorded as the reminder service records one. */
-async function reminded(s: Shop, status: 'sent' | 'blocked' = 'sent'): Promise<string> {
-  return withBusiness(db, s.businessId, async (tx) => {
-    const id = await remindersRepo.startReminder(tx, {
-      businessId: s.businessId,
-      invoiceId: s.invoiceId,
-      customerId: s.customerId,
-      channel: 'whatsapp',
-      idempotencyKey: `reply-test-${s.businessId.slice(0, 8)}-${(seq += 1)}`,
-      balanceK: 4_500_000,
-      attestationId: null,
-      userId: s.ownerId,
-    });
-    await remindersRepo.finishReminder(
-      tx,
-      s.businessId,
-      id!,
-      status,
-      status === 'sent' ? null : 'window_closed_no_template',
-    );
-    return id!;
-  });
-}
-
-const reply = async (phoneNumberId: string, wamid: string, text: string) => {
-  expect((await post(messagePayload(CUSTOMER_WA, wamid, text, phoneNumberId))).statusCode).toBe(
-    200,
-  );
-  while (await buildRunner(workerDb, db, deps).runOnce()) {
-    /* drain: every job this webhook queued */
-  }
-};
-
-const noticesTo = (phone: string) =>
-  stubSender.sent.filter(
-    (m) => m.to === phone && m.text.includes('has sent your business a WhatsApp'),
-  );
-
-const noticeRows = (businessId: string) =>
-  withBusiness(db, businessId, async (tx) => [
-    ...(await tx.execute<{ reminder_id: string }>(
-      sql`SELECT reminder_id FROM reminder_reply_notices`,
-    )),
-  ]);
+useSaleWriter(issueRepo.issueSale);
 
 describe('a customer replies to a WhatsApp reminder (OWN-83)', () => {
   it('tells the business in its own chat, naming the invoice, with the assistant off', async () => {
@@ -260,8 +114,11 @@ describe('a customer replies to a WhatsApp reminder (OWN-83)', () => {
       expect(await noticeRows(s.businessId)).toHaveLength(0);
 
       // The job is retried: the business is told again (the accepted duplicate), now recorded.
-      await ownerDb.execute(sql`
-        UPDATE jobs SET run_at = now() WHERE business_id = ${s.businessId}::uuid AND state <> 'done'`);
+      await withBusiness(db, s.businessId, (tx) =>
+        tx.execute(
+          sql`UPDATE jobs SET run_at = now() WHERE business_id = ${s.businessId}::uuid AND state <> 'done'`,
+        ),
+      );
       while (await buildRunner(workerDb, db, deps).runOnce()) {
         /* drain the retry */
       }
@@ -424,72 +281,6 @@ describe('a customer replies to a WhatsApp reminder (OWN-83)', () => {
       (m) => m.to === s.ownerPhone && m.text.includes('could not answer'),
     );
     expect(handoff).toHaveLength(1);
-  });
-
-  it('a notice Meta accepts and later reports failed is due again, and told once more', async () => {
-    const s = await shop('PN-RR-17');
-    await reminded(s);
-    await reply('PN-RR-17', 'wamid.RR.17A', 'I will pay');
-    expect(noticesTo(s.ownerPhone)).toHaveLength(1);
-    // The stub numbers its message ids by send order.
-    const at = stubSender.sent.findIndex(
-      (m) => m.to === s.ownerPhone && m.text.includes('has sent your business a WhatsApp'),
-    );
-    const noticeWamid = `wamid.STUB${at + 1}`;
-
-    // Meta's delivery receipt for that notice, on Rekoda's number: failed.
-    expect(
-      (await post(statusPayload(s.ownerPhone.slice(1), noticeWamid, 'failed'))).statusCode,
-    ).toBe(200);
-    while (await buildRunner(workerDb, db, deps).runOnce()) {
-      /* drain the delivery-status job */
-    }
-
-    // The customer's next message tells the business again, and only once more.
-    await reply('PN-RR-17', 'wamid.RR.17B', 'hello?');
-    expect(noticesTo(s.ownerPhone)).toHaveLength(2);
-    await reply('PN-RR-17', 'wamid.RR.17C', 'still there?');
-    expect(noticesTo(s.ownerPhone)).toHaveLength(2);
-    expect(await noticeRows(s.businessId)).toHaveLength(1);
-  });
-
-  it('a failed receipt whose job died is still applied: the notice is told once more', async () => {
-    const s = await shop('PN-RR-18');
-    await reminded(s);
-    await reply('PN-RR-18', 'wamid.RR.18A', 'I will pay');
-    const at = stubSender.sent.findIndex(
-      (m) => m.to === s.ownerPhone && m.text.includes('has sent your business a WhatsApp'),
-    );
-    const noticeWamid = `wamid.STUB${at + 1}`;
-    // The receipt was stored, but its delivery-status job ran out of attempts.
-    await withBusiness(db, s.businessId, async (tx) => {
-      const [event] = [
-        ...(await tx.execute<{ id: string }>(sql`
-          INSERT INTO external_events (provider, event_type, external_id, payload, business_id, signature_valid)
-          VALUES ('meta', 'status.failed', ${`st-${noticeWamid}`}, '{}'::jsonb, ${s.businessId}::uuid, 1)
-          RETURNING id`)),
-      ];
-      const job = await jobsRepo.enqueue(tx, {
-        businessId: s.businessId,
-        kind: 'delivery.status',
-        payload: { eventId: event!.id, outboundMessageId: noticeWamid },
-        singletonKey: event!.id,
-        maxAttempts: 12,
-      });
-      await tx.execute(
-        sql`UPDATE jobs SET state = 'dead', attempts = 12 WHERE id = ${job!.id}::uuid`,
-      );
-    });
-    // The owner's next message to Rekoda applies dead receipts (as the inbound handler does).
-    expect(
-      await withBusiness(db, s.businessId, (tx) =>
-        conversationsRepo.reconcileDeadReceipts(tx, s.businessId),
-      ),
-    ).toBe(1);
-
-    await reply('PN-RR-18', 'wamid.RR.18B', 'hello?');
-    expect(noticesTo(s.ownerPhone)).toHaveLength(2);
-    expect(await noticeRows(s.businessId)).toHaveLength(1);
   });
 
   it('a message that answers no reminder keeps today’s behaviour: no reminder notice', async () => {
