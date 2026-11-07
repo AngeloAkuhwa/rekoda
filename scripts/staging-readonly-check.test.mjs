@@ -380,6 +380,11 @@ test('checks that cannot be made read unknown, never pass: /health down, ledger 
     assert.match(out, /RESULT: ATTENTION \(\d+ item\(s\) above need a look\)\n$/);
     assert.match(out, /\/health\s+FAIL \(no answer\)\n/);
     assert.match(out, /expected migrations\s+unknown \(cannot read/);
+    assert.match(
+      out,
+      /0190 job failure category and inbound failure\s+unknown \(cannot read the journal\)\n/,
+    );
+    assert.match(attention(out), /0190 job failure category and inbound failure\s+unknown/);
     assert.match(out, /applied migrations\s+unknown \(query failed/);
     assert.doesNotMatch(out, /not applied\s+none/);
     assert.match(out, /REKODA_CUSTOMER_REMINDERS \(api\)\s+unknown \(cannot exec/);

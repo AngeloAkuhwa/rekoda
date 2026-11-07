@@ -218,7 +218,9 @@ mig_sql  "0188 payment check validated" 0188_validate_payment_instruction_check 
 mig_sql  "0189 reminder batch tables" 0189_reminder_batches "select to_regclass('public.reminder_batches') is not null and to_regclass('public.reminder_batch_items') is not null"
 # Only a checkout whose journal carries 0190 is held to it: an older checkout (the deployed one before this change) has no
 # such migration to check, and flagging it would fail a valid deployment (Qodo on #428).
-if grep -q '"tag": *"0190_failed_inbound_and_failure_category"' packages/db/migrations/meta/_journal.json 2>/dev/null; then
+if [ ! -r packages/db/migrations/meta/_journal.json ]; then
+  flag "0190 job failure category and inbound failure" "unknown (cannot read the journal)"
+elif grep -q '"tag": *"0190_failed_inbound_and_failure_category"' packages/db/migrations/meta/_journal.json 2>/dev/null; then
   mig_sql  "0190 job failure category and inbound failure" 0190_failed_inbound_and_failure_category "select (select count(*) = 1 from information_schema.columns where table_schema = 'public' and table_name = 'jobs' and column_name = 'failure_category') and exists (select 1 from pg_constraint where conname = 'jobs_failure_category_ck' and conrelid = 'public.jobs'::regclass) and exists (select 1 from pg_constraint where conname = 'command_drafts_retired_reason_ck' and conrelid = 'public.command_drafts'::regclass and pg_get_constraintdef(oid) like '%inbound_message_failed%')"
 else
   say "0190 job failure category and inbound failure" "not in this checkout's journal (not checked)"
