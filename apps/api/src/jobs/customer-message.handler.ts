@@ -284,6 +284,8 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
      * accepted, a lost one is not. Do not "fix" this by recording a claim before sending; that
      * makes an uncertain send unrecoverable. Pinned by meta-reminder-reply.integration.test.ts. */
     if (tellBusiness) {
+      /* Held to commit, so a failed receipt for this notice waits for its row (see the lock). */
+      await remindersRepo.lockReminderReplyNotices(tx, businessId);
       const sent = await tellBusinessOfReminderReply(tx, deps, businessId, answered.invoiceNumber);
       let told = sent.note;
       if (sent.providerMessageId !== null) {

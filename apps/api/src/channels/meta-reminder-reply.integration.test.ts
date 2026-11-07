@@ -13,6 +13,7 @@ import {
   customersRepo,
   identity,
   issueRepo,
+  jobsRepo,
   remindersRepo,
   sql,
   wabaRepo,
@@ -448,6 +449,45 @@ describe('a customer replies to a WhatsApp reminder (OWN-83)', () => {
     await reply('PN-RR-17', 'wamid.RR.17B', 'hello?');
     expect(noticesTo(s.ownerPhone)).toHaveLength(2);
     await reply('PN-RR-17', 'wamid.RR.17C', 'still there?');
+    expect(noticesTo(s.ownerPhone)).toHaveLength(2);
+    expect(await noticeRows(s.businessId)).toHaveLength(1);
+  });
+
+  it('a failed receipt whose job died is still applied: the notice is told once more', async () => {
+    const s = await shop('PN-RR-18');
+    await reminded(s);
+    await reply('PN-RR-18', 'wamid.RR.18A', 'I will pay');
+    const at = stubSender.sent.findIndex(
+      (m) => m.to === s.ownerPhone && m.text.includes('has sent your business a WhatsApp'),
+    );
+    const noticeWamid = `wamid.STUB${at + 1}`;
+    // The receipt was stored, but its delivery-status job ran out of attempts.
+    await withBusiness(db, s.businessId, async (tx) => {
+      const [event] = [
+        ...(await tx.execute<{ id: string }>(sql`
+          INSERT INTO external_events (provider, event_type, external_id, payload, business_id, signature_valid)
+          VALUES ('meta', 'status.failed', ${`st-${noticeWamid}`}, '{}'::jsonb, ${s.businessId}::uuid, 1)
+          RETURNING id`)),
+      ];
+      const job = await jobsRepo.enqueue(tx, {
+        businessId: s.businessId,
+        kind: 'delivery.status',
+        payload: { eventId: event!.id, outboundMessageId: noticeWamid },
+        singletonKey: event!.id,
+        maxAttempts: 12,
+      });
+      await tx.execute(
+        sql`UPDATE jobs SET state = 'dead', attempts = 12 WHERE id = ${job!.id}::uuid`,
+      );
+    });
+    // The owner's next message to Rekoda applies dead receipts (as the inbound handler does).
+    expect(
+      await withBusiness(db, s.businessId, (tx) =>
+        conversationsRepo.reconcileDeadReceipts(tx, s.businessId),
+      ),
+    ).toBe(1);
+
+    await reply('PN-RR-18', 'wamid.RR.18B', 'hello?');
     expect(noticesTo(s.ownerPhone)).toHaveLength(2);
     expect(await noticeRows(s.businessId)).toHaveLength(1);
   });

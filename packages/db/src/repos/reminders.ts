@@ -559,6 +559,18 @@ export async function recordReminderReplyNotice(
 }
 
 /**
+ * The business's reply-notice lock, held to the end of the transaction. The customer-message job
+ * takes it before sending a notice and the receipt paths take it before marking one, so a failed
+ * receipt that arrives within seconds waits for the notice's row to commit instead of finding
+ * nothing and being lost.
+ */
+export async function lockReminderReplyNotices(tx: TenantDb, businessId: string): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${`reminder-reply-notices:${businessId}`}))`,
+  );
+}
+
+/**
  * Meta reported a reply notice failed after accepting it (a delivery receipt; for example the
  * owner's 24-hour window was not really open). The reminder's notice becomes due again, so the
  * customer's next message tries once more. Returns how many notices were marked (0 or 1).
@@ -568,6 +580,7 @@ export async function markReminderReplyNoticeUndelivered(
   businessId: string,
   providerMessageId: string,
 ): Promise<number> {
+  await lockReminderReplyNotices(tx, businessId);
   const rows = await tx.execute<{ id: string }>(sql`
     UPDATE reminder_reply_notices SET undelivered_at = now()
      WHERE business_id = ${businessId}::uuid AND provider_message_id = ${providerMessageId}

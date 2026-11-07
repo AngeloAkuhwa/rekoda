@@ -39,6 +39,12 @@ import type { JobContext, JobHandler } from './runner.js';
  * dies, `reconcileDeadReceipts` applies the same update the next time that owner writes in (an
  * owner who never writes back keeps 'sent'). A failure that arrives before the sweep
  * has recorded the wamid matches nothing and is not retried: the reminder stays 'sent'.
+ *
+ * Or a reminder-reply notice (OWN-83), sent from Rekoda's number to the owner and attributed the
+ * same way (an owner with several businesses gets no attribution, so no retry). It is marked
+ * undelivered, so the customer's next message tells the business again; the business's
+ * reply-notice lock, which the sending job holds to commit, makes a fast receipt wait for the
+ * notice's row. A dead job is applied by `reconcileDeadReceipts` as above.
  */
 export function deliveryStatusHandler(): JobHandler {
   const log = new Logger('DeliveryStatusJob');
