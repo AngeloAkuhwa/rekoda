@@ -47,6 +47,18 @@ test('a failed per-slot query reads unknown, never UNSET', () => {
   }
 });
 
+test('a query that fails in one container reads unknown there only; the other reads its own result', () => {
+  const env = { META_OTP_TEMPLATE: 'rekoda_otp', META_TRIAL_TEMPLATE: 'rekoda_trial_ending' };
+  const h = host({ failKey: 'META_TRIAL_TEMPLATE', failIn: 'worker', env, workerEnv: env });
+  try {
+    const out = h.go();
+    assert.match(out, /META_TRIAL_TEMPLATE \(worker\)\s+unknown \(worker query failed\)/);
+    assert.match(out, /META_TRIAL_TEMPLATE \(api\)\s+SET, the agreed name\n/);
+  } finally {
+    h.done();
+  }
+});
+
 test('prints presence only, never a template value', () => {
   const h = host();
   try {

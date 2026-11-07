@@ -10,7 +10,7 @@ import { afterAll, beforeAll, beforeEach } from 'vitest';
 import 'reflect-metadata';
 
 import { encryptFacet } from '@rekoda/core/vault';
-import { matchKeyFor } from '@rekoda/core/vault';
+import { matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
 
 import {
   createDb,
@@ -164,7 +164,8 @@ export async function seedWith(
     identities.push({
       facet: 'phone',
       ciphertext: encryptFacet(phone, config.vaultKey, `${businessId}:phone`),
-      matchKey: matchKeyFor(businessId, 'phone', phone, config.matchKey),
+      // Keyed as the privacy gateway keys every customer phone it stores.
+      matchKey: matchKeyFor(businessId, 'phone', normaliseFacet('phone', phone), config.matchKey),
     });
   }
   const customer = await customersRepo.createCustomerWithIdentities(

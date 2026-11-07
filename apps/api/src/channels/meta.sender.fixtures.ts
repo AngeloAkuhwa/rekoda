@@ -13,6 +13,8 @@ export interface RecordedRequest {
   authorization: string | undefined;
   contentType: string | undefined;
   raw: string;
+  /** The body decoded as UTF-8, for JSON bodies whose parameters may not be ASCII. */
+  text: string;
 }
 
 export interface GraphServer {
@@ -49,6 +51,7 @@ export function useGraphServer(): GraphServer {
           authorization: req.headers.authorization,
           contentType: req.headers['content-type'],
           raw: Buffer.concat(chunks).toString('binary'),
+          text: Buffer.concat(chunks).toString('utf8'),
         });
         graph.respond(req, res);
       });

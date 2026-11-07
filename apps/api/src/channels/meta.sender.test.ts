@@ -24,6 +24,7 @@ interface Recorded {
   authorization: string | undefined;
   contentType: string | undefined;
   raw: string;
+  text: string;
 }
 
 let server: Server;
@@ -42,6 +43,7 @@ beforeAll(async () => {
         authorization: req.headers.authorization,
         contentType: req.headers['content-type'],
         raw: Buffer.concat(chunks).toString('binary'),
+        text: Buffer.concat(chunks).toString('utf8'),
       });
       respond(req, res);
     });
@@ -95,7 +97,7 @@ const sender = (
 const LINK = 'https://staging.myrekoda.com/app/billing';
 
 const bodyOf = (index = 0): Record<string, unknown> =>
-  JSON.parse(requests[index]!.raw) as Record<string, unknown>;
+  JSON.parse(requests[index]!.text) as Record<string, unknown>;
 
 describe('the wire', () => {
   it('carries the token and posts to the phone number id', async () => {

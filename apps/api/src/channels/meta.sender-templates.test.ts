@@ -43,7 +43,7 @@ const sender = (
   );
 
 const bodyOf = (index = 0): Record<string, unknown> =>
-  JSON.parse(graph.requests[index]!.raw) as Record<string, unknown>;
+  JSON.parse(graph.requests[index]!.text) as Record<string, unknown>;
 
 describe('the utility templates', () => {
   it('puts the grace figures in the body, in order', async () => {
@@ -70,6 +70,19 @@ describe('the utility templates', () => {
         ],
       },
     });
+  });
+
+  it('keeps a parameter that is not ASCII exactly as sent', async () => {
+    await sender().sendBillingNotice({
+      to: '2348031234567',
+      daysLeft: '6',
+      endsOn: '28 août 2026 · ₦',
+      billingUrl: LINK,
+    });
+    const body = bodyOf() as {
+      template: { components: Array<{ parameters: Array<{ text: string }> }> };
+    };
+    expect(body.template.components[0]!.parameters[1]!.text).toBe('28 août 2026 · ₦');
   });
 
   it('puts the retention figures in the body, in order', async () => {

@@ -193,10 +193,20 @@ POST /v1/ops/privacy/email-erasure
   (lane 1, `EraseData`), and every invoice, receipt and ledger row.
 
 - One narrow window remains: a confirmation request that committed its link just before the erasure
-  still hands that one mail to the provider after it (the send follows the commit). The link in it
-  is already void (the erasure moved the revision on), so it proves nothing; nothing re-sends
-  afterwards, and no job or sweep re-sets a billing email. Erase again only if a new request was
-  made after this one.
+  still hands that one mail to the provider after it (the send follows the commit). When the erasure
+  named that business and cleared its billing email, the link in it is already void (the erasure
+  moved the revision on), so it proves nothing. Without `businessId`, or when the business's
+  address did not match, the business's billing email is unchanged, so an unexpired, unconsumed
+  link can still confirm that unchanged address (OWN-79 clears a billing email only for a named,
+  matching business). Nothing re-sends afterwards, and no job or sweep re-sets a billing email.
+  Erase again only if a new request was made after this one.
+- The same window for checkout: a subscription checkout that read the address before the erasure
+  may still hand that address to Paystack after it (the payment form is created with it). The
+  revision check withholds the returned payment link from the merchant, but the address has
+  already reached Paystack, and Paystack's copy is not erased by Rekoda. OPEN OWNER QUESTION: must
+  checkout hand-over be coordinated with erasure (for example a lock or a re-read before the
+  Paystack call)? Until ruled, checkout behaviour is unchanged and an erasure request should also
+  be passed to Paystack by the operator.
 
 Check after the fact, as the owner:
 

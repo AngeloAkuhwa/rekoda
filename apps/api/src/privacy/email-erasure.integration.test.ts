@@ -322,6 +322,10 @@ describe("a named business's billing email", () => {
   });
 
   it('is left alone when it is a different address; the counter is still erased', async () => {
+    // Another business asked for a link to EMAIL, so the shared counter holds a row for it.
+    const other = await seedBusiness();
+    expect((await emails().requestVerification(other, EMAIL)).state).toBe('sent');
+    expect(await counterRows()).toBe(1);
     const a = await seedBusiness();
     await setAddress(a, 'chidi@shop.example.ng');
     const before = await billingEmailState(a);
@@ -330,9 +334,22 @@ describe("a named business's billing email", () => {
       OPERATOR,
     );
     expect(result.billingEmail).toBe('different_address');
+    expect(result.counterRowsRemoved).toBe(1);
+    expect(await counterRows()).toBe(0);
     const after = await billingEmailState(a);
     expect(after.sealed).toBe(before.sealed);
     expect(after.revision).toBe(before.revision);
+  });
+
+  it('erases for a business id typed in upper case: the seal is bound to the lower-case id', async () => {
+    const a = await seedBusiness();
+    await setAddress(a, EMAIL);
+    const result = await erasure().erase(
+      { address: EMAIL, reason: 'erasure_request', businessId: a.toUpperCase() },
+      OPERATOR,
+    );
+    expect(result.billingEmail).toBe('cleared');
+    expect((await billingEmailState(a)).sealed).toBeNull();
   });
 
   it('refuses, changing nothing, when the stored seal cannot be opened (never a false success)', async () => {

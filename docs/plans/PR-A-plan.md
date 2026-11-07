@@ -35,4 +35,4 @@ No migration was needed for OD-39's limit: it already serialises on an advisory 
 
 ## Rollback
 
-Revert the PR. Migrations 0191 and 0192 are additive (0191: a table and a function nobody else calls; 0192: a table and a unique key on `invoice_reminders`); their rollback statements are in the files. Env additions are optional.
+Revert the PR. Migrations 0191 and 0192 are additive (0191: a table and a function nobody else calls; 0192: a table, a partial index and a unique key on `invoice_reminders`); their rollback statements are in the files. A rollback of 0191 drops the function and KEEPS `email_address_erasures`: its rows are the receipts of erasures already done, and the table is dropped only after they are exported to the audit records. Env additions are optional.

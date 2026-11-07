@@ -78,7 +78,9 @@ export class EmailErasureService {
       return { erased: true, counterRowsRemoved, billingEmail: 'not_requested' };
     }
 
-    const businessId = input.businessId;
+    /* Seals are bound to the lower-case id the database returns; an id typed in upper case is the
+     * same business and must open them (CodeRabbit on #431). */
+    const businessId = input.businessId.toLowerCase();
     return withBusiness(this.db, businessId, async (tx) => {
       const current = await subscriptionsRepo.billingEmailSealedForUpdate(tx, businessId);
       if (!current.found) throw new ErasureBusinessNotFound();

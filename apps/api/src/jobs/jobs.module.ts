@@ -40,7 +40,7 @@ import { BANK_FEED, type BankFeedPort } from '../bank/feed.port.js';
 import { sweepBankFeeds } from '../bank/feed-sync.js';
 import { sweepUnknownSenders } from '../channels/stranger-sweep.js';
 import { sweepGracePeriods } from '../billing/grace-sweep.js';
-import { sweepTrialNotices } from '../billing/trial-notice-sweep.js';
+import { sweepTrialNotices, trialNoticeGate } from '../billing/trial-notice-sweep.js';
 import { EMAIL_SENDER, NoEmailSender, type EmailSender } from '../email/email.port.js';
 import { BillingEmailService } from '../billing/billing-email.service.js';
 import { EmailModule } from '../email/email.module.js';
@@ -536,10 +536,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
               workerDb,
               appDb: this.appDb,
               sender: this.sender,
-              templateConfigured:
-                this.config.metaTrialTemplate !== null &&
-                billingPageUrl(this.config.webUrl) !== null,
-              billingUrl: billingPageUrl(this.config.webUrl),
+              ...trialNoticeGate(this.config),
               fxNairaPerUsd: this.config.planningFxNairaPerUsd,
             }),
           )

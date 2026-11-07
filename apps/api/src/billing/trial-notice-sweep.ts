@@ -29,6 +29,23 @@ import { redactForLog } from '@rekoda/core/privacy';
 import { subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import { SendFailed, type MessageSender } from '../channels/sender.js';
 import { recordMessageCost } from '../channels/message-cost.js';
+import { billingPageUrl } from '../channels/template-slots.js';
+
+/**
+ * What the worker hands the trial sweep (OD-41(b), OWN-80): the template counts as configured only
+ * when the billing page `{{3}}` can be built too, so a template set without a usable REKODA_WEB_URL
+ * claims nothing and sends nothing.
+ */
+export function trialNoticeGate(config: {
+  metaTrialTemplate: string | null;
+  webUrl: string | null;
+}): { templateConfigured: boolean; billingUrl: string | null } {
+  const billingUrl = billingPageUrl(config.webUrl);
+  return {
+    templateConfigured: config.metaTrialTemplate !== null && billingUrl !== null,
+    billingUrl,
+  };
+}
 
 export interface TrialNoticeSweepDeps {
   /** `rekoda_worker` — "which trials are ending" names no tenant. */

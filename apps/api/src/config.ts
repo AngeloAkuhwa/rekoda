@@ -583,7 +583,12 @@ function supportEmail(env: NodeJS.ProcessEnv): string | null {
   // Empty is unset, as for the other optional names (a copied .env.example boots).
   const value = env['REKODA_SUPPORT_EMAIL']?.trim() ?? '';
   if (value === '') return null;
-  if (value.length > 254 || !BARE_ADDRESS.test(value)) {
+  const [local = '', domain = ''] = value.split('@');
+  const withinLimits =
+    value.length <= 254 &&
+    local.length <= 64 &&
+    domain.split('.').every((label) => label.length <= 63);
+  if (!withinLimits || !BARE_ADDRESS.test(value)) {
     throw new ConfigError(
       'REKODA_SUPPORT_EMAIL must be one email address, such as help@example.com (no name, no list)',
     );

@@ -9,7 +9,8 @@
 -- No message text, no phone number and no customer name is stored: only which reminder was
 -- answered and when the business was told.
 --
--- Rollback (by hand, per docs/runbooks/deploy.md): DROP TABLE reminder_reply_notices; then
+-- Rollback (by hand, per docs/runbooks/deploy.md): DROP TABLE reminder_reply_notices;
+-- DROP INDEX invoice_reminders_whatsapp_sent_ix; then
 -- ALTER TABLE invoice_reminders DROP CONSTRAINT invoice_reminders_tenant_id_ux;
 
 -- The tenant-scoped key a child row references, so a notice can only name a reminder of its own
@@ -25,6 +26,12 @@ CREATE TABLE IF NOT EXISTS reminder_reply_notices (
   CONSTRAINT reminder_reply_notices_reminder_fk
     FOREIGN KEY (business_id, reminder_id) REFERENCES invoice_reminders (business_id, id)
 );
+
+-- The reply lookup: a customer's newest sent WhatsApp reminder, found from the customer the
+-- phone blind index names, without scanning the business's other reminders.
+CREATE INDEX IF NOT EXISTS invoice_reminders_whatsapp_sent_ix
+  ON invoice_reminders (business_id, customer_id, sent_at DESC)
+  WHERE channel = 'whatsapp' AND status = 'sent';
 
 ALTER TABLE reminder_reply_notices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reminder_reply_notices FORCE ROW LEVEL SECURITY;

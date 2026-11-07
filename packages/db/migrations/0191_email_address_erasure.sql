@@ -26,7 +26,9 @@
 -- Additive only: a new table and a new function; nothing existing changes.
 -- Rollback (after the code that calls it is gone):
 --   DROP FUNCTION IF EXISTS email_address_erase(text, text, text, boolean);
---   DROP TABLE IF EXISTS email_address_erasures;
+--   KEEP email_address_erasures: its rows are the receipts of erasures already done, the evidence
+--   that a request was honoured. Drop it only after its rows have been exported to the operator's
+--   records (COPY email_address_erasures TO a file kept with the audit trail).
 --   and delete the row tagged '0191_email_address_erasure' in the migration ledger table (rekoda_migrations).
 
 CREATE TABLE IF NOT EXISTS email_address_erasures (

@@ -141,6 +141,20 @@ describe('the operator guard with a verified identity', () => {
     );
   });
 
+  it('refuses email erasure (ops:privacy) to a verified operator holding every other scope', async () => {
+    const token = await mint('ops:read ops:payment ops:billing ops:security');
+    const { context } = contextFor({ authorization: `Bearer ${token}` }, ['ops:privacy']);
+    await expect(guardWith(config()).canActivate(context)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+    const allowed = await mint('ops:privacy');
+    expect(
+      await guardWith(config()).canActivate(
+        contextFor({ authorization: `Bearer ${allowed}` }, ['ops:privacy']).context,
+      ),
+    ).toBe(true);
+  });
+
   it('stops honouring the static secret the moment a verifier exists', async () => {
     const { context } = contextFor({ 'x-rekoda-operator-secret': SECRET }, ['ops:read']);
 

@@ -36,6 +36,19 @@ describe('REKODA_SUPPORT_EMAIL', () => {
     expect(loadConfig({ ...REMINDERS_ON, REKODA_SUPPORT_EMAIL: '' }).supportEmail).toBeNull();
   });
 
+  it('accepts a local part of 64 and a domain label of 63, and refuses one more of either', () => {
+    const local64 = 'a'.repeat(64);
+    const label63 = 'b'.repeat(63);
+    expect(
+      loadConfig({ ...BASE, REKODA_SUPPORT_EMAIL: `${local64}@${label63}.ng` }).supportEmail,
+    ).toBe(`${local64}@${label63}.ng`);
+    for (const bad of [`${local64}a@x.ng`, `help@${label63}b.ng`]) {
+      expect(() => loadConfig({ ...BASE, REKODA_SUPPORT_EMAIL: bad })).toThrow(
+        'REKODA_SUPPORT_EMAIL must be one email address',
+      );
+    }
+  });
+
   it.each([
     'support',
     'support@',

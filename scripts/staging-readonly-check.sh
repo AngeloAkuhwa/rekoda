@@ -355,11 +355,12 @@ META_BILLING_TEMPLATE required rekoda_billing_grace_notice -
 META_RETENTION_TEMPLATE optional rekoda_retention_notice -
 META_DOCUMENT_TEMPLATE required rekoda_document_ready -
 META_TRIAL_TEMPLATE required rekoda_trial_ending en"
-# Optional: the dashboard origin this host should link to. Only an https origin with no path is
-# accepted, because it is compared inside the container.
+# Optional: the dashboard origin this host should link to: an https origin with no path, query or
+# fragment (any host spelling, internationalised and underscore hosts included). It is handed to
+# the container as an environment variable and compared there, never spliced into the script.
 EXPECT_WEB="${EXPECT_WEB_URL:-}"
 EXPECT_WEB="${EXPECT_WEB%/}"
-if [ -n "$EXPECT_WEB" ] && ! [[ "$EXPECT_WEB" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?$ ]]; then
+if [ -n "$EXPECT_WEB" ] && ! [[ "$EXPECT_WEB" =~ ^https://[^/?#[:space:]@]+$ ]]; then
   flag "EXPECT_WEB_URL" "not an https origin with no path; comparison skipped"; EXPECT_WEB=""
 fi
 echo "== Meta template slots in the running api and worker (configuration only, not Meta approval)"
@@ -371,7 +372,7 @@ for c in api worker; do
   while read -r k need agreed locale; do
     # The container answers AGREED, OTHER or UNSET itself; anything else (a failed exec, a
     # container that stopped mid-loop) is reported as unknown, never as UNSET.
-    r="$(dc exec -T -e "K=$k" "$c" sh -c 'eval "v=\${$K:-}"; if [ -z "$v" ]; then echo UNSET; elif [ "$v" = "'"$agreed"'" ]; then echo AGREED; else echo OTHER; fi' 2>/dev/null)"
+    r="$(dc exec -T -e "K=$k" -e "AGREED=$agreed" "$c" sh -c 'eval "v=\${$K:-}"; if [ -z "$v" ]; then echo UNSET; elif [ "$v" = "$AGREED" ]; then echo AGREED; else echo OTHER; fi' 2>/dev/null)"
     case "$r:$need" in
       AGREED:*) say "$k ($c)" "SET, the agreed name" ;;
       OTHER:*) flag "$k ($c)" "SET, but not the agreed name $agreed" ;;
@@ -394,7 +395,7 @@ for c in api worker; do
   # The grace and trial templates carry the billing page as {{3}}, built from REKODA_WEB_URL as
   # <origin>/app/billing. The URL is classified, never printed. With EXPECT_WEB_URL=<origin> (for
   # example https://staging.myrekoda.com) it is compared with that origin inside the container.
-  w="$(dc exec -T -e K=REKODA_WEB_URL "$c" sh -c 'eval "v=\${$K:-}"; v="${v%/}"; case "$v" in https://*) if [ -n "'"$EXPECT_WEB"'" ] && [ "$v" != "'"$EXPECT_WEB"'" ]; then echo DIFFERENT; else echo HTTPS; fi ;; "") echo UNSET ;; *) echo OTHER ;; esac' 2>/dev/null)"
+  w="$(dc exec -T -e K=REKODA_WEB_URL -e "EXPECTED=$EXPECT_WEB" "$c" sh -c 'eval "v=\${$K:-}"; v="${v%/}"; case "$v" in https://*) if [ -n "$EXPECTED" ] && [ "$v" != "$EXPECTED" ]; then echo DIFFERENT; else echo HTTPS; fi ;; "") echo UNSET ;; *) echo OTHER ;; esac' 2>/dev/null)"
   case "$w" in
     HTTPS) if [ -n "$EXPECT_WEB" ]; then say "billing link in templates ($c)" "EXPECT_WEB_URL/app/billing"
            else say "billing link in templates ($c)" "https origin/app/billing (pass EXPECT_WEB_URL to compare)"; fi ;;

@@ -94,6 +94,24 @@ test('EXPECT_WEB_URL is compared inside each container: the agreed origin passes
   }
 });
 
+test('EXPECT_WEB_URL may be an internationalised or underscore host, and is still compared', () => {
+  const h = healthy({
+    env: { ...SLOTS, REKODA_WEB_URL: 'https://bücher_shop.invalid' },
+    workerEnv: { ...SLOTS, REKODA_WEB_URL: 'https://bücher_shop.invalid' },
+  });
+  try {
+    const r = h.run2(undefined, {
+      EXPECT_SHA: h.sha.slice(0, 7),
+      EXPECT_WEB_URL: 'https://bücher_shop.invalid',
+    });
+    assert.match(r.stdout, /billing link in templates \(api\)\s+EXPECT_WEB_URL\/app\/billing\n/);
+    assert.match(r.stdout, /billing link in templates \(worker\)\s+EXPECT_WEB_URL\/app\/billing\n/);
+    assert.doesNotMatch(r.stdout, /comparison skipped/);
+  } finally {
+    h.done();
+  }
+});
+
 test('an unset required slot is ATTENTION; an unset optional slot is information and keeps RESULT: OK', () => {
   const noRetention = { ...SLOTS };
   delete noRetention.META_RETENTION_TEMPLATE;

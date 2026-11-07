@@ -246,6 +246,20 @@ describe('a customer replies to a WhatsApp reminder (OWN-83)', () => {
     expect(noticesTo(s.ownerPhone)).toHaveLength(1);
   });
 
+  it('a message from a number no reminder went to tells the business nothing', async () => {
+    const s = await shop('PN-RR-14');
+    await reminded(s);
+    // Someone else writes to the shop's number: not the reminded customer.
+    expect(
+      (await post(messagePayload('2349091112222', 'wamid.RR.14', 'hello', 'PN-RR-14'))).statusCode,
+    ).toBe(200);
+    while (await buildRunner(workerDb, db, deps).runOnce()) {
+      /* drain */
+    }
+    expect(noticesTo(s.ownerPhone)).toHaveLength(0);
+    expect(await noticeRows(s.businessId)).toHaveLength(0);
+  });
+
   it('a later reminder answered again is told again', async () => {
     const s = await shop('PN-RR-3');
     await reminded(s);
