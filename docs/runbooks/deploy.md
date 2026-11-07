@@ -150,8 +150,8 @@ treat it as a variable. Every generated value above is hex.
    must print `172.30.10.1 false`. Anything else means Docker kept an older
    network: `dc down` (never `-v`) and `dc up -d --wait` recreate it.
 9. **Health.** `curl -fsS https://<api host>/health` must show
-   `"status":"ok"`, `"database":"up"`, `"migrations":152` (the count of
-   entries in `packages/db/migrations/meta/_journal.json`), and the
+   `"status":"ok"`, `"database":"up"`, `"migrations"` equal to the count of
+   entries in `packages/db/migrations/meta/_journal.json` (191 at the time of writing; it grows with each migration), and the
    `release` and `commit` just built.
 10. **Worker.** See "Is the worker working?" below.
 

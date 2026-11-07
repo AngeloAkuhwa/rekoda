@@ -57,6 +57,12 @@ Use a phone you control. On mobile and on a laptop-sized window.
 | 22  | SUB-05: let a fresh test business's 14-day trial run out without paying (needs the G-119 date-move procedure)                                                                                       | `/app/billing` says "Your free trial ended on …"; a merchant from step 17 whose paid plan lapsed says "Your subscription stopped on …"; neither says anything was deleted |
 | 23  | SUB-05: compare the dashboard usage meter with "This month" on `/app/billing` for the same business                                                                                                 | Every unit shows the same ceiling on both pages                                                                                                                           |
 
+**Which business for steps 16 to 19.** Use separate test businesses, or reset between steps, because one
+business cannot pass them in order: a plan cancelled in step 16 stops at its paid-to date with no grace
+(undo the cancellation, or use another business, before step 17); step 18 reactivates the plan, so step 19
+needs a business that is still inside the grace window of step 17, not one already paid in step 18. Record the
+business used for each step in its result row.
+
 ## 3. Not built yet, so do not expect it
 
 - A receipt or invoice document for your Rekoda subscription payment (Paystack emails its own receipt;

@@ -414,52 +414,65 @@ describe('what happens after the 200', () => {
     expect([...rows].map((r) => r.same)).toEqual([true, true]);
   });
 
-  /* One body carrying a merchant's "cancel" then "yes": if the first cannot get the ingress lock,
-   * the second must not be stored ahead of it. Meta redelivers the whole body on the non-200, and
-   * the redelivery stamps them in sending order (independent review on #428). */
-  it('does not store a later message of a batch after an earlier one from the same sender failed', async () => {
-    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
-    const body = messagePayload('2348031234567', 'wamid.BATCH.A', 'cancel');
-    body.entry[0]!.changes[0]!.value.messages.push({
-      id: 'wamid.BATCH.B',
-      from: '2348031234567',
-      timestamp: '1700000001',
-      type: 'text',
-      text: { body: 'yes' },
-    });
-    const stored = async () => {
-      const rows = await withBusiness(db, business.id, (tx) =>
-        tx.execute<{ external_id: string }>(sql`
+  /* One body carrying a "cancel" then a "yes": if the first cannot get the ingress lock, the second
+   * must not be stored ahead of it, whether it comes from the same member or another member of the
+   * business. Meta redelivers the whole body on the non-200, and the redelivery stamps them in
+   * sending order (independent review and CodeRabbit on #428). */
+  it.each([
+    ['the same member', '2348031234567'],
+    ['another member of the business', '2348039990002'],
+  ])(
+    'does not store a later message of a batch after an earlier one failed (%s)',
+    async (_who, laterFrom) => {
+      const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+      const delegate = await identity.upsertUserByPhone(db, '+2348039990002');
+      await identity.addMembership(db, business.id, delegate.id, 'delegate');
+      const body = messagePayload('2348031234567', 'wamid.BATCH.A', 'cancel');
+      body.entry[0]!.changes[0]!.value.messages.push({
+        id: 'wamid.BATCH.B',
+        from: laterFrom,
+        timestamp: '1700000001',
+        type: 'text',
+        text: { body: 'yes' },
+      });
+      const stored = async () => {
+        const rows = await withBusiness(db, business.id, (tx) =>
+          tx.execute<{ external_id: string }>(sql`
           SELECT external_id FROM external_events
            WHERE business_id = ${business.id}::uuid ORDER BY created_at`),
-      );
-      return [...rows].map((r) => r.external_id);
-    };
+        );
+        return [...rows].map((r) => r.external_id);
+      };
 
-    /* Hold the business's ingress lock past the 2 s bound while the batch arrives. */
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => (release = resolve));
-    let locked!: () => void;
-    const isLocked = new Promise<void>((resolve) => (locked = resolve));
-    const holder = withBusiness(db, business.id, async (tx) => {
-      await jobsRepo.serializeBusiness(tx, business.id, 'ingress');
-      locked();
-      await held;
-    });
-    await isLocked;
-    /* Freed just after the first message's 2 s bound runs out, so the second one gets the lock. */
-    const timer = setTimeout(release, 2_150);
-    const first = await post(body);
-    clearTimeout(timer);
-    release();
-    await holder;
-    expect(first.statusCode).toBe(503);
-    expect(await stored()).toEqual([]);
+      /* Hold the business's ingress lock past the 2 s bound while the batch arrives. */
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      let locked!: () => void;
+      const isLocked = new Promise<void>((resolve) => (locked = resolve));
+      const holder = withBusiness(db, business.id, async (tx) => {
+        await jobsRepo.serializeBusiness(tx, business.id, 'ingress');
+        locked();
+        await held;
+      });
+      try {
+        await isLocked;
+        /* Freed shortly after the first message's 2 s bound runs out, so a later message that is
+         * (wrongly) attempted would get the lock. */
+        const timer = setTimeout(release, 2_400);
+        const first = await post(body);
+        clearTimeout(timer);
+        expect(first.statusCode).toBe(503);
+      } finally {
+        release();
+        await holder;
+      }
+      expect(await stored()).toEqual([]);
 
-    const second = await post(body);
-    expect(second.statusCode).toBe(200);
-    expect(await stored()).toEqual(['wamid.BATCH.A', 'wamid.BATCH.B']);
-  });
+      const second = await post(body);
+      expect(second.statusCode).toBe(200);
+      expect(await stored()).toEqual(['wamid.BATCH.A', 'wamid.BATCH.B']);
+    },
+  );
 
   it('runs that job and closes the event out', async () => {
     const business = await seedMerchant('+2348031234567', 'Ada Fashion');

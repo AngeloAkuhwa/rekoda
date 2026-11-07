@@ -300,10 +300,15 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       ['affirm', 'deny', 'cancel', 'unsure'].includes(answerRoute.intent.kind)
         ? answerRoute.intent.kind
         : null;
-    if (
-      (answerKind || isVoiceNote(inbound)) &&
-      (await jobsRepo.hasEarlierLiveJobByArrival(tx, jobId))
-    ) {
+    /* A short answer to a question Rekoda asked (the funding source, a period, a choice, "same or
+     * separate") is an answer too: it cannot be told from a new request before it is read, so while
+     * a clarification is open it waits behind an earlier live message the same way (CodeRabbit on
+     * #428). With no question open, requests are not held up. */
+    const mayAnswer =
+      Boolean(answerKind) ||
+      isVoiceNote(inbound) ||
+      (await continuationsRepo.hasOpenClarification(tx, businessId));
+    if (mayAnswer && (await jobsRepo.hasEarlierLiveJobByArrival(tx, jobId))) {
       throw new JobDeferred();
     }
     /* Logged only once this run is going ahead: a deferral rolls the retirement back. */

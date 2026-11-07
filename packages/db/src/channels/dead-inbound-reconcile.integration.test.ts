@@ -314,6 +314,36 @@ describe('reconcileDeadInboundMessages', () => {
     expect((await open())[1]).toBe('clarification:funding_source:open');
   });
 
+  it('also retires a purchase held for its identity question that was waiting behind the lost message (CodeRabbit on #428)', async () => {
+    const businessId = await seedBusiness();
+    const wamid = `wamid.HELD.${businessId.slice(0, 8)}`;
+    await eventAt(businessId, wamid, at(0));
+    const held = await withBusiness(app, businessId, async (tx: TenantDb) => {
+      const message = await conversationsRepo.recordInbound(tx, {
+        businessId,
+        channel: 'meta',
+        kind: 'text',
+        body: 'msg held',
+        providerMessageId: wamid,
+      });
+      return conversationsRepo.recordDraft(tx, {
+        businessId,
+        conversationMessageId: message.id,
+        intent: 'RecordPurchase',
+        command: { intent: 'RecordPurchase', amount: 180_000, paymentMethod: 'pos' },
+        model: null,
+        held: true,
+      });
+    });
+    await owner.execute(
+      sql`UPDATE command_drafts SET expires_at = ${at(600).toISOString()}::timestamptz WHERE id = ${held.id}::uuid`,
+    );
+    await inboundJob(businessId, 'lost', at(10), 'dead');
+
+    expect(await reconcile(businessId)).toEqual({ messages: 1, drafts: 1, continuations: 0 });
+    expect(await draftState(held.id)).toEqual(RETIRED);
+  });
+
   it('never reaches another business, in either direction', async () => {
     const a = await seedBusiness();
     const b = await seedBusiness();

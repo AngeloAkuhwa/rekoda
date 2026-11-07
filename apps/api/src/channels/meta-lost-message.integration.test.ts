@@ -31,6 +31,7 @@ import {
   seedMerchant,
 } from './meta-preview-expiry.fixtures.js';
 import { arrangeAudio, voicePayload, voiceUsed } from './meta-voice-note.fixtures.js';
+import { POS_PURCHASE } from './meta-continuations.fixtures.js';
 
 useMetaWebhookHarness();
 
@@ -242,6 +243,32 @@ describe('an inbound message that fails and backs off before it dies (markFailed
       replies.earlierMessageLostYes().text,
     ]);
     expect((await footprint(business.id)).expenses).toBe(0);
+  });
+
+  it('a "cash" answer to the funding question waits for the retrying "cancel", so a lost cancel cannot be overtaken (CodeRabbit on #428)', async () => {
+    const business = await seedMerchant();
+    await say('wamid.fund-1', POS_PURCHASE, 'I bought 10 cartons for 100k, paid by POS');
+    expect(stubSender.lastText).toContain('Reply *bank* or *cash*');
+    await queueOnly('wamid.fund-cancel', 'cancel');
+    const cancel = await failOnceAndBackOff(business.id);
+
+    /* The answer arrives during the backoff: it must not rebuild the purchase from a question the
+     * lost "cancel" may have withdrawn. */
+    await plain('wamid.fund-cash', 'cash');
+    await failLastAttempt(business.id, cancel);
+    await asTenant(
+      business.id,
+      sql`
+      UPDATE jobs SET run_at = now()
+       WHERE business_id = ${business.id}::uuid AND state = 'pending'`,
+    );
+    await drain();
+
+    /* Nothing is left confirmable: the later yes books no purchase. */
+    await plain('wamid.fund-yes', 'yes');
+    const after = await footprint(business.id);
+    expect(after.expenses).toBe(0);
+    expect(after.postings).toBe(0);
   });
 
   it('a request sent while the lost message retried keeps its own draft when that message dies', async () => {

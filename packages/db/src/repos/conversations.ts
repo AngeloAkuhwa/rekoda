@@ -906,7 +906,7 @@ export const INBOUND_MESSAGE_FAILED = 'inbound_message_failed';
  * every attempt (`reclaimStalled`), nothing will ever run it again. It may have been the
  * merchant's "cancel" or a correction, so a draft that was pending then must never be confirmed
  * by a later "yes". Called under the business's inbound lock before any answer is read, this
- * retires every pending draft whose message reached Rekoda before the lost one (and whose window
+ * retires every pending draft (and every purchase held for its identity question) whose message reached Rekoda before the lost one (and whose window
  * was then open), as `superseded` with reason `inbound_message_failed`, so the next "yes" or
  * "no" can tell the merchant to record it again. Open clarification questions asked before the
  * lost message are closed the same way (`continuations`).
@@ -965,7 +965,7 @@ export async function reconcileDeadInboundMessages(
              updated_at = clock_timestamp()
         FROM conversation_messages m, external_events lost
        WHERE d.business_id = ${businessId}::uuid
-         AND d.state = 'pending'
+         AND d.state IN ('pending', 'held')
          AND d.expires_at > lost.created_at
          AND m.business_id = ${businessId}::uuid
          AND m.id = d.conversation_message_id
