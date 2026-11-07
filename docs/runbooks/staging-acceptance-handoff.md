@@ -34,7 +34,7 @@ operator must check each:
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
 | The host checkout is `b8baf24…` with 0 tracked modifications                                                                                                                                                                                                                                     | The deploy ran from this checkout                                        |
 | The api and worker run the same image, `rekoda-app:staging-b8baf24`; the web runs `rekoda-web:staging-b8baf24`                                                                                                                                                                                   | A stale worker applies payments and sends reminders with old code        |
-| The applied migrations match the deployed checkout's journal, with no missing or extra tags (for `b8baf24`: 190, 0000 to 0189)                                                                                                                                                                   | The deploy refuses fewer migrations, but nothing has read the list since |
+| The applied migrations match the deployed checkout's journal, with no missing or extra tags (for `b8baf24`: 190 at `b8baf24`, 191 with 0190)                                                                                                                                                     | The deploy refuses fewer migrations, but nothing has read the list since |
 | postgres, api, worker, web and caddy are running (and healthy where they have a healthcheck); migrate and edge-check exited 0 (or are not present); no error-level lines in the api or worker logs (the check counts only those two; postgres, web and caddy logs are not read); the web answers | `/health` covers the api only                                            |
 
 If `main` has moved on and a newer deploy is green, use that commit instead of `b8baf24`.
@@ -71,7 +71,7 @@ only as `APPLIED`:
   dropped by hand);
 - `unknown`: the check could not run.
 
-The ledger lines compare tags only. A migration without its own object check (only 0171–0175, 0181–0183, 0185–0189 have one) whose objects were removed by
+The ledger lines compare tags only. A migration without its own object check (only 0171–0175, 0181–0183, 0185–0190 have one) whose objects were removed by
 hand would still count as applied there, so a `degraded` `/health` is worth reporting even when
 `not applied` reads `none`.
 

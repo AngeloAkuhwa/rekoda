@@ -111,6 +111,8 @@ ${Object.keys(images)
         no0189) case "$*" in *reminder_batch*|*0189_reminder_batches*) echo f ;; *) echo t ;; esac ;;
         # 0187's constraint dropped while its ledger tag stays: objects f, tag t.
         broken0187) case "$*" in *rekoda_migrations*) echo t ;; *businesses_payment_instruction_all_or_nothing*) echo f ;; *) echo t ;; esac ;;
+        # 0190's column constraint dropped while its ledger tag stays.
+        broken0190) case "$*" in *rekoda_migrations*) echo t ;; *jobs_failure_category_ck*) echo f ;; *) echo t ;; esac ;;
         fail) echo "psql: FATAL: password authentication failed for user leakyuser" >&2; exit 2 ;;
       esac
       exit 0 ;;
@@ -195,6 +197,7 @@ export const TAGS = [
   '0187_payment_instructions',
   '0188_validate_payment_instruction_check',
   '0189_reminder_batches',
+  '0190_failed_inbound_and_failure_category',
 ];
 export const SLOTS = {
   META_OTP_TEMPLATE: 'a',

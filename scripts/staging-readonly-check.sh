@@ -212,10 +212,11 @@ mig_sql  "0181 trial sweep function" 0181_sweep_trial_candidates "select exists 
 mig_cols "0183 email send outcome column" 0183_email_verification_send_outcome billing_email_verifications.send_outcome
 mig_cols "0186 trial notice failure column" 0186_trial_notice_undelivered businesses.trial_notice_failed_at
 
-echo "== reminder migrations 0187-0189 (APPLIED / MISSING / INCOMPLETE / INCONSISTENT / unknown; read-only)"
+echo "== reminder and job migrations 0187-0190 (APPLIED / MISSING / INCOMPLETE / INCONSISTENT / unknown; read-only)"
 mig_sql  "0187 payment instruction columns" 0187_payment_instructions "select (select count(*) = 5 from information_schema.columns where table_schema = 'public' and table_name = 'businesses' and column_name in ('payment_bank_name', 'payment_account_name', 'payment_account_number', 'payment_instruction_approved_at', 'payment_instruction_approved_by')) and exists (select 1 from pg_constraint where conname = 'businesses_payment_instruction_all_or_nothing' and conrelid = 'public.businesses'::regclass)"
 mig_sql  "0188 payment check validated" 0188_validate_payment_instruction_check "select coalesce((select convalidated from pg_constraint where conname = 'businesses_payment_instruction_all_or_nothing' and conrelid = 'public.businesses'::regclass), false)"
 mig_sql  "0189 reminder batch tables" 0189_reminder_batches "select to_regclass('public.reminder_batches') is not null and to_regclass('public.reminder_batch_items') is not null"
+mig_sql  "0190 job failure category and inbound failure" 0190_failed_inbound_and_failure_category "select (select count(*) = 1 from information_schema.columns where table_schema = 'public' and table_name = 'jobs' and column_name = 'failure_category') and (select count(*) = 2 from pg_constraint where conname in ('jobs_failure_category_ck', 'command_drafts_retired_reason_ck'))"
 
 # Every migration this checkout carries (its journal) against every tag the database has
 # recorded. Tags are file names, not data, so the missing and unexpected ones are listed by name.

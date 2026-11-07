@@ -284,16 +284,9 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       return;
     }
 
-    /* An earlier inbound message whose job died was never processed (owner ruling, 4 Nov 2026):
-     * every draft pending then is retired here, under the lock and before any "yes" is read, so a
-     * lost "cancel" can never be overtaken by a later "yes". Only a run that can go on to tell the
-     * merchant does it: the early returns above must not consume the lost message silently (Qodo
-     * on #428). Counts only, never content. */
-    const lost = await conversationsRepo.reconcileDeadInboundMessages(tx, businessId, jobId);
-
     /* OWN-74: an answer waits for every earlier message still live, even one backing off after
      * a failure that `hasEarlierLiveJob` lets a request pass. If that message never succeeds it
-     * dies and is reconciled above before this answer is read, so a lost "cancel" is never
+     * dies and is reconciled below before this answer is read, so a lost "cancel" is never
      * overtaken by a "yes" sent while it retried. A voice note may say "yes" too and is not
      * heard until it is transcribed, so it waits the same way, before any provider is paid. */
     const answerRoute = typeof inbound.text === 'string' ? routeMessage(inbound.text) : null;
@@ -313,6 +306,18 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     if (mayAnswer && (await jobsRepo.hasEarlierLiveJobByArrival(tx, jobId))) {
       throw new JobDeferred();
     }
+    /* An earlier inbound message whose job died was never processed (owner ruling, 4 Nov 2026):
+     * every draft pending then is retired here, under the lock and before any "yes" is read, so a
+     * lost "cancel" can never be overtaken by a later "yes". Only a run that can go on to tell the
+     * merchant does it: the early returns above must not consume the lost message silently (Qodo
+     * on #428). Counts only, never content.
+     *
+     * It runs AFTER the live-message check above, not before (Codex on #428): a message that is
+     * still live when that check runs defers the answer, and one that is dead or done by then is
+     * read as dead here. Reconciling first left a window in which a stale job reclaimed as dead
+     * between the two reads was seen as neither, and the answer proceeded. */
+    const lost = await conversationsRepo.reconcileDeadInboundMessages(tx, businessId, jobId);
+
     /* Logged only once this run is going ahead: a deferral rolls the retirement back. */
     if (lost.messages > 0) {
       log.warn(

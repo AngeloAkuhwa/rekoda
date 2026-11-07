@@ -195,11 +195,15 @@ test('a healthy host at EXPECT_SHA: every check passes and attention reads none'
     }
     assert.match(
       out,
-      new RegExp(`expected migrations\\s+${TAGS.length} \\(last 0189_reminder_batches\\)\\n`),
+      new RegExp(
+        `expected migrations\\s+${TAGS.length} \\(last 0190_failed_inbound_and_failure_category\\)\\n`,
+      ),
     );
     assert.match(
       out,
-      new RegExp(`applied migrations\\s+${TAGS.length} \\(last 0189_reminder_batches\\)\\n`),
+      new RegExp(
+        `applied migrations\\s+${TAGS.length} \\(last 0190_failed_inbound_and_failure_category\\)\\n`,
+      ),
     );
     assert.match(out, /not applied\s+none\n/);
     assert.match(out, new RegExp(`/health migrations = expected\\s+yes \\(${TAGS.length}\\)\\n`));
@@ -241,7 +245,7 @@ test('a missing migration is named, its object check reads MISSING, and /health 
     assert.match(
       out,
       new RegExp(
-        `applied migrations\\s+${TAGS.length - 1} \\(last 0188_validate_payment_instruction_check\\)\\n`,
+        `applied migrations\\s+${TAGS.length - 1} \\(last 0190_failed_inbound_and_failure_category\\)\\n`,
       ),
     );
     assert.match(out, /not applied\s+0189_reminder_batches\n/);
@@ -425,6 +429,24 @@ test('the verdict line and exit status: OK and 0 only when nothing needs attenti
   } finally {
     ok.done();
     bad.done();
+  }
+});
+
+test('0190 is checked by its objects too: a recorded tag with its constraint gone reads INCONSISTENT (Codex on #428)', () => {
+  const h = healthy({ migrations: 'broken0190' });
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(
+      r.stdout,
+      /0190 job failure category and inbound failure\s+INCONSISTENT \(recorded, objects missing\)\n/,
+    );
+    assert.match(
+      attention(r.stdout),
+      /0190 job failure category and inbound failure\s+INCONSISTENT/,
+    );
+    assert.equal(r.status, 1);
+  } finally {
+    h.done();
   }
 });
 
