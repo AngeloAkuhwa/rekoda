@@ -733,7 +733,7 @@ check out.
 
 ## Smoke checklist after every deploy
 
-- [ ] `/health` returns `ok`, at least 191 migrations (the journal count; a rollback may leave a higher applied count), and the new release
+- [ ] `/health` returns `ok`, at least the deployed release's journal count of migrations (a rollback may leave a higher applied count), and the new release
 - [ ] `dc ps`: every service healthy
 - [ ] `docker network inspect rekoda-prod_edge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}} {{.EnableIPv6}}'` prints `172.30.10.1 false` (the gateway the edge check refuses, G-75)
 - [ ] Worker: `job runner started` in its log, and no growing `pending` backlog

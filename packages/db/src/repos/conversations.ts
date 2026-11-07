@@ -995,7 +995,7 @@ export async function reconcileDeadInboundMessages(
      * it open for a later "cash" to rebuild and a "yes" to confirm (Codex on #428). Same rule as
      * the drafts: asked by a message that arrived before the lost one, window open at its arrival.
      * Read-only follow-ups (`query`) move no money and are left alone. */
-    const closed = await tx.execute<{ id: string }>(sql`
+    const closed = await tx.execute<{ id: string; draft_id: string | null }>(sql`
       UPDATE conversation_continuations c
          SET state = 'superseded', updated_at = clock_timestamp()
         FROM conversation_messages m, external_events lost
@@ -1014,8 +1014,23 @@ export async function reconcileDeadInboundMessages(
                    AND src.external_id = m.provider_message_id
                  LIMIT 1),
                m.created_at) < lost.created_at
-      RETURNING c.id`);
+      RETURNING c.id, c.draft_id`);
     continuations += [...closed].length;
+    /* The question's own draft is `abandoned`, and a later "yes" can reopen the question from it
+     * (`reaskRetiredQuestion`), so a "cash" would then rebuild and confirm the purchase the lost
+     * message withdrew. Retire it with the reason, so the "yes" is told the request was withdrawn
+     * (CodeRabbit on #428). */
+    const draftIds = [...closed].map((c) => c.draft_id).filter((id): id is string => Boolean(id));
+    if (draftIds.length > 0) {
+      await tx.execute(sql`
+        UPDATE command_drafts SET state = 'superseded', retired_reason = ${INBOUND_MESSAGE_FAILED},
+               updated_at = clock_timestamp()
+         WHERE business_id = ${businessId}::uuid AND state = 'abandoned'
+           AND id IN (${sql.join(
+             draftIds.map((id) => sql`${id}::uuid`),
+             sql`, `,
+           )})`);
+    }
     if (message.held) continue;
     await tx.execute(sql`
       UPDATE external_events SET processed_at = now(),

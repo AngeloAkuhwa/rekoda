@@ -134,6 +134,31 @@ describe.each<Death>(['markFailed', 'reclaimStalled'])(
   },
 );
 
+describe('a funding question behind a lost message (CodeRabbit on #428)', () => {
+  it.each<Death>(['markFailed', 'reclaimStalled'])(
+    'cannot be reopened by a later "yes" and answered "cash" to book the purchase (%s)',
+    async (death) => {
+      const business = await seedMerchant();
+      await say(
+        `wamid.fundlost-${death}-1`,
+        POS_PURCHASE,
+        'I bought 10 cartons for 100k, paid by POS',
+      );
+      expect(stubSender.lastText).toContain('Reply *bank* or *cash*');
+      await queueOnly(`wamid.fundlost-${death}-cancel`, 'cancel');
+      await killInboundJob(business.id, death);
+
+      await plain(`wamid.fundlost-${death}-yes`, 'yes');
+      expect(stubSender.lastText).toBe(replies.earlierMessageLostYes().text);
+      await plain(`wamid.fundlost-${death}-cash`, 'cash');
+      await plain(`wamid.fundlost-${death}-yes-2`, 'yes');
+      const after = await footprint(business.id);
+      expect(after.expenses).toBe(0);
+      expect(after.postings).toBe(0);
+    },
+  );
+});
+
 describe('a run that returns early does not consume a lost message (Qodo on #428)', () => {
   it('leaves the withdrawal for a run that can tell the merchant, instead of retiring it silently', async () => {
     const business = await seedMerchant();
