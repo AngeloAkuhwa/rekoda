@@ -99,6 +99,8 @@ export const INGRESS_WAIT_MS = 5_000;
 export const INGRESS_MAX_WAITING = 32;
 export const INGRESS_FENCE_MS = 120_000;
 export const INGRESS_MAX_OUTSTANDING = 256;
+/** Most unattributed failures whose order is reserved at once, across every business. */
+export const INGRESS_MAX_RESERVED = 4_096;
 
 interface Lane {
   /** Settles once every message admitted so far has finished. */
@@ -200,11 +202,13 @@ export class IngressSequencer {
    * Reserves an admission order for a message that failed before its business was known, so that
    * when it comes back it is ordered as it first came: ahead of the messages after it in its body
    * that were held back meanwhile (`hold`), which would otherwise fence it and be stored first.
-   * Kept for `fenceMs` and for at most `maxOutstanding` messages; a reservation is used once.
+   * Kept for `fenceMs`, for at most `INGRESS_MAX_RESERVED` messages across the process (past that a
+   * failure is not reserved, and its body-mates may be stored ahead of it on the redelivery); a
+   * reservation is used once.
    */
   reserve(externalId: string): void {
     this.pruneReserved();
-    if (this.reserved.has(externalId) || this.reserved.size >= this.options.maxOutstanding) return;
+    if (this.reserved.has(externalId) || this.reserved.size >= INGRESS_MAX_RESERVED) return;
     this.reserved.set(externalId, {
       seq: (this.seq += 1),
       until: this.options.now() + this.options.fenceMs,
@@ -215,11 +219,13 @@ export class IngressSequencer {
    * Holds back a message the caller could not try at all (an earlier message of its webhook body
    * failed before that message's business was known): it becomes outstanding, ordered as it
    * reached the lane, so no later message of its business is stored ahead of it before Meta
-   * redelivers the body. It leaves the set when it is stored, like any refused message.
+   * redelivers the body. It leaves the set when it is stored, like any refused message. Held
+   * behind `behind` (the failed message, reserved by `reserve`), it lapses no later than that
+   * reservation, so it can never outlive it and fence the failed message when it comes back.
    */
-  hold(businessId: string, externalId: string): void {
+  hold(businessId: string, externalId: string, behind?: string): void {
     const lane = this.laneFor(businessId);
-    this.remember(lane, externalId, (this.seq += 1));
+    this.remember(lane, externalId, (this.seq += 1), this.reserved.get(behind ?? '')?.until);
     this.dropIfIdle(businessId, lane);
   }
 
@@ -297,11 +303,15 @@ export class IngressSequencer {
    * Remembers a message that was not stored, keeping the earliest order it ever had and the window
    * its first failure opened (a later failure of the same message extends neither).
    */
-  private remember(lane: Lane, externalId: string, seq: number): void {
+  private remember(lane: Lane, externalId: string, seq: number, notAfter?: number): void {
     this.prune(lane);
     if (lane.outstanding.has(externalId)) return;
     if (lane.outstanding.size >= this.options.maxOutstanding) return;
-    lane.outstanding.set(externalId, { seq, until: this.options.now() + this.options.fenceMs });
+    const until = this.options.now() + this.options.fenceMs;
+    lane.outstanding.set(externalId, {
+      seq,
+      until: notAfter === undefined ? until : Math.min(until, notAfter),
+    });
   }
 
   private dropIfIdle(businessId: string, lane: Lane): void {

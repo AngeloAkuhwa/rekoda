@@ -254,6 +254,8 @@ describe('a held purchase withdrawn by a lost message stays withdrawn (OWN-74)',
       expect(later).not.toContain(SEPARATE_LEAD);
       expect(later).not.toContain(REASK);
       expect(later).not.toContain(SAME_DONE);
+      /* Each answer was replied to, and none as if the question were still open. */
+      expect(sentSince(afterSeparate).length).toBeGreaterThanOrEqual(3);
       expect(later).not.toContain('Saved ✅');
       expect(await purchaseDrafts(business.id)).toEqual(drafts);
       const withdrawn = await purchaseFootprint(business.id);

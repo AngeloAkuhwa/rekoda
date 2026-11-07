@@ -379,11 +379,42 @@ describe('IngressSequencer', () => {
     await sequencer.run('b1', 'cancel', async () => stored.push('cancel'));
     await sequencer.run('b1', 'yes', async () => stored.push('yes'));
     expect(stored).toEqual(['cancel', 'yes']);
-    /* A reservation is used once and lapses with the fence. */
-    sequencer.reserve('late');
-    sequencer.hold('b1', 'after');
-    advance(120_000);
-    expect(await sequencer.run('b1', 'after', async () => 'after')).toBe('after');
+    /* A second failure of the same message keeps its first reservation. */
+    sequencer.reserve('again');
+    sequencer.hold('b1', 'next', 'again');
+    sequencer.reserve('again');
+    const order: string[] = [];
+    await sequencer.run('b1', 'again', async () => order.push('again'));
+    await sequencer.run('b1', 'next', async () => order.push('next'));
+    expect(order).toEqual(['again', 'next']);
+  });
+
+  it('a reserved order survives a refusal in the lane, so the message keeps its place behind nothing newer', async () => {
+    const { sequencer } = lane();
+    sequencer.reserve('cancel');
+    sequencer.hold('b1', 'yes', 'cancel');
+    /* The cancel comes back attributed but fails to be stored: it is remembered with its reserved
+     * order, still ahead of the yes. */
+    await expect(
+      sequencer.run('b1', 'cancel', () => Promise.reject(new Error('x'))),
+    ).rejects.toThrow('x');
+    await expect(sequencer.run('b1', 'yes', async () => 1)).rejects.toBeInstanceOf(IngressFenced);
+    const stored: string[] = [];
+    await sequencer.run('b1', 'cancel', async () => stored.push('cancel'));
+    await sequencer.run('b1', 'yes', async () => stored.push('yes'));
+    expect(stored).toEqual(['cancel', 'yes']);
+  });
+
+  it('a message held behind a reservation lapses no later than it, so it never fences the reserved one', async () => {
+    const { sequencer, advance } = lane({ fenceMs: 120_000 });
+    sequencer.reserve('cancel');
+    advance(300); // the hold-back of the body-mate comes a little later
+    sequencer.hold('b1', 'yes', 'cancel');
+    advance(119_800); // 120.1 s after the reservation: both lapsed
+    const stored: string[] = [];
+    await sequencer.run('b1', 'cancel', async () => stored.push('cancel'));
+    await sequencer.run('b1', 'yes', async () => stored.push('yes'));
+    expect(stored).toEqual(['cancel', 'yes']);
   });
 
   it('refuses bounds that are not positive whole numbers', () => {

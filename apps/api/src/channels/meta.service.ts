@@ -287,7 +287,7 @@ export class MetaIngressService {
    * be stored ahead of it before Meta redelivers the body. Messages to a merchant's own WABA do
    * not use the lane. Best effort: the caller ignores a failure, and Meta redelivers regardless.
    */
-  async holdBack(event: InboundEvent): Promise<void> {
+  async holdBack(event: InboundEvent, behind?: string): Promise<void> {
     if (event.kind !== 'message') return;
     if (event.phoneNumberId) {
       if (await this.routeMerchantWaba(event.phoneNumberId)) return;
@@ -297,7 +297,7 @@ export class MetaIngressService {
     }
     const businessId = await this.resolveBusiness(event.from);
     if (!businessId || (await this.isStored(businessId, event.externalId))) return;
-    this.sequencer.hold(businessId, event.externalId);
+    this.sequencer.hold(businessId, event.externalId, behind);
   }
 
   /**

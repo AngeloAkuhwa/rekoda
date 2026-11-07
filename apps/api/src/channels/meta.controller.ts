@@ -118,15 +118,17 @@ export class MetaWebhookController {
      * Each of them is held in its own business's lane meanwhile, so a later webhook of that
      * business is not stored ahead of it, and the failed message's order is reserved first, so the
      * redelivery stores it ahead of them. Holding back stops at its first failure (most likely the
-     * same database fault), and the redelivery is enough without it. Status receipts carry on.
-     * Messages that did land deduplicate on redelivery. */
-    let messageFailed = false;
+     * same database fault, which would only add waits before the 503): the messages after it are
+     * still not stored and wait for the redelivery, but a separate later webhook of their business
+     * may then be stored ahead of them (G-122 item 9). Status receipts carry on. Messages that
+     * did land deduplicate on redelivery. */
+    let messageFailed: string | null = null;
     let holdBack = true;
     for (const event of events) {
-      if (messageFailed && event.kind === 'message') {
+      if (messageFailed !== null && event.kind === 'message') {
         failed += 1;
         if (holdBack) {
-          holdBack = await this.ingress.holdBack(event).then(
+          holdBack = await this.ingress.holdBack(event, messageFailed).then(
             () => true,
             () => false,
           );
@@ -139,7 +141,7 @@ export class MetaWebhookController {
         failed += 1;
         const attributed = error instanceof IngressRefused || error instanceof IngressStoreFailed;
         if (event.kind === 'message' && !attributed) {
-          messageFailed = true;
+          messageFailed = event.externalId;
           this.ingress.reserveOrder(event);
         }
         this.log.error(
