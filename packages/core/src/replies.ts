@@ -588,6 +588,77 @@ export function upgradeRequested(): Reply {
   );
 }
 
+/**
+ * A customer wrote on WhatsApp after a payment reminder (OWN-83). Names the invoice so the merchant
+ * knows who it is; never the customer's number or what they wrote. Says plainly that Rekoda does
+ * not show customer messages, rather than pointing at an inbox that does not exist (G-124).
+ */
+export function reminderReplyNotice(invoiceNumber: string): Reply {
+  return reply(
+    `The customer you reminded about invoice ${invoiceNumber} has sent your business a WhatsApp ` +
+      'message. They may be waiting for you.\n\n' +
+      'Rekoda does not show customer messages here, so please contact them directly about this ' +
+      'invoice.',
+  );
+}
+
+/* ── the business email, given on WhatsApp (OWN-83) ──────────────────────── */
+
+/** A confirmation link went to the address. Nothing is verified until it is opened. */
+export function businessEmailLinkSent(masked: string): Reply {
+  return reply(
+    `We sent a confirmation link to ${masked}. Open it while signed in to your Rekoda dashboard ` +
+      'to confirm the address. It works once and expires in one hour.\n\n' +
+      'Until it is confirmed, reminders go by WhatsApp only. Once it is, customers who reply to ' +
+      'an email reminder reach you at this address.',
+  );
+}
+
+/** The send's outcome is unknown: the mail may have gone. Never "it failed". */
+export function businessEmailLinkMaybeSent(masked: string): Reply {
+  return reply(
+    `We could not confirm that the link reached ${masked}. Check that inbox in a few minutes; ` +
+      'if nothing arrives, send your email again.',
+  );
+}
+
+export function businessEmailAlreadyConfirmed(masked: string): Reply {
+  return reply(`${masked} is already confirmed as your business email. Nothing else to do.`);
+}
+
+export function businessEmailInvalid(): Reply {
+  return reply(
+    'That does not look like an email address you can use. Send it like this:\n' +
+      '*my email is accounts@yourshop.com*',
+  );
+}
+
+export function businessEmailTryLater(minutes: number): Reply {
+  const wait = minutes <= 1 ? 'a minute' : `${minutes} minutes`;
+  return reply(`We sent a link a moment ago. Please try again in ${wait}.`);
+}
+
+export function businessEmailUnavailable(): Reply {
+  return reply(
+    'We cannot send a confirmation email right now, so nothing was changed. ' +
+      'Please try again later, or add your email on the billing page of your dashboard.',
+  );
+}
+
+/** The address cannot take mail from Rekoda (an earlier bounce or complaint). */
+export function businessEmailUndeliverable(): Reply {
+  return reply(
+    'Mail to that address has bounced before, so we cannot send the confirmation link there. ' +
+      'Please send a different email address.',
+  );
+}
+
+export function businessEmailOwnerOnly(): Reply {
+  return reply(
+    'Only the business owner can set the business email. Ask them to send it from their WhatsApp.',
+  );
+}
+
 /** The daily ceiling refused this merchant. Their own budget, their own day. */
 export function quotaReachedForBusiness(): Reply {
   return reply(

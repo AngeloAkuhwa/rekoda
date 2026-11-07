@@ -36,6 +36,9 @@ import { sweepGracePeriods } from './grace-sweep.js';
 import { StubSender } from '../channels/sender.stub.js';
 import { SendFailed } from '../channels/sender.js';
 
+/** The billing page the grace and trial templates link to (`{{3}}`, OD-41(b)). */
+const BILLING_URL = 'https://app.rekoda.test/app/billing';
+
 let urls: Urls;
 let app: NestFastifyApplication;
 let db: Db;
@@ -147,10 +150,12 @@ describe('the grace period', () => {
   it('records the billing reminder as the utility template Rekoda paid for', async () => {
     const { businessId } = await failedMerchant('+2348177100030');
     const sender = new StubSender();
-    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450, billingUrl: BILLING_URL };
 
     await sweepGracePeriods(deps, dayAfterFailure(1));
     expect(sender.billingNotices).toHaveLength(1);
+    /* `rekoda_billing_grace_notice` carries the billing page as {{3}} (OD-41(b)). */
+    expect(sender.billingNotices[0]).toMatchObject({ billingUrl: BILLING_URL });
 
     const rows = await marginRepo.costByUsageType(workerDb, usagePeriod(new Date()));
     const utility = rows.find(
@@ -169,7 +174,7 @@ describe('the grace period', () => {
     await failedMerchant('+2348177100031');
     const sender = new StubSender();
     sender.failWith();
-    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450, billingUrl: BILLING_URL };
 
     await sweepGracePeriods(deps, dayAfterFailure(1));
 
@@ -183,7 +188,7 @@ describe('the grace period', () => {
     await failedMerchant('+2348177100040');
     const sender = new StubSender();
     sender.failWith(new SendFailed('timeout'));
-    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450, billingUrl: BILLING_URL };
 
     await sweepGracePeriods(deps, dayAfterFailure(1));
     await sweepGracePeriods(deps, dayAfterFailure(1));
@@ -220,7 +225,7 @@ describe('the grace period', () => {
       }
       return sent;
     };
-    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450, billingUrl: BILLING_URL };
 
     await sweepGracePeriods(deps, dayAfterFailure(1));
     expect(sender.billingNotices).toHaveLength(1);
@@ -231,7 +236,7 @@ describe('the grace period', () => {
   it('rolls the claim back when the final eligibility read fails', async () => {
     await failedMerchant('+2348177100044');
     const sender = new StubSender();
-    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450, billingUrl: BILLING_URL };
     const real = subscriptionsRepo.graceReminderEligibility;
     const spy = vi
       .spyOn(subscriptionsRepo, 'graceReminderEligibility')
@@ -273,7 +278,7 @@ describe('the grace period', () => {
       if (notice.to === first.phone) await identity.setOptOut(db, second.phone, null);
       return sent;
     };
-    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450, billingUrl: BILLING_URL };
 
     await sweepGracePeriods(deps, dayAfterFailure(1));
     expect(sender.billingNotices.map((n) => n.to).sort()).toEqual(
@@ -288,7 +293,7 @@ describe('the grace period', () => {
     await failedMerchant('+2348177100048');
     const sender = new StubSender();
     sender.failWith(new SendFailed('rejected', 429, true, true));
-    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450, billingUrl: BILLING_URL };
     const spy = vi
       .spyOn(subscriptionsRepo, 'releaseGraceReminder')
       .mockRejectedValueOnce(new Error('release failed'));
@@ -305,7 +310,7 @@ describe('the grace period', () => {
     await failedMerchant('+2348177100041');
     const sender = new StubSender();
     sender.failWith(new SendFailed('rejected', 429, true, true));
-    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450, billingUrl: BILLING_URL };
 
     await sweepGracePeriods(deps, dayAfterFailure(1));
     expect(sender.billingNotices).toHaveLength(0);
@@ -316,7 +321,7 @@ describe('the grace period', () => {
   it('sends one reminder on day 1 and none the same day twice', async () => {
     const { auth } = await failedMerchant('+2348177100010');
     const sender = new StubSender();
-    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450, billingUrl: BILLING_URL };
 
     const first = await sweepGracePeriods(deps, dayAfterFailure(1));
     expect(first).toEqual({ reminded: 1, expired: 0 });
@@ -337,7 +342,7 @@ describe('the grace period', () => {
   it('says nothing between reminders once each has been sent', async () => {
     await failedMerchant('+2348177100011');
     const sender = new StubSender();
-    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450, billingUrl: BILLING_URL };
 
     expect((await sweepGracePeriods(deps, dayAfterFailure(0))).reminded).toBe(0);
     expect((await sweepGracePeriods(deps, dayAfterFailure(1))).reminded).toBe(1);
@@ -352,7 +357,7 @@ describe('the grace period', () => {
   it('sends a missed day-one warning late instead of staying silent until day five', async () => {
     await failedMerchant('+2348177100015');
     const sender = new StubSender();
-    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450, billingUrl: BILLING_URL };
 
     /* The sweep was down through all of day one. Its first pass lands on day
      * two: the merchant still gets the first warning, once, with the days
@@ -372,7 +377,7 @@ describe('the grace period', () => {
 
     const sender = new StubSender();
     const swept = await sweepGracePeriods(
-      { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 },
+      { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450, billingUrl: BILLING_URL },
       dayAfterFailure(1),
     );
     expect(swept.reminded).toBe(1);
@@ -382,7 +387,7 @@ describe('the grace period', () => {
   it('expires on day SEVEN, not day six', async () => {
     const { auth } = await failedMerchant('+2348177100013');
     const sender = new StubSender();
-    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450, billingUrl: BILLING_URL };
 
     expect((await sweepGracePeriods(deps, dayAfterFailure(GRACE_DAYS - 1))).expired).toBe(0);
     expect((await overviewOf(auth)).plan).toBe('chat');
@@ -406,7 +411,13 @@ describe('the grace period', () => {
   it('leaves the books readable after expiry', async () => {
     const { auth } = await failedMerchant('+2348177100014');
     await sweepGracePeriods(
-      { workerDb, appDb: db, sender: new StubSender(), fxNairaPerUsd: 1_450 },
+      {
+        workerDb,
+        appDb: db,
+        sender: new StubSender(),
+        fxNairaPerUsd: 1_450,
+        billingUrl: BILLING_URL,
+      },
       dayAfterFailure(GRACE_DAYS),
     );
 
@@ -422,7 +433,7 @@ describe('the grace period', () => {
   it('stops reminding the moment a cycle is paid for', async () => {
     const { businessId } = await failedMerchant('+2348177100015');
     const sender = new StubSender();
-    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450, billingUrl: BILLING_URL };
 
     await sweepGracePeriods(deps, dayAfterFailure(1));
     expect(sender.billingNotices).toHaveLength(1);
@@ -441,7 +452,13 @@ describe('the grace period', () => {
   it('an allowance a merchant no longer has is refused after expiry', async () => {
     const { businessId } = await failedMerchant('+2348177100016');
     await sweepGracePeriods(
-      { workerDb, appDb: db, sender: new StubSender(), fxNairaPerUsd: 1_450 },
+      {
+        workerDb,
+        appDb: db,
+        sender: new StubSender(),
+        fxNairaPerUsd: 1_450,
+        billingUrl: BILLING_URL,
+      },
       dayAfterFailure(GRACE_DAYS),
     );
 

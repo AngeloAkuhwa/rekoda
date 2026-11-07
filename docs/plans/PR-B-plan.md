@@ -1,0 +1,38 @@
+# PR B plan (revision 4): payment timestamps, dead-job recovery, live-key renewal safeguard, plan protection, staging tools
+
+Base: `main` after PR A merges. **Status: PLAN ONLY; not started. PR B must not start until PR A is merged.**
+Owner baseline: the 7 Nov 2026 PR A/PR B brief. It supersedes revision 3 where they differ (OD-40, OWN-70, OD-37 and G-119 are now approved as below). Migrations: next free numbers after PR A (0191 used; 0192 unused), the brief's recorded range 0193 to 0196; numbers are confirmed against `packages/db/migrations` when PR B starts.
+
+## Order (one item at a time)
+
+1. OD-40 timestamps. 2. OWN-73 `payment.process` dead-job exception + recovery. 3. OWN-76 `billing.process` dead-job exception + recovery (closes the two #428 `jobs.ts` threads). 4. OWN-70 live-key renewal safeguard. 5. OD-37 plan-field trigger. 6. G-119 / OWN-77 staging tools (uses the OD-37 sanctioned path, so after 5).
+
+## 1. OD-40: three timestamps
+
+`provider_paid_at` (payment time verified from Paystack), `provider_settled_at` (nullable, settlement confirmed by Paystack), `units_credited_at` (when Rekoda credited units). Existing: `subscription_charges.paid_at`, `payments.settled_at`, `usagePeriod(input.when)` in `billing.service.ts` (~650-665). Additive nullable columns; values only from verified provider evidence (verify response, signed webhook, settlement record); historical rows backfilled only from stored signed events, otherwise null; never overwritten by an older or less authoritative value (conditional update). No change to accounting or unit crediting. Reports and reconciliation label the three times separately. Tests: provider time vs receipt time, null settlement, separate credit time, delayed, duplicate and out-of-order webhooks, missing history, UTC, retry.
+
+## 2. OWN-73 and 3. OWN-76: dead jobs
+
+Hook on the transition to `dead` in both `markFailed` and `reclaimStalled` (`packages/db/src/repos/jobs.ts`), in the same statement or transaction, idempotent per job id.
+
+- `payment.process`: merchant exception reuses the reconciliation exception queue (`settleRepo.recordException`, `/v1/payments/exceptions`, `/app/payments`, dashboard `exceptionsOpen`) with a new reason worded for merchants.
+- `billing.process`: a separate billing notice/status on the billing page and dashboard (D4 option 1), never in the merchant's reconciliation.
+- Operations queue: reuse `GET /v1/ops/exceptions` by flagging the attributed event (`external_events.error` set, `processed_at` left null, so it stays recoverable).
+- Recovery: operator-only, `ops:payment`, reason required, re-verifies with Paystack, keyed on the Paystack reference, conditional on the exception still open, audited (operator, time, verification, outcome), no automatic replay, poison bound kept (one fresh bounded attempt; a second death reopens the same exception). Existing unique references and charge state transitions prevent a second settlement or extension.
+- Tests: both terminal paths, repeats, idempotent exception and queue item, missing or invalid reference, verification failure, successful and repeated recovery, no duplicate settlement or extension, no unintended transitions, merchant status and operator authorisation, tenant isolation.
+
+## 4. OWN-70: live-key renewal safeguard
+
+Existing (PR #418): `chargeGate` in `apps/api/src/billing/paystack-key.ts` refuses a live-key plan, pack or checkout charge without `REKODA_PAYSTACK_PLATFORM_CONFIRMED`. Gap to close: the renewal path (`renewal-sweep.ts` and any renewal charge initialisation) must apply the same gate: a blocked renewal is recorded, not marked paid, raises an operations exception and an operator alert, keeps payment and subscription state, and resumes only after confirmation through the verified recovery path. Tests: blocked and confirmed live key, test key unaffected, provider success and failure, duplicate and delayed webhooks, application failure after provider success, operator recovery and repeat, cancelled and expired subscriptions, no duplicate extension. No live charges.
+
+## 5. OD-37: plan-field trigger
+
+`BEFORE UPDATE OF plan, plan_expires_at ON businesses` (fires only when a value changes) refusing unless a transaction-local setting set by the sanctioned writers is present; owner-role bypass for migrations and administrative repair. Sanctioned writers (from the G-62 guard, `packages/db/src/billing/plan-expiry-files.test.ts`): `subscriptions.writeSubscriptionState` (provider cycles: first purchase, renewal, upgrade, scheduled downgrade taking effect; operator `billingRepo.setPlan` corrections) and `subscriptions.expireSubscription` (lapse); the trial row is an INSERT (`identity.createBusinessWithOwner`), which the trigger does not see. Sensitive changes are audited as today (`plan_changed`, `subscription_expired`). Test fixtures that set plans directly (about 25 files) get a helper. Tests: each valid transition, direct write refused, unrelated job refused, owner repair, tenant boundary, migration apply and rollback.
+
+## 6. G-119 / OWN-77: staging tools (Route A)
+
+`apps/api/src/health/staging-tools.controller.ts` (scope `ops:staging`, a new operator scope), runbook `docs/runbooks/staging-test-business-tools.md`. Enabled only when all hold, else the routes refuse and write nothing: `REKODA_STAGING_TOOLS=1` (parsed like `zeroOrOneFlag`; any other value refuses to boot; set only in the staging host `.env`, never in `docker-compose.prod.yml`, and `scripts/check-staging-deploy.mjs` asserts the compose file never sets it); a database marker; Paystack key kind `test` (boot refuses the marker with a live key; `REKODA_PAYSTACK_PLATFORM_CONFIRMED` set also refuses); the business designated as a test business. Date moves (trial end, paid-to, renewal) go through the OD-37 sanctioned function with 90-day bounds, compare-and-revert rollback, append-only audit (operator, business, before, after, reason, time, outcome). One-shot faults: send timeout and refused sender, consumed by exactly one send for that business. `NODE_ENV` is not used as the discriminator (staging and production both run `NODE_ENV=production`). Manual acceptance scenarios for the owner (SUB-ACC 17, 18, 19, 22; ACCEPT-01 2, 3, 9, 10) are written into the runbook with preconditions, configuration, steps, expected results, failure conditions, evidence and cleanup.
+
+## Exclusions
+
+No live charges or renewals, no production deploy, no change to the accepted #428 ingress decisions, no automatic settlement replay, no billing events in merchant books.

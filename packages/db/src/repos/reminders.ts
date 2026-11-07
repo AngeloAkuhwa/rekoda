@@ -458,3 +458,85 @@ export async function reminderInFlight(
   `);
   return [...rows].length > 0;
 }
+
+/* ── a customer's WhatsApp reply to a reminder (OWN-83) ─────────────────────────────────────── */
+
+/** A WhatsApp reminder that went out recently: the candidates a customer's reply may answer. */
+export interface SentWhatsAppReminder {
+  id: string;
+  invoiceNumber: string;
+  customerId: string;
+  sentAt: Date;
+}
+
+/**
+ * The business's WhatsApp reminders sent in the last `withinDays` days, newest first, at most
+ * `limit`. Only `sent` ones: a reminder that never reached the customer cannot be replied to.
+ */
+export async function recentSentWhatsAppReminders(
+  tx: TenantDb,
+  businessId: string,
+  opts: { withinDays: number; limit: number },
+): Promise<SentWhatsAppReminder[]> {
+  const rows = await tx.execute<{
+    id: string;
+    invoice_number: string;
+    customer_id: string;
+    sent_at: Date;
+  }>(sql`
+    SELECT r.id, i.invoice_number, r.customer_id, r.sent_at
+      FROM invoice_reminders r
+      JOIN invoices i ON i.business_id = r.business_id AND i.id = r.invoice_id
+     WHERE r.business_id = ${businessId}::uuid
+       AND r.channel = 'whatsapp' AND r.status = 'sent'
+       AND r.customer_id IS NOT NULL AND r.sent_at IS NOT NULL
+       AND r.sent_at > now() - make_interval(days => ${opts.withinDays})
+     ORDER BY r.sent_at DESC, r.id DESC
+     LIMIT ${opts.limit}
+  `);
+  return [...rows].map((r) => ({
+    id: r.id,
+    invoiceNumber: r.invoice_number,
+    customerId: r.customer_id,
+    sentAt: new Date(r.sent_at),
+  }));
+}
+
+/**
+ * Whether the business still has to be told about replies to this reminder. Takes a
+ * transaction-scoped lock on the reminder first, so two customer messages handled at once are
+ * decided one after the other: the second waits for the first to commit and then sees its row.
+ * Writes nothing; `recordReminderReplyNotice` records the notice once it was delivered.
+ */
+export async function reminderReplyNoticeDue(
+  tx: TenantDb,
+  businessId: string,
+  reminderId: string,
+): Promise<boolean> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${`reminder-reply-notice:${businessId}:${reminderId}`}))`,
+  );
+  const rows = await tx.execute<{ one: number }>(sql`
+    SELECT 1 AS one FROM reminder_reply_notices
+     WHERE business_id = ${businessId}::uuid AND reminder_id = ${reminderId}::uuid
+  `);
+  return [...rows].length === 0;
+}
+
+/**
+ * The business was told about replies to this reminder. Recorded only after the notice was
+ * delivered, in the caller's transaction, so an undelivered notice (the owner's WhatsApp window
+ * closed, an outage) is tried again on the customer's next message instead of being lost, and a
+ * job that rolls back records nothing.
+ */
+export async function recordReminderReplyNotice(
+  tx: TenantDb,
+  businessId: string,
+  reminderId: string,
+): Promise<void> {
+  await tx.execute(sql`
+    INSERT INTO reminder_reply_notices (business_id, reminder_id)
+    VALUES (${businessId}::uuid, ${reminderId}::uuid)
+    ON CONFLICT (business_id, reminder_id) DO NOTHING
+  `);
+}

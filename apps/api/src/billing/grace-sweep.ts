@@ -34,6 +34,11 @@ export interface GraceSweepDeps {
   sender: MessageSender;
   /** Planning FX, for pricing the utility template this sweep sends. */
   fxNairaPerUsd: number;
+  /**
+   * The billing page the reminder links to (`{{3}}`, OD-41(b)), from REKODA_WEB_URL. Null: the
+   * sender refuses the reminder as not sent and the day is retried once it is configured.
+   */
+  billingUrl: string | null;
 }
 
 export interface GraceSweepResult {
@@ -125,6 +130,7 @@ export async function sweepGracePeriods(
           to: row.ownerPhone,
           daysLeft: String(state.daysLeft),
           endsOn: lagosDate(state.endsAt),
+          billingUrl: deps.billingUrl,
         });
         /* A UTILITY template, and one Rekoda pays Meta for. It was
          * invisible to the margin view until now: the sweep sent it and

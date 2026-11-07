@@ -54,6 +54,9 @@ export const DETERMINISTIC_ACCESS: Readonly<
   delete_my_data: 'universal',
   dashboard: 'universal',
   upgrade: 'universal',
+  /* OWN-83: giving the business email starts its confirmation. Account setup, not Chat: any plan,
+   * a lapsed one included. The owner-only rule is the handler's. */
+  business_email: 'universal',
 
   affirm: 'conversation',
   /* "na so?", "yes?": a questioned yes (Build 7, G-68). It confirms nothing

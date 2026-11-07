@@ -70,13 +70,17 @@ export interface InboundMedia {
  * message a utility template exists for: an account event the merchant is
  * already party to.
  *
- * Two parameters, in order: how many days of grace remain, and the date it
- * ends. Enough for the merchant to act, and nothing about what they sell.
+ * Three parameters, in order (`rekoda_billing_grace_notice`, OD-41(b)): how many days of grace
+ * remain, the date it ends, and the link to the merchant's billing page. Enough for the merchant
+ * to act, and nothing about what they sell. The link is built from this environment's
+ * `REKODA_WEB_URL`; with none the sender refuses the notice as not sent.
  */
 export interface OutboundBillingNotice {
   to: string;
   daysLeft: string;
   endsOn: string;
+  /** The billing page, for example `https://staging.myrekoda.com/app/billing`; null when unknown. */
+  billingUrl: string | null;
 }
 
 /**
@@ -100,13 +104,16 @@ export interface OutboundRetentionNotice {
  *
  * A merchant in the middle of a trial has not necessarily written to the business
  * number in the last 24 hours, so a free-form text would be rejected the same way
- * a billing notice is. Two parameters, in order: whole days of trial left and the
- * date it ends. Nothing about what the business sold.
+ * a billing notice is. Three parameters, in order (`rekoda_trial_ending`, OD-41(b)):
+ * whole days of trial left, the date it ends, and the link to the billing page.
+ * Nothing about what the business sold.
  */
 export interface OutboundTrialNotice {
   to: string;
   daysLeft: string;
   endsOn: string;
+  /** The billing page (`{{3}}` of `rekoda_trial_ending`); null when unknown, then not sent. */
+  billingUrl: string | null;
 }
 
 /**

@@ -21,7 +21,6 @@ import {
   PARTICIPANT_INDEX_KEY_VERSION,
 } from '@rekoda/core/vault';
 import {
-  billingRepo,
   createDb,
   customerConsentRepo,
   customersRepo,
@@ -35,7 +34,7 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { migrate, readyToRemind, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../config.js';
 import {
   EmailRefusedError,
@@ -130,7 +129,7 @@ async function shop(n: number, name = 'Adaeze Fabrics', withPhone = false): Prom
     ownerUserId: user.id,
   });
   const businessId = business.id;
-  await billingRepo.setPlan(db, { businessId, plan: 'complete', expiresAt: null, actor: 'test' });
+  await readyToRemind(db, config.vaultKey, businessId);
   const invoices: Shop['invoices'] = [];
   for (let i = 0; i < n; i += 1) {
     seq += 1;

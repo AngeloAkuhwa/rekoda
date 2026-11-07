@@ -122,7 +122,7 @@ test('the healthy services and jobs read as expected and are not flagged', () =>
 
 test('reminders on in one service and off in the other are flagged; both off or both on are not', () => {
   const mixed = healthy({
-    workerEnv: { REKODA_CUSTOMER_REMINDERS: '0', REKODA_EMAIL_PROVIDER: 'resend' },
+    workerEnv: { ...SLOTS, REKODA_CUSTOMER_REMINDERS: '0', REKODA_EMAIL_PROVIDER: 'resend' },
   });
   const off = healthy({
     env: {
@@ -130,7 +130,7 @@ test('reminders on in one service and off in the other are flagged; both off or 
       PAYSTACK_SECRET_KEY: 'sk_test_qqqqqqqqqqqqqqqq',
       REKODA_EMAIL_PROVIDER: 'resend',
     },
-    workerEnv: { REKODA_EMAIL_PROVIDER: 'resend' },
+    workerEnv: { ...SLOTS, REKODA_EMAIL_PROVIDER: 'resend' },
   });
   try {
     const r = mixed.run2(undefined, { EXPECT_SHA: mixed.sha.slice(0, 7) });
@@ -440,5 +440,22 @@ test('a /health that answers but is not ok, or whose database is not up, needs a
     } finally {
       h.done();
     }
+  }
+});
+
+test('REKODA_SUPPORT_EMAIL is reported per container and never flagged: it is not the reminder Reply-To (OWN-83)', () => {
+  const noSupport = { ...SLOTS };
+  delete noSupport.REKODA_SUPPORT_EMAIL;
+  const h = healthy({
+    workerEnv: { ...noSupport, REKODA_CUSTOMER_REMINDERS: '1', REKODA_EMAIL_PROVIDER: 'resend' },
+  });
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(r.stdout, /REKODA_SUPPORT_EMAIL \(api\)\s+SET\n/);
+    assert.match(r.stdout, /REKODA_SUPPORT_EMAIL \(worker\)\s+UNSET \(optional/);
+    assert.ok(!attention(r.stdout).includes('REKODA_SUPPORT_EMAIL'));
+    assert.doesNotMatch(r.stdout, /support@staging\.invalid/);
+  } finally {
+    h.done();
   }
 });

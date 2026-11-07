@@ -203,12 +203,17 @@ export const TAGS = [
   '0189_reminder_batches',
   '0190_failed_inbound_and_failure_category',
 ];
+/** The five agreed template names (OD-41(b)), as a healthy api and worker carry them. */
 export const SLOTS = {
-  META_OTP_TEMPLATE: 'a',
-  META_BILLING_TEMPLATE: 'b',
-  META_RETENTION_TEMPLATE: 'c',
-  META_DOCUMENT_TEMPLATE: 'd',
-  META_TRIAL_TEMPLATE: 'e',
+  META_OTP_TEMPLATE: 'rekoda_login_otp',
+  META_BILLING_TEMPLATE: 'rekoda_billing_grace_notice',
+  META_RETENTION_TEMPLATE: 'rekoda_retention_notice',
+  META_DOCUMENT_TEMPLATE: 'rekoda_document_ready',
+  META_TRIAL_TEMPLATE: 'rekoda_trial_ending',
+  META_TRIAL_TEMPLATE_LOCALE: 'en',
+  REKODA_WEB_URL: 'https://staging.invalid',
+  // The reminder Reply-To (OD-42(b)); a healthy host with reminders on carries it.
+  REKODA_SUPPORT_EMAIL: 'support@staging.invalid',
 };
 /** The healthy host's .env. Not a credential: low-entropy stand-ins whose only job is to be findable if printed. */
 export const HEALTHY_DOTENV =
@@ -244,7 +249,7 @@ export const healthy = (over = {}) =>
       'migrate|exited||0',
       'edge-check|exited||0',
     ],
-    workerEnv: { REKODA_CUSTOMER_REMINDERS: '1', REKODA_EMAIL_PROVIDER: 'resend' },
+    workerEnv: { ...SLOTS, REKODA_CUSTOMER_REMINDERS: '1', REKODA_EMAIL_PROVIDER: 'resend' },
     ...over,
   });
 /** The attention section of an output; fails when the script never printed it. */

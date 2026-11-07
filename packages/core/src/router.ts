@@ -51,6 +51,13 @@ export type DeterministicIntent =
   | { kind: 'dashboard' }
   | { kind: 'resend' }
   | { kind: 'upgrade' }
+  /**
+   * "my email is accounts@shop.ng" (OWN-83): the owner gives the business email that customer
+   * replies to reminder emails go to. It only STARTS confirmation (a link mailed to the address);
+   * typing an address never marks it verified. The address is the merchant's own, not a
+   * customer's, and is never stored in the conversation history.
+   */
+  | { kind: 'business_email'; email: string }
   /** Begins the NDPR erasure flow. Always confirmed before anything is erased. */
   | { kind: 'delete_my_data' };
 
@@ -1119,6 +1126,23 @@ function survivedNormalisation(raw: string, matched: string): boolean {
 }
 
 /**
+ * "my email is X", "business email: X" and close forms, as the WHOLE message (OWN-83). It must say
+ * whose email it is ("my", "our", "business", "billing", "shop"): a bare "email x@y.com" may be
+ * "send it to this address", and treating that as a change would clear a confirmed email.
+ * The address is returned as typed (trimmed); whether it is an acceptable address is the billing
+ * email check's decision, not this matcher's. A sentence that merely contains an address ("send
+ * the receipt to ada@x.com") is not this command and goes to the model, tokenised.
+ */
+const BUSINESS_EMAIL =
+  /^\s*(?:(?:my|our)\s+(?:(?:business|billing|shop)\s+)?|(?:business|billing|shop)\s+)e-?mail(?:\s+address)?(?:\s+is|\s*:|\s*=)?\s+([^\s@]{1,64}@[^\s@]{1,255})\s*[.!]?\s*$/iu;
+
+export function businessEmailCommand(raw: string): string | null {
+  if (raw.length > 400) return null;
+  const match = BUSINESS_EMAIL.exec(raw);
+  return match ? match[1]!.replace(/[.!]+$/u, '') : null;
+}
+
+/**
  * Classify a message without a model, or say that it needs one.
  *
  * A bare number is reported as `{ kind: 'number' }` rather than "menu option",
@@ -1137,6 +1161,12 @@ export function routeMessage(raw: string): Route {
   // or it is not (G-24).
   const consent = consentKeyword(raw);
   if (consent) return { route: 'deterministic', intent: { kind: consent } };
+
+  /* Read off the RAW message: normalisation would take the address apart. */
+  const businessEmail = businessEmailCommand(raw);
+  if (businessEmail !== null) {
+    return { route: 'deterministic', intent: { kind: 'business_email', email: businessEmail } };
+  }
 
   const text = stripFillers(normalised);
   if (!text || text.length > MAX_COMMAND_CHARS) return { route: 'model', reason: 'unrecognised' };

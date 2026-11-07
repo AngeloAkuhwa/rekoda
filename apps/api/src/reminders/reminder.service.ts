@@ -117,7 +117,10 @@ type Prepared =
       reminderId: string;
       email: string | null;
       phone: string | null;
-      /** The merchant's verified billing email, for replies; null when none is verified. */
+      /**
+       * Email only: the business's verified billing email, the Reply-To (OWN-83). Never null for an
+       * email that goes: without one the email is blocked (`business_email_unverified`).
+       */
       replyTo: string | null;
       facts: Parameters<typeof composeEmailReminder>[0];
     };
@@ -169,8 +172,9 @@ export class ReminderService {
     if (input.channels === 'auto') {
       const on = await this.onFile(businessId, input.invoiceNumber);
       channels = planChannels('debt_reminder', 'auto', on);
-      /* Neither is on file: one honest refusal row, not silence. */
-      if (channels.length === 0) channels = ['whatsapp'];
+      /* Nothing to try: one honest refusal row, not silence. A customer email that cannot be used
+       * only because the business email is unverified is the actionable reason, so it is the row. */
+      if (channels.length === 0) channels = [on.customerEmail ? 'email' : 'whatsapp'];
     } else {
       channels = planChannels('debt_reminder', input.channels, { whatsapp: true, email: true });
     }
@@ -223,11 +227,16 @@ export class ReminderService {
           const facets = invoice.customerId
             ? await customersRepo.identityFacetsFor(tx, businessId, invoice.customerId)
             : [];
+          const customerEmail = facets.some((f) => f.facet === 'email');
           channels = planChannels('debt_reminder', 'auto', {
             whatsapp: facets.some((f) => f.facet === 'phone'),
-            email: facets.some((f) => f.facet === 'email'),
+            /* OWN-83: the same rule as the send. */
+            email:
+              customerEmail &&
+              this.replyTo(businessId, await remindersRepo.businessForReminder(tx, businessId)) !==
+                null,
           });
-          if (channels.length === 0) channels = ['whatsapp'];
+          if (channels.length === 0) channels = [customerEmail ? 'email' : 'whatsapp'];
         } else {
           channels = planChannels('debt_reminder', input.channels, {
             whatsapp: true,
@@ -357,11 +366,16 @@ export class ReminderService {
     return withBusiness(this.db, businessId, async (tx) => {
       const invoice = await remindersRepo.invoiceForReminder(tx, businessId, invoiceNumber);
       if (!invoice) throw new ReminderInvoiceNotFound();
-      if (!invoice.customerId) return { whatsapp: false, email: false };
+      if (!invoice.customerId) return { whatsapp: false, email: false, customerEmail: false };
       const facets = await customersRepo.identityFacetsFor(tx, businessId, invoice.customerId);
+      const business = await remindersRepo.businessForReminder(tx, businessId);
+      const customerEmail = facets.some((f) => f.facet === 'email');
       return {
         whatsapp: facets.some((f) => f.facet === 'phone'),
-        email: facets.some((f) => f.facet === 'email'),
+        /* OWN-83: email is a channel to try only once the business's own email is verified
+         * and opens: the same test the send applies. */
+        email: customerEmail && this.replyTo(businessId, business) !== null,
+        customerEmail,
       };
     });
   }
@@ -430,7 +444,7 @@ export class ReminderService {
             subject: message.subject,
             text: message.text,
             fromName: message.fromName,
-            ...(prepared.replyTo ? { replyTo: prepared.replyTo } : {}),
+            replyTo: prepared.replyTo!,
             idempotencyKey: `reminder-${reminderId}`,
           });
         } else {
@@ -504,14 +518,8 @@ export class ReminderService {
         invoice.invoiceId,
         channel,
       );
-      const { business, email, phone, attestation, attestedAlready, block } = await this.judge(
-        tx,
-        businessId,
-        invoice,
-        channel,
-        input.attest === true,
-        inFlight,
-      );
+      const { business, email, phone, attestation, attestedAlready, block, replyTo } =
+        await this.judge(tx, businessId, invoice, channel, input.attest === true, inFlight);
 
       if (block !== null) {
         await remindersRepo.recordBlockedReminder(tx, {
@@ -558,7 +566,7 @@ export class ReminderService {
         reminderId: started,
         email,
         phone,
-        replyTo: channel === 'email' ? this.replyTo(businessId, business!) : null,
+        replyTo,
         facts: {
           businessName: business!.name,
           publicPhone: business!.publicContactPhone!,
@@ -642,8 +650,20 @@ export class ReminderService {
     });
     if (!this.config.customerReminders) block = 'reminders_not_released';
     if (block === null && ambiguous) block = 'ambiguous_contact';
-    if (block === null && channel === 'email') {
-      if (!this.email.available || !this.config.webUrl) block = 'email_not_configured';
+    /* OWN-83: a reminder email's Reply-To is the business's own verified email, so a customer's
+     * reply reaches the business that issued the invoice. Without one (none on file, not yet
+     * confirmed, or a seal this key cannot open) the email does not go: it is never sent with
+     * Rekoda support, another business or Rekoda's sending address as the reply destination. */
+    let replyTo: string | null = null;
+    if ((block === null || block === 'attestation_required') && channel === 'email') {
+      if (!this.email.available || !this.config.webUrl) {
+        if (block === null) block = 'email_not_configured';
+      } else {
+        replyTo = this.replyTo(businessId, business);
+        /* Ahead of the attestation: the merchant is not asked to attest for an email that could
+         * not go anyway. */
+        if (replyTo === null) block = 'business_email_unverified';
+      }
     }
     if (block === null && channel === 'whatsapp') {
       try {
@@ -653,16 +673,25 @@ export class ReminderService {
         block = 'invalid_recipient';
       }
     }
-    return { business, email, phone, attestation, attestedAlready, block };
+    return { business, email, phone, attestation, attestedAlready, block, replyTo };
   }
 
   /**
-   * Where a customer's reply goes: the merchant's billing email, and only once its mailbox has been
-   * proven (a changed address clears the proof). Otherwise none, and a reply reaches Rekoda's own
-   * sending address. Opened here, held only for the send, never logged.
+   * Where a customer's reply goes (OWN-83, superseding OWN-81): the business's own verified billing
+   * email, so a reply reaches the business that issued the invoice, and only once its mailbox has
+   * been proven (a changed address clears the proof). Null when none is verified or the seal cannot
+   * be opened; the caller then blocks the email (`business_email_unverified`). Never Rekoda
+   * support, never another business. Opened here, held only for the send, never logged.
    */
-  private replyTo(businessId: string, business: remindersRepo.ReminderBusiness): string | null {
-    if (business.billingEmailVerifiedAt === null || business.billingEmailSealed === null) {
+  private replyTo(
+    businessId: string,
+    business: remindersRepo.ReminderBusiness | null,
+  ): string | null {
+    if (
+      business === null ||
+      business.billingEmailVerifiedAt === null ||
+      business.billingEmailSealed === null
+    ) {
       return null;
     }
     try {
@@ -672,8 +701,8 @@ export class ReminderService {
         `billing-email:${businessId}`,
       );
     } catch {
-      /* A seal this key cannot open is a reply-to left out, never a reminder refused. */
-      this.log.warn('reminder reply-to omitted: billing email could not be opened');
+      /* A seal this key cannot open is no usable reply destination: the email is blocked. */
+      this.log.warn('reminder email blocked: the business email could not be opened');
       return null;
     }
   }

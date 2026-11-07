@@ -41,6 +41,9 @@ import { StubSender } from '../channels/sender.stub.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
 import { CONFIG, type ApiConfig } from '../config.js';
 
+/** The billing page the grace and trial templates link to (`{{3}}`, OD-41(b)). */
+const BILLING_URL = 'https://app.rekoda.test/app/billing';
+
 let urls: Urls;
 let app: NestFastifyApplication;
 let db: Db;
@@ -185,7 +188,13 @@ async function putOnPlan(
 }
 
 const FX = 1_450;
-const sweepDeps = (sender: StubSender) => ({ workerDb, appDb: db, sender, fxNairaPerUsd: FX });
+const sweepDeps = (sender: StubSender) => ({
+  workerDb,
+  appDb: db,
+  sender,
+  fxNairaPerUsd: FX,
+  billingUrl: BILLING_URL,
+});
 
 /** An annual merchant whose year ended a day ago and whose renewal the sweep has raised. */
 async function unpaidYear() {

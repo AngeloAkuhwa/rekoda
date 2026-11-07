@@ -26,16 +26,22 @@ import {
 } from '@rekoda/core';
 import { normaliseParticipant, InvalidPhoneError } from '@rekoda/core/identity';
 import { redactForLog } from '@rekoda/core/privacy';
-import { participantIndexFor, PARTICIPANT_INDEX_KEY_VERSION } from '@rekoda/core/vault';
+import {
+  decryptFacet,
+  participantIndexFor,
+  PARTICIPANT_INDEX_KEY_VERSION,
+} from '@rekoda/core/vault';
 import { extractInboundEvents, metaWebhookBody, type InboundEvent } from '@rekoda/contracts';
 import {
   catalogueRepo,
   conversationsRepo,
   customerConsentRepo,
+  customersRepo,
   entitlementsRepo,
   events,
   identity,
   ordersRepo,
+  remindersRepo,
   stockRepo,
   usageRepo,
   wabaRepo,
@@ -230,28 +236,123 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
      * only: the assistant holds no command surface at all, which is
      * Appendix D's "never HIGH_RISK" in its strongest form. Everything it
      * cannot answer HANDS OFF, and says it is doing so (PR-091). */
+    /* A REPLY TO AN INVOICE REMINDER (OWN-83). The business is told in its own Rekoda chat,
+     * whether or not the away assistant is on, once per reminder: a delivered notice is recorded
+     * in this transaction, so a redelivered webhook, a retried job or the customer's next message
+     * about the same reminder tells it nothing more, while an undelivered one is tried again on
+     * the next message. When THIS message is due that notice, the assistant's handoff does not
+     * ALSO tell the business: one notice, not two. Once the notice is recorded, later messages
+     * are handed off exactly as any other customer's. */
+    const answered = await reminderThisAnswers(tx, deps, businessId, participant);
+    const tellBusiness =
+      answered !== null &&
+      (await remindersRepo.reminderReplyNoticeDue(tx, businessId, answered.id));
+    const handoff: HandoffOptions = { tellMerchant: !tellBusiness };
+
+    let note: string | null;
     if (inbound.messageType === 'text' && (inbound.text ?? '').trim().length > 0) {
-      const note = await maybeAssistantAnswer(
+      note = await maybeAssistantAnswer(
         tx,
         deps,
         businessId,
         participant,
         blindIndex,
         inbound.text ?? '',
+        handoff,
       );
-      await events.markProcessed(tx, eventId, note, businessId);
-      return;
+    } else {
+      /* A voice note, an image, an empty text: the assistant cannot answer
+       * any of these, and "cannot answer" is exactly what the handoff is
+       * for — every time, not just when the words looked like a question. */
+      const settings = await wabaRepo.assistantSettingsFor(tx, businessId);
+      note = settings.enabled
+        ? await handoffToHuman(tx, deps, businessId, participant, blindIndex, handoff)
+        : null;
     }
-
-    /* A voice note, an image, an empty text: the assistant cannot answer
-     * any of these, and "cannot answer" is exactly what the handoff is
-     * for — every time, not just when the words looked like a question. */
-    const settings = await wabaRepo.assistantSettingsFor(tx, businessId);
-    const note = settings.enabled
-      ? await handoffToHuman(tx, deps, businessId, participant, blindIndex)
-      : null;
+    /* Last, after everything else this job does, so little after it can roll the record back
+     * once the business has been told. Recorded only when it was delivered. */
+    if (tellBusiness) {
+      const told = await tellBusinessOfReminderReply(tx, deps, businessId, answered.invoiceNumber);
+      if (told === 'reminder reply: business told') {
+        await remindersRepo.recordReminderReplyNotice(tx, businessId, answered.id);
+      }
+      note = note ? `${note}; ${told}` : told;
+    }
     await events.markProcessed(tx, eventId, note, businessId);
   };
+}
+
+/** Whether the assistant's handoff also tells the merchant (OWN-83: not when a reply notice does). */
+interface HandoffOptions {
+  tellMerchant: boolean;
+}
+
+/** How far back a customer's WhatsApp message is read as a reply to a reminder (OWN-83). */
+const REMINDER_REPLY_WINDOW_DAYS = 7;
+/** At most this many recent reminders are compared; the newest that matches wins. */
+const REMINDER_REPLY_CANDIDATES = 50;
+
+/**
+ * The WhatsApp reminder this customer's message answers: the newest one this business sent in the
+ * last seven days to the same number, compared exactly as the send normalised it. Null when there
+ * is none. Reads this business's rows only (RLS and the explicit business id); a number is
+ * compared in memory, never stored or logged.
+ */
+async function reminderThisAnswers(
+  tx: TenantDb,
+  deps: CustomerMessageDeps,
+  businessId: string,
+  participant: string,
+): Promise<remindersRepo.SentWhatsAppReminder | null> {
+  const recent = await remindersRepo.recentSentWhatsAppReminders(tx, businessId, {
+    withinDays: REMINDER_REPLY_WINDOW_DAYS,
+    limit: REMINDER_REPLY_CANDIDATES,
+  });
+  const phones = new Map<string, string[]>();
+  for (const reminder of recent) {
+    let numbers = phones.get(reminder.customerId);
+    if (!numbers) {
+      const facets = await customersRepo.identityFacetsFor(tx, businessId, reminder.customerId);
+      numbers = [];
+      for (const facet of facets) {
+        if (facet.facet !== 'phone') continue;
+        try {
+          numbers.push(
+            normaliseParticipant(
+              decryptFacet(facet.ciphertext, deps.config.vaultKey, `${businessId}:phone`),
+            ),
+          );
+        } catch {
+          /* A seal this key cannot open, or a number that will not normalise: not a match. */
+        }
+      }
+      phones.set(reminder.customerId, numbers);
+    }
+    if (numbers.includes(participant)) return reminder;
+  }
+  return null;
+}
+
+/**
+ * Tell the business, in its own Rekoda chat, that a customer replied to a reminder. Names the
+ * invoice, never the customer's number or message. STOP from the owner is honoured, as for the
+ * handoff notice.
+ */
+async function tellBusinessOfReminderReply(
+  tx: TenantDb,
+  deps: CustomerMessageDeps,
+  businessId: string,
+  invoiceNumber: string,
+): Promise<string> {
+  const to = await identity.ownerPhoneFor(deps.db, businessId);
+  if (!to) return 'reminder reply: no owner to tell';
+  if (await identity.optedOutAt(deps.db, to)) return 'reminder reply: owner opted out';
+  const sent = await deps.replySender.send(tx, {
+    businessId,
+    to,
+    reply: replies.reminderReplyNotice(invoiceNumber),
+  });
+  return sent.delivered ? 'reminder reply: business told' : 'reminder reply: notice not delivered';
 }
 
 /**
@@ -330,6 +431,7 @@ async function handoffToHuman(
   businessId: string,
   participant: string,
   customerHash: string,
+  options: HandoffOptions = { tellMerchant: true },
 ): Promise<string | null> {
   const log = new Logger('CustomerMessageJob');
 
@@ -359,7 +461,9 @@ async function handoffToHuman(
   /* The merchant's side. STOP is honoured — this is a message they did
    * not ask for by name — and a merchant who opted out still has the
    * customer's message waiting in their own WhatsApp, which is where the
-   * notice was pointing anyway. */
+   * notice was pointing anyway. A reply to a reminder has its own notice
+   * (OWN-83), so the merchant is not told twice about one message. */
+  if (!options.tellMerchant) return 'handed off to a human (business told of the reminder reply)';
   const to = await identity.ownerPhoneFor(deps.db, businessId);
   if (to && !(await identity.optedOutAt(deps.db, to))) {
     await deps.replySender.send(tx, { businessId, to, reply: replies.assistantHandoffNotice() });
@@ -381,6 +485,7 @@ async function maybeAssistantAnswer(
   participant: string,
   customerHash: string,
   text: string,
+  handoff: HandoffOptions,
 ): Promise<string | null> {
   const log = new Logger('CustomerMessageJob');
 
@@ -396,7 +501,7 @@ async function maybeAssistantAnswer(
   );
   if (matched.length === 0) {
     /* Not a question the shelf can answer: a human's, said out loud. */
-    return handoffToHuman(tx, deps, businessId, participant, customerHash);
+    return handoffToHuman(tx, deps, businessId, participant, customerHash, handoff);
   }
 
   const held = await stockRepo.onHandByIds(
@@ -413,7 +518,7 @@ async function maybeAssistantAnswer(
     };
   });
   const answer = composeShelfAnswer(items);
-  if (!answer) return handoffToHuman(tx, deps, businessId, participant, customerHash);
+  if (!answer) return handoffToHuman(tx, deps, businessId, participant, customerHash, handoff);
 
   const claimed = await wabaRepo.claimAssistantReply(tx, {
     businessId,
@@ -425,7 +530,7 @@ async function maybeAssistantAnswer(
     /* Beyond the configured limits IS "the assistant cannot": the ceiling
      * was the merchant's own line, and past it a human takes over. */
     log.log('assistant ceiling reached: handing off');
-    return handoffToHuman(tx, deps, businessId, participant, customerHash);
+    return handoffToHuman(tx, deps, businessId, participant, customerHash, handoff);
   }
 
   try {

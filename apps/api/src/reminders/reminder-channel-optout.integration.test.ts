@@ -22,7 +22,6 @@ import {
   PARTICIPANT_INDEX_KEY_VERSION,
 } from '@rekoda/core/vault';
 import {
-  billingRepo,
   createDb,
   customerConsentRepo,
   customersRepo,
@@ -35,7 +34,7 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { migrate, readyToRemind, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../config.js';
 import { MockEmailSender } from '../email/email.port.js';
 import { StubSender } from '../channels/sender.stub.js';
@@ -105,7 +104,7 @@ async function shop(name = 'Adaeze Fabrics'): Promise<Shop> {
     ownerUserId: user.id,
   });
   const businessId = business.id;
-  await billingRepo.setPlan(db, { businessId, plan: 'complete', expiresAt: null, actor: 'test' });
+  await readyToRemind(db, config.vaultKey, businessId);
 
   const phoneNumberId = `pn-optout-${seq}`;
   const connected = await withBusiness(db, businessId, (tx) =>

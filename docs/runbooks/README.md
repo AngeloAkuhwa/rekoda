@@ -18,6 +18,7 @@ Planned (populated as the systems they describe land):
 | `meta-submission.md` — WhatsApp/app review, exact URLs per field                                                  | M2 (owner, W0)                                               |
 | `integrate-onboarding.md` — concierge WABA/catalogue/Paystack setup                                               | M5                                                           |
 | `staging-acceptance-handoff.md` — post-deploy check, prerequisites and order for SUB-ACC and ACCEPT-01            | MVP (4 Nov 2026)                                             |
+| `meta-whatsapp-templates.md` — the five template slots, manual Meta and staging verification                      | PR A (OD-41(b), 7 Nov 2026)                                  |
 
 Rule: a backup that has not been restore-drilled does not count as a backup.
 

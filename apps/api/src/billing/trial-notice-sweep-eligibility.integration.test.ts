@@ -16,6 +16,9 @@ import { SendFailed } from '../channels/sender.js';
 import { StubSender } from '../channels/sender.stub.js';
 import { sweepTrialNotices } from './trial-notice-sweep.js';
 
+/** The billing page the grace and trial templates link to (`{{3}}`, OD-41(b)). */
+const BILLING_URL = 'https://app.rekoda.test/app/billing';
+
 let urls: Urls;
 let appDb: Db;
 let closeApp: () => Promise<void>;
@@ -75,7 +78,10 @@ async function stateOf(id: string) {
 }
 
 const sweep = (sender: StubSender, now: Date, templateConfigured = true) =>
-  sweepTrialNotices({ workerDb, appDb, sender, templateConfigured, fxNairaPerUsd: 1500 }, now);
+  sweepTrialNotices(
+    { workerDb, appDb, sender, templateConfigured, fxNairaPerUsd: 1500, billingUrl: BILLING_URL },
+    now,
+  );
 
 describe('trial reminders', () => {
   describe('the final eligibility check before dispatch (owner ruling, 25 Oct 2026)', () => {
@@ -270,7 +276,14 @@ describe('trial reminders', () => {
       };
 
       const result = await sweepTrialNotices(
-        { workerDb, appDb, sender, templateConfigured: true, fxNairaPerUsd: 1500 },
+        {
+          workerDb,
+          appDb,
+          sender,
+          templateConfigured: true,
+          fxNairaPerUsd: 1500,
+          billingUrl: BILLING_URL,
+        },
         clock,
       );
 

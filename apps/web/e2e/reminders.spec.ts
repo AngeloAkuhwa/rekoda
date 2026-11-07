@@ -97,6 +97,19 @@ async function giveCustomerEmail(businessId: string, invoiceNumber: string, emai
             ${encryptFacet(email, VAULT_KEY, `${businessId}:email`)}, NULL)`;
 }
 
+/**
+ * The business's own email, confirmed (OWN-83): the Reply-To of its reminder emails. The real
+ * confirmation link goes to the API's in-memory mailbox, out of the browser's reach, so this stands
+ * in for an owner who opened it; the link flow itself is covered by the API suites.
+ */
+async function confirmBusinessEmail(businessId: string, address: string) {
+  await sql`
+    UPDATE businesses
+       SET billing_email_sealed = ${encryptFacet(address, VAULT_KEY, `billing-email:${businessId}`)},
+           billing_email_verified_at = now()
+     WHERE id = ${businessId}`;
+}
+
 async function savePhone(page: Page) {
   await page.goto('/app/settings');
   await page.getByLabel('Business phone for customers').fill('0803 123 4567');
@@ -237,19 +250,33 @@ test('the owner reminds one invoice by email, reads its history, and stops and r
   await expect(outcome).toContainText('Add the business phone customers can call');
 
   await savePhone(page);
+  // Without a confirmed business email, the email is not sent: replies would have nowhere to go.
+  await page.goto(`/app/reminders/invoice?number=${encodeURIComponent(invoice)}`);
+  await page.getByRole('radio', { name: /^Email only/ }).check();
+  await page.getByRole('checkbox', { name: /lawful reason/ }).check();
+  await page.getByRole('button', { name: 'Send a reminder now' }).click();
+  const unconfirmed = page.getByRole('status').filter({ hasText: 'Email' });
+  await expect(unconfirmed).toContainText('Not sent');
+  await expect(unconfirmed).toContainText('your business email');
+  await shot(page, info, 'invoice-business-email-unconfirmed');
+
+  await confirmBusinessEmail(businessId, 'accounts@chiamaka-shop.example.ng');
   await page.goto(`/app/reminders/invoice?number=${encodeURIComponent(invoice)}`);
   await page.getByRole('radio', { name: /^Email only/ }).check();
   await page.getByRole('checkbox', { name: /lawful reason/ }).check();
   await page.getByRole('button', { name: 'Send a reminder now' }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Email' })).toContainText('Sent');
 
-  // The history keeps both, newest first, each in words.
+  // The history keeps all three, newest first, each in words.
   const history = page.getByRole('list', { name: 'Reminder history' });
-  await expect(history.getByRole('listitem')).toHaveCount(2);
+  await expect(history.getByRole('listitem')).toHaveCount(3);
   await expect(history.getByRole('listitem').first()).toContainText('Sent');
   await expect(history.getByRole('listitem').first()).toContainText('Quoted ₦45,000 as owing.');
   await expect(history.getByRole('listitem').nth(1)).toContainText('Not sent');
-  await expect(page.getByText(/no_public_contact|reasonCode/)).toHaveCount(0);
+  await expect(history.getByRole('listitem').nth(2)).toContainText('Not sent');
+  await expect(
+    page.getByText(/no_public_contact|business_email_unverified|reasonCode/),
+  ).toHaveCount(0);
   await shot(page, info, 'invoice-sent');
 
   // Stopping removes the send control; resuming brings it back.
@@ -272,6 +299,7 @@ test('a batch is previewed with exclusions explained, confirmed for later, then 
 
   const reachable = await invoiceFor(page, 30_000, 'Bayo Traders');
   await giveCustomerEmail(businessId, reachable, 'bayo@customer.example.ng');
+  await confirmBusinessEmail(businessId, 'accounts@bayo-shop.example.ng');
   const anonymous = await invoiceFor(page, 12_500);
   await savePhone(page);
 
@@ -389,6 +417,7 @@ test('an accountant reads reminders but is offered no action and is refused one;
   const businessId = await onboard(page);
   const invoice = await invoiceFor(page, 20_000, 'Ngozi Stores');
   await giveCustomerEmail(businessId, invoice, 'ngozi@customer.example.ng');
+  await confirmBusinessEmail(businessId, 'accounts@ngozi-shop.example.ng');
   await savePhone(page);
   await page.goto('/app/settings');
   await page.getByLabel('Bank', { exact: true }).fill('Access Bank');

@@ -14,7 +14,12 @@
  * avoid.
  */
 import postgres from 'postgres';
+import { encryptFacet } from '@rekoda/core/vault';
+import { sql as drizzleSql } from 'drizzle-orm';
 import { applyMigrations } from './migrate.js';
+import { withBusiness, type Db } from './client.js';
+import { setPlan } from './repos/billing.js';
+import { setBillingEmailSealed } from './repos/subscriptions.js';
 
 export interface Urls {
   /** Owner — DDL and fixture teardown. */
@@ -212,6 +217,32 @@ export async function grantCapacityAddOn(
     await sql.end();
   }
   return addOnId;
+}
+
+/**
+ * A business ready to remind on every channel (OWN-83): on the Complete plan, with its own email
+ * sealed as the billing-email service seals it and marked verified, as an opened confirmation link
+ * would. That verified email is the Reply-To of its reminder emails; without it none is sent.
+ * Through the application role, under the business's own RLS scope.
+ */
+export async function readyToRemind(
+  db: Db,
+  vaultKey: string,
+  businessId: string,
+  address = 'accounts@adaeze.example.ng',
+): Promise<void> {
+  await setPlan(db, { businessId, plan: 'complete', expiresAt: null, actor: 'test' });
+  await withBusiness(db, businessId, async (tx) => {
+    await setBillingEmailSealed(
+      tx,
+      businessId,
+      encryptFacet(address, vaultKey, `billing-email:${businessId}`),
+      new Date(),
+    );
+    await tx.execute(
+      drizzleSql`UPDATE businesses SET billing_email_verified_at = now() WHERE id = ${businessId}::uuid`,
+    );
+  });
 }
 
 /**

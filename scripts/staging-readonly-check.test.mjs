@@ -21,8 +21,8 @@ test('a compose call cannot swallow the rest of the piped script', () => {
   const h = host();
   try {
     const out = h.go();
-    assert.match(out, /== Meta template slots in the running api/);
-    assert.match(out, /META_TRIAL_TEMPLATE\s+SET/);
+    assert.match(out, /== Meta template slots in the running api and worker/);
+    assert.match(out, /META_TRIAL_TEMPLATE \(api\)\s+SET, the agreed name/);
     // The same script without the stdin guard stops at the first compose call.
     const unguarded = h.script.replace('"$@" </dev/null; }', '"$@"; }');
     assert.notEqual(unguarded, h.script, 'the guard is where the test expects it');
@@ -39,9 +39,9 @@ test('a failed per-slot query reads unknown, never UNSET', () => {
   });
   try {
     const out = h.go();
-    assert.match(out, /META_TRIAL_TEMPLATE\s+unknown \(api query failed\)/);
-    assert.doesNotMatch(out, /META_TRIAL_TEMPLATE\s+UNSET/);
-    assert.match(out, /META_OTP_TEMPLATE\s+SET/);
+    assert.match(out, /META_TRIAL_TEMPLATE \(api\)\s+unknown \(api query failed\)/);
+    assert.doesNotMatch(out, /META_TRIAL_TEMPLATE \(api\)\s+UNSET/);
+    assert.match(out, /META_OTP_TEMPLATE \(api\)\s+SET, but not the agreed name rekoda_login_otp/);
   } finally {
     h.done();
   }
@@ -58,7 +58,13 @@ test('prints presence only, never a template value', () => {
       'META_DOCUMENT_TEMPLATE',
       'META_TRIAL_TEMPLATE',
     ]) {
-      assert.match(out, new RegExp(`${k}\\s+(SET|UNSET|unknown \\(api query failed\\))\\n`));
+      for (const c of ['api', 'worker'])
+        assert.match(
+          out,
+          new RegExp(
+            `${k} \\(${c}\\)\\s+(SET, the agreed name|SET, but not the agreed name \\w+|UNSET \\((required|optional; information only)\\))\\n`,
+          ),
+        );
     }
   } finally {
     h.done();
@@ -75,11 +81,18 @@ test('reads set, empty and unset template variables as the API would', () => {
   });
   try {
     const out = h.go();
-    assert.match(out, /META_OTP_TEMPLATE\s+SET\n/);
-    assert.match(out, /META_BILLING_TEMPLATE\s+UNSET\n/);
-    assert.match(out, /META_RETENTION_TEMPLATE\s+UNSET\n/);
-    assert.match(out, /META_TRIAL_TEMPLATE\s+SET\n/);
-    assert.doesNotMatch(out, /rekoda_otp|x y/);
+    assert.match(
+      out,
+      /META_OTP_TEMPLATE \(api\)\s+SET, but not the agreed name rekoda_login_otp\n/,
+    );
+    assert.match(out, /META_BILLING_TEMPLATE \(api\)\s+UNSET \(required\)\n/);
+    assert.match(out, /META_RETENTION_TEMPLATE \(api\)\s+UNSET \(optional; information only\)\n/);
+    assert.match(
+      out,
+      /META_TRIAL_TEMPLATE \(api\)\s+SET, but not the agreed name rekoda_trial_ending\n/,
+    );
+    // The configured values themselves never appear: only the agreed names do.
+    assert.doesNotMatch(out, /rekoda_otp[^_]|x y/);
   } finally {
     h.done();
   }
@@ -282,7 +295,7 @@ test('an applied tag this checkout does not carry is listed, not ignored', () =>
 test('missing configuration is flagged: no EXPECT_SHA, live or absent key, platform flag set, slot unset, invalid reminders', () => {
   const h = healthy({
     dotenv: 'REKODA_RELEASE=staging-{sha7}\n',
-    env: { META_OTP_TEMPLATE: 'a', REKODA_PAYSTACK_PLATFORM_CONFIRMED: '1' },
+    env: { META_OTP_TEMPLATE: 'rekoda_login_otp', REKODA_PAYSTACK_PLATFORM_CONFIRMED: '1' },
     workerEnv: { REKODA_CUSTOMER_REMINDERS: '' },
     images: { api: 'rekoda-app:staging-{sha7}', web: 'rekoda-web:staging-{sha7}' },
   });
@@ -300,7 +313,7 @@ test('missing configuration is flagged: no EXPECT_SHA, live or absent key, platf
       out,
       /REKODA_PAYSTACK_PLATFORM_CONFIRMED\s+SET \(OWN-70: it stays UNSET on staging\)\n/,
     );
-    assert.match(out, /META_TRIAL_TEMPLATE\s+UNSET\n/);
+    assert.match(out, /META_TRIAL_TEMPLATE \(api\)\s+UNSET \(required\)\n/);
     assert.match(out, /REKODA_CUSTOMER_REMINDERS \(api\)\s+OFF \(unset; the default is off\)\n/);
     assert.match(out, /REKODA_CUSTOMER_REMINDERS \(worker\)\s+INVALID/);
     for (const l of [
@@ -308,7 +321,7 @@ test('missing configuration is flagged: no EXPECT_SHA, live or absent key, platf
       'image of worker',
       'PAYSTACK_SECRET_KEY',
       'REKODA_PAYSTACK_PLATFORM_CONFIRMED',
-      'META_TRIAL_TEMPLATE',
+      'META_TRIAL_TEMPLATE (api)',
       'REKODA_CUSTOMER_REMINDERS (worker)',
     ])
       assert.ok(a.includes(l), `${l} is under attention`);
@@ -517,7 +530,7 @@ test('reminders set to 0 read OFF (0) and, like the default, are not flagged', (
       REKODA_CUSTOMER_REMINDERS: '0',
       REKODA_EMAIL_PROVIDER: 'resend',
     },
-    workerEnv: { REKODA_CUSTOMER_REMINDERS: '0', REKODA_EMAIL_PROVIDER: 'resend' },
+    workerEnv: { ...SLOTS, REKODA_CUSTOMER_REMINDERS: '0', REKODA_EMAIL_PROVIDER: 'resend' },
   });
   try {
     const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });

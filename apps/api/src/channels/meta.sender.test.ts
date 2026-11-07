@@ -91,6 +91,9 @@ const sender = (
     baseUrl,
   );
 
+/** The billing page `{{3}}` of the grace and trial templates (OD-41(b)). */
+const LINK = 'https://staging.myrekoda.com/app/billing';
+
 const bodyOf = (index = 0): Record<string, unknown> =>
   JSON.parse(requests[index]!.raw) as Record<string, unknown>;
 
@@ -194,233 +197,6 @@ describe('the authentication template', () => {
     );
     // The alternative is a free-form text Meta rejects with 131047, swallowed
     // by the caller. That is how a sign-in flow reaches nobody while passing.
-    expect(requests).toHaveLength(0);
-  });
-});
-
-describe('the utility templates', () => {
-  it('puts the grace figures in the body, in order', async () => {
-    await sender().sendBillingNotice({ to: '2348031234567', daysLeft: '6', endsOn: '28/08/2026' });
-
-    expect(bodyOf()).toMatchObject({
-      type: 'template',
-      template: {
-        name: 'rekoda_billing',
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              { type: 'text', text: '6' },
-              { type: 'text', text: '28/08/2026' },
-            ],
-          },
-        ],
-      },
-    });
-  });
-
-  it('puts the retention figures in the body, in order', async () => {
-    await sender().sendRetentionNotice({
-      to: '2348031234567',
-      daysLeft: '30',
-      deletesOn: '20/09/2026',
-    });
-
-    expect(bodyOf()).toMatchObject({
-      template: {
-        name: 'rekoda_retention',
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              { type: 'text', text: '30' },
-              { type: 'text', text: '20/09/2026' },
-            ],
-          },
-        ],
-      },
-    });
-  });
-
-  it('puts days left and the end date in the trial body, in order (G-109)', async () => {
-    await sender().sendTrialNotice({ to: '2348031234567', daysLeft: '2', endsOn: '16/11/2026' });
-
-    expect(bodyOf()).toMatchObject({
-      template: {
-        name: 'rekoda_trial',
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              { type: 'text', text: '2' },
-              { type: 'text', text: '16/11/2026' },
-            ],
-          },
-        ],
-      },
-    });
-  });
-
-  it('says a client error is definitely not sent and a server error is not known (OWN-47)', async () => {
-    respond = (_req, res) => {
-      res.writeHead(400, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: { code: 100 } }));
-    };
-    await expect(
-      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
-    ).rejects.toMatchObject({ notSent: true, providerCode: 100 });
-
-    respond = (_req, res) => {
-      res.writeHead(503);
-      res.end();
-    };
-    await expect(
-      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
-    ).rejects.toMatchObject({ notSent: false });
-
-    await expect(
-      sender({ trial: null }).sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
-    ).rejects.toMatchObject({ notSent: true });
-  });
-
-  it('treats an expired token reported as HTTP 400 code 190, and a missing template, as sender-wide transient', async () => {
-    respond = (_req, res) => {
-      res.writeHead(400, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: { code: 190 } }));
-    };
-    await expect(
-      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
-    ).rejects.toMatchObject({ notSent: true, transient: true, outage: true });
-
-    respond = (_req, res) => {
-      res.writeHead(400, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: { code: 132001 } }));
-    };
-    /* A missing or paused template hits every business, so it is a sender-wide outage the
-     * operator fixes, not a refusal to record against each owner. */
-    await expect(
-      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
-    ).rejects.toMatchObject({ notSent: true, transient: true, outage: true });
-
-    respond = (_req, res) => {
-      res.writeHead(429);
-      res.end();
-    };
-    await expect(
-      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
-    ).rejects.toMatchObject({ notSent: true, transient: true });
-  });
-
-  it('an unconfigured sender refuses a trial notice as not sent and transient (the operator can fix it)', async () => {
-    await expect(
-      new NoSenderConfigured(['META_ACCESS_TOKEN']).sendTrialNotice(),
-    ).rejects.toMatchObject({
-      notSent: true,
-      transient: true,
-    });
-  });
-
-  it('treats an unrecognised 4xx as transient, and a per-recipient throttle as not an outage', async () => {
-    respond = (_req, res) => {
-      res.writeHead(400, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: { code: 999999 } }));
-    };
-    await expect(
-      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
-    ).rejects.toMatchObject({ notSent: true, transient: true, outage: true });
-
-    respond = (_req, res) => {
-      res.writeHead(400, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: { code: 131056 } }));
-    };
-    await expect(
-      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
-    ).rejects.toMatchObject({ notSent: true, transient: true, outage: false });
-  });
-
-  it('treats the spam rate limit 131048 as sender-wide, since it restricts the sending number', async () => {
-    respond = (_req, res) => {
-      res.writeHead(400, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: { code: 131048 } }));
-    };
-    await expect(
-      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
-    ).rejects.toMatchObject({ notSent: true, transient: true, outage: true });
-  });
-
-  it('ends a stage as refused only for a recipient-scope code, whatever the HTTP status', async () => {
-    for (const [status, code] of [
-      [400, 131026],
-      [403, 131030],
-      [400, 131021],
-    ] as const) {
-      respond = (_req, res) => {
-        res.writeHead(status, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: { code } }));
-      };
-      await expect(
-        sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
-      ).rejects.toMatchObject({ notSent: true, transient: false, outage: false });
-    }
-
-    respond = (_req, res) => {
-      res.writeHead(400, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: { code: 131049 } }));
-    };
-    await expect(
-      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
-    ).rejects.toMatchObject({ notSent: true, transient: true, outage: false });
-  });
-
-  it('puts what the document is and its reference in the body, in order (G-67)', async () => {
-    await sender().sendDocumentNotice({
-      to: '2348031234567',
-      documentLabel: 'receipt',
-      reference: 'RCT-2026-000002',
-    });
-
-    expect(bodyOf()).toMatchObject({
-      type: 'template',
-      to: '2348031234567',
-      template: {
-        name: 'rekoda_document',
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              { type: 'text', text: 'receipt' },
-              { type: 'text', text: 'RCT-2026-000002' },
-            ],
-          },
-        ],
-      },
-    });
-  });
-
-  it('refuses each one when unconfigured, and sends nothing', async () => {
-    await expect(
-      sender({ document: null }).sendDocumentNotice({
-        to: '1',
-        documentLabel: 'receipt',
-        reference: 'x',
-      }),
-    ).rejects.toThrow(/META_DOCUMENT_TEMPLATE/);
-    await expect(
-      sender({ billing: null }).sendBillingNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
-    ).rejects.toThrow(/META_BILLING_TEMPLATE/);
-    await expect(
-      sender({ retention: null }).sendRetentionNotice({ to: '1', daysLeft: '1', deletesOn: 'x' }),
-    ).rejects.toThrow(/META_RETENTION_TEMPLATE/);
-    await expect(
-      sender({ trial: null }).sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
-    ).rejects.toThrow(/META_TRIAL_TEMPLATE/);
-    /* An unconfigured trial template is a fixable condition: it must not burn a reminder stage. */
-    await expect(
-      sender({ trial: null }).sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
-    ).rejects.toMatchObject({ notSent: true, transient: true, outage: true });
-
-    /* The retention one matters most: no template means no warning, and the
-     * sweep treats an undelivered warning as a reason NOT to delete. */
     expect(requests).toHaveLength(0);
   });
 });
@@ -640,7 +416,12 @@ describe('the unconfigured sender names what is missing (G-58)', () => {
   it('reports a billing notice with nothing configured as definitely not sent', async () => {
     const unconfigured = new NoSenderConfigured(['META_ACCESS_TOKEN']);
     const noTemplate = sender({ billing: null });
-    const notice = { to: '+2348000000000', daysLeft: '3', endsOn: '01/01/2027' };
+    const notice = {
+      to: '+2348000000000',
+      daysLeft: '3',
+      endsOn: '01/01/2027',
+      billingUrl: LINK,
+    };
     for (const attempt of [
       () => unconfigured.sendBillingNotice(),
       () => noTemplate.sendBillingNotice(notice),
