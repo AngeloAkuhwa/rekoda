@@ -175,4 +175,26 @@ describe('delivery receipts for the reminder-reply notice (OWN-83)', () => {
     await receiptJob;
     expect(await undelivered(s.businessId)).toBe(true);
   });
+  it('deciding whether a notice is due leaves the business notice lock free unless a dead receipt applies', async () => {
+    const s = await shop('PN-RR-21');
+    await reminded(s);
+    await reply('PN-RR-21', 'wamid.RR.21A', 'I will pay');
+    const [row] = await noticeRows(s.businessId);
+    const lockFree = () =>
+      withBusiness(db, s.businessId, async (tx) => [
+        ...(await tx.execute<{ free: boolean }>(
+          sql`SELECT pg_try_advisory_xact_lock(hashtext(${`reminder-reply-notices:${s.businessId}`})) AS free`,
+        )),
+      ]).then((r) => r[0]?.free);
+    const whileDeciding = () =>
+      withBusiness(db, s.businessId, async (tx) => {
+        await remindersRepo.reminderReplyNoticeDue(tx, s.businessId, row!.reminder_id);
+        return lockFree();
+      });
+    // No dead receipt: the lock stays free until a notice is actually sent.
+    expect(await whileDeciding()).toBe(true);
+    // A dead receipt for the notice: re-opening it takes the lock, in the live receipt's order.
+    await deadReceipt(s.businessId, noticeWamidOf(s.ownerPhone));
+    expect(await whileDeciding()).toBe(false);
+  });
 });

@@ -545,7 +545,9 @@ export async function reminderReplyNoticeDue(
        AND j.kind = 'delivery.status' AND j.state = 'dead' AND e.processed_at IS NULL
        AND n.provider_message_id = j.payload->>'outboundMessageId'`;
   const pending = await tx.execute<{ one: number }>(
-    sql`SELECT 1 AS one FROM reminder_reply_notices n JOIN LATERAL (SELECT 1 ${deadReceiptMatch} LIMIT 1) m ON true LIMIT 1`,
+    sql`SELECT 1 AS one FROM reminder_reply_notices n
+          WHERE n.business_id = ${businessId}::uuid AND n.reminder_id = ${reminderId}::uuid
+            AND EXISTS (SELECT 1 ${deadReceiptMatch})`,
   );
   if ([...pending].length > 0) {
     await lockReminderReplyNotices(tx, businessId);
