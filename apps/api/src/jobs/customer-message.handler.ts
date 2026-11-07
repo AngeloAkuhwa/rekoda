@@ -248,7 +248,8 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
     /* The notice is free-form text from Rekoda's number, so it is sent only while the owner's
      * 24-hour window with Rekoda is open. Outside it Meta accepts the message and fails it later
      * (131047), which would record a notice nobody received. Withheld, it stays due and is tried
-     * on the customer's next message, and the assistant's handoff tells the business meanwhile. */
+     * on the customer's next message. Meanwhile the assistant's handoff (when on) attempts its own
+     * notice, which is free-form too and meets the same window limit. */
     const tellBusiness =
       answered !== null &&
       (await ownerWindowOpen(tx, businessId)) &&

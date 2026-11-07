@@ -344,6 +344,19 @@ describe('a customer replies to a WhatsApp reminder (OWN-83)', () => {
     expect(handoff).toHaveLength(1);
   });
 
+  it('with the assistant on and the owner’s window closed, the handoff is not silenced', async () => {
+    const s = await shop('PN-RR-15', { assistant: true, ownerWrote: false });
+    await reminded(s);
+    await reply('PN-RR-15', 'wamid.RR.15', 'I already paid yesterday, check your account');
+    // The reminder notice waits for the window, so the handoff tries its own notice as before.
+    expect(noticesTo(s.ownerPhone)).toHaveLength(0);
+    expect(await noticeRows(s.businessId)).toHaveLength(0);
+    const handoff = stubSender.sent.filter(
+      (m) => m.to === s.ownerPhone && m.text.includes('could not answer'),
+    );
+    expect(handoff).toHaveLength(1);
+  });
+
   it('a message that answers no reminder keeps today’s behaviour: no reminder notice', async () => {
     const s = await shop('PN-RR-5', { assistant: true });
     await reply('PN-RR-5', 'wamid.RR.5', 'when do you open tomorrow?');
