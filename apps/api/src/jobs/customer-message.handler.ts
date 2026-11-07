@@ -279,9 +279,14 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
     /* Last, after everything else this job does, so little after it can roll the record back
      * once the business has been told. Recorded only when it was delivered. */
     if (tellBusiness) {
-      const told = await tellBusinessOfReminderReply(tx, deps, businessId, answered.invoiceNumber);
+      let told = await tellBusinessOfReminderReply(tx, deps, businessId, answered.invoiceNumber);
       if (told === 'reminder reply: business told') {
         await remindersRepo.recordReminderReplyNotice(tx, businessId, answered.id);
+      } else if (handoff.merchantNoticeHeld) {
+        /* The handoff held back its notice for this one; it did not arrive, so the business gets
+         * the ordinary handoff notice now rather than nothing (the reminder notice stays due). */
+        await tellMerchantOfHandoff(tx, deps, businessId);
+        told = `${told}; handoff notice sent instead`;
       }
       note = note ? `${note}; ${told}` : told;
     }
@@ -292,6 +297,8 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
 /** Whether the assistant's handoff also tells the merchant (OWN-83: not when a reply notice does). */
 interface HandoffOptions {
   tellMerchant: boolean;
+  /** Set by the handoff when it held its merchant notice back for the reply notice. */
+  merchantNoticeHeld?: boolean;
 }
 
 /**
@@ -457,12 +464,24 @@ async function handoffToHuman(
    * customer's message waiting in their own WhatsApp, which is where the
    * notice was pointing anyway. A reply to a reminder has its own notice
    * (OWN-83), so the merchant is not told twice about one message. */
-  if (!options.tellMerchant) return 'handed off to a human (business told of the reminder reply)';
+  if (!options.tellMerchant) {
+    options.merchantNoticeHeld = true;
+    return 'handed off to a human (business told of the reminder reply)';
+  }
+  await tellMerchantOfHandoff(tx, deps, businessId);
+  return 'handed off to a human';
+}
+
+/** The merchant's side of a handoff: the owner is told, unless they sent STOP. */
+async function tellMerchantOfHandoff(
+  tx: TenantDb,
+  deps: CustomerMessageDeps,
+  businessId: string,
+): Promise<void> {
   const to = await identity.ownerPhoneFor(deps.db, businessId);
   if (to && !(await identity.optedOutAt(deps.db, to))) {
     await deps.replySender.send(tx, { businessId, to, reply: replies.assistantHandoffNotice() });
   }
-  return 'handed off to a human';
 }
 
 /**

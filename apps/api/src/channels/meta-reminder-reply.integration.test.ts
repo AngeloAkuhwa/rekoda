@@ -357,6 +357,22 @@ describe('a customer replies to a WhatsApp reminder (OWN-83)', () => {
     expect(handoff).toHaveLength(1);
   });
 
+  it('with the assistant on, a refused reminder notice falls back to the handoff notice', async () => {
+    const s = await shop('PN-RR-16', { assistant: true });
+    await reminded(s);
+    // Meta refuses the reminder notice only; the customer's handoff text and the rest go through.
+    stubSender.failTextsContaining('has sent your business a WhatsApp');
+    await reply('PN-RR-16', 'wamid.RR.16', 'I already paid yesterday, check your account');
+    expect(stubSender.connectionTexts).toHaveLength(1);
+    expect(noticesTo(s.ownerPhone)).toHaveLength(0);
+    expect(await noticeRows(s.businessId)).toHaveLength(0);
+    // The business is not left with nothing: the ordinary handoff notice tells it.
+    const handoff = stubSender.sent.filter(
+      (m) => m.to === s.ownerPhone && m.text.includes('could not answer'),
+    );
+    expect(handoff).toHaveLength(1);
+  });
+
   it('a message that answers no reminder keeps today’s behaviour: no reminder notice', async () => {
     const s = await shop('PN-RR-5', { assistant: true });
     await reply('PN-RR-5', 'wamid.RR.5', 'when do you open tomorrow?');

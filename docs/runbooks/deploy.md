@@ -361,6 +361,13 @@ runs against the newer schema. A migration that must itself be reverted is a
 restore from backup, and **there is no backup mechanism yet** (G-02 in
 `docs/REKODA_LAUNCH_READINESS.md`; `backup-restore.md` describes the plan).
 
+Migration 0192 (`reminder_reply_notices`) is the one hand-reverted migration with
+data that must survive it. A normal roll back keeps it. If it was ever reverted
+by hand, do not run the deploy above (`dc run --rm -T migrate` then `dc up`)
+until the saved notice rows are restored: the migration's rollback comment gives
+the copy and restore statements. Recreated empty, the table lets a customer's
+next message re-notify businesses about reminders they were already told about.
+
 ## Disk space and image retention (staging)
 
 `scripts/deploy-staging.sh` guards the host's disk, because a full disk once
