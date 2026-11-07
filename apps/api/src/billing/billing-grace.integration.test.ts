@@ -25,6 +25,7 @@ import {
   identity,
   marginRepo,
   quotaRepo,
+  sql,
   subscriptionsRepo,
   usageRepo,
   withBusiness,
@@ -186,7 +187,7 @@ describe('the grace period', () => {
    * pass does not claim, fail and release it again and again; the day goes out once a link
    * exists. Expiry does not wait for the link. */
   it('with no billing link, claims no reminder, still expires, and reminds once a link exists', async () => {
-    await failedMerchant('+2348177100032');
+    const { businessId } = await failedMerchant('+2348177100032');
     const sender = new StubSender();
     const noLink = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450, billingUrl: null };
 
@@ -199,6 +200,14 @@ describe('the grace period', () => {
       expired: 0,
     });
     expect(sender.billingNotices).toHaveLength(0);
+    // Not claimed and released: the claim column was never written, so a claim-then-release
+    // implementation (which would also send nothing) fails here.
+    const claimed = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ last_grace_reminder_day: number | null }>(
+        sql`SELECT last_grace_reminder_day FROM businesses WHERE id = ${businessId}::uuid`,
+      ),
+    );
+    expect([...claimed][0]?.last_grace_reminder_day).toBeNull();
 
     // Unclaimed, so the same day is reminded as soon as the link is configured.
     await sweepGracePeriods({ ...noLink, billingUrl: BILLING_URL }, dayAfterFailure(1));

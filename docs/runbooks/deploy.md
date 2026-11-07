@@ -361,11 +361,13 @@ runs against the newer schema. A migration that must itself be reverted is a
 restore from backup, and **there is no backup mechanism yet** (G-02 in
 `docs/REKODA_LAUNCH_READINESS.md`; `backup-restore.md` describes the plan).
 
-Migration 0192 (`reminder_reply_notices`) is the one migration whose manual
-revert must keep its data. A normal roll back keeps it. If it was ever reverted
+Migrations 0191 and 0192 are additive and keep data on a manual revert. 0191's
+`email_address_erasures` holds erasure receipts: keep the table, or export its
+rows to the audit records before dropping it. Migration 0192 (`reminder_reply_notices`)
+must keep its data too. A normal roll back keeps it. If it was ever reverted
 by hand, redeploy in this order, with the api and worker still stopped: run only
 `dc run --rm -T migrate` (it recreates the table); restore the saved rows as a
-superuser or BYPASSRLS role; check the row counts match; drop the saved copy;
+superuser or BYPASSRLS role; check the row counts match (a reminder deleted since the revert has no parent, so restore only notices whose reminder still exists, and confirm every surviving reminder's notice is back); drop the saved copy;
 only then `dc up -d --wait`. The migration's rollback comment gives the
 statements. Started on an empty table, a customer's next message re-notifies
 businesses about reminders they were already told about.
