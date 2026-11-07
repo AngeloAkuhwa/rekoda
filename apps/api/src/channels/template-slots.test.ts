@@ -80,6 +80,14 @@ describe('billingPageUrl', () => {
     expect(billingPageUrl('https://app.myrekoda.com')).toBe('https://app.myrekoda.com/app/billing');
   });
 
+  it('never carries credentials, a path, a query or a fragment from the configured value', () => {
+    expect(billingPageUrl('https://user:secret@app.myrekoda.com')).toBeNull();
+    expect(billingPageUrl('https://user@app.myrekoda.com')).toBeNull();
+    expect(billingPageUrl('https://app.myrekoda.com/ignored?x=1#frag')).toBe(
+      'https://app.myrekoda.com/app/billing',
+    );
+  });
+
   it('is null with no origin', () => {
     expect(billingPageUrl(null)).toBeNull();
     expect(billingPageUrl('')).toBeNull();

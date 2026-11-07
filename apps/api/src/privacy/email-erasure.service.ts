@@ -34,6 +34,18 @@ export class ErasureBusinessNotFound extends Error {
   }
 }
 
+/**
+ * The named business's billing email is sealed but this vault key cannot open it, so whether it is
+ * the address being erased is unknown. Nothing is changed (the request rolls back) and the
+ * operator is told, rather than being answered `erased: true` while the address stays stored.
+ */
+export class ErasureSealUnreadable extends Error {
+  constructor() {
+    super('the stored billing email could not be opened');
+    this.name = 'ErasureSealUnreadable';
+  }
+}
+
 const normalise = (address: string): string => address.trim().toLowerCase();
 
 @Injectable()
@@ -66,7 +78,7 @@ export class EmailErasureService {
 
       let billingEmail: OpsEmailErasureResponse['billingEmail'] = 'not_on_file';
       if (current.sealed !== null) {
-        let onFile: string | null;
+        let onFile: string;
         try {
           onFile = decryptFacet(
             current.sealed,
@@ -74,10 +86,11 @@ export class EmailErasureService {
             `billing-email:${businessId}`,
           );
         } catch {
-          /* A seal this key cannot open is not proof of a match: nothing on the business changes. */
-          onFile = null;
+          /* A seal this key cannot open is neither a match nor proof of a different address:
+           * refuse, so the transaction rolls back and nothing is reported as erased. */
+          throw new ErasureSealUnreadable();
         }
-        if (onFile !== null && normalise(onFile) === address) {
+        if (normalise(onFile) === address) {
           await subscriptionsRepo.eraseBillingEmail(tx, businessId, operator);
           billingEmail = 'cleared';
         } else {

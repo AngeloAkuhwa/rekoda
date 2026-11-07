@@ -5,6 +5,7 @@
  */
 import {
   BadRequestException,
+  ConflictException,
   Body,
   Controller,
   HttpCode,
@@ -16,7 +17,11 @@ import {
 } from '@nestjs/common';
 import { opsEmailErasureRequest, type OpsEmailErasureResponse } from '@rekoda/contracts';
 import { OperatorGuard, OperatorScopes, type OperatorRequest } from '../auth/operator.guard.js';
-import { EmailErasureService, ErasureBusinessNotFound } from './email-erasure.service.js';
+import {
+  EmailErasureService,
+  ErasureBusinessNotFound,
+  ErasureSealUnreadable,
+} from './email-erasure.service.js';
 
 @Controller('v1/ops/privacy')
 @UseGuards(OperatorGuard)
@@ -41,6 +46,11 @@ export class EmailErasureController {
       return await this.erasure.erase(input.data, `operator:${request.operator!.subject}`);
     } catch (error) {
       if (error instanceof ErasureBusinessNotFound) throw new NotFoundException('no such business');
+      if (error instanceof ErasureSealUnreadable) {
+        throw new ConflictException(
+          'the stored billing email could not be opened; nothing was changed',
+        );
+      }
       throw error;
     }
   }

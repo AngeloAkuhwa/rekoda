@@ -28,7 +28,11 @@ import { MockEmailSender } from '../email/email.port.js';
 import { BillingEmailService } from '../billing/billing-email.service.js';
 import { OPERATOR_SCOPES_KEY } from '../auth/operator.guard.js';
 import { EmailErasureController } from './email-erasure.controller.js';
-import { EmailErasureService, ErasureBusinessNotFound } from './email-erasure.service.js';
+import {
+  EmailErasureService,
+  ErasureBusinessNotFound,
+  ErasureSealUnreadable,
+} from './email-erasure.service.js';
 
 const RUN_SALT = randomBytes(16).toString('hex');
 const testKey = (label: string): string =>
@@ -329,6 +333,34 @@ describe("a named business's billing email", () => {
     const after = await billingEmailState(a);
     expect(after.sealed).toBe(before.sealed);
     expect(after.revision).toBe(before.revision);
+  });
+
+  it('refuses, changing nothing, when the stored seal cannot be opened (never a false success)', async () => {
+    const a = await seedBusiness();
+    await withBusiness(appDb, a, (tx) =>
+      subscriptionsRepo.setBillingEmailSealed(
+        tx,
+        a,
+        encryptFacet(EMAIL, testKey('another-vault-key'), `billing-email:${a}`),
+        new Date(),
+      ),
+    );
+    expect((await emails().requestVerification(await seedBusiness(), EMAIL)).state).toBe('sent');
+    const before = await billingEmailState(a);
+    await expect(
+      erasure().erase({ address: EMAIL, reason: 'erasure_request', businessId: a }, OPERATOR),
+    ).rejects.toBeInstanceOf(ErasureSealUnreadable);
+    const after = await billingEmailState(a);
+    expect(after.sealed).toBe(before.sealed);
+    expect(after.revision).toBe(before.revision);
+    expect(await counterRows()).toBe(1);
+    const res = await post(
+      { address: EMAIL, reason: 'erasure_request', businessId: a },
+      { 'x-rekoda-operator-secret': OPERATOR_SECRET },
+    );
+    expect(res.statusCode).toBe(409);
+    expect(res.body).not.toMatch(/ada@/i);
+    expect(await counterRows()).toBe(1);
   });
 
   it('reports not_on_file when the business has none', async () => {

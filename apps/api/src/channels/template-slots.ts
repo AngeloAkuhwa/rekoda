@@ -172,7 +172,11 @@ export function missingTemplateSlots(env: NodeJS.ProcessEnv): TemplateSlot[] {
 export function billingPageUrl(webUrl: string | null): string | null {
   if (!webUrl) return null;
   try {
-    return new URL('/app/billing', webUrl).toString();
+    const origin = new URL(webUrl);
+    /* A link goes to a merchant's phone and into Meta: never one that carries credentials, and
+     * only the origin is used, so no path, query or fragment of the setting is copied. */
+    if (origin.username !== '' || origin.password !== '') return null;
+    return new URL('/app/billing', origin.origin).toString();
   } catch {
     return null;
   }
