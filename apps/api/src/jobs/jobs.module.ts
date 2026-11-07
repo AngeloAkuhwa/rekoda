@@ -65,6 +65,7 @@ import { CustomerThreadRouter } from '../channels/customer-route.service.js';
 import { SPEECH_TO_TEXT, type SpeechToText } from '../ai/stt.js';
 import { TEXT_EXTRACTION, type TextExtraction } from '../ai/ocr.js';
 import type { MessageSender } from '../channels/sender.js';
+import { billingPageUrl } from '../channels/template-slots.js';
 import { DocumentsModule, DOCUMENT_STORAGE } from '../documents/documents.module.js';
 import type { DocumentStorage } from '../documents/storage.js';
 
@@ -498,6 +499,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
               appDb: this.appDb,
               sender: this.sender,
               fxNairaPerUsd: this.config.planningFxNairaPerUsd,
+              billingUrl: billingPageUrl(this.config.webUrl),
             }),
           )
             .catch((error: unknown) => {
@@ -522,7 +524,10 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
               workerDb,
               appDb: this.appDb,
               sender: this.sender,
-              templateConfigured: this.config.metaTrialTemplate !== null,
+              templateConfigured:
+                this.config.metaTrialTemplate !== null &&
+                billingPageUrl(this.config.webUrl) !== null,
+              billingUrl: billingPageUrl(this.config.webUrl),
               fxNairaPerUsd: this.config.planningFxNairaPerUsd,
             }),
           )

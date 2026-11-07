@@ -340,27 +340,70 @@ case "$r" in
   *) flag "REKODA_PAYSTACK_PLATFORM_CONFIRMED" "unknown (cannot exec into the api container)" ;;
 esac
 
-# All five WhatsApp template slots the API reads (G-03; OD-41 for which approved template is the
-# trial one). Presence only: the configured names are matched against Meta's dashboard by hand.
-# Asked of the running api container, not parsed from .env, so quoting, inline comments and
-# defaults resolve exactly as the API sees them. Each value is only tested for emptiness, never
-# printed.
-echo "== Meta template slots in the running api (SET/UNSET only)"
-if dc exec -T api true >/dev/null 2>&1; then
-  for k in META_OTP_TEMPLATE META_BILLING_TEMPLATE META_RETENTION_TEMPLATE META_DOCUMENT_TEMPLATE \
-           META_TRIAL_TEMPLATE; do
-    # The container answers SET or UNSET itself; anything else (a failed exec, a container that
-    # stopped mid-loop) is reported as unknown, never as UNSET.
-    r="$(dc exec -T -e "K=$k" api sh -c 'eval "v=\${$K:-}"; if [ -n "$v" ]; then echo SET; else echo UNSET; fi' 2>/dev/null)"
-    case "$r" in
-      SET) say "$k" "$r" ;;
-      UNSET) flag "$k" "$r" ;;
-      *) flag "$k" "unknown (api query failed)" ;;
-    esac
-  done
-else
-  flag "Meta template slots" "unknown (cannot exec into the api container)"
+# The five WhatsApp template slots (OD-41(b)). The authority is
+# apps/api/src/channels/template-slots.ts; staging-readonly-check.test.mjs fails if this list and
+# that file disagree. Each line: variable, required|optional, the agreed Meta template name, and
+# the agreed language ("-" when none was agreed, so it is only reported).
+# CONFIGURATION ONLY: this reads what the running containers were started with. It cannot see
+# whether Meta approved, paused, rejected or rated a template, or what its components say; those
+# are checked by hand in WhatsApp Manager (docs/runbooks/meta-whatsapp-templates.md).
+# Asked of the running api AND worker (the worker's sweeps send the grace, trial and retention
+# templates), not parsed from .env, so quoting and defaults resolve exactly as the API sees them.
+# A template name is compared with the agreed name inside the container and never printed.
+TEMPLATE_SLOTS="META_OTP_TEMPLATE required rekoda_login_otp -
+META_BILLING_TEMPLATE required rekoda_billing_grace_notice -
+META_RETENTION_TEMPLATE optional rekoda_retention_notice -
+META_DOCUMENT_TEMPLATE required rekoda_document_ready -
+META_TRIAL_TEMPLATE required rekoda_trial_ending en"
+# Optional: the dashboard origin this host should link to. Only an https origin with no path is
+# accepted, because it is compared inside the container.
+EXPECT_WEB="${EXPECT_WEB_URL:-}"
+EXPECT_WEB="${EXPECT_WEB%/}"
+if [ -n "$EXPECT_WEB" ] && ! printf '%s' "$EXPECT_WEB" | grep -Eq '^https://[A-Za-z0-9.-]+(:[0-9]+)?$'; then
+  flag "EXPECT_WEB_URL" "not an https origin with no path; comparison skipped"; EXPECT_WEB=""
 fi
+echo "== Meta template slots in the running api and worker (configuration only, not Meta approval)"
+for c in api worker; do
+  if ! dc exec -T "$c" true >/dev/null 2>&1; then
+    flag "Meta template slots ($c)" "unknown (cannot exec into the $c container)"
+    continue
+  fi
+  while read -r k need agreed locale; do
+    # The container answers AGREED, OTHER or UNSET itself; anything else (a failed exec, a
+    # container that stopped mid-loop) is reported as unknown, never as UNSET.
+    r="$(dc exec -T -e "K=$k" "$c" sh -c 'eval "v=\${$K:-}"; if [ -z "$v" ]; then echo UNSET; elif [ "$v" = "'"$agreed"'" ]; then echo AGREED; else echo OTHER; fi' 2>/dev/null)"
+    case "$r:$need" in
+      AGREED:*) say "$k ($c)" "SET, the agreed name" ;;
+      OTHER:*) flag "$k ($c)" "SET, but not the agreed name $agreed" ;;
+      UNSET:required) flag "$k ($c)" "UNSET (required)" ;;
+      UNSET:optional) say "$k ($c)" "UNSET (optional; information only)" ;;
+      *) flag "$k ($c)" "unknown ($c query failed)" ;;
+    esac
+    # The language: an unset one is the code's default, en. Compared with the agreed language
+    # where one was agreed; otherwise only reported, for checking against WhatsApp Manager.
+    l="$(dc exec -T -e "K=${k}_LOCALE" "$c" sh -c 'eval "v=\${$K-__unset__}"; case "$v" in __unset__) echo DEFAULT ;; en) echo EN ;; *) echo OTHER ;; esac' 2>/dev/null)"
+    case "$l:$locale" in
+      DEFAULT:en|EN:en) say "${k}_LOCALE ($c)" "en, the agreed language" ;;
+      OTHER:en) flag "${k}_LOCALE ($c)" "not the agreed language en" ;;
+      DEFAULT:-) say "${k}_LOCALE ($c)" "unset (the code sends en)" ;;
+      EN:-) say "${k}_LOCALE ($c)" "en" ;;
+      OTHER:-) say "${k}_LOCALE ($c)" "SET (not en; confirm in WhatsApp Manager)" ;;
+      *) flag "${k}_LOCALE ($c)" "unknown ($c query failed)" ;;
+    esac
+  done <<<"$TEMPLATE_SLOTS"
+  # The grace and trial templates carry the billing page as {{3}}, built from REKODA_WEB_URL as
+  # <origin>/app/billing. The URL is classified, never printed. With EXPECT_WEB_URL=<origin> (for
+  # example https://staging.myrekoda.com) it is compared with that origin inside the container.
+  w="$(dc exec -T -e K=REKODA_WEB_URL "$c" sh -c 'eval "v=\${$K:-}"; v="${v%/}"; case "$v" in https://*) if [ -n "'"$EXPECT_WEB"'" ] && [ "$v" != "'"$EXPECT_WEB"'" ]; then echo DIFFERENT; else echo HTTPS; fi ;; "") echo UNSET ;; *) echo OTHER ;; esac' 2>/dev/null)"
+  case "$w" in
+    HTTPS) if [ -n "$EXPECT_WEB" ]; then say "billing link in templates ($c)" "EXPECT_WEB_URL/app/billing"
+           else say "billing link in templates ($c)" "https origin/app/billing (pass EXPECT_WEB_URL to compare)"; fi ;;
+    DIFFERENT) flag "billing link in templates ($c)" "REKODA_WEB_URL is not EXPECT_WEB_URL" ;;
+    UNSET) flag "billing link in templates ($c)" "UNSET (REKODA_WEB_URL; grace and trial notices cannot be sent)" ;;
+    OTHER) flag "billing link in templates ($c)" "REKODA_WEB_URL is not https://" ;;
+    *) flag "billing link in templates ($c)" "unknown ($c query failed)" ;;
+  esac
+done
 
 # Customer payment reminders (N1, REM-01..06) run only with REKODA_CUSTOMER_REMINDERS=1, and the
 # api and the worker each read it. Absent or 0 is off (the default); 1 is on; anything else makes

@@ -6,6 +6,7 @@
  * `node --test scripts/staging-readonly-check.test.mjs` (CI does).
  */
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import {
   HEALTHY_DOTENV,
@@ -21,8 +22,8 @@ test('a compose call cannot swallow the rest of the piped script', () => {
   const h = host();
   try {
     const out = h.go();
-    assert.match(out, /== Meta template slots in the running api/);
-    assert.match(out, /META_TRIAL_TEMPLATE\s+SET/);
+    assert.match(out, /== Meta template slots in the running api and worker/);
+    assert.match(out, /META_TRIAL_TEMPLATE \(api\)\s+SET, the agreed name/);
     // The same script without the stdin guard stops at the first compose call.
     const unguarded = h.script.replace('"$@" </dev/null; }', '"$@"; }');
     assert.notEqual(unguarded, h.script, 'the guard is where the test expects it');
@@ -39,9 +40,9 @@ test('a failed per-slot query reads unknown, never UNSET', () => {
   });
   try {
     const out = h.go();
-    assert.match(out, /META_TRIAL_TEMPLATE\s+unknown \(api query failed\)/);
-    assert.doesNotMatch(out, /META_TRIAL_TEMPLATE\s+UNSET/);
-    assert.match(out, /META_OTP_TEMPLATE\s+SET/);
+    assert.match(out, /META_TRIAL_TEMPLATE \(api\)\s+unknown \(api query failed\)/);
+    assert.doesNotMatch(out, /META_TRIAL_TEMPLATE \(api\)\s+UNSET/);
+    assert.match(out, /META_OTP_TEMPLATE \(api\)\s+SET, but not the agreed name rekoda_login_otp/);
   } finally {
     h.done();
   }
@@ -58,7 +59,13 @@ test('prints presence only, never a template value', () => {
       'META_DOCUMENT_TEMPLATE',
       'META_TRIAL_TEMPLATE',
     ]) {
-      assert.match(out, new RegExp(`${k}\\s+(SET|UNSET|unknown \\(api query failed\\))\\n`));
+      for (const c of ['api', 'worker'])
+        assert.match(
+          out,
+          new RegExp(
+            `${k} \\(${c}\\)\\s+(SET, the agreed name|SET, but not the agreed name \\w+|UNSET \\((required|optional; information only)\\))\\n`,
+          ),
+        );
     }
   } finally {
     h.done();
@@ -75,11 +82,18 @@ test('reads set, empty and unset template variables as the API would', () => {
   });
   try {
     const out = h.go();
-    assert.match(out, /META_OTP_TEMPLATE\s+SET\n/);
-    assert.match(out, /META_BILLING_TEMPLATE\s+UNSET\n/);
-    assert.match(out, /META_RETENTION_TEMPLATE\s+UNSET\n/);
-    assert.match(out, /META_TRIAL_TEMPLATE\s+SET\n/);
-    assert.doesNotMatch(out, /rekoda_otp|x y/);
+    assert.match(
+      out,
+      /META_OTP_TEMPLATE \(api\)\s+SET, but not the agreed name rekoda_login_otp\n/,
+    );
+    assert.match(out, /META_BILLING_TEMPLATE \(api\)\s+UNSET \(required\)\n/);
+    assert.match(out, /META_RETENTION_TEMPLATE \(api\)\s+UNSET \(optional; information only\)\n/);
+    assert.match(
+      out,
+      /META_TRIAL_TEMPLATE \(api\)\s+SET, but not the agreed name rekoda_trial_ending\n/,
+    );
+    // The configured values themselves never appear: only the agreed names do.
+    assert.doesNotMatch(out, /rekoda_otp[^_]|x y/);
   } finally {
     h.done();
   }
@@ -282,7 +296,7 @@ test('an applied tag this checkout does not carry is listed, not ignored', () =>
 test('missing configuration is flagged: no EXPECT_SHA, live or absent key, platform flag set, slot unset, invalid reminders', () => {
   const h = healthy({
     dotenv: 'REKODA_RELEASE=staging-{sha7}\n',
-    env: { META_OTP_TEMPLATE: 'a', REKODA_PAYSTACK_PLATFORM_CONFIRMED: '1' },
+    env: { META_OTP_TEMPLATE: 'rekoda_login_otp', REKODA_PAYSTACK_PLATFORM_CONFIRMED: '1' },
     workerEnv: { REKODA_CUSTOMER_REMINDERS: '' },
     images: { api: 'rekoda-app:staging-{sha7}', web: 'rekoda-web:staging-{sha7}' },
   });
@@ -300,7 +314,7 @@ test('missing configuration is flagged: no EXPECT_SHA, live or absent key, platf
       out,
       /REKODA_PAYSTACK_PLATFORM_CONFIRMED\s+SET \(OWN-70: it stays UNSET on staging\)\n/,
     );
-    assert.match(out, /META_TRIAL_TEMPLATE\s+UNSET\n/);
+    assert.match(out, /META_TRIAL_TEMPLATE \(api\)\s+UNSET \(required\)\n/);
     assert.match(out, /REKODA_CUSTOMER_REMINDERS \(api\)\s+OFF \(unset; the default is off\)\n/);
     assert.match(out, /REKODA_CUSTOMER_REMINDERS \(worker\)\s+INVALID/);
     for (const l of [
@@ -308,7 +322,7 @@ test('missing configuration is flagged: no EXPECT_SHA, live or absent key, platf
       'image of worker',
       'PAYSTACK_SECRET_KEY',
       'REKODA_PAYSTACK_PLATFORM_CONFIRMED',
-      'META_TRIAL_TEMPLATE',
+      'META_TRIAL_TEMPLATE (api)',
       'REKODA_CUSTOMER_REMINDERS (worker)',
     ])
       assert.ok(a.includes(l), `${l} is under attention`);
@@ -517,7 +531,7 @@ test('reminders set to 0 read OFF (0) and, like the default, are not flagged', (
       REKODA_CUSTOMER_REMINDERS: '0',
       REKODA_EMAIL_PROVIDER: 'resend',
     },
-    workerEnv: { REKODA_CUSTOMER_REMINDERS: '0', REKODA_EMAIL_PROVIDER: 'resend' },
+    workerEnv: { ...SLOTS, REKODA_CUSTOMER_REMINDERS: '0', REKODA_EMAIL_PROVIDER: 'resend' },
   });
   try {
     const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
@@ -559,6 +573,190 @@ test('a /health transfer that fails after a partial answer reads unknown, never 
     assert.match(attention(r.stdout), /\/health/);
     assert.doesNotMatch(r.stdout, /served status\s+ok\n/);
     assert.equal(r.status, 1, r.stdout);
+  } finally {
+    h.done();
+  }
+});
+
+/* OD-41(b): the five slots, required against optional, in both containers. */
+
+test('the bash slot list is the same as apps/api/src/channels/template-slots.ts', () => {
+  const ts = readFileSync(
+    new URL('../apps/api/src/channels/template-slots.ts', import.meta.url),
+    'utf8',
+  );
+  const fromTs = [
+    ...ts.matchAll(
+      /env: '(META_\w+)',[\s\S]*?agreedName: '(\w+)',\s*agreedLocale: (null|'(\w+)'),[\s\S]*?required: (true|false),/g,
+    ),
+  ].map((m) => [m[1], m[5] === 'true' ? 'required' : 'optional', m[2], m[4] ?? '-'].join(' '));
+  const block = SCRIPT.match(/TEMPLATE_SLOTS="([^"]*)"/);
+  assert.ok(block, 'the script declares TEMPLATE_SLOTS');
+  assert.equal(fromTs.length, 5);
+  assert.deepEqual(block[1].split('\n'), fromTs);
+});
+
+test('a healthy host reads every slot as the agreed name in api and worker, and the billing link', () => {
+  const h = healthy();
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    for (const c of ['api', 'worker']) {
+      for (const k of Object.keys(SLOTS).filter((k) => k.endsWith('_TEMPLATE')))
+        assert.match(r.stdout, new RegExp(`${k} \\(${c}\\)\\s+SET, the agreed name\\n`));
+      assert.match(
+        r.stdout,
+        new RegExp(`META_TRIAL_TEMPLATE_LOCALE \\(${c}\\)\\s+en, the agreed language\\n`),
+      );
+      assert.match(
+        r.stdout,
+        new RegExp(
+          `billing link in templates \\(${c}\\)\\s+https origin/app/billing \\(pass EXPECT_WEB_URL to compare\\)\\n`,
+        ),
+      );
+    }
+    assert.match(r.stdout, /configuration only, not Meta approval/);
+    // The origin is classified, never printed.
+    assert.doesNotMatch(r.stdout, /staging\.invalid/);
+    assert.equal(r.status, 0, r.stdout);
+  } finally {
+    h.done();
+  }
+});
+
+test('EXPECT_WEB_URL is compared inside each container: the agreed origin passes, another is ATTENTION', () => {
+  const h = healthy({
+    workerEnv: {
+      ...SLOTS,
+      REKODA_WEB_URL: 'https://other.invalid/',
+      REKODA_CUSTOMER_REMINDERS: '1',
+      REKODA_EMAIL_PROVIDER: 'resend',
+    },
+  });
+  try {
+    const r = h.run2(undefined, {
+      EXPECT_SHA: h.sha.slice(0, 7),
+      EXPECT_WEB_URL: 'https://staging.invalid',
+    });
+    assert.match(r.stdout, /billing link in templates \(api\)\s+EXPECT_WEB_URL\/app\/billing\n/);
+    assert.match(
+      r.stdout,
+      /billing link in templates \(worker\)\s+REKODA_WEB_URL is not EXPECT_WEB_URL\n/,
+    );
+    assert.ok(attention(r.stdout).includes('billing link in templates (worker)'));
+    assert.doesNotMatch(r.stdout, /other\.invalid/);
+    // A malformed EXPECT_WEB_URL is refused, never placed in the container command.
+    const bad = h.run2(undefined, { EXPECT_WEB_URL: 'https://x.invalid/"; rm -rf /' });
+    assert.match(
+      bad.stdout,
+      /EXPECT_WEB_URL\s+not an https origin with no path; comparison skipped/,
+    );
+    assert.doesNotMatch(h.calls().join('\n'), /rm -rf/);
+  } finally {
+    h.done();
+  }
+});
+
+test('an unset required slot is ATTENTION; an unset optional slot is information and keeps RESULT: OK', () => {
+  const noRetention = { ...SLOTS };
+  delete noRetention.META_RETENTION_TEMPLATE;
+  const optional = healthy({
+    env: {
+      ...noRetention,
+      REKODA_CUSTOMER_REMINDERS: '1',
+      REKODA_EMAIL_PROVIDER: 'resend',
+      PAYSTACK_SECRET_KEY: 'sk_test_qqqqqqqqqqqqqqqq',
+    },
+    workerEnv: { ...noRetention, REKODA_CUSTOMER_REMINDERS: '1', REKODA_EMAIL_PROVIDER: 'resend' },
+  });
+  try {
+    const r = optional.run2(undefined, { EXPECT_SHA: optional.sha.slice(0, 7) });
+    assert.match(
+      r.stdout,
+      /META_RETENTION_TEMPLATE \(worker\)\s+UNSET \(optional; information only\)\n/,
+    );
+    assert.ok(!attention(r.stdout).includes('META_RETENTION_TEMPLATE'));
+    assert.match(r.stdout, /RESULT: OK/);
+    assert.equal(r.status, 0, r.stdout);
+  } finally {
+    optional.done();
+  }
+
+  const noTrial = { ...SLOTS };
+  delete noTrial.META_TRIAL_TEMPLATE;
+  const required = healthy({
+    env: {
+      ...noTrial,
+      REKODA_CUSTOMER_REMINDERS: '1',
+      REKODA_EMAIL_PROVIDER: 'resend',
+      PAYSTACK_SECRET_KEY: 'sk_test_qqqqqqqqqqqqqqqq',
+    },
+    // The worker alone has it: the api's copy still reads ATTENTION.
+    workerEnv: { ...SLOTS, REKODA_CUSTOMER_REMINDERS: '1', REKODA_EMAIL_PROVIDER: 'resend' },
+  });
+  try {
+    const r = required.run2(undefined, { EXPECT_SHA: required.sha.slice(0, 7) });
+    const a = attention(r.stdout);
+    assert.ok(a.includes('META_TRIAL_TEMPLATE (api)'));
+    assert.ok(!a.includes('META_TRIAL_TEMPLATE (worker)'));
+    assert.match(r.stdout, /RESULT: ATTENTION/);
+    assert.equal(r.status, 1);
+  } finally {
+    required.done();
+  }
+});
+
+test('a wrong trial language, a non-https or missing REKODA_WEB_URL are ATTENTION in the container that has them', () => {
+  const h = healthy({
+    workerEnv: {
+      ...SLOTS,
+      META_TRIAL_TEMPLATE_LOCALE: 'en_US',
+      REKODA_WEB_URL: 'http://staging.invalid',
+      REKODA_CUSTOMER_REMINDERS: '1',
+      REKODA_EMAIL_PROVIDER: 'resend',
+    },
+  });
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    const a = attention(r.stdout);
+    assert.ok(a.includes('META_TRIAL_TEMPLATE_LOCALE (worker)'));
+    assert.ok(a.includes('billing link in templates (worker)'));
+    assert.match(
+      r.stdout,
+      /billing link in templates \(worker\)\s+REKODA_WEB_URL is not https:\/\/\n/,
+    );
+    assert.ok(!a.includes('(api)'), a);
+    // The non-agreed language value is never printed.
+    assert.doesNotMatch(r.stdout, /en_US/);
+  } finally {
+    h.done();
+  }
+  const none = healthy({
+    workerEnv: {
+      ...SLOTS,
+      REKODA_WEB_URL: '',
+      REKODA_CUSTOMER_REMINDERS: '1',
+      REKODA_EMAIL_PROVIDER: 'resend',
+    },
+  });
+  try {
+    const out = none.go();
+    assert.match(out, /billing link in templates \(worker\)\s+UNSET \(REKODA_WEB_URL/);
+  } finally {
+    none.done();
+  }
+});
+
+test('a container that cannot be queried reads unknown for its slots, never UNSET', () => {
+  const h = healthy({ failKey: 'META_DOCUMENT_TEMPLATE' });
+  try {
+    const out = h.go();
+    for (const c of ['api', 'worker']) {
+      assert.match(
+        out,
+        new RegExp(`META_DOCUMENT_TEMPLATE \\(${c}\\)\\s+unknown \\(${c} query failed\\)`),
+      );
+      assert.ok(attention(out).includes(`META_DOCUMENT_TEMPLATE (${c})`));
+    }
   } finally {
     h.done();
   }

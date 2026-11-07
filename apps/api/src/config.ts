@@ -14,6 +14,11 @@ import {
   type Range,
 } from './http/client-address.js';
 import { MONO_API, PAYSTACK_API, nonPublicReason } from './endpoints.js';
+import {
+  DEFAULT_TEMPLATE_LOCALE,
+  billingPageUrl,
+  templateConfigProblems,
+} from './channels/template-slots.js';
 
 export interface ApiConfig {
   port: number;
@@ -1295,6 +1300,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       'META_ACCESS_TOKEN is set but META_OTP_TEMPLATE is not: sign-in codes cannot be delivered',
     );
   }
+  /* A template name or language Meta cannot have approved is refused at boot, everywhere: every
+   * send through it would be rejected, which reads like an approval problem rather than a typo
+   * (OD-41(b)). The value is never echoed. */
+  const templateProblem = templateConfigProblems(env)[0];
+  if (templateProblem) {
+    throw new ConfigError(`${templateProblem.env} ${templateProblem.problem}`);
+  }
+  /* The grace and trial templates carry a link to the billing page, built from REKODA_WEB_URL.
+   * In production a configured template with no https origin to link to is refused at boot
+   * rather than sending a message whose link goes nowhere. Outside production the sender
+   * refuses those messages as not sent instead. */
+  if (isProduction && (env['META_BILLING_TEMPLATE'] || env['META_TRIAL_TEMPLATE'])) {
+    const link = billingPageUrl(webUrl(env));
+    if (link === null || !link.startsWith('https://')) {
+      throw new ConfigError(
+        'META_BILLING_TEMPLATE or META_TRIAL_TEMPLATE is set but REKODA_WEB_URL is not an https:// origin: the billing link in those messages would go nowhere',
+      );
+    }
+  }
 
   const workerEnabled = env['REKODA_WORKER'] === '1';
   if (workerEnabled && !env['WORKER_DATABASE_URL']) {
@@ -1463,15 +1487,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     metaPhoneNumberId: env['META_PHONE_NUMBER_ID'] ?? '',
     metaGraphVersion: env['META_GRAPH_VERSION'] ?? 'v21.0',
     metaOtpTemplate: env['META_OTP_TEMPLATE'] || null,
-    metaOtpTemplateLocale: env['META_OTP_TEMPLATE_LOCALE'] ?? 'en',
+    metaOtpTemplateLocale: env['META_OTP_TEMPLATE_LOCALE'] ?? DEFAULT_TEMPLATE_LOCALE,
     metaBillingTemplate: env['META_BILLING_TEMPLATE'] || null,
-    metaBillingTemplateLocale: env['META_BILLING_TEMPLATE_LOCALE'] ?? 'en',
+    metaBillingTemplateLocale: env['META_BILLING_TEMPLATE_LOCALE'] ?? DEFAULT_TEMPLATE_LOCALE,
     metaRetentionTemplate: env['META_RETENTION_TEMPLATE'] || null,
-    metaRetentionTemplateLocale: env['META_RETENTION_TEMPLATE_LOCALE'] ?? 'en',
+    metaRetentionTemplateLocale: env['META_RETENTION_TEMPLATE_LOCALE'] ?? DEFAULT_TEMPLATE_LOCALE,
     metaDocumentTemplate: env['META_DOCUMENT_TEMPLATE'] || null,
-    metaDocumentTemplateLocale: env['META_DOCUMENT_TEMPLATE_LOCALE'] ?? 'en',
+    metaDocumentTemplateLocale: env['META_DOCUMENT_TEMPLATE_LOCALE'] ?? DEFAULT_TEMPLATE_LOCALE,
     metaTrialTemplate: env['META_TRIAL_TEMPLATE'] || null,
-    metaTrialTemplateLocale: env['META_TRIAL_TEMPLATE_LOCALE'] ?? 'en',
+    metaTrialTemplateLocale: env['META_TRIAL_TEMPLATE_LOCALE'] ?? DEFAULT_TEMPLATE_LOCALE,
     metaServiceReplyCostMicros: nonNegativeInteger(env, 'META_SERVICE_REPLY_COST_MICROS', 0),
     metaWabaRegisteredInNigeria: env['META_WABA_REGISTERED_IN_NIGERIA'] !== 'false',
     planCatalogueReads: env['REKODA_PLAN_CATALOGUE_READS'] !== '0',

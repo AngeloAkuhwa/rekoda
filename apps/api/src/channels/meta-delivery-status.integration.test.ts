@@ -35,6 +35,9 @@ import {
   workerDb,
 } from './meta-webhook.fixtures.js';
 
+/** The billing page the grace and trial templates link to (`{{3}}`, OD-41(b)). */
+const BILLING_URL = 'https://app.rekoda.test/app/billing';
+
 useMetaWebhookHarness();
 
 describe('a trial reminder Meta later reports as failed (REM-01, G-109)', () => {
@@ -84,7 +87,14 @@ describe('a trial reminder Meta later reports as failed (REM-01, G-109)', () => 
 
   const sweep = (sender: StubSender, now: Date) =>
     sweepTrialNotices(
-      { workerDb, appDb: db, sender, templateConfigured: true, fxNairaPerUsd: 1500 },
+      {
+        workerDb,
+        appDb: db,
+        sender,
+        templateConfigured: true,
+        fxNairaPerUsd: 1500,
+        billingUrl: BILLING_URL,
+      },
       now,
     );
 

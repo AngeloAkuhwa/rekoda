@@ -17,6 +17,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { MetaSender, NoSenderConfigured } from './meta.sender.js';
 import { SendFailed } from './sender.js';
+import { TEMPLATE_SLOTS } from './template-slots.js';
 
 interface Recorded {
   method: string;
@@ -90,6 +91,9 @@ const sender = (
     'en',
     baseUrl,
   );
+
+/** The billing page `{{3}}` of the grace and trial templates (OD-41(b)). */
+const LINK = 'https://staging.myrekoda.com/app/billing';
 
 const bodyOf = (index = 0): Record<string, unknown> =>
   JSON.parse(requests[index]!.raw) as Record<string, unknown>;
@@ -200,7 +204,12 @@ describe('the authentication template', () => {
 
 describe('the utility templates', () => {
   it('puts the grace figures in the body, in order', async () => {
-    await sender().sendBillingNotice({ to: '2348031234567', daysLeft: '6', endsOn: '28/08/2026' });
+    await sender().sendBillingNotice({
+      to: '2348031234567',
+      daysLeft: '6',
+      endsOn: '28/08/2026',
+      billingUrl: LINK,
+    });
 
     expect(bodyOf()).toMatchObject({
       type: 'template',
@@ -212,6 +221,7 @@ describe('the utility templates', () => {
             parameters: [
               { type: 'text', text: '6' },
               { type: 'text', text: '28/08/2026' },
+              { type: 'text', text: LINK },
             ],
           },
         ],
@@ -243,7 +253,12 @@ describe('the utility templates', () => {
   });
 
   it('puts days left and the end date in the trial body, in order (G-109)', async () => {
-    await sender().sendTrialNotice({ to: '2348031234567', daysLeft: '2', endsOn: '16/11/2026' });
+    await sender().sendTrialNotice({
+      to: '2348031234567',
+      daysLeft: '2',
+      endsOn: '16/11/2026',
+      billingUrl: LINK,
+    });
 
     expect(bodyOf()).toMatchObject({
       template: {
@@ -254,6 +269,7 @@ describe('the utility templates', () => {
             parameters: [
               { type: 'text', text: '2' },
               { type: 'text', text: '16/11/2026' },
+              { type: 'text', text: LINK },
             ],
           },
         ],
@@ -267,7 +283,7 @@ describe('the utility templates', () => {
       res.end(JSON.stringify({ error: { code: 100 } }));
     };
     await expect(
-      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x', billingUrl: LINK }),
     ).rejects.toMatchObject({ notSent: true, providerCode: 100 });
 
     respond = (_req, res) => {
@@ -275,11 +291,16 @@ describe('the utility templates', () => {
       res.end();
     };
     await expect(
-      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x', billingUrl: LINK }),
     ).rejects.toMatchObject({ notSent: false });
 
     await expect(
-      sender({ trial: null }).sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+      sender({ trial: null }).sendTrialNotice({
+        to: '1',
+        daysLeft: '1',
+        endsOn: 'x',
+        billingUrl: LINK,
+      }),
     ).rejects.toMatchObject({ notSent: true });
   });
 
@@ -289,7 +310,7 @@ describe('the utility templates', () => {
       res.end(JSON.stringify({ error: { code: 190 } }));
     };
     await expect(
-      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x', billingUrl: LINK }),
     ).rejects.toMatchObject({ notSent: true, transient: true, outage: true });
 
     respond = (_req, res) => {
@@ -299,7 +320,7 @@ describe('the utility templates', () => {
     /* A missing or paused template hits every business, so it is a sender-wide outage the
      * operator fixes, not a refusal to record against each owner. */
     await expect(
-      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x', billingUrl: LINK }),
     ).rejects.toMatchObject({ notSent: true, transient: true, outage: true });
 
     respond = (_req, res) => {
@@ -307,7 +328,7 @@ describe('the utility templates', () => {
       res.end();
     };
     await expect(
-      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x', billingUrl: LINK }),
     ).rejects.toMatchObject({ notSent: true, transient: true });
   });
 
@@ -326,7 +347,7 @@ describe('the utility templates', () => {
       res.end(JSON.stringify({ error: { code: 999999 } }));
     };
     await expect(
-      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x', billingUrl: LINK }),
     ).rejects.toMatchObject({ notSent: true, transient: true, outage: true });
 
     respond = (_req, res) => {
@@ -334,7 +355,7 @@ describe('the utility templates', () => {
       res.end(JSON.stringify({ error: { code: 131056 } }));
     };
     await expect(
-      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x', billingUrl: LINK }),
     ).rejects.toMatchObject({ notSent: true, transient: true, outage: false });
   });
 
@@ -344,7 +365,7 @@ describe('the utility templates', () => {
       res.end(JSON.stringify({ error: { code: 131048 } }));
     };
     await expect(
-      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x', billingUrl: LINK }),
     ).rejects.toMatchObject({ notSent: true, transient: true, outage: true });
   });
 
@@ -359,7 +380,7 @@ describe('the utility templates', () => {
         res.end(JSON.stringify({ error: { code } }));
       };
       await expect(
-        sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+        sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x', billingUrl: LINK }),
       ).rejects.toMatchObject({ notSent: true, transient: false, outage: false });
     }
 
@@ -368,7 +389,7 @@ describe('the utility templates', () => {
       res.end(JSON.stringify({ error: { code: 131049 } }));
     };
     await expect(
-      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+      sender().sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x', billingUrl: LINK }),
     ).rejects.toMatchObject({ notSent: true, transient: true, outage: false });
   });
 
@@ -406,17 +427,32 @@ describe('the utility templates', () => {
       }),
     ).rejects.toThrow(/META_DOCUMENT_TEMPLATE/);
     await expect(
-      sender({ billing: null }).sendBillingNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+      sender({ billing: null }).sendBillingNotice({
+        to: '1',
+        daysLeft: '1',
+        endsOn: 'x',
+        billingUrl: LINK,
+      }),
     ).rejects.toThrow(/META_BILLING_TEMPLATE/);
     await expect(
       sender({ retention: null }).sendRetentionNotice({ to: '1', daysLeft: '1', deletesOn: 'x' }),
     ).rejects.toThrow(/META_RETENTION_TEMPLATE/);
     await expect(
-      sender({ trial: null }).sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+      sender({ trial: null }).sendTrialNotice({
+        to: '1',
+        daysLeft: '1',
+        endsOn: 'x',
+        billingUrl: LINK,
+      }),
     ).rejects.toThrow(/META_TRIAL_TEMPLATE/);
     /* An unconfigured trial template is a fixable condition: it must not burn a reminder stage. */
     await expect(
-      sender({ trial: null }).sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x' }),
+      sender({ trial: null }).sendTrialNotice({
+        to: '1',
+        daysLeft: '1',
+        endsOn: 'x',
+        billingUrl: LINK,
+      }),
     ).rejects.toMatchObject({ notSent: true, transient: true, outage: true });
 
     /* The retention one matters most: no template means no warning, and the
@@ -640,7 +676,12 @@ describe('the unconfigured sender names what is missing (G-58)', () => {
   it('reports a billing notice with nothing configured as definitely not sent', async () => {
     const unconfigured = new NoSenderConfigured(['META_ACCESS_TOKEN']);
     const noTemplate = sender({ billing: null });
-    const notice = { to: '+2348000000000', daysLeft: '3', endsOn: '01/01/2027' };
+    const notice = {
+      to: '+2348000000000',
+      daysLeft: '3',
+      endsOn: '01/01/2027',
+      billingUrl: LINK,
+    };
     for (const attempt of [
       () => unconfigured.sendBillingNotice(),
       () => noTemplate.sendBillingNotice(notice),
@@ -668,5 +709,156 @@ describe('the unconfigured sender names what is missing (G-58)', () => {
     ]) {
       await expect(call).rejects.toThrow('META_PHONE_NUMBER_ID is not set');
     }
+  });
+});
+
+/* OD-41(b): the five slots on the wire. Each test sends through the name and language the
+ * environment configured, with the parameters `TEMPLATE_SLOTS` declares, in that order. */
+describe('the five template slots (OD-41(b))', () => {
+  const named = () =>
+    new MetaSender(
+      'TOKEN123',
+      'PNID',
+      'v21.0',
+      2_000,
+      'rekoda_login_otp',
+      'en_GB',
+      'rekoda_billing_grace_notice',
+      'en',
+      'rekoda_retention_notice',
+      'fr',
+      'rekoda_document_ready',
+      'en_US',
+      'rekoda_trial_ending',
+      'en',
+      baseUrl,
+    );
+
+  const templateOf = (index = 0) =>
+    bodyOf(index)['template'] as {
+      name: string;
+      language: { code: string };
+      components: {
+        type: string;
+        sub_type?: string;
+        parameters: { type: string; text: string }[];
+      }[];
+    };
+
+  it('sends each slot through its configured name and language, with the declared parameters in order', async () => {
+    const s = named();
+    await s.sendAuthCode({ to: '1', code: '123456' });
+    await s.sendBillingNotice({ to: '1', daysLeft: '5', endsOn: '12/11/2026', billingUrl: LINK });
+    await s.sendRetentionNotice({ to: '1', daysLeft: '30', deletesOn: '07/12/2026' });
+    await s.sendDocumentNotice({ to: '1', documentLabel: 'receipt', reference: 'RCT-0001' });
+    await s.sendTrialNotice({ to: '1', daysLeft: '7', endsOn: '14/11/2026', billingUrl: LINK });
+
+    const values: Record<string, string> = {
+      code: '123456',
+      daysLeft: '',
+      endsOn: '',
+      deletesOn: '07/12/2026',
+      billingUrl: LINK,
+      documentLabel: 'receipt',
+      reference: 'RCT-0001',
+    };
+    const daysLeft = ['', '5', '30', '', '7'];
+    const endsOn = ['', '12/11/2026', '', '', '14/11/2026'];
+    const locales = ['en_GB', 'en', 'fr', 'en_US', 'en'];
+
+    TEMPLATE_SLOTS.forEach((slot, i) => {
+      const t = templateOf(i);
+      expect(t.name).toBe(slot.agreedName);
+      expect(t.language.code).toBe(locales[i]);
+      const body = t.components.find((c) => c.type === 'body')!;
+      expect(body.parameters.map((p) => p.type)).toEqual(slot.body.map(() => 'text'));
+      expect(body.parameters.map((p) => p.text)).toEqual(
+        slot.body.map((p) =>
+          p === 'daysLeft' ? daysLeft[i] : p === 'endsOn' ? endsOn[i] : values[p],
+        ),
+      );
+      const button = t.components.find((c) => c.type === 'button');
+      if (slot.button) {
+        expect(button).toMatchObject({ sub_type: 'url', index: '0' });
+        expect(button!.parameters).toEqual([{ type: 'text', text: values[slot.button] }]);
+      } else {
+        expect(button).toBeUndefined();
+      }
+    });
+    expect(requests).toHaveLength(5);
+  });
+
+  it('carries the billing page as {{3}} of the trial template at 7, 2 and 1 days left', async () => {
+    const s = named();
+    for (const days of ['7', '2', '1']) {
+      await s.sendTrialNotice({ to: '1', daysLeft: days, endsOn: '14/11/2026', billingUrl: LINK });
+    }
+    expect([0, 1, 2].map((i) => templateOf(i).components[0]!.parameters)).toEqual(
+      ['7', '2', '1'].map((days) => [
+        { type: 'text', text: days },
+        { type: 'text', text: '14/11/2026' },
+        { type: 'text', text: 'https://staging.myrekoda.com/app/billing' },
+      ]),
+    );
+  });
+
+  it('refuses a grace or trial notice with no billing page as not sent, transient, and sends nothing', async () => {
+    for (const attempt of [
+      () => named().sendBillingNotice({ to: '1', daysLeft: '5', endsOn: 'x', billingUrl: null }),
+      () => named().sendTrialNotice({ to: '1', daysLeft: '5', endsOn: 'x', billingUrl: null }),
+      () => named().sendTrialNotice({ to: '1', daysLeft: '5', endsOn: 'x', billingUrl: '' }),
+    ]) {
+      const error = await attempt().catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(SendFailed);
+      expect(error).toMatchObject({ notSent: true, transient: true });
+      expect((error as SendFailed).message).toMatch(/REKODA_WEB_URL/);
+    }
+    expect(requests).toHaveLength(0);
+  });
+
+  it('never falls back to a free-form text when a slot is unset', async () => {
+    const unset = new MetaSender(
+      'TOKEN123',
+      'PNID',
+      'v21.0',
+      2_000,
+      null,
+      'en',
+      null,
+      'en',
+      null,
+      'en',
+      null,
+      'en',
+      null,
+      'en',
+      baseUrl,
+    );
+    for (const attempt of [
+      () => unset.sendAuthCode({ to: '1', code: '1' }),
+      () => unset.sendBillingNotice({ to: '1', daysLeft: '1', endsOn: 'x', billingUrl: LINK }),
+      () => unset.sendRetentionNotice({ to: '1', daysLeft: '1', deletesOn: 'x' }),
+      () => unset.sendDocumentNotice({ to: '1', documentLabel: 'receipt', reference: 'R' }),
+      () => unset.sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x', billingUrl: LINK }),
+    ]) {
+      await expect(attempt()).rejects.toBeInstanceOf(SendFailed);
+    }
+    // Nothing at all reached Meta: no template, and no `type: text` substitute.
+    expect(requests).toHaveLength(0);
+  });
+
+  it('reports a parameter mismatch Meta refuses (132000) as definitely not sent', async () => {
+    respond = (_req, res) => {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({ error: { code: 132000, message: 'Number of parameters does not match' } }),
+      );
+    };
+    const error = await named()
+      .sendTrialNotice({ to: '1', daysLeft: '1', endsOn: 'x', billingUrl: LINK })
+      .catch((e: unknown) => e);
+    expect(error).toMatchObject({ notSent: true, providerCode: 132000 });
+    // Meta's own message text never travels on the error (it can echo the request).
+    expect((error as SendFailed).message).not.toMatch(/Number of parameters/);
   });
 });

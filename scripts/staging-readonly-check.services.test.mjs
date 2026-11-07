@@ -122,7 +122,7 @@ test('the healthy services and jobs read as expected and are not flagged', () =>
 
 test('reminders on in one service and off in the other are flagged; both off or both on are not', () => {
   const mixed = healthy({
-    workerEnv: { REKODA_CUSTOMER_REMINDERS: '0', REKODA_EMAIL_PROVIDER: 'resend' },
+    workerEnv: { ...SLOTS, REKODA_CUSTOMER_REMINDERS: '0', REKODA_EMAIL_PROVIDER: 'resend' },
   });
   const off = healthy({
     env: {
@@ -130,7 +130,7 @@ test('reminders on in one service and off in the other are flagged; both off or 
       PAYSTACK_SECRET_KEY: 'sk_test_qqqqqqqqqqqqqqqq',
       REKODA_EMAIL_PROVIDER: 'resend',
     },
-    workerEnv: { REKODA_EMAIL_PROVIDER: 'resend' },
+    workerEnv: { ...SLOTS, REKODA_EMAIL_PROVIDER: 'resend' },
   });
   try {
     const r = mixed.run2(undefined, { EXPECT_SHA: mixed.sha.slice(0, 7) });

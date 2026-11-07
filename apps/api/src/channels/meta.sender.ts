@@ -152,6 +152,18 @@ export class MetaSender implements MessageSender {
         true,
       );
     }
+    if (!notice.billingUrl) {
+      /* `{{3}}` is the billing link (OD-41(b)). A template sent with two of its three
+       * parameters is rejected by Meta, so it is refused here as not sent, and transient: the
+       * operator fixes REKODA_WEB_URL and the stage is still owed. */
+      throw new SendFailed(
+        'no billing page URL for the trial template (REKODA_WEB_URL)',
+        null,
+        true,
+        true,
+        true,
+      );
+    }
     return this.post({
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
@@ -166,6 +178,7 @@ export class MetaSender implements MessageSender {
             parameters: [
               { type: 'text', text: notice.daysLeft },
               { type: 'text', text: notice.endsOn },
+              { type: 'text', text: notice.billingUrl },
             ],
           },
         ],
@@ -225,6 +238,17 @@ export class MetaSender implements MessageSender {
         true,
       );
     }
+    if (!notice.billingUrl) {
+      /* `{{3}}` is the billing link (OD-41(b)); without it Meta would reject the parameter
+       * count. Not sent and transient, like an unset template: the grace sweep gives the day
+       * back and retries once REKODA_WEB_URL is set. */
+      throw new SendFailed(
+        'no billing page URL for the billing template (REKODA_WEB_URL)',
+        null,
+        true,
+        true,
+      );
+    }
     return this.post({
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
@@ -239,6 +263,7 @@ export class MetaSender implements MessageSender {
             parameters: [
               { type: 'text', text: notice.daysLeft },
               { type: 'text', text: notice.endsOn },
+              { type: 'text', text: notice.billingUrl },
             ],
           },
         ],
