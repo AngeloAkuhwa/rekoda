@@ -253,11 +253,6 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * it names reads 'undelivered' (REM-01). */
     const reconciled = await conversationsRepo.reconcileDeadReceipts(tx, businessId);
     if (reconciled > 0) log.warn(`applied ${reconciled} failed receipt(s) from dead jobs`);
-    /* An earlier inbound message whose job died was never processed (owner ruling, 4 Nov 2026):
-     * every draft pending then is retired here, under the lock and before any "yes" is read, so
-     * a lost "cancel" can never be overtaken by a later "yes". Counts only, never content. */
-    const lost = await conversationsRepo.reconcileDeadInboundMessages(tx, businessId);
-
     const event = await events.eventForBusiness(tx, eventId, businessId);
     if (!event) {
       // Attributed to a different tenant, or truncated between enqueue and
@@ -288,6 +283,13 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       await events.markProcessed(tx, eventId, null, businessId);
       return;
     }
+
+    /* An earlier inbound message whose job died was never processed (owner ruling, 4 Nov 2026):
+     * every draft pending then is retired here, under the lock and before any "yes" is read, so a
+     * lost "cancel" can never be overtaken by a later "yes". Only a run that can go on to tell the
+     * merchant does it: the early returns above must not consume the lost message silently (Qodo
+     * on #428). Counts only, never content. */
+    const lost = await conversationsRepo.reconcileDeadInboundMessages(tx, businessId);
 
     /* OWN-74: an answer waits for every earlier message still live, even one backing off after
      * a failure that `hasEarlierLiveJob` lets a request pass. If that message never succeeds it

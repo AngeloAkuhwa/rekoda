@@ -456,10 +456,18 @@ describe('what happens after the 200', () => {
       });
       try {
         await isLocked;
-        /* Freed shortly after the first message's 2 s bound runs out, so a later message that is
-         * (wrongly) attempted would get the lock. */
-        const timer = setTimeout(release, 2_400);
-        const first = await post(body);
+        /* Freed 2.25 s after the first message is seen waiting for the lock, so a later message that
+         * is (wrongly) attempted would get it. Waiting is observed, not assumed (Qodo on #428). */
+        const request = post(body);
+        for (let tries = 0; tries < 200; tries++) {
+          const waiting = await withBusiness(db, business.id, (tx) =>
+            tx.execute(sql`SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`),
+          );
+          if ([...waiting].length > 0) break;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        const timer = setTimeout(release, 2_250);
+        const first = await request;
         clearTimeout(timer);
         expect(first.statusCode).toBe(503);
       } finally {

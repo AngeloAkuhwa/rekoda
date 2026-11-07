@@ -134,6 +134,30 @@ describe.each<Death>(['markFailed', 'reclaimStalled'])(
   },
 );
 
+describe('a run that returns early does not consume a lost message (Qodo on #428)', () => {
+  it('leaves the withdrawal for a run that can tell the merchant, instead of retiring it silently', async () => {
+    const business = await seedMerchant();
+    await say('wamid.early-1', AN_EXPENSE, 'bought fuel 20k cash');
+    await queueOnly('wamid.early-cancel', 'cancel');
+    await killInboundJob(business.id, 'markFailed');
+
+    /* The next message's payload cannot be read, so its run returns before it reaches the notice. */
+    await queueOnly('wamid.early-bad', 'hello');
+    await asTenant(
+      business.id,
+      sql`UPDATE external_events SET payload = '{}'::jsonb
+           WHERE business_id = ${business.id}::uuid AND external_id = 'wamid.early-bad'`,
+    );
+    await drain();
+    expect(await draftStates(business.id)).toEqual([{ state: 'pending', reason: null }]);
+
+    /* The next readable message still withdraws it and tells the merchant. */
+    await plain('wamid.early-yes', 'yes');
+    expect(stubSender.lastText).toBe(replies.earlierMessageLostYes().text);
+    expect((await footprint(business.id)).expenses).toBe(0);
+  });
+});
+
 describe('a lost message whose draft window closes before the next message is read', () => {
   it('a "yes" sent inside the window still confirms nothing once the window has closed', async () => {
     const business = await seedMerchant();
