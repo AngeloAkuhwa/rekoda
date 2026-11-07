@@ -633,23 +633,35 @@ export function businessEmailInvalid(): Reply {
   );
 }
 
+/**
+ * A new address is saved before any link is asked for, so when no link goes out it is on file but
+ * unconfirmed: a previously confirmed address no longer counts, and email reminders pause (OWN-83).
+ * Said conditionally, because the same reply answers a repeat of the address already on file.
+ */
+const NEW_ADDRESS_SAVED_UNCONFIRMED =
+  'If this is a new address, it is now saved as your business email but not confirmed, so ' +
+  'email reminders are paused until you confirm it.';
+
 export function businessEmailTryLater(minutes: number): Reply {
   const wait = minutes <= 1 ? 'a minute' : `${minutes} minutes`;
   return reply(
-    `Too many confirmation emails have been asked for just now, so none was sent. Please try again in ${wait}.`,
+    `Too many confirmation emails have been asked for just now, so none was sent. Please try again in ${wait}.\n\n` +
+      NEW_ADDRESS_SAVED_UNCONFIRMED,
   );
 }
 
 /**
- * No confirmation could be sent. `send_failed` is transient, so the billing page is a second way to
- * try; `email_not_configured` means that page cannot send one either, so it is not offered.
+ * No confirmation could be sent. `email_not_configured` is refused before the address is saved, so
+ * nothing changed, and the billing page cannot send one either, so it is not offered. `send_failed`
+ * comes after the address was saved, and is transient, so the billing page is a second way to try.
  */
 export function businessEmailUnavailable(reason: 'email_not_configured' | 'send_failed'): Reply {
   return reply(
-    'We cannot send a confirmation email right now, so nothing was changed. ' +
-      (reason === 'send_failed'
-        ? 'Please try again later, or add your email on the billing page of your dashboard.'
-        : 'Please try again later.'),
+    reason === 'send_failed'
+      ? 'We could not send the confirmation email just now. Please try again later, or confirm ' +
+          'your email on the billing page of your dashboard.\n\n' +
+          NEW_ADDRESS_SAVED_UNCONFIRMED
+      : 'We cannot send a confirmation email right now, so nothing was changed. Please try again later.',
   );
 }
 
@@ -658,7 +670,8 @@ export function businessEmailUndeliverable(): Reply {
   return reply(
     'That address cannot receive email from Rekoda (an earlier message to it bounced or was ' +
       'reported as unwanted), so we cannot send the confirmation link there. Please send a ' +
-      'different email address.',
+      'different email address.\n\n' +
+      NEW_ADDRESS_SAVED_UNCONFIRMED,
   );
 }
 

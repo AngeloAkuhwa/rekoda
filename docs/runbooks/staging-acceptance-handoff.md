@@ -178,7 +178,7 @@ a user or password in it, remove it before sharing and report it as a defect in 
    "your business email ... is not confirmed yet" and only WhatsApp reminders can go. After a WhatsApp reminder, a reply
    from the customer's phone to the business's number gives the owner ONE notice in their Rekoda chat naming the invoice
    (a second reply to the same reminder gives none). The owner must have written to Rekoda in the last 24 hours, or the
-   notice is refused by Meta and only tried again on the customer's next message. Rekoda does not show the customer's
+   notice is withheld and only tried again on the customer's next message. Rekoda does not show the customer's
    message (G-124): do not record that as a failure.
 5. **ACCEPT-01.** Run the 17 A5 journeys (`REKODA_MVP_DELIVERY_PLAN.md` §A5) with the plan in §4a,
    and fill its result table. Record for each:

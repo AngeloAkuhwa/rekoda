@@ -135,6 +135,22 @@ describe('"my email is X" on WhatsApp (OWN-83)', () => {
     expect(stubSender.lastText).not.toMatch(/we sent/i);
   });
 
+  it('a new address within the cooldown replaces a confirmed one, unconfirmed, and says so', async () => {
+    const businessId = await seedOwner();
+    const mail = new MockEmailSender();
+    await say(mail, OWNER, 'wamid.BE13', `my email is ${ADDRESS}`);
+    await new BillingEmailService(deps.config, db, mail).confirm(businessId, tokenIn(mail));
+    expect((await state(businessId)).verifiedAt).not.toBeNull();
+
+    // Within the cooldown of the first link: no second link goes out, but B is now on file.
+    await say(mail, OWNER, 'wamid.BE14', 'business email: new@adaeze.example.ng');
+    expect(mail.outbox).toHaveLength(1);
+    expect(stubSender.lastText).toContain('so none was sent');
+    expect(stubSender.lastText).toContain('email reminders are paused until you confirm it');
+    // Unconfirmed, so email reminders are refused (reminder-reply-to.integration.test.ts).
+    expect((await state(businessId)).verifiedAt).toBeNull();
+  });
+
   it('refuses an address that is not usable, and sends nothing', async () => {
     const businessId = await seedOwner();
     const mail = new MockEmailSender();

@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   billingRepo,
+  conversationsRepo,
   customersRepo,
   identity,
   issueRepo,
@@ -45,10 +46,25 @@ interface Shop {
   customerId: string;
 }
 
-/** A business on its own WhatsApp number, one customer on `CUSTOMER_WA`, one unpaid invoice. */
+/** The owner writes to Rekoda's number, which opens their 24-hour window for free-form notices. */
+const ownerWrites = (businessId: string) =>
+  withBusiness(db, businessId, (tx) =>
+    conversationsRepo.recordInbound(tx, {
+      businessId,
+      channel: 'meta',
+      kind: 'text',
+      body: 'who owes me',
+      providerMessageId: `wamid.owner-${businessId.slice(0, 8)}-${(seq += 1)}`,
+    }),
+  );
+
+/**
+ * A business on its own WhatsApp number, one customer on `CUSTOMER_WA`, one unpaid invoice. The
+ * owner has written to Rekoda today unless `ownerWrote` is false.
+ */
 async function shop(
   phoneNumberId: string,
-  opts: { name?: string; assistant?: boolean } = {},
+  opts: { name?: string; assistant?: boolean; ownerWrote?: boolean } = {},
 ): Promise<Shop> {
   seq += 1;
   const ownerPhone = `+23480300033${String(seq).padStart(2, '0')}`;
@@ -77,6 +93,7 @@ async function shop(
       dailyReplyLimit: 3,
     });
   });
+  if (opts.ownerWrote ?? true) await ownerWrites(businessId);
   const customer = await customersRepo.createCustomerWithIdentities(db, businessId, `R${seq}`, [
     {
       facet: 'phone',
@@ -207,6 +224,32 @@ describe('a customer replies to a WhatsApp reminder (OWN-83)', () => {
     expect(await noticeRows(s.businessId)).toHaveLength(1);
     await reply('PN-RR-12', 'wamid.RR.12C', 'still there?');
     expect(noticesTo(s.ownerPhone)).toHaveLength(1);
+  });
+
+  it('waits for the owner’s 24-hour window: not sent, not spent, then told once they write', async () => {
+    // The owner has not written to Rekoda in the last day: Meta would accept the free-form notice
+    // and fail it later (131047), so it is not sent and nothing is recorded.
+    const s = await shop('PN-RR-14', { ownerWrote: false });
+    await reminded(s);
+    await reply('PN-RR-14', 'wamid.RR.14A', 'I will pay');
+    expect(noticesTo(s.ownerPhone)).toHaveLength(0);
+    expect(await noticeRows(s.businessId)).toHaveLength(0);
+
+    // A window that closed a day ago is still closed.
+    await ownerWrites(s.businessId);
+    await withBusiness(db, s.businessId, (tx) =>
+      tx.execute(
+        sql`UPDATE conversation_messages SET created_at = now() - interval '25 hours' WHERE direction = 'inbound'`,
+      ),
+    );
+    await reply('PN-RR-14', 'wamid.RR.14B', 'hello?');
+    expect(noticesTo(s.ownerPhone)).toHaveLength(0);
+
+    // The owner writes; the customer's next message tells the business, once.
+    await ownerWrites(s.businessId);
+    await reply('PN-RR-14', 'wamid.RR.14C', 'are you there?');
+    expect(noticesTo(s.ownerPhone)).toHaveLength(1);
+    expect(await noticeRows(s.businessId)).toHaveLength(1);
   });
 
   it('a busy shop: a reply still matches when many newer reminders went to other customers', async () => {

@@ -104,7 +104,7 @@ test('reads set, empty and unset template variables as the API would', () => {
       /META_TRIAL_TEMPLATE \(api\)\s+SET, but not the agreed name rekoda_trial_ending\n/,
     );
     // The configured values themselves never appear: only the agreed names do.
-    assert.doesNotMatch(out, /rekoda_otp[^_]|x y/);
+    assert.doesNotMatch(out, /rekoda_otp|x y/);
   } finally {
     h.done();
   }

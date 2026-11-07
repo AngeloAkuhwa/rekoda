@@ -304,12 +304,26 @@ describe("a named business's billing email", () => {
     // The link mailed before the erasure can no longer prove anything.
     expect((await emails().confirm(a, decodeURIComponent(token))).state).not.toBe('verified');
 
-    const audit = await tenantRowsOf<{ action: string; actor: string; new_value: unknown }>(
+    const audit = await tenantRowsOf<{
+      action: string;
+      actor: string;
+      old_value: unknown;
+      new_value: unknown;
+      reason: string | null;
+    }>(
       a,
-      `SELECT action, actor, new_value FROM audit_events WHERE business_id = '${a}' AND action = 'billing_email_erased'`,
+      `SELECT action, actor, old_value, new_value, reason FROM audit_events
+        WHERE business_id = '${a}' AND action = 'billing_email_erased'`,
     );
+    // Every field, so no form of the address (encoded or not) can hide in one.
     expect(audit).toEqual([
-      { action: 'billing_email_erased', actor: OPERATOR, new_value: { erased: true } },
+      {
+        action: 'billing_email_erased',
+        actor: OPERATOR,
+        old_value: null,
+        new_value: { erased: true },
+        reason: null,
+      },
     ]);
     const receipt = await rowsOf<{
       billing_email_cleared: boolean;

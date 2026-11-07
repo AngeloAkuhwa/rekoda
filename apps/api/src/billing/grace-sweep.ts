@@ -59,6 +59,10 @@ export async function sweepGracePeriods(
   now: Date = new Date(),
 ): Promise<GraceSweepResult> {
   const result: GraceSweepResult = { reminded: 0, expired: 0 };
+  /* With no billing link (OD-41(b)) the reminder cannot be sent, so it is not claimed at all:
+   * claiming, being refused and releasing every eligible business every hour would only churn and
+   * log. Expiry is unaffected. Said once per pass, and the day is reminded once a link exists. */
+  let withheldForNoLink = 0;
 
   /* Pages until the whole grace population has been walked. One fixed bite
    * per hour meant tenant 501 and beyond never heard from us at all. */
@@ -91,6 +95,10 @@ export async function sweepGracePeriods(
       }
 
       if (state.state !== 'grace' || state.reminderDue === null) continue;
+      if (deps.billingUrl === null) {
+        withheldForNoLink += 1;
+        continue;
+      }
 
       /* The day number is what the claim is keyed on, and it comes from core
        * rather than from a counter here: the sweep must not have its own
@@ -180,5 +188,10 @@ export async function sweepGracePeriods(
     if (rows.length < PAGE) break;
   }
 
+  if (withheldForNoLink > 0) {
+    log.warn(
+      `${withheldForNoLink} grace reminder(s) not sent: no billing page to link to (set REKODA_WEB_URL)`,
+    );
+  }
   return result;
 }

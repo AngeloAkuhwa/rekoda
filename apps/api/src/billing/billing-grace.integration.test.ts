@@ -182,6 +182,31 @@ describe('the grace period', () => {
     expect(rows.find((row) => row.usageType === 'UTILITY_TEMPLATE')).toBeUndefined();
   });
 
+  /* OD-41(b): with no billing page to link to, the reminder is not claimed at all, so the hourly
+   * pass does not claim, fail and release it again and again; the day goes out once a link
+   * exists. Expiry does not wait for the link. */
+  it('with no billing link, claims no reminder, still expires, and reminds once a link exists', async () => {
+    await failedMerchant('+2348177100032');
+    const sender = new StubSender();
+    const noLink = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450, billingUrl: null };
+
+    expect(await sweepGracePeriods(noLink, dayAfterFailure(1))).toEqual({
+      reminded: 0,
+      expired: 0,
+    });
+    expect(await sweepGracePeriods(noLink, dayAfterFailure(1))).toEqual({
+      reminded: 0,
+      expired: 0,
+    });
+    expect(sender.billingNotices).toHaveLength(0);
+
+    // Unclaimed, so the same day is reminded as soon as the link is configured.
+    await sweepGracePeriods({ ...noLink, billingUrl: BILLING_URL }, dayAfterFailure(1));
+    expect(sender.billingNotices).toHaveLength(1);
+
+    expect((await sweepGracePeriods(noLink, dayAfterFailure(GRACE_DAYS))).expired).toBe(1);
+  });
+
   /* SUB-03r (OWN-47). A timeout or dropped connection after the request left may
    * have delivered the notice. The claim must stay, or the next hourly pass sends it again. */
   it('does not resend a reminder whose outcome is unknown', async () => {

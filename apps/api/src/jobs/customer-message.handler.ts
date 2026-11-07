@@ -20,6 +20,7 @@ import {
   consentIntentOf,
   lagosDay,
   replies,
+  serviceWindowOpen,
   shelfMatches,
   usagePeriod,
   type ShelfItem,
@@ -244,8 +245,13 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
      * ALSO tell the business: one notice, not two. Once the notice is recorded, later messages
      * are handed off exactly as any other customer's. */
     const answered = await reminderThisAnswers(tx, deps, businessId, participant);
+    /* The notice is free-form text from Rekoda's number, so it is sent only while the owner's
+     * 24-hour window with Rekoda is open. Outside it Meta accepts the message and fails it later
+     * (131047), which would record a notice nobody received. Withheld, it stays due and is tried
+     * on the customer's next message, and the assistant's handoff tells the business meanwhile. */
     const tellBusiness =
       answered !== null &&
+      (await ownerWindowOpen(tx, businessId)) &&
       (await remindersRepo.reminderReplyNoticeDue(tx, businessId, answered.id));
     const handoff: HandoffOptions = { tellMerchant: !tellBusiness };
 
@@ -285,6 +291,16 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
 /** Whether the assistant's handoff also tells the merchant (OWN-83: not when a reply notice does). */
 interface HandoffOptions {
   tellMerchant: boolean;
+}
+
+/**
+ * Whether a free-form message to the owner can reach them now: someone in the business wrote to
+ * Rekoda's number in the last 24 hours (G-67, as for a delivered PDF). A delegate's message counts
+ * too, which can only make it look open when it is not; Meta's refusal is the second check.
+ */
+async function ownerWindowOpen(tx: TenantDb, businessId: string): Promise<boolean> {
+  const inbound = await conversationsRepo.lastMerchantInboundAt(tx, businessId);
+  return serviceWindowOpen(inbound.at, inbound.now);
 }
 
 /** How far back a customer's WhatsApp message is read as a reply to a reminder (OWN-83). */
