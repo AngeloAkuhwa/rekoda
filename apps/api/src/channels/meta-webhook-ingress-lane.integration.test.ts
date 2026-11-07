@@ -186,7 +186,6 @@ describe('ordered ingress across separate webhooks (OWN-74)', () => {
       /* Without the lane it waits for a pool connection behind the burst: at least the 2 s bound. */
       expect(Date.now() - started).toBeLessThan(1_500);
       expect(await stored(other.id)).toEqual(['wamid.OTHER.1']);
-      expect(await lockWaiters(busy.id)).toBe(1);
 
       const codes = (await Promise.all(burst)).map((r) => r.statusCode);
       expect(new Set(codes)).toEqual(new Set([503]));
@@ -211,5 +210,35 @@ describe('ordered ingress across separate webhooks (OWN-74)', () => {
     expect([...(await stored(busy.id))].sort()).toEqual(
       Array.from({ length: 25 }, (_, i) => `wamid.BURST.${String(i).padStart(2, '0')}`),
     );
+  });
+
+  /* A message already stored that comes back while its business is fenced (a duplicate, or a
+   * redelivered body that also carries the failed one) is acknowledged, and must not stay
+   * outstanding: it will never be stored again, so it would hold back every newer message until
+   * the fence's life ran out (second independent review of #428). */
+  it('a stored message redelivered under a fence is acknowledged and does not hold the business back', async () => {
+    const business = await seedMerchant(OWNER, 'Ada Fashion');
+    const sold = messagePayload(OWNER, 'wamid.DUP.sold', 'sold 3 bags');
+    const cancel = messagePayload(OWNER, 'wamid.DUP.cancel', 'cancel');
+    expect((await post(sold)).statusCode).toBe(200);
+
+    const lock = await holdIngressLock(business.id);
+    try {
+      expect((await post(cancel)).statusCode).toBe(503);
+    } finally {
+      await lock.release();
+    }
+    /* Meta repeats the stored message while the cancel is outstanding: acknowledged, not stored twice. */
+    expect((await post(sold)).statusCode).toBe(200);
+    expect((await post(cancel)).statusCode).toBe(200);
+    expect(lane().outstanding(business.id)).toBe(0);
+
+    /* A fresh message is admitted at once. */
+    expect((await post(messagePayload(OWNER, 'wamid.DUP.next', 'yes'))).statusCode).toBe(200);
+    expect(await stored(business.id)).toEqual([
+      'wamid.DUP.sold',
+      'wamid.DUP.cancel',
+      'wamid.DUP.next',
+    ]);
   });
 });

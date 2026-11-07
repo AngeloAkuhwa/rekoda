@@ -174,6 +174,18 @@ export class IngressSequencer {
     }
   }
 
+  /**
+   * The caller found a refused message already stored (a duplicate, or a redelivered body that
+   * also carries a failed message): it will never be stored again, so it stops being outstanding
+   * and holds nothing back.
+   */
+  settle(businessId: string, externalId: string): void {
+    const lane = this.lanes.get(businessId);
+    if (!lane) return;
+    lane.outstanding.delete(externalId);
+    this.dropIfIdle(businessId, lane);
+  }
+
   /** Waiting and running messages of a business, for tests and diagnostics. */
   depth(businessId: string): number {
     return this.lanes.get(businessId)?.size ?? 0;

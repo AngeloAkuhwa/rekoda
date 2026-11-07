@@ -107,6 +107,7 @@ export class MetaIngressService {
         /* A message stored before the fence went up is not new work: Meta is redelivering a body
          * that also carries the fenced message, and acknowledging it changes nothing. */
         if (error instanceof IngressFenced && (await this.isStored(businessId, event.externalId))) {
+          this.sequencer.settle(businessId, event.externalId);
           return { isNew: false };
         }
         throw error;

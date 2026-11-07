@@ -258,6 +258,18 @@ describe('IngressSequencer', () => {
     expect(sequencer.outstanding('b1')).toBe(0);
   });
 
+  it('a refused message the caller found already stored is settled and holds nothing back', async () => {
+    const { sequencer } = lane();
+    await expect(
+      sequencer.run('b1', 'cancel', () => Promise.reject(new Error('x'))),
+    ).rejects.toThrow('x');
+    await expect(sequencer.run('b1', 'dup', async () => 1)).rejects.toBeInstanceOf(IngressFenced);
+    sequencer.settle('b1', 'dup');
+    expect(await sequencer.run('b1', 'cancel', async () => 'stored')).toBe('stored');
+    expect(sequencer.outstanding('b1')).toBe(0);
+    expect(await sequencer.run('b1', 'next', async () => 'next')).toBe('next');
+  });
+
   it('refuses bounds that are not positive whole numbers', () => {
     for (const bad of [0, -1, 1.5, Number.NaN]) {
       expect(() => new IngressSequencer({ waitMs: bad, maxWaiting: 1, fenceMs: 1 })).toThrow();
