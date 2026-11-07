@@ -360,6 +360,11 @@ describe("a named business's billing email", () => {
     );
     expect(res.statusCode).toBe(409);
     expect(res.body).not.toMatch(/ada@/i);
+    // The next step is stated: a retry without businessId clears only the shared counter.
+    expect(res.body).toContain(
+      'Retrying without businessId clears only the shared cross-business counter',
+    );
+    expect(res.body).toContain("does not remove this business's billing email");
     expect(await counterRows()).toBe(1);
   });
 

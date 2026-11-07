@@ -52,7 +52,6 @@ describe('REKODA_CUSTOMER_REMINDERS', () => {
       loadConfig({
         ...on,
         REKODA_WEB_URL: 'https://app.rekoda.test',
-        REKODA_SUPPORT_EMAIL: 'support@rekoda.test',
       }).customerReminders,
     ).toBe(true);
   });

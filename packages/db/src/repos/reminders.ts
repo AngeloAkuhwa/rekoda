@@ -22,6 +22,9 @@ export interface ReminderBusiness {
   name: string;
   publicContactPhone: string | null;
   publicContactApprovedAt: Date | null;
+  billingEmailVerifiedAt: Date | null;
+  /** The merchant's billing email, still sealed; opening it is the caller's. Null when none. */
+  billingEmailSealed: string | null;
   /** The merchant's approved bank details (REM-04), or null: a reminder then points to the public phone. */
   paymentInstruction: StoredPaymentInstruction | null;
 }
@@ -83,13 +86,15 @@ export async function businessForReminder(
     name: string;
     public_contact_phone: string | null;
     public_contact_approved_at: Date | null;
+    billing_email_verified_at: Date | null;
+    billing_email_sealed: string | null;
     payment_bank_name: string | null;
     payment_account_name: string | null;
     payment_account_number: string | null;
     payment_instruction_approved_at: Date | null;
   }>(sql`
-    SELECT name, public_contact_phone, public_contact_approved_at,
-           payment_bank_name, payment_account_name, payment_account_number,
+    SELECT name, public_contact_phone, public_contact_approved_at, billing_email_verified_at,
+           billing_email_sealed, payment_bank_name, payment_account_name, payment_account_number,
            payment_instruction_approved_at
     FROM businesses WHERE id = ${businessId}::uuid
   `);
@@ -100,6 +105,9 @@ export async function businessForReminder(
     publicContactPhone: row.public_contact_phone,
     publicContactApprovedAt:
       row.public_contact_approved_at === null ? null : new Date(row.public_contact_approved_at),
+    billingEmailVerifiedAt:
+      row.billing_email_verified_at === null ? null : new Date(row.billing_email_verified_at),
+    billingEmailSealed: row.billing_email_sealed,
     /* Only a complete, approved instruction counts; the CHECK in 0187 makes that all or none. */
     paymentInstruction:
       row.payment_bank_name !== null &&
@@ -449,4 +457,67 @@ export async function reminderInFlight(
      LIMIT 1
   `);
   return [...rows].length > 0;
+}
+
+/* ── a customer's WhatsApp reply to a reminder (OWN-83) ─────────────────────────────────────── */
+
+/** A WhatsApp reminder that went out recently: the candidates a customer's reply may answer. */
+export interface SentWhatsAppReminder {
+  id: string;
+  invoiceNumber: string;
+  customerId: string;
+  sentAt: Date;
+}
+
+/**
+ * The business's WhatsApp reminders sent in the last `withinDays` days, newest first, at most
+ * `limit`. Only `sent` ones: a reminder that never reached the customer cannot be replied to.
+ */
+export async function recentSentWhatsAppReminders(
+  tx: TenantDb,
+  businessId: string,
+  opts: { withinDays: number; limit: number },
+): Promise<SentWhatsAppReminder[]> {
+  const rows = await tx.execute<{
+    id: string;
+    invoice_number: string;
+    customer_id: string;
+    sent_at: Date;
+  }>(sql`
+    SELECT r.id, i.invoice_number, r.customer_id, r.sent_at
+      FROM invoice_reminders r
+      JOIN invoices i ON i.business_id = r.business_id AND i.id = r.invoice_id
+     WHERE r.business_id = ${businessId}::uuid
+       AND r.channel = 'whatsapp' AND r.status = 'sent'
+       AND r.customer_id IS NOT NULL AND r.sent_at IS NOT NULL
+       AND r.sent_at > now() - make_interval(days => ${opts.withinDays})
+     ORDER BY r.sent_at DESC, r.id DESC
+     LIMIT ${opts.limit}
+  `);
+  return [...rows].map((r) => ({
+    id: r.id,
+    invoiceNumber: r.invoice_number,
+    customerId: r.customer_id,
+    sentAt: new Date(r.sent_at),
+  }));
+}
+
+/**
+ * Claim the one notice the business gets about replies to this reminder. True for the first
+ * claim; false when it was already told (a redelivered webhook, a retried job, or the customer's
+ * next message about the same reminder). In the caller's transaction, so a job that rolls back
+ * gives the claim back with everything else.
+ */
+export async function claimReminderReplyNotice(
+  tx: TenantDb,
+  businessId: string,
+  reminderId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ reminder_id: string }>(sql`
+    INSERT INTO reminder_reply_notices (business_id, reminder_id)
+    VALUES (${businessId}::uuid, ${reminderId}::uuid)
+    ON CONFLICT (business_id, reminder_id) DO NOTHING
+    RETURNING reminder_id
+  `);
+  return [...rows].length === 1;
 }

@@ -428,14 +428,14 @@ if [ -n "${REM[api]}" ] && [ -n "${REM[worker]}" ]; then
   if [ "${REM[api]}" = "${REM[worker]}" ]; then say "reminders api and worker" "SAME (${REM[api]})"
   else flag "reminders api and worker" "DIFFERENT (api ${REM[api]}, worker ${REM[worker]})"; fi
 fi
-# A reminder email's Reply-To is Rekoda support (OD-42(b)); a process with reminders on and no
-# REKODA_SUPPORT_EMAIL refuses to boot. Presence only, asked of each container; never printed.
+# REKODA_SUPPORT_EMAIL is Rekoda's separate support contact, not a reminder's Reply-To (OWN-83: that
+# is the business's own verified billing email). Informational only; never a reason to flag. Presence
+# only, asked of each container; never printed.
 for c in api worker; do
   r="$(dc exec -T -e K=REKODA_SUPPORT_EMAIL "$c" sh -c 'eval "v=\${$K:-}"; if [ -n "$v" ]; then echo SET; else echo UNSET; fi' 2>/dev/null)"
-  case "$r:${REM[$c]:-}" in
-    SET:*) say "REKODA_SUPPORT_EMAIL ($c)" "SET" ;;
-    UNSET:ON) flag "REKODA_SUPPORT_EMAIL ($c)" "UNSET (reminders are ON: the process refuses to boot without it)" ;;
-    UNSET:*) say "REKODA_SUPPORT_EMAIL ($c)" "UNSET (needed before reminders are switched on)" ;;
+  case "$r" in
+    SET) say "REKODA_SUPPORT_EMAIL ($c)" "SET" ;;
+    UNSET) say "REKODA_SUPPORT_EMAIL ($c)" "UNSET (optional: Rekoda's support contact; reminder replies go to each business)" ;;
     *) flag "REKODA_SUPPORT_EMAIL ($c)" "unknown ($c query failed)" ;;
   esac
 done

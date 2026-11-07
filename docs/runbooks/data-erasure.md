@@ -177,6 +177,11 @@ POST /v1/ops/privacy/email-erasure
   any checkout session bound to the old address becomes stale, as on a change of address. Another
   address on that business is left alone (`different_address`). No other business is searched or
   changed: name each business the request concerns, one call each.
+- `409` with `businessId`: that business's stored billing email cannot be opened with the current
+  vault key, so the whole call is refused and nothing changes (no false "erased"). A retry WITHOUT
+  `businessId` clears only the shared cross-business counter for the address; it does not remove that
+  business's billing email, which stays stored until it can be opened with the right key and erased
+  with `businessId`. Record the business as not erased and escalate the key problem.
 - Both happen in one transaction: a failure changes nothing, and the call can simply be repeated.
   A repeat removes nothing more (`counterRowsRemoved: 0`).
 - Receipts: one row in `email_address_erasures` per call (operator subject, reason, rows removed,

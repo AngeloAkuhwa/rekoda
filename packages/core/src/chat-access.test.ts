@@ -43,6 +43,7 @@ describe('the deterministic entitlement matrix (G-65)', () => {
     'dashboard',
     'upgrade',
     'resend',
+    'business_email',
   ] as const;
   const KEPT_ON_LAPSE = ['debtors', 'records', 'stock', 'payment_details', 'remind'] as const;
 

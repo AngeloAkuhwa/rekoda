@@ -73,6 +73,8 @@ export function reminderReason(code: string | null, channel?: ReminderChannel): 
       return 'This customer has more than one contact of this kind on file, so Rekoda did not guess which to use.';
     case 'email_not_configured':
       return 'Email reminders are not set up yet, so nothing was sent by email.';
+    case 'business_email_unverified':
+      return 'Customers reply to an email reminder at your business email, and yours is not confirmed yet, so nothing was sent by email. Add and confirm it on the billing page, or send Rekoda "my email is" and the address on WhatsApp. WhatsApp reminders can still go.';
     case 'send_failed':
       return 'It could not be sent, so nothing was delivered. You can try again.';
     case 'reminder_in_flight':

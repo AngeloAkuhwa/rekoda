@@ -62,9 +62,10 @@ export interface ApiConfig {
    */
   webUrl: string | null;
   /**
-   * Rekoda's support mailbox (REKODA_SUPPORT_EMAIL, OD-42(b) option B): the Reply-To of every
-   * customer payment-reminder email, so a customer's reply reaches Rekoda support. A bare address;
-   * the From address is unchanged. Null when unset (then reminders cannot be switched on).
+   * Rekoda's own support mailbox (REKODA_SUPPORT_EMAIL): a separate support contact. It is NOT the
+   * Reply-To of a customer payment reminder (OWN-83): that is the business's own verified billing
+   * email, so a customer's reply reaches the business that issued the invoice. A bare address, or
+   * null when unset; nothing needs it to boot.
    */
   supportEmail: string | null;
   /**
@@ -573,10 +574,10 @@ const BARE_ADDRESS =
   /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
 
 /**
- * REKODA_SUPPORT_EMAIL (OD-42(b)): the Reply-To of reminder emails. A value that is set but is not
- * one bare address refuses to boot in every environment: a Reply-To header is copied into mail a
- * customer receives, so a display name, a list or a stray character is refused rather than sent.
- * Unset or empty is null. The value is never echoed.
+ * REKODA_SUPPORT_EMAIL: Rekoda's separate support contact (not the reminder Reply-To, OWN-83). A
+ * value that is set but is not one bare address refuses to boot in every environment, so a display
+ * name, a list or a stray character never reaches mail a customer receives. Unset or empty is
+ * null. The value is never echoed.
  */
 function supportEmail(env: NodeJS.ProcessEnv): string | null {
   // Empty is unset, as for the other optional names (a copied .env.example boots).
@@ -1268,14 +1269,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     }
   }
 
-  /* OD-42(b): a reminder email's Reply-To is Rekoda support. Reminders cannot be switched on
-   * without one, so a customer's reply never silently lands on the bare sending address. */
   const support = supportEmail(env);
-  if (customerReminders && support === null) {
-    throw new ConfigError(
-      'REKODA_CUSTOMER_REMINDERS=1 needs REKODA_SUPPORT_EMAIL, the support address customer replies to a reminder email go to',
-    );
-  }
 
   const revealOtp = env['REKODA_REVEAL_OTP'] === '1';
   if (revealOtp && isProduction) {

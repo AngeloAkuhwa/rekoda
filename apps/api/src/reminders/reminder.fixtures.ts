@@ -18,6 +18,7 @@ import {
   identity,
   issueRepo,
   sql,
+  subscriptionsRepo,
   withBusiness,
   type Db,
 } from '@rekoda/db';
@@ -62,6 +63,7 @@ export function useReminderHarness(): void {
       ...loadConfig(),
       webUrl: 'https://app.rekoda.test',
       customerReminders: true,
+      /* Rekoda support is set on purpose: a reminder must never use it as its Reply-To (OWN-83). */
       supportEmail: 'support@rekoda.test',
     };
   });
@@ -98,10 +100,44 @@ export interface Seeded {
 }
 
 export const EMAIL = 'ada@customer.example.ng';
+/** The business's own email, the Reply-To of its reminder emails once verified (OWN-83). */
+export const BUSINESS_EMAIL = 'accounts@adaeze.example.ng';
+
+/**
+ * Give a business its own email (OWN-83), sealed as the billing-email service seals it. `verified`
+ * marks the mailbox proven, as a confirmed link would; without it the address is only on file.
+ */
+export async function setBusinessEmail(
+  db: Db,
+  vaultKey: string,
+  businessId: string,
+  address: string,
+  verified: boolean,
+): Promise<void> {
+  await withBusiness(db, businessId, async (tx) => {
+    await subscriptionsRepo.setBillingEmailSealed(
+      tx,
+      businessId,
+      encryptFacet(address, vaultKey, `billing-email:${businessId}`),
+      new Date(),
+    );
+    if (verified) {
+      await tx.execute(
+        sql`UPDATE businesses SET billing_email_verified_at = now() WHERE id = ${businessId}::uuid`,
+      );
+    }
+  });
+}
 
 export async function seedWith(
   issueSale: typeof issueRepo.issueSale,
-  opts: { name?: string; email?: string | null; phone?: string | null } = {},
+  opts: {
+    name?: string;
+    email?: string | null;
+    phone?: string | null;
+    /** The business's own verified email (default `BUSINESS_EMAIL`); null leaves it with none. */
+    businessEmail?: string | null;
+  } = {},
 ) {
   seq += 1;
   const user = await identity.upsertUserByPhone(appDb, `+23481750${String(seq).padStart(4, '0')}`);
@@ -111,6 +147,9 @@ export async function seedWith(
     ownerUserId: user.id,
   });
   const businessId = business.id;
+  const businessEmail = opts.businessEmail === undefined ? BUSINESS_EMAIL : opts.businessEmail;
+  if (businessEmail)
+    await setBusinessEmail(appDb, config.vaultKey, businessId, businessEmail, true);
   const identities: customersRepo.IdentityInput[] = [];
   const email = opts.email === undefined ? EMAIL : opts.email;
   const phone = opts.phone === undefined ? '+2348039998888' : opts.phone;

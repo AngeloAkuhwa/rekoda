@@ -34,6 +34,9 @@ export type ReminderBlockReason =
   | 'invalid_recipient'
   | 'ambiguous_contact'
   | 'email_not_configured'
+  /* OWN-83: a reminder email's Reply-To is the business's own verified email. Without one the email
+   * is not sent (WhatsApp may still go); the business is asked to add and confirm its email. */
+  | 'business_email_unverified'
   | 'send_failed'
   /* REM-02: another reminder to this invoice on this channel is still with the provider (status
    * `sending`), whatever idempotency key the new request carries. This is concurrency control, not

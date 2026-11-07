@@ -193,7 +193,7 @@ here is LIVE PROVIDER VERIFIED or PRODUCTION READY. Launch verdict: NOT READY
 | SUB-05    | Merged; acceptance pending                                   | #404 `def64c3`                 | Browser walkthrough on staging                                                                                                                                   |
 | SUB-ACC   | Not started (needs a person on staging)                      | —                              | `docs/runbooks/billing-staging-walkthrough.md`                                                                                                                   |
 | REM-01    | Merged; deployed to staging; acceptance pending              | #405 `79f9968`                 | OD-41 (Day 0 / trial-ended, which template)                                                                                                                      |
-| REM-02    | Merged; deployed to staging; acceptance pending              | #406 `60cfee8`                 | OD-42(b) reply-to (owner)                                                                                                                                        |
+| REM-02    | Merged; deployed to staging; acceptance pending              | #406 `60cfee8`                 | OD-42(b) ruled (OWN-83, PR A)                                                                                                                                    |
 | REM-03    | Merged 3 Nov; deployed to staging (pending)                  | #412 `7b37e26`                 | Queued-message tests ship with REM-05 (sequencing note in the plan)                                                                                              |
 | REM-04    | Merged; deployed to staging; acceptance pending              | #409 `90c369e`                 | —                                                                                                                                                                |
 | REM-05    | Merged 3 Nov; deployed to staging (pending)                  | #413 `d11ed34`                 | OD-43 (owner: limits, per-customer consolidation, WhatsApp reminder template); a batch held while reminders are off sends when they return (eligibility re-read) |
@@ -232,6 +232,9 @@ here is LIVE PROVIDER VERIFIED or PRODUCTION READY. Launch verdict: NOT READY
 Open and MVP-relevant: OD-37 (plan-write trigger), OD-38 (operator-set private beta), OD-39
 (per-address limit abuse), OD-40 (pack month), OD-41 (Day 0 / trial-ended, trial template), OD-42(b)
 (email reply-to), OD-43 (batch limits, per-customer consolidation, WhatsApp reminder template).
+Since ruled (7 Nov 2026): OD-38 (OWN-78), OD-39 (OWN-79), OD-41(b) (OWN-80), OD-43(f) (OWN-82) and
+OD-42(b) (OWN-83, superseding OWN-81: reminder replies go to the business's verified email; no
+verified email, no email reminder), all in PR A (#431), not merged when recorded.
 Older OD rows (OD-1 to OD-29) keep their own status in the register; several are ruled by OWN-39 to
 OWN-49 as noted there.
 

@@ -1,7 +1,7 @@
 /**
- * REKODA_SUPPORT_EMAIL (OD-42(b), option B): the Reply-To of customer reminder emails. One bare
- * address or nothing; reminders cannot be released without it; a bad value refuses to boot and is
- * never echoed.
+ * REKODA_SUPPORT_EMAIL: Rekoda's separate support contact (OWN-83: not the reminder Reply-To). One
+ * bare address or nothing; nothing needs it to boot, reminders included; a bad value refuses to
+ * boot and is never echoed.
  */
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../config.js';
@@ -20,11 +20,11 @@ describe('REKODA_SUPPORT_EMAIL', () => {
     ).toBe('support@myrekoda.com');
   });
 
-  it('is null when unset, and reminders then refuse to boot', () => {
+  it('is null when unset, and reminders still boot: the support address is not their Reply-To', () => {
     expect(loadConfig({ ...BASE }).supportEmail).toBeNull();
-    expect(() => loadConfig(REMINDERS_ON)).toThrow(
-      'REKODA_CUSTOMER_REMINDERS=1 needs REKODA_SUPPORT_EMAIL',
-    );
+    const reminders = loadConfig(REMINDERS_ON);
+    expect(reminders.customerReminders).toBe(true);
+    expect(reminders.supportEmail).toBeNull();
     expect(
       loadConfig({ ...REMINDERS_ON, REKODA_SUPPORT_EMAIL: 'support@myrekoda.com' }).supportEmail,
     ).toBe('support@myrekoda.com');
@@ -33,9 +33,7 @@ describe('REKODA_SUPPORT_EMAIL', () => {
   it('treats an empty value as unset, as a copied .env.example has it', () => {
     expect(loadConfig({ ...BASE, REKODA_SUPPORT_EMAIL: '' }).supportEmail).toBeNull();
     expect(loadConfig({ ...BASE, REKODA_SUPPORT_EMAIL: '  ' }).supportEmail).toBeNull();
-    expect(() => loadConfig({ ...REMINDERS_ON, REKODA_SUPPORT_EMAIL: '' })).toThrow(
-      'needs REKODA_SUPPORT_EMAIL',
-    );
+    expect(loadConfig({ ...REMINDERS_ON, REKODA_SUPPORT_EMAIL: '' }).supportEmail).toBeNull();
   });
 
   it.each([

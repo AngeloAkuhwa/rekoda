@@ -39,6 +39,13 @@ export class ErasureBusinessNotFound extends Error {
  * the address being erased is unknown. Nothing is changed (the request rolls back) and the
  * operator is told, rather than being answered `erased: true` while the address stays stored.
  */
+/** The 409 an operator reads when the named business's stored billing email cannot be opened. */
+export const ERASURE_SEAL_UNREADABLE_MESSAGE =
+  "this business's stored billing email could not be opened, so nothing was changed. " +
+  'Retrying without businessId clears only the shared cross-business counter for the address; ' +
+  "it does not remove this business's billing email, which stays stored until it can be opened " +
+  'with the right vault key and erased with businessId.';
+
 export class ErasureSealUnreadable extends Error {
   constructor() {
     super('the stored billing email could not be opened');

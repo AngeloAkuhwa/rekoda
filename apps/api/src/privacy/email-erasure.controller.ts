@@ -20,6 +20,7 @@ import { OperatorGuard, OperatorScopes, type OperatorRequest } from '../auth/ope
 import {
   EmailErasureService,
   ErasureBusinessNotFound,
+  ERASURE_SEAL_UNREADABLE_MESSAGE,
   ErasureSealUnreadable,
 } from './email-erasure.service.js';
 
@@ -47,9 +48,9 @@ export class EmailErasureController {
     } catch (error) {
       if (error instanceof ErasureBusinessNotFound) throw new NotFoundException('no such business');
       if (error instanceof ErasureSealUnreadable) {
-        throw new ConflictException(
-          'the stored billing email could not be opened; nothing was changed',
-        );
+        /* The operator's next step, said plainly: a retry without businessId clears only the
+         * shared counter and leaves this business's billing email stored. */
+        throw new ConflictException(ERASURE_SEAL_UNREADABLE_MESSAGE);
       }
       throw error;
     }
