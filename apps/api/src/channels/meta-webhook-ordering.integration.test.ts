@@ -71,8 +71,8 @@ describe('ordered ingress after a failed message', () => {
    * must not be stored ahead of it, whether it comes from the same member or another member of the
    * business. Meta redelivers the whole body on the non-200, and the redelivery stamps them in
    * sending order (independent review and CodeRabbit on #428). The lock is released by the first
-   * message's own failure, observed, before the controller moves on: a controller that went on to
-   * the second message would find the lock free and store it, and the test would fail. */
+   * message's own failure, observed, before the controller moves on to the second message, so the
+   * second finds the lock free: if anything let it through, it would be stored and the test fail. */
   it.each([
     ['the same member', '2348031234567'],
     ['another member of the business', '2348039990002'],
@@ -102,7 +102,9 @@ describe('ordered ingress after a failed message', () => {
         await isLocked;
         const first = await post(body);
         expect(first.statusCode).toBe(503);
-        expect(watch.attempted).toEqual(['wamid.BATCH.A']);
+        /* A's failure is attributed to its business, so the controller tries B, and the business's
+         * lane refuses it: with the lock already free, only the lane keeps B out. */
+        expect(watch.attempted).toEqual(['wamid.BATCH.A', 'wamid.BATCH.B']);
       } finally {
         watch.restore();
         release();
@@ -133,5 +135,41 @@ describe('ordered ingress after a failed message', () => {
 
     expect((await post(body)).statusCode).toBe(200);
     expect(await stored(business.id)).toEqual(['wamid.BATCH.A', 'wamid.BATCH.B']);
+  });
+
+  /* One business's refusal does not hold back another business's message in the same body
+   * (independent review of d1c799a): only the refused business waits for the redelivery. */
+  it("stores another business's message in a body whose first message is refused for its own business", async () => {
+    const a = await seedMerchant('+2348031234567', 'Ada Fashion');
+    const b = await seedMerchant('+2348035550001', 'Bola Foods');
+    const body = messagePayload('2348031234567', 'wamid.MIX.A', 'cancel');
+    body.entry[0]!.changes[0]!.value.messages.push({
+      id: 'wamid.MIX.B',
+      from: '2348035550001',
+      timestamp: '1700000001',
+      type: 'text',
+      text: { body: 'sold 1 bag' },
+    });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let locked!: () => void;
+    const isLocked = new Promise<void>((resolve) => (locked = resolve));
+    const holder = withBusiness(db, a.id, async (tx) => {
+      await jobsRepo.serializeBusiness(tx, a.id, 'ingress');
+      locked();
+      await held;
+    });
+    try {
+      await isLocked;
+      expect((await post(body)).statusCode).toBe(503);
+      expect(await stored(a.id)).toEqual([]);
+      expect(await stored(b.id)).toEqual(['wamid.MIX.B']);
+    } finally {
+      release();
+      await holder;
+    }
+    expect((await post(body)).statusCode).toBe(200);
+    expect(await stored(a.id)).toEqual(['wamid.MIX.A']);
+    expect(await stored(b.id)).toEqual(['wamid.MIX.B']);
   });
 });

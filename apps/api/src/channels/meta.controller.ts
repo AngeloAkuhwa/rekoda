@@ -17,6 +17,7 @@ import { redactForLog } from '@rekoda/core/privacy';
 import { extractInboundEvents, metaWebhookBody } from '@rekoda/contracts';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { MetaIngressService } from './meta.service.js';
+import { IngressRefused, IngressStoreFailed } from './ingress-sequencer.js';
 import { SecurityMetrics } from './security-metrics.service.js';
 
 /** Fastify hands us the raw body via the hook registered in main.ts. */
@@ -107,11 +108,14 @@ export class MetaWebhookController {
 
     const events = extractInboundEvents(parsed.data);
     let failed = 0;
-    /* Messages are stored in the order Meta sent them (OWN-74). Once one message fails, the
-     * rest of the messages in this body wait for the redelivery below, whoever sent them: a later
-     * "yes" stored ahead of an earlier "cancel" that could not be stored would be stamped first,
-     * and a failed message cannot be attributed to a business to scope the wait to it. Status
-     * receipts carry on. Messages that did land deduplicate on redelivery. */
+    /* Messages are stored in the order Meta sent them (OWN-74). A message that failed for a
+     * business the ingress knows (refused by its lane, or failed while being stored) holds back
+     * only that business's later messages, and its lane does that, in this body and in later
+     * webhooks alike (`IngressSequencer`); other businesses' messages in the body are stored. A
+     * message that failed before its business was known cannot be scoped, so the rest of the
+     * messages in this body wait for the redelivery below, whoever sent them: a later "yes"
+     * stored ahead of an earlier "cancel" would be stamped first. Status receipts carry on.
+     * Messages that did land deduplicate on redelivery. */
     let messageFailed = false;
     for (const event of events) {
       if (messageFailed && event.kind === 'message') {
@@ -122,7 +126,8 @@ export class MetaWebhookController {
         await this.ingress.accept(event, parsed.data);
       } catch (error) {
         failed += 1;
-        if (event.kind === 'message') messageFailed = true;
+        const attributed = error instanceof IngressRefused || error instanceof IngressStoreFailed;
+        if (event.kind === 'message' && !attributed) messageFailed = true;
         this.log.error(
           `failed to accept a Meta event: ${redactForLog(String((error as Error)?.message ?? error))}`,
         );

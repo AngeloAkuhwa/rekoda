@@ -39,12 +39,19 @@ async function stored(businessId: string): Promise<string[]> {
   return [...rows].map((r) => r.external_id);
 }
 
-/** Connections waiting on an advisory lock right now (the ingress lock is the only one held). */
+/**
+ * Connections waiting for this business's ingress lock right now, in this database (pg_locks;
+ * the two-key advisory lock is (LOCK_CLASS.business = 2, hashtext('<business>:ingress'))).
+ */
 async function lockWaiters(businessId: string): Promise<number> {
   const rows = await withBusiness(db, businessId, (tx) =>
     tx.execute<{ n: number }>(sql`
-      SELECT count(*)::int AS n FROM pg_stat_activity
-       WHERE wait_event_type = 'Lock' AND wait_event = 'advisory' AND pid <> pg_backend_pid()`),
+      SELECT count(*)::int AS n FROM pg_locks l
+       WHERE l.locktype = 'advisory' AND NOT l.granted
+         AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+         AND l.classid = 2::oid
+         AND l.objid = ((hashtext(${`${businessId}:ingress`})::bigint + 4294967296) % 4294967296)::text::oid
+         AND l.objsubid = 2`),
   );
   return [...rows][0]!.n;
 }
@@ -144,14 +151,17 @@ describe('ordered ingress across separate webhooks (OWN-74)', () => {
       await lock.release();
     }
 
-    /* Meta redelivers the cancel: it goes first, and the rest follow in their turn. */
+    /* Meta redelivers the cancel: it goes first. Its retries of the other two come back reversed
+     * (the later webhook first): it is refused again until the yes that came before it is stored,
+     * so they are stored in the order they first reached Rekoda (independent review of d1c799a). */
     expect((await post(cancelBody)).statusCode).toBe(200);
-    expect((await post(laterBody)).statusCode).toBe(200);
+    expect((await post(laterBody)).statusCode).toBe(503);
     expect((await post(yesBody)).statusCode).toBe(200);
+    expect((await post(laterBody)).statusCode).toBe(200);
     expect(await stored(business.id)).toEqual([
       'wamid.TO.cancel',
-      'wamid.TO.later',
       'wamid.TO.yes',
+      'wamid.TO.later',
     ]);
   });
 
@@ -173,7 +183,8 @@ describe('ordered ingress across separate webhooks (OWN-74)', () => {
       const started = Date.now();
       const answered = await post(messagePayload('2348035550001', 'wamid.OTHER.1', 'sold 1 bag'));
       expect(answered.statusCode).toBe(200);
-      expect(Date.now() - started).toBeLessThan(1_000);
+      /* Without the lane it waits for a pool connection behind the burst: at least the 2 s bound. */
+      expect(Date.now() - started).toBeLessThan(1_500);
       expect(await stored(other.id)).toEqual(['wamid.OTHER.1']);
       expect(await lockWaiters(busy.id)).toBe(1);
 
@@ -185,10 +196,10 @@ describe('ordered ingress across separate webhooks (OWN-74)', () => {
       await Promise.allSettled(burst);
     }
     /* Concurrent webhooks reach the lane in no fixed order, so which one the fence names is not
-     * known here. Meta redelivers every refused one until it is taken: the fenced one lands first,
-     * then the rest, and nothing is lost or stored twice. */
+     * known here. Meta redelivers every refused one until it is taken: each round stores whichever
+     * is earliest outstanding, so all land, none twice, in the order they reached the lane. */
     const waiting = new Set(Array.from({ length: 25 }, (_, i) => i));
-    for (let round = 0; round < 3 && waiting.size > 0; round++) {
+    for (let round = 0; round < 30 && waiting.size > 0; round++) {
       for (const i of [...waiting]) {
         const wamid = `wamid.BURST.${String(i).padStart(2, '0')}`;
         const code = (await post(messagePayload(OWNER, wamid, `sold ${i}`))).statusCode;

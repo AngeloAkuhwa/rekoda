@@ -4,7 +4,12 @@
  * no later message is stored ahead of an earlier one that failed.
  */
 import { describe, expect, it } from 'vitest';
-import { IngressFenced, IngressRefused, IngressSequencer } from './ingress-sequencer.js';
+import {
+  IngressFenced,
+  IngressRefused,
+  IngressSequencer,
+  IngressStoreFailed,
+} from './ingress-sequencer.js';
 
 function gate() {
   let open!: () => void;
@@ -18,7 +23,14 @@ function gate() {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-function lane(over: Partial<{ waitMs: number; maxWaiting: number; fenceMs: number }> = {}) {
+function lane(
+  over: Partial<{
+    waitMs: number;
+    maxWaiting: number;
+    fenceMs: number;
+    maxOutstanding: number;
+  }> = {},
+) {
   let now = 1_000;
   const sequencer = new IngressSequencer({
     waitMs: 1_000,
@@ -85,25 +97,70 @@ describe('IngressSequencer', () => {
       IngressFenced,
     );
     expect(laterRan).toBe(false);
-    expect(sequencer.fenced('b1')).toBe(true);
+    expect(sequencer.outstanding('b1')).toBeGreaterThan(0);
     /* Another business is not fenced. */
     expect(await sequencer.run('b2', 'x', async () => 'ok')).toBe('ok');
 
-    /* The redelivered cancel goes first and lifts the fence; the rest follow. */
+    /* The redelivered cancel goes first; the two refused after it stay ahead of anything new
+     * until each is stored, in the order they first came. */
     expect(await sequencer.run('b1', 'cancel', async () => 'cancel stored')).toBe('cancel stored');
-    expect(sequencer.fenced('b1')).toBe(false);
+    expect(sequencer.outstanding('b1')).toBe(2);
+    await expect(sequencer.run('b1', 'later-yes', async () => 1)).rejects.toBeInstanceOf(
+      IngressFenced,
+    );
     expect(await sequencer.run('b1', 'yes', async () => 'yes stored')).toBe('yes stored');
+    expect(await sequencer.run('b1', 'later-yes', async () => 'stored')).toBe('stored');
+    expect(sequencer.outstanding('b1')).toBe(0);
   });
 
-  it('a redelivered fenced message that fails again keeps the fence', async () => {
+  it('a store failure is reported with its business, so the caller can scope its response', async () => {
     const { sequencer } = lane();
+    const failure = await sequencer
+      .run('b1', 'cancel', () => Promise.reject(new Error('lock timeout')))
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(IngressStoreFailed);
+    expect((failure as IngressStoreFailed).businessId).toBe('b1');
+    const refused = await sequencer.run('b1', 'yes', async () => 1).catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(IngressFenced);
+    expect((refused as IngressFenced).businessId).toBe('b1');
+  });
+
+  it('messages refused behind a failure are stored in the order they first came, whatever order Meta redelivers them in', async () => {
+    const { sequencer } = lane();
+    const stored: string[] = [];
+    const store = (id: string) =>
+      sequencer.run('b1', id, async () => {
+        stored.push(id);
+      });
     await expect(
-      sequencer.run('b1', 'cancel', () => Promise.reject(new Error('boom'))),
-    ).rejects.toThrow('boom');
-    await expect(
-      sequencer.run('b1', 'cancel', () => Promise.reject(new Error('boom again'))),
-    ).rejects.toThrow('boom again');
+      sequencer.run('b1', 'sold', () => Promise.reject(new Error('lock timeout'))),
+    ).rejects.toThrow('lock timeout');
+    /* A cancel, then a yes, each in its own webhook: both refused. */
+    await expect(store('cancel')).rejects.toBeInstanceOf(IngressFenced);
+    await expect(store('yes')).rejects.toBeInstanceOf(IngressFenced);
+    expect(sequencer.outstanding('b1')).toBe(3);
+
+    await store('sold');
+    /* Meta's retries come back reversed: the yes is still refused until the cancel is stored. */
+    await expect(store('yes')).rejects.toBeInstanceOf(IngressFenced);
+    await store('cancel');
+    await store('yes');
+    expect(stored).toEqual(['sold', 'cancel', 'yes']);
+    expect(sequencer.outstanding('b1')).toBe(0);
+    /* And a new message after them all is admitted. */
+    await store('next');
+  });
+
+  it('a message failing again on redelivery does not extend the fence', async () => {
+    const { sequencer, advance } = lane({ fenceMs: 120_000 });
+    const poison = () => sequencer.run('b1', 'poison', () => Promise.reject(new Error('bad')));
+    await expect(poison()).rejects.toThrow('bad');
+    advance(100_000);
+    await expect(poison()).rejects.toThrow('bad');
     await expect(sequencer.run('b1', 'yes', async () => 1)).rejects.toBeInstanceOf(IngressFenced);
+    /* 120 s after the FIRST failure the fence ends, though the poison failed again at 100 s. */
+    advance(20_000);
+    expect(await sequencer.run('b1', 'yes', async () => 2)).toBe(2);
   });
 
   it('bounds the wait: a message that cannot get its turn in time is refused and fences the later ones', async () => {
@@ -117,7 +174,7 @@ describe('IngressSequencer', () => {
     await expect(c).rejects.toBeInstanceOf(IngressFenced);
     held.open();
     await a;
-    expect(sequencer.fenced('b1')).toBe(true);
+    expect(sequencer.outstanding('b1')).toBeGreaterThan(0);
     expect(await sequencer.run('b1', 'b', async () => 'b stored')).toBe('b stored');
     expect(await sequencer.run('b1', 'c', async () => 'c stored')).toBe('c stored');
   });
@@ -158,7 +215,20 @@ describe('IngressSequencer', () => {
     /* b gave up first, but a is earlier: b may not be stored before a is. */
     await expect(sequencer.run('b1', 'b', async () => 'b')).rejects.toBeInstanceOf(IngressFenced);
     expect(await sequencer.run('b1', 'a', async () => 'a stored')).toBe('a stored');
+    /* b is still outstanding once a is stored: nothing new passes it. */
+    await expect(sequencer.run('b1', 'c', async () => 'c')).rejects.toBeInstanceOf(IngressFenced);
     expect(await sequencer.run('b1', 'b', async () => 'b stored')).toBe('b stored');
+    expect(await sequencer.run('b1', 'c', async () => 'c stored')).toBe('c stored');
+  });
+
+  it('remembers at most maxOutstanding refused messages per business', async () => {
+    const { sequencer } = lane({ maxOutstanding: 2 });
+    await expect(sequencer.run('b1', 'a', () => Promise.reject(new Error('x')))).rejects.toThrow(
+      'x',
+    );
+    await expect(sequencer.run('b1', 'b', async () => 1)).rejects.toBeInstanceOf(IngressFenced);
+    await expect(sequencer.run('b1', 'c', async () => 1)).rejects.toBeInstanceOf(IngressFenced);
+    expect(sequencer.outstanding('b1')).toBe(2);
   });
 
   it('bounds how many may wait per business', async () => {
@@ -185,7 +255,7 @@ describe('IngressSequencer', () => {
     await expect(sequencer.run('b1', 'next', async () => 1)).rejects.toBeInstanceOf(IngressRefused);
     advance(120_000);
     expect(await sequencer.run('b1', 'next', async () => 2)).toBe(2);
-    expect(sequencer.fenced('b1')).toBe(false);
+    expect(sequencer.outstanding('b1')).toBe(0);
   });
 
   it('refuses bounds that are not positive whole numbers', () => {
@@ -193,6 +263,9 @@ describe('IngressSequencer', () => {
       expect(() => new IngressSequencer({ waitMs: bad, maxWaiting: 1, fenceMs: 1 })).toThrow();
       expect(() => new IngressSequencer({ waitMs: 1, maxWaiting: bad, fenceMs: 1 })).toThrow();
       expect(() => new IngressSequencer({ waitMs: 1, maxWaiting: 1, fenceMs: bad })).toThrow();
+      expect(
+        () => new IngressSequencer({ waitMs: 1, maxWaiting: 1, fenceMs: 1, maxOutstanding: bad }),
+      ).toThrow();
     }
   });
 });
