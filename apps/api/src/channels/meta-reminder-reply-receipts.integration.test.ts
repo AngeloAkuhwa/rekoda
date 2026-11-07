@@ -34,6 +34,46 @@ import {
 useMetaWebhookHarness();
 useSaleWriter(issueRepo.issueSale);
 
+/** The stub numbers its message ids by send order: the Meta id of the first notice to `phone`. */
+const noticeWamidOf = (phone: string) =>
+  `wamid.STUB${
+    stubSender.sent.findIndex(
+      (m) => m.to === phone && m.text.includes('has sent your business a WhatsApp'),
+    ) + 1
+  }`;
+
+/** A failed receipt for `wamid` was stored, but its delivery-status job ran out of attempts. */
+async function deadReceipt(businessId: string, wamid: string): Promise<void> {
+  await withBusiness(db, businessId, async (tx) => {
+    const [event] = [
+      ...(await tx.execute<{ id: string }>(sql`
+        INSERT INTO external_events (provider, event_type, external_id, payload, business_id, signature_valid)
+        VALUES ('meta', 'status.failed', ${`st-${wamid}`}, '{}'::jsonb, ${businessId}::uuid, 1)
+        RETURNING id`)),
+    ];
+    const job = await jobsRepo.enqueue(tx, {
+      businessId,
+      kind: 'delivery.status',
+      payload: { eventId: event!.id, outboundMessageId: wamid },
+      singletonKey: event!.id,
+      maxAttempts: 12,
+    });
+    await tx.execute(
+      sql`UPDATE jobs SET state = 'dead', attempts = 12 WHERE id = ${job!.id}::uuid`,
+    );
+  });
+}
+
+/** Backends waiting on an advisory lock (pg_locks is readable by every role). */
+const advisoryWaiters = async () =>
+  Number(
+    [
+      ...(await db.execute<{ n: string }>(
+        sql`SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`,
+      )),
+    ][0]?.n ?? 0,
+  );
+
 describe('delivery receipts for the reminder-reply notice (OWN-83)', () => {
   it('a notice Meta accepts and later reports failed is due again, and told once more', async () => {
     const s = await shop('PN-RR-17');
@@ -62,45 +102,38 @@ describe('delivery receipts for the reminder-reply notice (OWN-83)', () => {
     expect(await noticeRows(s.businessId)).toHaveLength(1);
   });
 
-  it('a failed receipt whose job died is still applied: the notice is told once more', async () => {
+  it("a failed receipt whose job died is applied on the owner's next message", async () => {
     const s = await shop('PN-RR-18');
     await reminded(s);
     await reply('PN-RR-18', 'wamid.RR.18A', 'I will pay');
-    const at = stubSender.sent.findIndex(
-      (m) => m.to === s.ownerPhone && m.text.includes('has sent your business a WhatsApp'),
-    );
-    const noticeWamid = `wamid.STUB${at + 1}`;
-    // The receipt was stored, but its delivery-status job ran out of attempts.
-    await withBusiness(db, s.businessId, async (tx) => {
-      const [event] = [
-        ...(await tx.execute<{ id: string }>(sql`
-          INSERT INTO external_events (provider, event_type, external_id, payload, business_id, signature_valid)
-          VALUES ('meta', 'status.failed', ${`st-${noticeWamid}`}, '{}'::jsonb, ${s.businessId}::uuid, 1)
-          RETURNING id`)),
-      ];
-      const job = await jobsRepo.enqueue(tx, {
-        businessId: s.businessId,
-        kind: 'delivery.status',
-        payload: { eventId: event!.id, outboundMessageId: noticeWamid },
-        singletonKey: event!.id,
-        maxAttempts: 12,
-      });
-      await tx.execute(
-        sql`UPDATE jobs SET state = 'dead', attempts = 12 WHERE id = ${job!.id}::uuid`,
-      );
-    });
-    // The customer writes again before the owner does: the notice is retried anyway.
-    await reply('PN-RR-18', 'wamid.RR.18B', 'hello?');
-    expect(noticesTo(s.ownerPhone)).toHaveLength(2);
-    expect(await noticeRows(s.businessId)).toHaveLength(1);
-    // The owner's next message still applies the rest of the receipt (as the inbound handler
-    // does), and the re-sent notice, with its new Meta id, is not re-opened by it.
+    await deadReceipt(s.businessId, noticeWamidOf(s.ownerPhone));
+    // The owner's next message to Rekoda applies dead receipts (as the inbound handler does).
     expect(
       await withBusiness(db, s.businessId, (tx) =>
         conversationsRepo.reconcileDeadReceipts(tx, s.businessId),
       ),
     ).toBe(1);
-    await reply('PN-RR-18', 'wamid.RR.18C', 'still there?');
+    await reply('PN-RR-18', 'wamid.RR.18B', 'hello?');
+    expect(noticesTo(s.ownerPhone)).toHaveLength(2);
+    expect(await noticeRows(s.businessId)).toHaveLength(1);
+  });
+
+  it('a failed receipt whose job died is applied when the customer writes first', async () => {
+    const s = await shop('PN-RR-20');
+    await reminded(s);
+    await reply('PN-RR-20', 'wamid.RR.20A', 'I will pay');
+    await deadReceipt(s.businessId, noticeWamidOf(s.ownerPhone));
+    await reply('PN-RR-20', 'wamid.RR.20B', 'hello?');
+    expect(noticesTo(s.ownerPhone)).toHaveLength(2);
+    expect(await noticeRows(s.businessId)).toHaveLength(1);
+    // The owner's next message still applies the rest of the receipt, and the re-sent notice,
+    // with its new Meta id, is not re-opened by it.
+    expect(
+      await withBusiness(db, s.businessId, (tx) =>
+        conversationsRepo.reconcileDeadReceipts(tx, s.businessId),
+      ),
+    ).toBe(1);
+    await reply('PN-RR-20', 'wamid.RR.20C', 'still there?');
     expect(noticesTo(s.ownerPhone)).toHaveLength(2);
   });
 
@@ -122,7 +155,11 @@ describe('delivery receipts for the reminder-reply notice (OWN-83)', () => {
           .statusCode,
       ).toBe(200);
       receiptJob = buildRunner(workerDb, db, deps).runOnce();
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      // Commit only once the receipt job is waiting on the notice lock (or after 5s, which
+      // fails the assertion below: without the lock the job never waits).
+      for (let i = 0; i < 50 && (await advisoryWaiters()) === 0; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
     });
     await receiptJob;
     const [after] = await withBusiness(db, s.businessId, async (tx) => [

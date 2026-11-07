@@ -515,7 +515,8 @@ export async function sentWhatsAppReminderForPhone(
  * Whether the business still has to be told about replies to this reminder. Takes a
  * transaction-scoped lock on the reminder first, so two customer messages handled at once are
  * decided one after the other: the second waits for the first to commit and then sees its row.
- * Writes nothing; `recordReminderReplyNotice` records the notice once it was delivered.
+ * It also applies a dead receipt job's failure to this notice (below); otherwise it writes nothing,
+ * and `recordReminderReplyNotice` records the notice once Meta accepted it.
  */
 export async function reminderReplyNoticeDue(
   tx: TenantDb,
@@ -529,7 +530,9 @@ export async function reminderReplyNoticeDue(
    * customer's next message retries even if the owner has not written since (the full
    * `reconcileDeadReceipts` runs only on the owner's next message, under the inbound lock). Only
    * the notice is touched and the receipt's event stays open, so that reconciliation still applies
-   * the rest of the receipt later. A notice re-sent since carries a new Meta id and is not matched. */
+   * the rest of the receipt later. A notice re-sent since carries a new Meta id and is not matched.
+   * The business notice lock is taken before the row, in the same order as the live receipt job. */
+  await lockReminderReplyNotices(tx, businessId);
   await tx.execute(sql`
     UPDATE reminder_reply_notices n SET undelivered_at = now()
       FROM jobs j
