@@ -558,6 +558,33 @@ export const opsExceptionsResponse = z.object({
  * queue is that somebody decided, and a row that left the list with nobody's
  * name and no sentence on it is indistinguishable from one that was lost.
  */
+/**
+ * Erase one email address (OD-39, migration 0191). `ops:privacy`. The address is used to derive its
+ * counter key and, when `businessId` is given, compared with that business's billing email; it is
+ * never stored, logged or returned. `reason` is closed so no free text can carry the address.
+ */
+export const opsEmailErasureRequest = z.object({
+  address: z.string().trim().min(3).max(320),
+  reason: z.enum(['erasure_request', 'limit_cleared']),
+  businessId: z
+    .string()
+    .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+    .optional(),
+});
+export type OpsEmailErasureRequest = z.infer<typeof opsEmailErasureRequest>;
+
+export const opsEmailErasureResponse = z.object({
+  erased: z.literal(true),
+  /** Rows removed from the cross-business confirmation counter; 0 on a repeat. */
+  counterRowsRemoved: z.number().int().nonnegative(),
+  /**
+   * The named business's billing email: `cleared` (it was this address), `different_address`
+   * (left as it was), `not_on_file`, or `not_requested` (no business named).
+   */
+  billingEmail: z.enum(['cleared', 'different_address', 'not_on_file', 'not_requested']),
+});
+export type OpsEmailErasureResponse = z.infer<typeof opsEmailErasureResponse>;
+
 export const opsResolveEventRequest = z.object({
   resolution: z.string().trim().min(4).max(200),
   /* No `actor`, for the reason on `opsRefundRequest` above. */

@@ -7,6 +7,8 @@ import { RolesGuard } from './auth/roles.guard.js';
 import { DbModule } from './db/db.module.js';
 import { HealthController } from './health/health.controller.js';
 import { OpsController } from './health/ops.controller.js';
+import { EmailErasureController } from './privacy/email-erasure.controller.js';
+import { EmailErasureService } from './privacy/email-erasure.service.js';
 import { MetaWebhookController } from './channels/meta.controller.js';
 import { MetaIngressService } from './channels/meta.service.js';
 import { IngressSequencer } from './channels/ingress-sequencer.js';
@@ -48,6 +50,7 @@ import { WebhooksModule } from './webhooks/webhooks.module.js';
     BusinessController,
     HealthController,
     OpsController,
+    EmailErasureController,
     MetaWebhookController,
   ],
   providers: [
@@ -55,6 +58,7 @@ import { WebhooksModule } from './webhooks/webhooks.module.js';
     SessionGuard,
     RolesGuard,
     OperatorGuard,
+    EmailErasureService,
     MetaIngressService,
     /* One lane per process for every webhook it receives (OWN-74). */
     { provide: IngressSequencer, useFactory: () => new IngressSequencer() },

@@ -149,32 +149,52 @@ touches the rows that name them, and the same sweep pass drains the queue
 (PR-136). Both tables deliberately outlive the tenant, and both are
 excluded from the function's own delete loop for that reason.
 
-## A billing email in the per-address limit counter (SUB-02a, OWN-58/OWN-66)
+## Erasing one email address (OD-39, OWN-58/OWN-66)
 
-`billing_email_address_requests` counts billing-email confirmation requests per
-address across businesses. It holds a keyed hash of the address and a time, no
-address and no business id, so a business deletion has nothing there to find.
-Rows older than a day are removed as later requests arrive (not on a timer).
-To erase one address on request, or to clear an address whose hourly allowance
-another business used up (ADR 0036, OD-39), run the one-shot command below ON THE
-API HOST, where `MATCH_KEY` already lives (never copy `MATCH_KEY` to a
-workstation; `docs/runbooks/key-rotation.md`, Custody), from the API image's
-working directory. It reads the address from a prompt (never shell history),
-derives the key in memory and deletes that key's rows as the owner. The command
-prints only the number of rows removed, or on failure only the database error
-code: it never prints the key, the address or the query. Read the owner URL the
-operator already uses for owner SQL in this runbook silently, so the password
-stays out of shell history, and unset it afterwards (in `bash`; `read -s` is not available in plain `sh`):
+An email address can sit in two places Rekoda controls:
 
-```sh
-read -rs -p 'owner database url: ' OWNER_DATABASE_URL && export OWNER_DATABASE_URL && echo
-node --input-type=module -e "import {createInterface} from 'node:readline/promises'; import {billingEmailAddressKeyFor} from '@rekoda/core/vault'; import {createDb, sql} from '@rekoda/db'; const rl = createInterface({input: process.stdin, output: process.stderr}); const address = await rl.question('address: '); rl.close(); let close; try { const opened = createDb(process.env.OWNER_DATABASE_URL, {max: 1}); close = opened.close; const db = opened.db; const rows = await db.execute(sql\`DELETE FROM billing_email_address_requests WHERE address_key = \${billingEmailAddressKeyFor(address, process.env.MATCH_KEY)} RETURNING 1\`); console.log('rows removed:', [...rows].length); } catch (e) { console.error('failed:', e?.cause?.code ?? 'error'); process.exitCode = 1; } finally { if (close) await close(); }"
-unset OWNER_DATABASE_URL
+- `billing_email_address_requests`, the shared counter that limits billing-email confirmation
+  requests per address across every business (5 an hour, 60 seconds apart). It holds a keyed hash
+  of the address and a time, no address and no business id. Rows older than a day are removed as
+  later requests arrive.
+- one business's billing email (`businesses.billing_email_sealed`, sealed under the vault key), with
+  its confirmation links.
+
+An authorised operator with the `ops:privacy` scope erases an address with one request (no SQL, no
+key handling, nothing run on the host):
+
+```
+POST /v1/ops/privacy/email-erasure
+{ "address": "<the address>", "reason": "erasure_request" | "limit_cleared", "businessId": "<optional>" }
 ```
 
-The address is trimmed and lower-cased by the function. The terminal shows the
-address as it is typed; clear the screen afterwards. Never paste the address or
-a derived key into a ticket, a chat or a query log.
+- `reason`: `erasure_request` for a person's request to erase their address; `limit_cleared` to free
+  an address whose shared hourly allowance another business used up (ADR 0036). Closed values, so
+  no free text can carry the address.
+- Always: the address's counter rows are deleted, so its shared allowance and cooldown start again.
+- With `businessId`: if that business's billing email IS this address (compared trimmed and
+  lower-cased), it is cleared together with its proof, and its open confirmation links are voided;
+  any checkout session bound to the old address becomes stale, as on a change of address. Another
+  address on that business is left alone (`different_address`). No other business is searched or
+  changed: name each business the request concerns, one call each.
+- Both happen in one transaction: a failure changes nothing, and the call can simply be repeated.
+  A repeat removes nothing more (`counterRowsRemoved: 0`).
+- Receipts: one row in `email_address_erasures` per call (operator subject, reason, rows removed,
+  whether a billing email was cleared) and, when a business was changed, a `billing_email_erased` row
+  in its `audit_events`. Neither holds the address, its key or (the receipt) a business id. The
+  response does not echo the address.
+- Kept, on purpose: `email_suppressions` and `customer_email_optouts` (stop records; deleting them
+  would resume mail to someone who bounced, complained or opted out), customer identity facets
+  (lane 1, `EraseData`), and every invoice, receipt and ledger row.
+
+Check after the fact, as the owner:
+
+```sql
+SELECT created_at, operator, reason, counter_rows_removed, billing_email_cleared
+FROM email_address_erasures ORDER BY created_at DESC LIMIT 10;
+```
+
+Never paste the address into a ticket, a chat or a query log.
 
 ## The one number to watch: objects still owed
 

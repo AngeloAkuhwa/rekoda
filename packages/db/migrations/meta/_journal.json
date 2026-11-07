@@ -1338,6 +1338,13 @@
       "when": 1794052800000,
       "tag": "0190_failed_inbound_and_failure_category",
       "breakpoints": true
+    },
+    {
+      "idx": 191,
+      "version": "7",
+      "when": 1794139200000,
+      "tag": "0191_email_address_erasure",
+      "breakpoints": true
     }
   ]
 }
