@@ -407,18 +407,26 @@ export async function reopenSuperseded(
 }
 
 /**
- * Whether ANY member of this business has an open, unexpired clarification question (OWN-74).
- * Read only to decide that a message may be an answer to it, so it waits behind an earlier
- * message still being retried: an answer that passed a lost "cancel" would rebuild what it
- * withdrew. Counts nothing and reveals nothing but yes or no.
+ * Whether ANY member of this business has an open clarification question that was live at `asOf`
+ * (OWN-74): asked by then (`created_at <= asOf`) and not yet expired (`asOf < expires_at`), the same
+ * test `currentContinuation` applies at the instant the member's message arrived (CodeRabbit on
+ * #428). `asOf` defaults to the database clock. Read only to decide that a message may be an answer
+ * to it, so it waits behind an earlier message still being retried: an answer that passed a lost
+ * "cancel" would rebuild what it withdrew. Counts nothing and reveals nothing but yes or no.
  */
-export async function hasOpenClarification(tx: TenantDb, businessId: string): Promise<boolean> {
+export async function hasOpenClarification(
+  tx: TenantDb,
+  businessId: string,
+  asOf?: Date,
+): Promise<boolean> {
+  const at = clock(asOf);
   const rows = await tx.execute(sql`
     SELECT 1 FROM conversation_continuations
      WHERE business_id = ${businessId}::uuid
        AND state = 'open'
        AND kind = 'clarification'
-       AND expires_at > clock_timestamp()
+       AND created_at <= ${at}
+       AND expires_at > ${at}
      LIMIT 1`);
   return [...rows].length > 0;
 }

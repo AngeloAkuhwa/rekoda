@@ -321,6 +321,7 @@ change a feature and want to know what to run.
 | integration | `apps/api/src/channels/meta-invoices.integration.test.ts`             |
 | integration | `apps/api/src/channels/meta-lost-message.integration.test.ts`         |
 | integration | `apps/api/src/channels/meta-order-ingress.integration.test.ts`        |
+| integration | `apps/api/src/channels/meta-webhook-ordering.integration.test.ts`     |
 | integration | `apps/api/src/channels/meta-pidgin-continuations.integration.test.ts` |
 | integration | `apps/api/src/channels/meta-plan-example.integration.test.ts`         |
 | integration | `apps/api/src/channels/meta-preview-expiry-1.integration.test.ts`     |
@@ -359,6 +360,7 @@ change a feature and want to know what to run.
 | integration | `packages/db/src/channels/dead-inbound-reconcile.integration.test.ts` |
 | integration | `packages/db/src/channels/draft-expiry.integration.test.ts`           |
 | integration | `packages/db/src/channels/email-suppressions.integration.test.ts`     |
+| integration | `packages/db/src/channels/ingress-arrival-lock.integration.test.ts`   |
 | integration | `packages/db/src/channels/waba.integration.test.ts`                   |
 | unit        | `apps/api/src/ai/audio-duration.test.ts`                              |
 | unit        | `apps/api/src/ai/eval/dataset.test.ts`                                |

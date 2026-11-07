@@ -409,6 +409,47 @@ describe('reconcileDeadInboundMessages', () => {
   });
 });
 
+describe('hasOpenClarification', () => {
+  it('judges the window at the instant the message arrived, not at processing time (CodeRabbit on #428)', async () => {
+    const businessId = await seedBusiness();
+    const userRows = await owner.execute<{ user_id: string }>(
+      sql`SELECT user_id FROM memberships WHERE business_id = ${businessId}::uuid LIMIT 1`,
+    );
+    const userId = [...userRows][0]!.user_id;
+    await withBusiness(app, businessId, async (tx: TenantDb) => {
+      const message = await conversationsRepo.recordInbound(tx, {
+        businessId,
+        channel: 'meta',
+        kind: 'text',
+        body: 'a question',
+        providerMessageId: `wamid.GATE.${businessId.slice(0, 8)}`,
+      });
+      await continuationsRepo.openContinuation(tx, {
+        businessId,
+        userId,
+        sourceMessageId: message.id,
+        state: { kind: 'clarification', expects: 'period', topic: 'sales_summary' },
+        now: at(0),
+        expiresAt: at(600),
+      });
+    });
+    await owner.execute(
+      sql`UPDATE conversation_continuations SET created_at = ${at(0).toISOString()}::timestamptz,
+                 expires_at = ${at(600).toISOString()}::timestamptz
+           WHERE business_id = ${businessId}::uuid`,
+    );
+    const gate = (asOf?: Date) =>
+      withBusiness(app, businessId, (tx) =>
+        continuationsRepo.hasOpenClarification(tx, businessId, asOf),
+      );
+    /* Expired long ago by the database clock, but open when the message arrived. */
+    expect(await gate(at(300))).toBe(true);
+    expect(await gate(at(600))).toBe(false);
+    /* Not yet asked when the message arrived. */
+    expect(await gate(at(-1))).toBe(false);
+  });
+});
+
 describe('hasEarlierLiveJobByArrival', () => {
   const earlier = (businessId: string, jobId: string) =>
     withBusiness(app, businessId, (tx) => jobsRepo.hasEarlierLiveJobByArrival(tx, jobId));

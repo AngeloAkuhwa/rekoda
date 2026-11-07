@@ -302,7 +302,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     const mayAnswer =
       Boolean(answerKind) ||
       isVoiceNote(inbound) ||
-      (await continuationsRepo.hasOpenClarification(tx, businessId));
+      (await continuationsRepo.hasOpenClarification(tx, businessId, event.receivedAt));
     if (mayAnswer && (await jobsRepo.hasEarlierLiveJobByArrival(tx, jobId))) {
       throw new JobDeferred();
     }
