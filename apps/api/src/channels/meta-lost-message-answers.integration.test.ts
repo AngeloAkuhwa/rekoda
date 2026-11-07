@@ -25,16 +25,19 @@ import {
 import {
   MILO,
   QUESTION,
+  REASK,
   SEPARATE_LEAD,
   bookMilo,
   footprint as purchaseFootprint,
   seedMerchant as seedProvisions,
 } from './meta-purchase-truth.fixtures.js';
 import {
+  type Death,
   asTenant,
   bringDue,
   failLastAttempt,
   failOnceAndBackOff,
+  killInboundJob,
   pendingInbound,
   queueOnly,
 } from './meta-lost-message.fixtures.js';
@@ -193,4 +196,84 @@ describe('an answer sent while an earlier "cancel" retries waits for it (OWN-74)
     await reply('wamid.new-yes', 'yes');
     expect((await purchaseFootprint(business.id)).purchases).toBe(1);
   });
+});
+
+/** The business's purchase drafts, oldest first: state and why it was retired. */
+async function purchaseDrafts(businessId: string) {
+  const rows = await asTenant(
+    businessId,
+    sql`SELECT state, retired_reason FROM command_drafts
+         WHERE business_id = ${businessId}::uuid AND intent = 'RecordPurchase'
+         ORDER BY created_at, id`,
+  );
+  return [...(rows as Iterable<{ state: string; retired_reason: string | null }>)];
+}
+
+/* OWN-74, owner ruling: a held purchase that a lost message withdraws stays withdrawn. The merchant
+ * is told to send it again; no late answer, redelivery or "yes" resumes it, and the purchase sent
+ * again is booked as normal. */
+describe('a held purchase withdrawn by a lost message stays withdrawn (OWN-74)', () => {
+  it.each<Death>(['markFailed', 'reclaimStalled'])(
+    'late "separate", its redelivery, "same", "cash" and "yes" resume nothing; the purchase sent again books once (%s)',
+    async (death) => {
+      const business = await seedProvisions();
+      const tag = `wd-${death}`;
+      await bookMilo(business.id, tag);
+      await say(
+        `wamid.${tag}-again`,
+        MILO,
+        'I bought another 10 cartons of Milo from Emeka for 100k',
+      );
+      expect(stubSender.lastText).toContain(QUESTION);
+      await queueOnly(`wamid.${tag}-cancel`, 'cancel');
+      await killInboundJob(business.id, death);
+      const before = stubSender.sent.length;
+
+      /* The late answer to the withdrawn question: the merchant is told, no preview is rebuilt. */
+      await reply(`wamid.${tag}-separate`, 'separate');
+      const told = sentSince(before);
+      expect(told).toContain(LOST);
+      expect(told.join('\n')).not.toContain(SEPARATE_LEAD);
+      const drafts = await purchaseDrafts(business.id);
+      expect(drafts.at(-1)).toEqual({
+        state: 'superseded',
+        retired_reason: 'inbound_message_failed',
+      });
+
+      /* Meta redelivers the same "separate": deduplicated, nothing sent, nothing built. */
+      const afterSeparate = stubSender.sent.length;
+      await reply(`wamid.${tag}-separate`, 'separate');
+      expect(stubSender.sent.length).toBe(afterSeparate);
+
+      /* Any other answer the held purchase took, and a "yes": none resumes it. */
+      await reply(`wamid.${tag}-same`, 'same');
+      await reply(`wamid.${tag}-cash`, 'cash');
+      await reply(`wamid.${tag}-yes`, 'yes');
+      const later = sentSince(afterSeparate).join('\n');
+      expect(later).not.toContain(SEPARATE_LEAD);
+      expect(later).not.toContain(REASK);
+      expect(later).not.toContain('Saved ✅');
+      expect(await purchaseDrafts(business.id)).toEqual(drafts);
+      const withdrawn = await purchaseFootprint(business.id);
+      expect(withdrawn.purchases).toBe(1);
+      expect(withdrawn.arrivals).toBe(1);
+      expect(withdrawn.postings).toBe(1);
+
+      /* The merchant sends the purchase again: asked, answered and booked as normal, once. */
+      await say(
+        `wamid.${tag}-resend`,
+        MILO,
+        'I bought another 10 cartons of Milo from Emeka for 100k',
+      );
+      expect(stubSender.lastText).toContain(QUESTION);
+      await reply(`wamid.${tag}-resend-separate`, 'separate');
+      expect(stubSender.lastText).toContain(SEPARATE_LEAD);
+      await reply(`wamid.${tag}-resend-yes`, 'yes');
+      expect(stubSender.lastText).toContain('Saved ✅');
+      const booked = await purchaseFootprint(business.id);
+      expect(booked.purchases).toBe(2);
+      expect(booked.arrivals).toBe(2);
+      expect(booked.postings).toBe(2);
+    },
+  );
 });

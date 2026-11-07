@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  INGRESS_FENCE_MS,
   IngressFenced,
   IngressRefused,
   IngressSequencer,
@@ -258,6 +259,86 @@ describe('IngressSequencer', () => {
     expect(sequencer.outstanding('b1')).toBe(0);
   });
 
+  it('a message that fails late in a fence keeps its own full window, so nothing overtakes it when the first failure lapses', async () => {
+    const { sequencer, advance } = lane({ fenceMs: 120_000 });
+    await expect(
+      sequencer.run('b1', 'poison', () => Promise.reject(new Error('x'))),
+    ).rejects.toThrow('x');
+    /* 110 s later the cancel arrives and is refused behind it: outstanding from 110 s. */
+    advance(110_000);
+    await expect(sequencer.run('b1', 'cancel', async () => 'cancel')).rejects.toBeInstanceOf(
+      IngressFenced,
+    );
+    /* The poison's window has passed; the cancel's has not. A later "yes" must not overtake it. */
+    advance(15_000);
+    await expect(sequencer.run('b1', 'yes', async () => 'yes')).rejects.toBeInstanceOf(
+      IngressFenced,
+    );
+    /* Meta redelivers the cancel inside its window: it is stored first, then the yes. */
+    const stored: string[] = [];
+    await sequencer.run('b1', 'cancel', async () => stored.push('cancel'));
+    await sequencer.run('b1', 'yes', async () => stored.push('yes'));
+    expect(stored).toEqual(['cancel', 'yes']);
+    expect(sequencer.outstanding('b1')).toBe(0);
+  });
+
+  it('a late message still lapses 120 s after its own first failure', async () => {
+    const { sequencer, advance } = lane({ fenceMs: 120_000 });
+    await expect(
+      sequencer.run('b1', 'first', () => Promise.reject(new Error('x'))),
+    ).rejects.toThrow('x');
+    advance(60_000);
+    await expect(sequencer.run('b1', 'second', async () => 1)).rejects.toBeInstanceOf(
+      IngressFenced,
+    );
+    advance(60_000); // first lapses at 120 s; second is held until 180 s
+    expect(sequencer.outstanding('b1')).toBe(1);
+    await expect(sequencer.run('b1', 'next', async () => 1)).rejects.toBeInstanceOf(IngressFenced);
+    advance(60_000);
+    /* Both lapsed. "next" was refused at 120 s, so it is outstanding itself, and is admitted. */
+    expect(await sequencer.run('b1', 'next', async () => 2)).toBe(2);
+    expect(sequencer.outstanding('b1')).toBe(0);
+  });
+
+  it('the production defaults fence for exactly 120 s: held at 119.999 s, lapsed at 120 s', async () => {
+    expect(INGRESS_FENCE_MS).toBe(120_000);
+    let now = 5_000;
+    const sequencer = new IngressSequencer({ now: () => now });
+    await expect(sequencer.run('b1', 'lost', () => Promise.reject(new Error('x')))).rejects.toThrow(
+      'x',
+    );
+    now += 119_999;
+    await expect(sequencer.run('b1', 'yes', async () => 1)).rejects.toBeInstanceOf(IngressFenced);
+    now += 1;
+    /* "lost" lapsed; "yes" was refused at 119.999 s and is outstanding itself, so it goes. */
+    expect(await sequencer.run('b1', 'yes', async () => 2)).toBe(2);
+  });
+
+  it('the fence is in memory only: a restarted process starts with no fence (documented limit)', async () => {
+    const before = new IngressSequencer({ waitMs: 1_000, maxWaiting: 8, fenceMs: 120_000 });
+    await expect(before.run('b1', 'lost', () => Promise.reject(new Error('x')))).rejects.toThrow(
+      'x',
+    );
+    await expect(before.run('b1', 'yes', async () => 1)).rejects.toBeInstanceOf(IngressFenced);
+    /* A restart or deploy builds a new sequencer: the outstanding set is gone, and a later
+     * message is admitted. Ordering then rests on the database lock and arrival stamp alone. */
+    const afterRestart = new IngressSequencer({ waitMs: 1_000, maxWaiting: 8, fenceMs: 120_000 });
+    expect(afterRestart.outstanding('b1')).toBe(0);
+    expect(await afterRestart.run('b1', 'yes', async () => 'admitted')).toBe('admitted');
+  });
+
+  it('a message stored once and redelivered is admitted, and leaves nothing outstanding', async () => {
+    const { sequencer } = lane();
+    expect(await sequencer.run('b1', 'sold', async () => ({ isNew: true }))).toEqual({
+      isNew: true,
+    });
+    expect(await sequencer.run('b1', 'sold', async () => ({ isNew: false }))).toEqual({
+      isNew: false,
+    });
+    expect(sequencer.outstanding('b1')).toBe(0);
+    expect(await sequencer.run('b1', 'next', async () => 'next')).toBe('next');
+  });
+
   it('a refused message the caller found already stored is settled and holds nothing back', async () => {
     const { sequencer } = lane();
     await expect(
@@ -268,6 +349,18 @@ describe('IngressSequencer', () => {
     expect(await sequencer.run('b1', 'cancel', async () => 'stored')).toBe('stored');
     expect(sequencer.outstanding('b1')).toBe(0);
     expect(await sequencer.run('b1', 'next', async () => 'next')).toBe('next');
+  });
+
+  it('a message held back without being tried fences the later ones of its business only', async () => {
+    const { sequencer } = lane();
+    sequencer.hold('b1', 'skipped-cancel');
+    await expect(sequencer.run('b1', 'yes', async () => 1)).rejects.toBeInstanceOf(IngressFenced);
+    expect(await sequencer.run('b2', 'other', async () => 'other')).toBe('other');
+    const stored: string[] = [];
+    await sequencer.run('b1', 'skipped-cancel', async () => stored.push('skipped-cancel'));
+    await sequencer.run('b1', 'yes', async () => stored.push('yes'));
+    expect(stored).toEqual(['skipped-cancel', 'yes']);
+    expect(sequencer.outstanding('b1')).toBe(0);
   });
 
   it('refuses bounds that are not positive whole numbers', () => {

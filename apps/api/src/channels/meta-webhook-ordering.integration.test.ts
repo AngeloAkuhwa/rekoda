@@ -30,6 +30,13 @@ describe('ordered ingress after a failed message', () => {
     return body;
   }
 
+  async function inboundJobs(businessId: string): Promise<number> {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      jobsRepo.jobsForBusiness(tx, 'inbound.message'),
+    );
+    return rows.length;
+  }
+
   async function stored(businessId: string) {
     const rows = await withBusiness(db, businessId, (tx) =>
       tx.execute<{ external_id: string }>(sql`
@@ -171,5 +178,51 @@ describe('ordered ingress after a failed message', () => {
     expect((await post(body)).statusCode).toBe(200);
     expect(await stored(a.id)).toEqual(['wamid.MIX.A']);
     expect(await stored(b.id)).toEqual(['wamid.MIX.B']);
+  });
+
+  /* An unattributed failure delays the rest of its body for every business (accepted, G-122
+   * item 9), but loses nothing and lets nothing overtake: each skipped message is held in its own
+   * business's lane until Meta redelivers the body, and the redelivery, and any repeat of it,
+   * stores each message and queues its job once. */
+  it('a message skipped behind an unattributed failure is not lost, is not overtaken by its business, and is stored once', async () => {
+    const a = await seedMerchant('+2348031234567', 'Ada Fashion');
+    const b = await seedMerchant('+2348035550001', 'Bola Foods');
+    const body = messagePayload('2348031234567', 'wamid.UNATTR.A', 'sold 2 bags');
+    body.entry[0]!.changes[0]!.value.messages.push({
+      id: 'wamid.UNATTR.B1',
+      from: '2348035550001',
+      timestamp: '1700000001',
+      type: 'text',
+      text: { body: 'cancel' },
+    });
+    const watch = watchAccept(async () => {}, true);
+    try {
+      expect((await post(body)).statusCode).toBe(503);
+      expect(watch.attempted).toEqual(['wamid.UNATTR.A']);
+    } finally {
+      watch.restore();
+    }
+    expect(await stored(a.id)).toEqual([]);
+    expect(await stored(b.id)).toEqual([]);
+
+    /* Bola's "yes" in a separate webhook, before Meta redelivers the body: not stored ahead of
+     * Bola's skipped "cancel". Ada's own lane is not involved and another message is admitted. */
+    const yes = messagePayload('2348035550001', 'wamid.UNATTR.B2', 'yes');
+    expect((await post(yes)).statusCode).toBe(503);
+    expect(await stored(b.id)).toEqual([]);
+
+    expect((await post(body)).statusCode).toBe(200);
+    expect(await stored(a.id)).toEqual(['wamid.UNATTR.A']);
+    expect(await stored(b.id)).toEqual(['wamid.UNATTR.B1']);
+    expect((await post(yes)).statusCode).toBe(200);
+    expect(await stored(b.id)).toEqual(['wamid.UNATTR.B1', 'wamid.UNATTR.B2']);
+
+    /* Meta repeats both: acknowledged, nothing stored or queued twice. */
+    expect((await post(body)).statusCode).toBe(200);
+    expect((await post(yes)).statusCode).toBe(200);
+    expect(await stored(a.id)).toEqual(['wamid.UNATTR.A']);
+    expect(await stored(b.id)).toEqual(['wamid.UNATTR.B1', 'wamid.UNATTR.B2']);
+    expect(await inboundJobs(a.id)).toBe(1);
+    expect(await inboundJobs(b.id)).toBe(2);
   });
 });

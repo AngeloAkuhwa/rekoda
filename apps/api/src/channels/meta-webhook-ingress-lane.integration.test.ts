@@ -13,9 +13,10 @@
  *
  * Every wait is observed (pg_stat_activity, the lane's depth), never assumed from a delay.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { identity, jobsRepo, withBusiness, sql } from '@rekoda/db';
 import { IngressSequencer } from './ingress-sequencer.js';
+import { MetaIngressService } from './meta.service.js';
 import { app, db, messagePayload, post, useMetaWebhookHarness } from './meta-webhook.fixtures.js';
 
 useMetaWebhookHarness();
@@ -240,5 +241,99 @@ describe('ordered ingress across separate webhooks (OWN-74)', () => {
       'wamid.DUP.cancel',
       'wamid.DUP.next',
     ]);
+  });
+
+  it('a stored message whose redelivery cannot take the lock is acknowledged and fences nothing', async () => {
+    const business = await seedMerchant(OWNER, 'Ada Fashion');
+    const sold = messagePayload(OWNER, 'wamid.REDUP.sold', 'sold 3 bags');
+    expect((await post(sold)).statusCode).toBe(200);
+
+    /* Meta repeats the stored message while the ingress lock is busy: its duplicate write times
+     * out on the lock. It is already stored, so it is acknowledged, not left outstanding. */
+    const lock = await holdIngressLock(business.id);
+    try {
+      expect((await post(sold)).statusCode).toBe(200);
+    } finally {
+      await lock.release();
+    }
+    expect(lane().outstanding(business.id)).toBe(0);
+
+    /* The merchant's next message is not held back behind a message that was never lost. */
+    expect((await post(messagePayload(OWNER, 'wamid.REDUP.next', 'yes'))).statusCode).toBe(200);
+    expect(await stored(business.id)).toEqual(['wamid.REDUP.sold', 'wamid.REDUP.next']);
+  });
+});
+
+/**
+ * The guarantee is ADMISSION order: messages of one business are stored, stamped and processed in
+ * the order they reach the business's lane, after sender resolution. Rekoda cannot see Meta's send
+ * order for two webhooks in flight at once (Meta does not order separate requests, and its
+ * `timestamp` is whole seconds), and nothing uses that timestamp to order them. These pin that
+ * guarantee and its stated limit; independent lanes per business are pinned by the burst test
+ * above.
+ */
+describe('concurrent webhooks of one business: admission order, not send order (OWN-74)', () => {
+  async function stamps(businessId: string) {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ external_id: string; event_at: string; job_at: string }>(sql`
+        SELECT e.external_id, e.created_at::text AS event_at, j.created_at::text AS job_at
+          FROM external_events e
+          JOIN jobs j ON j.business_id = e.business_id AND j.payload->>'eventId' = e.id::text
+         WHERE e.business_id = ${businessId}::uuid
+         ORDER BY e.created_at, j.created_at`),
+    );
+    return [...rows];
+  }
+
+  it('a webhook whose sender resolution finishes first is admitted, stamped and stored first, whatever Meta sent first', async () => {
+    const business = await seedMerchant(OWNER, 'Ada Fashion');
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+    const service = app.get(MetaIngressService) as unknown as {
+      resolveBusiness: (from: string) => Promise<string | null>;
+    };
+    const original = service.resolveBusiness.bind(service);
+    let resolveSlow!: () => void;
+    const slow = new Promise<void>((resolve) => (resolveSlow = resolve));
+    let slowStarted = false;
+    const spy = vi.spyOn(service, 'resolveBusiness').mockImplementation(async (from: string) => {
+      if (from === OWNER) {
+        slowStarted = true;
+        await slow;
+      }
+      return original(from);
+    });
+    try {
+      /* Same Meta timestamp on both. The owner's "cancel" reaches Rekoda first, but its sender
+       * resolution is slow; the delegate's "yes" resolves first and is admitted first. */
+      const cancel = post(messagePayload(OWNER, 'wamid.RACE.cancel', 'cancel'));
+      await until('the cancel is resolving its sender', () => slowStarted);
+      const yes = await post(messagePayload(DELEGATE, 'wamid.RACE.yes', 'yes'));
+      expect(yes.statusCode).toBe(200);
+      resolveSlow();
+      expect((await cancel).statusCode).toBe(200);
+    } finally {
+      resolveSlow();
+      spy.mockRestore();
+    }
+    /* Stored, and stamped for the worker, in admission order: Rekoda does not claim Meta's order. */
+    const rows = await stamps(business.id);
+    expect(rows.map((r) => r.external_id)).toEqual(['wamid.RACE.yes', 'wamid.RACE.cancel']);
+    for (const row of rows) expect(row.job_at).toBe(row.event_at);
+    expect(rows[0]!.event_at).not.toBe(rows[1]!.event_at);
+  });
+
+  it('simultaneous webhooks with the same Meta timestamp each get a distinct arrival stamp, one total order', async () => {
+    const business = await seedMerchant(OWNER, 'Ada Fashion');
+    const ids = Array.from({ length: 6 }, (_, i) => `wamid.SAME-TS.${i}`);
+    const answers = await Promise.all(
+      ids.map((id, i) => post(messagePayload(OWNER, id, `sold ${i} bags`))),
+    );
+    expect(answers.map((r) => r.statusCode)).toEqual(ids.map(() => 200));
+    const rows = await stamps(business.id);
+    expect(rows.map((r) => r.external_id).sort()).toEqual([...ids].sort());
+    /* No two share a stamp, so the worker's order is total without the whole-second timestamp. */
+    expect(new Set(rows.map((r) => r.event_at)).size).toBe(ids.length);
+    for (const row of rows) expect(row.job_at).toBe(row.event_at);
   });
 });
