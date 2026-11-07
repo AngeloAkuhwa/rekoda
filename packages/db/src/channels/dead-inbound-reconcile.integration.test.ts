@@ -146,9 +146,9 @@ async function eventRow(eventId: string) {
   return [...rows][0]!;
 }
 
-const reconcile = (businessId: string) =>
+const reconcile = (businessId: string, processingJobId?: string) =>
   withBusiness(app, businessId, (tx) =>
-    conversationsRepo.reconcileDeadInboundMessages(tx, businessId),
+    conversationsRepo.reconcileDeadInboundMessages(tx, businessId, processingJobId),
   );
 
 const RETIRED = { state: 'superseded', retired_reason: conversationsRepo.INBOUND_MESSAGE_FAILED };
@@ -245,6 +245,52 @@ describe('reconcileDeadInboundMessages', () => {
     expect(await draftState(draft)).toEqual(STILL_PENDING);
     expect((await eventRow(live.eventId)).processed_at).toBeNull();
     expect((await eventRow(done.eventId)).processed_at).toBeNull();
+  });
+
+  it('Sequence A: a "yes" that arrived before a lost "cancel" keeps its draft valid (Codex on #428)', async () => {
+    const businessId = await seedBusiness();
+    const draft = await draftFrom(businessId, 'draft', at(0), at(600));
+    const yes = await inboundJob(businessId, 'yes', at(10), 'running');
+    const lost = await inboundJob(businessId, 'cancel', at(20), 'dead');
+
+    /* Processing the earlier yes: the later loss must not retire the draft under it... */
+    expect(await reconcile(businessId, yes.jobId)).toEqual({
+      messages: 0,
+      drafts: 0,
+      continuations: 0,
+    });
+    expect(await draftState(draft)).toEqual(STILL_PENDING);
+    expect((await eventRow(lost.eventId)).processed_at).toBeNull();
+  });
+
+  it('Sequence B: a lost "cancel" withdraws the draft before a later "yes" is read (Codex on #428)', async () => {
+    const businessId = await seedBusiness();
+    const draft = await draftFrom(businessId, 'draft', at(0), at(600));
+    const lost = await inboundJob(businessId, 'cancel', at(10), 'dead');
+    const yes = await inboundJob(businessId, 'yes', at(20), 'running');
+
+    expect(await reconcile(businessId, yes.jobId)).toEqual({
+      messages: 1,
+      drafts: 1,
+      continuations: 0,
+    });
+    expect(await draftState(draft)).toEqual(RETIRED);
+    expect((await eventRow(lost.eventId)).processed_at).not.toBeNull();
+  });
+
+  it('a later message still reaches a lost message that an earlier run left open', async () => {
+    const businessId = await seedBusiness();
+    const draft = await draftFrom(businessId, 'draft', at(0), at(600));
+    const yes = await inboundJob(businessId, 'yes', at(10), 'running');
+    await inboundJob(businessId, 'cancel', at(20), 'dead');
+    const later = await inboundJob(businessId, 'later', at(30), 'running');
+
+    await reconcile(businessId, yes.jobId);
+    expect(await draftState(draft)).toEqual(STILL_PENDING);
+    /* The earlier message finishes (here without confirming); the next run applies the loss. */
+    await owner.execute(sql`UPDATE jobs SET state = 'done' WHERE id = ${yes.jobId}::uuid`);
+    expect((await reconcile(businessId, later.jobId)).messages).toBe(1);
+    expect(await draftState(draft)).toEqual(RETIRED);
   });
 
   it('a live message that arrived after the dead one does not hold it back', async () => {

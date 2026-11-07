@@ -289,7 +289,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * lost "cancel" can never be overtaken by a later "yes". Only a run that can go on to tell the
      * merchant does it: the early returns above must not consume the lost message silently (Qodo
      * on #428). Counts only, never content. */
-    const lost = await conversationsRepo.reconcileDeadInboundMessages(tx, businessId);
+    const lost = await conversationsRepo.reconcileDeadInboundMessages(tx, businessId, jobId);
 
     /* OWN-74: an answer waits for every earlier message still live, even one backing off after
      * a failure that `hasEarlierLiveJob` lets a request pass. If that message never succeeds it

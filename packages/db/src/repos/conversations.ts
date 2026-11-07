@@ -929,6 +929,7 @@ export const INBOUND_MESSAGE_FAILED = 'inbound_message_failed';
 export async function reconcileDeadInboundMessages(
   tx: TenantDb,
   businessId: string,
+  processingJobId?: string,
 ): Promise<{ messages: number; drafts: number; continuations: number }> {
   const dead = await tx.execute<{ event_id: string; held: boolean }>(sql`
     SELECT e.id AS event_id,
@@ -954,6 +955,15 @@ export async function reconcileDeadInboundMessages(
        AND j.state = 'dead'
        AND e.business_id = ${businessId}::uuid
        AND e.processed_at IS NULL
+       /* Temporal eligibility (Codex on #428): a message that is itself being processed is only
+        * affected by lost messages that arrived BEFORE it. A "yes" that arrived before a lost
+        * "cancel" was sent while the draft was still wanted, so the later loss must not
+        * retroactively retire the draft under it; the lost message is left open and applies on
+        * the first run that arrived after it. Without a processing job, every dead message applies. */
+       AND (${processingJobId ?? null}::uuid IS NULL
+            OR (j.created_at, j.id) < (SELECT p.created_at, p.id FROM jobs p
+                                        WHERE p.id = ${processingJobId ?? null}::uuid
+                                          AND p.business_id = ${businessId}::uuid))
      ORDER BY j.updated_at, j.id`);
   let messages = 0;
   let drafts = 0;
