@@ -320,8 +320,10 @@ change a feature and want to know what to run.
 | integration | `apps/api/src/channels/meta-g68-review.integration.test.ts`           |
 | integration | `apps/api/src/channels/meta-invoices.integration.test.ts`             |
 | integration | `apps/api/src/channels/meta-lost-message.integration.test.ts`         |
+| integration | `apps/api/src/channels/meta-lost-message-answers.integration.test.ts` |
 | integration | `apps/api/src/channels/meta-order-ingress.integration.test.ts`        |
 | integration | `apps/api/src/channels/meta-webhook-ordering.integration.test.ts`     |
+| integration | `apps/api/src/channels/meta-webhook-ingress-lane.integration.test.ts` |
 | integration | `apps/api/src/channels/meta-pidgin-continuations.integration.test.ts` |
 | integration | `apps/api/src/channels/meta-plan-example.integration.test.ts`         |
 | integration | `apps/api/src/channels/meta-preview-expiry-1.integration.test.ts`     |
@@ -371,6 +373,7 @@ change a feature and want to know what to run.
 | unit        | `apps/api/src/ai/prompt.test.ts`                                      |
 | unit        | `apps/api/src/ai/stt.openai.test.ts`                                  |
 | unit        | `apps/api/src/ai/transports.test.ts`                                  |
+| unit        | `apps/api/src/channels/ingress-sequencer.test.ts`                     |
 | unit        | `apps/api/src/channels/meta.sender.test.ts`                           |
 | unit        | `apps/api/src/documents/r2.storage.test.ts`                           |
 | unit        | `apps/api/src/documents/r2.storage.wire.test.ts`                      |
