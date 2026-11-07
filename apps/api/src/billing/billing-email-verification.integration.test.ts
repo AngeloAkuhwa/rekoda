@@ -200,7 +200,7 @@ describe('asking for a link', () => {
     expect(answer).toEqual({ state: 'sent', maskedEmail: 'a**@shop.example.ng' });
     expect(mail.outbox).toHaveLength(1);
     expect(mail.outbox[0]!.to).toBe(EMAIL);
-    // OD-42(b) applies to reminder emails only: this confirmation carries no Reply-To.
+    // Only reminder emails carry a Reply-To (the business's verified email, OWN-83): not this one.
     expect(mail.outbox[0]!).not.toHaveProperty('replyTo');
     const link = /https:\/\/\S+/.exec(mail.outbox[0]!.text)![0];
     const url = new URL(link);

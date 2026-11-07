@@ -98,7 +98,7 @@ describe('reminder reasons in plain words', () => {
     const text = reminderReason('business_email_unverified', 'email');
     expect(text).toContain('your business email');
     expect(text).toContain('billing page');
-    expect(text).toContain('WhatsApp reminders can still go');
+    expect(text).toContain('This does not affect WhatsApp reminders');
     expect(text).not.toMatch(/support/i);
     expect(previewReason('business_email_unverified', 'email')).toContain(
       'so it cannot be sent by email now',

@@ -589,15 +589,15 @@ export function upgradeRequested(): Reply {
 }
 
 /**
- * A customer replied on WhatsApp to a payment reminder (OWN-83). Names the invoice so the merchant
+ * A customer wrote on WhatsApp after a payment reminder (OWN-83). Names the invoice so the merchant
  * knows who it is; never the customer's number or what they wrote. Says plainly that Rekoda does
- * not show the message yet, rather than pointing at an inbox that does not exist.
+ * not show customer messages, rather than pointing at an inbox that does not exist (G-124).
  */
 export function reminderReplyNotice(invoiceNumber: string): Reply {
   return reply(
-    `A customer replied on WhatsApp to your payment reminder for invoice ${invoiceNumber}. ` +
-      'They may be waiting for you.\n\n' +
-      'Rekoda cannot show their message here yet, so please contact them directly about this ' +
+    `The customer you reminded about invoice ${invoiceNumber} has sent your business a WhatsApp ` +
+      'message. They may be waiting for you.\n\n' +
+      'Rekoda does not show customer messages here, so please contact them directly about this ' +
       'invoice.',
   );
 }

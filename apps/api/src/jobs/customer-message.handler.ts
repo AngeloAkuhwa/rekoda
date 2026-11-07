@@ -237,15 +237,17 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
      * Appendix D's "never HIGH_RISK" in its strongest form. Everything it
      * cannot answer HANDS OFF, and says it is doing so (PR-091). */
     /* A REPLY TO AN INVOICE REMINDER (OWN-83). The business is told in its own Rekoda chat,
-     * whether or not the away assistant is on, once per reminder: the claim is a row in this
-     * transaction, so a redelivered webhook, a retried job or the customer's next message about
-     * the same reminder tells it nothing more. When this message answers a reminder, the
-     * assistant's handoff does not ALSO tell the business: one notice, not two. */
+     * whether or not the away assistant is on, once per reminder: a delivered notice is recorded
+     * in this transaction, so a redelivered webhook, a retried job or the customer's next message
+     * about the same reminder tells it nothing more, while an undelivered one is tried again on
+     * the next message. When THIS message is due that notice, the assistant's handoff does not
+     * ALSO tell the business: one notice, not two. Once the notice is recorded, later messages
+     * are handed off exactly as any other customer's. */
     const answered = await reminderThisAnswers(tx, deps, businessId, participant);
     const tellBusiness =
       answered !== null &&
-      (await remindersRepo.claimReminderReplyNotice(tx, businessId, answered.id));
-    const handoff: HandoffOptions = { tellMerchant: answered === null };
+      (await remindersRepo.reminderReplyNoticeDue(tx, businessId, answered.id));
+    const handoff: HandoffOptions = { tellMerchant: !tellBusiness };
 
     let note: string | null;
     if (inbound.messageType === 'text' && (inbound.text ?? '').trim().length > 0) {
@@ -267,10 +269,13 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
         ? await handoffToHuman(tx, deps, businessId, participant, blindIndex, handoff)
         : null;
     }
-    /* Last, after everything else this job does, so nothing after it can roll the claim back
-     * once the business has been told. */
+    /* Last, after everything else this job does, so little after it can roll the record back
+     * once the business has been told. Recorded only when it was delivered. */
     if (tellBusiness) {
       const told = await tellBusinessOfReminderReply(tx, deps, businessId, answered.invoiceNumber);
+      if (told === 'reminder reply: business told') {
+        await remindersRepo.recordReminderReplyNotice(tx, businessId, answered.id);
+      }
       note = note ? `${note}; ${told}` : told;
     }
     await events.markProcessed(tx, eventId, note, businessId);

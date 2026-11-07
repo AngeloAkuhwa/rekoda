@@ -503,21 +503,40 @@ export async function recentSentWhatsAppReminders(
 }
 
 /**
- * Claim the one notice the business gets about replies to this reminder. True for the first
- * claim; false when it was already told (a redelivered webhook, a retried job, or the customer's
- * next message about the same reminder). In the caller's transaction, so a job that rolls back
- * gives the claim back with everything else.
+ * Whether the business still has to be told about replies to this reminder. Takes a
+ * transaction-scoped lock on the reminder first, so two customer messages handled at once are
+ * decided one after the other: the second waits for the first to commit and then sees its row.
+ * Writes nothing; `recordReminderReplyNotice` records the notice once it was delivered.
  */
-export async function claimReminderReplyNotice(
+export async function reminderReplyNoticeDue(
   tx: TenantDb,
   businessId: string,
   reminderId: string,
 ): Promise<boolean> {
-  const rows = await tx.execute<{ reminder_id: string }>(sql`
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${`reminder-reply-notice:${businessId}:${reminderId}`}))`,
+  );
+  const rows = await tx.execute<{ one: number }>(sql`
+    SELECT 1 AS one FROM reminder_reply_notices
+     WHERE business_id = ${businessId}::uuid AND reminder_id = ${reminderId}::uuid
+  `);
+  return [...rows].length === 0;
+}
+
+/**
+ * The business was told about replies to this reminder. Recorded only after the notice was
+ * delivered, in the caller's transaction, so an undelivered notice (the owner's WhatsApp window
+ * closed, an outage) is tried again on the customer's next message instead of being lost, and a
+ * job that rolls back records nothing.
+ */
+export async function recordReminderReplyNotice(
+  tx: TenantDb,
+  businessId: string,
+  reminderId: string,
+): Promise<void> {
+  await tx.execute(sql`
     INSERT INTO reminder_reply_notices (business_id, reminder_id)
     VALUES (${businessId}::uuid, ${reminderId}::uuid)
     ON CONFLICT (business_id, reminder_id) DO NOTHING
-    RETURNING reminder_id
   `);
-  return [...rows].length === 1;
 }

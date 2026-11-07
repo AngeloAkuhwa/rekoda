@@ -125,12 +125,6 @@ type Prepared =
       facts: Parameters<typeof composeEmailReminder>[0];
     };
 
-/** The business's own email is confirmed (OWN-83). Whether its seal opens is checked at send. */
-const businessEmailVerified = (business: remindersRepo.ReminderBusiness | null): boolean =>
-  business !== null &&
-  business.billingEmailVerifiedAt !== null &&
-  business.billingEmailSealed !== null;
-
 const toItem = (row: remindersRepo.ReminderRow): ReminderHistoryItem => ({
   id: row.id,
   channel: row.channel,
@@ -239,7 +233,8 @@ export class ReminderService {
             /* OWN-83: the same rule as the send. */
             email:
               customerEmail &&
-              businessEmailVerified(await remindersRepo.businessForReminder(tx, businessId)),
+              this.replyTo(businessId, await remindersRepo.businessForReminder(tx, businessId)) !==
+                null,
           });
           if (channels.length === 0) channels = [customerEmail ? 'email' : 'whatsapp'];
         } else {
@@ -377,8 +372,9 @@ export class ReminderService {
       const customerEmail = facets.some((f) => f.facet === 'email');
       return {
         whatsapp: facets.some((f) => f.facet === 'phone'),
-        /* OWN-83: email is a channel to try only once the business's own email is verified. */
-        email: customerEmail && businessEmailVerified(business),
+        /* OWN-83: email is a channel to try only once the business's own email is verified
+         * and opens: the same test the send applies. */
+        email: customerEmail && this.replyTo(businessId, business) !== null,
         customerEmail,
       };
     });
@@ -659,10 +655,13 @@ export class ReminderService {
      * confirmed, or a seal this key cannot open) the email does not go: it is never sent with
      * Rekoda support, another business or Rekoda's sending address as the reply destination. */
     let replyTo: string | null = null;
-    if (block === null && channel === 'email') {
-      if (!this.email.available || !this.config.webUrl) block = 'email_not_configured';
-      else {
+    if ((block === null || block === 'attestation_required') && channel === 'email') {
+      if (!this.email.available || !this.config.webUrl) {
+        if (block === null) block = 'email_not_configured';
+      } else {
         replyTo = this.replyTo(businessId, business);
+        /* Ahead of the attestation: the merchant is not asked to attest for an email that could
+         * not go anyway. */
         if (replyTo === null) block = 'business_email_unverified';
       }
     }

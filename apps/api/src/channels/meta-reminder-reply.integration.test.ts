@@ -144,7 +144,9 @@ const reply = async (phoneNumberId: string, wamid: string, text: string) => {
 };
 
 const noticesTo = (phone: string) =>
-  stubSender.sent.filter((m) => m.to === phone && m.text.includes('replied on WhatsApp'));
+  stubSender.sent.filter(
+    (m) => m.to === phone && m.text.includes('has sent your business a WhatsApp'),
+  );
 
 const noticeRows = (businessId: string) =>
   withBusiness(db, businessId, async (tx) => [
@@ -163,7 +165,7 @@ describe('a customer replies to a WhatsApp reminder (OWN-83)', () => {
     const notices = noticesTo(s.ownerPhone);
     expect(notices).toHaveLength(1);
     expect(notices[0]!.text).toContain(s.invoiceNumber);
-    expect(notices[0]!.text).toContain('Rekoda cannot show their message here yet');
+    expect(notices[0]!.text).toContain('Rekoda does not show customer messages here');
     // No customer identity or message content rides the notice.
     expect(notices[0]!.text).not.toMatch(/234909|9097778888/);
     expect(notices[0]!.text).not.toContain('Friday');
@@ -187,6 +189,22 @@ describe('a customer replies to a WhatsApp reminder (OWN-83)', () => {
     expect(await noticeRows(s.businessId)).toHaveLength(1);
   });
 
+  it('a notice that could not be delivered is not spent: the next message tries again', async () => {
+    const s = await shop('PN-RR-12');
+    await reminded(s);
+    // The owner's WhatsApp window is closed (or Meta is down): the free-form notice is refused.
+    stubSender.failWith();
+    await reply('PN-RR-12', 'wamid.RR.12A', 'I will pay');
+    expect(noticesTo(s.ownerPhone)).toHaveLength(0);
+    expect(await noticeRows(s.businessId)).toHaveLength(0);
+    // The customer writes again once delivery works: the business is told, once.
+    await reply('PN-RR-12', 'wamid.RR.12B', 'hello?');
+    expect(noticesTo(s.ownerPhone)).toHaveLength(1);
+    expect(await noticeRows(s.businessId)).toHaveLength(1);
+    await reply('PN-RR-12', 'wamid.RR.12C', 'still there?');
+    expect(noticesTo(s.ownerPhone)).toHaveLength(1);
+  });
+
   it('a later reminder answered again is told again', async () => {
     const s = await shop('PN-RR-3');
     await reminded(s);
@@ -208,6 +226,24 @@ describe('a customer replies to a WhatsApp reminder (OWN-83)', () => {
     // The business gets the reminder-reply notice, and NOT the generic handoff notice as well.
     expect(noticesTo(s.ownerPhone)).toHaveLength(1);
     expect(stubSender.sent.filter((m) => m.to === s.ownerPhone)).toHaveLength(1);
+  });
+
+  it('after the one reminder notice, a later unanswered message is handed off to the business as before', async () => {
+    const s = await shop('PN-RR-11', { assistant: true });
+    await reminded(s);
+    await reply('PN-RR-11', 'wamid.RR.11A', 'I already paid yesterday');
+    expect(noticesTo(s.ownerPhone)).toHaveLength(1);
+    // A new day for the assistant's once-a-day handoff (the reminder notice is already spent).
+    await withBusiness(db, s.businessId, (tx) =>
+      tx.execute(sql`UPDATE away_assistant_replies SET day = '2000-01-01'`),
+    );
+    await reply('PN-RR-11', 'wamid.RR.11B', 'when do you open tomorrow?');
+    expect(noticesTo(s.ownerPhone)).toHaveLength(1);
+    // The business is not left in the dark: the ordinary handoff notice tells it.
+    const handoff = stubSender.sent.filter(
+      (m) => m.to === s.ownerPhone && m.text.includes('could not answer'),
+    );
+    expect(handoff).toHaveLength(1);
   });
 
   it('a message that answers no reminder keeps today’s behaviour: no reminder notice', async () => {

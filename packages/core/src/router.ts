@@ -1126,13 +1126,15 @@ function survivedNormalisation(raw: string, matched: string): boolean {
 }
 
 /**
- * "my email is X", "business email X", "email: X" and close forms, as the WHOLE message (OWN-83).
+ * "my email is X", "business email: X" and close forms, as the WHOLE message (OWN-83). It must say
+ * whose email it is ("my", "our", "business", "billing", "shop"): a bare "email x@y.com" may be
+ * "send it to this address", and treating that as a change would clear a confirmed email.
  * The address is returned as typed (trimmed); whether it is an acceptable address is the billing
  * email check's decision, not this matcher's. A sentence that merely contains an address ("send
  * the receipt to ada@x.com") is not this command and goes to the model, tokenised.
  */
 const BUSINESS_EMAIL =
-  /^\s*(?:(?:my|our)\s+)?(?:(?:business|billing|shop)\s+)?e-?mail(?:\s+address)?(?:\s+is|\s*:|\s*=)?\s+([^\s@]{1,64}@[^\s@]{1,255})\s*[.!]?\s*$/iu;
+  /^\s*(?:(?:my|our)\s+(?:(?:business|billing|shop)\s+)?|(?:business|billing|shop)\s+)e-?mail(?:\s+address)?(?:\s+is|\s*:|\s*=)?\s+([^\s@]{1,64}@[^\s@]{1,255})\s*[.!]?\s*$/iu;
 
 export function businessEmailCommand(raw: string): string | null {
   if (raw.length > 400) return null;

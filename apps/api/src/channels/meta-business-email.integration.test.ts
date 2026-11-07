@@ -120,7 +120,7 @@ describe('"my email is X" on WhatsApp (OWN-83)', () => {
         sql`UPDATE billing_email_verifications SET created_at = now() - interval '2 minutes'`,
       ),
     );
-    await say(mail, OWNER, 'wamid.BE6', 'email: new@adaeze.example.ng');
+    await say(mail, OWNER, 'wamid.BE6', 'business email: new@adaeze.example.ng');
     expect((await state(businessId)).verifiedAt).toBeNull();
     expect(mail.outbox.at(-1)!.to).toBe('new@adaeze.example.ng');
   });

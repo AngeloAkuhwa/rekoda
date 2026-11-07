@@ -106,6 +106,16 @@ describe('the reminder email Reply-To is the business (OWN-83)', () => {
     expect(mail.attempts).toBe(0);
   });
 
+  it('names the business email before asking for the attestation', async () => {
+    const s = await seed({ businessEmail: null });
+    await approvePhone(s);
+    const r = await sendEmail(s, { attest: false });
+    expect(r.reminder).toMatchObject({
+      status: 'blocked',
+      reasonCode: 'business_email_unverified',
+    });
+  });
+
   it('confirming the business email lets email reminders go, with that address as Reply-To', async () => {
     const s = await seed({ businessEmail: null });
     await approvePhone(s);
@@ -145,6 +155,19 @@ describe('the channel decision without a verified business email (OWN-83)', () =
     );
     expect(out.results.map((r) => [r.channel, r.reminder.status])).toEqual([['whatsapp', 'sent']]);
     expect(whatsappCalls).toHaveLength(1);
+    expect(mail.attempts).toBe(0);
+  });
+
+  it("'auto' treats a verified email whose seal cannot be opened as none: WhatsApp only", async () => {
+    const s = await seed();
+    await approvePhone(s);
+    await rows(s.businessId, sql`UPDATE businesses SET billing_email_sealed = 'not-a-seal'`);
+    const out = await new ReminderService(config, appDb, mail, whatsapp).send(
+      s.businessId,
+      s.userId,
+      { invoiceNumber: s.invoiceNumber, channels: 'auto', idempotencyKey: key(), attest: true },
+    );
+    expect(out.results.map((r) => r.channel)).toEqual(['whatsapp']);
     expect(mail.attempts).toBe(0);
   });
 

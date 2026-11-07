@@ -24,7 +24,6 @@ describe('the business email command', () => {
     ['my email is accounts@adaeze.ng', 'accounts@adaeze.ng'],
     ['My business email is Accounts@Adaeze.ng', 'Accounts@Adaeze.ng'],
     ['business email: accounts@adaeze.ng', 'accounts@adaeze.ng'],
-    ['email accounts@adaeze.ng', 'accounts@adaeze.ng'],
     ['billing email accounts@adaeze.ng.', 'accounts@adaeze.ng'],
     ['our e-mail address is hello@bisi-shoes.com.ng', 'hello@bisi-shoes.com.ng'],
     ['  my email is accounts@adaeze.ng  ', 'accounts@adaeze.ng'],
@@ -41,6 +40,8 @@ describe('the business email command', () => {
     'my email is not working',
     'my email is a@b.ng and c@d.ng',
     'customer email ada@customer.ng',
+    'email ada@customer.ng',
+    'email: ada@customer.ng',
   ])('leaves %j to the model', (raw) => {
     expect(goesToModel(raw)).toBe(true);
   });
