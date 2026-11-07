@@ -32,3 +32,8 @@ aaf444e10fdf4f21fd498a507cb6760233ff6086:apps/web/src/lib/billing-pay-copy.test.
 # credential (self-describing, never issued). The live line now builds the
 # string at run time, so no such literal remains in the tree.
 7488a3cf700ff814560e5b64bfc8aab823bfc161:packages/db/src/ops/jobs.integration.test.ts:stripe-access-token:268
+
+# Synthetic fixture (commit 9d8e151, PR #428): a made-up host .env value proving the staging check
+# never trusts the host's Paystack key when the running api cannot be asked. Never issued, not a
+# credential. The live line now builds the string at run time, so no such literal remains.
+9d8e15154abcac38ad06d49493299b40ae91c02f:scripts/staging-readonly-check.services.test.mjs:stripe-access-token:409
