@@ -370,6 +370,22 @@ describe('IngressSequencer', () => {
     expect(sequencer.outstanding('b1')).toBe(0);
   });
 
+  it('a message reserved when it failed unattributed is admitted ahead of the body-mates held behind it', async () => {
+    const { sequencer, advance } = lane({ fenceMs: 120_000 });
+    /* [cancel, yes] in one body; the cancel failed before its business was known. */
+    sequencer.reserve('cancel');
+    sequencer.hold('b1', 'yes');
+    const stored: string[] = [];
+    await sequencer.run('b1', 'cancel', async () => stored.push('cancel'));
+    await sequencer.run('b1', 'yes', async () => stored.push('yes'));
+    expect(stored).toEqual(['cancel', 'yes']);
+    /* A reservation is used once and lapses with the fence. */
+    sequencer.reserve('late');
+    sequencer.hold('b1', 'after');
+    advance(120_000);
+    expect(await sequencer.run('b1', 'after', async () => 'after')).toBe('after');
+  });
+
   it('refuses bounds that are not positive whole numbers', () => {
     for (const bad of [0, -1, 1.5, Number.NaN]) {
       expect(() => new IngressSequencer({ waitMs: bad, maxWaiting: 1, fenceMs: 1 })).toThrow();

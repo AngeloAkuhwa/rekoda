@@ -26,6 +26,7 @@ import {
   MILO,
   QUESTION,
   REASK,
+  SAME_DONE,
   SEPARATE_LEAD,
   bookMilo,
   footprint as purchaseFootprint,
@@ -252,6 +253,7 @@ describe('a held purchase withdrawn by a lost message stays withdrawn (OWN-74)',
       const later = sentSince(afterSeparate).join('\n');
       expect(later).not.toContain(SEPARATE_LEAD);
       expect(later).not.toContain(REASK);
+      expect(later).not.toContain(SAME_DONE);
       expect(later).not.toContain('Saved ✅');
       expect(await purchaseDrafts(business.id)).toEqual(drafts);
       const withdrawn = await purchaseFootprint(business.id);

@@ -300,6 +300,14 @@ export class MetaIngressService {
     this.sequencer.hold(businessId, event.externalId);
   }
 
+  /**
+   * A message that failed before its business was known keeps its place: when it comes back it is
+   * ordered ahead of the messages after it in its body that `holdBack` held meanwhile.
+   */
+  reserveOrder(event: InboundEvent): void {
+    if (event.kind === 'message') this.sequencer.reserve(event.externalId);
+  }
+
   /** Whether this message is already stored for the business (a redelivery). */
   private isStored(businessId: string, externalId: string): Promise<boolean> {
     return withBusiness(this.db, businessId, (tx) => events.isRecorded(tx, 'meta', externalId));

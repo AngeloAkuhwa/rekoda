@@ -116,13 +116,21 @@ export class MetaWebhookController {
      * business, so the rest of the messages in this body are not stored, whoever sent them, and
      * wait for the redelivery below (an accepted, temporary cross-business delay; G-122 item 9).
      * Each of them is held in its own business's lane meanwhile, so a later webhook of that
-     * business is not stored ahead of it. Status receipts carry on. Messages that did land
-     * deduplicate on redelivery. */
+     * business is not stored ahead of it, and the failed message's order is reserved first, so the
+     * redelivery stores it ahead of them. Holding back stops at its first failure (most likely the
+     * same database fault), and the redelivery is enough without it. Status receipts carry on.
+     * Messages that did land deduplicate on redelivery. */
     let messageFailed = false;
+    let holdBack = true;
     for (const event of events) {
       if (messageFailed && event.kind === 'message') {
         failed += 1;
-        await this.ingress.holdBack(event).catch(() => undefined);
+        if (holdBack) {
+          holdBack = await this.ingress.holdBack(event).then(
+            () => true,
+            () => false,
+          );
+        }
         continue;
       }
       try {
@@ -130,7 +138,10 @@ export class MetaWebhookController {
       } catch (error) {
         failed += 1;
         const attributed = error instanceof IngressRefused || error instanceof IngressStoreFailed;
-        if (event.kind === 'message' && !attributed) messageFailed = true;
+        if (event.kind === 'message' && !attributed) {
+          messageFailed = true;
+          this.ingress.reserveOrder(event);
+        }
         this.log.error(
           `failed to accept a Meta event: ${redactForLog(String((error as Error)?.message ?? error))}`,
         );

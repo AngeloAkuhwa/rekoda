@@ -30,10 +30,12 @@
  *  - **The fence ends.** Each outstanding message is remembered for `fenceMs` (120 s in
  *    production) from the moment it FIRST failed or was refused; failing again on a redelivery does
  *    not extend it. Within that window nothing that reached the lane after it is stored ahead of it.
- *    When its window passes it is forgotten and holds nothing back, so one message that keeps
- *    failing cannot hold a merchant's messages back for longer than that (messages refused behind
- *    it are outstanding on their own windows, and are admitted on their own redelivery once nothing
- *    earlier is outstanding). At most `maxOutstanding` are remembered per business; a refusal past
+ *    When its window passes it is forgotten and holds nothing back. Messages refused behind it are
+ *    outstanding on their own windows and are admitted on their own redelivery once nothing earlier
+ *    is outstanding, so the windows can chain: while a merchant keeps writing faster than Meta
+ *    redelivers, each new message can be refused behind the last, and the fence clears when the
+ *    redeliveries catch up or 120 s pass with no new refusal. Nothing is lost meanwhile, and no
+ *    single message fences anything for more than 120 s after its own first failure. At most `maxOutstanding` are remembered per business; a refusal past
  *    the cap is not remembered, so its order against the others is not kept.
  *
  * The guarantee is ADMISSION order: the order messages of one business reach this lane, after
@@ -41,8 +43,10 @@
  *  - order two webhooks that are in flight at the same time: they reach the lane in the order their
  *    sender resolution finishes. Meta does not order its separate webhook requests, and its message
  *    timestamps are whole seconds, so Rekoda has no source for the send order and none is used;
- *  - fence a message whose business could not be resolved before it failed (the controller holds
- *    back the rest of that webhook body instead, for every business, until Meta redelivers it);
+ *  - fence a message whose business could not be resolved before it failed: its business is
+ *    unknown, so a later webhook of that business may be stored before it. The controller holds
+ *    back the rest of its webhook body instead, for every business, until Meta redelivers it, and
+ *    reserves the failed message's order (`reserve`) so the redelivery stores it before them;
  *  - keep the set across a restart or deploy (it is in memory), or share it with a second API
  *    process (production runs one; a second would still be ordered by the database lock alone);
  *  - hold a message past its window: if Meta redelivers it more than 120 s after it first failed,
@@ -111,6 +115,11 @@ interface Lane {
 
 export class IngressSequencer {
   private readonly lanes = new Map<string, Lane>();
+  /**
+   * Admission orders reserved for messages that failed before their business was known (see
+   * `reserve`), by external id, each forgotten `fenceMs` after it was reserved.
+   */
+  private readonly reserved = new Map<string, { seq: number; until: number }>();
   /** Admission order across the process; only compared within one lane. */
   private seq = 0;
   private readonly options: Required<IngressSequencerOptions>;
@@ -137,7 +146,7 @@ export class IngressSequencer {
    */
   async run<T>(businessId: string, externalId: string, work: () => Promise<T>): Promise<T> {
     const lane = this.laneFor(businessId);
-    const seq = (this.seq += 1);
+    const seq = this.takeReserved(externalId) ?? (this.seq += 1);
     this.admitOrRefuse(lane, businessId, externalId, seq);
     if (lane.size >= this.options.maxWaiting) {
       this.remember(lane, externalId, seq);
@@ -188,6 +197,21 @@ export class IngressSequencer {
   }
 
   /**
+   * Reserves an admission order for a message that failed before its business was known, so that
+   * when it comes back it is ordered as it first came: ahead of the messages after it in its body
+   * that were held back meanwhile (`hold`), which would otherwise fence it and be stored first.
+   * Kept for `fenceMs` and for at most `maxOutstanding` messages; a reservation is used once.
+   */
+  reserve(externalId: string): void {
+    this.pruneReserved();
+    if (this.reserved.has(externalId) || this.reserved.size >= this.options.maxOutstanding) return;
+    this.reserved.set(externalId, {
+      seq: (this.seq += 1),
+      until: this.options.now() + this.options.fenceMs,
+    });
+  }
+
+  /**
    * Holds back a message the caller could not try at all (an earlier message of its webhook body
    * failed before that message's business was known): it becomes outstanding, ordered as it
    * reached the lane, so no later message of its business is stored ahead of it before Meta
@@ -222,6 +246,20 @@ export class IngressSequencer {
      * from the map while in use would let a second lane of the business run beside it. */
     this.prune(lane);
     return lane;
+  }
+
+  private takeReserved(externalId: string): number | undefined {
+    this.pruneReserved();
+    const entry = this.reserved.get(externalId);
+    if (!entry) return undefined;
+    this.reserved.delete(externalId);
+    return entry.seq;
+  }
+
+  private pruneReserved(): void {
+    if (this.reserved.size === 0) return;
+    const now = this.options.now();
+    for (const [id, entry] of this.reserved) if (now >= entry.until) this.reserved.delete(id);
   }
 
   /** Forgets outstanding messages whose own window has passed. */

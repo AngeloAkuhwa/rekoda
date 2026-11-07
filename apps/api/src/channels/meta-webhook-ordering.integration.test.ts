@@ -77,7 +77,7 @@ describe('ordered ingress after a failed message', () => {
   /* One body carrying a "cancel" then a "yes": if the first cannot get the ingress lock, the second
    * must not be stored ahead of it, whether it comes from the same member or another member of the
    * business. Meta redelivers the whole body on the non-200, and the redelivery stamps them in
-   * sending order (independent review and CodeRabbit on #428). The lock is released by the first
+   * body order (independent review and CodeRabbit on #428). The lock is released by the first
    * message's own failure, observed, before the controller moves on to the second message, so the
    * second finds the lock free: if anything let it through, it would be stored and the test fail. */
   it.each([
@@ -206,7 +206,7 @@ describe('ordered ingress after a failed message', () => {
     expect(await stored(b.id)).toEqual([]);
 
     /* Bola's "yes" in a separate webhook, before Meta redelivers the body: not stored ahead of
-     * Bola's skipped "cancel". Ada's own lane is not involved and another message is admitted. */
+     * Bola's skipped "cancel". */
     const yes = messagePayload('2348035550001', 'wamid.UNATTR.B2', 'yes');
     expect((await post(yes)).statusCode).toBe(503);
     expect(await stored(b.id)).toEqual([]);
@@ -224,5 +224,23 @@ describe('ordered ingress after a failed message', () => {
     expect(await stored(b.id)).toEqual(['wamid.UNATTR.B1', 'wamid.UNATTR.B2']);
     expect(await inboundJobs(a.id)).toBe(1);
     expect(await inboundJobs(b.id)).toBe(2);
+  });
+
+  /* The same, inside one business (independent review of 0c5501e): the failed "cancel" keeps its
+   * place, so the "yes" held back behind it does not fence it on the redelivery and get stored
+   * first. */
+  it('a message that failed unattributed is stored before the body-mates of its own business held behind it', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    const body = batch('2348031234567');
+    const watch = watchAccept(async () => {}, true);
+    try {
+      expect((await post(body)).statusCode).toBe(503);
+      expect(watch.attempted).toEqual(['wamid.BATCH.A']);
+    } finally {
+      watch.restore();
+    }
+    expect(await stored(business.id)).toEqual([]);
+    expect((await post(body)).statusCode).toBe(200);
+    expect(await stored(business.id)).toEqual(['wamid.BATCH.A', 'wamid.BATCH.B']);
   });
 });
