@@ -282,11 +282,11 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
       let told = await tellBusinessOfReminderReply(tx, deps, businessId, answered.invoiceNumber);
       if (told === 'reminder reply: business told') {
         await remindersRepo.recordReminderReplyNotice(tx, businessId, answered.id);
-      } else if (handoff.merchantNoticeHeld) {
+      } else if (told === 'reminder reply: notice not delivered' && handoff.merchantNoticeHeld) {
         /* The handoff held back its notice for this one; it did not arrive, so the business gets
          * the ordinary handoff notice now rather than nothing (the reminder notice stays due). */
         await tellMerchantOfHandoff(tx, deps, businessId);
-        told = `${told}; handoff notice sent instead`;
+        told = `${told}; handoff notice tried instead`;
       }
       note = note ? `${note}; ${told}` : told;
     }
