@@ -1,11 +1,14 @@
 /**
  * Webhook ingress ordering (OWN-74, PR #428): a message of a webhook body is never stored ahead of
  * an earlier one that could not be stored. Split by concern from meta-webhook-ingress.integration
- * .test.ts; the shared app, stubs and payload helpers are in meta-webhook.fixtures.ts.
+ * .test.ts; the shared app, stubs and payload helpers are in meta-webhook.fixtures.ts. The ordering
+ * across separate webhooks is in meta-webhook-ingress-lane.integration.test.ts.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import type { InboundEvent } from '@rekoda/contracts';
 import { identity, jobsRepo, withBusiness, sql } from '@rekoda/db';
-import { db, messagePayload, post, useMetaWebhookHarness } from './meta-webhook.fixtures.js';
+import { MetaIngressService } from './meta.service.js';
+import { app, db, messagePayload, post, useMetaWebhookHarness } from './meta-webhook.fixtures.js';
 
 useMetaWebhookHarness();
 
@@ -15,10 +18,61 @@ describe('ordered ingress after a failed message', () => {
     return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
   }
 
+  function batch(laterFrom: string) {
+    const body = messagePayload('2348031234567', 'wamid.BATCH.A', 'cancel');
+    body.entry[0]!.changes[0]!.value.messages.push({
+      id: 'wamid.BATCH.B',
+      from: laterFrom,
+      timestamp: '1700000001',
+      type: 'text',
+      text: { body: 'yes' },
+    });
+    return body;
+  }
+
+  async function stored(businessId: string) {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ external_id: string }>(sql`
+        SELECT external_id FROM external_events
+         WHERE business_id = ${businessId}::uuid ORDER BY created_at`),
+    );
+    return [...rows].map((r) => r.external_id);
+  }
+
+  /**
+   * Watch the ingress service: record which messages the controller tries to store, and run
+   * `onFirstFailure` the moment the first attempt fails, before that failure reaches the
+   * controller, so it is done before the controller could try the next message.
+   */
+  function watchAccept(onFirstFailure: () => Promise<void>, failFirst = false) {
+    const service = app.get(MetaIngressService);
+    const original = service.accept.bind(service);
+    const attempted: string[] = [];
+    let failed = false;
+    const spy = vi
+      .spyOn(service, 'accept')
+      .mockImplementation(async (event: InboundEvent, payload) => {
+        if (event.kind === 'message') attempted.push(event.externalId);
+        try {
+          if (failFirst && attempted.length === 1) throw new Error('could not resolve the sender');
+          return await original(event, payload);
+        } catch (error) {
+          if (!failed) {
+            failed = true;
+            await onFirstFailure();
+          }
+          throw error;
+        }
+      });
+    return { attempted, restore: () => spy.mockRestore() };
+  }
+
   /* One body carrying a "cancel" then a "yes": if the first cannot get the ingress lock, the second
    * must not be stored ahead of it, whether it comes from the same member or another member of the
    * business. Meta redelivers the whole body on the non-200, and the redelivery stamps them in
-   * sending order (independent review and CodeRabbit on #428). */
+   * sending order (independent review and CodeRabbit on #428). The lock is released by the first
+   * message's own failure, observed, before the controller moves on: a controller that went on to
+   * the second message would find the lock free and store it, and the test would fail. */
   it.each([
     ['the same member', '2348031234567'],
     ['another member of the business', '2348039990002'],
@@ -28,24 +82,9 @@ describe('ordered ingress after a failed message', () => {
       const business = await seedMerchant('+2348031234567', 'Ada Fashion');
       const delegate = await identity.upsertUserByPhone(db, '+2348039990002');
       await identity.addMembership(db, business.id, delegate.id, 'delegate');
-      const body = messagePayload('2348031234567', 'wamid.BATCH.A', 'cancel');
-      body.entry[0]!.changes[0]!.value.messages.push({
-        id: 'wamid.BATCH.B',
-        from: laterFrom,
-        timestamp: '1700000001',
-        type: 'text',
-        text: { body: 'yes' },
-      });
-      const stored = async () => {
-        const rows = await withBusiness(db, business.id, (tx) =>
-          tx.execute<{ external_id: string }>(sql`
-          SELECT external_id FROM external_events
-           WHERE business_id = ${business.id}::uuid ORDER BY created_at`),
-        );
-        return [...rows].map((r) => r.external_id);
-      };
+      const body = batch(laterFrom);
 
-      /* Hold the business's ingress lock past the 2 s bound while the batch arrives. */
+      /* Hold the business's ingress lock until the first message has failed for want of it. */
       let release!: () => void;
       const held = new Promise<void>((resolve) => (release = resolve));
       let locked!: () => void;
@@ -55,36 +94,44 @@ describe('ordered ingress after a failed message', () => {
         locked();
         await held;
       });
+      const watch = watchAccept(async () => {
+        release();
+        await holder;
+      });
       try {
         await isLocked;
-        /* Freed 2.25 s after the first message is seen waiting for the lock, so a later message that
-         * is (wrongly) attempted would get it. Waiting is observed, not assumed (Qodo on #428). */
-        const request = post(body);
-        let seen = false;
-        for (let tries = 0; tries < 200 && !seen; tries++) {
-          const waiting = await withBusiness(db, business.id, (tx) =>
-            tx.execute(sql`
-            SELECT 1 FROM pg_stat_activity
-             WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'
-               AND query LIKE '%pg_advisory_xact_lock%' AND pid <> pg_backend_pid()`),
-          );
-          seen = [...waiting].length > 0;
-          if (!seen) await new Promise((resolve) => setTimeout(resolve, 25));
-        }
-        if (!seen) throw new Error('the request was never seen waiting on the ingress lock');
-        const timer = setTimeout(release, 2_250);
-        const first = await request;
-        clearTimeout(timer);
+        const first = await post(body);
         expect(first.statusCode).toBe(503);
+        expect(watch.attempted).toEqual(['wamid.BATCH.A']);
       } finally {
+        watch.restore();
         release();
         await holder;
       }
-      expect(await stored()).toEqual([]);
+      expect(await stored(business.id)).toEqual([]);
 
       const second = await post(body);
       expect(second.statusCode).toBe(200);
-      expect(await stored()).toEqual(['wamid.BATCH.A', 'wamid.BATCH.B']);
+      expect(await stored(business.id)).toEqual(['wamid.BATCH.A', 'wamid.BATCH.B']);
     },
   );
+
+  /* A message that fails before its business is known (here, its sender cannot be resolved) has no
+   * business to fence. The controller alone keeps the rest of the body behind it. */
+  it('does not try a later message of a batch after an earlier one failed before it was attributed', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    const body = batch('2348031234567');
+    const watch = watchAccept(async () => {}, true);
+    try {
+      const first = await post(body);
+      expect(first.statusCode).toBe(503);
+      expect(watch.attempted).toEqual(['wamid.BATCH.A']);
+    } finally {
+      watch.restore();
+    }
+    expect(await stored(business.id)).toEqual([]);
+
+    expect((await post(body)).statusCode).toBe(200);
+    expect(await stored(business.id)).toEqual(['wamid.BATCH.A', 'wamid.BATCH.B']);
+  });
 });

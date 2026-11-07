@@ -7,6 +7,7 @@ import { CONFIG, type ApiConfig } from '../config.js';
 import { DB, WORKER_DB } from '../db/db.module.js';
 import { JobKind } from '../jobs/queue.service.js';
 import { sealPayload } from '../privacy/payload-vault.js';
+import { IngressFenced, IngressSequencer } from './ingress-sequencer.js';
 
 /**
  * Turns an inbound Meta event into a durable, de-duplicated row.
@@ -26,6 +27,7 @@ export class MetaIngressService {
     @Inject(DB) private readonly db: Db,
     @Inject(WORKER_DB) private readonly workerDb: Db | null,
     @Inject(CONFIG) private readonly config: ApiConfig,
+    @Inject(IngressSequencer) private readonly sequencer: IngressSequencer,
   ) {}
 
   async accept(event: InboundEvent, payload: unknown): Promise<{ isNew: boolean }> {
@@ -72,29 +74,43 @@ export class MetaIngressService {
      * later one is processed (OWN-74; `jobsRepo.stampInboundArrival`).
      */
     if (businessId) {
-      return withBusiness(this.db, businessId, async (tx) => {
-        const arrivedAt = await jobsRepo.stampInboundArrival(tx, businessId);
-        const recorded = await events.recordEvent(tx, {
-          provider: 'meta',
-          eventType: `message.${event.messageType}`,
-          externalId: event.externalId,
-          payload: sealPayload(payload, this.config.vaultKey, 'meta', event.externalId),
-          businessId,
-          arrivedAt,
-        });
-        if (!recorded.isNew) {
-          this.log.debug(`ignored a duplicate Meta event ${redactForLog(event.externalId)}`);
+      /* Admitted in its turn for the business, waiting in memory rather than on a pool
+       * connection, and never ahead of an earlier message of the business that could not be
+       * stored (`IngressSequencer`). */
+      try {
+        return await this.sequencer.run(businessId, event.externalId, () =>
+          withBusiness(this.db, businessId, async (tx) => {
+            const arrivedAt = await jobsRepo.stampInboundArrival(tx, businessId);
+            const recorded = await events.recordEvent(tx, {
+              provider: 'meta',
+              eventType: `message.${event.messageType}`,
+              externalId: event.externalId,
+              payload: sealPayload(payload, this.config.vaultKey, 'meta', event.externalId),
+              businessId,
+              arrivedAt,
+            });
+            if (!recorded.isNew) {
+              this.log.debug(`ignored a duplicate Meta event ${redactForLog(event.externalId)}`);
+              return { isNew: false };
+            }
+            await jobsRepo.enqueue(tx, {
+              businessId,
+              kind: JobKind.InboundMessage,
+              payload: { eventId: recorded.id },
+              singletonKey: recorded.id,
+              arrivedAt,
+            });
+            return { isNew: true };
+          }),
+        );
+      } catch (error) {
+        /* A message stored before the fence went up is not new work: Meta is redelivering a body
+         * that also carries the fenced message, and acknowledging it changes nothing. */
+        if (error instanceof IngressFenced && (await this.isStored(businessId, event.externalId))) {
           return { isNew: false };
         }
-        await jobsRepo.enqueue(tx, {
-          businessId,
-          kind: JobKind.InboundMessage,
-          payload: { eventId: recorded.id },
-          singletonKey: recorded.id,
-          arrivedAt,
-        });
-        return { isNew: true };
-      });
+        throw error;
+      }
     }
 
     const recorded = await events.recordEvent(this.db, {
@@ -254,6 +270,11 @@ export class MetaIngressService {
       });
       return { isNew: true };
     });
+  }
+
+  /** Whether this message is already stored for the business (a redelivery). */
+  private isStored(businessId: string, externalId: string): Promise<boolean> {
+    return withBusiness(this.db, businessId, (tx) => events.isRecorded(tx, 'meta', externalId));
   }
 
   /** Durably stored, attributed to nobody, and no job: refused, not lost. */

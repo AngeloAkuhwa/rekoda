@@ -115,6 +115,25 @@ export async function recordEvent(q: Queryable, event: IncomingEvent): Promise<R
 }
 
 /**
+ * Whether a provider event is already stored and visible to this handle. A read only: the
+ * webhook ingress asks it of a message it is refusing to store (OWN-74, `IngressSequencer`), so
+ * a redelivered message that landed before the refusal can still be acknowledged. A row the
+ * handle cannot see reads false, which only means the message is refused and redelivered again.
+ */
+export async function isRecorded(
+  q: Queryable,
+  provider: string,
+  externalId: string,
+): Promise<boolean> {
+  const rows = await q
+    .select({ id: externalEvents.id })
+    .from(externalEvents)
+    .where(and(eq(externalEvents.provider, provider), eq(externalEvents.externalId, externalId)))
+    .limit(1);
+  return rows.length > 0;
+}
+
+/**
  * Record that this message's "yes" reserved a metered unit (G-23). Called in
  * the same transaction as the consume, so the record exists iff the unit was
  * taken. Left in place when the attempt executes: the unit paid for what was
