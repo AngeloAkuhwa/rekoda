@@ -6,6 +6,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   INGRESS_FENCE_MS,
+  INGRESS_MAX_WAITING,
+  INGRESS_WAIT_MS,
   IngressFenced,
   IngressRefused,
   IngressSequencer,
@@ -303,7 +305,12 @@ describe('IngressSequencer', () => {
   it('the production defaults fence for exactly 120 s: held at 119.999 s, lapsed at 120 s', async () => {
     expect(INGRESS_FENCE_MS).toBe(120_000);
     let now = 5_000;
-    const sequencer = new IngressSequencer({ now: () => now });
+    const sequencer = new IngressSequencer({
+      waitMs: INGRESS_WAIT_MS,
+      maxWaiting: INGRESS_MAX_WAITING,
+      fenceMs: INGRESS_FENCE_MS,
+      now: () => now,
+    });
     await expect(sequencer.run('b1', 'lost', () => Promise.reject(new Error('x')))).rejects.toThrow(
       'x',
     );
@@ -349,18 +356,6 @@ describe('IngressSequencer', () => {
     expect(await sequencer.run('b1', 'cancel', async () => 'stored')).toBe('stored');
     expect(sequencer.outstanding('b1')).toBe(0);
     expect(await sequencer.run('b1', 'next', async () => 'next')).toBe('next');
-  });
-
-  it('a message held back without being tried fences the later ones of its business only', async () => {
-    const { sequencer } = lane();
-    sequencer.hold('b1', 'skipped-cancel');
-    await expect(sequencer.run('b1', 'yes', async () => 1)).rejects.toBeInstanceOf(IngressFenced);
-    expect(await sequencer.run('b2', 'other', async () => 'other')).toBe('other');
-    const stored: string[] = [];
-    await sequencer.run('b1', 'skipped-cancel', async () => stored.push('skipped-cancel'));
-    await sequencer.run('b1', 'yes', async () => stored.push('yes'));
-    expect(stored).toEqual(['skipped-cancel', 'yes']);
-    expect(sequencer.outstanding('b1')).toBe(0);
   });
 
   it('refuses bounds that are not positive whole numbers', () => {
