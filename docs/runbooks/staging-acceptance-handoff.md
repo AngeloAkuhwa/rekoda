@@ -47,7 +47,7 @@ The older copy at `b8baf24` lacks the 0187–0189, migration-ledger, image-parit
 customer-reminders checks.
 
 ```bash
-ssh <deploy-user>@<staging-host> 'EXPECT_SHA=a43675c bash -s' < scripts/staging-readonly-check.sh
+ssh <deploy-user>@<staging-host> 'EXPECT_SHA=a43675c EXPECT_WEB_URL=https://staging.myrekoda.com bash -s' < scripts/staging-readonly-check.sh
 ```
 
 `EXPECT_SHA` takes 7 to 40 hexadecimal characters.

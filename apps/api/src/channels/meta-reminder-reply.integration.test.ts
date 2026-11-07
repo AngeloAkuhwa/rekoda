@@ -16,7 +16,7 @@ import {
   wabaRepo,
   withBusiness,
 } from '@rekoda/db';
-import { encryptFacet } from '@rekoda/core/vault';
+import { encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
 import { buildRunner } from '../jobs/jobs.module.js';
 import {
   db,
@@ -31,6 +31,9 @@ import {
 useMetaWebhookHarness();
 
 const CUSTOMER_WA = '2349097778888';
+/** The blind index the privacy gateway stores on a customer phone. */
+const phoneKey = (businessId: string, phone: string) =>
+  matchKeyFor(businessId, 'phone', normaliseFacet('phone', phone), deps.config.matchKey);
 let seq = 0;
 
 interface Shop {
@@ -78,7 +81,8 @@ async function shop(
     {
       facet: 'phone',
       ciphertext: encryptFacet(`+${CUSTOMER_WA}`, deps.config.vaultKey, `${businessId}:phone`),
-      matchKey: null,
+      // Keyed as the privacy gateway keys every customer phone it stores.
+      matchKey: phoneKey(businessId, `+${CUSTOMER_WA}`),
     },
   ]);
   const sale = await withBusiness(db, businessId, (tx) =>
@@ -218,7 +222,7 @@ describe('a customer replies to a WhatsApp reminder (OWN-83)', () => {
             deps.config.vaultKey,
             `${s.businessId}:phone`,
           ),
-          matchKey: null,
+          matchKey: phoneKey(s.businessId, `+23490977${String(10000 + i)}`),
         },
       ]);
       await withBusiness(db, s.businessId, async (tx) => {

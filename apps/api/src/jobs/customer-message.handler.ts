@@ -27,7 +27,8 @@ import {
 import { normaliseParticipant, InvalidPhoneError } from '@rekoda/core/identity';
 import { redactForLog } from '@rekoda/core/privacy';
 import {
-  decryptFacet,
+  matchKeyFor,
+  normaliseFacet,
   participantIndexFor,
   PARTICIPANT_INDEX_KEY_VERSION,
 } from '@rekoda/core/vault';
@@ -290,10 +291,10 @@ interface HandoffOptions {
 const REMINDER_REPLY_WINDOW_DAYS = 7;
 /**
  * The WhatsApp reminder this customer's message answers: the newest one this business sent in the
- * last seven days to the same number, compared exactly as the send normalised it. Null when there
- * is none. Every customer reminded in the window is considered (one query, no cap), so a busy
- * shop does not miss a reply. Reads this business's rows only (RLS and the explicit business id);
- * a number is compared in memory, never stored or logged.
+ * last seven days to a customer whose phone has the sender's blind index. Null when there is none.
+ * The index is the one the privacy gateway stores on every customer phone (`normaliseFacet`, then
+ * the business-scoped `matchKeyFor`), so no customer's number is decrypted and no number of other
+ * reminders can hide this one. This business's rows only (RLS and the explicit business id).
  */
 async function reminderThisAnswers(
   tx: TenantDb,
@@ -301,22 +302,12 @@ async function reminderThisAnswers(
   businessId: string,
   participant: string,
 ): Promise<remindersRepo.SentWhatsAppReminder | null> {
-  const recent = await remindersRepo.recentSentWhatsAppReminders(tx, businessId, {
+  const normalised = normaliseFacet('phone', participant);
+  if (normalised.length === 0) return null;
+  const phoneKey = matchKeyFor(businessId, 'phone', normalised, deps.config.matchKey);
+  return remindersRepo.sentWhatsAppReminderForPhone(tx, businessId, phoneKey, {
     withinDays: REMINDER_REPLY_WINDOW_DAYS,
   });
-  for (const reminder of recent) {
-    for (const sealed of reminder.sealedPhones) {
-      try {
-        const number = normaliseParticipant(
-          decryptFacet(sealed, deps.config.vaultKey, `${businessId}:phone`),
-        );
-        if (number === participant) return reminder;
-      } catch {
-        /* A seal this key cannot open, or a number that will not normalise: not a match. */
-      }
-    }
-  }
-  return null;
 }
 
 /**

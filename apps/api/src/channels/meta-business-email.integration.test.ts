@@ -163,6 +163,8 @@ describe('"my email is X" on WhatsApp (OWN-83)', () => {
     // No `email` dep: the runner falls back to the honest "none" sender.
     expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
     expect(stubSender.lastText).toContain('We cannot send a confirmation email right now');
+    // The billing page cannot send one either here, so it is not offered as a dead end.
+    expect(stubSender.lastText).not.toContain('billing page');
     expect((await state(businessId)).sealed).toBeNull();
   });
 

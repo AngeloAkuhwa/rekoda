@@ -140,7 +140,10 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   businessEmailAlreadyConfirmed: [replies.businessEmailAlreadyConfirmed('a•••@shop.example.ng')],
   businessEmailInvalid: [replies.businessEmailInvalid()],
   businessEmailTryLater: [replies.businessEmailTryLater(1), replies.businessEmailTryLater(5)],
-  businessEmailUnavailable: [replies.businessEmailUnavailable()],
+  businessEmailUnavailable: [
+    replies.businessEmailUnavailable('send_failed'),
+    replies.businessEmailUnavailable('email_not_configured'),
+  ],
   businessEmailUndeliverable: [replies.businessEmailUndeliverable()],
   businessEmailOwnerOnly: [replies.businessEmailOwnerOnly()],
   quotaReachedForBusiness: [replies.quotaReachedForBusiness()],

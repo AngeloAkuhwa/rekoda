@@ -1989,7 +1989,7 @@ async function businessEmailReply(
     case 'unavailable':
       return out.reason === 'address_unusable'
         ? replies.businessEmailUndeliverable()
-        : replies.businessEmailUnavailable();
+        : replies.businessEmailUnavailable(out.reason);
   }
 }
 

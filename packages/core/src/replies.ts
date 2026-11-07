@@ -640,10 +640,16 @@ export function businessEmailTryLater(minutes: number): Reply {
   );
 }
 
-export function businessEmailUnavailable(): Reply {
+/**
+ * No confirmation could be sent. `send_failed` is transient, so the billing page is a second way to
+ * try; `email_not_configured` means that page cannot send one either, so it is not offered.
+ */
+export function businessEmailUnavailable(reason: 'email_not_configured' | 'send_failed'): Reply {
   return reply(
     'We cannot send a confirmation email right now, so nothing was changed. ' +
-      'Please try again later, or add your email on the billing page of your dashboard.',
+      (reason === 'send_failed'
+        ? 'Please try again later, or add your email on the billing page of your dashboard.'
+        : 'Please try again later.'),
   );
 }
 
