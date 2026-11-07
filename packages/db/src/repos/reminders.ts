@@ -531,10 +531,10 @@ export async function reminderReplyNoticeDue(
    * `reconcileDeadReceipts` runs only on the owner's next message, under the inbound lock). Only
    * the notice is touched and the receipt's event stays open, so that reconciliation still applies
    * the rest of the receipt later. A notice re-sent since carries a new Meta id and is not matched.
-   * The business notice lock is taken before the row, in the same order as the live receipt job. */
-  await lockReminderReplyNotices(tx, businessId);
-  await tx.execute(sql`
-    UPDATE reminder_reply_notices n SET undelivered_at = now()
+   * The business notice lock is taken only when there is such a receipt (rare), and before the
+   * row, in the same order as the live receipt job; the common path takes no business-wide lock
+   * until the notice is sent. */
+  const deadReceiptMatch = sql`
       FROM jobs j
       JOIN external_events e ON e.id = CASE
              WHEN j.payload->>'eventId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
@@ -543,8 +543,16 @@ export async function reminderReplyNoticeDue(
        AND n.undelivered_at IS NULL
        AND j.business_id = ${businessId}::uuid AND e.business_id = ${businessId}::uuid
        AND j.kind = 'delivery.status' AND j.state = 'dead' AND e.processed_at IS NULL
-       AND n.provider_message_id = j.payload->>'outboundMessageId'
-  `);
+       AND n.provider_message_id = j.payload->>'outboundMessageId'`;
+  const pending = await tx.execute<{ one: number }>(
+    sql`SELECT 1 AS one FROM reminder_reply_notices n JOIN LATERAL (SELECT 1 ${deadReceiptMatch} LIMIT 1) m ON true LIMIT 1`,
+  );
+  if ([...pending].length > 0) {
+    await lockReminderReplyNotices(tx, businessId);
+    await tx.execute(
+      sql`UPDATE reminder_reply_notices n SET undelivered_at = now() ${deadReceiptMatch}`,
+    );
+  }
   /* Due when never told, or when Meta later reported the notice failed (`undelivered_at`). */
   const rows = await tx.execute<{ one: number }>(sql`
     SELECT 1 AS one FROM reminder_reply_notices
@@ -580,9 +588,10 @@ export async function recordReminderReplyNotice(
 
 /**
  * The business's reply-notice lock, held to the end of the transaction. The customer-message job
- * takes it before sending a notice and the receipt paths take it before marking one, so a failed
- * receipt that arrives within seconds waits for the notice's row to commit instead of finding
- * nothing and being lost.
+ * takes it before sending a notice (and, rarely, earlier, when `reminderReplyNoticeDue` applies a
+ * dead receipt), and the live receipt job takes it before marking one, so a failed receipt that
+ * arrives within seconds waits for the notice's row to commit instead of finding nothing and being
+ * lost.
  */
 export async function lockReminderReplyNotices(tx: TenantDb, businessId: string): Promise<void> {
   await tx.execute(

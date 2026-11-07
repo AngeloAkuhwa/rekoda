@@ -64,12 +64,22 @@ async function deadReceipt(businessId: string, wamid: string): Promise<void> {
   });
 }
 
+/** Whether the business's (only) reply notice is marked undelivered. */
+const undelivered = async (businessId: string) =>
+  (
+    await withBusiness(db, businessId, async (tx) => [
+      ...(await tx.execute<{ undelivered: boolean }>(
+        sql`SELECT undelivered_at IS NOT NULL AS undelivered FROM reminder_reply_notices`,
+      )),
+    ])
+  )[0]?.undelivered ?? false;
+
 /** Backends waiting on an advisory lock (pg_locks is readable by every role). */
 const advisoryWaiters = async () =>
   Number(
     [
       ...(await db.execute<{ n: string }>(
-        sql`SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`,
+        sql`SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND pid <> pg_backend_pid()`,
       )),
     ][0]?.n ?? 0,
   );
@@ -113,6 +123,7 @@ describe('delivery receipts for the reminder-reply notice (OWN-83)', () => {
         conversationsRepo.reconcileDeadReceipts(tx, s.businessId),
       ),
     ).toBe(1);
+    expect(await undelivered(s.businessId)).toBe(true);
     await reply('PN-RR-18', 'wamid.RR.18B', 'hello?');
     expect(noticesTo(s.ownerPhone)).toHaveLength(2);
     expect(await noticeRows(s.businessId)).toHaveLength(1);
@@ -162,11 +173,6 @@ describe('delivery receipts for the reminder-reply notice (OWN-83)', () => {
       }
     });
     await receiptJob;
-    const [after] = await withBusiness(db, s.businessId, async (tx) => [
-      ...(await tx.execute<{ undelivered: boolean }>(
-        sql`SELECT undelivered_at IS NOT NULL AS undelivered FROM reminder_reply_notices`,
-      )),
-    ]);
-    expect(after?.undelivered).toBe(true);
+    expect(await undelivered(s.businessId)).toBe(true);
   });
 });

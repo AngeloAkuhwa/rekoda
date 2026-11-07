@@ -81,7 +81,7 @@ export function deliveryStatusHandler(): JobHandler {
     /* A reminder-reply notice (OWN-83) Meta accepted and then failed: due again, so the customer's
      * next message tells the business once more. This waits for a customer job still recording
      * that notice (its business-wide notice lock), holding the inbound lock meanwhile: bounded by
-     * that job's Meta send. */
+     * that job's Meta send (rarely longer, when that job first applied a dead receipt). */
     const replyNotices = await remindersRepo.markReminderReplyNoticeUndelivered(
       tx,
       businessId,
