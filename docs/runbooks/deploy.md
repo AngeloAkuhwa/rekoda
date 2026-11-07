@@ -372,6 +372,26 @@ only then `dc up -d --wait`. The migration's rollback comment gives the
 statements. Started on an empty table, a customer's next message re-notifies
 businesses about reminders they were already told about.
 
+After rolling back to a release older than PR A and then forward again: the older
+release processed WhatsApp failure receipts without marking the reminder-reply
+notice they named, so those notices still read as delivered. Before `dc up -d --wait`
+of the newer release (api and worker stopped), as a superuser or BYPASSRLS role,
+re-open them the way a live receipt does (OWN-83: due again on the customer's next
+message), replacing the timestamp with when the older release started:
+
+```sql
+UPDATE reminder_reply_notices n SET undelivered_at = now()
+  FROM jobs j
+ WHERE j.kind = 'delivery.status' AND j.state = 'done'
+   AND j.business_id = n.business_id
+   AND j.payload->>'outboundMessageId' = n.provider_message_id
+   AND n.undelivered_at IS NULL
+   AND j.updated_at >= '2026-11-07T00:00:00Z';  -- when the older release started
+```
+
+Only failed receipts are queued as `delivery.status` jobs, so this matches nothing
+else. Record the row count in the deploy notes.
+
 ## Disk space and image retention (staging)
 
 `scripts/deploy-staging.sh` guards the host's disk, because a full disk once

@@ -52,6 +52,7 @@ export const ownerWrites = (businessId: string) =>
 /* Sales are issued through a writer the TEST FILE passes in: financial writers stay out of
  * fixtures (check-boundaries exempts only *.test.ts). */
 let saleWriter: typeof issueRepo.issueSale | null = null;
+/** Sets the sale writer `shop()` uses; each test file passes `issueRepo.issueSale`. */
 export function useSaleWriter(writer: typeof issueRepo.issueSale): void {
   saleWriter = writer;
 }
@@ -155,6 +156,7 @@ export async function reminded(s: Shop, status: 'sent' | 'blocked' = 'sent'): Pr
   });
 }
 
+/** The customer on `CUSTOMER_WA` writes to the business's number; every job queued is run. */
 export const reply = async (phoneNumberId: string, wamid: string, text: string) => {
   expect((await post(messagePayload(CUSTOMER_WA, wamid, text, phoneNumberId))).statusCode).toBe(
     200,
@@ -164,11 +166,13 @@ export const reply = async (phoneNumberId: string, wamid: string, text: string) 
   }
 };
 
+/** The reminder-reply notices the stub sender sent to `phone`. */
 export const noticesTo = (phone: string) =>
   stubSender.sent.filter(
     (m) => m.to === phone && m.text.includes('has sent your business a WhatsApp'),
   );
 
+/** The business's recorded reminder-reply notices. */
 export const noticeRows = (businessId: string) =>
   withBusiness(db, businessId, async (tx) => [
     ...(await tx.execute<{ reminder_id: string }>(
