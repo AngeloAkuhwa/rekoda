@@ -291,7 +291,7 @@ for k in REKODA_WEB_URL REKODA_ANNUAL_BILLING \
   # KEY=""#later, KEY= "" and KEY= (spaces only) all read empty (independent review and CodeRabbit on #428).
   # A key assigned twice reads its LAST assignment, as compose's dotenv parser keeps (Codex on #428).
   v="$(sed -n "s/^$k=//p" .env 2>/dev/null | tail -1 |
-       sed -e 's/^[[:space:]]*\(["'"'"']\)/\1/' -e 's/[[:space:]]*$//' \
+       sed -e 's/^[[:space:]][[:space:]]*#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
            -e '/^["'"'"']/!s/[[:space:]][[:space:]]*#.*$//' \
            -e 's/^\("[^"]*"\)[[:space:]]*#.*$/\1/' \
            -e "s/^\('[^']*'\)[[:space:]]*#.*\$/\1/" \

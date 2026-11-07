@@ -333,6 +333,16 @@ test('a key assigned twice in .env is read from its LAST line, as compose resolv
   }
 });
 
+test('an unquoted value after whitespace is read as compose reads it (Codex on #428)', () => {
+  const h = healthy({ dotenv: HEALTHY_DOTENV + 'REKODA_ANNUAL_BILLING= 0\n' });
+  try {
+    const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(out, /REKODA_ANNUAL_BILLING\s+SET \(0\)\n/);
+  } finally {
+    h.done();
+  }
+});
+
 test('a live Paystack key on staging is flagged without printing it', () => {
   const h = healthy({
     env: { ...SLOTS, PAYSTACK_SECRET_KEY: 'sk_live_zzzzzzzzzzzzzzzz' },
