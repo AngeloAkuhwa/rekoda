@@ -250,7 +250,9 @@ describe('a held purchase withdrawn by a lost message stays withdrawn (OWN-74)',
       const replied: Record<string, number> = {};
       for (const word of ['same', 'cash', 'yes']) {
         const at = stubSender.sent.length;
-        await reply(`wamid.${tag}-${word}`, word);
+        /* Ids of their own: `bookMilo` already used `wamid.${tag}-yes` for the first booking's
+         * "yes", and reusing it would be a Meta redelivery, deduplicated with no reply. */
+        await reply(`wamid.${tag}-late-${word}`, word);
         replied[word] = stubSender.sent.length - at;
       }
       const later = sentSince(afterSeparate).join('\n');
