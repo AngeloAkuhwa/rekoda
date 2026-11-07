@@ -17,6 +17,7 @@ Planned (populated as the systems they describe land):
 | `pr-quality-pipeline.md` — review signals, merge gate, CI-to-staging sequence, branch rules                       | IN PROGRESS (#303)                                           |
 | `meta-submission.md` — WhatsApp/app review, exact URLs per field                                                  | M2 (owner, W0)                                               |
 | `integrate-onboarding.md` — concierge WABA/catalogue/Paystack setup                                               | M5                                                           |
+| `staging-acceptance-handoff.md` — post-deploy check, prerequisites and order for SUB-ACC and ACCEPT-01            | MVP (4 Nov 2026)                                             |
 
 Rule: a backup that has not been restore-drilled does not count as a backup.
 

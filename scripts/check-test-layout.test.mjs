@@ -5,7 +5,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { check, checkBaselineChange, countLines, discover } from './check-test-layout.mjs';
+import {
+  API_ROOT_TESTS,
+  check,
+  checkBaselineChange,
+  countLines,
+  discover,
+} from './check-test-layout.mjs';
 
 const f = (path, lines = 10) => ({ path, lines });
 const run = (files, map = '', exists = () => true) => check(files, map, exists);
@@ -23,7 +29,7 @@ test('accepts the four recognised layers in their places', () => {
 test('rejects an unknown suffix, a stray spec and a stray mjs test', () => {
   const r = run([
     f('packages/core/src/a.test.js'),
-    f('apps/api/src/b.spec.ts'),
+    f('apps/api/src/billing/b.spec.ts'),
     f('apps/web/src/c.test.mjs'),
     f('apps/web/e2e/d.test.ts'),
   ]);
@@ -112,7 +118,7 @@ test('rejects .test.tsx outside apps/web and a top-level tests/ tree', () => {
     f('apps/api/src/billing/b.test.tsx'),
     f('packages/db/src/billing/c.test.tsx'),
     f('tests/d.test.ts'),
-    f('apps/api/src/e.test.ts'),
+    f('apps/api/src/billing/e.test.ts'),
   ]);
   const text = r.errors.join('\n');
   assert.equal(r.errors.length, 3);
@@ -131,7 +137,7 @@ test('counts lines, not the empty entry after a final newline', () => {
   assert.equal(countLines('a\nb'), 2);
   assert.equal(countLines(''), 0);
   const body = `${'x\n'.repeat(600)}`;
-  const r = run([f('apps/api/src/z.test.ts', countLines(body))]);
+  const r = run([f('apps/api/src/billing/z.test.ts', countLines(body))]);
   assert.deepEqual(r, { errors: [], debt: [] });
 });
 
@@ -234,17 +240,17 @@ test('the command line compares the baseline with --base-ref and fails closed on
       writeFileSync(join(root, 'scripts/test-layout-baseline.json'), JSON.stringify({ oversized }));
     mkdirSync(join(root, 'docs'));
     mkdirSync(join(root, 'scripts'));
-    mkdirSync(join(root, 'apps/api/src'), { recursive: true });
+    mkdirSync(join(root, 'apps/api/src/billing'), { recursive: true });
     writeFileSync(join(root, 'docs/TEST_MAP.md'), '');
-    writeFileSync(join(root, 'apps/api/src/a.test.ts'), big(700));
-    baseline({ 'apps/api/src/a.test.ts': 700 });
+    writeFileSync(join(root, 'apps/api/src/billing/a.test.ts'), big(700));
+    baseline({ 'apps/api/src/billing/a.test.ts': 700 });
     sh(
       'git init -q . && git add -A && git -c user.name=t -c user.email=t@t commit -qm base && git tag base',
     );
 
     // A new 650-line file listed in the baseline passes without the target branch, fails with it.
-    writeFileSync(join(root, 'apps/api/src/b.test.ts'), big(650));
-    baseline({ 'apps/api/src/a.test.ts': 700, 'apps/api/src/b.test.ts': 650 });
+    writeFileSync(join(root, 'apps/api/src/billing/b.test.ts'), big(650));
+    baseline({ 'apps/api/src/billing/a.test.ts': 700, 'apps/api/src/billing/b.test.ts': 650 });
     sh('git add -A');
     assert.equal(cli().status, 0);
     const added = cli('--base-ref', 'base');
@@ -252,9 +258,9 @@ test('the command line compares the baseline with --base-ref and fails closed on
     assert.match(added.stderr, /b\.test\.ts was added/);
 
     // Raising an entry so a file can grow fails too.
-    rmSync(join(root, 'apps/api/src/b.test.ts'));
-    writeFileSync(join(root, 'apps/api/src/a.test.ts'), big(720));
-    baseline({ 'apps/api/src/a.test.ts': 720 });
+    rmSync(join(root, 'apps/api/src/billing/b.test.ts'));
+    writeFileSync(join(root, 'apps/api/src/billing/a.test.ts'), big(720));
+    baseline({ 'apps/api/src/billing/a.test.ts': 720 });
     sh('git add -A');
     const raised = cli('--base-ref', 'base');
     assert.equal(raised.status, 1);
@@ -264,6 +270,108 @@ test('the command line compares the baseline with --base-ref and fails closed on
     const unknown = cli('--base-ref', 'no-such-ref');
     assert.notEqual(unknown.status, 0);
     assert.match(unknown.stderr, /not a commit this checkout has/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+const root = (files, apiRoot = API_ROOT_TESTS) => check(files, '', () => true, {}, apiRoot);
+
+test('api root: a test in a feature folder passes, a new test loose in apps/api/src/ fails', () => {
+  const r = root([
+    f('apps/api/src/http/client-address.test.ts'),
+    f('apps/api/src/config/numeric.test.ts'),
+    f('apps/api/src/billing/billing-charge.integration.test.ts'),
+    f('apps/api/src/new-thing.test.ts'),
+    f('apps/api/src/new-flow.integration.test.ts'),
+  ]);
+  assert.deepEqual(r.errors, [
+    'apps/api/src/new-thing.test.ts: sits directly in apps/api/src/; move it into the feature folder it tests (only API_ROOT_TESTS in scripts/check-test-layout.mjs may stay)',
+    'apps/api/src/new-flow.integration.test.ts: sits directly in apps/api/src/; move it into the feature folder it tests (only API_ROOT_TESTS in scripts/check-test-layout.mjs may stay)',
+  ]);
+});
+
+test('api root: an approved exception passes, and only the exact path is approved', () => {
+  assert.deepEqual(
+    root([f('apps/api/src/edge-check.test.ts'), f('apps/api/src/edge-proxies.test.ts')]),
+    {
+      errors: [],
+      debt: [],
+    },
+  );
+  // The approval is for one file, not a name pattern: a sibling is still loose.
+  const r = root([f('apps/api/src/edge-check.integration.test.ts')]);
+  assert.equal(r.errors.length, 1);
+  assert.match(r.errors[0], /edge-check\.integration\.test\.ts: sits directly in apps\/api\/src\//);
+  // With no approvals at all, the edge pair is loose too.
+  assert.equal(root([f('apps/api/src/edge-check.test.ts')], {}).errors.length, 1);
+});
+
+test('api root: the rule leaves other packages and deeper api folders alone', () => {
+  const r = root([
+    f('packages/core/src/money.test.ts'),
+    f('apps/web/src/server/client-address.test.ts'),
+    f('apps/api/src/ai/eval/oracle.test.ts'),
+    f('apps/web/e2e/billing.spec.ts'),
+    f('scripts/check-test-years.test.mjs'),
+  ]);
+  assert.deepEqual(r, { errors: [], debt: [] });
+});
+
+test('api root: every approved exception is a tracked test whose module sits beside it at the root', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { existsSync } = await import('node:fs');
+  // Resolved from this file, not the working directory, so the test runs from anywhere.
+  const repo = fileURLToPath(new URL('..', import.meta.url));
+  const tracked = new Set(
+    execFileSync('git', ['ls-files'], { cwd: repo, encoding: 'utf8' }).split('\n'),
+  );
+  const entries = Object.entries(API_ROOT_TESTS);
+  // OWN-71 approves only the edge-check pair; the set may shrink, never swap in another test.
+  const own71 = new Set(['apps/api/src/edge-check.test.ts', 'apps/api/src/edge-proxies.test.ts']);
+  for (const [path] of entries) assert.ok(own71.has(path), `${path} is not an OWN-71 exception`);
+  for (const [path, reason] of entries) {
+    assert.match(path, /^apps\/api\/src\/[^/]+\.test\.ts$/, path);
+    assert.ok(
+      tracked.has(path) && existsSync(join(repo, path)),
+      `${path} is not a tracked test any more`,
+    );
+    const module = path.replace(/\.test\.ts$/, '.ts');
+    assert.ok(
+      existsSync(join(repo, module)),
+      `${path}: ${module} has left the root, so its test should too`,
+    );
+    assert.ok(reason.length > 20, `${path}: give the reason it stays`);
+  }
+});
+
+test('api root: the command line fails on a new root test, with and without --base-ref', () => {
+  const root = mkdtempSync(join(tmpdir(), 'layout api root '));
+  try {
+    const sh = (cmd) => {
+      const r = spawnSync('bash', ['-c', cmd], { cwd: root, encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+    };
+    const script = fileURLToPath(new URL('./check-test-layout.mjs', import.meta.url));
+    const cli = (...args) => spawnSync('node', [script, ...args], { cwd: root, encoding: 'utf8' });
+    mkdirSync(join(root, 'docs'));
+    mkdirSync(join(root, 'apps/api/src/http'), { recursive: true });
+    writeFileSync(join(root, 'docs/TEST_MAP.md'), '');
+    writeFileSync(join(root, 'apps/api/src/http/a.test.ts'), 'x\n');
+    writeFileSync(join(root, 'apps/api/src/edge-check.test.ts'), 'x\n');
+    sh(
+      'git init -q . && git add -A && git -c user.name=t -c user.email=t@t commit -qm base && git tag base',
+    );
+    assert.equal(cli().status, 0, 'a feature-folder test and an approved exception pass');
+    assert.equal(cli('--base-ref', 'base').status, 0);
+
+    writeFileSync(join(root, 'apps/api/src/loose.test.ts'), 'x\n');
+    sh('git add -A');
+    for (const args of [[], ['--base-ref', 'base']]) {
+      const r = cli(...args);
+      assert.equal(r.status, 1, `${args.join(' ')}: ${r.stdout}${r.stderr}`);
+      assert.match(r.stderr, /loose\.test\.ts: sits directly in apps\/api\/src\//);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

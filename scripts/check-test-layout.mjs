@@ -8,7 +8,10 @@
  *   3. a `.test.mjs` lives only in `scripts/`;
  *   4. every file path named in docs/TEST_MAP.md exists.
  *
- *   5. no test file sits directly in `packages/db/src/` (feature folders);
+ *   5. no test file sits directly in `packages/db/src/` (feature folders), nor
+ *      directly in `apps/api/src/` unless API_ROOT_TESTS names it (each entry is a
+ *      test of a module that stays at the root, with the reason; a self-test fails
+ *      on an entry whose test or module is gone, so the list only shrinks);
  *   6. the size ratchet, against scripts/test-layout-baseline.json:
  *      - a test file over 600 lines that is not in the baseline fails;
  *      - a baselined file that grows past its recorded size fails;
@@ -45,16 +48,30 @@ export function countLines(text) {
   return text.split('\n').length - (text.endsWith('\n') ? 1 : 0);
 }
 
+/**
+ * The only tests allowed directly in `apps/api/src/`, each with its reason. The api's
+ * root holds the process entry points and config; every other test lives in the
+ * feature folder it tests (`http/`, `billing/`, `config/` …). Keep this list minimal: add
+ * an entry only for a test whose module must itself stay at the root.
+ */
+export const API_ROOT_TESTS = {
+  'apps/api/src/edge-check.test.ts':
+    'tests edge-check.ts, which stays at the root (owner ruling OWN-71, 4 Nov 2026): docker-compose.prod.yml runs dist/edge-check.js',
+  'apps/api/src/edge-proxies.test.ts':
+    'tests edge-proxies.ts, the rule edge-check.ts runs, kept beside it at the root (owner ruling OWN-71, 4 Nov 2026)',
+};
+
 // Where a test may live: a directory the runners discover. Every workspace unit and integration
 // config includes `src/**`, Playwright's testDir is apps/web/e2e, and scripts/ has its own runner.
 const TEST_HOME = /^(apps|packages)\/[^/]+\/src\/|^apps\/web\/e2e\/|^scripts\//;
 
 /**
- * Pure: the findings for a list of `{ path, lines }`, the map text and the size
+ * Pure: the findings for a list of `{ path, lines }`, the map text, the size
  * baseline (`{ path: lines }`, the oversized files that existed when the ratchet
- * was introduced).
+ * was introduced) and the approved api-root tests (`{ path: reason }`; the command
+ * line passes API_ROOT_TESTS).
  */
-export function check(files, mapText, exists = existsSync, baseline = {}) {
+export function check(files, mapText, exists = existsSync, baseline = {}, apiRoot = {}) {
   const errors = [];
   const debt = [];
   for (const { path, lines } of files) {
@@ -92,6 +109,11 @@ export function check(files, mapText, exists = existsSync, baseline = {}) {
     }
     if (/^packages\/db\/src\/[^/]+$/.test(path)) {
       errors.push(`${path}: sits directly in packages/db/src/; move it into a feature folder`);
+    }
+    if (/^apps\/api\/src\/[^/]+$/.test(path) && !Object.hasOwn(apiRoot, path)) {
+      errors.push(
+        `${path}: sits directly in apps/api/src/; move it into the feature folder it tests (only API_ROOT_TESTS in scripts/check-test-layout.mjs may stay)`,
+      );
     }
     const allowed = Object.hasOwn(baseline, path) ? baseline[path] : undefined;
     if (allowed === undefined) {
@@ -164,6 +186,11 @@ function baselineAt(ref) {
   return JSON.parse(text).oversized;
 }
 
+/**
+ * CLI entry point: checks every tracked test file against TEST_MAP and the
+ * oversized-file baseline, and with `--base-ref` refuses a baseline that grew.
+ * Exits 1 on any error, or on layout debt when `--strict` is passed.
+ */
 function main() {
   const strict = process.argv.includes('--strict');
   const listed = discover(
@@ -179,6 +206,7 @@ function main() {
     readFileSync('docs/TEST_MAP.md', 'utf8'),
     existsSync,
     baseline,
+    API_ROOT_TESTS,
   );
   const at = process.argv.indexOf('--base-ref');
   if (at !== -1) {

@@ -41,6 +41,11 @@ export interface IncomingEvent {
    * outbound message is the exception: it is queued, and its job marks it.
    */
   processed?: boolean;
+  /**
+   * The row's `created_at`, from `jobsRepo.stampInboundArrival`, for an inbound message whose job
+   * must carry the same arrival instant (OWN-74). Unset: `now()`.
+   */
+  arrivedAt?: string;
 }
 
 /**
@@ -96,6 +101,9 @@ export async function recordEvent(q: Queryable, event: IncomingEvent): Promise<R
       // Only signed events are ever persisted; see the note in the controller.
       signatureValid: 1,
       ...(event.processed ? { processedAt: new Date() } : {}),
+      ...(event.arrivedAt === undefined
+        ? {}
+        : { createdAt: sql`${event.arrivedAt}::timestamptz` as unknown as Date }),
     })
     .onConflictDoNothing({
       target: [externalEvents.provider, externalEvents.externalId],
@@ -104,6 +112,25 @@ export async function recordEvent(q: Queryable, event: IncomingEvent): Promise<R
 
   const row = inserted[0];
   return row ? { isNew: true, id: row.id } : { isNew: false };
+}
+
+/**
+ * Whether a provider event is already stored and visible to this handle. A read only: the
+ * webhook ingress asks it of a message it is refusing to store (OWN-74, `IngressSequencer`), so
+ * a redelivered message that landed before the refusal can still be acknowledged. A row the
+ * handle cannot see reads false, which only means the message is refused and redelivered again.
+ */
+export async function isRecorded(
+  q: Queryable,
+  provider: string,
+  externalId: string,
+): Promise<boolean> {
+  const rows = await q
+    .select({ id: externalEvents.id })
+    .from(externalEvents)
+    .where(and(eq(externalEvents.provider, provider), eq(externalEvents.externalId, externalId)))
+    .limit(1);
+  return rows.length > 0;
 }
 
 /**

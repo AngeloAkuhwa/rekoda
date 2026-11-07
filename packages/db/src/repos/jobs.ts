@@ -28,6 +28,11 @@ export interface EnqueueInput {
   /** Delay before the job first becomes claimable. */
   delayMs?: number;
   maxAttempts?: number;
+  /**
+   * The job's `created_at`, from `stampInboundArrival`, so an inbound message's job and its
+   * webhook event carry the one arrival instant taken under the ingress lock. Unset: `now()`.
+   */
+  arrivedAt?: string;
 }
 
 export interface ClaimedJob {
@@ -58,6 +63,9 @@ export async function enqueue(q: Queryable, input: EnqueueInput): Promise<{ id: 
       singletonKey: input.singletonKey ?? null,
       runAt,
       ...(input.maxAttempts === undefined ? {} : { maxAttempts: input.maxAttempts }),
+      ...(input.arrivedAt === undefined
+        ? {}
+        : { createdAt: sql`${input.arrivedAt}::timestamptz` as unknown as Date }),
     })
     /**
      * The conflict target has to name the index PREDICATE as well as its
@@ -136,6 +144,50 @@ export async function serializeBusiness(
 }
 
 /**
+ * The arrival instant of an inbound message, taken under its business's ingress lock (OWN-74).
+ *
+ * `hasEarlierLiveJobByArrival` can only defer an answer behind an earlier message it can SEE. With
+ * arrival stamped as `now()`, the transaction's start, an ingress transaction that began first but
+ * committed late was invisible to a later "yes" processed in between: it ordered earlier, yet the
+ * "yes" confirmed the draft it may have cancelled, and if it then died nothing could retire that
+ * draft (CodeRabbit on #428). So an ingress transaction first serializes on `(business, 'ingress')`
+ * and only then reads `clock_timestamp()`. A message stamped earlier than another took the lock
+ * first and so committed before the other was even stamped: by the time any job runs, every
+ * message that arrived before it is visible. The lock is held only for the event and job inserts,
+ * never across a handler, so it does not slow the webhook's answer to Meta.
+ *
+ * Returned as text and written back with `::timestamptz`, keeping PostgreSQL's microseconds (a
+ * JavaScript `Date` would round to the millisecond and could tie two messages).
+ *
+ * The wait for the lock is bounded (`INGRESS_LOCK_TIMEOUT_MS`, CodeRabbit on `3fa1f4e`): each
+ * waiting webhook holds a connection from the shared application pool, so an ingress that stalled
+ * while holding the lock must not let one business's queued messages starve every other
+ * business's webhooks. A wait past the bound fails with `lock_not_available`; the transaction rolls
+ * back having written nothing, the controller answers Meta non-200, and Meta redelivers the
+ * message, which is then stamped in its turn. Ordering is unchanged: a message is only ever stamped
+ * while holding the lock. The bound applies to this one lock; it is reset before the inserts.
+ */
+export const INGRESS_LOCK_TIMEOUT_MS = 2_000;
+
+export async function stampInboundArrival(
+  tx: TenantDb,
+  businessId: string,
+  options: { lockTimeoutMs?: number } = {},
+): Promise<string> {
+  const timeoutMs = options.lockTimeoutMs ?? INGRESS_LOCK_TIMEOUT_MS;
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('stampInboundArrival: lockTimeoutMs must be a positive integer');
+  }
+  await tx.execute(sql.raw(`SET LOCAL lock_timeout = '${timeoutMs}ms'`));
+  await serializeBusiness(tx, businessId, 'ingress');
+  await tx.execute(sql`SET LOCAL lock_timeout TO DEFAULT`);
+  const rows = await tx.execute<{ at: string }>(sql`SELECT clock_timestamp()::text AS at`);
+  const at = [...rows][0]?.at;
+  if (!at) throw new Error('stampInboundArrival: no clock reading');
+  return at;
+}
+
+/**
  * Is an older live job of the same kind still ahead of this one?
  *
  * The advisory lock above guarantees exclusion, not order: between claiming a
@@ -179,6 +231,41 @@ export async function hasEarlierLiveJob(
         OR ((j.kind = me.kind AND j.attempts = 0${alsoKinds.length > 0 ? sql` OR j.kind IN (${kinds})` : sql``})
            AND (j.created_at, j.id) < (me.created_at, me.id))
       )
+    LIMIT 1
+  `);
+  return [...rows].length > 0;
+}
+
+/**
+ * Whether an earlier job of the same kind and business, by arrival, is still `pending` or
+ * `running`, INCLUDING one backing off after a failure (owner ruling OWN-74, 4 Nov 2026).
+ *
+ * `hasEarlierLiveJob` lets a newer message pass a sibling that is backing off, so a request is
+ * not held up for the ~30 s a failing one retries. An answer must not pass it: if that sibling is
+ * the merchant's "cancel" or a correction and it never succeeds, a "yes" sent during its backoff
+ * would confirm the draft it was about. So the inbound handler defers a "yes", "no", "cancel" or
+ * "yes?" while this is true; the sibling then either succeeds or dies, and a dead one is
+ * reconciled (`reconcileDeadInboundMessages`) before the answer is read.
+ *
+ * "Arrival" is the job's `created_at`. For `inbound.message` that is the webhook event's arrival
+ * instant exactly: the only producer (`MetaService`) stamps both rows with one
+ * `stampInboundArrival` reading, taken under the business's ingress lock, in the transaction that
+ * writes them. So a message stamped earlier is always committed, and visible here, before a later
+ * one is even stamped; there is no window in which an earlier message's uncommitted ingress hides
+ * it from this check. A new producer must stamp the same way (pinned in
+ * `apps/api/src/channels/meta-webhook-ingress.integration.test.ts` and
+ * `packages/db/src/channels/dead-inbound-reconcile.integration.test.ts`).
+ */
+export async function hasEarlierLiveJobByArrival(tx: TenantDb, jobId: string): Promise<boolean> {
+  const rows = await tx.execute(sql`
+    SELECT 1
+    FROM jobs j, jobs me
+    WHERE me.id = ${jobId}::uuid
+      AND j.business_id = me.business_id
+      AND j.kind = me.kind
+      AND j.id <> me.id
+      AND j.state IN ('pending', 'running')
+      AND (j.created_at, j.id) < (me.created_at, me.id)
     LIMIT 1
   `);
   return [...rows].length > 0;
@@ -369,6 +456,7 @@ export async function markFailed(
       locked_at  = NULL,
       locked_by  = NULL,
       last_error = ${error},
+      failure_category = 'handler_error',
       updated_at = now()
     WHERE id = ${job.id}::uuid
       AND (${claimedBy ?? null}::text IS NULL OR locked_by = ${claimedBy ?? null})
@@ -385,16 +473,32 @@ export async function markFailed(
  *
  * A crashed process leaves its row `running` forever, and nothing else will
  * ever touch it — the claim query only looks at `pending`. The attempt has
- * already been counted, so a job that reliably kills its worker still reaches
- * `dead` rather than looping.
+ * already been counted at the claim. A handler that crashes its process every
+ * time never reaches `markFailed`, so without a bound here it would be
+ * reclaimed for ever, repeating any provider call it made before dying.
+ *
+ * The bound is one run past `max_attempts`: a job whose last attempt died with
+ * its worker gets exactly one more run, which sees `attempt >= maxAttempts` and
+ * takes the handler's last-attempt path (the payment-event handler turns an
+ * unread refund or dispute into a merchant exception there, never a silent dead
+ * job). Only if that run dies too does the job go `dead` here.
  */
 export async function reclaimStalled(db: Db, olderThanMs = 300_000): Promise<number> {
   const rows = await db.execute<{ id: string }>(sql`
     UPDATE jobs SET
-      state      = 'pending',
+      state      = CASE WHEN attempts > max_attempts THEN 'dead' ELSE 'pending' END,
       locked_at  = NULL,
       locked_by  = NULL,
-      last_error = coalesce(last_error, 'reclaimed: worker did not finish'),
+      -- An expired lease says the worker stopped answering, not why, so the message is neutral.
+      -- A dead job's error is fixed text (owner ruling, 4 Nov 2026): no earlier attempt's error
+      -- text is carried into it. That an earlier attempt's handler failed survives only as the
+      -- sanitised category beside it.
+      last_error = CASE WHEN attempts > max_attempts
+                     THEN 'reclaimed past the last attempt: its lease expired'
+                     ELSE coalesce(last_error, 'reclaimed: lease expired before the worker finished') END,
+      failure_category = CASE WHEN failure_category IN ('handler_error', 'lease_expired_after_handler_error')
+                              THEN 'lease_expired_after_handler_error'
+                              ELSE 'lease_expired' END,
       updated_at = now()
     WHERE state = 'running'
       AND locked_at < now() - make_interval(secs => ${olderThanMs / 1000})
@@ -409,6 +513,8 @@ export interface JobRow {
   state: string;
   attempts: number;
   lastError: string | null;
+  /** The latest failure's fixed category (migration 0190), never error text. */
+  failureCategory: string | null;
 }
 
 /** A tenant's own view of its queue — for the dashboard and for tests. */
@@ -421,6 +527,7 @@ export async function jobsForBusiness(tx: TenantDb, kind?: string): Promise<JobR
       state: jobs.state,
       attempts: jobs.attempts,
       lastError: jobs.lastError,
+      failureCategory: jobs.failureCategory,
     })
     .from(jobs)
     .where(where)

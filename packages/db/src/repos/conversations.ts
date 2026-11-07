@@ -897,6 +897,151 @@ export async function reconcileDeadReceipts(tx: TenantDb, businessId: string): P
   return applied;
 }
 
+/** Why `reconcileDeadInboundMessages` retired a draft (migration 0190). */
+export const INBOUND_MESSAGE_FAILED = 'inbound_message_failed';
+
+/**
+ * An inbound message whose job is dead was never processed (owner ruling, 4 Nov 2026, PR #428):
+ * whether its handler failed on every attempt (`markFailed`) or its worker stopped answering on
+ * every attempt (`reclaimStalled`), nothing will ever run it again. It may have been the
+ * merchant's "cancel" or a correction, so a draft that was pending then must never be confirmed
+ * by a later "yes". Called under the business's inbound lock before any answer is read, this
+ * retires every pending draft (and every purchase held for its identity question) whose message reached Rekoda before the lost one (and whose window
+ * was then open), as `superseded` with reason `inbound_message_failed`, so the next "yes" or
+ * "no" can tell the merchant to record it again. Open clarification questions asked before the
+ * lost message are closed the same way (`continuations`).
+ *
+ * Which drafts: those still pending whose own message reached Rekoda before the lost one did (by
+ * each message's webhook event, `external_events` `created_at`) and whose confirmation window was
+ * still open when the lost message arrived. Like every message, the lost one is judged at its
+ * arrival (G-23), not when this runs: a window that closed only afterwards still counts, because
+ * a later "yes" sent inside that window would otherwise confirm the draft. A draft from a message
+ * that arrived later, including one that passed the lost message while it was backing off, is
+ * that later message's and stays. A draft already expired when the lost message arrived is left
+ * for `expireStaleDrafts`, so a "yes" to it is still told it expired.
+ *
+ * A dead message is closed once: its event is then marked processed, which is also what takes it
+ * out of the next call, as `reconcileDeadReceipts` does for receipts. While a message that arrived
+ * before it is still live it is retired against on every run but left open (`held`), and
+ * `messages` counts only the ones closed. The event's
+ * error is fixed text; nothing of the job's error or the message is copied anywhere.
+ */
+export async function reconcileDeadInboundMessages(
+  tx: TenantDb,
+  businessId: string,
+  processingJobId?: string,
+): Promise<{ messages: number; drafts: number; continuations: number }> {
+  const dead = await tx.execute<{ event_id: string; held: boolean }>(sql`
+    SELECT e.id AS event_id,
+           /* Held open while a message that arrived before it is still live (Codex on d57258b): a
+            * newer request may pass a sibling backing off, and that earlier message may go on to
+            * draft. The drafts and questions behind the lost message are retired on every run
+            * regardless (independent review of a802742: deferring the retirement let a correction
+            * supersede the draft first, silently), but the event is only marked processed once
+            * every earlier message has finished, so a run after that still reaches the draft the
+            * earlier message created. Retiring again is idempotent: only still-open rows move. */
+           EXISTS (
+             SELECT 1 FROM jobs o
+              WHERE o.business_id = j.business_id
+                AND o.kind = 'inbound.message'
+                AND o.state IN ('pending', 'running')
+                AND (o.created_at, o.id) < (j.created_at, j.id)) AS held
+      FROM jobs j
+      JOIN external_events e ON e.id = CASE
+             WHEN j.payload->>'eventId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+             THEN (j.payload->>'eventId')::uuid END
+     WHERE j.business_id = ${businessId}::uuid
+       AND j.kind = 'inbound.message'
+       AND j.state = 'dead'
+       AND e.business_id = ${businessId}::uuid
+       AND e.processed_at IS NULL
+       /* Temporal eligibility (Codex on #428): a message that is itself being processed is only
+        * affected by lost messages that arrived BEFORE it. A "yes" that arrived before a lost
+        * "cancel" was sent while the draft was still wanted, so the later loss must not
+        * retroactively retire the draft under it; the lost message is left open and applies on
+        * the first run that arrived after it. Without a processing job, every dead message applies. */
+       AND (${processingJobId ?? null}::uuid IS NULL
+            OR (j.created_at, j.id) < (SELECT p.created_at, p.id FROM jobs p
+                                        WHERE p.id = ${processingJobId ?? null}::uuid
+                                          AND p.business_id = ${businessId}::uuid))
+     ORDER BY j.updated_at, j.id`);
+  let messages = 0;
+  let drafts = 0;
+  let continuations = 0;
+  for (const message of [...dead]) {
+    const retired = await tx.execute<{ id: string }>(sql`
+      UPDATE command_drafts d
+         SET state = 'superseded', retired_reason = ${INBOUND_MESSAGE_FAILED},
+             updated_at = clock_timestamp()
+        FROM conversation_messages m, external_events lost
+       WHERE d.business_id = ${businessId}::uuid
+         AND d.state IN ('pending', 'held')
+         AND d.expires_at > lost.created_at
+         AND m.business_id = ${businessId}::uuid
+         AND m.id = d.conversation_message_id
+         AND lost.business_id = ${businessId}::uuid
+         AND lost.id = ${message.event_id}::uuid
+         AND coalesce(
+               (SELECT src.created_at FROM external_events src
+                 WHERE src.business_id = ${businessId}::uuid
+                   AND src.provider = lost.provider
+                   AND src.external_id = m.provider_message_id
+                 LIMIT 1),
+               m.created_at) < lost.created_at
+      RETURNING d.id`);
+    drafts += [...retired].length;
+    /* A question Rekoda asked (a purchase's funding source, a period, a choice) is answerable
+     * state too, though its draft is `abandoned`, not `pending`: a lost "cancel" must not leave
+     * it open for a later "cash" to rebuild and a "yes" to confirm (Codex on #428). Same rule as
+     * the drafts: asked by a message that arrived before the lost one, window open at its arrival.
+     * Read-only follow-ups (`query`) move no money and are left alone. */
+    const closed = await tx.execute<{ id: string; draft_id: string | null }>(sql`
+      UPDATE conversation_continuations c
+         SET state = 'superseded', updated_at = clock_timestamp()
+        FROM conversation_messages m, external_events lost
+       WHERE c.business_id = ${businessId}::uuid
+         AND c.state = 'open'
+         AND c.kind = 'clarification'
+         AND c.expires_at > lost.created_at
+         AND m.business_id = ${businessId}::uuid
+         AND m.id = c.source_message_id
+         AND lost.business_id = ${businessId}::uuid
+         AND lost.id = ${message.event_id}::uuid
+         AND coalesce(
+               (SELECT src.created_at FROM external_events src
+                 WHERE src.business_id = ${businessId}::uuid
+                   AND src.provider = lost.provider
+                   AND src.external_id = m.provider_message_id
+                 LIMIT 1),
+               m.created_at) < lost.created_at
+      RETURNING c.id, c.draft_id`);
+    continuations += [...closed].length;
+    /* The question's own draft is `abandoned`, and a later "yes" can reopen the question from it
+     * (`reaskRetiredQuestion`), so a "cash" would then rebuild and confirm the purchase the lost
+     * message withdrew. Retire it with the reason, so the "yes" is told the request was withdrawn
+     * (CodeRabbit on #428). */
+    const draftIds = [...closed].map((c) => c.draft_id).filter((id): id is string => Boolean(id));
+    if (draftIds.length > 0) {
+      await tx.execute(sql`
+        UPDATE command_drafts SET state = 'superseded', retired_reason = ${INBOUND_MESSAGE_FAILED},
+               updated_at = clock_timestamp()
+         WHERE business_id = ${businessId}::uuid AND state = 'abandoned'
+           AND id IN (${sql.join(
+             draftIds.map((id) => sql`${id}::uuid`),
+             sql`, `,
+           )})`);
+    }
+    if (message.held) continue;
+    await tx.execute(sql`
+      UPDATE external_events SET processed_at = now(),
+             error = 'not processed: its job died; drafts pending then were retired'
+       WHERE id = ${message.event_id}::uuid AND business_id = ${businessId}::uuid
+         AND processed_at IS NULL`);
+    messages += 1;
+  }
+  return { messages, drafts, continuations };
+}
+
 /**
  * Close every confirmation window that has lapsed for this business (G-23).
  *
@@ -1089,6 +1234,8 @@ export interface LatestDraft {
   requestedBy: string | null;
   /** When its state last changed. */
   updatedAt: Date;
+  /** Why it was retired other than by the merchant's own answer (0170, 0190), or null. */
+  retiredReason: string | null;
 }
 
 async function newestDraft(
@@ -1105,6 +1252,7 @@ async function newestDraft(
       previewed: commandDrafts.previewed,
       requestedBy: commandDrafts.requestedBy,
       updatedAt: commandDrafts.updatedAt,
+      retiredReason: commandDrafts.retiredReason,
     })
     .from(commandDrafts)
     .where(

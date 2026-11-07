@@ -11,7 +11,6 @@
     "apps/api/src/channels/waba-templates.integration.test.ts": 824,
     "apps/api/src/commands/sale-commands.integration.test.ts": 1475,
     "apps/api/src/commands/spend-commands.integration.test.ts": 686,
-    "apps/api/src/config.test.ts": 850,
     "apps/api/src/health/ops.integration.test.ts": 1016,
     "apps/api/src/payments/pipeline.integration.test.ts": 655,
     "apps/api/src/privacy/gateway.integration.test.ts": 1078,

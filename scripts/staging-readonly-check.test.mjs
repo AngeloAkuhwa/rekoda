@@ -6,92 +6,16 @@
  * `node --test scripts/staging-readonly-check.test.mjs` (CI does).
  */
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { test } from 'node:test';
-
-const SCRIPT = readFileSync(new URL('./staging-readonly-check.sh', import.meta.url), 'utf8');
-
-/**
- * A host checkout plus fakes. The fake `docker compose` reads all of stdin, as
- * a real `compose exec` can, and logs what it saw. `failKey` makes the
- * per-slot query for that one variable fail, as an exec that dies would.
- */
-function host({
-  failKey = '',
-  env = { META_TRIAL_TEMPLATE: 'rekoda_trial_ending' },
-  migrations = 'applied',
-} = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'staging-check-'));
-  const dir = join(root, 'rekoda');
-  const fake = join(root, 'fake');
-  mkdirSync(dir);
-  mkdirSync(fake);
-  const run = (cmd) => {
-    const r = spawnSync('bash', ['-c', cmd], { cwd: dir, encoding: 'utf8' });
-    assert.equal(r.status, 0, r.stderr);
-  };
-  run('git init -q -b main . && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m c');
-  writeFileSync(join(dir, '.env'), 'REKODA_RELEASE=staging-test\n');
-  const bin = (name, body) => {
-    writeFileSync(join(fake, name), `#!/usr/bin/env bash\n${body}\n`);
-    chmodSync(join(fake, name), 0o755);
-  };
-  bin(
-    'docker',
-    `
-if [ "$1" = compose ]; then
-  n="$(cat | wc -c)"
-  echo "compose $* stdin=$n" >> "${join(fake, 'calls.log')}"
-  case " $* " in
-    *" exec -T api true "*) exit 0 ;;
-    *" -e Q="*)
-      # A migration query: answer from the fixture. "fail" writes a client error that names a
-      # database user, as psql does, to prove it never reaches the output.
-      case "${migrations}" in
-        applied) echo t ;;
-        missing) echo f ;;
-        noledger) case "$*" in *rekoda_migrations*) echo f ;; *) echo t ;; esac ;;
-        ledgeronly) case "$*" in *rekoda_migrations*) echo t ;; *) echo f ;; esac ;;
-        noaddr) case "$*" in *billing_email_address_requests*|*rekoda_migrations*) echo f ;; *) echo t ;; esac ;;
-        partial) case "$*" in *billing_interval*) echo f ;; *) echo t ;; esac ;;
-        fail) echo "psql: FATAL: password authentication failed for user leakyuser" >&2; exit 2 ;;
-      esac
-      exit 0 ;;
-    *" exec -T -e K=${failKey || '__none__'} "*) exit 1 ;;
-    *" exec -T -e K="*)
-      # Run the container-side snippet for real, against the fixture environment.
-      # argv: compose -f FILE exec -T -e K=NAME api sh -c SNIPPET
-      k="$7"; shift 10
-      env -i ${Object.entries(env)
-        .map(([key, value]) => `${key}='${value}'`)
-        .join(' ')} "$k" sh -c "$1"
-      exit $? ;;
-  esac
-  exit 0
-fi
-echo image:test`,
-  );
-  bin('curl', 'echo ok');
-  const script = SCRIPT.replaceAll('/opt/rekoda', dir);
-  const go = (body = script) => {
-    const r = spawnSync('bash', ['-s'], {
-      cwd: dir,
-      input: body,
-      encoding: 'utf8',
-      env: { ...process.env, PATH: `${fake}:${process.env.PATH}`, API_URL: 'https://x.invalid' },
-    });
-    return r.stdout;
-  };
-  return {
-    go,
-    script,
-    calls: () => readFileSync(join(fake, 'calls.log'), 'utf8').split('\n'),
-    done: () => rmSync(root, { recursive: true, force: true }),
-  };
-}
+import {
+  HEALTHY_DOTENV,
+  SCRIPT,
+  SLOTS,
+  TAGS,
+  attention,
+  healthy,
+  host,
+} from './staging-readonly-check.fixtures.mjs';
 
 test('a compose call cannot swallow the rest of the piped script', () => {
   const h = host();
@@ -248,5 +172,394 @@ test('objects without a ledger tag read INCOMPLETE, a tag without objects reads 
   } finally {
     noLedger.done();
     ledgerOnly.done();
+  }
+});
+
+/* ── the post-deploy checks: commit, image parity, migration ledger, reminders ── */
+
+test('a healthy host at EXPECT_SHA: every check passes and attention reads none', () => {
+  const h = healthy();
+  try {
+    const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(out, /checkout matches EXPECT_SHA\s+yes\n/);
+    assert.match(out, /api and worker image\s+SAME\n/);
+    assert.match(out, /api image is the \.env release\s+yes\n/);
+    assert.match(out, /served commit matches EXPECT_SHA\s+yes\n/);
+    assert.match(out, /served release is staging-<commit>\s+yes\n/);
+    for (const l of [
+      '0187 payment instruction columns',
+      '0188 payment check validated',
+      '0189 reminder batch tables',
+    ]) {
+      assert.match(out, new RegExp(`${l}\\s+APPLIED\\n`));
+    }
+    assert.match(
+      out,
+      new RegExp(
+        `expected migrations\\s+${TAGS.length} \\(last 0190_failed_inbound_and_failure_category\\)\\n`,
+      ),
+    );
+    assert.match(
+      out,
+      new RegExp(
+        `applied migrations\\s+${TAGS.length} \\(last 0190_failed_inbound_and_failure_category\\)\\n`,
+      ),
+    );
+    assert.match(out, /not applied\s+none\n/);
+    assert.match(out, new RegExp(`/health migrations = expected\\s+yes \\(${TAGS.length}\\)\\n`));
+    assert.match(out, /REKODA_CUSTOMER_REMINDERS \(api\)\s+ON \(1\)\n/);
+    assert.match(out, /REKODA_CUSTOMER_REMINDERS \(worker\)\s+ON \(1\)\n/);
+    assert.match(out, /PAYSTACK_SECRET_KEY\s+SET \(TEST-KEY\)\n/);
+    assert.match(attention(out), /== attention[^\n]*\nnone\nRESULT: OK [^\n]*\n$/);
+  } finally {
+    h.done();
+  }
+});
+
+test('a full EXPECT_SHA matches too, and a different one is NO for checkout and served commit', () => {
+  const h = healthy();
+  try {
+    assert.match(
+      h.go(undefined, { EXPECT_SHA: h.sha }),
+      /served commit matches EXPECT_SHA\s+yes\n/,
+    );
+    const out = h.go(undefined, { EXPECT_SHA: 'deadbee' });
+    assert.match(out, /checkout matches EXPECT_SHA\s+NO\n/);
+    assert.match(out, /served commit matches EXPECT_SHA\s+NO\n/);
+    assert.match(attention(out), /checkout matches EXPECT_SHA\s+NO/);
+  } finally {
+    h.done();
+  }
+});
+
+test('a missing migration is named, its object check reads MISSING, and /health disagrees', () => {
+  const h = healthy({
+    ledger: TAGS.filter((t) => t !== '0189_reminder_batches'),
+    migrations: 'no0189',
+    health: `{"status":"degraded","database":"up","migrations":${TAGS.length - 1},"release":"staging-{sha7}","commit":"{sha7}"}`,
+  });
+  try {
+    const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(out, /0189 reminder batch tables\s+MISSING\n/);
+    assert.match(out, /0187 payment instruction columns\s+APPLIED\n/);
+    assert.match(
+      out,
+      new RegExp(
+        `applied migrations\\s+${TAGS.length - 1} \\(last 0190_failed_inbound_and_failure_category\\)\\n`,
+      ),
+    );
+    assert.match(out, /not applied\s+0189_reminder_batches\n/);
+    assert.match(
+      out,
+      new RegExp(
+        `/health migrations = expected\\s+NO \\(${TAGS.length - 1} served, ${TAGS.length} expected\\)\\n`,
+      ),
+    );
+    const a = attention(out);
+    for (const l of [
+      'served status',
+      '0189 reminder batch tables',
+      'not applied',
+      '/health migrations = expected',
+    ])
+      assert.ok(a.includes(l), `${l} is under attention`);
+  } finally {
+    h.done();
+  }
+});
+
+test('an applied tag this checkout does not carry is listed, not ignored', () => {
+  const h = healthy({ ledger: [...TAGS, '0190_from_a_newer_build'] });
+  try {
+    const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(out, /applied but not in this checkout\s+0190_from_a_newer_build\n/);
+    assert.match(attention(out), /applied but not in this checkout/);
+  } finally {
+    h.done();
+  }
+});
+
+test('missing configuration is flagged: no EXPECT_SHA, live or absent key, platform flag set, slot unset, invalid reminders', () => {
+  const h = healthy({
+    dotenv: 'REKODA_RELEASE=staging-{sha7}\n',
+    env: { META_OTP_TEMPLATE: 'a', REKODA_PAYSTACK_PLATFORM_CONFIRMED: '1' },
+    workerEnv: { REKODA_CUSTOMER_REMINDERS: '' },
+    images: { api: 'rekoda-app:staging-{sha7}', web: 'rekoda-web:staging-{sha7}' },
+  });
+  try {
+    const out = h.go();
+    const a = attention(out);
+    assert.match(out, /EXPECT_SHA\s+not given/);
+    assert.match(out, /image of worker\s+MISSING\n/);
+    assert.match(out, /api and worker image\s+unknown \(a container is missing\)\n/);
+    assert.match(
+      out,
+      /PAYSTACK_SECRET_KEY\s+UNSET \(staging test payments need an sk_test_ key\)\n/,
+    );
+    assert.match(
+      out,
+      /REKODA_PAYSTACK_PLATFORM_CONFIRMED\s+SET \(OWN-70: it stays UNSET on staging\)\n/,
+    );
+    assert.match(out, /META_TRIAL_TEMPLATE\s+UNSET\n/);
+    assert.match(out, /REKODA_CUSTOMER_REMINDERS \(api\)\s+OFF \(unset; the default is off\)\n/);
+    assert.match(out, /REKODA_CUSTOMER_REMINDERS \(worker\)\s+INVALID/);
+    for (const l of [
+      'EXPECT_SHA',
+      'image of worker',
+      'PAYSTACK_SECRET_KEY',
+      'REKODA_PAYSTACK_PLATFORM_CONFIRMED',
+      'META_TRIAL_TEMPLATE',
+      'REKODA_CUSTOMER_REMINDERS (worker)',
+    ])
+      assert.ok(a.includes(l), `${l} is under attention`);
+    // Off by default is the expected state before the reminder journeys, so it is not flagged.
+    assert.ok(!a.includes('REKODA_CUSTOMER_REMINDERS (api)'));
+  } finally {
+    h.done();
+  }
+});
+
+test('a key assigned twice in .env is read from its LAST line, as compose resolves it (Codex on #428)', () => {
+  const h = healthy({
+    dotenv:
+      HEALTHY_DOTENV +
+      'REKODA_ANNUAL_BILLING=1\nREKODA_ANNUAL_BILLING=0\nREKODA_RELEASE=staging-{sha7}\n',
+  });
+  try {
+    const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(out, /REKODA_ANNUAL_BILLING\s+SET \(0\)\n/);
+  } finally {
+    h.done();
+  }
+});
+
+test('an unquoted value after whitespace is read as compose reads it (Codex on #428)', () => {
+  const h = healthy({ dotenv: HEALTHY_DOTENV + 'REKODA_ANNUAL_BILLING= 0\n' });
+  try {
+    const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(out, /REKODA_ANNUAL_BILLING\s+SET \(0\)\n/);
+  } finally {
+    h.done();
+  }
+});
+
+test('a live Paystack key on staging is flagged without printing it', () => {
+  const h = healthy({
+    env: { ...SLOTS, PAYSTACK_SECRET_KEY: 'sk_live_zzzzzzzzzzzzzzzz' },
+  });
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    const out = r.stdout;
+    assert.match(
+      out,
+      /PAYSTACK_SECRET_KEY\s+SET \(NOT-A-TEST-KEY: a live key; staging must run an sk_test_ key\)\n/,
+    );
+    assert.doesNotMatch(out, /zzzzzzzz|sk_live_/);
+    assert.match(attention(out), /PAYSTACK_SECRET_KEY/);
+    assert.equal(r.status, 1, out);
+  } finally {
+    h.done();
+  }
+});
+
+test('different api and worker images read DIFFERENT; an image that is not the release reads NO', () => {
+  const h = healthy({
+    images: { api: 'rekoda-app:staging-0000000', worker: 'rekoda-app:staging-{sha7}', web: 'w' },
+  });
+  try {
+    const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(out, /api and worker image\s+DIFFERENT\n/);
+    assert.match(out, /api image is the \.env release\s+NO \(expected rekoda-app:staging-/);
+  } finally {
+    h.done();
+  }
+});
+
+test('checks that cannot be made read unknown, never pass: /health down, ledger query failed, no journal, no exec', () => {
+  const h = healthy({
+    health: 'fail',
+    ledger: 'fail',
+    journal: null,
+    migrations: 'fail',
+    failKey: 'REKODA_CUSTOMER_REMINDERS',
+  });
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    const out = r.stdout;
+    assert.equal(r.status, 1, out);
+    assert.match(out, /RESULT: ATTENTION \(\d+ item\(s\) above need a look\)\n$/);
+    assert.match(out, /\/health\s+FAIL \(no answer\)\n/);
+    assert.match(out, /expected migrations\s+unknown \(cannot read/);
+    assert.match(
+      out,
+      /0190 job failure category and inbound failure\s+unknown \(cannot read the journal\)\n/,
+    );
+    assert.match(attention(out), /0190 job failure category and inbound failure\s+unknown/);
+    assert.match(out, /applied migrations\s+unknown \(query failed/);
+    assert.doesNotMatch(out, /not applied\s+none/);
+    assert.match(out, /REKODA_CUSTOMER_REMINDERS \(api\)\s+unknown \(cannot exec/);
+    assert.doesNotMatch(out, /leakyuser|password authentication/);
+    assert.doesNotMatch(attention(out), /\nnone\n/);
+  } finally {
+    h.done();
+  }
+});
+
+test('no secret value reaches the output: keys, connection strings and .env values stay hidden', () => {
+  const h = healthy();
+  try {
+    const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.doesNotMatch(out, /qqqqqqqq|rrrrrrrr|wwwwwwww|vvvvvvvv|whsec_|postgres:\/\//);
+    assert.match(out, /RESEND_API_KEY\s+SET\n/);
+    assert.match(out, /WORKER_DATABASE_URL\s+SET\n/);
+  } finally {
+    h.done();
+  }
+});
+
+test('the script never runs a writing command against the host', () => {
+  // Static: no migrate, restart, up, down, pull, rm, or write SQL anywhere in the script.
+  assert.doesNotMatch(
+    SCRIPT,
+    /migrate:apply|dist\/migrate|compose[^\n]*\b(up|down|restart|stop|rm|pull|build|run)\b/,
+  );
+  assert.doesNotMatch(
+    SCRIPT.toLowerCase(),
+    /\b(insert into|update [a-z_]+ set|delete from|alter table|drop |truncate )/,
+  );
+  assert.doesNotMatch(SCRIPT, /(^|[^<])>\s*\.env|sed -i/);
+});
+
+test('the verdict line and exit status: OK and 0 only when nothing needs attention', () => {
+  const ok = healthy();
+  const bad = healthy({ ledger: TAGS.filter((x) => x !== '0189_reminder_batches') });
+  try {
+    const good = ok.run2(undefined, { EXPECT_SHA: ok.sha.slice(0, 7) });
+    assert.equal(good.status, 0, good.stdout);
+    assert.match(good.stdout, /RESULT: OK \(every check above is as expected\)\n$/);
+    const r = bad.run2(undefined, { EXPECT_SHA: bad.sha.slice(0, 7) });
+    assert.equal(r.status, 1);
+    assert.match(r.stdout, /RESULT: ATTENTION \(\d+ item\(s\) above need a look\)\n$/);
+    assert.doesNotMatch(r.stdout, /RESULT: OK/);
+  } finally {
+    ok.done();
+    bad.done();
+  }
+});
+
+test('0190 is checked by its objects too: a recorded tag with its constraint gone reads INCONSISTENT (Codex on #428)', () => {
+  const h = healthy({ migrations: 'broken0190' });
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(
+      r.stdout,
+      /0190 job failure category and inbound failure\s+INCONSISTENT \(recorded, objects missing\)\n/,
+    );
+    assert.match(
+      attention(r.stdout),
+      /0190 job failure category and inbound failure\s+INCONSISTENT/,
+    );
+    assert.equal(r.status, 1);
+  } finally {
+    h.done();
+  }
+});
+
+test('a checkout whose journal predates 0190 is not flagged for it (Qodo on #428)', () => {
+  const older = TAGS.filter((t) => !t.startsWith('0190_'));
+  const h = healthy({
+    journal: older,
+    ledger: older,
+    health: `{"status":"ok","database":"up","migrations":${older.length},"release":"staging-{sha7}","commit":"{sha7}"}`,
+  });
+  try {
+    const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(out, /0190 job failure category and inbound failure\s+not in this checkout/);
+    assert.doesNotMatch(out, /0190 job failure category and inbound failure\s+MISSING/);
+    assert.doesNotMatch(attention(out), /0190/);
+  } finally {
+    h.done();
+  }
+});
+
+test('the 0190 object check asks for the new retired reason, not only the constraint name (Qodo on #428)', () => {
+  const line =
+    SCRIPT.split('\n').find((l) => l.includes('0190_failed_inbound_and_failure_category "')) ?? '';
+  assert.match(line, /pg_get_constraintdef/);
+  assert.match(line, /inbound_message_failed/);
+  assert.match(line, /conrelid = 'public\.jobs'::regclass/);
+  assert.match(line, /conrelid = 'public\.command_drafts'::regclass/);
+});
+
+test('a migration whose tag is recorded but whose objects are gone reads INCONSISTENT, never APPLIED', () => {
+  // The disposable-database case: 0187's constraint dropped, its ledger tag kept. The ledger
+  // still lists 0187 as applied by tag, so only the objects check can catch it.
+  const h = healthy({ migrations: 'broken0187' });
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(
+      r.stdout,
+      /0187 payment instruction columns\s+INCONSISTENT \(recorded, objects missing\)\n/,
+    );
+    assert.doesNotMatch(r.stdout, /0187 payment instruction columns\s+APPLIED/);
+    assert.match(attention(r.stdout), /0187 payment instruction columns\s+INCONSISTENT/);
+    assert.equal(r.status, 1);
+  } finally {
+    h.done();
+  }
+});
+
+test('reminders set to 0 read OFF (0) and, like the default, are not flagged', () => {
+  const h = healthy({
+    env: {
+      ...SLOTS,
+      PAYSTACK_SECRET_KEY: 'sk_test_qqqqqqqqqqqqqqqq',
+      REKODA_CUSTOMER_REMINDERS: '0',
+      REKODA_EMAIL_PROVIDER: 'resend',
+    },
+    workerEnv: { REKODA_CUSTOMER_REMINDERS: '0', REKODA_EMAIL_PROVIDER: 'resend' },
+  });
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(r.stdout, /REKODA_CUSTOMER_REMINDERS \(api\)\s+OFF \(0\)\n/);
+    assert.match(r.stdout, /REKODA_CUSTOMER_REMINDERS \(worker\)\s+OFF \(0\)\n/);
+    assert.equal(r.status, 0, r.stdout);
+  } finally {
+    h.done();
+  }
+});
+
+test('a /health that answers without a migrations count reads unknown, never a silent pass', () => {
+  const h = healthy({
+    health: '{"status":"ok","database":"up","release":"staging-{sha7}","commit":"{sha7}"}',
+  });
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(
+      r.stdout,
+      /\/health migrations = expected\s+unknown \(\/health served no migrations field\)\n/,
+    );
+    assert.match(attention(r.stdout), /\/health migrations = expected/);
+    assert.match(r.stdout, /RESULT: ATTENTION/);
+    assert.equal(r.status, 1, r.stdout);
+  } finally {
+    h.done();
+  }
+});
+
+test('a /health transfer that fails after a partial answer reads unknown, never a pass on what arrived', () => {
+  // The fake curl prints the full healthy body and then exits 28, as a timeout mid-transfer does.
+  const h = healthy({ healthExit: 28 });
+  try {
+    const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+    assert.match(
+      r.stdout,
+      /\/health\s+unknown \(transfer failed after a partial answer, curl exit 28\)\n/,
+    );
+    assert.match(attention(r.stdout), /\/health/);
+    assert.doesNotMatch(r.stdout, /served status\s+ok\n/);
+    assert.equal(r.status, 1, r.stdout);
+  } finally {
+    h.done();
   }
 });

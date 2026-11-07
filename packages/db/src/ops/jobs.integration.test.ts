@@ -215,8 +215,10 @@ describe('a worker that dies mid-job', () => {
     expect(await jobsRepo.claimNext(workerDb, 'worker-2')).toBeNull();
 
     // Age the lock rather than waiting five minutes for it.
-    await workerDb.execute(
-      sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(
+        sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
+      ),
     );
 
     expect(await jobsRepo.reclaimStalled(workerDb, 300_000)).toBe(1);
@@ -225,6 +227,74 @@ describe('a worker that dies mid-job', () => {
     // The attempt already spent still counts, so a job that kills its worker
     // every time reaches `dead` instead of looping forever.
     expect(reclaimed?.attempts).toBe(2);
+  });
+
+  it('gives a job whose last attempt killed its worker one more run, then sends it to dead', async () => {
+    /* A handler that crashes its process every time (an OOM, a segfault) never reaches
+     * markFailed, so only the reclaim can stop it; without a bound it is reclaimed every five
+     * minutes for ever, repeating any provider call it made before dying. The one run past
+     * max_attempts is the handler's last-attempt path (attempt >= maxAttempts), which the
+     * payment-event handler relies on to raise a merchant exception rather than die silently. */
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    await enqueue(businessId, { maxAttempts: 2 });
+    for (const [worker, attempt] of [
+      ['worker-1', 1],
+      ['worker-2', 2],
+      ['worker-3', 3],
+    ] as const) {
+      const job = await jobsRepo.claimNext(workerDb, worker);
+      expect(job?.attempts).toBe(attempt);
+      await withBusiness(appDb, businessId, (tx) =>
+        tx.execute(
+          sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
+        ),
+      );
+      expect(await jobsRepo.reclaimStalled(workerDb, 300_000)).toBe(1);
+      const [row] = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
+      // After the last attempt (2) the job is still runnable once more; after the run past it, dead.
+      expect(row?.state).toBe(attempt > 2 ? 'dead' : 'pending');
+    }
+    const rows = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ state: 'dead', attempts: 3 });
+    expect(rows[0]).toMatchObject({
+      lastError: 'reclaimed past the last attempt: its lease expired',
+      failureCategory: 'lease_expired',
+    });
+    expect(await jobsRepo.claimNext(workerDb, 'worker-4')).toBeNull();
+  });
+
+  it('a dead job never carries an earlier error text, only its sanitised category', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    await enqueue(businessId, { maxAttempts: 2 });
+    const first = await jobsRepo.claimNext(workerDb, 'worker-1');
+    // What a provider might echo back: a token and a phone number. None of it may survive.
+    // Built at run time so no literal resembling a live key sits in source (Gitleaks).
+    const fakeKey = ['sk', 'live', 'x'.repeat(24)].join('_');
+    const sensitive = `provider said: token ${fakeKey} for +2348040000001`;
+    expect((await jobsRepo.markFailed(workerDb, first!, sensitive, 0)).state).toBe('pending');
+    const [failed] = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
+    expect(failed?.failureCategory).toBe('handler_error');
+    for (const worker of ['worker-2', 'worker-3']) {
+      const job = await jobsRepo.claimNext(workerDb, worker);
+      await withBusiness(appDb, businessId, (tx) =>
+        tx.execute(
+          sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
+        ),
+      );
+      expect(await jobsRepo.reclaimStalled(workerDb, 300_000)).toBe(1);
+    }
+    const [row] = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
+    expect(row).toMatchObject({
+      state: 'dead',
+      attempts: 3,
+      lastError: 'reclaimed past the last attempt: its lease expired',
+      failureCategory: 'lease_expired_after_handler_error',
+    });
+    const raw = await workerDb.execute<{ row: string }>(
+      sql`SELECT row_to_json(j)::text AS row FROM jobs j WHERE business_id = ${businessId}::uuid`,
+    );
+    expect([...raw][0]?.row).not.toMatch(/sk_live_|xxxxxxxx|provider said|2348040000001/);
   });
 
   it('does not reclaim a job whose worker is still alive', async () => {

@@ -253,7 +253,6 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * it names reads 'undelivered' (REM-01). */
     const reconciled = await conversationsRepo.reconcileDeadReceipts(tx, businessId);
     if (reconciled > 0) log.warn(`applied ${reconciled} failed receipt(s) from dead jobs`);
-
     const event = await events.eventForBusiness(tx, eventId, businessId);
     if (!event) {
       // Attributed to a different tenant, or truncated between enqueue and
@@ -283,6 +282,74 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     if (!inbound || inbound.kind !== 'message') {
       await events.markProcessed(tx, eventId, null, businessId);
       return;
+    }
+
+    /* OWN-74: an answer waits for every earlier message still live, even one backing off after
+     * a failure that `hasEarlierLiveJob` lets a request pass. If that message never succeeds it
+     * dies and is reconciled below before this answer is read, so a lost "cancel" is never
+     * overtaken by a "yes" sent while it retried. A voice note may say "yes" too and is not
+     * heard until it is transcribed, so it waits the same way, before any provider is paid. */
+    const answerRoute = typeof inbound.text === 'string' ? routeMessage(inbound.text) : null;
+    const answerKind =
+      answerRoute?.route === 'deterministic' &&
+      ['affirm', 'deny', 'cancel', 'unsure'].includes(answerRoute.intent.kind)
+        ? answerRoute.intent.kind
+        : null;
+    /* A short answer to a question Rekoda asked (the funding source, a period, a choice, "same or
+     * separate") is an answer too: it cannot be told from a new request before it is read, so while
+     * a clarification is open it waits behind an earlier live message the same way (CodeRabbit on
+     * #428). With no question open, requests are not held up. */
+    /* "cash", "bank", "same" or "separate" can answer a question whose continuation is no longer
+     * open: a bare "same" or "separate" still answers a purchase held for its identity question
+     * after another message retired that question's continuation (G-81). Those words wait on
+     * their own, so a held purchase is never rebuilt past a retrying "cancel" (CodeRabbit on #428).
+     * They are never a new request on their own, so nothing else is held up. */
+    const answerWords =
+      typeof inbound.text === 'string' &&
+      (fundingSourceAnswer(inbound.text) !== null || purchaseIdentityAnswer(inbound.text) !== null);
+    const mayAnswer =
+      Boolean(answerKind) ||
+      answerWords ||
+      isVoiceNote(inbound) ||
+      (await continuationsRepo.hasOpenClarification(tx, businessId, event.receivedAt));
+    if (mayAnswer && (await jobsRepo.hasEarlierLiveJobByArrival(tx, jobId))) {
+      throw new JobDeferred();
+    }
+    /* An earlier inbound message whose job died was never processed (owner ruling, 4 Nov 2026):
+     * every draft pending then is retired here, under the lock and before any "yes" is read, so a
+     * lost "cancel" can never be overtaken by a later "yes". Only a run that can go on to tell the
+     * merchant does it: the early returns above must not consume the lost message silently (Qodo
+     * on #428). Counts only, never content.
+     *
+     * It runs AFTER the live-message check above, not before (Codex on #428): a message that is
+     * still live when that check runs defers the answer, and one that is dead or done by then is
+     * read as dead here. Reconciling first left a window in which a stale job reclaimed as dead
+     * between the two reads was seen as neither, and the answer proceeded. */
+    const lost = await conversationsRepo.reconcileDeadInboundMessages(tx, businessId, jobId);
+
+    /* Logged only once this run is going ahead: a deferral rolls the retirement back. */
+    if (lost.messages > 0) {
+      log.warn(
+        `retired ${lost.drafts} draft(s) and ${lost.continuations} question(s) behind ${lost.messages} inbound message(s) whose job died`,
+      );
+    }
+    /* OWN-74: the merchant is told that a waiting request was withdrawn. A typed "yes", "no" or
+     * "cancel" is told by its own answer when that answer is about the withdrawn request; when it
+     * is not (it answered a newer request, or returned before reaching it), the notice follows
+     * the answer below, so a withdrawal is never silent. Any other message is told here, first.
+     * A voice note is told here too, before it is heard, so it is told even if it cannot be
+     * transcribed; a spoken "yes" or "no" then also gets its own answer. */
+    if (
+      (lost.drafts > 0 || lost.continuations > 0) &&
+      answerKind !== 'affirm' &&
+      answerKind !== 'deny' &&
+      answerKind !== 'cancel'
+    ) {
+      await deps.replySender.send(tx, {
+        businessId,
+        to: inbound.from,
+        reply: replies.earlierMessageLostNo(),
+      });
     }
 
     /**
@@ -773,6 +840,19 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       }
     }
 
+    /* OWN-74: a typed answer that did not itself report the withdrawn request (see above). */
+    if (
+      (lost.drafts > 0 || lost.continuations > 0) &&
+      (answerKind === 'affirm' || answerKind === 'deny' || answerKind === 'cancel') &&
+      !outcome.toldEarlierMessageLost
+    ) {
+      await deps.replySender.send(tx, {
+        businessId,
+        to: inbound.from,
+        reply: replies.earlierMessageLostNo(),
+      });
+    }
+
     await events.markProcessed(tx, eventId, null, businessId);
     log.debug(`answered an inbound message routed as ${route.route}`);
   };
@@ -811,6 +891,9 @@ type RebuildOutcome = {
    * answer it (Codex review of 0e9bf52). Given back only when the reply
    * that replaced it was an identity re-ask nobody received. */
   retiredContinuation?: string;
+  /** OWN-74: this message's answer was itself the notice that a waiting request was withdrawn
+   * behind a lost message, so the handler sends no second one. */
+  toldEarlierMessageLost?: boolean;
 };
 
 /** A recording somebody made with the microphone button, not an attached file. */
@@ -1591,6 +1674,11 @@ async function deterministicReply(
       const lapsed = expiredAnswer(latest.command, latest.previewed, 'no');
       if (lapsed) return lapsed;
     }
+    /* The request this "no" is about was withdrawn because an earlier message was lost. */
+    if (latest?.retiredReason === conversationsRepo.INBOUND_MESSAGE_FAILED) {
+      if (ctx.outcome) ctx.outcome.toldEarlierMessageLost = true;
+      return replies.earlierMessageLostNo();
+    }
     const closedQuestion =
       latest?.state === 'abandoned'
         ? await conversationsRepo.closeRetiredDraft(tx, businessId, latest.id)
@@ -2341,6 +2429,16 @@ async function confirmPendingDraft(
     /* Never fall through to an older preview behind the question, even if
      * the stored question no longer gates (rules changed since). */
     return replies.nothingToConfirm();
+  }
+  /* The last thing the merchant was shown was withdrawn because an earlier message of theirs
+   * was never processed (owner ruling, 4 Nov 2026): this "yes" is about it. Nothing is claimed
+   * or metered, nothing older is reached behind it, and the merchant is told to send it again. */
+  if (latest?.retiredReason === conversationsRepo.INBOUND_MESSAGE_FAILED) {
+    if (retrying) {
+      await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
+    }
+    if (sender.outcome) sender.outcome.toldEarlierMessageLost = true;
+    return replies.earlierMessageLostYes();
   }
   /* The last thing the merchant was shown expired (G-23): this "yes" is
    * about it. Say so, and never fall through to an older preview behind it,

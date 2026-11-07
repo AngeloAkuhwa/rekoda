@@ -319,7 +319,11 @@ change a feature and want to know what to run.
 | integration | `apps/api/src/channels/meta-g68-final-review.integration.test.ts`     |
 | integration | `apps/api/src/channels/meta-g68-review.integration.test.ts`           |
 | integration | `apps/api/src/channels/meta-invoices.integration.test.ts`             |
+| integration | `apps/api/src/channels/meta-lost-message.integration.test.ts`         |
+| integration | `apps/api/src/channels/meta-lost-message-answers.integration.test.ts` |
 | integration | `apps/api/src/channels/meta-order-ingress.integration.test.ts`        |
+| integration | `apps/api/src/channels/meta-webhook-ordering.integration.test.ts`     |
+| integration | `apps/api/src/channels/meta-webhook-ingress-lane.integration.test.ts` |
 | integration | `apps/api/src/channels/meta-pidgin-continuations.integration.test.ts` |
 | integration | `apps/api/src/channels/meta-plan-example.integration.test.ts`         |
 | integration | `apps/api/src/channels/meta-preview-expiry-1.integration.test.ts`     |
@@ -355,8 +359,10 @@ change a feature and want to know what to run.
 | integration | `apps/api/src/reminders/reminder.integration.test.ts`                 |
 | integration | `apps/api/src/replies/reply.integration.test.ts`                      |
 | integration | `packages/db/src/channels/continuations.integration.test.ts`          |
+| integration | `packages/db/src/channels/dead-inbound-reconcile.integration.test.ts` |
 | integration | `packages/db/src/channels/draft-expiry.integration.test.ts`           |
 | integration | `packages/db/src/channels/email-suppressions.integration.test.ts`     |
+| integration | `packages/db/src/channels/ingress-arrival-lock.integration.test.ts`   |
 | integration | `packages/db/src/channels/waba.integration.test.ts`                   |
 | unit        | `apps/api/src/ai/audio-duration.test.ts`                              |
 | unit        | `apps/api/src/ai/eval/dataset.test.ts`                                |
@@ -367,6 +373,7 @@ change a feature and want to know what to run.
 | unit        | `apps/api/src/ai/prompt.test.ts`                                      |
 | unit        | `apps/api/src/ai/stt.openai.test.ts`                                  |
 | unit        | `apps/api/src/ai/transports.test.ts`                                  |
+| unit        | `apps/api/src/channels/ingress-sequencer.test.ts`                     |
 | unit        | `apps/api/src/channels/meta.sender.test.ts`                           |
 | unit        | `apps/api/src/documents/r2.storage.test.ts`                           |
 | unit        | `apps/api/src/documents/r2.storage.wire.test.ts`                      |
@@ -391,6 +398,7 @@ change a feature and want to know what to run.
 | unit        | `packages/core/src/messaging.test.ts`                                 |
 | unit        | `packages/core/src/notification-policy.test.ts`                       |
 | unit        | `packages/core/src/reminders.test.ts`                                 |
+| unit        | `packages/core/src/replies-links.test.ts`                             |
 | unit        | `packages/core/src/replies.test.ts`                                   |
 | unit        | `packages/core/src/request-kind.test.ts`                              |
 | unit        | `packages/core/src/router.test.ts`                                    |
@@ -453,8 +461,15 @@ change a feature and want to know what to run.
 | integration | `packages/db/src/payments/provenance-classifier.integration.test.ts` |
 | integration | `packages/db/src/payments/provenance-writers.integration.test.ts`    |
 | unit        | `apps/api/src/api/public/sale-event-id.test.ts`                      |
-| unit        | `apps/api/src/config.production.test.ts`                             |
-| unit        | `apps/api/src/config.test.ts`                                        |
+| unit        | `apps/api/src/config/ai-provider.test.ts`                            |
+| unit        | `apps/api/src/config/command-bus.test.ts`                            |
+| unit        | `apps/api/src/config/feature-flags.test.ts`                          |
+| unit        | `apps/api/src/config/fx.test.ts`                                     |
+| unit        | `apps/api/src/config/hardening.test.ts`                              |
+| unit        | `apps/api/src/config/media.test.ts`                                  |
+| unit        | `apps/api/src/config/numeric.test.ts`                                |
+| unit        | `apps/api/src/config/production.test.ts`                             |
+| unit        | `apps/api/src/config/trust.test.ts`                                  |
 | unit        | `apps/web/src/app/app/export/[kind]/route.test.ts`                   |
 | unit        | `apps/web/src/app/og.test.tsx`                                       |
 | unit        | `apps/web/src/components/legal/LegalPage.test.tsx`                   |

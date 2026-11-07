@@ -150,9 +150,17 @@ treat it as a variable. Every generated value above is hex.
    must print `172.30.10.1 false`. Anything else means Docker kept an older
    network: `dc down` (never `-v`) and `dc up -d --wait` recreate it.
 9. **Health.** `curl -fsS https://<api host>/health` must show
-   `"status":"ok"`, `"database":"up"`, `"migrations":152` (the count of
-   entries in `packages/db/migrations/meta/_journal.json`), and the
-   `release` and `commit` just built.
+   `"status":"ok"`, `"database":"up"`, `"migrations"` at least the count of
+   entries in the deployed release's `packages/db/migrations/meta/_journal.json`
+   (191 at the time of writing; it grows with each migration), and the
+   `release` and `commit` just built. A higher count is not by itself a fault: a
+   rollback to an older release leaves the newer migrations applied. The count
+   alone does not prove that every migration this release needs is applied, so
+   `"status":"ok"` is required with it (the API refuses `ok` when one is missing),
+   and the staging read-only check compares the applied tags with this release's
+   journal tag by tag (`scripts/staging-readonly-check.sh`; there a tag applied
+   but not in the checkout reads under attention, for the operator to confirm it
+   is a rollback).
 10. **Worker.** See "Is the worker working?" below.
 
 The first API boot enrols the `VAULT_KEY` and `MATCH_KEY` fingerprints in the
@@ -733,7 +741,7 @@ check out.
 
 ## Smoke checklist after every deploy
 
-- [ ] `/health` returns `ok`, 152 migrations (or the new count), and the new release
+- [ ] `/health` returns `ok`, at least the deployed release's journal count of migrations (a rollback may leave a higher applied count), and the new release
 - [ ] `dc ps`: every service healthy
 - [ ] `docker network inspect rekoda-prod_edge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}} {{.EnableIPv6}}'` prints `172.30.10.1 false` (the gateway the edge check refuses, G-75)
 - [ ] Worker: `job runner started` in its log, and no growing `pending` backlog

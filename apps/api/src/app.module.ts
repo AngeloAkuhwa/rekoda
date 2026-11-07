@@ -9,6 +9,7 @@ import { HealthController } from './health/health.controller.js';
 import { OpsController } from './health/ops.controller.js';
 import { MetaWebhookController } from './channels/meta.controller.js';
 import { MetaIngressService } from './channels/meta.service.js';
+import { IngressSequencer } from './channels/ingress-sequencer.js';
 import { SecurityMetricsModule } from './channels/security-metrics.module.js';
 import { JobsModule } from './jobs/jobs.module.js';
 import { BillingModule } from './billing/billing.module.js';
@@ -49,6 +50,14 @@ import { WebhooksModule } from './webhooks/webhooks.module.js';
     OpsController,
     MetaWebhookController,
   ],
-  providers: [AuthService, SessionGuard, RolesGuard, OperatorGuard, MetaIngressService],
+  providers: [
+    AuthService,
+    SessionGuard,
+    RolesGuard,
+    OperatorGuard,
+    MetaIngressService,
+    /* One lane per process for every webhook it receives (OWN-74). */
+    { provide: IngressSequencer, useFactory: () => new IngressSequencer() },
+  ],
 })
 export class AppModule {}
