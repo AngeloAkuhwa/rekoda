@@ -74,7 +74,12 @@ beforeAll(async () => {
   process.env['REKODA_API_SECRET'] = testKey('secret');
   process.env['VAULT_KEY'] = testKey('vault');
   process.env['MATCH_KEY'] = testKey('match');
-  config = { ...loadConfig(), webUrl: 'https://app.rekoda.test', customerReminders: true };
+  config = {
+    ...loadConfig(),
+    webUrl: 'https://app.rekoda.test',
+    customerReminders: true,
+    supportEmail: 'support@rekoda.test',
+  };
 });
 
 afterAll(async () => {
@@ -1069,7 +1074,7 @@ describe('void, credit and reversal (REM-02)', () => {
   });
 });
 
-describe('the email reply-to (REM-02)', () => {
+describe('the email reply-to (OD-42(b): Rekoda support)', () => {
   const setBillingEmail = async (s: Seeded, address: string, verified: boolean) => {
     await withBusiness(appDb, s.businessId, (tx) =>
       subscriptionsRepo.setBillingEmailSealed(
@@ -1084,26 +1089,41 @@ describe('the email reply-to (REM-02)', () => {
     }
   };
 
-  it("sends replies to the merchant's verified billing email", async () => {
+  it("sends replies to REKODA_SUPPORT_EMAIL, never to the merchant's billing email", async () => {
     const s = await seed();
     await approvePhone(s);
     await setBillingEmail(s, 'owner@adaeze.example.ng', true);
     expect((await sendEmail(s, { attest: true })).reminder.status).toBe('sent');
-    expect(mail.outbox[0]!.replyTo).toBe('owner@adaeze.example.ng');
-    // Still sent from Rekoda's own address under the merchant's display name.
+    expect(mail.outbox[0]!.replyTo).toBe('support@rekoda.test');
+    // Still sent from Rekoda's own address under the merchant's display name: From is unchanged.
     expect(mail.outbox[0]!.fromName).toBe('Adaeze Fabrics via Rekoda');
+    expect(JSON.stringify(mail.outbox[0])).not.toContain('owner@adaeze.example.ng');
   });
 
-  it('leaves the reply-to out when the billing email is not verified, or there is none', async () => {
+  it('uses the support address whether or not the merchant has a billing email', async () => {
     const s = await seed();
     await approvePhone(s);
     await sendEmail(s, { attest: true });
-    expect(mail.outbox[0]!).not.toHaveProperty('replyTo');
+    expect(mail.outbox[0]!.replyTo).toBe('support@rekoda.test');
 
     await setBillingEmail(s, 'unproven@adaeze.example.ng', false);
     await sendEmail(s);
     expect(mail.outbox).toHaveLength(2);
-    expect(mail.outbox[1]!).not.toHaveProperty('replyTo');
+    expect(mail.outbox[1]!.replyTo).toBe('support@rekoda.test');
+  });
+
+  it('leaves the header out rather than inventing one when no support address is configured', async () => {
+    const s = await seed();
+    await approvePhone(s);
+    const bare = new ReminderService({ ...config, supportEmail: null }, appDb, mail, whatsapp);
+    const out = await bare.send(s.businessId, s.userId, {
+      invoiceNumber: s.invoiceNumber,
+      channels: ['email'],
+      idempotencyKey: key(),
+      attest: true,
+    });
+    expect(out.results[0]!.reminder.status).toBe('sent');
+    expect(mail.outbox[0]!).not.toHaveProperty('replyTo');
   });
 });
 

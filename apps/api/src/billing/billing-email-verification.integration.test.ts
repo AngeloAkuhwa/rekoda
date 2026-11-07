@@ -51,6 +51,8 @@ beforeAll(async () => {
     paystackSecretKey: 'sk_test_x',
     paystackPlatformConfirmed: true,
     webUrl: 'https://app.rekoda.test',
+    // Set, to prove the billing-email confirmation does not pick it up (OD-42(b) is reminders only).
+    supportEmail: 'support@rekoda.test',
   };
   provider = new StubPaymentProvider();
 });
@@ -198,6 +200,8 @@ describe('asking for a link', () => {
     expect(answer).toEqual({ state: 'sent', maskedEmail: 'a**@shop.example.ng' });
     expect(mail.outbox).toHaveLength(1);
     expect(mail.outbox[0]!.to).toBe(EMAIL);
+    // OD-42(b) applies to reminder emails only: this confirmation carries no Reply-To.
+    expect(mail.outbox[0]!).not.toHaveProperty('replyTo');
     const link = /https:\/\/\S+/.exec(mail.outbox[0]!.text)![0];
     const url = new URL(link);
     expect(url.pathname).toBe('/app/billing/confirm-email');

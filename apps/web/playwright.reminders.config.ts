@@ -104,6 +104,8 @@ export default defineConfig({
         // memory. Never a real send.
         REKODA_CUSTOMER_REMINDERS: '1',
         REKODA_WEB_URL: 'https://rekoda.app',
+        // The reminder email's Reply-To (OD-42(b)); reminders refuse to boot without it.
+        REKODA_SUPPORT_EMAIL: 'support@rekoda.test',
         REKODA_EMAIL_PROVIDER: 'mock',
       },
     },

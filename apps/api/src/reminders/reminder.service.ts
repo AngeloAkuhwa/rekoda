@@ -117,7 +117,7 @@ type Prepared =
       reminderId: string;
       email: string | null;
       phone: string | null;
-      /** The merchant's verified billing email, for replies; null when none is verified. */
+      /** Rekoda support (REKODA_SUPPORT_EMAIL, OD-42(b)), for replies; null leaves it out. */
       replyTo: string | null;
       facts: Parameters<typeof composeEmailReminder>[0];
     };
@@ -558,7 +558,7 @@ export class ReminderService {
         reminderId: started,
         email,
         phone,
-        replyTo: channel === 'email' ? this.replyTo(businessId, business!) : null,
+        replyTo: channel === 'email' ? this.config.supportEmail : null,
         facts: {
           businessName: business!.name,
           publicPhone: business!.publicContactPhone!,
@@ -654,28 +654,6 @@ export class ReminderService {
       }
     }
     return { business, email, phone, attestation, attestedAlready, block };
-  }
-
-  /**
-   * Where a customer's reply goes: the merchant's billing email, and only once its mailbox has been
-   * proven (a changed address clears the proof). Otherwise none, and a reply reaches Rekoda's own
-   * sending address. Opened here, held only for the send, never logged.
-   */
-  private replyTo(businessId: string, business: remindersRepo.ReminderBusiness): string | null {
-    if (business.billingEmailVerifiedAt === null || business.billingEmailSealed === null) {
-      return null;
-    }
-    try {
-      return decryptFacet(
-        business.billingEmailSealed,
-        this.config.vaultKey,
-        `billing-email:${businessId}`,
-      );
-    } catch {
-      /* A seal this key cannot open is a reply-to left out, never a reminder refused. */
-      this.log.warn('reminder reply-to omitted: billing email could not be opened');
-      return null;
-    }
   }
 
   async history(businessId: string, invoiceNumber: string): Promise<ReminderHistoryResponse> {

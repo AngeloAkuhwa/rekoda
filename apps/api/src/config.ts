@@ -62,6 +62,12 @@ export interface ApiConfig {
    */
   webUrl: string | null;
   /**
+   * Rekoda's support mailbox (REKODA_SUPPORT_EMAIL, OD-42(b) option B): the Reply-To of every
+   * customer payment-reminder email, so a customer's reply reaches Rekoda support. A bare address;
+   * the From address is unchanged. Null when unset (then reminders cannot be switched on).
+   */
+  supportEmail: string | null;
+  /**
    * Where operational alerts are POSTed as JSON (G-26): a chat incoming-webhook
    * or a mail relay. Null means no destination is configured, and the alert
    * pass then only logs at error level and lists the active alerts on
@@ -560,6 +566,28 @@ function webUrl(env: NodeJS.ProcessEnv): string | null {
   } catch {
     return null;
   }
+}
+
+/** One bare mailbox: an RFC 5322 dot-atom local part and dot-separated ASCII domain labels. */
+const BARE_ADDRESS =
+  /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
+
+/**
+ * REKODA_SUPPORT_EMAIL (OD-42(b)): the Reply-To of reminder emails. A value that is set but is not
+ * one bare address refuses to boot in every environment: a Reply-To header is copied into mail a
+ * customer receives, so a display name, a list or a stray character is refused rather than sent.
+ * Unset or empty is null. The value is never echoed.
+ */
+function supportEmail(env: NodeJS.ProcessEnv): string | null {
+  // Empty is unset, as for the other optional names (a copied .env.example boots).
+  const value = env['REKODA_SUPPORT_EMAIL']?.trim() ?? '';
+  if (value === '') return null;
+  if (value.length > 254 || !BARE_ADDRESS.test(value)) {
+    throw new ConfigError(
+      'REKODA_SUPPORT_EMAIL must be one email address, such as help@example.com (no name, no list)',
+    );
+  }
+  return value;
 }
 
 /**
@@ -1240,6 +1268,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     }
   }
 
+  /* OD-42(b): a reminder email's Reply-To is Rekoda support. Reminders cannot be switched on
+   * without one, so a customer's reply never silently lands on the bare sending address. */
+  const support = supportEmail(env);
+  if (customerReminders && support === null) {
+    throw new ConfigError(
+      'REKODA_CUSTOMER_REMINDERS=1 needs REKODA_SUPPORT_EMAIL, the support address customer replies to a reminder email go to',
+    );
+  }
+
   const revealOtp = env['REKODA_REVEAL_OTP'] === '1';
   if (revealOtp && isProduction) {
     throw new ConfigError(
@@ -1334,6 +1371,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     secret: required(env, 'REKODA_API_SECRET', 32),
     operatorSecret: operatorSecret(env, isProduction),
     webUrl: webUrl(env),
+    supportEmail: support,
     opsAlertWebhookUrl: opsAlertWebhookUrl(env, isProduction),
     revealOtp,
     /**
