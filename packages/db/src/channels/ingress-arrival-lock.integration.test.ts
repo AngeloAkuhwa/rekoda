@@ -53,9 +53,14 @@ describe('stampInboundArrival', () => {
     note: string,
     hold?: Promise<void>,
     stamped?: () => void,
+    lockTimeoutMs?: number,
   ) {
     return withBusiness(app, businessId, async (tx) => {
-      const arrivedAt = await jobsRepo.stampInboundArrival(tx, businessId);
+      const arrivedAt = await jobsRepo.stampInboundArrival(
+        tx,
+        businessId,
+        lockTimeoutMs === undefined ? {} : { lockTimeoutMs },
+      );
       stamped?.();
       if (hold) await hold;
       const recorded = await events.recordEvent(tx, {
@@ -84,7 +89,17 @@ describe('stampInboundArrival', () => {
     void p.then(() => (state.done = true));
     return state;
   };
-  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  /** Waits until some backend is blocked on an advisory lock, or fails: never assumes it (Qodo on #428). */
+  async function waitUntilBlockedOnLock() {
+    for (let tries = 0; tries < 200; tries++) {
+      const rows = await owner.execute(sql`
+        SELECT 1 FROM pg_stat_activity
+         WHERE wait_event_type = 'Lock' AND wait_event = 'advisory' AND pid <> pg_backend_pid()`);
+      if ([...rows].length > 0) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error('no backend was seen waiting on the ingress lock');
+  }
 
   it('a message stamped while an earlier one is uncommitted waits for it, and orders after it', async () => {
     const businessId = await seedBusiness();
@@ -98,7 +113,7 @@ describe('stampInboundArrival', () => {
     await stamped;
     const second = ingest(businessId, 'second');
     const secondState = settled(second);
-    await pause(300);
+    await waitUntilBlockedOnLock();
     /* Without the lock the later message would commit here, ordered after an invisible one. */
     expect(secondState.done).toBe(false);
 
@@ -133,7 +148,7 @@ describe('stampInboundArrival', () => {
     await stamped;
     const second = ingest(businessId, 'second');
     const secondState = settled(second);
-    await pause(300);
+    await waitUntilBlockedOnLock();
     expect(secondState.done).toBe(false);
 
     fail();
@@ -194,9 +209,13 @@ describe('stampInboundArrival', () => {
 
     const first = ingest(a, 'a-first', held, markStamped);
     await stamped;
-    /* B's ingress completes while A's is still open. */
-    await ingest(b, 'b-only');
-    release();
+    /* B's ingress completes while A's is still open. A bound keeps a regression from hanging the
+     * test, and the held transaction is always released (Qodo on #428). */
+    try {
+      await ingest(b, 'b-only', undefined, undefined, 1_500);
+    } finally {
+      release();
+    }
     await first;
   });
 });

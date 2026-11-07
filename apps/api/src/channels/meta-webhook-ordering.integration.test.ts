@@ -60,13 +60,18 @@ describe('ordered ingress after a failed message', () => {
         /* Freed 2.25 s after the first message is seen waiting for the lock, so a later message that
          * is (wrongly) attempted would get it. Waiting is observed, not assumed (Qodo on #428). */
         const request = post(body);
-        for (let tries = 0; tries < 200; tries++) {
+        let seen = false;
+        for (let tries = 0; tries < 200 && !seen; tries++) {
           const waiting = await withBusiness(db, business.id, (tx) =>
-            tx.execute(sql`SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`),
+            tx.execute(sql`
+            SELECT 1 FROM pg_stat_activity
+             WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'
+               AND query LIKE '%pg_advisory_xact_lock%' AND pid <> pg_backend_pid()`),
           );
-          if ([...waiting].length > 0) break;
-          await new Promise((resolve) => setTimeout(resolve, 25));
+          seen = [...waiting].length > 0;
+          if (!seen) await new Promise((resolve) => setTimeout(resolve, 25));
         }
+        if (!seen) throw new Error('the request was never seen waiting on the ingress lock');
         const timer = setTimeout(release, 2_250);
         const first = await request;
         clearTimeout(timer);
