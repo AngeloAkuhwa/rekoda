@@ -525,27 +525,54 @@ export async function reminderReplyNoticeDue(
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtext(${`reminder-reply-notice:${businessId}:${reminderId}`}))`,
   );
+  /* Due when never told, or when Meta later reported the notice failed (`undelivered_at`). */
   const rows = await tx.execute<{ one: number }>(sql`
     SELECT 1 AS one FROM reminder_reply_notices
      WHERE business_id = ${businessId}::uuid AND reminder_id = ${reminderId}::uuid
+       AND undelivered_at IS NULL
   `);
   return [...rows].length === 0;
 }
 
 /**
- * The business was told about replies to this reminder. Recorded only after the notice was
- * delivered, in the caller's transaction, so an undelivered notice (the owner's WhatsApp window
- * closed, an outage) is tried again on the customer's next message instead of being lost, and a
- * job that rolls back records nothing.
+ * The business was told about replies to this reminder: Meta accepted the notice and gave it
+ * `providerMessageId`. Recorded only then, in the caller's transaction, so a notice Meta refused
+ * (an outage) is tried again on the customer's next message instead of being lost, and a job that
+ * rolls back records nothing. A notice Meta accepted and later reported failed is marked by
+ * `markReminderReplyNoticeUndelivered`; sending it again replaces the record.
  */
 export async function recordReminderReplyNotice(
   tx: TenantDb,
   businessId: string,
   reminderId: string,
+  providerMessageId: string,
 ): Promise<void> {
   await tx.execute(sql`
-    INSERT INTO reminder_reply_notices (business_id, reminder_id)
-    VALUES (${businessId}::uuid, ${reminderId}::uuid)
-    ON CONFLICT (business_id, reminder_id) DO NOTHING
+    INSERT INTO reminder_reply_notices (business_id, reminder_id, provider_message_id)
+    VALUES (${businessId}::uuid, ${reminderId}::uuid, ${providerMessageId})
+    ON CONFLICT (business_id, reminder_id) DO UPDATE
+       SET provider_message_id = EXCLUDED.provider_message_id,
+           notified_at = now(),
+           undelivered_at = NULL
+     WHERE reminder_reply_notices.undelivered_at IS NOT NULL
   `);
+}
+
+/**
+ * Meta reported a reply notice failed after accepting it (a delivery receipt; for example the
+ * owner's 24-hour window was not really open). The reminder's notice becomes due again, so the
+ * customer's next message tries once more. Returns how many notices were marked (0 or 1).
+ */
+export async function markReminderReplyNoticeUndelivered(
+  tx: TenantDb,
+  businessId: string,
+  providerMessageId: string,
+): Promise<number> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE reminder_reply_notices SET undelivered_at = now()
+     WHERE business_id = ${businessId}::uuid AND provider_message_id = ${providerMessageId}
+       AND undelivered_at IS NULL
+    RETURNING reminder_id AS id
+  `);
+  return [...rows].length;
 }

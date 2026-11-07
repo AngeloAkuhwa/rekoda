@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import { conversationsRepo, events, jobsRepo, subscriptionsRepo } from '@rekoda/db';
+import { conversationsRepo, events, jobsRepo, remindersRepo, subscriptionsRepo } from '@rekoda/db';
 import type { JobContext, JobHandler } from './runner.js';
 
 /**
@@ -71,6 +71,16 @@ export function deliveryStatusHandler(): JobHandler {
     );
     if (reminders > 0) {
       log.log(`a trial reminder failed after acceptance: ${reminders} marked undelivered`);
+    }
+    /* A reminder-reply notice (OWN-83) Meta accepted and then failed: due again, so the customer's
+     * next message tells the business once more. */
+    const replyNotices = await remindersRepo.markReminderReplyNoticeUndelivered(
+      tx,
+      businessId,
+      outboundMessageId,
+    );
+    if (replyNotices > 0) {
+      log.log('a reminder-reply notice failed after acceptance: it will be tried again');
     }
     await events.markProcessed(tx, eventId, null, businessId);
   };

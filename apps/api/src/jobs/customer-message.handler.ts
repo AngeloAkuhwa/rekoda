@@ -284,9 +284,15 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
      * accepted, a lost one is not. Do not "fix" this by recording a claim before sending; that
      * makes an uncertain send unrecoverable. Pinned by meta-reminder-reply.integration.test.ts. */
     if (tellBusiness) {
-      let told = await tellBusinessOfReminderReply(tx, deps, businessId, answered.invoiceNumber);
-      if (told === 'reminder reply: business told') {
-        await remindersRepo.recordReminderReplyNotice(tx, businessId, answered.id);
+      const sent = await tellBusinessOfReminderReply(tx, deps, businessId, answered.invoiceNumber);
+      let told = sent.note;
+      if (sent.providerMessageId !== null) {
+        await remindersRepo.recordReminderReplyNotice(
+          tx,
+          businessId,
+          answered.id,
+          sent.providerMessageId,
+        );
       } else if (told === 'reminder reply: notice not delivered' && handoff.merchantNoticeHeld) {
         /* The handoff held back its notice for this one; it did not arrive, so the business gets
          * the ordinary handoff notice now rather than nothing (the reminder notice stays due). */
@@ -342,23 +348,27 @@ async function reminderThisAnswers(
 /**
  * Tell the business, in its own Rekoda chat, that a customer replied to a reminder. Names the
  * invoice, never the customer's number or message. STOP from the owner is honoured, as for the
- * handoff notice.
+ * handoff notice. `providerMessageId` is Meta's id when it accepted the notice, else null.
  */
 async function tellBusinessOfReminderReply(
   tx: TenantDb,
   deps: CustomerMessageDeps,
   businessId: string,
   invoiceNumber: string,
-): Promise<string> {
+): Promise<{ note: string; providerMessageId: string | null }> {
   const to = await identity.ownerPhoneFor(deps.db, businessId);
-  if (!to) return 'reminder reply: no owner to tell';
-  if (await identity.optedOutAt(deps.db, to)) return 'reminder reply: owner opted out';
+  if (!to) return { note: 'reminder reply: no owner to tell', providerMessageId: null };
+  if (await identity.optedOutAt(deps.db, to)) {
+    return { note: 'reminder reply: owner opted out', providerMessageId: null };
+  }
   const sent = await deps.replySender.send(tx, {
     businessId,
     to,
     reply: replies.reminderReplyNotice(invoiceNumber),
   });
-  return sent.delivered ? 'reminder reply: business told' : 'reminder reply: notice not delivered';
+  return sent.delivered && sent.providerMessageId
+    ? { note: 'reminder reply: business told', providerMessageId: sent.providerMessageId }
+    : { note: 'reminder reply: notice not delivered', providerMessageId: null };
 }
 
 /**

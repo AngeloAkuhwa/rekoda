@@ -25,6 +25,7 @@ import {
   deps,
   messagePayload,
   post,
+  statusPayload,
   stubSender,
   urls,
   useMetaWebhookHarness,
@@ -424,6 +425,33 @@ describe('a customer replies to a WhatsApp reminder (OWN-83)', () => {
     expect(handoff).toHaveLength(1);
   });
 
+  it('a notice Meta accepts and later reports failed is due again, and told once more', async () => {
+    const s = await shop('PN-RR-17');
+    await reminded(s);
+    await reply('PN-RR-17', 'wamid.RR.17A', 'I will pay');
+    expect(noticesTo(s.ownerPhone)).toHaveLength(1);
+    // The stub numbers its message ids by send order.
+    const at = stubSender.sent.findIndex(
+      (m) => m.to === s.ownerPhone && m.text.includes('has sent your business a WhatsApp'),
+    );
+    const noticeWamid = `wamid.STUB${at + 1}`;
+
+    // Meta's delivery receipt for that notice, on Rekoda's number: failed.
+    expect(
+      (await post(statusPayload(s.ownerPhone.slice(1), noticeWamid, 'failed'))).statusCode,
+    ).toBe(200);
+    while (await buildRunner(workerDb, db, deps).runOnce()) {
+      /* drain the delivery-status job */
+    }
+
+    // The customer's next message tells the business again, and only once more.
+    await reply('PN-RR-17', 'wamid.RR.17B', 'hello?');
+    expect(noticesTo(s.ownerPhone)).toHaveLength(2);
+    await reply('PN-RR-17', 'wamid.RR.17C', 'still there?');
+    expect(noticesTo(s.ownerPhone)).toHaveLength(2);
+    expect(await noticeRows(s.businessId)).toHaveLength(1);
+  });
+
   it('a message that answers no reminder keeps today’s behaviour: no reminder notice', async () => {
     const s = await shop('PN-RR-5', { assistant: true });
     await reply('PN-RR-5', 'wamid.RR.5', 'when do you open tomorrow?');
@@ -476,21 +504,30 @@ describe('a customer replies to a WhatsApp reminder (OWN-83)', () => {
     expect(await noticeRows(b.businessId)).toHaveLength(0);
   });
 
-  it('the notice table is the application role’s to insert and read only, under RLS', async () => {
+  it('the notice table: the application role inserts, reads and marks delivery only, under RLS', async () => {
     const s = await shop('PN-RR-9');
     await reminded(s);
     await reply('PN-RR-9', 'wamid.RR.9', 'ok');
     const other = await shop('PN-RR-10', { name: 'Other' });
     // Another tenant sees nothing.
     expect(await noticeRows(other.businessId)).toHaveLength(0);
-    // Evidence is never changed or deleted by the application.
+    // Which business and which reminder never change, and nothing is deleted.
     await expect(
       withBusiness(db, s.businessId, (tx) => tx.execute(sql`DELETE FROM reminder_reply_notices`)),
     ).rejects.toThrow();
     await expect(
       withBusiness(db, s.businessId, (tx) =>
-        tx.execute(sql`UPDATE reminder_reply_notices SET notified_at = now()`),
+        tx.execute(sql`UPDATE reminder_reply_notices SET reminder_id = reminder_id`),
       ),
     ).rejects.toThrow();
+    await expect(
+      withBusiness(db, s.businessId, (tx) =>
+        tx.execute(sql`UPDATE reminder_reply_notices SET business_id = business_id`),
+      ),
+    ).rejects.toThrow();
+    // The delivery fields may be marked (a failed receipt), within the tenant only.
+    await withBusiness(db, s.businessId, (tx) =>
+      tx.execute(sql`UPDATE reminder_reply_notices SET undelivered_at = now()`),
+    );
   });
 });
