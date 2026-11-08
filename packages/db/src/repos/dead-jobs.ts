@@ -107,6 +107,20 @@ export async function recordDeath(
     : false;
   const eventId = owned ? named : null;
 
+  /* Enrolment only: the candidate was selected earlier, so re-read the event now. One that was
+   * processed or resolved since (another worker, an operator) is settled work, and enrolling it
+   * would raise a merchant exception for money that is already dealt with. */
+  if (opts.enrolOnly && eventId) {
+    const settled = [
+      ...(await tx.execute<{ settled: boolean }>(sql`
+        SELECT (processed_at IS NOT NULL OR resolved_at IS NOT NULL) AS settled
+        FROM external_events
+        WHERE id = ${eventId}::uuid AND business_id = ${job.businessId}::uuid
+        FOR SHARE`)),
+    ][0]?.settled;
+    if (settled === true) return;
+  }
+
   const rows = await tx.execute<{ inserted: boolean; status: string }>(sql`
     INSERT INTO dead_job_exceptions
       (job_id, business_id, kind, event_id, reference, failure_category, summary, attempts)
