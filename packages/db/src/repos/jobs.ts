@@ -573,6 +573,10 @@ export async function enrolUnrecordedDeaths(db: Db, limit = 100): Promise<number
       WHERE j.state = 'dead' AND j.kind IN ('payment.process', 'billing.process')
         AND j.business_id IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM dead_job_exceptions d WHERE d.job_id = j.id)
+        -- Work an operator already closed by resolving its event (before 0194's guard) is not
+        -- reopened: no stale merchant notice and no operator item for a settled job.
+        AND NOT EXISTS (SELECT 1 FROM external_events e
+                         WHERE e.id::text = j.payload->>'eventId' AND e.resolved_at IS NOT NULL)
       ORDER BY j.updated_at, j.id
       LIMIT ${limit}
       -- Held until this pass commits: a recovery requeueing the job waits, and a second pass skips it.

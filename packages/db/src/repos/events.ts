@@ -718,6 +718,11 @@ export async function resolveEvent(
            processed_at = COALESCE(processed_at, ${now.toISOString()}::timestamptz)
      WHERE id = ${id}::uuid
        AND resolved_at IS NULL
+       -- In the same statement as the write: an event behind an open dead job is worked through
+       -- that job (OWN-73, OWN-76), even if the job died after the caller checked.
+       AND NOT EXISTS (SELECT 1 FROM dead_job_exceptions d
+                        WHERE d.event_id = external_events.id
+                          AND d.status IN ('open', 'recovering'))
      RETURNING id
   `);
   return [...rows].length === 1;

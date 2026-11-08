@@ -278,6 +278,8 @@ export async function opsQueue(
   limit = 50,
   /** When given, exactly these jobs (still open or recovering), whatever their age. */
   jobIds?: readonly string[],
+  /** Only records with no event (filtered in SQL, so event-bound ones cannot crowd them out). */
+  eventless = false,
 ): Promise<DeadJobOpsRow[]> {
   const ids = jobIds?.filter((id) => UUID.test(id));
   if (ids && ids.length === 0) return [];
@@ -306,6 +308,7 @@ export async function opsQueue(
     JOIN businesses b ON b.id = d.business_id
     WHERE d.status IN ('open', 'recovering')
       ${ids ? sql`AND d.job_id = ANY(${`{${ids.join(',')}}`}::uuid[])` : sql``}
+      ${eventless ? sql`AND d.event_id IS NULL` : sql``}
     ORDER BY d.opened_at, d.job_id
     LIMIT ${ids ? ids.length : limit}
   `);

@@ -308,6 +308,41 @@ describe('what a dead job leaves, by kind and by payload', () => {
     expect((await eventRow(eventId))?.error).toBe('payment_job_dead');
   });
 
+  it('an event behind an open dead job cannot be resolved directly, even by a stale caller', async () => {
+    const businessId = await seedBusiness();
+    const eventId = await attributedEvent(businessId);
+    await enqueue(businessId, 'payment.process', { eventId });
+    await killByHandler(2);
+    expect(await events.resolveEvent(workerDb, eventId, 'not ours', 'operator:bob')).toBe(false);
+    expect((await eventRow(eventId))?.processed_at).toBeNull();
+  });
+
+  it('enrolment skips a death whose event an operator already resolved, and lists event-less ones first', async () => {
+    const businessId = await seedBusiness();
+    const eventId = await attributedEvent(businessId);
+    await enqueue(businessId, 'payment.process', { eventId });
+    await enqueue(businessId, 'billing.process', {});
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
+    );
+    expect(await events.resolveEvent(workerDb, eventId, 'settled by hand', 'operator:bob')).toBe(
+      true,
+    );
+    expect(await jobsRepo.enrolUnrecordedDeaths(workerDb)).toBe(1);
+    expect((await recordsOf(businessId)).map((r) => r['event_id'])).toEqual([null]);
+    expect(await merchantExceptions(businessId)).toHaveLength(0);
+  });
+
+  it('the event-less list is filtered in SQL, so older event-bound records cannot crowd it out', async () => {
+    const businessId = await seedBusiness();
+    await enqueue(businessId, 'payment.process', { eventId: await attributedEvent(businessId) });
+    await killByHandler(2);
+    await enqueue(businessId, 'payment.process', {});
+    await killByHandler(2);
+    const page = await deadJobsRepo.opsQueue(workerDb, 1, undefined, true);
+    expect(page.map((d) => d.eventId)).toEqual([null]);
+  });
+
   it('a billing job gets the operator record and event flag but NEVER a merchant reconciliation exception', async () => {
     const businessId = await seedBusiness();
     const eventId = await attributedEvent(businessId);

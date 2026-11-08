@@ -556,6 +556,7 @@ export class OpsController {
      * the oldest dead jobs could miss the very job a flagged row points at. */
     const flaggedJobIds = queue.flagged.flatMap((e) => (e.jobId ? [e.jobId] : []));
     const flaggedDetails = await deadJobsRepo.opsQueue(this.workerDb, limit, flaggedJobIds);
+    const eventless = await deadJobsRepo.opsQueue(this.workerDb, limit, undefined, true);
     const blocked = await subscriptionsRepo.blockedRenewals(this.workerDb, limit);
     const now = new Date();
     return opsExceptionsResponse.parse({
@@ -580,7 +581,7 @@ export class OpsController {
         resolveBy: unappliedChargeDueAt(c.unappliedAt).toISOString(),
         overdue: unappliedChargeOverdue(c.unappliedAt, now),
       })),
-      deadJobs: deadJobs.filter((d) => d.eventId === null).map((d) => toDeadJobView(d, now)),
+      deadJobs: eventless.map((d) => toDeadJobView(d, now)),
       /* Every flagged row's job, plus any other event-bound dead job on the page, once each,
        * so no open item is hidden whichever list it would otherwise have fallen into. */
       deadJobDetails: [
