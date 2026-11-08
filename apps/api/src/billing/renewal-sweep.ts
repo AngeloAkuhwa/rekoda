@@ -60,7 +60,15 @@ export async function sweepRenewals(
   /* OWN-70: once the gate is open (the §47 confirmation recorded, or a usable key set), a renewal
    * stamped blocked can be paid like any other, so its block is closed here, audited, and the
    * alert clears without an operator closing each one by hand. */
-  if (chargeGate(deps.config).ok) await closeBlocksTheGateNoLongerHolds(deps);
+  if (chargeGate(deps.config).ok) {
+    /* Housekeeping only: a failing listing must never stop the renewals that are due from being
+     * raised. It is retried by the next pass. */
+    try {
+      await closeBlocksTheGateNoLongerHolds(deps);
+    } catch (error) {
+      log.warn(`blocked renewals could not be listed for closing: ${redactForLog(String(error))}`);
+    }
+  }
 
   /* Raising a charge starts the grace clock and takes the row OUT of the due
    * set, so repeating until a short page drains everything due rather than

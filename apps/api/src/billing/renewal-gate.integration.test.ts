@@ -248,6 +248,38 @@ describe('OWN-70: what happens to a blocked renewal afterwards', () => {
     ]);
   });
 
+  it('a failing block cleanup never stops the sweep raising the renewals that are due', async () => {
+    const blocked = await dueBusiness();
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
+    expect(await subscriptionsRepo.blockedRenewals(workerDb)).toHaveLength(1);
+    const due = await dueBusiness();
+    // The first read on the worker credential (the block listing) fails once.
+    let failed = false;
+    const flaky = new Proxy(workerDb, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if ((prop === 'execute' || prop === 'select') && typeof value === 'function' && !failed) {
+          failed = true;
+          return () => {
+            throw new Error('listing failed');
+          };
+        }
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+
+    await expect(
+      sweepRenewals({ workerDb: flaky, appDb: db, config: gated(LIVE, true) }),
+    ).resolves.toMatchObject({ raised: 1 });
+
+    expect(failed).toBe(true);
+    expect((await chargesOf(due)).filter((c) => c.kind === 'renewal')).toHaveLength(1);
+    // Cleanup is retried by the next pass.
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE, true) });
+    expect(await subscriptionsRepo.blockedRenewals(workerDb)).toEqual([]);
+    expect((await chargesOf(blocked))[0]?.blocked_at).not.toBeNull();
+  });
+
   it('a renewal that was paid meanwhile cannot be given a block resolution', async () => {
     const businessId = await dueBusiness();
     await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
