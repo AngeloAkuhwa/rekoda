@@ -135,7 +135,7 @@ describe('closing blocked renewals keeps a persisted cursor', () => {
     // and the stamp, and every attempt on them is counted by a sequence (it survives the rollback).
     await ownerDb.execute(sql`
       UPDATE subscription_charges
-      SET blocked_close_failed_at = now() - interval '1 day' + blocked_at - (now() - interval '1 hour')`);
+      SET blocked_close_failed_at = blocked_at - interval '1 day'`);
     await ownerDb.execute(sql`DROP TRIGGER refuse_block_close ON subscription_charges`);
     await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS refuse_attempts`);
     await ownerDb.execute(sql`CREATE SEQUENCE refuse_attempts`);
