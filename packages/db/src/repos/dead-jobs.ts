@@ -98,12 +98,18 @@ export async function recordDeath(
   /* The event is bound only when it is this business's own: a payload naming another tenant's
    * event (a mis-enqueued job) records none, so neither a resolve nor the operator queue can ever
    * associate this job with that event. */
+  /* The event row is locked here, before the record is written: an operator resolving the same
+   * event takes the same lock first (`events.resolveEvent`), so exactly one of the two goes first.
+   * A death that finds the event already resolved binds nothing (settled work, no operator item
+   * or merchant exception behind a closed event); a resolve that finds this record committed is
+   * refused by its guard. */
   const owned = named
     ? [
-        ...(await tx.execute<{ yes: boolean }>(sql`
-          SELECT EXISTS (SELECT 1 FROM external_events
-                         WHERE id = ${named}::uuid AND business_id = ${job.businessId}::uuid) AS yes`)),
-      ][0]?.yes === true
+        ...(await tx.execute<{ open: boolean }>(sql`
+          SELECT (resolved_at IS NULL) AS open FROM external_events
+          WHERE id = ${named}::uuid AND business_id = ${job.businessId}::uuid
+          FOR UPDATE`)),
+      ][0]?.open === true
     : false;
   const eventId = owned ? named : null;
 

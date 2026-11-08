@@ -303,6 +303,9 @@ holding either is a credential at rest. Do not switch one on.
 
 ## Safe restart
 
+- **After a failed deploy of a release carrying 0196 do not restart or start the api or worker
+  from the previous release's containers** (`dc start` / `dc restart` would): they are the old code
+  and are refused by the plan-field guard. Fix forward ("Deploy a release carrying 0196").
 - **One service:** `dc restart api` (or `worker`, `web`, `caddy`). Meta and
   Paystack retry a webhook that meets a restart. A stopping worker finishes
   the jobs it holds first (it is given 150 seconds, the api 30), so a restart
@@ -382,9 +385,18 @@ would have plan changes, renewals and lapses refused (`42501`). Therefore:
   you saw, and escalate to the owner. The only database rollback is a restore from backup, and there
   is no backup mechanism yet (G-02); a restore also needs the `rekoda_plan_writer` role
   (`scripts/restore-drill.sh` creates it). That is an owner decision, never an operator reflex.
-- If migration 0196 itself fails, it is a single transaction and the database stays as it was. Confirm
-  that (0196 absent from the applied migrations) before restarting the previous release; if it is
-  present, treat it as applied.
+- If migration 0196 itself fails, its own transaction rolls back and the database stays as it was.
+  Confirm that **in the database, not only the ledger** before restarting the previous release: the
+  guard exists if `SELECT 1 FROM pg_trigger WHERE tgname = 'businesses_plan_fields_guard'` returns a
+  row (a process killed between the migration and its `rekoda_migrations` row leaves it applied and
+  unrecorded). A present guard means applied; 0196 is safe to re-run, so the cure is to run migrate again.
+- **By-hand fix-forward** after a failed or interrupted deploy of a release carrying 0196 (the
+  automatic staging workflow refuses to run while `/health` is down, so do not wait for it): from
+  `/opt/rekoda`, whose checkout and `.env` are already at the new release, run `dc run --rm -T
+migrate`, confirm the guard exists (above), `dc up -d --wait --wait-timeout 300`, reload Caddy,
+  check `/health` names the new release, then remove `.git/rekoda-deploy-staging.state`. Never
+  `dc start api worker` or `git checkout` the previous release: the stopped containers are the old
+  release.
 - 0196 refuses to run if `rekoda_app` or `rekoda_worker` is a member of `rekoda_plan_writer`
   (directly or through another role): `REVOKE` the membership as the owner, then migrate again.
 
@@ -542,8 +554,10 @@ hand, from `/opt/rekoda` as the deploy user, only if **every** check agrees:
    `sed -i 's/^REKODA_RELEASE=.*/REKODA_RELEASE=<running release>/' .env`.
    No `down -v`, no prune, no `reset --hard`, no migration rollback. Migrations
    are expand-only, so a migration that ran before the kill stays and the running
-   release works against it. For a `live` marker, then remove
-   `.git/rekoda-deploy-staging.state`.
+   release works against it. **Except 0196 (OWN-86):** if the interrupted release
+   carries it, the running release does NOT work against a database that holds it. Do not
+   run this step; fix forward as "Deploy a release carrying 0196" says. For a `live`
+   marker, then remove `.git/rekoda-deploy-staging.state`.
 5. Re-run step 1; checkout, `.env` and `/health` must now agree. Then start the
    manual "Deploy staging" workflow from `main` (blank `sha` deploys its tip).
 
@@ -722,7 +736,9 @@ back" says), check out the commit
 (detached), change only the `REKODA_RELEASE` line of `.env`, build the api
 image and then the web image (`dc build ... api`, `dc build ... web`, never
 both at once, and refused below `MIN_MEM_KB` of available memory, 1 GiB by
-default, raised with `REKODA_DEPLOY_MIN_MEM_KB`), `dc run --rm -T migrate`, `dc up -d --wait --wait-timeout 300`, reload the
+default, raised with `REKODA_DEPLOY_MIN_MEM_KB`), `dc run --rm -T migrate` (preceded by `dc stop api worker`, a check that both stopped, and
+the refusal to migrate while either runs, whenever the commit carries a compatibility-breaking migration,
+today 0196; OWN-86), `dc up -d --wait --wait-timeout 300`, reload the
 Caddyfile, confirm the edge network, and require
 `https://staging-api.myrekoda.com/health` to answer `status` ok, `database`
 up, and this release and commit. It ends with `dc ps`, then removes
@@ -743,7 +759,12 @@ What a failure leaves:
   host; the workflow log never holds container logs. Then roll forward with a
   fixed commit, or roll back as "Roll back" says, with the previous commit in
   place of `vPREVIOUS` and `staging-<its short sha>` as the release. Those
-  images are still on the host.
+  images are still on the host. **Exception (OWN-86): for a release carrying
+  0196, once migrate has been entered the script prints no rollback commands.**
+  Migrations commit one file at a time, so 0196 may already be applied, and the
+  previous release must never be restarted against a database that holds it.
+  Check `rekoda_migrations`, fix forward, and escalate if unsure ("Deploy a
+  release carrying 0196").
 
 Two deployments never overlap: the workflow runs one at a time and waits
 rather than cancelling, and the script holds a lock

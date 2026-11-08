@@ -64,6 +64,9 @@ beforeEach(async () => {
 afterEach(async () => {
   while (opened.length) await opened.pop()?.close();
   await ownerDb.execute(sql`DELETE FROM staging_environment`);
+  // Each createApp enrolled this test's random VAULT_KEY / MATCH_KEY fingerprints; a later file
+  // that boots with different keys would refuse them, so clear them with everything else.
+  await truncateAll(urls);
 });
 
 const mark = () =>

@@ -26,13 +26,9 @@ describe('quotes: the quote number is resolved inside the caller’s business', 
     });
     expect(made.statusCode).toBe(200);
     const quoteNumber = (made.json() as { quoteNumber: string }).quoteNumber;
-    const state = () =>
-      q(sql`SELECT id, business_id, status FROM orders ORDER BY id`).then((rows) => ({
-        rows,
-        invoices: q(sql`SELECT id FROM invoices`),
-      }));
+    const state = () => q(sql`SELECT id, business_id, status FROM orders ORDER BY id`);
     const before = {
-      orders: (await state()).rows,
+      orders: await state(),
       invoices: await q(sql`SELECT id FROM invoices`),
     };
 
@@ -47,7 +43,7 @@ describe('quotes: the quote number is resolved inside the caller’s business', 
       expect(missing.json(), action).toEqual({ outcome: 'not_found' });
     }
     expect({
-      orders: (await state()).rows,
+      orders: await state(),
       invoices: await q(sql`SELECT id FROM invoices`),
     }).toEqual(before);
     // Control: the owner of the quote can cancel it.

@@ -149,8 +149,11 @@ isolation, and this amendment is not permission for any later feature to read ac
    secret, and it is not a business search.
 3. It is reached only from an operator route that enforces `ops:read` (or the worker's own pass). It
    is read-only.
-4. **Reading authorises nothing.** Every recovery, resolution or other mutation runs under
-   `withBusiness()` for the record's own business, enforces its own operator scope (`ops:payment`,
+4. **Reading authorises nothing.** Every recovery, resolution or other mutation of the work-list
+   records runs under `withBusiness()` for the record's own business (the one pre-existing exception
+   is the generic `external_events` exception resolve, `POST /v1/ops/exceptions/:id/resolve`, which
+   runs on the worker credential under the older `worker_reads_the_estate` policy of migration 0130
+   and is listed under residual privilege below), enforces its own operator scope (`ops:payment`,
    `ops:staging`), validates the target and its business association, and writes an audit event with
    the operator, target, action, reason and outcome.
 5. Business-facing endpoints stay tenant-scoped. A new cross-tenant read needs its own review and
@@ -161,7 +164,7 @@ Tests (`packages/db/src/ops/operator-work-lists.integration.test.ts`) pin the gr
 returns nothing to an unpinned worker, and that the application role cannot call any of them.
 
 **Residual privilege (unchanged, recorded).** The worker credential still holds migration 0004's
-table grants and `ops_read_businesses`, and the older cross-tenant reads (`worker_resolve` on
+table grants and `ops_read_businesses`, and the generic event-resolve write above, and the older cross-tenant reads (`worker_resolve` on
 `subscription_charges` and `payment_intents`, the events exception queue) predate this amendment.
 Narrowing them remains the least-privilege follow-up. The functions read tables under
 `FORCE ROW LEVEL SECURITY` and so, like the discovery functions of Amendment 1, depend on their owner

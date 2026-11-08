@@ -94,6 +94,8 @@ export async function createApp(): Promise<NestFastifyApplication> {
   await bootChecks.assertRoleCannotBypassRls(db, 'application');
   const workerDb = app.get<Db | null>(WORKER_DB);
   if (workerDb) await bootChecks.assertRoleCannotBypassRls(workerDb, 'worker');
+  await bootChecks.assertRoleCannotAssumePlanWriter(db, 'application');
+  if (workerDb) await bootChecks.assertRoleCannotAssumePlanWriter(workerDb, 'worker');
   await bootChecks.assertKeyUnchanged(db, 'VAULT_KEY', config.vaultKey);
   await bootChecks.assertKeyUnchanged(db, 'MATCH_KEY', config.matchKey);
   await assertStagingMarkerNotLive(db, config.paystackSecretKey);

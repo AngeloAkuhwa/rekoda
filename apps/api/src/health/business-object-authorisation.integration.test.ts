@@ -165,9 +165,10 @@ describe('members: the user id is only ever looked up inside the caller’s own 
 
   it('a member (not owner) cannot manage members at all, in their own business or another', async () => {
     const a = await team();
-    const b = await shop();
+    const b = await team();
     const before = await rowsOf('memberships');
-    for (const target of [a.memberId, unknownUuid]) {
+    // A's accountant tries A's own member and B's member; both are refused by role, before any lookup.
+    for (const target of [a.memberId, b.memberId, unknownUuid]) {
       expect(
         (await call('DELETE', `/v1/businesses/members/${target}`, a.memberSession)).statusCode,
       ).toBe(403);
@@ -180,6 +181,5 @@ describe('members: the user id is only ever looked up inside the caller’s own 
       ).toBe(403);
     }
     expect(await rowsOf('memberships')).toEqual(before);
-    expect(b.id).not.toBe(a.owner.id);
   });
 });

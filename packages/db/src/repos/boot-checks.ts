@@ -38,6 +38,33 @@ export async function assertRoleCannotBypassRls(db: Db, label: string): Promise<
 }
 
 /**
+ * The plan-field guard's authority is a role (`rekoda_plan_writer`, migration 0196): a connection
+ * that can become it can write a business's plan and paid-to date outside the two sanctioned
+ * functions. Migration 0196 refuses such a membership when it runs; this refuses it on every boot,
+ * so a later `GRANT` is caught before the process serves anything. Checked live against the
+ * catalogue for the role the process is connected as (membership of any kind, direct or through
+ * another role). A database without the role yet (before 0196) has nothing to check.
+ */
+export async function assertRoleCannotAssumePlanWriter(db: Db, label: string): Promise<void> {
+  const rows = await db.execute<{ rolname: string; member: boolean }>(sql`
+    SELECT current_user::text AS rolname,
+           CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rekoda_plan_writer')
+                THEN pg_has_role(current_user, 'rekoda_plan_writer', 'MEMBER')
+                ELSE false END AS member
+  `);
+  const role = [...rows][0];
+  if (!role) throw new Error(`plan-writer boot check: could not read the ${label} role`);
+  if (role.member) {
+    throw new Error(
+      `the ${label} database role "${role.rolname}" is a member of rekoda_plan_writer, so it can ` +
+        'SET ROLE and write plan fields outside the sanctioned functions (OD-37). Revoke the ' +
+        'membership: REVOKE rekoda_plan_writer FROM ' +
+        `${role.rolname}.`,
+    );
+  }
+}
+
+/**
  * A NON-SECRET fingerprint of a key (remediation A6).
  *
  * SHA-256 over a versioned domain separator plus the key, truncated: enough

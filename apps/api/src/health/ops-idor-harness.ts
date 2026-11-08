@@ -113,6 +113,10 @@ export function useHarness(): void {
 
   afterAll(async () => {
     await app?.close();
+    // Leave nothing behind for the next file: the staging marker and, above all, the enrolled
+    // VAULT_KEY / MATCH_KEY fingerprints a later file's createApp would refuse (a different key).
+    await truncateAll(urls);
+    await ownerDb.execute(sql`DELETE FROM staging_environment`);
     for (const close of closers) await close();
     globalThis.fetch = realFetch;
     for (const key of MANAGED) {
@@ -213,7 +217,7 @@ export async function snapshot() {
     ),
     audit: await q(
       sql`SELECT business_id, entity, entity_id, action FROM audit_events
-          WHERE entity IN ('job', 'subscription_charge') ORDER BY created_at, id`,
+          ORDER BY created_at, id`,
     ),
     events: await q(sql`SELECT id, processed_at, resolved_at FROM external_events ORDER BY id`),
     charges: await q(
@@ -223,7 +227,13 @@ export async function snapshot() {
       sql`SELECT id, resolved_at FROM reconciliations WHERE status = 'EXCEPTION' ORDER BY id`,
     ),
     stagingActions: await q(sql`SELECT id, business_id FROM staging_tool_actions ORDER BY id`),
-    plans: await q(sql`SELECT id, plan, plan_expires_at FROM businesses ORDER BY id`),
+    stagingFaults: await q(
+      sql`SELECT id, business_id, consumed_at FROM staging_send_faults ORDER BY id`,
+    ),
+    stagingTestBusinesses: await q(sql`SELECT * FROM staging_test_businesses ORDER BY 1`),
+    plans: await q(
+      sql`SELECT id, plan, plan_expires_at, payment_failed_at FROM businesses ORDER BY id`,
+    ),
   };
 }
 

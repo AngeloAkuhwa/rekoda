@@ -181,6 +181,15 @@ describe('the operator lists reach across businesses, with fixed columns', () =>
       sql`SELECT job_id FROM dead_job_ops_queue(100000, NULL::uuid[], false)`,
     );
     expect([...huge].length).toBeLessThanOrEqual(200);
+    // The cap itself, not just a small table: 205 open records still answer at most 200.
+    await ownerDb.execute(sql`
+      INSERT INTO dead_job_exceptions (job_id, business_id, kind, status, summary, attempts)
+      SELECT gen_random_uuid(), ${a}::uuid, 'payment.process', 'open', 'fixed summary', 1
+      FROM generate_series(1, 205)`);
+    const capped = await workerDb.execute<{ job_id: string }>(
+      sql`SELECT job_id FROM dead_job_ops_queue(100000, NULL::uuid[], false)`,
+    );
+    expect([...capped]).toHaveLength(200);
     const zero = await workerDb.execute(
       sql`SELECT * FROM dead_job_ops_queue(0, NULL::uuid[], false)`,
     );

@@ -141,3 +141,39 @@ describe('assertKeyUnchanged (A6)', () => {
     expect([...rows][0]?.fingerprint).toBe(bootChecks.fingerprintKey(KEY));
   });
 });
+
+describe('assertRoleCannotAssumePlanWriter (OD-37, 0196)', () => {
+  it('passes for the application and worker roles as migrated', async () => {
+    await expect(
+      bootChecks.assertRoleCannotAssumePlanWriter(app, 'application'),
+    ).resolves.toBeUndefined();
+    await expect(
+      bootChecks.assertRoleCannotAssumePlanWriter(worker, 'worker'),
+    ).resolves.toBeUndefined();
+  });
+
+  it('refuses a role that is a member of the plan writer, directly or through another role', async () => {
+    for (const setup of [
+      'GRANT rekoda_plan_writer TO boot_hop',
+      'CREATE ROLE boot_mid NOLOGIN; GRANT rekoda_plan_writer TO boot_mid; GRANT boot_mid TO boot_hop',
+    ]) {
+      let refusal = '';
+      await owner
+        .transaction(async (tx) => {
+          await tx.execute(sql.raw('CREATE ROLE boot_hop NOLOGIN'));
+          await tx.execute(sql.raw(setup));
+          await tx.execute(sql.raw('SET LOCAL ROLE boot_hop'));
+          try {
+            await bootChecks.assertRoleCannotAssumePlanWriter(tx as never, 'application');
+          } catch (error) {
+            refusal = (error as Error).message;
+          }
+          tx.rollback();
+        })
+        .catch((error: unknown) => {
+          if (!String(error).includes('Rollback')) throw error;
+        });
+      expect(refusal, setup).toMatch(/member of rekoda_plan_writer/);
+    }
+  });
+});

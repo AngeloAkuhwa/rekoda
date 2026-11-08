@@ -720,7 +720,12 @@ export async function resolveEvent(
       : sql`NOT EXISTS (SELECT 1 FROM dead_job_exceptions d
                         WHERE d.event_id = external_events.id
                           AND d.status IN ('open', 'recovering'))`;
-  const rows = await q.execute<{ id: string }>(sql`
+  const resolveOnce = async (x: Queryable) => {
+    /* The event row is locked in its own statement first, then the guarded write runs on a fresh
+     * snapshot: a death that committed while this waited for the lock is seen by the guard, and a
+     * death that has not locked the row yet waits for this resolve (`dead-jobs.recordDeath`). */
+    await x.execute(sql`SELECT 1 FROM external_events WHERE id = ${id}::uuid FOR UPDATE`);
+    return x.execute<{ id: string }>(sql`
     UPDATE external_events
        SET resolved_at = ${now.toISOString()}::timestamptz,
            resolved_by = ${actor},
@@ -733,5 +738,11 @@ export async function resolveEvent(
        AND ${noOpenDeadJob}
      RETURNING id
   `);
+  };
+  /* The operator scope arrives on a plain connection: give it one transaction so the lock holds. */
+  const rows =
+    scope === 'operator'
+      ? await (q as Db).transaction((tx) => resolveOnce(tx))
+      : await resolveOnce(q);
   return [...rows].length === 1;
 }

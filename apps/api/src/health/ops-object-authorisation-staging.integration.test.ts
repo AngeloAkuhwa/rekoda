@@ -80,7 +80,15 @@ describe('staging tools act only on the designated business named in the route',
     });
     expect(faultB.statusCode).toBeGreaterThanOrEqual(400);
 
-    // A's action id through B's route reverts nothing and shows nothing.
+    // B is also designated, so the next requests get past the designation check and reach the
+    // action lookup itself: A's action id through B's route must still find nothing.
+    expect(
+      (
+        await call('POST', `/v1/ops/staging/businesses/${b.id}/designate`, staging, {
+          reason: REASON,
+        })
+      ).statusCode,
+    ).toBe(200);
     const revert = await call(
       'POST',
       `/v1/ops/staging/businesses/${b.id}/actions/${actionId}/revert`,
@@ -88,8 +96,9 @@ describe('staging tools act only on the designated business named in the route',
       { reason: REASON },
     );
     expect(revert.statusCode).toBeGreaterThanOrEqual(400);
+    expect(revert.statusCode).toBeLessThan(500);
     const listed = await call('GET', `/v1/ops/staging/businesses/${b.id}/actions`, staging);
-    // Refused outright, or an empty list: never A's action.
+    expect(listed.statusCode).toBe(200);
     expect(listed.body).not.toContain(actionId);
     expect(listed.body).not.toContain(a.id);
 
@@ -100,7 +109,11 @@ describe('staging tools act only on the designated business named in the route',
     expect(await ownerDb.execute(sql`SELECT 1 FROM staging_send_faults`)).toHaveLength(0);
 
     const after = await snapshot();
-    expect(after.stagingActions).toEqual(before.stagingActions);
+    const rowsOf = (all: unknown[], id: string) =>
+      (all as Array<{ business_id: string }>).filter((r) => r.business_id === id);
+    // A's log is exactly as it was (the revert reverted nothing); B's holds only its own designation.
+    expect(rowsOf(after.stagingActions, a.id)).toEqual(rowsOf(before.stagingActions, a.id));
+    expect(rowsOf(after.stagingActions, b.id)).toHaveLength(1);
     expect(await trialEnd(b.id)).toEqual(bEnd);
     expect(await trialEnd(a.id), "A's move still stands").not.toEqual(aEnd);
   });

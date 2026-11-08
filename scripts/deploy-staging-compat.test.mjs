@@ -86,7 +86,7 @@ function host(extraTags) {
     'docker',
     `echo "$*" >> "${fake}/docker.log"
 case "$*" in
-  *"ps --status running --services"*) cat "${fake}/running" 2>/dev/null ;;
+  *"ps --status running --services"*) [ -e "${fake}/ps-fails" ] && exit 1; cat "${fake}/running" 2>/dev/null ;;
   *"info --format"*) echo "${fake}" ;;
   *"run --rm -T migrate"*) [ -e "${fake}/fail-migrate" ] && exit 1 ;;
   *" up "*) [ -e "${fake}/fail-up" ] && exit 1; cp "${fake}/next-health.json" "${fake}/health.json" ;;
@@ -164,7 +164,17 @@ test('a failed migrate never prints rollback commands: 0196 may already have com
   assert.doesNotMatch(r.stderr, /git checkout [0-9a-f]{40}/);
   assert.doesNotMatch(r.stderr, /To roll back/);
   assert.match(r.stderr, /rekoda_migrations/);
+  assert.match(r.stderr, /pg_trigger/); // the database object, not only the ledger row
   assert.match(r.stderr, /Fix forward/);
+});
+
+test('the stop is not trusted when the running services cannot be listed', () => {
+  const h = host([BREAKING]);
+  writeFileSync(join(h.fake, 'ps-fails'), '');
+  const r = h.run();
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /could not list the running services/);
+  assert.equal(h.at('run --rm -T migrate'), -1, 'migrate must not run');
 });
 
 test('a failure after 0196 is applied never advises restarting the previous release', () => {

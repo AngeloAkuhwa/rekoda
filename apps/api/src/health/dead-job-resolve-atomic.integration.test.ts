@@ -135,7 +135,7 @@ describe('resolving a dead job is one transaction', () => {
 
     await expect(
       controller.resolve(asOperator, jobId, { resolution: 'settled by hand' }),
-    ).rejects.toBeDefined();
+    ).rejects.toThrow(/event write refused/);
 
     expect(await state(businessId, jobId, eventId)).toEqual({
       record: 'open',

@@ -201,7 +201,7 @@ accepted so far, and both are structural.
 
 ## Operator work lists added by PR B (#432, 8 Nov 2026)
 
-Not RLS exemptions (every table below has FORCE RLS and the canonical tenant policy); recorded here
+Not RLS exemptions (every table below has FORCE RLS and the canonical tenant policy; `subscription_charges` and `payment_intents` additionally keep their older `worker_resolve` policy, residual under ADR 0035 Amendment 2); recorded here
 because each gives `rekoda_worker` a cross-tenant read for an operator queue (approved as ADR 0035 Amendment 2, OWN-85: fixed-column worker-only definer functions, no table policy), the same shape as the
 event exception queue and the unapplied-charge queue above, and ADR 0035 read literally covers only
 aggregates. Owner rulings OWN-73, OWN-76 (an operator item naming the business, job and reference)

@@ -119,14 +119,16 @@ describe('the six functions', () => {
   });
 
   it('are executable by exactly the owner and the worker (no other grantee in the ACL)', async () => {
-    const grantees = await rows<{ proname: string; grantee: string }>(
+    const grantees = await rows<{ proname: string; grantee: string; owner: string }>(
       ownerDb,
-      sql`SELECT p.proname, CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END AS grantee
+      sql`SELECT p.proname, pg_get_userbyid(p.proowner) AS owner,
+                 CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END AS grantee
           FROM pg_proc p, aclexplode(p.proacl) a
           WHERE p.proname IN (${list}) AND a.privilege_type = 'EXECUTE'`,
     );
     for (const g of grantees) {
-      expect(['rekoda_worker', 'rekoda'], `${g.proname} -> ${g.grantee}`).toContain(g.grantee);
+      // The owner (whatever role migrated this database) and the worker, nobody else.
+      expect(['rekoda_worker', g.owner], `${g.proname} -> ${g.grantee}`).toContain(g.grantee);
     }
     expect(new Set(grantees.map((g) => g.proname)).size).toBe(6);
   });

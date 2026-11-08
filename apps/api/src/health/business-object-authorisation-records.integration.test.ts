@@ -5,7 +5,15 @@
  * snapshot of the books and queues it could have touched.
  */
 import { describe, expect, it } from 'vitest';
-import { entitlementsRepo, issueRepo, settleRepo, sql, usageRepo, withBusiness } from '@rekoda/db';
+import {
+  entitlementsRepo,
+  issueRepo,
+  partyStatementsRepo,
+  settleRepo,
+  sql,
+  usageRepo,
+  withBusiness,
+} from '@rekoda/db';
 import { usagePeriod } from '@rekoda/core';
 import { grantCapacityAddOn } from '@rekoda/db/testing';
 import {
@@ -143,20 +151,101 @@ describe('public merchant API: ids in a body or path are resolved inside the key
   });
 });
 
-describe('party statements: a foreign id reads as empty, a malformed id as nothing', () => {
-  it.each(['customers', 'suppliers'])('%s: JSON and CSV', async (kind) => {
+describe('party statements: a foreign id reads as nothing, and the SQL itself is business-scoped', () => {
+  /** A customer of `businessId` with one real invoice, and a supplier with one real bill. */
+  async function partiesOf(businessId: string) {
+    const customerId = await customerFor(businessId);
+    const sale = await withBusiness(appDb, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId,
+        customerToken: 'CUSTOMER_7K2',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 5_000_000 }],
+        subtotalK: 5_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 5_000_000,
+        paidK: 0,
+        balanceDueK: 5_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: `idor-${Math.random()}`,
+        actor: 'system',
+      }),
+    );
+    const [expense] = await q(sql`
+      INSERT INTO expenses (business_id, description, amount_k, source_type)
+      VALUES (${businessId}::uuid, 'fabric', 250000, 'chat') RETURNING id`);
+    const [supplier] = await q(sql`
+      INSERT INTO suppliers (business_id, name_cipher, match_key)
+      VALUES (${businessId}::uuid, 'cipher', ${'mk-' + Math.random()}) RETURNING id`);
+    const billNumber = `BILL-IDOR-${Math.floor(Math.random() * 1e6)}`;
+    await q(sql`
+      INSERT INTO bills (business_id, expense_id, supplier_id, bill_number, total_k, billed_on, source_type)
+      VALUES (${businessId}::uuid, ${(expense as { id: string }).id}::uuid,
+              ${(supplier as { id: string }).id}::uuid, ${billNumber}, 250000, current_date, 'chat')`);
+    return {
+      customerId,
+      supplierId: (supplier as { id: string }).id,
+      invoiceNumber: sale.invoiceNumber,
+      billNumber,
+    };
+  }
+
+  it.each([
+    ['customers', 'customerId', 'invoiceNumber'],
+    ['suppliers', 'supplierId', 'billNumber'],
+  ] as const)('%s: JSON and CSV', async (kind, idKey, referenceKey) => {
     const a = await business();
     const b = await business();
-    const theirCustomer = kind === 'customers' ? await customerFor(b.id) : unknownUuid;
+    const theirs = await partiesOf(b.id);
     for (const suffix of ['statement', 'statement.csv']) {
       const url = (id: string) => `/v1/reports/${kind}/${id}/${suffix}`;
-      const foreign = await call('GET', url(theirCustomer), a.session);
+      const foreign = await call('GET', url(theirs[idKey]), a.session);
       const missing = await call('GET', url(unknownUuid), a.session);
       const malformed = await call('GET', url('not-a-uuid'), a.session);
+      // The real foreign id is answered exactly as an id nobody holds, and shows nothing of B's.
       expect(foreign.statusCode, url('x')).toBe(missing.statusCode);
-      expect(foreign.body, url('x')).toBe(missing.body);
+      expect(foreign.body.replace(/\d{4}-\d{2}-\d{2}/g, 'D'), url('x')).toBe(
+        missing.body.replace(/\d{4}-\d{2}-\d{2}/g, 'D'),
+      );
+      expect(foreign.body, url('x')).not.toContain(theirs[referenceKey]);
       expect(malformed.statusCode, url('x')).toBe(404);
+      // Control: the owner of the data does see its own entry.
+      expect((await call('GET', url(theirs[idKey]), b.session)).body, url('x')).toContain(
+        theirs[referenceKey],
+      );
     }
+  });
+
+  it('the statement queries are scoped to the business in SQL, on a connection that bypasses RLS', async () => {
+    const a = await business();
+    const b = await business();
+    const theirs = await partiesOf(b.id);
+    const run = (pinned: string, asBusiness: string) =>
+      ownerDb.transaction(async (tx) => {
+        await tx.execute(sql`SELECT set_config('app.business_id', ${pinned}, true)`);
+        return {
+          customer: await partyStatementsRepo.customerStatementFor(
+            tx as never,
+            asBusiness,
+            theirs.customerId,
+          ),
+          supplier: await partyStatementsRepo.supplierStatementFor(
+            tx as never,
+            asBusiness,
+            theirs.supplierId,
+          ),
+        };
+      });
+    const asA = await run(a.id, a.id);
+    expect(JSON.stringify(asA)).not.toContain(theirs.invoiceNumber);
+    expect(JSON.stringify(asA)).not.toContain(theirs.billNumber);
+    // Control: the same readers return the entries for the business that owns them.
+    const asB = await run(b.id, b.id);
+    expect(JSON.stringify(asB.customer)).toContain(theirs.invoiceNumber);
+    expect(JSON.stringify(asB.supplier)).toContain(theirs.billNumber);
   });
 });
 
