@@ -133,4 +133,36 @@ describe('enrolment skips a settled payment', () => {
     expect(await recordsOf(businessId)).toHaveLength(0);
     expect(await merchantExceptions(businessId)).toHaveLength(0);
   });
+
+  it('enrolment skips a death whose event an operator resolved after the candidate was picked', async () => {
+    const businessId = await seedBusiness();
+    const eventId = await attributedEvent(businessId);
+    await enqueue(businessId, 'payment.process', { eventId });
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
+    );
+    const [job] = [
+      ...(await workerDb.execute<{ id: string }>(sql`SELECT id FROM jobs WHERE state = 'dead'`)),
+    ];
+    // Closed by an operator (resolved, not processed) after the sweep selected the job.
+    expect(
+      await events.resolveEvent(workerDb, eventId, 'settled by hand', 'operator:bob', 'operator'),
+    ).toBe(true);
+    await workerDb.transaction((tx) =>
+      deadJobsRepo.recordDeath(
+        tx,
+        {
+          id: job!.id,
+          businessId,
+          kind: 'payment.process',
+          payload: { eventId },
+          attempts: 2,
+          failureCategory: null,
+        },
+        { enrolOnly: true },
+      ),
+    );
+    expect(await recordsOf(businessId)).toHaveLength(0);
+    expect(await merchantExceptions(businessId)).toHaveLength(0);
+  });
 });

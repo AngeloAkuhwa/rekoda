@@ -328,7 +328,11 @@ on_exit() {
       restore_prepared
       ;;
     live)
-      printf '\nSTAGING DEPLOY FAILED after migrate/up started: the stack may be part-way to %s.\n' "$RELEASE" >&2
+      if [ -n "$BREAKING" ] && [ "$MIGRATE_ENTERED" != true ]; then
+        printf '\nSTAGING DEPLOY FAILED BEFORE migrate: nothing was migrated, but the api and worker were being stopped for %s and their stopped state is UNVERIFIED.\n' "$BREAKING" >&2
+      else
+        printf '\nSTAGING DEPLOY FAILED after migrate/up started: the stack may be part-way to %s.\n' "$RELEASE" >&2
+      fi
       if [ "$BREAKING_APPLIED" = true ]; then
         printf 'Migration(s) %s are APPLIED, so the previous release (%s) is NOT safe to restart against this database.\n' "$BREAKING" "$PREV_RELEASE" >&2
         printf 'Fix forward, by hand from %s (the checkout is already at the new release): `dc run --rm -T migrate`; confirm the guard exists (`SELECT 1 FROM pg_trigger WHERE tgname = '"'"'businesses_plan_fields_guard'"'"'`); `dc up -d --wait --wait-timeout 300`; reload Caddy; check /health; remove .git/rekoda-deploy-staging.state.\n' "$REKODA_DIR" >&2
@@ -339,7 +343,7 @@ on_exit() {
         printf 'Fix forward, by hand from %s (the checkout is already at the new release): correct the cause first (a repeat of the same failure, such as the plan-writer membership refusal, will repeat), then `dc run --rm -T migrate` (0196 is safe to re-run), then `dc up -d --wait --wait-timeout 300`, reload Caddy, check /health, remove .git/rekoda-deploy-staging.state. The previous release (%s) must never be restarted against a database holding 0196; the workflow refuses to run while /health is down. Escalate if unsure.\n' "$REKODA_DIR" "$PREV_RELEASE" >&2
       else
         if [ -n "$BREAKING" ]; then
-          printf 'The api and worker were stopped for %s. If migrate failed, check it is NOT applied in the database itself (the guard trigger `businesses_plan_fields_guard` must be absent, not only the ledger row) before restarting the previous release.\n' "$BREAKING" >&2
+          printf 'Migrate was never entered, so %s is not applied by this run. Check with `dc ps` whether the api and worker are running before anything else: the previous release is still compatible with this database, so `dc start api worker` is safe if they are down. Confirm the guard trigger `businesses_plan_fields_guard` is absent in the database itself before restarting it.\n' "$BREAKING" >&2
         fi
         printf 'Inspect with `dc ps -a` and `dc logs <service>` on the host. To roll back, from %s:\n' "$REKODA_DIR" >&2
         printf '  git checkout %s\n' "$PREV_SHA" >&2

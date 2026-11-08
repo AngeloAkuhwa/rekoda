@@ -20,6 +20,10 @@ Known limits, recorded on purpose after the independent review:
 - Rolling forward onto 0196: stop `api` and `worker` before `migrate` (`docs/runbooks/deploy.md`).
 - Owner rulings 8 Nov 2026: OD-47 (OWN-85) approves the operator work lists as worker-only, fixed-column `SECURITY DEFINER` functions with no cross-tenant table policy (ADR 0035 Amendment 2); OD-48 (OWN-86) accepts 0196 as a compatibility break, enforced by `deploy-staging.sh` stopping the api and worker first; there is no rollback past 0196 (fix forward or escalate).
 - A renewal stamped blocked is closed by the next renewal sweep once the gate opens (`system:gate_open`, audited).
+- Post-MVP follow-ups, recorded rather than built (no new scope in this PR):
+  - Closing blocked renewals after the gate opens pages at most 20 pages of 200 per sweep and skips rows that failed in the pass. With more than 4,000 renewals that persistently fail to close, later rows wait for those to clear. Reason: needs a persisted cursor across sweeps; the count is far beyond any plausible staging or launch volume. Risk: stale operator items and a non-zero `billing.renewals_blocked` count after the gate opens. Depends on nothing; revisit if the alert ever stays raised after the gate is open.
+  - The gate closing again while a pass is closing blocks (a block raised and closed in the same window) is not specially handled; the next sweep restates the truth.
+  - The IDOR hardening in `e7e3e59` (malformed-id handling on business routes and its two-business tests) is outside the six PB items and waits for an owner A/B ruling; CodeRabbit's follow-ups on it (neutral responses for malformed statement ids, a customer-existence lock in the merchant API sale write, stricter assertions in the staging and records tests) are held with it.
 
 The original plan follows.
 Owner baseline: the 7 Nov 2026 PR A/PR B brief. It supersedes revision 3 where they differ (OD-40, OWN-70, OD-37 and G-119 are now approved as below). Migrations: next free numbers after PR A (0191 and 0192 used by PR A), the brief's recorded range 0193 to 0196; numbers are confirmed against `packages/db/migrations` when PR B starts.

@@ -104,29 +104,24 @@ export async function recordDeath(
    * flagged and no record points at it). The record and the merchant exception are still written,
    * unbound, because OWN-73 says every dead job leaves both; an operator closes the unbound item
    * with `resolve`. A resolve that finds this record committed is refused by its guard. */
-  const owned = named
+  const ownedEvent = named
     ? [
-        ...(await tx.execute<{ open: boolean }>(sql`
-          SELECT (resolved_at IS NULL) AS open FROM external_events
+        ...(await tx.execute<{ open: boolean; settled: boolean }>(sql`
+          SELECT (resolved_at IS NULL) AS open,
+                 (processed_at IS NOT NULL OR resolved_at IS NOT NULL) AS settled
+          FROM external_events
           WHERE id = ${named}::uuid AND business_id = ${job.businessId}::uuid
           FOR UPDATE`)),
-      ][0]?.open === true
-    : false;
-  const eventId = owned ? named : null;
+      ][0]
+    : undefined;
+  const eventId = ownedEvent?.open === true ? named : null;
 
-  /* Enrolment only: the candidate was selected earlier, so re-read the event now. One that was
-   * processed or resolved since (another worker, an operator) is settled work, and enrolling it
-   * would raise a merchant exception for money that is already dealt with. */
-  if (opts.enrolOnly && eventId) {
-    const settled = [
-      ...(await tx.execute<{ settled: boolean }>(sql`
-        SELECT (processed_at IS NOT NULL OR resolved_at IS NOT NULL) AS settled
-        FROM external_events
-        WHERE id = ${eventId}::uuid AND business_id = ${job.businessId}::uuid
-        FOR SHARE`)),
-    ][0]?.settled;
-    if (settled === true) return;
-  }
+  /* Enrolment only: the candidate was selected earlier, and the row read above is current (the
+   * lock waited for any writer). An owned event that was processed or resolved since (another
+   * worker, an operator) is settled work, and enrolling it would raise a merchant exception for
+   * money that is already dealt with. A missing or another tenant's event is not "settled": it
+   * keeps its existing handling (recorded, no event bound). */
+  if (opts.enrolOnly && ownedEvent?.settled === true) return;
 
   const rows = await tx.execute<{ inserted: boolean; status: string }>(sql`
     INSERT INTO dead_job_exceptions

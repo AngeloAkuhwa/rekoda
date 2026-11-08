@@ -7,7 +7,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
-import { deadJobsRepo, events, identity, jobsRepo } from '../index.js';
+import { deadJobsRepo, events, identity, jobsRepo, settleRepo } from '../index.js';
 import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '../testing.js';
 
 let urls: Urls;
@@ -104,6 +104,14 @@ describe('a death that meets an already resolved event', () => {
     );
     expect(event?.error ?? null).toBeNull();
     expect(await deadJobsRepo.openJobForEvent(workerDb, eventId)).toBeNull();
+
+    // Both OWN-73 notices exist: the operator queue item (unbound) and the merchant exception.
+    const queue = await deadJobsRepo.opsQueue(workerDb);
+    expect(queue.map((r) => [r.businessId, r.eventId])).toEqual([[businessId, null]]);
+    const exceptions = await withBusiness(appDb, businessId, (tx) =>
+      settleRepo.reconciliationsFor(tx, { status: 'EXCEPTION', limit: 50 }),
+    );
+    expect(exceptions).toHaveLength(1);
   });
 });
 

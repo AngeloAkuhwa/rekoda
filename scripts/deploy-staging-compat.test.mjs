@@ -175,6 +175,21 @@ test('the stop is not trusted when the running services cannot be listed', () =>
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /could not list the running services/);
   assert.equal(h.at('run --rm -T migrate'), -1, 'migrate must not run');
+  // The exit message describes what happened: migrate was never entered, and the stopped state
+  // is unverified. It must not claim the services stopped or that migrate/up started.
+  assert.match(r.stderr, /BEFORE migrate/);
+  assert.match(r.stderr, /stopped state .*unverified/i);
+  assert.doesNotMatch(r.stderr, /after migrate\/up started/);
+  assert.doesNotMatch(r.stderr, /were stopped for/);
+});
+
+test('a refused migration because a service is still running says migrate was never entered', () => {
+  const h = host([BREAKING]);
+  writeFileSync(join(h.fake, 'running'), 'worker\nweb\n');
+  const r = h.run();
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /BEFORE migrate/);
+  assert.doesNotMatch(r.stderr, /after migrate\/up started/);
 });
 
 test('a failure after 0196 is applied never advises restarting the previous release', () => {
