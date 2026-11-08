@@ -75,6 +75,9 @@ PHASE=checks
 COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard'
 BREAKING=
 BREAKING_APPLIED=false
+# Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
+# file in its own transaction, so from here whether 0196 committed is unknown (OWN-86).
+MIGRATE_ENTERED=false
 PREV_SHA=
 PREV_RELEASE=
 # The exit status meaning "skipped, nothing changed"; no failure may use it.
@@ -329,6 +332,9 @@ on_exit() {
       if [ "$BREAKING_APPLIED" = true ]; then
         printf 'Migration(s) %s are APPLIED, so the previous release (%s) is NOT safe to restart against this database.\n' "$BREAKING" "$PREV_RELEASE" >&2
         printf 'Fix forward: inspect with `dc ps -a` and `dc logs <service>`, correct the cause, then re-run the Deploy staging workflow. Escalate if the new release cannot start.\n' >&2
+      elif [ "$MIGRATE_ENTERED" = true ]; then
+        printf 'The api and worker were stopped for %s and migrate did not finish. Migrations commit one file at a time, so %s MAY already be applied: no rollback commands are printed.\n' "$BREAKING" "$BREAKING" >&2
+        printf 'Check the applied-migrations table (rekoda_migrations) on the host. Fix forward by correcting the cause and re-running the Deploy staging workflow; the previous release (%s) must never be restarted against a database holding 0196. Escalate if unsure.\n' "$PREV_RELEASE" >&2
       else
         if [ -n "$BREAKING" ]; then
           printf 'The api and worker were stopped for %s. If migrate failed, check it is NOT applied (the migrate output, or the applied-migrations table) before restarting the previous release.\n' "$BREAKING" >&2
@@ -586,6 +592,7 @@ if [ -n "$BREAKING" ]; then
   [ -z "$still_up" ] || fail "the api and worker must be stopped before migrating $BREAKING, but still running: $still_up"
 fi
 step 'migrate (expand-only, as the owner)'
+[ -z "$BREAKING" ] || MIGRATE_ENTERED=true
 dc run --rm -T migrate
 [ -z "$BREAKING" ] || BREAKING_APPLIED=true
 

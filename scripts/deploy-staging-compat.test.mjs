@@ -144,13 +144,27 @@ test('a release without a compatibility-breaking migration does not stop anythin
   assert.ok(h.at('run --rm -T migrate') >= 0);
 });
 
-test('a failed migrate after the stop tells the operator to confirm 0196 is absent first', () => {
+test('a failed migrate after the stop tells the operator 0196 may already be applied', () => {
   const h = host([BREAKING]);
   writeFileSync(join(h.fake, 'fail-migrate'), '');
   const r = h.run();
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /api and worker were stopped for 0196_plan_fields_guard/);
-  assert.match(r.stderr, /NOT applied/);
+  assert.match(r.stderr, /MAY already be applied/);
+});
+
+test('a failed migrate never prints rollback commands: 0196 may already have committed (OWN-86)', () => {
+  // migrate applies each file in its own transaction, so a later file (0197) or the ledger insert
+  // can fail after 0196 committed. The script cannot know, so it must not hand out the commands
+  // that restart the previous release.
+  const h = host([BREAKING]);
+  writeFileSync(join(h.fake, 'fail-migrate'), '');
+  const r = h.run();
+  assert.notEqual(r.status, 0);
+  assert.doesNotMatch(r.stderr, /git checkout [0-9a-f]{40}/);
+  assert.doesNotMatch(r.stderr, /To roll back/);
+  assert.match(r.stderr, /rekoda_migrations/);
+  assert.match(r.stderr, /Fix forward/);
 });
 
 test('a failure after 0196 is applied never advises restarting the previous release', () => {
