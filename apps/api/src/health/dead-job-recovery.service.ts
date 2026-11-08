@@ -103,19 +103,19 @@ export class DeadJobRecoveryService {
     if (!this.workerDb) return { outcome: 'no_worker' as const };
     const record = await deadJobsRepo.findForOps(this.workerDb, jobId);
     if (!record) return { outcome: 'not_found' as const };
-    const closed = await withBusiness(this.db, record.businessId, (tx) =>
-      deadJobsRepo.resolveByOperator(tx, {
+    /* The record and its flagged event close together, in one tenant-pinned transaction, so the
+     * event never stays on the operator list for a record that is closed (or the reverse). */
+    const closed = await withBusiness(this.db, record.businessId, async (tx) => {
+      const done = await deadJobsRepo.resolveByOperator(tx, {
         businessId: record.businessId,
         jobId,
         actor,
         resolution,
-      }),
-    );
+      });
+      if (done && record.eventId) await events.resolveEvent(tx, record.eventId, resolution, actor);
+      return done;
+    });
     if (!closed) return { outcome: 'not_open' as const };
-    /* The flagged event leaves the operator's list with the same decision on it. */
-    if (record.eventId) {
-      await events.resolveEvent(this.workerDb, record.eventId, resolution, actor);
-    }
     return { outcome: 'resolved' as const };
   }
 

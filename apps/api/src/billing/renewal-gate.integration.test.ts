@@ -182,6 +182,19 @@ describe('OWN-70: the renewal sweep applies the charge gate', () => {
     expect(await subscriptionsRepo.blockedRenewalCount(workerDb)).toBe(0);
   });
 
+  it('an expired subscription raises nothing, so nothing is blocked', async () => {
+    const businessId = await dueBusiness();
+    await withBusiness(db, businessId, async (tx) => {
+      await subscriptionsRepo.markRenewalFailed(tx, businessId, new Date(Date.now() - 10 * DAY));
+      expect(
+        await subscriptionsRepo.expireSubscription(tx, businessId, 'system:test', 'grace'),
+      ).toBe('chat');
+    });
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
+    expect(await chargesOf(businessId)).toHaveLength(0);
+    expect(await subscriptionsRepo.blockedRenewalCount(workerDb)).toBe(0);
+  });
+
   it('a blocked renewal is never a dead job: there is nothing for the recovery path to verify', async () => {
     await dueBusiness();
     await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });

@@ -367,20 +367,21 @@ export function lapsedPlanCopy(input: {
 
 /**
  * OWN-76: a Paystack update about a payment to Rekoda could not be processed automatically and is
- * with Rekoda's team. The copy claims nothing about whether money moved (the update may have been a
- * failure or still in progress), asks the merchant not to pay twice while it is checked, and says
- * the records are untouched. Never "payment failed", never a reconciliation exception.
+ * with Rekoda's team. The copy claims nothing about whether money moved or what the outcome will be
+ * (the update may report a failed or unfinished payment), promises no plan change, and does not
+ * imply the renewal clock has stopped. It says the result will appear here and that the records are
+ * untouched. Never "payment failed", never a reconciliation exception.
  */
 export function billingProcessingCopy(
   issue: { since: string; recovering: boolean },
   owner: boolean,
 ): string {
   const checking = issue.recovering
-    ? 'Our team has confirmed a recent Paystack update about your Rekoda payment and is finishing it now.'
-    : 'We could not process a recent Paystack update about your Rekoda payment automatically, so our team is checking it with Paystack.';
+    ? 'Our team is processing a recent Paystack update about a payment to Rekoda again.'
+    : 'We could not process a recent Paystack update about a payment to Rekoda automatically, so our team is checking it.';
   const next = owner
-    ? 'Please do not pay again while we check: your plan will be updated as soon as it is confirmed.'
-    : 'The owner does not need to pay again while we check: the plan will be updated as soon as it is confirmed.';
+    ? 'The result will show on this page once it is checked. If you are unsure whether a payment went through, message us on WhatsApp before paying again.'
+    : 'The result will show on this page once it is checked.';
   return `${checking} ${next} Your records are safe.`;
 }
 

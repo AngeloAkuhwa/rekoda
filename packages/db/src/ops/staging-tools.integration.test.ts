@@ -281,6 +281,22 @@ describe('OWN-77: on a staging database', () => {
     }
   });
 
+  it('the application cannot plant a move row that a revert would trust', async () => {
+    const businessId = await seedBusiness();
+    await designate(businessId);
+    expect(
+      await outcome(
+        withBusiness(appDb, businessId, (tx) =>
+          tx.execute(sql`
+            INSERT INTO staging_tool_actions
+              (business_id, operator, action, field, before_value, after_value, reason, outcome)
+            VALUES (${businessId}::uuid, 'operator:x', 'move_date', 'trial_end',
+                    now() + interval '2 years', now(), 'planted', 'applied')`),
+        ),
+      ),
+    ).toMatch(/recorded only by staging_move_date/);
+  });
+
   it('once the owner removes the marker, nothing acts again', async () => {
     const businessId = await seedBusiness();
     await designate(businessId);

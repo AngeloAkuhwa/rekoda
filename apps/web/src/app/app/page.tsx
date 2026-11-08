@@ -44,17 +44,17 @@ export const metadata: Metadata = {
 export default async function DashboardPage() {
   const { identity, token } = await requireSessionWithToken();
 
-  const [overview, cashflow, debtors, activity, usage] = await Promise.all([
+  /* Only an owner reads billing here: for the trial strip, and for a Paystack update about a
+   * payment to Rekoda that is with Rekoda's team (OWN-76). A failed read shows neither. */
+  const [overview, cashflow, debtors, activity, usage, billing] = await Promise.all([
     reportsOverview(token),
     reportsCashflow(token),
     reportsDebtors(token),
     reportsActivity(token),
     usageMeter(token),
+    isOwner(identity.role) ? billingOverview(token).catch(() => null) : Promise.resolve(null),
   ]);
 
-  /* Only an owner reads billing here: for the trial strip, and for a Paystack update about a
-   * payment to Rekoda that is with Rekoda's team (OWN-76). A failed read shows neither. */
-  const billing = isOwner(identity.role) ? await billingOverview(token).catch(() => null) : null;
   const trialEndsAt =
     trialStripAudience(identity.plan, identity.role) && billing?.status.state === 'trial'
       ? billing.status.endsAt

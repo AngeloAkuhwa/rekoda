@@ -28,6 +28,8 @@
 DO $$ BEGIN
   CREATE ROLE rekoda_plan_writer NOLOGIN;
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- A role that already existed (made by hand) is held to the same shape: no login, no RLS bypass.
+ALTER ROLE rekoda_plan_writer NOLOGIN NOBYPASSRLS;
 
 -- What the writer role touches: the two guarded columns and the bookkeeping that moves with an
 -- expiry. It reads the row to check the expiry condition. Nothing else.
@@ -48,6 +50,9 @@ CREATE OR REPLACE FUNCTION public.subscription_write_plan(
 ) RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
+-- `public` stays on the path (after pg_catalog, before nothing writable by others): a trigger fired
+-- by the writer's UPDATE (release_trial_month_rows, 0176) names its tables unqualified and runs with
+-- this path. Every table this function names is schema-qualified; PUBLIC holds no CREATE on public.
 SET search_path = pg_catalog, public, pg_temp
 AS $$
 BEGIN
@@ -66,6 +71,9 @@ CREATE OR REPLACE FUNCTION public.subscription_expire_plan(
 ) RETURNS boolean
 LANGUAGE plpgsql
 SECURITY DEFINER
+-- `public` stays on the path (after pg_catalog, before nothing writable by others): a trigger fired
+-- by the writer's UPDATE (release_trial_month_rows, 0176) names its tables unqualified and runs with
+-- this path. Every table this function names is schema-qualified; PUBLIC holds no CREATE on public.
 SET search_path = pg_catalog, public, pg_temp
 AS $$
 BEGIN

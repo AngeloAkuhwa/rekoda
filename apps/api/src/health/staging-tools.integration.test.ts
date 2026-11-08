@@ -21,6 +21,7 @@ import {
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../config.js';
 import { StagingRefused, StagingToolsService } from './staging-tools.service.js';
+import { assertStagingMarkerNotLive } from './staging-boot-check.js';
 import { sweepGracePeriods } from '../billing/grace-sweep.js';
 import { StubSender } from '../channels/sender.stub.js';
 
@@ -140,6 +141,16 @@ describe('OWN-77: boot refuses an unsafe configuration', () => {
         REKODA_PAYSTACK_PLATFORM_CONFIRMED: '1',
       }),
     ).toThrow(/PLATFORM_CONFIRMED/);
+  });
+});
+
+describe('OWN-77: boot refuses a staging-marked database beside a live key (main.ts)', () => {
+  it('refuses a live key on a marked database, and allows a test key or an unmarked one', async () => {
+    await expect(assertStagingMarkerNotLive(db, LIVE_KEY)).resolves.toBeUndefined();
+    await markStaging();
+    await expect(assertStagingMarkerNotLive(db, LIVE_KEY)).rejects.toThrow(/marked as staging/);
+    await expect(assertStagingMarkerNotLive(db, TEST_KEY)).resolves.toBeUndefined();
+    await expect(assertStagingMarkerNotLive(db, '')).resolves.toBeUndefined();
   });
 });
 

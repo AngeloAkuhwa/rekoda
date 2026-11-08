@@ -60,8 +60,11 @@ All under `https://<staging api>/v1/ops/staging`, operator token in `Authorizati
 - `field`: `trial_end` (a business on its trial: `plan_expires_at`), `paid_to` (a dated paid plan:
   `plan_expires_at`, which is also the renewal date), `grace_clock` (a renewal in grace:
   `payment_failed_at`).
-- `expected`: the current value you read (ISO 8601 with a zone), the compare-before. A stale value
-  answers 409 and changes nothing: read again.
+- `expected`: the current value, copied exactly (ISO 8601 with a zone) from
+  `GET /v1/ops/business/:businessId` (`ops:read`): `renewsAt` for `trial_end` and `paid_to` (both are
+  `plan_expires_at`), `paymentFailedAt` for `grace_clock`. The compare is exact, so a date read off
+  `/app/billing` (shown as a Lagos day) never matches. A stale value answers 409 and changes nothing:
+  read again. Each successful move answers with its action id; the new value is the `to` you sent.
 - `to`: within 90 days of now (a revert is exempt only for the exact value its move replaced).
 - `kind`: `send_timeout` (the send's outcome is unknown: the sweep never resends it) or
   `sender_refused` (definitely not sent, sender-wide: the sweep stops and retries next pass). Faults
@@ -85,7 +88,8 @@ customer data.
 
 - **Preconditions:** a test business on a paid plan (paid in Paystack test mode, walkthrough 6–10).
 - **Configuration:** §2 done; billing template slot configured (OD-41(b)).
-- **Steps:** read the paid-to date (`/app/billing` or `GET /v1/ops/businesses/:id/billing`); move
+- **Steps:** read the paid-to date as `renewsAt` from `GET /v1/ops/business/:businessId` (`ops:read`);
+  move
   `paid_to` to one hour ago (`expected` = what you read); wait for the hourly renewal sweep (or the
   next worker pass); then move `grace_clock` back day by day to reach day 1, day 5 and day 7 of grace,
   letting the hourly grace sweep run after each move.
@@ -128,7 +132,8 @@ customer data.
 
 - **Preconditions:** a fresh test business on its trial; a second business from step 17 whose paid
   plan lapsed.
-- **Steps:** read the trial end; move `trial_end` to one hour ago; reload `/app/billing` for both
+- **Steps:** read the trial end (`renewsAt` from `GET /v1/ops/business/:businessId`); move `trial_end`
+  to one hour ago; reload `/app/billing` for both
   businesses.
 - **Expected:** the trial business reads "Your free trial ended on …"; the lapsed paid business reads
   "Your subscription stopped on …"; neither says anything was deleted; records are readable.

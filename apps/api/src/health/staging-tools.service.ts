@@ -8,8 +8,9 @@
  *   3. the database carries the staging marker (written by the owner on the staging host only);
  *   4. for anything but designation, the business is a designated test business;
  *   5. the caller holds `ops:staging` (the controller).
- * The database repeats 3 and 4 inside `staging_move_date` and the fault functions, so even a wrong
- * flag on production moves nothing. Date moves go through the OD-37 sanctioned writer; every
+ * The database repeats 3 and 4 inside `staging_move_date`; arming a fault reads them first and
+ * consuming one checks the marker in the same statement, so even a wrong flag on production moves
+ * nothing. Date moves go through the OD-37 sanctioned writer; every
  * action is audited append-only. Not a general bypass: three dates, two one-shot faults.
  */
 import { Inject, Injectable } from '@nestjs/common';

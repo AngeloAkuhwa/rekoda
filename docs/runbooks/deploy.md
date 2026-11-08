@@ -369,9 +369,10 @@ direct write of `businesses.plan` / `plan_expires_at`, and older releases write 
 directly, so an older release's plan changes, renewals and lapses would fail. Before starting an
 older release (api and worker stopped), as the database owner:
 `DROP TRIGGER businesses_plan_fields_guard ON businesses;` (the functions and the
-`rekoda_plan_writer` role may stay; they are inert without it). Rolling forward again re-creates the
-trigger: run `dc run --rm -T migrate` only after re-applying 0196 by hand, or restore the trigger with
-the `CREATE TRIGGER` statement in `packages/db/migrations/0196_plan_fields_guard.sql`. A restore needs
+`rekoda_plan_writer` role may stay; they are inert without it). Rolling forward again does NOT
+restore the trigger by itself (the migration ledger already records 0196, so migrate skips it):
+before starting the newer release, re-apply `packages/db/migrations/0196_plan_fields_guard.sql` by
+hand as the owner (it is idempotent). A restore needs
 the `rekoda_plan_writer` role to exist (`scripts/restore-drill.sh` creates it).
 
 Migrations 0191 and 0192 are additive and keep data on a manual revert. 0191's

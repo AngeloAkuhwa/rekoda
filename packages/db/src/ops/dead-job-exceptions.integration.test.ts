@@ -417,6 +417,21 @@ describe('recovery: one bounded attempt, verified by the caller', () => {
     ]);
   });
 
+  it('a merchant who dismissed the exception sees a fresh one when the job dies again', async () => {
+    const businessId = await seedBusiness();
+    const { jobId } = await deadPaymentJob(businessId);
+    const [first] = await merchantExceptions(businessId);
+    await withBusiness(appDb, businessId, (tx) =>
+      settleRepo.resolveException(tx, businessId, first!.id, 'user:owner'),
+    );
+    expect(await begin(businessId, jobId)).toBe(true);
+    await killByHandler(1);
+
+    const exceptions = await merchantExceptions(businessId);
+    expect(exceptions).toHaveLength(2);
+    expect(exceptions.filter((e) => e.resolvedAt === null)).toHaveLength(1);
+  });
+
   it('a finished recovery closes the record and the merchant exception, in the job commit', async () => {
     const businessId = await seedBusiness();
     const { jobId } = await deadPaymentJob(businessId);

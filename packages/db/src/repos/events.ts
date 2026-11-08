@@ -663,7 +663,8 @@ export async function exceptionQueue(q: Queryable, limit = 50): Promise<Exceptio
             e.created_at, EXTRACT(EPOCH FROM (now() - e.created_at))::int AS age_seconds,
             'flagged' AS bucket,
             (SELECT d.job_id FROM dead_job_exceptions d
-              WHERE d.event_id = e.id AND d.status IN ('open', 'recovering')
+              WHERE d.event_id = e.id AND d.business_id = e.business_id
+                AND d.status IN ('open', 'recovering')
               ORDER BY d.opened_at DESC LIMIT 1) AS job_id
        FROM external_events e
       WHERE e.error IS NOT NULL AND e.resolved_at IS NULL

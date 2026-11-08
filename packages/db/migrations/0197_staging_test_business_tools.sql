@@ -8,6 +8,8 @@
 --   * the database carries the staging marker (`staging_environment`, one row, written by the
 --     database OWNER on the staging host only; no application role can write it), and
 --   * the business is designated a test business (`staging_test_businesses`).
+-- (`staging_move_date` checks both itself; arming a fault reads them first, and consuming one checks
+-- the marker in the same statement.)
 -- On production neither exists, so even a mis-set flag moves nothing.
 --
 -- A date move goes through `staging_move_date`, a SECURITY DEFINER function owned by
@@ -78,6 +80,27 @@ CREATE POLICY tenant_isolation ON staging_tool_actions
   WITH CHECK (business_id = nullif(current_setting('app.business_id', true), '')::uuid);
 REVOKE ALL ON staging_tool_actions FROM rekoda_app, rekoda_worker;
 GRANT SELECT, INSERT ON staging_tool_actions TO rekoda_app, rekoda_plan_writer;
+-- A date move or a revert row is written only by `staging_move_date` (as rekoda_plan_writer), so a
+-- revert can trust the move row it names; the application writes only its own acts (designate, arm
+-- and consume a fault). The authority is the role, as in 0196, never a setting.
+CREATE OR REPLACE FUNCTION rekoda_private.staging_tool_actions_writer_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $$
+BEGIN
+  IF NEW.action IN ('move_date', 'revert_date') AND current_user <> 'rekoda_plan_writer'
+     AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'USAGE') THEN
+    RAISE EXCEPTION 'staging_tool_actions: a date move is recorded only by staging_move_date'
+      USING ERRCODE = '42501';
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS staging_tool_actions_writer_guard ON staging_tool_actions;
+CREATE TRIGGER staging_tool_actions_writer_guard
+  BEFORE INSERT ON staging_tool_actions
+  FOR EACH ROW EXECUTE FUNCTION rekoda_private.staging_tool_actions_writer_guard();
 
 -- One-shot send faults: armed by an operator, consumed by exactly one send for that business.
 CREATE TABLE IF NOT EXISTS staging_send_faults (
@@ -115,6 +138,9 @@ CREATE OR REPLACE FUNCTION public.staging_move_date(
 ) RETURNS uuid
 LANGUAGE plpgsql
 SECURITY DEFINER
+-- `public` stays on the path (after pg_catalog, before nothing writable by others): a trigger fired
+-- by the writer's UPDATE (release_trial_month_rows, 0176) names its tables unqualified and runs with
+-- this path. Every table this function names is schema-qualified; PUBLIC holds no CREATE on public.
 SET search_path = pg_catalog, public, pg_temp
 AS $$
 DECLARE

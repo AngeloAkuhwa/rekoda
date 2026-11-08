@@ -39,6 +39,8 @@ import { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { deadJobsRepo } from '@rekoda/db';
 import { DeadJobRecoveryService } from './dead-job-recovery.service.js';
 import { DeadJobsController } from './dead-jobs.controller.js';
+import { OpsController } from './ops.controller.js';
+import type { SecurityMetrics } from '../channels/security-metrics.service.js';
 import type { OperatorRequest } from '../auth/operator.guard.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -417,6 +419,49 @@ describe('OWN-73: an operator recovers a dead payment job', () => {
     expect(await paymentCount(businessId)).toBe(0);
   });
 
+  it('a job whose queued reference differs from its signed event is refused: invalid_reference', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    const { jobId } = await deadPaymentJob(businessId, intent.reference);
+    // The record names another of Rekoda's references; the signed event is the authority.
+    const owner = createDb(urls.owner, { max: 1 });
+    await owner.db.execute(
+      sql`UPDATE dead_job_exceptions SET reference = 'RKD-PAY-20261108-ZZZZZZ' WHERE job_id = ${jobId}::uuid`,
+    );
+    await owner.close();
+
+    await expect(
+      controller().recover(asOperator, jobId, { reason: 'try now' }),
+    ).rejects.toMatchObject({ status: 422 });
+    expect((await statusOf(businessId, jobId))?.status).toBe('open');
+    expect(await drainJobs()).toBe(0);
+    const audit = await auditActions(businessId, jobId);
+    expect(audit.at(-1)).toMatchObject({ new_value: { outcome: 'invalid_reference' } });
+  });
+
+  it('a payment job whose signed event names a subscription reference is refused', async () => {
+    const businessId = await seedBusiness();
+    const eventId = await storeChargeSuccess('RKD-SUB-20261108-ABCDEF');
+    expect(await events.attributeEvent(workerDb, eventId, businessId)).toBe(true);
+    await withBusiness(appDb, businessId, (tx) =>
+      jobsRepo.enqueue(tx, {
+        businessId,
+        kind: 'payment.process',
+        payload: { eventId },
+        maxAttempts: 1,
+      }),
+    );
+    const job = await jobsRepo.claimNext(workerDb, 'test');
+    expect((await jobsRepo.markFailed(workerDb, job!, 'boom', 0)).state).toBe('dead');
+
+    await expect(
+      controller().recover(asOperator, job!.id, { reason: 'try now' }),
+    ).rejects.toMatchObject({ status: 422 });
+    expect((await statusOf(businessId, job!.id))?.status).toBe('open');
+    const audit = await auditActions(businessId, job!.id);
+    expect(audit.at(-1)).toMatchObject({ new_value: { outcome: 'invalid_reference' } });
+  });
+
   it('a job with no event has no reference to verify: refused, and closable by resolve', async () => {
     const businessId = await seedBusiness();
     await withBusiness(appDb, businessId, (tx) =>
@@ -435,6 +480,32 @@ describe('OWN-73: an operator recovers a dead payment job', () => {
     await expect(
       controller().resolve(asOperator, job!.id, { resolution: 'again' }),
     ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('the generic event resolve refuses an event whose dead job is open, changing nothing', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    const { eventId, jobId } = await deadPaymentJob(businessId, intent.reference);
+    const ops = new OpsController(config, appDb, workerDb, {} as SecurityMetrics);
+    await expect(
+      ops.resolveException(asOperator, eventId, { resolution: 'not ours' }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect((await statusOf(businessId, jobId))?.status).toBe('open');
+    const queue = await events.exceptionQueue(workerDb);
+    expect(queue.flagged.find((row) => row.id === eventId)?.jobId).toBe(jobId);
+  });
+
+  it('resolving the job closes its flagged event in the same transaction', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    const { eventId, jobId } = await deadPaymentJob(businessId, intent.reference);
+    expect(
+      await controller().resolve(asOperator, jobId, { resolution: 'settled by hand' }),
+    ).toEqual({
+      resolved: true,
+    });
+    const queue = await events.exceptionQueue(workerDb);
+    expect(queue.flagged.find((row) => row.id === eventId)).toBeUndefined();
   });
 
   it('refuses a missing reason, a malformed id and an unknown job without changing anything', async () => {

@@ -539,8 +539,13 @@ export async function reclaimStalled(db: Db, olderThanMs = 300_000): Promise<num
       RETURNING id, business_id, kind, payload, attempts, state, failure_category
     `);
     const reclaimed = [...rows];
+    /* Each record in its own savepoint: one that fails (a transient lock conflict) rolls back
+     * only itself, not the whole cross-tenant pass. Its job is already dead in this transaction,
+     * so a failure is re-thrown: losing the record would be a silent dead job. */
     for (const row of reclaimed) {
-      if (row.state === 'dead') await deadJobs.recordDeath(tx, dyingJob(row));
+      if (row.state === 'dead') {
+        await tx.transaction((savepoint) => deadJobs.recordDeath(savepoint, dyingJob(row)));
+      }
     }
     return reclaimed.length;
   });

@@ -371,19 +371,30 @@ describe('the lapsed-plan banner says what actually ended (SUB-05)', () => {
 
 describe('billingProcessingCopy (OWN-76)', () => {
   const since = '2026-11-08T10:00:00.000Z';
-  it('never claims a payment failed or went through, and asks the owner not to pay twice', () => {
-    const text = billingProcessingCopy({ since, recovering: false }, true);
-    expect(text).toMatch(/Please do not pay again/);
-    expect(text).toMatch(/Your records are safe/);
-    expect(text).not.toMatch(/fail|did not go through|declined|received your payment/i);
+  const all = [true, false].flatMap((recovering) =>
+    [true, false].map((owner) => billingProcessingCopy({ since, recovering }, owner)),
+  );
+  it('never claims an outcome: no failure, no success, no promised plan change, no confirmation', () => {
+    for (const text of all) {
+      expect(text).not.toMatch(/fail|did not go through|declined|received your payment/i);
+      expect(text).not.toMatch(/plan will|will be updated|confirmed|extended|activated/i);
+      expect(text).toMatch(/Your records are safe/);
+      expect(text).toMatch(/result will show on this page/);
+    }
   });
-  it('says the team is finishing it once an operator has confirmed it', () => {
-    expect(billingProcessingCopy({ since, recovering: true }, true)).toMatch(/finishing it now/);
+  it('never tells the owner to stop paying outright, which could let a renewal lapse', () => {
+    for (const text of all) expect(text).not.toMatch(/do not pay|don't pay/i);
+    expect(billingProcessingCopy({ since, recovering: false }, true)).toMatch(
+      /message us on WhatsApp before paying again/,
+    );
   });
-  it('speaks to a member who is not the owner without asking them to pay', () => {
-    const text = billingProcessingCopy({ since, recovering: false }, false);
-    expect(text).toMatch(/The owner does not need to pay again/);
-    expect(text).not.toMatch(/Please do not pay again/);
+  it('says the team is processing it again once an operator has started a recovery', () => {
+    expect(billingProcessingCopy({ since, recovering: true }, true)).toMatch(/processing .* again/);
+  });
+  it('asks nothing of a member who is not the owner', () => {
+    expect(billingProcessingCopy({ since, recovering: false }, false)).not.toMatch(
+      /\bpay(ing)?\b/i,
+    );
   });
   it('the dashboard strip points to billing and claims nothing about money', () => {
     expect(BILLING_PROCESSING_STRIP).toMatch(/See billing/);

@@ -915,7 +915,6 @@ function nonNegativeInteger(env: NodeJS.ProcessEnv, name: string, fallback: numb
   );
 }
 
-/** Absent or `0` is off, `1` is on; anything else refuses to boot rather than quietly selling nothing. */
 /**
  * G-119 / OWN-77: the staging tools exist only on a deployment whose money is never real. A live
  * Paystack key, an unrecognised or missing one, or the §47 confirmation set beside the flag refuses
@@ -932,6 +931,7 @@ function stagingToolsFlag(env: NodeJS.ProcessEnv): boolean {
   return true;
 }
 
+/** Absent or `0` is off, `1` is on; anything else refuses to boot rather than quietly selling nothing. */
 function zeroOrOneFlag(env: NodeJS.ProcessEnv, name: string): boolean {
   const raw = env[name];
   if (raw === undefined || raw === '0') return false;
