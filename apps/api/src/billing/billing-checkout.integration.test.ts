@@ -137,7 +137,10 @@ describe('the billing email', () => {
 
     const { sealed, set_at } = await rowOf(businessId);
     expect(sealed).not.toBeNull();
-    expect(sealed).not.toContain('ada');
+    /* The whole address, not a fragment: the sealed blob is random base64, and a three-letter
+     * fragment such as 'ada' appears in it by chance about once in several thousand runs. */
+    expect(sealed).not.toContain('shop.example');
+    expect(sealed!.toLowerCase()).not.toContain('ada@shop');
     expect(set_at).not.toBeNull();
     const audit = await withBusiness(appDb, businessId, async (tx) => {
       const rows = await tx.execute<{ action: string; new_value: unknown }>(sql`
