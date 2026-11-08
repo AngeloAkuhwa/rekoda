@@ -9,8 +9,8 @@
 --
 -- What the row never holds: the job's error text, the event payload, a credential, a provider
 -- response. `summary` is fixed text per kind; `failure_category` is the job's sanitised category
--- (migration 0190). `recovery_reference` is the Paystack reference an operator's recovery
--- verified, which is a payment reference, not personal data.
+-- (migration 0190). `reference` and `recovery_reference` are Rekoda's own payment references
+-- (the latter the one an operator's recovery verified with Paystack), not personal data.
 --
 -- Nothing is booked by this table or by the code that writes it: no payment, intent, invoice,
 -- ledger row, charge or plan changes when a job dies.
@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS dead_job_exceptions (
   kind text NOT NULL CHECK (kind IN ('payment.process', 'billing.process')),
   -- The job payload's `eventId` when it named a valid one; null for a job that had none.
   event_id uuid,
+  -- Rekoda's own payment or subscription reference from the job payload (RKD-PAY-..., RKD-SUB-...,
+  -- RKD-PACK-...), when the payload carried one in that shape; null for older jobs. Shown to the
+  -- operator; a recovery still verifies the reference read from the signed event, never this one.
+  reference text CHECK (reference IS NULL OR reference ~ '^RKD-(PAY|SUB|PACK)-[0-9]{8}-[0-9A-Z]{6}(-R[0-9]{1,2})?$'),
   -- open: waiting for an operator. recovering: an operator verified the reference with Paystack
   -- and requeued one bounded attempt. recovered: that attempt finished. resolved: an operator
   -- closed it without a recovery.

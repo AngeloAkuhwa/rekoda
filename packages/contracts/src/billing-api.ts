@@ -214,6 +214,18 @@ export const billingOverviewResponse = z.object({
    */
   chargesTotal: z.number().int().nonnegative(),
   charges: z.array(billingChargeView),
+  /**
+   * OWN-76: a Paystack update about a payment to Rekoda could not be processed and is with
+   * Rekoda's team (a dead `billing.process` job). Null when there is none. It is a billing notice,
+   * never a payment-reconciliation exception, and it claims nothing about whether money moved.
+   */
+  processingIssue: z
+    .object({
+      since: isoDate,
+      /** An operator has verified it with Paystack and it is being processed again. */
+      recovering: z.boolean(),
+    })
+    .nullable(),
 });
 
 /** What a plan change costs today, and when it takes effect. */
@@ -529,6 +541,10 @@ export const opsDeadJobView = z.object({
   businessId: z.string(),
   kind: z.enum(['payment.process', 'billing.process']),
   status: z.enum(['open', 'recovering']),
+  /** The signed event behind it, when it had one (then it is also that event's flagged row). */
+  eventId: z.string().nullable(),
+  /** Rekoda's own payment or subscription reference, when the job carried one. */
+  reference: z.string().nullable(),
   failureCategory: z.string().nullable(),
   summary: z.string(),
   attempts: z.number().int().nonnegative(),
@@ -536,6 +552,11 @@ export const opsDeadJobView = z.object({
   openedAt: z.string(),
   lastDiedAt: z.string(),
   ageSeconds: z.number().int().nonnegative(),
+  /** The charge's (billing) or intent's (payment) status now; null without a reference. */
+  paymentState: z.string().nullable(),
+  /** The business's plan and paid-to date now, for a billing job; null for a payment job. */
+  currentPlan: z.string().nullable(),
+  currentPlanExpiresAt: z.string().nullable(),
 });
 
 /** Start one verified, bounded recovery of a dead job. The reason is the audit record's. */
@@ -582,8 +603,13 @@ export const opsExceptionsResponse = z.object({
   flagged: z.array(opsEventView),
   /** Paid but unapplied subscription charges awaiting an operator (OD-30). Oldest first. */
   unappliedCharges: z.array(opsUnappliedChargeView),
-  /** Dead payment or billing jobs with no event behind them (OWN-73, OWN-76). Oldest first. */
+  /**
+   * Dead payment or billing jobs with no event behind them (OWN-73, OWN-76). Oldest first. A dead
+   * job WITH an event is that event's flagged row (`jobId`), detailed in `deadJobDetails`.
+   */
   deadJobs: z.array(opsDeadJobView),
+  /** The detail (reference, current payment and plan state) of each dead job on the flagged list. */
+  deadJobDetails: z.array(opsDeadJobView),
 });
 
 /**

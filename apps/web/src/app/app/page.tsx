@@ -16,7 +16,12 @@ import { PLAN_NAMES } from '@/lib/plans';
 import { CashflowChart } from './CashflowChart';
 import { SignOutButton } from './SignOutButton';
 import { heldBy } from '@/lib/capabilities';
-import { trialMilestoneAt, trialStripAudience } from '@/lib/billing-pay-copy';
+import { isOwner } from '@/lib/permissions';
+import {
+  BILLING_PROCESSING_STRIP,
+  trialMilestoneAt,
+  trialStripAudience,
+} from '@/lib/billing-pay-copy';
 
 export const metadata: Metadata = {
   title: 'Your dashboard',
@@ -47,13 +52,14 @@ export default async function DashboardPage() {
     usageMeter(token),
   ]);
 
-  // Only the owner of a trial sees the strip, so only that dashboard makes the billing read.
-  const trialEndsAt = trialStripAudience(identity.plan, identity.role)
-    ? await billingOverview(token).then(
-        (b) => (b.status.state === 'trial' ? b.status.endsAt : null),
-        () => null,
-      )
-    : null;
+  /* Only an owner reads billing here: for the trial strip, and for a Paystack update about a
+   * payment to Rekoda that is with Rekoda's team (OWN-76). A failed read shows neither. */
+  const billing = isOwner(identity.role) ? await billingOverview(token).catch(() => null) : null;
+  const trialEndsAt =
+    trialStripAudience(identity.plan, identity.role) && billing?.status.state === 'trial'
+      ? billing.status.endsAt
+      : null;
+  const billingProcessing = billing?.processingIssue ?? null;
   const milestone = trialMilestoneAt(trialEndsAt, new Date());
 
   const hasBooks = activity.items.length > 0;
@@ -100,6 +106,12 @@ export default async function DashboardPage() {
       {milestone ? (
         <a href="/app/billing" className="rk-trial-strip" data-milestone={milestone.kind}>
           <strong>{milestone.heading}.</strong> {milestone.body}
+        </a>
+      ) : null}
+
+      {billingProcessing ? (
+        <a href="/app/billing" className="rk-attention-strip" data-billing-processing>
+          {BILLING_PROCESSING_STRIP}
         </a>
       ) : null}
 

@@ -364,3 +364,26 @@ export function lapsedPlanCopy(input: {
       : 'The owner can start it again from this page.';
   return `${ended} Your books are still here and you can still read and export everything. ${next}`;
 }
+
+/**
+ * OWN-76: a Paystack update about a payment to Rekoda could not be processed automatically and is
+ * with Rekoda's team. The copy claims nothing about whether money moved (the update may have been a
+ * failure or still in progress), asks the merchant not to pay twice while it is checked, and says
+ * the records are untouched. Never "payment failed", never a reconciliation exception.
+ */
+export function billingProcessingCopy(
+  issue: { since: string; recovering: boolean },
+  owner: boolean,
+): string {
+  const checking = issue.recovering
+    ? 'Our team has confirmed a recent Paystack update about your Rekoda payment and is finishing it now.'
+    : 'We could not process a recent Paystack update about your Rekoda payment automatically, so our team is checking it with Paystack.';
+  const next = owner
+    ? 'Please do not pay again while we check: your plan will be updated as soon as it is confirmed.'
+    : 'The owner does not need to pay again while we check: the plan will be updated as soon as it is confirmed.';
+  return `${checking} ${next} Your records are safe.`;
+}
+
+/** The dashboard's one-line pointer to the notice above. */
+export const BILLING_PROCESSING_STRIP =
+  'We are checking a recent update about your Rekoda payment. See billing for what this means.';

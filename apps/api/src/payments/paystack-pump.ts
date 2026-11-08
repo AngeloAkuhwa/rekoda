@@ -98,7 +98,9 @@ export async function pumpPaystackEvents(deps: PumpDeps, limit = 50): Promise<nu
         jobsRepo.enqueue(tx, {
           businessId: owner,
           kind: JobKind.ProcessBillingCharge,
-          payload: { eventId: event.id },
+          /* The reference rides along so a job that dies names it to the operator (OWN-76).
+           * The handler still reads it from the signed event, never from here. */
+          payload: { eventId: event.id, reference },
           singletonKey: `billevent:${event.id}`,
         }),
       );
@@ -129,7 +131,8 @@ export async function pumpPaystackEvents(deps: PumpDeps, limit = 50): Promise<nu
       jobsRepo.enqueue(tx, {
         businessId: intent.businessId,
         kind: JobKind.ProcessPaymentEvent,
-        payload: { eventId: event.id },
+        /* Named to the operator if the job dies (OWN-73); the handler reads the signed event. */
+        payload: { eventId: event.id, reference },
         singletonKey: `payevent:${event.id}`,
       }),
     );
@@ -164,7 +167,7 @@ export async function pumpPaystackEvents(deps: PumpDeps, limit = 50): Promise<nu
       await jobsRepo.enqueue(tx, {
         businessId: owner,
         kind,
-        payload: { eventId: event.id },
+        payload: { eventId: event.id, reference: opened.reference },
         singletonKey,
       });
       return true;

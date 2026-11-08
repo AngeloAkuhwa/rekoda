@@ -47,6 +47,17 @@ const SUMMARY: Record<DeadJobKind, string> = {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** Rekoda's own reference shapes: a merchant payment, a subscription charge, a pack (with its
+ * checkout-attempt suffix). Anything else in a payload is not recorded. */
+const REKODA_REFERENCE = /^RKD-(PAY|SUB|PACK)-\d{8}-[0-9A-Z]{6}(-R\d{1,2})?$/;
+
+/** A job payload's `reference`, when it is one of Rekoda's own references. */
+export function referenceOf(payload: unknown): string | null {
+  if (typeof payload !== 'object' || payload === null) return null;
+  const value = (payload as Record<string, unknown>)['reference'];
+  return typeof value === 'string' && REKODA_REFERENCE.test(value) ? value : null;
+}
+
 /** A job payload's `eventId`, when it names a valid one. A malformed payload names none. */
 export function eventIdOf(payload: unknown): string | null {
   if (typeof payload !== 'object' || payload === null) return null;
@@ -74,14 +85,15 @@ export async function recordDeath(tx: Tx, job: DyingJob): Promise<void> {
   if (!isDeadJobKind(job.kind) || !UUID.test(job.businessId)) return;
   const kind = job.kind;
   const eventId = eventIdOf(job.payload);
+  const reference = referenceOf(job.payload);
 
   /* The writes below are tenant rows: pin the job's tenant for the rest of this transaction. */
   await tx.execute(sql`SELECT set_config('app.business_id', ${job.businessId}, true)`);
 
   const rows = await tx.execute<{ inserted: boolean; status: string }>(sql`
     INSERT INTO dead_job_exceptions
-      (job_id, business_id, kind, event_id, failure_category, summary, attempts)
-    VALUES (${job.id}::uuid, ${job.businessId}::uuid, ${kind}, ${eventId}::uuid,
+      (job_id, business_id, kind, event_id, reference, failure_category, summary, attempts)
+    VALUES (${job.id}::uuid, ${job.businessId}::uuid, ${kind}, ${eventId}::uuid, ${reference},
             ${job.failureCategory}, ${SUMMARY[kind]}, ${job.attempts})
     ON CONFLICT (job_id) DO UPDATE SET
       status = 'open',
@@ -132,6 +144,7 @@ export async function recordDeath(tx: Tx, job: DyingJob): Promise<void> {
             ${JSON.stringify({
               kind,
               eventId,
+              reference,
               attempts: job.attempts,
               failureCategory: job.failureCategory,
             })}::jsonb,
@@ -171,6 +184,8 @@ export interface DeadJobRow {
   businessId: string;
   kind: DeadJobKind;
   eventId: string | null;
+  /** Rekoda's own reference from the job payload, when it carried one. */
+  reference: string | null;
   status: 'open' | 'recovering' | 'recovered' | 'resolved';
   failureCategory: string | null;
   summary: string;
@@ -187,6 +202,7 @@ interface RawDeadJob extends Record<string, unknown> {
   business_id: string;
   kind: DeadJobKind;
   event_id: string | null;
+  reference: string | null;
   status: DeadJobRow['status'];
   failure_category: string | null;
   summary: string;
@@ -203,6 +219,7 @@ const shape = (r: RawDeadJob): DeadJobRow => ({
   businessId: r.business_id,
   kind: r.kind,
   eventId: r.event_id,
+  reference: r.reference,
   status: r.status,
   failureCategory: r.failure_category,
   summary: r.summary,
@@ -214,22 +231,61 @@ const shape = (r: RawDeadJob): DeadJobRow => ({
   recoveryReference: r.recovery_reference,
 });
 
-const COLUMNS = sql`job_id, business_id, kind, event_id, status, failure_category, summary,
+const COLUMNS = sql`job_id, business_id, kind, event_id, reference, status, failure_category, summary,
   attempts, death_count, opened_at, last_died_at, recovery_requested_at, recovery_reference`;
 
+/** A dead job as the operator queue shows it: the record, and the state it left things in. */
+export interface DeadJobOpsRow extends DeadJobRow {
+  /**
+   * Current payment state for the reference, read now: the subscription charge's status for a
+   * billing job, the payment intent's status for a payment job; null without a reference.
+   */
+  paymentState: string | null;
+  /** The business's plan and paid-to date now (billing jobs only; null for a payment job). */
+  currentPlan: string | null;
+  currentPlanExpiresAt: Date | null;
+}
+
 /**
- * The operator queue's job-keyed items: open or recovering dead jobs with NO event. A dead job
- * with an event is already on the flagged-event list, carrying its job id
- * (`events.exceptionQueue`), so listing it here too would queue it twice. Worker-credentialed.
+ * The operator queue: every open or recovering dead job, oldest first, with the current payment
+ * and subscription state (OWN-76). A job with an event is shown on that event's flagged row; one
+ * without is its own item (the caller splits them). Worker-credentialed; ids, statuses and
+ * fixed text only.
  */
-export async function opsQueueWithoutEvent(db: Db, limit = 50): Promise<DeadJobRow[]> {
-  const rows = await db.execute<RawDeadJob>(sql`
-    SELECT ${COLUMNS} FROM dead_job_exceptions
-    WHERE status IN ('open', 'recovering') AND event_id IS NULL
-    ORDER BY opened_at, job_id
+export async function opsQueue(db: Db, limit = 50): Promise<DeadJobOpsRow[]> {
+  const rows = await db.execute<
+    RawDeadJob & {
+      payment_state: string | null;
+      current_plan: string | null;
+      current_plan_expires_at: string | null;
+    }
+  >(sql`
+    SELECT d.job_id, d.business_id, d.kind, d.event_id, d.reference, d.status,
+           d.failure_category, d.summary, d.attempts, d.death_count, d.opened_at,
+           d.last_died_at, d.recovery_requested_at, d.recovery_reference,
+           CASE WHEN d.kind = 'billing.process' THEN
+                  (SELECT c.status FROM subscription_charges c
+                    WHERE c.business_id = d.business_id
+                      AND c.reference = regexp_replace(d.reference, '-R[0-9]+$', ''))
+                ELSE
+                  (SELECT i.status FROM payment_intents i
+                    WHERE i.business_id = d.business_id AND i.reference = d.reference)
+           END AS payment_state,
+           CASE WHEN d.kind = 'billing.process' THEN b.plan END AS current_plan,
+           CASE WHEN d.kind = 'billing.process' THEN b.plan_expires_at END
+             AS current_plan_expires_at
+    FROM dead_job_exceptions d
+    JOIN businesses b ON b.id = d.business_id
+    WHERE d.status IN ('open', 'recovering')
+    ORDER BY d.opened_at, d.job_id
     LIMIT ${limit}
   `);
-  return [...rows].map(shape);
+  return [...rows].map((r) => ({
+    ...shape(r),
+    paymentState: r.payment_state,
+    currentPlan: r.current_plan,
+    currentPlanExpiresAt: r.current_plan_expires_at ? new Date(r.current_plan_expires_at) : null,
+  }));
 }
 
 /** One record by job id, across tenants, for the operator routes. Worker-credentialed. */

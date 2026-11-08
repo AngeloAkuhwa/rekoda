@@ -74,6 +74,10 @@ export class DeadJobRecoveryService {
         ? PAYMENT_REFERENCE_PATTERN
         : SUBSCRIPTION_REFERENCE_PATTERN;
     if (!pattern.test(reference)) return refuse('invalid_reference');
+    /* The reference the job was queued with must be the one its signed event names. */
+    if (record.reference !== null && record.reference !== reference) {
+      return refuse('invalid_reference');
+    }
 
     let verification: string;
     try {

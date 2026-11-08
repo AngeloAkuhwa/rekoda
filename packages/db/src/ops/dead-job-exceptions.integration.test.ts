@@ -272,8 +272,8 @@ describe('what a dead job leaves, by kind and by payload', () => {
     const records = await recordsOf(businessId);
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({ job_id: jobId, event_id: null, status: 'open' });
-    const queue = await deadJobsRepo.opsQueueWithoutEvent(workerDb);
-    expect(queue.map((r) => r.jobId)).toEqual([jobId]);
+    const queue = await deadJobsRepo.opsQueue(workerDb);
+    expect(queue.map((r) => [r.jobId, r.eventId])).toEqual([[jobId, null]]);
   });
 
   it('a malformed eventId is treated as none, and the death is still recorded', async () => {
@@ -323,8 +323,7 @@ describe('the operator queue and tenant isolation', () => {
 
     const queue = await events.exceptionQueue(workerDb);
     expect(queue.flagged.find((row) => row.id === eventId)?.jobId).toBe(jobId);
-    // Event-linked records are on the flagged list, not on the job-keyed list.
-    expect(await deadJobsRepo.opsQueueWithoutEvent(workerDb)).toHaveLength(0);
+    expect((await deadJobsRepo.opsQueue(workerDb)).map((r) => r.eventId)).toEqual([eventId]);
 
     expect(await recordsOf(b)).toHaveLength(0);
     expect(await merchantExceptions(b)).toHaveLength(0);

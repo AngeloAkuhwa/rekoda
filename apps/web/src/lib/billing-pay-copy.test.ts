@@ -1,6 +1,8 @@
 import type { BillingChargeView } from '@rekoda/contracts';
 import { describe, expect, it } from 'vitest';
 import {
+  BILLING_PROCESSING_STRIP,
+  billingProcessingCopy,
   lapsedPlanCopy,
   checkoutInputProblem,
   checkoutRefusalCopy,
@@ -364,5 +366,27 @@ describe('the lapsed-plan banner says what actually ended (SUB-05)', () => {
         );
       }
     }
+  });
+});
+
+describe('billingProcessingCopy (OWN-76)', () => {
+  const since = '2026-11-08T10:00:00.000Z';
+  it('never claims a payment failed or went through, and asks the owner not to pay twice', () => {
+    const text = billingProcessingCopy({ since, recovering: false }, true);
+    expect(text).toMatch(/Please do not pay again/);
+    expect(text).toMatch(/Your records are safe/);
+    expect(text).not.toMatch(/fail|did not go through|declined|received your payment/i);
+  });
+  it('says the team is finishing it once an operator has confirmed it', () => {
+    expect(billingProcessingCopy({ since, recovering: true }, true)).toMatch(/finishing it now/);
+  });
+  it('speaks to a member who is not the owner without asking them to pay', () => {
+    const text = billingProcessingCopy({ since, recovering: false }, false);
+    expect(text).toMatch(/The owner does not need to pay again/);
+    expect(text).not.toMatch(/Please do not pay again/);
+  });
+  it('the dashboard strip points to billing and claims nothing about money', () => {
+    expect(BILLING_PROCESSING_STRIP).toMatch(/See billing/);
+    expect(BILLING_PROCESSING_STRIP).not.toMatch(/fail|paid|declined/i);
   });
 });

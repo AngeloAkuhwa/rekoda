@@ -45,6 +45,7 @@ import type {
 } from '@rekoda/contracts';
 import {
   addOnsRepo,
+  deadJobsRepo,
   subscriptionsRepo,
   usageRepo,
   withBusiness,
@@ -128,6 +129,8 @@ export class BillingService {
 
       const byUnit = new Map(counters.map((row) => [row.unit, row]));
       const allowances = await meterAllowances(this.config, tx, businessId, plan, now);
+      /* OWN-76: the oldest open dead billing job, if any, as a notice on this page. */
+      const [stuck] = await deadJobsRepo.openForBusiness(tx, businessId, 'billing.process');
       return {
         plan,
         priceK: await planPriceKFor(this.config, tx, businessId, plan, now),
@@ -167,6 +170,9 @@ export class BillingService {
           startedAt: held.startedAt.toISOString(),
           endsAt: held.endsAt?.toISOString() ?? null,
         })),
+        processingIssue: stuck
+          ? { since: stuck.openedAt.toISOString(), recovering: stuck.status === 'recovering' }
+          : null,
         chargesTotal: charges.count,
         charges: await Promise.all(
           chargeRows.map(async (charge) => ({

@@ -549,7 +549,7 @@ export class OpsController {
     const limit = Math.min(Math.max(Number(limitParam) || 50, 1), 200);
     const queue = await events.exceptionQueue(this.workerDb, limit);
     const unapplied = await subscriptionsRepo.unappliedCharges(this.workerDb, limit);
-    const deadJobs = await deadJobsRepo.opsQueueWithoutEvent(this.workerDb, limit);
+    const deadJobs = await deadJobsRepo.opsQueue(this.workerDb, limit);
     const now = new Date();
     return opsExceptionsResponse.parse({
       stuck: queue.stuck.map(toEventView),
@@ -573,21 +573,8 @@ export class OpsController {
         resolveBy: unappliedChargeDueAt(c.unappliedAt).toISOString(),
         overdue: unappliedChargeOverdue(c.unappliedAt, now),
       })),
-      deadJobs: deadJobs
-        .filter((d) => d.status === 'open' || d.status === 'recovering')
-        .map((d) => ({
-          jobId: d.jobId,
-          businessId: d.businessId,
-          kind: d.kind,
-          status: d.status,
-          failureCategory: d.failureCategory,
-          summary: d.summary,
-          attempts: d.attempts,
-          deathCount: d.deathCount,
-          openedAt: d.openedAt.toISOString(),
-          lastDiedAt: d.lastDiedAt.toISOString(),
-          ageSeconds: Math.max(0, Math.floor((now.getTime() - d.openedAt.getTime()) / 1000)),
-        })),
+      deadJobs: deadJobs.filter((d) => d.eventId === null).map((d) => toDeadJobView(d, now)),
+      deadJobDetails: deadJobs.filter((d) => d.eventId !== null).map((d) => toDeadJobView(d, now)),
     });
   }
 
@@ -663,6 +650,28 @@ export class OpsController {
     if (!resolved) throw new NotFoundException('no open exception with that id');
     return { resolved: true as const };
   }
+}
+
+/** A dead-job record to wire: ids, statuses, a category and fixed text (OWN-73, OWN-76). */
+function toDeadJobView(d: deadJobsRepo.DeadJobOpsRow, now: Date) {
+  return {
+    jobId: d.jobId,
+    businessId: d.businessId,
+    kind: d.kind,
+    status: d.status as 'open' | 'recovering',
+    eventId: d.eventId,
+    reference: d.reference,
+    failureCategory: d.failureCategory,
+    summary: d.summary,
+    attempts: d.attempts,
+    deathCount: d.deathCount,
+    openedAt: d.openedAt.toISOString(),
+    lastDiedAt: d.lastDiedAt.toISOString(),
+    ageSeconds: Math.max(0, Math.floor((now.getTime() - d.openedAt.getTime()) / 1000)),
+    paymentState: d.paymentState,
+    currentPlan: d.currentPlan,
+    currentPlanExpiresAt: d.currentPlanExpiresAt?.toISOString() ?? null,
+  };
 }
 
 /** Row to wire. Nothing here that a payload or a name could reach. */
