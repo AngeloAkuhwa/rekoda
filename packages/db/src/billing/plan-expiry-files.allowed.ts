@@ -34,6 +34,10 @@ export const ALLOWED: Readonly<Record<string, Entry>> = {
     role: 'definition',
     why: "this guard's own patterns and checks, which name the column to find it.",
   },
+  'apps/api/src/health/ops-idor-harness.ts': {
+    role: 'reader',
+    why: 'object-level authorisation tests (PR B): snapshots plan and plan_expires_at with a SELECT before and after a refused request to prove nothing changed. Used only by the object-authorisation integration tests; it holds no UPDATE.',
+  },
   'packages/db/src/repos/dead-jobs.ts': {
     role: 'reader',
     why: 'OWN-76: the operator queue reads the plan and paid-to date of a business whose billing job died.',
