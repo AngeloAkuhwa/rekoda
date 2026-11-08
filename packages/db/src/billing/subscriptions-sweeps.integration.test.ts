@@ -18,7 +18,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db, type TenantDb } from '../client.js';
 import { identity, subscriptionsRepo } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -95,9 +95,7 @@ describe('the sweeps', () => {
     await inTenant(businessId, (tx) =>
       subscriptionsRepo.schedulePlanChange(tx, businessId, 'chat'),
     );
-    await inTenant(businessId, (tx) =>
-      tx.execute(sql`UPDATE businesses SET plan = 'complete' WHERE id = ${businessId}::uuid`),
-    );
+    await setPlanAsOwner(urls, businessId, { plan: 'complete' });
 
     const [row] = await subscriptionsRepo.dueForRenewal(workerDb, NOW);
     expect(row?.plan).toBe('complete');

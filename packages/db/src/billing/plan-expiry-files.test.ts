@@ -65,7 +65,23 @@ export interface Entry {
 export const ALLOWED: Readonly<Record<string, Entry>> = {
   'packages/db/src/repos/subscriptions.ts': {
     role: 'writer',
-    why: 'writeSubscriptionState is the single UPDATE that sets plan, expiry and the rest of the cycle together (G-62); the same file reads the date for sweeps and renewals.',
+    why: 'writeSubscriptionState sets plan and expiry through subscription_write_plan (OD-37, 0196) beside the rest of the cycle in one transaction (G-62); expireSubscription lapses through subscription_expire_plan; the same file reads the date for sweeps and renewals.',
+  },
+  'packages/db/migrations/0196_plan_fields_guard.sql': {
+    role: 'migration',
+    why: 'OD-37: the two SECURITY DEFINER writers owned by rekoda_plan_writer and the trigger that refuses any other change to plan or plan_expires_at (immutable once applied).',
+  },
+  'packages/db/src/testing.ts': {
+    role: 'writer',
+    why: "OD-37: setPlanAsOwner, the integration fixtures' one way to set a plan, which writes AS THE TABLE OWNER (the migration and repair exemption the 0196 trigger allows). @rekoda/db/testing is never imported by production code.",
+  },
+  'packages/db/src/repos/dead-jobs.ts': {
+    role: 'reader',
+    why: 'OWN-76: the operator queue reads the plan and paid-to date of a business whose billing job died.',
+  },
+  'packages/contracts/src/billing-api.ts': {
+    role: 'reader',
+    why: 'wire shapes that carry the paid-to date to the billing page and the operator queue.',
   },
   'packages/db/src/repos/identity.ts': {
     role: 'writer',
@@ -214,10 +230,22 @@ export interface Pin {
 
 export const PINS: Readonly<Record<string, Pin>> = {
   'packages/db/src/repos/subscriptions.ts': {
+    plan: 0,
+    expiry: 0,
+    businessInserts: 0,
+    why: 'OD-37: no direct assignment any more; writeSubscriptionState and expireSubscription call the 0196 database writers.',
+  },
+  'packages/db/src/testing.ts': {
+    plan: 1,
+    expiry: 1,
+    businessInserts: 0,
+    why: 'OD-37: setPlanAsOwner, one owner-role UPDATE for test fixtures; refused for the application and worker roles by the 0196 trigger.',
+  },
+  'packages/db/migrations/0196_plan_fields_guard.sql': {
     plan: 2,
     expiry: 1,
     businessInserts: 0,
-    why: 'writeSubscriptionState (plan and date together) and the lapse to expired (plan only, guarded on the previous plan).',
+    why: 'OD-37: subscription_write_plan (plan and date together) and subscription_expire_plan (plan only, guarded on the previous plan), the only writers the trigger accepts.',
   },
   'packages/db/migrations/0017_trial_expiry.sql': {
     plan: 0,
@@ -399,6 +427,8 @@ describe('G-62: files that may touch plan_expires_at', () => {
     expect(writers).toEqual([
       'packages/db/src/repos/identity.ts',
       'packages/db/src/repos/subscriptions.ts',
+      // OD-37: the owner-role fixture helper; the 0196 trigger refuses the application roles.
+      'packages/db/src/testing.ts',
     ]);
   });
 });

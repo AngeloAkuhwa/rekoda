@@ -13,7 +13,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { billingRepo, events, identity, usageRepo } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '../testing.js';
 import { USAGE_UNITS, allowanceFor } from '@rekoda/core';
 
 let urls: Urls;
@@ -48,9 +48,7 @@ const PERIOD = '2026-08';
 
 /** Put a business on a plan directly, as a settled charge would. */
 async function setPlanOnRow(businessId: string, plan: string) {
-  await withBusiness(db, businessId, (tx) =>
-    tx.execute(sql`UPDATE businesses SET plan = ${plan} WHERE id = ${businessId}::uuid`),
-  );
+  await setPlanAsOwner(urls, businessId, { plan });
 }
 
 const consume = (businessId: string, allowance: number, n = 1) =>
@@ -143,13 +141,7 @@ describe('the atomic gate', () => {
 describe('the trial clock (docs/pricing-model.md)', () => {
   /** Move a business's plan and expiry directly, as an operator or time would. */
   async function setPlanRow(businessId: string, plan: string, expiresAt: Date | null) {
-    await withBusiness(db, businessId, (tx) =>
-      tx.execute(sql`
-        UPDATE businesses
-        SET plan = ${plan}, plan_expires_at = ${expiresAt ? expiresAt.toISOString() : null}::timestamptz
-        WHERE id = ${businessId}::uuid
-      `),
-    );
+    await setPlanAsOwner(urls, businessId, { plan, planExpiresAt: expiresAt });
   }
 
   const planOf = (businessId: string, now?: Date) =>

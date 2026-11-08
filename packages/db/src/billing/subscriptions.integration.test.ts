@@ -18,7 +18,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db, type TenantDb } from '../client.js';
 import { identity, subscriptionsRepo, usageRepo } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -364,9 +364,7 @@ describe('an add-on pack', () => {
   it('does not roll over into the next month', async () => {
     const businessId = await seedBusiness();
     // A paid plan meters by calendar month; a trial meters one row for its 14 days.
-    await inTenant(businessId, (tx) =>
-      tx.execute(sql`UPDATE businesses SET plan = 'chat' WHERE id = ${businessId}::uuid`),
-    );
+    await setPlanAsOwner(urls, businessId, { plan: 'chat' });
     await inTenant(businessId, (tx) =>
       usageRepo.creditBonus(tx, businessId, PERIOD, 'AI_ACTIONS', 5),
     );

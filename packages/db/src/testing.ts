@@ -335,3 +335,34 @@ export function storedEventId(recorded: { isNew: true; id: string } | { isNew: f
   if (!recorded.isNew) throw new Error('fixture recorded a duplicate event');
   return recorded.id;
 }
+
+/**
+ * OD-37 (migration 0196): put a business on a plan and/or a paid-to date directly, AS THE OWNER.
+ *
+ * The plan fields change only through the subscription writers; the table owner is the one
+ * exemption (migrations and an administrator's repair), and this helper is a test using it. A
+ * fixture that needs a business "on Complete" without walking a paid cycle calls this; the
+ * application and worker roles cannot do it, and production code never does. A field left out
+ * keeps its value.
+ */
+export async function setPlanAsOwner(
+  urls: Urls,
+  businessId: string,
+  fields: { plan?: string; planExpiresAt?: Date | null },
+): Promise<void> {
+  const sql = postgres(urls.owner, { max: 1, onnotice: () => {} });
+  try {
+    const expires =
+      fields.planExpiresAt === undefined
+        ? sql`plan_expires_at`
+        : sql`${fields.planExpiresAt ? fields.planExpiresAt.toISOString() : null}::timestamptz`;
+    await sql`
+      UPDATE businesses
+      SET plan = COALESCE(${fields.plan ?? null}::text, plan), plan_expires_at = ${expires},
+          updated_at = now()
+      WHERE id = ${businessId}::uuid
+    `;
+  } finally {
+    await sql.end();
+  }
+}

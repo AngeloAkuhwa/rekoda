@@ -14,7 +14,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { entitlementsRepo, identity } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '../testing.js';
 import { ENTITLEMENT_KEYS, type EntitlementKey } from '@rekoda/core';
 
 let urls: Urls;
@@ -48,9 +48,7 @@ async function seedOn(plan: string): Promise<string> {
   });
   /* Pinned: `businesses` carries RLS, so an unpinned UPDATE matches no row
    * and silently leaves every business on `trial`. */
-  await withBusiness(db, business.id, (tx) =>
-    tx.execute(sql`UPDATE businesses SET plan = ${plan} WHERE id = ${business.id}::uuid`),
-  );
+  await setPlanAsOwner(urls, business.id, { plan });
   return business.id;
 }
 

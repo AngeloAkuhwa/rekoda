@@ -12,7 +12,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { identity, marginRepo, quotaRepo } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -46,9 +46,7 @@ async function seedBusiness(name: string, phone: string, plan?: string): Promise
     ownerUserId: user.id,
   });
   if (plan) {
-    await withBusiness(appDb, business.id, (tx) =>
-      tx.execute(sql`UPDATE businesses SET plan = ${plan} WHERE id = ${business.id}::uuid`),
-    );
+    await setPlanAsOwner(urls, business.id, { plan });
   }
   return business.id;
 }

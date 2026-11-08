@@ -16,7 +16,7 @@ import { randomBytes } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { createDb, sql, withBusiness } from '@rekoda/db';
 import { replies } from '@rekoda/core';
-import { storedEventId } from '@rekoda/db/testing';
+import { storedEventId, setPlanAsOwner } from '@rekoda/db/testing';
 import { buildRunner } from './jobs.module.js';
 import { ProviderUnreachable } from '../ai/transport.js';
 import { sealPayload } from '../privacy/payload-vault.js';
@@ -126,9 +126,7 @@ describe('the chat surface enforces roles', () => {
   it('refunds the original month once when a retry crosses the month boundary (G-57)', async () => {
     const businessId = await seedBusiness('Role Gate Month Ltd', '+2348140010047');
     /* A paid plan meters by calendar month, which is what this test is about. */
-    await withBusiness(appDb, businessId, (tx) =>
-      tx.execute(sql`UPDATE businesses SET plan = 'complete' WHERE id = ${businessId}::uuid`),
-    );
+    await setPlanAsOwner(urls, businessId, { plan: 'complete' });
     await memberOf(businessId, '+2348140010048', 'accountant');
     const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
     const used = async (period: string) => {

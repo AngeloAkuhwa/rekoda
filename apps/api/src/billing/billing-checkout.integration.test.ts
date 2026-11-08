@@ -21,7 +21,7 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../config.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
@@ -453,12 +453,7 @@ describe('what may be paid', () => {
     /* The cycle runs out inside the provider call, after eligibility was read. */
     const realInitialize = provider.initializeTransaction.bind(provider);
     provider.initializeTransaction = async (input) => {
-      await withBusiness(appDb, businessId, (tx) =>
-        tx.execute(sql`
-          UPDATE businesses SET plan_expires_at = now() - interval '1 second'
-          WHERE id = ${businessId}::uuid
-        `),
-      );
+      await setPlanAsOwner(urls, businessId, { planExpiresAt: new Date(Date.now() - 1_000) });
       return realInitialize(input);
     };
 

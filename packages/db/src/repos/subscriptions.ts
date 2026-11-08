@@ -217,11 +217,15 @@ export async function writeSubscriptionState(
            LIMIT 1))
       END`
     : sql`plan_version_id`;
+  /* OD-37 (migration 0196): `plan` and `plan_expires_at` are written by the database function
+   * owned by `rekoda_plan_writer`; the trigger refuses them from anywhere else. The rest of the
+   * cycle is written beside it, in this same transaction, so the state still lands as one fact. */
+  await tx.execute(sql`
+    SELECT subscription_write_plan(${businessId}::uuid, ${state.plan}, ${expires})
+  `);
   await tx.execute(sql`
     UPDATE businesses SET
-      plan = ${state.plan},
       plan_version_id = ${pin},
-      plan_expires_at = ${expires},
       cycle_started_at = ${cycleStarted},
       renewal_anchor_day = ${state.anchorDay},
       pending_plan = ${state.pendingPlan},
@@ -2256,17 +2260,15 @@ export async function expireSubscription(
   const previous = [...before][0]?.plan;
   if (!previous || previous === 'trial' || previous === 'expired') return null;
 
-  const updated = await tx.execute<{ id: string }>(sql`
-    UPDATE businesses
-    SET plan = 'expired', pending_plan = NULL, plan_decided_at = clock_timestamp(),
-        updated_at = now()
-    WHERE id = ${businessId}::uuid AND plan = ${previous}
-      AND ${reason === 'grace' ? sql`payment_failed_at IS NOT NULL` : sql`pending_plan = 'expired'`}
-    RETURNING id
+  /* OD-37 (migration 0196): the lapse is written by the database function owned by
+   * `rekoda_plan_writer`, with the same race-safe condition: still on `previous`, and still unpaid
+   * (grace) or still cancelling. */
+  const updated = await tx.execute<{ changed: boolean }>(sql`
+    SELECT subscription_expire_plan(${businessId}::uuid, ${previous}, ${reason}) AS changed
   `);
   /* Somebody paid, or undid the cancel, between the read and the write.
    * Their plan stands. */
-  if ([...updated].length !== 1) return null;
+  if ([...updated][0]?.changed !== true) return null;
 
   await tx.execute(sql`
     INSERT INTO audit_events

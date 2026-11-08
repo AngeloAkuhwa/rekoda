@@ -13,7 +13,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { events, identity, usageRepo } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '../testing.js';
 
 let urls: Urls;
 let db: Db;
@@ -45,9 +45,7 @@ async function seedBusiness(): Promise<string> {
 
 /** Put a business on a plan directly, as a settled charge would. */
 async function setPlanOnRow(businessId: string, plan: string) {
-  await withBusiness(db, businessId, (tx) =>
-    tx.execute(sql`UPDATE businesses SET plan = ${plan} WHERE id = ${businessId}::uuid`),
-  );
+  await setPlanAsOwner(urls, businessId, { plan });
 }
 
 describe('one budget per trial (G-109, OWN-27, OD-26)', () => {

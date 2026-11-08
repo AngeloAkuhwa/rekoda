@@ -31,7 +31,7 @@ import {
   subscriptionsRepo,
   usageRepo,
 } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -76,13 +76,9 @@ async function abandonedTrial(daysAgo: number): Promise<string> {
     businessType: null,
     ownerUserId: user.id,
   });
-  await inTenant(business.id, (tx) =>
-    tx.execute(sql`
-      UPDATE businesses
-      SET plan_expires_at = now() - ${`${daysAgo} days`}::interval
-      WHERE id = ${business.id}::uuid
-    `),
-  );
+  await setPlanAsOwner(urls, business.id, {
+    planExpiresAt: new Date(Date.now() - daysAgo * 86_400_000),
+  });
   return business.id;
 }
 
@@ -145,9 +141,7 @@ describe('who is due', () => {
       }),
     ).toBe(true);
     // The paid plan then lapsed (renewal unpaid, grace run out).
-    await inTenant(businessId, (tx) =>
-      tx.execute(sql`UPDATE businesses SET plan = 'expired' WHERE id = ${businessId}::uuid`),
-    );
+    await setPlanAsOwner(urls, businessId, { plan: 'expired' });
 
     expect(await retentionRepo.dueForNotice(workerDb, daysAgo(60))).toEqual([]);
     await warn(businessId, daysAgo(200));
@@ -277,12 +271,14 @@ describe('who is due', () => {
     // The payment path: plan and ever_paid_at change in one transaction that
     // has not committed yet.
     const payment = inTenant(businessId, async (tx) => {
-      await tx.execute(sql`
-        UPDATE businesses
-        SET plan = 'chat', plan_expires_at = now() + interval '30 days',
-            ever_paid_at = coalesce(ever_paid_at, now())
-        WHERE id = ${businessId}::uuid
-      `);
+      /* The real writer (OD-37): plan, expiry and ever_paid_at in one transaction. */
+      const renewsAt = new Date(Date.now() + 30 * 86_400_000);
+      await subscriptionsRepo.applyCycle(tx, businessId, {
+        plan: 'chat',
+        cycleStartedAt: new Date(),
+        renewsAt,
+        anchorDay: renewsAt.getUTCDate(),
+      });
       applied();
       await held;
     });

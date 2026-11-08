@@ -151,7 +151,8 @@ describe('trial reminders', () => {
 
       let result!: Awaited<ReturnType<typeof sweep>>;
       await afterClaim(
-        "IF NEW.plan = 'trial' THEN UPDATE businesses SET plan = 'chat' WHERE id = NEW.id; END IF;",
+        /* Through the sanctioned writer, as a real purchase is (OD-37). */
+        "IF NEW.plan = 'trial' THEN PERFORM subscription_write_plan(NEW.id, 'chat', NEW.plan_expires_at); END IF;",
         async () => {
           result = await sweep(sender, at(12));
         },
