@@ -405,9 +405,11 @@ would have plan changes, renewals and lapses refused (`42501`). Therefore:
 ### Deploy a release carrying 0196
 
 Production and any host not deployed by `scripts/deploy-staging.sh` follow this sequence by hand;
-`deploy-staging.sh` runs steps 3 to 5 itself (it stops the api and worker before it migrates whenever
-the commit carries 0196 and the running commit does not) and refuses to proceed if either is still
-running.
+`deploy-staging.sh` does the stop-and-prove part itself: whenever the commit carries 0196 and the
+running commit does not, it stops the api and worker, checks with `docker compose ps` that neither is
+running, refuses to migrate otherwise, then migrates and starts the new release. Its only check after
+the start is `/health`. The ledger and trigger check ("is 0196 applied"), the guard-exists smoke and
+the plan-change smoke are manual steps on staging; run them from this list after the script finishes.
 
 1. Confirm the target host, the running release and the release to deploy.
 2. Confirm the backup and recovery arrangements you rely on exist (G-02: today there are none for
@@ -753,8 +755,9 @@ takes away one of the properties above.
 What a failure leaves:
 
 - **Before migrate** (a refused check, a failed fetch or build): nothing
-  live changed. The script puts the checkout and `REKODA_RELEASE` back to the
-  running release, so the host is as it was. **Exception (0196):** if stopping
+  live changed. While the deploy is still being prepared the script puts the checkout and
+  `REKODA_RELEASE` back to the running release, so the host is as it was; once it is live it only
+  prints the commands for you to run. **Exception (0196):** if stopping
   the api and worker fails or cannot be proved, nothing was migrated but their
   stopped state is unverified; the script says so. Check `dc ps`. Confirm
   first that the guard trigger `businesses_plan_fields_guard` is absent in the database; if it is,
