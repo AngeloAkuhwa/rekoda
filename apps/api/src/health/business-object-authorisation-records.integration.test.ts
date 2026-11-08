@@ -279,6 +279,10 @@ describe('payments lists: scoped to the pinned business in SQL as well as by RLS
     const b = await business();
     const exceptionB = await deadJobWithMerchantException(b.id);
     await deadJobWithMerchantException(a.id);
+    // One identifiable payment per business, so the payment list is proved as well as the exceptions.
+    await q(sql`
+      INSERT INTO payments (business_id, amount_k, source_type)
+      VALUES (${a.id}::uuid, 1110000, 'chat'), (${b.id}::uuid, 2220000, 'chat')`);
     // The owner connection bypasses RLS: only the SQL predicate stands between A's pin and B's rows.
     const seen = await ownerDb.transaction(async (tx) => {
       await tx.execute(sql`SELECT set_config('app.business_id', ${a.id}, true)`);
@@ -288,6 +292,10 @@ describe('payments lists: scoped to the pinned business in SQL as well as by RLS
         sql`SELECT count(DISTINCT business_id)::int AS n FROM reconciliations`,
       );
       expect(all?.n).toBeGreaterThanOrEqual(2);
+      const [paid] = await tx.execute<{ n: number }>(
+        sql`SELECT count(DISTINCT business_id)::int AS n FROM payments`,
+      );
+      expect(paid?.n).toBe(2);
       const reconciliations = await settleRepo.reconciliationsFor(tx as never, {
         status: 'EXCEPTION',
         limit: 50,
@@ -297,6 +305,9 @@ describe('payments lists: scoped to the pinned business in SQL as well as by RLS
     });
     expect(seen.reconciliations.map((r) => r.id)).not.toContain(exceptionB);
     expect(seen.reconciliations.length).toBeGreaterThan(0);
+    // The payment list: exactly A's one payment, B's excluded, and the count agrees with the rows.
+    expect(seen.payments.rows.map((p) => Number(p.amountK))).toEqual([1110000]);
+    expect(seen.payments.count).toBe(1);
     const unpinned = await ownerDb.transaction(async (tx) =>
       settleRepo.reconciliationsFor(tx as never, { status: 'EXCEPTION', limit: 50 }),
     );
