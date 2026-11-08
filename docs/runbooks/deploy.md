@@ -756,9 +756,11 @@ What a failure leaves:
   live changed. The script puts the checkout and `REKODA_RELEASE` back to the
   running release, so the host is as it was. **Exception (0196):** if stopping
   the api and worker fails or cannot be proved, nothing was migrated but their
-  stopped state is unverified; the script says so. Check `dc ps`; the previous
-  release is still compatible with the unmigrated database, so
-  `dc start api worker` is safe.
+  stopped state is unverified; the script says so. Check `dc ps`. Confirm
+  first that the guard trigger `businesses_plan_fields_guard` is absent in the database; if it is,
+  the previous release is still compatible and `dc start api worker` is safe (the checkout, `.env`
+  and the `live` marker stay at the new release; follow the commands the script printed). This is the
+  only case where starting the previous containers is allowed; once migrate was entered, never.
 - **At or after migrate:** the stack may be part-way to the new release.
   The script prints the exact rollback commands (the previous commit and
   release) and `dc ps -a`, and exits non-zero. Read `dc logs <service>` on the

@@ -144,7 +144,7 @@ describe('enrolment skips a settled payment', () => {
     const [job] = [
       ...(await workerDb.execute<{ id: string }>(sql`SELECT id FROM jobs WHERE state = 'dead'`)),
     ];
-    // Closed by an operator (resolved, not processed) after the sweep selected the job.
+    // Closed by an operator after the sweep selected the job (resolving also marks it processed).
     expect(
       await events.resolveEvent(workerDb, eventId, 'settled by hand', 'operator:bob', 'operator'),
     ).toBe(true);

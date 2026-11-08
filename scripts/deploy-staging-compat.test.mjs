@@ -190,6 +190,7 @@ test('a refused migration because a service is still running says migrate was ne
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /BEFORE migrate/);
   assert.doesNotMatch(r.stderr, /after migrate\/up started/);
+  assert.equal(h.at('run --rm -T migrate'), -1, 'migrate must not run');
 });
 
 test('a failure after 0196 is applied never advises restarting the previous release', () => {
