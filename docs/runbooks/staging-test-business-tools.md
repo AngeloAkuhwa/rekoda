@@ -14,13 +14,13 @@ two setup steps below are done. STAGING ACCEPTANCE PENDING.
 Every route refuses and writes nothing unless **every** item holds. The database repeats checks 3 and
 4 inside its own functions, so a wrong flag on production still moves nothing.
 
-| #   | Condition                                                                                    | Where it is enforced                                                                       |
-| --- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| 1   | `REKODA_STAGING_TOOLS=1` in the **staging host's `.env`** (any value but `0`/`1` refuses boot) | `apps/api/src/config.ts`                                                                   |
-| 2   | `PAYSTACK_SECRET_KEY` is a **test** key (`sk_test_…`); `REKODA_PAYSTACK_PLATFORM_CONFIRMED` unset | boot refuses otherwise (`config.ts`); re-checked per call (`staging-tools.service.ts`)     |
-| 3   | The database carries the staging marker (`staging_environment`, one row, owner-written)      | `staging-tools.service.ts`; `staging_move_date` and the fault queries (migration 0197)      |
-| 4   | The business is designated a test business                                                   | service; `staging_move_date`; `armFault`                                                    |
-| 5   | The operator token carries `ops:staging`                                                     | `OperatorGuard`; pinned by `apps/api/src/auth/operator-plane.test.ts`                      |
+| #   | Condition                                                                                         | Where it is enforced                                                                   |
+| --- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| 1   | `REKODA_STAGING_TOOLS=1` in the **staging host's `.env`** (any value but `0`/`1` refuses boot)    | `apps/api/src/config.ts`                                                               |
+| 2   | `PAYSTACK_SECRET_KEY` is a **test** key (`sk_test_…`); `REKODA_PAYSTACK_PLATFORM_CONFIRMED` unset | boot refuses otherwise (`config.ts`); re-checked per call (`staging-tools.service.ts`) |
+| 3   | The database carries the staging marker (`staging_environment`, one row, owner-written)           | `staging-tools.service.ts`; `staging_move_date` and the fault queries (migration 0197) |
+| 4   | The business is designated a test business                                                        | service; `staging_move_date`; `armFault`                                               |
+| 5   | The operator token carries `ops:staging`                                                          | `OperatorGuard`; pinned by `apps/api/src/auth/operator-plane.test.ts`                  |
 
 Also: the API refuses to **boot** when the database carries the staging marker and the Paystack key is
 live (`apps/api/src/main.ts`), flag or no flag. `NODE_ENV` is never the discriminator (staging and
@@ -49,13 +49,13 @@ To switch the tools off: remove the flag from `.env`, recreate api and worker, a
 
 All under `https://<staging api>/v1/ops/staging`, operator token in `Authorization: Bearer`.
 
-| Route                                                  | Body                                    | Does                                                                         |
-| ------------------------------------------------------ | --------------------------------------- | ---------------------------------------------------------------------------- |
-| `POST businesses/:businessId/designate`                | `{ reason }`                            | Marks a business a test business (once; audited)                             |
-| `POST businesses/:businessId/dates`                    | `{ field, expected, to, reason }`       | Moves one date through `staging_move_date` (OD-37 sanctioned writer)          |
-| `POST businesses/:businessId/actions/:actionId/revert` | `{ reason }`                            | Puts a moved date back, only if it still holds what the move wrote, once      |
-| `POST businesses/:businessId/faults`                   | `{ kind, reason }`                      | Arms one fault, consumed by exactly one send for that business                |
-| `GET businesses/:businessId/actions`                   |                                         | The append-only action log (the evidence to record)                          |
+| Route                                                  | Body                              | Does                                                                     |
+| ------------------------------------------------------ | --------------------------------- | ------------------------------------------------------------------------ |
+| `POST businesses/:businessId/designate`                | `{ reason }`                      | Marks a business a test business (once; audited)                         |
+| `POST businesses/:businessId/dates`                    | `{ field, expected, to, reason }` | Moves one date through `staging_move_date` (OD-37 sanctioned writer)     |
+| `POST businesses/:businessId/actions/:actionId/revert` | `{ reason }`                      | Puts a moved date back, only if it still holds what the move wrote, once |
+| `POST businesses/:businessId/faults`                   | `{ kind, reason }`                | Arms one fault, consumed by exactly one send for that business           |
+| `GET businesses/:businessId/actions`                   |                                   | The append-only action log (the evidence to record)                      |
 
 - `field`: `trial_end` (a business on its trial: `plan_expires_at`), `paid_to` (a dated paid plan:
   `plan_expires_at`, which is also the renewal date), `grace_clock` (a renewal in grace:

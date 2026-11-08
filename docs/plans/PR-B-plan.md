@@ -1,6 +1,17 @@
 # PR B plan (revision 4): payment timestamps, dead-job recovery, live-key renewal safeguard, plan protection, staging tools
 
-Base: `main` after PR A merges. **Status: PLAN ONLY; not started. PR B must not start until PR A is merged.**
+Base: `main` at `58e6834` (PR A, #431, merged). **Status (8 Nov 2026): ALL SIX ITEMS CODE COMPLETE in PR #432 (branch `angelo/magical-bell-s81mqc`), OPEN, not merged, not deployed, STAGING ACCEPTANCE PENDING.**
+
+As built, against this plan:
+
+- Migrations are 0193 to 0197, one more than the recorded range: 0197 holds the item 6 staging tables and writer (the brief allowed numbers to be confirmed when PR B started).
+- Item 1: `provider_settled_at` has no writer, because Rekoda has no Paystack settlement feed for its own account; no row is backfilled, because the evidence is sealed or was never kept.
+- Items 2 and 3 share one table (`dead_job_exceptions`). A dead job behind an event is that event's flagged row, carrying `jobId`, and a job without one is a `deadJobs` item. The pump now puts Rekoda's own reference in the job payload so the operator item names it; recovery still verifies the reference read from the signed event.
+- Item 4: the renewal row and grace clock are unchanged, and the renewal is stamped blocked, listed and alerted on (`billing.renewals_blocked`). OD-44 stays open.
+- Item 5: `rekoda_plan_writer` also holds what the `release_trial_month_rows` trigger needs (under RLS), because that AFTER trigger runs as the writer.
+- Item 6: faults are applied in the grace and trial-notice sweeps (sends carry no business id), only while the flag is on.
+
+The original plan follows.
 Owner baseline: the 7 Nov 2026 PR A/PR B brief. It supersedes revision 3 where they differ (OD-40, OWN-70, OD-37 and G-119 are now approved as below). Migrations: next free numbers after PR A (0191 and 0192 used by PR A), the brief's recorded range 0193 to 0196; numbers are confirmed against `packages/db/migrations` when PR B starts.
 
 ## Order (one item at a time)

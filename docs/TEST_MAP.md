@@ -86,6 +86,7 @@ change a feature and want to know what to run.
 | unit        | `packages/core/src/margin.test.ts`                                        |
 | unit        | `packages/core/src/payment-record.test.ts`                                |
 | unit        | `packages/db/src/billing/plan-expiry-files.test.ts`                       |
+| unit        | `packages/db/src/billing/plan-expiry-files.patterns.test.ts`              |
 
 ### Payments, settlement, bank and reconciliation
 
