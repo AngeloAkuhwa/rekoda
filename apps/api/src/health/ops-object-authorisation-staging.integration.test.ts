@@ -93,6 +93,12 @@ describe('staging tools act only on the designated business named in the route',
     expect(listed.body).not.toContain(actionId);
     expect(listed.body).not.toContain(a.id);
 
+    // Refused as a client error (never a server fault), and no fault was armed for anyone.
+    expect(moveB.statusCode).toBeLessThan(500);
+    expect(faultB.statusCode).toBeLessThan(500);
+    expect(revert.statusCode).toBeLessThan(500);
+    expect(await ownerDb.execute(sql`SELECT 1 FROM staging_send_faults`)).toHaveLength(0);
+
     const after = await snapshot();
     expect(after.stagingActions).toEqual(before.stagingActions);
     expect(await trialEnd(b.id)).toEqual(bEnd);
