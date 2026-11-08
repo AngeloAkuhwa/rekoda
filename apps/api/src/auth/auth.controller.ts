@@ -43,6 +43,7 @@ import {
   businessSettingsRequest,
 } from '@rekoda/contracts';
 import { AuthService, SetupTokenInvalid } from './auth.service.js';
+import { isUuid } from '../http/uuid.js';
 import { SessionGuard, type AuthedRequest } from './session.guard.js';
 import { Roles, RolesGuard } from './roles.guard.js';
 
@@ -302,6 +303,8 @@ export class BusinessController {
     @Param('userId') userId: string,
   ): Promise<{ removed: boolean }> {
     const businessId = request.auth!.businessId;
+    // A malformed id is an id no member holds: the same neutral answer as a foreign or missing one.
+    if (!isUuid(userId)) return { removed: false };
     try {
       const removed = await withBusiness(this.db, businessId, (tx) =>
         identity.removeMember(tx, businessId, userId, `user:${request.auth!.userId}`),
@@ -332,6 +335,7 @@ export class BusinessController {
     const parsed = changeMemberRoleRequest.safeParse(body);
     if (!parsed.success) throw new BadRequestException('role must be accountant or delegate');
     const businessId = request.auth!.businessId;
+    if (!isUuid(userId)) return { changed: false };
     try {
       const changed = await withBusiness(this.db, businessId, (tx) =>
         identity.changeMemberRole(

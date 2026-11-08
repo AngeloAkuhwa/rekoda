@@ -37,6 +37,7 @@ import {
 } from '@rekoda/contracts';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
+import { isUuid } from '../http/uuid.js';
 import { ApiKeysService } from './api-keys.service.js';
 
 @Controller('v1/api-keys')
@@ -84,6 +85,7 @@ export class ApiKeysController {
   ): Promise<CreateApiKeyResponse> {
     const parsed = createApiKeyRequest.safeParse(body ?? {});
     if (!parsed.success) throw new BadRequestException('a label, or nothing at all');
+    if (!isUuid(applicationId)) throw new NotFoundException('no such application');
 
     const outcome = await this.keys.mintKey(request.auth!.businessId, applicationId, {
       label: parsed.data.label ?? null,
@@ -117,6 +119,7 @@ export class ApiKeysController {
     @Req() request: AuthedRequest,
     @Param('id') keyId: string,
   ): Promise<{ revoked: true }> {
+    if (!isUuid(keyId)) throw new NotFoundException('no such key');
     const done = await this.keys.revokeKey(request.auth!.businessId, keyId);
     if (!done) throw new NotFoundException('no such key');
     return { revoked: true };
@@ -128,6 +131,7 @@ export class ApiKeysController {
     @Req() request: AuthedRequest,
     @Param('id') applicationId: string,
   ): Promise<{ status: 'disabled' }> {
+    if (!isUuid(applicationId)) throw new NotFoundException('no such application');
     const done = await this.keys.setApplicationStatus(
       request.auth!.businessId,
       applicationId,
@@ -143,6 +147,7 @@ export class ApiKeysController {
     @Req() request: AuthedRequest,
     @Param('id') applicationId: string,
   ): Promise<{ status: 'active' }> {
+    if (!isUuid(applicationId)) throw new NotFoundException('no such application');
     const done = await this.keys.setApplicationStatus(
       request.auth!.businessId,
       applicationId,

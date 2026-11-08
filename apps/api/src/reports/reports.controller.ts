@@ -15,6 +15,7 @@ import {
   HttpCode,
   HttpException,
   Inject,
+  NotFoundException,
   Post,
   Param,
   Query,
@@ -23,6 +24,7 @@ import {
   ServiceUnavailableException,
   UseGuards,
 } from '@nestjs/common';
+import { isUuid } from '../http/uuid.js';
 
 /**
  * The two methods a CSV response needs, and nothing else.
@@ -321,6 +323,7 @@ export class ReportsController {
     @Query('from') from?: string,
     @Query('to') to?: string,
   ): Promise<PartyStatementResponse> {
+    if (!isUuid(customerId)) throw new NotFoundException('no such customer');
     const businessId = request.auth!.businessId;
     return withBusiness(this.db, businessId, (tx) =>
       partyStatementsRepo.customerStatementFor(tx, businessId, customerId, {
@@ -338,6 +341,7 @@ export class ReportsController {
     @Query('from') from?: string,
     @Query('to') to?: string,
   ): Promise<PartyStatementResponse> {
+    if (!isUuid(supplierId)) throw new NotFoundException('no such supplier');
     const businessId = request.auth!.businessId;
     return withBusiness(this.db, businessId, (tx) =>
       partyStatementsRepo.supplierStatementFor(tx, businessId, supplierId, {
@@ -2197,6 +2201,7 @@ export class ReportsController {
     @Param('customerId') customerId: string,
     @Res() reply: CsvReply,
   ): Promise<void> {
+    if (!isUuid(customerId)) throw new NotFoundException('no such customer');
     const businessId = request.auth!.businessId;
     await this.takeExport(businessId);
     const statement = await withBusiness(this.db, businessId, (tx) =>
@@ -2217,6 +2222,7 @@ export class ReportsController {
     @Param('supplierId') supplierId: string,
     @Res() reply: CsvReply,
   ): Promise<void> {
+    if (!isUuid(supplierId)) throw new NotFoundException('no such supplier');
     const businessId = request.auth!.businessId;
     await this.takeExport(businessId);
     const statement = await withBusiness(this.db, businessId, (tx) =>

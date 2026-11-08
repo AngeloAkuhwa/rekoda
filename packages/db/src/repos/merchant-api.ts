@@ -272,3 +272,20 @@ function clamp(limit: number): number {
 function at(value: string | Date): Date {
   return value instanceof Date ? value : new Date(value);
 }
+
+/**
+ * Whether `customerId` is one of this business's own customers. The public sale route checks it
+ * before booking anything, so a customer id of another business (or none at all) is one and the
+ * same refusal, decided by the application and not left to a foreign-key violation deep inside
+ * the booking transaction.
+ */
+export async function customerBelongsToBusiness(
+  tx: TenantDb,
+  businessId: string,
+  customerId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ ok: number }>(sql`
+    SELECT 1 AS ok FROM customers WHERE business_id = ${businessId} AND id = ${customerId}::uuid
+  `);
+  return [...rows].length === 1;
+}

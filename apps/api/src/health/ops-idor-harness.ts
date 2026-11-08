@@ -130,7 +130,7 @@ export function useHarness(): void {
 /* ── callers ─────────────────────────────────────────────────────────────── */
 
 export const call = (
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   url: string,
   headers: Record<string, string> = {},
   payload?: object,
@@ -228,3 +228,12 @@ export async function snapshot() {
 }
 
 export const REASON = 'checking the object boundary';
+
+/** A dead payment job for `businessId`, which leaves the merchant's reconciliation exception; returns its id. */
+export async function deadJobWithMerchantException(businessId: string): Promise<string> {
+  await deadJob(businessId, await attributedEvent(businessId));
+  const found = await withBusiness(appDb, businessId, (tx) =>
+    settleRepo.reconciliationsFor(tx, { status: 'EXCEPTION', limit: 10 }),
+  );
+  return found.find((r) => r.reason === 'payment_processing_stopped')!.id;
+}

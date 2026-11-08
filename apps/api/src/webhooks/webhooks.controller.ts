@@ -31,6 +31,7 @@ import {
 } from '@rekoda/contracts';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
+import { isUuid } from '../http/uuid.js';
 import { WebhookDestinationRefused } from './destination.js';
 import { WebhooksService } from './webhooks.service.js';
 
@@ -81,6 +82,7 @@ export class WebhooksController {
     @Req() request: AuthedRequest,
     @Param('id') id: string,
   ): Promise<WebhookSecretResponse> {
+    if (!isUuid(id)) throw new NotFoundException('no such endpoint');
     const rotated = await this.webhooks.rotate(request.auth!.businessId, id);
     if (!rotated) throw new NotFoundException('no such endpoint');
     return webhookSecretResponse.parse(rotated);
@@ -92,6 +94,7 @@ export class WebhooksController {
     @Req() request: AuthedRequest,
     @Param('id') id: string,
   ): Promise<{ status: 'disabled' }> {
+    if (!isUuid(id)) throw new NotFoundException('no such endpoint');
     const done = await this.webhooks.setStatus(request.auth!.businessId, id, 'disabled');
     if (!done) throw new NotFoundException('no such endpoint');
     return { status: 'disabled' };
@@ -103,6 +106,7 @@ export class WebhooksController {
     @Req() request: AuthedRequest,
     @Param('id') id: string,
   ): Promise<{ status: 'active' }> {
+    if (!isUuid(id)) throw new NotFoundException('no such endpoint');
     const done = await this.webhooks.setStatus(request.auth!.businessId, id, 'active');
     if (!done) throw new NotFoundException('no such endpoint');
     return { status: 'active' };

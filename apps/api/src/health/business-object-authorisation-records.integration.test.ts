@@ -1,0 +1,342 @@
+/**
+ * Object-level authorisation (IDOR) over the money-and-records endpoint families: the public
+ * merchant API, party statements, payment lists and exceptions, invoice void and credit
+ * (harness: `ops-idor-harness.ts`). Two businesses throughout; every refusal is checked against a
+ * snapshot of the books and queues it could have touched.
+ */
+import { describe, expect, it } from 'vitest';
+import { entitlementsRepo, issueRepo, settleRepo, sql, usageRepo, withBusiness } from '@rekoda/db';
+import { usagePeriod } from '@rekoda/core';
+import { grantCapacityAddOn } from '@rekoda/db/testing';
+import {
+  REASON,
+  appDb,
+  business,
+  call,
+  deadJobWithMerchantException,
+  ownerDb,
+  urls,
+  useHarness,
+} from './ops-idor-harness.js';
+
+useHarness();
+
+const unknownUuid = '00000000-0000-4000-8000-000000000bad';
+const q = async (text: ReturnType<typeof sql>) => [...(await ownerDb.execute(text))];
+
+/** What a request in this file could change, in one comparable value. */
+async function books() {
+  return {
+    invoices: await q(
+      sql`SELECT id, business_id, status, paid_k, balance_due_k FROM invoices ORDER BY id`,
+    ),
+    payments: await q(sql`SELECT id, business_id FROM payments ORDER BY id`),
+    receipts: await q(sql`SELECT id FROM receipts ORDER BY id`),
+    ledger: await q(sql`SELECT id FROM ledger_entries ORDER BY id`),
+    credits: await q(sql`SELECT id FROM credit_notes ORDER BY id`),
+    outbox: await q(sql`SELECT id FROM outbox_events ORDER BY id`),
+    drafts: await q(sql`SELECT id FROM command_drafts ORDER BY id`),
+    audit: await q(sql`SELECT business_id, action FROM audit_events ORDER BY created_at, id`),
+  };
+}
+
+async function invoiceFor(businessId: string): Promise<string> {
+  const sale = await withBusiness(appDb, businessId, (tx) =>
+    issueRepo.issueSale(tx, {
+      businessId,
+      customerId: null,
+      customerToken: 'CUSTOMER_7K2',
+      items: [{ name: 'wig', quantity: 1, unitPriceK: 5_000_000 }],
+      subtotalK: 5_000_000,
+      discountK: 0,
+      deliveryFeeK: 0,
+      vatK: 0,
+      totalK: 5_000_000,
+      paidK: 0,
+      balanceDueK: 5_000_000,
+      method: 'transfer',
+      sourceType: 'chat',
+      sourceId: `idor-${Math.random()}`,
+      actor: 'system',
+    }),
+  );
+  return sale.invoiceNumber;
+}
+
+async function customerFor(businessId: string): Promise<string> {
+  const rows = await q(
+    sql`INSERT INTO customers (business_id, token) VALUES (${businessId}::uuid, ${'CUSTOMER_' + Math.random().toString(36).slice(2, 8)})
+        RETURNING id`,
+  );
+  return (rows[0] as { id: string }).id;
+}
+
+/** A business with a live API key (mode live), the API entitlement and request capacity. */
+async function apiShop() {
+  const b = await business();
+  await withBusiness(appDb, b.id, (tx) =>
+    entitlementsRepo.grant(tx, {
+      businessId: b.id,
+      entitlementKey: 'REKODA_API',
+      source: 'MANUAL_GRANT',
+      grantedBy: 'operator:idor-suite',
+    }),
+  );
+  await withBusiness(appDb, b.id, (tx) =>
+    usageRepo.creditBonus(tx, b.id, usagePeriod(new Date()), 'API_REQUEST_UNITS', 1_000),
+  );
+  await grantCapacityAddOn(urls, b.id, 'API_APPLICATIONS', 5);
+  const app = (
+    await call('POST', '/v1/api-keys/applications', b.session, { name: 'idor' })
+  ).json() as {
+    id: string;
+  };
+  const minted = (
+    await call('POST', `/v1/api-keys/applications/${app.id}/keys`, b.session, { mode: 'live' })
+  ).json() as { token: string };
+  return { ...b, key: { authorization: `Bearer ${minted.token}` } };
+}
+
+describe('public merchant API: ids in a body or path are resolved inside the key’s business', () => {
+  it('a sale naming another business’s customer is refused like an unknown one, and writes nothing', async () => {
+    const a = await apiShop();
+    const b = await apiShop();
+    const theirCustomer = await customerFor(b.id);
+    const sale = (customerId: string) =>
+      call('POST', '/api/v1/sales', a.key, {
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 100_000 }],
+        customerId,
+      });
+    const before = await books();
+
+    const foreign = await sale(theirCustomer);
+    const missing = await sale(unknownUuid);
+    expect([foreign.statusCode, missing.statusCode]).toEqual([400, 400]);
+    expect(foreign.body).toBe(missing.body);
+    expect(await books()).toEqual(before);
+
+    // Control: the same sale with the business's own customer is accepted.
+    const own = await sale(await customerFor(a.id));
+    expect(own.statusCode).toBe(200);
+  });
+
+  it('a payment against another business’s invoice number is refused like an unknown number', async () => {
+    const a = await apiShop();
+    const b = await apiShop();
+    const theirs = await invoiceFor(b.id);
+    const pay = (invoiceNumber: string) =>
+      call('POST', '/api/v1/payments', a.key, { invoiceNumber, amountK: 100_000 });
+    const before = await books();
+
+    const foreign = await pay(theirs);
+    const missing = await pay('INV-2099-999999');
+    expect(foreign.json()).toEqual({ outcome: 'not_found' });
+    expect(missing.json()).toEqual({ outcome: 'not_found' });
+    expect(foreign.statusCode).toBe(missing.statusCode);
+    expect(await books()).toEqual(before);
+    // and the invoice is still readable by its own business only
+    expect((await call('GET', `/api/v1/invoices/${theirs}`, a.key)).statusCode).toBe(404);
+    expect((await call('GET', `/api/v1/invoices/${theirs}`, b.key)).statusCode).toBe(200);
+  });
+});
+
+describe('party statements: a foreign id reads as empty, a malformed id as nothing', () => {
+  it.each(['customers', 'suppliers'])('%s: JSON and CSV', async (kind) => {
+    const a = await business();
+    const b = await business();
+    const theirCustomer = kind === 'customers' ? await customerFor(b.id) : unknownUuid;
+    for (const suffix of ['statement', 'statement.csv']) {
+      const url = (id: string) => `/v1/reports/${kind}/${id}/${suffix}`;
+      const foreign = await call('GET', url(theirCustomer), a.session);
+      const missing = await call('GET', url(unknownUuid), a.session);
+      const malformed = await call('GET', url('not-a-uuid'), a.session);
+      expect(foreign.statusCode, url('x')).toBe(missing.statusCode);
+      expect(foreign.body, url('x')).toBe(missing.body);
+      expect(malformed.statusCode, url('x')).toBe(404);
+    }
+  });
+});
+
+describe('payments lists: scoped to the pinned business in SQL as well as by RLS', () => {
+  it('A never sees B’s payment exceptions, and cannot resolve one', async () => {
+    const a = await business();
+    const b = await business();
+    const exceptionId = await deadJobWithMerchantException(b.id);
+    const before = await books();
+    const listed = (await call('GET', '/v1/payments/exceptions', a.session)).json() as {
+      exceptions: Array<{ id: string }>;
+    };
+    expect(listed.exceptions.map((e) => e.id)).not.toContain(exceptionId);
+    expect(
+      (await call('POST', `/v1/payments/exceptions/${exceptionId}/resolve`, a.session)).statusCode,
+    ).toBe(404);
+    expect(
+      (await call('GET', '/v1/payments/exceptions', b.session)).body,
+      'B still sees its own',
+    ).toContain(exceptionId);
+    expect(await books()).toEqual(before);
+  });
+
+  it('the readers return only the pinned business even on a connection that bypasses RLS', async () => {
+    const a = await business();
+    const b = await business();
+    const exceptionB = await deadJobWithMerchantException(b.id);
+    await deadJobWithMerchantException(a.id);
+    // The owner connection bypasses RLS: only the SQL predicate stands between A's pin and B's rows.
+    const seen = await ownerDb.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('app.business_id', ${a.id}, true)`);
+      const reconciliations = await settleRepo.reconciliationsFor(tx as never, {
+        status: 'EXCEPTION',
+        limit: 50,
+      });
+      const payments = await settleRepo.paymentsFor(tx as never);
+      return { reconciliations, payments };
+    });
+    expect(seen.reconciliations.map((r) => r.id)).not.toContain(exceptionB);
+    expect(seen.reconciliations.length).toBeGreaterThan(0);
+    const unpinned = await ownerDb.transaction(async (tx) =>
+      settleRepo.reconciliationsFor(tx as never, { status: 'EXCEPTION', limit: 50 }),
+    );
+    expect(unpinned).toEqual([]);
+  });
+});
+
+describe('invoice void and credit: the invoice number is resolved inside the caller’s business', () => {
+  it('B’s owner cannot void or credit A’s invoice; every step answers as for an unknown number', async () => {
+    const a = await business();
+    const b = await business();
+    const theirs = await invoiceFor(a.id);
+    const before = await books();
+    const unknown = 'INV-2099-999999';
+
+    // Void is a two-step: the first call only opens a confirmation for the caller's OWN business.
+    const voidIt = async (number: string) => {
+      const opened = await call('POST', '/v1/reports/invoices/void', b.session, {
+        invoiceNumber: number,
+        reason: REASON,
+      });
+      const { confirmationId } = opened.json() as { confirmationId: string };
+      return call('POST', '/v1/reports/invoices/void', b.session, {
+        invoiceNumber: number,
+        reason: REASON,
+        confirmationId,
+      });
+    };
+    const credit = (number: string) =>
+      call('POST', '/v1/reports/invoices/credit', b.session, {
+        invoiceNumber: number,
+        amountK: 100_000,
+        reason: REASON,
+        clientRef: crypto.randomUUID(),
+      });
+
+    for (const act of [voidIt, credit]) {
+      const foreign = await act(theirs);
+      const missing = await act(unknown);
+      expect(foreign.statusCode).toBe(200);
+      expect(foreign.json()).toEqual({ outcome: 'not_found' });
+      expect(missing.json()).toEqual({ outcome: 'not_found' });
+    }
+    // A's invoice, ledger, credits and payments are exactly as they were; only B's own
+    // confirmation (a refused-operation record) may have been added, and never in A's business.
+    const after = await books();
+    expect({ ...after, audit: null }).toEqual({ ...before, audit: null });
+    const added = (after.audit as Array<{ business_id: string }>).slice(
+      (before.audit as unknown[]).length,
+    );
+    expect(added.every((row) => row.business_id === b.id)).toBe(true);
+  });
+});
+
+describe('customer reminders: batch and invoice ids are resolved inside the caller’s business', () => {
+  async function batchOf(businessId: string) {
+    const invoiceNumber = await invoiceFor(businessId);
+    const [invoice] = await q(
+      sql`SELECT id FROM invoices WHERE business_id = ${businessId}::uuid AND invoice_number = ${invoiceNumber}`,
+    );
+    const [member] = await q(
+      sql`SELECT user_id FROM memberships WHERE business_id = ${businessId}::uuid`,
+    );
+    const [batch] = await q(sql`
+      INSERT INTO reminder_batches (business_id, channels, scheduled_for, idempotency_key, item_count, created_by)
+      VALUES (${businessId}::uuid, 'auto', now() + interval '1 day', ${'idor-' + businessId.slice(0, 12)}, 1,
+              ${(member as { user_id: string }).user_id}::uuid)
+      RETURNING id`);
+    const batchId = (batch as { id: string }).id;
+    await q(sql`
+      INSERT INTO reminder_batch_items (business_id, batch_id, invoice_id, position)
+      VALUES (${businessId}::uuid, ${batchId}::uuid, ${(invoice as { id: string }).id}::uuid, 0)`);
+    return { batchId, invoiceNumber };
+  }
+  const state = () =>
+    q(sql`SELECT b.id, b.state, i.state AS item_state FROM reminder_batches b
+          JOIN reminder_batch_items i ON i.batch_id = b.id ORDER BY b.id`);
+
+  it('B cannot read or cancel A’s batch; the answer matches an unknown id; A’s batch is untouched', async () => {
+    const a = await business();
+    const b = await business();
+    const mine = await batchOf(a.id);
+    const before = { batches: await state(), audit: (await books()).audit };
+
+    for (const [method, suffix] of [
+      ['GET', ''],
+      ['POST', '/cancel'],
+    ] as const) {
+      const foreign = await call(
+        method,
+        `/v1/reminders/batches/${mine.batchId}${suffix}`,
+        b.session,
+      );
+      const missing = await call(
+        method,
+        `/v1/reminders/batches/${unknownUuid}${suffix}`,
+        b.session,
+      );
+      const malformed = await call(method, `/v1/reminders/batches/not-a-uuid${suffix}`, b.session);
+      expect([foreign.statusCode, missing.statusCode, malformed.statusCode], suffix).toEqual([
+        404, 404, 404,
+      ]);
+      expect(foreign.body, suffix).toBe(missing.body);
+    }
+    expect(await state()).toEqual(before.batches);
+    expect((await books()).audit).toEqual(before.audit);
+    expect(
+      JSON.stringify((await call('GET', '/v1/reminders/batches', b.session)).json()),
+    ).not.toContain(mine.batchId);
+    // Control: A reads its own batch.
+    expect((await call('GET', `/v1/reminders/batches/${mine.batchId}`, a.session)).statusCode).toBe(
+      200,
+    );
+  });
+
+  it('B cannot send, stop or read the history of a reminder for A’s invoice number', async () => {
+    const a = await business();
+    const b = await business();
+    const theirs = (await batchOf(a.id)).invoiceNumber;
+    const before = {
+      reminders: await q(sql`SELECT id FROM invoice_reminders`),
+      books: await books(),
+    };
+    const probes = (number: string) => [
+      call('GET', `/v1/reminders/history?invoiceNumber=${number}`, b.session),
+      call('POST', '/v1/reminders/stop', b.session, { invoiceNumber: number }),
+      call('POST', '/v1/reminders/send', b.session, {
+        invoiceNumber: number,
+        channels: 'auto',
+        idempotencyKey: 'idor-send-key-0001',
+      }),
+    ];
+    const foreign = await Promise.all(probes(theirs));
+    const missing = await Promise.all(probes('INV-2099-999999'));
+    for (const [i, r] of foreign.entries()) {
+      expect(r.statusCode, `probe ${i}`).toBe(missing[i]!.statusCode);
+      expect(r.body.replace(theirs, 'N'), `probe ${i}`).toBe(
+        missing[i]!.body.replace('INV-2099-999999', 'N'),
+      );
+    }
+    expect({
+      reminders: await q(sql`SELECT id FROM invoice_reminders`),
+      books: await books(),
+    }).toEqual(before);
+  });
+});
