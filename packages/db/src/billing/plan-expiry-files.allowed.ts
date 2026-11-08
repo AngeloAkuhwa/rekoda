@@ -127,6 +127,10 @@ export const ALLOWED: Readonly<Record<string, Entry>> = {
     role: 'migration',
     why: 'OD-47: blocked_renewals_ops reads the paid-to date beside a blocked renewal; read-only, worker-only function.',
   },
+  'packages/db/migrations/0198_blocked_renewal_close_order.sql': {
+    role: 'migration',
+    why: 'OD-47: replaces blocked_renewals_ops (0195) with an optional close-order argument; it still only reads the paid-to date beside a blocked renewal, in a read-only, worker-only function. It writes no plan field.',
+  },
   'packages/db/migrations/0181_sweep_trial_candidates.sql': {
     role: 'migration',
     why: 'trial-notice candidate function reads the date (applied; immutable).',
