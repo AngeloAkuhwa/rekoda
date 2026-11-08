@@ -6,8 +6,8 @@
 --   provider_settled_at  when Paystack confirmed the money settled. Nullable, and nothing
 --                        writes it yet: Rekoda has no settlement feed for its own platform
 --                        account, and a time is only recorded from verified evidence.
---   units_credited_at    when Rekoda committed the units a pack bought: the database time of
---                        the transaction that credited them, set in that transaction. A plan
+--   units_credited_at    when Rekoda credited the units a pack bought: the database clock at the
+--                        credit statement, set in the transaction that credited them. A plan
 --                        charge credits no units and keeps it null.
 --
 -- `paid_at` keeps its meaning (when Rekoda recorded the payment) and `payments.settled_at`

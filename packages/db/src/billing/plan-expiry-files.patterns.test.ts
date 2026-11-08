@@ -188,3 +188,18 @@ describe('array-form builder inserts (review of a1eeef8)', () => {
     );
   });
 });
+
+describe('equality predicates are reads, not assignments (Qodo on 73cc919)', () => {
+  it('does not count a WHERE or AND equality on either column', () => {
+    expect(
+      countAssignments(
+        "UPDATE businesses SET name = $1 WHERE plan = 'chat' AND plan_expires_at = $2",
+      ),
+    ).toEqual({ plan: 0, expiry: 0, inserts: 0 });
+    expect(
+      countAssignments(
+        "UPDATE businesses SET plan = $1 WHERE plan_expires_at = $2 AND plan = 'trial'",
+      ),
+    ).toEqual({ plan: 1, expiry: 0, inserts: 0 });
+  });
+});

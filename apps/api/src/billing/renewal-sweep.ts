@@ -57,6 +57,11 @@ export async function sweepRenewals(
 ): Promise<RenewalSweepResult> {
   const result: RenewalSweepResult = { raised: 0, skipped: 0 };
 
+  /* OWN-70: once the gate is open (the §47 confirmation recorded, or a usable key set), a renewal
+   * stamped blocked can be paid like any other, so its block is closed here, audited, and the
+   * alert clears without an operator closing each one by hand. */
+  if (chargeGate(deps.config).ok) await closeBlocksTheGateNoLongerHolds(deps);
+
   /* Raising a charge starts the grace clock and takes the row OUT of the due
    * set, so repeating until a short page drains everything due rather than
    * capping the hour at one bite. */
@@ -224,4 +229,31 @@ export async function sweepRenewals(
   }
 
   return result;
+}
+
+async function closeBlocksTheGateNoLongerHolds(deps: RenewalSweepDeps): Promise<void> {
+  for (let page = 0; page < 20; page += 1) {
+    const open = await subscriptionsRepo.blockedRenewals(deps.workerDb, 200);
+    if (open.length === 0) return;
+    let closed = 0;
+    for (const blocked of open) {
+      try {
+        const done = await withBusiness(deps.appDb, blocked.businessId, (tx) =>
+          subscriptionsRepo.resolveBlockedRenewal(
+            tx,
+            blocked.businessId,
+            blocked.reference,
+            'the payment gate is open: the renewal can now be paid',
+            'system:gate_open',
+          ),
+        );
+        if (done) closed += 1;
+      } catch (error) {
+        log.warn(
+          `business ${blocked.businessId}: blocked renewal not closed: ${redactForLog(String(error))}`,
+        );
+      }
+    }
+    if (closed === 0) return;
+  }
 }

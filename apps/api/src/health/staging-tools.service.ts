@@ -96,7 +96,7 @@ export class StagingToolsService {
     await this.assertEnabled();
     const revertId = await this.inTestBusiness(businessId, async (tx) => {
       const action = await stagingToolsRepo.actionById(tx, businessId, actionId);
-      if (!action || action.action !== 'move_date' || !action.field || !action.before) {
+      if (!action || action.action !== 'move_date' || !action.field) {
         throw new StagingRefused('no_action', 'no date move with that id for this business');
       }
       return stagingToolsRepo.moveDate(tx, {

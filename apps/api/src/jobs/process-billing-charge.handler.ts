@@ -335,8 +335,27 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
  */
 export function instantOf(iso: string | null | undefined): Date | null {
   if (typeof iso !== 'string') return null;
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i.test(iso))
+  const m =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|([+-])(\d{2}):?(\d{2}))$/i.exec(
+      iso,
+    );
+  if (!m) return null;
+  const [year, month, day, hour, minute, second] = [m[1], m[2], m[3], m[4], m[5], m[6] ?? '0'].map(
+    Number,
+  ) as [number, number, number, number, number, number];
+  /* Every component must be a real calendar value: Date would silently roll 30 February into March. */
+  const civil = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  if (
+    civil.getUTCFullYear() !== year ||
+    civil.getUTCMonth() !== month - 1 ||
+    civil.getUTCDate() !== day ||
+    civil.getUTCHours() !== hour ||
+    civil.getUTCMinutes() !== minute ||
+    civil.getUTCSeconds() !== second
+  ) {
     return null;
+  }
+  if (m[8] !== undefined && (Number(m[9]) > 14 || Number(m[10]) > 59)) return null;
   const at = new Date(iso);
   return Number.isNaN(at.getTime()) ? null : at;
 }

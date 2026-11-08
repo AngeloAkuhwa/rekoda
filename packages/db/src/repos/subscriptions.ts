@@ -668,8 +668,9 @@ export async function settleCharge(
 /**
  * OD-40: record that a paid pack's units were credited, in the transaction that credited them.
  *
- * The time is the database's `now()`, the start of THIS transaction, so it is Rekoda's commit
- * time for the credit and never a provider time. Written once: a charge that already carries it,
+ * The time is the database clock when this statement runs (`clock_timestamp()`), right after the
+ * credit in the same transaction: Rekoda's own time for the credit, never a provider time, and not
+ * the transaction's start (which precedes the provider verification the job waited on). Written once: a charge that already carries it,
  * or one that is not paid, is left alone and the call answers false.
  */
 export async function markUnitsCredited(
@@ -678,7 +679,7 @@ export async function markUnitsCredited(
   reference: string,
 ): Promise<boolean> {
   const rows = await tx.execute<{ id: string }>(sql`
-    UPDATE subscription_charges SET units_credited_at = now(), updated_at = now()
+    UPDATE subscription_charges SET units_credited_at = clock_timestamp(), updated_at = now()
     WHERE business_id = ${businessId}::uuid AND reference = ${reference}
       AND status = 'paid' AND units_credited_at IS NULL
     RETURNING id
@@ -2394,6 +2395,7 @@ export async function resolveBlockedRenewal(
         blocked_resolution = ${resolution}, updated_at = now()
     WHERE business_id = ${businessId}::uuid AND reference = ${reference}
       AND blocked_at IS NOT NULL AND blocked_resolved_at IS NULL
+      AND status = 'pending' AND superseded_at IS NULL
     RETURNING id
   `);
   if ([...rows].length !== 1) return false;

@@ -226,6 +226,54 @@ describe('OWN-70: what happens to a blocked renewal afterwards', () => {
     expect(await blockedAlert()).toBeUndefined();
   });
 
+  it('the next sweep after the gate opens closes the block itself, audited, and the alert clears', async () => {
+    const businessId = await dueBusiness();
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
+    expect(await blockedAlert()).toBeDefined();
+    const [charge] = await chargesOf(businessId);
+
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE, true) });
+
+    expect(await subscriptionsRepo.blockedRenewals(workerDb)).toEqual([]);
+    expect(await blockedAlert()).toBeUndefined();
+    expect((await chargesOf(businessId))[0]?.status).toBe('pending');
+    const audit = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ action: string; actor: string }>(sql`
+        SELECT action, actor FROM audit_events WHERE entity = 'subscription_charge'
+          AND entity_id = ${charge!.reference} ORDER BY created_at`),
+    );
+    expect([...audit]).toEqual([
+      { action: 'renewal_blocked', actor: 'system:renewal_sweep' },
+      { action: 'renewal_block_resolved', actor: 'system:gate_open' },
+    ]);
+  });
+
+  it('a renewal that was paid meanwhile cannot be given a block resolution', async () => {
+    const businessId = await dueBusiness();
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
+    const [charge] = await chargesOf(businessId);
+    await withBusiness(db, businessId, (tx) =>
+      applySettledCharge(tx, {
+        businessId,
+        reference: charge!.reference,
+        providerReference: 'ps_paid_meanwhile',
+        when: new Date(),
+        config: gated(LIVE, true),
+      }),
+    );
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        subscriptionsRepo.resolveBlockedRenewal(
+          tx,
+          businessId,
+          charge!.reference,
+          'too late to matter',
+          'operator:alice',
+        ),
+      ),
+    ).toBe(false);
+  });
+
   it('an operator closes it with a resolution, once; the charge and the grace clock are untouched', async () => {
     const businessId = await dueBusiness();
     await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });

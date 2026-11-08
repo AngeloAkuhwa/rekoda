@@ -14,8 +14,7 @@ As built, against this plan:
 Known limits, recorded on purpose after the independent review:
 
 - Payment and billing jobs that died before 0194 have no record, so the recovery routes cannot reach them; an operator finds them as today, through the dead counts and the flagged-event list.
-- A renewal stamped blocked stays listed, and alerting, after the gate opens (§47 confirmed or a key set) until it is paid, retired or resolved by an operator.
-- A staging move of a date that was null cannot be reverted through the API, because a revert needs a value; trial and paid dates are never null in practice.
+- A renewal stamped blocked is closed by the next renewal sweep once the gate opens (`system:gate_open`, audited).
 
 The original plan follows.
 Owner baseline: the 7 Nov 2026 PR A/PR B brief. It supersedes revision 3 where they differ (OD-40, OWN-70, OD-37 and G-119 are now approved as below). Migrations: next free numbers after PR A (0191 and 0192 used by PR A), the brief's recorded range 0193 to 0196; numbers are confirmed against `packages/db/migrations` when PR B starts.

@@ -76,7 +76,8 @@ export async function moveDate(
     businessId: string;
     field: StagingDateField;
     expected: Date | null;
-    to: Date;
+    /** Null only for a revert restoring a date that was unset. */
+    to: Date | null;
     operator: string;
     reason: string;
     reverts?: string;
@@ -86,7 +87,7 @@ export async function moveDate(
     SELECT staging_move_date(
       ${input.businessId}::uuid, ${input.field},
       ${input.expected ? input.expected.toISOString() : null}::timestamptz,
-      ${input.to.toISOString()}::timestamptz,
+      ${input.to ? input.to.toISOString() : null}::timestamptz,
       ${input.operator}, ${input.reason}, ${input.reverts ?? null}::uuid) AS id`);
   return [...rows][0]!.id;
 }

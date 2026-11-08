@@ -244,6 +244,28 @@ describe('OWN-77: on a staging database', () => {
     expect(log.filter((a) => a.action === 'revert_date')).toHaveLength(1);
   });
 
+  it('reverts a move of a date that was unset back to unset', async () => {
+    const businessId = await seedBusiness();
+    await designate(businessId);
+    await ownerDb.execute(
+      sql`UPDATE businesses SET plan_expires_at = NULL WHERE id = ${businessId}::uuid`,
+    );
+    const to = new Date(Date.now() + DAY);
+    const moved = await move(businessId, { expected: null, to });
+    await withBusiness(appDb, businessId, (tx) =>
+      stagingToolsRepo.moveDate(tx, {
+        businessId,
+        field: 'trial_end',
+        expected: to,
+        to: null,
+        operator: OPERATOR,
+        reason: 'cleanup',
+        reverts: moved,
+      }),
+    );
+    expect((await current(businessId))?.value).toBeNull();
+  });
+
   it('another business cannot move this business’s dates', async () => {
     const a = await seedBusiness();
     const b = await seedBusiness();
