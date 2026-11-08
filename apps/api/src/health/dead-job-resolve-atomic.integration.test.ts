@@ -133,9 +133,15 @@ describe('resolving a dead job is one transaction', () => {
       CREATE TRIGGER refuse_event_close BEFORE UPDATE ON external_events
       FOR EACH ROW WHEN (NEW.resolved_at IS NOT NULL) EXECUTE FUNCTION refuse_event_close()`);
 
-    await expect(
-      controller.resolve(asOperator, jobId, { resolution: 'settled by hand' }),
-    ).rejects.toThrow(/event write refused/);
+    // Drizzle wraps the driver error ("Failed query: ..."); the trigger's
+    // message is on the cause.
+    const failure = await controller
+      .resolve(asOperator, jobId, { resolution: 'settled by hand' })
+      .then(
+        () => undefined,
+        (error: unknown) => error as { message?: string; cause?: { message?: string } },
+      );
+    expect(`${failure?.message}\n${failure?.cause?.message}`).toMatch(/event write refused/);
 
     expect(await state(businessId, jobId, eventId)).toEqual({
       record: 'open',
