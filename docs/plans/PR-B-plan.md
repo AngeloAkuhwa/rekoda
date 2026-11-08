@@ -57,3 +57,11 @@ Existing (PR #418): `chargeGate` in `apps/api/src/billing/paystack-key.ts` refus
 ## Exclusions
 
 No live charges or renewals, no production deploy, no change to the accepted #428 ingress decisions, no automatic settlement replay, no billing events in merchant books.
+
+## Object-level authorisation (IDOR) review, 8 Nov 2026
+
+Owner requirement: knowing or guessing an identifier never grants access. Reviewed for PR B: the operator dead-job routes (`recover`, `resolve`), the blocked-renewal and generic exception resolves, the operator work lists (OD-47), the staging tools (`designate`, `dates`, `faults`, `revert`, `actions`), and the business-facing payment record, billing overview and payment-exception routes. Findings: no cross-business or privilege-escalation path. Every operator action derives the business from the record it names (never from a body or header), re-reads the event under that business's pin, and conditions the write on the record's business and state.
+
+Tests (`apps/api/src/health/ops-object-authorisation.integration.test.ts` and `-staging`, harness `ops-idor-harness.ts`), over real HTTP with scoped operator tokens and business sessions, each refusal checked against a before and after snapshot of jobs, dead-job records, audit, events, charges, exceptions, staging actions and plan dates: no credential, a business session and a forged token are refused on every operator route; `ops:read` cannot recover, resolve or use staging; `ops:payment` cannot use staging and `ops:staging` cannot recover or resolve; a smuggled business id, role or scope in a body grants nothing; business A cannot read B's payment record (same 404 as a missing reference), see B's dead job or resolve B's payment exception; an unknown job id, a job naming another business's event, an already closed job and an event behind an open dead job are refused without side effects; a blocked-renewal resolve closes only the named renewal; staging refuses without the database marker, and designating A gives no power over B (dates, faults, reverts, actions list).
+
+Not covered here (existing tests or out of PR B's surface): other business-facing id routes (reminders, API keys, webhooks, catalogue, reports) were not re-audited in this pass. Mutation testing of the guards was not run.
