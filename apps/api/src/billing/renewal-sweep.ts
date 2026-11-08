@@ -43,6 +43,8 @@ export interface RenewalSweepDeps {
   config: PlanTermsConfig & { paystackSecretKey: string; paystackPlatformConfirmed: boolean };
   /** Blocked renewals listed per page when closing them (default 200; a test sets it small). */
   blockPageSize?: number;
+  /** Pages listed per closing pass (default 20; a test lowers it to simulate an interrupted pass). */
+  maxBlockPages?: number;
 }
 
 export interface RenewalSweepResult {
@@ -58,19 +60,6 @@ export async function sweepRenewals(
   now: Date = new Date(),
 ): Promise<RenewalSweepResult> {
   const result: RenewalSweepResult = { raised: 0, skipped: 0 };
-
-  /* OWN-70: once the gate is open (the §47 confirmation recorded, or a usable key set), a renewal
-   * stamped blocked can be paid like any other, so its block is closed here, audited, and the
-   * alert clears without an operator closing each one by hand. */
-  if (chargeGate(deps.config).ok) {
-    /* Housekeeping only: a failing listing must never stop the renewals that are due from being
-     * raised. It is retried by the next pass. */
-    try {
-      await closeBlocksTheGateNoLongerHolds(deps, deps.blockPageSize);
-    } catch (error) {
-      log.warn(`blocked renewals could not be listed for closing: ${redactForLog(String(error))}`);
-    }
-  }
 
   /* Raising a charge starts the grace clock and takes the row OUT of the due
    * set, so repeating until a short page drains everything due rather than
@@ -238,22 +227,52 @@ export async function sweepRenewals(
     if (page.length < PAGE || due.length === 0 || result.raised + result.skipped === before) break;
   }
 
+  /* OWN-70: once the gate is open (the §47 confirmation recorded, or a usable key set), a renewal
+   * stamped blocked can be paid like any other, so its block is closed here, audited, and the
+   * alert clears without an operator closing each one by hand. It runs AFTER the due renewals have
+   * been raised: housekeeping, however long a pass of failing blocks takes, never delays a renewal.
+   * A failing listing is logged and retried by the next pass. */
+  if (chargeGate(deps.config).ok) {
+    try {
+      await closeBlocksTheGateNoLongerHolds(deps, deps.blockPageSize, deps.maxBlockPages);
+    } catch (error) {
+      log.warn(`blocked renewals could not be listed for closing: ${redactForLog(String(error))}`);
+    }
+  }
+
   return result;
 }
 
-/** Blocks listed per page when closing them after the gate opens. */
+/** Blocks listed per page, and pages per pass, when closing them after the gate opens. */
 const BLOCK_PAGE = 200;
+const BLOCK_PAGES = 20;
 
+/**
+ * Close the blocks the open gate no longer holds, bounded per pass.
+ *
+ * The cursor is persisted on each block (migration 0198, `blocked_close_failed_at`): candidates come
+ * least-recently-attempted first and only those not attempted since this pass began. A block whose
+ * close fails is stamped, drops behind every block not yet tried, and is not retried in this pass,
+ * so a block that fails persistently cannot keep later blocks waiting: the next pass reaches them
+ * first, however many fail. A restart loses nothing (the order is data); two sweeps at once may try
+ * the same block, and the close is conditional on the block still being open.
+ */
 async function closeBlocksTheGateNoLongerHolds(
   deps: RenewalSweepDeps,
   pageSize = BLOCK_PAGE,
+  maxPages = BLOCK_PAGES,
 ): Promise<void> {
-  /* A block that cannot be closed stays on the list, so each page skips the ones this pass has
-   * already failed on: one persistent failure (or a full page of them) must not keep every later
-   * block open and counted. */
-  let failed = 0;
-  for (let page = 0; page < 20; page += 1) {
-    const open = await subscriptionsRepo.blockedRenewals(deps.workerDb, pageSize, failed);
+  const passStart = await subscriptionsRepo.databaseNow(deps.workerDb);
+  /* A failed block that also could not be stamped stays at the head of the list, so it is skipped by
+   * position for the rest of this pass (the stamp is the normal way past it). */
+  let unstamped = 0;
+  for (let page = 0; page < maxPages; page += 1) {
+    const open = await subscriptionsRepo.blockedRenewals(
+      deps.workerDb,
+      pageSize,
+      unstamped,
+      passStart,
+    );
     if (open.length === 0) return;
     for (const blocked of open) {
       try {
@@ -268,10 +287,16 @@ async function closeBlocksTheGateNoLongerHolds(
           ),
         );
       } catch (error) {
-        failed += 1;
         log.warn(
           `business ${blocked.businessId}: blocked renewal not closed: ${redactForLog(String(error))}`,
         );
+        try {
+          await withBusiness(deps.appDb, blocked.businessId, (tx) =>
+            subscriptionsRepo.noteBlockCloseFailed(tx, blocked.businessId, blocked.reference),
+          );
+        } catch {
+          unstamped += 1;
+        }
       }
     }
     if (open.length < pageSize) return;

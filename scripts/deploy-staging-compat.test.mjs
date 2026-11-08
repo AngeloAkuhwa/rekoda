@@ -6,7 +6,7 @@
  * `node --test scripts/deploy-staging-compat.test.mjs` (CI does).
  */
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -86,9 +86,10 @@ function host(extraTags) {
     'docker',
     `echo "$*" >> "${fake}/docker.log"
 case "$*" in
+  *"stop api worker"*) [ -e "${fake}/stop-fails" ] && exit 1; [ -e "${fake}/hang-stop" ] && sleep 60 ;;
   *"ps --status running --services"*) [ -e "${fake}/ps-fails" ] && exit 1; cat "${fake}/running" 2>/dev/null ;;
   *"info --format"*) echo "${fake}" ;;
-  *"run --rm -T migrate"*) [ -e "${fake}/fail-migrate" ] && exit 1 ;;
+  *"run --rm -T migrate"*) [ -e "${fake}/hang-migrate" ] && sleep 60; [ -e "${fake}/fail-migrate" ] && exit 1 ;;
   *" up "*) [ -e "${fake}/fail-up" ] && exit 1; cp "${fake}/next-health.json" "${fake}/health.json" ;;
   *network\\ inspect*) echo '172.30.10.1 false' ;;
 esac
@@ -107,12 +108,34 @@ exit 0`,
       encoding: 'utf8',
       env: { ...process.env, PATH: `${fake}:${process.env.PATH}` },
     });
+  /** The script as a process GROUP that a test can terminate part-way, as a cancelled workflow or a
+   * dropped ssh session does: the signal reaches the script and whatever it is waiting on. */
+  const runInterrupted = async (waitFor, signal = 'SIGTERM') => {
+    const child = spawn('bash', [script, next], {
+      cwd: dir,
+      detached: true,
+      env: { ...process.env, PATH: `${fake}:${process.env.PATH}` },
+    });
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+    const closed = new Promise((resolve) =>
+      child.on('close', (code, sig) => resolve({ code, sig })),
+    );
+    const deadline = Date.now() + 20_000;
+    while (!calls().some((c) => c.includes(waitFor))) {
+      assert.ok(Date.now() < deadline, `never reached: ${waitFor}\n${stderr}`);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    process.kill(-child.pid, signal);
+    const { code, sig } = await closed;
+    return { code, sig, stderr };
+  };
   const calls = () =>
     existsSync(join(fake, 'docker.log'))
       ? readFileSync(join(fake, 'docker.log'), 'utf8').split('\n').filter(Boolean)
       : [];
   const at = (needle) => calls().findIndex((c) => c.includes(needle));
-  return { fake, run, calls, at };
+  return { fake, run, runInterrupted, calls, at };
 }
 
 test('a release carrying 0196 stops the api and worker, proves it, then migrates, then starts', () => {
@@ -201,4 +224,59 @@ test('a failure after 0196 is applied never advises restarting the previous rele
   assert.match(r.stderr, /APPLIED, so the previous release .* is NOT safe to restart/);
   assert.match(r.stderr, /Fix forward/);
   assert.doesNotMatch(r.stderr, /git checkout [0-9a-f]{40}/);
+});
+
+test('a failed stop never lets migration run, and the script does not assume the services stopped', () => {
+  const h = host([BREAKING]);
+  writeFileSync(join(h.fake, 'stop-fails'), '');
+  // `ps` reports nothing running, so only the failed stop itself can keep migrate from running: a
+  // stop that failed is not trusted just because a later listing looks empty.
+  const r = h.run();
+  assert.notEqual(r.status, 0);
+  assert.ok(h.at('stop api worker') >= 0);
+  assert.equal(h.at('run --rm -T migrate'), -1, 'migrate must not run after a failed stop');
+  assert.equal(h.at(' up '), -1, 'the new release must not start after a failed stop');
+  assert.match(r.stderr, /BEFORE migrate/);
+  assert.match(r.stderr, /stopped state .*unverified/i);
+  // Nothing was migrated: it must not claim the guard is applied or that fix-forward is the only way.
+  assert.doesNotMatch(r.stderr, /APPLIED, so the previous release/);
+  assert.doesNotMatch(r.stderr, /MAY already be applied/);
+});
+
+test('SIGTERM during migrate: 0196 may be applied, so no rollback is offered and fix-forward is stated', async () => {
+  const h = host([BREAKING]);
+  writeFileSync(join(h.fake, 'hang-migrate'), '');
+  const { code, stderr } = await h.runInterrupted('run --rm -T migrate');
+  assert.notEqual(code, 0, 'an interrupted deploy must not look successful');
+  assert.match(stderr, /MAY already be applied/);
+  assert.match(stderr, /api and worker were stopped for 0196_plan_fields_guard/);
+  assert.match(stderr, /Fix forward/);
+  assert.match(stderr, /pg_trigger/);
+  assert.match(stderr, /must never be restarted against a database holding 0196/);
+  // The commands that restart the incompatible previous release are never printed.
+  assert.doesNotMatch(stderr, /git checkout [0-9a-f]{40}/);
+  assert.doesNotMatch(stderr, /To roll back/);
+  assert.doesNotMatch(stderr, /dc start api worker.*safe/);
+  assert.equal(h.at(' up '), -1, 'the new release must not start after an interrupted migrate');
+});
+
+test('SIGHUP during migrate (a dropped ssh session) is treated the same way', async () => {
+  const h = host([BREAKING]);
+  writeFileSync(join(h.fake, 'hang-migrate'), '');
+  const { code, stderr } = await h.runInterrupted('run --rm -T migrate', 'SIGHUP');
+  assert.notEqual(code, 0);
+  assert.match(stderr, /MAY already be applied/);
+  assert.doesNotMatch(stderr, /git checkout [0-9a-f]{40}/);
+});
+
+test('SIGTERM while the services are being stopped: migrate is never entered and the state is unverified', async () => {
+  const h = host([BREAKING]);
+  writeFileSync(join(h.fake, 'hang-stop'), '');
+  const { code, stderr } = await h.runInterrupted('stop api worker');
+  assert.notEqual(code, 0);
+  assert.equal(h.at('run --rm -T migrate'), -1, 'migrate must not run');
+  assert.match(stderr, /BEFORE migrate/);
+  assert.match(stderr, /stopped state .*unverified/i);
+  assert.match(stderr, /Migrate was never entered/);
+  assert.doesNotMatch(stderr, /MAY already be applied/);
 });

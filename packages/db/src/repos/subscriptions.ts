@@ -2347,8 +2347,14 @@ const OPEN_BLOCKED = sql`c.blocked_at IS NOT NULL AND c.blocked_resolved_at IS N
 export async function blockedRenewals(
   db: Db,
   limit = 50,
-  /** Rows to pass over (a caller skipping ones it could not close). */
+  /** Rows to pass over (a caller skipping ones it could not close and could not stamp). */
   offset = 0,
+  /**
+   * The closing pass's own start time. When given, the list is the close order: rows whose last
+   * failed close is NULL or before this time, never-attempted first and then the longest-failed
+   * (migration 0198). Omitted, it is the operator order, oldest block first.
+   */
+  notAttemptedSince: Date | null = null,
 ): Promise<BlockedRenewalRow[]> {
   const rows = await db.execute<{
     reference: string;
@@ -2359,7 +2365,9 @@ export async function blockedRenewals(
     blocked_at: string;
     current_plan: string;
     current_renews_at: string | null;
-  }>(sql`SELECT * FROM blocked_renewals_ops(${limit}, ${offset})`);
+  }>(
+    sql`SELECT * FROM blocked_renewals_ops(${limit}, ${offset}, ${notAttemptedSince?.toISOString() ?? null}::timestamptz)`,
+  );
   return [...rows].map((r) => ({
     reference: r.reference,
     businessId: r.business_id,
@@ -2370,6 +2378,30 @@ export async function blockedRenewals(
     currentPlan: r.current_plan,
     currentRenewsAt: at(r.current_renews_at),
   }));
+}
+
+/**
+ * Record that closing this block failed, so the closing pass tries every other block first
+ * (migration 0198). Only an open block is stamped. Returns whether a row was stamped.
+ */
+export async function noteBlockCloseFailed(
+  tx: TenantDb,
+  businessId: string,
+  reference: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE subscription_charges SET blocked_close_failed_at = now()
+    WHERE business_id = ${businessId}::uuid AND reference = ${reference}
+      AND blocked_at IS NOT NULL AND blocked_resolved_at IS NULL
+    RETURNING id
+  `);
+  return [...rows].length === 1;
+}
+
+/** The database's own clock, for a pass that must compare against rows it stamps. */
+export async function databaseNow(db: Db): Promise<Date> {
+  const rows = await db.execute<{ now: string | Date }>(sql`SELECT clock_timestamp() AS now`);
+  return new Date([...rows][0]!.now);
 }
 
 /** How many blocked renewals are open: an approved operational count for the alert (OWN-70). */

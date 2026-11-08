@@ -1387,6 +1387,13 @@
       "when": 1794657600000,
       "tag": "0197_staging_test_business_tools",
       "breakpoints": true
+    },
+    {
+      "idx": 198,
+      "version": "7",
+      "when": 1794744000000,
+      "tag": "0198_blocked_renewal_close_order",
+      "breakpoints": true
     }
   ]
 }

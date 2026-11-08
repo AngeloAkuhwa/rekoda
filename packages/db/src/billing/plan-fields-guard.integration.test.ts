@@ -330,3 +330,58 @@ describe('OD-37: the boundary itself', () => {
     });
   });
 });
+
+/**
+ * What OD-37 is, and is not (PR B review, security finding on `subscription_write_plan`).
+ *
+ * The guard is accident prevention: it stops ordinary application code, and a later contributor's
+ * stray UPDATE, from writing the two fields outside the two reviewed writers (the database half of
+ * the G-62 static guard). It is NOT authorisation against hostile SQL: whoever can run arbitrary SQL
+ * under the application credential can already set the tenant pin to any business (that is how row
+ * level security itself is keyed) and so can call the writer for it. Authorisation of a plan change
+ * is enforced in the application (an operator identity with `ops:billing`, or a Paystack-verified
+ * settlement). These tests pin exactly that boundary; a stronger one (for example a writer that
+ * demands evidence of a settled charge) is a separate owner decision, and changing it means changing
+ * these tests deliberately.
+ */
+describe('OD-37: what the guard is not', () => {
+  it('only the writer role, the application and the worker can execute the writers; PUBLIC cannot', async () => {
+    const acl = await ownerDb.execute<{ proname: string; grantee: string }>(sql`
+      SELECT p.proname,
+             CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END AS grantee
+      FROM pg_proc p, aclexplode(p.proacl) a
+      WHERE p.proname IN ('subscription_write_plan', 'subscription_expire_plan')
+        AND a.privilege_type = 'EXECUTE'
+      ORDER BY p.proname, 2`);
+    const byName = (name: string) =>
+      [...acl].filter((r) => r.proname === name).map((r) => r.grantee);
+    for (const name of ['subscription_write_plan', 'subscription_expire_plan']) {
+      expect(byName(name), name).toEqual(['rekoda_app', 'rekoda_plan_writer', 'rekoda_worker']);
+    }
+  });
+
+  it('the tenant pin is the only condition: the pinned business may be given any plan value', async () => {
+    const businessId = await seedBusiness();
+    // Known limit: the function checks the pin, not the plan value, a settled charge or a transition.
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(
+        sql`SELECT subscription_write_plan(${businessId}::uuid, 'complete', ${FUTURE.toISOString()}::timestamptz)`,
+      ),
+    );
+    expect((await planOf(businessId))?.plan).toBe('complete');
+  });
+
+  it('an application session can repoint the pin, exactly as it can for row-level security', async () => {
+    const a = await seedBusiness();
+    const b = await seedBusiness();
+    // Pinned to A, a session that sets the pin to B is B's pinned tenant from then on: the same
+    // keying that row level security rests on (invariant 3). The plan writers add nothing to it.
+    await withBusiness(appDb, a, async (tx) => {
+      await tx.execute(sql`SELECT set_config('app.business_id', ${b}, true)`);
+      await tx.execute(
+        sql`SELECT subscription_write_plan(${b}::uuid, 'chat', ${FUTURE.toISOString()}::timestamptz)`,
+      );
+    });
+    expect((await planOf(b))?.plan).toBe('chat');
+  });
+});

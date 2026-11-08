@@ -253,15 +253,23 @@ describe('OWN-70: what happens to a blocked renewal afterwards', () => {
     await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
     expect(await subscriptionsRepo.blockedRenewals(workerDb)).toHaveLength(1);
     const due = await dueBusiness();
-    // The first read on the worker credential (the block listing) fails once.
+    // The cleanup's own first read on the worker credential (its clock read or the block listing)
+    // fails once. The cleanup runs after the due renewals are raised, so those reads are not first.
     let failed = false;
+    const isCleanupRead = (query: unknown) =>
+      /blocked_renewals_ops|clock_timestamp/.test(
+        JSON.stringify((query as { queryChunks?: unknown })?.queryChunks),
+      );
     const flaky = new Proxy(workerDb, {
       get(target, prop, receiver) {
         const value = Reflect.get(target, prop, receiver);
-        if ((prop === 'execute' || prop === 'select') && typeof value === 'function' && !failed) {
-          failed = true;
-          return () => {
-            throw new Error('listing failed');
+        if (prop === 'execute' && typeof value === 'function') {
+          return (query: unknown) => {
+            if (!failed && isCleanupRead(query)) {
+              failed = true;
+              throw new Error('listing failed');
+            }
+            return (value as (q: unknown) => unknown).call(target, query);
           };
         }
         return typeof value === 'function' ? value.bind(target) : value;

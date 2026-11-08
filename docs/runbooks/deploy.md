@@ -365,8 +365,9 @@ runs against the newer schema. A migration that must itself be reverted is a
 restore from backup, and **there is no backup mechanism yet** (G-02 in
 `docs/REKODA_LAUNCH_READINESS.md`; `backup-restore.md` describes the plan).
 
-**PR B (0193 to 0197).** 0193 (charge provider times), 0194 (`dead_job_exceptions` and its
-worker-only list functions), 0195 (blocked renewals) and 0197 (staging tools) are additive; a normal
+**PR B (0193 to 0198).** 0193 (charge provider times), 0194 (`dead_job_exceptions` and its
+worker-only list functions), 0195 (blocked renewals), 0197 (staging tools) and 0198 (the blocked-renewal
+close cursor: one column and a third, optional argument on `blocked_renewals_ops`) are additive; a normal
 roll back keeps them and the older code ignores them. Their rows are payment evidence and operator
 records: never drop them by hand. Dead payment and billing jobs from before 0194 (or from an old
 worker) are enrolled by the worker's reclaim pass (`jobsRepo.enrolUnrecordedDeaths`), so none is
@@ -416,7 +417,7 @@ the plan-change smoke are manual steps on staging; run them from this list after
    production; on staging, say so and accept the risk before continuing).
 3. `dc stop api worker`, so the previous release can no longer write plan fields.
 4. Confirm both have stopped: `dc ps --status running --services` lists neither `api` nor `worker`.
-5. `dc run --rm -T migrate` (applies 0193 to 0197 in order, as the owner).
+5. `dc run --rm -T migrate` (applies 0193 to 0198 in order, as the owner).
 6. Verify it succeeded: the command exits 0 and `rekoda_migrations` (or the migrate output) lists
    `0196_plan_fields_guard`.
 7. The new release's images are already built (build before anything live changes).
