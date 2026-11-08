@@ -357,10 +357,20 @@ describe('OWN-73: an operator recovers a dead payment job', () => {
     const businessId = await seedBusiness();
     const { intent } = await seedObligation(businessId);
     const { jobId } = await deadPaymentJob(businessId, intent.reference);
+    // The pre-upgrade shape: neither the record nor the queued job carries the reference.
     const owner = createDb(urls.owner, { max: 1 });
     await owner.db.execute(
       sql`UPDATE dead_job_exceptions SET reference = NULL WHERE job_id = ${jobId}::uuid`,
     );
+    await owner.db.execute(
+      sql`UPDATE jobs SET payload = payload - 'reference' WHERE id = ${jobId}::uuid`,
+    );
+    const [queued] = [
+      ...(await owner.db.execute<{ payload: Record<string, unknown> }>(
+        sql`SELECT payload FROM jobs WHERE id = ${jobId}::uuid`,
+      )),
+    ];
+    expect(Object.keys(queued!.payload)).toEqual(['eventId']);
     await owner.close();
     expect(await controller().recover(asOperator, jobId, { reason: 'old payload' })).toEqual({
       recovering: true,

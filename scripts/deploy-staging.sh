@@ -70,6 +70,11 @@ fail() {
 #   prepared  the checkout and .env name the new release; nothing live changed
 #   live      migrate or `up` has run; the running stack may be the new one
 PHASE=checks
+# Migrations the previous release cannot run against (OD-48): the api and worker are stopped before
+# any of them is applied, and the old release is never restarted against a database that has one.
+COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard'
+BREAKING=
+BREAKING_APPLIED=false
 PREV_SHA=
 PREV_RELEASE=
 # The exit status meaning "skipped, nothing changed"; no failure may use it.
@@ -321,11 +326,19 @@ on_exit() {
       ;;
     live)
       printf '\nSTAGING DEPLOY FAILED after migrate/up started: the stack may be part-way to %s.\n' "$RELEASE" >&2
-      printf 'Inspect with `dc ps -a` and `dc logs <service>` on the host. To roll back, from %s:\n' "$REKODA_DIR" >&2
-      printf '  git checkout %s\n' "$PREV_SHA" >&2
-      printf "  sed -i 's/^REKODA_RELEASE=.*/REKODA_RELEASE=%s/' .env\n" "$PREV_RELEASE" >&2
-      printf '  dc up -d --wait --wait-timeout 300\n' >&2
-      printf '  dc exec -T caddy caddy reload --config /etc/caddy/Caddyfile\n' >&2
+      if [ "$BREAKING_APPLIED" = true ]; then
+        printf 'Migration(s) %s are APPLIED, so the previous release (%s) is NOT safe to restart against this database.\n' "$BREAKING" "$PREV_RELEASE" >&2
+        printf 'Fix forward: inspect with `dc ps -a` and `dc logs <service>`, correct the cause, then re-run the Deploy staging workflow. Escalate if the new release cannot start.\n' >&2
+      else
+        if [ -n "$BREAKING" ]; then
+          printf 'The api and worker were stopped for %s. If migrate failed, check it is NOT applied (the migrate output, or the applied-migrations table) before restarting the previous release.\n' "$BREAKING" >&2
+        fi
+        printf 'Inspect with `dc ps -a` and `dc logs <service>` on the host. To roll back, from %s:\n' "$REKODA_DIR" >&2
+        printf '  git checkout %s\n' "$PREV_SHA" >&2
+        printf "  sed -i 's/^REKODA_RELEASE=.*/REKODA_RELEASE=%s/' .env\n" "$PREV_RELEASE" >&2
+        printf '  dc up -d --wait --wait-timeout 300\n' >&2
+        printf '  dc exec -T caddy caddy reload --config /etc/caddy/Caddyfile\n' >&2
+      fi
       dc ps -a >&2 || true
       ;;
   esac
@@ -520,6 +533,11 @@ unknown=$(jq -rn --argjson run "$running_journal" --argjson new "$target_journal
   fail "the migration journals could not be compared"
 [ -z "$unknown" ] ||
   fail "commit $SHA does not carry migrations staging already runs ($unknown); roll back across a migration by hand, as the runbook's \"Roll back\" says"
+BREAKING=$(jq -rn --argjson run "$running_journal" --argjson new "$target_journal" \
+  --arg breaking "$COMPAT_BREAKING_MIGRATIONS" \
+  '($breaking | split(" ")) as $b
+   | [$new.entries[].tag] - [$run.entries[].tag] | map(select(. as $t | $b | index($t))) | join(" ")') ||
+  fail "the migration journals could not be compared for compatibility-breaking migrations"
 MIGRATIONS=$(jq '.entries | length' <<<"$target_journal")
 APPLIED=$(jq '.migrations' <<<"$running")
 [[ "$MIGRATIONS" =~ ^[0-9]+$ && "$APPLIED" =~ ^[0-9]+$ ]] ||
@@ -556,10 +574,20 @@ require_memory 'before the web build'
 dc build --build-arg REKODA_COMMIT="$SHORT" web
 log_memory 'after the web build'
 
-step 'migrate (expand-only, as the owner)'
 PHASE=live
 write_state live
+if [ -n "$BREAKING" ]; then
+  # The previous release's api and worker write columns these migrations guard; left running they
+  # would be refused mid-migration, or run against a schema they do not know. Stop them first and
+  # prove it, so the old release cannot keep writing while the new schema goes in.
+  step "stop the api and worker: this release carries a migration the running release cannot work against ($BREAKING)"
+  dc stop api worker
+  still_up=$(dc ps --status running --services | grep -Ex 'api|worker' || true)
+  [ -z "$still_up" ] || fail "the api and worker must be stopped before migrating $BREAKING, but still running: $still_up"
+fi
+step 'migrate (expand-only, as the owner)'
 dc run --rm -T migrate
+[ -z "$BREAKING" ] || BREAKING_APPLIED=true
 
 step 'start the new release'
 dc up -d --wait --wait-timeout 300

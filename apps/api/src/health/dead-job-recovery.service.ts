@@ -112,7 +112,8 @@ export class DeadJobRecoveryService {
         actor,
         resolution,
       });
-      if (done && record.eventId) await events.resolveEvent(tx, record.eventId, resolution, actor);
+      if (done && record.eventId)
+        await events.resolveEvent(tx, record.eventId, resolution, actor, 'tenant');
       return done;
     });
     if (!closed) return { outcome: 'not_open' as const };

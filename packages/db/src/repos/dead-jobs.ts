@@ -284,8 +284,8 @@ export interface DeadJobOpsRow extends DeadJobRow {
 /**
  * The operator queue: every open or recovering dead job, oldest first, with the current payment
  * and subscription state (OWN-76). A job with an event is shown on that event's flagged row; one
- * without is its own item (the caller splits them). Worker-credentialed; ids, statuses and
- * fixed text only.
+ * without is its own item (the caller splits them). Worker-credentialed through a fixed-column
+ * SECURITY DEFINER function (0194, ADR 0035 Amendment 2); ids, statuses and fixed text only.
  */
 export async function opsQueue(
   db: Db,
@@ -304,27 +304,10 @@ export async function opsQueue(
       current_plan_expires_at: string | null;
     }
   >(sql`
-    SELECT d.job_id, d.business_id, d.kind, d.event_id, d.reference, d.status,
-           d.failure_category, d.summary, d.attempts, d.death_count, d.opened_at,
-           d.last_died_at, d.recovery_requested_at, d.recovery_reference,
-           CASE WHEN d.kind = 'billing.process' THEN
-                  (SELECT c.status FROM subscription_charges c
-                    WHERE c.business_id = d.business_id
-                      AND c.reference = regexp_replace(d.reference, '-R[0-9]+$', ''))
-                ELSE
-                  (SELECT i.status FROM payment_intents i
-                    WHERE i.business_id = d.business_id AND i.reference = d.reference)
-           END AS payment_state,
-           CASE WHEN d.kind = 'billing.process' THEN b.plan END AS current_plan,
-           CASE WHEN d.kind = 'billing.process' THEN b.plan_expires_at END
-             AS current_plan_expires_at
-    FROM dead_job_exceptions d
-    JOIN businesses b ON b.id = d.business_id
-    WHERE d.status IN ('open', 'recovering')
-      ${ids ? sql`AND d.job_id = ANY(${`{${ids.join(',')}}`}::uuid[])` : sql``}
-      ${eventless ? sql`AND d.event_id IS NULL` : sql``}
-    ORDER BY d.opened_at, d.job_id
-    LIMIT ${ids ? ids.length : limit}
+    SELECT * FROM dead_job_ops_queue(
+      ${ids ? ids.length : limit},
+      ${ids ? sql`${`{${ids.join(',')}}`}::uuid[]` : sql`NULL::uuid[]`},
+      ${eventless})
   `);
   return [...rows].map((r) => ({
     ...shape(r),
@@ -337,10 +320,8 @@ export async function opsQueue(
 /** The open (or recovering) dead job bound to an event, if any. Worker-credentialed, by event id. */
 export async function openJobForEvent(db: Db, eventId: string): Promise<string | null> {
   if (!UUID.test(eventId)) return null;
-  const rows = await db.execute<{ job_id: string }>(sql`
-    SELECT job_id FROM dead_job_exceptions
-    WHERE event_id = ${eventId}::uuid AND status IN ('open', 'recovering')
-    LIMIT 1
+  const rows = await db.execute<{ job_id: string | null }>(sql`
+    SELECT dead_job_open_for_event(${eventId}::uuid, NULL) AS job_id
   `);
   return [...rows][0]?.job_id ?? null;
 }
@@ -349,7 +330,7 @@ export async function openJobForEvent(db: Db, eventId: string): Promise<string |
 export async function findForOps(db: Db, jobId: string): Promise<DeadJobRow | null> {
   if (!UUID.test(jobId)) return null;
   const rows = await db.execute<RawDeadJob>(sql`
-    SELECT ${COLUMNS} FROM dead_job_exceptions WHERE job_id = ${jobId}::uuid
+    SELECT * FROM dead_job_find_for_ops(${jobId}::uuid)
   `);
   const row = [...rows][0];
   return row ? shape(row) : null;

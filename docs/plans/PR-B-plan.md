@@ -18,6 +18,7 @@ Known limits, recorded on purpose after the independent review:
 - A dead job binds its payload's event only when the event is the same business's own (`recordDeath`).
 - Staging date moves compare to the millisecond (the API's precision), and a revert restores the exact stored value.
 - Rolling forward onto 0196: stop `api` and `worker` before `migrate` (`docs/runbooks/deploy.md`).
+- Owner rulings 8 Nov 2026: OD-47 (OWN-85) approves the operator work lists as worker-only, fixed-column `SECURITY DEFINER` functions with no cross-tenant table policy (ADR 0035 Amendment 2); OD-48 (OWN-86) accepts 0196 as a compatibility break, enforced by `deploy-staging.sh` stopping the api and worker first; there is no rollback past 0196 (fix forward or escalate).
 - A renewal stamped blocked is closed by the next renewal sweep once the gate opens (`system:gate_open`, audited).
 
 The original plan follows.

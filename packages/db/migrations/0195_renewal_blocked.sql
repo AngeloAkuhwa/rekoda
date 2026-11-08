@@ -36,3 +36,39 @@ ALTER TABLE subscription_charges
 CREATE INDEX IF NOT EXISTS subscription_charges_blocked_open_ix
   ON subscription_charges (blocked_at)
   WHERE blocked_at IS NOT NULL AND blocked_resolved_at IS NULL AND status = 'pending';
+
+-- The operator list of open blocked renewals (owner ruling OD-47, ADR 0035 Amendment 2). A
+-- fixed-column SECURITY DEFINER function, EXECUTE for rekoda_worker alone, at most 200 rows:
+-- Rekoda's own reference, the business id, the plan and amount of the renewal, the block reason
+-- and time, and the business's plan and paid-to date now. No other column of either table is
+-- reachable through it. Reading a row authorises no change: the resolve route runs under the
+-- business's own pin and its own operator scope.
+CREATE OR REPLACE FUNCTION blocked_renewals_ops(p_limit integer, p_offset integer DEFAULT 0)
+RETURNS TABLE (
+  reference text,
+  business_id uuid,
+  plan text,
+  amount_k bigint,
+  blocked_reason text,
+  blocked_at timestamptz,
+  current_plan text,
+  current_renews_at timestamptz
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+  SELECT c.reference, c.business_id, c.plan::text, c.amount_k::bigint, c.blocked_reason,
+         c.blocked_at, b.plan::text, b.plan_expires_at
+  FROM public.subscription_charges c
+  JOIN public.businesses b ON b.id = c.business_id
+  WHERE c.blocked_at IS NOT NULL AND c.blocked_resolved_at IS NULL
+    AND c.status = 'pending' AND c.superseded_at IS NULL
+  ORDER BY c.blocked_at, c.reference
+  LIMIT least(greatest(coalesce(p_limit, 50), 1), 200)
+  OFFSET greatest(coalesce(p_offset, 0), 0)
+$$;
+
+REVOKE ALL ON FUNCTION blocked_renewals_ops(integer, integer) FROM PUBLIC, rekoda_app;
+GRANT EXECUTE ON FUNCTION blocked_renewals_ops(integer, integer) TO rekoda_worker;

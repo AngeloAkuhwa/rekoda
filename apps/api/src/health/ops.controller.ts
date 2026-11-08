@@ -715,6 +715,7 @@ export class OpsController {
       id,
       input.data.resolution,
       `operator:${request.operator!.subject}`,
+      'operator',
     );
     if (!resolved) throw new NotFoundException('no open exception with that id');
     return { resolved: true as const };

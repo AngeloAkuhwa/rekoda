@@ -192,8 +192,10 @@ describe('a payment job that dies by its handler failing (markFailed)', () => {
     const fakeKey = ['sk', 'live', 'q'.repeat(24)].join('_');
     await killByHandler(2, `provider said ${fakeKey} for +2348050000001`);
 
-    const raw = await workerDb.execute<{ row: string }>(
-      sql`SELECT row_to_json(d)::text AS row FROM dead_job_exceptions d`,
+    const raw = await withBusiness(appDb, businessId, (tx) =>
+      tx.execute<{ row: string }>(
+        sql`SELECT row_to_json(d)::text AS row FROM dead_job_exceptions d`,
+      ),
     );
     expect([...raw][0]?.row).not.toMatch(/sk_live_|provider said|2348050000001|payload-detail/);
     const audit = await workerDb.execute<{ row: string }>(
@@ -313,7 +315,9 @@ describe('what a dead job leaves, by kind and by payload', () => {
     const eventId = await attributedEvent(businessId);
     await enqueue(businessId, 'payment.process', { eventId });
     await killByHandler(2);
-    expect(await events.resolveEvent(workerDb, eventId, 'not ours', 'operator:bob')).toBe(false);
+    expect(
+      await events.resolveEvent(workerDb, eventId, 'not ours', 'operator:bob', 'operator'),
+    ).toBe(false);
     expect((await eventRow(eventId))?.processed_at).toBeNull();
   });
 
@@ -325,9 +329,9 @@ describe('what a dead job leaves, by kind and by payload', () => {
     await withBusiness(appDb, businessId, (tx) =>
       tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
     );
-    expect(await events.resolveEvent(workerDb, eventId, 'settled by hand', 'operator:bob')).toBe(
-      true,
-    );
+    expect(
+      await events.resolveEvent(workerDb, eventId, 'settled by hand', 'operator:bob', 'operator'),
+    ).toBe(true);
     expect(await jobsRepo.enrolUnrecordedDeaths(workerDb)).toBe(1);
     expect((await recordsOf(businessId)).map((r) => r['event_id'])).toEqual([null]);
     expect(await merchantExceptions(businessId)).toHaveLength(0);
@@ -336,7 +340,9 @@ describe('what a dead job leaves, by kind and by payload', () => {
   it('another business resolving its own event never hides this business’s dead job from enrolment', async () => {
     const businessId = await seedBusiness();
     const foreign = await attributedEvent(await seedBusiness());
-    expect(await events.resolveEvent(workerDb, foreign, 'theirs', 'operator:bob')).toBe(true);
+    expect(await events.resolveEvent(workerDb, foreign, 'theirs', 'operator:bob', 'operator')).toBe(
+      true,
+    );
     await enqueue(businessId, 'payment.process', { eventId: foreign });
     await withBusiness(appDb, businessId, (tx) =>
       tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),

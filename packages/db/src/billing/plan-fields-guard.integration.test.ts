@@ -6,6 +6,7 @@
  * never a setting: no session or transaction setting, and no role the application holds, reaches
  * it. The table owner keeps migrations and an administrator's repair.
  */
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql, TransactionRollbackError } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
@@ -278,22 +279,54 @@ describe('OD-37: the boundary itself', () => {
     expect(role).toEqual({ rolcanlogin: false, rolbypassrls: false, members: 0 });
   });
 
-  it('the documented rollback statement is valid (run and undone inside one transaction)', async () => {
-    let dropped = false;
-    await ownerDb
-      .transaction(async (tx) => {
-        await tx.execute(sql`DROP TRIGGER businesses_plan_fields_guard ON businesses`);
-        dropped = true;
-        tx.rollback();
-      })
-      /* Only the deliberate rollback is swallowed: a failed DROP must fail the test. */
-      .catch((error: unknown) => {
-        if (!(error instanceof TransactionRollbackError)) throw error;
-      });
-    expect(dropped).toBe(true);
-    const still = await ownerDb.execute(
-      sql`SELECT 1 FROM pg_trigger WHERE tgname = 'businesses_plan_fields_guard'`,
-    );
-    expect([...still]).toHaveLength(1);
+  describe('migration 0196 refuses a credential that can become the writer role', () => {
+    /** The membership check, taken from the migration itself so the test cannot drift from it. */
+    const check = (() => {
+      const text = readFileSync(
+        new URL('../../migrations/0196_plan_fields_guard.sql', import.meta.url),
+        'utf8',
+      );
+      const block = /DO \$\$\nDECLARE\n {2}offender text;[\s\S]*?END \$\$;/.exec(text);
+      if (!block) throw new Error('0196 membership check not found');
+      return block[0];
+    })();
+
+    /** Run the check inside a transaction that is always rolled back, after `setup`. */
+    async function runCheck(setup: string | null): Promise<string | undefined> {
+      let state: string | undefined;
+      await ownerDb
+        .transaction(async (tx) => {
+          if (setup) await tx.execute(sql.raw(setup));
+          try {
+            await tx.execute(sql.raw('SAVEPOINT membership_check'));
+            await tx.execute(sql.raw(check));
+          } catch (error) {
+            const e = error as { code?: string; cause?: { code?: string } };
+            state = e.cause?.code ?? e.code ?? 'unknown';
+          }
+          tx.rollback();
+        })
+        .catch((error: unknown) => {
+          if (!(error instanceof TransactionRollbackError)) throw error;
+        });
+      return state;
+    }
+
+    it('passes when neither credential is a member', async () => {
+      expect(await runCheck(null)).toBeUndefined();
+    });
+
+    it.each(['rekoda_app', 'rekoda_worker'])('fails when %s is a direct member', async (role) => {
+      expect(await runCheck(`GRANT rekoda_plan_writer TO ${role}`)).toBe('42501');
+    });
+
+    it('fails when a credential is a member through another role', async () => {
+      expect(
+        await runCheck(
+          `CREATE ROLE plan_writer_hop NOLOGIN; GRANT rekoda_plan_writer TO plan_writer_hop;
+           GRANT plan_writer_hop TO rekoda_app`,
+        ),
+      ).toBe('42501');
+    });
   });
 });

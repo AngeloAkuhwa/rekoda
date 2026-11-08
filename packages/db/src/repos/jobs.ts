@@ -518,8 +518,7 @@ export async function reclaimStalled(db: Db, olderThanMs = 300_000): Promise<num
   /* An operator's recovery (OWN-73, OWN-76) is ONE attempt: its run already took the
    * last-attempt path, so a crash during it goes straight back to dead (reopening the record)
    * instead of taking the ordinary one-more-run crash allowance without a fresh operator ask. */
-  const exhausted = sql`(attempts > max_attempts OR (attempts >= max_attempts AND EXISTS (
-      SELECT 1 FROM dead_job_exceptions d WHERE d.job_id = jobs.id AND d.status = 'recovering')))`;
+  const exhausted = sql`(attempts > max_attempts OR (attempts >= max_attempts AND dead_job_is_recovering(jobs.id)))`;
   /* One transaction: every payment or billing job this pass sends to `dead` writes its dead-job
    * record in the same commit (OWN-73, OWN-76). `recordDeath` pins each job's own tenant. */
   return db.transaction(async (tx) => {
@@ -572,7 +571,7 @@ export async function enrolUnrecordedDeaths(db: Db, limit = 100): Promise<number
       FROM jobs j
       WHERE j.state = 'dead' AND j.kind IN ('payment.process', 'billing.process')
         AND j.business_id IS NOT NULL
-        AND NOT EXISTS (SELECT 1 FROM dead_job_exceptions d WHERE d.job_id = j.id)
+        AND NOT dead_job_has_record(j.id)
         -- Work an operator already closed by resolving its event (before 0194's guard), or whose
         -- event was processed another way (a verify or intent sweep booked it), is not reopened:
         -- no stale merchant notice and no operator item for a settled job.

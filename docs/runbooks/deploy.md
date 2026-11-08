@@ -176,7 +176,7 @@ sed -i 's/^REKODA_RELEASE=.*/REKODA_RELEASE=vX.Y.Z/' .env
 dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) api   # build BEFORE touching anything live
 dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) web   # one image at a time: never both at once
 # First PRODUCTION deploy carrying migrations 0175-0178 (G-109): run `dc stop api worker` here first
-# Every deploy carrying 0196 (PR B, plan-field trigger): run `dc stop api worker` here first
+# Every deploy carrying 0196 (PR B, plan-field trigger, OD-48): run `dc stop api worker` here first, and see "Deploy a release carrying 0196"
 dc run --rm -T migrate                                             # expand-only migrations, as the owner
 dc up -d --wait                                                    # recreates api, worker and web on the new images
 dc exec caddy caddy reload --config /etc/caddy/Caddyfile            # apply a changed Caddyfile (validated first)
@@ -362,27 +362,57 @@ runs against the newer schema. A migration that must itself be reverted is a
 restore from backup, and **there is no backup mechanism yet** (G-02 in
 `docs/REKODA_LAUNCH_READINESS.md`; `backup-restore.md` describes the plan).
 
-**PR B (0193 to 0197).** 0193 (charge provider times), 0194 (`dead_job_exceptions`), 0195
-(blocked renewals) and 0197 (staging tools) are additive; a normal roll back keeps them and the older
-code ignores them. Their rows are payment evidence and operator records: never drop them by hand.
-**Rolling forward onto 0196: stop `api` and `worker` before `migrate`.** Its trigger refuses the
-previous release's direct plan writes, so a previous-release process still running between `migrate`
-and its replacement would have a plan change, renewal or lapse refused (`42501`). That failure is
-fail-closed (nothing is written, and the new release's hourly sweeps redo the lapse), but a checkout
-or webhook settled in that window would answer an error, so the window is closed by stopping both
-first, as for G-109. Dead payment and billing jobs from before 0194 (or from an old worker) are
-enrolled by the worker's reclaim pass (`jobsRepo.enrolUnrecordedDeaths`), so none is left without its
-merchant notice and operator item.
-**0196 is the exception: rolling back past it needs one manual step first.** Its trigger refuses a
-direct write of `businesses.plan` / `plan_expires_at`, and older releases write those columns
-directly, so an older release's plan changes, renewals and lapses would fail. Before starting an
-older release (api and worker stopped), as the database owner:
-`DROP TRIGGER businesses_plan_fields_guard ON businesses;` (the functions and the
-`rekoda_plan_writer` role may stay; they are inert without it). Rolling forward again does NOT
-restore the trigger by itself (the migration ledger already records 0196, so migrate skips it):
-before starting the newer release, re-apply `packages/db/migrations/0196_plan_fields_guard.sql` by
-hand as the owner (it is idempotent). A restore needs
-the `rekoda_plan_writer` role to exist (`scripts/restore-drill.sh` creates it).
+**PR B (0193 to 0197).** 0193 (charge provider times), 0194 (`dead_job_exceptions` and its
+worker-only list functions), 0195 (blocked renewals) and 0197 (staging tools) are additive; a normal
+roll back keeps them and the older code ignores them. Their rows are payment evidence and operator
+records: never drop them by hand. Dead payment and billing jobs from before 0194 (or from an old
+worker) are enrolled by the worker's reclaim pass (`jobsRepo.enrolUnrecordedDeaths`), so none is
+left without its merchant notice and operator item.
+
+**0196 is a deliberate compatibility break (owner ruling OD-48, OWN-86): do not roll back past it.**
+Its trigger refuses a direct write of `businesses.plan` / `plan_expires_at`, and every older release
+writes those columns directly, so an older api or worker started against a database that holds 0196
+would have plan changes, renewals and lapses refused (`42501`). Therefore:
+
+- The previous release is **not** a rollback target once 0196 is applied. Do not restart it against
+  that database, and do not remove the guard (`DROP TRIGGER ...`) as a shortcut: the guard is a
+  security control, and no down migration exists or will be written.
+- A failed deploy after 0196 is **fixed forward**: correct the cause and redeploy the new release.
+- If the new release cannot be made to start safely, stop: leave api and worker stopped, record what
+  you saw, and escalate to the owner. The only database rollback is a restore from backup, and there
+  is no backup mechanism yet (G-02); a restore also needs the `rekoda_plan_writer` role
+  (`scripts/restore-drill.sh` creates it). That is an owner decision, never an operator reflex.
+- If migration 0196 itself fails, it is a single transaction and the database stays as it was. Confirm
+  that (0196 absent from the applied migrations) before restarting the previous release; if it is
+  present, treat it as applied.
+- 0196 refuses to run if `rekoda_app` or `rekoda_worker` is a member of `rekoda_plan_writer`
+  (directly or through another role): `REVOKE` the membership as the owner, then migrate again.
+
+### Deploy a release carrying 0196
+
+Production and any host not deployed by `scripts/deploy-staging.sh` follow this sequence by hand;
+`deploy-staging.sh` runs steps 3 to 5 itself (it stops the api and worker before it migrates whenever
+the commit carries 0196 and the running commit does not) and refuses to proceed if either is still
+running.
+
+1. Confirm the target host, the running release and the release to deploy.
+2. Confirm the backup and recovery arrangements you rely on exist (G-02: today there are none for
+   production; on staging, say so and accept the risk before continuing).
+3. `dc stop api worker`, so the previous release can no longer write plan fields.
+4. Confirm both have stopped: `dc ps --status running --services` lists neither `api` nor `worker`.
+5. `dc run --rm -T migrate` (applies 0193 to 0197 in order, as the owner).
+6. Verify it succeeded: the command exits 0 and `rekoda_migrations` (or the migrate output) lists
+   `0196_plan_fields_guard`.
+7. The new release's images are already built (build before anything live changes).
+8. Smoke the database: as the owner, `SELECT proowner::regrole FROM pg_proc WHERE proname IN
+('subscription_write_plan','subscription_expire_plan');` returns `rekoda_plan_writer` twice, and the
+   trigger `businesses_plan_fields_guard` exists on `businesses`.
+9. `dc up -d --wait` recreates api, worker and web on the new images (the worker and api start here).
+10. Confirm the new application can change a plan through the sanctioned functions: on staging, the
+    acceptance steps that move a plan; on production, the first renewal or lapse after the deploy is
+    watched in the logs (no `42501`).
+11. Verify `/health` names the release and `ok`, billing and subscription pages load, and the worker
+    log shows its sweeps running without errors.
 
 Migrations 0191 and 0192 are additive and keep data on a manual revert. 0191's
 `email_address_erasures` holds erasure receipts: keep the table, or export its

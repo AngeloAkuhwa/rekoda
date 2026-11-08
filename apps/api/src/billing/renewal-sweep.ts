@@ -41,6 +41,8 @@ export interface RenewalSweepDeps {
   /** The catalogue flag: a renewal is priced by the merchant's PINNED version. The Paystack key
    * and the §47 confirmation decide whether the renewal can be paid at all (OWN-70). */
   config: PlanTermsConfig & { paystackSecretKey: string; paystackPlatformConfirmed: boolean };
+  /** Blocked renewals listed per page when closing them (default 200; a test sets it small). */
+  blockPageSize?: number;
 }
 
 export interface RenewalSweepResult {
@@ -64,7 +66,7 @@ export async function sweepRenewals(
     /* Housekeeping only: a failing listing must never stop the renewals that are due from being
      * raised. It is retried by the next pass. */
     try {
-      await closeBlocksTheGateNoLongerHolds(deps);
+      await closeBlocksTheGateNoLongerHolds(deps, deps.blockPageSize);
     } catch (error) {
       log.warn(`blocked renewals could not be listed for closing: ${redactForLog(String(error))}`);
     }
@@ -239,14 +241,23 @@ export async function sweepRenewals(
   return result;
 }
 
-async function closeBlocksTheGateNoLongerHolds(deps: RenewalSweepDeps): Promise<void> {
+/** Blocks listed per page when closing them after the gate opens. */
+const BLOCK_PAGE = 200;
+
+async function closeBlocksTheGateNoLongerHolds(
+  deps: RenewalSweepDeps,
+  pageSize = BLOCK_PAGE,
+): Promise<void> {
+  /* A block that cannot be closed stays on the list, so each page skips the ones this pass has
+   * already failed on: one persistent failure (or a full page of them) must not keep every later
+   * block open and counted. */
+  let failed = 0;
   for (let page = 0; page < 20; page += 1) {
-    const open = await subscriptionsRepo.blockedRenewals(deps.workerDb, 200);
+    const open = await subscriptionsRepo.blockedRenewals(deps.workerDb, pageSize, failed);
     if (open.length === 0) return;
-    let closed = 0;
     for (const blocked of open) {
       try {
-        const done = await withBusiness(deps.appDb, blocked.businessId, (tx) =>
+        await withBusiness(deps.appDb, blocked.businessId, (tx) =>
           subscriptionsRepo.resolveBlockedRenewal(
             tx,
             blocked.businessId,
@@ -256,13 +267,13 @@ async function closeBlocksTheGateNoLongerHolds(deps: RenewalSweepDeps): Promise<
             'system',
           ),
         );
-        if (done) closed += 1;
       } catch (error) {
+        failed += 1;
         log.warn(
           `business ${blocked.businessId}: blocked renewal not closed: ${redactForLog(String(error))}`,
         );
       }
     }
-    if (closed === 0) return;
+    if (open.length < pageSize) return;
   }
 }

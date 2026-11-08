@@ -662,10 +662,7 @@ export async function exceptionQueue(q: Queryable, limit = 50): Promise<Exceptio
     (SELECT e.id, e.provider, e.event_type, e.business_id, e.error, e.signature_valid,
             e.created_at, EXTRACT(EPOCH FROM (now() - e.created_at))::int AS age_seconds,
             'flagged' AS bucket,
-            (SELECT d.job_id FROM dead_job_exceptions d
-              WHERE d.event_id = e.id AND d.business_id = e.business_id
-                AND d.status IN ('open', 'recovering')
-              ORDER BY d.opened_at DESC LIMIT 1) AS job_id
+            dead_job_open_for_event(e.id, e.business_id) AS job_id
        FROM external_events e
       WHERE e.error IS NOT NULL AND e.resolved_at IS NULL
       ORDER BY e.created_at
@@ -708,8 +705,21 @@ export async function resolveEvent(
   id: string,
   resolution: string,
   actor: string,
+  /**
+   * Who is calling, which decides how the open-dead-job guard reads the record. `operator`: the
+   * worker credential with no tenant pin (the operator route), through the worker-only function
+   * (ADR 0035 Amendment 2). `tenant`: a tenant-pinned transaction, reading the business's own
+   * record directly. Required, so an unpinned caller cannot fall back to a guard that sees nothing.
+   */
+  scope: 'operator' | 'tenant',
   now = new Date(),
 ): Promise<boolean> {
+  const noOpenDeadJob =
+    scope === 'operator'
+      ? sql`dead_job_open_for_event(external_events.id) IS NULL`
+      : sql`NOT EXISTS (SELECT 1 FROM dead_job_exceptions d
+                        WHERE d.event_id = external_events.id
+                          AND d.status IN ('open', 'recovering'))`;
   const rows = await q.execute<{ id: string }>(sql`
     UPDATE external_events
        SET resolved_at = ${now.toISOString()}::timestamptz,
@@ -720,9 +730,7 @@ export async function resolveEvent(
        AND resolved_at IS NULL
        -- In the same statement as the write: an event behind an open dead job is worked through
        -- that job (OWN-73, OWN-76), even if the job died after the caller checked.
-       AND NOT EXISTS (SELECT 1 FROM dead_job_exceptions d
-                        WHERE d.event_id = external_events.id
-                          AND d.status IN ('open', 'recovering'))
+       AND ${noOpenDeadJob}
      RETURNING id
   `);
   return [...rows].length === 1;

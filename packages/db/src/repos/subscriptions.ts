@@ -2342,8 +2342,14 @@ export interface BlockedRenewalRow {
 const OPEN_BLOCKED = sql`c.blocked_at IS NOT NULL AND c.blocked_resolved_at IS NULL
   AND c.status = 'pending' AND c.superseded_at IS NULL`;
 
-/** Open blocked renewals, oldest first, for the operator queue. Worker-credentialed. */
-export async function blockedRenewals(db: Db, limit = 50): Promise<BlockedRenewalRow[]> {
+/** Open blocked renewals, oldest first, for the operator queue. Worker-credentialed, through the
+ * fixed-column SECURITY DEFINER function `blocked_renewals_ops` (0195, ADR 0035 Amendment 2). */
+export async function blockedRenewals(
+  db: Db,
+  limit = 50,
+  /** Rows to pass over (a caller skipping ones it could not close). */
+  offset = 0,
+): Promise<BlockedRenewalRow[]> {
   const rows = await db.execute<{
     reference: string;
     business_id: string;
@@ -2353,14 +2359,7 @@ export async function blockedRenewals(db: Db, limit = 50): Promise<BlockedRenewa
     blocked_at: string;
     current_plan: string;
     current_renews_at: string | null;
-  }>(sql`
-    SELECT c.reference, c.business_id, c.plan, c.amount_k, c.blocked_reason, c.blocked_at,
-           b.plan AS current_plan, b.plan_expires_at AS current_renews_at
-    FROM subscription_charges c JOIN businesses b ON b.id = c.business_id
-    WHERE ${OPEN_BLOCKED}
-    ORDER BY c.blocked_at, c.reference
-    LIMIT ${limit}
-  `);
+  }>(sql`SELECT * FROM blocked_renewals_ops(${limit}, ${offset})`);
   return [...rows].map((r) => ({
     reference: r.reference,
     businessId: r.business_id,

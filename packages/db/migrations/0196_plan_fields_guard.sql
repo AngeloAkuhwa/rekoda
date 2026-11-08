@@ -20,16 +20,37 @@
 -- definer role (it does not bypass RLS). Audit events (`plan_changed`, `subscription_expired`) stay
 -- where they were, in the repository.
 --
--- Rollback: a normal release rollback is NOT safe across this migration: older code writes the two
--- columns directly and the trigger refuses it. Before rolling back past 0196, as the owner:
---   DROP TRIGGER businesses_plan_fields_guard ON businesses;
--- (the functions and the role may stay; they are inert without the trigger). See docs/runbooks/deploy.md.
+-- Rollback (owner ruling OD-48): none. This migration is a deliberate compatibility break: the
+-- previous release writes the two columns directly and the trigger refuses it, so the previous
+-- release must not be restarted against a database that holds 0196, and the guard is not removed as
+-- a rollback shortcut. Deploy it with the api and worker stopped, and fix forward (see
+-- docs/runbooks/deploy.md, "Deploy a release carrying 0196").
 
 DO $$ BEGIN
   CREATE ROLE rekoda_plan_writer NOLOGIN;
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- A role that already existed (made by hand) is held to the same shape: no login, no RLS bypass.
 ALTER ROLE rekoda_plan_writer NOLOGIN NOBYPASSRLS;
+
+-- The authority is the role, so nothing that connects may be able to become it. A membership of
+-- the writer role held (directly or through another role) by the application or worker credential
+-- would let a connection `SET ROLE rekoda_plan_writer` and update a pinned business's plan fields
+-- outside the two functions. Refuse to migrate rather than preserve such a membership.
+DO $$
+DECLARE
+  offender text;
+BEGIN
+  SELECT r.rolname INTO offender
+  FROM pg_roles r
+  WHERE r.rolname IN ('rekoda_app', 'rekoda_worker')
+    AND pg_has_role(r.rolname, 'rekoda_plan_writer', 'MEMBER')
+  LIMIT 1;
+  IF offender IS NOT NULL THEN
+    RAISE EXCEPTION 'migration 0196: % is a member of rekoda_plan_writer; revoke it first '
+      '(REVOKE rekoda_plan_writer FROM %)', offender, offender
+      USING ERRCODE = '42501';
+  END IF;
+END $$;
 
 -- What the writer role touches: the two guarded columns and the bookkeeping that moves with an
 -- expiry. It reads the row to check the expiry condition. Nothing else.

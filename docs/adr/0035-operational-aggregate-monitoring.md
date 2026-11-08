@@ -116,3 +116,53 @@ bypass (neither `rolsuper` nor `rolbypassrls`), discovery returns zero rows and 
 silently; rotating to another owner that keeps the bypass is safe. Any later change to the function owner or its RLS capability must
 be reviewed against this paragraph, and an alert on "reminders due but none claimed" is the
 monitoring that would catch it (not built; tracked with backlog N8).
+
+## Amendment 2 (8 Nov 2026, owner ruling OWN-85 / OD-47): operator work lists
+
+The decision and Amendment 1 stand. Rekoda's operations team must be able to find failed work across
+businesses (a dead payment or billing job, a renewal Rekoda could not take payment for) without
+knowing the business first, so the policy now distinguishes four classes. None weakens tenant
+isolation, and this amendment is not permission for any later feature to read across tenants.
+
+1. **Aggregate operational queries** (the original decision).
+2. **ID-only scheduling discovery** (Amendment 1).
+3. **Approved operator work lists** (this amendment): a narrowly scoped, read-only, cross-tenant
+   discovery of the records an operator must work.
+4. **Ordinary tenant-scoped access**: everything else, through `withBusiness()` only.
+
+**Approved operator work lists, and nothing else:**
+
+| Workflow                      | Function (migration)                                   | Returns (fixed columns)                                                                                                                                                                                              |
+| ----------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dead payment and billing jobs | `dead_job_ops_queue`, `dead_job_find_for_ops` (0194)   | job id, business id, kind, event id, Rekoda reference, status, failure category, fixed summary, attempts, death count, timestamps, recovery state; the queue also the current charge or intent status and plan state |
+| The job behind an event       | `dead_job_open_for_event` (0194)                       | a job id                                                                                                                                                                                                             |
+| The worker's own passes       | `dead_job_is_recovering`, `dead_job_has_record` (0194) | a boolean                                                                                                                                                                                                            |
+| Blocked renewals              | `blocked_renewals_ops` (0195)                          | Rekoda reference, business id, plan, amount, block reason and time, the business's current plan and paid-to date                                                                                                     |
+
+**Rules for every work list:**
+
+1. It is a dedicated `SECURITY DEFINER` function with a pinned `search_path`, `EXECUTE` granted to
+   `rekoda_worker` only (revoked from `PUBLIC` and `rekoda_app`). There is no cross-tenant RLS policy
+   on `dead_job_exceptions` or any new table, and no general-purpose cross-tenant repository method.
+2. It returns a fixed column set and is bounded (at most 200 rows). It never returns or logs a
+   customer or supplier identity, phone, message content, payload, error text, payment credential or
+   secret, and it is not a business search.
+3. It is reached only from an operator route that enforces `ops:read` (or the worker's own pass). It
+   is read-only.
+4. **Reading authorises nothing.** Every recovery, resolution or other mutation runs under
+   `withBusiness()` for the record's own business, enforces its own operator scope (`ops:payment`,
+   `ops:staging`), validates the target and its business association, and writes an audit event with
+   the operator, target, action, reason and outcome.
+5. Business-facing endpoints stay tenant-scoped. A new cross-tenant read needs its own review and
+   its own line here.
+
+Tests (`packages/db/src/ops/operator-work-lists.integration.test.ts`) pin the grants, the
+`SECURITY DEFINER` and `search_path` settings, the exact column sets, the bound, that the table
+returns nothing to an unpinned worker, and that the application role cannot call any of them.
+
+**Residual privilege (unchanged, recorded).** The worker credential still holds migration 0004's
+table grants and `ops_read_businesses`, and the older cross-tenant reads (`worker_resolve` on
+`subscription_charges` and `payment_intents`, the events exception queue) predate this amendment.
+Narrowing them remains the least-privilege follow-up. The functions read tables under
+`FORCE ROW LEVEL SECURITY` and so, like the discovery functions of Amendment 1, depend on their owner
+bypassing RLS (the migrating role); a change to that owner must be reviewed against this paragraph.

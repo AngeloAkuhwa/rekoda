@@ -25,7 +25,6 @@
     "packages/core/src/request-kind.test.ts": 1275,
     "packages/core/src/router.test.ts": 1775,
     "packages/db/src/bank/bank.integration.test.ts": 913,
-    "packages/db/src/billing/plan-expiry-files.test.ts": 650,
     "packages/db/src/channels/continuations.integration.test.ts": 1010,
     "packages/db/src/customers/customers.integration.test.ts": 763,
     "packages/db/src/documents/issue.integration.test.ts": 894,

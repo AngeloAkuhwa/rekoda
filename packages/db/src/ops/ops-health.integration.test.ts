@@ -352,9 +352,9 @@ describe('the exception queue an operator works', () => {
     const flagged = await record('evt.worked');
     await events.markProcessed(workerDb, flagged, 'foreign_reference');
 
-    expect(await events.resolveEvent(workerDb, flagged, 'not our merchant', 'operator:ada')).toBe(
-      true,
-    );
+    expect(
+      await events.resolveEvent(workerDb, flagged, 'not our merchant', 'operator:ada', 'operator'),
+    ).toBe(true);
 
     const queue = await events.exceptionQueue(workerDb);
     expect(queue.flagged).toHaveLength(0);
@@ -376,7 +376,13 @@ describe('the exception queue an operator works', () => {
 
   it('stamps a stuck event processed, so no sweep keeps picking it up', async () => {
     const stuck = await record('evt.abandoned');
-    await events.resolveEvent(workerDb, stuck, 'reference was never ours', 'operator:ada');
+    await events.resolveEvent(
+      workerDb,
+      stuck,
+      'reference was never ours',
+      'operator:ada',
+      'operator',
+    );
 
     const queue = await events.exceptionQueue(workerDb);
     expect(queue.stuck).toHaveLength(0);
@@ -388,8 +394,8 @@ describe('the exception queue an operator works', () => {
     await events.markProcessed(workerDb, flagged, 'unknown_reference');
 
     const outcomes = await Promise.all([
-      events.resolveEvent(workerDb, flagged, 'first decision', 'operator:ada'),
-      events.resolveEvent(workerDb, flagged, 'second decision', 'operator:bola'),
+      events.resolveEvent(workerDb, flagged, 'first decision', 'operator:ada', 'operator'),
+      events.resolveEvent(workerDb, flagged, 'second decision', 'operator:bola', 'operator'),
     ]);
     expect(outcomes.filter(Boolean)).toHaveLength(1);
 
@@ -407,6 +413,7 @@ describe('the exception queue an operator works', () => {
         '00000000-0000-0000-0000-000000000000',
         'nothing here',
         'operator:ada',
+        'operator',
       ),
     ).toBe(false);
   });
@@ -421,7 +428,7 @@ describe('the exception queue an operator works', () => {
     await events.markProcessed(workerDb, flagged, 'unknown_reference');
     expect((await events.eventHealth(workerDb, 'meta')).flagged).toBe(1);
 
-    await events.resolveEvent(workerDb, flagged, 'handled by hand', 'operator:ada');
+    await events.resolveEvent(workerDb, flagged, 'handled by hand', 'operator:ada', 'operator');
     expect((await events.eventHealth(workerDb, 'meta')).flagged).toBe(0);
   });
 });
