@@ -59,8 +59,13 @@ CREATE TABLE IF NOT EXISTS staging_tool_actions (
   after_value timestamptz,
   reason text NOT NULL,
   outcome text NOT NULL,
-  reverts_action_id uuid REFERENCES staging_tool_actions(id),
-  created_at timestamptz NOT NULL DEFAULT now()
+  reverts_action_id uuid,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  -- The tenant-scoped key a revert references, so a revert can only name an action of its own
+  -- business (the composite foreign key idiom of 0132 onwards).
+  CONSTRAINT staging_tool_actions_tenant_id_ux UNIQUE (business_id, id),
+  CONSTRAINT staging_tool_actions_reverts_fk
+    FOREIGN KEY (business_id, reverts_action_id) REFERENCES staging_tool_actions (business_id, id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS staging_tool_actions_one_revert_ux
   ON staging_tool_actions (reverts_action_id) WHERE reverts_action_id IS NOT NULL;
