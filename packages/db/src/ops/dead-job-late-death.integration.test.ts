@@ -1,7 +1,8 @@
 /**
- * OWN-73: a payment job that dies after an operator already resolved its event binds nothing
- * (settled work: no operator item, no merchant exception behind a closed event), and resolving an
- * event and recording a death on it serialise on the event row.
+ * OWN-73: a payment job that dies after an operator already resolved its event binds nothing to
+ * that event (the closed event is not flagged and no record points at it; the record and merchant
+ * exception are still written, unbound, as OWN-73 requires), and resolving an event and recording
+ * a death on it serialise on the event row, proved here with a held lock in both orders.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
@@ -65,8 +66,27 @@ const records = (businessId: string) =>
     tx.execute<{ event_id: string | null }>(sql`SELECT event_id FROM dead_job_exceptions`),
   ).then((rows) => [...rows]);
 
+const reconciliationsOf = (businessId: string) =>
+  withBusiness(appDb, businessId, (tx) =>
+    tx.execute<{ reason: string }>(
+      sql`SELECT reason FROM reconciliations WHERE status = 'EXCEPTION'`,
+    ),
+  ).then((rows) => [...rows]);
+
+/** Wait until some session is blocked on a lock (the other side of a held-lock interleaving). */
+async function untilALockWaitExists(): Promise<void> {
+  for (let i = 0; i < 100; i++) {
+    const waiting = await workerDb.execute(
+      sql`SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()`,
+    );
+    if ([...waiting].length > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error('nothing ever waited on a lock: the two sides are not serialising');
+}
+
 describe('a death that meets an already resolved event', () => {
-  it('records the dead job but binds no event, and flags nothing', async () => {
+  it('still records the dead job and its merchant exception, but binds no event and flags nothing', async () => {
     const { businessId, eventId } = await seed();
     expect(
       await events.resolveEvent(workerDb, eventId, 'settled by hand', 'operator:bob', 'operator'),
@@ -74,7 +94,11 @@ describe('a death that meets an already resolved event', () => {
     const job = await jobsRepo.claimNext(workerDb, 'late');
     expect((await jobsRepo.markFailed(workerDb, job!, 'boom', 0)).state).toBe('dead');
 
+    // The record exists (every dead job leaves one) and is not bound to the closed event.
     expect((await records(businessId)).map((r) => r.event_id)).toEqual([null]);
+    expect((await reconciliationsOf(businessId)).map((r) => r.reason)).toEqual([
+      'payment_processing_stopped',
+    ]);
     const [event] = await workerDb.execute<{ error: string | null }>(
       sql`SELECT error FROM external_events WHERE id = ${eventId}::uuid`,
     );
@@ -84,31 +108,47 @@ describe('a death that meets an already resolved event', () => {
 });
 
 describe('a resolve and a death on the same event serialise on the event row', () => {
-  it('whichever takes the row first wins: never an open dead job behind a resolved event', async () => {
-    for (let round = 0; round < 8; round++) {
-      await truncateAll(urls);
-      const { businessId, eventId } = await seed();
-      const job = await jobsRepo.claimNext(workerDb, `race-${round}`);
-      const [resolved, died] = await Promise.all([
-        events.resolveEvent(workerDb, eventId, 'settled by hand', 'operator:bob', 'operator'),
-        jobsRepo.markFailed(workerDb, job!, 'boom', 0),
-      ]);
-      expect(died.state).toBe('dead');
-      const eventRow = (
-        await workerDb.execute<{ resolved_at: string | null }>(
-          sql`SELECT resolved_at FROM external_events WHERE id = ${eventId}::uuid`,
-        )
-      )[0];
-      const bound = (await records(businessId)).filter((r) => r.event_id === eventId);
-      if (resolved) {
-        // The resolve won: the event is closed and no record is bound to it.
-        expect(eventRow?.resolved_at).not.toBeNull();
-        expect(bound).toEqual([]);
-      } else {
-        // The death won: the guard refused the resolve, the event stays open and bound.
-        expect(eventRow?.resolved_at).toBeNull();
-        expect(bound).toHaveLength(1);
-      }
-    }
+  it('a death already holding the event: the resolve waits, then is refused by its guard', async () => {
+    const { businessId, eventId } = await seed();
+    const job = await jobsRepo.claimNext(workerDb, 'death-first');
+    let resolve: Promise<boolean> | undefined;
+    await workerDb.transaction(async (tx) => {
+      // The death's own first steps, left uncommitted: pin, lock the event, write the record.
+      await tx.execute(sql`SELECT set_config('app.business_id', ${businessId}, true)`);
+      await tx.execute(sql`SELECT 1 FROM external_events WHERE id = ${eventId}::uuid FOR UPDATE`);
+      await tx.execute(sql`
+        INSERT INTO dead_job_exceptions (job_id, business_id, kind, event_id, summary, attempts)
+        VALUES (${job!.id}::uuid, ${businessId}::uuid, 'payment.process', ${eventId}::uuid, 'fixed', 1)`);
+      resolve = events.resolveEvent(
+        workerDb,
+        eventId,
+        'settled by hand',
+        'operator:bob',
+        'operator',
+      );
+      await untilALockWaitExists(); // the resolve is now blocked behind the death
+    });
+    expect(await resolve).toBe(false); // it saw the record the death committed
+    const [row] = await workerDb.execute<{ resolved_at: string | null }>(
+      sql`SELECT resolved_at FROM external_events WHERE id = ${eventId}::uuid`,
+    );
+    expect(row?.resolved_at).toBeNull();
+  });
+
+  it('a resolve already holding the event: the death waits, then binds nothing to it', async () => {
+    const { businessId, eventId } = await seed();
+    const job = await jobsRepo.claimNext(workerDb, 'resolve-first');
+    let death: ReturnType<typeof jobsRepo.markFailed> | undefined;
+    await workerDb.transaction(async (tx) => {
+      // The resolve's write, left uncommitted: it holds the event row.
+      await tx.execute(sql`
+        UPDATE external_events SET resolved_at = now(), resolved_by = 'operator:bob',
+               resolution = 'settled by hand', processed_at = COALESCE(processed_at, now())
+        WHERE id = ${eventId}::uuid`);
+      death = jobsRepo.markFailed(workerDb, job!, 'boom', 0);
+      await untilALockWaitExists(); // the death is now blocked behind the resolve
+    });
+    expect((await death)!.state).toBe('dead');
+    expect((await records(businessId)).map((r) => r.event_id)).toEqual([null]);
   });
 });

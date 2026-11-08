@@ -392,8 +392,10 @@ would have plan changes, renewals and lapses refused (`42501`). Therefore:
   unrecorded). A present guard means applied; 0196 is safe to re-run, so the cure is to run migrate again.
 - **By-hand fix-forward** after a failed or interrupted deploy of a release carrying 0196 (the
   automatic staging workflow refuses to run while `/health` is down, so do not wait for it): from
-  `/opt/rekoda`, whose checkout and `.env` are already at the new release, run `dc run --rm -T
-migrate`, confirm the guard exists (above), `dc up -d --wait --wait-timeout 300`, reload Caddy,
+  `/opt/rekoda`, whose checkout and `.env` are already at the new release, first `dc stop api worker`
+  and confirm `dc ps --status running --services` lists neither (a run killed before its own stop
+  may have left the previous release serving), then correct the cause of the failure, then run
+  `dc run --rm -T migrate`, confirm the guard exists (above), `dc up -d --wait --wait-timeout 300`, reload Caddy,
   check `/health` names the new release, then remove `.git/rekoda-deploy-staging.state`. Never
   `dc start api worker` or `git checkout` the previous release: the stopped containers are the old
   release.

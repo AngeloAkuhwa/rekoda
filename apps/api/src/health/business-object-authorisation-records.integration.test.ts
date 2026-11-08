@@ -226,6 +226,11 @@ describe('party statements: a foreign id reads as nothing, and the SQL itself is
     const run = (pinned: string, asBusiness: string) =>
       ownerDb.transaction(async (tx) => {
         await tx.execute(sql`SELECT set_config('app.business_id', ${pinned}, true)`);
+        // Control: this connection sees B's invoice whichever business it is pinned to.
+        const [all] = await tx.execute<{ n: number }>(
+          sql`SELECT count(*)::int AS n FROM invoices WHERE invoice_number = ${theirs.invoiceNumber}`,
+        );
+        expect(all?.n).toBeGreaterThanOrEqual(1);
         return {
           customer: await partyStatementsRepo.customerStatementFor(
             tx as never,
@@ -277,6 +282,12 @@ describe('payments lists: scoped to the pinned business in SQL as well as by RLS
     // The owner connection bypasses RLS: only the SQL predicate stands between A's pin and B's rows.
     const seen = await ownerDb.transaction(async (tx) => {
       await tx.execute(sql`SELECT set_config('app.business_id', ${a.id}, true)`);
+      // Control: this connection really does see across businesses while pinned to A, so the
+      // readers below are limited by their own SQL and not by row-level security.
+      const [all] = await tx.execute<{ n: number }>(
+        sql`SELECT count(DISTINCT business_id)::int AS n FROM reconciliations`,
+      );
+      expect(all?.n).toBeGreaterThanOrEqual(2);
       const reconciliations = await settleRepo.reconciliationsFor(tx as never, {
         status: 'EXCEPTION',
         limit: 50,

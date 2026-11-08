@@ -100,9 +100,10 @@ export async function recordDeath(
    * associate this job with that event. */
   /* The event row is locked here, before the record is written: an operator resolving the same
    * event takes the same lock first (`events.resolveEvent`), so exactly one of the two goes first.
-   * A death that finds the event already resolved binds nothing (settled work, no operator item
-   * or merchant exception behind a closed event); a resolve that finds this record committed is
-   * refused by its guard. */
+   * A death that finds the event already resolved binds NOTHING to it (the closed event is not
+   * flagged and no record points at it). The record and the merchant exception are still written,
+   * unbound, because OWN-73 says every dead job leaves both; an operator closes the unbound item
+   * with `resolve`. A resolve that finds this record committed is refused by its guard. */
   const owned = named
     ? [
         ...(await tx.execute<{ open: boolean }>(sql`

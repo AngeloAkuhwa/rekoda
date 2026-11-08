@@ -336,7 +336,7 @@ on_exit() {
       elif [ "$MIGRATE_ENTERED" = true ]; then
         printf 'The api and worker were stopped for %s and migrate did not finish. Migrations commit one file at a time, so %s MAY already be applied: no rollback commands are printed.\n' "$BREAKING" "$BREAKING" >&2
         printf 'Check the DATABASE, not only the ledger (rekoda_migrations): the guard exists if `SELECT 1 FROM pg_trigger WHERE tgname = '"'"'businesses_plan_fields_guard'"'"'` returns a row (a kill between the migration and its ledger row leaves it applied, unrecorded). Treat a present guard as applied.\n' >&2
-        printf 'Fix forward, by hand from %s (the checkout is already at the new release): `dc run --rm -T migrate` (0196 is safe to re-run), then `dc up -d --wait --wait-timeout 300`, reload Caddy, check /health, remove .git/rekoda-deploy-staging.state. The previous release (%s) must never be restarted against a database holding 0196; the workflow refuses to run while /health is down. Escalate if unsure.\n' "$REKODA_DIR" "$PREV_RELEASE" >&2
+        printf 'Fix forward, by hand from %s (the checkout is already at the new release): correct the cause first (a repeat of the same failure, such as the plan-writer membership refusal, will repeat), then `dc run --rm -T migrate` (0196 is safe to re-run), then `dc up -d --wait --wait-timeout 300`, reload Caddy, check /health, remove .git/rekoda-deploy-staging.state. The previous release (%s) must never be restarted against a database holding 0196; the workflow refuses to run while /health is down. Escalate if unsure.\n' "$REKODA_DIR" "$PREV_RELEASE" >&2
       else
         if [ -n "$BREAKING" ]; then
           printf 'The api and worker were stopped for %s. If migrate failed, check it is NOT applied in the database itself (the guard trigger `businesses_plan_fields_guard` must be absent, not only the ledger row) before restarting the previous release.\n' "$BREAKING" >&2
@@ -591,9 +591,9 @@ if [ -n "$BREAKING" ]; then
   step "stop the api and worker: this release carries a migration the running release cannot work against ($BREAKING)"
   dc stop api worker
   # A failing `ps` is not "nothing running": it is "could not tell", and migrate must not go ahead.
-  running=$(dc ps --status running --services) ||
+  running_services=$(dc ps --status running --services) ||
     fail "could not list the running services, so it cannot be proved that the api and worker stopped; not migrating $BREAKING"
-  still_up=$(grep -Ex 'api|worker' <<<"$running" || true)
+  still_up=$(grep -Ex 'api|worker' <<<"$running_services" || true)
   [ -z "$still_up" ] || fail "the api and worker must be stopped before migrating $BREAKING, but still running: $still_up"
 fi
 step 'migrate (expand-only, as the owner)'
