@@ -340,6 +340,11 @@ export default async function BillingPage({
               you pay. It is separate from your WhatsApp number.
             </p>
           )}
+          <p className="rk-fineprint">
+            Once confirmed, this is also your business email for payment reminders: customers who
+            reply to a reminder email reach you here. Email reminders are sent only after it is
+            confirmed.
+          </p>
           {email.outstandingLink?.delivery === 'uncertain' ? (
             <p className="rk-fineprint" role="status">
               We made a confirmation link on {lagosDate(email.outstandingLink.sentAt)} but could not

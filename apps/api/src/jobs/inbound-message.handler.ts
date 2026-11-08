@@ -136,6 +136,7 @@ import { eraseDataWork } from '../commands/privacy-commands.js';
 import type { MessageSender } from '../channels/sender.js';
 import type { CustomerThreadRouter } from '../channels/customer-route.service.js';
 import type { CustomerTexts } from './payment-link.handler.js';
+import type { BillingEmailService } from '../billing/billing-email.service.js';
 
 /** The MERCHANT thread identity, stated at the ingress (Appendix F.2).
  * This ingress hears the merchant talking to Rekoda; customer threads
@@ -184,6 +185,11 @@ export interface InboundMessageDeps {
   customerRoute: CustomerThreadRouter;
   /** The metered door into a customer's thread (PR-061), for X1 delivery. */
   customerTexts: CustomerTexts;
+  /**
+   * The business email's confirmation (OWN-83): "my email is X" on WhatsApp starts the same
+   * mailed, single-use link the billing page sends. It never marks an address verified.
+   */
+  businessEmail: Pick<BillingEmailService, 'requestVerification'>;
 }
 
 /**
@@ -1937,6 +1943,8 @@ async function deterministicReply(
     case 'resend':
       if (!(await mayTransact(tx, businessId, ctx.from))) return replies.viewOnlyRole();
       return resendReply(tx, businessId, ctx.eventId);
+    case 'business_email':
+      return businessEmailReply(deps, tx, businessId, ctx.from, intent.email);
     case 'upgrade': {
       // Free, and always answered: this is the one message from a merchant
       // who wants to pay us, and it must never hit a wall or a dead link.
@@ -1946,6 +1954,42 @@ async function deterministicReply(
     }
     default:
       return null;
+  }
+}
+
+/**
+ * "my email is X" (OWN-83). The owner only: the business email is where customers' replies to
+ * reminder emails go, so a helper or an accountant cannot point them elsewhere. Saving the address
+ * and mailing the link is the billing-email service's (rate limits, the address limit across
+ * businesses, an unknown send outcome); this only says what happened. The address is confirmed
+ * only when the link is opened under the owner's dashboard session. The address itself is never
+ * logged and never written to the conversation (`describeIntent`).
+ */
+async function businessEmailReply(
+  deps: InboundMessageDeps,
+  tx: TenantDb,
+  businessId: string,
+  from: string,
+  email: string,
+): Promise<Reply> {
+  if (!(await isOwner(tx, businessId, from))) return replies.businessEmailOwnerOnly();
+  const out = await deps.businessEmail.requestVerification(businessId, email);
+  switch (out.state) {
+    case 'sent':
+      return replies.businessEmailLinkSent(out.maskedEmail);
+    case 'delivery_uncertain':
+      return replies.businessEmailLinkMaybeSent(out.maskedEmail);
+    case 'already_verified':
+      return replies.businessEmailAlreadyConfirmed(out.maskedEmail);
+    case 'invalid_billing_email':
+    case 'requires_billing_email':
+      return replies.businessEmailInvalid();
+    case 'rate_limited':
+      return replies.businessEmailTryLater(Math.ceil(out.retryAfterSeconds / 60));
+    case 'unavailable':
+      return out.reason === 'address_unusable'
+        ? replies.businessEmailUndeliverable()
+        : replies.businessEmailUnavailable(out.reason);
   }
 }
 

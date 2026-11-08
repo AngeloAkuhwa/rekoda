@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import { conversationsRepo, events, jobsRepo, subscriptionsRepo } from '@rekoda/db';
+import { conversationsRepo, events, jobsRepo, remindersRepo, subscriptionsRepo } from '@rekoda/db';
 import type { JobContext, JobHandler } from './runner.js';
 
 /**
@@ -39,6 +39,12 @@ import type { JobContext, JobHandler } from './runner.js';
  * dies, `reconcileDeadReceipts` applies the same update the next time that owner writes in (an
  * owner who never writes back keeps 'sent'). A failure that arrives before the sweep
  * has recorded the wamid matches nothing and is not retried: the reminder stays 'sent'.
+ *
+ * Or a reminder-reply notice (OWN-83), sent from Rekoda's number to the owner and attributed the
+ * same way (an owner with several businesses gets no attribution, so no retry). It is marked
+ * undelivered, so the customer's next message tells the business again; the business's
+ * reply-notice lock, which the sending job holds to commit, makes a fast receipt wait for the
+ * notice's row. A dead job is applied by `reconcileDeadReceipts` as above.
  */
 export function deliveryStatusHandler(): JobHandler {
   const log = new Logger('DeliveryStatusJob');
@@ -71,6 +77,18 @@ export function deliveryStatusHandler(): JobHandler {
     );
     if (reminders > 0) {
       log.log(`a trial reminder failed after acceptance: ${reminders} marked undelivered`);
+    }
+    /* A reminder-reply notice (OWN-83) Meta accepted and then failed: due again, so the customer's
+     * next message tells the business once more. This waits for a customer job still recording
+     * that notice (its business-wide notice lock), holding the inbound lock meanwhile: bounded by
+     * that job's Meta send (rarely longer, when that job first applied a dead receipt). */
+    const replyNotices = await remindersRepo.markReminderReplyNoticeUndelivered(
+      tx,
+      businessId,
+      outboundMessageId,
+    );
+    if (replyNotices > 0) {
+      log.log('a reminder-reply notice failed after acceptance: it will be tried again');
     }
     await events.markProcessed(tx, eventId, null, businessId);
   };

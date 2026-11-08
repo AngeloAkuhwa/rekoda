@@ -40,8 +40,9 @@ import { BANK_FEED, type BankFeedPort } from '../bank/feed.port.js';
 import { sweepBankFeeds } from '../bank/feed-sync.js';
 import { sweepUnknownSenders } from '../channels/stranger-sweep.js';
 import { sweepGracePeriods } from '../billing/grace-sweep.js';
-import { sweepTrialNotices } from '../billing/trial-notice-sweep.js';
-import { EMAIL_SENDER, type EmailSender } from '../email/email.port.js';
+import { sweepTrialNotices, trialNoticeGate } from '../billing/trial-notice-sweep.js';
+import { EMAIL_SENDER, NoEmailSender, type EmailSender } from '../email/email.port.js';
+import { BillingEmailService } from '../billing/billing-email.service.js';
 import { EmailModule } from '../email/email.module.js';
 import { sweepReminderBatches } from '../reminders/reminder-batch.service.js';
 import { ReminderService } from '../reminders/reminder.service.js';
@@ -65,6 +66,7 @@ import { CustomerThreadRouter } from '../channels/customer-route.service.js';
 import { SPEECH_TO_TEXT, type SpeechToText } from '../ai/stt.js';
 import { TEXT_EXTRACTION, type TextExtraction } from '../ai/ocr.js';
 import type { MessageSender } from '../channels/sender.js';
+import { billingPageUrl } from '../channels/template-slots.js';
 import { DocumentsModule, DOCUMENT_STORAGE } from '../documents/documents.module.js';
 import type { DocumentStorage } from '../documents/storage.js';
 
@@ -84,11 +86,16 @@ import type { DocumentStorage } from '../documents/storage.js';
  */
 export interface RunnerDeps extends Omit<
   InboundMessageDeps,
-  'db' | 'customerRoute' | 'customerTexts'
+  'db' | 'customerRoute' | 'customerTexts' | 'businessEmail'
 > {
   storage: DocumentStorage;
   sender: MessageSender;
   paymentProvider: PaymentProviderPort;
+  /**
+   * Transactional email, for the business email's confirmation link (OWN-83). Absent means none
+   * is configured: "my email is X" is then answered honestly as unavailable.
+   */
+  email?: EmailSender;
 }
 
 export function buildRunner(
@@ -103,9 +110,14 @@ export function buildRunner(
    * make each test re-declare what this line derives. */
   const customerTexts = new WabaTemplateService(appDb, deps.config, deps.sender, deps.gateway);
   const customerRoute = new CustomerThreadRouter(deps.config);
+  const businessEmail = new BillingEmailService(
+    deps.config,
+    appDb,
+    deps.email ?? new NoEmailSender(),
+  );
   runner.register(
     JobKind.InboundMessage,
-    inboundMessageHandler({ ...deps, db: appDb, customerTexts, customerRoute }),
+    inboundMessageHandler({ ...deps, db: appDb, customerTexts, customerRoute, businessEmail }),
   );
   runner.register(
     JobKind.CustomerMessage,
@@ -303,6 +315,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         ocr: this.ocr,
         audioProbe: this.audioProbe,
         commandBus: this.commandBus,
+        email: this.email,
       },
       { concurrency: this.config.workerConcurrency },
     );
@@ -498,6 +511,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
               appDb: this.appDb,
               sender: this.sender,
               fxNairaPerUsd: this.config.planningFxNairaPerUsd,
+              billingUrl: billingPageUrl(this.config.webUrl),
             }),
           )
             .catch((error: unknown) => {
@@ -522,7 +536,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
               workerDb,
               appDb: this.appDb,
               sender: this.sender,
-              templateConfigured: this.config.metaTrialTemplate !== null,
+              ...trialNoticeGate(this.config),
               fxNairaPerUsd: this.config.planningFxNairaPerUsd,
             }),
           )

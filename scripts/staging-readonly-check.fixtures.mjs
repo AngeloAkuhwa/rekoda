@@ -14,10 +14,12 @@ export const SCRIPT = readFileSync(new URL('./staging-readonly-check.sh', import
 /**
  * A host checkout plus fakes. The fake `docker compose` reads all of stdin, as
  * a real `compose exec` can, and logs what it saw. `failKey` makes the
- * per-slot query for that one variable fail, as an exec that dies would.
+ * per-slot query for that one variable fail, as an exec that dies would; with `failIn` set to
+ * `api` or `worker`, only in that container.
  */
 export function host({
   failKey = '',
+  failIn = '',
   env = { META_TRIAL_TEMPLATE: 'rekoda_trial_ending' },
   workerEnv = {},
   migrations = 'applied',
@@ -120,13 +122,15 @@ ${Object.keys(images)
         fail) echo "psql: FATAL: password authentication failed for user leakyuser" >&2; exit 2 ;;
       esac
       exit 0 ;;
-    *" exec -T -e K=${failKey || '__none__'} "*) exit 1 ;;
+    *" exec -T -e K=${failKey || '__none__'} "*${failIn ? `" ${failIn} sh -c "*` : ''}) exit 1 ;;
     *" exec -T -e K="*)
       # Run the container-side snippet for real, against the fixture environment.
-      # argv: compose -f FILE exec -T -e K=NAME api sh -c SNIPPET
-      k="$7"; svc="$8"; shift 10
-      if [ "$svc" = worker ]; then env -i ${envLine(workerEnv)} "$k" sh -c "$1"
-      else env -i ${envLine(env)} "$k" sh -c "$1"; fi
+      # argv: compose -f FILE exec -T (-e NAME=VALUE)... SERVICE sh -c SNIPPET
+      shift 5; extra=()
+      while [ "$1" = -e ]; do extra+=("$2"); shift 2; done
+      svc="$1"; shift 3
+      if [ "$svc" = worker ]; then env -i ${envLine(workerEnv)} "\${extra[@]}" sh -c "$1"
+      else env -i ${envLine(env)} "\${extra[@]}" sh -c "$1"; fi
       exit $? ;;
   esac
   exit 0
@@ -203,12 +207,17 @@ export const TAGS = [
   '0189_reminder_batches',
   '0190_failed_inbound_and_failure_category',
 ];
+/** The five agreed template names (OD-41(b)), as a healthy api and worker carry them. */
 export const SLOTS = {
-  META_OTP_TEMPLATE: 'a',
-  META_BILLING_TEMPLATE: 'b',
-  META_RETENTION_TEMPLATE: 'c',
-  META_DOCUMENT_TEMPLATE: 'd',
-  META_TRIAL_TEMPLATE: 'e',
+  META_OTP_TEMPLATE: 'rekoda_login_otp',
+  META_BILLING_TEMPLATE: 'rekoda_billing_grace_notice',
+  META_RETENTION_TEMPLATE: 'rekoda_retention_notice',
+  META_DOCUMENT_TEMPLATE: 'rekoda_document_ready',
+  META_TRIAL_TEMPLATE: 'rekoda_trial_ending',
+  META_TRIAL_TEMPLATE_LOCALE: 'en',
+  REKODA_WEB_URL: 'https://staging.invalid',
+  // The reminder Reply-To (OD-42(b)); a healthy host with reminders on carries it.
+  REKODA_SUPPORT_EMAIL: 'support@staging.invalid',
 };
 /** The healthy host's .env. Not a credential: low-entropy stand-ins whose only job is to be findable if printed. */
 export const HEALTHY_DOTENV =
@@ -244,7 +253,7 @@ export const healthy = (over = {}) =>
       'migrate|exited||0',
       'edge-check|exited||0',
     ],
-    workerEnv: { REKODA_CUSTOMER_REMINDERS: '1', REKODA_EMAIL_PROVIDER: 'resend' },
+    workerEnv: { ...SLOTS, REKODA_CUSTOMER_REMINDERS: '1', REKODA_EMAIL_PROVIDER: 'resend' },
     ...over,
   });
 /** The attention section of an output; fails when the script never printed it. */

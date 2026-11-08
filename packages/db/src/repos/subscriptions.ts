@@ -1466,6 +1466,82 @@ export async function releaseBillingEmailAddress(
   await tx.execute(sql`SELECT billing_email_address_release(${requestId}::uuid, ${addressKey})`);
 }
 
+/* ── operator email-address erasure (migration 0191, OD-39) ─────────────────── */
+
+/** Why an operator erased an address: closed, so no free text can carry the address itself. */
+export type EmailErasureReason = 'erasure_request' | 'limit_cleared';
+
+/**
+ * Remove one address's rows from the cross-business confirmation counter and write the receipt
+ * (migration 0191). Takes the claim's address lock, so it never interleaves with a claim. The
+ * application role cannot read the counter or the receipts; this function is its only way in.
+ * Returns how many counter rows went (0 on a repeat).
+ */
+export async function eraseEmailAddressFromCounter(
+  q: Db | TenantDb,
+  input: {
+    addressKey: string;
+    operator: string;
+    reason: EmailErasureReason;
+    billingEmailCleared: boolean;
+  },
+): Promise<number> {
+  const rows = await q.execute<{ removed: number }>(sql`
+    SELECT email_address_erase(${input.addressKey}, ${input.operator}, ${input.reason},
+                               ${input.billingEmailCleared}) AS removed
+  `);
+  return Number([...rows][0]?.removed ?? 0);
+}
+
+/**
+ * Clear a business's billing email on an operator's erasure (OD-39), under the business row lock.
+ * The caller has opened the sealed address and found it is the one being erased. The address goes,
+ * its proof goes, and the revision moves on, which makes every link and checkout session bound to
+ * the old address stale exactly as a change of address does; open links are voided as well. The
+ * audit row says THAT it was erased and by whom, never the address. False when nothing was on file.
+ */
+export async function eraseBillingEmail(
+  tx: TenantDb,
+  businessId: string,
+  actor: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE businesses AS b
+    SET billing_email_sealed = NULL,
+        billing_email_set_at = NULL,
+        billing_email_verified_at = NULL,
+        billing_email_revision = b.billing_email_revision + 1,
+        updated_at = now()
+    WHERE b.id = ${businessId}::uuid AND b.billing_email_sealed IS NOT NULL
+    RETURNING b.id
+  `);
+  if ([...rows].length === 0) return false;
+  await tx.execute(sql`
+    UPDATE billing_email_verifications
+    SET consumed_at = clock_timestamp(), voided_at = clock_timestamp()
+    WHERE business_id = ${businessId}::uuid AND consumed_at IS NULL
+  `);
+  await tx.execute(sql`
+    INSERT INTO audit_events
+      (business_id, actor, entity, entity_id, action, new_value, source_type)
+    VALUES (${businessId}::uuid, ${actor}, 'business', ${businessId}, 'billing_email_erased',
+            ${JSON.stringify({ erased: true })}::jsonb, 'system')
+  `);
+  return true;
+}
+
+/** The sealed billing email under the business row lock, for an erasure to compare with. */
+export async function billingEmailSealedForUpdate(
+  tx: TenantDb,
+  businessId: string,
+): Promise<{ found: boolean; sealed: string | null }> {
+  const rows = await tx.execute<{ billing_email_sealed: string | null }>(sql`
+    SELECT billing_email_sealed FROM businesses WHERE id = ${businessId}::uuid FOR UPDATE
+  `);
+  const row = [...rows][0];
+  return row ? { found: true, sealed: row.billing_email_sealed } : { found: false, sealed: null };
+}
+
 /** How a link's hand-over to the email provider ended (migration 0183). */
 export type EmailSendOutcome = 'accepted' | 'uncertain';
 

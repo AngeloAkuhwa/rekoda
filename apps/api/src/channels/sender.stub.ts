@@ -41,8 +41,15 @@ export class StubSender implements MessageSender {
   /** In-window free-form sends on a merchant WABA (PR-061). */
   readonly connectionTexts: OutboundConnectionText[] = [];
   private failNext: Error | null = null;
+  /** Texts containing this are refused until reset (one message among several in a job). */
+  private failTextContaining: string | null = null;
   private failDocuments: Error | null = null;
   private failTrialNotices: Error | null = null;
+
+  /** Refuse every text containing `fragment`, until reset, leaving the job's other sends alone. */
+  failTextsContaining(fragment: string): void {
+    this.failTextContaining = fragment;
+  }
 
   /** Make the next TEXT send fail, as an outage or a revoked token would. */
   failWith(error: Error = new SendFailed('stub outage')): void {
@@ -77,6 +84,7 @@ export class StubSender implements MessageSender {
     this.connectionTexts.length = 0;
     this.media.clear();
     this.failNext = null;
+    this.failTextContaining = null;
     this.omitIdNext = false;
     this.failDocuments = null;
     this.failTrialNotices = null;
@@ -100,6 +108,9 @@ export class StubSender implements MessageSender {
   private omitIdNext = false;
 
   send(message: OutboundMessage): Promise<SendResult> {
+    if (this.failTextContaining !== null && message.text.includes(this.failTextContaining)) {
+      return Promise.reject(new SendFailed('stub refused this text'));
+    }
     if (this.failNext) {
       const error = this.failNext;
       this.failNext = null;

@@ -16,6 +16,9 @@ import { SendFailed } from '../channels/sender.js';
 import { StubSender } from '../channels/sender.stub.js';
 import { sweepTrialNotices } from './trial-notice-sweep.js';
 
+/** The billing page the grace and trial templates link to (`{{3}}`, OD-41(b)). */
+const BILLING_URL = 'https://app.rekoda.test/app/billing';
+
 let urls: Urls;
 let appDb: Db;
 let closeApp: () => Promise<void>;
@@ -75,7 +78,10 @@ async function stateOf(id: string) {
 }
 
 const sweep = (sender: StubSender, now: Date, templateConfigured = true) =>
-  sweepTrialNotices({ workerDb, appDb, sender, templateConfigured, fxNairaPerUsd: 1500 }, now);
+  sweepTrialNotices(
+    { workerDb, appDb, sender, templateConfigured, fxNairaPerUsd: 1500, billingUrl: BILLING_URL },
+    now,
+  );
 
 describe('trial reminders', () => {
   it('sends nothing on days 0 to 6', async () => {
@@ -96,10 +102,26 @@ describe('trial reminders', () => {
     }
 
     expect(sender.trialNotices).toEqual([
-      { to: phone, daysLeft: '7', endsOn: '16/11/2026' },
-      { to: phone, daysLeft: '2', endsOn: '16/11/2026' },
-      { to: phone, daysLeft: '1', endsOn: '16/11/2026' },
+      { to: phone, daysLeft: '7', endsOn: '16/11/2026', billingUrl: BILLING_URL },
+      { to: phone, daysLeft: '2', endsOn: '16/11/2026', billingUrl: BILLING_URL },
+      { to: phone, daysLeft: '1', endsOn: '16/11/2026', billingUrl: BILLING_URL },
     ]);
+  });
+
+  it('does nothing, and claims nothing, while there is no billing page to link to (OD-41(b))', async () => {
+    await seedTrial();
+    const sender = new StubSender();
+
+    /* The worker passes templateConfigured=false when REKODA_WEB_URL gives no billing page;
+     * a template set without its {{3}} link must not claim a stage it cannot send. */
+    await sweepTrialNotices(
+      { workerDb, appDb, sender, templateConfigured: false, fxNairaPerUsd: 1500, billingUrl: null },
+      at(7),
+    );
+    expect(sender.trialNotices).toHaveLength(0);
+
+    await sweep(sender, at(7, 60_000));
+    expect(sender.trialNotices).toHaveLength(1);
   });
 
   it('sends nothing at or after the expiry instant', async () => {
@@ -118,7 +140,9 @@ describe('trial reminders', () => {
 
     await sweep(sender, at(13, 1_000));
 
-    expect(sender.trialNotices).toEqual([{ to: phone, daysLeft: '1', endsOn: '16/11/2026' }]);
+    expect(sender.trialNotices).toEqual([
+      { to: phone, daysLeft: '1', endsOn: '16/11/2026', billingUrl: BILLING_URL },
+    ]);
   });
 
   it('does nothing, and claims nothing, while no template is configured', async () => {

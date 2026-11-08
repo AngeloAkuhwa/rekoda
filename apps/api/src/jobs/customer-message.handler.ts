@@ -20,13 +20,19 @@ import {
   consentIntentOf,
   lagosDay,
   replies,
+  serviceWindowOpen,
   shelfMatches,
   usagePeriod,
   type ShelfItem,
 } from '@rekoda/core';
 import { normaliseParticipant, InvalidPhoneError } from '@rekoda/core/identity';
 import { redactForLog } from '@rekoda/core/privacy';
-import { participantIndexFor, PARTICIPANT_INDEX_KEY_VERSION } from '@rekoda/core/vault';
+import {
+  matchKeyFor,
+  normaliseFacet,
+  participantIndexFor,
+  PARTICIPANT_INDEX_KEY_VERSION,
+} from '@rekoda/core/vault';
 import { extractInboundEvents, metaWebhookBody, type InboundEvent } from '@rekoda/contracts';
 import {
   catalogueRepo,
@@ -36,6 +42,7 @@ import {
   events,
   identity,
   ordersRepo,
+  remindersRepo,
   stockRepo,
   usageRepo,
   wabaRepo,
@@ -230,28 +237,140 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
      * only: the assistant holds no command surface at all, which is
      * Appendix D's "never HIGH_RISK" in its strongest form. Everything it
      * cannot answer HANDS OFF, and says it is doing so (PR-091). */
+    /* A REPLY TO AN INVOICE REMINDER (OWN-83). The business is told in its own Rekoda chat,
+     * whether or not the away assistant is on, once per reminder: a delivered notice is recorded
+     * in this transaction, so a redelivered webhook, a retried job or the customer's next message
+     * about the same reminder tells it nothing more, while an undelivered one is tried again on
+     * the next message. When THIS message is due that notice, the assistant's handoff does not
+     * ALSO tell the business: one notice, not two. Once the notice is recorded, later messages
+     * are handed off exactly as any other customer's. */
+    const answered = await reminderThisAnswers(tx, deps, businessId, participant);
+    /* The notice is free-form text from Rekoda's number, so it is sent only while the owner's
+     * 24-hour window with Rekoda is open. Outside it Meta accepts the message and fails it later
+     * (131047), which would record a notice nobody received. Withheld, it stays due and is tried
+     * on the customer's next message. Meanwhile the assistant's handoff (when on) attempts its own
+     * notice, which is free-form too and meets the same window limit. */
+    const tellBusiness =
+      answered !== null &&
+      (await ownerWindowOpen(tx, businessId)) &&
+      (await remindersRepo.reminderReplyNoticeDue(tx, businessId, answered.id));
+    const handoff: HandoffOptions = { tellMerchant: !tellBusiness };
+
+    let note: string | null;
     if (inbound.messageType === 'text' && (inbound.text ?? '').trim().length > 0) {
-      const note = await maybeAssistantAnswer(
+      note = await maybeAssistantAnswer(
         tx,
         deps,
         businessId,
         participant,
         blindIndex,
         inbound.text ?? '',
+        handoff,
       );
-      await events.markProcessed(tx, eventId, note, businessId);
-      return;
+    } else {
+      /* A voice note, an image, an empty text: the assistant cannot answer
+       * any of these, and "cannot answer" is exactly what the handoff is
+       * for — every time, not just when the words looked like a question. */
+      const settings = await wabaRepo.assistantSettingsFor(tx, businessId);
+      note = settings.enabled
+        ? await handoffToHuman(tx, deps, businessId, participant, blindIndex, handoff)
+        : null;
     }
-
-    /* A voice note, an image, an empty text: the assistant cannot answer
-     * any of these, and "cannot answer" is exactly what the handoff is
-     * for — every time, not just when the words looked like a question. */
-    const settings = await wabaRepo.assistantSettingsFor(tx, businessId);
-    const note = settings.enabled
-      ? await handoffToHuman(tx, deps, businessId, participant, blindIndex)
-      : null;
+    /* Last, after everything else this job does, so little after it can roll the record back
+     * once the business has been told. Recorded only when it was delivered. */
+    /* AT-LEAST-ONCE (OD-46, ruled OWN-84). The notice is sent, then recorded in this job's
+     * transaction. A crash after Meta accepted it but before the commit leaves no record, so the
+     * retried job or the customer's next message tells the business again: a duplicate notice is
+     * accepted, a lost one is not. Do not "fix" this by recording a claim before sending; that
+     * makes an uncertain send unrecoverable. Pinned by meta-reminder-reply.integration.test.ts. */
+    if (tellBusiness) {
+      /* Held to commit, so a failed receipt for this notice waits for its row (see the lock). */
+      await remindersRepo.lockReminderReplyNotices(tx, businessId);
+      const sent = await tellBusinessOfReminderReply(tx, deps, businessId, answered.invoiceNumber);
+      let told = sent.note;
+      if (sent.providerMessageId !== null) {
+        await remindersRepo.recordReminderReplyNotice(
+          tx,
+          businessId,
+          answered.id,
+          sent.providerMessageId,
+        );
+      } else if (told === 'reminder reply: notice not delivered' && handoff.merchantNoticeHeld) {
+        /* The handoff held back its notice for this one; it did not arrive, so the business gets
+         * the ordinary handoff notice now rather than nothing (the reminder notice stays due). */
+        await tellMerchantOfHandoff(tx, deps, businessId);
+        told = `${told}; handoff notice tried instead`;
+      }
+      note = note ? `${note}; ${told}` : told;
+    }
     await events.markProcessed(tx, eventId, note, businessId);
   };
+}
+
+/** Whether the assistant's handoff also tells the merchant (OWN-83: not when a reply notice does). */
+interface HandoffOptions {
+  tellMerchant: boolean;
+  /** Set by the handoff when it held its merchant notice back for the reply notice. */
+  merchantNoticeHeld?: boolean;
+}
+
+/**
+ * Whether a free-form message to the owner can reach them now: someone in the business wrote to
+ * Rekoda's number in the last 24 hours (G-67, as for a delivered PDF). A delegate's message counts
+ * too, which can only make it look open when it is not; Meta's refusal is the second check.
+ */
+async function ownerWindowOpen(tx: TenantDb, businessId: string): Promise<boolean> {
+  const inbound = await conversationsRepo.lastMerchantInboundAt(tx, businessId);
+  return serviceWindowOpen(inbound.at, inbound.now);
+}
+
+/** How far back a customer's WhatsApp message is read as a reply to a reminder (OWN-83). */
+const REMINDER_REPLY_WINDOW_DAYS = 7;
+/**
+ * The WhatsApp reminder this customer's message answers: the newest one this business sent in the
+ * last seven days to a customer whose phone has the sender's blind index. Null when there is none.
+ * The index is the one the privacy gateway stores on every customer phone (`normaliseFacet`, then
+ * the business-scoped `matchKeyFor`), so no customer's number is decrypted and no number of other
+ * reminders can hide this one. This business's rows only (RLS and the explicit business id).
+ */
+async function reminderThisAnswers(
+  tx: TenantDb,
+  deps: CustomerMessageDeps,
+  businessId: string,
+  participant: string,
+): Promise<remindersRepo.SentWhatsAppReminder | null> {
+  const normalised = normaliseFacet('phone', participant);
+  if (normalised.length === 0) return null;
+  const phoneKey = matchKeyFor(businessId, 'phone', normalised, deps.config.matchKey);
+  return remindersRepo.sentWhatsAppReminderForPhone(tx, businessId, phoneKey, {
+    withinDays: REMINDER_REPLY_WINDOW_DAYS,
+  });
+}
+
+/**
+ * Tell the business, in its own Rekoda chat, that a customer replied to a reminder. Names the
+ * invoice, never the customer's number or message. STOP from the owner is honoured, as for the
+ * handoff notice. `providerMessageId` is Meta's id when it accepted the notice, else null.
+ */
+async function tellBusinessOfReminderReply(
+  tx: TenantDb,
+  deps: CustomerMessageDeps,
+  businessId: string,
+  invoiceNumber: string,
+): Promise<{ note: string; providerMessageId: string | null }> {
+  const to = await identity.ownerPhoneFor(deps.db, businessId);
+  if (!to) return { note: 'reminder reply: no owner to tell', providerMessageId: null };
+  if (await identity.optedOutAt(deps.db, to)) {
+    return { note: 'reminder reply: owner opted out', providerMessageId: null };
+  }
+  const sent = await deps.replySender.send(tx, {
+    businessId,
+    to,
+    reply: replies.reminderReplyNotice(invoiceNumber),
+  });
+  return sent.delivered && sent.providerMessageId
+    ? { note: 'reminder reply: business told', providerMessageId: sent.providerMessageId }
+    : { note: 'reminder reply: notice not delivered', providerMessageId: null };
 }
 
 /**
@@ -330,6 +449,7 @@ async function handoffToHuman(
   businessId: string,
   participant: string,
   customerHash: string,
+  options: HandoffOptions = { tellMerchant: true },
 ): Promise<string | null> {
   const log = new Logger('CustomerMessageJob');
 
@@ -359,12 +479,26 @@ async function handoffToHuman(
   /* The merchant's side. STOP is honoured — this is a message they did
    * not ask for by name — and a merchant who opted out still has the
    * customer's message waiting in their own WhatsApp, which is where the
-   * notice was pointing anyway. */
+   * notice was pointing anyway. A reply to a reminder has its own notice
+   * (OWN-83), so the merchant is not told twice about one message. */
+  if (!options.tellMerchant) {
+    options.merchantNoticeHeld = true;
+    return 'handed off to a human (business told of the reminder reply)';
+  }
+  await tellMerchantOfHandoff(tx, deps, businessId);
+  return 'handed off to a human';
+}
+
+/** The merchant's side of a handoff: the owner is told, unless they sent STOP. */
+async function tellMerchantOfHandoff(
+  tx: TenantDb,
+  deps: CustomerMessageDeps,
+  businessId: string,
+): Promise<void> {
   const to = await identity.ownerPhoneFor(deps.db, businessId);
   if (to && !(await identity.optedOutAt(deps.db, to))) {
     await deps.replySender.send(tx, { businessId, to, reply: replies.assistantHandoffNotice() });
   }
-  return 'handed off to a human';
 }
 
 /**
@@ -381,6 +515,7 @@ async function maybeAssistantAnswer(
   participant: string,
   customerHash: string,
   text: string,
+  handoff: HandoffOptions,
 ): Promise<string | null> {
   const log = new Logger('CustomerMessageJob');
 
@@ -396,7 +531,7 @@ async function maybeAssistantAnswer(
   );
   if (matched.length === 0) {
     /* Not a question the shelf can answer: a human's, said out loud. */
-    return handoffToHuman(tx, deps, businessId, participant, customerHash);
+    return handoffToHuman(tx, deps, businessId, participant, customerHash, handoff);
   }
 
   const held = await stockRepo.onHandByIds(
@@ -413,7 +548,7 @@ async function maybeAssistantAnswer(
     };
   });
   const answer = composeShelfAnswer(items);
-  if (!answer) return handoffToHuman(tx, deps, businessId, participant, customerHash);
+  if (!answer) return handoffToHuman(tx, deps, businessId, participant, customerHash, handoff);
 
   const claimed = await wabaRepo.claimAssistantReply(tx, {
     businessId,
@@ -425,7 +560,7 @@ async function maybeAssistantAnswer(
     /* Beyond the configured limits IS "the assistant cannot": the ceiling
      * was the merchant's own line, and past it a human takes over. */
     log.log('assistant ceiling reached: handing off');
-    return handoffToHuman(tx, deps, businessId, participant, customerHash);
+    return handoffToHuman(tx, deps, businessId, participant, customerHash, handoff);
   }
 
   try {

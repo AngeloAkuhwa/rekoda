@@ -44,6 +44,7 @@ const CODES = [
   'invalid_recipient',
   'ambiguous_contact',
   'email_not_configured',
+  'business_email_unverified',
   'send_failed',
   'reminder_in_flight',
   'delivery_unconfirmed',
@@ -91,6 +92,17 @@ describe('reminder reasons in plain words', () => {
   it('names the missing contact by channel', () => {
     expect(reminderReason('no_contact', 'email')).toMatch(/email address/);
     expect(reminderReason('no_contact', 'whatsapp')).toMatch(/WhatsApp number/);
+  });
+
+  it('an unconfirmed business email says where replies go and both ways to fix it (OWN-83)', () => {
+    const text = reminderReason('business_email_unverified', 'email');
+    expect(text).toContain('your business email');
+    expect(text).toContain('billing page');
+    expect(text).toContain('This does not affect WhatsApp reminders');
+    expect(text).not.toMatch(/support/i);
+    expect(previewReason('business_email_unverified', 'email')).toContain(
+      'so it cannot be sent by email now',
+    );
   });
 
   it('asks for the lawful-basis confirmation by name', () => {

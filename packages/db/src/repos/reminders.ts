@@ -458,3 +458,169 @@ export async function reminderInFlight(
   `);
   return [...rows].length > 0;
 }
+
+/* ── a customer's WhatsApp reply to a reminder (OWN-83) ─────────────────────────────────────── */
+
+/** The WhatsApp reminder a customer's reply answers. */
+export interface SentWhatsAppReminder {
+  id: string;
+  invoiceNumber: string;
+  customerId: string;
+  sentAt: Date;
+}
+
+/**
+ * The newest WhatsApp reminder this business sent in the last `withinDays` days to a customer
+ * whose phone facet has this blind index (`match_key`, as the privacy gateway keys every phone it
+ * stores), or null. One indexed lookup: no cap on how many other customers were reminded, and no
+ * phone number is decrypted. Only `sent` ones: a reminder that never reached the customer cannot
+ * be replied to.
+ */
+export async function sentWhatsAppReminderForPhone(
+  tx: TenantDb,
+  businessId: string,
+  phoneMatchKey: string,
+  opts: { withinDays: number },
+): Promise<SentWhatsAppReminder | null> {
+  const rows = await tx.execute<{
+    id: string;
+    invoice_number: string;
+    customer_id: string;
+    sent_at: Date;
+  }>(sql`
+    SELECT r.id, i.invoice_number, r.customer_id, r.sent_at
+      FROM customer_identities ci
+      JOIN invoice_reminders r
+        ON r.business_id = ci.business_id AND r.customer_id = ci.customer_id
+      JOIN invoices i ON i.business_id = r.business_id AND i.id = r.invoice_id
+     WHERE ci.business_id = ${businessId}::uuid
+       AND ci.facet = 'phone' AND ci.match_key = ${phoneMatchKey}
+       AND r.channel = 'whatsapp' AND r.status = 'sent' AND r.sent_at IS NOT NULL
+       AND r.sent_at > now() - make_interval(days => ${opts.withinDays})
+     ORDER BY r.sent_at DESC, r.id DESC
+     LIMIT 1
+  `);
+  const row = [...rows][0];
+  return row
+    ? {
+        id: row.id,
+        invoiceNumber: row.invoice_number,
+        customerId: row.customer_id,
+        sentAt: new Date(row.sent_at),
+      }
+    : null;
+}
+
+/**
+ * Whether the business still has to be told about replies to this reminder. Takes a
+ * transaction-scoped lock on the reminder first, so two customer messages handled at once are
+ * decided one after the other: the second waits for the first to commit and then sees its row.
+ * It also applies a dead receipt job's failure to this notice (below); otherwise it writes nothing,
+ * and `recordReminderReplyNotice` records the notice once Meta accepted it.
+ */
+export async function reminderReplyNoticeDue(
+  tx: TenantDb,
+  businessId: string,
+  reminderId: string,
+): Promise<boolean> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${`reminder-reply-notice:${businessId}:${reminderId}`}))`,
+  );
+  /* A failed receipt for this notice whose `delivery.status` job died is applied here too, so the
+   * customer's next message retries even if the owner has not written since (the full
+   * `reconcileDeadReceipts` runs only on the owner's next message, under the inbound lock). Only
+   * the notice is touched and the receipt's event stays open, so that reconciliation still applies
+   * the rest of the receipt later. A notice re-sent since carries a new Meta id and is not matched.
+   * The business notice lock is taken only when there is such a receipt (rare), and before the
+   * row, in the same order as the live receipt job; the common path takes no business-wide lock
+   * until the notice is sent. */
+  const deadReceiptMatch = sql`
+      FROM jobs j
+      JOIN external_events e ON e.id = CASE
+             WHEN j.payload->>'eventId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+             THEN (j.payload->>'eventId')::uuid END
+     WHERE n.business_id = ${businessId}::uuid AND n.reminder_id = ${reminderId}::uuid
+       AND n.undelivered_at IS NULL
+       AND j.business_id = ${businessId}::uuid AND e.business_id = ${businessId}::uuid
+       AND j.kind = 'delivery.status' AND j.state = 'dead' AND e.processed_at IS NULL
+       AND n.provider_message_id = j.payload->>'outboundMessageId'`;
+  const pending = await tx.execute<{ one: number }>(
+    sql`SELECT 1 AS one FROM reminder_reply_notices n
+          WHERE n.business_id = ${businessId}::uuid AND n.reminder_id = ${reminderId}::uuid
+            AND EXISTS (SELECT 1 ${deadReceiptMatch})`,
+  );
+  if ([...pending].length > 0) {
+    await lockReminderReplyNotices(tx, businessId);
+    await tx.execute(
+      sql`UPDATE reminder_reply_notices n SET undelivered_at = now() ${deadReceiptMatch}`,
+    );
+  }
+  /* Due when never told, or when Meta later reported the notice failed (`undelivered_at`). */
+  const rows = await tx.execute<{ one: number }>(sql`
+    SELECT 1 AS one FROM reminder_reply_notices
+     WHERE business_id = ${businessId}::uuid AND reminder_id = ${reminderId}::uuid
+       AND undelivered_at IS NULL
+  `);
+  return [...rows].length === 0;
+}
+
+/**
+ * The business was told about replies to this reminder: Meta accepted the notice and gave it
+ * `providerMessageId`. Recorded only then, in the caller's transaction, so a notice Meta refused
+ * (an outage) is tried again on the customer's next message instead of being lost, and a job that
+ * rolls back records nothing. A notice Meta accepted and later reported failed is marked by
+ * `markReminderReplyNoticeUndelivered`; sending it again replaces the record.
+ */
+export async function recordReminderReplyNotice(
+  tx: TenantDb,
+  businessId: string,
+  reminderId: string,
+  providerMessageId: string,
+): Promise<void> {
+  await tx.execute(sql`
+    INSERT INTO reminder_reply_notices (business_id, reminder_id, provider_message_id)
+    VALUES (${businessId}::uuid, ${reminderId}::uuid, ${providerMessageId})
+    ON CONFLICT (business_id, reminder_id) DO UPDATE
+       SET provider_message_id = EXCLUDED.provider_message_id,
+           notified_at = now(),
+           undelivered_at = NULL
+     WHERE reminder_reply_notices.undelivered_at IS NOT NULL
+  `);
+}
+
+/**
+ * The business's reply-notice lock, held to the end of the transaction. The customer-message job
+ * takes it before sending a notice (and, rarely, earlier, when `reminderReplyNoticeDue` applies a
+ * dead receipt), and the live receipt job takes it before marking one, so a failed receipt that
+ * arrives within seconds waits for the notice's row to commit instead of finding nothing and being
+ * lost.
+ */
+export async function lockReminderReplyNotices(tx: TenantDb, businessId: string): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${`reminder-reply-notices:${businessId}`}))`,
+  );
+}
+
+/**
+ * Meta reported a reply notice failed after accepting it (a delivery receipt; for example the
+ * owner's 24-hour window was not really open). The reminder's notice becomes due again, so the
+ * customer's next message tries once more. Returns how many notices were marked (0 or 1).
+ */
+export async function markReminderReplyNoticeUndelivered(
+  tx: TenantDb,
+  businessId: string,
+  providerMessageId: string,
+  /* A live receipt can race the send it names, so it waits for the notice to be recorded. A
+   * dead job's receipt arrived long before (`reconcileDeadReceipts`), and taking this
+   * business-wide lock there would hold it across the merchant's model calls. */
+  opts: { waitForRecord: boolean } = { waitForRecord: true },
+): Promise<number> {
+  if (opts.waitForRecord) await lockReminderReplyNotices(tx, businessId);
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE reminder_reply_notices SET undelivered_at = now()
+     WHERE business_id = ${businessId}::uuid AND provider_message_id = ${providerMessageId}
+       AND undelivered_at IS NULL
+    RETURNING reminder_id AS id
+  `);
+  return [...rows].length;
+}

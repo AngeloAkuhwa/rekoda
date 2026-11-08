@@ -361,6 +361,41 @@ runs against the newer schema. A migration that must itself be reverted is a
 restore from backup, and **there is no backup mechanism yet** (G-02 in
 `docs/REKODA_LAUNCH_READINESS.md`; `backup-restore.md` describes the plan).
 
+Migrations 0191 and 0192 are additive and keep data on a manual revert. 0191's
+`email_address_erasures` holds erasure receipts: keep the table, or export its
+rows to the audit records before dropping it. Migration 0192 (`reminder_reply_notices`)
+must keep its data too. A normal roll back keeps it. If it was ever reverted
+by hand, redeploy in this order, with the api and worker still stopped: run only
+`dc run --rm -T migrate` (it recreates the table); restore the saved rows as a
+superuser or BYPASSRLS role; check the row counts match (a reminder deleted since the revert has no parent, so restore only notices whose reminder still exists, and confirm every surviving reminder's notice is back); drop the saved copy;
+only then `dc up -d --wait`. The migration's rollback comment gives the
+statements. Started on an empty table, a customer's next message re-notifies
+businesses about reminders they were already told about.
+
+If PR A ran (and recorded reminder-reply notices), was then rolled back to an older
+release, and is rolled forward again: the older release processed WhatsApp failure
+receipts, and applied dead receipt jobs on the owner's message, without marking the
+notice they named, so those notices still read as delivered. Before `dc up -d --wait`
+of the newer release (api and worker stopped), as a superuser or BYPASSRLS role,
+re-open them the way a live receipt does (OWN-83: due again on the customer's next
+message):
+
+```sql
+UPDATE reminder_reply_notices n SET undelivered_at = now()
+  FROM jobs j
+ WHERE j.kind = 'delivery.status' AND j.state IN ('done', 'dead')
+   AND j.business_id = n.business_id
+   AND j.payload->>'outboundMessageId' = n.provider_message_id
+   AND n.undelivered_at IS NULL;
+```
+
+Only failed receipts are queued as `delivery.status` jobs, and a notice re-sent since
+carries a new Meta id, so this matches only notices whose last send failed. Record the
+row count in the deploy notes. Receipt jobs still pending are left to the newer release,
+which applies them as it does any receipt. Not recovered: a customer's reply that the
+older release handled is not told to the business afterwards, because the older release
+records no notice for it (the same as before PR A).
+
 ## Disk space and image retention (staging)
 
 `scripts/deploy-staging.sh` guards the host's disk, because a full disk once

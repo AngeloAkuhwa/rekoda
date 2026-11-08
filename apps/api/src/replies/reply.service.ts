@@ -77,6 +77,8 @@ export class ReplySender {
      * For a caller that must know whether a line survived the cut (G-60).
      */
     shown?: string | null;
+    /** Meta's id for a delivered reply, for a caller that tracks its delivery receipt. */
+    providerMessageId?: string;
   }> {
     /* With tokens, the token-aware fit is the ONLY cut: the limit binds the
      * text that LEAVES, after rehydration, where one token can read as a name
@@ -129,7 +131,11 @@ export class ReplySender {
         this.log.warn('reply accepted without a message id: treated as not delivered');
         return { delivered: false };
       }
-      return { delivered: true, shown: forHuman === rehydrated ? safe.text : null };
+      return {
+        delivered: true,
+        shown: forHuman === rehydrated ? safe.text : null,
+        providerMessageId: result.providerMessageId,
+      };
     } catch (error) {
       if (error instanceof SendFailed) {
         /**
