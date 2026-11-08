@@ -333,6 +333,18 @@ describe('what a dead job leaves, by kind and by payload', () => {
     expect(await merchantExceptions(businessId)).toHaveLength(0);
   });
 
+  it('another business resolving its own event never hides this business’s dead job from enrolment', async () => {
+    const businessId = await seedBusiness();
+    const foreign = await attributedEvent(await seedBusiness());
+    expect(await events.resolveEvent(workerDb, foreign, 'theirs', 'operator:bob')).toBe(true);
+    await enqueue(businessId, 'payment.process', { eventId: foreign });
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
+    );
+    expect(await jobsRepo.enrolUnrecordedDeaths(workerDb)).toBe(1);
+    expect((await recordsOf(businessId))[0]).toMatchObject({ event_id: null, status: 'open' });
+  });
+
   it('the event-less list is filtered in SQL, so older event-bound records cannot crowd it out', async () => {
     const businessId = await seedBusiness();
     await enqueue(businessId, 'payment.process', { eventId: await attributedEvent(businessId) });
