@@ -703,8 +703,8 @@ export class OpsController {
     /* An event behind an open dead payment or billing job is worked through that job
      * (OWN-73, OWN-76): resolving only the event would leave the job's record, the merchant's
      * exception or billing notice open, and a later death could not flag the event again. */
-    const queue = await events.exceptionQueue(this.workerDb, 200);
-    if (queue.flagged.some((row) => row.id === id && row.jobId !== null)) {
+    /* Looked up by the event itself, not by scanning a page of the queue. */
+    if ((await deadJobsRepo.openJobForEvent(this.workerDb, id)) !== null) {
       throw new ConflictException(
         'this event belongs to an open dead job; recover or resolve it at /v1/ops/dead-jobs/:jobId',
       );

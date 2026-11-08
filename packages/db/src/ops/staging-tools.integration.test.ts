@@ -283,6 +283,21 @@ describe('OWN-77: on a staging database', () => {
     expect([...exact][0]?.v).toBe('2026-12-01T10:00:00.123456');
   });
 
+  it('a revert refuses a value changed within the same millisecond as the move wrote', async () => {
+    const businessId = await seedBusiness();
+    await designate(businessId);
+    const read = (await current(businessId))!.value!;
+    const to = new Date(Date.now() + DAY);
+    const moved = await move(businessId, { expected: read, to });
+    const nudged = new Date(to.getTime()).toISOString().replace('Z', '456Z');
+    await ownerDb.execute(
+      sql`UPDATE businesses SET plan_expires_at = ${nudged}::timestamptz WHERE id = ${businessId}::uuid`,
+    );
+    expect(await outcome(move(businessId, { expected: to, to: read, reverts: moved }))).toMatch(
+      /value changed/,
+    );
+  });
+
   it('another business cannot move this business’s dates', async () => {
     const a = await seedBusiness();
     const b = await seedBusiness();

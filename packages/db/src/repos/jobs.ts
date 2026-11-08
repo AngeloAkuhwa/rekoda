@@ -575,10 +575,16 @@ export async function enrolUnrecordedDeaths(db: Db, limit = 100): Promise<number
         AND NOT EXISTS (SELECT 1 FROM dead_job_exceptions d WHERE d.job_id = j.id)
       ORDER BY j.updated_at, j.id
       LIMIT ${limit}
+      -- Held until this pass commits: a recovery requeueing the job waits, and a second pass skips it.
+      FOR UPDATE OF j SKIP LOCKED
     `);
     const found = [...rows];
     for (const row of found) {
-      await tx.transaction((savepoint) => deadJobs.recordDeath(savepoint, dyingJob(row)));
+      /* Insert only: a record that already exists (another pass, or a recovery since) is never
+       * reopened by a stale candidate. */
+      await tx.transaction((savepoint) =>
+        deadJobs.recordDeath(savepoint, dyingJob(row), { enrolOnly: true }),
+      );
     }
     return found.length;
   });

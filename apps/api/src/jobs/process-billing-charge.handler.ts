@@ -355,7 +355,11 @@ export function instantOf(iso: string | null | undefined): Date | null {
   ) {
     return null;
   }
-  if (m[8] !== undefined && (Number(m[9]) > 14 || Number(m[10]) > 59)) return null;
+  /* An offset is at most ±14:00 (UTC+14 is the furthest zone): +14:01 to +14:59 are invalid too. */
+  if (m[8] !== undefined) {
+    const offsetMinutes = Number(m[9]) * 60 + Number(m[10]);
+    if (Number(m[10]) > 59 || offsetMinutes > 14 * 60) return null;
+  }
   const at = new Date(iso);
   return Number.isNaN(at.getTime()) ? null : at;
 }

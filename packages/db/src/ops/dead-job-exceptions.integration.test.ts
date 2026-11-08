@@ -453,6 +453,31 @@ describe('recovery: one bounded attempt, verified by the caller', () => {
     expect(await jobsRepo.claimNext(workerDb, 'nobody')).toBeNull();
   });
 
+  it('a stale enrolment never reopens a record a recovery has moved on', async () => {
+    const businessId = await seedBusiness();
+    const { jobId } = await deadPaymentJob(businessId);
+    expect(await begin(businessId, jobId)).toBe(true);
+    // A pass that read the job as dead and unrecorded before the recovery began.
+    await workerDb.transaction((tx) =>
+      deadJobsRepo.recordDeath(
+        tx,
+        {
+          id: jobId,
+          businessId,
+          kind: 'payment.process',
+          payload: {},
+          attempts: 2,
+          failureCategory: null,
+        },
+        { enrolOnly: true },
+      ),
+    );
+    expect((await recordsOf(businessId))[0]).toMatchObject({
+      status: 'recovering',
+      death_count: 1,
+    });
+  });
+
   it('a merchant who dismissed the exception sees a fresh one when the job dies again', async () => {
     const businessId = await seedBusiness();
     const { jobId } = await deadPaymentJob(businessId);

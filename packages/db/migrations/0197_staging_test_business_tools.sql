@@ -199,6 +199,11 @@ BEGIN
             IS DISTINCT FROM date_trunc('milliseconds', p_new) THEN
       RAISE EXCEPTION 'staging_move_date: not a revert of that move' USING ERRCODE = '22023';
     END IF;
+    -- Exactly, not to the millisecond: the value must still be precisely what the move wrote, so a
+    -- change within the same millisecond by another writer is never overwritten.
+    IF v_current IS DISTINCT FROM v_revert.after_value THEN
+      RAISE EXCEPTION 'staging_move_date: the value changed since it was read' USING ERRCODE = '40001';
+    END IF;
     -- The exact stored value comes back, at full precision, not the caller's millisecond copy.
     p_new := v_revert.before_value;
   END IF;

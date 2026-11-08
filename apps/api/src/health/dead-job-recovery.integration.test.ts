@@ -531,6 +531,26 @@ describe('OWN-73: an operator recovers a dead payment job', () => {
     expect(answer.deadJobDetails.map((d) => d.jobId)).toContain(b.jobId);
   });
 
+  it('the generic resolve guard holds for an event beyond the first page of the queue', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    const { eventId, jobId } = await deadPaymentJob(businessId, intent.reference);
+    // 200 older flagged events put this one past any first page of the queue.
+    const owner = createDb(urls.owner, { max: 1 });
+    await owner.db.execute(sql`
+      INSERT INTO external_events (provider, event_type, external_id, payload, signature_valid,
+                                   error, created_at)
+      SELECT 'paystack', 'charge.success', 'older-' || g, '{}'::jsonb, 1, 'flagged',
+             now() - interval '1 day'
+      FROM generate_series(1, 200) g`);
+    await owner.close();
+    const ops = new OpsController(config, appDb, workerDb, {} as SecurityMetrics);
+    await expect(
+      ops.resolveException(asOperator, eventId, { resolution: 'not ours' }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect((await statusOf(businessId, jobId))?.status).toBe('open');
+  });
+
   it('resolving the job closes its flagged event in the same transaction', async () => {
     const businessId = await seedBusiness();
     const { intent } = await seedObligation(businessId);

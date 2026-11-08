@@ -2388,6 +2388,8 @@ export async function resolveBlockedRenewal(
   reference: string,
   resolution: string,
   actor: string,
+  /** Who closed it: an operator through the route, or the sweep once the gate opens. */
+  sourceType: 'operator' | 'system' = 'operator',
 ): Promise<boolean> {
   const rows = await tx.execute<{ id: string }>(sql`
     UPDATE subscription_charges
@@ -2402,7 +2404,7 @@ export async function resolveBlockedRenewal(
   await tx.execute(sql`
     INSERT INTO audit_events (business_id, actor, entity, entity_id, action, new_value, source_type)
     VALUES (${businessId}::uuid, ${actor}, 'subscription_charge', ${reference},
-            'renewal_block_resolved', ${JSON.stringify({ resolution })}::jsonb, 'operator')
+            'renewal_block_resolved', ${JSON.stringify({ resolution })}::jsonb, ${sourceType})
   `);
   return true;
 }

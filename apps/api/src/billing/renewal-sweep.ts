@@ -245,6 +245,7 @@ async function closeBlocksTheGateNoLongerHolds(deps: RenewalSweepDeps): Promise<
             blocked.reference,
             'the payment gate is open: the renewal can now be paid',
             'system:gate_open',
+            'system',
           ),
         );
         if (done) closed += 1;

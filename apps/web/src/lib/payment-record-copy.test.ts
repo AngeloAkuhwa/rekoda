@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { billingPaymentState } from '@rekoda/contracts';
 import {
   PAYMENT_RECORD_NOTICE,
+  paymentRecordTimeline,
   paymentRecordTimes,
   paymentRecordView,
 } from './payment-record-copy';
@@ -149,5 +150,27 @@ describe('payment record timeline (OD-40)', () => {
     expect(
       paymentRecordTimes({ ...times, kind: 'upgrade', noCharge: true }).map((r) => r.label),
     ).toEqual(['Applied on']);
+  });
+});
+
+describe('payment record timeline as shown (Lagos)', () => {
+  it('shows each of four distinct times in Lagos time, to the minute', () => {
+    expect(
+      paymentRecordTimeline({
+        kind: 'add_on',
+        state: 'paid_applied',
+        noCharge: false,
+        providerPaidAt: '2026-11-01T09:00:00.000Z',
+        paidAt: '2026-11-01T09:07:00.000Z',
+        providerSettledAt: '2026-11-02T23:30:00.000Z',
+        unitsCreditedAt: '2026-11-01T09:08:00.000Z',
+        failedAt: null,
+      }),
+    ).toEqual([
+      { label: 'Paid at Paystack on', shown: '1 Nov 2026, 10:00 (Lagos time)' },
+      { label: 'Payment recorded by Rekoda on', shown: '1 Nov 2026, 10:07 (Lagos time)' },
+      { label: 'Settled by Paystack on', shown: '3 Nov 2026, 00:30 (Lagos time)' },
+      { label: 'Units added on', shown: '1 Nov 2026, 10:08 (Lagos time)' },
+    ]);
   });
 });

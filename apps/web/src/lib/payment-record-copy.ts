@@ -151,3 +151,23 @@ export function paymentRecordTimes(record: TimesInput): Array<{ label: string; i
   }
   return rows;
 }
+
+/** Lagos, so a merchant reads the date and time they would write on a form. */
+export function lagosDateTime(iso: string): string {
+  return new Date(iso).toLocaleString('en-GB', {
+    timeZone: 'Africa/Lagos',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+/** The timeline as the page shows it: each label with its Lagos date and time. */
+export function paymentRecordTimeline(record: TimesInput): Array<{ label: string; shown: string }> {
+  return paymentRecordTimes(record).map((row) => ({
+    label: row.label,
+    shown: `${lagosDateTime(row.iso)} (Lagos time)`,
+  }));
+}

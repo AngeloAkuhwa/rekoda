@@ -81,7 +81,12 @@ export interface DyingJob {
  * Record a job's death. Call inside the transaction that set `state = 'dead'`. Idempotent per
  * job: an open row is left as it is; a row a recovery had moved on is reopened, the same row.
  */
-export async function recordDeath(tx: Tx, job: DyingJob): Promise<void> {
+export async function recordDeath(
+  tx: Tx,
+  job: DyingJob,
+  /** Enrolment of an unrecorded death: insert only, never reopen an existing record. */
+  opts: { enrolOnly?: boolean } = {},
+): Promise<void> {
   if (!isDeadJobKind(job.kind) || !UUID.test(job.businessId)) return;
   const kind = job.kind;
   const named = eventIdOf(job.payload);
@@ -107,14 +112,18 @@ export async function recordDeath(tx: Tx, job: DyingJob): Promise<void> {
       (job_id, business_id, kind, event_id, reference, failure_category, summary, attempts)
     VALUES (${job.id}::uuid, ${job.businessId}::uuid, ${kind}, ${eventId}::uuid, ${reference},
             ${job.failureCategory}, ${SUMMARY[kind]}, ${job.attempts})
-    ON CONFLICT (job_id) DO UPDATE SET
+    ${
+      opts.enrolOnly
+        ? sql`ON CONFLICT (job_id) DO NOTHING`
+        : sql`ON CONFLICT (job_id) DO UPDATE SET
       status = 'open',
       failure_category = EXCLUDED.failure_category,
       attempts = EXCLUDED.attempts,
       death_count = dead_job_exceptions.death_count + 1,
       last_died_at = now(),
       updated_at = now()
-    WHERE dead_job_exceptions.status = 'recovering'
+    WHERE dead_job_exceptions.status = 'recovering'`
+    }
     RETURNING (xmax = 0) AS inserted, status
   `);
   const row = [...rows][0];
@@ -306,6 +315,17 @@ export async function opsQueue(
     currentPlan: r.current_plan,
     currentPlanExpiresAt: r.current_plan_expires_at ? new Date(r.current_plan_expires_at) : null,
   }));
+}
+
+/** The open (or recovering) dead job bound to an event, if any. Worker-credentialed, by event id. */
+export async function openJobForEvent(db: Db, eventId: string): Promise<string | null> {
+  if (!UUID.test(eventId)) return null;
+  const rows = await db.execute<{ job_id: string }>(sql`
+    SELECT job_id FROM dead_job_exceptions
+    WHERE event_id = ${eventId}::uuid AND status IN ('open', 'recovering')
+    LIMIT 1
+  `);
+  return [...rows][0]?.job_id ?? null;
 }
 
 /** One record by job id, across tenants, for the operator routes. Worker-credentialed. */

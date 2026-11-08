@@ -238,13 +238,13 @@ describe('OWN-70: what happens to a blocked renewal afterwards', () => {
     expect(await blockedAlert()).toBeUndefined();
     expect((await chargesOf(businessId))[0]?.status).toBe('pending');
     const audit = await withBusiness(db, businessId, (tx) =>
-      tx.execute<{ action: string; actor: string }>(sql`
-        SELECT action, actor FROM audit_events WHERE entity = 'subscription_charge'
+      tx.execute<{ action: string; actor: string; source_type: string }>(sql`
+        SELECT action, actor, source_type FROM audit_events WHERE entity = 'subscription_charge'
           AND entity_id = ${charge!.reference} ORDER BY created_at`),
     );
     expect([...audit]).toEqual([
-      { action: 'renewal_blocked', actor: 'system:renewal_sweep' },
-      { action: 'renewal_block_resolved', actor: 'system:gate_open' },
+      { action: 'renewal_blocked', actor: 'system:renewal_sweep', source_type: 'system' },
+      { action: 'renewal_block_resolved', actor: 'system:gate_open', source_type: 'system' },
     ]);
   });
 
@@ -272,6 +272,21 @@ describe('OWN-70: what happens to a blocked renewal afterwards', () => {
         ),
       ),
     ).toBe(false);
+  });
+
+  it('a renewal superseded meanwhile cannot be given a block resolution', async () => {
+    const businessId = await dueBusiness();
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
+    const [charge] = await chargesOf(businessId);
+    const owner = createDb(urls.owner, { max: 1 });
+    await owner.db.execute(
+      sql`UPDATE subscription_charges SET superseded_at = now() WHERE reference = ${charge!.reference}`,
+    );
+    await owner.close();
+    const resolved = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.resolveBlockedRenewal(tx, businessId, charge!.reference, 'stale', 'op:a'),
+    );
+    expect(resolved).toBe(false);
   });
 
   it('an operator closes it with a resolution, once; the charge and the grace clock are untouched', async () => {

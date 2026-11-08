@@ -6,8 +6,9 @@ import { Money } from '@/components/ui/Money';
 import { heldBy } from '@/lib/capabilities';
 import { PLAN_NAMES } from '@/lib/plans';
 import {
+  lagosDateTime,
   PAYMENT_RECORD_NOTICE,
-  paymentRecordTimes,
+  paymentRecordTimeline,
   paymentRecordView,
 } from '@/lib/payment-record-copy';
 import { billingPayment } from '@/server/api';
@@ -28,18 +29,6 @@ const KIND_LABELS: Record<BillingPaymentRecord['kind'], string> = {
   add_on: 'Usage pack',
   seat: 'Extra seat',
 };
-
-/** Lagos, so a merchant reads the date and time they would write on a form. */
-function lagosDateTime(iso: string): string {
-  return new Date(iso).toLocaleString('en-GB', {
-    timeZone: 'Africa/Lagos',
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
 
 function lagosDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-GB', {
@@ -140,10 +129,10 @@ export default async function PaymentRecordPage({
                   : 'Not confirmed'}
             </dd>
           </div>
-          {paymentRecordTimes(record).map((row) => (
+          {paymentRecordTimeline(record).map((row) => (
             <div key={row.label}>
               <dt>{row.label}</dt>
-              <dd>{lagosDateTime(row.iso)} (Lagos time)</dd>
+              <dd>{row.shown}</dd>
             </div>
           ))}
           {record.refundedAmountK > 0 ? (
