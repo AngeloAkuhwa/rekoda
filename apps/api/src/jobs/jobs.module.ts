@@ -512,6 +512,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
               sender: this.sender,
               fxNairaPerUsd: this.config.planningFxNairaPerUsd,
               billingUrl: billingPageUrl(this.config.webUrl),
+              stagingFaults: this.config.stagingTools,
             }),
           )
             .catch((error: unknown) => {
@@ -538,6 +539,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
               sender: this.sender,
               ...trialNoticeGate(this.config),
               fxNairaPerUsd: this.config.planningFxNairaPerUsd,
+              stagingFaults: this.config.stagingTools,
             }),
           )
             .catch((error: unknown) => {

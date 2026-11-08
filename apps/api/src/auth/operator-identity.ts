@@ -24,8 +24,10 @@ import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
  * What an operator may do, not merely that they exist.
  *
  * A valid operator token must not automatically carry estate-wide refund,
- * privacy-deletion and billing authority at once. These are the five things
+ * privacy-deletion and billing authority at once. These are the six things
  * the plane can currently do, and a token says which of them it is for.
+ * `ops:staging` (G-119, OWN-77) moves a staging test business's dates and arms
+ * one-shot send faults; it exists only where the staging tools are switched on.
  */
 export const OPERATOR_SCOPES = [
   'ops:read',
@@ -33,6 +35,7 @@ export const OPERATOR_SCOPES = [
   'ops:privacy',
   'ops:billing',
   'ops:security',
+  'ops:staging',
 ] as const;
 export type OperatorScope = (typeof OPERATOR_SCOPES)[number];
 

@@ -673,3 +673,46 @@ export type OpsEventView = z.infer<typeof opsEventView>;
 export type OpsUnappliedChargeView = z.infer<typeof opsUnappliedChargeView>;
 export type OpsExceptionsResponse = z.infer<typeof opsExceptionsResponse>;
 export type OpsResolveEventRequest = z.infer<typeof opsResolveEventRequest>;
+
+/* ── G-119 / OWN-77: staging test-business tools (`ops:staging`, staging only) ── */
+
+/** Designate a business as a test business. The reason is the audit row's. */
+export const opsStagingDesignateRequest = z.object({
+  reason: z.string().trim().min(4).max(200),
+});
+
+/**
+ * Move one date of a designated test business. `expected` is the value the operator read (the
+ * compare-before: null only for a date that is unset); `to` must be within 90 days of now.
+ */
+export const opsStagingMoveDateRequest = z.object({
+  field: z.enum(['trial_end', 'paid_to', 'grace_clock']),
+  expected: z.string().datetime({ offset: true }).nullable(),
+  to: z.string().datetime({ offset: true }),
+  reason: z.string().trim().min(4).max(200),
+});
+
+/** Arm one send fault, consumed by exactly one send for the business. */
+export const opsStagingArmFaultRequest = z.object({
+  kind: z.enum(['send_timeout', 'sender_refused']),
+  reason: z.string().trim().min(4).max(200),
+});
+
+export const opsStagingRevertRequest = z.object({
+  reason: z.string().trim().min(4).max(200),
+});
+
+export const opsStagingActionView = z.object({
+  id: z.string(),
+  businessId: z.string(),
+  operator: z.string(),
+  action: z.string(),
+  field: z.string().nullable(),
+  before: z.string().nullable(),
+  after: z.string().nullable(),
+  reason: z.string(),
+  outcome: z.string(),
+  revertsActionId: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type OpsStagingActionView = z.infer<typeof opsStagingActionView>;

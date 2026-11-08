@@ -17,6 +17,7 @@
 import { describe, expect, it } from 'vitest';
 import { OpsController } from '../health/ops.controller.js';
 import { DeadJobsController } from '../health/dead-jobs.controller.js';
+import { StagingToolsController } from '../health/staging-tools.controller.js';
 import { BusinessController } from './auth.controller.js';
 import { OPERATOR_SCOPES, type OperatorScope } from './operator-identity.js';
 import { OPERATOR_SCOPES_KEY } from './operator.guard.js';
@@ -48,14 +49,22 @@ function routesOf(controller: new (...args: never[]) => object): Route[] {
 
 describe('every operator route declares the authority it needs', () => {
   it('leaves no route on the ops plane undeclared', () => {
-    const undeclared = [...routesOf(OpsController), ...routesOf(DeadJobsController)]
+    const undeclared = [
+      ...routesOf(OpsController),
+      ...routesOf(DeadJobsController),
+      ...routesOf(StagingToolsController),
+    ]
       .filter((route) => !route.scopes || route.scopes.length === 0)
       .map((route) => route.name);
     expect(undeclared).toEqual([]);
   });
 
   it('declares only scopes that exist', () => {
-    for (const route of [...routesOf(OpsController), ...routesOf(DeadJobsController)]) {
+    for (const route of [
+      ...routesOf(OpsController),
+      ...routesOf(DeadJobsController),
+      ...routesOf(StagingToolsController),
+    ]) {
       for (const scope of route.scopes ?? []) {
         expect(OPERATOR_SCOPES).toContain(scope);
       }
@@ -79,6 +88,10 @@ describe('every operator route declares the authority it needs', () => {
     const dead = new Map(routesOf(DeadJobsController).map((route) => [route.name, route.scopes]));
     expect(dead.get('recover')).toEqual(['ops:payment']);
     expect(dead.get('resolve')).toEqual(['ops:payment']);
+    /* G-119 / OWN-77: the staging tools take their own scope, and nothing else does. */
+    for (const route of routesOf(StagingToolsController)) {
+      expect(route.scopes, route.name).toEqual(['ops:staging']);
+    }
   });
 
   it('puts the plan change on billing authority, not on read', () => {
@@ -103,6 +116,7 @@ describe('the scope vocabulary', () => {
       'ops:privacy',
       'ops:billing',
       'ops:security',
+      'ops:staging',
     ]);
   });
 });

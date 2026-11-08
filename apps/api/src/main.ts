@@ -6,7 +6,7 @@ import rateLimit from '@fastify/rate-limit';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { AppModule } from './app.module.js';
 import { DB, WORKER_DB } from './db/db.module.js';
-import { bootChecks, isEntrypoint, type Db } from '@rekoda/db';
+import { bootChecks, isEntrypoint, stagingToolsRepo, type Db } from '@rekoda/db';
 import { MAX_IMAGE_BYTES } from '@rekoda/core';
 import { publicApi } from '@rekoda/contracts';
 import { CONFIG, loadConfig, trustedProxies, type ApiConfig } from './config.js';
@@ -95,6 +95,16 @@ export async function createApp(): Promise<NestFastifyApplication> {
   if (workerDb) await bootChecks.assertRoleCannotBypassRls(workerDb, 'worker');
   await bootChecks.assertKeyUnchanged(db, 'VAULT_KEY', config.vaultKey);
   await bootChecks.assertKeyUnchanged(db, 'MATCH_KEY', config.matchKey);
+  /* G-119 / OWN-77: a database marked as staging must never run beside a live Paystack key, flag or
+   * no flag. The marker is the database's own claim to be staging; a live key says the opposite. */
+  if (
+    /^sk_live_/.test(config.paystackSecretKey) &&
+    (await stagingToolsRepo.isStagingDatabase(db))
+  ) {
+    throw new Error(
+      'this database is marked as staging but the Paystack key is LIVE; refusing to boot',
+    );
+  }
 
   /**
    * Product photos, and nothing else.

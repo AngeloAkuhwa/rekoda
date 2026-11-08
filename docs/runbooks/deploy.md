@@ -361,6 +361,19 @@ runs against the newer schema. A migration that must itself be reverted is a
 restore from backup, and **there is no backup mechanism yet** (G-02 in
 `docs/REKODA_LAUNCH_READINESS.md`; `backup-restore.md` describes the plan).
 
+**PR B (0193 to 0197).** 0193 (charge provider times), 0194 (`dead_job_exceptions`), 0195
+(blocked renewals) and 0197 (staging tools) are additive; a normal roll back keeps them and the older
+code ignores them. Their rows are payment evidence and operator records: never drop them by hand.
+**0196 is the exception: rolling back past it needs one manual step first.** Its trigger refuses a
+direct write of `businesses.plan` / `plan_expires_at`, and older releases write those columns
+directly, so an older release's plan changes, renewals and lapses would fail. Before starting an
+older release (api and worker stopped), as the database owner:
+`DROP TRIGGER businesses_plan_fields_guard ON businesses;` (the functions and the
+`rekoda_plan_writer` role may stay; they are inert without it). Rolling forward again re-creates the
+trigger: run `dc run --rm -T migrate` only after re-applying 0196 by hand, or restore the trigger with
+the `CREATE TRIGGER` statement in `packages/db/migrations/0196_plan_fields_guard.sql`. A restore needs
+the `rekoda_plan_writer` role to exist (`scripts/restore-drill.sh` creates it).
+
 Migrations 0191 and 0192 are additive and keep data on a manual revert. 0191's
 `email_address_erasures` holds erasure receipts: keep the table, or export its
 rows to the audit records before dropping it. Migration 0192 (`reminder_reply_notices`)

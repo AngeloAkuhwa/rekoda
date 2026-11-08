@@ -28,6 +28,7 @@ export const FILES = {
   workflow: '.github/workflows/deploy-staging.yml',
   ci: '.github/workflows/ci.yml',
   dockerignore: '.dockerignore',
+  compose: 'docker-compose.prod.yml',
 };
 
 /**
@@ -541,8 +542,16 @@ function retentionProblems(lines) {
   return problems;
 }
 
-export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
+export function problemsFor({ runbook, script, workflow, ci, dockerignore, compose = '' }) {
   const problems = [];
+
+  /* ---- G-119 / OWN-77: the staging tools are switched on in the staging host's .env only. The
+   * compose file is what production runs, so it must never name the flag, set or unset. ---- */
+  if (/REKODA_STAGING_TOOLS/.test(compose)) {
+    problems.push(
+      `${FILES.compose} names REKODA_STAGING_TOOLS; the staging tools are set only in the staging host's .env (OWN-77)`,
+    );
+  }
 
   /* ---- The runbook and the script perform the same steps, in order. ---- */
   const block = runbookDeployBlock(runbook);

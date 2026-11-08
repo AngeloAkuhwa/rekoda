@@ -369,6 +369,15 @@ export interface ApiConfig {
    */
   paystackPlatformConfirmed: boolean;
   /**
+   * G-119 / OWN-77: the staging test-business tools (`/v1/ops/staging/*`, one-shot send faults).
+   * `REKODA_STAGING_TOOLS=1` only in the staging host's `.env`, never in a compose file. Parsed
+   * fail-closed (anything but 0 or 1 refuses to boot), and refused at boot with anything but a
+   * TEST Paystack key or with the §47 confirmation set. `NODE_ENV` is not the discriminator:
+   * staging and production both run production builds. The database adds its own fence (the
+   * staging marker, migration 0197).
+   */
+  stagingTools: boolean;
+  /**
    * Authenticates bank-feed calls to Mono (ADR 0012, fix-plan 4 G5). Empty
    * means the feed door does not exist on this deployment: the bank page
    * says so and the CSV upload carries reconciliation alone, which is how
@@ -907,6 +916,22 @@ function nonNegativeInteger(env: NodeJS.ProcessEnv, name: string, fallback: numb
 }
 
 /** Absent or `0` is off, `1` is on; anything else refuses to boot rather than quietly selling nothing. */
+/**
+ * G-119 / OWN-77: the staging tools exist only on a deployment whose money is never real. A live
+ * Paystack key, an unrecognised or missing one, or the §47 confirmation set beside the flag refuses
+ * to boot rather than run the tools next to real payments.
+ */
+function stagingToolsFlag(env: NodeJS.ProcessEnv): boolean {
+  if (!zeroOrOneFlag(env, 'REKODA_STAGING_TOOLS')) return false;
+  if (!/^sk_test_\S+$/.test(env['PAYSTACK_SECRET_KEY'] ?? '')) {
+    throw new Error('REKODA_STAGING_TOOLS=1 needs a Paystack TEST key (sk_test_...)');
+  }
+  if (env['REKODA_PAYSTACK_PLATFORM_CONFIRMED'] === '1') {
+    throw new Error('REKODA_STAGING_TOOLS=1 cannot run with REKODA_PAYSTACK_PLATFORM_CONFIRMED=1');
+  }
+  return true;
+}
+
 function zeroOrOneFlag(env: NodeJS.ProcessEnv, name: string): boolean {
   const raw = env[name];
   if (raw === undefined || raw === '0') return false;
@@ -1517,6 +1542,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     paystackSecretKey: env['PAYSTACK_SECRET_KEY'] ?? '',
     paystackBaseUrl: providerBaseUrl(env, 'PAYSTACK_BASE_URL', PAYSTACK_API, isProduction),
     paystackPlatformConfirmed: env['REKODA_PAYSTACK_PLATFORM_CONFIRMED'] === '1',
+    stagingTools: stagingToolsFlag(env),
     monoSecretKey: env['MONO_SECRET_KEY'] ?? '',
     monoBaseUrl: providerBaseUrl(env, 'MONO_BASE_URL', MONO_API, isProduction),
     connectionKey: optionalHexKey(env, 'CONNECTION_KEY'),

@@ -9,6 +9,8 @@ import { HealthController } from './health/health.controller.js';
 import { OpsController } from './health/ops.controller.js';
 import { DeadJobsController } from './health/dead-jobs.controller.js';
 import { DeadJobRecoveryService } from './health/dead-job-recovery.service.js';
+import { StagingToolsController } from './health/staging-tools.controller.js';
+import { StagingToolsService } from './health/staging-tools.service.js';
 import { EmailErasureController } from './privacy/email-erasure.controller.js';
 import { EmailErasureService } from './privacy/email-erasure.service.js';
 import { MetaWebhookController } from './channels/meta.controller.js';
@@ -53,6 +55,7 @@ import { WebhooksModule } from './webhooks/webhooks.module.js';
     HealthController,
     OpsController,
     DeadJobsController,
+    StagingToolsController,
     EmailErasureController,
     MetaWebhookController,
   ],
@@ -63,6 +66,7 @@ import { WebhooksModule } from './webhooks/webhooks.module.js';
     OperatorGuard,
     EmailErasureService,
     DeadJobRecoveryService,
+    StagingToolsService,
     MetaIngressService,
     /* One lane per process for every webhook it receives (OWN-74). */
     { provide: IngressSequencer, useFactory: () => new IngressSequencer() },

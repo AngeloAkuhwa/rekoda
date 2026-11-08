@@ -24,6 +24,7 @@
  *     honours it. No absolute prevention is claimed.
  */
 import { Logger } from '@nestjs/common';
+import { applyStagingFault } from './staging-faults.js';
 import { TRIAL_NOTICE_DAYS_LEFT, trialNoticeDue } from '@rekoda/core';
 import { redactForLog } from '@rekoda/core/privacy';
 import { subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
@@ -62,6 +63,8 @@ export interface TrialNoticeSweepDeps {
   billingUrl: string | null;
   /** Planning FX, for pricing the utility template this sweep sends. */
   fxNairaPerUsd: number;
+  /** G-119 / OWN-77: the deployment's staging flag; on, an armed one-shot fault is applied. */
+  stagingFaults?: boolean;
 }
 
 export interface TrialNoticeSweepResult {
@@ -228,6 +231,7 @@ export async function sweepTrialNotices(
 
       let accepted: { providerMessageId: string | null };
       try {
+        await applyStagingFault(deps.appDb, row.businessId, deps.stagingFaults);
         accepted = await deps.sender.sendTrialNotice({
           to: finalCheck.ownerPhone,
           daysLeft: String(due.daysLeft),
