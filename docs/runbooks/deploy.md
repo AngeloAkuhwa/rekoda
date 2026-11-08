@@ -391,7 +391,10 @@ UPDATE reminder_reply_notices n SET undelivered_at = now()
 
 Only failed receipts are queued as `delivery.status` jobs, and a notice re-sent since
 carries a new Meta id, so this matches only notices whose last send failed. Record the
-row count in the deploy notes.
+row count in the deploy notes. Receipt jobs still pending are left to the newer release,
+which applies them as it does any receipt. Not recovered: a customer's reply that the
+older release handled is not told to the business afterwards, because the older release
+records no notice for it (the same as before PR A).
 
 ## Disk space and image retention (staging)
 
