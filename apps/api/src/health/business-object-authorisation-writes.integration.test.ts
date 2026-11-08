@@ -8,6 +8,9 @@ import { sql } from '@rekoda/db';
 import { REASON, business, call, ownerDb } from './ops-idor-harness.js';
 import { useHarness } from './ops-idor-harness.js';
 
+// not issued: a quote number nobody holds, used only as a not-found probe
+const NEVER_ISSUED_QUOTE = 'QUO-2099-999999';
+
 useHarness();
 
 const q = async (text: ReturnType<typeof sql>) => [...(await ownerDb.execute(text))];
@@ -38,7 +41,7 @@ describe('quotes: the quote number is resolved inside the caller’s business', 
         quoteNumber,
       });
       const missing = await call('POST', `/v1/reports/quotes/${action}`, b.session, {
-        quoteNumber: 'QUO-2099-999999',
+        quoteNumber: NEVER_ISSUED_QUOTE,
       });
       expect(foreign.json(), action).toEqual({ outcome: 'not_found' });
       expect(missing.json(), action).toEqual({ outcome: 'not_found' });

@@ -19,6 +19,9 @@ import {
   useHarness,
 } from './ops-idor-harness.js';
 
+// not issued: an invoice number nobody holds, used only as a not-found probe
+const NEVER_ISSUED_INVOICE = 'INV-2099-999999';
+
 useHarness();
 
 const unknownUuid = '00000000-0000-4000-8000-000000000bad';
@@ -129,7 +132,7 @@ describe('public merchant API: ids in a body or path are resolved inside the key
     const before = await books();
 
     const foreign = await pay(theirs);
-    const missing = await pay('INV-2099-999999');
+    const missing = await pay(NEVER_ISSUED_INVOICE);
     expect(foreign.json()).toEqual({ outcome: 'not_found' });
     expect(missing.json()).toEqual({ outcome: 'not_found' });
     expect(foreign.statusCode).toBe(missing.statusCode);
@@ -207,7 +210,7 @@ describe('invoice void and credit: the invoice number is resolved inside the cal
     const b = await business();
     const theirs = await invoiceFor(a.id);
     const before = await books();
-    const unknown = 'INV-2099-999999';
+    const unknown = NEVER_ISSUED_INVOICE;
 
     // Void is a two-step: the first call only opens a confirmation for the caller's OWN business.
     const voidIt = async (number: string) => {
@@ -327,11 +330,11 @@ describe('customer reminders: batch and invoice ids are resolved inside the call
       }),
     ];
     const foreign = await Promise.all(probes(theirs));
-    const missing = await Promise.all(probes('INV-2099-999999'));
+    const missing = await Promise.all(probes(NEVER_ISSUED_INVOICE));
     for (const [i, r] of foreign.entries()) {
       expect(r.statusCode, `probe ${i}`).toBe(missing[i]!.statusCode);
       expect(r.body.replace(theirs, 'N'), `probe ${i}`).toBe(
-        missing[i]!.body.replace('INV-2099-999999', 'N'),
+        missing[i]!.body.replace(NEVER_ISSUED_INVOICE, 'N'),
       );
     }
     expect({
