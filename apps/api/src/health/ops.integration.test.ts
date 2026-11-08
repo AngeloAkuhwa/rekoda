@@ -94,7 +94,8 @@ function margin(query = '', headers: Record<string, string> = {}) {
   return app.inject({ method: 'GET', url: `/v1/ops/margin${query}`, headers });
 }
 
-const QUIET = { stuck: [], flagged: [], unappliedCharges: [], deadJobs: [], deadJobDetails: [] };
+const QUIET = { stuck: [], flagged: [], unappliedCharges: [] };
+const QUIET_PR_B = { deadJobs: [], deadJobDetails: [], blockedRenewals: [] };
 function exceptions(query = '', headers: Record<string, string> = {}) {
   return app.inject({ method: 'GET', url: `/v1/ops/exceptions${query}`, headers });
 }
@@ -674,7 +675,7 @@ describe('the exception queue', () => {
   it('is two empty lists on a quiet platform', async () => {
     const res = await exceptions('', operator);
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual(QUIET);
+    expect(res.json()).toEqual({ ...QUIET, ...QUIET_PR_B });
   });
 
   it('shows what is waiting and what was flagged, and NEVER the payload', async () => {
@@ -708,7 +709,7 @@ describe('the exception queue', () => {
     expect(done.statusCode).toBe(200);
     expect(done.json()).toEqual({ resolved: true });
 
-    expect((await exceptions('', operator)).json()).toEqual(QUIET);
+    expect((await exceptions('', operator)).json()).toEqual({ ...QUIET, ...QUIET_PR_B });
 
     const healthNow = (await health(operator)).json() as { paystack: { flagged: number } };
     expect(healthNow.paystack.flagged).toBe(0);

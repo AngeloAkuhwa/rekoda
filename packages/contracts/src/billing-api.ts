@@ -559,6 +559,22 @@ export const opsDeadJobView = z.object({
   currentPlanExpiresAt: z.string().nullable(),
 });
 
+/**
+ * A renewal raised while Rekoda cannot take its payment (OWN-70): a live key without the §47
+ * confirmation, or no usable key. It stays pending and the grace clock runs (OD-44 open).
+ */
+export const opsBlockedRenewalView = z.object({
+  reference: z.string(),
+  businessId: z.string(),
+  plan: z.string().nullable(),
+  amountK: z.number().int().nonnegative(),
+  reason: z.enum(['awaiting_platform_confirmation', 'payments_not_configured']),
+  blockedAt: z.string(),
+  ageSeconds: z.number().int().nonnegative(),
+  currentPlan: z.string(),
+  currentRenewsAt: z.string().nullable(),
+});
+
 /** Start one verified, bounded recovery of a dead job. The reason is the audit record's. */
 export const opsDeadJobRecoverRequest = z.object({
   reason: z.string().trim().min(4).max(200),
@@ -610,6 +626,8 @@ export const opsExceptionsResponse = z.object({
   deadJobs: z.array(opsDeadJobView),
   /** The detail (reference, current payment and plan state) of each dead job on the flagged list. */
   deadJobDetails: z.array(opsDeadJobView),
+  /** Renewals raised while Rekoda could not take the payment (OWN-70), still open. Oldest first. */
+  blockedRenewals: z.array(opsBlockedRenewalView),
 });
 
 /**

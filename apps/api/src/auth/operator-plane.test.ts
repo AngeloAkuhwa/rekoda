@@ -74,6 +74,7 @@ describe('every operator route declares the authority it needs', () => {
     expect(byName.get('health')).toEqual(['ops:read']);
     expect(byName.get('marginReport')).toEqual(['ops:read']);
     expect(byName.get('businessBilling')).toEqual(['ops:read']);
+    expect(byName.get('resolveBlockedRenewal')).toEqual(['ops:payment']);
     /* OWN-73, OWN-76: recovering or closing a dead payment or billing job moves payment state. */
     const dead = new Map(routesOf(DeadJobsController).map((route) => [route.name, route.scopes]));
     expect(dead.get('recover')).toEqual(['ops:payment']);

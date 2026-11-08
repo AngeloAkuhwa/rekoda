@@ -31,14 +31,16 @@ import { addInterval, subscriptionReference } from '@rekoda/core';
 import { redactForLog } from '@rekoda/core/privacy';
 import { subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import { planPriceKFor, type PlanTermsConfig } from './plan-terms.js';
+import { chargeGate } from './paystack-key.js';
 
 export interface RenewalSweepDeps {
   /** `rekoda_worker` - "whose cycle ended" names no tenant, which is the point. */
   workerDb: Db;
   /** `rekoda_app` - the charge and the clock are written under a tenant pin. */
   appDb: Db;
-  /** The catalogue flag: a renewal is priced by the merchant's PINNED version. */
-  config: PlanTermsConfig;
+  /** The catalogue flag: a renewal is priced by the merchant's PINNED version. The Paystack key
+   * and the §47 confirmation decide whether the renewal can be paid at all (OWN-70). */
+  config: PlanTermsConfig & { paystackSecretKey: string; paystackPlatformConfirmed: boolean };
 }
 
 export interface RenewalSweepResult {
@@ -177,11 +179,32 @@ export async function sweepRenewals(
             Math.max(fresh.renewsAt.getTime(), Date.now() - 2 * 86_400_000),
           );
           await subscriptionsRepo.markRenewalFailed(tx, business.businessId, failedAt);
+
+          /* OWN-70: the same gate that refuses a live-key charge without the §47 confirmation.
+           * The renewal row and the grace clock above are kept exactly as ADR 0024 describes
+           * (OD-44 is open: no resume, no other expiry policy). What changes is that a renewal
+           * nobody can pay is RECORDED: stamped on the charge, audited, listed for an operator and
+           * alerted on. It is never marked paid and no Paystack reference or event is invented. */
+          const gate = chargeGate(deps.config);
+          if (!gate.ok) {
+            await subscriptionsRepo.markRenewalBlocked(
+              tx,
+              business.businessId,
+              reference,
+              gate.reason,
+            );
+            return 'blocked' as const;
+          }
           return true;
         });
 
         if (opened) {
           result.raised += 1;
+          if (opened === 'blocked') {
+            log.warn(
+              `business ${business.businessId}: renewal raised but cannot be paid yet (OWN-70)`,
+            );
+          }
           log.log(`business ${business.businessId}: renewal raised`);
         } else {
           result.skipped += 1;

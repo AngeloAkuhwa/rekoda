@@ -28,6 +28,11 @@ export interface OpsSnapshot {
   } | null;
   meta: EventCounts | null;
   paystack: EventCounts | null;
+  /**
+   * Rekoda's own billing: open renewals raised while their payment could not be taken (OWN-70).
+   * Absent or null when the process cannot see it.
+   */
+  billing?: { blockedRenewals: number } | null;
 }
 
 export interface EventCounts {
@@ -115,6 +120,15 @@ export function evaluateOpsAlerts(
         summary: `${paystack.unprocessedStale} Paystack event(s) have waited more than 10 minutes unprocessed (limit ${limits.unprocessedEvents})`,
       });
     }
+  }
+
+  /* A renewal nobody can pay is revenue lost and a merchant heading for read-only (OWN-70). */
+  if (snapshot.billing && snapshot.billing.blockedRenewals > 0) {
+    alerts.push({
+      key: 'billing.renewals_blocked',
+      severity: 'critical',
+      summary: `${snapshot.billing.blockedRenewals} renewal(s) were raised while Rekoda cannot take the payment (live key unconfirmed or not configured); see the operator exception queue`,
+    });
   }
 
   if (meta) {

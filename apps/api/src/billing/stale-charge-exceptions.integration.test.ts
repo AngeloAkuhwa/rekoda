@@ -52,7 +52,12 @@ beforeEach(async () => {
   await truncateAll(urls);
 });
 
-const config = { planCatalogueReads: false };
+/* A test key: renewals are payable, so none is recorded as blocked (OWN-70). */
+const config = {
+  planCatalogueReads: false,
+  paystackSecretKey: 'sk_test_x',
+  paystackPlatformConfirmed: false,
+};
 const renewsAt = new Date(Date.now() + 20 * 86_400_000);
 
 let seq = 0;

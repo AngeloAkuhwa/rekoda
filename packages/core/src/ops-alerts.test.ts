@@ -160,3 +160,16 @@ describe('planAlertDelivery (G-26)', () => {
     expect(back.send).toEqual([dead]);
   });
 });
+
+describe('blocked renewals (OWN-70)', () => {
+  it('pages while any renewal Rekoda cannot take the payment for is open, and not otherwise', () => {
+    expect(keys({ ...healthy, billing: { blockedRenewals: 0 } })).not.toContain(
+      'billing.renewals_blocked',
+    );
+    expect(keys({ ...healthy, billing: null })).not.toContain('billing.renewals_blocked');
+    const alerts = evaluateOpsAlerts({ ...healthy, billing: { blockedRenewals: 2 } });
+    expect(alerts.find((a) => a.key === 'billing.renewals_blocked')).toMatchObject({
+      severity: 'critical',
+    });
+  });
+});

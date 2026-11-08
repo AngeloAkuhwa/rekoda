@@ -128,10 +128,11 @@ export class OpsController {
     alerts: OpsAlert[];
   }> {
     const worker = this.workerDb;
-    const [queue, meta, paystack] = await Promise.all([
+    const [queue, meta, paystack, blockedRenewals] = await Promise.all([
       worker ? jobsRepo.queueHealth(worker) : Promise.resolve(null),
       worker ? events.eventHealth(worker, 'meta') : Promise.resolve(null),
       worker ? events.eventHealth(worker, 'paystack') : Promise.resolve(null),
+      worker ? subscriptionsRepo.blockedRenewalCount(worker) : Promise.resolve(null),
     ]);
     return {
       queue,
@@ -153,6 +154,7 @@ export class OpsController {
         },
         meta,
         paystack,
+        billing: blockedRenewals === null ? null : { blockedRenewals },
       }),
     };
   }
@@ -550,6 +552,7 @@ export class OpsController {
     const queue = await events.exceptionQueue(this.workerDb, limit);
     const unapplied = await subscriptionsRepo.unappliedCharges(this.workerDb, limit);
     const deadJobs = await deadJobsRepo.opsQueue(this.workerDb, limit);
+    const blocked = await subscriptionsRepo.blockedRenewals(this.workerDb, limit);
     const now = new Date();
     return opsExceptionsResponse.parse({
       stuck: queue.stuck.map(toEventView),
@@ -575,6 +578,17 @@ export class OpsController {
       })),
       deadJobs: deadJobs.filter((d) => d.eventId === null).map((d) => toDeadJobView(d, now)),
       deadJobDetails: deadJobs.filter((d) => d.eventId !== null).map((d) => toDeadJobView(d, now)),
+      blockedRenewals: blocked.map((b) => ({
+        reference: b.reference,
+        businessId: b.businessId,
+        plan: b.plan,
+        amountK: b.amountK,
+        reason: b.reason,
+        blockedAt: b.blockedAt.toISOString(),
+        ageSeconds: Math.max(0, Math.floor((now.getTime() - b.blockedAt.getTime()) / 1000)),
+        currentPlan: b.currentPlan,
+        currentRenewsAt: b.currentRenewsAt?.toISOString() ?? null,
+      })),
     });
   }
 
@@ -611,6 +625,40 @@ export class OpsController {
       ),
     );
     if (!resolved) throw new ConflictException('that charge is not open');
+    return { resolved: true as const };
+  }
+
+  /**
+   * Close a blocked renewal (OWN-70) with what the operator decided. Records only: it neither pays
+   * the renewal, nor starts a new one, nor touches the grace clock (OD-44 is open).
+   */
+  @Post('exceptions/renewals/:reference/resolve')
+  @OperatorScopes('ops:payment')
+  @HttpCode(200)
+  async resolveBlockedRenewal(
+    @Req() request: OperatorRequest,
+    @Param('reference') reference: string,
+    @Body() body: unknown,
+  ): Promise<{ resolved: true }> {
+    if (!this.workerDb) {
+      throw new ServiceUnavailableException('this process holds no worker credential');
+    }
+    const input = opsResolveEventRequest.safeParse(body);
+    if (!input.success) {
+      throw new BadRequestException('a resolution of at least 4 characters is required');
+    }
+    const businessId = await subscriptionsRepo.businessForCharge(this.workerDb, reference);
+    if (!businessId) throw new NotFoundException('no such charge');
+    const resolved = await withBusiness(this.db, businessId, (tx) =>
+      subscriptionsRepo.resolveBlockedRenewal(
+        tx,
+        businessId,
+        reference,
+        input.data.resolution,
+        `operator:${request.operator!.subject}`,
+      ),
+    );
+    if (!resolved) throw new ConflictException('that renewal is not an open blocked renewal');
     return { resolved: true as const };
   }
 

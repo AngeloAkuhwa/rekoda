@@ -2291,3 +2291,114 @@ export async function businessForCharge(db: Db, reference: string): Promise<stri
   `);
   return [...rows][0]?.business_id ?? null;
 }
+
+/* ── OWN-70: renewals raised while the payment could not be taken (migration 0195) ── */
+
+export type RenewalBlockReason = 'awaiting_platform_confirmation' | 'payments_not_configured';
+
+/**
+ * Stamp a just-opened renewal charge as blocked: Rekoda cannot take its payment (the live key is
+ * unconfirmed, or no usable key is configured). Records only: the charge stays pending, the grace
+ * clock runs as for any renewal (OD-44 open), nothing is paid, no provider reference exists. Written
+ * once, with an audit event, in the sweep's own transaction.
+ */
+export async function markRenewalBlocked(
+  tx: TenantDb,
+  businessId: string,
+  reference: string,
+  reason: RenewalBlockReason,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE subscription_charges
+    SET blocked_at = now(), blocked_reason = ${reason}, updated_at = now()
+    WHERE business_id = ${businessId}::uuid AND reference = ${reference}
+      AND kind = 'renewal' AND status = 'pending' AND blocked_at IS NULL
+    RETURNING id
+  `);
+  if ([...rows].length !== 1) return false;
+  await tx.execute(sql`
+    INSERT INTO audit_events (business_id, actor, entity, entity_id, action, new_value, source_type)
+    VALUES (${businessId}::uuid, 'system:renewal_sweep', 'subscription_charge', ${reference},
+            'renewal_blocked', ${JSON.stringify({ reason })}::jsonb, 'system')
+  `);
+  return true;
+}
+
+export interface BlockedRenewalRow {
+  reference: string;
+  businessId: string;
+  plan: string | null;
+  amountK: number;
+  reason: RenewalBlockReason;
+  blockedAt: Date;
+  /** The business's plan and paid-to date now. */
+  currentPlan: string;
+  currentRenewsAt: Date | null;
+}
+
+const OPEN_BLOCKED = sql`c.blocked_at IS NOT NULL AND c.blocked_resolved_at IS NULL
+  AND c.status = 'pending' AND c.superseded_at IS NULL`;
+
+/** Open blocked renewals, oldest first, for the operator queue. Worker-credentialed. */
+export async function blockedRenewals(db: Db, limit = 50): Promise<BlockedRenewalRow[]> {
+  const rows = await db.execute<{
+    reference: string;
+    business_id: string;
+    plan: string | null;
+    amount_k: string | number;
+    blocked_reason: RenewalBlockReason;
+    blocked_at: string;
+    current_plan: string;
+    current_renews_at: string | null;
+  }>(sql`
+    SELECT c.reference, c.business_id, c.plan, c.amount_k, c.blocked_reason, c.blocked_at,
+           b.plan AS current_plan, b.plan_expires_at AS current_renews_at
+    FROM subscription_charges c JOIN businesses b ON b.id = c.business_id
+    WHERE ${OPEN_BLOCKED}
+    ORDER BY c.blocked_at, c.reference
+    LIMIT ${limit}
+  `);
+  return [...rows].map((r) => ({
+    reference: r.reference,
+    businessId: r.business_id,
+    plan: r.plan,
+    amountK: Number(r.amount_k),
+    reason: r.blocked_reason,
+    blockedAt: new Date(r.blocked_at),
+    currentPlan: r.current_plan,
+    currentRenewsAt: at(r.current_renews_at),
+  }));
+}
+
+/** How many blocked renewals are open: an approved operational count for the alert (OWN-70). */
+export async function blockedRenewalCount(db: Db): Promise<number> {
+  const rows = await db.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM subscription_charges c WHERE ${OPEN_BLOCKED}
+  `);
+  return [...rows][0]?.n ?? 0;
+}
+
+/** An operator closes a blocked renewal with a written resolution. True when this call closed it. */
+export async function resolveBlockedRenewal(
+  tx: TenantDb,
+  businessId: string,
+  reference: string,
+  resolution: string,
+  actor: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE subscription_charges
+    SET blocked_resolved_at = now(), blocked_resolved_by = ${actor},
+        blocked_resolution = ${resolution}, updated_at = now()
+    WHERE business_id = ${businessId}::uuid AND reference = ${reference}
+      AND blocked_at IS NOT NULL AND blocked_resolved_at IS NULL
+    RETURNING id
+  `);
+  if ([...rows].length !== 1) return false;
+  await tx.execute(sql`
+    INSERT INTO audit_events (business_id, actor, entity, entity_id, action, new_value, source_type)
+    VALUES (${businessId}::uuid, ${actor}, 'subscription_charge', ${reference},
+            'renewal_block_resolved', ${JSON.stringify({ resolution })}::jsonb, 'operator')
+  `);
+  return true;
+}

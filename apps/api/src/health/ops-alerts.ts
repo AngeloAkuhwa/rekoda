@@ -16,7 +16,7 @@ import {
   type OpsSnapshot,
 } from '@rekoda/core';
 import { redactForLog } from '@rekoda/core/privacy';
-import { events, jobsRepo, type Db } from '@rekoda/db';
+import { events, jobsRepo, subscriptionsRepo, type Db } from '@rekoda/db';
 
 export const ALERT_COOLDOWN_MS = 30 * 60_000;
 
@@ -59,15 +59,17 @@ export class WebhookAlertSink implements AlertSink {
 /**
  * Read the platform's numbers. Null parts mean this process cannot see them.
  *
- * The only cross-tenant reads here are the two approved operational aggregates
- * (OWN-36, ADR 0035): counts and ages, no identities, no payloads, read-only.
+ * The only cross-tenant reads here are approved operational aggregates (OWN-36, ADR 0035, and the
+ * blocked-renewal count the owner-approved PR B plan adds for OWN-70): counts and ages, no
+ * identities, no payloads, read-only.
  */
 export async function collectOpsSnapshot(workerDb: Db | null): Promise<OpsSnapshot> {
   if (!workerDb) return { queue: null, meta: null, paystack: null };
-  const [queue, meta, paystack] = await Promise.all([
+  const [queue, meta, paystack, blockedRenewals] = await Promise.all([
     jobsRepo.queueHealth(workerDb),
     events.eventHealth(workerDb, 'meta'),
     events.eventHealth(workerDb, 'paystack'),
+    subscriptionsRepo.blockedRenewalCount(workerDb),
   ]);
   return {
     queue: {
@@ -80,6 +82,7 @@ export async function collectOpsSnapshot(workerDb: Db | null): Promise<OpsSnapsh
     },
     meta,
     paystack,
+    billing: { blockedRenewals },
   };
 }
 
