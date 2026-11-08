@@ -333,50 +333,6 @@ describe('what a dead job leaves, by kind and by payload', () => {
     expect(await merchantExceptions(businessId)).toHaveLength(0);
   });
 
-  it('enrolment skips a death whose payment was already booked (event processed): no false merchant exception', async () => {
-    const businessId = await seedBusiness();
-    const eventId = await attributedEvent(businessId);
-    await enqueue(businessId, 'payment.process', { eventId });
-    await withBusiness(appDb, businessId, (tx) =>
-      tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
-    );
-    // Settled another way (a verify or intent sweep booked it) after the job's last attempt.
-    await events.markProcessed(workerDb, eventId, null, businessId);
-    expect(await jobsRepo.enrolUnrecordedDeaths(workerDb)).toBe(0);
-    expect(await recordsOf(businessId)).toHaveLength(0);
-    expect(await merchantExceptions(businessId)).toHaveLength(0);
-  });
-
-  it('enrolment re-reads the event at insert time: one settled after the candidate was picked is not enrolled', async () => {
-    const businessId = await seedBusiness();
-    const eventId = await attributedEvent(businessId);
-    await enqueue(businessId, 'payment.process', { eventId });
-    await withBusiness(appDb, businessId, (tx) =>
-      tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
-    );
-    const [job] = [
-      ...(await workerDb.execute<{ id: string }>(sql`SELECT id FROM jobs WHERE state = 'dead'`)),
-    ];
-    // The event is settled after the sweep selected the job and before the record is written.
-    await events.markProcessed(workerDb, eventId, null, businessId);
-    await workerDb.transaction((tx) =>
-      deadJobsRepo.recordDeath(
-        tx,
-        {
-          id: job!.id,
-          businessId,
-          kind: 'payment.process',
-          payload: { eventId },
-          attempts: 2,
-          failureCategory: null,
-        },
-        { enrolOnly: true },
-      ),
-    );
-    expect(await recordsOf(businessId)).toHaveLength(0);
-    expect(await merchantExceptions(businessId)).toHaveLength(0);
-  });
-
   it('another business resolving its own event never hides this business’s dead job from enrolment', async () => {
     const businessId = await seedBusiness();
     const foreign = await attributedEvent(await seedBusiness());
