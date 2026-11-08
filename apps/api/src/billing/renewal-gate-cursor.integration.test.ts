@@ -129,6 +129,39 @@ describe('closing blocked renewals keeps a persisted cursor', () => {
     expect(audited).toEqual({ n: 300, distinct: 300 });
   }, 120_000);
 
+  it('a block whose close fails AND whose stamp fails is skipped exactly once per pass, and no healthy block is skipped', async () => {
+    await seedBlocked(8, 3);
+    // Every block has an old stamp (so they sort by it), the 3 stuck ones refuse both the close
+    // and the stamp, and every attempt on them is counted by a sequence (it survives the rollback).
+    await ownerDb.execute(sql`
+      UPDATE subscription_charges
+      SET blocked_close_failed_at = now() - interval '1 day' + blocked_at - (now() - interval '1 hour')`);
+    await ownerDb.execute(sql`DROP TRIGGER refuse_block_close ON subscription_charges`);
+    await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS refuse_attempts`);
+    await ownerDb.execute(sql`CREATE SEQUENCE refuse_attempts`);
+    await ownerDb.execute(sql`
+      CREATE OR REPLACE FUNCTION refuse_block_close() RETURNS trigger LANGUAGE plpgsql
+      SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $f$
+      BEGIN PERFORM nextval('public.refuse_attempts');
+            RAISE EXCEPTION 'cannot close or stamp'; END $f$`);
+    await ownerDb.execute(sql`
+      CREATE TRIGGER refuse_block_close BEFORE UPDATE ON subscription_charges
+      FOR EACH ROW WHEN (OLD.quantity = 2
+        AND (NEW.blocked_resolved_at IS NOT NULL
+             OR NEW.blocked_close_failed_at IS DISTINCT FROM OLD.blocked_close_failed_at))
+      EXECUTE FUNCTION refuse_block_close()`);
+
+    await sweep({ blockPageSize: 1 });
+
+    expect(await openCount()).toBe(3); // the 5 healthy blocks all closed in this one pass
+    const [seq] = await ownerDb.execute<{ last: string; called: boolean }>(
+      sql`SELECT last_value::text AS last, is_called AS called FROM refuse_attempts`,
+    );
+    // Each stuck block: one failed close and one failed stamp, once, in the whole pass.
+    expect(seq?.called ? Number(seq.last) : 0).toBe(6);
+    await ownerDb.execute(sql`DROP SEQUENCE refuse_attempts CASCADE`);
+  }, 120_000);
+
   it('the cleanup never stands in the way of raising a due renewal', async () => {
     await seedBlocked(10, 10);
     // Every block fails to close, and the sweep still completes and reports normally.

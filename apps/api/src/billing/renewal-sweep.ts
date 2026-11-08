@@ -263,8 +263,11 @@ async function closeBlocksTheGateNoLongerHolds(
   maxPages = BLOCK_PAGES,
 ): Promise<void> {
   const passStart = await subscriptionsRepo.databaseNow(deps.workerDb);
-  /* A failed block that also could not be stamped stays at the head of the list, so it is skipped by
-   * position for the rest of this pass (the stamp is the normal way past it). */
+  /* A block whose close failed and whose stamp also failed stays eligible, at its place in the
+   * order. Candidates are taken strictly in that order, so every row that is still listed ahead of
+   * the first untried one is exactly such a block: skipping that many rows moves past them and
+   * only them (a concurrent sweep removing rows can make the skip land a few rows late, and the
+   * next pass picks those up). The stamp is the normal way past a failure; this is its fallback. */
   let unstamped = 0;
   for (let page = 0; page < maxPages; page += 1) {
     const open = await subscriptionsRepo.blockedRenewals(
