@@ -325,12 +325,16 @@ export class ReportsController {
   ): Promise<PartyStatementResponse> {
     if (!isUuid(customerId)) throw new NotFoundException('no such customer');
     const businessId = request.auth!.businessId;
-    return withBusiness(this.db, businessId, (tx) =>
-      partyStatementsRepo.customerStatementFor(tx, businessId, customerId, {
+    return withBusiness(this.db, businessId, async (tx) => {
+      /* Malformed, unknown and another business's id are one and the same 404. */
+      if (!(await partyStatementsRepo.customerKnown(tx, businessId, customerId))) {
+        throw new NotFoundException('no such customer');
+      }
+      return partyStatementsRepo.customerStatementFor(tx, businessId, customerId, {
         from: dayOrNull(from),
         to: dayOrNull(to),
-      }),
-    );
+      });
+    });
   }
 
   /** The mirror for a supplier: bills raised, payments made, balance owed. */
@@ -343,12 +347,15 @@ export class ReportsController {
   ): Promise<PartyStatementResponse> {
     if (!isUuid(supplierId)) throw new NotFoundException('no such supplier');
     const businessId = request.auth!.businessId;
-    return withBusiness(this.db, businessId, (tx) =>
-      partyStatementsRepo.supplierStatementFor(tx, businessId, supplierId, {
+    return withBusiness(this.db, businessId, async (tx) => {
+      if (!(await partyStatementsRepo.supplierKnown(tx, businessId, supplierId))) {
+        throw new NotFoundException('no such supplier');
+      }
+      return partyStatementsRepo.supplierStatementFor(tx, businessId, supplierId, {
         from: dayOrNull(from),
         to: dayOrNull(to),
-      }),
-    );
+      });
+    });
   }
 
   @Get('cashflow')
@@ -2203,6 +2210,12 @@ export class ReportsController {
   ): Promise<void> {
     if (!isUuid(customerId)) throw new NotFoundException('no such customer');
     const businessId = request.auth!.businessId;
+    /* Checked before the export unit is taken: an id that names no customer of this business
+     * costs nothing and is the same 404 as a malformed one. */
+    const known = await withBusiness(this.db, businessId, (tx) =>
+      partyStatementsRepo.customerKnown(tx, businessId, customerId),
+    );
+    if (!known) throw new NotFoundException('no such customer');
     await this.takeExport(businessId);
     const statement = await withBusiness(this.db, businessId, (tx) =>
       partyStatementsRepo.customerStatementFor(tx, businessId, customerId),
@@ -2224,6 +2237,10 @@ export class ReportsController {
   ): Promise<void> {
     if (!isUuid(supplierId)) throw new NotFoundException('no such supplier');
     const businessId = request.auth!.businessId;
+    const known = await withBusiness(this.db, businessId, (tx) =>
+      partyStatementsRepo.supplierKnown(tx, businessId, supplierId),
+    );
+    if (!known) throw new NotFoundException('no such supplier');
     await this.takeExport(businessId);
     const statement = await withBusiness(this.db, businessId, (tx) =>
       partyStatementsRepo.supplierStatementFor(tx, businessId, supplierId),

@@ -165,4 +165,22 @@ describe('enrolment skips a settled payment', () => {
     expect(await recordsOf(businessId)).toHaveLength(0);
     expect(await merchantExceptions(businessId)).toHaveLength(0);
   });
+
+  it('enrolment matches the settled event whatever the case of the payload id, and a malformed id cannot throw', async () => {
+    const businessId = await seedBusiness();
+    const eventId = await attributedEvent(businessId);
+    // Payload written with an upper-case UUID: the settled event must still be recognised.
+    await enqueue(businessId, 'payment.process', { eventId: eventId.toUpperCase() });
+    // A malformed id on a second dead job: nothing matches, nothing is cast, the pass completes.
+    await enqueue(businessId, 'payment.process', { eventId: 'not-a-uuid' });
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
+    );
+    await events.markProcessed(workerDb, eventId, null, businessId);
+    // Only the malformed-id job is enrolled; the upper-case one is skipped as settled.
+    expect(await jobsRepo.enrolUnrecordedDeaths(workerDb)).toBe(1);
+    const records = await recordsOf(businessId);
+    expect(records).toHaveLength(1);
+    expect(records[0]!['event_id']).toBeNull();
+  });
 });

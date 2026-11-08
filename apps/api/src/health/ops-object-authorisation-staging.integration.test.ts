@@ -39,8 +39,9 @@ describe('staging tools act only on the designated business named in the route',
     const r = await call('POST', `/v1/ops/staging/businesses/${a.id}/designate`, staging, {
       reason: REASON,
     });
-    expect(r.statusCode).toBeGreaterThanOrEqual(400);
-    expect(r.statusCode).toBeLessThan(500);
+    // Exactly the staging-marker refusal, not any 4xx (a bad token or body would also be one).
+    expect(r.statusCode).toBe(403);
+    expect(r.body).toContain('this database is not marked as staging');
     expect(await snapshot()).toEqual(before);
   });
 

@@ -278,6 +278,11 @@ function at(value: string | Date): Date {
  * before booking anything, so a customer id of another business (or none at all) is one and the
  * same refusal, decided by the application and not left to a foreign-key violation deep inside
  * the booking transaction.
+ *
+ * The row is read `FOR KEY SHARE`, held until the caller's transaction ends: a customer merge
+ * (which deletes the orphan) or any other removal of that customer waits for the sale to commit
+ * instead of landing between this check and the booking and turning the sale into a foreign-key
+ * failure deep inside it. Call it in the same transaction that books the sale.
  */
 export async function customerBelongsToBusiness(
   tx: TenantDb,
@@ -286,6 +291,7 @@ export async function customerBelongsToBusiness(
 ): Promise<boolean> {
   const rows = await tx.execute<{ ok: number }>(sql`
     SELECT 1 AS ok FROM customers WHERE business_id = ${businessId} AND id = ${customerId}::uuid
+    FOR KEY SHARE
   `);
   return [...rows].length === 1;
 }

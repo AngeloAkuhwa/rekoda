@@ -574,9 +574,11 @@ export async function enrolUnrecordedDeaths(db: Db, limit = 100): Promise<number
         AND NOT dead_job_has_record(j.id)
         -- Work an operator already closed by resolving its event (before 0194's guard), or whose
         -- event was processed another way (a verify or intent sweep booked it), is not reopened:
-        -- no stale merchant notice and no operator item for a settled job.
+        -- no stale merchant notice and no operator item for a settled job. The id is compared as
+        -- lower-cased text (a uuid prints lower-case; a payload may carry any case) and never cast,
+        -- so a malformed payload value matches nothing and cannot throw.
         AND NOT EXISTS (SELECT 1 FROM external_events e
-                         WHERE e.id::text = j.payload->>'eventId' AND e.business_id = j.business_id
+                         WHERE e.id::text = lower(j.payload->>'eventId') AND e.business_id = j.business_id
                            AND (e.resolved_at IS NOT NULL OR e.processed_at IS NOT NULL))
       ORDER BY j.updated_at, j.id
       LIMIT ${limit}

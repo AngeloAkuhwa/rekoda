@@ -149,3 +149,31 @@ export async function supplierStatementFor(
   `);
   return assemble([...rows], window.from ?? null);
 }
+
+/**
+ * Whether `customerId` is one of THIS business's customers. The statement routes answer an id that
+ * is malformed, unknown or another business's with one and the same "no such customer", so the
+ * answer never says which of the three it was.
+ */
+export async function customerKnown(
+  tx: TenantDb,
+  businessId: string,
+  customerId: string,
+): Promise<boolean> {
+  const rows = await tx.execute(sql`
+    SELECT 1 FROM customers WHERE business_id = ${businessId}::uuid AND id = ${customerId}::uuid
+  `);
+  return [...rows].length === 1;
+}
+
+/** The supplier twin of {@link customerKnown}. */
+export async function supplierKnown(
+  tx: TenantDb,
+  businessId: string,
+  supplierId: string,
+): Promise<boolean> {
+  const rows = await tx.execute(sql`
+    SELECT 1 FROM suppliers WHERE business_id = ${businessId}::uuid AND id = ${supplierId}::uuid
+  `);
+  return [...rows].length === 1;
+}

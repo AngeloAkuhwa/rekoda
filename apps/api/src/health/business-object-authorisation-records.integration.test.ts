@@ -211,11 +211,27 @@ describe('party statements: a foreign id reads as nothing, and the SQL itself is
         missing.body.replace(/\d{4}-\d{2}-\d{2}/g, 'D'),
       );
       expect(foreign.body, url('x')).not.toContain(theirs[referenceKey]);
+      // Foreign, unknown and malformed are all the same 404 with the same body: the answer never
+      // says which of the three it was, and none of them spends an export unit.
+      expect(foreign.statusCode, url('x')).toBe(404);
       expect(malformed.statusCode, url('x')).toBe(404);
+      expect(malformed.body, url('x')).toBe(missing.body);
+      expect(foreign.body, url('x')).toBe(missing.body);
       // Control: the owner of the data does see its own entry.
       expect((await call('GET', url(theirs[idKey]), b.session)).body, url('x')).toContain(
         theirs[referenceKey],
       );
+    }
+  });
+
+  it('a customer of the business with no activity yet still gets an (empty) statement, not a 404', async () => {
+    const a = await business();
+    const idle = await customerFor(a.id);
+    for (const suffix of ['statement', 'statement.csv']) {
+      expect(
+        (await call('GET', `/v1/reports/customers/${idle}/${suffix}`, a.session)).statusCode,
+        suffix,
+      ).toBe(200);
     }
   });
 
@@ -308,6 +324,13 @@ describe('payments lists: scoped to the pinned business in SQL as well as by RLS
     // The payment list: exactly A's one payment, B's excluded, and the count agrees with the rows.
     expect(seen.payments.rows.map((p) => Number(p.amountK))).toEqual([1110000]);
     expect(seen.payments.count).toBe(1);
+    // With no business pinned the same reader returns nothing at all, rows and count: the SQL
+    // predicate fails closed even on a connection that bypasses RLS.
+    const unpinnedPayments = await ownerDb.transaction(async (tx) =>
+      settleRepo.paymentsFor(tx as never),
+    );
+    expect(unpinnedPayments.rows).toEqual([]);
+    expect(unpinnedPayments.count).toBe(0);
     const unpinned = await ownerDb.transaction(async (tx) =>
       settleRepo.reconciliationsFor(tx as never, { status: 'EXCEPTION', limit: 50 }),
     );

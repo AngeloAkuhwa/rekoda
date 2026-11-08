@@ -150,11 +150,15 @@ describe('members: the user id is only ever looked up inside the caller’s own 
       role: 'delegate',
     });
     const removedMissing = await call('DELETE', `/v1/businesses/members/${unknownUuid}`, b.session);
+    // The owner's own session with a malformed id: the same safe answer as an unknown member.
+    const removedMalformed = await call('DELETE', '/v1/businesses/members/not-a-uuid', b.session);
     const changedMalformed = await call('PATCH', '/v1/businesses/members/not-a-uuid', b.session, {
       role: 'delegate',
     });
     expect(removed.json()).toEqual({ removed: false });
     expect(removed.body).toBe(removedMissing.body);
+    expect(removedMalformed.statusCode).toBe(removedMissing.statusCode);
+    expect(removedMalformed.body).toBe(removedMissing.body);
     expect(changed.json()).toEqual({ changed: false });
     expect(changedMalformed.json()).toEqual({ changed: false });
     expect({
