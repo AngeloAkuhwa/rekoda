@@ -71,7 +71,7 @@ async function enqueue(
   );
 }
 
-/** Fail every attempt through the handler path until the job is dead. */
+/** The operator records of a business: what enrolment may or may not write. */
 const recordsOf = (businessId: string) =>
   withBusiness(appDb, businessId, (tx) =>
     tx.execute<Record<string, unknown>>(
