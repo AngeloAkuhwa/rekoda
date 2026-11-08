@@ -353,6 +353,24 @@ describe('OWN-73: an operator recovers a dead payment job', () => {
     });
   });
 
+  it('a job queued before the upgrade (no reference in its payload) recovers from its signed event', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    const { jobId } = await deadPaymentJob(businessId, intent.reference);
+    const owner = createDb(urls.owner, { max: 1 });
+    await owner.db.execute(
+      sql`UPDATE dead_job_exceptions SET reference = NULL WHERE job_id = ${jobId}::uuid`,
+    );
+    await owner.close();
+    expect(await controller().recover(asOperator, jobId, { reason: 'old payload' })).toEqual({
+      recovering: true,
+      jobId,
+    });
+    await drainJobs();
+    expect(await paymentCount(businessId)).toBe(1);
+    expect((await statusOf(businessId, jobId))?.status).toBe('recovered');
+  });
+
   it('a second recovery of the same job is refused, and a replayed event books nothing more', async () => {
     const businessId = await seedBusiness();
     const { intent } = await seedObligation(businessId);
@@ -493,6 +511,24 @@ describe('OWN-73: an operator recovers a dead payment job', () => {
     expect((await statusOf(businessId, jobId))?.status).toBe('open');
     const queue = await events.exceptionQueue(workerDb);
     expect(queue.flagged.find((row) => row.id === eventId)?.jobId).toBe(jobId);
+  });
+
+  it('the operator queue details the job each flagged row names, not an unrelated page', async () => {
+    const first = await seedBusiness();
+    const a = await deadPaymentJob(first, (await seedObligation(first)).intent.reference);
+    const second = await seedBusiness();
+    const b = await deadPaymentJob(second, (await seedObligation(second)).intent.reference);
+    // A's event is older, but its job died later: an oldest-first page of one finds only B.
+    const owner = createDb(urls.owner, { max: 1 });
+    await owner.db.execute(
+      sql`UPDATE dead_job_exceptions SET opened_at = now() + interval '1 hour' WHERE job_id = ${a.jobId}::uuid`,
+    );
+    await owner.close();
+    const ops = new OpsController(config, appDb, workerDb, {} as SecurityMetrics);
+    const answer = await ops.exceptions('1');
+    expect(answer.flagged.map((f) => f.jobId)).toEqual([a.jobId]);
+    expect(answer.deadJobDetails.map((d) => d.jobId)).toContain(a.jobId);
+    expect(answer.deadJobDetails.map((d) => d.jobId)).toContain(b.jobId);
   });
 
   it('resolving the job closes its flagged event in the same transaction', async () => {

@@ -515,19 +515,24 @@ const dyingJob = (row: DyingRow): deadJobs.DyingJob => ({
  * job). Only if that run dies too does the job go `dead` here.
  */
 export async function reclaimStalled(db: Db, olderThanMs = 300_000): Promise<number> {
+  /* An operator's recovery (OWN-73, OWN-76) is ONE attempt: its run already took the
+   * last-attempt path, so a crash during it goes straight back to dead (reopening the record)
+   * instead of taking the ordinary one-more-run crash allowance without a fresh operator ask. */
+  const exhausted = sql`(attempts > max_attempts OR (attempts >= max_attempts AND EXISTS (
+      SELECT 1 FROM dead_job_exceptions d WHERE d.job_id = jobs.id AND d.status = 'recovering')))`;
   /* One transaction: every payment or billing job this pass sends to `dead` writes its dead-job
    * record in the same commit (OWN-73, OWN-76). `recordDeath` pins each job's own tenant. */
   return db.transaction(async (tx) => {
     const rows = await tx.execute<DyingRow>(sql`
       UPDATE jobs SET
-        state      = CASE WHEN attempts > max_attempts THEN 'dead' ELSE 'pending' END,
+        state      = CASE WHEN ${exhausted} THEN 'dead' ELSE 'pending' END,
         locked_at  = NULL,
         locked_by  = NULL,
         -- An expired lease says the worker stopped answering, not why, so the message is neutral.
         -- A dead job's error is fixed text (owner ruling, 4 Nov 2026): no earlier attempt's error
         -- text is carried into it. That an earlier attempt's handler failed survives only as the
         -- sanitised category beside it.
-        last_error = CASE WHEN attempts > max_attempts
+        last_error = CASE WHEN ${exhausted}
                        THEN 'reclaimed past the last attempt: its lease expired'
                        ELSE coalesce(last_error, 'reclaimed: lease expired before the worker finished') END,
         failure_category = CASE WHEN failure_category IN ('handler_error', 'lease_expired_after_handler_error')
@@ -548,6 +553,34 @@ export async function reclaimStalled(db: Db, olderThanMs = 300_000): Promise<num
       }
     }
     return reclaimed.length;
+  });
+}
+
+/**
+ * Enrol dead payment and billing jobs that have no dead-job record (OWN-73, OWN-76 cutover).
+ *
+ * A job that died before migration 0194, or under a worker still running the old code during a
+ * rollout, has no record, so it would sit dead with no merchant notice, no operator item and no
+ * recovery. This pass, run beside the reclaim, gives each one the same record a death writes now.
+ * `recordDeath` is idempotent per job, and a job an operator already closed has a row, so it is
+ * never enrolled twice. Bounded per pass; one savepoint per job.
+ */
+export async function enrolUnrecordedDeaths(db: Db, limit = 100): Promise<number> {
+  return db.transaction(async (tx) => {
+    const rows = await tx.execute<DyingRow>(sql`
+      SELECT j.id, j.business_id, j.kind, j.payload, j.attempts, j.state, j.failure_category
+      FROM jobs j
+      WHERE j.state = 'dead' AND j.kind IN ('payment.process', 'billing.process')
+        AND j.business_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM dead_job_exceptions d WHERE d.job_id = j.id)
+      ORDER BY j.updated_at, j.id
+      LIMIT ${limit}
+    `);
+    const found = [...rows];
+    for (const row of found) {
+      await tx.transaction((savepoint) => deadJobs.recordDeath(savepoint, dyingJob(row)));
+    }
+    return found.length;
   });
 }
 

@@ -5,7 +5,11 @@ import type { BillingPaymentRecord } from '@rekoda/contracts';
 import { Money } from '@/components/ui/Money';
 import { heldBy } from '@/lib/capabilities';
 import { PLAN_NAMES } from '@/lib/plans';
-import { PAYMENT_RECORD_NOTICE, paymentRecordView } from '@/lib/payment-record-copy';
+import {
+  PAYMENT_RECORD_NOTICE,
+  paymentRecordTimes,
+  paymentRecordView,
+} from '@/lib/payment-record-copy';
 import { billingPayment } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../../../AppNav';
@@ -136,36 +140,12 @@ export default async function PaymentRecordPage({
                   : 'Not confirmed'}
             </dd>
           </div>
-          {record.providerPaidAt && !record.noCharge ? (
-            <div>
-              <dt>Paid at Paystack on</dt>
-              <dd>{lagosDateTime(record.providerPaidAt)} (Lagos time)</dd>
+          {paymentRecordTimes(record).map((row) => (
+            <div key={row.label}>
+              <dt>{row.label}</dt>
+              <dd>{lagosDateTime(row.iso)} (Lagos time)</dd>
             </div>
-          ) : null}
-          {record.paidAt ? (
-            <div>
-              <dt>{record.noCharge ? 'Applied on' : 'Payment recorded by Rekoda on'}</dt>
-              <dd>{lagosDateTime(record.paidAt)} (Lagos time)</dd>
-            </div>
-          ) : null}
-          {record.providerSettledAt ? (
-            <div>
-              <dt>Settled by Paystack on</dt>
-              <dd>{lagosDateTime(record.providerSettledAt)} (Lagos time)</dd>
-            </div>
-          ) : null}
-          {record.kind === 'add_on' && record.unitsCreditedAt ? (
-            <div>
-              <dt>Units added on</dt>
-              <dd>{lagosDateTime(record.unitsCreditedAt)} (Lagos time)</dd>
-            </div>
-          ) : null}
-          {record.failedAt && record.state === 'failed' ? (
-            <div>
-              <dt>Reported failed on</dt>
-              <dd>{lagosDateTime(record.failedAt)} (Lagos time)</dd>
-            </div>
-          ) : null}
+          ))}
           {record.refundedAmountK > 0 ? (
             <div>
               <dt>Returned to you</dt>

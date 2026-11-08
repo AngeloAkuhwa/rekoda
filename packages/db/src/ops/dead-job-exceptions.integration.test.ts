@@ -283,6 +283,31 @@ describe('what a dead job leaves, by kind and by payload', () => {
     expect((await recordsOf(businessId))[0]).toMatchObject({ event_id: null });
   });
 
+  it('an event of another business is never bound: no event_id, and that event is not flagged', async () => {
+    const businessId = await seedBusiness();
+    const foreign = await attributedEvent(await seedBusiness());
+    await enqueue(businessId, 'payment.process', { eventId: foreign });
+    await killByHandler(2);
+    expect((await recordsOf(businessId))[0]).toMatchObject({ event_id: null });
+    expect((await eventRow(foreign))?.error).toBeNull();
+  });
+
+  it('a death with no record (pre-0194, or an old worker) is enrolled once by the sweep', async () => {
+    const businessId = await seedBusiness();
+    const eventId = await attributedEvent(businessId);
+    await enqueue(businessId, 'payment.process', { eventId });
+    // As the old code left it: dead, with no record.
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
+    );
+    expect(await recordsOf(businessId)).toHaveLength(0);
+    expect(await jobsRepo.enrolUnrecordedDeaths(workerDb)).toBe(1);
+    expect(await jobsRepo.enrolUnrecordedDeaths(workerDb)).toBe(0);
+    expect((await recordsOf(businessId))[0]).toMatchObject({ event_id: eventId, status: 'open' });
+    expect(await merchantExceptions(businessId)).toHaveLength(1);
+    expect((await eventRow(eventId))?.error).toBe('payment_job_dead');
+  });
+
   it('a billing job gets the operator record and event flag but NEVER a merchant reconciliation exception', async () => {
     const businessId = await seedBusiness();
     const eventId = await attributedEvent(businessId);
@@ -415,6 +440,17 @@ describe('recovery: one bounded attempt, verified by the caller', () => {
       'dead_job_recovery_started',
       'dead_job_exception_reopened',
     ]);
+  });
+
+  it('a recovery attempt whose worker crashes is not run again: dead, record reopened', async () => {
+    const businessId = await seedBusiness();
+    const { jobId } = await deadPaymentJob(businessId);
+    expect(await begin(businessId, jobId)).toBe(true);
+
+    await killByCrash(businessId, 1);
+
+    expect((await recordsOf(businessId))[0]).toMatchObject({ status: 'open', death_count: 2 });
+    expect(await jobsRepo.claimNext(workerDb, 'nobody')).toBeNull();
   });
 
   it('a merchant who dismissed the exception sees a fresh one when the job dies again', async () => {

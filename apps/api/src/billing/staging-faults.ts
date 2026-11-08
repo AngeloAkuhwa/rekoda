@@ -19,9 +19,17 @@ export async function applyStagingFault(
   enabled: boolean | undefined,
 ): Promise<void> {
   if (!enabled) return;
-  const kind = await withBusiness(appDb, businessId, (tx) =>
-    stagingToolsRepo.consumeFault(tx, businessId),
-  );
+  let kind: stagingToolsRepo.StagingFaultKind | null;
+  try {
+    kind = await withBusiness(appDb, businessId, (tx) =>
+      stagingToolsRepo.consumeFault(tx, businessId),
+    );
+  } catch {
+    /* The lookup failed before any provider call, so the message definitely did not leave:
+     * say so (not sent, transient, not sender-wide) and the sweep releases its claim and
+     * retries next pass, instead of treating it as an unknown outcome that is never resent. */
+    throw new SendFailed('staging fault lookup failed before the send', null, true, true, false);
+  }
   if (kind === 'send_timeout') {
     throw new SendFailed('staging fault: the send timed out', null, false);
   }

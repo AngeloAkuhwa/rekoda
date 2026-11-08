@@ -112,3 +112,42 @@ const lower = (sentence: string): string => sentence.charAt(0).toLowerCase() + s
 /** The sentence under every record: factual, and neither a tax invoice nor a tax receipt. */
 export const PAYMENT_RECORD_NOTICE =
   'This is a record of a payment to Rekoda. It is not a VAT invoice, tax invoice or tax receipt.';
+
+type TimesInput = Pick<
+  BillingPaymentRecord,
+  | 'kind'
+  | 'state'
+  | 'noCharge'
+  | 'providerPaidAt'
+  | 'paidAt'
+  | 'providerSettledAt'
+  | 'unitsCreditedAt'
+  | 'failedAt'
+>;
+
+/**
+ * The record's timeline (OD-40), in order: each row only when its time exists, and each a
+ * distinct fact, never one time standing in for another. Lagos formatting stays with the page.
+ */
+export function paymentRecordTimes(record: TimesInput): Array<{ label: string; iso: string }> {
+  const rows: Array<{ label: string; iso: string }> = [];
+  if (record.providerPaidAt && !record.noCharge) {
+    rows.push({ label: 'Paid at Paystack on', iso: record.providerPaidAt });
+  }
+  if (record.paidAt) {
+    rows.push({
+      label: record.noCharge ? 'Applied on' : 'Payment recorded by Rekoda on',
+      iso: record.paidAt,
+    });
+  }
+  if (record.providerSettledAt && !record.noCharge) {
+    rows.push({ label: 'Settled by Paystack on', iso: record.providerSettledAt });
+  }
+  if (record.kind === 'add_on' && record.unitsCreditedAt) {
+    rows.push({ label: 'Units added on', iso: record.unitsCreditedAt });
+  }
+  if (record.failedAt && record.state === 'failed') {
+    rows.push({ label: 'Reported failed on', iso: record.failedAt });
+  }
+  return rows;
+}

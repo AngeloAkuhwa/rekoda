@@ -177,7 +177,9 @@ BEGIN
     RAISE EXCEPTION 'staging_move_date: unknown field' USING ERRCODE = '22023';
   END IF;
 
-  IF v_current IS DISTINCT FROM p_expected THEN
+  -- Compared to the millisecond: the API carries instants as ISO 8601 with milliseconds, so a value
+  -- a SQL writer stored with microseconds must still match the value an operator read back.
+  IF date_trunc('milliseconds', v_current) IS DISTINCT FROM date_trunc('milliseconds', p_expected) THEN
     RAISE EXCEPTION 'staging_move_date: the value changed since it was read' USING ERRCODE = '40001';
   END IF;
 
@@ -191,10 +193,14 @@ BEGIN
     SELECT * INTO v_revert FROM public.staging_tool_actions
      WHERE id = p_reverts AND business_id = p_business AND action = 'move_date';
     IF NOT FOUND OR v_revert.field IS DISTINCT FROM p_field
-       OR v_revert.after_value IS DISTINCT FROM p_expected
-       OR v_revert.before_value IS DISTINCT FROM p_new THEN
+       OR date_trunc('milliseconds', v_revert.after_value)
+            IS DISTINCT FROM date_trunc('milliseconds', p_expected)
+       OR date_trunc('milliseconds', v_revert.before_value)
+            IS DISTINCT FROM date_trunc('milliseconds', p_new) THEN
       RAISE EXCEPTION 'staging_move_date: not a revert of that move' USING ERRCODE = '22023';
     END IF;
+    -- The exact stored value comes back, at full precision, not the caller's millisecond copy.
+    p_new := v_revert.before_value;
   END IF;
 
   IF p_field = 'grace_clock' THEN

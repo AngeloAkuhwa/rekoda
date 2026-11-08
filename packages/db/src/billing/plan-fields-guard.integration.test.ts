@@ -7,7 +7,7 @@
  * it. The table owner keeps migrations and an administrator's repair.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { sql } from 'drizzle-orm';
+import { sql, TransactionRollbackError } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { billingRepo, identity, subscriptionsRepo } from '../index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
@@ -279,12 +279,18 @@ describe('OD-37: the boundary itself', () => {
   });
 
   it('the documented rollback statement is valid (run and undone inside one transaction)', async () => {
+    let dropped = false;
     await ownerDb
       .transaction(async (tx) => {
         await tx.execute(sql`DROP TRIGGER businesses_plan_fields_guard ON businesses`);
+        dropped = true;
         tx.rollback();
       })
-      .catch(() => undefined);
+      /* Only the deliberate rollback is swallowed: a failed DROP must fail the test. */
+      .catch((error: unknown) => {
+        if (!(error instanceof TransactionRollbackError)) throw error;
+      });
+    expect(dropped).toBe(true);
     const still = await ownerDb.execute(
       sql`SELECT 1 FROM pg_trigger WHERE tgname = 'businesses_plan_fields_guard'`,
     );

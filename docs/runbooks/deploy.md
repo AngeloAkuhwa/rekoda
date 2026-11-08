@@ -176,6 +176,7 @@ sed -i 's/^REKODA_RELEASE=.*/REKODA_RELEASE=vX.Y.Z/' .env
 dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) api   # build BEFORE touching anything live
 dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) web   # one image at a time: never both at once
 # First PRODUCTION deploy carrying migrations 0175-0178 (G-109): run `dc stop api worker` here first
+# Every deploy carrying 0196 (PR B, plan-field trigger): run `dc stop api worker` here first
 dc run --rm -T migrate                                             # expand-only migrations, as the owner
 dc up -d --wait                                                    # recreates api, worker and web on the new images
 dc exec caddy caddy reload --config /etc/caddy/Caddyfile            # apply a changed Caddyfile (validated first)
@@ -364,6 +365,14 @@ restore from backup, and **there is no backup mechanism yet** (G-02 in
 **PR B (0193 to 0197).** 0193 (charge provider times), 0194 (`dead_job_exceptions`), 0195
 (blocked renewals) and 0197 (staging tools) are additive; a normal roll back keeps them and the older
 code ignores them. Their rows are payment evidence and operator records: never drop them by hand.
+**Rolling forward onto 0196: stop `api` and `worker` before `migrate`.** Its trigger refuses the
+previous release's direct plan writes, so a previous-release process still running between `migrate`
+and its replacement would have a plan change, renewal or lapse refused (`42501`). That failure is
+fail-closed (nothing is written, and the new release's hourly sweeps redo the lapse), but a checkout
+or webhook settled in that window would answer an error, so the window is closed by stopping both
+first, as for G-109. Dead payment and billing jobs from before 0194 (or from an old worker) are
+enrolled by the worker's reclaim pass (`jobsRepo.enrolUnrecordedDeaths`), so none is left without its
+merchant notice and operator item.
 **0196 is the exception: rolling back past it needs one manual step first.** Its trigger refuses a
 direct write of `businesses.plan` / `plan_expires_at`, and older releases write those columns
 directly, so an older release's plan changes, renewals and lapses would fail. Before starting an

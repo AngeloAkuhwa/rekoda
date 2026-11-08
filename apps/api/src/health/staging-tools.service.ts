@@ -125,6 +125,14 @@ export class StagingToolsService {
     if (outcome === 'already_armed') {
       throw new StagingRefused('already_armed', 'a fault is already armed for this business');
     }
+    /* The repository repeats the marker and designation checks inside the transaction; a marker
+     * removed after `assertEnabled` is a refusal, never `armed: true` with nothing written. */
+    if (outcome === 'not_staging') {
+      throw new StagingRefused('not_staging', 'this database is not marked as staging');
+    }
+    if (outcome === 'not_test_business') {
+      throw new StagingRefused('not_test_business', 'not a designated test business');
+    }
     return { armed: true as const, kind };
   }
 

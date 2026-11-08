@@ -232,6 +232,9 @@ export class JobRunner {
   async reclaim(): Promise<number> {
     const n = await jobsRepo.reclaimStalled(this.workerDb, this.stalledAfterMs);
     if (n > 0) this.log.warn(`reclaimed ${n} stalled job(s)`);
+    /* Deaths with no record (from before 0194, or an old worker mid-rollout) get one here. */
+    const enrolled = await jobsRepo.enrolUnrecordedDeaths(this.workerDb);
+    if (enrolled > 0) this.log.warn(`enrolled ${enrolled} dead payment or billing job(s)`);
     return n;
   }
 

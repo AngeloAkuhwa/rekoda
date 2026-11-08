@@ -23,7 +23,7 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { migrate, requireUrls, setPlanAsOwner, truncateAll, type Urls } from '@rekoda/db/testing';
 import { buildRunner, type RunnerDeps } from '../jobs/jobs.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
@@ -350,6 +350,12 @@ describe('OD-40: the units-credited time', () => {
 
   it('keeps the month a pack counts toward unchanged: the month it was credited in', async () => {
     const businessId = await seedBusiness();
+    /* A paid business: a trial's bonus goes to its trial row whatever the month (OWN-54), which
+     * would hide a credit written to the Paystack payment month. */
+    await setPlanAsOwner(urls, businessId, {
+      plan: 'chat',
+      planExpiresAt: new Date(Date.now() + 20 * 24 * HOUR),
+    });
     const reference = await openPack(businessId);
     /* Paid at Paystack 40 days ago (a long-delayed webhook): the units still land in
      * the month they are credited, exactly as before OD-40. */
@@ -365,7 +371,7 @@ describe('OD-40: the units-credited time', () => {
         SELECT period, bonus FROM usage_counters
         WHERE business_id = ${businessId}::uuid AND bonus > 0`),
     );
-    expect([...credited].reduce((n, row) => n + Number(row.bonus), 0)).toBe(PACK_UNITS);
+    expect([...credited]).toEqual([{ period: usagePeriod(new Date()), bonus: PACK_UNITS }]);
     expect([...credited].some((row) => row.period === usagePeriod(longAgo))).toBe(false);
     expect((await timesOf(businessId, reference)).provider_paid_at?.toISOString()).toBe(
       longAgo.toISOString(),

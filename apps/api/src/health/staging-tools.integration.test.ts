@@ -229,6 +229,29 @@ describe('OWN-77: with the tools on', () => {
     expect(after?.value?.toISOString()).toBe(trialEnd.toISOString());
   });
 
+  it('refuses, writing nothing, when the marker goes after the entry check (armFault)', async () => {
+    const businessId = await seedBusiness();
+    await tools().designate(businessId, OPERATOR, 'walkthrough 19');
+    await ownerDb.execute(sql`DELETE FROM staging_environment`);
+    /* The entry check reads a marker that is gone by the time the transaction runs. */
+    let first = true;
+    const racing = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === 'execute' && first) {
+          first = false;
+          return async () => [{ marked: true }];
+        }
+        return Reflect.get(target, prop, receiver) as unknown;
+      },
+    });
+    const service = new StagingToolsService(enabled(), racing);
+    expect(await refusal(service.armFault(businessId, 'send_timeout', OPERATOR, 'step 19'))).toBe(
+      'not_staging',
+    );
+    const faults = await ownerDb.execute(sql`SELECT count(*)::int AS n FROM staging_send_faults`);
+    expect([...faults][0]).toEqual({ n: 0 });
+  });
+
   async function graceMerchant(): Promise<{ businessId: string; failedAt: Date }> {
     const businessId = await seedBusiness();
     const failedAt = new Date(Date.now() - 3_600_000);

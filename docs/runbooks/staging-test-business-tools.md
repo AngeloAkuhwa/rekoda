@@ -67,7 +67,10 @@ All under `https://<staging api>/v1/ops/staging`, operator token in `Authorizati
   read again. Each successful move answers with its action id; the new value is the `to` you sent.
 - `to`: within 90 days of now (a revert is exempt only for the exact value its move replaced).
 - `kind`: `send_timeout` (the send's outcome is unknown: the sweep never resends it) or
-  `sender_refused` (definitely not sent, sender-wide: the sweep stops and retries next pass). Faults
+  `sender_refused` (definitely not sent, as a sender-wide refusal reports it: that business's
+  reminder is released and retried on the next pass). It is one refusal for one send, so other
+  businesses in the same pass are unaffected; a pass stops early only after several sender-wide
+  refusals in a row, which one fault does not reach. Faults
   apply to the grace-reminder and trial-notice sends only. At most one armed per business.
 
 Answers: 200 done; 400 bad shape; 403 tools off, database not staging, or not a test business; 404
@@ -100,7 +103,9 @@ customer data.
   copy saying data was deleted; a renewal raised twice.
 - **Evidence:** screenshots of `/app/billing` at each stage; the reminders as received (time, text);
   the action log; the renewal charge reference.
-- **Cleanup:** revert the moves in reverse order, or leave the business lapsed and stop using it.
+- **Cleanup:** before day 7, revert the moves in reverse order. Once day 7 has stopped the plan, the
+  moves cannot be reverted (the database refuses a `paid_to` move on an expired plan, and putting
+  the dates back would not restore the plan): leave the business lapsed and stop using it.
 
 ### SUB-ACC 18: pay a new plan after expiry
 

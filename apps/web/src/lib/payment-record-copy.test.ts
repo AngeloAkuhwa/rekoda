@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { billingPaymentState } from '@rekoda/contracts';
-import { PAYMENT_RECORD_NOTICE, paymentRecordView } from './payment-record-copy';
+import {
+  PAYMENT_RECORD_NOTICE,
+  paymentRecordTimes,
+  paymentRecordView,
+} from './payment-record-copy';
 
 const base = {
   state: 'paid_applied' as const,
@@ -106,5 +110,44 @@ describe('payment record copy', () => {
       const { title, summary } = paymentRecordView({ ...base, state, reconciled: true });
       expect(`${title} ${summary}`).not.toMatch(/vat|tax/i);
     }
+  });
+});
+
+describe('payment record timeline (OD-40)', () => {
+  const times = {
+    kind: 'add_on' as const,
+    state: 'paid_applied' as const,
+    noCharge: false,
+    providerPaidAt: '2026-11-01T09:00:00.000Z',
+    paidAt: '2026-11-01T09:05:00.000Z',
+    providerSettledAt: '2026-11-02T12:00:00.000Z',
+    unitsCreditedAt: '2026-11-01T09:05:01.000Z',
+    failedAt: null,
+  };
+
+  it('an add-on with four distinct times shows each, labelled, in order', () => {
+    expect(paymentRecordTimes(times)).toEqual([
+      { label: 'Paid at Paystack on', iso: times.providerPaidAt },
+      { label: 'Payment recorded by Rekoda on', iso: times.paidAt },
+      { label: 'Settled by Paystack on', iso: times.providerSettledAt },
+      { label: 'Units added on', iso: times.unitsCreditedAt },
+    ]);
+  });
+
+  it('shows nothing it does not have, and no units row for a plan', () => {
+    expect(
+      paymentRecordTimes({
+        ...times,
+        kind: 'renewal',
+        providerPaidAt: null,
+        providerSettledAt: null,
+      }).map((r) => r.label),
+    ).toEqual(['Payment recorded by Rekoda on']);
+  });
+
+  it('a no-charge upgrade shows when it was applied, never a Paystack time', () => {
+    expect(
+      paymentRecordTimes({ ...times, kind: 'upgrade', noCharge: true }).map((r) => r.label),
+    ).toEqual(['Applied on']);
   });
 });

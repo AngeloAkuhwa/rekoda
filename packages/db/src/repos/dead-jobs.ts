@@ -84,11 +84,23 @@ export interface DyingJob {
 export async function recordDeath(tx: Tx, job: DyingJob): Promise<void> {
   if (!isDeadJobKind(job.kind) || !UUID.test(job.businessId)) return;
   const kind = job.kind;
-  const eventId = eventIdOf(job.payload);
+  const named = eventIdOf(job.payload);
   const reference = referenceOf(job.payload);
 
   /* The writes below are tenant rows: pin the job's tenant for the rest of this transaction. */
   await tx.execute(sql`SELECT set_config('app.business_id', ${job.businessId}, true)`);
+
+  /* The event is bound only when it is this business's own: a payload naming another tenant's
+   * event (a mis-enqueued job) records none, so neither a resolve nor the operator queue can ever
+   * associate this job with that event. */
+  const owned = named
+    ? [
+        ...(await tx.execute<{ yes: boolean }>(sql`
+          SELECT EXISTS (SELECT 1 FROM external_events
+                         WHERE id = ${named}::uuid AND business_id = ${job.businessId}::uuid) AS yes`)),
+      ][0]?.yes === true
+    : false;
+  const eventId = owned ? named : null;
 
   const rows = await tx.execute<{ inserted: boolean; status: string }>(sql`
     INSERT INTO dead_job_exceptions
@@ -252,7 +264,14 @@ export interface DeadJobOpsRow extends DeadJobRow {
  * without is its own item (the caller splits them). Worker-credentialed; ids, statuses and
  * fixed text only.
  */
-export async function opsQueue(db: Db, limit = 50): Promise<DeadJobOpsRow[]> {
+export async function opsQueue(
+  db: Db,
+  limit = 50,
+  /** When given, exactly these jobs (still open or recovering), whatever their age. */
+  jobIds?: readonly string[],
+): Promise<DeadJobOpsRow[]> {
+  const ids = jobIds?.filter((id) => UUID.test(id));
+  if (ids && ids.length === 0) return [];
   const rows = await db.execute<
     RawDeadJob & {
       payment_state: string | null;
@@ -277,8 +296,9 @@ export async function opsQueue(db: Db, limit = 50): Promise<DeadJobOpsRow[]> {
     FROM dead_job_exceptions d
     JOIN businesses b ON b.id = d.business_id
     WHERE d.status IN ('open', 'recovering')
+      ${ids ? sql`AND d.job_id = ANY(${`{${ids.join(',')}}`}::uuid[])` : sql``}
     ORDER BY d.opened_at, d.job_id
-    LIMIT ${limit}
+    LIMIT ${ids ? ids.length : limit}
   `);
   return [...rows].map((r) => ({
     ...shape(r),

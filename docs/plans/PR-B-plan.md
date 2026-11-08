@@ -13,7 +13,11 @@ As built, against this plan:
 
 Known limits, recorded on purpose after the independent review:
 
-- Payment and billing jobs that died before 0194 have no record, so the recovery routes cannot reach them; an operator finds them as today, through the dead counts and the flagged-event list.
+- Payment and billing jobs that died before 0194, or under an old worker during the rollout, are enrolled by the worker's reclaim pass (`jobsRepo.enrolUnrecordedDeaths`, after the CodeRabbit review), so each gets the same record, notice and operator item a death writes now.
+- A recovery attempt whose worker crashes goes back to dead (record reopened) instead of taking the ordinary one-more-run crash allowance (`reclaimStalled`).
+- A dead job binds its payload's event only when the event is the same business's own (`recordDeath`).
+- Staging date moves compare to the millisecond (the API's precision), and a revert restores the exact stored value.
+- Rolling forward onto 0196: stop `api` and `worker` before `migrate` (`docs/runbooks/deploy.md`).
 - A renewal stamped blocked is closed by the next renewal sweep once the gate opens (`system:gate_open`, audited).
 
 The original plan follows.
