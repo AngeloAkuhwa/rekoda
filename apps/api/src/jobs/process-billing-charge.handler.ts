@@ -238,6 +238,9 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
       reference,
       providerReference: t.providerTransactionId,
       paidAmountK: judgement.amountK,
+      /* OD-40: the time the VERIFY response gives, never the webhook body's claim nor when
+       * the event arrived. Missing or unreadable stays null rather than being guessed. */
+      providerPaidAt: instantOf(t.paidAtIso),
       when: new Date(),
       config: deps.config,
     });
@@ -323,6 +326,19 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
       log.log(`business ${businessId}: subscription charge ${charge.kind} applied`);
     }
   };
+}
+
+/**
+ * A provider timestamp as an instant, or null. Only a full ISO 8601 date-time with a zone
+ * (`Z` or an offset) is accepted: a bare date or a zoneless time would be read in the
+ * server's zone, which is a guess about when the payment happened.
+ */
+export function instantOf(iso: string | null | undefined): Date | null {
+  if (typeof iso !== 'string') return null;
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i.test(iso))
+    return null;
+  const at = new Date(iso);
+  return Number.isNaN(at.getTime()) ? null : at;
 }
 
 function eventKindOf(payload: unknown, vaultKey: string, externalId: string): string | null {

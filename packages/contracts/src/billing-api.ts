@@ -72,7 +72,8 @@ export const billingChargeView = z.object({
 /**
  * One payment to Rekoda in full (billing Slice A). Every field is read from the charge's own row
  * under the tenant pin; nothing is composed from the provider's response at read time. `paidAt`
- * is the verified payment time and is null for anything that is not paid.
+ * is when Rekoda recorded the verified payment and is null for anything that is not paid; the
+ * provider's own payment and settlement times and the units-credited time are separate (OD-40).
  */
 export const billingPaymentState = z.enum([
   'awaiting_payment',
@@ -105,7 +106,14 @@ export const billingPaymentRecord = z.object({
   periodStart: isoDate.nullable(),
   periodEnd: isoDate.nullable(),
   createdAt: isoDate,
+  /** When Rekoda recorded the verified payment; null for anything that is not paid. */
   paidAt: isoDate.nullable(),
+  /** OD-40: when Paystack says the payment happened (its verified `paid_at`); null when Paystack gave none. */
+  providerPaidAt: isoDate.nullable(),
+  /** OD-40: when Paystack confirmed the money settled; null until verified settlement evidence exists. */
+  providerSettledAt: isoDate.nullable(),
+  /** OD-40: when Rekoda added a pack's units to the account; null for a plan charge or before they were added. */
+  unitsCreditedAt: isoDate.nullable(),
   failedAt: isoDate.nullable(),
   refundedAt: isoDate.nullable(),
   /** A verified payment that took effect on the account, whether or not it was later refunded. False for any unpaid state and for money received but refused as stale. */

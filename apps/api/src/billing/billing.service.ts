@@ -245,6 +245,9 @@ export class BillingService {
         periodEnd: charge.appliedPeriodEnd?.toISOString() ?? null,
         createdAt: charge.createdAt.toISOString(),
         paidAt: charge.paidAt?.toISOString() ?? null,
+        providerPaidAt: charge.providerPaidAt?.toISOString() ?? null,
+        providerSettledAt: charge.providerSettledAt?.toISOString() ?? null,
+        unitsCreditedAt: charge.unitsCreditedAt?.toISOString() ?? null,
         failedAt: charge.failedAt?.toISOString() ?? null,
         refundedAt: charge.refundedAt?.toISOString() ?? null,
         /* A refund returns money; it does not un-apply a plan that took effect. */
@@ -636,6 +639,8 @@ export async function applySettledCharge(
     providerReference: string;
     /** What the provider verified it took; recorded so an overpayment's excess is visible (G-107). */
     paidAmountK?: number;
+    /** OD-40: when the provider's verify response says the payment happened; null or absent when it gave none. */
+    providerPaidAt?: Date | null;
     when: Date;
     config: PlanTermsConfig;
   },
@@ -647,6 +652,7 @@ export async function applySettledCharge(
     status: 'paid',
     providerReference: input.providerReference,
     ...(input.paidAmountK !== undefined ? { paidAmountK: input.paidAmountK } : {}),
+    providerPaidAt: input.providerPaidAt ?? null,
     when: input.when,
   });
   if (!charge) return 'already_settled';
@@ -664,6 +670,9 @@ export async function applySettledCharge(
         pack.unit,
         pack.quantity * charge.quantity,
       );
+      /* OD-40: the credit's own time, in the transaction that made it. A pack that could
+       * not be resolved credited nothing and so records no credit time. */
+      await subscriptionsRepo.markUnitsCredited(tx, input.businessId, input.reference);
     }
     return 'applied';
   }

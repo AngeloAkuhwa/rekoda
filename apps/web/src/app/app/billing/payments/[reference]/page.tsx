@@ -136,10 +136,28 @@ export default async function PaymentRecordPage({
                   : 'Not confirmed'}
             </dd>
           </div>
+          {record.providerPaidAt && !record.noCharge ? (
+            <div>
+              <dt>Paid at Paystack on</dt>
+              <dd>{lagosDateTime(record.providerPaidAt)} (Lagos time)</dd>
+            </div>
+          ) : null}
           {record.paidAt ? (
             <div>
-              <dt>{record.noCharge ? 'Applied on' : 'Payment recorded on'}</dt>
+              <dt>{record.noCharge ? 'Applied on' : 'Payment recorded by Rekoda on'}</dt>
               <dd>{lagosDateTime(record.paidAt)} (Lagos time)</dd>
+            </div>
+          ) : null}
+          {record.providerSettledAt ? (
+            <div>
+              <dt>Settled by Paystack on</dt>
+              <dd>{lagosDateTime(record.providerSettledAt)} (Lagos time)</dd>
+            </div>
+          ) : null}
+          {record.kind === 'add_on' && record.unitsCreditedAt ? (
+            <div>
+              <dt>Units added on</dt>
+              <dd>{lagosDateTime(record.unitsCreditedAt)} (Lagos time)</dd>
             </div>
           ) : null}
           {record.failedAt && record.state === 'failed' ? (

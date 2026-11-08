@@ -484,6 +484,12 @@ export interface ChargeRow extends Record<string, unknown> {
   billingInterval: BillingInterval;
   /** The Paystack checkout it was initialised with (G-102); null until the merchant starts paying. */
   checkoutUrl: string | null;
+  /** OD-40: when Paystack says the payment happened (verified `paid_at`); null when not known. */
+  providerPaidAt: Date | null;
+  /** OD-40: when Paystack confirmed settlement; null until verified settlement evidence exists. */
+  providerSettledAt: Date | null;
+  /** OD-40: when Rekoda committed a pack's units (database time); null for a plan charge or before crediting. */
+  unitsCreditedAt: Date | null;
 }
 
 interface RawCharge extends Record<string, unknown> {
@@ -505,6 +511,9 @@ interface RawCharge extends Record<string, unknown> {
   refunded_amount_k: string | number | null;
   billing_interval: string | null;
   checkout_url: string | null;
+  provider_paid_at: string | null;
+  provider_settled_at: string | null;
+  units_credited_at: string | null;
 }
 
 const shape = (row: RawCharge): ChargeRow => ({
@@ -526,6 +535,9 @@ const shape = (row: RawCharge): ChargeRow => ({
   refundedAmountK: Number(row.refunded_amount_k ?? 0),
   billingInterval: intervalOf(row.billing_interval),
   checkoutUrl: row.checkout_url,
+  providerPaidAt: at(row.provider_paid_at),
+  providerSettledAt: at(row.provider_settled_at),
+  unitsCreditedAt: at(row.units_credited_at),
 });
 
 /**
@@ -620,10 +632,17 @@ export async function settleCharge(
     failureReason?: string | null;
     /** The amount the provider verified it took, for a paid settlement (G-107). */
     paidAmountK?: number | null;
+    /**
+     * OD-40: when the provider says the payment happened, from its verify response only;
+     * null (or absent) when it gave none. Never the webhook's receipt time.
+     */
+    providerPaidAt?: Date | null;
     when: Date;
   },
 ): Promise<ChargeRow | null> {
   const stamp = settlement.when.toISOString();
+  const providerPaidAt =
+    settlement.status === 'paid' ? (settlement.providerPaidAt?.toISOString() ?? null) : null;
   const rows = await tx.execute<RawCharge>(sql`
     UPDATE subscription_charges SET
       status = ${settlement.status},
@@ -632,6 +651,7 @@ export async function settleCharge(
       paid_amount_k = CASE WHEN ${settlement.status} = 'paid'
                            THEN ${settlement.paidAmountK ?? null}::bigint ELSE paid_amount_k END,
       paid_at = CASE WHEN ${settlement.status} = 'paid' THEN ${stamp}::timestamptz ELSE paid_at END,
+      provider_paid_at = COALESCE(provider_paid_at, ${providerPaidAt}::timestamptz),
       failed_at = CASE WHEN ${settlement.status} = 'failed' THEN ${stamp}::timestamptz ELSE failed_at END,
       updated_at = now()
     WHERE reference = ${settlement.reference} AND status = 'pending'
@@ -639,6 +659,27 @@ export async function settleCharge(
   `);
   const row = [...rows][0];
   return row ? shape(row) : null;
+}
+
+/**
+ * OD-40: record that a paid pack's units were credited, in the transaction that credited them.
+ *
+ * The time is the database's `now()`, the start of THIS transaction, so it is Rekoda's commit
+ * time for the credit and never a provider time. Written once: a charge that already carries it,
+ * or one that is not paid, is left alone and the call answers false.
+ */
+export async function markUnitsCredited(
+  tx: TenantDb,
+  businessId: string,
+  reference: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE subscription_charges SET units_credited_at = now(), updated_at = now()
+    WHERE business_id = ${businessId}::uuid AND reference = ${reference}
+      AND status = 'paid' AND units_credited_at IS NULL
+    RETURNING id
+  `);
+  return [...rows].length === 1;
 }
 
 /**
