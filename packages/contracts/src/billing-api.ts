@@ -516,6 +516,31 @@ export const opsEventView = z.object({
   createdAt: z.string(),
   /** How long it has been sitting. What an operator judges "stuck" by. */
   ageSeconds: z.number().int().nonnegative(),
+  /** The dead payment or billing job behind a flagged event (OWN-73, OWN-76); null otherwise. */
+  jobId: z.string().nullable(),
+});
+
+/**
+ * A payment or billing job that died with no event behind it (OWN-73, OWN-76): its own work item,
+ * keyed on the job. Ids, a category and fixed text only; never error text or a payload.
+ */
+export const opsDeadJobView = z.object({
+  jobId: z.string(),
+  businessId: z.string(),
+  kind: z.enum(['payment.process', 'billing.process']),
+  status: z.enum(['open', 'recovering']),
+  failureCategory: z.string().nullable(),
+  summary: z.string(),
+  attempts: z.number().int().nonnegative(),
+  deathCount: z.number().int().positive(),
+  openedAt: z.string(),
+  lastDiedAt: z.string(),
+  ageSeconds: z.number().int().nonnegative(),
+});
+
+/** Start one verified, bounded recovery of a dead job. The reason is the audit record's. */
+export const opsDeadJobRecoverRequest = z.object({
+  reason: z.string().trim().min(4).max(200),
 });
 
 /**
@@ -557,6 +582,8 @@ export const opsExceptionsResponse = z.object({
   flagged: z.array(opsEventView),
   /** Paid but unapplied subscription charges awaiting an operator (OD-30). Oldest first. */
   unappliedCharges: z.array(opsUnappliedChargeView),
+  /** Dead payment or billing jobs with no event behind them (OWN-73, OWN-76). Oldest first. */
+  deadJobs: z.array(opsDeadJobView),
 });
 
 /**

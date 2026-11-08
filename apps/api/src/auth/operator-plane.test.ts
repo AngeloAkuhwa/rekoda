@@ -16,6 +16,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { OpsController } from '../health/ops.controller.js';
+import { DeadJobsController } from '../health/dead-jobs.controller.js';
 import { BusinessController } from './auth.controller.js';
 import { OPERATOR_SCOPES, type OperatorScope } from './operator-identity.js';
 import { OPERATOR_SCOPES_KEY } from './operator.guard.js';
@@ -47,14 +48,14 @@ function routesOf(controller: new (...args: never[]) => object): Route[] {
 
 describe('every operator route declares the authority it needs', () => {
   it('leaves no route on the ops plane undeclared', () => {
-    const undeclared = routesOf(OpsController)
+    const undeclared = [...routesOf(OpsController), ...routesOf(DeadJobsController)]
       .filter((route) => !route.scopes || route.scopes.length === 0)
       .map((route) => route.name);
     expect(undeclared).toEqual([]);
   });
 
   it('declares only scopes that exist', () => {
-    for (const route of routesOf(OpsController)) {
+    for (const route of [...routesOf(OpsController), ...routesOf(DeadJobsController)]) {
       for (const scope of route.scopes ?? []) {
         expect(OPERATOR_SCOPES).toContain(scope);
       }
@@ -73,6 +74,10 @@ describe('every operator route declares the authority it needs', () => {
     expect(byName.get('health')).toEqual(['ops:read']);
     expect(byName.get('marginReport')).toEqual(['ops:read']);
     expect(byName.get('businessBilling')).toEqual(['ops:read']);
+    /* OWN-73, OWN-76: recovering or closing a dead payment or billing job moves payment state. */
+    const dead = new Map(routesOf(DeadJobsController).map((route) => [route.name, route.scopes]));
+    expect(dead.get('recover')).toEqual(['ops:payment']);
+    expect(dead.get('resolve')).toEqual(['ops:payment']);
   });
 
   it('puts the plan change on billing authority, not on read', () => {

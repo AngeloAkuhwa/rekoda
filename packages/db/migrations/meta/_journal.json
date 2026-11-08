@@ -1359,6 +1359,13 @@
       "when": 1794312000000,
       "tag": "0193_charge_provider_times",
       "breakpoints": true
+    },
+    {
+      "idx": 194,
+      "version": "7",
+      "when": 1794398400000,
+      "tag": "0194_dead_job_exceptions",
+      "breakpoints": true
     }
   ]
 }

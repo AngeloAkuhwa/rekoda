@@ -19,6 +19,7 @@ import { opsExceptionsResponse, opsRefundRequest, opsResolveEventRequest } from 
 import type { OpsExceptionsResponse } from '@rekoda/contracts';
 import {
   billingRepo,
+  deadJobsRepo,
   events,
   jobsRepo,
   marginRepo,
@@ -548,6 +549,7 @@ export class OpsController {
     const limit = Math.min(Math.max(Number(limitParam) || 50, 1), 200);
     const queue = await events.exceptionQueue(this.workerDb, limit);
     const unapplied = await subscriptionsRepo.unappliedCharges(this.workerDb, limit);
+    const deadJobs = await deadJobsRepo.opsQueueWithoutEvent(this.workerDb, limit);
     const now = new Date();
     return opsExceptionsResponse.parse({
       stuck: queue.stuck.map(toEventView),
@@ -571,6 +573,21 @@ export class OpsController {
         resolveBy: unappliedChargeDueAt(c.unappliedAt).toISOString(),
         overdue: unappliedChargeOverdue(c.unappliedAt, now),
       })),
+      deadJobs: deadJobs
+        .filter((d) => d.status === 'open' || d.status === 'recovering')
+        .map((d) => ({
+          jobId: d.jobId,
+          businessId: d.businessId,
+          kind: d.kind,
+          status: d.status,
+          failureCategory: d.failureCategory,
+          summary: d.summary,
+          attempts: d.attempts,
+          deathCount: d.deathCount,
+          openedAt: d.openedAt.toISOString(),
+          lastDiedAt: d.lastDiedAt.toISOString(),
+          ageSeconds: Math.max(0, Math.floor((now.getTime() - d.openedAt.getTime()) / 1000)),
+        })),
     });
   }
 
@@ -658,6 +675,7 @@ function toEventView(row: {
   signatureValid: number;
   createdAt: Date;
   ageSeconds: number;
+  jobId?: string | null;
 }) {
   return {
     id: row.id,
@@ -668,5 +686,6 @@ function toEventView(row: {
     signatureValid: row.signatureValid === 1 ? (1 as const) : (0 as const),
     createdAt: row.createdAt.toISOString(),
     ageSeconds: Math.max(0, row.ageSeconds),
+    jobId: row.jobId ?? null,
   };
 }

@@ -602,6 +602,11 @@ export interface OpsEventRow {
   createdAt: Date;
   /** How long it has been sitting. What an operator actually judges by. */
   ageSeconds: number;
+  /**
+   * The dead payment or billing job behind this event, while its record is open or recovering
+   * (OWN-73, OWN-76): the id an operator recovers or resolves it by. Null otherwise.
+   */
+  jobId: string | null;
 }
 
 export interface ExceptionQueue {
@@ -644,21 +649,25 @@ export async function exceptionQueue(q: Queryable, limit = 50): Promise<Exceptio
     created_at: Date;
     age_seconds: number;
     bucket: string;
+    job_id: string | null;
   }>(sql`
     (SELECT id, provider, event_type, business_id, error, signature_valid, created_at,
             EXTRACT(EPOCH FROM (now() - created_at))::int AS age_seconds,
-            'stuck' AS bucket
+            'stuck' AS bucket, NULL::uuid AS job_id
        FROM external_events
       WHERE processed_at IS NULL AND business_id IS NULL
       ORDER BY created_at
       LIMIT ${limit})
     UNION ALL
-    (SELECT id, provider, event_type, business_id, error, signature_valid, created_at,
-            EXTRACT(EPOCH FROM (now() - created_at))::int AS age_seconds,
-            'flagged' AS bucket
-       FROM external_events
-      WHERE error IS NOT NULL AND resolved_at IS NULL
-      ORDER BY created_at
+    (SELECT e.id, e.provider, e.event_type, e.business_id, e.error, e.signature_valid,
+            e.created_at, EXTRACT(EPOCH FROM (now() - e.created_at))::int AS age_seconds,
+            'flagged' AS bucket,
+            (SELECT d.job_id FROM dead_job_exceptions d
+              WHERE d.event_id = e.id AND d.status IN ('open', 'recovering')
+              ORDER BY d.opened_at DESC LIMIT 1) AS job_id
+       FROM external_events e
+      WHERE e.error IS NOT NULL AND e.resolved_at IS NULL
+      ORDER BY e.created_at
       LIMIT ${limit})
   `);
 
@@ -673,6 +682,7 @@ export async function exceptionQueue(q: Queryable, limit = 50): Promise<Exceptio
       signatureValid: r.signature_valid,
       createdAt: new Date(r.created_at),
       ageSeconds: Number(r.age_seconds),
+      jobId: r.job_id,
     };
     if (r.bucket === 'stuck') queue.stuck.push(row);
     else queue.flagged.push(row);

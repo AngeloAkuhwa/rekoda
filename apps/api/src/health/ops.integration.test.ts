@@ -673,7 +673,7 @@ describe('the exception queue', () => {
   it('is two empty lists on a quiet platform', async () => {
     const res = await exceptions('', operator);
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ stuck: [], flagged: [], unappliedCharges: [] });
+    expect(res.json()).toEqual({ stuck: [], flagged: [], unappliedCharges: [], deadJobs: [] });
   });
 
   it('shows what is waiting and what was flagged, and NEVER the payload', async () => {
@@ -707,11 +707,8 @@ describe('the exception queue', () => {
     expect(done.statusCode).toBe(200);
     expect(done.json()).toEqual({ resolved: true });
 
-    expect((await exceptions('', operator)).json()).toEqual({
-      stuck: [],
-      flagged: [],
-      unappliedCharges: [],
-    });
+    const after = (await exceptions('', operator)).json();
+    expect(after).toEqual({ stuck: [], flagged: [], unappliedCharges: [], deadJobs: [] });
 
     const healthNow = (await health(operator)).json() as { paystack: { flagged: number } };
     expect(healthNow.paystack.flagged).toBe(0);
