@@ -62,8 +62,9 @@ All under `https://<staging api>/v1/ops/staging`, operator token in `Authorizati
   `payment_failed_at`).
 - `expected`: the current value, copied exactly (ISO 8601 with a zone) from
   `GET /v1/ops/business/:businessId` (`ops:read`): `renewsAt` for `trial_end` and `paid_to` (both are
-  `plan_expires_at`), `paymentFailedAt` for `grace_clock`. The compare is exact, so a date read off
-  `/app/billing` (shown as a Lagos day) never matches. A stale value answers 409 and changes nothing:
+  `plan_expires_at`), `paymentFailedAt` for `grace_clock`. The compare is to the millisecond (the
+  precision the API reads and accepts), so a date read off `/app/billing` (shown as a Lagos day) never
+  matches. A revert is stricter: the value must still be exactly what the move wrote. A stale value answers 409 and changes nothing:
   read again. Each successful move answers with its action id; the new value is the `to` you sent.
 - `to`: within 90 days of now (a revert is exempt only for the exact value its move replaced).
 - `kind`: `send_timeout` (the send's outcome is unknown: the sweep never resends it) or
