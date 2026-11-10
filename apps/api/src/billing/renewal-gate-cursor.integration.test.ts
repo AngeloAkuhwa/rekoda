@@ -168,6 +168,13 @@ describe('closing blocked renewals keeps a persisted cursor', () => {
     // so the stamp cannot move them back; only the 2 healthy blocks after them can close.
     await seedBlocked(8, 6);
     await ownerDb.execute(sql`DROP TRIGGER refuse_block_close ON subscription_charges`);
+    await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS refuse_attempts`);
+    await ownerDb.execute(sql`CREATE SEQUENCE refuse_attempts`);
+    await ownerDb.execute(sql`
+      CREATE OR REPLACE FUNCTION refuse_block_close() RETURNS trigger LANGUAGE plpgsql
+      SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $f$
+      BEGIN PERFORM nextval('public.refuse_attempts');
+            RAISE EXCEPTION 'cannot close or stamp'; END $f$`);
     await ownerDb.execute(sql`
       CREATE TRIGGER refuse_block_close BEFORE UPDATE ON subscription_charges
       FOR EACH ROW WHEN (OLD.quantity = 2
@@ -180,10 +187,20 @@ describe('closing blocked renewals keeps a persisted cursor', () => {
     expect(await openCount()).toBe(8);
     await sweep(bounded); // resumes past them, so the healthy blocks close
     expect(await openCount()).toBe(6);
-    // The carried offset wraps once the list is exhausted, and the head is retried.
+    // Pass 3 resumes past the end and finds nothing: the carried offset wraps to 0. Pass 4 then
+    // retries the head: 4 blocks, each one failed close and one failed stamp.
+    const attempts = async () => {
+      const [seq] = await ownerDb.execute<{ last: string; called: boolean }>(
+        sql`SELECT last_value::text AS last, is_called AS called FROM refuse_attempts`,
+      );
+      return seq?.called ? Number(seq.last) : 0;
+    };
     await sweep(bounded);
+    const beforeWrap = await attempts();
     await sweep(bounded);
+    expect((await attempts()) - beforeWrap).toBe(8);
     expect(await openCount()).toBe(6);
+    await ownerDb.execute(sql`DROP SEQUENCE refuse_attempts CASCADE`);
   }, 120_000);
 
   it('the cleanup never stands in the way of raising a due renewal', async () => {

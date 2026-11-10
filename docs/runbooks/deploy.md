@@ -392,7 +392,7 @@ would have plan changes, renewals and lapses refused (`42501`). Therefore:
   row (a process killed between the migration and its `rekoda_migrations` row leaves it applied and
   unrecorded). A present guard means applied; 0196 is safe to re-run, so the cure is to correct the
   cause and fix forward as below (migrate again, then the pre-start smoke, then start), which is
-  also all the script prints. Restarting the previous release is not part of any printed procedure;
+  also all the script prints. Once migrate has been entered, restarting the previous release is not part of any printed procedure;
   if you believe it is needed, escalate to the owner first.
 - **By-hand fix-forward** after a failed or interrupted deploy of a release carrying 0196 (the
   automatic staging workflow refuses to run while `/health` is down, so do not wait for it): from

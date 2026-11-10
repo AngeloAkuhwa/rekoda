@@ -249,8 +249,11 @@ const BLOCK_PAGES = 20;
 
 /* Where the fallback skip (blocks whose close AND stamp both failed) stopped when the last pass ran
  * out of pages. The next pass starts there instead of at the same failing head, and it wraps to 0
- * once the list is exhausted, so even a full pass of blocks that cannot be stamped cannot starve
- * the blocks behind them: every block is tried within a bounded number of passes. Held in memory,
+ * once the list is exhausted, so a full pass of blocks that cannot be stamped does not by itself
+ * starve the blocks behind them. It assumes the first rows of the next pass are the same unstampable
+ * blocks; if the head changes (an operator closes one, a new block is raised) a few healthy blocks
+ * may be skipped until the offset wraps, which needs the rest of the list to fit in a pass (PR B
+ * plan, post-MVP). Held in memory,
  * so a restart begins again at 0. Known limit (PR B plan, post-MVP): if more than a whole pass of
  * blocks refuse both writes AND the process restarts after every pass, each pass starts over at 0
  * and the blocks behind them wait; closing that needs the offset persisted outside those rows. */
