@@ -301,8 +301,14 @@ test('OWN-86: a release carrying 0196 runs the pre-start database smoke after mi
   // The smoke checks the database objects, not only the ledger row.
   assert.match(sql, /rekoda_migrations/);
   assert.match(sql, /businesses_plan_fields_guard/);
-  assert.match(sql, /subscription_write_plan/);
-  assert.match(sql, /subscription_expire_plan/);
+  // Each writer at its exact signature, still SECURITY DEFINER (a count across both names could
+  // pass with one writer missing).
+  assert.match(
+    sql,
+    /to_regprocedure\('public\.subscription_write_plan\(uuid,text,timestamptz\)'\)/,
+  );
+  assert.match(sql, /to_regprocedure\('public\.subscription_expire_plan\(uuid,text,text\)'\)/);
+  assert.match(sql, /prosecdef/);
   assert.match(sql, /rekoda_plan_writer/);
   assert.match(sql, /pg_has_role\('rekoda_app'/);
   assert.match(sql, /pg_has_role\('rekoda_worker'/);

@@ -87,15 +87,17 @@ MIGRATE_ENTERED=false
 # Set just before `up`: a failure after migrate but before it (the 0196 smoke) has started nothing.
 UP_ENTERED=false
 # The OWN-86 pre-start database smoke for 0196, run as the owner between migrate and `up`. It prints
-# `t` only when the ledger row, the guard trigger (enabled in origin or always mode, so it fires), both
-# plan functions owned by rekoda_plan_writer, and the runtime roles' separation from it all hold.
+# `t` only when the ledger row, the guard trigger (enabled in origin or always mode, so it fires), each
+# plan function at its exact signature, SECURITY DEFINER and owned by rekoda_plan_writer, and the
+# runtime roles' separation from it all hold.
 SMOKE_0196_SQL="SELECT
   (SELECT count(*) FROM rekoda_migrations WHERE tag = '0196_plan_fields_guard') = 1
   AND (SELECT count(*) FROM pg_trigger WHERE tgname = 'businesses_plan_fields_guard'
         AND tgrelid = 'public.businesses'::regclass AND tgenabled IN ('O', 'A')) = 1
-  AND (SELECT count(*) FROM pg_proc WHERE pronamespace = 'public'::regnamespace
-        AND proname IN ('subscription_write_plan', 'subscription_expire_plan')
-        AND proowner = 'rekoda_plan_writer'::regrole) = 2
+  AND (SELECT count(*) FROM pg_proc WHERE prosecdef AND proowner = 'rekoda_plan_writer'::regrole
+        AND oid = to_regprocedure('public.subscription_write_plan(uuid,text,timestamptz)')) = 1
+  AND (SELECT count(*) FROM pg_proc WHERE prosecdef AND proowner = 'rekoda_plan_writer'::regrole
+        AND oid = to_regprocedure('public.subscription_expire_plan(uuid,text,text)')) = 1
   AND NOT pg_has_role('rekoda_app', 'rekoda_plan_writer', 'MEMBER')
   AND NOT pg_has_role('rekoda_worker', 'rekoda_plan_writer', 'MEMBER')"
 PREV_SHA=
