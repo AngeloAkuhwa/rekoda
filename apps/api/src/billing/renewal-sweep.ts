@@ -247,6 +247,18 @@ export async function sweepRenewals(
 const BLOCK_PAGE = 200;
 const BLOCK_PAGES = 20;
 
+/* Where the fallback skip (blocks whose close AND stamp both failed) stopped when the last pass ran
+ * out of pages. The next pass starts there instead of at the same failing head, and it wraps to 0
+ * once the list is exhausted, so even a full pass of blocks that cannot be stamped cannot starve
+ * the blocks behind them: every block is tried within a bounded number of passes. Held in memory:
+ * a restart begins again at 0, which costs at most one pass. */
+let carriedUnstamped = 0;
+
+/** Test-only: forget the carried fallback offset between test cases. */
+export function resetBlockCloseCarryForTests(): void {
+  carriedUnstamped = 0;
+}
+
 /**
  * Close the blocks the open gate no longer holds, bounded per pass.
  *
@@ -268,7 +280,8 @@ async function closeBlocksTheGateNoLongerHolds(
    * the first untried one is exactly such a block: skipping that many rows moves past them and
    * only them (a concurrent sweep removing rows can make the skip land a few rows late, and the
    * next pass picks those up). The stamp is the normal way past a failure; this is its fallback. */
-  let unstamped = 0;
+  let unstamped = carriedUnstamped;
+  carriedUnstamped = 0;
   for (let page = 0; page < maxPages; page += 1) {
     const open = await subscriptionsRepo.blockedRenewals(
       deps.workerDb,
@@ -304,4 +317,6 @@ async function closeBlocksTheGateNoLongerHolds(
     }
     if (open.length < pageSize) return;
   }
+  // Out of pages before the list ran out: the next pass resumes past the unstampable blocks.
+  carriedUnstamped = unstamped;
 }

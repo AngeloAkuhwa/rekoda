@@ -7,7 +7,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDb, identity, sql, subscriptionsRepo, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
-import { sweepRenewals } from './renewal-sweep.js';
+import { resetBlockCloseCarryForTests, sweepRenewals } from './renewal-sweep.js';
 
 const LIVE = ['sk', 'live', 'p'.repeat(24)].join('_');
 const OPEN_GATE = {
@@ -43,6 +43,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await ownerDb.execute(sql`DROP FUNCTION IF EXISTS refuse_block_close() CASCADE`);
   await truncateAll(urls);
+  resetBlockCloseCarryForTests();
 });
 
 /** `total` open blocked renewals; the first `stuck` (by block time) cannot be closed. */
@@ -160,6 +161,29 @@ describe('closing blocked renewals keeps a persisted cursor', () => {
     // Each stuck block: one failed close and one failed stamp, once, in the whole pass.
     expect(seq?.called ? Number(seq.last) : 0).toBe(6);
     await ownerDb.execute(sql`DROP SEQUENCE refuse_attempts CASCADE`);
+  }, 120_000);
+
+  it('more than a full pass of blocks whose close AND stamp fail never starves the blocks behind them', async () => {
+    // A pass here is 2 pages of 2 (4 rows). The first 6 blocks refuse both the close and the stamp,
+    // so the stamp cannot move them back; only the 2 healthy blocks after them can close.
+    await seedBlocked(8, 6);
+    await ownerDb.execute(sql`DROP TRIGGER refuse_block_close ON subscription_charges`);
+    await ownerDb.execute(sql`
+      CREATE TRIGGER refuse_block_close BEFORE UPDATE ON subscription_charges
+      FOR EACH ROW WHEN (OLD.quantity = 2
+        AND (NEW.blocked_resolved_at IS NOT NULL
+             OR NEW.blocked_close_failed_at IS DISTINCT FROM OLD.blocked_close_failed_at))
+      EXECUTE FUNCTION refuse_block_close()`);
+    const bounded = { blockPageSize: 2, maxBlockPages: 2 };
+
+    await sweep(bounded); // spends the whole pass on 4 of the unstampable head
+    expect(await openCount()).toBe(8);
+    await sweep(bounded); // resumes past them, so the healthy blocks close
+    expect(await openCount()).toBe(6);
+    // The carried offset wraps once the list is exhausted, and the head is retried.
+    await sweep(bounded);
+    await sweep(bounded);
+    expect(await openCount()).toBe(6);
   }, 120_000);
 
   it('the cleanup never stands in the way of raising a due renewal', async () => {
