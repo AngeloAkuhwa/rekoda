@@ -396,8 +396,9 @@ would have plan changes, renewals and lapses refused (`42501`). Therefore:
   `/opt/rekoda`, whose checkout and `.env` are already at the new release, first `dc stop api worker`
   and confirm `dc ps --status running --services` lists neither (a run killed before its own stop
   may have left the previous release serving), then correct the cause of the failure, then run
-  `dc run --rm -T migrate`, run the pre-start database smoke of step 8 below (the guard trigger, the
-  ledger row and both plan functions owned by `rekoda_plan_writer`; do not start anything if it fails), `dc up -d --wait --wait-timeout 300`, reload Caddy,
+  `dc run --rm -T migrate`, run the pre-start database smoke of step 8 below (the ledger row, the
+  enabled guard trigger, both plan functions owned by `rekoda_plan_writer`, and neither runtime role a
+  member of it; the script prints the exact query; do not start anything unless it returns `t`), `dc up -d --wait --wait-timeout 300`, reload Caddy,
   check `/health` names the new release, then remove `.git/rekoda-deploy-staging.state`. Never
   `dc start api worker` or `git checkout` the previous release: the stopped containers are the old
   release.
@@ -431,7 +432,7 @@ after the script finishes. Step 2 is the operator's before starting the workflow
 7. The new release's images are already built (build before anything live changes).
 8. Smoke the database before anything starts: as the owner, `SELECT proowner::regrole FROM pg_proc WHERE proname IN
 ('subscription_write_plan','subscription_expire_plan');` returns `rekoda_plan_writer` twice, the
-   trigger `businesses_plan_fields_guard` exists on `businesses` and is enabled, and
+   trigger `businesses_plan_fields_guard` exists on `businesses` and is enabled (`tgenabled` `O` or `A`), and
    `pg_has_role('rekoda_app', 'rekoda_plan_writer', 'MEMBER')` and the same for `rekoda_worker` are
    both false. If any check fails, do not run step 9: fix forward or escalate (above). On staging the
    script runs this exact check; its query is in `scripts/deploy-staging.sh`.
@@ -789,8 +790,11 @@ What a failure leaves:
   0196, once migrate has been entered the script prints no rollback commands.**
   Migrations commit one file at a time, so 0196 may already be applied, and the
   previous release must never be restarted against a database that holds it.
-  Check `rekoda_migrations`, fix forward, and escalate if unsure ("Deploy a
-  release carrying 0196").
+  Check the database, not only `rekoda_migrations` (the guard trigger, as
+  "Deploy a release carrying 0196" says), fix forward, and escalate if unsure.
+  If the **pre-start database smoke** failed, migrate finished but nothing was
+  started: the api and worker are still stopped. Correct the cause, run the
+  smoke query the script printed again, and run `dc up` only when it returns `t`.
 
 Two deployments never overlap: the workflow runs one at a time and waits
 rather than cancelling, and the script holds a lock

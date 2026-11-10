@@ -313,6 +313,17 @@ test('OWN-86: a failed pre-start smoke never starts the new release and states f
   assert.match(r.stderr, /APPLIED, so the previous release .* is NOT safe to restart/);
   assert.match(r.stderr, /Fix forward/);
   assert.doesNotMatch(r.stderr, /git checkout [0-9a-f]{40}/);
+  // Nothing was started, and the printed fix-forward never leads around the smoke: it says to
+  // correct the cause, re-run the smoke and not start the release unless it passes, and gives the query.
+  assert.match(
+    r.stderr,
+    /before the new release was started: the api and worker are still stopped/,
+  );
+  assert.doesNotMatch(r.stderr, /after migrate\/up started/);
+  assert.match(r.stderr, /correct the cause first/);
+  assert.match(r.stderr, /do NOT run `dc up` unless it prints t/);
+  assert.match(r.stderr, /Pre-start database smoke \(OWN-86\): dc exec -T postgres psql .*SELECT/s);
+  assert.match(r.stderr, /tgenabled IN \('O', 'A'\)/);
 });
 
 test('OWN-86: a smoke that cannot run is a failure, not a pass', () => {
