@@ -253,10 +253,12 @@ const BLOCK_PAGES = 20;
  * starve the blocks behind them. It assumes the first rows of the next pass are the same unstampable
  * blocks; if the head changes (an operator closes one, a new block is raised) a few healthy blocks
  * may be skipped until the offset wraps, which needs the rest of the list to fit in a pass (PR B
- * plan, post-MVP). Held in memory,
- * so a restart begins again at 0. Known limit (PR B plan, post-MVP): if more than a whole pass of
- * blocks refuse both writes AND the process restarts after every pass, each pass starts over at 0
- * and the blocks behind them wait; closing that needs the offset persisted outside those rows. */
+ * plan, post-MVP).
+ *
+ * Held in memory, so a restart begins again at 0. Known limit (PR B plan, post-MVP): if more than a
+ * whole pass of blocks refuse both writes AND the process restarts after every pass, each pass
+ * starts over at 0 and the blocks behind them wait; closing that needs the offset persisted outside
+ * those rows. */
 let carriedUnstamped = 0;
 
 /** Test-only: forget the carried fallback offset between test cases. */

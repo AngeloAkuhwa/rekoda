@@ -400,7 +400,8 @@ would have plan changes, renewals and lapses refused (`42501`). Therefore:
   and confirm `dc ps --status running --services` lists neither (a run killed before its own stop
   may have left the previous release serving), then correct the cause of the failure, then run
   `dc run --rm -T migrate`, run the pre-start database smoke of step 8 below (the ledger row, the
-  enabled guard trigger, both plan functions owned by `rekoda_plan_writer`, and neither runtime role a
+  enabled guard trigger, both plan writers at their exact signatures, `SECURITY DEFINER` and owned by
+  `rekoda_plan_writer`, and neither runtime role a
   member of it; the script prints the exact query; do not start anything unless it returns `t`), `dc up -d --wait --wait-timeout 300`, reload Caddy,
   check `/health` names the new release, then remove `.git/rekoda-deploy-staging.state`. Never
   `dc start api worker` or `git checkout` the previous release: the stopped containers are the old
@@ -416,7 +417,7 @@ told to skip any of them: whenever the commit carries 0196 and the running commi
 the api and worker, checks with `docker compose ps` that neither is running (and refuses to migrate
 otherwise), migrates, then runs the **pre-start database smoke** of steps 6 and 8 as the owner
 (`dc exec -T postgres psql`): the `0196_plan_fields_guard` ledger row, the enabled
-`businesses_plan_fields_guard` trigger on `businesses`, both plan functions owned by
+`businesses_plan_fields_guard` trigger on `businesses`, both plan writers (exact signature, `SECURITY DEFINER`) owned by
 `rekoda_plan_writer`, and neither `rekoda_app` nor `rekoda_worker` a member of it. If that query
 fails or cannot run, the script stops **before** `dc up`, with the api and worker still stopped, and
 prints the fix-forward steps; only when it passes does it start the new release and require `/health`
@@ -433,9 +434,12 @@ after the script finishes. Step 2 is the operator's before starting the workflow
 6. Verify it succeeded: the command exits 0 and `rekoda_migrations` (or the migrate output) lists
    `0196_plan_fields_guard`.
 7. The new release's images are already built (build before anything live changes).
-8. Smoke the database before anything starts: as the owner, `SELECT proowner::regrole FROM pg_proc WHERE proname IN
-('subscription_write_plan','subscription_expire_plan');` returns `rekoda_plan_writer` twice, the
-   trigger `businesses_plan_fields_guard` exists on `businesses` and is enabled (`tgenabled` `O` or `A`), and
+8. Smoke the database before anything starts: as the owner, each plan writer exists at its exact
+   signature, is `SECURITY DEFINER` and is owned by `rekoda_plan_writer`
+   (`SELECT proowner::regrole, prosecdef FROM pg_proc WHERE oid IN
+(to_regprocedure('public.subscription_write_plan(uuid,text,timestamptz)'),
+to_regprocedure('public.subscription_expire_plan(uuid,text,text)'));` returns two rows, each
+   `rekoda_plan_writer` and `t`), the trigger `businesses_plan_fields_guard` exists on `businesses` and is enabled (`tgenabled` `O` or `A`), and
    `pg_has_role('rekoda_app', 'rekoda_plan_writer', 'MEMBER')` and the same for `rekoda_worker` are
    both false. If any check fails, do not run step 9: fix forward or escalate (above). On staging the
    script runs this exact check; its query is in `scripts/deploy-staging.sh`.
