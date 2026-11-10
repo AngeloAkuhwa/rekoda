@@ -250,8 +250,10 @@ const BLOCK_PAGES = 20;
 /* Where the fallback skip (blocks whose close AND stamp both failed) stopped when the last pass ran
  * out of pages. The next pass starts there instead of at the same failing head, and it wraps to 0
  * once the list is exhausted, so even a full pass of blocks that cannot be stamped cannot starve
- * the blocks behind them: every block is tried within a bounded number of passes. Held in memory:
- * a restart begins again at 0, which costs at most one pass. */
+ * the blocks behind them: every block is tried within a bounded number of passes. Held in memory,
+ * so a restart begins again at 0. Known limit (PR B plan, post-MVP): if more than a whole pass of
+ * blocks refuse both writes AND the process restarts after every pass, each pass starts over at 0
+ * and the blocks behind them wait; closing that needs the offset persisted outside those rows. */
 let carriedUnstamped = 0;
 
 /** Test-only: forget the carried fallback offset between test cases. */
