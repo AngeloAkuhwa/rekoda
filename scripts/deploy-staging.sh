@@ -634,7 +634,8 @@ dc run --rm -T migrate
 # OWN-86: "applies the migrations, verifies, deploys the new release, smokes, then starts them". The
 # database half of that is checked here, between migrate and `up`, so it cannot be skipped: the
 # ledger row, the guard trigger itself (a ledger row alone can disagree with the database), the
-# sanctioned plan functions owned by rekoda_plan_writer, and neither runtime role able to become it.
+# sanctioned plan functions (exact signature, SECURITY DEFINER, owned by rekoda_plan_writer), and
+# neither runtime role able to become it.
 # Any miss stops the deploy with the api and worker still stopped; the exit handler then prints the
 # fix-forward steps (0196 is applied, so the previous release must not be restarted).
 if [[ " $BREAKING " == *' 0196_plan_fields_guard '* ]]; then
@@ -642,7 +643,7 @@ if [[ " $BREAKING " == *' 0196_plan_fields_guard '* ]]; then
   smoke_0196=$(dc exec -T postgres psql -U rekoda_owner -d rekoda -v ON_ERROR_STOP=1 -tA -c "$SMOKE_0196_SQL") ||
     fail 'migrations are APPLIED, but the pre-start database smoke for 0196 could not run, so the new release is not started; the api and worker stay stopped'
   [ "$smoke_0196" = t ] ||
-    fail "migrations are APPLIED, but the pre-start database smoke for 0196 failed (got '$smoke_0196'): the ledger row, the enabled businesses_plan_fields_guard trigger, both plan functions owned by rekoda_plan_writer, or the runtime roles' separation from it is missing; the new release is not started and the api and worker stay stopped"
+    fail "migrations are APPLIED, but the pre-start database smoke for 0196 failed (got '$smoke_0196'): the ledger row, the enabled businesses_plan_fields_guard trigger, both plan writers (exact signature, SECURITY DEFINER, owned by rekoda_plan_writer), or the runtime roles' separation from it is missing; the new release is not started and the api and worker stay stopped"
 fi
 
 step 'start the new release'

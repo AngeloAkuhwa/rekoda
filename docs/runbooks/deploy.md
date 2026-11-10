@@ -434,15 +434,17 @@ after the script finishes. Step 2 is the operator's before starting the workflow
 6. Verify it succeeded: the command exits 0 and `rekoda_migrations` (or the migrate output) lists
    `0196_plan_fields_guard`.
 7. The new release's images are already built (build before anything live changes).
-8. Smoke the database before anything starts: as the owner, each plan writer exists at its exact
-   signature, is `SECURITY DEFINER` and is owned by `rekoda_plan_writer`
-   (`SELECT proowner::regrole, prosecdef FROM pg_proc WHERE oid IN
-(to_regprocedure('public.subscription_write_plan(uuid,text,timestamptz)'),
-to_regprocedure('public.subscription_expire_plan(uuid,text,text)'));` returns two rows, each
-   `rekoda_plan_writer` and `t`), the trigger `businesses_plan_fields_guard` exists on `businesses` and is enabled (`tgenabled` `O` or `A`), and
-   `pg_has_role('rekoda_app', 'rekoda_plan_writer', 'MEMBER')` and the same for `rekoda_worker` are
-   both false. If any check fails, do not run step 9: fix forward or escalate (above). On staging the
-   script runs this exact check; its query is in `scripts/deploy-staging.sh`.
+8. Smoke the database before anything starts, as the owner, with the **one query** the script uses:
+   `SMOKE_0196_SQL` in `scripts/deploy-staging.sh` (a failed deploy also prints it, ready to paste
+   as `dc exec -T postgres psql -U rekoda_owner -d rekoda -v ON_ERROR_STOP=1 -tA -c "..."`). It
+   prints a single value: **`t` passes; anything else (`f`, an error, no output) fails.** It is `t`
+   only when all of these hold: the `0196_plan_fields_guard` row is in `rekoda_migrations`; the
+   trigger `businesses_plan_fields_guard` exists on `businesses` and is enabled (`tgenabled` `O` or
+   `A`); `public.subscription_write_plan(uuid,text,timestamptz)` and
+   `public.subscription_expire_plan(uuid,text,text)` each exist at that exact signature, are
+   `SECURITY DEFINER` and are owned by `rekoda_plan_writer`; and neither `rekoda_app` nor
+   `rekoda_worker` is a member of `rekoda_plan_writer`. If it does not print `t`, do not run step 9:
+   fix forward or escalate (above). On staging the script runs this same query itself.
 9. `dc up -d --wait` recreates api, worker and web on the new images (the worker and api start here).
 10. Confirm the new application can change a plan through the sanctioned functions: on staging, the
     acceptance steps that move a plan; on production, the first renewal or lapse after the deploy is
