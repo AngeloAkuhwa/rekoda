@@ -387,10 +387,13 @@ would have plan changes, renewals and lapses refused (`42501`). Therefore:
   is no backup mechanism yet (G-02); a restore also needs the `rekoda_plan_writer` role
   (`scripts/restore-drill.sh` creates it). That is an owner decision, never an operator reflex.
 - If migration 0196 itself fails, its own transaction rolls back and the database stays as it was.
-  Confirm that **in the database, not only the ledger** before restarting the previous release: the
+  Confirm that **in the database, not only the ledger** before deciding anything: the
   guard exists if `SELECT 1 FROM pg_trigger WHERE tgname = 'businesses_plan_fields_guard'` returns a
   row (a process killed between the migration and its `rekoda_migrations` row leaves it applied and
-  unrecorded). A present guard means applied; 0196 is safe to re-run, so the cure is to run migrate again.
+  unrecorded). A present guard means applied; 0196 is safe to re-run, so the cure is to correct the
+  cause and fix forward as below (migrate again, then the pre-start smoke, then start), which is
+  also all the script prints. Restarting the previous release is not part of any printed procedure;
+  if you believe it is needed, escalate to the owner first.
 - **By-hand fix-forward** after a failed or interrupted deploy of a release carrying 0196 (the
   automatic staging workflow refuses to run while `/health` is down, so do not wait for it): from
   `/opt/rekoda`, whose checkout and `.env` are already at the new release, first `dc stop api worker`
@@ -793,8 +796,9 @@ What a failure leaves:
   Check the database, not only `rekoda_migrations` (the guard trigger, as
   "Deploy a release carrying 0196" says), fix forward, and escalate if unsure.
   If the **pre-start database smoke** failed, migrate finished but nothing was
-  started: the api and worker are still stopped. Correct the cause, run the
-  smoke query the script printed again, and run `dc up` only when it returns `t`.
+  started: the api and worker are still stopped. Correct the cause, run
+  `dc run --rm -T migrate`, run the smoke query the script printed again, and
+  run `dc up` only when it returns `t`.
 
 Two deployments never overlap: the workflow runs one at a time and waits
 rather than cancelling, and the script holds a lock

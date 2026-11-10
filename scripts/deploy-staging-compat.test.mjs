@@ -190,6 +190,9 @@ test('a failed migrate never prints rollback commands: 0196 may already have com
   assert.match(r.stderr, /rekoda_migrations/);
   assert.match(r.stderr, /pg_trigger/); // the database object, not only the ledger row
   assert.match(r.stderr, /Fix forward/);
+  // The by-hand fix-forward never leads around the OWN-86 pre-start smoke.
+  assert.match(r.stderr, /do NOT run `dc up` unless it prints t/);
+  assert.match(r.stderr, /Pre-start database smoke \(OWN-86\): dc exec -T postgres psql .*SELECT/s);
 });
 
 test('the stop is not trusted when the running services cannot be listed', () => {
@@ -254,6 +257,8 @@ test('SIGTERM during migrate: 0196 may be applied, so no rollback is offered and
   assert.match(stderr, /Fix forward/);
   assert.match(stderr, /pg_trigger/);
   assert.match(stderr, /must never be restarted against a database holding 0196/);
+  assert.match(stderr, /do NOT run `dc up` unless it prints t/);
+  assert.match(stderr, /Pre-start database smoke \(OWN-86\): dc exec -T postgres psql .*SELECT/s);
   // The commands that restart the incompatible previous release are never printed.
   assert.doesNotMatch(stderr, /git checkout [0-9a-f]{40}/);
   assert.doesNotMatch(stderr, /To roll back/);
