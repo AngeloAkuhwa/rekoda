@@ -605,6 +605,28 @@ step 'migrate (expand-only, as the owner)'
 dc run --rm -T migrate
 [ -z "$BREAKING" ] || BREAKING_APPLIED=true
 
+# OWN-86: "applies the migrations, verifies, deploys the new release, smokes, then starts them". The
+# database half of that is checked here, between migrate and `up`, so it cannot be skipped: the
+# ledger row, the guard trigger itself (a ledger row alone can disagree with the database), the
+# sanctioned plan functions owned by rekoda_plan_writer, and neither runtime role able to become it.
+# Any miss stops the deploy with the api and worker still stopped; the exit handler then prints the
+# fix-forward steps (0196 is applied, so the previous release must not be restarted).
+if [[ " $BREAKING " == *' 0196_plan_fields_guard '* ]]; then
+  step 'pre-start database smoke for 0196 (OWN-86): ledger, guard trigger, plan functions, role boundary'
+  smoke_0196=$(dc exec -T postgres psql -U rekoda_owner -d rekoda -v ON_ERROR_STOP=1 -tA -c "SELECT
+  (SELECT count(*) FROM rekoda_migrations WHERE tag = '0196_plan_fields_guard') = 1
+  AND (SELECT count(*) FROM pg_trigger WHERE tgname = 'businesses_plan_fields_guard'
+        AND tgrelid = 'public.businesses'::regclass AND tgenabled <> 'D') = 1
+  AND (SELECT count(*) FROM pg_proc WHERE pronamespace = 'public'::regnamespace
+        AND proname IN ('subscription_write_plan', 'subscription_expire_plan')
+        AND proowner = 'rekoda_plan_writer'::regrole) = 2
+  AND NOT pg_has_role('rekoda_app', 'rekoda_plan_writer', 'MEMBER')
+  AND NOT pg_has_role('rekoda_worker', 'rekoda_plan_writer', 'MEMBER')") ||
+    fail 'the pre-start database smoke for 0196 could not run, so the new release is not started; the api and worker stay stopped'
+  [ "$smoke_0196" = t ] ||
+    fail "the pre-start database smoke for 0196 failed (got '$smoke_0196'): the ledger row, the enabled businesses_plan_fields_guard trigger, both plan functions owned by rekoda_plan_writer, or the runtime roles' separation from it is missing; the new release is not started and the api and worker stay stopped"
+fi
+
 step 'start the new release'
 dc up -d --wait --wait-timeout 300
 

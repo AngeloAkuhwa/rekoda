@@ -90,6 +90,7 @@ case "$*" in
   *"ps --status running --services"*) [ -e "${fake}/ps-fails" ] && exit 1; cat "${fake}/running" 2>/dev/null ;;
   *"info --format"*) echo "${fake}" ;;
   *"run --rm -T migrate"*) [ -e "${fake}/hang-migrate" ] && sleep 60; [ -e "${fake}/fail-migrate" ] && exit 1 ;;
+  *"exec -T postgres psql"*) [ -e "${fake}/smoke-errors" ] && exit 1; if [ -e "${fake}/smoke-fails" ]; then echo f; else echo t; fi ;;
   *" up "*) [ -e "${fake}/fail-up" ] && exit 1; cp "${fake}/next-health.json" "${fake}/health.json" ;;
   *network\\ inspect*) echo '172.30.10.1 false' ;;
 esac
@@ -279,4 +280,53 @@ test('SIGTERM while the services are being stopped: migrate is never entered and
   assert.match(stderr, /stopped state .*unverified/i);
   assert.match(stderr, /Migrate was never entered/);
   assert.doesNotMatch(stderr, /MAY already be applied/);
+});
+
+test('OWN-86: a release carrying 0196 runs the pre-start database smoke after migrate and before up', () => {
+  const h = host([BREAKING]);
+  const r = h.run();
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const migrate = h.at('run --rm -T migrate');
+  const smoke = h.at('exec -T postgres psql');
+  const up = h.at(' up ');
+  assert.ok(smoke >= 0, 'the pre-start database smoke never ran');
+  assert.ok(migrate < smoke && smoke < up, h.calls().join('\n'));
+  // The query spans several lines of the fake docker log: read every line up to `up`.
+  const sql = h.calls().slice(smoke, up).join('\n');
+  // The smoke checks the database objects, not only the ledger row.
+  assert.match(sql, /rekoda_migrations/);
+  assert.match(sql, /businesses_plan_fields_guard/);
+  assert.match(sql, /subscription_write_plan/);
+  assert.match(sql, /subscription_expire_plan/);
+  assert.match(sql, /rekoda_plan_writer/);
+  assert.match(sql, /pg_has_role\('rekoda_app'/);
+  assert.match(sql, /pg_has_role\('rekoda_worker'/);
+});
+
+test('OWN-86: a failed pre-start smoke never starts the new release and states fix-forward', () => {
+  const h = host([BREAKING]);
+  writeFileSync(join(h.fake, 'smoke-fails'), '');
+  const r = h.run();
+  assert.notEqual(r.status, 0);
+  assert.equal(h.at(' up '), -1, 'the new release must not start after a failed smoke');
+  assert.match(r.stderr, /pre-start database smoke for 0196 failed/);
+  assert.match(r.stderr, /APPLIED, so the previous release .* is NOT safe to restart/);
+  assert.match(r.stderr, /Fix forward/);
+  assert.doesNotMatch(r.stderr, /git checkout [0-9a-f]{40}/);
+});
+
+test('OWN-86: a smoke that cannot run is a failure, not a pass', () => {
+  const h = host([BREAKING]);
+  writeFileSync(join(h.fake, 'smoke-errors'), '');
+  const r = h.run();
+  assert.notEqual(r.status, 0);
+  assert.equal(h.at(' up '), -1, 'the new release must not start when the smoke could not run');
+  assert.match(r.stderr, /pre-start database smoke for 0196 could not run/);
+});
+
+test('a release without 0196 does not run the 0196 smoke', () => {
+  const h = host(['0199_something_additive']);
+  const r = h.run();
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.equal(h.at('exec -T postgres psql'), -1);
 });

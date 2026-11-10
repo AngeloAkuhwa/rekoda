@@ -396,7 +396,8 @@ would have plan changes, renewals and lapses refused (`42501`). Therefore:
   `/opt/rekoda`, whose checkout and `.env` are already at the new release, first `dc stop api worker`
   and confirm `dc ps --status running --services` lists neither (a run killed before its own stop
   may have left the previous release serving), then correct the cause of the failure, then run
-  `dc run --rm -T migrate`, confirm the guard exists (above), `dc up -d --wait --wait-timeout 300`, reload Caddy,
+  `dc run --rm -T migrate`, run the pre-start database smoke of step 8 below (the guard trigger, the
+  ledger row and both plan functions owned by `rekoda_plan_writer`; do not start anything if it fails), `dc up -d --wait --wait-timeout 300`, reload Caddy,
   check `/health` names the new release, then remove `.git/rekoda-deploy-staging.state`. Never
   `dc start api worker` or `git checkout` the previous release: the stopped containers are the old
   release.
@@ -406,11 +407,18 @@ would have plan changes, renewals and lapses refused (`42501`). Therefore:
 ### Deploy a release carrying 0196
 
 Production and any host not deployed by `scripts/deploy-staging.sh` follow this sequence by hand;
-`deploy-staging.sh` does the stop-and-prove part itself: whenever the commit carries 0196 and the
-running commit does not, it stops the api and worker, checks with `docker compose ps` that neither is
-running, refuses to migrate otherwise, then migrates and starts the new release. Its only check after
-the start is `/health`. The ledger and trigger check ("is 0196 applied"), the guard-exists smoke and
-the plan-change smoke are manual steps on staging; run them from this list after the script finishes.
+`deploy-staging.sh` does steps 3 to 9 and 11's `/health` check itself, in this order, and cannot be
+told to skip any of them: whenever the commit carries 0196 and the running commit does not, it stops
+the api and worker, checks with `docker compose ps` that neither is running (and refuses to migrate
+otherwise), migrates, then runs the **pre-start database smoke** of steps 6 and 8 as the owner
+(`dc exec -T postgres psql`): the `0196_plan_fields_guard` ledger row, the enabled
+`businesses_plan_fields_guard` trigger on `businesses`, both plan functions owned by
+`rekoda_plan_writer`, and neither `rekoda_app` nor `rekoda_worker` a member of it. If that query
+fails or cannot run, the script stops **before** `dc up`, with the api and worker still stopped, and
+prints the fix-forward steps; only when it passes does it start the new release and require `/health`
+to name it. Step 10 (a real plan change) and the page and worker-log checks of step 11 need the
+running application and stay manual: on staging they are part of the owner's staging acceptance,
+after the script finishes. Step 2 is the operator's before starting the workflow.
 
 1. Confirm the target host, the running release and the release to deploy.
 2. Confirm the backup and recovery arrangements you rely on exist (G-02: today there are none for
@@ -421,9 +429,12 @@ the plan-change smoke are manual steps on staging; run them from this list after
 6. Verify it succeeded: the command exits 0 and `rekoda_migrations` (or the migrate output) lists
    `0196_plan_fields_guard`.
 7. The new release's images are already built (build before anything live changes).
-8. Smoke the database: as the owner, `SELECT proowner::regrole FROM pg_proc WHERE proname IN
-('subscription_write_plan','subscription_expire_plan');` returns `rekoda_plan_writer` twice, and the
-   trigger `businesses_plan_fields_guard` exists on `businesses`.
+8. Smoke the database before anything starts: as the owner, `SELECT proowner::regrole FROM pg_proc WHERE proname IN
+('subscription_write_plan','subscription_expire_plan');` returns `rekoda_plan_writer` twice, the
+   trigger `businesses_plan_fields_guard` exists on `businesses` and is enabled, and
+   `pg_has_role('rekoda_app', 'rekoda_plan_writer', 'MEMBER')` and the same for `rekoda_worker` are
+   both false. If any check fails, do not run step 9: fix forward or escalate (above). On staging the
+   script runs this exact check; its query is in `scripts/deploy-staging.sh`.
 9. `dc up -d --wait` recreates api, worker and web on the new images (the worker and api start here).
 10. Confirm the new application can change a plan through the sanctioned functions: on staging, the
     acceptance steps that move a plan; on production, the first renewal or lapse after the deploy is
@@ -743,7 +754,8 @@ image and then the web image (`dc build ... api`, `dc build ... web`, never
 both at once, and refused below `MIN_MEM_KB` of available memory, 1 GiB by
 default, raised with `REKODA_DEPLOY_MIN_MEM_KB`), `dc run --rm -T migrate` (preceded by `dc stop api worker`, a check that both stopped, and
 the refusal to migrate while either runs, whenever the commit carries a compatibility-breaking migration,
-today 0196; OWN-86), `dc up -d --wait --wait-timeout 300`, reload the
+today 0196; OWN-86), for 0196 the pre-start database smoke (ledger row, guard trigger, plan-function
+owner, role boundary; a failure stops before `up`), `dc up -d --wait --wait-timeout 300`, reload the
 Caddyfile, confirm the edge network, and require
 `https://staging-api.myrekoda.com/health` to answer `status` ok, `database`
 up, and this release and commit. It ends with `dc ps`, then removes
@@ -762,7 +774,7 @@ What a failure leaves:
   the api and worker fails or cannot be proved, nothing was migrated but their
   stopped state is unverified; the script says so. Check `dc ps`. Confirm
   first that the guard trigger `businesses_plan_fields_guard` is absent in the database; if it is,
-  the previous release is still compatible with it. Then do what the script printed: it puts the
+  the previous release is still compatible with it. Then run the commands the script printed (it prints them; it does not run them): they put the
   checkout and `.env` back to the previous release (`git checkout <previous sha>`, the `sed` line,
   `dc up -d --wait`, the Caddy reload), which also starts the stopped api and worker. Do not leave
   the checkout at the new release with the old containers running. This is the only case where the
