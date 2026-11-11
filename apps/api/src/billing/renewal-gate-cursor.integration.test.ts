@@ -236,6 +236,35 @@ describe('the blocked-renewal close cursor is durable', () => {
     expect(audited).toEqual({ n: 6, distinct: 6 });
   }, 120_000);
 
+  it('a pass that stops before saving still raises its alert and records the failures it saw', async () => {
+    await seedBlocked(4, 2, true);
+    await ownerDb.execute(sql`
+      CREATE OR REPLACE FUNCTION refuse_cursor_advance() RETURNS trigger LANGUAGE plpgsql AS $f$
+      BEGIN RAISE EXCEPTION 'crash before the cursor was saved'; END $f$`);
+    await ownerDb.execute(sql`
+      CREATE TRIGGER refuse_cursor_advance BEFORE UPDATE ON renewal_block_close_cursor
+      FOR EACH ROW WHEN (NEW.after_reference IS DISTINCT FROM OLD.after_reference)
+      EXECUTE FUNCTION refuse_cursor_advance()`);
+    vi.resetModules();
+    const { Logger } = await import('@nestjs/common');
+    const error = vi.spyOn(Logger.prototype, 'error');
+    try {
+      await sweep({ blockPageSize: 10 });
+      expect(
+        error.mock.calls.filter(([m]) =>
+          /^ALERT renewal_block_close_pass failed=2 .*stopped=true/.test(String(m)),
+        ),
+      ).toHaveLength(1);
+    } finally {
+      error.mockRestore();
+    }
+    const status = await subscriptionsRepo.blockCloseCursorStatus(workerDb);
+    expect(status).toMatchObject({ lastPassFailed: 2, positioned: false, leased: false });
+    expect(evaluateOpsAlerts(await collectOpsSnapshot(workerDb)).map((a) => a.key)).toContain(
+      'billing.renewal_block_close_failing',
+    );
+  }, 120_000);
+
   it('a batch that cannot be listed does not move the cursor or reset it', async () => {
     await seedBlocked(6, 6);
     await sweep({ blockPageSize: 2, maxBlockPages: 1 });

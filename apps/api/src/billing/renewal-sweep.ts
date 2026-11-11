@@ -295,6 +295,7 @@ export async function closeBlocksTheGateNoLongerHolds(
     return result;
   }
   result.ran = true;
+  let unrecordedFailed = 0;
   try {
     for (let page = 0; page < maxPages; page += 1) {
       const batch = await subscriptionsRepo.blockedRenewalsCloseBatch(deps.workerDb, pageSize);
@@ -306,7 +307,7 @@ export async function closeBlocksTheGateNoLongerHolds(
       let failed = 0;
       for (const blocked of batch) {
         try {
-          await withBusiness(deps.appDb, blocked.businessId, (tx) =>
+          const closedNow = await withBusiness(deps.appDb, blocked.businessId, (tx) =>
             subscriptionsRepo.resolveBlockedRenewal(
               tx,
               blocked.businessId,
@@ -316,7 +317,8 @@ export async function closeBlocksTheGateNoLongerHolds(
               'system',
             ),
           );
-          closed += 1;
+          // False when a concurrent runner (or an operator) already closed it: not ours to count.
+          if (closedNow) closed += 1;
         } catch (error) {
           failed += 1;
           let stamped = false;
@@ -334,6 +336,8 @@ export async function closeBlocksTheGateNoLongerHolds(
           );
         }
       }
+      /* Counted for the alert even if the advance below fails: these failures happened. */
+      unrecordedFailed = failed;
       const last = batch[batch.length - 1]!;
       const advanced = await subscriptionsRepo.advanceBlockCloseCursor(
         deps.workerDb,
@@ -347,6 +351,7 @@ export async function closeBlocksTheGateNoLongerHolds(
       }
       result.closed += closed;
       result.failed += failed;
+      unrecordedFailed = 0;
       if (batch.length < pageSize) {
         result.wrapped = true;
         break;
@@ -356,7 +361,16 @@ export async function closeBlocksTheGateNoLongerHolds(
       throw new Error('the close cursor lease was lost before the pass could be finished');
     }
   } catch (error) {
-    await subscriptionsRepo.releaseBlockCloseCursor(deps.workerDb, owner).catch(() => false);
+    await subscriptionsRepo
+      .releaseBlockCloseCursor(deps.workerDb, owner, unrecordedFailed)
+      .catch(() => false);
+    const failedThisPass = result.failed + unrecordedFailed;
+    if (failedThisPass > 0) {
+      /* A pass that stopped still says so: the failures it saw happened, saved or not. */
+      log.error(
+        `ALERT renewal_block_close_pass failed=${failedThisPass} closed=${result.closed} stopped=true`,
+      );
+    }
     throw error;
   }
   if (result.failed > 0) {

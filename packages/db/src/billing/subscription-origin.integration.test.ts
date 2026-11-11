@@ -64,8 +64,8 @@ const originOf = async (businessId: string) => {
   return subscription.origin;
 };
 
-/* A paid plan set by an operator must renew in the future (G-114, enforced by the operator writer,
- * migration 0200), so the fixture cycle renews well after any day these tests run. */
+/* A paid plan set by an operator renews in the future (G-114, the operator route's rule), so the
+ * fixture cycle renews well after any day these tests run. */
 const START = new Date('2027-08-01T00:00:00Z');
 const RENEWS = new Date('2027-09-01T00:00:00Z');
 

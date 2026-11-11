@@ -214,14 +214,18 @@ describe('OD-37: the provider writer moves a plan only for a paid, unapplied cha
     expect((await planOf(businessId))?.plan).toBe('chat');
   });
 
-  it('applies one paid charge at most once', async () => {
+  it('applies one paid charge at most once: the writer claims the charge itself', async () => {
     const businessId = await seedBusiness();
     const reference = await seedCharge(businessId, { plan: 'chat' });
     expect(await apply(businessId, reference)).toBe('allowed');
-    await withBusiness(appDb, businessId, (tx) =>
-      subscriptionsRepo.markChargeApplied(tx, reference, new Date(), FUTURE),
+    // No markChargeApplied in between: a second call for the same charge is refused by the writer.
+    expect(await apply(businessId, reference, new Date(Date.now() + 300 * 86_400_000))).toMatch(
+      /42501.*not a paid, unapplied plan charge/,
     );
-    expect(await apply(businessId, reference)).toMatch(/42501.*not a paid, unapplied plan charge/);
+    const [row] = await ownerDb.execute<{ end: string | null }>(
+      sql`SELECT applied_period_end AS end FROM subscription_charges WHERE reference = ${reference}`,
+    );
+    expect(new Date(row!.end!).toISOString()).toBe(FUTURE.toISOString());
   });
 
   it("refuses a renewal date far outside the charge's cycle, and empty inputs", async () => {
@@ -293,12 +297,14 @@ describe('OD-37: no other path writes the plan fields (0200)', () => {
     for (const [plan, days] of [
       ['complete', 30],
       ['trial', 90],
+      ['trial', null],
     ] as const) {
       expect(
         await outcome(
           appDb.execute(sql`
             INSERT INTO businesses (name, owner_user_id, plan, plan_expires_at)
-            VALUES ('Forged', ${user.id}::uuid, ${plan}, now() + make_interval(days => ${days}))`),
+            VALUES ('Forged', ${user.id}::uuid, ${plan},
+                    ${days === null ? sql`NULL` : sql`now() + make_interval(days => ${days})`})`),
         ),
       ).toMatch(/42501/);
     }

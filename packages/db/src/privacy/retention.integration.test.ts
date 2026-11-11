@@ -137,7 +137,7 @@ describe('who is due', () => {
       await billingRepo.setPlan(appDb, {
         businessId,
         plan: 'complete',
-        expiresAt: new Date(Date.now() + 30 * 86_400_000), // a paid plan's date is in the future (0200)
+        expiresAt: new Date(Date.now() + 30 * 86_400_000), // a paid plan's date is in the future (G-114)
         actor: 'operator:test',
       }),
     ).toBe(true);
@@ -237,7 +237,7 @@ describe('who is due', () => {
     const change = (plan: string, expiresAt: Date) =>
       billingRepo.setPlan(appDb, { businessId, plan, expiresAt, actor: 'operator:test' });
 
-    await change('complete', new Date(Date.now() + 30 * 86_400_000)); // future: G-114, 0200
+    await change('complete', new Date(Date.now() + 30 * 86_400_000)); // future: G-114
     const first = await everPaidAt();
     expect(first).not.toBeNull();
 

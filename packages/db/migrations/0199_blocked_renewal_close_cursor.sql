@@ -195,19 +195,21 @@ END $$;
 
 -- Give the lease back without moving the cursor (a pass that stopped on an error). The position is
 -- never reset here.
-CREATE OR REPLACE FUNCTION renewal_block_close_release(p_owner uuid)
+-- `p_unrecorded_failed` counts the failures of the batch whose advance did not happen, so the
+-- operations alert still sees them.
+CREATE OR REPLACE FUNCTION renewal_block_close_release(p_owner uuid, p_unrecorded_failed integer)
 RETURNS boolean
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
-  IF p_owner IS NULL THEN
+  IF p_owner IS NULL OR p_unrecorded_failed IS NULL OR p_unrecorded_failed < 0 THEN
     RAISE EXCEPTION 'renewal_block_close_release: invalid input' USING ERRCODE = '22023';
   END IF;
   UPDATE public.renewal_block_close_cursor
   SET last_pass_closed = pass_closed,
-      last_pass_failed = pass_failed,
+      last_pass_failed = pass_failed + p_unrecorded_failed,
       last_pass_finished_at = clock_timestamp(),
       lease_owner = NULL, lease_expires_at = NULL, updated_at = clock_timestamp()
   WHERE id AND lease_owner = p_owner;
@@ -244,19 +246,19 @@ REVOKE ALL ON FUNCTION blocked_renewals_close_batch(integer) FROM PUBLIC;
 REVOKE ALL ON FUNCTION renewal_block_close_claim(uuid, integer) FROM PUBLIC;
 REVOKE ALL ON FUNCTION renewal_block_close_advance(uuid, bigint, text, integer, integer, integer) FROM PUBLIC;
 REVOKE ALL ON FUNCTION renewal_block_close_finish(uuid, boolean) FROM PUBLIC;
-REVOKE ALL ON FUNCTION renewal_block_close_release(uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION renewal_block_close_release(uuid, integer) FROM PUBLIC;
 REVOKE ALL ON FUNCTION renewal_block_close_status() FROM PUBLIC;
 DO $$ BEGIN
   REVOKE ALL ON FUNCTION blocked_renewals_close_batch(integer) FROM rekoda_app;
   REVOKE ALL ON FUNCTION renewal_block_close_claim(uuid, integer) FROM rekoda_app;
   REVOKE ALL ON FUNCTION renewal_block_close_advance(uuid, bigint, text, integer, integer, integer) FROM rekoda_app;
   REVOKE ALL ON FUNCTION renewal_block_close_finish(uuid, boolean) FROM rekoda_app;
-  REVOKE ALL ON FUNCTION renewal_block_close_release(uuid) FROM rekoda_app;
+  REVOKE ALL ON FUNCTION renewal_block_close_release(uuid, integer) FROM rekoda_app;
   REVOKE ALL ON FUNCTION renewal_block_close_status() FROM rekoda_app;
 EXCEPTION WHEN undefined_object THEN NULL; END $$;
 GRANT EXECUTE ON FUNCTION blocked_renewals_close_batch(integer) TO rekoda_worker;
 GRANT EXECUTE ON FUNCTION renewal_block_close_claim(uuid, integer) TO rekoda_worker;
 GRANT EXECUTE ON FUNCTION renewal_block_close_advance(uuid, bigint, text, integer, integer, integer) TO rekoda_worker;
 GRANT EXECUTE ON FUNCTION renewal_block_close_finish(uuid, boolean) TO rekoda_worker;
-GRANT EXECUTE ON FUNCTION renewal_block_close_release(uuid) TO rekoda_worker;
+GRANT EXECUTE ON FUNCTION renewal_block_close_release(uuid, integer) TO rekoda_worker;
 GRANT EXECUTE ON FUNCTION renewal_block_close_status() TO rekoda_worker;

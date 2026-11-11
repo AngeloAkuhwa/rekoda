@@ -404,10 +404,10 @@ would have plan changes, renewals and lapses refused (`42501`). Therefore:
   `/opt/rekoda`, whose checkout and `.env` are already at the new release, first `dc stop api worker`
   and confirm `dc ps --status running --services` lists neither (a run killed before its own stop
   may have left the previous release serving), then correct the cause of the failure, then run
-  `dc run --rm -T migrate`, run the pre-start database smoke of step 8 below (the ledger row, the
-  enabled guard trigger, both plan writers at their exact signatures, `SECURITY DEFINER` and owned by
-  `rekoda_plan_writer`, and neither runtime role a
-  member of it; the script prints the exact query; do not start anything unless it returns `t`), `dc up -d --wait --wait-timeout 300`, reload Caddy,
+  `dc run --rm -T migrate`, run the pre-start database smoke of step 8 below (the 0196 and 0200 ledger rows, the
+  enabled update and insert guard triggers, the three plan writers at their exact signatures,
+  `SECURITY DEFINER` and owned by `rekoda_plan_writer`, the removed general writer and the test-only
+  fixture writer absent, and neither runtime role a member of the writer role; the script prints the exact query; do not start anything unless it returns `t`), `dc up -d --wait --wait-timeout 300`, reload Caddy,
   check `/health` names the new release, then remove `.git/rekoda-deploy-staging.state`. Never
   `dc start api worker` or `git checkout` the previous release: the stopped containers are the old
   release.

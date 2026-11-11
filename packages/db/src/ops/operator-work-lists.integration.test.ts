@@ -220,7 +220,7 @@ describe('only the worker credential may call the lists', () => {
     sql`SELECT renewal_block_close_claim(${uuid(1)}::uuid, 60)`,
     sql`SELECT renewal_block_close_advance(${uuid(1)}::uuid, 1::bigint, 'RKD-X', 0, 0, 60)`,
     sql`SELECT renewal_block_close_finish(${uuid(1)}::uuid, true)`,
-    sql`SELECT renewal_block_close_release(${uuid(1)}::uuid)`,
+    sql`SELECT renewal_block_close_release(${uuid(1)}::uuid, 0)`,
     sql`SELECT * FROM renewal_block_close_status()`,
   ];
 

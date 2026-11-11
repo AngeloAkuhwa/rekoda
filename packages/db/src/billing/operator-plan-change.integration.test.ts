@@ -201,7 +201,7 @@ describe('an operator move to a paid plan (G-62)', () => {
 
   it('re-posting the same plan and expiry keeps the cycle start', async () => {
     const businessId = await troubledComplete();
-    // An operator re-post needs a future date (G-114, enforced by the writer, 0200), so the cycle
+    // An operator re-post carries a future date (G-114, the route's rule), so the cycle
     // already running is moved to renew in the future first, as it would after a renewal.
     await setPlanAsOwner(urls, businessId, { planExpiresAt: FUTURE_RENEWS_AT });
     // Same plan, same renewal date as the cycle already running.

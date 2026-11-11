@@ -11,8 +11,8 @@
 --       The provider path (a settled Paystack charge). The PLAN comes from the charge row, never
 --       from the caller. The charge must belong to the business, be `paid`, be a plan charge
 --       (first_purchase, renewal or upgrade) for a known paid plan, and be neither applied
---       (`applied_period_end`) nor marked unapplied; so one paid charge can move the plan at most
---       once. A charge that was superseded as the payable link but was then paid anyway still buys
+--       (`applied_period_end`) nor marked unapplied, and the writer CLAIMS it (sets the applied
+--       period) in the same statement, so one paid charge can move the plan at most once. A charge that was superseded as the payable link but was then paid anyway still buys
 --       what it was priced for (G-104, the settlement path decides that before calling here). The renewal date must lie within 400 days of when the charge was paid.
 --       EXECUTE: rekoda_app and rekoda_worker (settlement runs in the API's verify path and in the
 --       worker's billing job).
@@ -29,7 +29,7 @@
 --       inputs are now validated and it refuses an unknown previous plan.
 --
 -- The trial INSERT is now guarded too: a business created by anyone but the writer role or the
--- table owner must start on `trial` with a trial end no more than 15 days away (TRIAL_DAYS is 14),
+-- table owner must start on `trial` with a trial end set and no more than 15 days away (TRIAL_DAYS is 14),
 -- so the BEFORE UPDATE guard cannot be side-stepped by inserting a paid business.
 --
 -- The authority stays the ROLE (`current_user` inside the trigger), never a setting. The tenant pin
@@ -48,8 +48,10 @@
 -- (`scripts/deploy-staging.sh` lists it as compatibility-breaking): a release that still calls
 -- `subscription_write_plan` cannot run against it. Re-running it is safe.
 
--- The writer reads the charge it applies (under RLS and the tenant pin, as every role does).
+-- The writer reads the charge it applies and claims it (the applied period), under RLS and the
+-- tenant pin, as every role does. Nothing else on the table.
 GRANT SELECT ON subscription_charges TO rekoda_plan_writer;
+GRANT UPDATE (applied_period_start, applied_period_end) ON subscription_charges TO rekoda_plan_writer;
 
 DROP FUNCTION IF EXISTS public.subscription_write_plan(uuid, text, timestamptz);
 
@@ -95,6 +97,19 @@ BEGIN
      OR p_expires > coalesce(c.paid_at, clock_timestamp()) + interval '400 days' THEN
     RAISE EXCEPTION 'subscription_apply_paid_charge: the renewal date is outside the charge''s cycle'
       USING ERRCODE = '22023';
+  END IF;
+  -- Claim the charge in the same statement that re-checks it: only a paid, unapplied plan charge of
+  -- this business is claimed, and a second call (or a concurrent one) finds it claimed and is
+  -- refused. The caller's markChargeApplied then records the exact period it bought.
+  UPDATE public.subscription_charges
+  SET applied_period_start = coalesce(applied_period_start, clock_timestamp()),
+      applied_period_end = p_expires
+  WHERE reference = p_reference AND business_id = p_business AND status = 'paid'
+    AND applied_period_end IS NULL AND unapplied_at IS NULL
+    AND kind IN ('first_purchase', 'renewal', 'upgrade') AND plan IN ('chat', 'integrate', 'complete');
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'subscription_apply_paid_charge: the charge is not a paid, unapplied plan charge'
+      USING ERRCODE = '42501';
   END IF;
   UPDATE public.businesses SET plan = c.plan, plan_expires_at = p_expires WHERE id = p_business;
   IF NOT FOUND THEN
@@ -200,8 +215,8 @@ BEGIN
   IF pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'USAGE') THEN
     RETURN NEW;
   END IF;
-  IF NEW.plan IS DISTINCT FROM 'trial'
-     OR (NEW.plan_expires_at IS NOT NULL AND NEW.plan_expires_at > now() + interval '15 days') THEN
+  IF NEW.plan IS DISTINCT FROM 'trial' OR NEW.plan_expires_at IS NULL
+     OR NEW.plan_expires_at > now() + interval '15 days' THEN
     RAISE EXCEPTION
       'a new business starts on its trial; plan and plan_expires_at change only through the subscription writers (OD-37)'
       USING ERRCODE = '42501';

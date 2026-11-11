@@ -2545,9 +2545,14 @@ export async function finishBlockClosePass(
 }
 
 /** Give the lease back without moving the cursor (a pass that stopped on an error). */
-export async function releaseBlockCloseCursor(db: Db, owner: string): Promise<boolean> {
+export async function releaseBlockCloseCursor(
+  db: Db,
+  owner: string,
+  /** Failures in the batch whose advance did not happen, so the ops alert still counts them. */
+  unrecordedFailed = 0,
+): Promise<boolean> {
   const rows = await db.execute<{ ok: boolean }>(
-    sql`SELECT renewal_block_close_release(${owner}::uuid) AS ok`,
+    sql`SELECT renewal_block_close_release(${owner}::uuid, ${unrecordedFailed}) AS ok`,
   );
   return [...rows][0]?.ok === true;
 }
