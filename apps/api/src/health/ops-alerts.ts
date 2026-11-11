@@ -83,7 +83,20 @@ export async function collectOpsSnapshot(workerDb: Db | null): Promise<OpsSnapsh
     },
     meta,
     paystack,
-    billing: { blockedRenewals, blockCloseFailed: closeCursor?.lastPassFailed ?? 0 },
+    billing: {
+      blockedRenewals,
+      /* The worst of the last pass, the cycle under way and the last complete cycle: with more
+       * blocks open than one pass reaches, a pass over a clean window does not clear the alert;
+       * a whole clean cycle does. */
+      blockCloseFailed: closeCursor
+        ? Math.max(
+            closeCursor.lastPassFailed ?? 0,
+            closeCursor.cycleFailed,
+            closeCursor.lastCycleFailed ?? 0,
+          )
+        : 0,
+      blockCloseStalled: closeCursor?.abandoned ?? false,
+    },
   };
 }
 

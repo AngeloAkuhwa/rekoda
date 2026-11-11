@@ -48,6 +48,15 @@ CREATE TABLE IF NOT EXISTS renewal_block_close_cursor (
   pass_closed        integer NOT NULL DEFAULT 0 CHECK (pass_closed >= 0),
   pass_failed        integer NOT NULL DEFAULT 0 CHECK (pass_failed >= 0),
   passes_completed   bigint  NOT NULL DEFAULT 0 CHECK (passes_completed >= 0),
+  -- Passes whose lease expired without a finish or a release (the runner died, or could not
+  -- reach the database to give the lease back). Taken over by the next claim.
+  passes_abandoned   bigint  NOT NULL DEFAULT 0 CHECK (passes_abandoned >= 0),
+  -- Failures since the cursor last wrapped (a CYCLE may span several passes when more than one
+  -- pass of blocks is open), and the total of the last complete cycle. The operations alert reads
+  -- these too, so it stays on until a whole cycle runs clean instead of following each pass's
+  -- window of the list.
+  cycle_failed       integer NOT NULL DEFAULT 0 CHECK (cycle_failed >= 0),
+  last_cycle_failed  integer CHECK (last_cycle_failed >= 0),
   last_pass_closed   integer CHECK (last_pass_closed >= 0),
   last_pass_failed   integer CHECK (last_pass_failed >= 0),
   last_pass_finished_at timestamptz,
@@ -119,8 +128,19 @@ BEGIN
   END IF;
   -- The single row is recreated if it was ever removed; a missing row means "start of the list".
   INSERT INTO public.renewal_block_close_cursor (id) VALUES (true) ON CONFLICT (id) DO NOTHING;
+  -- Taking over an ABANDONED pass (another owner's lease that expired without a finish or a
+  -- release) first records what that pass saved, so its failures still reach the operations
+  -- alert instead of being wiped by the counter reset. Every SET expression reads the old row.
   UPDATE public.renewal_block_close_cursor
-  SET lease_owner = p_owner,
+  SET last_pass_closed = CASE WHEN lease_owner IS NOT NULL AND lease_owner <> p_owner
+                              THEN pass_closed ELSE last_pass_closed END,
+      last_pass_failed = CASE WHEN lease_owner IS NOT NULL AND lease_owner <> p_owner
+                              THEN pass_failed ELSE last_pass_failed END,
+      last_pass_finished_at = CASE WHEN lease_owner IS NOT NULL AND lease_owner <> p_owner
+                                   THEN lease_expires_at ELSE last_pass_finished_at END,
+      passes_abandoned = passes_abandoned
+        + CASE WHEN lease_owner IS NOT NULL AND lease_owner <> p_owner THEN 1 ELSE 0 END,
+      lease_owner = p_owner,
       lease_expires_at = clock_timestamp() + make_interval(secs => p_lease_seconds),
       pass_started_at = clock_timestamp(),
       pass_closed = 0,
@@ -146,23 +166,39 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $$
+DECLARE
+  k timestamptz;
 BEGIN
+  -- No upper bound on the reference: `subscription_charges.reference` has none, and a cap here
+  -- would refuse every advance past one long reference and wedge the cursor at that batch.
   IF p_owner IS NULL OR p_after_blocked_at_us IS NULL OR p_after_reference IS NULL
-     OR length(p_after_reference) NOT BETWEEN 1 AND 64
+     OR length(p_after_reference) < 1
      OR p_closed IS NULL OR p_closed < 0 OR p_failed IS NULL OR p_failed < 0
      OR p_lease_seconds IS NULL OR p_lease_seconds < 30 OR p_lease_seconds > 3600 THEN
     RAISE EXCEPTION 'renewal_block_close_advance: invalid input' USING ERRCODE = '22023';
   END IF;
+  k := 'epoch'::timestamptz + p_after_blocked_at_us * interval '1 microsecond';
+  -- The cursor only moves forward within a cycle (back to the start only through finish): a key at
+  -- or before the stored one would silently re-skip or re-walk rows, so it is refused.
   UPDATE public.renewal_block_close_cursor
-  SET after_blocked_at = 'epoch'::timestamptz + p_after_blocked_at_us * interval '1 microsecond',
+  SET after_blocked_at = k,
       after_reference = p_after_reference,
       pass_closed = pass_closed + p_closed,
       pass_failed = pass_failed + p_failed,
+      cycle_failed = cycle_failed + p_failed,
       lease_expires_at = clock_timestamp() + make_interval(secs => p_lease_seconds),
       last_advanced_at = clock_timestamp(),
       updated_at = clock_timestamp()
-  WHERE id AND lease_owner = p_owner;
-  RETURN FOUND;
+  WHERE id AND lease_owner = p_owner
+    AND (after_blocked_at IS NULL OR (k, p_after_reference) > (after_blocked_at, after_reference));
+  IF FOUND THEN
+    RETURN true;
+  END IF;
+  IF EXISTS (SELECT 1 FROM public.renewal_block_close_cursor WHERE id AND lease_owner = p_owner) THEN
+    RAISE EXCEPTION 'renewal_block_close_advance: the cursor cannot move backwards'
+      USING ERRCODE = '22023';
+  END IF;
+  RETURN false;
 END $$;
 
 -- End a pass and release the lease. `p_wrapped` (the list was exhausted) moves the cursor back to
@@ -183,6 +219,8 @@ BEGIN
   SET after_blocked_at = CASE WHEN p_wrapped THEN NULL ELSE after_blocked_at END,
       after_reference = CASE WHEN p_wrapped THEN NULL ELSE after_reference END,
       passes_completed = passes_completed + CASE WHEN p_wrapped THEN 1 ELSE 0 END,
+      last_cycle_failed = CASE WHEN p_wrapped THEN cycle_failed ELSE last_cycle_failed END,
+      cycle_failed = CASE WHEN p_wrapped THEN 0 ELSE cycle_failed END,
       last_pass_closed = pass_closed,
       last_pass_failed = pass_failed,
       last_pass_finished_at = clock_timestamp(),
@@ -217,12 +255,17 @@ BEGIN
 END $$;
 
 -- The cursor's state for operations: counts, times and whether a position is held. No reference,
--- no business, no identity.
+-- no business, no identity. `abandoned` is a lease that expired without a finish or a release: a
+-- pass died, or could not reach the database to give the lease back (the stalled-pass alert).
 CREATE OR REPLACE FUNCTION renewal_block_close_status()
 RETURNS TABLE (
   positioned boolean,
   leased boolean,
+  abandoned boolean,
   passes_completed bigint,
+  passes_abandoned bigint,
+  cycle_failed integer,
+  last_cycle_failed integer,
   pass_closed integer,
   pass_failed integer,
   last_pass_closed integer,
@@ -237,7 +280,8 @@ SET search_path = pg_catalog, pg_temp
 AS $$
   SELECT after_reference IS NOT NULL,
          lease_owner IS NOT NULL AND lease_expires_at >= clock_timestamp(),
-         passes_completed, pass_closed, pass_failed, last_pass_closed, last_pass_failed,
+         lease_owner IS NOT NULL AND lease_expires_at < clock_timestamp(),
+         passes_completed, passes_abandoned, cycle_failed, last_cycle_failed, pass_closed, pass_failed, last_pass_closed, last_pass_failed,
          last_pass_finished_at, last_advanced_at
   FROM public.renewal_block_close_cursor WHERE id
 $$;

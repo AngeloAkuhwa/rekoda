@@ -87,7 +87,7 @@ COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
-# file in its own transaction, so from here whether 0196 committed is unknown (OWN-86).
+# file in its own transaction, so from here whether 0196 or 0200 committed is unknown (OWN-86).
 MIGRATE_ENTERED=false
 # Set just before `up`: a failure after migrate but before it (the 0196 smoke) has started nothing.
 UP_ENTERED=false
@@ -96,7 +96,9 @@ UP_ENTERED=false
 # insert guard triggers exist and fire (enabled in origin or always mode); each writer
 # (subscription_apply_paid_charge, subscription_operator_set_plan, subscription_expire_plan) exists at
 # its exact signature, SECURITY DEFINER and owned by rekoda_plan_writer; the removed general writer
-# and the test-only fixture writer are ABSENT; and neither runtime role can become the writer role.
+# and the test-only fixture writer are ABSENT; neither runtime role can become the writer role; each
+# writer's search_path is the pinned one; PUBLIC cannot execute any writer and the worker cannot
+# execute the operator writer; and the applied-once trigger on subscription_charges fires.
 SMOKE_0196_SQL="SELECT
   (SELECT count(*) FROM rekoda_migrations
     WHERE tag IN ('0196_plan_fields_guard', '0200_plan_writer_boundary')) = 2
@@ -113,7 +115,17 @@ SMOKE_0196_SQL="SELECT
   AND to_regprocedure('public.subscription_write_plan(uuid,text,timestamptz)') IS NULL
   AND to_regprocedure('public.test_fixture_set_plan(uuid,text,timestamptz)') IS NULL
   AND NOT pg_has_role('rekoda_app', 'rekoda_plan_writer', 'MEMBER')
-  AND NOT pg_has_role('rekoda_worker', 'rekoda_plan_writer', 'MEMBER')"
+  AND NOT pg_has_role('rekoda_worker', 'rekoda_plan_writer', 'MEMBER')
+  AND (SELECT count(*) FROM pg_proc WHERE proconfig = ARRAY['search_path=pg_catalog, public, pg_temp']
+        AND oid IN (to_regprocedure('public.subscription_apply_paid_charge(uuid,text,timestamptz)'),
+                    to_regprocedure('public.subscription_operator_set_plan(uuid,text,timestamptz,text)'),
+                    to_regprocedure('public.subscription_expire_plan(uuid,text,text)'))) = 3
+  AND NOT has_function_privilege('public', 'public.subscription_apply_paid_charge(uuid,text,timestamptz)', 'EXECUTE')
+  AND NOT has_function_privilege('public', 'public.subscription_operator_set_plan(uuid,text,timestamptz,text)', 'EXECUTE')
+  AND NOT has_function_privilege('public', 'public.subscription_expire_plan(uuid,text,text)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_worker', 'public.subscription_operator_set_plan(uuid,text,timestamptz,text)', 'EXECUTE')
+  AND (SELECT count(*) FROM pg_trigger WHERE tgname = 'subscription_charges_applied_once_guard'
+        AND tgrelid = 'public.subscription_charges'::regclass AND tgenabled IN ('O', 'A')) = 1"
 PREV_SHA=
 PREV_RELEASE=
 # The exit status meaning "skipped, nothing changed"; no failure may use it.
@@ -378,12 +390,12 @@ on_exit() {
         printf 'The Deploy staging workflow refuses to run while /health is down, so do not wait for it, and do not start the previous containers (`dc start api worker` would). Escalate if the new release cannot start.\n' >&2
       elif [ "$MIGRATE_ENTERED" = true ]; then
         printf 'The api and worker were stopped for %s and migrate did not finish. Migrations commit one file at a time, so %s MAY already be applied: no rollback commands are printed.\n' "$BREAKING" "$BREAKING" >&2
-        printf 'Check the DATABASE, not only the ledger (rekoda_migrations): the guard exists if `SELECT 1 FROM pg_trigger WHERE tgname = '"'"'businesses_plan_fields_guard'"'"'` returns a row (a kill between the migration and its ledger row leaves it applied, unrecorded). Treat a present guard as applied.\n' >&2
-        printf 'Fix forward, by hand from %s (the checkout is already at the new release): correct the cause first (a repeat of the same failure, such as the plan-writer membership refusal, will repeat), then `dc run --rm -T migrate` (0196 is safe to re-run), then run the pre-start database smoke below as the owner and do NOT run `dc up` unless it prints t, then `dc up -d --wait --wait-timeout 300`, reload Caddy, check /health, remove .git/rekoda-deploy-staging.state. The previous release (%s) must never be restarted against a database holding 0196; the workflow refuses to run while /health is down. Escalate if unsure.\n' "$REKODA_DIR" "$PREV_RELEASE" >&2
+        printf 'Check the DATABASE, not only the ledger (rekoda_migrations): 0196 is present if `SELECT 1 FROM pg_trigger WHERE tgname = '"'"'businesses_plan_fields_guard'"'"'` returns a row, and 0200 is present if `SELECT to_regprocedure('"'"'public.subscription_apply_paid_charge(uuid,text,timestamptz)'"'"')` is not null (a kill between a migration and its ledger row leaves it applied, unrecorded). Treat either as applied.\n' >&2
+        printf 'Fix forward, by hand from %s (the checkout is already at the new release): correct the cause first (a repeat of the same failure, such as the plan-writer membership refusal, will repeat), then `dc run --rm -T migrate` (0196 and 0200 are safe to re-run), then run the pre-start database smoke below as the owner and do NOT run `dc up` unless it prints t, then `dc up -d --wait --wait-timeout 300`, reload Caddy, check /health, remove .git/rekoda-deploy-staging.state. The previous release (%s) must never be restarted against a database holding 0196 or 0200; the workflow refuses to run while /health is down. Escalate if unsure.\n' "$REKODA_DIR" "$PREV_RELEASE" >&2
         print_smoke_0196
       else
         if [ -n "$BREAKING" ]; then
-          printf 'Migrate was never entered, so %s is not applied by this run. Check with `dc ps` whether the api and worker are running before anything else: the previous release is still compatible with this database, so `dc start api worker` is safe if they are down. Confirm the guard trigger `businesses_plan_fields_guard` is absent in the database itself before restarting it.\n' "$BREAKING" >&2
+          printf 'Migrate was never entered, so %s is not applied by this run. Check with `dc ps` whether the api and worker are running before anything else: the previous release is still compatible with this database, so `dc start api worker` is safe if they are down. Confirm in the database itself, before restarting it, that the guard trigger `businesses_plan_fields_guard` is absent (0196) and that `subscription_write_plan(uuid,text,timestamptz)` still exists (0200 not applied).\n' "$BREAKING" >&2
         fi
         printf 'Inspect with `dc ps -a` and `dc logs <service>` on the host. To roll back, from %s:\n' "$REKODA_DIR" >&2
         printf '  git checkout %s\n' "$PREV_SHA" >&2
@@ -651,13 +663,13 @@ dc run --rm -T migrate
 # sanctioned plan functions (exact signature, SECURITY DEFINER, owned by rekoda_plan_writer), and
 # neither runtime role able to become it.
 # Any miss stops the deploy with the api and worker still stopped; the exit handler then prints the
-# fix-forward steps (0196 is applied, so the previous release must not be restarted).
+# fix-forward steps (0196/0200 are applied, so the previous release must not be restarted).
 if carries_plan_boundary; then
   step 'pre-start database smoke for the plan-field boundary, 0196/0200 (OWN-86): ledger, guard triggers, plan writers, role boundary'
   smoke_0196=$(dc exec -T postgres psql -U rekoda_owner -d rekoda -v ON_ERROR_STOP=1 -tA -c "$SMOKE_0196_SQL") ||
-    fail 'migrations are APPLIED, but the pre-start database smoke for 0196 could not run, so the new release is not started; the api and worker stay stopped'
+    fail 'migrations are APPLIED, but the pre-start database smoke for 0196/0200 could not run, so the new release is not started; the api and worker stay stopped'
   [ "$smoke_0196" = t ] ||
-    fail "migrations are APPLIED, but the pre-start database smoke for 0196 failed (got '$smoke_0196'): the 0196 and 0200 ledger rows, the enabled update and insert guard triggers, the three plan writers (exact signature, SECURITY DEFINER, owned by rekoda_plan_writer), the absence of the removed general writer and of the test-only fixture writer, or the runtime roles' separation from the writer role is missing; the new release is not started and the api and worker stay stopped"
+    fail "migrations are APPLIED, but the pre-start database smoke for 0196/0200 failed (got '$smoke_0196'): the 0196 and 0200 ledger rows, the enabled update and insert guard triggers, the three plan writers (exact signature, SECURITY DEFINER, owned by rekoda_plan_writer, pinned search_path, no PUBLIC execute, no worker execute of the operator writer), the applied-once trigger, the absence of the removed general writer and of the test-only fixture writer, or the runtime roles' separation from the writer role is missing; the new release is not started and the api and worker stay stopped"
 fi
 
 step 'start the new release'

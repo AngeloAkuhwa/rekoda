@@ -7,6 +7,7 @@
  * gone; a new business starts on its trial. The role boundary itself is pinned in
  * plan-fields-guard.integration.test.ts.
  */
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql, TransactionRollbackError } from 'drizzle-orm';
@@ -195,7 +196,10 @@ describe('OD-37: the provider writer moves a plan only for a paid, unapplied cha
     const businessId = await seedBusiness();
     const reference =
       'exists' in spec ? 'RKD-SUB-NOPE-000001' : await seedCharge(businessId, spec as ChargeSpec);
-    expect(await apply(businessId, reference)).toMatch(/42501/);
+    // The writer's own refusal, not some other 42501 (RLS, a missing grant).
+    expect(await apply(businessId, reference)).toMatch(
+      /^42501 subscription_apply_paid_charge: (no such charge for this business|the charge is not a paid, unapplied plan charge)/,
+    );
     expect((await planOf(businessId))?.plan).toBe('trial');
   });
 
@@ -203,7 +207,9 @@ describe('OD-37: the provider writer moves a plan only for a paid, unapplied cha
     const a = await seedBusiness();
     const b = await seedBusiness();
     const reference = await seedCharge(a, { plan: 'complete' });
-    expect(await apply(b, reference)).toMatch(/42501/);
+    expect(await apply(b, reference)).toMatch(
+      /^42501 subscription_apply_paid_charge: no such charge for this business/,
+    );
     expect((await planOf(b))?.plan).toBe('trial');
   });
 
@@ -226,6 +232,32 @@ describe('OD-37: the provider writer moves a plan only for a paid, unapplied cha
       sql`SELECT applied_period_end AS end FROM subscription_charges WHERE reference = ${reference}`,
     );
     expect(new Date(row!.end!).toISOString()).toBe(FUTURE.toISOString());
+  });
+
+  it('an applied charge cannot be un-applied by the application to buy a second cycle', async () => {
+    const businessId = await seedBusiness();
+    const reference = await seedCharge(businessId, { plan: 'chat' });
+    expect(await apply(businessId, reference)).toBe('allowed');
+    for (const column of ['applied_period_end', 'applied_period_start']) {
+      expect(
+        await outcome(
+          withBusiness(appDb, businessId, (tx) =>
+            tx.execute(
+              sql`UPDATE subscription_charges SET ${sql.raw(column)} = NULL WHERE reference = ${reference}`,
+            ),
+          ),
+        ),
+      ).toMatch(/^42501 a charge's applied period cannot be cleared/);
+    }
+    expect(await apply(businessId, reference)).toMatch(/42501.*not a paid, unapplied plan charge/);
+    // Re-recording the period it bought (markChargeApplied after the writer) is still allowed.
+    expect(
+      await outcome(
+        withBusiness(appDb, businessId, (tx) =>
+          subscriptionsRepo.markChargeApplied(tx, reference, new Date(), FUTURE),
+        ),
+      ),
+    ).toBe('allowed');
   });
 
   it("refuses a renewal date far outside the charge's cycle, and empty inputs", async () => {
@@ -264,9 +296,46 @@ describe('OD-37: the operator writer validates its inputs (0200)', () => {
     expect(await set(businessId, 'chat', new Date('2099-01-01T00:00:00Z'))).toMatch(
       /22023.*outside the accepted window/,
     );
-    expect(await set(businessId, 'chat', FUTURE, '')).toMatch(/22023/);
-    expect(await set(businessId, 'chat', FUTURE, 'system:grace-sweep')).toMatch(/22023/);
+    // The actor must be the operator-plane subject the route passes, `operator:<subject>`.
+    for (const actor of [
+      '',
+      'system:grace-sweep',
+      'user:ada',
+      'operator:',
+      'operator:a b',
+      'ops',
+    ]) {
+      expect(await set(businessId, 'chat', FUTURE, actor)).toMatch(/^22023 .*invalid input/);
+    }
     expect((await planOf(businessId))?.plan).toBe('trial');
+  });
+
+  it('records its own audit row in the same transaction: no operator plan change without one', async () => {
+    const businessId = await seedBusiness();
+    const before = await planOf(businessId);
+    expect(await set(businessId, 'complete', FUTURE, 'operator:alice')).toBe('allowed');
+    const rows = await ownerDb.execute<{
+      actor: string;
+      action: string;
+      source_type: string;
+      old_value: { plan: string; expiresAt: string | null };
+      new_value: { plan: string; expiresAt: string | null };
+    }>(sql`
+      SELECT actor, action, source_type, old_value, new_value FROM audit_events
+      WHERE business_id = ${businessId}::uuid AND entity = 'business' AND action = 'plan_changed'`);
+    expect([...rows]).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      actor: 'operator:alice',
+      source_type: 'operator',
+      old_value: { plan: 'trial', expiresAt: new Date(before!.plan_expires_at!).toISOString() },
+      new_value: { plan: 'complete', expiresAt: FUTURE.toISOString() },
+    });
+    // A refused call leaves no row.
+    expect(await set(businessId, 'platinum', FUTURE)).toMatch(/22023/);
+    const [count] = await ownerDb.execute<{ n: number }>(
+      sql`SELECT count(*)::int AS n FROM audit_events WHERE business_id = ${businessId}::uuid AND action = 'plan_changed'`,
+    );
+    expect(count!.n).toBe(1);
   });
 
   it('accepts a known plan with a future or open-ended date, and a lapse to expired with any date', async () => {
@@ -292,23 +361,34 @@ describe('OD-37: the operator writer validates its inputs (0200)', () => {
 });
 
 describe('OD-37: no other path writes the plan fields (0200)', () => {
-  it('the application cannot insert a business on a paid plan or with a long trial', async () => {
+  it('the application cannot insert a business on a paid plan, with a long trial or an ended one', async () => {
     const user = await identity.upsertUserByPhone(appDb, '+2348060009901');
+    /* Under a real tenant pin, the path signup uses (createBusinessWithOwner): without the pin RLS
+     * refuses first, which would prove nothing about the guard. The guard's own message is
+     * matched, not just the SQLSTATE RLS shares. */
+    const insertAs = (plan: string, days: number | null) => {
+      const id = randomUUID();
+      return withBusiness(appDb, id, (tx) =>
+        tx.execute(sql`
+          INSERT INTO businesses (id, name, owner_user_id, plan, plan_expires_at)
+          VALUES (${id}::uuid, 'Forged', ${user.id}::uuid, ${plan},
+                  ${days === null ? sql`NULL` : sql`now() + make_interval(days => ${days})`})`),
+      );
+    };
     for (const [plan, days] of [
       ['complete', 30],
       ['trial', 90],
       ['trial', null],
+      // A trial that has already ended reads as expired the moment it is created (Qodo, PR #432).
+      ['trial', -1],
+      ['trial', 0],
     ] as const) {
-      expect(
-        await outcome(
-          appDb.execute(sql`
-            INSERT INTO businesses (name, owner_user_id, plan, plan_expires_at)
-            VALUES ('Forged', ${user.id}::uuid, ${plan},
-                    ${days === null ? sql`NULL` : sql`now() + make_interval(days => ${days})`})`),
-        ),
-      ).toMatch(/42501/);
+      expect(await outcome(insertAs(plan, days))).toMatch(
+        /^42501 a new business starts on its trial/,
+      );
     }
-    // The ordinary trial still starts.
+    // Control: the same pinned insert with an ordinary 14-day trial is allowed.
+    expect(await outcome(insertAs('trial', 14))).toBe('allowed');
     const businessId = await seedBusiness();
     expect((await planOf(businessId))?.plan).toBe('trial');
   });

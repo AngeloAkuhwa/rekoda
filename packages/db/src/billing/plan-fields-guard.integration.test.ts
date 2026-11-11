@@ -130,7 +130,7 @@ describe('OD-37: a direct write to the plan fields is refused', () => {
           ),
         ),
       ),
-    ).toMatch(/42501/);
+    ).toMatch(/42501.*subscription writers \(OD-37\)/);
     expect(await planOf(businessId)).toEqual(before);
   });
 

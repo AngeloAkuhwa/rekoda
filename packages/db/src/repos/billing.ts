@@ -94,25 +94,9 @@ export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
       keepPendingInterval: sameCycle,
     });
 
-    await tx.insert(auditEvents).values({
-      businessId: change.businessId,
-      actor: change.actor,
-      entity: 'business',
-      entityId: change.businessId,
-      action: 'plan_changed',
-      oldValue: {
-        plan: previous.plan,
-        expiresAt: previous.expiresAt ? previous.expiresAt.toISOString() : null,
-        /* What the move cleared, so an override stays traceable (G-62). */
-        pendingPlan: previous.pendingPlan,
-        paymentFailedAt: previous.paymentFailedAt ? previous.paymentFailedAt.toISOString() : null,
-      } as never,
-      newValue: {
-        plan: change.plan,
-        expiresAt: change.expiresAt ? change.expiresAt.toISOString() : null,
-      } as never,
-      sourceType: 'operator',
-    });
+    /* The `plan_changed` audit row (what the move replaced and what it set, G-62) is written by
+     * subscription_operator_set_plan itself, in this transaction (OD-37, 0200): an operator plan
+     * change cannot happen without it, whichever code path called the writer. */
     return true;
   });
 }

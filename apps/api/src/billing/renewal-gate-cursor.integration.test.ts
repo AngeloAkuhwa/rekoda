@@ -9,6 +9,7 @@
  * sweep module (`vi.resetModules`), so nothing held in memory by an earlier pass survives. The
  * previous in-memory fallback offset fails the restart tests below; the durable cursor passes.
  */
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { evaluateOpsAlerts } from '@rekoda/core';
 import { createDb, identity, sql, subscriptionsRepo, type Db } from '@rekoda/db';
@@ -59,7 +60,7 @@ beforeEach(async () => {
   await ownerDb.execute(sql`
     UPDATE renewal_block_close_cursor SET after_blocked_at = NULL, after_reference = NULL,
       lease_owner = NULL, lease_expires_at = NULL, pass_started_at = NULL, pass_closed = 0,
-      pass_failed = 0, passes_completed = 0, last_pass_closed = NULL, last_pass_failed = NULL,
+      pass_failed = 0, passes_completed = 0, passes_abandoned = 0, cycle_failed = 0, last_cycle_failed = NULL, last_pass_closed = NULL, last_pass_failed = NULL,
       last_pass_finished_at = NULL, last_advanced_at = NULL`);
   await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS refuse_attempts`);
   await ownerDb.execute(sql`CREATE SEQUENCE refuse_attempts`);
@@ -106,6 +107,10 @@ async function seedBlocked(total: number, stuck: number, stampFails = false): Pr
 }
 
 const openCount = () => subscriptionsRepo.blockedRenewalCount(workerDb);
+const closeOnce: typeof SweepModule.closeBlocksTheGateNoLongerHolds = async (...args) => {
+  const { closeBlocksTheGateNoLongerHolds } = await import('./renewal-sweep.js');
+  return closeBlocksTheGateNoLongerHolds(...args);
+};
 const sweep = async (extra: Record<string, unknown> = {}) => {
   const { sweepRenewals } = await import('./renewal-sweep.js');
   return sweepRenewals({ workerDb, appDb, config: OPEN_GATE, ...extra });
@@ -263,6 +268,110 @@ describe('the blocked-renewal close cursor is durable', () => {
     expect(evaluateOpsAlerts(await collectOpsSnapshot(workerDb)).map((a) => a.key)).toContain(
       'billing.renewal_block_close_failing',
     );
+  }, 120_000);
+
+  it('a pass that stops and cannot release its lease is never silent: logged, stalled alert, counts kept on takeover', async () => {
+    await seedBlocked(30, 30, true);
+    // The first batch saves; the second batch's advance is refused, and so is the release.
+    await ownerDb.execute(sql`
+      CREATE OR REPLACE FUNCTION refuse_cursor_advance() RETURNS trigger LANGUAGE plpgsql AS $f$
+      BEGIN RAISE EXCEPTION 'database lost before the cursor was saved'; END $f$`);
+    await ownerDb.execute(sql`
+      CREATE TRIGGER refuse_cursor_advance BEFORE UPDATE ON renewal_block_close_cursor
+      FOR EACH ROW WHEN (NEW.after_reference = ${sql.raw(`'${ref(20)}'`)})
+      EXECUTE FUNCTION refuse_cursor_advance()`);
+    await ownerDb.execute(
+      sql`REVOKE EXECUTE ON FUNCTION renewal_block_close_release(uuid, integer) FROM rekoda_worker`,
+    );
+    vi.resetModules();
+    const { Logger } = await import('@nestjs/common');
+    const error = vi.spyOn(Logger.prototype, 'error');
+    try {
+      await sweep({ blockPageSize: 10, maxBlockPages: 3 });
+      const lines = error.mock.calls.map(([m]) => String(m));
+      expect(
+        lines.filter((m) =>
+          /^ALERT renewal_block_close_release_failed unrecorded_failed=10 /.test(m),
+        ),
+      ).toHaveLength(1);
+      expect(
+        lines.filter((m) => /^ALERT renewal_block_close_pass failed=20 .*stopped=true/.test(m)),
+      ).toHaveLength(1);
+    } finally {
+      error.mockRestore();
+      await ownerDb.execute(
+        sql`GRANT EXECUTE ON FUNCTION renewal_block_close_release(uuid, integer) TO rekoda_worker`,
+      );
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS refuse_cursor_advance() CASCADE`);
+    }
+    // The saved batch stands; the lease was never given back.
+    expect((await cursorRow()).after_reference).toBe(ref(10));
+    expect((await cursorRow()).lease_owner).not.toBeNull();
+
+    // Once the lease expires unreleased, the ops alert says the pass stalled.
+    await ownerDb.execute(sql`
+      UPDATE renewal_block_close_cursor SET lease_expires_at = clock_timestamp() - interval '1 second'`);
+    expect(await subscriptionsRepo.blockCloseCursorStatus(workerDb)).toMatchObject({
+      abandoned: true,
+      leased: false,
+    });
+    expect(evaluateOpsAlerts(await collectOpsSnapshot(workerDb)).map((a) => a.key)).toContain(
+      'billing.renewal_block_close_stalled',
+    );
+
+    // A new runner takes over: the abandoned pass's saved failures reach the failing alert instead
+    // of being wiped, and the unsaved batch is replayed from the saved position.
+    const next = await restartedWorker();
+    expect(await subscriptionsRepo.claimBlockCloseCursor(next.worker, randomUUID(), 60)).toBe(true);
+    const taken = await subscriptionsRepo.blockCloseCursorStatus(workerDb);
+    expect(taken).toMatchObject({ abandoned: false, passesAbandoned: 1, lastPassFailed: 10 });
+    const keys = evaluateOpsAlerts(await collectOpsSnapshot(workerDb)).map((a) => a.key);
+    expect(keys).toContain('billing.renewal_block_close_failing');
+    expect(keys).not.toContain('billing.renewal_block_close_stalled');
+    await ownerDb.execute(
+      sql`UPDATE renewal_block_close_cursor SET lease_owner = NULL, lease_expires_at = NULL`,
+    );
+    await next.closePass({ workerDb: next.worker, appDb: next.app, config: OPEN_GATE }, 10, 1, 60);
+    expect((await cursorRow()).after_reference).toBe(ref(20));
+  }, 120_000);
+
+  it('blocks sharing a block time, or a microsecond apart, are each reached once across restarts', async () => {
+    await seedBlocked(6, 0);
+    // Three blocks at the same instant (the reference breaks the tie), two a microsecond apart.
+    await ownerDb.execute(sql`
+      UPDATE subscription_charges SET blocked_at = CASE
+        WHEN reference IN (${ref(1)}, ${ref(2)}, ${ref(3)}) THEN timestamptz '2026-11-08 10:00:00.000001+00'
+        WHEN reference = ${ref(4)} THEN timestamptz '2026-11-08 10:00:00.000002+00'
+        WHEN reference = ${ref(5)} THEN timestamptz '2026-11-08 10:00:00.000003+00'
+        ELSE timestamptz '2026-11-08 10:00:01+00' END`);
+    // One batch of two per pass, on a new worker each time: 6 -> 4 -> 2 -> 0, nothing skipped.
+    for (const left of [4, 2, 0]) {
+      const w = await restartedWorker();
+      await w.closePass({ workerDb: w.worker, appDb: w.app, config: OPEN_GATE }, 2, 1);
+      expect(await openCount()).toBe(left);
+    }
+  }, 120_000);
+
+  it('the ops alert stays on across clean windows until a whole cycle runs clean', async () => {
+    await seedBlocked(30, 10);
+    const failing = async () =>
+      evaluateOpsAlerts(await collectOpsSnapshot(workerDb))
+        .map((a) => a.key)
+        .includes('billing.renewal_block_close_failing');
+    const pass = () => closeOnce({ workerDb, appDb, config: OPEN_GATE }, 10, 1);
+    // Cycle 1: a failing window, two clean windows, then the wrap. On throughout.
+    for (let i = 0; i < 4; i += 1) {
+      await pass();
+      expect(await failing()).toBe(true);
+    }
+    // The failing blocks are fixed: the next pass closes them, but the cycle is not over yet.
+    await ownerDb.execute(sql`DROP FUNCTION IF EXISTS refuse_block_close() CASCADE`);
+    await pass();
+    expect(await openCount()).toBe(0);
+    expect(await failing()).toBe(true);
+    // The wrap ends a clean cycle: off.
+    await pass();
+    expect(await failing()).toBe(false);
   }, 120_000);
 
   it('a batch that cannot be listed does not move the cursor or reset it', async () => {

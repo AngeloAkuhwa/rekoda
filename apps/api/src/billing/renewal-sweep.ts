@@ -281,6 +281,8 @@ export interface BlockClosePassResult {
  *  - Reaching the end of the list wraps the cursor to the start: blocks that failed are retried and
  *    blocks with an earlier key are reached on the next pass.
  *  - On an unexpected error the lease is released and the position kept; it is never reset here.
+ *    If the release itself fails, that is logged as an alert, the lease expires unreleased (the
+ *    ops alert reports a stalled pass) and the next claim records the abandoned pass's counts.
  */
 export async function closeBlocksTheGateNoLongerHolds(
   deps: RenewalSweepDeps,
@@ -361,9 +363,23 @@ export async function closeBlocksTheGateNoLongerHolds(
       throw new Error('the close cursor lease was lost before the pass could be finished');
     }
   } catch (error) {
+    /* A release that fails is never silent: the lease then expires unreleased, the ops alert
+     * reports the pass as stalled, and the next claim records what this pass saved. */
     await subscriptionsRepo
       .releaseBlockCloseCursor(deps.workerDb, owner, unrecordedFailed)
-      .catch(() => false);
+      .then((released) => {
+        if (!released) {
+          log.warn(
+            'renewal_block_close_release_lost: the close cursor lease was already taken over',
+          );
+        }
+      })
+      .catch((releaseError: unknown) => {
+        log.error(
+          `ALERT renewal_block_close_release_failed unrecorded_failed=${unrecordedFailed} ` +
+            `error=${redactForLog(String(releaseError))}`,
+        );
+      });
     const failedThisPass = result.failed + unrecordedFailed;
     if (failedThisPass > 0) {
       /* A pass that stopped still says so: the failures it saw happened, saved or not. */

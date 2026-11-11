@@ -39,6 +39,11 @@ export interface OpsSnapshot {
      * when unknown.
      */
     blockCloseFailed?: number;
+    /**
+     * The close pass's lease expired without a finish or a release: a pass died or could not
+     * reach the database to record its end. Absent when unknown.
+     */
+    blockCloseStalled?: boolean;
   } | null;
 }
 
@@ -145,6 +150,17 @@ export function evaluateOpsAlerts(
       key: 'billing.renewal_block_close_failing',
       severity: 'critical',
       summary: `${snapshot.billing.blockCloseFailed} blocked renewal(s) could not be closed by the last close pass; see the worker log (renewal_block_close_failed)`,
+    });
+  }
+
+  /* A close pass stopped without recording its end (it died, or the database refused the lease
+   * release). Its unsaved batch is replayed by the next pass; until then, say so (OWN-88, 0199). */
+  if (snapshot.billing?.blockCloseStalled) {
+    alerts.push({
+      key: 'billing.renewal_block_close_stalled',
+      severity: 'critical',
+      summary:
+        'the blocked-renewal close pass stopped without recording its end; see the worker log (renewal_block_close_release_failed, renewal_block_close_pass)',
     });
   }
 

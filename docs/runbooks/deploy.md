@@ -176,7 +176,7 @@ sed -i 's/^REKODA_RELEASE=.*/REKODA_RELEASE=vX.Y.Z/' .env
 dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) api   # build BEFORE touching anything live
 dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) web   # one image at a time: never both at once
 # First PRODUCTION deploy carrying migrations 0175-0178 (G-109): run `dc stop api worker` here first
-# Every deploy carrying 0196 (PR B, plan-field trigger, OD-48): run `dc stop api worker` here first, and see "Deploy a release carrying 0196"
+# Every deploy carrying 0196 or 0200 (PR B, plan-field boundary, OD-48): run `dc stop api worker` here first, and see "Deploy a release carrying 0196"
 dc run --rm -T migrate                                             # expand-only migrations, as the owner
 dc up -d --wait                                                    # recreates api, worker and web on the new images
 dc exec caddy caddy reload --config /etc/caddy/Caddyfile            # apply a changed Caddyfile (validated first)
@@ -303,7 +303,7 @@ holding either is a credential at rest. Do not switch one on.
 
 ## Safe restart
 
-- **After a failed deploy of a release carrying 0196 do not restart or start the api or worker
+- **After a failed deploy of a release carrying 0196 or 0200 do not restart or start the api or worker
   from the previous release's containers** (`dc start` / `dc restart` would): they are the old code
   and are refused by the plan-field guard. Fix forward ("Deploy a release carrying 0196").
 - **One service:** `dc restart api` (or `worker`, `web`, `caddy`). Meta and
@@ -394,19 +394,22 @@ would have plan changes, renewals and lapses refused (`42501`). Therefore:
 - If migration 0196 itself fails, its own transaction rolls back and the database stays as it was.
   Confirm that **in the database, not only the ledger** before deciding anything: the
   guard exists if `SELECT 1 FROM pg_trigger WHERE tgname = 'businesses_plan_fields_guard'` returns a
-  row (a process killed between the migration and its `rekoda_migrations` row leaves it applied and
-  unrecorded). A present guard means applied; 0196 is safe to re-run, so the cure is to correct the
+  row, and 0200 is present if `SELECT to_regprocedure('public.subscription_apply_paid_charge(uuid,text,timestamptz)')`
+  is not null (a process killed between a migration and its `rekoda_migrations` row leaves it applied and
+  unrecorded). Either present means applied; 0196 and 0200 are safe to re-run, so the cure is to correct the
   cause and fix forward as below (migrate again, then the pre-start smoke, then start), which is
   also all the script prints. Once migrate has been entered, restarting the previous release is not part of any printed procedure;
   if you believe it is needed, escalate to the owner first.
-- **By-hand fix-forward** after a failed or interrupted deploy of a release carrying 0196 (the
+- **By-hand fix-forward** after a failed or interrupted deploy of a release carrying 0196 or 0200 (the
   automatic staging workflow refuses to run while `/health` is down, so do not wait for it): from
   `/opt/rekoda`, whose checkout and `.env` are already at the new release, first `dc stop api worker`
   and confirm `dc ps --status running --services` lists neither (a run killed before its own stop
   may have left the previous release serving), then correct the cause of the failure, then run
   `dc run --rm -T migrate`, run the pre-start database smoke of step 8 below (the 0196 and 0200 ledger rows, the
   enabled update and insert guard triggers, the three plan writers at their exact signatures,
-  `SECURITY DEFINER` and owned by `rekoda_plan_writer`, the removed general writer and the test-only
+  `SECURITY DEFINER`, owned by `rekoda_plan_writer`, with the pinned search_path and no PUBLIC
+  execute (and no worker execute of the operator writer), the applied-once trigger on
+  `subscription_charges`, the removed general writer and the test-only
   fixture writer absent, and neither runtime role a member of the writer role; the script prints the exact query; do not start anything unless it returns `t`), `dc up -d --wait --wait-timeout 300`, reload Caddy,
   check `/health` names the new release, then remove `.git/rekoda-deploy-staging.state`. Never
   `dc start api worker` or `git checkout` the previous release: the stopped containers are the old
@@ -423,7 +426,8 @@ the api and worker, checks with `docker compose ps` that neither is running (and
 otherwise), migrates, then runs the **pre-start database smoke** of steps 6 and 8 as the owner
 (`dc exec -T postgres psql`): the 0196 and 0200 ledger rows, the enabled update and insert guard
 triggers on `businesses`, the three plan writers (exact signature, `SECURITY DEFINER`, owned by
-`rekoda_plan_writer`), the absence of the removed general writer and of the test-only fixture writer,
+`rekoda_plan_writer`, pinned search_path, no PUBLIC execute, no worker execute of the operator
+writer), the applied-once trigger on `subscription_charges`, the absence of the removed general writer and of the test-only fixture writer,
 and neither `rekoda_app` nor `rekoda_worker` a member of the writer role. If that query
 fails or cannot run, the script stops **before** `dc up`, with the api and worker still stopped, and
 prints the fix-forward steps; only when it passes does it start the new release and require `/health`
@@ -453,7 +457,10 @@ after the script finishes. Step 2 is the operator's before starting the workflow
    `SECURITY DEFINER` and are owned by `rekoda_plan_writer`;
    `public.subscription_write_plan(uuid,text,timestamptz)` (removed by 0200) and
    `public.test_fixture_set_plan(uuid,text,timestamptz)` (a test-harness-only writer) do **not**
-   exist; and neither `rekoda_app` nor `rekoda_worker` is a member of `rekoda_plan_writer`. If it does not print `t`, do not run step 9:
+   exist; neither `rekoda_app` nor `rekoda_worker` is a member of `rekoda_plan_writer`; each of the
+   three writers has `search_path=pg_catalog, public, pg_temp` pinned; PUBLIC cannot execute any of
+   them and `rekoda_worker` cannot execute the operator writer; and the trigger
+   `subscription_charges_applied_once_guard` exists on `subscription_charges` and is enabled. If it does not print `t`, do not run step 9:
    fix forward or escalate (above). On staging the script runs this same query itself.
 9. `dc up -d --wait` recreates api, worker and web on the new images (the worker and api start here).
 10. Confirm the new application can change a plan through the sanctioned functions: on staging, the
@@ -590,8 +597,8 @@ hand, from `/opt/rekoda` as the deploy user, only if **every** check agrees:
    `sed -i 's/^REKODA_RELEASE=.*/REKODA_RELEASE=<running release>/' .env`.
    No `down -v`, no prune, no `reset --hard`, no migration rollback. Migrations
    are expand-only, so a migration that ran before the kill stays and the running
-   release works against it. **Except 0196 (OWN-86):** if the interrupted release
-   carries it, the running release does NOT work against a database that holds it. Do not
+   release works against it. **Except 0196 and 0200 (OWN-86):** if the interrupted release
+   carries either, the running release does NOT work against a database that holds it. Do not
    run this step; fix forward as "Deploy a release carrying 0196" says. For a `live`
    marker, then remove `.git/rekoda-deploy-staging.state`.
 5. Re-run step 1; checkout, `.env` and `/health` must now agree. Then start the
@@ -790,11 +797,12 @@ What a failure leaves:
 - **Before migrate** (a refused check, a failed fetch or build): nothing
   live changed. While the deploy is still being prepared the script puts the checkout and
   `REKODA_RELEASE` back to the running release, so the host is as it was; once it is live it only
-  prints the commands for you to run. **Exception (0196):** if stopping
+  prints the commands for you to run. **Exception (0196 and 0200):** if stopping
   the api and worker fails or cannot be proved, nothing was migrated but their
   stopped state is unverified; the script says so. Check `dc ps`. Confirm
-  first that the guard trigger `businesses_plan_fields_guard` is absent in the database; if it is,
-  the previous release is still compatible with it. Then run the commands the script printed (it prints them; it does not run them): they put the
+  first that the guard trigger `businesses_plan_fields_guard` is absent in the database and that
+  `subscription_write_plan(uuid,text,timestamptz)` still exists; if so, the previous release is
+  still compatible with it. Then run the commands the script printed (it prints them; it does not run them): they put the
   checkout and `.env` back to the previous release (`git checkout <previous sha>`, the `sed` line,
   `dc up -d --wait`, the Caddy reload), which also starts the stopped api and worker. Do not leave
   the checkout at the new release with the old containers running. This is the only case where the
@@ -806,10 +814,10 @@ What a failure leaves:
   fixed commit, or roll back as "Roll back" says, with the previous commit in
   place of `vPREVIOUS` and `staging-<its short sha>` as the release. Those
   images are still on the host. **Exception (OWN-86): for a release carrying
-  0196, once migrate has been entered the script prints no rollback commands.**
-  Migrations commit one file at a time, so 0196 may already be applied, and the
+  0196 or 0200, once migrate has been entered the script prints no rollback commands.**
+  Migrations commit one file at a time, so 0196 or 0200 may already be applied, and the
   previous release must never be restarted against a database that holds it.
-  Check the database, not only `rekoda_migrations` (the guard trigger, as
+  Check the database, not only `rekoda_migrations` (the guard trigger and the 0200 writer, as
   "Deploy a release carrying 0196" says), fix forward, and escalate if unsure.
   If the **pre-start database smoke** failed, migrate finished but nothing was
   started: the api and worker are still stopped. Correct the cause, run

@@ -330,6 +330,24 @@ test('OWN-86: a release carrying 0196 runs the pre-start database smoke after mi
   assert.match(sql, /rekoda_plan_writer/);
   assert.match(sql, /pg_has_role\('rekoda_app'/);
   assert.match(sql, /pg_has_role\('rekoda_worker'/);
+  // OWN-88: the writers' pinned search_path, no PUBLIC execute, no worker execute of the operator
+  // writer, and the applied-once trigger.
+  assert.match(sql, /proconfig = ARRAY\['search_path=pg_catalog, public, pg_temp'\]/);
+  for (const sig of [
+    'subscription_apply_paid_charge\\(uuid,text,timestamptz\\)',
+    'subscription_operator_set_plan\\(uuid,text,timestamptz,text\\)',
+    'subscription_expire_plan\\(uuid,text,text\\)',
+  ]) {
+    assert.match(
+      sql,
+      new RegExp(`NOT has_function_privilege\\('public', 'public\\.${sig}', 'EXECUTE'\\)`),
+    );
+  }
+  assert.match(
+    sql,
+    /NOT has_function_privilege\('rekoda_worker', 'public\.subscription_operator_set_plan\(uuid,text,timestamptz,text\)', 'EXECUTE'\)/,
+  );
+  assert.match(sql, /subscription_charges_applied_once_guard/);
 });
 
 test('OWN-86: a failed pre-start smoke never starts the new release and states fix-forward', () => {
@@ -338,7 +356,7 @@ test('OWN-86: a failed pre-start smoke never starts the new release and states f
   const r = h.run();
   assert.notEqual(r.status, 0);
   assert.equal(h.at(' up '), -1, 'the new release must not start after a failed smoke');
-  assert.match(r.stderr, /pre-start database smoke for 0196 failed/);
+  assert.match(r.stderr, /pre-start database smoke for 0196\/0200 failed/);
   assert.match(r.stderr, /APPLIED, so the previous release .* is NOT safe to restart/);
   assert.match(r.stderr, /Fix forward/);
   assert.doesNotMatch(r.stderr, /git checkout [0-9a-f]{40}/);
@@ -361,7 +379,7 @@ test('OWN-86: a smoke that cannot run is a failure, not a pass', () => {
   const r = h.run();
   assert.notEqual(r.status, 0);
   assert.equal(h.at(' up '), -1, 'the new release must not start when the smoke could not run');
-  assert.match(r.stderr, /pre-start database smoke for 0196 could not run/);
+  assert.match(r.stderr, /pre-start database smoke for 0196\/0200 could not run/);
 });
 
 test('OD-37 (0200): a release bringing in 0200 is compatibility-breaking and runs the smoke too', () => {

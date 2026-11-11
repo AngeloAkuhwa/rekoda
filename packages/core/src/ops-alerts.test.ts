@@ -190,4 +190,15 @@ describe('blocked renewals the close pass could not close (OWN-70, 0199)', () =>
       'billing.renewal_block_close_failing',
     );
   });
+  it('reports a pass that stopped without recording its end, and only that', () => {
+    expect(
+      evaluateOpsAlerts({
+        ...healthy,
+        billing: { blockedRenewals: 0, blockCloseStalled: true },
+      }).find((a) => a.key === 'billing.renewal_block_close_stalled'),
+    ).toMatchObject({ severity: 'critical' });
+    expect(
+      keys({ ...healthy, billing: { blockedRenewals: 0, blockCloseStalled: false } }),
+    ).not.toContain('billing.renewal_block_close_stalled');
+  });
 });

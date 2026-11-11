@@ -175,7 +175,7 @@ export async function writeCycle(
 /**
  * Who may move a business's plan fields (OD-37, migration 0200), each mapped to its own database
  * writer: a paid charge (`subscription_apply_paid_charge`, the plan comes from the charge), an
- * operator (`subscription_operator_set_plan`, validated plan and date, API credential only), or a
+ * operator (`subscription_operator_set_plan`: validated plan, date and `operator:` actor, audited by the writer, API credential only), or a
  * test fixture (a function only the test harness installs).
  */
 export type PlanWriteAuthority =
@@ -2561,7 +2561,13 @@ export async function releaseBlockCloseCursor(
 export interface BlockCloseCursorStatus {
   positioned: boolean;
   leased: boolean;
+  /** A lease that expired without a finish or a release: a pass died or could not give it back. */
+  abandoned: boolean;
   passesCompleted: number;
+  passesAbandoned: number;
+  /** Failures since the cursor last wrapped, and in the last complete cycle (null before one). */
+  cycleFailed: number;
+  lastCycleFailed: number | null;
   passClosed: number;
   passFailed: number;
   lastPassClosed: number | null;
@@ -2574,7 +2580,11 @@ export async function blockCloseCursorStatus(db: Db): Promise<BlockCloseCursorSt
   const rows = await db.execute<{
     positioned: boolean;
     leased: boolean;
+    abandoned: boolean;
     passes_completed: string | number;
+    passes_abandoned: string | number;
+    cycle_failed: number;
+    last_cycle_failed: number | null;
     pass_closed: number;
     pass_failed: number;
     last_pass_closed: number | null;
@@ -2587,7 +2597,11 @@ export async function blockCloseCursorStatus(db: Db): Promise<BlockCloseCursorSt
   return {
     positioned: r.positioned,
     leased: r.leased,
+    abandoned: r.abandoned,
     passesCompleted: Number(r.passes_completed),
+    passesAbandoned: Number(r.passes_abandoned),
+    cycleFailed: r.cycle_failed,
+    lastCycleFailed: r.last_cycle_failed,
     passClosed: r.pass_closed,
     passFailed: r.pass_failed,
     lastPassClosed: r.last_pass_closed,

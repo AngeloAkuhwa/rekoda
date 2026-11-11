@@ -21,28 +21,37 @@
 --       The operator path (POST /v1/businesses/plan, `ops:billing`). The plan must be one of the
 --       five known plans; a paid plan's date, when given, must lie in a sanity window (at most 400
 --       days back, at most 10 years ahead; the route itself requires a future date, G-114); the
---       actor must be named and may not be `system`. EXECUTE: rekoda_app only (the operator route is served by
---       the API; no worker flow sets a plan this way).
+--       actor must be an operator-plane subject (`operator:<subject>`). The writer records the
+--       audit row itself, so no operator plan change happens without one. EXECUTE: rekoda_app
+--       only (the operator route is served by the API; no worker flow sets a plan this way).
 --
 --   subscription_expire_plan(business, previous, reason) is unchanged in behaviour (it already
 --       took only a lapse to `expired`, guarded on the previous plan and the lapse condition); its
 --       inputs are now validated and it refuses an unknown previous plan.
 --
 -- The trial INSERT is now guarded too: a business created by anyone but the writer role or the
--- table owner must start on `trial` with a trial end set and no more than 15 days away (TRIAL_DAYS is 14),
+-- table owner must start on `trial` with a trial end set, in the future and no more than 15 days away (TRIAL_DAYS is 14),
 -- so the BEFORE UPDATE guard cannot be side-stepped by inserting a paid business.
 --
 -- The authority stays the ROLE (`current_user` inside the trigger), never a setting. The tenant pin
 -- is still checked as defence in depth (and RLS still applies to the writer role), but it is not the
 -- authority: the provider writer's authority is the paid charge row.
 --
--- STATED LIMIT (OWN-87 report): the application and worker credentials can insert and update
--- `subscription_charges` (0020), so a caller holding one of those credentials could forge a `paid`
--- charge and then apply it. The database cannot tell legitimate application code from a stolen
--- application credential; closing that needs the settlement itself to run under a separate
--- principal (see docs/plans/PR-B-plan.md §5). This migration removes the ability to set an
--- arbitrary plan or date through a single call, and binds every provider plan change to exactly one
--- paid charge.
+-- A paid charge's applied period cannot be cleared afterwards by an application role (a trigger,
+-- below), so the same charge cannot be applied twice.
+--
+-- STATED LIMIT (OWN-87/OWN-88 report): this is an INTEGRITY boundary against bugs and malformed
+-- calls, not an authorisation boundary against a stolen application credential. The application
+-- and worker credentials can insert and update `subscription_charges` (0020), so a caller holding
+-- one of those credentials could forge a `paid` charge and then apply it; and `rekoda_app` can call
+-- the operator writer for any business it pins (the operator-plane check, ADR 0034, happens in the
+-- API, not in the database). Such a call is always audited (the writer writes the row), but it is
+-- not prevented. The database cannot tell legitimate application code from a stolen application
+-- credential; closing that needs settlement and operator plan changes to run under principals the
+-- application credential does not hold (proposal: docs/plans/PR-B-plan.md §5, OPEN in
+-- docs/REKODA_LAUNCH_READINESS.md OD-37). What this migration does enforce: no single call can set
+-- an arbitrary plan from the provider path, every provider plan change is bound to exactly one paid
+-- charge, operator changes are validated and always audited, and no new business starts paid.
 --
 -- Rollback: none past 0196 (OWN-86). Like 0196, this is applied with the api and worker stopped
 -- (`scripts/deploy-staging.sh` lists it as compatibility-breaking): a release that still calls
@@ -52,6 +61,9 @@
 -- tenant pin, as every role does. Nothing else on the table.
 GRANT SELECT ON subscription_charges TO rekoda_plan_writer;
 GRANT UPDATE (applied_period_start, applied_period_end) ON subscription_charges TO rekoda_plan_writer;
+-- The operator writer records its own audit row (append-only for every application role: INSERT
+-- and SELECT only), so no operator plan change can happen without one, whoever the caller is.
+GRANT INSERT ON audit_events TO rekoda_plan_writer;
 
 DROP FUNCTION IF EXISTS public.subscription_write_plan(uuid, text, timestamptz);
 
@@ -128,10 +140,15 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public, pg_temp
 AS $$
+DECLARE
+  prev record;
 BEGIN
+  -- The actor is the verified operator-plane subject the route passes (`operator:<subject>`,
+  -- ADR 0034); anything else is refused. The database cannot verify the subject itself (see the
+  -- STATED LIMIT above); it can refuse a malformed or system actor and record it, below.
   IF p_business IS NULL OR p_plan IS NULL
      OR p_plan NOT IN ('trial', 'expired', 'chat', 'integrate', 'complete')
-     OR p_actor IS NULL OR length(p_actor) NOT BETWEEN 1 AND 200 OR p_actor ILIKE 'system%' THEN
+     OR p_actor IS NULL OR p_actor !~ '^operator:[!-~]{1,190}$' THEN
     RAISE EXCEPTION 'subscription_operator_set_plan: invalid input' USING ERRCODE = '22023';
   END IF;
   -- A sanity window on a paid plan's date (open-ended is allowed): not more than 400 days in the
@@ -148,10 +165,29 @@ BEGIN
     RAISE EXCEPTION 'subscription_operator_set_plan: the business is not the pinned tenant'
       USING ERRCODE = '42501';
   END IF;
-  UPDATE public.businesses SET plan = p_plan, plan_expires_at = p_expires WHERE id = p_business;
+  SELECT plan, plan_expires_at, pending_plan, payment_failed_at INTO prev
+  FROM public.businesses WHERE id = p_business FOR UPDATE;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'subscription_operator_set_plan: no such business' USING ERRCODE = '42501';
   END IF;
+  UPDATE public.businesses SET plan = p_plan, plan_expires_at = p_expires WHERE id = p_business;
+  -- The audit row is written HERE, in the same transaction, so an operator plan change can never
+  -- be made without one (the application cannot update or delete audit rows). Same shape as the
+  -- row billingRepo.setPlan used to write (G-62): what the move replaced and what it set.
+  INSERT INTO public.audit_events
+    (business_id, actor, entity, entity_id, action, old_value, new_value, source_type)
+  VALUES (
+    p_business, p_actor, 'business', p_business::text, 'plan_changed',
+    jsonb_build_object(
+      'plan', prev.plan,
+      'expiresAt', to_char(prev.plan_expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+      'pendingPlan', prev.pending_plan,
+      'paymentFailedAt',
+        to_char(prev.payment_failed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')),
+    jsonb_build_object(
+      'plan', p_plan,
+      'expiresAt', to_char(p_expires AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')),
+    'operator');
 END $$;
 
 CREATE OR REPLACE FUNCTION public.subscription_expire_plan(
@@ -202,6 +238,33 @@ GRANT EXECUTE ON FUNCTION public.subscription_operator_set_plan(uuid, text, time
 GRANT EXECUTE ON FUNCTION public.subscription_expire_plan(uuid, text, text)
   TO rekoda_app, rekoda_worker;
 
+-- A charge's applied period, once set, cannot be cleared by an application role: clearing it
+-- would let the same paid charge be applied a second time. (The application keeps UPDATE on the
+-- table for the settlement columns; only the owner, i.e. a reviewed migration or repair, may clear
+-- it.) Setting it again to a value, as markChargeApplied does after the writer, is allowed.
+CREATE OR REPLACE FUNCTION rekoda_private.subscription_charges_applied_once_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $$
+BEGIN
+  IF (OLD.applied_period_end IS NOT NULL AND NEW.applied_period_end IS NULL)
+     OR (OLD.applied_period_start IS NOT NULL AND NEW.applied_period_start IS NULL) THEN
+    IF NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'USAGE') THEN
+      RAISE EXCEPTION
+        'a charge''s applied period cannot be cleared; one paid charge buys one cycle (OD-37)'
+        USING ERRCODE = '42501';
+    END IF;
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS subscription_charges_applied_once_guard ON subscription_charges;
+CREATE TRIGGER subscription_charges_applied_once_guard
+  BEFORE UPDATE OF applied_period_start, applied_period_end ON subscription_charges
+  FOR EACH ROW
+  EXECUTE FUNCTION rekoda_private.subscription_charges_applied_once_guard();
+
 -- A new business starts on its trial unless the writer role or the table owner creates it.
 CREATE OR REPLACE FUNCTION rekoda_private.businesses_plan_fields_insert_guard()
 RETURNS trigger
@@ -216,6 +279,7 @@ BEGIN
     RETURN NEW;
   END IF;
   IF NEW.plan IS DISTINCT FROM 'trial' OR NEW.plan_expires_at IS NULL
+     OR NEW.plan_expires_at <= now()
      OR NEW.plan_expires_at > now() + interval '15 days' THEN
     RAISE EXCEPTION
       'a new business starts on its trial; plan and plan_expires_at change only through the subscription writers (OD-37)'

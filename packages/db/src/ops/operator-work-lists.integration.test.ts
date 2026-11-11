@@ -306,10 +306,30 @@ describe('the blocked-renewal close cursor (0199) is reachable only through its 
     for (const bad of [
       sql`SELECT renewal_block_close_claim(NULL, 60)`,
       sql`SELECT renewal_block_close_claim(${uuid(2)}::uuid, 5)`,
-      sql`SELECT renewal_block_close_advance(${uuid(2)}::uuid, 1::bigint, ${'x'.repeat(65)}, 0, 0, 60)`,
+      sql`SELECT renewal_block_close_advance(${uuid(2)}::uuid, 1::bigint, '', 0, 0, 60)`,
       sql`SELECT renewal_block_close_advance(${uuid(2)}::uuid, 1::bigint, 'RKD-X', -1, 0, 60)`,
     ]) {
       expect(await sqlState(workerDb.execute(bad))).toBe('22023');
     }
+  });
+
+  it('moves the cursor forward only, accepts any reference length, and refuses a lost lease', async () => {
+    const at = (owner: number, us: number, ref: string) =>
+      workerDb.execute<{ ok: boolean }>(
+        sql`SELECT renewal_block_close_advance(${uuid(owner)}::uuid, ${us}::bigint, ${ref}, 0, 0, 60) AS ok`,
+      );
+    const ok = async (q: ReturnType<typeof at>) => [...(await q)][0]!.ok;
+    await workerDb.execute(sql`SELECT renewal_block_close_claim(${uuid(3)}::uuid, 60)`);
+    expect(await ok(at(3, 1000, 'RKD-B'))).toBe(true);
+    // A reference longer than any cap the column does not have (a cap would wedge the cursor).
+    expect(await ok(at(3, 2000, 'R'.repeat(300)))).toBe(true);
+    // Backwards, or the same key again, is refused: rows would be silently re-skipped or re-walked.
+    expect(await sqlState(at(3, 1500, 'RKD-A'))).toBe('22023');
+    expect(await sqlState(at(3, 2000, 'R'.repeat(300)))).toBe('22023');
+    // The tie-break on the reference counts: the same time with a later reference moves forward.
+    expect(await ok(at(3, 2000, 'S'))).toBe(true);
+    // Another owner moves nothing and is told so.
+    expect(await ok(at(4, 9000, 'RKD-Z'))).toBe(false);
+    await workerDb.execute(sql`SELECT renewal_block_close_release(${uuid(3)}::uuid, 0)`);
   });
 });
