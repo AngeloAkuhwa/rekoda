@@ -59,6 +59,7 @@ import {
   workerDb,
   useAdjustmentsHarness,
 } from './adjustments.fixtures.js';
+import { settlementDb } from '@rekoda/db/testing';
 
 /**
  * An unpaid invoice with a live intent, the normal way in.
@@ -204,7 +205,7 @@ describe("Rekoda's own revenue and a merchant's customer money never meet", () =
   it('a refund of a SUBSCRIPTION charge is flagged for an operator and never enters the merchant ledger', async () => {
     const { businessId } = await seedBusiness();
     const reference = subscriptionReference(new Date(), (n) => randomBytes(n));
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'renewal',

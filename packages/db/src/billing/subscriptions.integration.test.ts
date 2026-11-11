@@ -193,7 +193,7 @@ describe('the cycle on a business row', () => {
 
 describe('charges', () => {
   const charge = (businessId: string, reference: string, overrides = {}) =>
-    inTenant(businessId, (tx) =>
+    inSettlement(businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'renewal',
@@ -391,7 +391,7 @@ describe('an add-on pack', () => {
 
 describe('recording a refund', () => {
   async function paidCharge(businessId: string, reference: string): Promise<void> {
-    await inTenant(businessId, (tx) =>
+    await inSettlement(businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'first_purchase',

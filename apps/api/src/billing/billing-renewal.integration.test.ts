@@ -27,8 +27,8 @@ import {
   requireUrls,
   truncateAll,
   type Urls,
+  settlementDb,
 } from '@rekoda/db/testing';
-import { settlementDb } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRenewals } from './renewal-sweep.js';
 import { applySettledCharge } from './billing.service.js';
@@ -124,7 +124,8 @@ const overviewOf = async (auth: Record<string, string>) =>
   );
 
 describe('the renewal sweep', () => {
-  const raise = (now: Date) => sweepRenewals({ workerDb, appDb: db, config }, now);
+  const raise = (now: Date) =>
+    sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config }, now);
 
   it('raises nothing while a cycle is still running', async () => {
     const { businessId } = await onboard('+2348177100022');
@@ -267,7 +268,7 @@ describe('the lock order of a settling payment (G-103)', () => {
     const { businessId } = await onboard('+2348177100090');
     const reference = 'sub_lockorder_1';
     const when = new Date('2026-08-20T10:00:00Z');
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'first_purchase',

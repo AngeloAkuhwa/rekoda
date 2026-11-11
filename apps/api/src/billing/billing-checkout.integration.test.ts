@@ -20,8 +20,9 @@ import {
   truncateAll,
   type Urls,
   setPlanAsOwner,
+  settlementDb,
 } from '@rekoda/db/testing';
-import { setPlanForTest, settlementDb } from '@rekoda/db/testing';
+import { setPlanForTest } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../config.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
@@ -477,7 +478,7 @@ describe('what may be paid', () => {
       expiresAt: new Date(Date.now() + 20 * 86_400_000),
       actor: 'operator:test-g102',
     });
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'upgrade',
@@ -511,7 +512,7 @@ describe('what may be paid', () => {
 
   it('refuses a charge of nothing', async () => {
     const businessId = await seedBusiness();
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'upgrade',

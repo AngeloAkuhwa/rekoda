@@ -13,7 +13,7 @@
 -- `@rekoda/core` (`addInterval`: Lagos wall-clock calendar months, the month's last day when it is
 -- shorter; `TRIAL_DAYS = 14`). The database cannot import that code, so it holds the SAME rule as
 -- two small functions below, used only to REFUSE a date beyond it; the parity test
--- (packages/db/src/billing/plan-duration-rules.integration.test.ts) pins them to the core
+-- (packages/db/src/billing/plan-writer-boundary.integration.test.ts, "the database length rule is the core rule") pins them to the core
 -- functions on month ends, leap days and year ends, so the two cannot drift silently. Core drops
 -- seconds when it adds a month; these keep them, so a core date is never later than the bound.
 --
@@ -43,7 +43,7 @@ RETURNS interval
 LANGUAGE sql
 IMMUTABLE
 SET search_path = pg_catalog, pg_temp
-AS $$ SELECT interval '14 days' $$;
+AS $$ SELECT interval '336 hours' $$; -- 14 x 24 hours exactly, whatever the session time zone
 
 -- `from` plus one billing interval in Lagos wall-clock calendar months, the target month's last
 -- day when it is shorter (`@rekoda/core` addInterval with no anchor day). Unknown interval: NULL,
@@ -270,7 +270,7 @@ BEGIN
   IF NEW.plan IS DISTINCT FROM 'trial' OR NEW.plan_expires_at IS NULL
      OR NEW.trial_started_at IS DISTINCT FROM now()
      OR NEW.plan_expires_at <= now()
-     OR NEW.plan_expires_at > now() + interval '14 days' THEN
+     OR NEW.plan_expires_at > now() + interval '336 hours' THEN
     RAISE EXCEPTION
       'a new business starts on its 14-day trial; plan and plan_expires_at change only through the subscription writers (OD-37)'
       USING ERRCODE = '42501';

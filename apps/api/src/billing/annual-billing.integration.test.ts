@@ -390,7 +390,12 @@ describe('renewing a year', () => {
     await putOnPlan(businessId, 'chat', 'annual', start);
     const renewsAt = addInterval(start, 'annual', anchor);
 
-    const raised = await sweepRenewals({ workerDb, appDb: db, config });
+    const raised = await sweepRenewals({
+      settlementDb: settlementDb(),
+      workerDb,
+      appDb: db,
+      config,
+    });
     expect(raised).toEqual({ raised: 1, skipped: 0 });
 
     const [charge] = await chargesOf(businessId);

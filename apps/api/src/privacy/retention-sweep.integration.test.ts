@@ -22,8 +22,8 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
-import { setPlanForTest, settlementDb } from '@rekoda/db/testing';
+import { migrate, requireUrls, truncateAll, type Urls, settlementDb } from '@rekoda/db/testing';
+import { setPlanForTest } from '@rekoda/db/testing';
 import { SendFailed } from '../channels/sender.js';
 import { StubSender } from '../channels/sender.stub.js';
 import { sweepRetention } from './retention-sweep.js';
@@ -151,7 +151,7 @@ describe('the warning', () => {
 
   it('does not warn, or claim, a merchant who has ever paid us', async () => {
     const { businessId } = await abandonedTrial(400);
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'first_purchase',
@@ -246,7 +246,7 @@ describe('the deletion', () => {
     await sweepRetention(deps(sender), new Date());
 
     // They came back and subscribed. The books are theirs again.
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'first_purchase',

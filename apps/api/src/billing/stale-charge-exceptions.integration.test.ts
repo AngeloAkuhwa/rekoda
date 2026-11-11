@@ -20,8 +20,9 @@ import {
   requireUrls,
   truncateAll,
   type Urls,
+  settlementDb,
 } from '@rekoda/db/testing';
-import { setPlanForTest, settlementDb } from '@rekoda/db/testing';
+import { setPlanForTest } from '@rekoda/db/testing';
 import { applySettledCharge, BillingService } from './billing.service.js';
 import { sweepRenewals } from './renewal-sweep.js';
 
@@ -91,7 +92,7 @@ const open = (
   reference: string,
   plan: string | null,
 ) =>
-  withBusiness(appDb, businessId, (tx) =>
+  withBusiness(settlementDb(), businessId, (tx) =>
     subscriptionsRepo.openCharge(tx, {
       businessId,
       kind,
@@ -306,7 +307,11 @@ describe('an upgrade paid after its cycle has ended never leaves the plan expiry
  * a grace business that has no payable one, and never touches the clock.
  */
 describe('a grace business whose renewal went stale is given a payable one (G-104)', () => {
-  const sweep = () => sweepRenewals({ workerDb: realWorkerDb, appDb, config }, new Date());
+  const sweep = () =>
+    sweepRenewals(
+      { settlementDb: settlementDb(), workerDb: realWorkerDb, appDb, config },
+      new Date(),
+    );
   const openRenewals = (businessId: string) =>
     withBusiness(appDb, businessId, async (tx) => {
       const rows = await tx.execute<{ plan: string; amount_k: string }>(sql`

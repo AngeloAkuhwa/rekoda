@@ -431,7 +431,7 @@ describe('the database length rule is the core rule (0203)', () => {
       SELECT extract(epoch FROM rekoda_private.trial_length())::int / 86400 AS days,
              pg_get_functiondef('rekoda_private.businesses_plan_fields_insert_guard()'::regprocedure) AS guard`);
     expect(row!.days).toBe(TRIAL_DAYS);
-    expect(row!.guard).toContain(`interval '${TRIAL_DAYS} days'`);
+    expect(row!.guard).toContain(`interval '${TRIAL_DAYS * 24} hours'`);
   });
 });
 

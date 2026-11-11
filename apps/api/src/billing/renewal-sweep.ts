@@ -36,8 +36,10 @@ import { chargeGate } from './paystack-key.js';
 export interface RenewalSweepDeps {
   /** `rekoda_worker` - "whose cycle ended" names no tenant, which is the point. */
   workerDb: Db;
-  /** `rekoda_app` - the charge and the clock are written under a tenant pin. */
+  /** `rekoda_app` - the clock and the block bookkeeping are written under a tenant pin. */
   appDb: Db;
+  /** `rekoda_settlement` - the only role that opens a charge, so it prices the renewal (OD-37). */
+  settlementDb: Db;
   /** The catalogue flag: a renewal is priced by the merchant's PINNED version. The Paystack key
    * and the §47 confirmation decide whether the renewal can be paid at all (OWN-70). */
   config: PlanTermsConfig & { paystackSecretKey: string; paystackPlatformConfirmed: boolean };
@@ -106,7 +108,8 @@ export async function sweepRenewals(
       }
 
       try {
-        const opened = await withBusiness(deps.appDb, business.businessId, async (tx) => {
+        /* On the settlement principal: only settlement opens a charge (OD-37, 0205). */
+        const opened = await withBusiness(deps.settlementDb, business.businessId, async (tx) => {
           /* G-104: lock first, so an operator move cannot slip between pricing
            * this renewal and opening its charge. */
           await subscriptionsRepo.lockBusiness(tx, business.businessId);
@@ -285,7 +288,8 @@ export interface BlockClosePassResult {
  *    ops alert reports a stalled pass) and the next claim records the abandoned pass's counts.
  */
 export async function closeBlocksTheGateNoLongerHolds(
-  deps: RenewalSweepDeps,
+  /* Closing a block opens no charge, so it needs no settlement pool. */
+  deps: Omit<RenewalSweepDeps, 'settlementDb'>,
   pageSize = BLOCK_PAGE,
   maxPages = BLOCK_PAGES,
   leaseSeconds = BLOCK_LEASE_SECONDS,

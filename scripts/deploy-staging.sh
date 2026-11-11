@@ -63,7 +63,9 @@ dc() { docker compose -f docker-compose.prod.yml "$@"; }
 carries_plan_boundary() {
   [[ " $BREAKING " == *' 0196_plan_fields_guard '* || " $BREAKING " == *' 0200_plan_writer_boundary '* ||
      " $BREAKING " == *' 0202_settlement_and_operator_principals '* ||
-     " $BREAKING " == *' 0203_plan_duration_rules '* ]]
+     " $BREAKING " == *' 0203_plan_duration_rules '* ||
+     " $BREAKING " == *' 0204_external_events_worker_least_privilege '* ||
+     " $BREAKING " == *' 0205_charge_terms_belong_to_settlement '* ]]
 }
 # The OWN-86 pre-start smoke query, printed for an operator fixing forward by hand.
 print_smoke_0196() {
@@ -85,7 +87,7 @@ fail() {
 PHASE=checks
 # Migrations the previous release cannot run against (OD-48): the api and worker are stopped before
 # any of them is applied, and the old release is never restarted against a database that has one.
-COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules'
+COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -94,7 +96,7 @@ MIGRATE_ENTERED=false
 # Set just before `up`: a failure after migrate but before it (the 0196 smoke) has started nothing.
 UP_ENTERED=false
 # The OWN-86 pre-start database smoke for the plan and payment boundary (0196, 0200, and OD-37's
-# 0202 to 0204), run as the owner between migrate and `up`. It prints `t` only when the DATABASE (not
+# 0202 to 0205), run as the owner between migrate and `up`. It prints `t` only when the DATABASE (not
 # only the ledger) holds exactly the boundary this release expects:
 #   * the ledger rows of 0196, 0200, 0202, 0203 and 0204;
 #   * every guard trigger exists and fires (enabled in origin or always mode): the plan-field update
@@ -116,7 +118,8 @@ SMOKE_0196_SQL="SELECT
   (SELECT count(*) FROM rekoda_migrations
     WHERE tag IN ('0196_plan_fields_guard', '0200_plan_writer_boundary',
                   '0202_settlement_and_operator_principals', '0203_plan_duration_rules',
-                  '0204_external_events_worker_least_privilege')) = 5
+                  '0204_external_events_worker_least_privilege',
+                  '0205_charge_terms_belong_to_settlement')) = 6
   AND (SELECT count(*) FROM pg_trigger t WHERE t.tgenabled IN ('O', 'A') AND (t.tgname, t.tgrelid) IN (
         ('businesses_plan_fields_guard', 'public.businesses'::regclass),
         ('businesses_plan_fields_insert_guard', 'public.businesses'::regclass),
@@ -159,7 +162,10 @@ SMOKE_0196_SQL="SELECT
   AND NOT has_column_privilege('rekoda_worker', 'public.external_events', 'business_id', 'UPDATE')
   AND has_function_privilege('rekoda_worker', 'public.attribute_external_event(uuid,uuid)', 'EXECUTE')
   AND NOT has_function_privilege('rekoda_app', 'public.attribute_external_event(uuid,uuid)', 'EXECUTE')
-  AND NOT has_table_privilege('rekoda_app', 'public.business_add_ons', 'INSERT')"
+  AND NOT has_table_privilege('rekoda_app', 'public.business_add_ons', 'INSERT')
+  AND NOT has_table_privilege('rekoda_app', 'public.subscription_charges', 'INSERT')
+  AND NOT has_table_privilege('rekoda_worker', 'public.subscription_charges', 'INSERT')
+  AND has_table_privilege('rekoda_settlement', 'public.subscription_charges', 'INSERT')"
 PREV_SHA=
 PREV_RELEASE=
 # The exit status meaning "skipped, nothing changed"; no failure may use it.
@@ -642,6 +648,24 @@ APPLIED=$(jq '.migrations' <<<"$running")
   fail "could not count migrations (commit carries '$MIGRATIONS', /health reports '$APPLIED')"
 [ "$MIGRATIONS" -ge "$APPLIED" ] ||
   fail "commit $SHA carries $MIGRATIONS migrations and staging's database has applied $APPLIED; roll back across a migration by hand, as the runbook's \"Roll back\" says"
+
+# OD-37 (0202): a release that brings in the settlement and billing-operator principals cannot start
+# without their credentials, and migrate.sh refuses to run without them. Check .env HERE, before the
+# api and worker are stopped, so a missing credential refuses the deploy with nothing live changed.
+# Only the variable names and the role each URL names are read; a password is never printed.
+if [[ " $BREAKING " == *' 0202_settlement_and_operator_principals '* ]]; then
+  for pair in SETTLEMENT_DATABASE_URL:rekoda_settlement OPERATOR_DATABASE_URL:rekoda_billing_operator; do
+    var=${pair%%:*}
+    role=${pair#*:}
+    value=$(sed -n "s/^${var}=//p" .env | tail -1)
+    [ -n "$value" ] ||
+      fail "this release carries 0202 (OD-37) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0202 to 0205\"); nothing has been changed"
+    case "$value" in
+      postgres://"$role":* | postgresql://"$role":*) ;;
+      *) fail "${var} in .env must connect as ${role} with its own password; nothing has been changed" ;;
+    esac
+  done
+fi
 
 SHORT=$(git rev-parse --short=7 "$SHA")
 RELEASE="staging-${SHORT}"

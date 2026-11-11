@@ -1436,6 +1436,13 @@
       "when": 1795262400000,
       "tag": "0204_external_events_worker_least_privilege",
       "breakpoints": true
+    },
+    {
+      "idx": 205,
+      "version": "7",
+      "when": 1795348800000,
+      "tag": "0205_charge_terms_belong_to_settlement",
+      "breakpoints": true
     }
   ]
 }

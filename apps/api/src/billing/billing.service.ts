@@ -584,7 +584,9 @@ export class BillingService {
     | { state: 'payment_required'; reference: string; amountK: number }
     | { state: 'unavailable'; reason: string }
   > {
-    return withBusiness(this.db, businessId, async (tx) => {
+    /* On the settlement principal: only settlement opens a charge, so the price it is opened at is
+     * one this code computed (OD-37, migration 0205). */
+    return withBusiness(this.settlementDb, businessId, async (tx) => {
       const pack = await packOffer(this.config, tx, packId, now);
       if (!pack) return { state: 'unavailable' as const, reason: 'unknown_pack' };
       const plan = await usageRepo.planFor(tx, businessId, now);

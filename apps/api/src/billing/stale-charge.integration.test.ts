@@ -20,8 +20,9 @@ import {
   requireUrls,
   truncateAll,
   type Urls,
+  settlementDb,
 } from '@rekoda/db/testing';
-import { setPlanForTest, settlementDb } from '@rekoda/db/testing';
+import { setPlanForTest } from '@rekoda/db/testing';
 import { applySettledCharge, BillingService } from './billing.service.js';
 import { sweepRenewals } from './renewal-sweep.js';
 
@@ -87,7 +88,7 @@ const open = (
   reference: string,
   plan: string | null,
 ) =>
-  withBusiness(appDb, businessId, (tx) =>
+  withBusiness(settlementDb(), businessId, (tx) =>
     subscriptionsRepo.openCharge(tx, {
       businessId,
       kind,
@@ -229,7 +230,10 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
       },
     }) as Db;
 
-    const swept = await sweepRenewals({ workerDb, appDb, config }, new Date());
+    const swept = await sweepRenewals(
+      { settlementDb: settlementDb(), workerDb, appDb, config },
+      new Date(),
+    );
     expect(swept.raised).toBe(0);
     expect(moved).toBe(true);
 
@@ -264,7 +268,10 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
       },
     }) as Db;
 
-    const swept = await sweepRenewals({ workerDb, appDb, config }, new Date());
+    const swept = await sweepRenewals(
+      { settlementDb: settlementDb(), workerDb, appDb, config },
+      new Date(),
+    );
 
     expect(cancelled).toBe(true);
     expect(swept.raised).toBe(0); // no renewal is billed for a month they declined
@@ -355,7 +362,11 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
     const businessId = await seedBusiness();
     const due = new Date(Date.now() - 3_600_000);
     await operator(businessId, 'complete', due);
-    const sweep = () => sweepRenewals({ workerDb: realWorkerDb, appDb, config }, new Date());
+    const sweep = () =>
+      sweepRenewals(
+        { settlementDb: settlementDb(), workerDb: realWorkerDb, appDb, config },
+        new Date(),
+      );
     expect((await sweep()).raised).toBe(1); // the renewal, and the grace clock
 
     await operator(businessId, 'complete', due); // clears payment_failed_at, same cycle
@@ -494,7 +505,7 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
   it('decisions and charges are stamped at statement time, not transaction start', async () => {
     const businessId = await seedBusiness();
     await operator(businessId, 'complete');
-    const row = await withBusiness(appDb, businessId, async (tx) => {
+    const row = await withBusiness(settlementDb(), businessId, async (tx) => {
       await tx.execute(sql`SELECT pg_sleep(0.05)`);
       await subscriptionsRepo.schedulePlanChange(tx, businessId, 'expired');
       await subscriptionsRepo.openCharge(tx, {

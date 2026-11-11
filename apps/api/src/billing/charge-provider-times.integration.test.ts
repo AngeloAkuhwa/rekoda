@@ -23,8 +23,14 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, setPlanAsOwner, truncateAll, type Urls } from '@rekoda/db/testing';
-import { settlementDb } from '@rekoda/db/testing';
+import {
+  migrate,
+  requireUrls,
+  setPlanAsOwner,
+  truncateAll,
+  type Urls,
+  settlementDb,
+} from '@rekoda/db/testing';
 import { buildRunner, type RunnerDeps } from '../jobs/jobs.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
@@ -124,7 +130,7 @@ const CHAT_K = 990_000;
 
 async function openPack(businessId: string): Promise<string> {
   const reference = addOnReference(new Date(), (n) => randomBytes(n));
-  await withBusiness(appDb, businessId, (tx) =>
+  await withBusiness(settlementDb(), businessId, (tx) =>
     subscriptionsRepo.openCharge(tx, {
       businessId,
       kind: 'add_on',
@@ -139,7 +145,7 @@ async function openPack(businessId: string): Promise<string> {
 async function openFirstPurchase(businessId: string): Promise<string> {
   const reference = subscriptionReference(new Date(), (n) => randomBytes(n));
   const now = new Date();
-  await withBusiness(appDb, businessId, (tx) =>
+  await withBusiness(settlementDb(), businessId, (tx) =>
     subscriptionsRepo.openCharge(tx, {
       businessId,
       kind: 'first_purchase',

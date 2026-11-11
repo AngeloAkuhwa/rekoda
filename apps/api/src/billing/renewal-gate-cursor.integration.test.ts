@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { evaluateOpsAlerts } from '@rekoda/core';
 import { createDb, identity, sql, subscriptionsRepo, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { migrate, requireUrls, truncateAll, type Urls, settlementDb } from '@rekoda/db/testing';
 import { collectOpsSnapshot } from '../health/ops-alerts.js';
 import type * as SweepModule from './renewal-sweep.js';
 
@@ -113,7 +113,13 @@ const closeOnce: typeof SweepModule.closeBlocksTheGateNoLongerHolds = async (...
 };
 const sweep = async (extra: Record<string, unknown> = {}) => {
   const { sweepRenewals } = await import('./renewal-sweep.js');
-  return sweepRenewals({ workerDb, appDb, config: OPEN_GATE, ...extra });
+  return sweepRenewals({
+    settlementDb: settlementDb(),
+    workerDb,
+    appDb,
+    config: OPEN_GATE,
+    ...extra,
+  });
 };
 
 /** A new worker process: fresh pools and a freshly loaded sweep module, nothing carried over. */
@@ -128,7 +134,13 @@ async function restartedWorker(): Promise<{
   const { app, worker } = pools();
   return {
     sweep: (extra = {}) =>
-      mod.sweepRenewals({ workerDb: worker, appDb: app, config: OPEN_GATE, ...extra }),
+      mod.sweepRenewals({
+        settlementDb: settlementDb(),
+        workerDb: worker,
+        appDb: app,
+        config: OPEN_GATE,
+        ...extra,
+      }),
     closePass: mod.closeBlocksTheGateNoLongerHolds,
     worker,
     app,

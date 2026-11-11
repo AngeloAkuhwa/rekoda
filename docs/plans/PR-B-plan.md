@@ -4,7 +4,7 @@ Base: `main` at `58e6834` (PR A, #431, merged). **Status (8 Nov 2026): ALL SIX I
 
 As built, against this plan:
 
-- Migrations are 0193 to 0204 (0201 to 0204 added by the owner review, OWN-89, §5a), eight more than the recorded range: 0197 holds the item 6 staging tables and writer (the brief allowed numbers to be confirmed when PR B started); 0198 (review of #432) ordered the blocked-renewal close pass by a per-row failure stamp; 0199 (owner direction 11 Nov 2026, OWN-88) replaces that with a durable keyset cursor; 0200 (OWN-88) makes the plan writers enforce the business rules (below and §5).
+- Migrations are 0193 to 0205 (0201 to 0205 added by the owner review and its independent review, OWN-89, §5a), nine more than the recorded range: 0197 holds the item 6 staging tables and writer (the brief allowed numbers to be confirmed when PR B started); 0198 (review of #432) ordered the blocked-renewal close pass by a per-row failure stamp; 0199 (owner direction 11 Nov 2026, OWN-88) replaces that with a durable keyset cursor; 0200 (OWN-88) makes the plan writers enforce the business rules (below and §5).
 - Item 1: `provider_settled_at` has no writer, because Rekoda has no Paystack settlement feed for its own account; no row is backfilled, because the evidence is sealed or was never kept.
 - Items 2 and 3 share one table (`dead_job_exceptions`). A dead job behind an event is that event's flagged row, carrying `jobId`, and a job without one is a `deadJobs` item. The pump now puts Rekoda's own reference in the job payload so the operator item names it; recovery still verifies the reference read from the signed event.
 - Item 4: the renewal row and grace clock are unchanged, and the renewal is stamped blocked, listed and alerted on (`billing.renewals_blocked`). OD-44 stays open.
@@ -67,7 +67,11 @@ The triggers decide on `current_user` (the executing role), never a setting; tes
 
 ### 5a. Owner review round (OWN-89, 11 Nov 2026): principals and plan durations, as built
 
-- **Principals (0202).** `rekoda_settlement` and `rekoda_billing_operator`, LOGIN, inheriting
+- **Principals (0202, 0205).** 0205 (independent security review of `e848bd9`): only settlement opens
+  a charge; its terms are frozen from opening; the general credentials may move a status only from
+  `paid` to `refunded` and cannot put back a paid charge set aside; the pack purchase and the renewal
+  sweep open their charges on the settlement pool.
+  `rekoda_settlement` and `rekoda_billing_operator`, LOGIN, inheriting
   `rekoda_app` (INHERIT TRUE, SET FALSE), no RLS bypass. Reserved to settlement: a charge's move into
   `paid` and its payment evidence (trigger `subscription_charges_settlement_guard`), raising
   `usage_counters.bonus` (`usage_counters_bonus_guard`), INSERT/UPDATE on `business_add_ons`, EXECUTE

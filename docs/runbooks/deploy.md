@@ -508,11 +508,13 @@ which applies them as it does any receipt. Not recovered: a customer's reply tha
 older release handled is not told to the business afterwards, because the older release
 records no notice for it (the same as before PR A).
 
-### Deploy a release carrying 0202 to 0204 (OD-37 principals, plan durations, event privilege)
+### Deploy a release carrying 0202 to 0205 (OD-37 principals, plan durations, event privilege)
 
-Migrations 0202 and 0203 are compatibility breaks like 0196 and 0200 (the previous release settles
-on `rekoda_app` and calls the four-argument operator writer, both refused afterwards), so the
-"Deploy a release carrying 0196" sequence applies unchanged, and `deploy-staging.sh` lists both. Two
+Migrations 0202 to 0205 are compatibility breaks like 0196 and 0200 (the previous release settles and
+opens charges on `rekoda_app`, calls the four-argument operator writer and attributes events with a
+direct worker UPDATE, all refused afterwards), so the "Deploy a release carrying 0196" sequence
+applies unchanged, and `deploy-staging.sh` lists all four. It also refuses, before stopping anything,
+a release carrying 0202 when `.env` lacks either credential or names the wrong role. Two
 things come first, because without them the new release refuses to start (no fallback to
 `DATABASE_URL`, by design):
 
@@ -529,13 +531,15 @@ things come first, because without them the new release refuses to start (no fal
    before changing anything. Nothing else reads them: never put them in a compose file, a log, an
    issue or a chat.
 2. **Run the deploy as for 0196** (api and worker stopped, migrate, pre-start smoke, then `up`).
-   The pre-start smoke now also checks, in the database: the 0202, 0203 and 0204 ledger rows; the
+   The pre-start smoke now also checks, in the database: the 0202 to 0205 ledger rows; that only
+   `rekoda_settlement` may insert a charge; the
    settlement and pack-credit guard triggers; that `rekoda_plan_writer` owns exactly the four
    expected writer functions, by signature, each with exactly its EXECUTE grantees (provider writer:
    `rekoda_settlement`; operator writer: `rekoda_billing_operator`; expiry writer: `rekoda_app`,
    `rekoda_worker`; staging date move: `rekoda_app`); the principals' roles and that no runtime role
-   can become another; and that the worker's `external_events` access is read-only apart from
-   `processed_at`/`error` on unattributed rows and the attribution function.
+   can become another; and that the worker's `external_events` access is SELECT plus `processed_at`/`error` (on
+   unattributed rows without a pin, and on a pinned business's rows through the ordinary tenant
+   policy) and the attribution function.
 3. On boot, the api and worker refuse to start if the settlement or operator connection does not log
    in as exactly its role, cannot run its own writer, can run the other's, or can become the worker
    or the plan writer, and if the general credentials can run either reserved writer.
@@ -544,7 +548,9 @@ Rotating either password: as in "Rotate a database password", with the variable 
 `dc up -d --wait --force-recreate api worker`.
 
 **Existing rows the duration rules would not accept** (0203 does not rewrite them; OD-49). Read-only,
-as the owner, before or after the deploy; expected empty on staging and production today:
+as the owner, before or after the deploy. Before 0203, signup set the trial end on the API's clock
+while the trial start is the database's, so most older trials end a few milliseconds after start +
+14 days; the query allows a minute for that and lists only real exceptions:
 
 ```sql
 SELECT id, plan, plan_expires_at, billing_interval, trial_started_at,
@@ -554,7 +560,9 @@ SELECT id, plan, plan_expires_at, billing_interval, trial_started_at,
          ((cycle_started_at AT TIME ZONE 'Africa/Lagos')
           + CASE billing_interval WHEN 'annual' THEN interval '12 months' ELSE interval '1 month' END
           + interval '3 days') AT TIME ZONE 'Africa/Lagos' THEN 'paid plan longer than its interval'
-    WHEN plan = 'trial' AND (plan_expires_at IS NULL OR plan_expires_at > trial_started_at + interval '14 days')
+    WHEN plan IN ('chat','integrate','complete') AND cycle_started_at IS NULL THEN 'paid plan with no cycle start'
+    WHEN plan = 'trial' AND (plan_expires_at IS NULL
+         OR plan_expires_at > trial_started_at + interval '336 hours' + interval '1 minute')
       THEN 'trial longer than 14 days'
     WHEN plan = 'expired' AND plan_expires_at > now() THEN 'expired plan with a future end'
   END AS nonconforming
@@ -563,7 +571,8 @@ WHERE (plan IN ('chat','integrate','complete') AND (plan_expires_at IS NULL OR c
         OR plan_expires_at > ((cycle_started_at AT TIME ZONE 'Africa/Lagos')
           + CASE billing_interval WHEN 'annual' THEN interval '12 months' ELSE interval '1 month' END
           + interval '3 days') AT TIME ZONE 'Africa/Lagos'))
-   OR (plan = 'trial' AND (plan_expires_at IS NULL OR plan_expires_at > trial_started_at + interval '14 days'))
+   OR (plan = 'trial' AND (plan_expires_at IS NULL
+       OR plan_expires_at > trial_started_at + interval '336 hours' + interval '1 minute'))
    OR (plan = 'expired' AND plan_expires_at > now());
 ```
 

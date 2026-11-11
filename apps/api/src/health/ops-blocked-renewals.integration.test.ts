@@ -15,6 +15,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { settlementDb } from '@rekoda/db/testing';
 import { sweepRenewals } from '../billing/renewal-sweep.js';
 
 const OPERATOR_SECRET = `operator-${randomBytes(24).toString('hex')}`;
@@ -76,6 +77,7 @@ async function blockedRenewal(): Promise<{ businessId: string; reference: string
     }),
   );
   await sweepRenewals({
+    settlementDb: settlementDb(),
     workerDb,
     appDb: db,
     config: {

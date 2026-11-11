@@ -115,11 +115,12 @@ export async function setPlan(db: Db, change: PlanChange, now = new Date()): Pro
         ? addInterval(now, billingInterval!)
         : change.plan === 'trial'
           ? trialExpiry(previous.trialStartedAt)
-          : now);
+          : await databaseNow(tx));
+    /* A defaulted `expired` end is the database's own now: compared with it, not the host clock. */
     const refusal = planDateRefusal(
       { plan: change.plan, expiresAt, billingInterval },
       previous.trialStartedAt,
-      now,
+      change.plan === 'expired' && change.expiresAt === null ? expiresAt : now,
     );
     if (refusal) throw new PlanDateRefused(refusal);
     await writePlanChange(tx, previous, { ...change, expiresAt }, billingInterval, {
@@ -134,6 +135,13 @@ export async function setPlan(db: Db, change: PlanChange, now = new Date()): Pro
   });
 }
 
+/* `expired` with no date ends "now" on the DATABASE clock (the transaction start), which the writer's
+ * `clock_timestamp()` check can never see as future, whatever the API host's clock says. */
+async function databaseNow(tx: TenantDb): Promise<Date> {
+  const rows = await tx.execute<{ at: string }>(sql`SELECT now()::text AS at`);
+  return new Date([...rows][0]!.at);
+}
+
 interface PlanChangeBefore {
   plan: string;
   expiresAt: Date | null;
@@ -142,6 +150,7 @@ interface PlanChangeBefore {
   trialStartedAt: Date;
   pendingPlan: string | null;
   paymentFailedAt: Date | null;
+  billingInterval: BillingInterval;
 }
 
 async function lockForPlanChange(
@@ -157,13 +166,15 @@ async function lockForPlanChange(
       trialStartedAt: businesses.trialStartedAt,
       pendingPlan: businesses.pendingPlan,
       paymentFailedAt: businesses.paymentFailedAt,
+      billingInterval: businesses.billingInterval,
     })
     .from(businesses)
     .where(eq(businesses.id, businessId))
     .limit(1)
     // The audit's old value is what the UPDATE below overwrites, so it is read under the row lock.
     .for('update');
-  return before[0];
+  const row = before[0];
+  return row ? { ...row, billingInterval: row.billingInterval as BillingInterval } : undefined;
 }
 
 /**
@@ -184,12 +195,15 @@ async function writePlanChange(
   authority: subscriptionsRepo.PlanWriteAuthority,
 ): Promise<void> {
   const paid = !UNPAID_PLANS.has(change.plan);
+  /* A different interval is a different cycle (owner review of #432): the writer validates and
+   * audits the interval it is given, so the state must record that same interval. */
   const sameCycle =
     previous.plan === change.plan &&
     previous.cycleStartedAt !== null &&
     previous.expiresAt !== null &&
     change.expiresAt !== null &&
-    previous.expiresAt.getTime() === change.expiresAt.getTime();
+    previous.expiresAt.getTime() === change.expiresAt.getTime() &&
+    (billingInterval === null || billingInterval === previous.billingInterval);
   await subscriptionsRepo.writeSubscriptionState(tx, change.businessId, {
     authority,
     plan: change.plan,

@@ -24,8 +24,7 @@
 --   * attribution through `attribute_external_event(event, business)`, a worker-only SECURITY
 --     DEFINER function (pinned search_path, validated inputs) that sets `business_id` once, from
 --     NULL, to a business that exists, and nothing else;
--- and loses INSERT and DELETE (it never records ingress; retention deletes through its definer
--- function) and UPDATE of every other column (business_id, payload, signature, reservations,
+-- and loses INSERT and DELETE (it never records ingress or deletes an event) and UPDATE of every other column (business_id, payload, signature, reservations,
 -- resolution).
 --
 -- Residual, recorded in docs/rls-exemption-register.md and ADR 0035: `app.business_id` is an
@@ -34,8 +33,11 @@
 -- resolution, which it holds no grant on), as the application credential can for its tenant rows; the definer-function narrowing of the worker's other blanket
 -- grants is the OD-33-F1 follow-up.
 --
--- Rollback: a release older than this one resolves exceptions on the worker credential and would
--- get "permission denied" on that route only; nothing else it does is refused. Re-running is safe.
+-- Rollback: a compatibility break (listed in scripts/deploy-staging.sh): a release older than this
+-- one resolves exceptions on the worker credential and attributes events with a direct worker UPDATE
+-- of business_id, and both are refused, so the payments pump of an older release cannot attribute.
+-- It ships with 0202 and 0203 and is applied the same way, with the api and worker stopped.
+-- Re-running is safe.
 
 DROP POLICY IF EXISTS worker_reads_the_estate ON external_events;
 CREATE POLICY worker_reads_the_estate ON external_events

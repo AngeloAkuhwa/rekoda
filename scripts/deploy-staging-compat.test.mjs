@@ -30,7 +30,12 @@ const sh = (cwd, cmd) => {
 };
 
 /** A host whose second commit adds the given migration tags to the journal. */
-function host(extraTags) {
+/* The OD-37 principals' URLs a host has once runbook step 1 is done (placeholder passwords). */
+const PRINCIPAL_ENV =
+  'SETTLEMENT_DATABASE_URL=postgres://rekoda_settlement:placeholder@postgres:5432/rekoda\n' +
+  'OPERATOR_DATABASE_URL=postgres://rekoda_billing_operator:placeholder@postgres:5432/rekoda\n';
+
+function host(extraTags, extraEnv = PRINCIPAL_ENV) {
   const root = mkdtempSync(join(tmpdir(), 'deploy-compat-'));
   const origin = join(root, 'origin.git');
   const work = join(root, 'work');
@@ -57,7 +62,7 @@ function host(extraTags) {
   sh(dir, `git checkout -q --detach ${prev}`);
   writeFileSync(
     join(dir, '.env'),
-    `REKODA_API_PUBLIC_URL=${API}\nREKODA_RELEASE=staging-${prev.slice(0, 7)}\n`,
+    `REKODA_API_PUBLIC_URL=${API}\nREKODA_RELEASE=staging-${prev.slice(0, 7)}\n${extraEnv}`,
   );
   mkdirSync(join(dir, 'secrets'));
   const health = (sha, migrations) =>
@@ -415,6 +420,26 @@ test('OD-37 (0202, 0203): a release bringing in the principals or the duration r
     const up = h.at(' up ');
     assert.ok(stop >= 0 && stop < migrate, `api and worker are stopped before migrating ${tag}`);
     assert.ok(migrate < smoke && smoke < up, h.calls().join('\n'));
+  }
+});
+
+test('OD-37 (0202): a missing or wrong principal credential refuses the deploy before anything is stopped', () => {
+  for (const env of [
+    '',
+    'SETTLEMENT_DATABASE_URL=postgres://rekoda_settlement:p@postgres:5432/rekoda\n',
+    'SETTLEMENT_DATABASE_URL=postgres://rekoda_app:p@postgres:5432/rekoda\nOPERATOR_DATABASE_URL=postgres://rekoda_billing_operator:p@postgres:5432/rekoda\n',
+  ]) {
+    const h = host(['0202_settlement_and_operator_principals'], env);
+    const r = h.run();
+    assert.notEqual(r.status, 0);
+    assert.match(
+      r.stderr,
+      /STAGING DEPLOY REFUSED: .*(has no (SETTLEMENT|OPERATOR)_DATABASE_URL|must connect as)/,
+    );
+    assert.match(r.stderr, /nothing has been changed/);
+    assert.equal(h.at('stop api worker'), -1, 'the api and worker must not be stopped');
+    assert.equal(h.at('run --rm -T migrate'), -1, 'nothing may be migrated');
+    assert.doesNotMatch(r.stderr + r.stdout, /placeholder|:p@/, 'a password is never printed');
   }
 });
 

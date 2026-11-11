@@ -81,6 +81,10 @@ interface PrincipalFacts {
   in_worker: boolean | null;
   in_app: boolean | null;
   in_plan_writer: boolean | null;
+  /** Can act as the owner of the guarded tables, which every OD-37 guard exempts. */
+  in_table_owner: boolean | null;
+  /** The OD-37 guard triggers present and enabled (plan fields, settlement, pack credit). */
+  guards_enabled: number;
 }
 
 /* Each fact is NULL when the role or function it names does not exist (migrations not applied):
@@ -103,7 +107,14 @@ async function principalFacts(db: Db): Promise<PrincipalFacts> {
       CASE WHEN to_regrole('rekoda_app') IS NULL THEN NULL
            ELSE pg_has_role(current_user, 'rekoda_app', 'USAGE') END AS in_app,
       CASE WHEN to_regrole('rekoda_plan_writer') IS NULL THEN NULL
-           ELSE pg_has_role(current_user, 'rekoda_plan_writer', 'MEMBER') END AS in_plan_writer
+           ELSE pg_has_role(current_user, 'rekoda_plan_writer', 'MEMBER') END AS in_plan_writer,
+      CASE WHEN to_regclass('public.subscription_charges') IS NULL THEN NULL
+           ELSE pg_has_role(current_user,
+                  (SELECT relowner FROM pg_class WHERE oid = 'public.subscription_charges'::regclass),
+                  'USAGE') END AS in_table_owner,
+      (SELECT count(*)::int FROM pg_trigger
+        WHERE tgenabled IN ('O', 'A') AND tgname IN ('businesses_plan_fields_guard',
+          'subscription_charges_settlement_guard', 'usage_counters_bonus_guard')) AS guards_enabled
     FROM pg_roles r WHERE r.rolname = current_user
   `);
   const facts = [...rows][0];
@@ -124,6 +135,10 @@ export async function assertRoleHoldsNoReservedWriter(db: Db, label: string): Pr
   if (f.operator_writer !== false) problems.push(`can run ${OPERATOR_WRITER}`);
   if (f.in_settlement !== false) problems.push('can become rekoda_settlement');
   if (f.in_operator !== false) problems.push('can become rekoda_billing_operator');
+  if (f.in_table_owner !== false) problems.push('can act as the owner of the guarded tables');
+  if (f.guards_enabled !== 3) {
+    problems.push('runs against a database whose OD-37 guard triggers are missing or disabled');
+  }
   if (problems.length > 0) {
     throw new Error(
       `the ${label} database role "${f.rolname}" ${problems.join(', ')}: settlement and operator ` +
@@ -162,6 +177,10 @@ export async function assertDatabasePrincipal(
   if (f.in_worker !== false) problems.push('can become rekoda_worker');
   if (f.in_plan_writer !== false) problems.push('can become rekoda_plan_writer');
   if (f.in_app !== true) problems.push("does not act with rekoda_app's rights");
+  if (f.in_table_owner !== false) problems.push('can act as the owner of the guarded tables');
+  if (f.guards_enabled !== 3) {
+    problems.push('runs against a database whose OD-37 guard triggers are missing or disabled');
+  }
   if (problems.length > 0) {
     throw new Error(
       `the ${label} database role ${expected} ${problems.join(', ')} (OD-37, migration 0202).`,

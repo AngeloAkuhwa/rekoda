@@ -458,11 +458,13 @@ export async function unattributedEvents(
 /**
  * Attribute an event to the business its reference resolved to.
  *
- * WRITE-ONCE: two pumps racing over the same event cannot re-point it, and nothing can ever move an
- * event from one tenant to another. Since migration 0204 that is the database's rule, not only this
- * query's: the worker holds no UPDATE of `business_id`, and `attribute_external_event` (worker-only,
+ * WRITE-ONCE: two pumps racing over the same event cannot re-point it. Since migration 0204 that is
+ * the database's rule for the worker, not only this query's: the worker holds no UPDATE of
+ * `business_id`, and `attribute_external_event` (worker-only,
  * SECURITY DEFINER) sets it once, from NULL, to a business that exists. Returns false for the loser
- * (or for a business that does not exist).
+ * (or for a business that does not exist). The application credential is not bound by this
+ * function: 0130's `app_records_unattributed_ingress` lets it un-attribute and re-attribute a row it can
+ * pin (pre-existing, `REKODA_LAUNCH_READINESS.md` OD-51 item 4).
  */
 export async function attributeEvent(
   q: Queryable,

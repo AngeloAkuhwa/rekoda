@@ -122,6 +122,25 @@ describe('OD-37: who may run which writer, and who may become whom (0202)', () =
     }
   });
 
+  it('the boot checks refuse a database whose guard triggers are disabled', async () => {
+    await ownerDb.execute(
+      sql`ALTER TABLE subscription_charges DISABLE TRIGGER subscription_charges_settlement_guard`,
+    );
+    try {
+      await expect(
+        bootChecks.assertRoleHoldsNoReservedWriter(appDb, 'application'),
+      ).rejects.toThrow(/guard triggers are missing or disabled/);
+      await expect(
+        bootChecks.assertDatabasePrincipal(settlementDb, 'settlement', 'rekoda_settlement'),
+      ).rejects.toThrow(/guard triggers are missing or disabled/);
+    } finally {
+      await ownerDb.execute(
+        sql`ALTER TABLE subscription_charges ENABLE TRIGGER subscription_charges_settlement_guard`,
+      );
+    }
+    await bootChecks.assertRoleHoldsNoReservedWriter(appDb, 'application');
+  });
+
   it('the boot checks pass for the real principals and refuse the general credentials in their place', async () => {
     await bootChecks.assertDatabasePrincipal(settlementDb, 'settlement', 'rekoda_settlement');
     await bootChecks.assertDatabasePrincipal(operatorDb, 'operator', 'rekoda_billing_operator');
@@ -176,7 +195,8 @@ describe('OD-37: only settlement records a payment (0202)', () => {
       // refusal, but the application roles must be refused by the guard itself.
       const forged = await outcome(insertPaid);
       expect(forged).toMatch(/42501/);
-      if (who !== 'worker') expect(forged).toMatch(/only settlement records a payment/);
+      // Since 0205 no role but settlement may insert a charge at all.
+      expect(forged).toMatch(/permission denied for table subscription_charges/);
       const settled = await outcome(
         withBusiness(db, businessId, (tx) =>
           subscriptionsRepo.settleCharge(tx, {
@@ -218,7 +238,7 @@ describe('OD-37: only settlement records a payment (0202)', () => {
           ),
         ),
       ).toMatch(
-        /^42501 (what a paid charge bought cannot be changed|only settlement records a payment)/,
+        /^42501 (what a charge buys is set when settlement opens it|only settlement records a payment)/,
       );
     }
   });
@@ -251,7 +271,135 @@ describe('OD-37: only settlement records a payment (0202)', () => {
           ),
         ),
       ),
-    ).toMatch(/^42501 only settlement records a payment/);
+    ).toMatch(/^42501 only settlement moves a charge's status/);
+  });
+});
+
+describe("OD-37: what a charge buys is settlement's alone, from its opening to its end (0205)", () => {
+  it.each(['app', 'worker', 'operator'] as const)(
+    '%s cannot open a charge at all, so it cannot set the terms a payment will be checked against',
+    async (who) => {
+      const businessId = await seedBusiness();
+      expect(
+        await outcome(
+          withBusiness(PRINCIPALS[who](), businessId, (tx) =>
+            subscriptionsRepo.openCharge(tx, {
+              businessId,
+              kind: 'first_purchase',
+              plan: 'complete',
+              amountK: 100,
+              reference: `CHEAP-${who}`,
+              periodStart: new Date(),
+              periodEnd: new Date(Date.now() + 365 * 86_400_000),
+            }),
+          ),
+        ),
+      ).toMatch(/^42501/);
+    },
+  );
+
+  it('the application cannot reprice, relabel or stretch a PENDING charge before it is paid', async () => {
+    const businessId = await seedBusiness();
+    const pending = await seedCharge(businessId, { status: 'pending' });
+    for (const change of [
+      sql`amount_k = 1`,
+      sql`billing_interval = 'annual'`,
+      sql`plan = 'complete'`,
+      sql`kind = 'renewal'`,
+      sql`quantity = 50`,
+      sql`pack_id = 'whatsapp_500'`,
+      sql`period_end = now() + interval '10 years'`,
+      sql`created_at = now() + interval '1 day'`,
+    ]) {
+      expect(
+        await outcome(
+          withBusiness(appDb, businessId, (tx) =>
+            tx.execute(sql`UPDATE subscription_charges SET ${change} WHERE reference = ${pending}`),
+          ),
+        ),
+        String(change.queryChunks[0]),
+      ).toMatch(/^42501 what a charge buys is set when settlement opens it/);
+    }
+  });
+
+  it.each([
+    ['paid', 'pending'],
+    ['paid', 'failed'],
+    ['refunded', 'pending'],
+    ['refunded', 'paid'],
+    ['pending', 'failed'],
+  ] as const)(
+    'the application cannot move a %s charge to %s (a verified payment is settled once)',
+    async (from, to) => {
+      const businessId = await seedBusiness();
+      const reference = await seedCharge(businessId, {
+        status: from === 'refunded' ? 'paid' : from,
+      });
+      if (from === 'refunded') {
+        await withBusiness(appDb, businessId, (tx) =>
+          subscriptionsRepo.refundCharge(tx, reference, 1000, new Date()),
+        );
+      }
+      expect(
+        await outcome(
+          withBusiness(appDb, businessId, (tx) =>
+            tx.execute(
+              sql`UPDATE subscription_charges SET status = ${to} WHERE reference = ${reference}`,
+            ),
+          ),
+        ),
+      ).toMatch(/^42501/);
+    },
+  );
+
+  it('the application cannot reopen a paid charge that was set aside (unapplied or superseded)', async () => {
+    const businessId = await seedBusiness();
+    const aside = await seedCharge(businessId, { unapplied: true, superseded: true });
+    for (const change of [sql`unapplied_at = NULL`, sql`superseded_at = NULL`]) {
+      expect(
+        await outcome(
+          withBusiness(appDb, businessId, (tx) =>
+            tx.execute(sql`UPDATE subscription_charges SET ${change} WHERE reference = ${aside}`),
+          ),
+        ),
+      ).toMatch(/^42501/);
+    }
+  });
+
+  it('the application still works the lifecycle around a charge: supersede, checkout link, block, refund, review', async () => {
+    const businessId = await seedBusiness();
+    const pending = await seedCharge(businessId, { status: 'pending', kind: 'renewal' });
+    for (const change of [
+      sql`superseded_at = now(), abandoned_at = now()`,
+      sql`superseded_at = NULL, abandoned_at = NULL`,
+      sql`checkout_url = 'https://checkout.paystack.com/x', checkout_started_at = now()`,
+      sql`blocked_at = now(), blocked_reason = 'awaiting_platform_confirmation'`,
+      sql`blocked_resolved_at = now(), blocked_resolved_by = 'system:gate_open', blocked_resolution = 'open'`,
+    ]) {
+      expect(
+        await outcome(
+          withBusiness(appDb, businessId, (tx) =>
+            tx.execute(sql`UPDATE subscription_charges SET ${change} WHERE reference = ${pending}`),
+          ),
+        ),
+      ).toBe('allowed');
+    }
+    const aside = await seedCharge(businessId, { unapplied: true });
+    expect(
+      await outcome(
+        withBusiness(appDb, businessId, (tx) =>
+          subscriptionsRepo.resolveUnapplied(tx, aside, 'refunded by hand', 'operator:ada'),
+        ),
+      ),
+    ).toBe('allowed');
+    const paid = await seedCharge(businessId);
+    expect(
+      (
+        await withBusiness(appDb, businessId, (tx) =>
+          subscriptionsRepo.refundCharge(tx, paid, 1000, new Date()),
+        )
+      )?.status,
+    ).toBe('refunded');
   });
 });
 

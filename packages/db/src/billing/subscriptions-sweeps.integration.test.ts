@@ -26,6 +26,7 @@ import {
   type Urls,
   setPlanAsOwner,
 } from '../testing.js';
+import { settlementDb } from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -70,6 +71,9 @@ const RENEWS_AT = new Date('2026-09-01T00:00:00Z');
 
 const inTenant = <T>(businessId: string, fn: (tx: TenantDb) => Promise<T>): Promise<T> =>
   withBusiness(appDb, businessId, fn);
+/** Charges are opened and paid only as `rekoda_settlement` (OD-37, 0202, 0205). */
+const inSettlement = <T>(businessId: string, fn: (tx: TenantDb) => Promise<T>): Promise<T> =>
+  withBusiness(settlementDb(), businessId, fn);
 
 describe('the sweeps', () => {
   async function paidBusiness(name: string, renewsAt: Date): Promise<string> {
@@ -116,7 +120,7 @@ describe('the sweeps', () => {
     // keeps the business out of the due set; re-selection of a grace business
     // whose renewals went stale (and the failed-renewal no-spin case) is covered
     // in stale-charge-exceptions.integration.test.ts (G-104).
-    await inTenant(businessId, async (tx) => {
+    await inSettlement(businessId, async (tx) => {
       await subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'renewal',
@@ -147,7 +151,7 @@ describe('the sweeps', () => {
 
   it('resolves a reference to its tenant for the worker only', async () => {
     const businessId = await seedBusiness();
-    await inTenant(businessId, (tx) =>
+    await inSettlement(businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'first_purchase',

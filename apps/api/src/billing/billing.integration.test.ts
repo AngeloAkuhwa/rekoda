@@ -31,8 +31,8 @@ import {
   requireUrls,
   truncateAll,
   type Urls,
+  settlementDb,
 } from '@rekoda/db/testing';
-import { settlementDb } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRenewals } from './renewal-sweep.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
@@ -284,7 +284,7 @@ describe('a charge the provider confirmed', () => {
     const { businessId, auth } = await onboard('+2348177100008');
     const now = new Date('2026-08-15T10:00:00Z');
 
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'first_purchase',
@@ -331,7 +331,7 @@ describe('a charge the provider confirmed', () => {
     const now = new Date();
     await putOnPlan(businessId, 'chat', now, new Date(now.getTime() + 30 * 86_400_000));
 
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'add_on',
@@ -367,7 +367,7 @@ describe('the cycle a payment starts', () => {
     reference: string,
     when: Date,
   ) {
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind,
@@ -471,7 +471,12 @@ describe('cancelling the subscription', () => {
     expect(await cancel(auth)).toEqual({ state: 'scheduled', endsAt: renewsAt.toISOString() });
 
     /* The sweep applies the cancellation instead of raising a renewal. */
-    expect(await sweepRenewals({ workerDb, appDb: db, config }, new Date())).toEqual({
+    expect(
+      await sweepRenewals(
+        { settlementDb: settlementDb(), workerDb, appDb: db, config },
+        new Date(),
+      ),
+    ).toEqual({
       raised: 0,
       skipped: 1,
     });

@@ -29,6 +29,7 @@ import {
   resetPlanCatalogue,
   truncateAll,
   type Urls,
+  settlementDb,
 } from '../testing.js';
 
 let urls: Urls;
@@ -125,7 +126,7 @@ describe('the plan catalogue (BL2, PR-099)', () => {
     expect(soldPrice).toBe(990_000);
 
     /* The charge the merchant actually paid, at the price then in force. */
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'renewal',

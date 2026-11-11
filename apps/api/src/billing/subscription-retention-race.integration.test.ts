@@ -25,8 +25,14 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '@rekoda/db/testing';
-import { settlementDb } from '@rekoda/db/testing';
+import {
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+  setPlanAsOwner,
+  settlementDb,
+} from '@rekoda/db/testing';
 import { applySettledCharge } from './billing.service.js';
 
 const BARRIER_KEY = 7_770_161;
@@ -79,7 +85,7 @@ async function warnedTrialWithPendingCharge(
   const businessId = business.id;
   /* OD-37: a plan date is set by the owner in a fixture, never by the application role. */
   await setPlanAsOwner(urls, businessId, { planExpiresAt: daysAgo(400) });
-  await withBusiness(appDb, businessId, async (tx) => {
+  await withBusiness(settlementDb(), businessId, async (tx) => {
     await retentionRepo.claimRetentionNotice(tx, businessId, daysAgo(200));
     await subscriptionsRepo.openCharge(tx, {
       businessId,

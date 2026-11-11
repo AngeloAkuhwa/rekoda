@@ -166,6 +166,15 @@ async function publishNewerVersion(planId: string): Promise<string> {
   });
 }
 
+const operatorMonthly = (businessId: string, expiresAt: Date) =>
+  billingRepo.setPlan(operatorDb(), {
+    businessId,
+    plan: 'chat',
+    expiresAt,
+    billingInterval: 'monthly',
+    actor: 'operator:test-g62',
+  });
+
 /** The real operator path (OD-37): the billing-operator principal, an annual interval for a paid
  * plan so the G-62 cases can use dates a few months out. */
 const operator = (businessId: string, plan: string, expiresAt: Date | null) =>
@@ -240,6 +249,10 @@ describe('an operator move to a paid plan (G-62)', () => {
     // An operator re-post carries a future date (G-114, the route's rule), so the cycle
     // already running is moved to renew in the future first, as it would after a renewal.
     await setPlanAsOwner(urls, businessId, { planExpiresAt: FUTURE_RENEWS_AT });
+    // ...on an annual cycle, the interval the operator re-posts (a different interval is a new cycle).
+    await ownerDb.execute(
+      sql`UPDATE businesses SET billing_interval = 'annual' WHERE id = ${businessId}::uuid`,
+    );
     // Same plan, same renewal date as the cycle already running.
     await operator(businessId, 'complete', FUTURE_RENEWS_AT);
     const after = await row(businessId);
@@ -270,6 +283,7 @@ describe('an operator move to a paid plan (G-62)', () => {
       applyFixtureCycle(tx, businessId, {
         plan: 'complete',
         cycleStartedAt: jan31Before(renews),
+        billingInterval: 'annual',
         renewsAt: renews,
         anchorDay: 31,
       }),
@@ -316,6 +330,60 @@ describe('an operator move to a paid plan (G-62)', () => {
     expect(after.version_plan).toBe('integrate');
     expect(after.pending_plan).toBeNull();
     expect(after.payment_failed_at).toBeNull();
+  });
+});
+
+describe('an operator re-post that changes only the interval (owner review of #432)', () => {
+  const intervalOf = async (businessId: string) =>
+    [
+      ...(await inTenant(businessId, (tx) =>
+        tx.execute<{ interval: string }>(
+          sql`SELECT billing_interval AS interval FROM businesses WHERE id = ${businessId}::uuid`,
+        ),
+      )),
+    ][0]!.interval;
+  const auditedInterval = async (businessId: string) =>
+    [
+      ...(await inTenant(businessId, (tx) =>
+        tx.execute<{ interval: string | null }>(sql`
+          SELECT new_value->>'billingInterval' AS interval FROM audit_events
+          WHERE business_id = ${businessId}::uuid AND action = 'plan_changed'
+          ORDER BY created_at DESC LIMIT 1`),
+      )),
+    ][0]!.interval;
+
+  it('records the interval it validated and audited: an annual cycle re-posted as monthly becomes monthly', async () => {
+    const businessId = await seedBusiness();
+    const renews = daysFromNow(20, 0);
+    await inTenant(businessId, (tx) =>
+      applyFixtureCycle(tx, businessId, {
+        plan: 'complete',
+        cycleStartedAt: new Date(renews.getTime() - 345 * 86_400_000),
+        renewsAt: renews,
+        anchorDay: new Date(renews.getTime() + 3_600_000).getUTCDate(),
+        billingInterval: 'annual',
+      }),
+    );
+    expect(await intervalOf(businessId)).toBe('annual');
+    // Same plan and expiry, no interval named: the request means monthly (the default).
+    await billingRepo.setPlan(operatorDb(), {
+      businessId,
+      plan: 'complete',
+      expiresAt: renews,
+      actor: 'operator:test-g62',
+    });
+    expect(await auditedInterval(businessId)).toBe('monthly');
+    expect(await intervalOf(businessId)).toBe('monthly');
+  });
+
+  it('a monthly operator plan re-posted as annual becomes annual', async () => {
+    const businessId = await seedBusiness();
+    const renews = daysFromNow(20, 0);
+    await operatorMonthly(businessId, renews);
+    expect(await intervalOf(businessId)).toBe('monthly');
+    await operator(businessId, 'chat', renews); // annual, same plan, same expiry
+    expect(await auditedInterval(businessId)).toBe('annual');
+    expect(await intervalOf(businessId)).toBe('annual');
   });
 });
 

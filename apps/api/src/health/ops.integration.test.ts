@@ -511,7 +511,7 @@ describe('the operator billing surface', () => {
       ownerUserId: user.id,
     });
     const reference = 'RKD-SUB-20260821-AAAAAA';
-    await withBusiness(db, business.id, (tx) =>
+    await withBusiness(settlementDb(), business.id, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId: business.id,
         kind: 'first_purchase',

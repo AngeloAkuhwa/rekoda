@@ -102,7 +102,7 @@ describe('who is due', () => {
 
   it('NEVER touches a business that has ever paid us', async () => {
     const businessId = await abandonedTrial(400);
-    await inTenant(businessId, (tx) =>
+    await inSettlement(businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'first_purchase',
@@ -159,7 +159,7 @@ describe('who is due', () => {
    * opened and left for weeks protects nobody: the exemption is bounded. */
   describe('a checkout in flight', () => {
     const pendingCharge = async (businessId: string, reference: string, ageDays: number) => {
-      await inTenant(businessId, async (tx) => {
+      await inSettlement(businessId, async (tx) => {
         await subscriptionsRepo.openCharge(tx, {
           businessId,
           kind: 'first_purchase',

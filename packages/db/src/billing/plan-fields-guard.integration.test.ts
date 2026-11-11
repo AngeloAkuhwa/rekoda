@@ -95,7 +95,7 @@ async function seedCharge(businessId: string, spec: ChargeSpec = {}): Promise<st
   const kind = spec.kind ?? 'first_purchase';
   const plan = spec.plan === undefined ? 'chat' : spec.plan;
   const status = spec.status ?? 'paid';
-  const writer = status === 'pending' ? appDb : settlementDb();
+  const writer = settlementDb(); // only settlement opens a charge (0205)
   await withBusiness(writer, businessId, (tx) =>
     tx.execute(sql`
       INSERT INTO subscription_charges
