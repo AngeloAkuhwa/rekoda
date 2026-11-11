@@ -151,6 +151,18 @@ export const ALLOWED: Readonly<Record<string, Entry>> = {
     role: 'migration',
     why: 'OD-50: re-creates subscription_operator_set_plan (owned by rekoda_plan_writer) so an operator paid plan or trial runs exactly its standard period, computed by the database, and guards trial_started_at.',
   },
+  'packages/db/migrations/0208_subscription_period_preflight.sql': {
+    role: 'migration',
+    why: 'OD-49: the owner-only preflight reads the dates, and the owner-only correct_subscription_period writes plan_expires_at for one active business breaking the rules, on an explicit call with an operator actor and a written reason, audited with the original and corrected values.',
+  },
+  'packages/db/src/preflight-subscriptions.ts': {
+    role: 'reader',
+    why: 'OD-49: the read-only release preflight prints the dates the owner-only preflight function returns; it writes nothing (READ ONLY transaction).',
+  },
+  'apps/api/src/jobs/initiate-blocked-renewal.handler.ts': {
+    role: 'reader',
+    why: 'OD-44: reads the paid-to date to check a blocked renewal still buys the cycle it was raised for before a fresh payment is started; writes no plan field.',
+  },
   'packages/db/src/billing/plan-writer.fixtures.ts': {
     role: 'reader',
     why: 'OD-37 boundary suites: reads plan and plan_expires_at back as the owner to assert what the writers did; writes neither.',

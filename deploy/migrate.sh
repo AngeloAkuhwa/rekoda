@@ -42,5 +42,13 @@ export APP_DATABASE_URL WORKER_DATABASE_URL SETTLEMENT_DATABASE_URL OPERATOR_DAT
 DATABASE_URL="postgres://${POSTGRES_OWNER:?}:${password}@${POSTGRES_HOST:?}:5432/${POSTGRES_DB:?}"
 export DATABASE_URL
 
+# OD-49: the read-only release preflight of subscription periods, as the owner, and nothing else:
+#   docker compose -f docker-compose.prod.yml run --rm -T migrate \
+#     sh /repo/deploy/migrate.sh preflight-subscriptions
+# Exit 0 PASS, 1 FAIL (an active subscription breaks the rules), 2 could not run.
+if [ "${1:-}" = 'preflight-subscriptions' ]; then
+  exec node /repo/packages/db/dist/preflight-subscriptions.js
+fi
+
 node /repo/packages/db/dist/migrate.js
 node /repo/packages/db/dist/provision.js

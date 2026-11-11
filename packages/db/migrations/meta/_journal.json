@@ -1457,6 +1457,13 @@
       "when": 1795521600000,
       "tag": "0207_operator_standard_periods",
       "breakpoints": true
+    },
+    {
+      "idx": 208,
+      "version": "7",
+      "when": 1795608000000,
+      "tag": "0208_subscription_period_preflight",
+      "breakpoints": true
     }
   ]
 }

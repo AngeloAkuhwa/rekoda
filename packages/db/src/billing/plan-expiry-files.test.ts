@@ -105,6 +105,18 @@ export const PINS: Readonly<Record<string, Pin>> = {
     businessInserts: 0,
     why: "OD-37 B3: the provider writer re-created, bound to the charge's frozen period (plan from the charge, and the date). Owned by rekoda_plan_writer.",
   },
+  'packages/db/migrations/0207_operator_standard_periods.sql': {
+    plan: 1,
+    expiry: 1,
+    businessInserts: 0,
+    why: 'OD-50: the operator writer re-created so a paid plan or trial runs its standard period, computed by the database (validated plan and the date it computes). Owned by rekoda_plan_writer.',
+  },
+  'packages/db/migrations/0208_subscription_period_preflight.sql': {
+    plan: 0,
+    expiry: 1,
+    businessInserts: 0,
+    why: 'OD-49: correct_subscription_period, owner-only, sets the corrected end of one active business breaking the rules on an explicit call with an actor and a reason, audited; never the plan.',
+  },
   'packages/db/migrations/0196_plan_fields_guard.sql': {
     plan: 2,
     expiry: 1,
