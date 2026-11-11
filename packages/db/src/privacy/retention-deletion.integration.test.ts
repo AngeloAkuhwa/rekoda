@@ -180,6 +180,7 @@ describe('the deletion function', () => {
      * document, a product photo, and the picture somebody sent of a bank
      * transfer. All three are a KEY in a row and BYTES in R2 (ADR 0006), so
      * all three would survive the deletion of the row without this. */
+    // not issued: a stored document row with a fixed reference; no number is allocated here.
     await withBusiness(appDb, businessId, (tx) =>
       issueRepo.recordDocument(tx, {
         businessId,
@@ -227,6 +228,7 @@ describe('the deletion function', () => {
   it('running the deletion twice does not queue an object twice', async () => {
     const businessId = await abandonedTrial(120);
     await warn(businessId, daysAgo(40));
+    // not issued: a stored document row with a fixed reference; no number is allocated here.
     await withBusiness(appDb, businessId, (tx) =>
       issueRepo.recordDocument(tx, {
         businessId,
