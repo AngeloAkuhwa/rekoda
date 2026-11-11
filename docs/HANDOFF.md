@@ -6,6 +6,25 @@
 > where it names a document, that document may since have been archived
 > (see `REKODA_REFERENCE_MANIFEST.md`).
 
+## Latest (11 Nov 2026): PR #432 remediation under OWN-90, in progress
+
+- **Branch:** `angelo/magical-bell-v7abci`, built on PR #432's head `51f800f`. Pushed there,
+  not to PR #432's branch: that needs the owner's say. No merge, no deploy, no live access (OWN-90
+  §12).
+- **Done, with tests run as the real principals:**
+  - 0207 (OD-50): standard operator periods, the audited `expired` early end, refusal log, fixed
+    trial start.
+  - 0208 (OD-49): the conformance rule, the gate, the owner report and the deploy preflight.
+  - 0209: journalled metering, refunds by the billing operator only, validated scheduling.
+  - 0210: charges priced from the catalogue.
+  - Deploy smoke, compatibility list, restore drill and boot checks extended.
+- **Open and launch-blocking:** G-125 (unforgeable tenant context), G-126 (settlement and operator
+  services), G-127 (explicit grants), G-128 (worker least privilege), G-129 (per-service secrets).
+  Design and sequence: ADR 0037 (Proposed).
+- **Owner decision still open:** OD-44 (a renewal blocked before initiation).
+- **Not run:** the OD-49 report against staging and production (no access). It runs in the deploy
+  preflight.
+
 ## Current state at a glance
 
 | Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |

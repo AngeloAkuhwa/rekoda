@@ -552,37 +552,96 @@ things come first, because without them the new release refuses to start (no fal
 Rotating either password: as in "Rotate a database password", with the variable added to step 1 and
 `dc up -d --wait --force-recreate api worker`.
 
-**Existing rows the duration rules would not accept** (0203 does not rewrite them; OD-49). Read-only,
-as the owner, before or after the deploy. Before 0203, signup set the trial end on the API's clock
-while the trial start is the database's, so most older trials end a few milliseconds after start +
-14 days; the query allows a minute for that and lists only real exceptions:
+### Deploy a release carrying 0207 to 0210 (OWN-90: operator periods, conformance, guarded billing writers, catalogue prices)
+
+Compatibility-breaking like 0202 to 0206: `scripts/deploy-staging.sh` lists 0207, 0209 and 0210 in
+`COMPAT_BREAKING_MIGRATIONS`, so the api and worker are stopped before the migration and the
+pre-start smoke must print `t` before `up`. No new secret is needed. What changes:
+
+- **0207 (OD-50).** The operator plan writer takes no date: `POST /v1/businesses/plan` with any
+  `expiresAt` date answers 400. A paid plan gets exactly one calendar month (or twelve with
+  `billingInterval: "annual"`), a trial its original 14-day end, and `expired` (the early end) needs a
+  `reason`. Refused attempts are kept in `rekoda_private.operator_refusals` (owner-readable).
+- **0208 (OD-49).** The conformance rule and the owner-only report (below).
+- **0209.** Metering goes through `usage_reserve`/`usage_release`/`usage_credit_bonus` (new NOLOGIN
+  role `rekoda_meter_writer`). `POST /v1/ops/refund` now runs on the billing-operator credential,
+  so an api process without `OPERATOR_DATABASE_URL` answers 503 for it. The merchant's scheduled plan
+  and interval go through validated functions.
+- **0210.** Every subscription charge opened is checked against the price catalogue (new NOLOGIN
+  role `rekoda_price_reader`). With `REKODA_PLAN_CATALOGUE_READS=0` the api prices from its
+  constants, and a charge whose constant differs from the catalogue is refused, never opened.
+
+The restore drill (`scripts/restore-drill.sh`) creates the two new roles.
+
+### Non-conforming subscriptions (OD-49)
+
+The release preflight runs after the migration and before `up`, on every deploy:
 
 ```sql
-SELECT id, plan, plan_expires_at, billing_interval, trial_started_at,
-  CASE
-    WHEN plan IN ('chat','integrate','complete') AND plan_expires_at IS NULL THEN 'open-ended paid plan'
-    WHEN plan IN ('chat','integrate','complete') AND plan_expires_at >
-         ((cycle_started_at AT TIME ZONE 'Africa/Lagos')
-          + CASE billing_interval WHEN 'annual' THEN interval '12 months' ELSE interval '1 month' END
-          + interval '3 days') AT TIME ZONE 'Africa/Lagos' THEN 'paid plan longer than its interval'
-    WHEN plan IN ('chat','integrate','complete') AND cycle_started_at IS NULL THEN 'paid plan with no cycle start'
-    WHEN plan = 'trial' AND (plan_expires_at IS NULL
-         OR plan_expires_at > trial_started_at + interval '336 hours' + interval '1 minute')
-      THEN 'trial longer than 14 days'
-    WHEN plan = 'expired' AND plan_expires_at > now() THEN 'expired plan with a future end'
-  END AS nonconforming
-FROM businesses
-WHERE (plan IN ('chat','integrate','complete') AND (plan_expires_at IS NULL OR cycle_started_at IS NULL
-        OR plan_expires_at > ((cycle_started_at AT TIME ZONE 'Africa/Lagos')
-          + CASE billing_interval WHEN 'annual' THEN interval '12 months' ELSE interval '1 month' END
-          + interval '3 days') AT TIME ZONE 'Africa/Lagos'))
-   OR (plan = 'trial' AND (plan_expires_at IS NULL
-       OR plan_expires_at > trial_started_at + interval '336 hours' + interval '1 minute'))
-   OR (plan = 'expired' AND plan_expires_at > now());
+SELECT business_id, plan, reason, active FROM rekoda_private.subscription_conformance_report();
 ```
 
-Such a business keeps working exactly as before (reads are unchanged); the next operator or renewal
-write must satisfy the rules. Do not edit them by hand; the owner decides each (OD-49).
+It names a row by business id, plan and a fixed reason code (`open_ended_paid_plan`,
+`paid_plan_without_cycle_start`, `paid_plan_unknown_interval`, `paid_plan_ends_before_it_starts`,
+`paid_plan_longer_than_its_interval`, `trial_without_start`, `open_ended_trial`,
+`trial_longer_than_14_days`, `expired_plan_with_future_end`, `unknown_plan`), with no customer
+detail. An ACTIVE row (a paid or trial row, or any row with a future end) stops the deploy with the
+api and worker still stopped. A long trial whose end has already passed is listed as history and
+does not block.
+
+Until it is corrected, the application grants such a row nothing it should not: an over-long trial
+ends 14 days after its own start, and a non-conforming paid row reads as lapsed (read-only access
+to the records, upgrade reachable).
+
+**Correction (never a silent edit of the row).** The preflight stops the deploy before `up`, so the
+new release's api is not running when it fires. There are two paths:
+
+1. **Before the deploy (preferred).** Run the same rule read-only, as the owner, against the database
+   the running release serves. Before 0208 is applied the report function does not exist, so use
+   this query; it is the 0208 rule written out:
+
+   ```sql
+   SELECT id, plan,
+     CASE
+       WHEN plan IN ('chat','integrate','complete') AND plan_expires_at IS NULL THEN 'open_ended_paid_plan'
+       WHEN plan IN ('chat','integrate','complete') AND cycle_started_at IS NULL THEN 'paid_plan_without_cycle_start'
+       WHEN plan IN ('chat','integrate','complete') AND plan_expires_at > ((cycle_started_at AT TIME ZONE 'Africa/Lagos')
+            + CASE billing_interval WHEN 'annual' THEN interval '12 months' ELSE interval '1 month' END)
+            AT TIME ZONE 'Africa/Lagos' + interval '3 days' THEN 'paid_plan_longer_than_its_interval'
+       WHEN plan = 'trial' AND (plan_expires_at IS NULL
+            OR plan_expires_at > trial_started_at + interval '336 hours' + interval '1 minute')
+            AND coalesce(plan_expires_at, 'infinity') > now() THEN 'trial_longer_than_14_days'
+       WHEN plan = 'expired' AND plan_expires_at > now() THEN 'expired_plan_with_future_end'
+     END AS reason
+   FROM businesses
+   WHERE plan IN ('chat','integrate','complete','trial','expired');
+   ```
+
+   Rows with a non-null reason are the ones to decide. With the owner's decision, move each one
+   through the running release's operator route (`POST /v1/businesses/plan`, which audits the move),
+   then deploy.
+
+2. **Found by the preflight after the migration.** The api and worker are stopped. As the owner, in
+   one transaction per business, use the audited operator writer itself. It records the operator
+   actor, the previous state and the reason in `audit_events`. For a paid plan, also write the cycle
+   the writer's period implies:
+
+   ```sql
+   BEGIN;
+   SELECT set_config('app.business_id', '<business id>', true);
+   -- paid: 'chat' | 'integrate' | 'complete' with 'monthly' | 'annual'; early end: 'expired', NULL
+   SELECT subscription_operator_set_plan('<business id>', '<plan>', '<interval or NULL>',
+     'operator:<your name>', 'OD-49 correction: <what was wrong and what the owner decided>');
+   -- paid plans only (the standard period the writer just assigned started now):
+   UPDATE businesses SET cycle_started_at = now(), billing_interval = '<interval>',
+     subscription_origin = 'operator', pending_plan = NULL, pending_billing_interval = NULL,
+     payment_failed_at = NULL, plan_decided_at = clock_timestamp()
+   WHERE id = '<business id>';
+   COMMIT;
+   ```
+
+   Then run the report again. When no active row is listed, re-run the deploy, which finishes from
+   the applied migration.
 
 ## Disk space and image retention (staging)
 

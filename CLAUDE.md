@@ -155,7 +155,7 @@ session never starts a capability from zero.
 Monorepo (pnpm + turbo, Node from `.nvmrc`): `apps/api` (NestJS on
 Fastify: webhooks, `/v1`, auth, jobs), `apps/web` (Next.js: marketing,
 legal, dashboard `/app`, storefront `/s/[slug]`), `packages/core` (pure
-rules, no IO), `packages/db` (Drizzle schema, SQL migrations `0000`–`0206`,
+rules, no IO), `packages/db` (Drizzle schema, SQL migrations `0000`–`0210`,
 RLS, repos in `src/repos/`), `packages/contracts` (zod borders),
 `packages/shared` (branded types).
 

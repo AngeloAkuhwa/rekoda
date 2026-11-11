@@ -80,6 +80,9 @@ interface PrincipalFacts {
   in_worker: boolean | null;
   in_app: boolean | null;
   in_plan_writer: boolean | null;
+  /** The NOLOGIN owners of the meter functions and the price check (0209, 0210). */
+  in_meter_writer: boolean | null;
+  in_price_reader: boolean | null;
   /** Can act as the owner of the guarded tables, which every OD-37 guard exempts. */
   in_table_owner: boolean | null;
   creates_in_public: boolean;
@@ -108,6 +111,10 @@ async function principalFacts(db: Db): Promise<PrincipalFacts> {
            ELSE pg_has_role(current_user, 'rekoda_app', 'USAGE') END AS in_app,
       CASE WHEN to_regrole('rekoda_plan_writer') IS NULL THEN NULL
            ELSE pg_has_role(current_user, 'rekoda_plan_writer', 'MEMBER') END AS in_plan_writer,
+      CASE WHEN to_regrole('rekoda_meter_writer') IS NULL THEN NULL
+           ELSE pg_has_role(current_user, 'rekoda_meter_writer', 'MEMBER') END AS in_meter_writer,
+      CASE WHEN to_regrole('rekoda_price_reader') IS NULL THEN NULL
+           ELSE pg_has_role(current_user, 'rekoda_price_reader', 'MEMBER') END AS in_price_reader,
       -- The cycle-input guard's test exemption keys on a function in public existing (0206), so no
       -- runtime role may create one there (PostgreSQL 15+ grants PUBLIC no CREATE on it).
       has_schema_privilege(current_user, 'public', 'CREATE') AS creates_in_public,
@@ -124,7 +131,12 @@ async function principalFacts(db: Db): Promise<PrincipalFacts> {
           ('businesses_cycle_fields_guard', to_regclass('public.businesses')),
           ('subscription_charges_applied_once_guard', to_regclass('public.subscription_charges')),
           ('subscription_charges_settlement_guard', to_regclass('public.subscription_charges')),
-          ('usage_counters_bonus_guard', to_regclass('public.usage_counters')))) AS guards_enabled
+          ('usage_counters_bonus_guard', to_regclass('public.usage_counters')),
+          ('businesses_trial_start_guard', to_regclass('public.businesses')),
+          ('businesses_schedule_fields_guard', to_regclass('public.businesses')),
+          ('subscription_charges_refund_guard', to_regclass('public.subscription_charges')),
+          ('subscription_charges_price_check', to_regclass('public.subscription_charges'))))
+        AS guards_enabled
     FROM pg_roles r WHERE r.rolname = current_user
   `);
   const facts = [...rows][0];
@@ -132,8 +144,9 @@ async function principalFacts(db: Db): Promise<PrincipalFacts> {
   return facts;
 }
 
-/** The OD-37 guard triggers a running database must have, all enabled (0196, 0200, 0202, 0206). */
-const GUARD_TRIGGERS = 6;
+/** The guard triggers a running database must have, all enabled (0196, 0200, 0202, 0206, and the
+ * PR #432 remediation's 0207, 0209 and 0210). */
+const GUARD_TRIGGERS = 10;
 
 /**
  * OD-37 (0206): the integration harness's fixture plan writer is never in a database a process
@@ -166,6 +179,8 @@ export async function assertRoleHoldsNoReservedWriter(db: Db, label: string): Pr
   if (f.in_settlement !== false) problems.push('can become rekoda_settlement');
   if (f.in_operator !== false) problems.push('can become rekoda_billing_operator');
   if (f.in_table_owner !== false) problems.push('can act as the owner of the guarded tables');
+  if (f.in_meter_writer !== false) problems.push('can become rekoda_meter_writer');
+  if (f.in_price_reader !== false) problems.push('can become rekoda_price_reader');
   if (f.creates_in_public !== false) problems.push('can create objects in schema public');
   if (f.guards_enabled !== GUARD_TRIGGERS) {
     problems.push('runs against a database whose OD-37 guard triggers are missing or disabled');
@@ -209,6 +224,8 @@ export async function assertDatabasePrincipal(
   if (f.in_plan_writer !== false) problems.push('can become rekoda_plan_writer');
   if (f.in_app !== true) problems.push("does not act with rekoda_app's rights");
   if (f.in_table_owner !== false) problems.push('can act as the owner of the guarded tables');
+  if (f.in_meter_writer !== false) problems.push('can become rekoda_meter_writer');
+  if (f.in_price_reader !== false) problems.push('can become rekoda_price_reader');
   if (f.creates_in_public !== false) problems.push('can create objects in schema public');
   if (f.guards_enabled !== GUARD_TRIGGERS) {
     problems.push('runs against a database whose OD-37 guard triggers are missing or disabled');

@@ -141,7 +141,14 @@ called from `apps/api/src/commands/`.
 - **Not yet:** `createBusinessWithOwner` writes no `audit_events` row for the creation itself, although every later financial write is audited (G-50).
 - **Fixed, MERGED #327 `7b56684`, not deployed (G-56):** `apps/web/src/app/app/export/[kind]/route.ts` used `new URL('/start', process.env.REKODA_WEB_URL)` and 500ed when the optional variable was unset; it now redirects to the configured origin when usable and otherwise by a relative `Location`.
 
-### 5.4 Tenant isolation and RLS — VERIFIED COMPLETE (strongest capability)
+### 5.4 Tenant isolation and RLS — VERIFIED COMPLETE against the application's own code paths; NOT a boundary against a stolen database credential (G-125, OWN-90)
+
+> **11 Nov 2026 (OWN-90).** The pin is the ordinary setting `app.business_id`, so a holder of the
+> `rekoda_app` or `rekoda_worker` password can pin any business. Migrations 0196 to 0210 protect the
+> billing columns and writers from that (settlement-only charges and payments, catalogue-checked
+> prices, operator-only plan changes and refunds, journalled metering, validated scheduling), but not
+> a tenant's ordinary records. The required fix is ADR 0037 (Proposed), gaps G-125 to G-129, and it
+> is not implemented.
 
 - **Evidence:** `packages/db/src/client.ts` `withBusiness()` (transaction-local `set_config('app.business_id')`, UUID-validated); migrations 0001, 0109, 0118, 0124, 0130, and the tenant-composite-FK campaign 0132–0147; three DB roles (owner for migrations, `rekoda_app`, `rekoda_worker`); `docs/rls-exemption-register.md` made executable by `packages/db/src/tenancy/rls-invariants.integration.test.ts`.
 - **Works:** six invariants asserted against `pg_policy` and `pg_class`: every `business_id` table has a tenant policy or a written exemption (exactly five: `sessions`, `magic_links`, `retention_deletions`, `platform_cost_events`, `migration_manifest_items`), the register decays in both directions, RLS is ENABLEd and FORCEd everywhere, every `USING (true)` belongs to `rekoda_worker`, every tenant predicate is byte-identical with four named exceptions, no `WITH CHECK` differs from its `USING`. `tenancy.integration.test.ts` proves behaviour over a pooled connection; 57 tenant-composite foreign-key edges carry cross-tenant refusal tests in the closure suites (`tenant-fk-*.integration.test.ts`): ruling 1's thirty-four relationships (0132–0140, delivered as 35 edges because 0140 constrained three columns where the audit enumerated two), group F's fourteen (0141–0145, found by re-measuring after ruling 1 closed), 0137's six previously unconstrained reference columns, and ruling 5's two composites re-proven when 0147 dropped their single-column twins; composite tenant keys that shipped with their tables from 0061 onward are additionally enforced by the schema and by the RLS invariants (some tests cover several edges) and a standing closure query. Boot refuses any credential with SUPERUSER or BYPASSRLS.
@@ -329,6 +336,20 @@ called from `apps/api/src/commands/`.
 - **Not yet:** `MANUAL_BOOKKEEPING` lapse is enforced on 15 dashboard doors (G-44, MERGED as #301 `e4b9b05`, deployed to staging, staging acceptance pending), not yet on the public API; three copies of the plan prices exist (core, catalogue, web), and the web change-plan table reads the hardcoded web copy.
 
 ### 5.27 Subscriptions, billing, renewals, grace — PARTIAL; revenue collection BLOCKED EXTERNALLY
+
+> **11 Nov 2026, PR #432 remediation (OWN-90; branch `angelo/magical-bell-v7abci`, migrations 0207
+> to 0210; CODE COMPLETE, not merged, not deployed, STAGING ACCEPTANCE PENDING).**
+>
+> - Operator plan changes assign only the standard periods. `expired` is the audited early end, and
+>   refusals are recorded (0207, OD-50).
+> - Non-conforming subscription rows are reported, block the release preflight and grant nothing
+>   (0208, OD-49).
+> - Metering is journalled reserve/release through definer functions. Refunds go only through the
+>   billing operator's bounded writer, and the merchant's scheduled change only through validated
+>   functions (0209).
+> - Every charge opened is recomputed from the price catalogue (0210).
+>
+> Tests: `packages/db/src/billing/{operator-plan-periods,subscription-conformance,meter-refund-schedule,charge-price-check}.integration.test.ts`.
 
 - **Routes:** `GET /v1/billing`, `POST /v1/billing/{quote,plan,cancel,packs}`; `/app/billing`; operator `POST /v1/ops/refund` (records only).
 - **Evidence:** `packages/core/src/billing.ts` (ADR 0024 arithmetic); migrations 0020, 0042, 0112, 0113; `apps/api/src/billing/{renewal-sweep,grace-sweep}.ts`; `billing.process` split from `payment.process` in the pump so Rekoda's revenue never meets a merchant's ledger; `subscriptions`, `charges`, `billing` integration suites.
