@@ -9,6 +9,7 @@
  * The terms themselves are Angelo's, recorded in ADR 0024. This file
  * implements them and does not decide them.
  */
+import { createHash } from 'node:crypto';
 import { PLAN_PRICES_K, type PlanId } from './allowances.js';
 import { mintReference, type RandomBytes } from './payments.js';
 import type { UsageUnit } from './allowances.js';
@@ -364,6 +365,31 @@ export const ADD_ON_PACKS: readonly AddOnPack[] = [
     priceK: 500_000,
   },
 ];
+
+/** Where a Rekoda price comes from: the versioned catalogue in the database, or these constants. */
+export type PricingSource = 'catalogue' | 'constants';
+
+/**
+ * A fingerprint of every price compiled into this build: the plan prices, the annual rule (as the
+ * year it yields for each plan) and each pack's unit, size and price (OD-51.6).
+ *
+ * The constant path is a rollback, and on it a price is whatever the running release compiled in.
+ * Two processes on different releases could therefore disagree about a price with no setting
+ * differing. Each process compares this value with the one recorded in the database when the
+ * constant path was switched on, and refuses to start on a difference. SHA-256 over a canonical
+ * rendering, so it moves when, and only when, a figure a charge could be priced at moves.
+ */
+export function pricingConstantsFingerprint(): string {
+  const plans = (Object.keys(PLAN_PRICES_K) as PlanId[])
+    .sort()
+    .map((plan) => `${plan}:${PLAN_PRICES_K[plan]}:${annualPriceK(PLAN_PRICES_K[plan])}`);
+  const packs = [...ADD_ON_PACKS]
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    .map((pack) => `${pack.id}:${pack.unit}:${pack.quantity}:${pack.priceK}`);
+  return createHash('sha256')
+    .update(`plans=${plans.join(',')};packs=${packs.join(',')}`)
+    .digest('hex');
+}
 
 /** ₦1,500 a month, recurring, and not a pack. */
 export const EXTRA_SEAT_PRICE_K = 150_000;

@@ -8,7 +8,8 @@ import { AppModule } from './app.module.js';
 import { DB, OPERATOR_DB, SETTLEMENT_DB, WORKER_DB } from './db/db.module.js';
 import { bootChecks, isEntrypoint, type Db } from '@rekoda/db';
 import { assertStagingMarkerNotLive } from './health/staging-boot-check.js';
-import { MAX_IMAGE_BYTES } from '@rekoda/core';
+import { MAX_IMAGE_BYTES, pricingConstantsFingerprint } from '@rekoda/core';
+import { pricingSourceOf } from './billing/plan-terms.js';
 import { publicApi } from '@rekoda/contracts';
 import { CONFIG, isProductionEnv, loadConfig, trustedProxies, type ApiConfig } from './config.js';
 import { clientAddress, rateLimitKey } from './http/client-address.js';
@@ -109,6 +110,13 @@ export async function createApp(): Promise<NestFastifyApplication> {
   if (operatorDb) {
     await bootChecks.assertDatabasePrincipal(operatorDb, 'operator', 'rekoda_billing_operator');
   }
+  /* OD-51.6 (0215): this process prices from the source the database says is in force, and on the
+   * constant path carries the same compiled figures, or it does not start. The same check runs in
+   * every process that prices or settles a charge. */
+  await bootChecks.assertPricingSource(db, config.workerEnabled ? 'worker' : 'api', {
+    mode: pricingSourceOf(config),
+    constantsFingerprint: pricingConstantsFingerprint(),
+  });
   await bootChecks.assertKeyUnchanged(db, 'VAULT_KEY', config.vaultKey);
   await bootChecks.assertKeyUnchanged(db, 'MATCH_KEY', config.matchKey);
   await assertStagingMarkerNotLive(db, config.paystackSecretKey);

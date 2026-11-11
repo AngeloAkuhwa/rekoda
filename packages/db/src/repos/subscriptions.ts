@@ -577,6 +577,14 @@ export interface NewCharge {
    */
   pricedAt?: Date;
   /**
+   * Where the opener's prices came from (OD-51.6, migration 0215): the plan catalogue or the
+   * compiled constants. Recorded on the charge, so settlement re-prices it from the same source
+   * whatever the settling process is set to; the database refuses a source other than the one in
+   * force. Every production opener passes its own setting. Absent (fixtures), the charge names
+   * none and is priced at settlement from the source in force then.
+   */
+  pricingSource?: 'catalogue' | 'constants';
+  /**
    * The reference of the retired pending charge this one replaces (OD-51.7, migration 0214): the
    * new charge is the SAME intended purchase and takes that charge's `purchase_id`, so only one of
    * the two can ever be credited. Absent, the charge is a new purchase with its own identity.
@@ -597,7 +605,8 @@ export async function openCharge(tx: TenantDb, charge: NewCharge): Promise<strin
   const rows = await tx.execute<{ id: string }>(sql`
     INSERT INTO subscription_charges
       (business_id, kind, plan, pack_id, quantity, amount_k, provider,
-       reference, period_start, period_end, billing_interval, created_at, priced_at, purchase_id)
+       reference, period_start, period_end, billing_interval, created_at, priced_at, purchase_id,
+       pricing_source)
     VALUES (
       ${charge.businessId}::uuid, ${charge.kind}, ${charge.plan ?? null},
       ${charge.packId ?? null}, ${charge.quantity ?? 1}, ${charge.amountK},
@@ -610,7 +619,8 @@ export async function openCharge(tx: TenantDb, charge: NewCharge): Promise<strin
       COALESCE((SELECT prior.purchase_id FROM subscription_charges prior
                 WHERE prior.business_id = ${charge.businessId}::uuid
                   AND prior.reference = ${charge.replaces ?? null}),
-               gen_random_uuid()))
+               gen_random_uuid()),
+      ${charge.pricingSource ?? null})
     ON CONFLICT DO NOTHING
     RETURNING id
   `);
@@ -652,6 +662,8 @@ export interface ChargeRow extends Record<string, unknown> {
   unitsCreditedAt: Date | null;
   /** The intended purchase this charge belongs to (OD-51.7, 0214); a replacement shares it. */
   purchaseId: string;
+  /** The source it was priced from (OD-51.6, 0215); null for a charge opened before it was recorded. */
+  pricingSource: 'catalogue' | 'constants' | null;
 }
 
 interface RawCharge extends Record<string, unknown> {
@@ -678,6 +690,7 @@ interface RawCharge extends Record<string, unknown> {
   provider_settled_at: string | null;
   units_credited_at: string | null;
   purchase_id: string;
+  pricing_source?: string | null;
 }
 
 const shape = (row: RawCharge): ChargeRow => ({
@@ -704,6 +717,10 @@ const shape = (row: RawCharge): ChargeRow => ({
   providerSettledAt: at(row.provider_settled_at),
   unitsCreditedAt: at(row.units_credited_at),
   purchaseId: row.purchase_id,
+  pricingSource:
+    row.pricing_source === 'catalogue' || row.pricing_source === 'constants'
+      ? row.pricing_source
+      : null,
 });
 
 /**

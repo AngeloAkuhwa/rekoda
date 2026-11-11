@@ -50,5 +50,14 @@ if [ "${1:-}" = 'preflight-subscriptions' ]; then
   exec node /repo/packages/db/dist/preflight-subscriptions.js
 fi
 
+# OD-51.6: show or switch the one pricing source every process prices from, as the owner:
+#   ... run --rm -T migrate sh /repo/deploy/migrate.sh pricing-source show
+#   ... run --rm -T migrate sh /repo/deploy/migrate.sh pricing-source set constants "<who>" "<why>"
+# Switch only with the api, worker and settlement processes stopped (docs/runbooks/deploy.md).
+if [ "${1:-}" = 'pricing-source' ]; then
+  shift
+  exec node /repo/packages/db/dist/pricing-source.js "$@"
+fi
+
 node /repo/packages/db/dist/migrate.js
 node /repo/packages/db/dist/provision.js

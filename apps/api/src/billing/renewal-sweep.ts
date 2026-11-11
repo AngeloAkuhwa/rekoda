@@ -31,7 +31,7 @@ import { addInterval, subscriptionReference } from '@rekoda/core';
 import { redactForLog } from '@rekoda/core/privacy';
 import { jobsRepo, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import { JobKind } from '../jobs/queue.service.js';
-import { planPriceKFor, type PlanTermsConfig } from './plan-terms.js';
+import { planPriceKFor, pricingSourceOf, type PlanTermsConfig } from './plan-terms.js';
 import { chargeGate } from './paystack-key.js';
 
 export interface RenewalSweepDeps {
@@ -171,6 +171,7 @@ export async function sweepRenewals(
             billingInterval: fresh.nextInterval,
             /* The instant settlement re-prices it at (OD-51). */
             pricedAt,
+            pricingSource: pricingSourceOf(deps.config),
           });
           if (!id) return false;
 

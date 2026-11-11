@@ -17,6 +17,7 @@ import {
   truncateAll,
   type Urls,
   settlementDb,
+  setPricingSource,
 } from '@rekoda/db/testing';
 import { setPlanForTest } from '@rekoda/db/testing';
 import { applySettledCharge, BillingService } from './billing.service.js';
@@ -42,6 +43,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await truncateAll(urls);
+  /* This suite prices from the compiled constants; the database is told so (OD-51.6, 0215). */
+  await setPricingSource(urls, 'constants');
 });
 
 const config = {

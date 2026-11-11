@@ -128,7 +128,9 @@ async function principalFacts(db: Db): Promise<PrincipalFacts> {
           ('usage_counters_bonus_guard', to_regclass('public.usage_counters')),
           ('businesses_trial_start_guard', to_regclass('public.businesses')),
           ('businesses_retention_notice_guard', to_regclass('public.businesses')),
-          ('external_events_worker_guard', to_regclass('public.external_events')))) AS guards_enabled
+          ('external_events_worker_guard', to_regclass('public.external_events')),
+          ('subscription_charges_purchase_guard', to_regclass('public.subscription_charges')),
+          ('subscription_charges_pricing_source_guard', to_regclass('public.subscription_charges')))) AS guards_enabled
     FROM pg_roles r WHERE r.rolname = current_user
   `);
   const facts = [...rows][0];
@@ -137,8 +139,9 @@ async function principalFacts(db: Db): Promise<PrincipalFacts> {
 }
 
 /** The guard triggers a running database must have, all enabled (OD-37: 0196, 0200, 0202, 0206;
- * OD-50: 0207, the trial start; OD-51: 0210, the retention notice and the worker's event writes). */
-const GUARD_TRIGGERS = 9;
+ * OD-50: 0207, the trial start; OD-51: 0210, the retention notice and the worker's event writes;
+ * 0214, one credit per pack purchase; 0215, a charge's pricing source). */
+const GUARD_TRIGGERS = 11;
 
 /**
  * OD-37 (0206): the integration harness's fixture plan writer is never in a database a process
@@ -297,6 +300,65 @@ export async function assertKeyUnchanged(db: Db, keyName: string, key: string): 
         'write new secrets under a key the existing data does not share. If this is a ' +
         'deliberate rotation, follow docs/runbooks/key-rotation.md; otherwise fix the ' +
         'deployed secret.',
+    );
+  }
+}
+
+/** The one pricing source in force, as the database records it (OD-51.6, migration 0215). */
+export interface PricingSourceInForce {
+  mode: 'catalogue' | 'constants';
+  /** For `constants`: the fingerprint of the compiled figures every process must carry. */
+  constantsFingerprint: string | null;
+}
+
+/** Read the pricing source in force. Null when the row is missing (migration 0215 not applied). */
+export async function pricingSourceInForce(db: Db): Promise<PricingSourceInForce | null> {
+  const rows = await db.execute<{ mode: string; constants_fingerprint: string | null }>(sql`
+    SELECT mode, constants_fingerprint FROM billing_pricing_source
+  `);
+  const row = [...rows][0];
+  if (!row || (row.mode !== 'catalogue' && row.mode !== 'constants')) return null;
+  return { mode: row.mode, constantsFingerprint: row.constants_fingerprint };
+}
+
+/**
+ * OD-51.6 (0215): this process prices from the source the database says is in force, or it does
+ * not start.
+ *
+ * `REKODA_PLAN_CATALOGUE_READS` used to be each process's own word for where prices come from, so
+ * an API and a settlement process started with different values priced the same charge
+ * differently, and an honest payment was set aside. The source is now one row every process is
+ * held to: a different setting here, or (on the constant path) different compiled figures, is
+ * refused at boot, before a single charge is priced or settled. `label` names the process in the
+ * message; no secret is involved.
+ */
+export async function assertPricingSource(
+  db: Db,
+  label: string,
+  own: { mode: 'catalogue' | 'constants'; constantsFingerprint: string },
+): Promise<void> {
+  const inForce = await pricingSourceInForce(db);
+  if (!inForce) {
+    throw new Error(
+      `the ${label} process cannot read the pricing source in force (billing_pricing_source, ` +
+        'migration 0215): apply the migrations before starting it (OD-51).',
+    );
+  }
+  if (inForce.mode !== own.mode) {
+    throw new Error(
+      `the ${label} process is set to price from the ${own.mode === 'catalogue' ? 'plan catalogue' : 'compiled constants'} ` +
+        `(REKODA_PLAN_CATALOGUE_READS=${own.mode === 'catalogue' ? '1' : '0'}), but the pricing source in force is ` +
+        `"${inForce.mode}". Every process must price from the same source: set ` +
+        `REKODA_PLAN_CATALOGUE_READS=${inForce.mode === 'catalogue' ? '1' : '0'} here, or switch the source ` +
+        'deliberately (docs/runbooks/deploy.md, "Pricing source"). Refusing to start (OD-51).',
+    );
+  }
+  if (inForce.mode === 'constants' && inForce.constantsFingerprint !== own.constantsFingerprint) {
+    throw new Error(
+      `the ${label} process carries compiled prices that differ from the ones recorded when the ` +
+        'constant pricing source was switched on (a different release). Run every process on the ' +
+        'same release, or record the new figures deliberately (docs/runbooks/deploy.md, "Pricing ' +
+        'source"). Refusing to start (OD-51).',
     );
   }
 }

@@ -1506,6 +1506,13 @@
       "when": 1796126400000,
       "tag": "0214_pack_purchase_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 215,
+      "version": "7",
+      "when": 1796212800000,
+      "tag": "0215_pricing_source_authority",
+      "breakpoints": true
     }
   ]
 }

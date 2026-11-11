@@ -32,6 +32,8 @@ import {
   packOffer,
   packsForBusiness,
   planPriceKFor,
+  pricingSourceOf,
+  termsOfCharge,
   type PlanTermsConfig,
 } from './plan-terms.js';
 import type {
@@ -447,6 +449,7 @@ export class BillingService {
           periodStart: subscription.cycleStartedAt ?? now,
           periodEnd: charge.renewsAt,
           pricedAt: now,
+          pricingSource: pricingSourceOf(this.config),
         });
         if (!free) return { state: 'unavailable' as const, reason: 'no_cycle' as const };
         /* Settled by the worker (OD-51), in its own transaction, through the same settlement every
@@ -503,6 +506,7 @@ export class BillingService {
           periodEnd: charge.renewsAt,
           billingInterval: interval,
           pricedAt: now,
+          pricingSource: pricingSourceOf(this.config),
         });
       let opened = await open();
       if (!opened) {
@@ -648,6 +652,7 @@ export class BillingService {
           amountK: pack.priceK,
           reference,
           pricedAt: now,
+          pricingSource: pricingSourceOf(this.config),
           ...(replaces ? { replaces } : {}),
         });
       let opened = await open();
@@ -725,9 +730,13 @@ export async function applySettledCharge(
   });
   if (!charge) return 'already_settled';
 
+  /* OD-51.6 (0215): the charge is re-priced from the source it recorded when it was opened, so the
+   * settling process's own setting cannot disagree with the opener's about what it cost. */
+  const terms = termsOfCharge(input.config, charge);
+
   if (charge.kind === 'add_on' && charge.packId) {
     /* OD-51: the price is checked before anything is credited (see verifiedPriceRefusal). */
-    const refused = await verifiedPriceRefusal(tx, input.config, input.businessId, charge, null);
+    const refused = await verifiedPriceRefusal(tx, terms, input.businessId, charge, null);
     if (refused) {
       await subscriptionsRepo.markUnapplied(tx, input.reference, refused, input.when);
       return 'superseded';
@@ -752,12 +761,7 @@ export async function applySettledCharge(
     /* The version in force when the charge was PRICED (the instant the price check above used),
      * not when the webhook arrived: a pack repriced or resized between purchase and settlement
      * still credits exactly what was bought and paid for. */
-    const pack = await packOffer(
-      input.config,
-      tx,
-      charge.packId,
-      charge.pricedAt ?? charge.createdAt,
-    );
+    const pack = await packOffer(terms, tx, charge.packId, charge.pricedAt ?? charge.createdAt);
     if (pack) {
       await usageRepo.creditBonus(
         tx,
@@ -844,13 +848,7 @@ export async function applySettledCharge(
      * the amount are recomputed here, from the database's own truth, with the same pricing the
      * opener uses; a charge that disagrees is recorded as paid and set aside for an operator,
      * never applied. */
-    const refused = await verifiedPriceRefusal(
-      tx,
-      input.config,
-      input.businessId,
-      charge,
-      subscription,
-    );
+    const refused = await verifiedPriceRefusal(tx, terms, input.businessId, charge, subscription);
     if (refused) {
       await subscriptionsRepo.markUnapplied(tx, input.reference, refused, input.when);
       return 'superseded';

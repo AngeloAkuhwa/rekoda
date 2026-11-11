@@ -16,7 +16,14 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { evaluateOpsAlerts } from '@rekoda/core';
 import { createDb, identity, sql, subscriptionsRepo, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls, settlementDb } from '@rekoda/db/testing';
+import {
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+  settlementDb,
+  setPricingSource,
+} from '@rekoda/db/testing';
 import { collectOpsSnapshot } from '../health/ops-alerts.js';
 import type * as SweepModule from './renewal-sweep.js';
 
@@ -62,6 +69,8 @@ beforeEach(async () => {
   await ownerDb.execute(sql`DROP FUNCTION IF EXISTS refuse_block_close() CASCADE`);
   await ownerDb.execute(sql`DROP FUNCTION IF EXISTS refuse_cursor_advance() CASCADE`);
   await truncateAll(urls);
+  /* This suite prices from the compiled constants; the database is told so (OD-51.6, 0215). */
+  await setPricingSource(urls, 'constants');
   // The cursor row is operational state, not test data: put it back to "start of the list".
   await ownerDb.execute(sql`
     UPDATE renewal_block_close_cursor SET after_blocked_at = NULL, after_reference = NULL,

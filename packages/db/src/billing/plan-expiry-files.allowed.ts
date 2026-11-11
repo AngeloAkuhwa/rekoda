@@ -159,6 +159,10 @@ export const ALLOWED: Readonly<Record<string, Entry>> = {
     role: 'migration',
     why: 'OD-49 review fixes: re-creates the owner-only preflight rule and listing (they read plan_expires_at) and the retention wrapper; writes no plan field.',
   },
+  'packages/db/migrations/0213_support_review_plan_change.sql': {
+    role: 'migration',
+    why: 'OD-50: subscription_request_plan_review reads plan_expires_at to freeze the paid-through date a review is asked against, and subscription_operator_resolve_review (owned by rekoda_plan_writer, billing operator only) moves the plan of a support-reviewed upgrade while leaving plan_expires_at unwritten; it compares the date and never assigns it.',
+  },
   'packages/db/src/preflight-subscriptions.ts': {
     role: 'reader',
     why: 'OD-49: the read-only release preflight prints the dates the owner-only preflight function returns; it writes nothing (READ ONLY transaction).',

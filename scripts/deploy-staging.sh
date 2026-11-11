@@ -132,6 +132,8 @@ UP_ENTERED=false
 #     application only, and no runtime role writes plan_change_reviews directly;
 #   * a pack purchase is credited once: the purchase guard is enabled and the unique index on a
 #     credited (business, purchase) exists (0214);
+#   * the pricing source in force is one row no runtime role can write or switch, and a charge's
+#     recorded source is guarded (0215);
 #   * the worker reads but cannot write other businesses' events (its estate policy is SELECT only,
 #     no table-level INSERT, UPDATE or DELETE), and the application cannot record an add-on holding.
 # The expected list is the contract; a new writer is a deliberate edit of this list in its PR.
@@ -144,7 +146,8 @@ SMOKE_0196_SQL="SELECT
                   '0206_paid_charge_bound_to_its_cycle', '0207_operator_standard_periods',
                   '0209_settlement_verifies_the_price', '0210_worker_least_privilege',
                   '0211_operator_principal_least_privilege', '0212_closeout_review_fixes',
-                  '0213_support_review_plan_change', '0214_pack_purchase_identity')) = 14
+                  '0213_support_review_plan_change', '0214_pack_purchase_identity',
+                  '0215_pricing_source_authority')) = 15
   AND (SELECT count(*) FROM pg_trigger t WHERE t.tgenabled IN ('O', 'A') AND (t.tgname, t.tgrelid) IN (
         ('businesses_plan_fields_guard', 'public.businesses'::regclass),
         ('businesses_plan_fields_insert_guard', 'public.businesses'::regclass),
@@ -155,7 +158,8 @@ SMOKE_0196_SQL="SELECT
         ('businesses_trial_start_guard', 'public.businesses'::regclass),
         ('businesses_retention_notice_guard', 'public.businesses'::regclass),
         ('external_events_worker_guard', 'public.external_events'::regclass),
-        ('subscription_charges_purchase_guard', 'public.subscription_charges'::regclass))) = 10
+        ('subscription_charges_purchase_guard', 'public.subscription_charges'::regclass),
+        ('subscription_charges_pricing_source_guard', 'public.subscription_charges'::regclass))) = 11
   AND (SELECT prosrc FROM pg_proc
         WHERE oid = to_regprocedure('public.subscription_apply_paid_charge(uuid,text,timestamptz)'))
         LIKE '%the upgrade was priced for another cycle%the renewal was priced for another cycle%'
@@ -242,7 +246,20 @@ SMOKE_0196_SQL="SELECT
            OR has_table_privilege(r.role, 'public.plan_change_reviews', 'DELETE'))
   AND (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public'
         AND indexname = 'subscription_charges_one_credit_per_purchase_ux'
-        AND indexdef LIKE '%UNIQUE%(business_id, purchase_id)%units_credited_at IS NOT NULL%') = 1"
+        AND indexdef LIKE '%UNIQUE%(business_id, purchase_id)%units_credited_at IS NOT NULL%') = 1
+  AND (SELECT count(*) FROM billing_pricing_source WHERE mode IN ('catalogue', 'constants')) = 1
+  AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker', 'rekoda_settlement',
+        'rekoda_billing_operator']) AS r(role)
+        CROSS JOIN unnest(ARRAY['public.billing_pricing_source',
+          'public.billing_pricing_source_history']) AS t(tab)
+        WHERE has_any_column_privilege(r.role, t.tab, 'INSERT')
+           OR has_any_column_privilege(r.role, t.tab, 'UPDATE')
+           OR has_table_privilege(r.role, t.tab, 'DELETE')
+           OR has_table_privilege(r.role, t.tab, 'TRUNCATE'))
+  AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker', 'rekoda_settlement',
+        'rekoda_billing_operator']) AS r(role)
+        WHERE has_function_privilege(r.role,
+          'rekoda_private.set_pricing_source(text,text,text,text)', 'EXECUTE'))"
 PREV_SHA=
 PREV_RELEASE=
 # The exit status meaning "skipped, nothing changed"; no failure may use it.

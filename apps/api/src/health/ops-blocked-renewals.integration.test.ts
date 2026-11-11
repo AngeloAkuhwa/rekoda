@@ -14,6 +14,7 @@ import {
   requireUrls,
   truncateAll,
   type Urls,
+  setPricingSource,
 } from '@rekoda/db/testing';
 import { settlementDb } from '@rekoda/db/testing';
 import { sweepRenewals } from '../billing/renewal-sweep.js';
@@ -58,6 +59,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await truncateAll(urls);
+  /* This suite prices from the compiled constants; the database is told so (OD-51.6, 0215). */
+  await setPricingSource(urls, 'constants');
 });
 
 async function blockedRenewal(): Promise<{ businessId: string; reference: string }> {

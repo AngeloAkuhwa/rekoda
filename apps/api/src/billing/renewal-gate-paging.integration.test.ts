@@ -11,6 +11,7 @@ import {
   requireUrls,
   truncateAll,
   type Urls,
+  setPricingSource,
 } from '@rekoda/db/testing';
 import { settlementDb } from '@rekoda/db/testing';
 import { sweepRenewals } from './renewal-sweep.js';
@@ -49,6 +50,8 @@ afterAll(async () => {
 beforeEach(async () => {
   await ownerDb.execute(sql`DROP FUNCTION IF EXISTS refuse_block_close() CASCADE`);
   await truncateAll(urls);
+  /* This suite prices from the compiled constants; the database is told so (OD-51.6, 0215). */
+  await setPricingSource(urls, 'constants');
 });
 
 let seq = 0;

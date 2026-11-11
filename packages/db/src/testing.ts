@@ -15,6 +15,7 @@
  */
 import postgres from 'postgres';
 import { encryptFacet } from '@rekoda/core/vault';
+import { pricingConstantsFingerprint } from '@rekoda/core';
 import { sql as drizzleSql } from 'drizzle-orm';
 import { applyMigrations } from './migrate.js';
 import { createDb, withBusiness, type Db } from './client.js';
@@ -127,6 +128,14 @@ export async function migrate(urls: Urls): Promise<void> {
 async function installTestFixtureWriter(ownerUrl: string): Promise<void> {
   const client = postgres(ownerUrl, { max: 1, onnotice: () => {} });
   try {
+    /* Every suite starts on the seeded pricing source (0215): one that ran on the constant path
+     * (`setPricingSource`) must not leave the next suite's processes refusing to boot. */
+    await client.unsafe(`
+      DELETE FROM billing_pricing_source_history;
+      UPDATE billing_pricing_source SET mode = 'catalogue', constants_fingerprint = NULL,
+        set_by = 'migration:0215', reason = 'seeded with the default source'
+      WHERE mode <> 'catalogue' OR set_by <> 'migration:0215';
+    `);
     await client.unsafe(`
       CREATE OR REPLACE FUNCTION public.test_fixture_set_plan(
         p_business uuid, p_plan text, p_expires timestamptz
@@ -187,6 +196,8 @@ const SEEDED_TABLES = [
   'usage_packs',
   'provider_capabilities',
   'provider_cost_schedules',
+  /* The pricing source in force (0215): one seeded row, put back to `catalogue` by `truncateAll`. */
+  'billing_pricing_source',
 ] as const;
 
 /**
@@ -227,9 +238,34 @@ export async function truncateAll(urls: Urls): Promise<void> {
     `;
     if (rows.length === 0) return;
     const deletes = rows.map((r) => `DELETE FROM "${r.tablename}";`).join('\n');
+    /* The pricing source goes back to the seeded default, so a suite that ran on the constant path
+     * (`setPricingSource`) cannot leave the next one there. */
     await sql.unsafe(
-      `SET session_replication_role = replica;\n${deletes}\nSET session_replication_role = origin;`,
+      `SET session_replication_role = replica;\n${deletes}\n` +
+        `UPDATE billing_pricing_source SET mode = 'catalogue', constants_fingerprint = NULL, ` +
+        `set_by = 'migration:0215', reason = 'seeded with the default source' ` +
+        `WHERE mode <> 'catalogue' OR set_by <> 'migration:0215';\n` +
+        `SET session_replication_role = origin;`,
     );
+  } finally {
+    await sql.end();
+  }
+}
+
+/**
+ * Switch the pricing source in force for a test (OD-51.6, migration 0215), as the owner, through
+ * the same function a deployment uses. `truncateAll` puts it back to `catalogue`, so a suite that
+ * prices from the compiled constants calls this after it in `beforeEach`.
+ */
+export async function setPricingSource(
+  urls: Urls,
+  mode: 'catalogue' | 'constants',
+  constantsFingerprint: string = pricingConstantsFingerprint(),
+): Promise<void> {
+  const sql = postgres(urls.owner, { max: 1, onnotice: () => {} });
+  try {
+    await sql`SELECT rekoda_private.set_pricing_source(
+      ${mode}, ${mode === 'constants' ? constantsFingerprint : null}, 'test:harness', 'test fixture')`;
   } finally {
     await sql.end();
   }

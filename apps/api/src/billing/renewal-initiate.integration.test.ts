@@ -30,6 +30,7 @@ import {
   settlementDb,
   truncateAll,
   type Urls,
+  setPricingSource,
 } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../config.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
@@ -78,6 +79,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await truncateAll(urls);
+  /* This suite prices from the compiled constants; the database is told so (OD-51.6, 0215). */
+  await setPricingSource(urls, 'constants');
   provider = new StubPaymentProvider();
 });
 

@@ -52,6 +52,7 @@ import { CONFIG, type ApiConfig } from '../config.js';
 import { chargeGate } from './paystack-key.js';
 import { DB } from '../db/db.module.js';
 import { expectedChargeTerms, isCustomCycle } from './billing.service.js';
+import { termsOfCharge } from './plan-terms.js';
 import { PAYMENT_PROVIDER, type PaymentProviderPort } from '../payments/provider.port.js';
 
 /** A sealed billing email belongs to one business: a blob copied onto another row fails to open. */
@@ -684,7 +685,8 @@ export class BillingCheckoutService {
      * pricing says (settlement would set the payment aside anyway). */
     const expected = await expectedChargeTerms(
       tx,
-      this.config,
+      /* From the source the charge recorded (OD-51.6), as settlement will. */
+      termsOfCharge(this.config, charge),
       businessId,
       charge,
       await subscriptionsRepo.subscriptionFor(tx, businessId),

@@ -176,6 +176,20 @@ describe('the pre-start database smoke, executed', () => {
       'the one-credit-per-purchase index dropped',
       'DROP INDEX subscription_charges_one_credit_per_purchase_ux',
     ],
+    // 0215 (OD-51.6): one pricing source, switched only by the owner.
+    [
+      'the pricing source writable by the application',
+      'GRANT UPDATE ON billing_pricing_source TO rekoda_app',
+    ],
+    [
+      'the pricing-source switch runnable by settlement',
+      'GRANT USAGE ON SCHEMA rekoda_private TO rekoda_settlement; GRANT EXECUTE ON FUNCTION rekoda_private.set_pricing_source(text,text,text,text) TO rekoda_settlement',
+    ],
+    [
+      'the pricing-source guard disabled',
+      'ALTER TABLE subscription_charges DISABLE TRIGGER subscription_charges_pricing_source_guard',
+    ],
+    ['no pricing source row', 'DELETE FROM billing_pricing_source'],
     [
       'the test-only fixture writer present',
       "CREATE FUNCTION public.test_fixture_set_plan(p uuid, q text, r timestamptz) RETURNS void LANGUAGE sql AS ''",
