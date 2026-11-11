@@ -88,16 +88,26 @@ const open = (
   reference: string,
   plan: string | null,
 ) =>
-  withBusiness(settlementDb(), businessId, (tx) =>
-    subscriptionsRepo.openCharge(tx, {
+  withBusiness(settlementDb(), businessId, async (tx) => {
+    /* The period production records on opening (0206 binds settlement to it): a renewal buys the
+     * cycle that starts at the current paid-to date, an upgrade the rest of the cycle ending there. */
+    const paidTo = (await subscriptionsRepo.subscriptionFor(tx, businessId))?.planExpiresAt;
+    const period =
+      paidTo && kind === 'renewal'
+        ? { periodStart: paidTo, periodEnd: new Date(paidTo.getTime() + 30 * 86_400_000) }
+        : paidTo && kind === 'upgrade'
+          ? { periodStart: new Date(paidTo.getTime() - 30 * 86_400_000), periodEnd: paidTo }
+          : {};
+    return subscriptionsRepo.openCharge(tx, {
       businessId,
       kind,
       ...(plan ? { plan } : {}),
       ...(kind === 'add_on' ? { packId: 'messages_100' } : {}),
       amountK: 990_000,
       reference,
-    }),
-  );
+      ...period,
+    });
+  });
 
 const settle = (businessId: string, reference: string) =>
   withBusiness(settlementDb(), businessId, (tx) =>

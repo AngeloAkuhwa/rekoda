@@ -10,7 +10,7 @@ import { bootChecks, isEntrypoint, type Db } from '@rekoda/db';
 import { assertStagingMarkerNotLive } from './health/staging-boot-check.js';
 import { MAX_IMAGE_BYTES } from '@rekoda/core';
 import { publicApi } from '@rekoda/contracts';
-import { CONFIG, loadConfig, trustedProxies, type ApiConfig } from './config.js';
+import { CONFIG, isProductionEnv, loadConfig, trustedProxies, type ApiConfig } from './config.js';
 import { clientAddress, rateLimitKey } from './http/client-address.js';
 import { isRateLimitExempt } from './http/rate-limit-exempt.js';
 
@@ -109,10 +109,13 @@ export async function createApp(): Promise<NestFastifyApplication> {
   if (operatorDb) {
     await bootChecks.assertDatabasePrincipal(operatorDb, 'operator', 'rekoda_billing_operator');
   }
-  await bootChecks.assertNoTestFixtureWriter(db);
   await bootChecks.assertKeyUnchanged(db, 'VAULT_KEY', config.vaultKey);
   await bootChecks.assertKeyUnchanged(db, 'MATCH_KEY', config.matchKey);
   await assertStagingMarkerNotLive(db, config.paystackSecretKey);
+  /* OD-37 (0206): the test harness's fixture plan writer is also the cycle-input guard's test-only
+   * exemption, so a served database must not have it. Production hardening (fail-closed: any
+   * NODE_ENV but development or test); the integration suites boot against test databases. */
+  if (isProductionEnv(process.env)) await bootChecks.assertNoTestFixtureWriter(db);
 
   /**
    * Product photos, and nothing else.
