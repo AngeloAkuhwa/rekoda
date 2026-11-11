@@ -263,7 +263,7 @@ describe('OWN-70: what happens to a blocked renewal afterwards', () => {
     // fails once. The cleanup runs after the due renewals are raised, so those reads are not first.
     let failed = false;
     const isCleanupRead = (query: unknown) =>
-      /blocked_renewals_ops|clock_timestamp/.test(
+      /renewal_block_close_claim|blocked_renewals_close_batch/.test(
         JSON.stringify((query as { queryChunks?: unknown })?.queryChunks),
       );
     const flaky = new Proxy(workerDb, {

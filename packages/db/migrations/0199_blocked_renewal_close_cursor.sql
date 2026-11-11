@@ -95,9 +95,9 @@ AS $$
          b.plan::text, b.plan_expires_at
   FROM public.subscription_charges c
   JOIN public.businesses b ON b.id = c.business_id
-  CROSS JOIN public.renewal_block_close_cursor k
-  WHERE k.id
-    AND c.blocked_at IS NOT NULL AND c.blocked_resolved_at IS NULL
+  -- No cursor row (never claimed) reads as "start of the list".
+  LEFT JOIN public.renewal_block_close_cursor k ON k.id
+  WHERE c.blocked_at IS NOT NULL AND c.blocked_resolved_at IS NULL
     AND c.status = 'pending' AND c.superseded_at IS NULL
     AND (k.after_blocked_at IS NULL
          OR (c.blocked_at, c.reference) > (k.after_blocked_at, k.after_reference))

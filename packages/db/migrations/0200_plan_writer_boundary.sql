@@ -11,15 +11,17 @@
 --       The provider path (a settled Paystack charge). The PLAN comes from the charge row, never
 --       from the caller. The charge must belong to the business, be `paid`, be a plan charge
 --       (first_purchase, renewal or upgrade) for a known paid plan, and be neither applied
---       (`applied_period_end`), marked unapplied, nor superseded; so one paid charge can move the
---       plan at most once. The renewal date must lie within 400 days of when the charge was paid.
+--       (`applied_period_end`) nor marked unapplied; so one paid charge can move the plan at most
+--       once. A charge that was superseded as the payable link but was then paid anyway still buys
+--       what it was priced for (G-104, the settlement path decides that before calling here). The renewal date must lie within 400 days of when the charge was paid.
 --       EXECUTE: rekoda_app and rekoda_worker (settlement runs in the API's verify path and in the
 --       worker's billing job).
 --
 --   subscription_operator_set_plan(business, plan, expires, actor)
 --       The operator path (POST /v1/businesses/plan, `ops:billing`). The plan must be one of the
---       five known plans; a paid plan with a date needs a date in the future (G-114); the actor must
---       be named and may not be `system`. EXECUTE: rekoda_app only (the operator route is served by
+--       five known plans; a paid plan's date, when given, must lie in a sanity window (at most 400
+--       days back, at most 10 years ahead; the route itself requires a future date, G-114); the
+--       actor must be named and may not be `system`. EXECUTE: rekoda_app only (the operator route is served by
 --       the API; no worker flow sets a plan this way).
 --
 --   subscription_expire_plan(business, previous, reason) is unchanged in behaviour (it already
@@ -74,7 +76,7 @@ BEGIN
     RAISE EXCEPTION 'subscription_apply_paid_charge: the business is not the pinned tenant'
       USING ERRCODE = '42501';
   END IF;
-  SELECT business_id, kind, plan, status, paid_at, applied_period_end, unapplied_at, superseded_at
+  SELECT business_id, kind, plan, status, paid_at, applied_period_end, unapplied_at
     INTO c
   FROM public.subscription_charges
   WHERE reference = p_reference;
@@ -85,8 +87,7 @@ BEGIN
   IF c.status IS DISTINCT FROM 'paid'
      OR c.kind NOT IN ('first_purchase', 'renewal', 'upgrade')
      OR c.plan IS NULL OR c.plan NOT IN ('chat', 'integrate', 'complete')
-     OR c.applied_period_end IS NOT NULL OR c.unapplied_at IS NOT NULL
-     OR c.superseded_at IS NOT NULL THEN
+     OR c.applied_period_end IS NOT NULL OR c.unapplied_at IS NOT NULL THEN
     RAISE EXCEPTION 'subscription_apply_paid_charge: the charge is not a paid, unapplied plan charge'
       USING ERRCODE = '42501';
   END IF;
@@ -118,11 +119,14 @@ BEGIN
      OR p_actor IS NULL OR length(p_actor) NOT BETWEEN 1 AND 200 OR p_actor ILIKE 'system%' THEN
     RAISE EXCEPTION 'subscription_operator_set_plan: invalid input' USING ERRCODE = '22023';
   END IF;
-  -- A paid plan already past its date would raise a renewal at once and age every later upgrade's
-  -- proration to nothing (G-114); `expired` is how a lapse is recorded.
+  -- A sanity window on a paid plan's date (open-ended is allowed): not more than 400 days in the
+  -- past and not more than 10 years ahead, so a garbage date cannot be stored. The stricter rule
+  -- that an operator gives a paid plan a FUTURE date (G-114) is the operator route's input rule
+  -- and is enforced there (POST /v1/businesses/plan).
   IF p_plan IN ('chat', 'integrate', 'complete') AND p_expires IS NOT NULL
-     AND p_expires <= clock_timestamp() THEN
-    RAISE EXCEPTION 'subscription_operator_set_plan: a paid plan needs an expiry in the future'
+     AND (p_expires < clock_timestamp() - interval '400 days'
+          OR p_expires > clock_timestamp() + interval '10 years') THEN
+    RAISE EXCEPTION 'subscription_operator_set_plan: the expiry is outside the accepted window'
       USING ERRCODE = '22023';
   END IF;
   IF p_business IS DISTINCT FROM nullif(current_setting('app.business_id', true), '')::uuid THEN

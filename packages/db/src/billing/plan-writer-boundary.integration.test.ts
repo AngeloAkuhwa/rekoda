@@ -1,8 +1,8 @@
 /**
  * OD-37 / OWN-88 (migration 0200): each plan writer accepts only what its caller is entitled to do.
  *
- * The provider writer takes the plan from a paid, unapplied, unsuperseded plan charge of the
- * business and applies a charge at most once; the operator writer takes a known plan, a future date
+ * The provider writer takes the plan from a paid, unapplied plan charge of the
+ * business and applies a charge at most once; the operator writer takes a known plan, a sane date
  * for a paid plan and a named actor, and only the API credential may call it; the general writer is
  * gone; a new business starts on its trial. The role boundary itself is pinned in
  * plan-fields-guard.integration.test.ts.
@@ -191,7 +191,6 @@ describe('OD-37: the provider writer moves a plan only for a paid, unapplied cha
     ['an add-on charge', { kind: 'add_on', plan: null }],
     ['a charge already applied', { applied: true }],
     ['a charge marked unapplied', { unapplied: true }],
-    ['a superseded charge', { superseded: true }],
   ] as const)('refuses %s', async (_label, spec) => {
     const businessId = await seedBusiness();
     const reference =
@@ -206,6 +205,13 @@ describe('OD-37: the provider writer moves a plan only for a paid, unapplied cha
     const reference = await seedCharge(a, { plan: 'complete' });
     expect(await apply(b, reference)).toMatch(/42501/);
     expect((await planOf(b))?.plan).toBe('trial');
+  });
+
+  it('applies a paid charge that was superseded as the payable link (it still buys its cycle, G-104)', async () => {
+    const businessId = await seedBusiness();
+    const reference = await seedCharge(businessId, { plan: 'chat', superseded: true });
+    expect(await apply(businessId, reference)).toBe('allowed');
+    expect((await planOf(businessId))?.plan).toBe('chat');
   });
 
   it('applies one paid charge at most once', async () => {
@@ -245,11 +251,14 @@ describe('OD-37: the operator writer validates its inputs (0200)', () => {
       ),
     );
 
-  it('refuses an unknown plan, a paid plan already past its date, and a missing or system actor', async () => {
+  it('refuses an unknown plan, a paid plan dated outside the accepted window, and a missing or system actor', async () => {
     const businessId = await seedBusiness();
     expect(await set(businessId, 'platinum', FUTURE)).toMatch(/22023/);
-    expect(await set(businessId, 'chat', new Date(Date.now() - 86_400_000))).toMatch(
-      /22023.*expiry in the future/,
+    expect(await set(businessId, 'chat', new Date(Date.now() - 500 * 86_400_000))).toMatch(
+      /22023.*outside the accepted window/,
+    );
+    expect(await set(businessId, 'chat', new Date('2099-01-01T00:00:00Z'))).toMatch(
+      /22023.*outside the accepted window/,
     );
     expect(await set(businessId, 'chat', FUTURE, '')).toMatch(/22023/);
     expect(await set(businessId, 'chat', FUTURE, 'system:grace-sweep')).toMatch(/22023/);
