@@ -89,7 +89,15 @@ export function initiateBlockedRenewalHandler(deps: InitiateBlockedRenewalDeps):
         await record('provider_unreachable');
         return;
       }
-      throw error;
+      /* Any other failure on the last attempt is recorded and alerted rather than left to die
+       * unseen: nothing was paid or started that needs recovering, and the merchant can still pay
+       * from the billing page. */
+      if (attempt < maxAttempts) throw error;
+      await record('unavailable', { reason: 'initiation_failed' });
+      log.error(
+        `ALERT billing_renewal_initiation_failed business=${businessId} reference=${reference}`,
+      );
+      return;
     }
 
     switch (answer.state) {

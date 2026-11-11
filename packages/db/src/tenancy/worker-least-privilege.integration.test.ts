@@ -87,16 +87,21 @@ describe('0210: the worker cannot write tenant or identity data', () => {
     }
   });
 
-  it('keeps exactly the writes its jobs make', async () => {
+  it('keeps exactly the writes its jobs make, at table and column level (0210, 0212)', async () => {
     const rows = await ownerDb.execute<{ grant: string }>(sql`
-      SELECT table_name || ':' || privilege_type AS grant
-      FROM information_schema.role_table_grants
-      WHERE grantee = 'rekoda_worker' AND table_schema = 'public'
-        AND privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE')
-      ORDER BY 1`);
+      SELECT c.relname || ':' || p.priv AS grant
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      CROSS JOIN unnest(ARRAY['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE']) AS p(priv)
+      WHERE n.nspname IN ('public', 'rekoda_private') AND c.relkind IN ('r', 'p')
+        AND CASE WHEN p.priv IN ('INSERT', 'UPDATE')
+                 THEN has_any_column_privilege('rekoda_worker', c.oid, p.priv)
+                 ELSE has_table_privilege('rekoda_worker', c.oid, p.priv) END
+      ORDER BY c.relname, p.priv`);
     expect([...rows].map((r) => r.grant)).toEqual([
       'audit_events:INSERT',
       'dead_job_exceptions:INSERT',
+      'dead_job_exceptions:UPDATE',
+      'external_events:UPDATE',
       'jobs:UPDATE',
       'outbox_events:UPDATE',
       'pending_object_deletions:DELETE',
@@ -106,8 +111,72 @@ describe('0210: the worker cannot write tenant or identity data', () => {
       'stranger_contacts:UPDATE',
       'usage_counters:INSERT',
       'usage_counters:UPDATE',
-      'webhook_deliveries:INSERT',
       'webhook_deliveries:UPDATE',
+      'webhook_endpoints:UPDATE',
+    ]);
+    const [defaults] = await ownerDb.execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM pg_default_acl d CROSS JOIN aclexplode(d.defaclacl) a
+      WHERE a.grantee = 'rekoda_worker'::regrole
+        AND a.privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE')`);
+    expect(defaults!.n).toBe(0);
+  });
+
+  it.each([
+    ['kind', "kind = 'billing.process'"],
+    ['payload', `payload = '{"eventId":"00000000-0000-0000-0000-000000000000"}'::jsonb`],
+    ['business_id', 'business_id = gen_random_uuid()'],
+  ])('cannot rewrite a job row to run other work (%s, 0212)', async (_column, set) => {
+    const victim = await seedBusiness();
+    await ownerDb.execute(
+      sql`INSERT INTO jobs (business_id, kind, payload, state) VALUES (${victim}::uuid, 'document.render', '{}'::jsonb, 'done')`,
+    );
+    expect(
+      await outcome(workerDb.execute(sql.raw(`UPDATE jobs SET ${set}, state = 'pending'`))),
+    ).toMatch(DENIED);
+  });
+
+  it('queues a webhook delivery only as a copy of the outbox fact, for an endpoint of the same business (0212)', async () => {
+    const mine = await seedBusiness();
+    const theirs = await seedBusiness();
+    const outboxId = randomUUID();
+    const ownEndpoint = randomUUID();
+    const foreignEndpoint = randomUUID();
+    await ownerDb.execute(sql`
+      INSERT INTO outbox_events (id, business_id, type, payload)
+      VALUES (${outboxId}::uuid, ${mine}::uuid, 'invoice.issued', '{"invoice":"INV-1"}'::jsonb)`);
+    for (const [id, business] of [
+      [ownEndpoint, mine],
+      [foreignEndpoint, theirs],
+    ] as const) {
+      await ownerDb.execute(sql`
+        INSERT INTO webhook_endpoints (id, business_id, url, event_types, status, encrypted_secret)
+        VALUES (${id}::uuid, ${business}::uuid, 'https://hooks.example.ng/x', ARRAY['*'], 'active', 'sealed')`);
+    }
+    // A forged delivery written directly is refused outright.
+    expect(
+      await pinned(
+        workerDb,
+        theirs,
+        sql`INSERT INTO webhook_deliveries (business_id, endpoint_id, outbox_event_id, event_type, payload)
+            VALUES (${theirs}::uuid, ${foreignEndpoint}::uuid, ${outboxId}::uuid, 'invoice.paid', '{"forged":true}'::jsonb)`,
+      ),
+    ).toMatch(DENIED);
+    const queue = async (endpoint: string) =>
+      [
+        ...(await workerDb.execute<{ queued: boolean }>(
+          sql`SELECT webhook_queue_delivery(${outboxId}::uuid, ${endpoint}::uuid) AS queued`,
+        )),
+      ][0]!.queued;
+    // Another business's endpoint gets nothing; the business's own gets the fact, once.
+    expect(await queue(foreignEndpoint)).toBe(false);
+    expect(await queue(ownEndpoint)).toBe(true);
+    expect(await queue(ownEndpoint)).toBe(false);
+    const delivered = [
+      ...(await ownerDb.execute<{ business_id: string; event_type: string; payload: unknown }>(sql`
+        SELECT business_id, event_type, payload FROM webhook_deliveries WHERE outbox_event_id = ${outboxId}::uuid`)),
+    ];
+    expect(delivered).toEqual([
+      { business_id: mine, event_type: 'invoice.issued', payload: { invoice: 'INV-1' } },
     ]);
   });
 });

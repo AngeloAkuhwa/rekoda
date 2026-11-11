@@ -10,7 +10,7 @@
  * to verify; the provider reference is Rekoda's own `no_charge:<reference>`.
  */
 import { Logger } from '@nestjs/common';
-import { subscriptionsRepo } from '@rekoda/db';
+import { sql, subscriptionsRepo } from '@rekoda/db';
 import type { ApiConfig } from '../config.js';
 import { applySettledCharge } from '../billing/billing.service.js';
 import type { JobContext, JobHandler } from './runner.js';
@@ -21,30 +21,51 @@ export function applyNoChargeUpgradeHandler(deps: {
   config: Pick<ApiConfig, 'planCatalogueReads'> & Partial<ApiConfig>;
 }): JobHandler {
   const log = new Logger('ApplyNoChargeUpgradeJob');
-  return async ({ tx, payload, businessId }: JobContext): Promise<void> => {
+  return async ({ tx, payload, businessId, attempt, maxAttempts }: JobContext): Promise<void> => {
     const reference = typeof payload['reference'] === 'string' ? payload['reference'] : null;
     if (!reference || !REFERENCE.test(reference)) {
       throw new Error('billing.apply_no_charge: payload has no subscription charge reference');
     }
     const charge = await subscriptionsRepo.chargeByReference(tx, businessId, reference);
-    /* Only a pending zero-priced upgrade is applied here; anything else is not this job's. */
+    /* Only a pending, current zero-priced upgrade is applied here. One a later request retired
+     * (a second click before this job ran opens its own) is not applied: the newer one is. */
     if (
       !charge ||
       charge.status !== 'pending' ||
       charge.kind !== 'upgrade' ||
-      charge.amountK !== 0
+      charge.amountK !== 0 ||
+      charge.supersededAt
     ) {
       log.warn(`billing.apply_no_charge: ${reference} is not a pending zero-priced upgrade`);
       return;
     }
-    const outcome = await applySettledCharge(tx, {
-      businessId,
-      reference,
-      /* Unique per charge: (provider, provider_reference) is globally unique. */
-      providerReference: `no_charge:${reference}`,
-      when: new Date(),
-      config: deps.config,
-    });
+    let outcome: string;
+    try {
+      /* In a savepoint, so a failure on the last attempt can still be recorded below. */
+      outcome = await tx.transaction((sp) =>
+        applySettledCharge(sp, {
+          businessId,
+          reference,
+          /* Unique per charge: (provider, provider_reference) is globally unique. */
+          providerReference: `no_charge:${reference}`,
+          when: new Date(),
+          config: deps.config,
+        }),
+      );
+    } catch (error) {
+      if (attempt < maxAttempts) throw error;
+      /* Not enrolled as a dead job (that is the payment-recovery path, OWN-73/OWN-76): nothing was
+       * paid. The charge stays pending at nothing, the merchant can choose the plan again (a new
+       * request retires it and queues a fresh one), and the failure is audited and alerted. */
+      await tx.execute(sql`
+        INSERT INTO audit_events (business_id, actor, entity, entity_id, action, new_value, source_type)
+        VALUES (${businessId}::uuid, 'system:no_charge_upgrade', 'subscription_charge', ${reference},
+                'no_charge_upgrade_failed', '{"outcome":"failed_last_attempt"}'::jsonb, 'system')`);
+      log.error(
+        `ALERT billing_no_charge_upgrade_failed business=${businessId} reference=${reference}`,
+      );
+      return;
+    }
     log.log(`business ${businessId}: zero-priced upgrade ${reference} ${outcome}`);
   };
 }

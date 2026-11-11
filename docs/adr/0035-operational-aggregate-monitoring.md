@@ -252,8 +252,16 @@ Migration 0210 closes all three:
    role, and no runtime role can backdate a retention notice.
 4. No runtime role writes `rekoda_migrations` or `business_entitlements`.
 
-Residual: the worker still updates any business's job row, because it coordinates the queue (ADR
-0022). The table owner and the infrastructure administrator are an administrative trust boundary,
+After the independent review of the delta, migration 0212 narrows two of these writes further:
+
+- the queue and outbox writes are limited to their coordination columns, so the worker cannot
+  rewrite what a job runs or for whom;
+- webhook deliveries are queued only through `webhook_queue_delivery(outbox event, endpoint)`, which
+  copies the outbox fact for an active endpoint of the same business, so the worker cannot queue a
+  forged, signed webhook.
+
+Residual: the worker still updates the coordination columns of any business's job row, because it
+coordinates the queue (ADR 0022). The table owner and the infrastructure administrator are an administrative trust boundary,
 exempt from every guard. That is not the same class as a runtime role.
 
 Tests:

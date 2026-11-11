@@ -155,6 +155,10 @@ export const ALLOWED: Readonly<Record<string, Entry>> = {
     role: 'migration',
     why: 'OD-49: the owner-only preflight reads the dates, and the owner-only correct_subscription_period writes plan_expires_at for one active business breaking the rules, on an explicit call with an operator actor and a written reason, audited with the original and corrected values.',
   },
+  'packages/db/migrations/0212_closeout_review_fixes.sql': {
+    role: 'migration',
+    why: 'OD-49 review fixes: re-creates the owner-only preflight rule and listing (they read plan_expires_at) and the retention wrapper; writes no plan field.',
+  },
   'packages/db/src/preflight-subscriptions.ts': {
     role: 'reader',
     why: 'OD-49: the read-only release preflight prints the dates the owner-only preflight function returns; it writes nothing (READ ONLY transaction).',

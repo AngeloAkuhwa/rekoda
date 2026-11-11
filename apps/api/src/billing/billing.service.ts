@@ -507,7 +507,9 @@ export class BillingService {
             ? { kind: 'first_purchase', periodStart, plan: to, billingInterval: interval }
             : { kind: 'upgrade', plan: to },
         );
-        if (pending) {
+        /* Handed back only at the price just computed: a pending charge at another price was not
+         * opened by this code (OD-51) and is never shown as what the merchant owes. */
+        if (pending && pending.amountK === charge.amountK) {
           return {
             state: 'payment_required' as const,
             reference: pending.reference,
@@ -637,7 +639,7 @@ export class BillingService {
           kind: 'add_on',
           packId: pack.id,
         });
-        if (pending) {
+        if (pending && pending.amountK === pack.priceK) {
           return {
             state: 'payment_required' as const,
             reference: pending.reference,
@@ -704,10 +706,15 @@ export async function applySettledCharge(
       await subscriptionsRepo.markUnapplied(tx, input.reference, refused, input.when);
       return 'superseded';
     }
-    /* The version in force when the charge was OPENED, not when the webhook
-     * arrived: a pack repriced or resized between purchase and settlement
+    /* The version in force when the charge was PRICED (the instant the price check above used),
+     * not when the webhook arrived: a pack repriced or resized between purchase and settlement
      * still credits exactly what was bought and paid for. */
-    const pack = await packOffer(input.config, tx, charge.packId, charge.createdAt);
+    const pack = await packOffer(
+      input.config,
+      tx,
+      charge.packId,
+      charge.pricedAt ?? charge.createdAt,
+    );
     if (pack) {
       await usageRepo.creditBonus(
         tx,

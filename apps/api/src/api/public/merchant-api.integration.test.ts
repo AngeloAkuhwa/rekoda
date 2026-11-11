@@ -1,4 +1,3 @@
-import { ownerDb as entitlementOwnerDb } from '@rekoda/db/testing';
 /**
  * The Merchant API over a real application and a real database (PR-111).
  *
@@ -33,11 +32,12 @@ import { usagePeriod } from '@rekoda/core';
 import {
   grantCapacityAddOn,
   migrate,
+  ownerDb as entitlementOwnerDb,
   requireUrls,
+  settlementDb,
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
-import { settlementDb } from '@rekoda/db/testing';
 
 const SECRET = 'merchant-api-secret-at-least-32-chars';
 
@@ -918,9 +918,7 @@ describe('reading', () => {
 });
 
 /**
- * Buy the API capacity this suite spends.
- *
- * §27 sells API units with the API product and no plan grants them (every
+ * Buy the API capacity this suite spends. §27 sells API units with the API product and no plan grants them (every
  * plan sells zero of all three, which is why the allowance comes from the
  * plan), so an entitled business with nothing bought is refused. That is
  * the product, not a test detail, and the two units are bought differently
@@ -930,8 +928,8 @@ describe('reading', () => {
  */
 async function creditApiCapacity(businessId: string): Promise<void> {
   const period = usagePeriod(new Date());
-  await withBusiness(settlementDb(), businessId, async (tx) => {
-    await usageRepo.creditBonus(tx, businessId, period, 'API_REQUEST_UNITS', 1_000);
-  });
+  await withBusiness(settlementDb(), businessId, (tx) =>
+    usageRepo.creditBonus(tx, businessId, period, 'API_REQUEST_UNITS', 1_000),
+  );
   await grantCapacityAddOn(urls, businessId, 'API_APPLICATIONS', 20);
 }

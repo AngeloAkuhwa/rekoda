@@ -618,7 +618,7 @@ describe('the operator plan endpoint', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ plan: 'chat' });
+    expect(res.json()).toEqual({ plan: 'chat', changed: true });
 
     /* The actor is no longer a string the caller typed into the body. It is
      * the identity the guard verified, so the audit trail names whoever held

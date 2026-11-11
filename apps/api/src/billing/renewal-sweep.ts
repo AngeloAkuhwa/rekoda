@@ -110,7 +110,8 @@ export async function sweepRenewals(
       }
 
       try {
-        /* On the settlement principal: only settlement opens a charge (OD-37, 0205). */
+        /* On the settlement principal, the worker's own (OD-37, 0209): the renewal sweep opens a
+         * renewal and starts its grace clock in one transaction. */
         const opened = await withBusiness(deps.settlementDb, business.businessId, async (tx) => {
           /* G-104: lock first, so an operator move cannot slip between pricing
            * this renewal and opening its charge. */
@@ -144,12 +145,15 @@ export async function sweepRenewals(
            * the version whose price rows never changed. A scheduled
            * downgrade is a different plan, so the stale-pin rule prices it
            * at the version on sale today. */
+          /* Priced at its own moment, not the pass's start: the database bounds a charge's pricing
+           * time to within five minutes of its opening (0209), and a long pass must not age it. */
+          const pricedAt = new Date();
           const amountK = await planPriceKFor(
             deps.config,
             tx,
             business.businessId,
             plan,
-            now,
+            pricedAt,
             fresh.nextInterval,
           );
           const reference = subscriptionReference(now, randomBytes);
@@ -166,7 +170,7 @@ export async function sweepRenewals(
             periodEnd: addInterval(fresh.renewsAt, fresh.nextInterval, anchorDay),
             billingInterval: fresh.nextInterval,
             /* The instant settlement re-prices it at (OD-51). */
-            pricedAt: now,
+            pricedAt,
           });
           if (!id) return false;
 

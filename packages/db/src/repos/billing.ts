@@ -91,7 +91,7 @@ export function planDateRefusal(
  * business does not exist rather than throwing: an operator typo is a 404 for the caller to report.
  * Throws `PlanDateRefused` for a date outside Rekoda's plan durations (a 400).
  */
-export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
+export async function setPlan(db: Db, change: PlanChange): Promise<boolean | 'unchanged'> {
   return withBusiness(db, change.businessId, async (tx) => {
     const previous = await lockForPlanChange(tx, change.businessId);
     if (!previous) return false;
@@ -109,15 +109,16 @@ export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
       await databaseNow(tx),
     );
     if (refusal) throw new PlanDateRefused(refusal);
-    await writePlanChange(tx, previous, change, billingInterval, {
+    const written = await writePlanChange(tx, previous, change, billingInterval, {
       kind: 'operator',
       actor: change.actor,
       billingInterval,
     });
     /* The `plan_changed` audit row (what the move replaced and what it set, G-62) is written by
      * subscription_operator_set_plan itself, in this transaction (OD-37, 0200): an operator plan
-     * change cannot happen without it, whichever code path called the writer. */
-    return true;
+     * change cannot happen without it, whichever code path called the writer. A re-post of the
+     * plan and interval already in force writes nothing and says so (OD-50, 0207). */
+    return written === 'unchanged' ? 'unchanged' : true;
   });
 }
 
@@ -179,7 +180,7 @@ async function writePlanChange(
   change: Omit<PlanChange, 'billingInterval'>,
   billingInterval: BillingInterval | null,
   authority: subscriptionsRepo.PlanWriteAuthority,
-): Promise<void> {
+): Promise<'written' | 'unchanged'> {
   const paid = !UNPAID_PLANS.has(change.plan);
   /* A different interval is a different cycle (owner review of #432): the writer validates and
    * audits the interval it is given, so the state must record that same interval. */
@@ -190,7 +191,7 @@ async function writePlanChange(
     change.expiresAt !== null &&
     previous.expiresAt.getTime() === change.expiresAt.getTime() &&
     (billingInterval === null || billingInterval === previous.billingInterval);
-  await subscriptionsRepo.writeSubscriptionState(tx, change.businessId, {
+  return subscriptionsRepo.writeSubscriptionState(tx, change.businessId, {
     authority,
     plan: change.plan,
     paid,

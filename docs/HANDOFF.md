@@ -19,7 +19,7 @@
 
 **PR B, 11 Nov 2026 closeout round (owner instruction OWN-90): still OPEN as #432, not merged, not deployed; STAGING ACCEPTANCE PENDING; the owner reviews the readiness report before any merge.**
 
-- Migrations 0207 to 0211:
+- Migrations 0207 to 0212:
   - **OD-44:** fresh payment initiation for a renewal blocked before initiation, once the gate opens (`billing.renewal_initiate`).
   - **OD-50 (0207):** standard operator periods; the trial start is fixed.
   - **OD-49 (0208):** read-only release preflight and audited correction. The staging and production counts are NOT checked yet.
@@ -29,7 +29,7 @@
 - **Web:** fixed the cause of the desktop reminders Playwright flake.
 - **Before a deploy:**
   - remove nothing from `.env`, since compose blanks `SETTLEMENT_DATABASE_URL` for the api;
-  - run `deploy/migrate.sh preflight-subscriptions` after migrate (`docs/runbooks/deploy.md`, "Deploy a release carrying 0207 to 0211").
+  - run `deploy/migrate.sh preflight-subscriptions` after migrate (`docs/runbooks/deploy.md`, "Deploy a release carrying 0207 to 0212").
 - **Open for the owner:**
   - the OD-50 support-review consequence;
   - the OD-51 known limitations (the operator credential in the API; settlement in the worker; settlement still inheriting `rekoda_app`; the application credential's metering and identity writes; the owner boundary).
@@ -52,7 +52,7 @@ Next steps: CI on the final head, CodeRabbit, an independent review, then owner 
 
 Still open:
 
-- **OD-44** (owner).
+- **OD-44** (owner); since implemented in the closeout round (OWN-90, `billing.renewal_initiate`).
 - **Rollback:** none past 0196 (OWN-86): stop api and worker before migrating, never restart the previous release against a database that holds 0196, fix forward or escalate (`docs/runbooks/deploy.md`, "Deploy a release carrying 0196").
 - **OD-47 and OD-48 RULED 8 Nov 2026 (OWN-85, OWN-86):** operator work lists are worker-only fixed-column definer functions (ADR 0035 Amendment 2); 0196 is an accepted compatibility break enforced by `deploy-staging.sh`.
 - **Dependabot:** #429 and #430 await the owner.

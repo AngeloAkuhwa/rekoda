@@ -260,7 +260,7 @@ describe('an operator move to a paid plan (G-62)', () => {
     );
 
     // The same plan and interval again: no new period, no new start, nothing else written.
-    expect(await operator(businessId, 'chat')).toBe(true);
+    expect(await operator(businessId, 'chat')).toBe('unchanged');
     const again = await row(businessId);
     expect(again.cycle_started_at).toBe(first.cycle_started_at);
     expect(again.plan_expires_at).toBe(first.plan_expires_at);

@@ -82,13 +82,6 @@ describe('OD-49: the subscription-period release preflight', () => {
       cycleStart: iso(now - 30 * DAY),
       expires: iso(now + 330 * DAY),
     });
-    // A renewal anchored to the 31st: the cycle that started on 28 February ends on 31 March.
-    const anchored = await seedBusiness();
-    await stage(anchored, {
-      plan: 'integrate',
-      cycleStart: '2099-02-28T09:00:00Z',
-      expires: '2099-03-31T09:00:00Z',
-    });
     // A shorter operator period written before 0207: grants nothing extra, not listed.
     const shorter = await seedBusiness();
     await stage(shorter, {
@@ -130,8 +123,9 @@ describe('OD-49: the subscription-period release preflight', () => {
           expires: iso(now + 500 * DAY),
         },
       ],
+      // An active plan that ends before its start necessarily starts in the future (0212).
       [
-        'paid_ends_before_start',
+        'paid_cycle_starts_in_future',
         { plan: 'chat', cycleStart: iso(now + 20 * DAY), expires: iso(now + 10 * DAY) },
       ],
       ['trial_open_ended', { plan: 'trial', expires: null }],
@@ -160,6 +154,62 @@ describe('OD-49: the subscription-period release preflight', () => {
         plan: dates.plan,
       });
     });
+  });
+
+  it('flags a monthly cycle stretched past one interval, and a future-dated start (0212)', async () => {
+    const now = Date.now();
+    // A trial whose start was moved into the future: the second-trial pattern 0207 closed.
+    const futureTrial = await seedBusiness();
+    await stage(futureTrial, {
+      plan: 'trial',
+      trialStart: iso(now + 20 * DAY),
+      expires: iso(now + 34 * DAY),
+    });
+    const futureCycle = await seedBusiness();
+    await stage(futureCycle, {
+      plan: 'chat',
+      cycleStart: iso(now + 20 * DAY),
+      expires: iso(now + 45 * DAY),
+    });
+    // A plan Rekoda does not sell (the owner is exempt from the plan guards): counted as active.
+    const unknown = await seedBusiness();
+    await ownerDb.execute(sql`UPDATE businesses SET plan = 'platinum' WHERE id = ${unknown}::uuid`);
+
+    const report = await subscriptionPeriodPreflight(urls.owner);
+
+    expect(report.result).toBe('FAIL');
+    const byId = new Map(report.active.map((r) => [r.businessId, r.reason]));
+    expect(byId.get(futureTrial)).toBe('trial_starts_in_future');
+    expect(byId.get(futureCycle)).toBe('paid_cycle_starts_in_future');
+    expect(byId.get(unknown)).toBe('unknown_plan');
+  });
+
+  /* The paid bound, through the rule itself with a chosen clock: these shapes cannot be staged as
+   * active rows on today's date. */
+  const violation = async (start: string, end: string, interval = 'monthly', now = start) =>
+    [
+      ...(await ownerDb.execute<{ reason: string | null }>(sql`
+        SELECT rekoda_private.subscription_period_violation('chat', ${end}::timestamptz,
+          ${start}::timestamptz, ${interval}, ${start}::timestamptz, ${now}::timestamptz) AS reason`)),
+    ][0]!.reason;
+
+  it('bounds a paid period by its standard end, allowing only the anchor-day clamp (0212)', async () => {
+    // A cycle from the 1st may end one month on, never 45 days on (inside the old month-end bound).
+    expect(await violation('2026-03-01T09:00:00Z', '2026-04-01T09:00:00Z')).toBeNull();
+    expect(await violation('2026-03-01T09:00:00Z', '2026-04-15T09:00:00Z')).toBe(
+      'paid_longer_than_interval',
+    );
+    expect(await violation('2026-03-01T09:00:00Z', '2027-03-01T09:00:00Z', 'annual')).toBeNull();
+    expect(await violation('2026-03-01T09:00:00Z', '2027-03-20T09:00:00Z', 'annual')).toBe(
+      'paid_longer_than_interval',
+    );
+    // A month's clamped last day may renew on its anchor: 31 January to 28 February, then on to
+    // 31 March, and no further.
+    expect(await violation('2027-01-31T09:00:00Z', '2027-02-28T09:00:00Z')).toBeNull();
+    expect(await violation('2027-02-28T09:00:00Z', '2027-03-31T09:00:00Z')).toBeNull();
+    expect(await violation('2027-02-28T09:00:00Z', '2027-04-01T09:00:00Z')).toBe(
+      'paid_longer_than_interval',
+    );
   });
 
   it('reports inactive historical records without failing the release', async () => {

@@ -1485,6 +1485,13 @@
       "when": 1795867200000,
       "tag": "0211_operator_principal_least_privilege",
       "breakpoints": true
+    },
+    {
+      "idx": 212,
+      "version": "7",
+      "when": 1795953600000,
+      "tag": "0212_closeout_review_fixes",
+      "breakpoints": true
     }
   ]
 }

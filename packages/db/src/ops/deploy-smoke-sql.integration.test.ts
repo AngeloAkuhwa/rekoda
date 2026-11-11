@@ -134,6 +134,20 @@ describe('the pre-start database smoke, executed', () => {
       "the worker's event guard disabled",
       'ALTER TABLE external_events DISABLE TRIGGER external_events_worker_guard',
     ],
+    // 0212: the worker coordinates the queue but cannot rewrite what a job runs or forge a webhook.
+    ['the worker able to rewrite a job kind', 'GRANT UPDATE (kind) ON jobs TO rekoda_worker'],
+    [
+      'the worker writing webhook deliveries directly',
+      'GRANT INSERT ON webhook_deliveries TO rekoda_worker',
+    ],
+    [
+      'a column-level write on sessions for the worker',
+      'GRANT UPDATE (token_hash) ON sessions TO rekoda_worker',
+    ],
+    [
+      'a default privilege handing the worker the next table',
+      'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT INSERT ON TABLES TO rekoda_worker',
+    ],
     // 0211: the operator holds only what a plan change needs.
     ['the operator acting as the application again', 'GRANT rekoda_app TO rekoda_billing_operator'],
     [

@@ -380,7 +380,10 @@ export class BusinessController {
   @UseGuards(OperatorGuard)
   @OperatorScopes('ops:billing')
   @HttpCode(200)
-  async setPlan(@Req() request: OperatorRequest, @Body() body: unknown): Promise<{ plan: string }> {
+  async setPlan(
+    @Req() request: OperatorRequest,
+    @Body() body: unknown,
+  ): Promise<{ plan: string; changed: boolean }> {
     const parsed = setPlanRequest.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(
@@ -402,7 +405,7 @@ export class BusinessController {
      * database writer, so `expiresAt` is null for them and a date is refused (a 400). `expired`
      * ends now, or at a given time that is not in the future; that is how a plan ends early. The
      * same rule is enforced in the application (`planDateRefusal`) and in the writer. */
-    let changed: boolean;
+    let changed: boolean | 'unchanged';
     try {
       changed = await billingRepo.setPlan(operatorDb, {
         businessId,
@@ -429,7 +432,9 @@ export class BusinessController {
       throw error;
     }
     if (!changed) throw new NotFoundException('no business with that id');
-    return { plan };
+    /* `changed: false` is a re-post of the plan and interval already in force (OD-50): nothing was
+     * written, so the period already running stands. */
+    return { plan, changed: changed === true };
   }
 }
 

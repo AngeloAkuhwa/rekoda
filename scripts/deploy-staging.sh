@@ -70,7 +70,8 @@ carries_plan_boundary() {
      " $BREAKING " == *' 0207_operator_standard_periods '* ||
      " $BREAKING " == *' 0209_settlement_verifies_the_price '* ||
      " $BREAKING " == *' 0210_worker_least_privilege '* ||
-     " $BREAKING " == *' 0211_operator_principal_least_privilege '* ]]
+     " $BREAKING " == *' 0211_operator_principal_least_privilege '* ||
+     " $BREAKING " == *' 0212_closeout_review_fixes '* ]]
 }
 # The OWN-86 pre-start smoke query, printed for an operator fixing forward by hand.
 print_smoke_0196() {
@@ -92,7 +93,7 @@ fail() {
 PHASE=checks
 # Migrations the previous release cannot run against (OD-48): the api and worker are stopped before
 # any of them is applied, and the old release is never restarted against a database that has one.
-COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_standard_periods 0209_settlement_verifies_the_price 0210_worker_least_privilege 0211_operator_principal_least_privilege'
+COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_standard_periods 0209_settlement_verifies_the_price 0210_worker_least_privilege 0211_operator_principal_least_privilege 0212_closeout_review_fixes'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -138,7 +139,7 @@ SMOKE_0196_SQL="SELECT
                   '0205_charge_terms_belong_to_settlement',
                   '0206_paid_charge_bound_to_its_cycle', '0207_operator_standard_periods',
                   '0209_settlement_verifies_the_price', '0210_worker_least_privilege',
-                  '0211_operator_principal_least_privilege')) = 11
+                  '0211_operator_principal_least_privilege', '0212_closeout_review_fixes')) = 12
   AND (SELECT count(*) FROM pg_trigger t WHERE t.tgenabled IN ('O', 'A') AND (t.tgname, t.tgrelid) IN (
         ('businesses_plan_fields_guard', 'public.businesses'::regclass),
         ('businesses_plan_fields_insert_guard', 'public.businesses'::regclass),
@@ -198,16 +199,30 @@ SMOKE_0196_SQL="SELECT
         AND attname = 'priced_at' AND NOT attisdropped) = 1
   AND NOT has_table_privilege('rekoda_worker', 'public.subscription_charges', 'INSERT')
   AND has_table_privilege('rekoda_settlement', 'public.subscription_charges', 'INSERT')
-  AND (SELECT string_agg(table_name || ':' || privilege_type, ',' ORDER BY table_name, privilege_type)
-        FROM information_schema.role_table_grants WHERE grantee = 'rekoda_worker'
-        AND table_schema = 'public' AND privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE'))
-      = 'audit_events:INSERT,dead_job_exceptions:INSERT,jobs:UPDATE,outbox_events:UPDATE,'
+  AND (SELECT string_agg(c.relname || ':' || p.priv, ',' ORDER BY c.relname, p.priv)
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        CROSS JOIN unnest(ARRAY['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE']) AS p(priv)
+        WHERE n.nspname IN ('public', 'rekoda_private') AND c.relkind IN ('r', 'p')
+          AND CASE WHEN p.priv IN ('INSERT', 'UPDATE')
+                   THEN has_any_column_privilege('rekoda_worker', c.oid, p.priv)
+                   ELSE has_table_privilege('rekoda_worker', c.oid, p.priv) END)
+      = 'audit_events:INSERT,dead_job_exceptions:INSERT,dead_job_exceptions:UPDATE,'
+        || 'external_events:UPDATE,jobs:UPDATE,outbox_events:UPDATE,'
         || 'pending_object_deletions:DELETE,pending_object_deletions:UPDATE,reconciliations:INSERT,'
         || 'stranger_contacts:INSERT,stranger_contacts:UPDATE,usage_counters:INSERT,usage_counters:UPDATE,'
-        || 'webhook_deliveries:INSERT,webhook_deliveries:UPDATE'
+        || 'webhook_deliveries:UPDATE,webhook_endpoints:UPDATE'
+  AND NOT has_column_privilege('rekoda_worker', 'public.jobs', 'kind', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_worker', 'public.jobs', 'payload', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_worker', 'public.jobs', 'business_id', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_worker', 'public.webhook_deliveries', 'payload', 'UPDATE')
+  AND has_function_privilege('rekoda_worker', 'public.webhook_queue_delivery(uuid,uuid)', 'EXECUTE')
+  AND NOT EXISTS (SELECT 1 FROM pg_default_acl d CROSS JOIN aclexplode(d.defaclacl) a
+        WHERE a.grantee = 'rekoda_worker'::regrole
+          AND a.privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE'))
   AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker']) AS r(role)
         CROSS JOIN unnest(ARRAY['public.rekoda_migrations', 'public.business_entitlements']) AS t(tab)
-        WHERE has_table_privilege(r.role, t.tab, 'INSERT') OR has_table_privilege(r.role, t.tab, 'UPDATE')
+        WHERE has_any_column_privilege(r.role, t.tab, 'INSERT')
+           OR has_any_column_privilege(r.role, t.tab, 'UPDATE')
            OR has_table_privilege(r.role, t.tab, 'DELETE'))
   AND NOT has_function_privilege('rekoda_worker', 'public.retention_delete_business_unchecked(uuid,timestamptz)', 'EXECUTE')
   AND NOT has_function_privilege('rekoda_app', 'public.retention_delete_business_unchecked(uuid,timestamptz)', 'EXECUTE')

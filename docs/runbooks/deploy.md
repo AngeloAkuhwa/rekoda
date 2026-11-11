@@ -555,9 +555,9 @@ Rotating either password: as in "Rotate a database password", with the variable 
 **Existing rows the duration rules would not accept** (0203 and 0207 do not rewrite them; OD-49).
 Use the release preflight in the next section, not a hand-written query.
 
-### Deploy a release carrying 0207 to 0211 (standard operator periods, release preflight, settlement off the API, worker least privilege, operator principal)
+### Deploy a release carrying 0207 to 0212 (standard operator periods, release preflight, settlement off the API, worker least privilege, operator principal, review fixes)
 
-0207, 0209, 0210 and 0211 are compatibility breaks like 0196 to 0206: the previous release passes
+0207 and 0209 to 0212 are compatibility breaks like 0196 to 0206: the previous release passes
 operator end dates that 0207 refuses, and opens charges and holds credentials in ways 0209 to 0211
 change. Deploy with the api and worker stopped. `scripts/deploy-staging.sh` lists them and enforces
 the order. 0208 only adds owner-only functions.
@@ -566,6 +566,13 @@ the order. 0208 only adds owner-only functions.
    `SETTLEMENT_DATABASE_URL`: the worker and the migrate job need it. `docker-compose.prod.yml`
    blanks it for the `api` service, and a production api process given it refuses to start
    ("SETTLEMENT_DATABASE_URL must not be set for an API process"). Do not add it back to the api.
+   The production worker listens on loopback only.
+
+   Keep `REKODA_PLAN_CATALOGUE_READS` the same for the api and the worker. Settlement re-prices
+   every charge with the worker's setting, so a mismatch, or a change while charges are pending,
+   sets honest payments aside as `price_not_verified` (an operator then reconciles each one).
+   Change it only with no pending plan or pack charge.
+
 2. `dc run --rm -T migrate`, as before, then the pre-start smoke. The smoke now also checks:
    - the trial-start, retention-notice and worker-event guards;
    - the charge guard that lets the application open only a pristine pending charge;
@@ -605,6 +612,9 @@ the order. 0208 only adds owner-only functions.
    It never changes the plan. It writes `subscription_period_corrected` to `audit_events` with the
    original and corrected values and the reason. To end a plan instead, use the operator route with
    `expired`. Re-run the preflight afterwards.
+
+   A row with no cycle start (`paid_no_cycle_start`), or one whose start is in the future, cannot
+   be corrected this way. Move it with the operator route: `expired`, then a standard period.
 
 5. **Operator plan changes (OD-50, 0207).** `POST /v1/businesses/plan` takes `expiresAt: null` for
    a paid plan or a trial: the database writer sets exactly one standard period (one Lagos calendar

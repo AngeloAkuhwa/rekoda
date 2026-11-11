@@ -48,6 +48,11 @@ export async function openPricedCharge(
   charge: FixtureCharge,
 ): Promise<string | null> {
   const at = new Date();
-  const amountK = charge.amountK ?? (await honestTerms(tx, config, charge, at))?.amountK ?? 0;
+  const amountK =
+    charge.amountK ??
+    (await honestTerms(tx, config, charge, at))?.amountK ??
+    ((): never => {
+      throw new Error(`no honest price for a ${charge.kind} charge: give one explicitly`);
+    })();
   return subscriptionsRepo.openCharge(tx, { ...charge, amountK, pricedAt: at });
 }

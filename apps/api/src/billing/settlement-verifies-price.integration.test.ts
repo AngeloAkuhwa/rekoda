@@ -230,7 +230,7 @@ describe('OD-51: a mis-priced charge is recorded and never applied', () => {
     expect((await planOf(businessId)).plan).toBe('trial');
   });
 
-  it('an upgrade underpriced by one kobo', async () => {
+  it('an upgrade to Integrate opened at 1 kobo', async () => {
     const businessId = await seedBusiness();
     await onPlan(businessId, 'chat', 12 * DAY);
     const honest = await billing().changePlan(businessId, 'complete');
@@ -280,17 +280,35 @@ describe('OD-51: a mis-priced charge is recorded and never applied', () => {
     await refused(businessId, reference);
   });
 
-  it('a first purchase labelled as an upgrade, to borrow a cheaper prorated price', async () => {
+  it('the right amount under the wrong kind: a first purchase opened for a business already paying', async () => {
     const businessId = await seedBusiness();
+    await onPlan(businessId, 'chat', 20 * DAY);
+    // Complete's full monthly price is what a FIRST purchase of it costs, so the amount alone
+    // passes; for a business on Chat this is an upgrade (prorated), so only the kind refuses it.
+    const honest = await withBusiness(appDb, businessId, (tx) =>
+      expectedChargeTerms(
+        tx,
+        config,
+        businessId,
+        {
+          kind: 'first_purchase',
+          plan: 'complete',
+          billingInterval: 'monthly',
+          createdAt: new Date(),
+          pricedAt: new Date(),
+        } as never,
+        null,
+      ),
+    );
+    expect(honest).toMatchObject({ kind: 'upgrade' });
+    const [{ price }] = [{ price: 2_990_000 }]; // Complete's monthly price (the constant table)
     const reference = await forge(businessId, {
-      kind: 'upgrade',
-      plan: 'chat',
-      amountK: 0,
-      periodStart: new Date(Date.now() - DAY),
-      periodEnd: new Date(Date.now() + DAY),
+      kind: 'first_purchase',
+      plan: 'complete',
+      amountK: price,
     });
-    expect(await settle(businessId, reference)).toBe('superseded');
-    expect((await planOf(businessId)).plan).toBe('trial');
+    await refused(businessId, reference);
+    expect((await planOf(businessId)).plan).toBe('chat');
   });
 
   it('ten packs for the price of one credit nothing', async () => {
@@ -344,7 +362,7 @@ describe('OD-51: the application opens only a pristine pending charge (0209)', (
   ])('refuses an insert with %s = %s', async (column, value) => {
     const businessId = await seedBusiness();
     expect(await attempt(businessId, column, value)).toMatch(
-      /opens only a new pending charge|violates check constraint/,
+      /the application opens only a new pending charge/,
     );
   });
 
@@ -378,7 +396,9 @@ describe('OD-51: the application opens only a pristine pending charge (0209)', (
           amountK: 1,
         }),
       ),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({
+      cause: { message: expect.stringMatching(/permission denied for table subscription_charges/) },
+    });
   });
 
   it('nobody but settlement and the owner may move the pricing time after opening', async () => {
@@ -390,7 +410,9 @@ describe('OD-51: the application opens only a pristine pending charge (0209)', (
         tx.execute(sql`UPDATE subscription_charges SET priced_at = priced_at - interval '1 minute'
                        WHERE reference = ${answer.reference}`),
       ),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({
+      cause: { message: expect.stringMatching(/what a charge buys is set when it is opened/) },
+    });
   });
 });
 
@@ -446,6 +468,26 @@ describe('OD-51: a zero-priced upgrade is applied by the worker, after it re-pri
     expect(await pending).toEqual({ state: 'applied', plan: 'complete' });
   });
 
+  it('a second click before the worker runs applies one upgrade and sets nothing aside', async () => {
+    const businessId = await seedBusiness();
+    await onPlan(businessId, 'chat', 10 * 3_600_000);
+
+    expect((await billing().changePlan(businessId, 'complete')).state).toBe('processing');
+    expect((await billing().changePlan(businessId, 'complete')).state).toBe('processing');
+    const jobs = await queued(businessId);
+    expect(jobs).toHaveLength(2);
+    for (const job of jobs) await runJob(businessId, job.reference);
+
+    expect((await planOf(businessId)).plan).toBe('complete');
+    const rows = [
+      ...(await ownerDb.execute<{ status: string; unapplied_reason: string | null }>(sql`
+        SELECT status, unapplied_reason FROM subscription_charges
+        WHERE business_id = ${businessId}::uuid AND kind = 'upgrade' ORDER BY created_at`)),
+    ];
+    expect(rows.filter((r) => r.status === 'paid')).toHaveLength(1);
+    expect(rows.filter((r) => r.unapplied_reason !== null)).toEqual([]);
+  });
+
   it('a zero-priced upgrade the application opened with twelve days left is refused', async () => {
     const businessId = await seedBusiness();
     await onPlan(businessId, 'chat', 12 * DAY);
@@ -470,5 +512,43 @@ describe('OD-51: a zero-priced upgrade is applied by the worker, after it re-pri
       status: 'paid',
       unapplied_reason: 'price_not_verified',
     });
+  });
+});
+
+describe('OD-51: a planted charge is never offered for payment', () => {
+  it('checkout refuses a pending charge whose price is not Rekoda own, and asks Paystack nothing', async () => {
+    const businessId = await seedBusiness();
+    const reference = await forge(businessId, {
+      kind: 'first_purchase',
+      plan: 'complete',
+      amountK: 1,
+    });
+    const { BillingCheckoutService } = await import('./billing-checkout.service.js');
+    const { StubPaymentProvider } = await import('../payments/provider.stub.js');
+    const provider = new StubPaymentProvider();
+    const answer = await new BillingCheckoutService(
+      { ...config, vaultKey: 'a'.repeat(64), webUrl: null } as never,
+      appDb,
+      provider,
+    ).checkout(businessId, reference, 'ada@shop.example.ng');
+    expect(answer).toEqual({ state: 'unavailable', reason: 'superseded' });
+    expect(provider.initialized).toEqual([]);
+  });
+
+  it('a plan change never hands back a pending charge at another price as what is owed', async () => {
+    const businessId = await seedBusiness();
+    const planted = await forge(businessId, {
+      kind: 'first_purchase',
+      plan: 'chat',
+      amountK: 1,
+      // The Lagos day's start, as the opener records a first purchase: the planted charge takes the
+      // merchant's own cycle slot.
+      periodStart: new Date(Math.floor((Date.now() + 3_600_000) / DAY) * DAY - 3_600_000),
+    });
+    const answer = await billing().changePlan(businessId, 'chat');
+    if (answer.state === 'payment_required') {
+      expect(answer.reference).not.toBe(planted);
+      expect(answer.amountK).not.toBe(1);
+    }
   });
 });

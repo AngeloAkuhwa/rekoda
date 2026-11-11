@@ -272,6 +272,10 @@ if (isEntrypoint(import.meta.url, process.argv[1])) {
   // one-line startup error instead of a stack trace inside a DI factory.
   const config = loadConfig();
   const app = await createApp();
-  await app.listen({ port: config.port, host: '0.0.0.0' });
-  new Logger('bootstrap').log(`Rekoda API listening on :${config.port}`);
+  /* OD-51: a production worker holds the settlement credential and serves no one but its own
+   * health check (run inside its container), so it listens on loopback only: nothing on the db
+   * network, the API included, can reach it. The API listens for Caddy as before. */
+  const host = config.workerEnabled && isProductionEnv(process.env) ? '127.0.0.1' : '0.0.0.0';
+  await app.listen({ port: config.port, host });
+  new Logger('bootstrap').log(`Rekoda API listening on ${host}:${config.port}`);
 }
