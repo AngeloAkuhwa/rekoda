@@ -150,6 +150,32 @@ describe('the pre-start database smoke, executed', () => {
     ],
     // 0211: the operator holds only what a plan change needs.
     ['the operator acting as the application again', 'GRANT rekoda_app TO rekoda_billing_operator'],
+    // 0213 (OD-50): the support-review resolution is the billing operator's alone.
+    [
+      'the support-review resolution granted to the application',
+      'GRANT EXECUTE ON FUNCTION subscription_operator_resolve_review(uuid,text,text,text) TO rekoda_app',
+    ],
+    [
+      'the support-review request granted to the operator',
+      'GRANT EXECUTE ON FUNCTION subscription_request_plan_review(uuid,text) TO rekoda_billing_operator',
+    ],
+    [
+      'a runtime role writing reviews directly',
+      'GRANT INSERT ON plan_change_reviews TO rekoda_app',
+    ],
+    [
+      'a review column writable by the operator',
+      'GRANT UPDATE (paid_through) ON plan_change_reviews TO rekoda_billing_operator',
+    ],
+    // 0214 (OD-51.7): one credit per pack purchase.
+    [
+      'the purchase guard disabled',
+      'ALTER TABLE subscription_charges DISABLE TRIGGER subscription_charges_purchase_guard',
+    ],
+    [
+      'the one-credit-per-purchase index dropped',
+      'DROP INDEX subscription_charges_one_credit_per_purchase_ux',
+    ],
     [
       'the test-only fixture writer present',
       "CREATE FUNCTION public.test_fixture_set_plan(p uuid, q text, r timestamptz) RETURNS void LANGUAGE sql AS ''",

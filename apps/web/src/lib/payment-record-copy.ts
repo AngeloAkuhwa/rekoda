@@ -66,6 +66,8 @@ const VIEWS: Record<State, PaymentRecordView> = {
 const NOT_APPLIED_WHY: Record<NonNullable<BillingPaymentRecord['notAppliedReason']>, string> = {
   plan_changed: 'It was not applied because your plan changed after this payment was started.',
   period_ended: 'It was not applied because your billing period had already ended when it arrived.',
+  paid_twice:
+    'It was not applied because this top-up had already been paid for. No extra units were added, and our team is reviewing this second payment.',
   under_review: 'It was not applied and is being reviewed.',
 };
 

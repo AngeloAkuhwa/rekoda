@@ -74,7 +74,7 @@ describe('payment record copy', () => {
   });
 
   it('names the true reason a payment was not applied and invents no newer choice', () => {
-    const why = (reason: 'plan_changed' | 'period_ended' | 'under_review') =>
+    const why = (reason: 'plan_changed' | 'period_ended' | 'paid_twice' | 'under_review') =>
       paymentRecordView({
         ...base,
         state: 'paid_not_applied',
@@ -84,6 +84,12 @@ describe('payment record copy', () => {
     expect(why('plan_changed')).toMatch(/plan changed after this payment was started/);
     expect(why('period_ended')).toMatch(/billing period had already ended/);
     expect(why('under_review')).toMatch(/being reviewed/);
+    /* OD-51.7: a second payment for a top-up already paid for says exactly that, and never claims
+     * the payment failed (Paystack confirmed it). */
+    expect(why('paid_twice')).toMatch(/this top-up had already been paid for/);
+    expect(why('paid_twice')).toMatch(/No extra units were added/);
+    expect(why('paid_twice')).not.toMatch(/fail/i);
+    expect(why('paid_twice')).toMatch(/^Paystack confirmed this payment/);
     expect(why('period_ended')).not.toMatch(/newer (plan )?choice|changed/i);
   });
 

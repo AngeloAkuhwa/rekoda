@@ -128,6 +128,10 @@ UP_ENTERED=false
 #   * the settlement and billing-operator roles exist, can log in and cannot bypass RLS; settlement
 #     acts with rekoda_app's rights and the operator does not; no runtime role can become another
 #     principal, the worker or the writer;
+#   * the support-review resolution (0213) runs for the billing operator only, the request for the
+#     application only, and no runtime role writes plan_change_reviews directly;
+#   * a pack purchase is credited once: the purchase guard is enabled and the unique index on a
+#     credited (business, purchase) exists (0214);
 #   * the worker reads but cannot write other businesses' events (its estate policy is SELECT only,
 #     no table-level INSERT, UPDATE or DELETE), and the application cannot record an add-on holding.
 # The expected list is the contract; a new writer is a deliberate edit of this list in its PR.
@@ -139,7 +143,8 @@ SMOKE_0196_SQL="SELECT
                   '0205_charge_terms_belong_to_settlement',
                   '0206_paid_charge_bound_to_its_cycle', '0207_operator_standard_periods',
                   '0209_settlement_verifies_the_price', '0210_worker_least_privilege',
-                  '0211_operator_principal_least_privilege', '0212_closeout_review_fixes')) = 12
+                  '0211_operator_principal_least_privilege', '0212_closeout_review_fixes',
+                  '0213_support_review_plan_change', '0214_pack_purchase_identity')) = 14
   AND (SELECT count(*) FROM pg_trigger t WHERE t.tgenabled IN ('O', 'A') AND (t.tgname, t.tgrelid) IN (
         ('businesses_plan_fields_guard', 'public.businesses'::regclass),
         ('businesses_plan_fields_insert_guard', 'public.businesses'::regclass),
@@ -149,7 +154,8 @@ SMOKE_0196_SQL="SELECT
         ('usage_counters_bonus_guard', 'public.usage_counters'::regclass),
         ('businesses_trial_start_guard', 'public.businesses'::regclass),
         ('businesses_retention_notice_guard', 'public.businesses'::regclass),
-        ('external_events_worker_guard', 'public.external_events'::regclass))) = 9
+        ('external_events_worker_guard', 'public.external_events'::regclass),
+        ('subscription_charges_purchase_guard', 'public.subscription_charges'::regclass))) = 10
   AND (SELECT prosrc FROM pg_proc
         WHERE oid = to_regprocedure('public.subscription_apply_paid_charge(uuid,text,timestamptz)'))
         LIKE '%the upgrade was priced for another cycle%the renewal was priced for another cycle%'
@@ -163,7 +169,9 @@ SMOKE_0196_SQL="SELECT
       = 'public.staging_move_date(uuid, text, timestamp with time zone, timestamp with time zone, text, text, uuid) => rekoda_app'
         || ' ; public.subscription_apply_paid_charge(uuid, text, timestamp with time zone) => rekoda_settlement'
         || ' ; public.subscription_expire_plan(uuid, text, text) => rekoda_app,rekoda_worker'
+        || ' ; public.subscription_operator_resolve_review(uuid, text, text, text) => rekoda_billing_operator'
         || ' ; public.subscription_operator_set_plan(uuid, text, timestamp with time zone, text, text) => rekoda_billing_operator'
+        || ' ; public.subscription_request_plan_review(uuid, text) => rekoda_app'
   AND NOT EXISTS (SELECT 1 FROM pg_proc WHERE proowner = 'rekoda_plan_writer'::regrole
         AND (NOT prosecdef OR proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, public, pg_temp']))
   AND to_regprocedure('public.subscription_write_plan(uuid,text,timestamptz)') IS NULL
@@ -226,7 +234,15 @@ SMOKE_0196_SQL="SELECT
            OR has_table_privilege(r.role, t.tab, 'DELETE'))
   AND NOT has_function_privilege('rekoda_worker', 'public.retention_delete_business_unchecked(uuid,timestamptz)', 'EXECUTE')
   AND NOT has_function_privilege('rekoda_app', 'public.retention_delete_business_unchecked(uuid,timestamptz)', 'EXECUTE')
-  AND NOT has_table_privilege('rekoda_billing_operator', 'public.subscription_charges', 'INSERT')"
+  AND NOT has_table_privilege('rekoda_billing_operator', 'public.subscription_charges', 'INSERT')
+  AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker', 'rekoda_settlement',
+        'rekoda_billing_operator']) AS r(role)
+        WHERE has_any_column_privilege(r.role, 'public.plan_change_reviews', 'INSERT')
+           OR has_any_column_privilege(r.role, 'public.plan_change_reviews', 'UPDATE')
+           OR has_table_privilege(r.role, 'public.plan_change_reviews', 'DELETE'))
+  AND (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public'
+        AND indexname = 'subscription_charges_one_credit_per_purchase_ux'
+        AND indexdef LIKE '%UNIQUE%(business_id, purchase_id)%units_credited_at IS NOT NULL%') = 1"
 PREV_SHA=
 PREV_RELEASE=
 # The exit status meaning "skipped, nothing changed"; no failure may use it.

@@ -637,7 +637,10 @@ export class BillingService {
       if (!gate.ok) return { state: 'unavailable' as const, reason: gate.reason };
 
       const reference = addOnReference(now, randomBytes);
-      const open = () =>
+      /* `replaces` names the retired charge a new one stands in for (OD-51.7, 0214): the two are
+       * one intended purchase, so whichever link is paid first credits the pack and the other is
+       * set aside. A charge opened with nothing to replace is a new purchase. */
+      const open = (replaces?: string) =>
         subscriptionsRepo.openCharge(tx, {
           businessId,
           kind: 'add_on',
@@ -645,6 +648,7 @@ export class BillingService {
           amountK: pack.priceK,
           reference,
           pricedAt: now,
+          ...(replaces ? { replaces } : {}),
         });
       let opened = await open();
       if (!opened) {
@@ -666,7 +670,7 @@ export class BillingService {
           pending &&
           (await subscriptionsRepo.retirePendingCharge(tx, businessId, pending.reference))
         ) {
-          opened = await open();
+          opened = await open(pending.reference);
         }
         if (!opened) return { state: 'unavailable' as const, reason: 'pack' };
       }
@@ -728,6 +732,23 @@ export async function applySettledCharge(
       await subscriptionsRepo.markUnapplied(tx, input.reference, refused, input.when);
       return 'superseded';
     }
+    /* OD-51.7 (0214): one intended purchase is credited once. A replacement charge shares its
+     * purchase with the retired charge it stood in for, and both links can be paid. The first
+     * verified payment of the purchase grants the units; this one, arriving second, is real money
+     * and stays recorded as paid, set aside for an operator to reconcile or refund. The business
+     * row is locked (above), so two settlements of one purchase cannot both pass this check, and
+     * the unique index on a credited purchase holds the rule whatever runs the settlement. */
+    if (
+      await subscriptionsRepo.purchaseCreditedElsewhere(
+        tx,
+        input.businessId,
+        charge.purchaseId,
+        input.reference,
+      )
+    ) {
+      await subscriptionsRepo.markUnapplied(tx, input.reference, 'duplicate_purchase', input.when);
+      return 'superseded';
+    }
     /* The version in force when the charge was PRICED (the instant the price check above used),
      * not when the webhook arrived: a pack repriced or resized between purchase and settlement
      * still credits exactly what was bought and paid for. */
@@ -748,6 +769,13 @@ export async function applySettledCharge(
       /* OD-40: the credit's own time, in the transaction that made it. A pack that could
        * not be resolved credited nothing and so records no credit time. */
       await subscriptionsRepo.markUnitsCredited(tx, input.businessId, input.reference);
+      /* The purchase is complete: its other links are no longer offered as payable. */
+      await subscriptionsRepo.retirePurchaseSiblings(
+        tx,
+        input.businessId,
+        charge.purchaseId,
+        input.reference,
+      );
     }
     return 'applied';
   }
@@ -1003,9 +1031,12 @@ async function verifiedPriceRefusal(
 }
 
 /** The merchant-safe family of an internal reason a paid charge was not applied (OD-30). */
-function notAppliedReason(reason: string | null): 'plan_changed' | 'period_ended' | 'under_review' {
+function notAppliedReason(
+  reason: string | null,
+): 'plan_changed' | 'period_ended' | 'paid_twice' | 'under_review' {
   if (reason === 'subscription_decided_after_charge') return 'plan_changed';
   if (reason === 'cycle_ended') return 'period_ended';
+  if (reason === 'duplicate_purchase') return 'paid_twice';
   return 'under_review';
 }
 

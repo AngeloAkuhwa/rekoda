@@ -576,6 +576,12 @@ export interface NewCharge {
    * this same instant. The database bounds it to the insert time; absent is the insert time.
    */
   pricedAt?: Date;
+  /**
+   * The reference of the retired pending charge this one replaces (OD-51.7, migration 0214): the
+   * new charge is the SAME intended purchase and takes that charge's `purchase_id`, so only one of
+   * the two can ever be credited. Absent, the charge is a new purchase with its own identity.
+   */
+  replaces?: string;
 }
 
 /**
@@ -591,7 +597,7 @@ export async function openCharge(tx: TenantDb, charge: NewCharge): Promise<strin
   const rows = await tx.execute<{ id: string }>(sql`
     INSERT INTO subscription_charges
       (business_id, kind, plan, pack_id, quantity, amount_k, provider,
-       reference, period_start, period_end, billing_interval, created_at, priced_at)
+       reference, period_start, period_end, billing_interval, created_at, priced_at, purchase_id)
     VALUES (
       ${charge.businessId}::uuid, ${charge.kind}, ${charge.plan ?? null},
       ${charge.packId ?? null}, ${charge.quantity ?? 1}, ${charge.amountK},
@@ -600,7 +606,11 @@ export async function openCharge(tx: TenantDb, charge: NewCharge): Promise<strin
       ${charge.periodEnd ? charge.periodEnd.toISOString() : null}::timestamptz,
       ${charge.billingInterval ?? 'monthly'}, clock_timestamp(),
       COALESCE(${charge.pricedAt ? charge.pricedAt.toISOString() : null}::timestamptz,
-               clock_timestamp()))
+               clock_timestamp()),
+      COALESCE((SELECT prior.purchase_id FROM subscription_charges prior
+                WHERE prior.business_id = ${charge.businessId}::uuid
+                  AND prior.reference = ${charge.replaces ?? null}),
+               gen_random_uuid()))
     ON CONFLICT DO NOTHING
     RETURNING id
   `);
@@ -640,6 +650,8 @@ export interface ChargeRow extends Record<string, unknown> {
   providerSettledAt: Date | null;
   /** OD-40: when Rekoda committed a pack's units (database time); null for a plan charge or before crediting. */
   unitsCreditedAt: Date | null;
+  /** The intended purchase this charge belongs to (OD-51.7, 0214); a replacement shares it. */
+  purchaseId: string;
 }
 
 interface RawCharge extends Record<string, unknown> {
@@ -665,6 +677,7 @@ interface RawCharge extends Record<string, unknown> {
   provider_paid_at: string | null;
   provider_settled_at: string | null;
   units_credited_at: string | null;
+  purchase_id: string;
 }
 
 const shape = (row: RawCharge): ChargeRow => ({
@@ -690,6 +703,7 @@ const shape = (row: RawCharge): ChargeRow => ({
   providerPaidAt: at(row.provider_paid_at),
   providerSettledAt: at(row.provider_settled_at),
   unitsCreditedAt: at(row.units_credited_at),
+  purchaseId: row.purchase_id,
 });
 
 /**
@@ -833,6 +847,47 @@ export async function markUnitsCredited(
     RETURNING id
   `);
   return [...rows].length === 1;
+}
+
+/**
+ * Has this intended pack purchase already been credited by ANOTHER charge (OD-51.7, 0214)? A
+ * replacement charge shares its purchase with the retired charge it replaced, and both links can be
+ * paid: the first verified settlement grants the units, a later one must not. Call with the
+ * business row locked, so two settlements of one purchase cannot both read "not yet".
+ */
+export async function purchaseCreditedElsewhere(
+  tx: TenantDb,
+  businessId: string,
+  purchaseId: string,
+  reference: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ reference: string }>(sql`
+    SELECT reference FROM subscription_charges
+    WHERE business_id = ${businessId}::uuid AND purchase_id = ${purchaseId}::uuid
+      AND reference <> ${reference} AND units_credited_at IS NOT NULL
+    LIMIT 1
+  `);
+  return rows.length > 0;
+}
+
+/**
+ * A purchase was just credited: retire its other still-payable charges (OD-51.7), so the billing
+ * page stops offering a link whose payment would be set aside, and buying the pack again opens a
+ * new purchase. A payment already in flight on one is still recorded at settlement. Call with the
+ * business row locked.
+ */
+export async function retirePurchaseSiblings(
+  tx: TenantDb,
+  businessId: string,
+  purchaseId: string,
+  reference: string,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE subscription_charges
+    SET superseded_at = clock_timestamp(), abandoned_at = clock_timestamp(), updated_at = now()
+    WHERE business_id = ${businessId}::uuid AND purchase_id = ${purchaseId}::uuid
+      AND reference <> ${reference} AND status = 'pending' AND superseded_at IS NULL
+  `);
 }
 
 /**
