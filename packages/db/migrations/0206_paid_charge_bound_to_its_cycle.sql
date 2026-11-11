@@ -136,7 +136,7 @@ BEGIN
   END IF;
   -- The integration harness's fixture writer, installed by the table owner in test databases only.
   -- A deployed database never has it: the pre-start smoke and the api's boot check refuse one that
-  -- does, and no role but the owner can create a function in `public`.
+  -- does, and both refuse a runtime role that can create a function in `public`.
   IF to_regprocedure('public.test_fixture_set_plan(uuid, text, timestamptz)') IS NOT NULL THEN
     RETURN NEW;
   END IF;
