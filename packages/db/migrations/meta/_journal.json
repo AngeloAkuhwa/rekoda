@@ -1450,6 +1450,34 @@
       "when": 1795435200000,
       "tag": "0206_paid_charge_bound_to_its_cycle",
       "breakpoints": true
+    },
+    {
+      "idx": 207,
+      "version": "7",
+      "when": 1795521600000,
+      "tag": "0207_operator_plan_periods_exact",
+      "breakpoints": true
+    },
+    {
+      "idx": 208,
+      "version": "7",
+      "when": 1795608000000,
+      "tag": "0208_subscription_conformance",
+      "breakpoints": true
+    },
+    {
+      "idx": 209,
+      "version": "7",
+      "when": 1795694400000,
+      "tag": "0209_meter_refund_schedule_writers",
+      "breakpoints": true
+    },
+    {
+      "idx": 210,
+      "version": "7",
+      "when": 1795780800000,
+      "tag": "0210_charge_price_from_the_catalogue",
+      "breakpoints": true
     }
   ]
 }

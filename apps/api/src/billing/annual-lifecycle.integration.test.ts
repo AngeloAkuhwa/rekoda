@@ -35,7 +35,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
-import { settlementDb } from '@rekoda/db/testing';
+import { operatorDb, settlementDb } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRenewals } from './renewal-sweep.js';
 import { sweepGracePeriods } from './grace-sweep.js';
@@ -356,8 +356,8 @@ describe('money returned on a yearly charge', () => {
   }
 
   const refund = (businessId: string, reference: string, amountK: number) =>
-    withBusiness(db, businessId, (tx) =>
-      subscriptionsRepo.refundCharge(tx, reference, amountK, new Date(), {
+    withBusiness(operatorDb(), businessId, (tx) =>
+      subscriptionsRepo.refundCharge(tx, businessId, reference, amountK, {
         actor: 'operator:test',
         reason: 'goodwill',
       }),

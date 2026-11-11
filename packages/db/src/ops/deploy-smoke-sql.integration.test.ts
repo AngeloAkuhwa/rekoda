@@ -67,7 +67,7 @@ describe('the pre-start database smoke, executed', () => {
     ],
     [
       'PUBLIC on the operator writer',
-      'GRANT EXECUTE ON FUNCTION subscription_operator_set_plan(uuid,text,timestamptz,text,text) TO PUBLIC',
+      'GRANT EXECUTE ON FUNCTION subscription_operator_set_plan(uuid,text,text,text,text) TO PUBLIC',
     ],
     [
       'a writer with the wrong owner',
@@ -77,10 +77,7 @@ describe('the pre-start database smoke, executed', () => {
       'an unexpected function owned by the writer role',
       "CREATE FUNCTION public.extra_writer() RETURNS int LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS 'select 1'; ALTER FUNCTION public.extra_writer() OWNER TO rekoda_plan_writer",
     ],
-    [
-      'a missing writer',
-      'DROP FUNCTION subscription_operator_set_plan(uuid,text,timestamptz,text,text)',
-    ],
+    ['a missing writer', 'DROP FUNCTION subscription_operator_set_plan(uuid,text,text,text,text)'],
     [
       'a writer without its pinned search_path',
       'ALTER FUNCTION subscription_apply_paid_charge(uuid,text,timestamptz) RESET search_path',
@@ -109,6 +106,32 @@ describe('the pre-start database smoke, executed', () => {
       'the test-only fixture writer present',
       "CREATE FUNCTION public.test_fixture_set_plan(p uuid, q text, r timestamptz) RETURNS void LANGUAGE sql AS ''",
     ],
+    // 0207 to 0210 (the PR #432 remediation brief).
+    ['the trial-start guard dropped', 'DROP TRIGGER businesses_trial_start_guard ON businesses'],
+    [
+      'the price check disabled',
+      'ALTER TABLE subscription_charges DISABLE TRIGGER subscription_charges_price_check',
+    ],
+    [
+      'the refund guard dropped',
+      'DROP TRIGGER subscription_charges_refund_guard ON subscription_charges',
+    ],
+    ['the scheduling guard dropped', 'DROP TRIGGER businesses_schedule_fields_guard ON businesses'],
+    ['the application writing counters again', 'GRANT UPDATE ON usage_counters TO rekoda_app'],
+    [
+      'the worker writing the consumption journal',
+      'GRANT INSERT ON usage_reservations TO rekoda_worker',
+    ],
+    [
+      'the application recording a refund',
+      'GRANT EXECUTE ON FUNCTION subscription_record_refund(uuid,text,bigint,text,text) TO rekoda_app',
+    ],
+    [
+      'the worker crediting pack units',
+      'GRANT EXECUTE ON FUNCTION usage_credit_bonus(uuid,text,text,integer) TO rekoda_worker',
+    ],
+    ['the application as the meter writer', 'GRANT rekoda_meter_writer TO rekoda_app'],
+    ['the worker as the price reader', 'GRANT rekoda_price_reader TO rekoda_worker'],
   ])('prints f for %s', async (_label, tamper) => {
     expect(await smokeAfter(tamper)).toBe('f');
   });

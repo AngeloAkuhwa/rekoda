@@ -86,6 +86,14 @@ interface ChargeSpec {
   superseded?: boolean;
 }
 
+/* The approved catalogue figures (0113): migration 0210 refuses a charge opened at any other. */
+const CATALOGUE_K: Record<string, number> = {
+  chat: 990_000,
+  integrate: 1_990_000,
+  complete: 2_990_000,
+  messages_100: 250_000,
+};
+
 let chargeSeq = 0;
 /** A subscription charge for the business, under the pin: opened pending as the application does,
  * or carrying a payment as only settlement may write one (OD-37, 0202). */
@@ -103,7 +111,7 @@ async function seedCharge(businessId: string, spec: ChargeSpec = {}): Promise<st
          paid_at, applied_period_start, applied_period_end, unapplied_at, unapplied_reason,
          superseded_at)
       VALUES (${businessId}::uuid, ${kind}, ${plan},
-        ${kind === 'add_on' ? 'whatsapp_500' : null}, 1000, ${status}, ${reference},
+        ${kind === 'add_on' ? 'messages_100' : null}, ${CATALOGUE_K[kind === 'add_on' ? 'messages_100' : (plan ?? '')] ?? 0}, ${status}, ${reference},
         now(), now() + interval '30 days',
         ${status === 'paid' ? sql`now()` : sql`NULL`},
         ${spec.applied ? sql`now()` : sql`NULL`}, ${spec.applied ? sql`now() + interval '30 days'` : sql`NULL`},
@@ -227,11 +235,13 @@ describe('OD-37: the sanctioned writers still work', () => {
       await billingRepo.setPlan(operatorDb(), {
         businessId,
         plan: 'complete',
-        expiresAt: FUTURE,
         actor: 'operator:alice',
       }),
     ).toBe(true);
-    expect((await planOf(businessId))?.plan).toBe('complete');
+    // The standard period the writer assigned (OD-50): in the future, never open-ended.
+    const corrected = await planOf(businessId);
+    expect(corrected?.plan).toBe('complete');
+    expect(new Date(corrected!.plan_expires_at!).getTime()).toBeGreaterThan(Date.now());
 
     await withBusiness(appDb, businessId, (tx) =>
       subscriptionsRepo.schedulePlanChange(tx, businessId, 'expired'),
@@ -294,7 +304,7 @@ describe('OD-37: the boundary itself', () => {
       await outcome(
         withBusiness(operatorDb(), b, (tx) =>
           tx.execute(
-            sql`SELECT subscription_operator_set_plan(${a}::uuid, 'complete', ${FUTURE.toISOString()}::timestamptz, 'monthly', 'operator:x')`,
+            sql`SELECT subscription_operator_set_plan(${a}::uuid, 'complete', 'monthly', 'operator:x', NULL)`,
           ),
         ),
       ),

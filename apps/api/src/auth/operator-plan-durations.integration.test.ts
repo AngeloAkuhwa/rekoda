@@ -1,9 +1,9 @@
 /**
- * Owner review of PR #432, item 3 (migration 0203), over real HTTP: `POST /v1/businesses/plan` holds
- * an operator to Rekoda's plan durations. A monthly plan ends within one calendar month, an annual
- * plan within twelve, a trial within 14 days of the business's own trial start, `expired` at or
- * before now, and no paid plan is open-ended. A date outside the rule is a 400 that writes nothing;
- * no date means the rule's own (one period). The write runs on the billing-operator principal
+ * Owner review of PR #432, item 3 (migration 0203) and OD-50 (migration 0207), over real HTTP:
+ * `POST /v1/businesses/plan` holds an operator to Rekoda's standard periods. The operator never
+ * chooses a date: a monthly plan ends exactly one calendar month from now, an annual plan twelve,
+ * and no paid plan is open-ended. Any date is a 400 that writes nothing, as is `expired` (the
+ * explicit early end) without a reason. The write runs on the billing-operator principal
  * (OD-37, 0202): the application credential cannot run the operator writer at all.
  */
 import { randomBytes } from 'node:crypto';
@@ -70,32 +70,30 @@ async function businessFor(phone: string): Promise<string> {
 
 const change = (body: unknown) => post('/v1/businesses/plan', body, OPERATOR);
 
-describe('the operator plan endpoint keeps to Rekoda plan durations', () => {
-  it('refuses dates outside Rekoda plan durations with 400, and writes nothing', async () => {
+describe('the operator plan endpoint keeps to Rekoda standard periods', () => {
+  it('refuses any operator-chosen date, and the other invalid moves, with 400, and writes nothing', async () => {
     const businessId = await businessFor('08031234597');
     const day = 86_400_000;
+    const noDates = /an operator cannot choose plan dates/;
     for (const [body, message] of [
-      [
-        { plan: 'chat', expiresAt: new Date(Date.now() + 45 * day).toISOString() },
-        /monthly plan ends within one month/,
-      ],
+      // OD-50: even a date inside the old rule (a shorter monthly period) is refused.
+      [{ plan: 'chat', expiresAt: new Date(Date.now() + 20 * day).toISOString() }, noDates],
+      [{ plan: 'chat', expiresAt: new Date(Date.now() + 45 * day).toISOString() }, noDates],
       [
         {
           plan: 'complete',
           billingInterval: 'annual',
           expiresAt: new Date(Date.now() + 400 * day).toISOString(),
         },
-        /annual plan ends within twelve months/,
+        noDates,
       ],
-      [
-        { plan: 'trial', expiresAt: new Date(Date.now() + 30 * day).toISOString() },
-        /trial ends within 14 days/,
-      ],
+      [{ plan: 'trial', expiresAt: new Date(Date.now() + 3 * day).toISOString() }, noDates],
+      [{ plan: 'expired', expiresAt: new Date().toISOString(), reason: 'closing' }, noDates],
       [{ plan: 'trial', billingInterval: 'monthly', expiresAt: null }, /has no billing interval/],
-      [
-        { plan: 'expired', expiresAt: new Date(Date.now() + day).toISOString() },
-        /cannot end in the future/,
-      ],
+      // The early end needs a reason.
+      [{ plan: 'expired', expiresAt: null }, /needs a reason/],
+      [{ plan: 'expired', reason: '   ' }, /a reason is at most 500 characters/],
+      [{ plan: 'expired', reason: 'x'.repeat(501) }, /a reason is at most 500 characters/],
       [
         { plan: 'chat', billingInterval: 'weekly', expiresAt: null },
         /billingInterval is monthly or annual/,
@@ -113,7 +111,7 @@ describe('the operator plan endpoint keeps to Rekoda plan durations', () => {
     expect([...rows][0]).toEqual({ plan: 'trial', n: 0 });
   });
 
-  it('with no date, a paid plan gets exactly one period: a month by default, a year when annual', async () => {
+  it('a paid plan gets exactly one standard period: a month by default, a year when annual', async () => {
     const businessId = await businessFor('08031234598');
     const expiryOf = async () =>
       new Date(

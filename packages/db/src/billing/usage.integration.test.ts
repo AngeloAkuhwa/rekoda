@@ -20,15 +20,19 @@ import { USAGE_UNITS, allowanceFor } from '@rekoda/core';
 let urls: Urls;
 let db: Db;
 let closeDb: () => Promise<void>;
+let ownerDb: Db;
+let closeOwner: () => Promise<void>;
 
 beforeAll(async () => {
   urls = requireUrls();
   await migrate(urls);
   ({ db, close: closeDb } = createDb(urls.app, { max: 10 }));
+  ({ db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 2 }));
 });
 
 afterAll(async () => {
   await closeDb?.();
+  await closeOwner?.();
 });
 
 beforeEach(async () => {
@@ -90,10 +94,7 @@ describe('the atomic gate', () => {
 
     // What the M4 billing event will do after a VERIFIED top-up payment (settlement only, OD-37).
     await withBusiness(settlementDb(), businessId, (tx) =>
-      tx.execute(sql`
-        UPDATE usage_counters SET bonus = 3
-        WHERE business_id = ${businessId}::uuid AND period = ${PERIOD} AND unit = 'AI_ACTIONS'
-      `),
+      usageRepo.creditBonus(tx, businessId, PERIOD, 'AI_ACTIONS', 3),
     );
 
     expect(await consume(businessId, 2)).toBe(true); // doorway reopened
@@ -116,14 +117,17 @@ describe('the atomic gate', () => {
     );
     expect(row?.used).toBe(1);
 
-    // Refunding more than was ever taken cannot mint credit.
-    await withBusiness(db, businessId, (tx) =>
-      usageRepo.refundUnit(tx, businessId, usageRepo.monthMeter(PERIOD), 'AI_ACTIONS', 99),
-    );
-    const [floored] = await withBusiness(db, businessId, (tx) =>
+    // Refunding more than any recorded consumption cannot mint credit: since 0209 a release gives
+    // back only units a reservation actually took, so this one is refused and changes nothing.
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        usageRepo.refundUnit(tx, businessId, usageRepo.monthMeter(PERIOD), 'AI_ACTIONS', 99),
+      ),
+    ).toBe(false);
+    const [kept] = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, PERIOD),
     );
-    expect(floored?.used).toBe(0);
+    expect(kept?.used).toBe(1);
   });
 
   it('keeps months separate — a new period is a fresh meter', async () => {
@@ -194,13 +198,12 @@ describe('the trial clock (docs/pricing-model.md)', () => {
 describe('plan changes and upgrade requests', () => {
   it('moves a business onto a plan and records who did it', async () => {
     const businessId = await seedBusiness();
-    const expiresAt = new Date(Date.now() + 365 * 86_400_000);
 
-    // The real operator path: the billing-operator principal and an annual plan (OD-37, 0203).
+    // The real operator path: the billing-operator principal and an annual plan (OD-37, 0203),
+    // on Rekoda's standard period (no operator date, OD-50).
     const changed = await billingRepo.setPlan(operatorDb(), {
       businessId,
       plan: 'chat',
-      expiresAt,
       billingInterval: 'annual',
       actor: 'operator:angelo',
     });
@@ -225,7 +228,6 @@ describe('plan changes and upgrade requests', () => {
     const changed = await billingRepo.setPlan(operatorDb(), {
       businessId: '2b0f9b6a-0000-4000-8000-000000000000',
       plan: 'complete',
-      expiresAt: null,
       actor: 'operator:typo',
     });
     expect(changed).toBe(false);
@@ -329,8 +331,9 @@ describe('the metered vocabulary (spec 4.2)', () => {
     businessId = await seedBusiness();
   });
 
+  // As the owner: since 0209 the application writes counters only through usage_reserve.
   const write = (unit: string) =>
-    withBusiness(db, businessId, (tx) =>
+    withBusiness(ownerDb, businessId, (tx) =>
       tx.execute(sql`
         INSERT INTO usage_counters (business_id, period, unit, used)
         VALUES (${businessId}::uuid, ${PERIOD}, ${unit}, 1)

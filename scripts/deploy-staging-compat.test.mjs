@@ -95,6 +95,7 @@ case "$*" in
   *"ps --status running --services"*) [ -e "${fake}/ps-fails" ] && exit 1; cat "${fake}/running" 2>/dev/null ;;
   *"info --format"*) echo "${fake}" ;;
   *"run --rm -T migrate"*) [ -e "${fake}/hang-migrate" ] && sleep 60; [ -e "${fake}/fail-migrate" ] && exit 1 ;;
+  *"subscription_conformance_report"*) [ -e "${fake}/od49-errors" ] && exit 1; if [ -e "${fake}/od49-rows" ]; then cat "${fake}/od49-rows"; else echo t; fi ;;
   *"exec -T postgres psql"*) [ -e "${fake}/smoke-errors" ] && exit 1; if [ -e "${fake}/smoke-fails" ]; then echo f; else echo t; fi ;;
   *" up "*) [ -e "${fake}/fail-up" ] && exit 1; cp "${fake}/next-health.json" "${fake}/health.json" ;;
   *network\\ inspect*) echo '172.30.10.1 false' ;;
@@ -314,7 +315,14 @@ test('OWN-86: a release carrying 0196 runs the pre-start database smoke after mi
     'public.staging_move_date\\(uuid, text, timestamp with time zone, timestamp with time zone, text, text, uuid\\) => rekoda_app',
     'public.subscription_apply_paid_charge\\(uuid, text, timestamp with time zone\\) => rekoda_settlement',
     'public.subscription_expire_plan\\(uuid, text, text\\) => rekoda_app,rekoda_worker',
-    'public.subscription_operator_set_plan\\(uuid, text, timestamp with time zone, text, text\\) => rekoda_billing_operator',
+    'public.subscription_operator_set_plan\\(uuid, text, text, text, text\\) => rekoda_billing_operator',
+    'public.subscription_operator_period_end\\(uuid, text, text\\) => rekoda_billing_operator',
+    'public.operator_record_refusal\\(uuid, text, text, text\\) => rekoda_billing_operator',
+    'public.subscription_record_refund\\(uuid, text, bigint, text, text\\) => rekoda_billing_operator',
+    'public.subscription_schedule_plan\\(uuid, text\\) => rekoda_app,rekoda_settlement',
+    'public.subscription_schedule_interval\\(uuid, text\\) => rekoda_app,rekoda_settlement',
+    'public.usage_reserve\\(uuid, text, text, integer, integer\\) => rekoda_app,rekoda_worker',
+    'public.usage_credit_bonus\\(uuid, text, text, integer\\) => rekoda_settlement',
   ]) {
     assert.match(sql, new RegExp(entry));
   }
@@ -447,5 +455,29 @@ test('a release without 0196 does not run the 0196 smoke', () => {
   const h = host(['0199_something_additive']);
   const r = h.run();
   assert.equal(r.status, 0, r.stderr + r.stdout);
-  assert.equal(h.at('exec -T postgres psql'), -1);
+  // The only database call is the OD-49 preflight, which every release runs.
+  assert.equal(h.at('rekoda_migrations'), -1);
+  assert.ok(h.at('subscription_conformance_report') >= 0, 'the OD-49 preflight never ran');
+});
+
+test('OD-49: an active non-conforming subscription stops the release before up, listing it without customer detail', () => {
+  const h = host(['0199_something_additive']);
+  writeFileSync(
+    join(h.fake, 'od49-rows'),
+    '00000000-0000-4000-8000-000000000001 complete open_ended_paid_plan\n',
+  );
+  const r = h.run();
+  assert.notEqual(r.status, 0);
+  assert.equal(h.at(' up '), -1, 'the new release must not start');
+  assert.match(r.stderr, /OD-49 preflight found active non-conforming subscriptions/);
+  assert.match(r.stderr, /00000000-0000-4000-8000-000000000001 complete open_ended_paid_plan/);
+});
+
+test('OD-49: a preflight that cannot run is a failure, not a pass', () => {
+  const h = host(['0199_something_additive']);
+  writeFileSync(join(h.fake, 'od49-errors'), '');
+  const r = h.run();
+  assert.notEqual(r.status, 0);
+  assert.equal(h.at(' up '), -1);
+  assert.match(r.stderr, /OD-49 subscription preflight could not run/);
 });

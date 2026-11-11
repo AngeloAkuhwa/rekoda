@@ -516,7 +516,7 @@ describe('OWN-73: an operator recovers a dead payment job', () => {
     const businessId = await seedBusiness();
     const { intent } = await seedObligation(businessId);
     const { eventId, jobId } = await deadPaymentJob(businessId, intent.reference);
-    const ops = new OpsController(config, appDb, workerDb, {} as SecurityMetrics);
+    const ops = new OpsController(config, appDb, workerDb, {} as SecurityMetrics, null);
     await expect(
       ops.resolveException(asOperator, eventId, { resolution: 'not ours' }),
     ).rejects.toMatchObject({ status: 409 });
@@ -536,7 +536,7 @@ describe('OWN-73: an operator recovers a dead payment job', () => {
       sql`UPDATE dead_job_exceptions SET opened_at = now() + interval '1 hour' WHERE job_id = ${a.jobId}::uuid`,
     );
     await owner.close();
-    const ops = new OpsController(config, appDb, workerDb, {} as SecurityMetrics);
+    const ops = new OpsController(config, appDb, workerDb, {} as SecurityMetrics, null);
     const answer = await ops.exceptions('1');
     expect(answer.flagged.map((f) => f.jobId)).toEqual([a.jobId]);
     expect(answer.deadJobDetails.map((d) => d.jobId)).toContain(a.jobId);
@@ -556,7 +556,7 @@ describe('OWN-73: an operator recovers a dead payment job', () => {
              now() - interval '1 day'
       FROM generate_series(1, 200) g`);
     await owner.close();
-    const ops = new OpsController(config, appDb, workerDb, {} as SecurityMetrics);
+    const ops = new OpsController(config, appDb, workerDb, {} as SecurityMetrics, null);
     await expect(
       ops.resolveException(asOperator, eventId, { resolution: 'not ours' }),
     ).rejects.toMatchObject({ status: 409 });

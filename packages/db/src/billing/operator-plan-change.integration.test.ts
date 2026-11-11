@@ -22,7 +22,7 @@ import {
   migrate,
   requireUrls,
   resetPlanCatalogue,
-  setPlanAsOwner,
+  setPlanForTest,
   truncateAll,
   type Urls,
 } from '../testing.js';
@@ -73,19 +73,6 @@ const inTenant = <T>(businessId: string, fn: (tx: TenantDb) => Promise<T>): Prom
 
 const CYCLE_START = new Date('2026-08-01T00:00:00Z');
 const RENEWS_AT = new Date('2026-09-01T00:00:00Z');
-/** Operator dates are relative to today: a paid plan ends in the future and within its interval
- * (owner review of #432, migration 0203), so a fixed calendar date would expire with the calendar. */
-const daysFromNow = (days: number, hourUtc = 10) => {
-  const d = new Date(Date.now() + days * 86_400_000);
-  d.setUTCHours(hourUtc, 0, 0, 0);
-  return d;
-};
-const FUTURE_RENEWS_AT = daysFromNow(300, 0);
-/** The 15th of a month at 10:00Z, 2 to 3 months ahead: inside an annual plan's window. */
-const fifteenth = (() => {
-  const d = new Date(Date.now() + 70 * 86_400_000);
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 15, 10, 0, 0));
-})();
 /** The last day of a month, 23:30Z, 2 to 3 months ahead: 00:30 on the 1st in Lagos. */
 const monthEndLateUtc = (() => {
   const d = new Date(Date.now() + 70 * 86_400_000);
@@ -100,6 +87,14 @@ const nextFeb28 = (() => {
   return new Date(Date.UTC(year, 1, 28, 0, 0, 0));
 })();
 const jan31Before = (feb28: Date) => new Date(Date.UTC(feb28.getUTCFullYear(), 0, 31, 0, 0, 0));
+/** The Lagos (UTC+1) day of the month of an instant. */
+const lagosDay = (at: Date) => new Date(at.getTime() + 3_600_000).getUTCDate();
+/** The standard end (OD-50) is the database's `now()` plus the interval; the host clock is close. */
+const expectStandardEnd = (written: string | null, from: Date, interval: 'monthly' | 'annual') => {
+  expect(written).not.toBeNull();
+  const expected = addInterval(from, interval);
+  expect(Math.abs(new Date(written!).getTime() - expected.getTime())).toBeLessThan(120_000);
+};
 
 type Row = {
   plan: string;
@@ -166,38 +161,40 @@ async function publishNewerVersion(planId: string): Promise<string> {
   });
 }
 
-const operatorMonthly = (businessId: string, expiresAt: Date) =>
+const operatorMonthly = (businessId: string) =>
   billingRepo.setPlan(operatorDb(), {
     businessId,
     plan: 'chat',
-    expiresAt,
     billingInterval: 'monthly',
     actor: 'operator:test-g62',
   });
 
-/** The real operator path (OD-37): the billing-operator principal, an annual interval for a paid
- * plan so the G-62 cases can use dates a few months out. */
-const operator = (businessId: string, plan: string, expiresAt: Date | null) =>
+/** The real operator path (OD-37, OD-50): the billing-operator principal, no date (Rekoda assigns
+ * the standard period), an annual interval for a paid plan, and the reason `expired` requires. */
+const operator = (businessId: string, plan: string) =>
   billingRepo.setPlan(operatorDb(), {
     businessId,
     plan,
-    expiresAt,
     ...(plan === 'trial' || plan === 'expired' ? {} : { billingInterval: 'annual' as const }),
     actor: 'operator:test-g62',
+    ...(plan === 'expired' ? { reason: 'G-62 test: ending the plan early' } : {}),
   });
+
+/** The fixture path (same G-62 state writer, no date rule): for cases that need a chosen date. */
+const fixture = (businessId: string, plan: string, expiresAt: Date) =>
+  setPlanForTest(appDb, { businessId, plan, expiresAt, actor: 'operator:test-g62' });
 
 describe('an operator move to a paid plan (G-62)', () => {
   it('drops the old subscription state and pins the new plan', async () => {
     const businessId = await troubledComplete();
-    const renews = fifteenth;
-    const before = Date.now();
+    const before = new Date();
 
-    expect(await operator(businessId, 'chat', renews)).toBe(true);
+    expect(await operator(businessId, 'chat')).toBe(true);
 
     const after = await row(businessId);
     expect(after.plan).toBe('chat');
-    expect(after.plan_expires_at).not.toBeNull();
-    expect(new Date(after.plan_expires_at!).toISOString()).toBe(renews.toISOString());
+    // The standard annual period from now (OD-50), never the old cycle's date.
+    expectStandardEnd(after.plan_expires_at, before, 'annual');
     // The downgrade, the failed renewal and its reminders described the old subscription.
     expect(after.pending_plan).toBeNull();
     expect(after.payment_failed_at).toBeNull();
@@ -205,16 +202,20 @@ describe('an operator move to a paid plan (G-62)', () => {
     // Never Chat carrying Complete's terms.
     expect(after.version_plan).toBe('chat');
     // The cycle the operator started is truthful: it began now, not in August.
-    expect(new Date(after.cycle_started_at!).getTime()).toBeGreaterThanOrEqual(before - 1_000);
-    // The next renewal is the operator's date, so it anchors to that Lagos day.
-    expect(after.renewal_anchor_day).toBe(15);
+    expect(new Date(after.cycle_started_at!).getTime()).toBeGreaterThanOrEqual(
+      before.getTime() - 1_000,
+    );
+    // The next renewal is the date the writer assigned, so it anchors to that Lagos day.
+    expect(after.renewal_anchor_day).toBe(lagosDay(new Date(after.plan_expires_at!)));
     expect(after.ever_paid_at).not.toBeNull();
   });
 
   it('anchors to the Lagos day, not the UTC day', async () => {
     const businessId = await troubledComplete();
+    // An operator can no longer choose 23:30Z (OD-50); the anchor rule lives in the shared G-62
+    // state writer, so it is exercised through the fixture path, which uses that same writer.
     // 23:30Z on a month's last day is 00:30 on the 1st in Lagos.
-    await operator(businessId, 'chat', monthEndLateUtc);
+    await fixture(businessId, 'chat', monthEndLateUtc);
     expect((await row(businessId)).renewal_anchor_day).toBe(1);
   });
 
@@ -225,7 +226,7 @@ describe('an operator move to a paid plan (G-62)', () => {
     const v2 = await publishNewerVersion('complete');
     expect(v2).not.toBe(pinned);
 
-    await operator(businessId, 'complete', daysFromNow(80, 0));
+    await operator(businessId, 'complete');
 
     const after = await row(businessId);
     expect(after.plan_version_id).toBe(pinned);
@@ -237,7 +238,7 @@ describe('an operator move to a paid plan (G-62)', () => {
     const businessId = await troubledComplete();
     const chatV2 = await publishNewerVersion('chat');
 
-    await operator(businessId, 'chat', fifteenth);
+    await operator(businessId, 'chat');
 
     const after = await row(businessId);
     expect(after.version_plan).toBe('chat');
@@ -246,31 +247,27 @@ describe('an operator move to a paid plan (G-62)', () => {
 
   it('re-posting the same plan and expiry keeps the cycle start', async () => {
     const businessId = await troubledComplete();
-    // An operator re-post carries a future date (G-114, the route's rule), so the cycle
-    // already running is moved to renew in the future first, as it would after a renewal.
-    await setPlanAsOwner(urls, businessId, { planExpiresAt: FUTURE_RENEWS_AT });
-    // ...on an annual cycle, the interval the operator re-posts (a different interval is a new cycle).
-    await ownerDb.execute(
-      sql`UPDATE businesses SET billing_interval = 'annual' WHERE id = ${businessId}::uuid`,
-    );
+    // An operator can no longer re-post a chosen expiry (OD-50: every operator move is the
+    // standard period from now), so the identical re-post is driven through the fixture path,
+    // which uses the same G-62 state writer and its same-cycle rule.
     // Same plan, same renewal date as the cycle already running.
-    await operator(businessId, 'complete', FUTURE_RENEWS_AT);
+    await fixture(businessId, 'complete', RENEWS_AT);
     const after = await row(businessId);
     expect(new Date(after.cycle_started_at!).toISOString()).toBe(CYCLE_START.toISOString());
     // The stale bookkeeping is still cleared.
     expect(after.pending_plan).toBeNull();
     expect(after.payment_failed_at).toBeNull();
 
-    // A repeat of an operator grant does not move its start either.
-    const renews = fifteenth;
-    await operator(businessId, 'chat', renews);
+    // A repeat of a grant does not move its start either.
+    const renews = new Date(Date.now() + 70 * 86_400_000);
+    await fixture(businessId, 'chat', renews);
     const first = (await row(businessId)).cycle_started_at;
-    await operator(businessId, 'chat', renews);
+    await fixture(businessId, 'chat', renews);
     expect((await row(businessId)).cycle_started_at).toBe(first);
 
-    // A different expiry is a new cycle: it starts now.
+    // An operator move is always a new standard period, so a new cycle: it starts now.
     const before = Date.now();
-    await operator(businessId, 'chat', daysFromNow(120));
+    await operator(businessId, 'chat');
     const moved = new Date((await row(businessId)).cycle_started_at!).getTime();
     expect(moved).toBeGreaterThanOrEqual(before - 1_000);
   });
@@ -289,7 +286,14 @@ describe('an operator move to a paid plan (G-62)', () => {
       }),
     );
 
-    await operator(businessId, 'complete', renews);
+    // A chosen expiry is fixture-only now (OD-50); the same-cycle anchor rule is the shared writer's.
+    await setPlanForTest(appDb, {
+      businessId,
+      plan: 'complete',
+      expiresAt: renews,
+      billingInterval: 'annual',
+      actor: 'operator:test-g62',
+    });
 
     const after = await row(businessId);
     expect(after.renewal_anchor_day).toBe(31);
@@ -299,7 +303,7 @@ describe('an operator move to a paid plan (G-62)', () => {
   it('a paid move starts a fresh cycle when none existed (never-paid trial)', async () => {
     const businessId = await seedBusiness();
     const before = Date.now();
-    await operator(businessId, 'chat', fifteenth);
+    await operator(businessId, 'chat');
     const after = await row(businessId);
     expect(after.ever_paid_at).not.toBeNull();
     const started = new Date(after.cycle_started_at!).getTime();
@@ -307,25 +311,21 @@ describe('an operator move to a paid plan (G-62)', () => {
     expect(started).toBeLessThanOrEqual(Date.now() + 1_000);
   });
 
-  it('no date asks for exactly one period: an operator can no longer make a paid plan open-ended', async () => {
+  it('assigns exactly one period: an operator can never make a paid plan open-ended', async () => {
     const businessId = await troubledComplete();
     const before = new Date();
 
     await billingRepo.setPlan(operatorDb(), {
       businessId,
       plan: 'integrate',
-      expiresAt: null,
       actor: 'operator:test-g62',
     });
 
     const after = await row(businessId);
     expect(after.plan).toBe('integrate');
     // Monthly by default: one calendar month from now (core addInterval), never null.
-    const expected = addInterval(before, 'monthly');
-    expect(Math.abs(new Date(after.plan_expires_at!).getTime() - expected.getTime())).toBeLessThan(
-      120_000,
-    );
-    expect(after.renewal_anchor_day).toBe(new Date(expected.getTime() + 3_600_000).getUTCDate());
+    expectStandardEnd(after.plan_expires_at, before, 'monthly');
+    expect(after.renewal_anchor_day).toBe(lagosDay(new Date(after.plan_expires_at!)));
     expect(after.cycle_started_at).not.toBeNull();
     expect(after.version_plan).toBe('integrate');
     expect(after.pending_plan).toBeNull();
@@ -354,22 +354,21 @@ describe('an operator re-post that changes only the interval (owner review of #4
 
   it('records the interval it validated and audited: an annual cycle re-posted as monthly becomes monthly', async () => {
     const businessId = await seedBusiness();
-    const renews = daysFromNow(20, 0);
+    const renews = new Date(Date.now() + 20 * 86_400_000);
     await inTenant(businessId, (tx) =>
       applyFixtureCycle(tx, businessId, {
         plan: 'complete',
         cycleStartedAt: new Date(renews.getTime() - 345 * 86_400_000),
         renewsAt: renews,
-        anchorDay: new Date(renews.getTime() + 3_600_000).getUTCDate(),
+        anchorDay: lagosDay(renews),
         billingInterval: 'annual',
       }),
     );
     expect(await intervalOf(businessId)).toBe('annual');
-    // Same plan and expiry, no interval named: the request means monthly (the default).
+    // Same plan, no interval named: the request means monthly (the default).
     await billingRepo.setPlan(operatorDb(), {
       businessId,
       plan: 'complete',
-      expiresAt: renews,
       actor: 'operator:test-g62',
     });
     expect(await auditedInterval(businessId)).toBe('monthly');
@@ -378,10 +377,9 @@ describe('an operator re-post that changes only the interval (owner review of #4
 
   it('a monthly operator plan re-posted as annual becomes annual', async () => {
     const businessId = await seedBusiness();
-    const renews = daysFromNow(20, 0);
-    await operatorMonthly(businessId, renews);
+    await operatorMonthly(businessId);
     expect(await intervalOf(businessId)).toBe('monthly');
-    await operator(businessId, 'chat', renews); // annual, same plan, same expiry
+    await operator(businessId, 'chat'); // annual, same plan
     expect(await auditedInterval(businessId)).toBe('annual');
     expect(await intervalOf(businessId)).toBe('annual');
   });
@@ -397,8 +395,8 @@ describe('an operator move back to trial or expired (G-62, OWN-28)', () => {
       // A newer Complete is current; the unpaid move must still not re-pin.
       expect(await publishNewerVersion('complete')).not.toBe(pinned);
 
-      // No date: the rule's own (the business's trial end for a trial, now for expired).
-      await operator(businessId, plan, null);
+      // The rule's own date (the business's original trial end for a trial, now for expired).
+      await operator(businessId, plan);
 
       const after = await row(businessId);
       expect(after.plan).toBe(plan);
@@ -418,7 +416,7 @@ describe('an operator move back to trial or expired (G-62, OWN-28)', () => {
 describe('the audit trail survives', () => {
   it('still records plan_changed with the operator actor', async () => {
     const businessId = await troubledComplete();
-    await operator(businessId, 'chat', fifteenth);
+    await operator(businessId, 'chat');
     const events = await inTenant(businessId, (tx) =>
       tx.execute<{ actor: string; action: string }>(sql`
         SELECT actor, action FROM audit_events

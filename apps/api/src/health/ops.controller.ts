@@ -45,7 +45,7 @@ import {
 } from '@rekoda/core';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { SecurityMetrics } from '../channels/security-metrics.service.js';
-import { DB, WORKER_DB } from '../db/db.module.js';
+import { DB, OPERATOR_DB, WORKER_DB } from '../db/db.module.js';
 import { operatorActor } from '../auth/operator-actor.js';
 
 /**
@@ -90,6 +90,11 @@ export class OpsController {
      */
     @Inject(WORKER_DB) private readonly workerDb: Db | null,
     @Inject(SecurityMetrics) private readonly security: SecurityMetrics,
+    /**
+     * `rekoda_billing_operator` (OD-37), or null in a process without the operator credential:
+     * the only connection that may record a refund on a subscription charge (migration 0209).
+     */
+    @Inject(OPERATOR_DB) private readonly operatorDb: Db | null,
   ) {}
 
   @Get('health')
@@ -510,8 +515,16 @@ export class OpsController {
      * the record said they were. */
     const actor = operatorActor(request);
 
-    return withBusiness(this.db, businessId, async (tx) => {
-      const charge = await subscriptionsRepo.refundCharge(tx, reference, amountK, new Date(), {
+    const operatorDb = this.operatorDb;
+    if (!operatorDb) {
+      throw new ServiceUnavailableException(
+        'refunds are not recorded by this process (no operator database credential)',
+      );
+    }
+    /* `subscription_record_refund` (0209): the billing operator principal only, bounded by what
+     * was actually paid, audited with the verified actor and the reason. */
+    return withBusiness(operatorDb, businessId, async (tx) => {
+      const charge = await subscriptionsRepo.refundCharge(tx, businessId, reference, amountK, {
         actor,
         reason,
       });

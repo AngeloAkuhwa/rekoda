@@ -108,6 +108,7 @@ export async function seedCharge(businessId: string, spec: ChargeSpec = {}): Pro
   const plan = spec.plan === undefined ? 'chat' : spec.plan;
   const status = spec.status ?? 'paid';
   const writer = settlementDb; // only settlement opens a charge (0205)
+  const amountK = await catalogueAmountK(businessId, kind, plan, spec.interval ?? 'monthly');
   await withBusiness(writer, businessId, (tx) =>
     tx.execute(sql`
       INSERT INTO subscription_charges
@@ -115,7 +116,7 @@ export async function seedCharge(businessId: string, spec: ChargeSpec = {}): Pro
          paid_at, applied_period_start, applied_period_end, unapplied_at, unapplied_reason,
          superseded_at, billing_interval)
       VALUES (${businessId}::uuid, ${kind}, ${plan},
-        ${kind === 'add_on' ? 'whatsapp_500' : null}, 1000, ${status}, ${reference},
+        ${kind === 'add_on' ? FIXTURE_PACK : null}, ${amountK}, ${status}, ${reference},
         now(), now() + interval '30 days',
         ${status === 'paid' ? sql`now()` : sql`NULL`},
         ${spec.applied ? sql`now()` : sql`NULL`}, ${spec.applied ? sql`now() + interval '30 days'` : sql`NULL`},
@@ -123,6 +124,35 @@ export async function seedCharge(businessId: string, spec: ChargeSpec = {}): Pro
         ${spec.superseded ? sql`now()` : sql`NULL`}, ${spec.interval ?? 'monthly'})`),
   );
   return reference;
+}
+
+/** A pack the catalogue sells (0106/0113). */
+export const FIXTURE_PACK = 'messages_100';
+
+/**
+ * What a charge must cost to be opened at all (migration 0210's price check, read as the owner):
+ * the catalogue price of the plan on the interval, the pack's price, or, for an upgrade from the
+ * business's current plan, the prorated difference over a cycle running now to 30 days from now.
+ */
+export async function catalogueAmountK(
+  businessId: string,
+  kind: string,
+  plan: string | null,
+  interval: 'monthly' | 'annual' = 'monthly',
+): Promise<number> {
+  const [row] = await ownerDb.execute<{ k: string | null }>(sql`
+    SELECT CASE
+      WHEN ${kind} = 'add_on' THEN (SELECT price_minor FROM usage_packs
+        WHERE pack_id = ${FIXTURE_PACK} AND effective_to IS NULL ORDER BY version DESC LIMIT 1)
+      WHEN ${kind} = 'upgrade' THEN (
+        SELECT floor((rekoda_private.plan_price_minor(${plan}, b.plan_version_id, 'monthly')
+                      - rekoda_private.plan_price_minor(b.plan, b.plan_version_id, 'monthly')) * 29 / 30.0)
+        FROM businesses b WHERE b.id = ${businessId}::uuid)
+      ELSE (SELECT rekoda_private.plan_price_minor(${plan}, b.plan_version_id, ${interval})
+            FROM businesses b WHERE b.id = ${businessId}::uuid)
+    END::text AS k`);
+  if (row?.k == null) throw new Error(`no catalogue price for a ${kind} charge on ${plan}`);
+  return Number(row.k);
 }
 
 /** The database's own bound for one interval from now (Lagos calendar months), read as the owner. */

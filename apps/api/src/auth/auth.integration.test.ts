@@ -611,11 +611,8 @@ describe('the operator plan endpoint', () => {
 
   it('moves a business onto a paid plan, and names the operator who did it', async () => {
     const businessId = await businessFor('08031234590');
-    const res = await change({
-      businessId,
-      plan: 'chat',
-      expiresAt: new Date(Date.now() + 20 * 86_400_000).toISOString(),
-    });
+    // No date: Rekoda assigns the standard period (OD-50).
+    const res = await change({ businessId, plan: 'chat' });
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ plan: 'chat' });
@@ -642,7 +639,7 @@ describe('the operator plan endpoint', () => {
 
     /* Accepted, the next sweep would raise a renewal at once and the cycle
      * start of "now" would sit after the expiry, so a later self-service
-     * upgrade prorated to nothing. */
+     * upgrade prorated to nothing. (Since OD-50 any operator date is refused.) */
     expect(res.statusCode).toBe(400);
     const plan = await withBusiness(db, businessId, (tx) =>
       tx.execute<{ plan: string }>(sql`SELECT plan FROM businesses WHERE id = ${businessId}::uuid`),
@@ -650,14 +647,14 @@ describe('the operator plan endpoint', () => {
     expect([...plan][0]?.plan).toBe('trial');
   });
 
-  it('still lets an operator mark a plan lapsed with a past date', async () => {
+  it('ends a plan early only as `expired` with a reason, never with a chosen date (OD-50)', async () => {
     const businessId = await businessFor('08031234596');
-    const res = await change({
-      businessId,
-      plan: 'expired',
-      expiresAt: new Date(Date.now() - 86_400_000).toISOString(),
-    });
-    expect(res.statusCode).toBe(200);
+    const past = new Date(Date.now() - 86_400_000).toISOString();
+    const why = { reason: 'closing the account' };
+    const status = async (body: object) => (await change({ businessId, ...body })).statusCode;
+    expect(await status({ plan: 'expired', expiresAt: past, ...why })).toBe(400);
+    expect(await status({ plan: 'expired' })).toBe(400);
+    expect(await status({ plan: 'expired', ...why })).toBe(200);
   });
 
   /* 401, not 403: the operator guard now separates the two questions it used

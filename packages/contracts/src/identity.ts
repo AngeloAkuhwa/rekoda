@@ -85,21 +85,22 @@ export const createBusinessRequest = z.object({
 export type CreateBusinessRequest = z.infer<typeof createBusinessRequest>;
 
 /**
- * An operator moving a business onto a plan (docs/pricing-model.md).
+ * An operator plan change (`POST /v1/businesses/plan`, operator plane, `ops:billing`).
  *
- * Rekoda's plan durations are enforced (owner review of PR #432, migration 0203): a paid plan is
- * monthly (ends within one calendar month) or annual (within twelve), never open-ended; a trial
- * ends within 14 days of the business's own trial start; `expired` ends at or before now. With
- * `expiresAt` null the rule's own date is used (exactly one period from now, the business's trial
- * end, or now). `billingInterval` applies to a paid plan only (monthly when absent). It is the
- * interval the business is on afterwards: re-posting an annual subscriber without it moves them
- * to monthly, and any interval change starts a new operator-defined cycle (no automatic proration).
+ * Rekoda's standard periods only (OD-50, owner ruling 11 Nov 2026, migration 0207): the operator
+ * chooses the plan, never a date. A paid plan is monthly (exactly one calendar month from now) or
+ * annual (exactly twelve calendar months); a trial ends at the business's ORIGINAL 14-day trial end
+ * and cannot be re-opened once that has passed; `expired` is the explicit early end, effective
+ * now, and needs a `reason` (audited; nothing is refunded or credited). `expiresAt` survives only
+ * so an older caller sending `null` keeps working: any date is refused. `billingInterval` applies to
+ * a paid plan only (monthly when absent); any interval change starts a new operator-defined cycle.
  */
 export const setPlanRequest = z.object({
   businessId: z.string().uuid(),
   plan: z.enum(['trial', 'expired', 'chat', 'integrate', 'complete']),
-  expiresAt: z.iso.datetime().nullable(),
+  expiresAt: z.null().optional(),
   billingInterval: z.enum(['monthly', 'annual']).optional(),
+  reason: z.string().trim().min(1).max(500).optional(),
   /* No `actor`. The operator plane verifies an identity and audits its
    * subject; a caller cannot name themselves (ADR 0034). */
 });

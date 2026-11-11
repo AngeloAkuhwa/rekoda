@@ -120,20 +120,14 @@ export async function reserveUnit(
    * only unit that spends that way today, which is exactly where it
    * surfaced.
    */
-  const rows = await tx.execute<{ used: number }>(sql`
-    INSERT INTO usage_counters (business_id, period, unit, used)
-    SELECT ${businessId}::uuid, ${period}::char(7), ${unit}::text, ${n}::int
-    WHERE ${n}::int <= ${allowance}::int
-       OR EXISTS (
-            SELECT 1 FROM usage_counters
-            WHERE business_id = ${businessId}::uuid
-              AND period = ${period}::char(7) AND unit = ${unit}::text)
-    ON CONFLICT (business_id, period, unit) DO UPDATE
-      SET used = usage_counters.used + ${n}::int, updated_at = now()
-      WHERE usage_counters.used + ${n}::int <= ${allowance}::int + usage_counters.bonus
-    RETURNING used
+  /* Written only by `usage_reserve` (migration 0209), which runs the single race-proof statement
+   * above and journals the consumption, so a later release can give back only what was taken. The
+   * application credential holds no INSERT or UPDATE on the counters. */
+  const rows = await tx.execute<{ reservation: string | null }>(sql`
+    SELECT usage_reserve(${businessId}::uuid, ${period}::text, ${unit}::text, ${allowance}::int,
+      ${n}::int) AS reservation
   `);
-  return { granted: [...rows].length === 1, meter };
+  return { granted: [...rows][0]?.reservation != null, meter };
 }
 
 /**
@@ -153,12 +147,14 @@ export async function refundUnit(
   meter: MeterRow,
   unit: UsageUnit,
   n = 1,
-): Promise<void> {
-  await tx.execute(sql`
-    UPDATE usage_counters
-    SET used = GREATEST(used - ${n}, 0), updated_at = now()
-    WHERE business_id = ${businessId}::uuid AND period = ${meter} AND unit = ${unit}
+): Promise<boolean> {
+  /* `usage_release` (0209) gives back units of a RECORDED consumption on exactly this row, once,
+   * within 35 days; with none to give back it changes nothing and answers false (a release is never
+   * a free decrement). */
+  const rows = await tx.execute<{ released: boolean }>(sql`
+    SELECT usage_release(${businessId}::uuid, ${meter}::text, ${unit}::text, ${n}::int) AS released
   `);
+  return [...rows][0]?.released === true;
 }
 
 /**
@@ -190,11 +186,9 @@ export async function creditBonus(
   n: number,
 ): Promise<void> {
   period = meterOn(await planOf(tx, businessId), period, unit);
+  /* `usage_credit_bonus` (0209): settlement only. */
   await tx.execute(sql`
-    INSERT INTO usage_counters (business_id, period, unit, bonus)
-    VALUES (${businessId}::uuid, ${period}, ${unit}, ${n})
-    ON CONFLICT (business_id, period, unit) DO UPDATE
-      SET bonus = usage_counters.bonus + ${n}, updated_at = now()
+    SELECT usage_credit_bonus(${businessId}::uuid, ${period}::text, ${unit}::text, ${n}::int)
   `);
 }
 
@@ -236,25 +230,74 @@ export async function usageFor(
   return [...rows];
 }
 
+/** The plan fields `planFor` and `lapseOf` judge, with the OD-49 rule's verdict on them. */
+interface PlanRow extends Record<string, unknown> {
+  plan: string;
+  plan_expires_at: string | null;
+  trial_started_at: string | null;
+  nonconformity: string | null;
+}
+
+async function planRow(tx: TenantDb, businessId: string): Promise<PlanRow | undefined> {
+  /* `subscription_nonconformity` (migration 0208) is the database's one statement of Rekoda's plan
+   * durations; a row it names was written before 0203, or by hand, and grants nothing it should
+   * not (OD-49). */
+  const rows = await tx.execute<PlanRow>(sql`
+    SELECT plan, plan_expires_at, trial_started_at,
+           subscription_nonconformity(plan, plan_expires_at, cycle_started_at, billing_interval,
+             trial_started_at, now()) AS nonconformity
+    FROM businesses WHERE id = ${businessId}::uuid
+  `);
+  return [...rows][0];
+}
+
+/* 14 days, the trial's hard stop (0203: 336 hours from the business's own trial start). */
+const TRIAL_MS = 336 * 3_600_000;
+
+/**
+ * Whether a row is past what it may grant. A conforming trial ends at its date. A NON-conforming
+ * row (OD-49) grants no more than a conforming one could: a trial ends 14 days after its own start
+ * whatever date it carries, and a paid plan that is open-ended, has no cycle start, or runs longer
+ * than its interval grants nothing until an operator corrects it through the audited writer (the
+ * release preflight refuses to start while such a row exists, so this is the fail-safe).
+ */
+function lapsed(row: PlanRow, now: Date): 'trial' | 'plan' | null {
+  if (row.plan === 'expired') return 'plan';
+  if (row.plan === 'trial') {
+    const stored = row.plan_expires_at ? new Date(row.plan_expires_at).getTime() : null;
+    const hardStop = row.trial_started_at
+      ? new Date(row.trial_started_at).getTime() + TRIAL_MS
+      : null;
+    const ends = row.nonconformity
+      ? hardStop === null
+        ? -Infinity
+        : stored === null
+          ? hardStop
+          : Math.min(stored, hardStop)
+      : stored;
+    if (ends !== null && ends <= now.getTime()) return 'trial';
+    return null;
+  }
+  if (row.nonconformity) return 'plan';
+  return null;
+}
+
 /**
  * The plan this business is on, read under the tenant pin — with the trial
  * clock applied.
  *
  * A lapsed trial answers `expired`, whose allowances are all zero, so the
- * gate refuses without needing a second concept. ONLY a trial expires here:
- * a paid plan whose date has slipped past keeps its allowances, because
- * cutting off a merchant who is paying us over a late billing job is the
- * one failure this file must never cause.
+ * gate refuses without needing a second concept. A conforming paid plan
+ * whose date has slipped past keeps its allowances, because cutting off a
+ * merchant who is paying us over a late billing job is the one failure this
+ * file must never cause; the grace sweep is what lapses it. A paid row that
+ * breaks Rekoda's plan durations (OD-49) answers `expired`: it was never a
+ * period anyone paid for.
  */
 export async function planFor(tx: TenantDb, businessId: string, now = new Date()): Promise<string> {
-  const rows = await tx.execute<{ plan: string; plan_expires_at: string | null }>(sql`
-    SELECT plan, plan_expires_at FROM businesses WHERE id = ${businessId}::uuid
-  `);
-  const row = [...rows][0];
+  const row = await planRow(tx, businessId);
   if (!row) return 'trial';
-  if (row.plan !== 'trial') return row.plan;
-  if (!row.plan_expires_at) return 'trial';
-  return new Date(row.plan_expires_at) <= now ? 'expired' : 'trial';
+  return lapsed(row, now) ? 'expired' : row.plan;
 }
 
 /**
@@ -271,14 +314,7 @@ export async function lapseOf(
   businessId: string,
   now = new Date(),
 ): Promise<'trial' | 'plan' | null> {
-  const rows = await tx.execute<{ plan: string; plan_expires_at: string | null }>(sql`
-    SELECT plan, plan_expires_at FROM businesses WHERE id = ${businessId}::uuid
-  `);
-  const row = [...rows][0];
+  const row = await planRow(tx, businessId);
   if (!row) return null;
-  if (row.plan === 'expired') return 'plan';
-  if (row.plan === 'trial' && row.plan_expires_at && new Date(row.plan_expires_at) <= now) {
-    return 'trial';
-  }
-  return null;
+  return lapsed(row, now);
 }

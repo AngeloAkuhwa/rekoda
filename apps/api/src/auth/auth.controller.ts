@@ -4,6 +4,7 @@ import {
   Body,
   Controller,
   Inject,
+  Logger,
   Delete,
   Patch,
   Get,
@@ -141,6 +142,8 @@ export class AuthController {
 
 @Controller('v1/businesses')
 export class BusinessController {
+  private readonly logger = new Logger(BusinessController.name);
+
   constructor(
     @Inject(AuthService) private readonly auth: AuthService,
     @Inject(CONFIG) private readonly config: ApiConfig,
@@ -384,7 +387,8 @@ export class BusinessController {
     const parsed = setPlanRequest.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(
-        'businessId, plan and expiresAt are required; billingInterval is monthly or annual',
+        'businessId and plan are required; billingInterval is monthly or annual; an operator ' +
+          'cannot choose plan dates (Rekoda assigns the standard period); a reason is at most 500 characters',
       );
     }
     /* The subject is checked before anything is written (a 400, not a 500 from the writer). */
@@ -396,25 +400,38 @@ export class BusinessController {
       );
     }
 
-    const { businessId, plan, expiresAt, billingInterval } = parsed.data;
-    /* Rekoda's plan durations (owner review of #432, migration 0203): a monthly plan ends in the
-     * future and within one month, an annual plan within twelve months, a trial within 14 days of
-     * the business's own trial start, and `expired` at or before now. No open-ended paid plan. With
-     * no `expiresAt` the rule's own date is used (one period, the trial end, now). A date outside
-     * the rule is refused, never clamped: the operator asked for something that is not a Rekoda
-     * plan. The database writer enforces the same rule. */
+    const { businessId, plan, billingInterval, reason } = parsed.data;
+    /* Rekoda's standard periods (OD-50, migration 0207): the database writer assigns exactly one
+     * calendar month or twelve calendar months for a paid plan, the business's original 14-day
+     * trial end for a trial, and now for `expired`, the explicit early end, which needs a reason.
+     * A refused change is recorded (`operator_record_refusal`) in its own transaction. */
+    const refuse = async (message: string): Promise<never> => {
+      try {
+        await billingRepo.recordOperatorRefusal(operatorDb, {
+          businessId,
+          actor,
+          action: 'plan_change',
+          refusal: message,
+        });
+      } catch (error) {
+        /* The refusal still answers 400; the failure to record it is the operator team's alert. */
+        this.logger.error(
+          `could not record a refused operator plan change: ${(error as Error).name}`,
+        );
+      }
+      throw new BadRequestException(message);
+    };
     let changed: boolean;
     try {
       changed = await billingRepo.setPlan(operatorDb, {
         businessId,
         plan,
-        expiresAt: expiresAt ? new Date(expiresAt) : null,
         ...(billingInterval ? { billingInterval } : {}),
         actor,
+        reason: reason ?? null,
       });
     } catch (error) {
-      if (error instanceof billingRepo.PlanDateRefused)
-        throw new BadRequestException(error.message);
+      if (error instanceof billingRepo.PlanDateRefused) return refuse(error.message);
       /* The writer's own input refusal (the same rule, enforced in the database) is the caller's
        * input too; anything else is not, and stays a 500. */
       const cause = (error as { cause?: { code?: string; message?: string } }).cause;
@@ -423,9 +440,7 @@ export class BusinessController {
         typeof cause.message === 'string' &&
         cause.message.startsWith('subscription_operator_set_plan:')
       ) {
-        throw new BadRequestException(
-          cause.message.replace('subscription_operator_set_plan: ', ''),
-        );
+        return refuse(cause.message.replace('subscription_operator_set_plan: ', ''));
       }
       throw error;
     }

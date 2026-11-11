@@ -1,5 +1,5 @@
 /**
- * OD-37 (migrations 0200, 0202, 0203; owner review of PR #432, 11 Nov 2026): who may record a payment,
+ * OD-37 (migrations 0200, 0202, 0203, 0207; owner review of PR #432, OD-50, 11 Nov 2026): who may record a payment,
  * apply a paid plan or make an operator plan change, and what each writer accepts.
  *
  *   rekoda_settlement        the only non-owner role that records a payment on a charge, credits
@@ -9,9 +9,10 @@
  *                            charge, credit units, or make an operator plan change.
  *
  * Every assertion is made on a live connection AS that principal (the CI database authenticates by
- * trust, so each URL is its own role), never through the owner. The writers enforce Rekoda's real
- * durations: a monthly plan ends within one calendar month, an annual plan within twelve, a trial
- * within 14 days of the business's own trial start, `expired` at or before now; the database's copy
+ * trust, so each URL is its own role), never through the owner. The paid-charge writer enforces
+ * Rekoda's real durations; the operator writer takes no date at all (OD-50) and assigns exactly one
+ * calendar month, twelve calendar months, the business's original trial end, or now for `expired`
+ * (which needs an audited reason); the database's copy
  * of the length rule is pinned to `@rekoda/core` here. The plan-field role boundary itself is pinned
  * in plan-fields-guard.integration.test.ts.
  */
@@ -180,30 +181,36 @@ describe('OD-37: the provider writer applies one paid, unapplied charge, for one
   });
 });
 
-describe("OD-37: the operator writer runs only as the billing operator, inside Rekoda's durations (0203)", () => {
-  const set = (
+describe("OD-37: the operator writer runs only as the billing operator, assigning Rekoda's standard periods (0203, 0207)", () => {
+  /* OD-50 (0207): the writer takes no date. It assigns the period itself and returns it. */
+  const call = (
     businessId: string,
     plan: string,
-    expires: Date | null,
     interval: string | null,
     actor = 'operator:alice',
     db = operatorDb,
+    reason: string | null = null,
   ) =>
-    outcome(
-      withBusiness(db, businessId, (tx) =>
-        tx.execute(
-          sql`SELECT subscription_operator_set_plan(${businessId}::uuid, ${plan}, ${expires?.toISOString() ?? null}::timestamptz, ${interval}, ${actor})`,
-        ),
+    withBusiness(db, businessId, (tx) =>
+      tx.execute<{ ends: string }>(
+        sql`SELECT subscription_operator_set_plan(${businessId}::uuid, ${plan}, ${interval}, ${actor}, ${reason})::text AS ends`,
       ),
     );
+  const set = (...args: Parameters<typeof call>) => outcome(call(...args));
+  const auditReason = async (businessId: string) =>
+    [
+      ...(await ownerDb.execute<{ reason: string | null }>(sql`
+        SELECT reason FROM audit_events WHERE business_id = ${businessId}::uuid
+          AND action = 'plan_changed' ORDER BY created_at DESC LIMIT 1`)),
+    ][0]?.reason;
 
   it.each(['app', 'worker', 'settlement'] as const)(
     '%s cannot run it, so an ordinary credential cannot bypass the API authorisation',
     async (who) => {
       const businessId = await seedBusiness();
-      expect(
-        await set(businessId, 'complete', FUTURE, 'monthly', 'operator:x', PRINCIPALS[who]()),
-      ).toMatch(/42501.*permission denied for function subscription_operator_set_plan/);
+      expect(await set(businessId, 'complete', 'monthly', 'operator:x', PRINCIPALS[who]())).toMatch(
+        /42501.*permission denied for function subscription_operator_set_plan/,
+      );
       expect((await planOf(businessId))?.plan).toBe('trial');
       const [audit] = await ownerDb.execute<{ n: number }>(
         sql`SELECT count(*)::int AS n FROM audit_events WHERE action = 'plan_changed'`,
@@ -212,85 +219,115 @@ describe("OD-37: the operator writer runs only as the billing operator, inside R
     },
   );
 
-  it('a monthly plan ends in the future and within one calendar month; never open-ended', async () => {
+  it('no caller can choose a date: the dated writer is gone (OD-50)', async () => {
+    const [fn] = await ownerDb.execute<{ old: string | null; current: string | null }>(sql`
+      SELECT to_regprocedure('public.subscription_operator_set_plan(uuid,text,timestamptz,text,text)')::text AS old,
+             to_regprocedure('public.subscription_operator_set_plan(uuid,text,text,text,text)')::text AS current`);
+    expect(fn).toEqual({ old: null, current: expect.any(String) });
     const businessId = await seedBusiness();
-    const bound = await dbBound('monthly');
-    expect(await set(businessId, 'chat', new Date(bound.getTime() + 1_000), 'monthly')).toMatch(
-      /^22023 .*within one monthly period/,
-    );
-    expect(await set(businessId, 'chat', null, 'monthly')).toMatch(/^22023 .*invalid input/);
-    expect(await set(businessId, 'chat', new Date(Date.now() - 60_000), 'monthly')).toMatch(
-      /^22023/,
-    );
-    expect(await set(businessId, 'chat', new Date('2099-01-01T00:00:00Z'), 'monthly')).toMatch(
-      /^22023/,
-    );
+    expect(
+      await outcome(
+        withBusiness(operatorDb, businessId, (tx) =>
+          tx.execute(
+            sql`SELECT subscription_operator_set_plan(${businessId}::uuid, 'chat', ${FUTURE.toISOString()}::timestamptz, 'monthly', 'operator:alice')`,
+          ),
+        ),
+      ),
+    ).toMatch(/^42883/);
     expect((await planOf(businessId))?.plan).toBe('trial');
-    // The bound itself (computed a moment earlier) is inside it.
-    expect(await set(businessId, 'chat', bound, 'monthly')).toBe('allowed');
-    expect(new Date((await planOf(businessId))!.plan_expires_at!).toISOString()).toBe(
-      bound.toISOString(),
+  });
+
+  it('a monthly plan ends exactly one calendar month from now, and the writer returns that end', async () => {
+    const businessId = await seedBusiness();
+    const earliest = await dbBound('monthly');
+    const [row] = await call(businessId, 'chat', 'monthly');
+    const latest = await dbBound('monthly');
+    const written = new Date((await planOf(businessId))!.plan_expires_at!);
+    expect(new Date(row!.ends).getTime()).toBe(written.getTime());
+    expect(written.getTime()).toBeGreaterThanOrEqual(earliest.getTime() - 1);
+    expect(written.getTime()).toBeLessThanOrEqual(latest.getTime());
+    // Core's rule, from the same instant (the database keeps the seconds core drops).
+    expect(Math.abs(written.getTime() - addInterval(new Date(), 'monthly').getTime())).toBeLessThan(
+      120_000,
     );
   });
 
-  it('an annual plan ends within twelve calendar months; a monthly interval cannot carry a year', async () => {
+  it('an annual plan ends exactly twelve calendar months from now', async () => {
     const businessId = await seedBusiness();
-    const year = await dbBound('annual');
-    expect(await set(businessId, 'complete', new Date(year.getTime() + 1_000), 'annual')).toMatch(
-      /^22023 .*within one annual period/,
-    );
-    expect(
-      await set(businessId, 'complete', new Date(Date.now() + 200 * 86_400_000), 'monthly'),
-    ).toMatch(/^22023 .*within one monthly period/);
-    expect(await set(businessId, 'complete', year, 'annual')).toBe('allowed');
+    const earliest = await dbBound('annual');
+    expect(await set(businessId, 'complete', 'annual')).toBe('allowed');
+    const latest = await dbBound('annual');
+    const written = new Date((await planOf(businessId))!.plan_expires_at!).getTime();
+    expect(written).toBeGreaterThanOrEqual(earliest.getTime() - 1);
+    expect(written).toBeLessThanOrEqual(latest.getTime());
   });
 
   it('a paid plan names its interval; trial and expired do not', async () => {
     const businessId = await seedBusiness();
-    expect(await set(businessId, 'chat', FUTURE, null)).toMatch(/^22023 .*names its interval/);
-    expect(await set(businessId, 'chat', FUTURE, 'weekly')).toMatch(/^22023/);
-    expect(await set(businessId, 'trial', FUTURE, 'monthly')).toMatch(
-      /^22023 .*names its interval/,
-    );
-    expect(await set(businessId, 'expired', new Date(), 'annual')).toMatch(/^22023/);
+    expect(await set(businessId, 'chat', null)).toMatch(/^22023 .*names its interval/);
+    expect(await set(businessId, 'chat', 'weekly')).toMatch(/^22023/);
+    expect(await set(businessId, 'trial', 'monthly')).toMatch(/^22023 .*names its interval/);
+    expect(
+      await set(businessId, 'expired', 'annual', 'operator:alice', operatorDb, 'ends'),
+    ).toMatch(/^22023 .*names its interval/);
+    expect((await planOf(businessId))?.plan).toBe('trial');
   });
 
-  it("a trial ends within 14 days of the business's own trial start: no extension, no second trial", async () => {
+  it("a trial ends at the business's ORIGINAL trial end: no extension, no second trial", async () => {
     const businessId = await seedBusiness();
-    const started = new Date((await planOf(businessId))!.trial_started_at);
-    const last = new Date(started.getTime() + TRIAL_DAYS * 86_400_000);
-    expect(await set(businessId, 'trial', new Date(last.getTime() + 1), null)).toMatch(
-      /^22023 .*within 14 days of the business's trial start/,
+    // Three days into the trial, then a paid plan: moving back gives the original end, not 14 more days.
+    await ownerDb.execute(sql`
+      UPDATE businesses SET trial_started_at = now() - interval '3 days',
+        plan_expires_at = now() + interval '11 days' WHERE id = ${businessId}::uuid`);
+    expect(await set(businessId, 'chat', 'monthly')).toBe('allowed');
+    expect(await set(businessId, 'trial', null)).toBe('allowed');
+    const row = (await planOf(businessId))!;
+    expect(row.plan).toBe('trial');
+    expect(
+      new Date(row.plan_expires_at!).getTime() - new Date(row.trial_started_at).getTime(),
+    ).toBe(TRIAL_DAYS * 86_400_000);
+
+    // Once the original trial has ended, an operator cannot re-open it.
+    const ended = await seedBusiness();
+    await ownerDb.execute(sql`
+      UPDATE businesses SET trial_started_at = now() - interval '15 days',
+        plan_expires_at = now() - interval '1 day' WHERE id = ${ended}::uuid`);
+    expect(await set(ended, 'trial', null)).toMatch(
+      /^22023 .*trial has ended; a trial cannot be re-opened/,
     );
-    expect(await set(businessId, 'trial', new Date(Date.now() + 30 * 86_400_000), null)).toMatch(
-      /^22023/,
-    );
-    expect(await set(businessId, 'trial', null, null)).toMatch(/^22023 .*invalid input/);
-    expect(await set(businessId, 'trial', last, null)).toBe('allowed');
-    // An earlier end (ending a trial early) is allowed; it never grants more.
-    expect(await set(businessId, 'trial', new Date(started.getTime() + 86_400_000), null)).toBe(
-      'allowed',
-    );
+    expect(new Date((await planOf(ended))!.plan_expires_at!).getTime()).toBeLessThan(Date.now());
   });
 
-  it('expired never carries a future end', async () => {
+  it('expired is the explicit early end: effective now, with a required, audited reason', async () => {
     const businessId = await seedBusiness();
-    expect(await set(businessId, 'expired', new Date(Date.now() + 60_000), null)).toMatch(
-      /^22023 .*cannot end in the future/,
-    );
-    expect(await set(businessId, 'expired', new Date(Date.now() - 1_000), null)).toBe('allowed');
-    expect((await planOf(businessId))?.plan).toBe('expired');
+    for (const reason of [null, '', '   ']) {
+      expect(await set(businessId, 'expired', null, 'operator:alice', operatorDb, reason)).toMatch(
+        /^22023 .*ending a plan early needs a reason/,
+      );
+    }
+    for (const reason of ['x'.repeat(501), 'line one\nline two']) {
+      expect(await set(businessId, 'expired', null, 'operator:alice', operatorDb, reason)).toMatch(
+        /^22023 .*invalid input/,
+      );
+    }
+    expect((await planOf(businessId))?.plan).toBe('trial');
+    expect(
+      await set(businessId, 'expired', null, 'operator:alice', operatorDb, '  closed account  '),
+    ).toBe('allowed');
+    const after = (await planOf(businessId))!;
+    expect(after.plan).toBe('expired');
+    expect(new Date(after.plan_expires_at!).getTime()).toBeLessThanOrEqual(Date.now());
+    expect(await auditReason(businessId)).toBe('closed account');
   });
 
-  it('expired with no date is stamped on the database clock, not a host clock that runs ahead', async () => {
-    // Before the fix the host's `now` (a minute ahead here) was written and the writer refused it.
+  it('expired through setPlan is stamped on the database clock and audits its reason', async () => {
     const businessId = await seedBusiness();
-    const ahead = new Date(Date.now() + 60_000);
-    const change = { businessId, plan: 'expired', expiresAt: null, actor: 'operator:ada' };
-    expect(await outcome(billingRepo.setPlan(operatorDb, change, ahead))).toBe('allowed');
+    const change = { businessId, plan: 'expired', actor: 'operator:ada', reason: 'fraud review' };
+    expect(await outcome(billingRepo.setPlan(operatorDb, change))).toBe('allowed');
     const after = await planOf(businessId);
     expect(after?.plan).toBe('expired');
     expect(new Date(after!.plan_expires_at!).getTime()).toBeLessThanOrEqual(Date.now());
+    expect(await auditReason(businessId)).toBe('fraud review');
   });
 
   it('signup ends the trial exactly 336 hours on, across a DST change in the session time zone', async () => {
@@ -319,7 +356,7 @@ describe("OD-37: the operator writer runs only as the billing operator, inside R
 
   it('refuses an unknown plan and a missing or system actor', async () => {
     const businessId = await seedBusiness();
-    expect(await set(businessId, 'platinum', FUTURE, 'monthly')).toMatch(/22023/);
+    expect(await set(businessId, 'platinum', 'monthly')).toMatch(/22023/);
     for (const actor of [
       '',
       'system:grace-sweep',
@@ -328,14 +365,10 @@ describe("OD-37: the operator writer runs only as the billing operator, inside R
       'operator:a b',
       'ops',
     ]) {
-      expect(await set(businessId, 'chat', FUTURE, 'monthly', actor)).toMatch(
-        /^22023 .*invalid input/,
-      );
+      expect(await set(businessId, 'chat', 'monthly', actor)).toMatch(/^22023 .*invalid input/);
     }
-    expect(await set(businessId, 'chat', FUTURE, 'monthly', `operator:${'s'.repeat(255)}`)).toBe(
-      'allowed',
-    );
-    expect(await set(businessId, 'chat', FUTURE, 'monthly', `operator:${'s'.repeat(256)}`)).toMatch(
+    expect(await set(businessId, 'chat', 'monthly', `operator:${'s'.repeat(255)}`)).toBe('allowed');
+    expect(await set(businessId, 'chat', 'monthly', `operator:${'s'.repeat(256)}`)).toMatch(
       /^22023/,
     );
   });
@@ -343,23 +376,26 @@ describe("OD-37: the operator writer runs only as the billing operator, inside R
   it('records its own audit row, interval included, in the same transaction', async () => {
     const businessId = await seedBusiness();
     const before = await planOf(businessId);
-    expect(await set(businessId, 'complete', FUTURE, 'monthly', 'operator:alice')).toBe('allowed');
+    expect(await set(businessId, 'complete', 'monthly', 'operator:alice')).toBe('allowed');
+    const written = new Date((await planOf(businessId))!.plan_expires_at!).toISOString();
     const rows = await ownerDb.execute<{
       actor: string;
       source_type: string;
+      reason: string | null;
       old_value: { plan: string; expiresAt: string | null };
       new_value: { plan: string; expiresAt: string | null; billingInterval: string | null };
     }>(sql`
-      SELECT actor, source_type, old_value, new_value FROM audit_events
+      SELECT actor, source_type, reason, old_value, new_value FROM audit_events
       WHERE business_id = ${businessId}::uuid AND entity = 'business' AND action = 'plan_changed'`);
     expect([...rows]).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       actor: 'operator:alice',
       source_type: 'operator',
+      reason: null,
       old_value: { plan: 'trial', expiresAt: new Date(before!.plan_expires_at!).toISOString() },
-      new_value: { plan: 'complete', expiresAt: FUTURE.toISOString(), billingInterval: 'monthly' },
+      new_value: { plan: 'complete', expiresAt: written, billingInterval: 'monthly' },
     });
-    expect(await set(businessId, 'platinum', FUTURE, 'monthly')).toMatch(/22023/);
+    expect(await set(businessId, 'platinum', 'monthly')).toMatch(/22023/);
     const [count] = await ownerDb.execute<{ n: number }>(
       sql`SELECT count(*)::int AS n FROM audit_events WHERE business_id = ${businessId}::uuid AND action = 'plan_changed'`,
     );
@@ -369,37 +405,45 @@ describe("OD-37: the operator writer runs only as the billing operator, inside R
   it('setPlan applies the same rules with the operator principal and refuses them as a typed 400 cause', async () => {
     const businessId = await seedBusiness();
     await expect(
-      billingRepo.setPlan(operatorDb, {
-        businessId,
-        plan: 'chat',
-        expiresAt: new Date(Date.now() + 45 * 86_400_000),
-        actor: 'operator:alice',
-      }),
+      billingRepo.setPlan(operatorDb, { businessId, plan: 'expired', actor: 'operator:alice' }),
     ).rejects.toBeInstanceOf(billingRepo.PlanDateRefused);
     await expect(
       billingRepo.setPlan(operatorDb, {
         businessId,
+        plan: 'expired',
+        actor: 'operator:alice',
+        reason: '   ',
+      }),
+    ).rejects.toThrow(/needs a reason/);
+    await expect(
+      billingRepo.setPlan(operatorDb, {
+        businessId,
         plan: 'trial',
-        expiresAt: null,
         billingInterval: 'monthly',
         actor: 'operator:alice',
       }),
     ).rejects.toThrow(/has no billing interval/);
     // The general credential cannot make the change at all, whatever the input.
     await expect(
-      billingRepo.setPlan(appDb, {
-        businessId,
-        plan: 'chat',
-        expiresAt: null,
-        actor: 'operator:alice',
-      }),
+      billingRepo.setPlan(appDb, { businessId, plan: 'chat', actor: 'operator:alice' }),
     ).rejects.toThrow();
     expect((await planOf(businessId))?.plan).toBe('trial');
+    // A trial that has ended cannot be re-opened through the repo either.
+    const ended = await seedBusiness();
+    await ownerDb.execute(sql`
+      UPDATE businesses SET trial_started_at = now() - interval '15 days',
+        plan_expires_at = now() - interval '1 day' WHERE id = ${ended}::uuid`);
+    await expect(
+      billingRepo.setPlan(operatorDb, {
+        businessId: ended,
+        plan: 'trial',
+        actor: 'operator:alice',
+      }),
+    ).rejects.toBeInstanceOf(billingRepo.PlanDateRefused);
     expect(
       await billingRepo.setPlan(operatorDb, {
         businessId,
         plan: 'chat',
-        expiresAt: new Date(Date.now() + 45 * 86_400_000),
         billingInterval: 'annual',
         actor: 'operator:alice',
       }),
@@ -417,12 +461,7 @@ describe("OD-37: the operator writer runs only as the billing operator, inside R
         ),
       ),
     ).toMatch(/22023/);
-    await billingRepo.setPlan(operatorDb, {
-      businessId,
-      plan: 'chat',
-      expiresAt: FUTURE,
-      actor: 'operator:alice',
-    });
+    await billingRepo.setPlan(operatorDb, { businessId, plan: 'chat', actor: 'operator:alice' });
     await withBusiness(appDb, businessId, (tx) =>
       subscriptionsRepo.schedulePlanChange(tx, businessId, 'expired'),
     );
@@ -510,13 +549,14 @@ describe('OD-37: no other path writes the plan fields (0200, 0203)', () => {
     ).toBe(TRIAL_DAYS * 86_400_000);
   });
 
-  it('migrations 0200 and 0202 to 0206 re-run cleanly as the owner (the repair path)', async () => {
+  it('migrations 0200 and 0202 to 0207 re-run cleanly as the owner (the repair path)', async () => {
     for (const file of [
       '0200_plan_writer_boundary.sql',
       '0202_settlement_and_operator_principals.sql',
       '0203_plan_duration_rules.sql',
       '0205_charge_terms_belong_to_settlement.sql',
       '0206_paid_charge_bound_to_its_cycle.sql',
+      '0207_operator_plan_periods_exact.sql',
     ]) {
       const text = readFileSync(new URL(`../../migrations/${file}`, import.meta.url), 'utf8');
       await ownerDb
@@ -528,9 +568,10 @@ describe('OD-37: no other path writes the plan fields (0200, 0203)', () => {
           if (!(error instanceof TransactionRollbackError)) throw error;
         });
     }
-    const [fn] = await ownerDb.execute<{ fn: string | null }>(
-      sql`SELECT to_regprocedure('public.subscription_operator_set_plan(uuid,text,timestamptz,text,text)')::text AS fn`,
-    );
-    expect(fn!.fn).not.toBeNull();
+    // Each re-run was rolled back: the current (OD-50, dateless) writer is the one left in place.
+    const [fn] = await ownerDb.execute<{ fn: string | null; old: string | null }>(sql`
+      SELECT to_regprocedure('public.subscription_operator_set_plan(uuid,text,text,text,text)')::text AS fn,
+             to_regprocedure('public.subscription_operator_set_plan(uuid,text,timestamptz,text,text)')::text AS old`);
+    expect(fn).toEqual({ fn: expect.any(String), old: null });
   });
 });

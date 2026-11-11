@@ -460,6 +460,68 @@ export async function setPlanAsOwner(
           updated_at = now()
       WHERE id = ${businessId}::uuid
     `;
+    /* A paid row must be one Rekoda's durations allow (OD-49, migration 0208), or the plan reader
+     * treats it as lapsed. A fixture that only names a paid plan (and maybe its date) gets the
+     * cycle such a row would have: started one month before its end (or now), monthly. A row the
+     * test already made conforming, or one a test deliberately breaks afterwards, is left alone. */
+    await sql`
+      UPDATE businesses
+      SET billing_interval = 'monthly',
+          plan_expires_at = COALESCE(plan_expires_at, now() + interval '1 month'),
+          cycle_started_at = COALESCE(plan_expires_at, now() + interval '1 month') - interval '1 month'
+      WHERE id = ${businessId}::uuid AND plan IN ('chat', 'integrate', 'complete')
+        AND subscription_nonconformity(plan, plan_expires_at, cycle_started_at, billing_interval,
+              trial_started_at, now()) IS NOT NULL
+    `;
+  } finally {
+    await sql.end();
+  }
+}
+
+/**
+ * The amount a test charge must carry to be opened at all (migration 0210's price check), computed
+ * by the database as the owner from the catalogue: the plan's price on the interval (the business's
+ * pinned version when it is that plan's), the pack's price, or, for an upgrade, the low end of the
+ * prorated window over the period given, as of now. A fixture that opens a charge through the real
+ * writer calls this instead of inventing a figure.
+ */
+export async function catalogueChargeK(
+  urls: Urls,
+  businessId: string,
+  charge: {
+    kind: string;
+    plan?: string | null;
+    packId?: string | null;
+    billingInterval?: 'monthly' | 'annual' | null;
+    periodStart?: Date | null;
+    periodEnd?: Date | null;
+  },
+): Promise<number> {
+  const sql = postgres(urls.owner, { max: 1, onnotice: () => {} });
+  try {
+    const start = charge.periodStart?.toISOString() ?? null;
+    const end = charge.periodEnd?.toISOString() ?? null;
+    const [row] = await sql<{ k: string | null }[]>`
+      SELECT (CASE
+        WHEN ${charge.kind} = 'add_on' THEN (
+          SELECT price_minor FROM usage_packs
+          WHERE pack_id = ${charge.packId ?? null} AND currency = 'NGN'
+            AND effective_from <= now() AND (effective_to IS NULL OR effective_to > now())
+          ORDER BY version DESC LIMIT 1)
+        WHEN ${charge.kind} = 'upgrade' THEN (
+          SELECT CASE WHEN t <= 0 THEN 0 ELSE floor(d * least(greatest(r - 1, 0), t)::numeric / t) END
+          FROM (SELECT rekoda_private.plan_price_minor(${charge.plan ?? null}, b.plan_version_id, 'monthly')
+                       - rekoda_private.plan_price_minor(b.plan, b.plan_version_id, 'monthly') AS d,
+                       greatest(0, floor(extract(epoch FROM (${end}::timestamptz - ${start}::timestamptz))
+                         / 86400)::int) AS t,
+                       greatest(0, floor(extract(epoch FROM (${end}::timestamptz - clock_timestamp()))
+                         / 86400)::int) AS r) x)
+        ELSE rekoda_private.plan_price_minor(${charge.plan ?? null}, b.plan_version_id,
+               ${charge.billingInterval ?? 'monthly'})
+      END)::text AS k
+      FROM businesses b WHERE b.id = ${businessId}::uuid`;
+    if (row?.k == null) throw new Error(`no catalogue price for a ${charge.kind} charge`);
+    return Number(row.k);
   } finally {
     await sql.end();
   }

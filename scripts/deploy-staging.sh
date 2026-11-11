@@ -66,7 +66,10 @@ carries_plan_boundary() {
      " $BREAKING " == *' 0203_plan_duration_rules '* ||
      " $BREAKING " == *' 0204_external_events_worker_least_privilege '* ||
      " $BREAKING " == *' 0205_charge_terms_belong_to_settlement '* ||
-     " $BREAKING " == *' 0206_paid_charge_bound_to_its_cycle '* ]]
+     " $BREAKING " == *' 0206_paid_charge_bound_to_its_cycle '* ||
+     " $BREAKING " == *' 0207_operator_plan_periods_exact '* ||
+     " $BREAKING " == *' 0209_meter_refund_schedule_writers '* ||
+     " $BREAKING " == *' 0210_charge_price_from_the_catalogue '* ]]
 }
 # The OWN-86 pre-start smoke query, printed for an operator fixing forward by hand.
 print_smoke_0196() {
@@ -88,7 +91,7 @@ fail() {
 PHASE=checks
 # Migrations the previous release cannot run against (OD-48): the api and worker are stopped before
 # any of them is applied, and the old release is never restarted against a database that has one.
-COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle'
+COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_plan_periods_exact 0209_meter_refund_schedule_writers 0210_charge_price_from_the_catalogue'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -123,14 +126,20 @@ SMOKE_0196_SQL="SELECT
                   '0202_settlement_and_operator_principals', '0203_plan_duration_rules',
                   '0204_external_events_worker_least_privilege',
                   '0205_charge_terms_belong_to_settlement',
-                  '0206_paid_charge_bound_to_its_cycle')) = 7
+                  '0206_paid_charge_bound_to_its_cycle', '0207_operator_plan_periods_exact',
+                  '0208_subscription_conformance', '0209_meter_refund_schedule_writers',
+                  '0210_charge_price_from_the_catalogue')) = 11
   AND (SELECT count(*) FROM pg_trigger t WHERE t.tgenabled IN ('O', 'A') AND (t.tgname, t.tgrelid) IN (
         ('businesses_plan_fields_guard', 'public.businesses'::regclass),
         ('businesses_plan_fields_insert_guard', 'public.businesses'::regclass),
         ('businesses_cycle_fields_guard', 'public.businesses'::regclass),
         ('subscription_charges_applied_once_guard', 'public.subscription_charges'::regclass),
         ('subscription_charges_settlement_guard', 'public.subscription_charges'::regclass),
-        ('usage_counters_bonus_guard', 'public.usage_counters'::regclass))) = 6
+        ('usage_counters_bonus_guard', 'public.usage_counters'::regclass),
+        ('businesses_trial_start_guard', 'public.businesses'::regclass),
+        ('businesses_schedule_fields_guard', 'public.businesses'::regclass),
+        ('subscription_charges_refund_guard', 'public.subscription_charges'::regclass),
+        ('subscription_charges_price_check', 'public.subscription_charges'::regclass))) = 10
   AND (SELECT prosrc FROM pg_proc
         WHERE oid = to_regprocedure('public.subscription_apply_paid_charge(uuid,text,timestamptz)'))
         LIKE '%the upgrade was priced for another cycle%the renewal was priced for another cycle%'
@@ -141,10 +150,35 @@ SMOKE_0196_SQL="SELECT
                          WHERE a.privilege_type = 'EXECUTE' AND a.grantee <> p.proowner), '') AS grantees
         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE p.proowner = 'rekoda_plan_writer'::regrole) w)
-      = 'public.staging_move_date(uuid, text, timestamp with time zone, timestamp with time zone, text, text, uuid) => rekoda_app'
+      = 'public.operator_record_refusal(uuid, text, text, text) => rekoda_billing_operator'
+        || ' ; public.staging_move_date(uuid, text, timestamp with time zone, timestamp with time zone, text, text, uuid) => rekoda_app'
         || ' ; public.subscription_apply_paid_charge(uuid, text, timestamp with time zone) => rekoda_settlement'
         || ' ; public.subscription_expire_plan(uuid, text, text) => rekoda_app,rekoda_worker'
-        || ' ; public.subscription_operator_set_plan(uuid, text, timestamp with time zone, text, text) => rekoda_billing_operator'
+        || ' ; public.subscription_operator_period_end(uuid, text, text) => rekoda_billing_operator'
+        || ' ; public.subscription_operator_set_plan(uuid, text, text, text, text) => rekoda_billing_operator'
+        || ' ; public.subscription_record_refund(uuid, text, bigint, text, text) => rekoda_billing_operator'
+        || ' ; public.subscription_schedule_interval(uuid, text) => rekoda_app,rekoda_settlement'
+        || ' ; public.subscription_schedule_plan(uuid, text) => rekoda_app,rekoda_settlement'
+  AND (SELECT string_agg(sig || ' => ' || grantees, ' ; ' ORDER BY sig) FROM (
+        SELECT n.nspname || '.' || p.proname || '(' || oidvectortypes(p.proargtypes) || ')' AS sig,
+               coalesce((SELECT string_agg(a.grantee::regrole::text, ',' ORDER BY a.grantee::regrole::text)
+                         FROM aclexplode(p.proacl) a
+                         WHERE a.privilege_type = 'EXECUTE' AND a.grantee <> p.proowner), '') AS grantees
+        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE p.proowner = 'rekoda_meter_writer'::regrole) w)
+      = 'public.usage_credit_bonus(uuid, text, text, integer) => rekoda_settlement'
+        || ' ; public.usage_release(uuid, text, text, integer) => rekoda_app,rekoda_worker'
+        || ' ; public.usage_reserve(uuid, text, text, integer, integer) => rekoda_app,rekoda_worker'
+  AND NOT EXISTS (SELECT 1 FROM pg_proc WHERE proowner = 'rekoda_meter_writer'::regrole
+        AND (NOT prosecdef OR proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, public, pg_temp']))
+  AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker', 'rekoda_settlement',
+        'rekoda_billing_operator']) AS r(role), unnest(ARRAY['INSERT', 'UPDATE', 'DELETE']) AS k(priv)
+        WHERE has_table_privilege(r.role, 'public.usage_counters', k.priv)
+           OR has_table_privilege(r.role, 'public.usage_reservations', k.priv))
+  AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker', 'rekoda_settlement',
+        'rekoda_billing_operator']) AS r(role)
+        WHERE pg_has_role(r.role, 'rekoda_meter_writer', 'MEMBER')
+           OR pg_has_role(r.role, 'rekoda_price_reader', 'MEMBER'))
   AND NOT EXISTS (SELECT 1 FROM pg_proc WHERE proowner = 'rekoda_plan_writer'::regrole
         AND (NOT prosecdef OR proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, public, pg_temp']))
   AND to_regprocedure('public.subscription_write_plan(uuid,text,timestamptz)') IS NULL
@@ -738,6 +772,21 @@ if carries_plan_boundary; then
     fail 'migrations are APPLIED, but the pre-start database smoke for 0196/0200/0202-0206 could not run, so the new release is not started; the api and worker stay stopped'
   [ "$smoke_0196" = t ] ||
     fail "migrations are APPLIED, but the pre-start database smoke for 0196/0200/0202-0206 failed (got '$smoke_0196'): a ledger row, an enabled guard trigger (plan fields, insert, cycle inputs, applied-once, settlement, pack credit), the cycle-bound provider writer, the exact set of rekoda_plan_writer functions with their exact EXECUTE grantees, SECURITY DEFINER and pinned search_path, the absence of the removed and test-only writers, the settlement and billing-operator roles and their separation, or the worker's read-only estate policy is not as this release requires; the new release is not started and the api and worker stay stopped"
+fi
+
+# OD-49 (owner ruling, 11 Nov 2026; migration 0208): no subscription row that breaks Rekoda's plan
+# durations may pass into a running release unnoticed. The owner-only report names each
+# non-conforming row by business id, plan and a fixed reason code (no customer detail); an ACTIVE one
+# (a paid or trial row, or any row with a future end) stops the deploy before anything starts.
+# Nothing here edits a row: an operator corrects each through the audited operator writer (0207),
+# then the deploy is run again (docs/runbooks/deploy.md, "Non-conforming subscriptions").
+step 'release preflight: no active subscription breaks the plan durations (OD-49)'
+od49=$(dc exec -T postgres psql -U rekoda_owner -d rekoda -v ON_ERROR_STOP=1 -tA -c \
+  "SELECT coalesce(string_agg(business_id || ' ' || plan || ' ' || reason, E'\\n' ORDER BY business_id), 't') FROM rekoda_private.subscription_conformance_report() WHERE active") ||
+  fail 'migrations are APPLIED, but the OD-49 subscription preflight could not run, so the new release is not started; the api and worker stay stopped'
+if [ "$od49" != t ]; then
+  printf 'Active subscriptions that break the plan durations (business id, plan, reason):\n%s\n' "$od49" >&2
+  fail 'migrations are APPLIED, but the OD-49 preflight found active non-conforming subscriptions (listed above); correct each through the operator writer and deploy again; the new release is not started and the api and worker stay stopped'
 fi
 
 step 'start the new release'

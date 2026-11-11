@@ -103,10 +103,11 @@ describe('the sweeps', () => {
 
   it('renews onto the scheduled downgrade when there is one', async () => {
     const businessId = await paidBusiness('Downgrading', new Date('2026-09-01T00:00:00Z'));
+    // On Complete first: only a cheaper plan than the current one can wait for the renewal (0209).
+    await setPlanAsOwner(urls, businessId, { plan: 'complete' });
     await inTenant(businessId, (tx) =>
       subscriptionsRepo.schedulePlanChange(tx, businessId, 'chat'),
     );
-    await setPlanAsOwner(urls, businessId, { plan: 'complete' });
 
     const [row] = await subscriptionsRepo.dueForRenewal(workerDb, NOW);
     expect(row?.plan).toBe('complete');

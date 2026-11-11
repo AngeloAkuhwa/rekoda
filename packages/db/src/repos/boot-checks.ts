@@ -66,8 +66,7 @@ export async function assertRoleCannotAssumePlanWriter(db: Db, label: string): P
 
 /** The writers OD-37 reserves to one principal each (migrations 0202, 0203). */
 export const SETTLEMENT_WRITER = 'public.subscription_apply_paid_charge(uuid,text,timestamptz)';
-export const OPERATOR_WRITER =
-  'public.subscription_operator_set_plan(uuid,text,timestamptz,text,text)';
+export const OPERATOR_WRITER = 'public.subscription_operator_set_plan(uuid,text,text,text,text)';
 export type DatabasePrincipal = 'rekoda_settlement' | 'rekoda_billing_operator';
 
 interface PrincipalFacts {

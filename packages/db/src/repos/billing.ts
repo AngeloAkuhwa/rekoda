@@ -17,7 +17,7 @@ import { withBusiness } from '../client.js';
 import { businesses } from '../schema/tenancy.js';
 import { auditEvents } from '../schema/ops.js';
 import * as subscriptionsRepo from './subscriptions.js';
-import { addInterval, trialExpiry, TRIAL_DAYS, type BillingInterval } from '@rekoda/core';
+import { addInterval, TRIAL_DAYS, type BillingInterval } from '@rekoda/core';
 
 /** The plans nobody paid for; every other plan is a paid one (G-103). */
 const UNPAID_PLANS = new Set(['trial', 'expired']);
@@ -28,11 +28,7 @@ const lagosDayOfMonth = (at: Date): number => new Date(at.getTime() + 3_600_000)
 export interface PlanChange {
   businessId: string;
   plan: string;
-  /**
-   * When the plan ends. Null asks for the rule's own date: exactly one billing interval from now
-   * for a paid plan, the business's 14-day trial end for a trial, now for `expired`. A date given
-   * must lie inside the rule (`planDateRefusal`), never beyond it (owner review, PR #432).
-   */
+  /** TEST FIXTURES ONLY (`setPlanAsFixture`): an operator move never chooses a date (OD-50). */
   expiresAt: Date | null;
   /** A paid plan's interval (monthly by default). Trial and expired have none. */
   billingInterval?: BillingInterval;
@@ -41,104 +37,102 @@ export interface PlanChange {
 }
 
 /**
- * The latest end one billing interval allows from `now`: `addInterval` (Lagos wall-clock calendar
- * months, the month's last day when shorter), with the seconds `addInterval` drops put back, so the
- * bound is the same instant the database's `rekoda_private.add_billing_interval` computes.
+ * An operator plan change (`POST /v1/businesses/plan`, OD-50). No date: Rekoda's standard period
+ * is assigned by the database writer (migration 0207): exactly one calendar month or twelve
+ * calendar months from now for a paid plan, the business's ORIGINAL 14-day trial end for a trial
+ * (refused once that has passed), now for `expired`. `expired` is the explicit early end and needs
+ * a `reason`, which the writer audits; nothing is refunded or credited.
  */
-function periodBound(now: Date, interval: BillingInterval): Date {
-  return new Date(addInterval(now, interval).getTime() + (now.getTime() % 60_000));
+export interface OperatorPlanChange {
+  businessId: string;
+  plan: string;
+  billingInterval?: BillingInterval;
+  actor: string;
+  reason?: string | null;
 }
 
-/** Why an operator plan date was refused: the caller's input, answered with a 400. */
+/** Why an operator plan change was refused: the caller's input, answered with a 400. */
 export class PlanDateRefused extends Error {
   override readonly name = 'PlanDateRefused';
 }
 
 /**
- * Rekoda's plan durations (migration 0203; the same rule the database enforces): a monthly plan ends
- * in the future and no later than one calendar month from now, an annual one no later than twelve
- * calendar months (`addInterval`, Lagos wall-clock), a trial no later than 14 days after the
- * business's own trial start (so moving the date cannot grant a second trial), and `expired` at or
- * before now. Returns the refusal, or null when the date is inside the rule.
- */
-export function planDateRefusal(
-  change: { plan: string; expiresAt: Date; billingInterval: BillingInterval | null },
-  trialStartedAt: Date,
-  now: Date,
-): string | null {
-  if (!UNPAID_PLANS.has(change.plan)) {
-    const interval = change.billingInterval ?? 'monthly';
-    if (change.expiresAt.getTime() <= now.getTime())
-      return 'a paid plan needs an expiry in the future';
-    if (change.expiresAt.getTime() > periodBound(now, interval).getTime()) {
-      return interval === 'annual'
-        ? 'an annual plan ends within twelve months'
-        : 'a monthly plan ends within one month';
-    }
-    return null;
-  }
-  if (change.billingInterval) return `a ${change.plan} plan has no billing interval`;
-  if (
-    change.plan === 'trial' &&
-    change.expiresAt.getTime() > trialExpiry(trialStartedAt).getTime()
-  ) {
-    return `a trial ends within ${TRIAL_DAYS} days of the business's trial start`;
-  }
-  if (change.plan === 'expired' && change.expiresAt.getTime() > now.getTime()) {
-    return 'an expired plan cannot end in the future';
-  }
-  return null;
-}
-
-/**
- * Move a business onto a plan as an operator, recording who and when (`POST /v1/businesses/plan`).
+ * Move a business onto a plan as an operator, recording who, when and why
+ * (`POST /v1/businesses/plan`).
  *
  * `db` must be the billing-operator pool (`rekoda_billing_operator`, OPERATOR_DATABASE_URL): the
  * operator writer is executable by that role only (OD-37, migration 0202). Returns false when the
  * business does not exist rather than throwing: an operator typo is a 404 for the caller to report.
- * Throws `PlanDateRefused` for a date outside Rekoda's plan durations (a 400).
+ * Throws `PlanDateRefused` for an input outside the rules (a 400).
  */
-export async function setPlan(db: Db, change: PlanChange, now = new Date()): Promise<boolean> {
+export async function setPlan(db: Db, change: OperatorPlanChange): Promise<boolean> {
+  const paid = !UNPAID_PLANS.has(change.plan);
+  if (!paid && change.billingInterval) {
+    throw new PlanDateRefused(`a ${change.plan} plan has no billing interval`);
+  }
+  const reason = change.reason?.trim() ? change.reason.trim() : null;
+  if (change.plan === 'expired' && !reason) {
+    throw new PlanDateRefused('ending a plan early needs a reason');
+  }
+  const billingInterval: BillingInterval | null = paid
+    ? (change.billingInterval ?? 'monthly')
+    : null;
   return withBusiness(db, change.businessId, async (tx) => {
     const previous = await lockForPlanChange(tx, change.businessId);
     if (!previous) return false;
-    const paid = !UNPAID_PLANS.has(change.plan);
-    if (!paid && change.billingInterval) {
-      throw new PlanDateRefused(`a ${change.plan} plan has no billing interval`);
+    /* The standard end, from the database writer's own rule on its own clock (0207): the same
+     * `now()` the writer uses in this transaction, so the cycle written beside it agrees. */
+    const ends = await tx.execute<{ at: string | null }>(sql`
+      SELECT to_char(subscription_operator_period_end(${change.businessId}::uuid, ${change.plan},
+        ${billingInterval}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS at`);
+    const at = [...ends][0]?.at;
+    if (!at) return false;
+    const expiresAt = new Date(at);
+    if (change.plan === 'trial' && expiresAt.getTime() <= (await databaseNow(tx)).getTime()) {
+      throw new PlanDateRefused(
+        `the business's ${TRIAL_DAYS}-day trial has ended; a trial cannot be re-opened`,
+      );
     }
-    const billingInterval: BillingInterval | null = paid
-      ? (change.billingInterval ?? 'monthly')
-      : null;
-    const expiresAt =
-      change.expiresAt ??
-      (paid
-        ? addInterval(now, billingInterval!)
-        : change.plan === 'trial'
-          ? trialExpiry(previous.trialStartedAt)
-          : await databaseNow(tx));
-    /* A defaulted `expired` end is the database's own now: compared with it, not the host clock. */
-    const refusal = planDateRefusal(
-      { plan: change.plan, expiresAt, billingInterval },
-      previous.trialStartedAt,
-      change.plan === 'expired' && change.expiresAt === null ? expiresAt : now,
-    );
-    if (refusal) throw new PlanDateRefused(refusal);
-    await writePlanChange(tx, previous, { ...change, expiresAt }, billingInterval, {
-      kind: 'operator',
-      actor: change.actor,
+    await writePlanChange(
+      tx,
+      previous,
+      { businessId: change.businessId, plan: change.plan, expiresAt, actor: change.actor },
       billingInterval,
-    });
-    /* The `plan_changed` audit row (what the move replaced and what it set, G-62) is written by
-     * subscription_operator_set_plan itself, in this transaction (OD-37, 0200): an operator plan
-     * change cannot happen without it, whichever code path called the writer. */
+      { kind: 'operator', actor: change.actor, billingInterval, reason },
+      await databaseNow(tx),
+    );
+    /* The `plan_changed` audit row (what the move replaced, what it set and why, G-62) is written by
+     * subscription_operator_set_plan itself, in this transaction (OD-37, 0200, 0207): an operator
+     * plan change cannot happen without it, whichever code path called the writer. */
     return true;
   });
 }
 
-/* `expired` with no date ends "now" on the DATABASE clock (the transaction start), which the writer's
- * `clock_timestamp()` check can never see as future, whatever the API host's clock says. */
+/**
+ * Record a REFUSED operator plan change (0207), in its own transaction: the refused change rolled
+ * back, and the record of the attempt must not. Best effort by design of the caller: a failure to
+ * record never turns a 400 into a 500, but it is logged by the caller.
+ */
+export async function recordOperatorRefusal(
+  db: Db,
+  refusal: { businessId: string | null; actor: string; action: string; refusal: string },
+): Promise<void> {
+  await db.execute(sql`
+    SELECT operator_record_refusal(${refusal.businessId}::uuid, ${refusal.actor},
+      ${refusal.action}, ${refusal.refusal})`);
+}
+
+/* The start of the period of `interval` that ends at `end` (UTC calendar months; fixtures only). */
+function periodBefore(end: Date, interval: BillingInterval): Date {
+  const start = new Date(end);
+  start.setUTCMonth(start.getUTCMonth() - (interval === 'annual' ? 12 : 1));
+  return start;
+}
+
+/* The DATABASE clock (the transaction start), the one the writer compares with. */
 async function databaseNow(tx: TenantDb): Promise<Date> {
-  const rows = await tx.execute<{ at: string }>(sql`SELECT now()::text AS at`);
+  const rows = await tx.execute<{ at: string }>(sql`
+    SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS at`);
   return new Date([...rows][0]!.at);
 }
 
@@ -193,6 +187,9 @@ async function writePlanChange(
   change: Omit<PlanChange, 'billingInterval'>,
   billingInterval: BillingInterval | null,
   authority: subscriptionsRepo.PlanWriteAuthority,
+  /* When the new cycle starts: the database clock for an operator move (the instant its period
+   * end was computed from, 0207); the host clock for a test fixture. */
+  startedAt: Date = new Date(),
 ): Promise<void> {
   const paid = !UNPAID_PLANS.has(change.plan);
   /* A different interval is a different cycle (owner review of #432): the writer validates and
@@ -209,7 +206,7 @@ async function writePlanChange(
     plan: change.plan,
     paid,
     cycleStartedAt:
-      paid && change.expiresAt ? (sameCycle ? previous.cycleStartedAt : new Date()) : null,
+      paid && change.expiresAt ? (sameCycle ? previous.cycleStartedAt : startedAt) : null,
     planExpiresAt: change.expiresAt,
     /* An operator-defined cycle is never provider-priced (OWN-33). Re-posting
      * the identical cycle changes nothing commercially, so its origin stays. */
@@ -236,9 +233,22 @@ export async function setPlanAsFixture(db: Db, change: PlanChange): Promise<bool
   return withBusiness(db, change.businessId, async (tx) => {
     const previous = await lockForPlanChange(tx, change.businessId);
     if (!previous) return false;
-    await writePlanChange(tx, previous, change, change.billingInterval ?? null, {
-      kind: 'fixture',
-    });
+    /* A paid fixture plan is one Rekoda's durations allow (OD-49, migration 0208), or the plan
+     * reader treats it as lapsed: no date means one standard period from now; a date means the
+     * period that ends then (it may lie in the past, for a cycle that has run out). */
+    const paid = !UNPAID_PLANS.has(change.plan);
+    const interval: BillingInterval = change.billingInterval ?? 'monthly';
+    const now = new Date();
+    const expiresAt = paid ? (change.expiresAt ?? addInterval(now, interval)) : change.expiresAt;
+    const startedAt = paid && change.expiresAt ? periodBefore(change.expiresAt, interval) : now;
+    await writePlanChange(
+      tx,
+      previous,
+      { ...change, expiresAt },
+      change.billingInterval ?? null,
+      { kind: 'fixture' },
+      startedAt,
+    );
     /* The same `plan_changed` row the operator writer records (0200, 0203), so a fixture move is the
      * evidence an operator move is (the 0167 origin backfill and the audit trail read it). */
     const iso = (d: Date | null) => (d ? d.toISOString() : null);
@@ -254,7 +264,7 @@ export async function setPlanAsFixture(db: Db, change: PlanChange): Promise<bool
         pendingPlan: previous.pendingPlan,
         paymentFailedAt: iso(previous.paymentFailedAt),
       },
-      newValue: { plan: change.plan, expiresAt: iso(change.expiresAt) },
+      newValue: { plan: change.plan, expiresAt: iso(expiresAt) },
       sourceType: 'operator',
     });
     return true;

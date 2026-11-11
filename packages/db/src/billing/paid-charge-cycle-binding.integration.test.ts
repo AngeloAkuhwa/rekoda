@@ -55,12 +55,27 @@ async function paidCharge(
 ): Promise<string> {
   seq += 1;
   const reference = `RKD-SUB-B3-${String(seq).padStart(6, '0')}`;
+  /* The price 0210's check accepts for this charge, read as the owner: the renewal price, or the
+   * low end of the upgrade's prorated window over the period given. */
+  const [priced] = await ownerDb.execute<{ k: string }>(sql`
+    SELECT CASE WHEN ${kind} = 'renewal'
+      THEN rekoda_private.plan_price_minor(${plan}, b.plan_version_id, 'monthly')
+      ELSE (SELECT CASE WHEN t <= 0 THEN 0
+                   ELSE floor(d * least(greatest(r - 1, 0), t)::numeric / t) END
+            FROM (SELECT rekoda_private.plan_price_minor(${plan}, b.plan_version_id, 'monthly')
+                         - rekoda_private.plan_price_minor(b.plan, b.plan_version_id, 'monthly') AS d,
+                         greatest(0, floor(extract(epoch FROM (${periodEnd.toISOString()}::timestamptz
+                           - ${periodStart.toISOString()}::timestamptz)) / 86400)::int) AS t,
+                         greatest(0, floor(extract(epoch FROM (${periodEnd.toISOString()}::timestamptz
+                           - clock_timestamp())) / 86400)::int) AS r) x)
+    END::text AS k
+    FROM businesses b WHERE b.id = ${businessId}::uuid`);
   await withBusiness(settlementDb, businessId, (tx) =>
     tx.execute(sql`
       INSERT INTO subscription_charges
         (business_id, kind, plan, amount_k, status, reference, period_start, period_end, paid_at,
          billing_interval)
-      VALUES (${businessId}::uuid, ${kind}, ${plan}, 1000, 'paid', ${reference},
+      VALUES (${businessId}::uuid, ${kind}, ${plan}, ${Number(priced!.k)}, 'paid', ${reference},
         ${periodStart.toISOString()}::timestamptz, ${periodEnd.toISOString()}::timestamptz, now(),
         'monthly')`),
   );
@@ -183,14 +198,17 @@ describe('B3: the cycle and pricing inputs belong to settlement and the operator
     for (const role of ['rekoda_settlement', 'rekoda_billing_operator']) {
       expect(await asRoleWithoutFixture(businessId, role, statement)).toBe('OK ');
     }
-    // Columns the merchant's own scheduling writes stay with the application.
-    expect(
-      await asRoleWithoutFixture(
-        businessId,
-        'rekoda_app',
-        "UPDATE businesses SET pending_plan = 'expired', pending_billing_interval = 'annual', plan_decided_at = clock_timestamp() WHERE id = $B",
-      ),
-    ).toBe('OK ');
+    // Since 0209 the merchant's own scheduling columns are written only through the validated
+    // scheduling functions; a direct write is refused for the application and the worker.
+    for (const role of ['rekoda_app', 'rekoda_worker']) {
+      expect(
+        await asRoleWithoutFixture(
+          businessId,
+          role,
+          "UPDATE businesses SET pending_plan = 'expired', pending_billing_interval = 'annual', plan_decided_at = clock_timestamp() WHERE id = $B",
+        ),
+      ).toMatch(/^42501 .*subscription_schedule_plan/);
+    }
   });
 
   it('the guard is installed and enabled', async () => {

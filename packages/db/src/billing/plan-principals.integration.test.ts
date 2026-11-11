@@ -36,6 +36,8 @@ import {
 
 usePlanWriterHarness();
 
+const REFUND_BY = { actor: 'operator:test', reason: 'test refund' };
+
 describe('OD-37: who may run which writer, and who may become whom (0202)', () => {
   it('EXECUTE is exactly one principal per reserved writer; the general writers are gone', async () => {
     const acl = await ownerDb.execute<{ proname: string; grantee: string }>(sql`
@@ -54,11 +56,15 @@ describe('OD-37: who may run which writer, and who may become whom (0202)', () =
     const [gone] = await ownerDb.execute<{
       general: string | null;
       old_operator: string | null;
+      dated_operator: string | null;
     }>(sql`
       SELECT to_regprocedure('public.subscription_write_plan(uuid,text,timestamptz)')::text AS general,
              to_regprocedure('public.subscription_operator_set_plan(uuid,text,timestamptz,text)')::text
-               AS old_operator`);
-    expect(gone).toEqual({ general: null, old_operator: null });
+               AS old_operator,
+             -- OD-50 (0207): the operator writer no longer takes a date.
+             to_regprocedure('public.subscription_operator_set_plan(uuid,text,timestamptz,text,text)')::text
+               AS dated_operator`);
+    expect(gone).toEqual({ general: null, old_operator: null, dated_operator: null });
   });
 
   it.each([
@@ -71,7 +77,7 @@ describe('OD-37: who may run which writer, and who may become whom (0202)', () =
     async (who: Principal, provider, operator) => {
       const [facts] = await PRINCIPALS[who]().execute<{ provider: boolean; operator: boolean }>(sql`
         SELECT has_function_privilege('public.subscription_apply_paid_charge(uuid,text,timestamptz)', 'EXECUTE') AS provider,
-               has_function_privilege('public.subscription_operator_set_plan(uuid,text,timestamptz,text,text)', 'EXECUTE') AS operator`);
+               has_function_privilege('public.subscription_operator_set_plan(uuid,text,text,text,text)', 'EXECUTE') AS operator`);
       expect(facts).toEqual({ provider, operator });
     },
   );
@@ -280,15 +286,21 @@ describe('OD-37: only settlement records a payment (0202)', () => {
         subscriptionsRepo.settleCharge(tx, {
           reference,
           status: 'paid',
-          paidAmountK: 1000,
+          paidAmountK: 990_000,
           when: new Date(),
         }),
       );
     expect((await settle())?.status).toBe('paid');
     expect(await settle()).toBeNull();
-    // Refunds take entitlement away and stay with the application (the ops refund route).
-    const refunded = await withBusiness(appDb, businessId, (tx) =>
-      subscriptionsRepo.refundCharge(tx, reference, 1000, new Date()),
+    // Refunds take entitlement away; since 0209 only the billing operator records one, through
+    // its bounded, audited writer (the ops refund route). The application cannot.
+    expect(
+      await withBusiness(appDb, businessId, (tx) =>
+        subscriptionsRepo.refundCharge(tx, businessId, reference, 990_000, REFUND_BY),
+      ).catch((e: { cause?: { code?: string } }) => e.cause?.code),
+    ).toBe('42501');
+    const refunded = await withBusiness(operatorDb, businessId, (tx) =>
+      subscriptionsRepo.refundCharge(tx, businessId, reference, 990_000, REFUND_BY),
     );
     expect(refunded?.status).toBe('refunded');
     // ...and a refunded charge cannot be made paid again by it.
@@ -365,8 +377,8 @@ describe("OD-37: what a charge buys is settlement's alone, from its opening to i
         status: from === 'refunded' ? 'paid' : from,
       });
       if (from === 'refunded') {
-        await withBusiness(appDb, businessId, (tx) =>
-          subscriptionsRepo.refundCharge(tx, reference, 1000, new Date()),
+        await withBusiness(operatorDb, businessId, (tx) =>
+          subscriptionsRepo.refundCharge(tx, businessId, reference, 990_000, REFUND_BY),
         );
       }
       expect(
@@ -424,8 +436,8 @@ describe("OD-37: what a charge buys is settlement's alone, from its opening to i
     const paid = await seedCharge(businessId);
     expect(
       (
-        await withBusiness(appDb, businessId, (tx) =>
-          subscriptionsRepo.refundCharge(tx, paid, 1000, new Date()),
+        await withBusiness(operatorDb, businessId, (tx) =>
+          subscriptionsRepo.refundCharge(tx, businessId, paid, 990_000, REFUND_BY),
         )
       )?.status,
     ).toBe('refunded');
@@ -442,8 +454,8 @@ describe('OD-37: only settlement credits pack units or records an add-on holding
           usageRepo.creditBonus(tx, businessId, '2026-11', 'AI_ACTIONS', 500),
         ),
       );
-      expect(credit).toMatch(/42501/);
-      if (who !== 'worker') expect(credit).toMatch(/pack units are credited only by settlement/);
+      // Since 0209 the pack credit is a settlement-only function: refused at EXECUTE.
+      expect(credit).toMatch(/42501.*permission denied for function usage_credit_bonus/);
     },
   );
 

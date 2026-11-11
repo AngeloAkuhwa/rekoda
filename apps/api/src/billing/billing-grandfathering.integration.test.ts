@@ -36,7 +36,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
-import { settlementDb } from '@rekoda/db/testing';
+import { operatorDb, settlementDb } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRenewals } from './renewal-sweep.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
@@ -358,8 +358,11 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
       0,
     );
 
-    await withBusiness(db, businessId, (tx) =>
-      subscriptionsRepo.refundCharge(tx, answer.reference, 100_000, new Date()),
+    await withBusiness(operatorDb(), businessId, (tx) =>
+      subscriptionsRepo.refundCharge(tx, businessId, answer.reference, 100_000, {
+        actor: 'operator:test',
+        reason: 'test refund',
+      }),
     );
 
     const overview = await confirmedBilling().overview(businessId);

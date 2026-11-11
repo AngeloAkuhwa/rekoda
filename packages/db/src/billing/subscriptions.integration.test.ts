@@ -26,7 +26,7 @@ import {
   type Urls,
   setPlanAsOwner,
 } from '../testing.js';
-import { settlementDb } from '../testing.js';
+import { operatorDb, settlementDb } from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -96,6 +96,10 @@ const inTenant = <T>(businessId: string, fn: (tx: TenantDb) => Promise<T>): Prom
 /** Settlement work (a payment recorded, pack units credited) runs only as `rekoda_settlement` (OD-37). */
 const inSettlement = <T>(businessId: string, fn: (tx: TenantDb) => Promise<T>): Promise<T> =>
   withBusiness(settlementDb(), businessId, fn);
+/** A refund is recorded only by the billing operator, through its audited writer (0209). */
+const inOperator = <T>(businessId: string, fn: (tx: TenantDb) => Promise<T>): Promise<T> =>
+  withBusiness(operatorDb(), businessId, fn);
+const BY = { actor: 'operator:test', reason: 'test refund' };
 
 describe('the cycle on a business row', () => {
   it('writes plan, dates and anchor as one fact', async () => {
@@ -235,11 +239,12 @@ describe('charges', () => {
   it('allows more than one UPGRADE inside a cycle', async () => {
     const businessId = await seedBusiness();
     // Chat to Integrate on day 3, Integrate to Complete on day 9. Both real.
+    // The cycle here has ended, so 0210's price check prorates each upgrade to nothing.
     expect(
-      await charge(businessId, 'RK-UP-1', { kind: 'upgrade', plan: 'integrate' }),
+      await charge(businessId, 'RK-UP-1', { kind: 'upgrade', plan: 'integrate', amountK: 0 }),
     ).not.toBeNull();
     expect(
-      await charge(businessId, 'RK-UP-2', { kind: 'upgrade', plan: 'complete' }),
+      await charge(businessId, 'RK-UP-2', { kind: 'upgrade', plan: 'complete', amountK: 0 }),
     ).not.toBeNull();
   });
 
@@ -300,20 +305,20 @@ describe('charges', () => {
       }),
     );
 
-    const half = await inTenant(businessId, (tx) =>
-      subscriptionsRepo.refundCharge(tx, 'RK-SUB-1', 490_000, new Date('2026-09-10T00:00:00Z')),
+    const half = await inOperator(businessId, (tx) =>
+      subscriptionsRepo.refundCharge(tx, businessId, 'RK-SUB-1', 490_000, BY),
     );
     // Half back is still a charge that happened, not a charge that did not.
     expect(half?.status).toBe('paid');
 
-    const rest = await inTenant(businessId, (tx) =>
-      subscriptionsRepo.refundCharge(tx, 'RK-SUB-1', 500_000, new Date('2026-09-11T00:00:00Z')),
+    const rest = await inOperator(businessId, (tx) =>
+      subscriptionsRepo.refundCharge(tx, businessId, 'RK-SUB-1', 500_000, BY),
     );
     expect(rest?.status).toBe('refunded');
 
     // And never more than was charged.
-    const over = await inTenant(businessId, (tx) =>
-      subscriptionsRepo.refundCharge(tx, 'RK-SUB-1', 1, new Date('2026-09-12T00:00:00Z')),
+    const over = await inOperator(businessId, (tx) =>
+      subscriptionsRepo.refundCharge(tx, businessId, 'RK-SUB-1', 1, BY),
     );
     expect(over).toBeNull();
   });
@@ -411,8 +416,8 @@ describe('recording a refund', () => {
     const businessId = await seedBusiness();
     await paidCharge(businessId, 'RKD-SUB-20260821-EEEEEE');
 
-    await inTenant(businessId, (tx) =>
-      subscriptionsRepo.refundCharge(tx, 'RKD-SUB-20260821-EEEEEE', 990_000, new Date(), {
+    await inOperator(businessId, (tx) =>
+      subscriptionsRepo.refundCharge(tx, businessId, 'RKD-SUB-20260821-EEEEEE', 990_000, {
         actor: 'operator:angelo',
         reason: 'unused_add_on',
       }),
@@ -438,8 +443,8 @@ describe('recording a refund', () => {
 
     // More than was ever charged.
     expect(
-      await inTenant(businessId, (tx) =>
-        subscriptionsRepo.refundCharge(tx, 'RKD-SUB-20260821-FFFFFF', 990_001, new Date(), {
+      await inOperator(businessId, (tx) =>
+        subscriptionsRepo.refundCharge(tx, businessId, 'RKD-SUB-20260821-FFFFFF', 990_001, {
           actor: 'operator:angelo',
           reason: 'duplicate_charge',
         }),

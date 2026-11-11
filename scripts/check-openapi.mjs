@@ -35,7 +35,9 @@ function routesInSource(dir) {
     /* A controller with no literal base path is not part of the versioned
      * surface this guard describes; the unsupported-version handler is one. */
     if (base !== 'api/v1') continue;
-    for (const [, verb, path] of text.matchAll(/@(Get|Post|Put|Patch|Delete)\(\s*'([^']*)'\s*\)/g)) {
+    for (const [, verb, path] of text.matchAll(
+      /@(Get|Post|Put|Patch|Delete)\(\s*'([^']*)'\s*\)/g,
+    )) {
       /* Nest writes `:invoiceNumber`, OpenAPI writes `{invoiceNumber}`. */
       const openApiPath = `/${base}/${path}`.replace(/:([A-Za-z0-9_]+)/g, '{$1}');
       found.push(`${verb.toUpperCase()} ${openApiPath}`);

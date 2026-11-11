@@ -175,14 +175,20 @@ export async function writeCycle(
 /**
  * Who may move a business's plan fields (OD-37, migration 0200), each mapped to its own database
  * writer: a paid charge (`subscription_apply_paid_charge`, the plan comes from the charge), an
- * operator (`subscription_operator_set_plan`: validated plan, interval, date and `operator:` actor, audited by the writer, billing-operator credential only, 0202/0203), or a
+ * operator (`subscription_operator_set_plan`: validated plan, interval and `operator:` actor, the standard period assigned by the writer, audited with its reason, billing-operator credential only, 0202/0203/0207), or a
  * test fixture (a function only the test harness installs).
  */
 export type PlanWriteAuthority =
   | { kind: 'charge'; reference: string }
   /* The interval a paid operator plan is sold on (null for trial and expired): the writer checks
    * the end against it (migration 0203). */
-  | { kind: 'operator'; actor: string; billingInterval: BillingInterval | null }
+  | {
+      kind: 'operator';
+      actor: string;
+      billingInterval: BillingInterval | null;
+      /* Audited with the move; required for `expired`, the explicit early end (OD-50, 0207). */
+      reason: string | null;
+    }
   | { kind: 'fixture' };
 
 /** What a business's subscription columns say, written as one fact. */
@@ -270,10 +276,16 @@ export async function writeSubscriptionState(
       throw new Error(`charge ${a.reference} buys a different plan than the cycle being applied`);
     }
   } else if (a.kind === 'operator') {
-    await tx.execute(sql`
-      SELECT subscription_operator_set_plan(${businessId}::uuid, ${state.plan}, ${expires},
-        ${a.billingInterval}, ${a.actor})
+    /* The writer assigns the standard end itself (OD-50, 0207); the caller read it first from
+     * `subscription_operator_period_end` in this transaction, so the two must agree exactly. */
+    const rows = await tx.execute<{ ends: string }>(sql`
+      SELECT to_char(subscription_operator_set_plan(${businessId}::uuid, ${state.plan},
+        ${a.billingInterval}, ${a.actor}, ${a.reason}) AT TIME ZONE 'UTC',
+        'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS ends
     `);
+    if (new Date([...rows][0]!.ends).getTime() !== state.planExpiresAt?.getTime()) {
+      throw new Error('the operator writer assigned a different period end than it reported');
+    }
   } else {
     await tx.execute(sql`
       SELECT test_fixture_set_plan(${businessId}::uuid, ${state.plan}, ${expires})
@@ -326,94 +338,12 @@ export async function schedulePlanChange(
   businessId: string,
   plan: string | null,
 ): Promise<void> {
-  /* Business row first, then charge rows: the order settlement uses (G-104).
-   * Touching a charge first lets a concurrent settlement deadlock with this. */
-  await lockBusiness(tx, businessId);
-  /* Scheduling a change is a decision (G-104): a plan charge opened before it
-   * must not silently undo it. Clearing one is not: an undone cancellation
-   * leaves the subscription as it was, so the renewal already open still
-   * renews. */
-  if (plan === null) {
-    /* Undo. A RENEWAL opened WHILE the change was pending was priced for the
-     * pending plan (the sweep prices the next cycle's plan); restoring the old
-     * plan makes it wrong, so it is flagged stale. An upgrade opened meanwhile
-     * was priced on the current plan and stays valid, as does anything opened
-     * before. A change pending from before migration 0162 has no decision time:
-     * every such renewal counts. */
-    await tx.execute(sql`
-      UPDATE subscription_charges c SET superseded_at = clock_timestamp(), updated_at = now()
-      FROM businesses b
-      WHERE b.id = ${businessId}::uuid AND c.business_id = b.id
-        AND b.pending_plan IS NOT NULL
-        AND c.status = 'pending' AND c.superseded_at IS NULL
-        AND c.kind = 'renewal' AND c.plan IS NOT NULL AND c.plan <> b.plan
-        AND c.created_at > COALESCE(b.plan_decided_at, '-infinity'::timestamptz)
-    `);
-    /* A charge opened BEFORE the schedule but retired AFTER it (the merchant
-     * asked for another paid plan while the change waited) was only stale
-     * because of the schedule. The undo removes that reason, so it is current
-     * again, unless a fresh charge already took its slot.
-     *
-     * `superseded_at >= plan_decided_at` is what keeps this to charges retired
-     * AFTER the schedule's own decision: a REPLACEMENT retires the first plan's
-     * renewals in a statement that runs BEFORE it stamps the new decision, so
-     * those are not revived (a renewal priced for an abandoned downgrade must
-     * stay retired). A renewal priced on an interval other than the one now
-     * in force (a yearly switch chosen meanwhile) is never revived either. That depends on the statement order in the replacement
-     * branch below and is pinned by "undoing after a REPLACED downgrade ...". */
-    await tx.execute(sql`
-      UPDATE subscription_charges c SET superseded_at = NULL, updated_at = now()
-      FROM businesses b
-      WHERE b.id = ${businessId}::uuid AND c.business_id = b.id
-        AND b.pending_plan IS NOT NULL
-        AND c.status = 'pending' AND c.superseded_at IS NOT NULL
-        AND c.unapplied_at IS NULL AND c.abandoned_at IS NULL AND c.plan IS NOT NULL
-        AND b.plan_decided_at IS NOT NULL AND b.plan_decided_before_pending IS NOT NULL
-        AND c.created_at >= b.plan_decided_before_pending AND c.created_at < b.plan_decided_at
-        AND c.superseded_at >= b.plan_decided_at
-        AND (c.kind <> 'renewal'
-          OR c.billing_interval IS NOT DISTINCT FROM COALESCE(b.pending_billing_interval, b.billing_interval))
-        AND NOT EXISTS (
-          SELECT 1 FROM subscription_charges o
-          WHERE o.business_id = c.business_id AND o.id <> c.id
-            AND o.status = 'pending' AND o.superseded_at IS NULL
-            AND o.kind = c.kind
-            AND (CASE WHEN c.kind = 'upgrade' THEN o.plan = c.plan
-                      ELSE o.period_start IS NOT DISTINCT FROM c.period_start END))
-    `);
-    /* Put the decision time back to what it was before the change was
-     * scheduled, so a charge opened before the cancellation is current again. */
-    await tx.execute(sql`
-      UPDATE businesses SET pending_plan = NULL,
-        plan_decided_at = CASE WHEN pending_plan IS NULL
-          THEN plan_decided_at ELSE plan_decided_before_pending END,
-        plan_decided_before_pending = NULL,
-        updated_at = now()
-      WHERE id = ${businessId}::uuid
-    `);
-    return;
-  }
-  /* REPLACING a pending change with a different one is a new decision: a charge
-   * opened for the first pending plan in between is flagged stale now (an undo
-   * only looks at charges since the latest schedule). */
-  await tx.execute(sql`
-    UPDATE subscription_charges c SET superseded_at = clock_timestamp(), updated_at = now()
-    FROM businesses b
-    WHERE b.id = ${businessId}::uuid AND c.business_id = b.id
-      AND b.pending_plan IS NOT NULL AND b.pending_plan IS DISTINCT FROM ${plan}
-      AND c.status = 'pending' AND c.superseded_at IS NULL
-      AND c.kind = 'renewal' AND c.plan IS NOT NULL AND c.plan <> b.plan
-      AND c.created_at > COALESCE(b.plan_decided_at, '-infinity'::timestamptz)
-  `);
-  await tx.execute(sql`
-    UPDATE businesses SET pending_plan = ${plan},
-      plan_decided_before_pending = CASE WHEN pending_plan IS NULL
-        THEN plan_decided_at ELSE plan_decided_before_pending END,
-      plan_decided_at = CASE WHEN pending_plan IS DISTINCT FROM ${plan}
-        THEN clock_timestamp() ELSE plan_decided_at END,
-      updated_at = now()
-    WHERE id = ${businessId}::uuid
-  `);
+  /* The whole operation lives in the database since migration 0209 (`subscription_schedule_plan`,
+   * owned by the plan writer): the same statements, in the same order (business row first, then
+   * charge rows, G-104), with the plan validated (a cheaper paid plan, `expired`, or the undo) and
+   * the decision times on the database clock. The application credential cannot write these
+   * columns any other way. */
+  await tx.execute(sql`SELECT subscription_schedule_plan(${businessId}::uuid, ${plan})`);
 }
 
 /**
@@ -440,19 +370,10 @@ export async function scheduleIntervalChange(
   businessId: string,
   interval: BillingInterval | null,
 ): Promise<void> {
-  await lockBusiness(tx, businessId);
-  await tx.execute(sql`
-    UPDATE businesses SET pending_billing_interval = ${interval}, updated_at = now()
-    WHERE id = ${businessId}::uuid
-  `);
-  await tx.execute(sql`
-    UPDATE subscription_charges c
-    SET superseded_at = clock_timestamp(), abandoned_at = clock_timestamp(), updated_at = now()
-    FROM businesses b
-    WHERE b.id = ${businessId}::uuid AND c.business_id = b.id
-      AND c.kind = 'renewal' AND c.status = 'pending' AND c.superseded_at IS NULL
-      AND c.billing_interval IS DISTINCT FROM COALESCE(b.pending_billing_interval, b.billing_interval)
-  `);
+  /* `subscription_schedule_interval` (migration 0209): validated (monthly, annual or the undo, on a
+   * paid business), locks the business first, and withdraws a renewal priced on the interval it
+   * moves away from (G-105). */
+  await tx.execute(sql`SELECT subscription_schedule_interval(${businessId}::uuid, ${interval})`);
 }
 
 /**
@@ -976,40 +897,33 @@ export async function resolveUnapplied(
  */
 export async function refundCharge(
   tx: TenantDb,
+  businessId: string,
   reference: string,
   amountK: number,
-  when: Date,
-  /** Who decided, and under which of ADR 0024's rows. */
-  record?: { actor: string; reason: string },
+  /** Who decided (the verified operator subject), and under which of ADR 0024's rows. */
+  record: { actor: string; reason: string },
 ): Promise<ChargeRow | null> {
+  /* `subscription_record_refund` (migration 0209), billing operator only: bounded by what was
+   * actually paid, the verified actor and a reason required, and the audit row written in the same
+   * statement. The refund columns cannot be written any other way. */
+  try {
+    /* A savepoint, so a refusal leaves the caller's transaction usable. */
+    await tx.transaction((sp) =>
+      sp.execute(sql`
+        SELECT * FROM subscription_record_refund(${businessId}::uuid, ${reference},
+          ${amountK}::bigint, ${record.actor}, ${record.reason})
+      `),
+    );
+  } catch (error) {
+    const cause = (error as { cause?: { code?: string } }).cause;
+    if (cause?.code === '22023') return null;
+    throw error;
+  }
   const rows = await tx.execute<RawCharge>(sql`
-    UPDATE subscription_charges SET
-      refunded_amount_k = refunded_amount_k + ${amountK},
-      status = CASE WHEN refunded_amount_k + ${amountK} >= amount_k THEN 'refunded' ELSE status END,
-      refunded_at = ${when.toISOString()}::timestamptz,
-      updated_at = now()
-    WHERE reference = ${reference}
-      AND status IN ('paid', 'refunded')
-      AND refunded_amount_k + ${amountK} <= amount_k
-    RETURNING *
+    SELECT * FROM subscription_charges WHERE reference = ${reference}
   `);
   const row = [...rows][0];
-  if (!row) return null;
-
-  /* Written here rather than by the caller, because a refund and the record
-   * of who decided it are one fact: a caller that could forget the second is
-   * a caller that will. */
-  if (record) {
-    await tx.execute(sql`
-      INSERT INTO audit_events
-        (business_id, actor, entity, entity_id, action, new_value, source_type)
-      VALUES (${row.business_id}::uuid, ${record.actor}, 'subscription_charge',
-              ${reference}, 'refunded',
-              ${JSON.stringify({ amountK, reason: record.reason, status: row.status })}::jsonb,
-              'operator')
-    `);
-  }
-  return shape(row);
+  return row ? shape(row) : null;
 }
 
 /**

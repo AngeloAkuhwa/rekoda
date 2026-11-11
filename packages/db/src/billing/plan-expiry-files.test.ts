@@ -77,9 +77,9 @@ export const PINS: Readonly<Record<string, Pin>> = {
   },
   'packages/db/src/testing.ts': {
     plan: 2,
-    expiry: 2,
+    expiry: 3,
     businessInserts: 0,
-    why: 'OD-37: setPlanAsOwner (one owner-role UPDATE) and test_fixture_set_plan (installed by the test harness only, owned by rekoda_plan_writer); both refused for the application roles in production databases, where the fixture writer does not exist.',
+    why: 'OD-37: setPlanAsOwner (one owner-role UPDATE, plus, OD-49, an owner-role completion of a paid row to a conforming cycle) and test_fixture_set_plan (installed by the test harness only, owned by rekoda_plan_writer); all refused for the application roles in production databases, where the fixture writer does not exist.',
   },
   'packages/db/migrations/0197_staging_test_business_tools.sql': {
     plan: 0,
@@ -98,6 +98,12 @@ export const PINS: Readonly<Record<string, Pin>> = {
     expiry: 3,
     businessInserts: 0,
     why: 'OWN-89: the three writers re-created with the duration rules (operator writer: plan and date; provider writer: plan from the charge and the date; expiry writer: plan, and a future end clamped to now). All owned by rekoda_plan_writer.',
+  },
+  'packages/db/migrations/0207_operator_plan_periods_exact.sql': {
+    plan: 1,
+    expiry: 1,
+    businessInserts: 0,
+    why: 'OD-50: the operator writer re-created with no date argument; it assigns the standard period itself (plan and date). Owned by rekoda_plan_writer.',
   },
   'packages/db/migrations/0206_paid_charge_bound_to_its_cycle.sql': {
     plan: 1,
