@@ -19,11 +19,7 @@ import { sql as drizzleSql } from 'drizzle-orm';
 import { applyMigrations } from './migrate.js';
 import { withBusiness, type Db } from './client.js';
 import { setPlan } from './repos/billing.js';
-import {
-  setBillingEmailSealed,
-  writeCycle,
-  type CycleInput,
-} from './repos/subscriptions.js';
+import { setBillingEmailSealed, writeCycle, type CycleInput } from './repos/subscriptions.js';
 import type { TenantDb } from './client.js';
 
 export interface Urls {
