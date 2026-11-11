@@ -367,17 +367,22 @@ describe('the cycle a payment starts', () => {
     reference: string,
     when: Date,
   ) {
-    await withBusiness(settlementDb(), businessId, (tx) =>
-      subscriptionsRepo.openCharge(tx, {
+    await withBusiness(settlementDb(), businessId, async (tx) => {
+      /* As the sweep opens it: a renewal's period starts at the current paid-to date (0206). */
+      const start =
+        kind === 'renewal'
+          ? ((await subscriptionsRepo.subscriptionFor(tx, businessId))?.planExpiresAt ?? when)
+          : when;
+      return subscriptionsRepo.openCharge(tx, {
         businessId,
         kind,
         plan,
         amountK: PLAN_PRICES_K[plan as 'chat'],
         reference,
-        periodStart: when,
-        periodEnd: new Date(when.getTime() + 30 * 86_400_000),
-      }),
-    );
+        periodStart: start,
+        periodEnd: new Date(start.getTime() + 30 * 86_400_000),
+      });
+    });
     await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, { businessId, reference, providerReference: 'ps_x', when, config }),
     );
