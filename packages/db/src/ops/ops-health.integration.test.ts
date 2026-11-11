@@ -11,7 +11,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { events, identity, jobsRepo } from '../index.js';
-import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '../testing.js';
+import {
+  migrate,
+  ownerDb,
+  requireUrls,
+  storedEventId,
+  truncateAll,
+  type Urls,
+} from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -138,7 +145,8 @@ describe('queue health', () => {
     await withBusiness(appDb, ada, (tx) =>
       jobsRepo.enqueue(tx, { businessId: ada, kind: 'inbound.message', delayMs: 3_600_000 }),
     );
-    await workerDb.execute(
+    /* created_at is not a queue-progress column the worker may write (0212): staged as the owner. */
+    await ownerDb().execute(
       sql`UPDATE jobs SET created_at = now() - interval '3 hours', updated_at = now()`,
     );
 
@@ -153,7 +161,7 @@ describe('queue health', () => {
     await withBusiness(appDb, ada, (tx) =>
       jobsRepo.enqueue(tx, { businessId: ada, kind: 'inbound.message' }),
     );
-    await workerDb.execute(
+    await ownerDb().execute(
       sql`UPDATE jobs SET state = 'running', created_at = now() - interval '5 hours'`,
     );
 
