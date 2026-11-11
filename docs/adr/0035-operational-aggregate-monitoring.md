@@ -210,3 +210,54 @@ the tenant policy; the older SELECT-only `worker_resolve` reads on `subscription
 `payment_intents`; and 0004's blanket grants on other tables (the OD-33-F1 follow-up). Tests:
 `packages/db/src/ops/external-events-worker-write.integration.test.ts`; the staging pre-start smoke
 checks the policy command and the column grants.
+
+## Amendment 4 (11 Nov 2026, owner closeout instruction for PR #432, OWN-90): the worker writes only what its jobs make
+
+Status: accepted with PR #432 (not merged at the time of writing). It closes the residual
+Amendment 3 recorded. Assessed on the code at `51f800f`:
+
+- 0004's blanket grants were still in force. The worker credential could write almost every table,
+  and every future one through default privileges, including column INSERT on the append-only books.
+  Because the pin is caller-settable, that reached any business: identity (sessions, users,
+  memberships), the migration ledger, the merchant's books, explicit entitlements and other
+  businesses' jobs.
+- Through the tenant policy, the worker could still mark another business's attributed event
+  processed, or clear its flag. That hides a payment from both the handler and the operators'
+  flagged list.
+- `retention_delete_business` took its cutoff from the caller. With the worker credential, any
+  warned trial or expired business that had never paid could be erased early.
+
+Migration 0210 closes all three:
+
+1. Every worker INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES and TRIGGER, at table and column level,
+   is revoked, default privileges included. Only the writes its jobs make are granted back:
+   - queue UPDATE;
+   - outbox UPDATE;
+   - webhook deliveries INSERT and UPDATE, and the endpoint health columns;
+   - object-deletion UPDATE and DELETE;
+   - stranger replies;
+   - usage counters (webhook-delivery metering, a dead job's reserved meters);
+   - the dead-job record with its audit row and merchant exception;
+   - the two event columns.
+
+   Discovery stays cross-tenant and read-only (rule 2, Amendment 1).
+
+2. A trigger limits the worker's event writes:
+   - on an attributed event, it may only add the dead-job flag (`error` from none to a value, with
+     `processed_at` left empty);
+   - on an unattributed event, it may mark it processed once, with a reason for a Paystack event, so
+     an unmatched payment stays in the flagged list.
+3. The retention deletion applies its own policy (ended at least 90 days ago, warned at least 30
+   days ago, core `RETENTION`) whatever cutoff it is given. Its unchecked body runs for no runtime
+   role, and no runtime role can backdate a retention notice.
+4. No runtime role writes `rekoda_migrations` or `business_entitlements`.
+
+Residual: the worker still updates any business's job row, because it coordinates the queue (ADR
+0022). The table owner and the infrastructure administrator are an administrative trust boundary,
+exempt from every guard. That is not the same class as a runtime role.
+
+Tests:
+
+- `packages/db/src/tenancy/worker-least-privilege.integration.test.ts`;
+- the pre-start smoke (`scripts/deploy-staging.sh`, `deploy-smoke-sql.integration.test.ts`), which
+  checks the worker's exact write set and has a tampering case for each rule.
