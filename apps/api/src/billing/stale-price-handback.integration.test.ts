@@ -120,7 +120,9 @@ describe('a pending charge priced on another day', () => {
     expect((await pendingOf(businessId)).length).toBe(1);
   });
 
-  it("a pack whose price has moved since its pending charge was opened opens today's price", async () => {
+  it("a pack whose pending charge is not at today's price opens today's price", async () => {
+    /* The stored amount is moved, not the catalogue: what this pins is the slot, which a repriced
+     * pack and a charge this code never opened (OD-51) both reach the same way. */
     const businessId = await onChat();
     const first = await billing().buyPack(businessId, 'documents_50');
     if (first.state !== 'payment_required') throw new Error(`payable, got ${first.state}`);
