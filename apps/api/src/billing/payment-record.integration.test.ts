@@ -10,6 +10,7 @@ import { billingPaymentRecord } from '@rekoda/contracts';
 import { createDb, identity, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import {
   applyFixtureCycle,
+  catalogueChargeK,
   migrate,
   requireUrls,
   truncateAll,
@@ -61,7 +62,7 @@ const open = (businessId: string, reference: string, over: { pack?: boolean } = 
       businessId,
       kind: over.pack ? 'add_on' : 'first_purchase',
       ...(over.pack ? { packId: 'messages_100' } : { plan: 'chat' }),
-      amountK: 990_000,
+      amountK: over.pack ? 250_000 : 990_000, // the catalogue prices 0210 requires
       reference,
       ...(over.pack
         ? {}
@@ -304,12 +305,18 @@ describe('payment record', () => {
         anchorDay: 1,
       }),
     );
+    const amountK = await catalogueChargeK(urls, b, {
+      kind: 'upgrade',
+      plan: 'integrate',
+      periodStart: cycleStart,
+      periodEnd: renewsAt,
+    });
     await withBusiness(settlementDb(), b, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId: b,
         kind: 'upgrade',
         plan: 'integrate',
-        amountK: 100_000,
+        amountK,
         reference: 'RKD-SUB-20261128-QQQQQQ',
         periodStart: cycleStart,
         periodEnd: renewsAt,

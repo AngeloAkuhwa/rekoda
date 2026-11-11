@@ -16,6 +16,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDb, identity, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import {
   applyFixtureCycle,
+  catalogueChargeK,
   migrate,
   requireUrls,
   truncateAll,
@@ -102,12 +103,14 @@ const open = (
         : paidTo && kind === 'upgrade'
           ? { periodStart: new Date(paidTo.getTime() - 30 * 86_400_000), periodEnd: paidTo }
           : {};
+    const packId = kind === 'add_on' ? 'messages_100' : null; // 0210: the catalogue's price
+    const amountK = await catalogueChargeK(urls, businessId, { kind, plan, packId, ...period });
     return subscriptionsRepo.openCharge(tx, {
       businessId,
       kind,
       ...(plan ? { plan } : {}),
-      ...(kind === 'add_on' ? { packId: 'messages_100' } : {}),
-      amountK: 990_000,
+      ...(packId ? { packId } : {}),
+      amountK,
       reference,
       ...period,
     });
@@ -224,7 +227,7 @@ describe('a paid but unapplied charge is an operator exception (OD-30)', () => {
       businessId,
       kind: 'renewal',
       plan: 'complete',
-      amountK: 990_000,
+      amountK: 2_990_000, // Complete's monthly catalogue price (0210)
       reason: 'subscription_decided_after_charge',
       currentPlan: 'chat',
     });

@@ -9,6 +9,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDb, identity, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import {
   applyFixtureCycle,
+  catalogueChargeK,
   migrate,
   requireUrls,
   settlementDb,
@@ -56,12 +57,14 @@ async function open(
   periodEnd: Date,
   reference: string,
 ): Promise<string> {
+  // 0210: the catalogue price (an upgrade's prorated difference over its frozen period).
+  const amountK = await catalogueChargeK(urls, businessId, { kind, plan, periodStart, periodEnd });
   await withBusiness(settlementDb(), businessId, (tx) =>
     subscriptionsRepo.openCharge(tx, {
       businessId,
       kind,
       plan,
-      amountK: kind === 'upgrade' ? 50_000 : 500_000,
+      amountK,
       reference,
       periodStart,
       periodEnd,

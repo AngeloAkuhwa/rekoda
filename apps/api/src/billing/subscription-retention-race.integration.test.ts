@@ -90,8 +90,9 @@ async function warnedTrialWithPendingCharge(
     await subscriptionsRepo.openCharge(tx, {
       businessId,
       kind,
-      ...(kind === 'first_purchase' ? { plan: 'chat' as const } : {}),
-      amountK: 990_000,
+      /* 0210: each at its catalogue price (Chat monthly; the 100-message pack). */
+      ...(kind === 'first_purchase' ? { plan: 'chat' as const } : { packId: 'messages_100' }),
+      amountK: kind === 'first_purchase' ? 990_000 : 250_000,
       reference: REFERENCE,
       periodStart: daysAgo(1),
       periodEnd: new Date(Date.now() + 29 * 86_400_000),

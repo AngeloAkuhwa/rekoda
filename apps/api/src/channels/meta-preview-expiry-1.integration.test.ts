@@ -241,11 +241,13 @@ describe('a preview has a time limit (G-23)', () => {
     await say('wamid.G23-edge', A_SALE, 'sold Ada 3 wigs for 300k');
     /* Deterministic: the moment this business's document unit is consumed,
      * its open preview's window closes, exactly the race the claim's own
-     * predicate exists for. Test-scoped, on the owner connection. */
+     * predicate exists for. Test-scoped, on the owner connection; SECURITY DEFINER because the
+     * meter now writes as rekoda_meter_writer (0209), which may not touch drafts. */
     const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
     try {
       await ownerDb.execute(sql`
-        CREATE OR REPLACE FUNCTION g23_close_window() RETURNS trigger AS $$
+        CREATE OR REPLACE FUNCTION g23_close_window() RETURNS trigger
+          SECURITY DEFINER AS $$
         BEGIN
           UPDATE command_drafts SET expires_at = clock_timestamp() - interval '1 day'
            WHERE business_id = NEW.business_id AND state = 'pending';

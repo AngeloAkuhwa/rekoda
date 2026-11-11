@@ -15,6 +15,7 @@ import { ServiceUnavailableException } from '@nestjs/common';
 import { createDb, identity, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import {
   applyFixtureCycle,
+  catalogueChargeK,
   migrate,
   requireUrls,
   truncateAll,
@@ -478,13 +479,24 @@ describe('what may be paid', () => {
       expiresAt: new Date(Date.now() + 20 * 86_400_000),
       actor: 'operator:test-g102',
     });
+    /* 0210: an upgrade carries its cycle and the catalogue's prorated price. */
+    const sub = await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.subscriptionFor(tx, businessId),
+    );
+    const period = { periodStart: sub!.cycleStartedAt!, periodEnd: sub!.planExpiresAt! };
+    const amountK = await catalogueChargeK(urls, businessId, {
+      kind: 'upgrade',
+      plan: 'complete',
+      ...period,
+    });
     await withBusiness(settlementDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'upgrade',
         plan: 'complete',
-        amountK: 50_000,
+        amountK,
         reference: 'RKD-SUB-20261024-BBBBBB',
+        ...period,
       }),
     );
 
@@ -512,6 +524,12 @@ describe('what may be paid', () => {
 
   it('refuses a charge of nothing', async () => {
     const businessId = await seedBusiness();
+    /* 0210 prices an upgrade from the catalogue: it is worth nothing only with under a day left. */
+    const periodEnd = new Date(Date.now() + 12 * 3_600_000);
+    await setPlanForTest(appDb, { businessId, plan: 'chat', expiresAt: periodEnd, actor: 'test' });
+    const sub = await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.subscriptionFor(tx, businessId),
+    );
     await withBusiness(settlementDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
@@ -519,6 +537,8 @@ describe('what may be paid', () => {
         plan: 'complete',
         amountK: 0,
         reference: 'RKD-SUB-20261024-AAAAAA',
+        periodStart: sub!.cycleStartedAt!,
+        periodEnd,
       }),
     );
 

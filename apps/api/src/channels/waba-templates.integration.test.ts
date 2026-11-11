@@ -536,19 +536,12 @@ describe('no transaction is held open while Meta is called (REM-02)', () => {
     }
     override async sendOnConnection(message: Parameters<StubSender['sendOnConnection']>[0]) {
       const businessId = this.businessId;
-      let usageRowUpdated = false;
-      try {
-        await withBusiness(db, businessId, async (tx) => {
-          await tx.execute(sql`SET LOCAL lock_timeout = '1500ms'`);
-          await tx.execute(
-            sql`UPDATE usage_counters SET updated_at = now()
-                 WHERE business_id = ${businessId}::uuid AND unit = 'SERVICE_MESSAGE'`,
-          );
-        });
-        usageRowUpdated = true;
-      } catch {
-        usageRowUpdated = false;
-      }
+      /* The same row, written through the meter's own writer (0209: the app may not write it). */
+      const usageRowUpdated = await withBusiness(settlementDb(), businessId, async (tx) => {
+        await tx.execute(sql`SET LOCAL lock_timeout = '1500ms'`);
+        await usageRepo.creditBonus(tx, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 1);
+        return true;
+      }).catch(() => false);
       const [outbound] = [
         ...(await withBusiness(db, businessId, (tx) =>
           tx.execute<{ n: number }>(

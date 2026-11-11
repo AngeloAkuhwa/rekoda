@@ -16,6 +16,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDb, identity, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import {
   applyFixtureCycle,
+  catalogueChargeK,
   migrate,
   requireUrls,
   truncateAll,
@@ -98,12 +99,14 @@ const open = (
         : paidTo && kind === 'upgrade'
           ? { periodStart: new Date(paidTo.getTime() - 30 * 86_400_000), periodEnd: paidTo }
           : {};
+    const packId = kind === 'add_on' ? 'messages_100' : null; // 0210: the catalogue's price
+    const amountK = await catalogueChargeK(urls, businessId, { kind, plan, packId, ...period });
     return subscriptionsRepo.openCharge(tx, {
       businessId,
       kind,
       ...(plan ? { plan } : {}),
-      ...(kind === 'add_on' ? { packId: 'messages_100' } : {}),
-      amountK: 990_000,
+      ...(packId ? { packId } : {}),
+      amountK,
       reference,
       ...period,
     });
@@ -399,13 +402,13 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
       withBusiness(appDb, businessId, (tx) =>
         subscriptionsRepo.schedulePlanChange(tx, businessId, plan),
       );
-    await schedule('chat');
-    await open(businessId, 'renewal', 'RKD-SUB-STALE-DL', 'chat');
+    await schedule('integrate'); // 0209: the replacement must stay cheaper than either plan
+    await open(businessId, 'renewal', 'RKD-SUB-STALE-DL', 'integrate');
 
     let scheduling: Promise<void> | undefined;
     const settling = withBusiness(settlementDb(), businessId, async (tx) => {
       await subscriptionsRepo.lockBusiness(tx, businessId); // the settlement's first move
-      scheduling = schedule('integrate'); // a replacement that flags the open renewal
+      scheduling = schedule('chat'); // a replacement that flags the open renewal
       await new Promise((r) => setTimeout(r, 400)); // let it reach its first statement
       return applySettledCharge(tx, {
         businessId,
@@ -515,6 +518,7 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
   it('decisions and charges are stamped at statement time, not transaction start', async () => {
     const businessId = await seedBusiness();
     await operator(businessId, 'complete');
+    const amountK = await catalogueChargeK(urls, businessId, { kind: 'renewal', plan: 'complete' });
     const row = await withBusiness(settlementDb(), businessId, async (tx) => {
       await tx.execute(sql`SELECT pg_sleep(0.05)`);
       await subscriptionsRepo.schedulePlanChange(tx, businessId, 'expired');
@@ -522,7 +526,7 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
         businessId,
         kind: 'renewal',
         plan: 'complete',
-        amountK: 990_000,
+        amountK,
         reference: 'RKD-SUB-STALE-ORD',
       });
       const rows = await tx.execute<{ decided_late: boolean; charge_late: boolean }>(sql`

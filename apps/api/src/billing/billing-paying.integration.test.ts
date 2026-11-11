@@ -182,11 +182,16 @@ describe('paying, and the gate in front of it', () => {
   it('refuses to prorate a one-year operator arrangement and changes nothing (OWN-33, G-115)', async () => {
     const { businessId } = await onboard('+2348177100099');
     const now = new Date();
-    await putOnPlan(
-      businessId,
-      'chat',
-      new Date(now.getTime() - 182 * 86_400_000),
-      new Date(now.getTime() + 183 * 86_400_000),
+    /* A year is a conforming cycle only on the annual interval (0208); on monthly it reads lapsed. */
+    const renewsAt = new Date(now.getTime() + 183 * 86_400_000);
+    await withBusiness(db, businessId, (tx) =>
+      applyFixtureCycle(tx, businessId, {
+        plan: 'chat',
+        cycleStartedAt: new Date(now.getTime() - 182 * 86_400_000),
+        renewsAt,
+        anchorDay: renewsAt.getUTCDate(),
+        billingInterval: 'annual',
+      }),
     );
     const before = await withBusiness(db, businessId, (tx) =>
       subscriptionsRepo.subscriptionFor(tx, businessId),
@@ -210,26 +215,31 @@ describe('paying, and the gate in front of it', () => {
     expect(after).toEqual(before);
   });
 
-  it('treats a dated plan with no recorded cycle start as custom, not prorated (OWN-33)', async () => {
+  /* OD-49 (migration 0208): a paid row with no cycle start or no expiry does not conform, so it
+   * reads as lapsed. It is never prorated: a change is a full first purchase at the catalogue price. */
+  const expectFullPurchaseOnly = async (businessId: string) => {
+    const answer = await confirmedBilling().changePlan(businessId, 'complete', new Date());
+    expect(answer).toMatchObject({ state: 'payment_required', amountK: PLAN_PRICES_K.complete });
+    const charges = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.chargesFor(tx, businessId),
+    );
+    expect(charges.rows.map((c) => c.kind)).toEqual(['first_purchase']);
+  };
+
+  it('treats a dated plan with no recorded cycle start as lapsed, never prorated (OWN-33, 0208)', async () => {
     const { businessId } = await onboard('+2348177100098');
     const now = new Date();
     await putOnPlan(
       businessId,
       'chat',
       new Date(now.getTime() - 10 * 86_400_000),
-      new Date(now.getTime() + 300 * 86_400_000),
+      new Date(now.getTime() + 20 * 86_400_000),
     );
     await ownerDb.execute(sql`UPDATE businesses SET cycle_started_at = NULL`);
-
-    const answer = await confirmedBilling().changePlan(businessId, 'complete', now);
-    expect(answer).toEqual({ state: 'unavailable', reason: 'support_review' });
-    const charges = await withBusiness(db, businessId, (tx) =>
-      subscriptionsRepo.chargesFor(tx, businessId),
-    );
-    expect(charges.count).toBe(0);
+    await expectFullPurchaseOnly(businessId);
   });
 
-  it('treats an open-ended paid plan (no expiry) as custom, not prorated (OWN-33)', async () => {
+  it('treats an open-ended paid plan (no expiry) as lapsed, never prorated (OWN-33, 0208)', async () => {
     const { businessId } = await onboard('+2348177100097');
     await setPlanForTest(db, {
       businessId,
@@ -237,16 +247,8 @@ describe('paying, and the gate in front of it', () => {
       expiresAt: null,
       actor: 'operator:test-g115',
     });
-
-    const billing = confirmedBilling();
-    const quote = await billing.quote(businessId, 'complete', new Date());
-    expect(quote.supportReview).toBe(true);
-    const answer = await billing.changePlan(businessId, 'complete', new Date());
-    expect(answer).toEqual({ state: 'unavailable', reason: 'support_review' });
-    const charges = await withBusiness(db, businessId, (tx) =>
-      subscriptionsRepo.chargesFor(tx, businessId),
-    );
-    expect(charges.count).toBe(0);
+    await ownerDb.execute(sql`UPDATE businesses SET plan_expires_at = NULL`);
+    await expectFullPurchaseOnly(businessId);
   });
 
   describe('an operator-defined arrangement is never prorated, whatever its length (OWN-33 Option B)', () => {
@@ -258,17 +260,19 @@ describe('paying, and the gate in front of it', () => {
       expect(charges.count).toBe(0);
     };
 
+    /* Operators grant standard periods only (0207): the 45-day row is a month ending 45 days out. */
     it.each([
-      ['a 30-day cycle', 30],
-      ['a custom 45-day cycle', 45],
-      ['an annual cycle', 365],
-    ])('sends %s granted by an operator to support review', async (_label, days) => {
+      ['a 30-day cycle', 30, 'monthly'],
+      ['a monthly period ending 45 days out', 45, 'monthly'],
+      ['an annual cycle', 365, 'annual'],
+    ] as const)('sends %s granted by an operator to support review', async (_l, days, interval) => {
       const { businessId } = await onboard(`+23481771${String(2000 + days).padStart(5, '0')}`);
       const now = new Date();
       await setPlanForTest(db, {
         businessId,
         plan: 'chat',
         expiresAt: new Date(now.getTime() + days * DAY),
+        billingInterval: interval,
         actor: 'operator:test-g115',
       });
       const before = await withBusiness(db, businessId, (tx) =>
