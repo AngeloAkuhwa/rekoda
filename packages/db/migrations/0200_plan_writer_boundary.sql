@@ -82,7 +82,7 @@ AS $$
 DECLARE
   c record;
 BEGIN
-  IF p_business IS NULL OR p_reference IS NULL OR length(p_reference) NOT BETWEEN 1 AND 64
+  IF p_business IS NULL OR p_reference IS NULL OR length(p_reference) < 1
      OR p_expires IS NULL THEN
     RAISE EXCEPTION 'subscription_apply_paid_charge: invalid input' USING ERRCODE = '22023';
   END IF;
@@ -148,7 +148,7 @@ BEGIN
   -- STATED LIMIT above); it can refuse a malformed or system actor and record it, below.
   IF p_business IS NULL OR p_plan IS NULL
      OR p_plan NOT IN ('trial', 'expired', 'chat', 'integrate', 'complete')
-     OR p_actor IS NULL OR p_actor !~ '^operator:[!-~]{1,190}$' THEN
+     OR p_actor IS NULL OR p_actor !~ '^operator:[!-~]{1,255}$' THEN
     RAISE EXCEPTION 'subscription_operator_set_plan: invalid input' USING ERRCODE = '22023';
   END IF;
   -- A sanity window on a paid plan's date (open-ended is allowed): not more than 400 days in the

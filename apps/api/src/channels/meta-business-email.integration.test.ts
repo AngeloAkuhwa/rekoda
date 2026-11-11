@@ -37,7 +37,7 @@ async function seedOwner(name = 'Adaeze Fabrics') {
     businessId: business.id,
     plan: 'complete',
     expiresAt: null,
-    actor: 'test',
+    actor: 'operator:test',
   });
   return business.id;
 }

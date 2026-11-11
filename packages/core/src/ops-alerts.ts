@@ -40,8 +40,8 @@ export interface OpsSnapshot {
      */
     blockCloseFailed?: number;
     /**
-     * The close pass's lease expired without a finish or a release: a pass died or could not
-     * reach the database to record its end. Absent when unknown.
+     * A close pass's lease expired without a finish or a release (a pass died or could not
+     * reach the database to record its end), now or within the last 24 hours. Absent when unknown.
      */
     blockCloseStalled?: boolean;
   } | null;
@@ -149,7 +149,7 @@ export function evaluateOpsAlerts(
     alerts.push({
       key: 'billing.renewal_block_close_failing',
       severity: 'critical',
-      summary: `${snapshot.billing.blockCloseFailed} blocked renewal(s) could not be closed by the last close pass; see the worker log (renewal_block_close_failed)`,
+      summary: `${snapshot.billing.blockCloseFailed} blocked renewal(s) could not be closed by the close pass (the worst of the last pass, the cycle under way and the last complete cycle); see the worker log (renewal_block_close_failed)`,
     });
   }
 
@@ -160,7 +160,7 @@ export function evaluateOpsAlerts(
       key: 'billing.renewal_block_close_stalled',
       severity: 'critical',
       summary:
-        'the blocked-renewal close pass stopped without recording its end; see the worker log (renewal_block_close_release_failed, renewal_block_close_pass)',
+        'a blocked-renewal close pass stopped without recording its end (now or in the last 24 hours); see the worker log (renewal_block_close_release_failed, renewal_block_close_pass)',
     });
   }
 

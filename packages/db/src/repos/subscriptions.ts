@@ -2563,6 +2563,8 @@ export interface BlockCloseCursorStatus {
   leased: boolean;
   /** A lease that expired without a finish or a release: a pass died or could not give it back. */
   abandoned: boolean;
+  /** An abandoned pass was taken over in the last 24 hours (keeps the stalled alert visible). */
+  recentlyAbandoned: boolean;
   passesCompleted: number;
   passesAbandoned: number;
   /** Failures since the cursor last wrapped, and in the last complete cycle (null before one). */
@@ -2581,6 +2583,7 @@ export async function blockCloseCursorStatus(db: Db): Promise<BlockCloseCursorSt
     positioned: boolean;
     leased: boolean;
     abandoned: boolean;
+    recently_abandoned: boolean;
     passes_completed: string | number;
     passes_abandoned: string | number;
     cycle_failed: number;
@@ -2598,6 +2601,7 @@ export async function blockCloseCursorStatus(db: Db): Promise<BlockCloseCursorSt
     positioned: r.positioned,
     leased: r.leased,
     abandoned: r.abandoned,
+    recentlyAbandoned: r.recently_abandoned,
     passesCompleted: Number(r.passes_completed),
     passesAbandoned: Number(r.passes_abandoned),
     cycleFailed: r.cycle_failed,

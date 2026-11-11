@@ -74,7 +74,12 @@ export async function shop(
     ownerUserId: owner.id,
   });
   const businessId = business.id;
-  await billingRepo.setPlan(db, { businessId, plan: 'complete', expiresAt: null, actor: 'test' });
+  await billingRepo.setPlan(db, {
+    businessId,
+    plan: 'complete',
+    expiresAt: null,
+    actor: 'operator:test',
+  });
   await withBusiness(db, businessId, async (tx) => {
     await wabaRepo.connectWaba(tx, {
       businessId,

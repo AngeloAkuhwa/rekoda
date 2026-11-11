@@ -60,7 +60,7 @@ beforeEach(async () => {
   await ownerDb.execute(sql`
     UPDATE renewal_block_close_cursor SET after_blocked_at = NULL, after_reference = NULL,
       lease_owner = NULL, lease_expires_at = NULL, pass_started_at = NULL, pass_closed = 0,
-      pass_failed = 0, passes_completed = 0, passes_abandoned = 0, cycle_failed = 0, last_cycle_failed = NULL, last_pass_closed = NULL, last_pass_failed = NULL,
+      pass_failed = 0, passes_completed = 0, passes_abandoned = 0, last_abandoned_at = NULL, cycle_failed = 0, last_cycle_failed = NULL, last_pass_closed = NULL, last_pass_failed = NULL,
       last_pass_finished_at = NULL, last_advanced_at = NULL`);
   await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS refuse_attempts`);
   await ownerDb.execute(sql`CREATE SEQUENCE refuse_attempts`);
@@ -327,7 +327,14 @@ describe('the blocked-renewal close cursor is durable', () => {
     expect(taken).toMatchObject({ abandoned: false, passesAbandoned: 1, lastPassFailed: 10 });
     const keys = evaluateOpsAlerts(await collectOpsSnapshot(workerDb)).map((a) => a.key);
     expect(keys).toContain('billing.renewal_block_close_failing');
-    expect(keys).not.toContain('billing.renewal_block_close_stalled');
+    // The takeover cleared the expired lease, but the stalled alert stays on for a day after it, so
+    // an alert pass that runs after the takeover still sees it (Qodo, PR #432).
+    expect(keys).toContain('billing.renewal_block_close_stalled');
+    await ownerDb.execute(sql`
+      UPDATE renewal_block_close_cursor SET last_abandoned_at = clock_timestamp() - interval '25 hours'`);
+    expect(evaluateOpsAlerts(await collectOpsSnapshot(workerDb)).map((a) => a.key)).not.toContain(
+      'billing.renewal_block_close_stalled',
+    );
     await ownerDb.execute(
       sql`UPDATE renewal_block_close_cursor SET lease_owner = NULL, lease_expires_at = NULL`,
     );

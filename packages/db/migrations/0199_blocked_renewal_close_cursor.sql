@@ -51,6 +51,10 @@ CREATE TABLE IF NOT EXISTS renewal_block_close_cursor (
   -- Passes whose lease expired without a finish or a release (the runner died, or could not
   -- reach the database to give the lease back). Taken over by the next claim.
   passes_abandoned   bigint  NOT NULL DEFAULT 0 CHECK (passes_abandoned >= 0),
+  -- When the last abandoned pass was taken over. The stalled-pass alert stays on for 24 hours
+  -- after it, so a takeover (which clears the expired lease) cannot erase the signal before an
+  -- alert pass has read it.
+  last_abandoned_at  timestamptz,
   -- Failures since the cursor last wrapped (a CYCLE may span several passes when more than one
   -- pass of blocks is open), and the total of the last complete cycle. The operations alert reads
   -- these too, so it stays on until a whole cycle runs clean instead of following each pass's
@@ -140,6 +144,8 @@ BEGIN
                                    THEN lease_expires_at ELSE last_pass_finished_at END,
       passes_abandoned = passes_abandoned
         + CASE WHEN lease_owner IS NOT NULL AND lease_owner <> p_owner THEN 1 ELSE 0 END,
+      last_abandoned_at = CASE WHEN lease_owner IS NOT NULL AND lease_owner <> p_owner
+                               THEN clock_timestamp() ELSE last_abandoned_at END,
       lease_owner = p_owner,
       lease_expires_at = clock_timestamp() + make_interval(secs => p_lease_seconds),
       pass_started_at = clock_timestamp(),
@@ -257,11 +263,13 @@ END $$;
 -- The cursor's state for operations: counts, times and whether a position is held. No reference,
 -- no business, no identity. `abandoned` is a lease that expired without a finish or a release: a
 -- pass died, or could not reach the database to give the lease back (the stalled-pass alert).
+-- `recently_abandoned` keeps that alert on for 24 hours after a takeover recorded one.
 CREATE OR REPLACE FUNCTION renewal_block_close_status()
 RETURNS TABLE (
   positioned boolean,
   leased boolean,
   abandoned boolean,
+  recently_abandoned boolean,
   passes_completed bigint,
   passes_abandoned bigint,
   cycle_failed integer,
@@ -281,6 +289,7 @@ AS $$
   SELECT after_reference IS NOT NULL,
          lease_owner IS NOT NULL AND lease_expires_at >= clock_timestamp(),
          lease_owner IS NOT NULL AND lease_expires_at < clock_timestamp(),
+         coalesce(last_abandoned_at >= clock_timestamp() - interval '24 hours', false),
          passes_completed, passes_abandoned, cycle_failed, last_cycle_failed, pass_closed, pass_failed, last_pass_closed, last_pass_failed,
          last_pass_finished_at, last_advanced_at
   FROM public.renewal_block_close_cursor WHERE id

@@ -348,6 +348,8 @@ test('OWN-86: a release carrying 0196 runs the pre-start database smoke after mi
     /NOT has_function_privilege\('rekoda_worker', 'public\.subscription_operator_set_plan\(uuid,text,timestamptz,text\)', 'EXECUTE'\)/,
   );
   assert.match(sql, /subscription_charges_applied_once_guard/);
+  // The writer role owns exactly the three writers and 0197's staging_move_date, nothing else.
+  assert.match(sql, /WHERE proowner = 'rekoda_plan_writer'::regrole\) = 4/);
 });
 
 test('OWN-86: a failed pre-start smoke never starts the new release and states fix-forward', () => {

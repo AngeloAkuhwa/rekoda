@@ -344,6 +344,9 @@ describe('OD-37: the operator writer validates its inputs (0200)', () => {
     expect(await set(businessId, 'chat', FUTURE)).toBe('allowed');
     expect(await set(businessId, 'expired', new Date(Date.now() - 86_400_000))).toBe('allowed');
     expect((await planOf(businessId))?.plan).toBe('expired');
+    // An OIDC subject may be up to 255 characters: the longest is accepted, one more is refused.
+    expect(await set(businessId, 'chat', FUTURE, `operator:${'s'.repeat(255)}`)).toBe('allowed');
+    expect(await set(businessId, 'chat', FUTURE, `operator:${'s'.repeat(256)}`)).toMatch(/^22023/);
   });
 
   it('the expiry writer refuses an unknown previous plan', async () => {

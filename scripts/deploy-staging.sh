@@ -98,7 +98,8 @@ UP_ENTERED=false
 # its exact signature, SECURITY DEFINER and owned by rekoda_plan_writer; the removed general writer
 # and the test-only fixture writer are ABSENT; neither runtime role can become the writer role; each
 # writer's search_path is the pinned one; PUBLIC cannot execute any writer and the worker cannot
-# execute the operator writer; and the applied-once trigger on subscription_charges fires.
+# execute the operator writer; the writer role owns exactly those three writers and 0197's
+# staging_move_date, nothing else; and the applied-once trigger on subscription_charges fires.
 SMOKE_0196_SQL="SELECT
   (SELECT count(*) FROM rekoda_migrations
     WHERE tag IN ('0196_plan_fields_guard', '0200_plan_writer_boundary')) = 2
@@ -124,6 +125,8 @@ SMOKE_0196_SQL="SELECT
   AND NOT has_function_privilege('public', 'public.subscription_operator_set_plan(uuid,text,timestamptz,text)', 'EXECUTE')
   AND NOT has_function_privilege('public', 'public.subscription_expire_plan(uuid,text,text)', 'EXECUTE')
   AND NOT has_function_privilege('rekoda_worker', 'public.subscription_operator_set_plan(uuid,text,timestamptz,text)', 'EXECUTE')
+  AND (SELECT count(*) FROM pg_proc WHERE proowner = 'rekoda_plan_writer'::regrole) = 4
+  AND (SELECT count(*) FROM pg_proc WHERE proowner = 'rekoda_plan_writer'::regrole AND proname = 'staging_move_date') = 1
   AND (SELECT count(*) FROM pg_trigger WHERE tgname = 'subscription_charges_applied_once_guard'
         AND tgrelid = 'public.subscription_charges'::regclass AND tgenabled IN ('O', 'A')) = 1"
 PREV_SHA=

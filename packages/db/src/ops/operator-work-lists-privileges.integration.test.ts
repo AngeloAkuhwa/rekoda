@@ -1,5 +1,6 @@
 /**
- * OD-47 / ADR 0035 Amendment 2: the database privilege facts behind the six operator work-list
+ * OD-47 / ADR 0035 Amendment 2: the database privilege facts behind the operator work-list (and,
+ * since OWN-88, the 0199 close-cursor)
  * functions, read from the catalogue and proved on live connections. Behaviour tests
  * (`operator-work-lists.integration.test.ts`) show the lists work; these show nothing a caller
  * holds can widen them: who owns the functions, who can assume which role, what each credential
@@ -17,6 +18,13 @@ const FUNCTIONS = [
   'dead_job_has_record',
   'dead_job_find_for_ops',
   'blocked_renewals_ops',
+  // OWN-88 (0199): the close pass's work list and its cursor functions.
+  'blocked_renewals_close_batch',
+  'renewal_block_close_claim',
+  'renewal_block_close_advance',
+  'renewal_block_close_finish',
+  'renewal_block_close_release',
+  'renewal_block_close_status',
 ];
 const CREDENTIALS = ['rekoda_app', 'rekoda_worker'];
 
@@ -57,7 +65,7 @@ async function sqlState(run: Promise<unknown>): Promise<string | undefined> {
   return undefined;
 }
 
-describe('the six functions', () => {
+describe('the operator work-list and close-cursor functions', () => {
   const list = sql.raw(FUNCTIONS.map((f) => `'${f}'`).join(','));
 
   it('are owned by a role that can reach every tenant, and that no credential is or can become', async () => {
@@ -67,7 +75,7 @@ describe('the six functions', () => {
           FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner
           WHERE p.proname IN (${list})`,
     );
-    expect(owners).toHaveLength(6);
+    expect(owners).toHaveLength(FUNCTIONS.length);
     for (const o of owners) {
       // The functions read tables under FORCE ROW LEVEL SECURITY: an owner that cannot bypass RLS
       // returns nothing (ADR 0035 Amendment 1, "Dependency"), so the owner must be able to.
@@ -106,14 +114,15 @@ describe('the six functions', () => {
                  coalesce((SELECT bool_or(a.grantee = 0) FROM aclexplode(p.proacl) a), false) AS pub
           FROM pg_proc p WHERE p.proname IN (${list})`,
     );
-    expect(fns).toHaveLength(6);
+    expect(fns).toHaveLength(FUNCTIONS.length);
     for (const f of fns) {
       expect(f, f.proname).toMatchObject({ secdef: true, app: false, worker: true, pub: false });
       expect(f.cfg, f.proname).toEqual(['search_path=pg_catalog, pg_temp']);
       expect(f.src, f.proname).not.toMatch(/\bexecute\b/i);
-      const unqualified = [...f.src.matchAll(/\b(?:from|join)\s+(?!public\.)([a-z_]+)/gi)].map(
-        (m) => m[1],
-      );
+      // `EXTRACT(EPOCH FROM x)` is not a table reference (0199 reads the cursor key exactly with it).
+      const unqualified = [
+        ...f.src.matchAll(/\b(?<!epoch\s)(?:from|join)\s+(?!public\.)([a-z_]+)/gi),
+      ].map((m) => m[1]);
       expect(unqualified, `${f.proname} names a table without schema`).toEqual([]);
     }
   });
@@ -130,7 +139,7 @@ describe('the six functions', () => {
       // The owner (whatever role migrated this database) and the worker, nobody else.
       expect(['rekoda_worker', g.owner], `${g.proname} -> ${g.grantee}`).toContain(g.grantee);
     }
-    expect(new Set(grantees.map((g) => g.proname)).size).toBe(6);
+    expect(new Set(grantees.map((g) => g.proname)).size).toBe(FUNCTIONS.length);
   });
 });
 

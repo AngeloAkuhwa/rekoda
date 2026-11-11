@@ -177,6 +177,7 @@ dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) api   # build B
 dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) web   # one image at a time: never both at once
 # First PRODUCTION deploy carrying migrations 0175-0178 (G-109): run `dc stop api worker` here first
 # Every deploy carrying 0196 or 0200 (PR B, plan-field boundary, OD-48): run `dc stop api worker` here first, and see "Deploy a release carrying 0196"
+# ...and after migrate, run the step-8 pre-start database smoke (SMOKE_0196_SQL) as the owner: do not `dc up` unless it prints t
 dc run --rm -T migrate                                             # expand-only migrations, as the owner
 dc up -d --wait                                                    # recreates api, worker and web on the new images
 dc exec caddy caddy reload --config /etc/caddy/Caddyfile            # apply a changed Caddyfile (validated first)
@@ -460,7 +461,8 @@ after the script finishes. Step 2 is the operator's before starting the workflow
    exist; neither `rekoda_app` nor `rekoda_worker` is a member of `rekoda_plan_writer`; each of the
    three writers has `search_path=pg_catalog, public, pg_temp` pinned; PUBLIC cannot execute any of
    them and `rekoda_worker` cannot execute the operator writer; and the trigger
-   `subscription_charges_applied_once_guard` exists on `subscription_charges` and is enabled. If it does not print `t`, do not run step 9:
+   `subscription_charges_applied_once_guard` exists on `subscription_charges` and is enabled; and
+   `rekoda_plan_writer` owns exactly four functions, the three writers and 0197's `staging_move_date`. If it does not print `t`, do not run step 9:
    fix forward or escalate (above). On staging the script runs this same query itself.
 9. `dc up -d --wait` recreates api, worker and web on the new images (the worker and api start here).
 10. Confirm the new application can change a plan through the sanctioned functions: on staging, the

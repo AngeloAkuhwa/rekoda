@@ -273,7 +273,7 @@ export async function readyToRemind(
   businessId: string,
   address = 'accounts@adaeze.example.ng',
 ): Promise<void> {
-  await setPlan(db, { businessId, plan: 'complete', expiresAt: null, actor: 'test' });
+  await setPlan(db, { businessId, plan: 'complete', expiresAt: null, actor: 'operator:test' });
   await withBusiness(db, businessId, async (tx) => {
     await setBillingEmailSealed(
       tx,

@@ -95,7 +95,7 @@ export async function collectOpsSnapshot(workerDb: Db | null): Promise<OpsSnapsh
             closeCursor.lastCycleFailed ?? 0,
           )
         : 0,
-      blockCloseStalled: closeCursor?.abandoned ?? false,
+      blockCloseStalled: (closeCursor?.abandoned || closeCursor?.recentlyAbandoned) ?? false,
     },
   };
 }
