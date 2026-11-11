@@ -71,25 +71,38 @@ async function businessFor(phone: string): Promise<string> {
 const change = (body: unknown) => post('/v1/businesses/plan', body, OPERATOR);
 
 describe('the operator plan endpoint keeps to Rekoda plan durations', () => {
-  it('refuses dates outside Rekoda plan durations with 400, and writes nothing', async () => {
+  it('refuses any end date for a paid plan or a trial, and a future end for expired, with 400, writing nothing', async () => {
     const businessId = await businessFor('08031234597');
     const day = 86_400_000;
+    const GIVE_NONE = /runs exactly one billing period from now; give no end date/;
     for (const [body, message] of [
-      [
-        { plan: 'chat', expiresAt: new Date(Date.now() + 45 * day).toISOString() },
-        /monthly plan ends within one month/,
-      ],
+      // Longer than the period.
+      [{ plan: 'chat', expiresAt: new Date(Date.now() + 45 * day).toISOString() }, GIVE_NONE],
       [
         {
           plan: 'complete',
           billingInterval: 'annual',
           expiresAt: new Date(Date.now() + 400 * day).toISOString(),
         },
-        /annual plan ends within twelve months/,
+        GIVE_NONE,
+      ],
+      // Shorter than the period (OD-50): ending early is `expired`, not a short paid plan.
+      [{ plan: 'chat', expiresAt: new Date(Date.now() + 20 * day).toISOString() }, GIVE_NONE],
+      [
+        {
+          plan: 'integrate',
+          billingInterval: 'annual',
+          expiresAt: new Date(Date.now() + 100 * day).toISOString(),
+        },
+        GIVE_NONE,
       ],
       [
         { plan: 'trial', expiresAt: new Date(Date.now() + 30 * day).toISOString() },
-        /trial ends within 14 days/,
+        /trial runs exactly 14 days from the business's trial start; give no end date/,
+      ],
+      [
+        { plan: 'trial', expiresAt: new Date(Date.now() + 2 * day).toISOString() },
+        /trial runs exactly 14 days/,
       ],
       [{ plan: 'trial', billingInterval: 'monthly', expiresAt: null }, /has no billing interval/],
       [
@@ -100,6 +113,7 @@ describe('the operator plan endpoint keeps to Rekoda plan durations', () => {
         { plan: 'chat', billingInterval: 'weekly', expiresAt: null },
         /billingInterval is monthly or annual/,
       ],
+      [{ plan: 'chat', expiresAt: 'not-a-date' }, /expiresAt are required/],
     ] as const) {
       const res = await change({ businessId, ...body });
       expect(res.statusCode, JSON.stringify(body)).toBe(400);
@@ -111,6 +125,45 @@ describe('the operator plan endpoint keeps to Rekoda plan durations', () => {
         FROM businesses WHERE id = ${businessId}::uuid`),
     );
     expect([...rows][0]).toEqual({ plan: 'trial', n: 0 });
+  });
+
+  it('ends a plan early only through expired: now by default, or a past time', async () => {
+    const businessId = await businessFor('08031234601');
+    expect((await change({ businessId, plan: 'chat', expiresAt: null })).statusCode).toBe(200);
+    const past = new Date(Date.now() - 60_000).toISOString();
+    expect((await change({ businessId, plan: 'expired', expiresAt: past })).statusCode).toBe(200);
+    const [row] = [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<{ plan: string; at: string }>(
+          sql`SELECT plan, plan_expires_at::text AS at FROM businesses WHERE id = ${businessId}::uuid`,
+        ),
+      )),
+    ];
+    expect(row?.plan).toBe('expired');
+    expect(new Date(row!.at).toISOString()).toBe(past);
+  });
+
+  it("a trial given back runs to the business's own 14-day end, never a fresh 14 days", async () => {
+    const businessId = await businessFor('08031234602');
+    const [before] = [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<{ started: string; ends: string }>(
+          sql`SELECT trial_started_at::text AS started, plan_expires_at::text AS ends FROM businesses WHERE id = ${businessId}::uuid`,
+        ),
+      )),
+    ];
+    expect((await change({ businessId, plan: 'chat', expiresAt: null })).statusCode).toBe(200);
+    expect((await change({ businessId, plan: 'trial', expiresAt: null })).statusCode).toBe(200);
+    const [after] = [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<{ ends: string }>(
+          sql`SELECT plan_expires_at::text AS ends FROM businesses WHERE id = ${businessId}::uuid`,
+        ),
+      )),
+    ];
+    expect(new Date(after!.ends).getTime()).toBe(
+      new Date(before!.started).getTime() + 14 * 86_400_000,
+    );
   });
 
   it('with no date, a paid plan gets exactly one period: a month by default, a year when annual', async () => {
@@ -125,8 +178,21 @@ describe('the operator plan endpoint keeps to Rekoda plan durations', () => {
           )),
         ][0]!.at,
       ).getTime();
+    const cycleOf = async () =>
+      [
+        ...(await withBusiness(db, businessId, (tx) =>
+          tx.execute<{ start: string; wanted: string }>(sql`
+            SELECT cycle_started_at::text AS start,
+                   (((cycle_started_at AT TIME ZONE 'Africa/Lagos') + CASE billing_interval
+                       WHEN 'annual' THEN interval '12 months' ELSE interval '1 month' END)
+                     AT TIME ZONE 'Africa/Lagos')::text AS wanted
+            FROM businesses WHERE id = ${businessId}::uuid`),
+        )),
+      ][0]!;
     const before = new Date();
     expect((await change({ businessId, plan: 'integrate', expiresAt: null })).statusCode).toBe(200);
+    let cycle = await cycleOf();
+    expect(await expiryOf()).toBe(new Date(cycle.wanted).getTime());
     expect(Math.abs((await expiryOf()) - addInterval(before, 'monthly').getTime())).toBeLessThan(
       120_000,
     );
@@ -134,6 +200,8 @@ describe('the operator plan endpoint keeps to Rekoda plan durations', () => {
       (await change({ businessId, plan: 'complete', billingInterval: 'annual', expiresAt: null }))
         .statusCode,
     ).toBe(200);
+    cycle = await cycleOf();
+    expect(await expiryOf()).toBe(new Date(cycle.wanted).getTime());
     expect(Math.abs((await expiryOf()) - addInterval(before, 'annual').getTime())).toBeLessThan(
       120_000,
     );

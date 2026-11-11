@@ -397,12 +397,11 @@ export class BusinessController {
     }
 
     const { businessId, plan, expiresAt, billingInterval } = parsed.data;
-    /* Rekoda's plan durations (owner review of #432, migration 0203): a monthly plan ends in the
-     * future and within one month, an annual plan within twelve months, a trial within 14 days of
-     * the business's own trial start, and `expired` at or before now. No open-ended paid plan. With
-     * no `expiresAt` the rule's own date is used (one period, the trial end, now). A date outside
-     * the rule is refused, never clamped: the operator asked for something that is not a Rekoda
-     * plan. The database writer enforces the same rule. */
+    /* Rekoda's plan periods (OD-50, migration 0207): a paid plan runs exactly one billing interval
+     * from now and a trial exactly to the business's own 14-day trial end, both computed by the
+     * database writer, so `expiresAt` is null for them and a date is refused (a 400). `expired`
+     * ends now, or at a given time that is not in the future; that is how a plan ends early. The
+     * same rule is enforced in the application (`planDateRefusal`) and in the writer. */
     let changed: boolean;
     try {
       changed = await billingRepo.setPlan(operatorDb, {

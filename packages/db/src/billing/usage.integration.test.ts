@@ -194,13 +194,13 @@ describe('the trial clock (docs/pricing-model.md)', () => {
 describe('plan changes and upgrade requests', () => {
   it('moves a business onto a plan and records who did it', async () => {
     const businessId = await seedBusiness();
-    const expiresAt = new Date(Date.now() + 365 * 86_400_000);
 
-    // The real operator path: the billing-operator principal and an annual plan (OD-37, 0203).
+    // The real operator path: the billing-operator principal and an annual plan, which runs its
+    // standard twelve months from now (OD-37, OD-50).
     const changed = await billingRepo.setPlan(operatorDb(), {
       businessId,
       plan: 'chat',
-      expiresAt,
+      expiresAt: null,
       billingInterval: 'annual',
       actor: 'operator:angelo',
     });

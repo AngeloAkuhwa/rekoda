@@ -147,6 +147,10 @@ export const ALLOWED: Readonly<Record<string, Entry>> = {
     role: 'migration',
     why: 'OD-37 B3: re-creates subscription_apply_paid_charge (owned by rekoda_plan_writer) so an upgrade or a renewal applies only to the cycle its charge was priced for, and guards the cycle and pricing inputs on businesses.',
   },
+  'packages/db/migrations/0207_operator_standard_periods.sql': {
+    role: 'migration',
+    why: 'OD-50: re-creates subscription_operator_set_plan (owned by rekoda_plan_writer) so an operator paid plan or trial runs exactly its standard period, computed by the database, and guards trial_started_at.',
+  },
   'packages/db/src/billing/plan-writer.fixtures.ts': {
     role: 'reader',
     why: 'OD-37 boundary suites: reads plan and plan_expires_at back as the owner to assert what the writers did; writes neither.',

@@ -614,7 +614,7 @@ describe('the operator plan endpoint', () => {
     const res = await change({
       businessId,
       plan: 'chat',
-      expiresAt: new Date(Date.now() + 20 * 86_400_000).toISOString(),
+      expiresAt: null,
     });
 
     expect(res.statusCode).toBe(200);

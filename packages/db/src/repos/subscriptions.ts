@@ -230,8 +230,38 @@ export interface SubscriptionState {
 export async function writeSubscriptionState(
   tx: TenantDb,
   businessId: string,
-  state: SubscriptionState,
-): Promise<void> {
+  given: SubscriptionState,
+): Promise<'written' | 'unchanged'> {
+  let state = given;
+  /* OD-50 (0207): the operator writer computes a paid plan's or a trial's end itself (Rekoda's
+   * standard period from the database clock) and returns it with the cycle start it used, so the
+   * rest of the cycle is recorded from the database's own values. Re-posting the plan and interval
+   * the business is already on changes nothing. */
+  if (given.authority.kind === 'operator') {
+    const a = given.authority;
+    const asked = given.planExpiresAt
+      ? sql`${given.planExpiresAt.toISOString()}::timestamptz`
+      : sql`NULL`;
+    const rows = await tx.execute<{
+      cycle_start: string | null;
+      expires_at: string | null;
+      changed: boolean;
+    }>(sql`
+      SELECT cycle_start, expires_at, changed FROM subscription_operator_set_plan(
+        ${businessId}::uuid, ${given.plan}, ${asked}, ${a.billingInterval}, ${a.actor})
+    `);
+    const row = [...rows][0];
+    if (!row) throw new Error('subscription_operator_set_plan returned nothing');
+    if (!row.changed) return 'unchanged';
+    const end = row.expires_at ? new Date(row.expires_at) : null;
+    const start = given.paid && row.cycle_start ? new Date(row.cycle_start) : null;
+    state = {
+      ...given,
+      cycleStartedAt: start,
+      planExpiresAt: end,
+      anchorDay: given.paid && end ? new Date(end.getTime() + 3_600_000).getUTCDate() : null,
+    };
+  }
   const startStamp = (state.cycleStartedAt ?? new Date()).toISOString();
   const cycleStarted = state.cycleStartedAt ? sql`${startStamp}::timestamptz` : sql`NULL`;
   const expires = state.planExpiresAt
@@ -270,10 +300,7 @@ export async function writeSubscriptionState(
       throw new Error(`charge ${a.reference} buys a different plan than the cycle being applied`);
     }
   } else if (a.kind === 'operator') {
-    await tx.execute(sql`
-      SELECT subscription_operator_set_plan(${businessId}::uuid, ${state.plan}, ${expires},
-        ${a.billingInterval}, ${a.actor})
-    `);
+    /* Already written above, by the operator writer. */
   } else {
     await tx.execute(sql`
       SELECT test_fixture_set_plan(${businessId}::uuid, ${state.plan}, ${expires})
@@ -312,6 +339,7 @@ export async function writeSubscriptionState(
       updated_at = now()
     WHERE id = ${businessId}::uuid
   `);
+  return 'written';
 }
 
 /**

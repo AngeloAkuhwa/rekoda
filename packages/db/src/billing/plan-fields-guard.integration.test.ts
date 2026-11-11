@@ -227,7 +227,7 @@ describe('OD-37: the sanctioned writers still work', () => {
       await billingRepo.setPlan(operatorDb(), {
         businessId,
         plan: 'complete',
-        expiresAt: FUTURE,
+        expiresAt: null,
         actor: 'operator:alice',
       }),
     ).toBe(true);
@@ -294,7 +294,7 @@ describe('OD-37: the boundary itself', () => {
       await outcome(
         withBusiness(operatorDb(), b, (tx) =>
           tx.execute(
-            sql`SELECT subscription_operator_set_plan(${a}::uuid, 'complete', ${FUTURE.toISOString()}::timestamptz, 'monthly', 'operator:x')`,
+            sql`SELECT * FROM subscription_operator_set_plan(${a}::uuid, 'complete', NULL, 'monthly', 'operator:x')`,
           ),
         ),
       ),

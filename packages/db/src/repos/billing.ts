@@ -17,7 +17,7 @@ import { withBusiness } from '../client.js';
 import { businesses } from '../schema/tenancy.js';
 import { auditEvents } from '../schema/ops.js';
 import * as subscriptionsRepo from './subscriptions.js';
-import { addInterval, trialExpiry, TRIAL_DAYS, type BillingInterval } from '@rekoda/core';
+import { trialExpiry, TRIAL_DAYS, type BillingInterval } from '@rekoda/core';
 
 /** The plans nobody paid for; every other plan is a paid one (G-103). */
 const UNPAID_PLANS = new Set(['trial', 'expired']);
@@ -29,9 +29,9 @@ export interface PlanChange {
   businessId: string;
   plan: string;
   /**
-   * When the plan ends. Null asks for the rule's own date: exactly one billing interval from now
-   * for a paid plan, the business's 14-day trial end for a trial, now for `expired`. A date given
-   * must lie inside the rule (`planDateRefusal`), never beyond it (owner review, PR #432).
+   * When the plan ends: only for `expired`, which ends now (null) or at a time that is not in the
+   * future. A paid plan and a trial run Rekoda's standard period, computed by the database writer
+   * (OD-50, migration 0207), so the caller gives null; a date is refused.
    */
   expiresAt: Date | null;
   /** A paid plan's interval (monthly by default). Trial and expired have none. */
@@ -40,51 +40,44 @@ export interface PlanChange {
   actor: string;
 }
 
-/**
- * The latest end one billing interval allows from `now`: `addInterval` (Lagos wall-clock calendar
- * months, the month's last day when shorter), with the seconds `addInterval` drops put back, so the
- * bound is the same instant the database's `rekoda_private.add_billing_interval` computes.
- */
-function periodBound(now: Date, interval: BillingInterval): Date {
-  return new Date(addInterval(now, interval).getTime() + (now.getTime() % 60_000));
-}
-
 /** Why an operator plan date was refused: the caller's input, answered with a 400. */
 export class PlanDateRefused extends Error {
   override readonly name = 'PlanDateRefused';
 }
 
 /**
- * Rekoda's plan durations (migration 0203; the same rule the database enforces): a monthly plan ends
- * in the future and no later than one calendar month from now, an annual one no later than twelve
- * calendar months (`addInterval`, Lagos wall-clock), a trial no later than 14 days after the
- * business's own trial start (so moving the date cannot grant a second trial), and `expired` at or
- * before now. Returns the refusal, or null when the date is inside the rule.
+ * Rekoda's operator plan periods (OD-50, owner instruction of 11 Nov 2026; the same rule the
+ * database writer enforces, migration 0207):
+ *  - a paid plan runs exactly one billing interval from the moment it is written (one Lagos calendar
+ *    month, or twelve), computed by the database: the caller gives no end;
+ *  - a trial runs to exactly 14 days after the business's own trial start, which is fixed at signup:
+ *    the caller gives no end, and a business whose trial is over cannot be given another;
+ *  - `expired` ends now (no end) or at a given time that is not in the future. Ending a plan early is
+ *    this operation, never a shorter paid period.
+ * Returns the refusal, or null when the request is inside the rule.
  */
 export function planDateRefusal(
-  change: { plan: string; expiresAt: Date; billingInterval: BillingInterval | null },
+  change: { plan: string; expiresAt: Date | null; billingInterval: BillingInterval | null },
   trialStartedAt: Date,
   now: Date,
 ): string | null {
   if (!UNPAID_PLANS.has(change.plan)) {
-    const interval = change.billingInterval ?? 'monthly';
-    if (change.expiresAt.getTime() <= now.getTime())
-      return 'a paid plan needs an expiry in the future';
-    if (change.expiresAt.getTime() > periodBound(now, interval).getTime()) {
-      return interval === 'annual'
-        ? 'an annual plan ends within twelve months'
-        : 'a monthly plan ends within one month';
+    if (change.expiresAt !== null) {
+      return 'a paid plan runs exactly one billing period from now; give no end date';
     }
     return null;
   }
   if (change.billingInterval) return `a ${change.plan} plan has no billing interval`;
-  if (
-    change.plan === 'trial' &&
-    change.expiresAt.getTime() > trialExpiry(trialStartedAt).getTime()
-  ) {
-    return `a trial ends within ${TRIAL_DAYS} days of the business's trial start`;
+  if (change.plan === 'trial') {
+    if (change.expiresAt !== null) {
+      return `a trial runs exactly ${TRIAL_DAYS} days from the business's trial start; give no end date`;
+    }
+    if (trialExpiry(trialStartedAt).getTime() <= now.getTime()) {
+      return `this business's ${TRIAL_DAYS}-day trial is already over`;
+    }
+    return null;
   }
-  if (change.plan === 'expired' && change.expiresAt.getTime() > now.getTime()) {
+  if (change.expiresAt !== null && change.expiresAt.getTime() > now.getTime()) {
     return 'an expired plan cannot end in the future';
   }
   return null;
@@ -98,7 +91,7 @@ export function planDateRefusal(
  * business does not exist rather than throwing: an operator typo is a 404 for the caller to report.
  * Throws `PlanDateRefused` for a date outside Rekoda's plan durations (a 400).
  */
-export async function setPlan(db: Db, change: PlanChange, now = new Date()): Promise<boolean> {
+export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
   return withBusiness(db, change.businessId, async (tx) => {
     const previous = await lockForPlanChange(tx, change.businessId);
     if (!previous) return false;
@@ -109,21 +102,14 @@ export async function setPlan(db: Db, change: PlanChange, now = new Date()): Pro
     const billingInterval: BillingInterval | null = paid
       ? (change.billingInterval ?? 'monthly')
       : null;
-    const expiresAt =
-      change.expiresAt ??
-      (paid
-        ? addInterval(now, billingInterval!)
-        : change.plan === 'trial'
-          ? trialExpiry(previous.trialStartedAt)
-          : await databaseNow(tx));
-    /* A defaulted `expired` end is the database's own now: compared with it, not the host clock. */
+    /* Judged on the database clock, the clock the writer itself uses. */
     const refusal = planDateRefusal(
-      { plan: change.plan, expiresAt, billingInterval },
+      { plan: change.plan, expiresAt: change.expiresAt, billingInterval },
       previous.trialStartedAt,
-      change.plan === 'expired' && change.expiresAt === null ? expiresAt : now,
+      await databaseNow(tx),
     );
     if (refusal) throw new PlanDateRefused(refusal);
-    await writePlanChange(tx, previous, { ...change, expiresAt }, billingInterval, {
+    await writePlanChange(tx, previous, change, billingInterval, {
       kind: 'operator',
       actor: change.actor,
       billingInterval,
@@ -135,10 +121,10 @@ export async function setPlan(db: Db, change: PlanChange, now = new Date()): Pro
   });
 }
 
-/* `expired` with no date ends "now" on the DATABASE clock (the transaction start), which the writer's
- * `clock_timestamp()` check can never see as future, whatever the API host's clock says. */
+/* The database's clock (the statement time), the one the writer's `clock_timestamp()` checks use,
+ * whatever the API host's clock says. */
 async function databaseNow(tx: TenantDb): Promise<Date> {
-  const rows = await tx.execute<{ at: string }>(sql`SELECT now()::text AS at`);
+  const rows = await tx.execute<{ at: string }>(sql`SELECT clock_timestamp()::text AS at`);
   return new Date([...rows][0]!.at);
 }
 
