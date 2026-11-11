@@ -109,6 +109,7 @@ export async function createApp(): Promise<NestFastifyApplication> {
   if (operatorDb) {
     await bootChecks.assertDatabasePrincipal(operatorDb, 'operator', 'rekoda_billing_operator');
   }
+  await bootChecks.assertNoTestFixtureWriter(db);
   await bootChecks.assertKeyUnchanged(db, 'VAULT_KEY', config.vaultKey);
   await bootChecks.assertKeyUnchanged(db, 'MATCH_KEY', config.matchKey);
   await assertStagingMarkerNotLive(db, config.paystackSecretKey);

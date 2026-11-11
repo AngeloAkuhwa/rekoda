@@ -90,6 +90,14 @@ describe('the pre-start database smoke, executed', () => {
       'ALTER TABLE subscription_charges DISABLE TRIGGER subscription_charges_settlement_guard',
     ],
     [
+      'a disabled cycle-input guard',
+      'ALTER TABLE businesses DISABLE TRIGGER businesses_cycle_fields_guard',
+    ],
+    [
+      'a provider writer that no longer binds a charge to its cycle',
+      "CREATE OR REPLACE FUNCTION public.subscription_apply_paid_charge(p_business uuid, p_reference text, p_expires timestamptz) RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$ BEGIN RETURN 'chat'; END $$",
+    ],
+    [
       'a disabled pack-credit guard',
       'ALTER TABLE usage_counters DISABLE TRIGGER usage_counters_bonus_guard',
     ],

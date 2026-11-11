@@ -508,12 +508,12 @@ which applies them as it does any receipt. Not recovered: a customer's reply tha
 older release handled is not told to the business afterwards, because the older release
 records no notice for it (the same as before PR A).
 
-### Deploy a release carrying 0202 to 0205 (OD-37 principals, plan durations, event privilege)
+### Deploy a release carrying 0202 to 0206 (OD-37 principals, plan durations, event privilege)
 
-Migrations 0202 to 0205 are compatibility breaks like 0196 and 0200 (the previous release settles and
+Migrations 0202 to 0206 are compatibility breaks like 0196 and 0200 (the previous release settles and
 opens charges on `rekoda_app`, calls the four-argument operator writer and attributes events with a
-direct worker UPDATE, all refused afterwards), so the "Deploy a release carrying 0196" sequence
-applies unchanged, and `deploy-staging.sh` lists all four. It also refuses, before stopping anything,
+direct worker UPDATE, and writes the cycle columns on `rekoda_app`, all refused afterwards), so the
+"Deploy a release carrying 0196" sequence applies unchanged, and `deploy-staging.sh` lists all five. It also refuses, before stopping anything,
 a release carrying 0202 when `.env` lacks either credential or names the wrong role. Two
 things come first, because without them the new release refuses to start (no fallback to
 `DATABASE_URL`, by design):
@@ -531,16 +531,20 @@ things come first, because without them the new release refuses to start (no fal
    before changing anything. Nothing else reads them: never put them in a compose file, a log, an
    issue or a chat.
 2. **Run the deploy as for 0196** (api and worker stopped, migrate, pre-start smoke, then `up`).
-   The pre-start smoke now also checks, in the database: the 0202 to 0205 ledger rows; that only
+   The pre-start smoke now also checks, in the database: the 0202 to 0206 ledger rows; that only
    `rekoda_settlement` may insert a charge; the
-   settlement and pack-credit guard triggers; that `rekoda_plan_writer` owns exactly the four
+   settlement, pack-credit and cycle-input guard triggers; that the provider writer is 0206's (it
+   binds an upgrade or a renewal to the charge's frozen period); that `rekoda_plan_writer` owns exactly the four
    expected writer functions, by signature, each with exactly its EXECUTE grantees (provider writer:
    `rekoda_settlement`; operator writer: `rekoda_billing_operator`; expiry writer: `rekoda_app`,
    `rekoda_worker`; staging date move: `rekoda_app`); the principals' roles and that no runtime role
    can become another; and that the worker's `external_events` access is SELECT plus `processed_at`/`error` (on
    unattributed rows without a pin, and on a pinned business's rows through the ordinary tenant
    policy) and the attribution function.
-3. On boot, the api and worker refuse to start if the settlement or operator connection does not log
+3. After 0206 a renewal or upgrade charge opened for a cycle that has since moved (or opened with no
+   period, before the period was recorded) is not applied when paid: the payment stays `paid` and
+   goes to the operator queue as `subscription_decided_after_charge`, as any stale charge does.
+4. On boot, the api and worker refuse to start if the database holds the test-only fixture writer, or if the settlement or operator connection does not log
    in as exactly its role, cannot run its own writer, can run the other's, or can become the worker
    or the plan writer, and if the general credentials can run either reserved writer.
 

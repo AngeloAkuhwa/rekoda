@@ -20,7 +20,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { TransactionRollbackError } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
-import { withBusiness } from '../client.js';
+import { createDb, withBusiness } from '../client.js';
 import { addInterval, TRIAL_DAYS } from '@rekoda/core';
 import { billingRepo, identity, subscriptionsRepo } from '../index.js';
 import {
@@ -35,6 +35,7 @@ import {
   seedBusiness,
   seedCharge,
   settlementDb,
+  urls,
   usePlanWriterHarness,
   type ChargeSpec,
 } from './plan-writer.fixtures.js';
@@ -281,6 +282,41 @@ describe("OD-37: the operator writer runs only as the billing operator, inside R
     expect((await planOf(businessId))?.plan).toBe('expired');
   });
 
+  it('expired with no date is stamped on the database clock, not a host clock that runs ahead', async () => {
+    // Before the fix the host's `now` (a minute ahead here) was written and the writer refused it.
+    const businessId = await seedBusiness();
+    const ahead = new Date(Date.now() + 60_000);
+    const change = { businessId, plan: 'expired', expiresAt: null, actor: 'operator:ada' };
+    expect(await outcome(billingRepo.setPlan(operatorDb, change, ahead))).toBe('allowed');
+    const after = await planOf(businessId);
+    expect(after?.plan).toBe('expired');
+    expect(new Date(after!.plan_expires_at!).getTime()).toBeLessThanOrEqual(Date.now());
+  });
+
+  it('signup ends the trial exactly 336 hours on, across a DST change in the session time zone', async () => {
+    // A POSIX zone whose clocks change in three days: 14 calendar days there are 335 hours.
+    const [today] = await ownerDb.execute<{ doy: number }>(sql`
+      SELECT extract(doy FROM now())::int AS doy`);
+    const doy = today!.doy;
+    const zone = `XST0XDT,J${((doy + 2) % 365) + 1},J${((doy + 59) % 365) + 1}`;
+    const { db, close } = createDb(urls.app, { max: 1 });
+    try {
+      await db.execute(sql`SELECT set_config('TimeZone', ${zone}, false)`);
+      const user = await identity.upsertUserByPhone(db, '+2348069990001');
+      const business = await identity.createBusinessWithOwner(db, {
+        name: 'Ada Fashion',
+        businessType: null,
+        ownerUserId: user.id,
+      });
+      const [row] = await ownerDb.execute<{ hours: number }>(sql`
+        SELECT extract(epoch FROM plan_expires_at - trial_started_at)::int / 3600 AS hours
+        FROM businesses WHERE id = ${business.id}::uuid`);
+      expect(row?.hours).toBe(TRIAL_DAYS * 24);
+    } finally {
+      await close();
+    }
+  });
+
   it('refuses an unknown plan and a missing or system actor', async () => {
     const businessId = await seedBusiness();
     expect(await set(businessId, 'platinum', FUTURE, 'monthly')).toMatch(/22023/);
@@ -474,11 +510,13 @@ describe('OD-37: no other path writes the plan fields (0200, 0203)', () => {
     ).toBe(TRIAL_DAYS * 86_400_000);
   });
 
-  it('migrations 0200, 0202 and 0203 re-run cleanly as the owner (the repair path)', async () => {
+  it('migrations 0200 and 0202 to 0206 re-run cleanly as the owner (the repair path)', async () => {
     for (const file of [
       '0200_plan_writer_boundary.sql',
       '0202_settlement_and_operator_principals.sql',
       '0203_plan_duration_rules.sql',
+      '0205_charge_terms_belong_to_settlement.sql',
+      '0206_paid_charge_bound_to_its_cycle.sql',
     ]) {
       const text = readFileSync(new URL(`../../migrations/${file}`, import.meta.url), 'utf8');
       await ownerDb

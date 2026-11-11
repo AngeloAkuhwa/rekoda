@@ -99,6 +99,12 @@ export const PINS: Readonly<Record<string, Pin>> = {
     businessInserts: 0,
     why: 'OWN-89: the three writers re-created with the duration rules (operator writer: plan and date; provider writer: plan from the charge and the date; expiry writer: plan, and a future end clamped to now). All owned by rekoda_plan_writer.',
   },
+  'packages/db/migrations/0206_paid_charge_bound_to_its_cycle.sql': {
+    plan: 1,
+    expiry: 1,
+    businessInserts: 0,
+    why: "OD-37 B3: the provider writer re-created, bound to the charge's frozen period (plan from the charge, and the date). Owned by rekoda_plan_writer.",
+  },
   'packages/db/migrations/0196_plan_fields_guard.sql': {
     plan: 2,
     expiry: 1,

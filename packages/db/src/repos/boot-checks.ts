@@ -108,18 +108,45 @@ async function principalFacts(db: Db): Promise<PrincipalFacts> {
            ELSE pg_has_role(current_user, 'rekoda_app', 'USAGE') END AS in_app,
       CASE WHEN to_regrole('rekoda_plan_writer') IS NULL THEN NULL
            ELSE pg_has_role(current_user, 'rekoda_plan_writer', 'MEMBER') END AS in_plan_writer,
+      -- to_regclass, never a ::regclass literal: an unmigrated database reads NULL here (and fails
+      -- the check by name) instead of raising "relation does not exist".
       CASE WHEN to_regclass('public.subscription_charges') IS NULL THEN NULL
            ELSE pg_has_role(current_user,
-                  (SELECT relowner FROM pg_class WHERE oid = 'public.subscription_charges'::regclass),
+                  (SELECT relowner FROM pg_class WHERE oid = to_regclass('public.subscription_charges')),
                   'USAGE') END AS in_table_owner,
-      (SELECT count(*)::int FROM pg_trigger
-        WHERE tgenabled IN ('O', 'A') AND tgname IN ('businesses_plan_fields_guard',
-          'subscription_charges_settlement_guard', 'usage_counters_bonus_guard')) AS guards_enabled
+      (SELECT count(*)::int FROM pg_trigger t
+        WHERE t.tgenabled IN ('O', 'A') AND (t.tgname, t.tgrelid) IN (
+          ('businesses_plan_fields_guard', to_regclass('public.businesses')),
+          ('businesses_plan_fields_insert_guard', to_regclass('public.businesses')),
+          ('businesses_cycle_fields_guard', to_regclass('public.businesses')),
+          ('subscription_charges_applied_once_guard', to_regclass('public.subscription_charges')),
+          ('subscription_charges_settlement_guard', to_regclass('public.subscription_charges')),
+          ('usage_counters_bonus_guard', to_regclass('public.usage_counters')))) AS guards_enabled
     FROM pg_roles r WHERE r.rolname = current_user
   `);
   const facts = [...rows][0];
   if (!facts) throw new Error('principal boot check: could not read pg_roles for this connection');
   return facts;
+}
+
+/** The OD-37 guard triggers a running database must have, all enabled (0196, 0200, 0202, 0206). */
+const GUARD_TRIGGERS = 6;
+
+/**
+ * OD-37 (0206): the integration harness's fixture plan writer is never in a database a process
+ * serves. Its presence is also the test-only exemption of the cycle-input guard, so a database that
+ * has it would let the application credential write a subscription's pricing inputs.
+ */
+export async function assertNoTestFixtureWriter(db: Db): Promise<void> {
+  const rows = await db.execute<{ present: boolean }>(sql`
+    SELECT to_regprocedure('public.test_fixture_set_plan(uuid,text,timestamptz)') IS NOT NULL
+      AS present`);
+  if ([...rows][0]?.present !== false) {
+    throw new Error(
+      'the database holds the test-only fixture plan writer (test_fixture_set_plan): this is a test ' +
+        'database, or one tampered with; refusing to serve from it (OD-37, migration 0206).',
+    );
+  }
 }
 
 /**
@@ -136,13 +163,13 @@ export async function assertRoleHoldsNoReservedWriter(db: Db, label: string): Pr
   if (f.in_settlement !== false) problems.push('can become rekoda_settlement');
   if (f.in_operator !== false) problems.push('can become rekoda_billing_operator');
   if (f.in_table_owner !== false) problems.push('can act as the owner of the guarded tables');
-  if (f.guards_enabled !== 3) {
+  if (f.guards_enabled !== GUARD_TRIGGERS) {
     problems.push('runs against a database whose OD-37 guard triggers are missing or disabled');
   }
   if (problems.length > 0) {
     throw new Error(
       `the ${label} database role "${f.rolname}" ${problems.join(', ')}: settlement and operator ` +
-        'plan changes must stay with their own principals (OD-37). Apply migrations 0202 and 0203 ' +
+        'plan changes must stay with their own principals (OD-37). Apply migrations 0202 to 0206 ' +
         'and revoke any extra grant or membership.',
     );
   }
@@ -178,7 +205,7 @@ export async function assertDatabasePrincipal(
   if (f.in_plan_writer !== false) problems.push('can become rekoda_plan_writer');
   if (f.in_app !== true) problems.push("does not act with rekoda_app's rights");
   if (f.in_table_owner !== false) problems.push('can act as the owner of the guarded tables');
-  if (f.guards_enabled !== 3) {
+  if (f.guards_enabled !== GUARD_TRIGGERS) {
     problems.push('runs against a database whose OD-37 guard triggers are missing or disabled');
   }
   if (problems.length > 0) {

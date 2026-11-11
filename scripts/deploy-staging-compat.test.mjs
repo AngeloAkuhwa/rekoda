@@ -371,7 +371,7 @@ test('OWN-86: a failed pre-start smoke never starts the new release and states f
   const r = h.run();
   assert.notEqual(r.status, 0);
   assert.equal(h.at(' up '), -1, 'the new release must not start after a failed smoke');
-  assert.match(r.stderr, /pre-start database smoke for 0196\/0200\/0202-0204 failed/);
+  assert.match(r.stderr, /pre-start database smoke for 0196\/0200\/0202-0206 failed/);
   assert.match(r.stderr, /APPLIED, so the previous release .* is NOT safe to restart/);
   assert.match(r.stderr, /Fix forward/);
   assert.doesNotMatch(r.stderr, /git checkout [0-9a-f]{40}/);
@@ -394,7 +394,7 @@ test('OWN-86: a smoke that cannot run is a failure, not a pass', () => {
   const r = h.run();
   assert.notEqual(r.status, 0);
   assert.equal(h.at(' up '), -1, 'the new release must not start when the smoke could not run');
-  assert.match(r.stderr, /pre-start database smoke for 0196\/0200\/0202-0204 could not run/);
+  assert.match(r.stderr, /pre-start database smoke for 0196\/0200\/0202-0206 could not run/);
 });
 
 test('OD-37 (0200): a release bringing in 0200 is compatibility-breaking and runs the smoke too', () => {

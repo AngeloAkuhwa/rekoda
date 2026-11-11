@@ -58,14 +58,15 @@ EDGE_NETWORK=rekoda-prod_edge
 EDGE_EXPECTED='172.30.10.1 false'
 
 dc() { docker compose -f docker-compose.prod.yml "$@"; }
-# Whether this release brings in the plan and payment boundary (0196, 0200, 0202 or 0203), so the
+# Whether this release brings in the plan and payment boundary (0196, 0200, 0202 to 0206), so the
 # OWN-86 pre-start smoke applies.
 carries_plan_boundary() {
   [[ " $BREAKING " == *' 0196_plan_fields_guard '* || " $BREAKING " == *' 0200_plan_writer_boundary '* ||
      " $BREAKING " == *' 0202_settlement_and_operator_principals '* ||
      " $BREAKING " == *' 0203_plan_duration_rules '* ||
      " $BREAKING " == *' 0204_external_events_worker_least_privilege '* ||
-     " $BREAKING " == *' 0205_charge_terms_belong_to_settlement '* ]]
+     " $BREAKING " == *' 0205_charge_terms_belong_to_settlement '* ||
+     " $BREAKING " == *' 0206_paid_charge_bound_to_its_cycle '* ]]
 }
 # The OWN-86 pre-start smoke query, printed for an operator fixing forward by hand.
 print_smoke_0196() {
@@ -87,7 +88,7 @@ fail() {
 PHASE=checks
 # Migrations the previous release cannot run against (OD-48): the api and worker are stopped before
 # any of them is applied, and the old release is never restarted against a database that has one.
-COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement'
+COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -96,12 +97,13 @@ MIGRATE_ENTERED=false
 # Set just before `up`: a failure after migrate but before it (the 0196 smoke) has started nothing.
 UP_ENTERED=false
 # The OWN-86 pre-start database smoke for the plan and payment boundary (0196, 0200, and OD-37's
-# 0202 to 0205), run as the owner between migrate and `up`. It prints `t` only when the DATABASE (not
+# 0202 to 0206), run as the owner between migrate and `up`. It prints `t` only when the DATABASE (not
 # only the ledger) holds exactly the boundary this release expects:
-#   * the ledger rows of 0196, 0200, 0202, 0203 and 0204;
+#   * the ledger rows of 0196, 0200 and 0202 to 0206;
 #   * every guard trigger exists and fires (enabled in origin or always mode): the plan-field update
-#     and insert guards, the applied-once guard, the settlement guard on subscription_charges and the
-#     pack-credit guard on usage_counters;
+#     and insert guards, the cycle-input guard on businesses, the applied-once guard, the settlement
+#     guard on subscription_charges and the pack-credit guard on usage_counters;
+#   * the provider writer is 0206's, which binds an upgrade or a renewal to its charge's frozen period;
 #   * rekoda_plan_writer owns EXACTLY the expected functions, each named by schema, name and argument
 #     types, each with EXACTLY its expected EXECUTE grantees (PUBLIC would show as "-", so a PUBLIC
 #     grant fails), no more and no fewer: a missing writer, an extra one, a renamed signature, a
@@ -119,13 +121,18 @@ SMOKE_0196_SQL="SELECT
     WHERE tag IN ('0196_plan_fields_guard', '0200_plan_writer_boundary',
                   '0202_settlement_and_operator_principals', '0203_plan_duration_rules',
                   '0204_external_events_worker_least_privilege',
-                  '0205_charge_terms_belong_to_settlement')) = 6
+                  '0205_charge_terms_belong_to_settlement',
+                  '0206_paid_charge_bound_to_its_cycle')) = 7
   AND (SELECT count(*) FROM pg_trigger t WHERE t.tgenabled IN ('O', 'A') AND (t.tgname, t.tgrelid) IN (
         ('businesses_plan_fields_guard', 'public.businesses'::regclass),
         ('businesses_plan_fields_insert_guard', 'public.businesses'::regclass),
+        ('businesses_cycle_fields_guard', 'public.businesses'::regclass),
         ('subscription_charges_applied_once_guard', 'public.subscription_charges'::regclass),
         ('subscription_charges_settlement_guard', 'public.subscription_charges'::regclass),
-        ('usage_counters_bonus_guard', 'public.usage_counters'::regclass))) = 5
+        ('usage_counters_bonus_guard', 'public.usage_counters'::regclass))) = 6
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('public.subscription_apply_paid_charge(uuid,text,timestamptz)'))
+        LIKE '%the upgrade was priced for another cycle%the renewal was priced for another cycle%'
   AND (SELECT string_agg(sig || ' => ' || grantees, ' ; ' ORDER BY sig) FROM (
         SELECT n.nspname || '.' || p.proname || '(' || oidvectortypes(p.proargtypes) || ')' AS sig,
                coalesce((SELECT string_agg(a.grantee::regrole::text, ',' ORDER BY a.grantee::regrole::text)
@@ -659,7 +666,7 @@ if [[ " $BREAKING " == *' 0202_settlement_and_operator_principals '* ]]; then
     role=${pair#*:}
     value=$(sed -n "s/^${var}=//p" .env | tail -1)
     [ -n "$value" ] ||
-      fail "this release carries 0202 (OD-37) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0202 to 0205\"); nothing has been changed"
+      fail "this release carries 0202 (OD-37) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0202 to 0206\"); nothing has been changed"
     case "$value" in
       postgres://"$role":* | postgresql://"$role":*) ;;
       *) fail "${var} in .env must connect as ${role} with its own password; nothing has been changed" ;;
@@ -723,11 +730,11 @@ dc run --rm -T migrate
 # Any miss stops the deploy with the api and worker still stopped; the exit handler then prints the
 # fix-forward steps (0196/0200 are applied, so the previous release must not be restarted).
 if carries_plan_boundary; then
-  step 'pre-start database smoke for the plan and payment boundary, 0196/0200/0202-0204 (OWN-86, OD-37): ledger, guard triggers, exact writer set and grants, principals'
+  step 'pre-start database smoke for the plan and payment boundary, 0196/0200/0202-0206 (OWN-86, OD-37): ledger, guard triggers, exact writer set and grants, principals'
   smoke_0196=$(dc exec -T postgres psql -U rekoda_owner -d rekoda -v ON_ERROR_STOP=1 -tA -c "$SMOKE_0196_SQL") ||
-    fail 'migrations are APPLIED, but the pre-start database smoke for 0196/0200/0202-0204 could not run, so the new release is not started; the api and worker stay stopped'
+    fail 'migrations are APPLIED, but the pre-start database smoke for 0196/0200/0202-0206 could not run, so the new release is not started; the api and worker stay stopped'
   [ "$smoke_0196" = t ] ||
-    fail "migrations are APPLIED, but the pre-start database smoke for 0196/0200/0202-0204 failed (got '$smoke_0196'): a ledger row, an enabled guard trigger (plan fields, insert, applied-once, settlement, pack credit), the exact set of rekoda_plan_writer functions with their exact EXECUTE grantees, SECURITY DEFINER and pinned search_path, the absence of the removed and test-only writers, the settlement and billing-operator roles and their separation, or the worker's read-only estate policy is not as this release requires; the new release is not started and the api and worker stay stopped"
+    fail "migrations are APPLIED, but the pre-start database smoke for 0196/0200/0202-0206 failed (got '$smoke_0196'): a ledger row, an enabled guard trigger (plan fields, insert, cycle inputs, applied-once, settlement, pack credit), the cycle-bound provider writer, the exact set of rekoda_plan_writer functions with their exact EXECUTE grantees, SECURITY DEFINER and pinned search_path, the absence of the removed and test-only writers, the settlement and billing-operator roles and their separation, or the worker's read-only estate policy is not as this release requires; the new release is not started and the api and worker stay stopped"
 fi
 
 step 'start the new release'

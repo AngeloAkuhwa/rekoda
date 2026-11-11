@@ -143,6 +143,10 @@ export const ALLOWED: Readonly<Record<string, Entry>> = {
     role: 'migration',
     why: 'OWN-89: re-creates subscription_operator_set_plan (with the interval and Rekoda durations), subscription_apply_paid_charge (one billing interval) and subscription_expire_plan (clamps a future end), all owned by rekoda_plan_writer, and the exact 14-day insert guard.',
   },
+  'packages/db/migrations/0206_paid_charge_bound_to_its_cycle.sql': {
+    role: 'migration',
+    why: 'OD-37 B3: re-creates subscription_apply_paid_charge (owned by rekoda_plan_writer) so an upgrade or a renewal applies only to the cycle its charge was priced for, and guards the cycle and pricing inputs on businesses.',
+  },
   'packages/db/src/billing/plan-writer.fixtures.ts': {
     role: 'reader',
     why: 'OD-37 boundary suites: reads plan and plan_expires_at back as the owner to assert what the writers did; writes neither.',

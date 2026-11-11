@@ -1443,6 +1443,13 @@
       "when": 1795348800000,
       "tag": "0205_charge_terms_belong_to_settlement",
       "breakpoints": true
+    },
+    {
+      "idx": 206,
+      "version": "7",
+      "when": 1795435200000,
+      "tag": "0206_paid_charge_bound_to_its_cycle",
+      "breakpoints": true
     }
   ]
 }

@@ -36,7 +36,8 @@ import { chargeGate } from './paystack-key.js';
 export interface RenewalSweepDeps {
   /** `rekoda_worker` - "whose cycle ended" names no tenant, which is the point. */
   workerDb: Db;
-  /** `rekoda_app` - the clock and the block bookkeeping are written under a tenant pin. */
+  /** `rekoda_app` - closing a renewal block the gate no longer holds, and a cancelled cycle's
+   * lapse, under a tenant pin. The renewal itself (its charge, clock and block) runs on settlement. */
   appDb: Db;
   /** `rekoda_settlement` - the only role that opens a charge, so it prices the renewal (OD-37). */
   settlementDb: Db;

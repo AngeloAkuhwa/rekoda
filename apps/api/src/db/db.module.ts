@@ -127,13 +127,15 @@ class DbLifecycle implements OnApplicationShutdown {
       inject: [WORKER_LOCK_HANDLE],
       useFactory: (handle: LockHandle | null): LockClient | null => handle?.client ?? null,
     },
-    /* Small pools: a settlement is one short transaction per verified payment or zero-priced
-     * upgrade, and an operator plan change is a rare manual act. */
+    /* Settlement opens every plan and pack charge (the owner's plan change, the pack purchase, the
+     * renewal sweep) and settles every verified payment, holding its connection across the
+     * provider's verify call; sized one above the worker's job concurrency so a full set of slow
+     * verifies cannot starve the sweep or a checkout. An operator plan change is a rare manual act. */
     {
       provide: SETTLEMENT_DB_HANDLE,
       inject: [CONFIG],
       useFactory: (config: ApiConfig): DbHandle =>
-        createDb(config.settlementDatabaseUrl, { max: 4 }),
+        createDb(config.settlementDatabaseUrl, { max: config.workerConcurrency + 1 }),
     },
     {
       provide: SETTLEMENT_DB,

@@ -141,6 +141,26 @@ describe('OD-37: who may run which writer, and who may become whom (0202)', () =
     await bootChecks.assertRoleHoldsNoReservedWriter(appDb, 'application');
   });
 
+  it('the boot checks refuse the cycle-input guard disabled, a table-owner credential, and the test fixture writer', async () => {
+    await ownerDb.execute(
+      sql`ALTER TABLE businesses DISABLE TRIGGER businesses_cycle_fields_guard`,
+    );
+    try {
+      await expect(
+        bootChecks.assertRoleHoldsNoReservedWriter(appDb, 'application'),
+      ).rejects.toThrow(/guard triggers are missing or disabled/);
+    } finally {
+      await ownerDb.execute(
+        sql`ALTER TABLE businesses ENABLE TRIGGER businesses_cycle_fields_guard`,
+      );
+    }
+    await expect(
+      bootChecks.assertRoleHoldsNoReservedWriter(ownerDb, 'application'),
+    ).rejects.toThrow(/can act as the owner of the guarded tables/);
+    // This harness installs the fixture writer, as every test database does; a served one never has it.
+    await expect(bootChecks.assertNoTestFixtureWriter(appDb)).rejects.toThrow(/test-only fixture/);
+  });
+
   it('the boot checks pass for the real principals and refuse the general credentials in their place', async () => {
     await bootChecks.assertDatabasePrincipal(settlementDb, 'settlement', 'rekoda_settlement');
     await bootChecks.assertDatabasePrincipal(operatorDb, 'operator', 'rekoda_billing_operator');

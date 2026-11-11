@@ -725,6 +725,26 @@ export async function applySettledCharge(
       return 'superseded';
     }
 
+    /* B3 (0206): a renewal or an upgrade buys the cycle it was priced for, read from the
+     * charge's frozen period, not from the business columns a merchant's own scheduling (or a
+     * stolen application credential) can move. A renewal must still start at the paid-to date;
+     * an upgrade must still end at it. The provider writer refuses anything else, so this keeps
+     * an honest stale payment out of an exception and in the operator queue. */
+    const paidTo = subscription?.planExpiresAt?.getTime();
+    if (
+      (charge.kind === 'upgrade' && charge.periodEnd?.getTime() !== paidTo) ||
+      (charge.kind === 'renewal' && charge.periodStart?.getTime() !== paidTo) ||
+      ((charge.kind === 'upgrade' || charge.kind === 'renewal') && paidTo === undefined)
+    ) {
+      await subscriptionsRepo.markUnapplied(
+        tx,
+        input.reference,
+        'subscription_decided_after_charge',
+        input.when,
+      );
+      return 'superseded';
+    }
+
     /* OWN-34 (G-115): an upgrade charge opened before the origin rule existed
      * must not turn an operator-defined or unknown-origin cycle into a
      * provider one by settling; it uses the same rule as quote and changePlan. The money stays recorded for an operator. */
