@@ -145,6 +145,10 @@ describe('the pre-start database smoke, executed', () => {
     ],
     ['the pin guard dropped', 'DROP TRIGGER businesses_plan_version_guard ON businesses'],
     [
+      'an extra function owned by the price reader',
+      "CREATE FUNCTION rekoda_private.extra_reader() RETURNS int LANGUAGE sql AS 'select 1'; ALTER FUNCTION rekoda_private.extra_reader() OWNER TO rekoda_price_reader; REVOKE ALL ON FUNCTION rekoda_private.extra_reader() FROM PUBLIC",
+    ],
+    [
       'the price check executable by everyone',
       'GRANT EXECUTE ON FUNCTION rekoda_private.subscription_charges_price_check() TO PUBLIC',
     ],

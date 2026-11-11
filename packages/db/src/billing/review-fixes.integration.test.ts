@@ -143,60 +143,69 @@ describe('the meter release (0212)', () => {
   });
 });
 
-describe('M2: the grandfathering pin is kept or set to the current version (0212)', () => {
-  it('settlement and the operator cannot pin a business to an older, cheaper version', async () => {
-    const { id } = await onCycle('chat', 5);
-    const older = [
-      ...(await ownerDb.execute<{ id: string }>(sql`SELECT id FROM plan_versions
-        WHERE plan_id = 'chat' ORDER BY version LIMIT 1`)),
-    ][0]!.id;
-    await planCatalogueRepo.publishPlanVersion(ownerDb, {
+describe('M2: the grandfathering pin is kept or set to the version in effect at the cycle start (0212)', () => {
+  const publishChat = (from: Date) =>
+    planCatalogueRepo.publishPlanVersion(ownerDb, {
       planId: 'chat',
       name: 'Rekoda chat',
       seats: 1,
-      effectiveFrom: new Date(Date.now() - 60_000),
+      effectiveFrom: from,
       entitlements: ['REKODA_CHAT'],
       allowances: { AI_ACTIONS: 300, VOICE_MINUTES: 60, DOCUMENT_GENERATION: 100 },
       prices: [{ currency: 'NGN', billingInterval: 'monthly', amountMinor: 1_490_000 }],
     });
-    // The business is on the old version already; it may keep it (grandfathering)...
-    await ownerDb.execute(
-      sql`UPDATE businesses SET plan_version_id = ${older}::uuid WHERE id = ${id}::uuid`,
-    );
-    const current = [
-      ...(await ownerDb.execute<{ id: string }>(sql`SELECT id FROM plan_versions
-        WHERE plan_id = 'chat' ORDER BY version DESC LIMIT 1`)),
-    ][0]!.id;
-    // ...moving to the current version is allowed...
+  const versions = async () =>
+    [
+      ...(await ownerDb.execute<{ id: string }>(
+        sql`SELECT id FROM plan_versions WHERE plan_id = 'chat' ORDER BY version`,
+      )),
+    ].map((r) => r.id);
+  /* As each principal, with the fixture writer dropped (its presence is the harness exemption). */
+  async function withoutFixture(fn: () => Promise<void>) {
     await ownerDb.execute(
       sql`DROP FUNCTION IF EXISTS public.test_fixture_set_plan(uuid, text, timestamptz)`,
     );
     try {
-      for (const db of [settlementDb, operatorDb]) {
-        expect(
-          await outcome(
-            withBusiness(db, id, (tx) =>
-              tx.execute(
-                sql`UPDATE businesses SET plan_version_id = ${current}::uuid WHERE id = ${id}::uuid`,
-              ),
-            ),
-          ),
-        ).toBe('allowed');
-        // ...and back to the older, cheaper one is refused.
-        expect(
-          await outcome(
-            withBusiness(db, id, (tx) =>
-              tx.execute(
-                sql`UPDATE businesses SET plan_version_id = ${older}::uuid WHERE id = ${id}::uuid`,
-              ),
-            ),
-          ),
-        ).toMatch(/42501.*current version/);
-      }
+      await fn();
     } finally {
-      // The harness migrate reinstalls its fixture writer.
-      await migrate(urls);
+      await migrate(urls); // reinstalls the harness writer
     }
+  }
+  const pin = (db: Db, id: string, version: string, cycleStart: Date) =>
+    outcome(
+      withBusiness(db, id, (tx) =>
+        tx.execute(sql`UPDATE businesses SET plan_version_id = ${version}::uuid,
+          cycle_started_at = ${cycleStart.toISOString()}::timestamptz WHERE id = ${id}::uuid`),
+      ),
+    );
+
+  it('an older, cheaper version than the one in effect at the cycle start is refused', async () => {
+    const { id } = await onCycle('chat', 0);
+    await publishChat(new Date(Date.now() - 60 * 60_000));
+    const [v1, v2] = await versions();
+    await ownerDb.execute(sql`UPDATE businesses SET plan_version_id = NULL WHERE id = ${id}::uuid`);
+    const now = new Date();
+    await withoutFixture(async () => {
+      for (const db of [settlementDb, operatorDb]) {
+        expect(await pin(db, id, v1!, now)).toMatch(/42501.*in effect at the cycle start/);
+        expect(await pin(db, id, v2!, now)).toBe('allowed');
+        await ownerDb.execute(
+          sql`UPDATE businesses SET plan_version_id = NULL WHERE id = ${id}::uuid`,
+        );
+      }
+    });
+  });
+
+  it('an upgrade keeping a cycle that began before a repricing pins the version of that cycle', async () => {
+    // Cycle started 20 days ago; a new version took effect 5 days ago (the delta review's case).
+    const { id, start } = await onCycle('chat', 20);
+    await publishChat(new Date(Date.now() - 5 * DAY));
+    const [v1, v2] = await versions();
+    await ownerDb.execute(sql`UPDATE businesses SET plan_version_id = NULL WHERE id = ${id}::uuid`);
+    await withoutFixture(async () => {
+      expect(await pin(settlementDb, id, v2!, start)).toMatch(/42501/);
+      expect(await pin(settlementDb, id, v1!, start)).toBe('allowed');
+    });
   });
 });
 
@@ -228,5 +237,36 @@ describe('R3: the staging date tool keeps the row conforming (0212)', () => {
       SELECT subscription_nonconformity(plan, plan_expires_at, cycle_started_at, billing_interval,
         trial_started_at, now()) AS reason FROM businesses WHERE id = ${id}::uuid`);
     expect(row?.reason).toBeNull();
+  });
+
+  it('moving a trial end moves the trial start with it: still exactly 14 days', async () => {
+    const id = await seedBusiness();
+    await ownerDb.execute(sql`INSERT INTO staging_environment (marked_by) VALUES ('owner:test')`);
+    await withBusiness(appDb, id, (tx) =>
+      stagingToolsRepo.designateTestBusiness(tx, {
+        businessId: id,
+        operator: 'owner:test',
+        reason: 'review R3 trial',
+      }),
+    );
+    const before = (await withBusiness(appDb, id, (tx) =>
+      stagingToolsRepo.currentDate(tx, id, 'trial_end'),
+    ))!.value!;
+    await withBusiness(appDb, id, (tx) =>
+      stagingToolsRepo.moveDate(tx, {
+        businessId: id,
+        field: 'trial_end',
+        expected: before,
+        to: new Date(Date.now() + 20 * DAY),
+        operator: 'owner:test',
+        reason: 'test a trial ending later',
+      }),
+    );
+    const [row] = await ownerDb.execute<{ reason: string | null; hours: number }>(sql`
+      SELECT subscription_nonconformity(plan, plan_expires_at, cycle_started_at, billing_interval,
+               trial_started_at, now()) AS reason,
+             round(extract(epoch FROM plan_expires_at - trial_started_at) / 3600)::int AS hours
+      FROM businesses WHERE id = ${id}::uuid`);
+    expect(row).toEqual({ reason: null, hours: 336 });
   });
 });

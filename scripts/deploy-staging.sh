@@ -147,10 +147,11 @@ SMOKE_0196_SQL="SELECT
         ('subscription_charges_terms_frozen', 'public.subscription_charges'::regclass),
         ('businesses_plan_version_guard', 'public.businesses'::regclass))) = 12
   AND (SELECT string_agg(p.oid::regprocedure::text, ' ; ' ORDER BY p.oid::regprocedure::text)
-        FROM pg_proc p WHERE p.proowner = 'rekoda_price_reader'::regrole
-          AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
-                          WHERE a.grantee <> p.proowner))
+        FROM pg_proc p WHERE p.proowner = 'rekoda_price_reader'::regrole)
       = 'rekoda_private.businesses_plan_version_guard() ; rekoda_private.plan_price_minor(text,uuid,text) ; rekoda_private.subscription_charges_price_check()'
+  AND NOT EXISTS (SELECT 1 FROM pg_proc p
+        CROSS JOIN LATERAL aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+        WHERE p.proowner = 'rekoda_price_reader'::regrole AND a.grantee <> p.proowner)
   AND (SELECT string_agg(g, ',' ORDER BY g) FROM (
         SELECT r.role || ':' || c.relname || ':' || a.privilege_type AS g
         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'

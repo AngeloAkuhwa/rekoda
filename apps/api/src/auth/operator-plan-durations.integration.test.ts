@@ -109,6 +109,16 @@ describe('the operator plan endpoint keeps to Rekoda standard periods', () => {
         FROM businesses WHERE id = ${businessId}::uuid`),
     );
     expect([...rows][0]).toEqual({ plan: 'trial', n: 0 });
+    // Every one of those refusals was recorded, the schema-rejected ones included (review M3).
+    const { db: owner, close } = createDb(urls.owner, { max: 1 });
+    try {
+      const [logged] = await owner.execute<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM rekoda_private.operator_refusals
+        WHERE business_id = ${businessId}::uuid AND action = 'plan_change'`);
+      expect(logged?.n).toBe(10);
+    } finally {
+      await close();
+    }
   });
 
   it('a paid plan gets exactly one standard period: a month by default, a year when annual', async () => {

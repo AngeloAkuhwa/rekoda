@@ -103,9 +103,9 @@ const open = (
     const period =
       paidTo && kind === 'renewal'
         ? { periodStart: paidTo, periodEnd: new Date(paidTo.getTime() + 30 * 86_400_000) }
-        : paidTo && kind === 'upgrade'
+        : paidTo && kind === 'upgrade' && cycleFrom
           ? {
-              periodStart: cycleFrom ?? new Date(paidTo.getTime() - 30 * 86_400_000),
+              periodStart: cycleFrom,
               periodEnd: paidTo,
             }
           : {};

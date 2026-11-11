@@ -16,8 +16,8 @@
 --      index (runtime 2).
 --   4. (security M2) the grandfathering pin (`plan_version_id`) could be set to any older, cheaper
 --      version by settlement or the operator, and the price check trusts it. A pin may now only be
---      kept, or set to the current version of the business's plan (the earliest when none is
---      current), which is all `writeSubscriptionState` ever writes.
+--      kept, or set to the version of the business's plan in effect when its cycle started (the
+--      earliest when none was), which is all `writeSubscriptionState` ever writes.
 --   5. (runtime 3) the staging date tool (OWN-77) moved a paid-to date or a trial end alone,
 --      leaving a row 0208 calls non-conforming (and that would block the next staging deploy). It
 --      now moves the cycle start, or the trial start, by the same amount.
@@ -239,10 +239,13 @@ BEGIN
   IF pg_has_role(session_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'USAGE') THEN
     RETURN NEW;
   END IF;
+  -- The writer's own rule (`writeSubscriptionState`, subscriptions.ts): the version in effect when
+  -- the cycle STARTED (an upgrade keeps its cycle, so that can be weeks ago), written in this same
+  -- UPDATE; the earliest version when none was in effect then.
   IF NEW.plan_version_id IS NULL OR NEW.plan_version_id = coalesce(
        (SELECT v.id FROM public.plan_versions v
-         WHERE v.plan_id = NEW.plan AND v.effective_from <= now()
-           AND (v.effective_to IS NULL OR v.effective_to > now())
+         WHERE v.plan_id = NEW.plan AND v.effective_from <= coalesce(NEW.cycle_started_at, now())
+           AND (v.effective_to IS NULL OR v.effective_to > coalesce(NEW.cycle_started_at, now()))
          ORDER BY v.version DESC LIMIT 1),
        (SELECT v.id FROM public.plan_versions v WHERE v.plan_id = NEW.plan
          ORDER BY v.version LIMIT 1)) THEN
@@ -252,7 +255,7 @@ BEGIN
   IF to_regprocedure('public.test_fixture_set_plan(uuid, text, timestamptz)') IS NOT NULL THEN
     RETURN NEW;
   END IF;
-  RAISE EXCEPTION 'a plan-version pin is kept or set to the current version of the plan (review M2)'
+  RAISE EXCEPTION 'a plan-version pin is kept or set to the version in effect at the cycle start (review M2)'
     USING ERRCODE = '42501';
 END $$;
 ALTER FUNCTION rekoda_private.businesses_plan_version_guard() OWNER TO rekoda_price_reader;
