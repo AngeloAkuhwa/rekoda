@@ -413,8 +413,12 @@ export class BillingService {
       }
 
       /* OWN-33 (G-115): an operator arrangement that is not a standard monthly
-       * cycle is never prorated automatically. Nothing is opened or changed. */
+       * cycle is never prorated automatically. No charge is opened and no plan changes. */
       if (charge.kind === 'upgrade' && isCustomCycle(subscription)) {
+        /* OD-50 (0213): the request is recorded, so an operator can resolve exactly this upgrade
+         * with the paid-through date kept. The database checks the facts itself; a request it
+         * refuses (nothing to review) records nothing. No charge, no plan change. */
+        await subscriptionsRepo.requestPlanReview(tx, businessId, to);
         return { state: 'unavailable' as const, reason: 'support_review' as const };
       }
 

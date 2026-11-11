@@ -23,6 +23,11 @@ import { CONFIG, type ApiConfig } from '../config.js';
 import { OperatorGuard, OperatorScopes, type OperatorRequest } from './operator.guard.js';
 import { DB, OPERATOR_DB } from '../db/db.module.js';
 import { operatorActor } from './operator-actor.js';
+import {
+  OperatorPlaneRefusal,
+  resolvePlanReviewAsOperator,
+  setPlanAsOperator,
+} from '../operator-plane/plan-operations.js';
 import { InvalidPhoneError, normalisePhone } from '@rekoda/core/identity';
 import {
   createBusinessRequest,
@@ -30,7 +35,7 @@ import {
   inviteMemberRequest,
   magicRedeemRequest,
   requestOtpRequest,
-  setPlanRequest,
+  type ResolvePlanReviewResponse,
   verifyOtpRequest,
   type MagicRedeemResponse,
   type MeResponse,
@@ -384,57 +389,49 @@ export class BusinessController {
     @Req() request: OperatorRequest,
     @Body() body: unknown,
   ): Promise<{ plan: string; changed: boolean }> {
-    const parsed = setPlanRequest.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(
-        'businessId, plan and expiresAt are required; billingInterval is monthly or annual',
-      );
-    }
     /* The subject is checked before anything is written (a 400, not a 500 from the writer). */
     const actor = operatorActor(request);
+    return this.onOperatorPrincipal((operatorDb) => setPlanAsOperator(operatorDb, actor, body));
+  }
+
+  /**
+   * Resolve a merchant's support-reviewed upgrade (OD-50, migration 0213): the plan moves, the
+   * paid-through date stays exactly as it is. No date is accepted (a strict body), and the
+   * database function takes none. It works only where the merchant's own upgrade request went to
+   * support review and the subscription has not changed since; a trial, an expired plan and a
+   * period that has ended are refused. Same identity, scope and audit rules as the route above.
+   */
+  @Post('plan/support-review')
+  @UseGuards(OperatorGuard)
+  @OperatorScopes('ops:billing')
+  @HttpCode(200)
+  async resolvePlanReview(
+    @Req() request: OperatorRequest,
+    @Body() body: unknown,
+  ): Promise<ResolvePlanReviewResponse> {
+    const actor = operatorActor(request);
+    return this.onOperatorPrincipal((operatorDb) =>
+      resolvePlanReviewAsOperator(operatorDb, actor, body),
+    );
+  }
+
+  /** Runs an operator plan operation on the billing-operator principal, mapping its refusals. */
+  private async onOperatorPrincipal<T>(run: (operatorDb: Db) => Promise<T>): Promise<T> {
     const operatorDb = this.operatorDb;
     if (!operatorDb) {
       throw new ServiceUnavailableException(
         'operator plan changes are not served by this process (no operator database credential)',
       );
     }
-
-    const { businessId, plan, expiresAt, billingInterval } = parsed.data;
-    /* Rekoda's plan periods (OD-50, migration 0207): a paid plan runs exactly one billing interval
-     * from now and a trial exactly to the business's own 14-day trial end, both computed by the
-     * database writer, so `expiresAt` is null for them and a date is refused (a 400). `expired`
-     * ends now, or at a given time that is not in the future; that is how a plan ends early. The
-     * same rule is enforced in the application (`planDateRefusal`) and in the writer. */
-    let changed: boolean | 'unchanged';
     try {
-      changed = await billingRepo.setPlan(operatorDb, {
-        businessId,
-        plan,
-        expiresAt: expiresAt ? new Date(expiresAt) : null,
-        ...(billingInterval ? { billingInterval } : {}),
-        actor,
-      });
+      return await run(operatorDb);
     } catch (error) {
-      if (error instanceof billingRepo.PlanDateRefused)
+      if (error instanceof OperatorPlaneRefusal) {
+        if (error.status === 404) throw new NotFoundException(error.message);
         throw new BadRequestException(error.message);
-      /* The writer's own input refusal (the same rule, enforced in the database) is the caller's
-       * input too; anything else is not, and stays a 500. */
-      const cause = (error as { cause?: { code?: string; message?: string } }).cause;
-      if (
-        cause?.code === '22023' &&
-        typeof cause.message === 'string' &&
-        cause.message.startsWith('subscription_operator_set_plan:')
-      ) {
-        throw new BadRequestException(
-          cause.message.replace('subscription_operator_set_plan: ', ''),
-        );
       }
       throw error;
     }
-    if (!changed) throw new NotFoundException('no business with that id');
-    /* `changed: false` is a re-post of the plan and interval already in force (OD-50): nothing was
-     * written, so the period already running stands. */
-    return { plan, changed: changed === true };
   }
 }
 

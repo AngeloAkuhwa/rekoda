@@ -97,6 +97,8 @@ describe('every operator route declares the authority it needs', () => {
   it('puts the plan change on billing authority, not on read', () => {
     const byName = new Map(routesOf(BusinessController).map((route) => [route.name, route.scopes]));
     expect(byName.get('setPlan')).toEqual(['ops:billing']);
+    /* OD-50: the support-review resolution moves a plan too, on the same authority. */
+    expect(byName.get('resolvePlanReview')).toEqual(['ops:billing']);
   });
 });
 

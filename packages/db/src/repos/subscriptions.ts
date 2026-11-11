@@ -343,6 +343,59 @@ export async function writeSubscriptionState(
 }
 
 /**
+ * Record that the merchant asked for an upgrade the product sends to support review (OD-50,
+ * migration 0213). The database function checks the facts itself (an active paid plan with a
+ * future paid-through date, a dearer paid target) and freezes the plan and paid-through date the
+ * request was made against; asking again for the same upgrade returns the same review. Returns
+ * null when the database refuses the request (nothing to review), which changes nothing.
+ */
+export async function requestPlanReview(
+  tx: TenantDb,
+  businessId: string,
+  plan: string,
+): Promise<string | null> {
+  try {
+    /* A savepoint: a refusal must not abort the caller's transaction. */
+    return await tx.transaction(async (sp) => {
+      const rows = await sp.execute<{ id: string }>(
+        sql`SELECT subscription_request_plan_review(${businessId}::uuid, ${plan}) AS id`,
+      );
+      return [...rows][0]?.id ?? null;
+    });
+  } catch (error) {
+    const cause = (error as { cause?: { code?: string } }).cause;
+    if (cause?.code === '22023') return null;
+    throw error;
+  }
+}
+
+/** The business's open support review, if any (the merchant's billing page reads it). */
+export async function openPlanReview(
+  tx: TenantDb,
+  businessId: string,
+): Promise<{ id: string; fromPlan: string; toPlan: string; paidThrough: Date } | null> {
+  const rows = await tx.execute<{
+    id: string;
+    from_plan: string;
+    to_plan: string;
+    paid_through: string;
+  }>(sql`
+    SELECT id, from_plan, to_plan, paid_through::text AS paid_through
+    FROM plan_change_reviews
+    WHERE business_id = ${businessId}::uuid AND status = 'open'
+  `);
+  const row = [...rows][0];
+  return row
+    ? {
+        id: row.id,
+        fromPlan: row.from_plan,
+        toPlan: row.to_plan,
+        paidThrough: new Date(row.paid_through),
+      }
+    : null;
+}
+
+/**
  * Schedule a downgrade for the next renewal (ADR 0024).
  *
  * Nothing else moves. The merchant keeps the plan they paid for until the

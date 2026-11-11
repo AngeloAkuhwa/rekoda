@@ -105,6 +105,30 @@ export const setPlanRequest = z.object({
 });
 export type SetPlanRequest = z.infer<typeof setPlanRequest>;
 
+/**
+ * An operator resolving a merchant's support-reviewed upgrade (OD-50, migration 0213).
+ *
+ * The plan moves; the paid-through date stays exactly what the merchant already paid for. There
+ * is NO date field and the object is strict: a body that carries one (`expiresAt` or anything
+ * else) is refused, never ignored. It applies only where the merchant's own upgrade request went
+ * to support review; every other assignment is `setPlanRequest`, which runs a standard period.
+ */
+export const resolvePlanReviewRequest = z.strictObject({
+  businessId: z.string().uuid(),
+  plan: z.enum(['chat', 'integrate', 'complete']),
+  reason: z.string().trim().min(1).max(500),
+});
+export type ResolvePlanReviewRequest = z.infer<typeof resolvePlanReviewRequest>;
+
+export const resolvePlanReviewResponse = z.object({
+  plan: z.string(),
+  previousPlan: z.string(),
+  /** The paid-through date kept, unchanged by the resolution. */
+  paidThrough: z.string(),
+  changed: z.boolean(),
+});
+export type ResolvePlanReviewResponse = z.infer<typeof resolvePlanReviewResponse>;
+
 export const sessionResponse = z.object({
   sessionToken: z.string(),
   expiresAt: z.string(),

@@ -122,6 +122,66 @@ export async function setPlan(db: Db, change: PlanChange): Promise<boolean | 'un
   });
 }
 
+/** A support-review resolution the database refused (a 400 for the caller): no open review, a
+ * subscription that changed since, a trial, an expired plan or a period that has ended. */
+export class SupportReviewRefused extends Error {}
+
+export interface SupportReviewResolution {
+  reviewId: string;
+  previousPlan: string;
+  /** The paid-through date the business keeps: exactly what it was before the change. */
+  paidThrough: Date;
+  /** False for a repeat of a resolution already made: nothing was written. */
+  changed: boolean;
+}
+
+/**
+ * Resolve a merchant's support-reviewed upgrade as an operator (OD-50, migration 0213): the plan
+ * moves, the paid-through date stays exactly as it is. There is no date to give: the database
+ * function takes none, requires the open review for exactly this plan and writes its own audit
+ * row. `db` must be the billing-operator pool. Returns null when the business does not exist.
+ */
+export async function resolveSupportReview(
+  db: Db,
+  input: { businessId: string; plan: string; actor: string; reason: string },
+): Promise<SupportReviewResolution | null> {
+  return withBusiness(db, input.businessId, async (tx) => {
+    const exists = await tx
+      .select({ id: businesses.id })
+      .from(businesses)
+      .where(eq(businesses.id, input.businessId))
+      .limit(1);
+    if (!exists[0]) return null;
+    try {
+      const rows = await tx.execute<{
+        review_id: string;
+        previous_plan: string;
+        expires_at: string;
+        changed: boolean;
+      }>(sql`
+        SELECT review_id, previous_plan, expires_at::text AS expires_at, changed
+        FROM subscription_operator_resolve_review(
+          ${input.businessId}::uuid, ${input.plan}, ${input.actor}, ${input.reason})
+      `);
+      const row = [...rows][0];
+      if (!row) throw new Error('subscription_operator_resolve_review returned nothing');
+      return {
+        reviewId: row.review_id,
+        previousPlan: row.previous_plan,
+        paidThrough: new Date(row.expires_at),
+        changed: row.changed,
+      };
+    } catch (error) {
+      const cause = (error as { cause?: { code?: string; message?: string } }).cause;
+      const prefix = 'subscription_operator_resolve_review: ';
+      if (cause?.code === '22023' && cause.message?.startsWith(prefix)) {
+        throw new SupportReviewRefused(cause.message.slice(prefix.length));
+      }
+      throw error;
+    }
+  });
+}
+
 /* The database's clock (the statement time), the one the writer's `clock_timestamp()` checks use,
  * whatever the API host's clock says. */
 async function databaseNow(tx: TenantDb): Promise<Date> {
