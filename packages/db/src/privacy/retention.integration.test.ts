@@ -31,14 +31,8 @@ import {
   subscriptionsRepo,
   usageRepo,
 } from '../index.js';
-import {
-  applyFixtureCycle,
-  migrate,
-  requireUrls,
-  truncateAll,
-  type Urls,
-  setPlanAsOwner,
-} from '../testing.js';
+import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '../testing.js';
+import { applyFixtureCycle } from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -143,8 +137,7 @@ describe('who is due', () => {
       await billingRepo.setPlan(appDb, {
         businessId,
         plan: 'complete',
-        // An operator sets a paid plan with a future date (G-114, enforced by the writer, 0200).
-        expiresAt: new Date(Date.now() + 30 * 86_400_000),
+        expiresAt: new Date(Date.now() + 30 * 86_400_000), // a paid plan's date is in the future (0200)
         actor: 'operator:test',
       }),
     ).toBe(true);
@@ -244,15 +237,13 @@ describe('who is due', () => {
     const change = (plan: string, expiresAt: Date) =>
       billingRepo.setPlan(appDb, { businessId, plan, expiresAt, actor: 'operator:test' });
 
-    // A paid plan needs a future date (G-114, enforced by the operator writer, 0200).
-    const ahead = new Date(Date.now() + 30 * 86_400_000);
-    await change('complete', ahead);
+    await change('complete', new Date(Date.now() + 30 * 86_400_000)); // future: G-114, 0200
     const first = await everPaidAt();
     expect(first).not.toBeNull();
 
     await change('trial', daysAgo(380));
     expect(await everPaidAt()).toEqual(first);
-    await change('chat', ahead);
+    await change('chat', new Date(Date.now() + 30 * 86_400_000));
     expect(await everPaidAt()).toEqual(first); // the first date stands
     await change('expired', daysAgo(380));
     expect(await everPaidAt()).toEqual(first);

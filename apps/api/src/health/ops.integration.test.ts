@@ -423,7 +423,6 @@ describe('the margin report', () => {
 
   it('prices a grandfathered merchant at the version they were sold', async () => {
     const pinned = await merchant('Launch Cohort', '+2348030000210', 'trial');
-    /* Sold Chat through the real cycle path, which pins version 1. */
     await withBusiness(db, pinned, (tx) =>
       applyFixtureCycle(tx, pinned, {
         plan: 'chat',
