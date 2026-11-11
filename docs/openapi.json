@@ -39,7 +39,9 @@
     "/api/v1/identity": {
       "get": {
         "operationId": "getIdentity",
-        "tags": ["Identity"],
+        "tags": [
+          "Identity"
+        ],
         "summary": "Who this key speaks for",
         "responses": {
           "200": {
@@ -98,7 +100,9 @@
     "/api/v1/customers": {
       "get": {
         "operationId": "listCustomers",
-        "tags": ["Reads"],
+        "tags": [
+          "Reads"
+        ],
         "summary": "The merchant's customers, as pseudonyms",
         "parameters": [
           {
@@ -175,7 +179,9 @@
     "/api/v1/products": {
       "get": {
         "operationId": "listProducts",
-        "tags": ["Reads"],
+        "tags": [
+          "Reads"
+        ],
         "summary": "The catalogue",
         "parameters": [
           {
@@ -252,7 +258,9 @@
     "/api/v1/invoices": {
       "get": {
         "operationId": "listInvoices",
-        "tags": ["Reads"],
+        "tags": [
+          "Reads"
+        ],
         "summary": "Invoices, newest first",
         "parameters": [
           {
@@ -267,7 +275,12 @@
             "required": false,
             "schema": {
               "type": "string",
-              "enum": ["issued", "partially_paid", "paid", "voided"]
+              "enum": [
+                "issued",
+                "partially_paid",
+                "paid",
+                "voided"
+              ]
             }
           }
         ],
@@ -338,7 +351,9 @@
     "/api/v1/invoices/{invoiceNumber}": {
       "get": {
         "operationId": "getInvoice",
-        "tags": ["Reads"],
+        "tags": [
+          "Reads"
+        ],
         "summary": "One invoice",
         "parameters": [
           {
@@ -407,7 +422,9 @@
     "/api/v1/sales": {
       "post": {
         "operationId": "recordSale",
-        "tags": ["Writes"],
+        "tags": [
+          "Writes"
+        ],
         "summary": "Record a sale that happened somewhere else",
         "description": "Totals are computed here from the caller's lines rather than taken from them: a program that sends a total is a program that can send one that does not match its own items, and the merchant's books would carry whichever the caller preferred.",
         "parameters": [
@@ -498,7 +515,9 @@
     "/api/v1/payments": {
       "post": {
         "operationId": "recordPayment",
-        "tags": ["Writes"],
+        "tags": [
+          "Writes"
+        ],
         "summary": "Record a payment against an invoice",
         "parameters": [
           {
@@ -618,11 +637,16 @@
     "schemas": {
       "Error": {
         "type": "object",
-        "required": ["error"],
+        "required": [
+          "error"
+        ],
         "properties": {
           "error": {
             "type": "object",
-            "required": ["code", "message"],
+            "required": [
+              "code",
+              "message"
+            ],
             "properties": {
               "code": {
                 "type": "string",
@@ -646,7 +670,10 @@
                 "type": "array",
                 "items": {
                   "type": "object",
-                  "required": ["field", "message"],
+                  "required": [
+                    "field",
+                    "message"
+                  ],
                   "properties": {
                     "field": {
                       "type": "string"
@@ -695,7 +722,10 @@
           },
           "mode": {
             "type": "string",
-            "enum": ["live", "test"]
+            "enum": [
+              "live",
+              "test"
+            ]
           },
           "rateLimitPerMinute": {
             "type": "integer",
@@ -705,7 +735,11 @@
       },
       "Customer": {
         "type": "object",
-        "required": ["id", "token", "createdAt"],
+        "required": [
+          "id",
+          "token",
+          "createdAt"
+        ],
         "properties": {
           "id": {
             "type": "string",
@@ -723,7 +757,14 @@
       },
       "Product": {
         "type": "object",
-        "required": ["id", "name", "description", "unitPriceK", "active", "createdAt"],
+        "required": [
+          "id",
+          "name",
+          "description",
+          "unitPriceK",
+          "active",
+          "createdAt"
+        ],
         "properties": {
           "id": {
             "type": "string",
@@ -733,10 +774,16 @@
             "type": "string"
           },
           "description": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "unitPriceK": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64",
             "minimum": 0,
             "description": "Minor units. Null when the merchant has not priced it. Not zero: those differ."
@@ -773,12 +820,20 @@
             "type": "string"
           },
           "customerId": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "format": "uuid"
           },
           "status": {
             "type": "string",
-            "enum": ["issued", "partially_paid", "paid", "voided"]
+            "enum": [
+              "issued",
+              "partially_paid",
+              "paid",
+              "voided"
+            ]
           },
           "totalK": {
             "type": "integer",
@@ -802,7 +857,10 @@
             "type": "string"
           },
           "dueDate": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "format": "date-time"
           },
           "issuedAt": {
@@ -813,7 +871,9 @@
       },
       "RecordSaleRequest": {
         "type": "object",
-        "required": ["items"],
+        "required": [
+          "items"
+        ],
         "properties": {
           "items": {
             "type": "array",
@@ -821,7 +881,11 @@
             "maxItems": 50,
             "items": {
               "type": "object",
-              "required": ["name", "quantity", "unitPriceK"],
+              "required": [
+                "name",
+                "quantity",
+                "unitPriceK"
+              ],
               "properties": {
                 "name": {
                   "type": "string",
@@ -842,7 +906,10 @@
             }
           },
           "customerId": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "format": "uuid"
           },
           "discountK": {
@@ -871,17 +938,28 @@
           },
           "method": {
             "type": "string",
-            "enum": ["cash", "transfer"]
+            "enum": [
+              "cash",
+              "transfer"
+            ]
           },
           "dueDate": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "format": "date-time"
           }
         }
       },
       "RecordSaleResponse": {
         "type": "object",
-        "required": ["invoiceId", "invoiceNumber", "totalK", "balanceDueK"],
+        "required": [
+          "invoiceId",
+          "invoiceNumber",
+          "totalK",
+          "balanceDueK"
+        ],
         "properties": {
           "invoiceId": {
             "type": "string",
@@ -906,7 +984,10 @@
       },
       "RecordPaymentRequest": {
         "type": "object",
-        "required": ["invoiceNumber", "amountK"],
+        "required": [
+          "invoiceNumber",
+          "amountK"
+        ],
         "properties": {
           "invoiceNumber": {
             "type": "string",
@@ -922,10 +1003,16 @@
           },
           "method": {
             "type": "string",
-            "enum": ["cash", "transfer"]
+            "enum": [
+              "cash",
+              "transfer"
+            ]
           },
           "reference": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "minLength": 1,
             "maxLength": 120,
             "description": "The caller's own reference, carried into the record."
@@ -969,13 +1056,20 @@
               },
               "invoiceStatus": {
                 "type": "string",
-                "enum": ["issued", "partially_paid", "paid", "voided"]
+                "enum": [
+                  "issued",
+                  "partially_paid",
+                  "paid",
+                  "voided"
+                ]
               }
             }
           },
           {
             "type": "object",
-            "required": ["outcome"],
+            "required": [
+              "outcome"
+            ],
             "properties": {
               "outcome": {
                 "const": "not_found"
@@ -984,7 +1078,10 @@
           },
           {
             "type": "object",
-            "required": ["outcome", "invoiceNumber"],
+            "required": [
+              "outcome",
+              "invoiceNumber"
+            ],
             "properties": {
               "outcome": {
                 "const": "already_settled"
@@ -996,7 +1093,12 @@
           },
           {
             "type": "object",
-            "required": ["outcome", "invoiceNumber", "balanceDueK", "excessK"],
+            "required": [
+              "outcome",
+              "invoiceNumber",
+              "balanceDueK",
+              "excessK"
+            ],
             "properties": {
               "outcome": {
                 "const": "balance_moved"
@@ -1022,7 +1124,10 @@
       },
       "CustomerPage": {
         "type": "object",
-        "required": ["items", "nextCursor"],
+        "required": [
+          "items",
+          "nextCursor"
+        ],
         "properties": {
           "items": {
             "type": "array",
@@ -1031,7 +1136,10 @@
             }
           },
           "nextCursor": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Null when the list is finished. The one thing a client must check."
           }
         },
@@ -1039,7 +1147,10 @@
       },
       "ProductPage": {
         "type": "object",
-        "required": ["items", "nextCursor"],
+        "required": [
+          "items",
+          "nextCursor"
+        ],
         "properties": {
           "items": {
             "type": "array",
@@ -1048,7 +1159,10 @@
             }
           },
           "nextCursor": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Null when the list is finished. The one thing a client must check."
           }
         },
@@ -1056,7 +1170,10 @@
       },
       "InvoicePage": {
         "type": "object",
-        "required": ["items", "nextCursor"],
+        "required": [
+          "items",
+          "nextCursor"
+        ],
         "properties": {
           "items": {
             "type": "array",
@@ -1065,7 +1182,10 @@
             }
           },
           "nextCursor": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Null when the list is finished. The one thing a client must check."
           }
         },
