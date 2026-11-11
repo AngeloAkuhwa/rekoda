@@ -26,6 +26,7 @@ import {
   type Db,
 } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '@rekoda/db/testing';
+import { settlementDb } from '@rekoda/db/testing';
 import { applySettledCharge } from './billing.service.js';
 
 const BARRIER_KEY = 7_770_161;
@@ -146,7 +147,7 @@ describe('a subscription payment racing the retention sweep', () => {
     `);
 
       // The payment, exactly as the billing job runs it.
-      const payment = withBusiness(appDb, businessId, (tx) =>
+      const payment = withBusiness(settlementDb(), businessId, (tx) =>
         applySettledCharge(tx, {
           businessId,
           reference: REFERENCE,
@@ -206,7 +207,7 @@ describe('a subscription payment racing the retention sweep', () => {
       await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90)),
     ).toBeGreaterThan(0);
 
-    const outcome = await withBusiness(appDb, businessId, (tx) =>
+    const outcome = await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: REFERENCE,
@@ -226,7 +227,7 @@ describe('a subscription payment racing the retention sweep', () => {
     const gate = new Promise<void>((resolve) => (release = resolve));
     let parked!: () => void;
     const settledUncommitted = new Promise<void>((resolve) => (parked = resolve));
-    const payment = withBusiness(appDb, businessId, async (tx) => {
+    const payment = withBusiness(settlementDb(), businessId, async (tx) => {
       const outcome = await applySettledCharge(tx, {
         businessId,
         reference: REFERENCE,

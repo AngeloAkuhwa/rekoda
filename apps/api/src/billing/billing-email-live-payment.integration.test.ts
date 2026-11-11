@@ -14,7 +14,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDb, identity, sql, withBusiness, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { migrate, requireUrls, truncateAll, type Urls, settlementDb } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../config.js';
 import { MockEmailSender, NoEmailSender } from '../email/email.port.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
@@ -124,7 +124,10 @@ async function age(businessId: string, seconds: number): Promise<void> {
 }
 
 async function pendingCharge(businessId: string): Promise<string> {
-  const answer = await new BillingService(config, appDb).changePlan(businessId, 'chat');
+  const answer = await new BillingService(config, appDb, settlementDb()).changePlan(
+    businessId,
+    'chat',
+  );
   if (answer.state !== 'payment_required') throw new Error('a first purchase should be payable');
   return answer.reference;
 }

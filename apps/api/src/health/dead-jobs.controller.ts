@@ -28,6 +28,7 @@ import {
 import { opsDeadJobRecoverRequest, opsResolveEventRequest } from '@rekoda/contracts';
 import { OperatorGuard, OperatorScopes, type OperatorRequest } from '../auth/operator.guard.js';
 import { DeadJobRecoveryService } from './dead-job-recovery.service.js';
+import { operatorActor } from '../auth/operator-actor.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -55,11 +56,7 @@ export class DeadJobsController {
     const input = opsDeadJobRecoverRequest.safeParse(body);
     if (!input.success)
       throw new BadRequestException('a reason of at least 4 characters is required');
-    const result = await this.recovery.recover(
-      jobId,
-      `operator:${request.operator!.subject}`,
-      input.data.reason,
-    );
+    const result = await this.recovery.recover(jobId, operatorActor(request), input.data.reason);
     switch (result.outcome) {
       case 'recovering':
         return { recovering: true as const, jobId: result.jobId };
@@ -91,7 +88,7 @@ export class DeadJobsController {
     }
     const result = await this.recovery.resolve(
       jobId,
-      `operator:${request.operator!.subject}`,
+      operatorActor(request),
       input.data.resolution,
     );
     if (result.outcome === 'no_worker') {

@@ -26,6 +26,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { settlementDb } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRenewals } from './renewal-sweep.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
@@ -119,6 +120,7 @@ const billing = () =>
       annualBillingSales: true,
     },
     db,
+    settlementDb(),
   );
 
 const overviewOf = async (auth: Record<string, string>) =>
@@ -134,7 +136,7 @@ const chargesOf = async (businessId: string) =>
 
 /** Settle a charge the way the webhook job does. */
 const pay = (businessId: string, reference: string, when: Date) =>
-  withBusiness(db, businessId, (tx) =>
+  withBusiness(settlementDb(), businessId, (tx) =>
     applySettledCharge(tx, {
       businessId,
       reference,
@@ -177,6 +179,7 @@ describe('annual billing is off until it is switched on', () => {
         annualBillingSales: false,
       },
       db,
+      settlementDb(),
     );
 
   it('refuses a yearly quote, purchase and switch, opens nothing, and still allows monthly', async () => {
@@ -208,6 +211,7 @@ describe('the annual switch and the catalogue', () => {
         annualBillingSales: false,
       },
       db,
+      settlementDb(),
     );
     // The subscriber keeps their own interval; asking for annual again is not a new sale.
     expect((await off.quote(businessId, 'chat', new Date(), 'annual')).supportReview).not.toBe(
@@ -231,6 +235,7 @@ describe('the annual switch and the catalogue', () => {
         planCatalogueReads: false,
       },
       db,
+      settlementDb(),
     );
     await expect(noCatalogue.changePlan(trial, 'chat', new Date(), 'annual')).rejects.toThrow(
       /annual/,

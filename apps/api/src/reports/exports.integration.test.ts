@@ -16,7 +16,7 @@ import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { usagePeriod } from '@rekoda/core';
-import { billingRepo, createDb, usageRepo, withBusiness, type Db } from '@rekoda/db';
+import { createDb, usageRepo, withBusiness, type Db } from '@rekoda/db';
 import {
   migrate,
   requireUrls,
@@ -24,6 +24,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { setPlanForTest } from '@rekoda/db/testing';
 import { meterAllowance } from '../billing/plan-terms.js';
 
 let urls: Urls;
@@ -97,7 +98,7 @@ async function signUp(
 }
 
 async function onPlan(businessId: string, plan: string): Promise<void> {
-  await billingRepo.setPlan(db, { businessId, plan, expiresAt: null, actor: 'operator:test' });
+  await setPlanForTest(db, { businessId, plan, expiresAt: null, actor: 'operator:test' });
 }
 
 async function used(businessId: string): Promise<number> {

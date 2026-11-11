@@ -8,8 +8,8 @@
  */
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { billingRepo, createDb, identity, sql, withBusiness, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { createDb, identity, sql, withBusiness, type Db } from '@rekoda/db';
+import { migrate, requireUrls, truncateAll, type Urls, setPlanForTest } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { MAX_FAILURES_PER_WINDOW, MAX_REQUESTS_PER_WINDOW, AuthService } from './auth.service.js';
 import { AuthController, BusinessController } from './auth.controller.js';
@@ -614,7 +614,7 @@ describe('the operator plan endpoint', () => {
     const res = await change({
       businessId,
       plan: 'chat',
-      expiresAt: new Date(Date.now() + 31 * 86_400_000).toISOString(),
+      expiresAt: new Date(Date.now() + 20 * 86_400_000).toISOString(),
     });
 
     expect(res.statusCode).toBe(200);
@@ -807,7 +807,7 @@ describe('the team an owner can build', () => {
 
   it('gives Complete its three seats, and the fourth the honest refusal', async () => {
     const owner = await ownerOf('+2348140000011');
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId: owner.businessId,
       plan: 'complete',
       expiresAt: new Date(Date.now() + 30 * 86_400_000),

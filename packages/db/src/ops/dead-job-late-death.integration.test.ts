@@ -13,6 +13,16 @@ import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '../
 let urls: Urls;
 let appDb: Db;
 let workerDb: Db;
+/** The owner sees every session's wait state; a runtime role sees only its own role's (0204 moved the
+ * resolve onto the application credential, so the two sides are different roles). */
+let ownerDb: Db;
+
+/** The operator's generic resolve: found on the worker credential, written on the application
+ * credential under the event's own business (migration 0204). True when it resolved. */
+const operatorResolve = (id: string, resolution: string, actor: string): Promise<boolean> =>
+  events
+    .resolveExceptionAsOperator(appDb, workerDb, id, resolution, actor)
+    .then((outcome) => outcome === 'resolved');
 const closers: Array<() => Promise<void>> = [];
 
 beforeAll(async () => {
@@ -21,6 +31,7 @@ beforeAll(async () => {
   for (const [url, set] of [
     [urls.app, (d: Db) => (appDb = d)],
     [urls.worker, (d: Db) => (workerDb = d)],
+    [urls.owner, (d: Db) => (ownerDb = d)],
   ] as const) {
     const { db, close } = createDb(url, { max: 6 });
     set(db);
@@ -76,7 +87,7 @@ const reconciliationsOf = (businessId: string) =>
 /** Wait until some session is blocked on a lock (the other side of a held-lock interleaving). */
 async function untilALockWaitExists(): Promise<void> {
   for (let i = 0; i < 100; i++) {
-    const waiting = await workerDb.execute(
+    const waiting = await ownerDb.execute(
       sql`SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()`,
     );
     if ([...waiting].length > 0) return;
@@ -88,9 +99,7 @@ async function untilALockWaitExists(): Promise<void> {
 describe('a death that meets an already resolved event', () => {
   it('still records the dead job and its merchant exception, but binds no event and flags nothing', async () => {
     const { businessId, eventId } = await seed();
-    expect(
-      await events.resolveEvent(workerDb, eventId, 'settled by hand', 'operator:bob', 'operator'),
-    ).toBe(true);
+    expect(await operatorResolve(eventId, 'settled by hand', 'operator:bob')).toBe(true);
     const job = await jobsRepo.claimNext(workerDb, 'late');
     expect((await jobsRepo.markFailed(workerDb, job!, 'boom', 0)).state).toBe('dead');
 
@@ -127,13 +136,7 @@ describe('a resolve and a death on the same event serialise on the event row', (
       await tx.execute(sql`
         INSERT INTO dead_job_exceptions (job_id, business_id, kind, event_id, summary, attempts)
         VALUES (${job!.id}::uuid, ${businessId}::uuid, 'payment.process', ${eventId}::uuid, 'fixed', 1)`);
-      resolve = events.resolveEvent(
-        workerDb,
-        eventId,
-        'settled by hand',
-        'operator:bob',
-        'operator',
-      );
+      resolve = operatorResolve(eventId, 'settled by hand', 'operator:bob');
       await untilALockWaitExists(); // the resolve is now blocked behind the death
     });
     expect(await resolve).toBe(false); // it saw the record the death committed
@@ -147,8 +150,10 @@ describe('a resolve and a death on the same event serialise on the event row', (
     const { businessId, eventId } = await seed();
     const job = await jobsRepo.claimNext(workerDb, 'resolve-first');
     let death: ReturnType<typeof jobsRepo.markFailed> | undefined;
-    await workerDb.transaction(async (tx) => {
-      // The resolve's write, left uncommitted: it holds the event row.
+    await appDb.transaction(async (tx) => {
+      // The resolve's write (application credential, pinned to the event's business, 0204), left
+      // uncommitted: it holds the event row.
+      await tx.execute(sql`SELECT set_config('app.business_id', ${businessId}, true)`);
       await tx.execute(sql`
         UPDATE external_events SET resolved_at = now(), resolved_by = 'operator:bob',
                resolution = 'settled by hand', processed_at = COALESCE(processed_at, now())

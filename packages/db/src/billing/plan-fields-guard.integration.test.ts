@@ -15,6 +15,7 @@ import { sql, TransactionRollbackError } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { billingRepo, identity, subscriptionsRepo } from '../index.js';
 import { applyFixtureCycle, migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { settlementDb, operatorDb } from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -86,14 +87,16 @@ interface ChargeSpec {
 }
 
 let chargeSeq = 0;
-/** A subscription charge for the business, written as the application would (under the pin). */
+/** A subscription charge for the business, under the pin: opened pending as the application does,
+ * or carrying a payment as only settlement may write one (OD-37, 0202). */
 async function seedCharge(businessId: string, spec: ChargeSpec = {}): Promise<string> {
   chargeSeq += 1;
   const reference = `RKD-SUB-OD37-${String(chargeSeq).padStart(6, '0')}`;
   const kind = spec.kind ?? 'first_purchase';
   const plan = spec.plan === undefined ? 'chat' : spec.plan;
   const status = spec.status ?? 'paid';
-  await withBusiness(appDb, businessId, (tx) =>
+  const writer = status === 'pending' ? appDb : settlementDb();
+  await withBusiness(writer, businessId, (tx) =>
     tx.execute(sql`
       INSERT INTO subscription_charges
         (business_id, kind, plan, pack_id, amount_k, status, reference, period_start, period_end,
@@ -204,7 +207,7 @@ describe('OD-37: the sanctioned writers still work', () => {
   it('a provider cycle (applyCycle with its paid charge) moves the plan and the date together', async () => {
     const businessId = await seedBusiness();
     const reference = await seedCharge(businessId, { plan: 'chat' });
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       subscriptionsRepo.applyCycle(tx, businessId, {
         chargeReference: reference,
         plan: 'chat',
@@ -221,7 +224,7 @@ describe('OD-37: the sanctioned writers still work', () => {
   it('an operator correction (billingRepo.setPlan) and a lapse (expireSubscription) work, audited as before', async () => {
     const businessId = await seedBusiness();
     expect(
-      await billingRepo.setPlan(appDb, {
+      await billingRepo.setPlan(operatorDb(), {
         businessId,
         plan: 'complete',
         expiresAt: FUTURE,
@@ -280,7 +283,7 @@ describe('OD-37: the boundary itself', () => {
     const reference = await seedCharge(a, { plan: 'complete' });
     expect(
       await outcome(
-        withBusiness(appDb, b, (tx) =>
+        withBusiness(settlementDb(), b, (tx) =>
           tx.execute(
             sql`SELECT subscription_apply_paid_charge(${a}::uuid, ${reference}, ${FUTURE.toISOString()}::timestamptz)`,
           ),
@@ -289,9 +292,9 @@ describe('OD-37: the boundary itself', () => {
     ).toMatch(/42501.*not the pinned tenant/);
     expect(
       await outcome(
-        withBusiness(appDb, b, (tx) =>
+        withBusiness(operatorDb(), b, (tx) =>
           tx.execute(
-            sql`SELECT subscription_operator_set_plan(${a}::uuid, 'complete', ${FUTURE.toISOString()}::timestamptz, 'operator:x')`,
+            sql`SELECT subscription_operator_set_plan(${a}::uuid, 'complete', ${FUTURE.toISOString()}::timestamptz, 'monthly', 'operator:x')`,
           ),
         ),
       ),

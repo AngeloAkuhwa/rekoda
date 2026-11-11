@@ -17,8 +17,8 @@ import postgres from 'postgres';
 import { encryptFacet } from '@rekoda/core/vault';
 import { sql as drizzleSql } from 'drizzle-orm';
 import { applyMigrations } from './migrate.js';
-import { withBusiness, type Db } from './client.js';
-import { setPlan } from './repos/billing.js';
+import { createDb, withBusiness, type Db } from './client.js';
+import { setPlanAsFixture, type PlanChange } from './repos/billing.js';
 import { setBillingEmailSealed, writeCycle, type CycleInput } from './repos/subscriptions.js';
 import type { TenantDb } from './client.js';
 
@@ -35,6 +35,13 @@ export interface Urls {
    * claims to.
    */
   worker: string;
+  /**
+   * `rekoda_settlement` (OD-37, migration 0202) - the only non-owner role that may record a payment
+   * on a charge, credit pack units, hold an add-on, or run the provider plan writer.
+   */
+  settlement: string;
+  /** `rekoda_billing_operator` (0202) - the only role that may run the operator plan writer. */
+  operator: string;
 }
 
 /**
@@ -48,14 +55,47 @@ export function requireUrls(): Urls {
   const owner = process.env['DATABASE_URL'];
   const app = process.env['APP_DATABASE_URL'];
   const worker = process.env['WORKER_DATABASE_URL'];
-  if (!owner || !app || !worker) {
+  const settlement = process.env['SETTLEMENT_DATABASE_URL'];
+  const operator = process.env['OPERATOR_DATABASE_URL'];
+  if (!owner || !app || !worker || !settlement || !operator) {
     throw new Error(
-      'Integration tests need DATABASE_URL (owner), APP_DATABASE_URL (rekoda_app) ' +
-        'and WORKER_DATABASE_URL (rekoda_worker). ' +
+      'Integration tests need DATABASE_URL (owner), APP_DATABASE_URL (rekoda_app), ' +
+        'WORKER_DATABASE_URL (rekoda_worker), SETTLEMENT_DATABASE_URL (rekoda_settlement) ' +
+        'and OPERATOR_DATABASE_URL (rekoda_billing_operator). ' +
         'Start one with: docker compose -f docker-compose.dev.yml up -d',
     );
   }
-  return { owner, app, worker };
+  return { owner, app, worker, settlement, operator };
+}
+
+const principalPools = new Map<string, { db: Db; close: () => Promise<void> }>();
+
+/**
+ * A pool for one of the OD-37 principals (migration 0202): `settlement` (`rekoda_settlement`, the
+ * only role that may record a payment on a charge, credit pack units, hold an add-on or apply a paid
+ * plan) or `operator` (`rekoda_billing_operator`, the only role that may run the operator plan
+ * writer). Cached per URL for the test file and closed by `closePrincipalPools`, which each
+ * integration config's setup file calls after every file.
+ */
+export function principalDb(urls: Urls, which: 'settlement' | 'operator'): Db {
+  const url = urls[which];
+  let pool = principalPools.get(url);
+  if (!pool) {
+    pool = createDb(url, { max: 4 });
+    principalPools.set(url, pool);
+  }
+  return pool.db;
+}
+
+/** `principalDb(requireUrls(), 'settlement')`: the settlement pool for a fixture. */
+export const settlementDb = (): Db => principalDb(requireUrls(), 'settlement');
+/** `principalDb(requireUrls(), 'operator')`: the billing-operator pool for a fixture. */
+export const operatorDb = (): Db => principalDb(requireUrls(), 'operator');
+
+export async function closePrincipalPools(): Promise<void> {
+  const pools = [...principalPools.values()];
+  principalPools.clear();
+  await Promise.all(pools.map((p) => p.close()));
 }
 
 export async function migrate(urls: Urls): Promise<void> {
@@ -92,6 +132,17 @@ async function installTestFixtureWriter(ownerUrl: string): Promise<void> {
   } finally {
     await client.end();
   }
+}
+
+/**
+ * A test fixture's plan move: the same state an operator move writes (G-62 cycle rules, origin
+ * `operator` for a paid plan), written through the harness-only fixture writer with none of the
+ * production duration rules or the operator principal, so a suite can stage an open-ended paid
+ * plan or a trial that ended long ago. `db` is the application pool. Suites that test the operator
+ * path itself call `billingRepo.setPlan` with the billing-operator pool instead.
+ */
+export async function setPlanForTest(db: Db, change: PlanChange): Promise<boolean> {
+  return setPlanAsFixture(db, change);
 }
 
 /** Put a business on a paid cycle for a test, without a charge (see `installTestFixtureWriter`). */
@@ -273,7 +324,12 @@ export async function readyToRemind(
   businessId: string,
   address = 'accounts@adaeze.example.ng',
 ): Promise<void> {
-  await setPlan(db, { businessId, plan: 'complete', expiresAt: null, actor: 'operator:test' });
+  await setPlanForTest(db, {
+    businessId,
+    plan: 'complete',
+    expiresAt: null,
+    actor: 'operator:test',
+  });
   await withBusiness(db, businessId, async (tx) => {
     await setBillingEmailSealed(
       tx,

@@ -21,7 +21,6 @@ import { sql } from 'drizzle-orm';
 import { paymentReference } from '@rekoda/core';
 import { createDb, withBusiness, type Db, type TenantDb } from '../client.js';
 import {
-  billingRepo,
   identity,
   issueRepo,
   paymentsHub,
@@ -31,8 +30,8 @@ import {
   subscriptionsRepo,
   usageRepo,
 } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '../testing.js';
-import { applyFixtureCycle } from '../testing.js';
+import { applyFixtureCycle, migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { setPlanAsOwner, setPlanForTest, settlementDb } from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -64,6 +63,9 @@ let phoneSeq = 0;
 
 const inTenant = <T>(businessId: string, fn: (tx: TenantDb) => Promise<T>): Promise<T> =>
   withBusiness(appDb, businessId, fn);
+/** Payments and pack units are recorded only as `rekoda_settlement` (OD-37). */
+const inSettlement = <T>(businessId: string, fn: (tx: TenantDb) => Promise<T>): Promise<T> =>
+  withBusiness(settlementDb(), businessId, fn);
 
 /** A business whose trial ended `daysAgo`, with nobody warned yet. */
 async function abandonedTrial(daysAgo: number): Promise<string> {
@@ -111,7 +113,7 @@ describe('who is due', () => {
         periodEnd: daysAgo(370),
       }),
     );
-    await inTenant(businessId, (tx) =>
+    await inSettlement(businessId, (tx) =>
       subscriptionsRepo.settleCharge(tx, {
         reference: 'RKD-SUB-20260101-AAAAAA',
         status: 'paid',
@@ -134,7 +136,7 @@ describe('who is due', () => {
   it('NEVER touches a business moved onto a paid plan by hand, once it lapses', async () => {
     const businessId = await abandonedTrial(400);
     expect(
-      await billingRepo.setPlan(appDb, {
+      await setPlanForTest(appDb, {
         businessId,
         plan: 'complete',
         expiresAt: new Date(Date.now() + 30 * 86_400_000), // a paid plan's date is in the future (G-114)
@@ -235,7 +237,7 @@ describe('who is due', () => {
         return [...rows][0]?.ever_paid_at ?? null;
       });
     const change = (plan: string, expiresAt: Date) =>
-      billingRepo.setPlan(appDb, { businessId, plan, expiresAt, actor: 'operator:test' });
+      setPlanForTest(appDb, { businessId, plan, expiresAt, actor: 'operator:test' });
 
     await change('complete', new Date(Date.now() + 30 * 86_400_000)); // future: G-114
     const first = await everPaidAt();
@@ -609,7 +611,7 @@ describe('the deletion function', () => {
 
 /** A month of real trading, so the deletion has something to miss. */
 async function seedTradingHistory(businessId: string): Promise<void> {
-  await withBusiness(appDb, businessId, async (tx) => {
+  await withBusiness(settlementDb(), businessId, async (tx) => {
     const sale = await issueRepo.issueSale(tx, {
       businessId,
       customerId: null,

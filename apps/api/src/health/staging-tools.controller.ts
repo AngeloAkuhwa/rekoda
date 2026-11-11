@@ -36,6 +36,7 @@ import {
 } from '@rekoda/contracts';
 import { OperatorGuard, OperatorScopes, type OperatorRequest } from '../auth/operator.guard.js';
 import { StagingRefused, StagingToolsService } from './staging-tools.service.js';
+import { operatorActor } from '../auth/operator-actor.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -134,7 +135,7 @@ export class StagingToolsController {
   }
 }
 
-const operatorOf = (request: OperatorRequest) => `operator:${request.operator!.subject}`;
+const operatorOf = (request: OperatorRequest): string => operatorActor(request);
 
 function uuid(value: string): string {
   if (!UUID.test(value)) throw new BadRequestException('not an id');

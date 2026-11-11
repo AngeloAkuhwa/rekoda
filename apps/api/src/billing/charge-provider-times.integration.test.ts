@@ -24,6 +24,7 @@ import {
   type Db,
 } from '@rekoda/db';
 import { migrate, requireUrls, setPlanAsOwner, truncateAll, type Urls } from '@rekoda/db/testing';
+import { settlementDb } from '@rekoda/db/testing';
 import { buildRunner, type RunnerDeps } from '../jobs/jobs.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
@@ -76,6 +77,7 @@ beforeAll(async () => {
   provider = new StubPaymentProvider();
   const stubSender = new StubSender();
   deps = {
+    settlementDb: settlementDb(),
     gateway: new PrivacyGateway(appDb, config),
     interpreter: new Interpreter(appDb, config, StubTransport.answering({ intent: 'Unclear' })),
     replySender: new ReplySender(config, stubSender),
@@ -476,7 +478,7 @@ describe('OD-40: replays, redeliveries and late events never move a recorded tim
     const businessId = await seedBusiness();
     const reference = await openPack(businessId);
     const first = new Date(Date.now() - 2 * HOUR);
-    await withBusiness(appDb, businessId, async (tx) => {
+    await withBusiness(settlementDb(), businessId, async (tx) => {
       await subscriptionsRepo.lockBusiness(tx, businessId);
       const settled = await subscriptionsRepo.settleCharge(tx, {
         reference,
@@ -491,7 +493,7 @@ describe('OD-40: replays, redeliveries and late events never move a recorded tim
     });
     const once = await timesOf(businessId, reference);
 
-    await withBusiness(appDb, businessId, async (tx) => {
+    await withBusiness(settlementDb(), businessId, async (tx) => {
       // A retried settle finds nothing pending and writes nothing.
       expect(
         await subscriptionsRepo.settleCharge(tx, {
@@ -528,7 +530,10 @@ describe('OD-40: the payment record shows the three times separately', () => {
     provider.willVerify(reference, { amountK: PACK_K, paidAtIso: paystackPaidAt.toISOString() });
     await deliver(reference, PACK_K);
 
-    const record = await new BillingService(config, appDb).paymentRecord(businessId, reference);
+    const record = await new BillingService(config, appDb, settlementDb()).paymentRecord(
+      businessId,
+      reference,
+    );
     const t = await timesOf(businessId, reference);
     expect(record?.providerPaidAt).toBe(paystackPaidAt.toISOString());
     expect(record?.paidAt).toBe(t.paid_at!.toISOString());

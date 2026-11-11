@@ -4,9 +4,9 @@
 #
 #   1. apply every pending migration (packages/db/src/migrate.ts), which
 #      refuses a role without SUPERUSER or BYPASSRLS;
-#   2. give rekoda_app and rekoda_worker the passwords their URLs in .env
-#      carry (packages/db/src/provision.ts), which refuses a URL naming any
-#      other role.
+#   2. give rekoda_app, rekoda_worker, rekoda_settlement and
+#      rekoda_billing_operator the passwords their URLs in .env carry
+#      (packages/db/src/provision.ts), which refuses a URL naming any other role.
 #
 # The owner password arrives as a mounted secret file and becomes a URL only
 # here, inside this short-lived container: no long-running service, and no
@@ -34,7 +34,10 @@ fi
 # loads the same file), before DATABASE_URL is replaced by the owner's.
 APP_DATABASE_URL="${DATABASE_URL:?DATABASE_URL (the rekoda_app URL) is not set in .env}"
 WORKER_DATABASE_URL="${WORKER_DATABASE_URL:?WORKER_DATABASE_URL is not set in .env}"
-export APP_DATABASE_URL WORKER_DATABASE_URL
+# OD-37 (migration 0202): the settlement and billing-operator principals.
+SETTLEMENT_DATABASE_URL="${SETTLEMENT_DATABASE_URL:?SETTLEMENT_DATABASE_URL is not set in .env (OD-37, docs/runbooks/deploy.md)}"
+OPERATOR_DATABASE_URL="${OPERATOR_DATABASE_URL:?OPERATOR_DATABASE_URL is not set in .env (OD-37, docs/runbooks/deploy.md)}"
+export APP_DATABASE_URL WORKER_DATABASE_URL SETTLEMENT_DATABASE_URL OPERATOR_DATABASE_URL
 
 DATABASE_URL="postgres://${POSTGRES_OWNER:?}:${password}@${POSTGRES_HOST:?}:5432/${POSTGRES_DB:?}"
 export DATABASE_URL

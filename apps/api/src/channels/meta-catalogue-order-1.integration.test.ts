@@ -9,7 +9,6 @@ import { describe, expect, it } from 'vitest';
 import { createDb, catalogueRepo, usageRepo, withBusiness, sql } from '@rekoda/db';
 import { allowanceFor, usagePeriod } from '@rekoda/core';
 import { buildRunner } from '../jobs/jobs.module.js';
-import { billingRepo } from '@rekoda/db';
 import {
   db,
   deps,
@@ -21,6 +20,7 @@ import {
   workerDb,
 } from './meta-webhook.fixtures.js';
 import { seedCommerceMerchant, ordersOf } from './meta-catalogue-order.fixtures.js';
+import { setPlanForTest } from '@rekoda/db/testing';
 
 useMetaWebhookHarness();
 
@@ -467,7 +467,7 @@ describe('a catalogue cart becomes an order (spec §3.2; W3, PR-087)', () => {
    */
   it('takes no order and charges nothing on a plan without Integrate', async () => {
     const { businessId, wigId } = await seedCommerceMerchant('+2348030002264', 'PN-METER-4');
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'chat',
       expiresAt: new Date(Date.now() + 30 * 86_400_000),

@@ -12,6 +12,7 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     include: ['src/**/*.integration.test.ts'],
+    setupFiles: ['./src/integration-setup.ts'],
     // Each file gets its own tenant fixtures; running them in one process
     // keeps connection counts low and makes the pooling assertions honest.
     fileParallelism: false,

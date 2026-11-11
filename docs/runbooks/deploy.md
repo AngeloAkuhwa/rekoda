@@ -27,13 +27,15 @@ alias dc='docker compose -f docker-compose.prod.yml'
 | `migrate`    | `rekoda-app:<release>` | A one-off, never started by `up`: `dc run --rm -T migrate` (migrations, then the runtime passwords)                                          |
 | `edge-check` | `rekoda-app:<release>` | A one-shot `up` runs before Caddy (`node dist/edge-check.js`): exits 0 when `REKODA_EDGE_PROXIES` is safe, 1 when it refuses it (G-74, G-75) |
 
-| Credential                                     | Lives in                          | Reaches                                                                                                         |
-| ---------------------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| PostgreSQL owner (superuser, migrations)       | `secrets/postgres_owner_password` | `postgres` and the `migrate` job. Never `api`, `worker` or `web`                                                |
-| `rekoda_app` (RLS-bound)                       | `DATABASE_URL` in `.env`          | `api`, `worker`; `migrate`, which loads all of `.env` to set the role's password from it                        |
-| `rekoda_worker` (claims jobs across tenants)   | `WORKER_DATABASE_URL` in `.env`   | `worker`, and `api` (it routes a message on a merchant's own WhatsApp number to its tenant); `migrate` as above |
-| Application secrets (`VAULT_KEY` and the rest) | `.env`                            | `api`, `worker`, and the `migrate` job (the same image, run on demand)                                          |
-| Anything at all                                | nowhere else                      | `web` receives only `NODE_ENV`, `REKODA_API_URL` and `REKODA_WEB_URL`                                           |
+| Credential                                     | Lives in                            | Reaches                                                                                                                                                                                                                                                  |
+| ---------------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PostgreSQL owner (superuser, migrations)       | `secrets/postgres_owner_password`   | `postgres` and the `migrate` job. Never `api`, `worker` or `web`                                                                                                                                                                                         |
+| `rekoda_app` (RLS-bound)                       | `DATABASE_URL` in `.env`            | `api`, `worker`; `migrate`, which loads all of `.env` to set the role's password from it                                                                                                                                                                 |
+| `rekoda_worker` (claims jobs across tenants)   | `WORKER_DATABASE_URL` in `.env`     | `worker`, and `api` (it routes a message on a merchant's own WhatsApp number to its tenant); `migrate` as above                                                                                                                                          |
+| `rekoda_settlement` (OD-37, 0202)              | `SETTLEMENT_DATABASE_URL` in `.env` | `worker` (its `billing.process` job records Rekoda payments) and `api` (a plan change can settle a zero-priced upgrade); `migrate` as above. The only non-owner role that may mark a charge paid, credit pack units, hold an add-on or apply a paid plan |
+| `rekoda_billing_operator` (OD-37, 0202)        | `OPERATOR_DATABASE_URL` in `.env`   | `api` only (`POST /v1/businesses/plan`); the compose file blanks it for `worker`; `migrate` as above. The only role that may run the operator plan writer                                                                                                |
+| Application secrets (`VAULT_KEY` and the rest) | `.env`                              | `api`, `worker`, and the `migrate` job (the same image, run on demand)                                                                                                                                                                                   |
+| Anything at all                                | nowhere else                        | `web` receives only `NODE_ENV`, `REKODA_API_URL` and `REKODA_WEB_URL`                                                                                                                                                                                    |
 
 The compose file sets some values itself, whatever `.env` says:
 `NODE_ENV=production` everywhere, `PORT`, `REKODA_WORKER`, the API's
@@ -505,6 +507,68 @@ row count in the deploy notes. Receipt jobs still pending are left to the newer 
 which applies them as it does any receipt. Not recovered: a customer's reply that the
 older release handled is not told to the business afterwards, because the older release
 records no notice for it (the same as before PR A).
+
+### Deploy a release carrying 0202 to 0204 (OD-37 principals, plan durations, event privilege)
+
+Migrations 0202 and 0203 are compatibility breaks like 0196 and 0200 (the previous release settles
+on `rekoda_app` and calls the four-argument operator writer, both refused afterwards), so the
+"Deploy a release carrying 0196" sequence applies unchanged, and `deploy-staging.sh` lists both. Two
+things come first, because without them the new release refuses to start (no fallback to
+`DATABASE_URL`, by design):
+
+1. **Add the two credentials to `.env` before the deploy**, each with its own password (never one
+   already used by another role):
+   ```bash
+   openssl rand -hex 32   # once for each
+   # .env:
+   SETTLEMENT_DATABASE_URL=postgres://rekoda_settlement:<password>@postgres:5432/rekoda
+   OPERATOR_DATABASE_URL=postgres://rekoda_billing_operator:<password>@postgres:5432/rekoda
+   ```
+   The migrate job creates both roles (0202) and then sets their passwords from these URLs
+   (`provision.js`); it refuses a URL naming another role, a shared password, or a missing URL
+   before changing anything. Nothing else reads them: never put them in a compose file, a log, an
+   issue or a chat.
+2. **Run the deploy as for 0196** (api and worker stopped, migrate, pre-start smoke, then `up`).
+   The pre-start smoke now also checks, in the database: the 0202, 0203 and 0204 ledger rows; the
+   settlement and pack-credit guard triggers; that `rekoda_plan_writer` owns exactly the four
+   expected writer functions, by signature, each with exactly its EXECUTE grantees (provider writer:
+   `rekoda_settlement`; operator writer: `rekoda_billing_operator`; expiry writer: `rekoda_app`,
+   `rekoda_worker`; staging date move: `rekoda_app`); the principals' roles and that no runtime role
+   can become another; and that the worker's `external_events` access is read-only apart from
+   `processed_at`/`error` on unattributed rows and the attribution function.
+3. On boot, the api and worker refuse to start if the settlement or operator connection does not log
+   in as exactly its role, cannot run its own writer, can run the other's, or can become the worker
+   or the plan writer, and if the general credentials can run either reserved writer.
+
+Rotating either password: as in "Rotate a database password", with the variable added to step 1 and
+`dc up -d --wait --force-recreate api worker`.
+
+**Existing rows the duration rules would not accept** (0203 does not rewrite them; OD-49). Read-only,
+as the owner, before or after the deploy; expected empty on staging and production today:
+
+```sql
+SELECT id, plan, plan_expires_at, billing_interval, trial_started_at,
+  CASE
+    WHEN plan IN ('chat','integrate','complete') AND plan_expires_at IS NULL THEN 'open-ended paid plan'
+    WHEN plan IN ('chat','integrate','complete') AND plan_expires_at >
+         ((cycle_started_at AT TIME ZONE 'Africa/Lagos')
+          + CASE billing_interval WHEN 'annual' THEN interval '12 months' ELSE interval '1 month' END
+          + interval '3 days') AT TIME ZONE 'Africa/Lagos' THEN 'paid plan longer than its interval'
+    WHEN plan = 'trial' AND (plan_expires_at IS NULL OR plan_expires_at > trial_started_at + interval '14 days')
+      THEN 'trial longer than 14 days'
+    WHEN plan = 'expired' AND plan_expires_at > now() THEN 'expired plan with a future end'
+  END AS nonconforming
+FROM businesses
+WHERE (plan IN ('chat','integrate','complete') AND (plan_expires_at IS NULL OR cycle_started_at IS NULL
+        OR plan_expires_at > ((cycle_started_at AT TIME ZONE 'Africa/Lagos')
+          + CASE billing_interval WHEN 'annual' THEN interval '12 months' ELSE interval '1 month' END
+          + interval '3 days') AT TIME ZONE 'Africa/Lagos'))
+   OR (plan = 'trial' AND (plan_expires_at IS NULL OR plan_expires_at > trial_started_at + interval '14 days'))
+   OR (plan = 'expired' AND plan_expires_at > now());
+```
+
+Such a business keeps working exactly as before (reads are unchanged); the next operator or renewal
+write must satisfy the rules. Do not edit them by hand; the owner decides each (OD-49).
 
 ## Disk space and image retention (staging)
 

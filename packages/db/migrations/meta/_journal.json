@@ -1415,6 +1415,27 @@
       "when": 1795003200000,
       "tag": "0201_blocked_renewal_close_heartbeat",
       "breakpoints": true
+    },
+    {
+      "idx": 202,
+      "version": "7",
+      "when": 1795089600000,
+      "tag": "0202_settlement_and_operator_principals",
+      "breakpoints": true
+    },
+    {
+      "idx": 203,
+      "version": "7",
+      "when": 1795176000000,
+      "tag": "0203_plan_duration_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 204,
+      "version": "7",
+      "when": 1795262400000,
+      "tag": "0204_external_events_worker_least_privilege",
+      "breakpoints": true
     }
   ]
 }

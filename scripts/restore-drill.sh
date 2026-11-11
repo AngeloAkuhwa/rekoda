@@ -25,7 +25,7 @@ trap cleanup EXIT
 
 # The dump references the runtime roles in grants and policies; a scratch
 # server has none, so create them (no login, no privileges) before restoring.
-ROLES_SQL="DO \$\$ DECLARE r text; BEGIN FOREACH r IN ARRAY ARRAY['rekoda_owner','rekoda_app','rekoda_worker','rekoda_provenance_owner','rekoda_operator','rekoda_plan_writer'] LOOP IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('CREATE ROLE %I NOLOGIN', r); END IF; END LOOP; END \$\$;"
+ROLES_SQL="DO \$\$ DECLARE r text; BEGIN FOREACH r IN ARRAY ARRAY['rekoda_owner','rekoda_app','rekoda_worker','rekoda_provenance_owner','rekoda_operator','rekoda_plan_writer','rekoda_settlement','rekoda_billing_operator'] LOOP IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('CREATE ROLE %I NOLOGIN', r); END IF; END LOOP; END \$\$;"
 
 START=$(date +%s)
 OBJECT=$(backup_fetch_decrypt "${DRILL_OBJECT:-}" "$WORK/restore.dump")

@@ -34,6 +34,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { setPlanForTest, settlementDb } from '@rekoda/db/testing';
 
 const SECRET = 'test-secret-at-least-32-characters-long';
 /* Deliberately different from REKODA_API_SECRET, which is the point of it
@@ -55,8 +56,7 @@ beforeAll(async () => {
   process.env['DATABASE_URL'] = urls.app;
   // The queue and the event counts both span tenants, so the endpoint needs
   // the worker credential to count either. Given here WITHOUT REKODA_WORKER,
-  // which is the arrangement worth testing: a web process that runs no jobs
-  // still reports both.
+  // which is the arrangement worth testing: a web process that runs no jobs still reports both.
   process.env['WORKER_DATABASE_URL'] = urls.worker;
   delete process.env['REKODA_WORKER'];
   process.env['OTP_PEPPER'] = 'test-pepper-at-least-32-characters-long';
@@ -277,7 +277,7 @@ describe('the margin report', () => {
       businessType: null,
       ownerUserId: user.id,
     });
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId: business.id,
       plan,
       expiresAt: null,
@@ -522,7 +522,7 @@ describe('the operator billing surface', () => {
         periodEnd: new Date(Date.now() + 30 * 86_400_000),
       }),
     );
-    await withBusiness(db, business.id, (tx) =>
+    await withBusiness(settlementDb(), business.id, (tx) =>
       subscriptionsRepo.settleCharge(tx, { reference, status: 'paid', when: new Date() }),
     );
     return { businessId: business.id, reference };
@@ -605,7 +605,7 @@ describe('the operator billing surface', () => {
   it('leaves the PLAN alone: a refund is money, not a cancellation', async () => {
     const { businessId, reference } = await merchantWithCharge('+2348140001005');
     await withBusiness(db, businessId, (tx) =>
-      billingRepo.setPlan(db, {
+      setPlanForTest(db, {
         businessId,
         plan: 'chat',
         expiresAt: new Date(Date.now() + 20 * 86_400_000),
@@ -723,7 +723,7 @@ describe('the exception queue', () => {
       ownerUserId: user.id,
     });
     const reference = 'RKD-SUB-20260821-ZZZZZZ';
-    await withBusiness(db, business.id, async (tx) => {
+    await withBusiness(settlementDb(), business.id, async (tx) => {
       await subscriptionsRepo.openCharge(tx, {
         businessId: business.id,
         kind: 'first_purchase',
@@ -805,7 +805,7 @@ describe('the exception queue', () => {
       ownerUserId: user.id,
     });
     const reference = 'RKD-SUB-20260821-YYYYYY';
-    await withBusiness(db, business.id, async (tx) => {
+    await withBusiness(settlementDb(), business.id, async (tx) => {
       await subscriptionsRepo.openCharge(tx, {
         businessId: business.id,
         kind: 'first_purchase',

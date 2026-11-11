@@ -32,6 +32,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { settlementDb } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRenewals } from './renewal-sweep.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
@@ -206,6 +207,7 @@ describe('the §47 charge gate, by Paystack key kind', () => {
     new BillingService(
       { ...app.get<ApiConfig>(CONFIG), paystackSecretKey, paystackPlatformConfirmed },
       db,
+      settlementDb(),
     );
   const chargesOf = (businessId: string) =>
     withBusiness(db, businessId, (tx) => subscriptionsRepo.chargesFor(tx, businessId));
@@ -294,7 +296,7 @@ describe('a charge the provider confirmed', () => {
       }),
     );
 
-    const applied = await withBusiness(db, businessId, (tx) =>
+    const applied = await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: 'RKD-SUB-20260815-AAAAAA',
@@ -311,7 +313,7 @@ describe('a charge the provider confirmed', () => {
     expect(overview.charges[0]?.status).toBe('paid');
 
     // The provider delivering the webhook twice must not extend the cycle.
-    const replay = await withBusiness(db, businessId, (tx) =>
+    const replay = await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: 'RKD-SUB-20260815-AAAAAA',
@@ -338,7 +340,7 @@ describe('a charge the provider confirmed', () => {
         reference: 'RKD-PACK-20260815-BBBBBB',
       }),
     );
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: 'RKD-PACK-20260815-BBBBBB',
@@ -376,7 +378,7 @@ describe('the cycle a payment starts', () => {
         periodEnd: new Date(when.getTime() + 30 * 86_400_000),
       }),
     );
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, { businessId, reference, providerReference: 'ps_x', when, config }),
     );
     return withBusiness(db, businessId, (tx) => subscriptionsRepo.subscriptionFor(tx, businessId));

@@ -82,6 +82,8 @@ export class UnknownJobKind extends Error {
 export class JobRunner {
   private readonly log = new Logger(JobRunner.name);
   private readonly handlers = new Map<string, JobHandler>();
+  /** A kind whose transaction runs on another principal than the application pool (OD-37). */
+  private readonly handlerDbs = new Map<string, Db>();
   private readonly idleMs: number;
   private readonly stalledAfterMs: number;
   private readonly workerId: string;
@@ -104,9 +106,16 @@ export class JobRunner {
     this.concurrency = Math.max(1, options.concurrency ?? 1);
   }
 
-  register(kind: string, handler: JobHandler): this {
+  /**
+   * `db`, when given, is the pool this kind's handler transaction (and its fenced completion) runs
+   * on instead of the application pool: `billing.process` runs on `rekoda_settlement`, the only
+   * role that may record a payment on a Rekoda charge (OD-37, migration 0202). That principal
+   * inherits the application's rights, so the completion fence works unchanged.
+   */
+  register(kind: string, handler: JobHandler, db?: Db): this {
     if (this.handlers.has(kind)) throw new Error(`job kind "${kind}" is already registered`);
     this.handlers.set(kind, handler);
+    if (db) this.handlerDbs.set(kind, db);
     return this;
   }
 
@@ -158,17 +167,21 @@ export class JobRunner {
          * second set of ledger entries. Committing them together makes "did this
          * job run?" a question the database answers.
          */
-        await withBusiness(this.appDb, job.businessId, async (tx) => {
-          await handler({
-            tx,
-            jobId: job.id,
-            businessId: job.businessId,
-            payload: job.payload,
-            attempt: job.attempts,
-            maxAttempts: job.maxAttempts,
-          });
-          await jobsRepo.markDone(tx, job.id, claimedBy);
-        });
+        await withBusiness(
+          this.handlerDbs.get(job.kind) ?? this.appDb,
+          job.businessId,
+          async (tx) => {
+            await handler({
+              tx,
+              jobId: job.id,
+              businessId: job.businessId,
+              payload: job.payload,
+              attempt: job.attempts,
+              maxAttempts: job.maxAttempts,
+            });
+            await jobsRepo.markDone(tx, job.id, claimedBy);
+          },
+        );
       } catch (error) {
         if (error instanceof jobsRepo.JobLeaseLost) {
           /* Another claim owns the job and this attempt's transaction already

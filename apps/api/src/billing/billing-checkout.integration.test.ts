@@ -12,15 +12,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { ServiceUnavailableException } from '@nestjs/common';
-import {
-  billingRepo,
-  createDb,
-  identity,
-  sql,
-  subscriptionsRepo,
-  withBusiness,
-  type Db,
-} from '@rekoda/db';
+import { createDb, identity, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import {
   applyFixtureCycle,
   migrate,
@@ -29,6 +21,7 @@ import {
   type Urls,
   setPlanAsOwner,
 } from '@rekoda/db/testing';
+import { setPlanForTest, settlementDb } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../config.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
@@ -71,7 +64,7 @@ beforeEach(async () => {
 });
 
 const plans = (overrides: Partial<ApiConfig> = {}) =>
-  new BillingService({ ...config, ...overrides }, appDb);
+  new BillingService({ ...config, ...overrides }, appDb, settlementDb());
 const checkouts = (overrides: Partial<ApiConfig> = {}) =>
   new BillingCheckoutService({ ...config, ...overrides }, appDb, provider);
 
@@ -189,7 +182,7 @@ describe('the billing email', () => {
     const businessId = await seedBusiness();
     const first = await pendingCharge(businessId);
     await checkouts().checkout(businessId, first.reference, 'ada@shop.example.ng');
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: first.reference,
@@ -305,7 +298,7 @@ describe('what may be paid', () => {
   it('refuses a charge that is already paid', async () => {
     const businessId = await seedBusiness();
     const { reference, amountK } = await pendingCharge(businessId);
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference,
@@ -347,7 +340,7 @@ describe('what may be paid', () => {
      * decides the subscription (no stamp on the charge), and then the call fails.
      * Neither this request nor the recovery that follows may hand out a link. */
     provider.initializeTransaction = async () => {
-      await billingRepo.setPlan(appDb, {
+      await setPlanForTest(appDb, {
         businessId,
         plan: 'integrate',
         expiresAt: new Date(Date.now() + 30 * 86_400_000),
@@ -370,7 +363,7 @@ describe('what may be paid', () => {
     const { reference } = await pendingCharge(businessId);
     await checkouts().checkout(businessId, reference, 'ada@shop.example.ng');
     /* An operator move decides the subscription after the charge was opened. */
-    await billingRepo.setPlan(appDb, {
+    await setPlanForTest(appDb, {
       businessId,
       plan: 'integrate',
       expiresAt: new Date(Date.now() + 30 * 86_400_000),
@@ -388,7 +381,7 @@ describe('what may be paid', () => {
     const { reference } = await pendingCharge(businessId);
     /* The decision lands after `prepare` and before the link is recorded. */
     const decide = async () =>
-      billingRepo.setPlan(appDb, {
+      setPlanForTest(appDb, {
         businessId,
         plan: 'integrate',
         expiresAt: new Date(Date.now() + 30 * 86_400_000),
@@ -412,7 +405,7 @@ describe('what may be paid', () => {
 
   it('refuses an upgrade once its cycle has ended, link stored or not', async () => {
     const businessId = await seedBusiness();
-    await billingRepo.setPlan(appDb, {
+    await setPlanForTest(appDb, {
       businessId,
       plan: 'chat',
       expiresAt: new Date(Date.now() + 20 * 86_400_000),
@@ -443,7 +436,7 @@ describe('what may be paid', () => {
 
   it('hands out no link when the upgrade cycle ends while Paystack is being called', async () => {
     const businessId = await seedBusiness();
-    await billingRepo.setPlan(appDb, {
+    await setPlanForTest(appDb, {
       businessId,
       plan: 'chat',
       expiresAt: new Date(Date.now() + 20 * 86_400_000),
@@ -478,7 +471,7 @@ describe('what may be paid', () => {
   it('refuses an upgrade on a cycle that is not a provider-bought month', async () => {
     const businessId = await seedBusiness();
     /* An operator grant is a custom cycle: never prorated or upgraded by payment. */
-    await billingRepo.setPlan(appDb, {
+    await setPlanForTest(appDb, {
       businessId,
       plan: 'chat',
       expiresAt: new Date(Date.now() + 20 * 86_400_000),

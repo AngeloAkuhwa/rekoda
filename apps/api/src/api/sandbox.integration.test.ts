@@ -25,6 +25,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { settlementDb } from '@rekoda/db/testing';
 
 const SECRET = 'sandbox-secret-at-least-32-characters';
 
@@ -95,7 +96,7 @@ async function developer(phone: string, name: string): Promise<Developer> {
   const auth = { authorization: `Bearer ${created.sessionToken}` };
 
   const period = usagePeriod(new Date());
-  await withBusiness(db, created.businessId, async (tx) => {
+  await withBusiness(settlementDb(), created.businessId, async (tx) => {
     await entitlementsRepo.grant(tx, {
       businessId: created.businessId,
       entitlementKey: 'REKODA_API',

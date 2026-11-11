@@ -17,7 +17,6 @@ import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { addInterval, annualPriceK, PLAN_PRICES_K } from '@rekoda/core';
 import {
-  billingRepo,
   createDb,
   planCatalogueRepo,
   sql,
@@ -33,6 +32,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { setPlanForTest, settlementDb } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRenewals } from './renewal-sweep.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
@@ -133,6 +133,7 @@ const billing = () =>
       annualBillingSales: true,
     },
     db,
+    settlementDb(),
   );
 
 const subOf = (businessId: string) =>
@@ -143,7 +144,7 @@ const chargesOf = async (businessId: string) =>
 
 /** Settle a charge the way the webhook job does. */
 const pay = (businessId: string, reference: string, when: Date) =>
-  withBusiness(db, businessId, (tx) =>
+  withBusiness(settlementDb(), businessId, (tx) =>
     applySettledCharge(tx, {
       businessId,
       reference,
@@ -404,7 +405,7 @@ describe('changing plan inside an annual cycle', () => {
     await putOnPlan(businessId, 'chat', 'annual', start);
     const before = await subOf(businessId);
 
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'chat',
       expiresAt: before!.planExpiresAt!,
@@ -422,7 +423,7 @@ describe('changing plan inside an annual cycle', () => {
     await putOnPlan(businessId, 'chat', 'annual', new Date());
     await billing().switchInterval(businessId, 'monthly');
 
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'integrate',
       expiresAt: new Date(Date.now() + 30 * DAY),

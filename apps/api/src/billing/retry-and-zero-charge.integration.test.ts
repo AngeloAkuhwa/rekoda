@@ -9,15 +9,7 @@
  *    was refused.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import {
-  billingRepo,
-  createDb,
-  identity,
-  sql,
-  subscriptionsRepo,
-  withBusiness,
-  type Db,
-} from '@rekoda/db';
+import { createDb, identity, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import {
   applyFixtureCycle,
   migrate,
@@ -25,6 +17,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { setPlanForTest, settlementDb } from '@rekoda/db/testing';
 import { applySettledCharge, BillingService } from './billing.service.js';
 
 let urls: Urls;
@@ -54,7 +47,7 @@ const config = {
   paystackSecretKey: 'sk_test_x',
   paystackPlatformConfirmed: true,
 };
-const billing = () => new BillingService(config as never, appDb);
+const billing = () => new BillingService(config as never, appDb, settlementDb());
 
 let seq = 0;
 async function seedBusiness(): Promise<string> {
@@ -72,7 +65,7 @@ const DAY = 86_400_000;
 
 /** A paid plan whose current cycle ends `msLeft` from now. */
 async function onPlan(businessId: string, plan: string, msLeft: number): Promise<void> {
-  await billingRepo.setPlan(appDb, {
+  await setPlanForTest(appDb, {
     businessId,
     plan,
     expiresAt: new Date(Date.now() + msLeft),
@@ -205,7 +198,7 @@ describe('a first purchase is retryable and plan-specific', () => {
     const second = await billing().changePlan(businessId, 'complete');
     if (second.state !== 'payment_required') throw new Error('payable');
 
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: second.reference,
@@ -226,7 +219,7 @@ describe('a first purchase is retryable and plan-specific', () => {
       throw new Error('both should be payable');
     }
     const pay = (reference: string) =>
-      withBusiness(appDb, businessId, (tx) =>
+      withBusiness(settlementDb(), businessId, (tx) =>
         applySettledCharge(tx, {
           businessId,
           reference,
@@ -250,7 +243,7 @@ describe('a first purchase is retryable and plan-specific', () => {
     await billing().changePlan(businessId, 'complete');
     if (first.state !== 'payment_required') throw new Error('payable');
 
-    const outcome = await withBusiness(appDb, businessId, (tx) =>
+    const outcome = await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: first.reference,
@@ -268,7 +261,7 @@ describe('a first purchase is retryable and plan-specific', () => {
     const businessId = await seedBusiness();
     const first = await billing().changePlan(businessId, 'chat');
     if (first.state !== 'payment_required') throw new Error('payable');
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       subscriptionsRepo.settleCharge(tx, {
         reference: first.reference,
         status: 'failed',
@@ -305,7 +298,7 @@ describe('a failed renewal does not hold its cycle', () => {
     // While the first is still pending the cycle is held (no double charge).
     expect(await open('RKD-SUB-RENEW-DUP')).toBeNull();
 
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       subscriptionsRepo.settleCharge(tx, {
         reference: 'RKD-SUB-RENEW-A',
         status: 'failed',

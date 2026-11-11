@@ -13,15 +13,7 @@
 // The stale charge suite. Split by concern; the rest of this suite is in stale-charge-
 // exceptions.integration.test.ts.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import {
-  billingRepo,
-  createDb,
-  identity,
-  sql,
-  subscriptionsRepo,
-  withBusiness,
-  type Db,
-} from '@rekoda/db';
+import { createDb, identity, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import {
   applyFixtureCycle,
   migrate,
@@ -29,6 +21,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { setPlanForTest, settlementDb } from '@rekoda/db/testing';
 import { applySettledCharge, BillingService } from './billing.service.js';
 import { sweepRenewals } from './renewal-sweep.js';
 
@@ -75,7 +68,7 @@ async function seedBusiness(): Promise<string> {
 }
 
 const operator = (businessId: string, plan: string, expiresAt: Date | null = renewsAt) =>
-  billingRepo.setPlan(appDb, { businessId, plan, expiresAt, actor: 'operator:test-g104' });
+  setPlanForTest(appDb, { businessId, plan, expiresAt, actor: 'operator:test-g104' });
 
 /** A standard monthly cycle ending at `renewsAt` (OWN-33: other spans are never prorated). */
 const standardCycle = (businessId: string, plan: string) =>
@@ -106,7 +99,7 @@ const open = (
   );
 
 const settle = (businessId: string, reference: string) =>
-  withBusiness(appDb, businessId, (tx) =>
+  withBusiness(settlementDb(), businessId, (tx) =>
     applySettledCharge(tx, {
       businessId,
       reference,
@@ -290,6 +283,7 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
         paystackPlatformConfirmed: true,
       } as never,
       appDb,
+      settlementDb(),
     );
     const first = await billing.changePlan(businessId, 'complete');
     expect(first.state).toBe('payment_required');
@@ -344,6 +338,7 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
         paystackPlatformConfirmed: true,
       } as never,
       appDb,
+      settlementDb(),
     );
     const first = await billing.changePlan(businessId, 'chat');
     expect(first.state).toBe('payment_required');
@@ -387,7 +382,7 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
     await open(businessId, 'renewal', 'RKD-SUB-STALE-DL', 'chat');
 
     let scheduling: Promise<void> | undefined;
-    const settling = withBusiness(appDb, businessId, async (tx) => {
+    const settling = withBusiness(settlementDb(), businessId, async (tx) => {
       await subscriptionsRepo.lockBusiness(tx, businessId); // the settlement's first move
       scheduling = schedule('integrate'); // a replacement that flags the open renewal
       await new Promise((r) => setTimeout(r, 400)); // let it reach its first statement
@@ -418,6 +413,7 @@ describe('a stale paid charge keeps the payment and refuses the plan change', ()
         paystackPlatformConfirmed: true,
       } as never,
       appDb,
+      settlementDb(),
     );
     const answer = await billing.changePlan(businessId, 'complete'); // the UI's undo
 

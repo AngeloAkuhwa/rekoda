@@ -35,6 +35,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { settlementDb } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRenewals } from './renewal-sweep.js';
 import { sweepGracePeriods } from './grace-sweep.js';
@@ -140,6 +141,7 @@ const billing = () =>
       annualBillingSales: true,
     },
     db,
+    settlementDb(),
   );
 
 const overviewOf = async (auth: Record<string, string>) =>
@@ -155,7 +157,7 @@ const chargesOf = async (businessId: string) =>
 
 /** Settle a charge the way the webhook job does. */
 const pay = (businessId: string, reference: string, when: Date) =>
-  withBusiness(db, businessId, (tx) =>
+  withBusiness(settlementDb(), businessId, (tx) =>
     applySettledCharge(tx, {
       businessId,
       reference,

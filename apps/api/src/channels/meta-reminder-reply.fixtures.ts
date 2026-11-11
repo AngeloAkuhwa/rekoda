@@ -6,7 +6,6 @@
  */
 import { expect } from 'vitest';
 import {
-  billingRepo,
   conversationsRepo,
   customersRepo,
   identity,
@@ -19,6 +18,7 @@ import type { issueRepo } from '@rekoda/db';
 import { encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
 import { buildRunner } from '../jobs/jobs.module.js';
 import { db, deps, messagePayload, post, stubSender, workerDb } from './meta-webhook.fixtures.js';
+import { setPlanForTest } from '@rekoda/db/testing';
 
 export const CUSTOMER_WA = '2349097778888';
 /** The blind index the privacy gateway stores on a customer phone. */
@@ -74,7 +74,7 @@ export async function shop(
     ownerUserId: owner.id,
   });
   const businessId = business.id;
-  await billingRepo.setPlan(db, {
+  await setPlanForTest(db, {
     businessId,
     plan: 'complete',
     expiresAt: null,

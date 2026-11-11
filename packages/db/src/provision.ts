@@ -1,5 +1,5 @@
 /**
- * Login passwords for the two runtime roles, set by the migration role.
+ * Login passwords for the four runtime roles, set by the migration role.
  *
  * The migrations create `rekoda_app` (0001) and `rekoda_worker` (0004) as
  * LOGIN roles with NO password, on purpose: a credential belongs to the
@@ -35,7 +35,13 @@ import { createHash, createHmac, pbkdf2Sync, randomBytes } from 'node:crypto';
 import postgres from 'postgres';
 import { isEntrypoint } from './entrypoint.js';
 
-export const RUNTIME_ROLES = { app: 'rekoda_app', worker: 'rekoda_worker' } as const;
+export const RUNTIME_ROLES = {
+  app: 'rekoda_app',
+  worker: 'rekoda_worker',
+  /* OD-37 (migration 0202): settlement and operator plan changes have their own principals. */
+  settlement: 'rekoda_settlement',
+  operator: 'rekoda_billing_operator',
+} as const;
 
 /** The iteration count libpq and `psql \password` use for SCRAM-SHA-256. */
 const SCRAM_ITERATIONS = 4096;
@@ -121,15 +127,29 @@ export function scramVerifier(
  */
 export async function provisionRuntimeRoles(
   migrationUrl: string,
-  urls: { app: string; worker: string },
+  urls: { app: string; worker: string; settlement: string; operator: string },
 ): Promise<string[]> {
   const credentials = [
     credentialFor('APP_DATABASE_URL', urls.app, RUNTIME_ROLES.app, migrationUrl),
     credentialFor('WORKER_DATABASE_URL', urls.worker, RUNTIME_ROLES.worker, migrationUrl),
+    credentialFor(
+      'SETTLEMENT_DATABASE_URL',
+      urls.settlement,
+      RUNTIME_ROLES.settlement,
+      migrationUrl,
+    ),
+    credentialFor('OPERATOR_DATABASE_URL', urls.operator, RUNTIME_ROLES.operator, migrationUrl),
   ];
+  /* Four distinct passwords: one credential per principal is the point of having four roles, and a
+   * shared password would let whoever holds one log in as another. */
+  if (new Set(credentials.map((c) => c.password)).size !== credentials.length) {
+    throw new Error(
+      'APP_, WORKER_, SETTLEMENT_ and OPERATOR_DATABASE_URL must each carry a different password',
+    );
+  }
   const sql = postgres(migrationUrl, { max: 1, onnotice: () => {} });
   try {
-    /* Both roles, or neither. A rotation that set rekoda_app's password and
+    /* All four roles, or none. A rotation that set rekoda_app's password and
      * then failed on rekoda_worker would leave the running api holding a
      * password the database no longer accepts, while the deploy stops before
      * recreating it. So every check runs first, and the two ALTERs commit
@@ -164,14 +184,17 @@ if (isEntrypoint(import.meta.url, process.argv[1])) {
   const migrationUrl = process.env['DATABASE_URL'];
   const app = process.env['APP_DATABASE_URL'];
   const worker = process.env['WORKER_DATABASE_URL'];
-  if (!migrationUrl || !app || !worker) {
+  const settlement = process.env['SETTLEMENT_DATABASE_URL'];
+  const operator = process.env['OPERATOR_DATABASE_URL'];
+  if (!migrationUrl || !app || !worker || !settlement || !operator) {
     console.error(
-      'DATABASE_URL (the migration role), APP_DATABASE_URL and WORKER_DATABASE_URL are required',
+      'DATABASE_URL (the migration role), APP_DATABASE_URL, WORKER_DATABASE_URL, ' +
+        'SETTLEMENT_DATABASE_URL and OPERATOR_DATABASE_URL are required',
     );
     process.exit(1);
   }
   try {
-    const roles = await provisionRuntimeRoles(migrationUrl, { app, worker });
+    const roles = await provisionRuntimeRoles(migrationUrl, { app, worker, settlement, operator });
     console.log(`runtime role passwords set: ${roles.join(', ')}`);
   } catch (error) {
     console.error(error instanceof Error ? error.message : 'provisioning failed');

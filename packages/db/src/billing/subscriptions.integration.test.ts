@@ -26,6 +26,7 @@ import {
   type Urls,
   setPlanAsOwner,
 } from '../testing.js';
+import { settlementDb } from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -92,6 +93,9 @@ const RENEWS_AT = new Date('2026-09-01T00:00:00Z');
 
 const inTenant = <T>(businessId: string, fn: (tx: TenantDb) => Promise<T>): Promise<T> =>
   withBusiness(appDb, businessId, fn);
+/** Settlement work (a payment recorded, pack units credited) runs only as `rekoda_settlement` (OD-37). */
+const inSettlement = <T>(businessId: string, fn: (tx: TenantDb) => Promise<T>): Promise<T> =>
+  withBusiness(settlementDb(), businessId, fn);
 
 describe('the cycle on a business row', () => {
   it('writes plan, dates and anchor as one fact', async () => {
@@ -244,7 +248,7 @@ describe('charges', () => {
     await charge(businessId, 'RK-SUB-1');
 
     const settle = () =>
-      inTenant(businessId, (tx) =>
+      inSettlement(businessId, (tx) =>
         subscriptionsRepo.settleCharge(tx, {
           reference: 'RK-SUB-1',
           status: 'paid',
@@ -264,7 +268,7 @@ describe('charges', () => {
   it('records a failure with its reason, and will not then settle as paid', async () => {
     const businessId = await seedBusiness();
     await charge(businessId, 'RK-SUB-1');
-    const failed = await inTenant(businessId, (tx) =>
+    const failed = await inSettlement(businessId, (tx) =>
       subscriptionsRepo.settleCharge(tx, {
         reference: 'RK-SUB-1',
         status: 'failed',
@@ -274,7 +278,7 @@ describe('charges', () => {
     );
     expect(failed?.status).toBe('failed');
 
-    const late = await inTenant(businessId, (tx) =>
+    const late = await inSettlement(businessId, (tx) =>
       subscriptionsRepo.settleCharge(tx, {
         reference: 'RK-SUB-1',
         status: 'paid',
@@ -288,7 +292,7 @@ describe('charges', () => {
   it('accumulates partial refunds and only then reads as refunded', async () => {
     const businessId = await seedBusiness();
     await charge(businessId, 'RK-SUB-1');
-    await inTenant(businessId, (tx) =>
+    await inSettlement(businessId, (tx) =>
       subscriptionsRepo.settleCharge(tx, {
         reference: 'RK-SUB-1',
         status: 'paid',
@@ -352,7 +356,7 @@ describe('an add-on pack', () => {
     expect(await consume(1)).toBe(true);
     expect(await consume(1)).toBe(false);
 
-    await inTenant(businessId, (tx) =>
+    await inSettlement(businessId, (tx) =>
       usageRepo.creditBonus(tx, businessId, PERIOD, 'AI_ACTIONS', 2),
     );
     expect(await consume(1)).toBe(true);
@@ -360,7 +364,7 @@ describe('an add-on pack', () => {
     expect(await consume(1)).toBe(false);
 
     // A second pack adds to the first rather than replacing it.
-    await inTenant(businessId, (tx) =>
+    await inSettlement(businessId, (tx) =>
       usageRepo.creditBonus(tx, businessId, PERIOD, 'AI_ACTIONS', 2),
     );
     const [row] = await inTenant(businessId, (tx) => usageRepo.usageFor(tx, businessId, PERIOD));
@@ -372,7 +376,7 @@ describe('an add-on pack', () => {
     const businessId = await seedBusiness();
     // A paid plan meters by calendar month; a trial meters one row for its 14 days.
     await setPlanAsOwner(urls, businessId, { plan: 'chat' });
-    await inTenant(businessId, (tx) =>
+    await inSettlement(businessId, (tx) =>
       usageRepo.creditBonus(tx, businessId, PERIOD, 'AI_ACTIONS', 5),
     );
 
@@ -398,7 +402,7 @@ describe('recording a refund', () => {
         periodEnd: RENEWS_AT,
       }),
     );
-    await inTenant(businessId, (tx) =>
+    await inSettlement(businessId, (tx) =>
       subscriptionsRepo.settleCharge(tx, { reference, status: 'paid', when: CYCLE_START }),
     );
   }

@@ -15,6 +15,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { settlementDb } from '@rekoda/db/testing';
 import { applySettledCharge, BillingService } from './billing.service.js';
 
 let urls: Urls;
@@ -40,7 +41,7 @@ beforeEach(async () => {
 });
 
 const config = { planCatalogueReads: false };
-const service = () => new BillingService(config as never, appDb);
+const service = () => new BillingService(config as never, appDb, settlementDb());
 
 let seq = 0;
 async function seedBusiness(): Promise<string> {
@@ -98,7 +99,7 @@ describe('payment record', () => {
   it('a verified payment that took effect is paid and applied, with its paid date', async () => {
     const b = await seedBusiness();
     await open(b, 'RKD-SUB-20261101-BBBBBB');
-    await withBusiness(appDb, b, (tx) =>
+    await withBusiness(settlementDb(), b, (tx) =>
       applySettledCharge(tx, {
         businessId: b,
         reference: 'RKD-SUB-20261101-BBBBBB',
@@ -186,7 +187,7 @@ describe('payment record', () => {
   it('a payment that was applied and later fully refunded is still recorded as applied', async () => {
     const b = await seedBusiness();
     await open(b, 'RKD-SUB-20261101-JJJJJJ');
-    await withBusiness(appDb, b, (tx) =>
+    await withBusiness(settlementDb(), b, (tx) =>
       applySettledCharge(tx, {
         businessId: b,
         reference: 'RKD-SUB-20261101-JJJJJJ',
@@ -315,7 +316,7 @@ describe('payment record', () => {
       }),
     );
     const paidOn = new Date('2026-11-28T09:00:00Z');
-    await withBusiness(appDb, b, (tx) =>
+    await withBusiness(settlementDb(), b, (tx) =>
       applySettledCharge(tx, {
         businessId: b,
         reference: 'RKD-SUB-20261128-QQQQQQ',

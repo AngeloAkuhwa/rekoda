@@ -10,6 +10,13 @@ import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '../
 let urls: Urls;
 let appDb: Db;
 let workerDb: Db;
+
+/** The operator's generic resolve: found on the worker credential, written on the application
+ * credential under the event's own business (migration 0204). True when it resolved. */
+const operatorResolve = (id: string, resolution: string, actor: string): Promise<boolean> =>
+  events
+    .resolveExceptionAsOperator(appDb, workerDb, id, resolution, actor)
+    .then((outcome) => outcome === 'resolved');
 let closeApp: () => Promise<void>;
 let closeWorker: () => Promise<void>;
 
@@ -98,7 +105,11 @@ describe('enrolment skips a settled payment', () => {
       tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
     );
     // Settled another way (a verify or intent sweep booked it) after the job's last attempt.
-    await events.markProcessed(workerDb, eventId, null, businessId);
+    // Settled under the business's pin, as every booking path does (the worker may write only
+    // unattributed events, 0204).
+    await withBusiness(appDb, businessId, (tx) =>
+      events.markProcessed(tx, eventId, null, businessId),
+    );
     expect(await jobsRepo.enrolUnrecordedDeaths(workerDb)).toBe(0);
     expect(await recordsOf(businessId)).toHaveLength(0);
     expect(await merchantExceptions(businessId)).toHaveLength(0);
@@ -115,7 +126,11 @@ describe('enrolment skips a settled payment', () => {
       ...(await workerDb.execute<{ id: string }>(sql`SELECT id FROM jobs WHERE state = 'dead'`)),
     ];
     // The event is settled after the sweep selected the job and before the record is written.
-    await events.markProcessed(workerDb, eventId, null, businessId);
+    // Settled under the business's pin, as every booking path does (the worker may write only
+    // unattributed events, 0204).
+    await withBusiness(appDb, businessId, (tx) =>
+      events.markProcessed(tx, eventId, null, businessId),
+    );
     await workerDb.transaction((tx) =>
       deadJobsRepo.recordDeath(
         tx,
@@ -145,9 +160,7 @@ describe('enrolment skips a settled payment', () => {
       ...(await workerDb.execute<{ id: string }>(sql`SELECT id FROM jobs WHERE state = 'dead'`)),
     ];
     // Closed by an operator after the sweep selected the job (resolving also marks it processed).
-    expect(
-      await events.resolveEvent(workerDb, eventId, 'settled by hand', 'operator:bob', 'operator'),
-    ).toBe(true);
+    expect(await operatorResolve(eventId, 'settled by hand', 'operator:bob')).toBe(true);
     await workerDb.transaction((tx) =>
       deadJobsRepo.recordDeath(
         tx,
@@ -176,7 +189,11 @@ describe('enrolment skips a settled payment', () => {
     await withBusiness(appDb, businessId, (tx) =>
       tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
     );
-    await events.markProcessed(workerDb, eventId, null, businessId);
+    // Settled under the business's pin, as every booking path does (the worker may write only
+    // unattributed events, 0204).
+    await withBusiness(appDb, businessId, (tx) =>
+      events.markProcessed(tx, eventId, null, businessId),
+    );
     // Only the malformed-id job is enrolled; the upper-case one is skipped as settled.
     expect(await jobsRepo.enrolUnrecordedDeaths(workerDb)).toBe(1);
     const records = await recordsOf(businessId);

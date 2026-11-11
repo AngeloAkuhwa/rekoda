@@ -54,7 +54,7 @@ import {
 } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { chargeGate } from './paystack-key.js';
-import { DB } from '../db/db.module.js';
+import { DB, SETTLEMENT_DB } from '../db/db.module.js';
 
 /** Midnight of the Lagos day (UTC+1, no DST) holding this moment. */
 function startOfLagosDay(when: Date): Date {
@@ -70,6 +70,11 @@ export class BillingService {
   constructor(
     @Inject(CONFIG) private readonly config: ApiConfig,
     @Inject(DB) private readonly db: Db,
+    /**
+     * `rekoda_settlement` (OD-37, migration 0202). A plan change can settle a zero-priced upgrade
+     * in the same transaction that decides it, and only this principal may record a payment.
+     */
+    @Inject(SETTLEMENT_DB) private readonly settlementDb: Db,
   ) {}
 
   /**
@@ -359,7 +364,10 @@ export class BillingService {
     now = new Date(),
     requested: BillingInterval = 'monthly',
   ): Promise<BillingPlanChangeResponse> {
-    return withBusiness(this.db, businessId, async (tx) => {
+    /* On the settlement principal (OD-37): the zero-priced upgrade below is settled in this same
+     * transaction, atomically with the business lock and the price it was decided on. Every other
+     * write here is an ordinary application write, which that principal inherits. */
+    return withBusiness(this.settlementDb, businessId, async (tx) => {
       /* G-104: lock the business row BEFORE reading the plan this charge is
        * priced against, so a concurrent operator move either finished (and is
        * read) or waits until this charge exists (and is then newer). */

@@ -141,7 +141,7 @@ describe('row-level security, across the whole schema', () => {
        ORDER BY c.relname, p.polname
     `);
 
-    /* Four predicates are legitimately not the tenant one, each pinned by
+    /* Five predicates are legitimately not the tenant one, each pinned by
      * POLICY rather than by table so a fourth cannot arrive unnoticed:
      *
      *   businesses.tenant_self                       its own `id` IS the tenant key
@@ -150,6 +150,11 @@ describe('row-level security, across the whole schema', () => {
      *   external_events.app_records_unattributed_ingress
      *                                                the unattributed backlog, which
      *                                                belongs to no tenant yet (0130)
+     *   external_events.worker_marks_unattributed_ingress
+     *                                                the worker marking that same backlog
+     *                                                processed (0204); UPDATE only, the
+     *                                                same predicate on both sides, so it can
+     *                                                never move a row to a tenant
      *
      * Keyed by policy because a table-level excuse is too coarse: every one
      * of these tables ALSO carries an ordinary tenant policy, and excusing
@@ -159,6 +164,7 @@ describe('row-level security, across the whole schema', () => {
       'memberships.membership_self',
       'shops.shop_public_read',
       'external_events.app_records_unattributed_ingress',
+      'external_events.worker_marks_unattributed_ingress',
     ]);
     const offBrand = [...rows]
       .filter(

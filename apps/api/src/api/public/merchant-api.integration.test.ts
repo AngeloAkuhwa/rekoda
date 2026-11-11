@@ -36,6 +36,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { settlementDb } from '@rekoda/db/testing';
 
 const SECRET = 'merchant-api-secret-at-least-32-chars';
 
@@ -700,8 +701,7 @@ describe('G-77: every public API sale is its own financial event', () => {
     /* What this release stored is what the previous release computes, and
      * what the previous release stored is what this one computes. */
     expect(stored?.request_hash).toBe(requestHash(legacy));
-    /* While the sale itself is booked with its own event id, never the
-     * application's. */
+    /* While the sale itself is booked with its own event id, never the application's. */
     const ids = await identities(shop.businessId);
     expect(ids).toHaveLength(1);
     expect(ids[0]!.source_id).toMatch(/^sale-k-[0-9a-f]{32}$/);
@@ -929,7 +929,7 @@ describe('reading', () => {
  */
 async function creditApiCapacity(businessId: string): Promise<void> {
   const period = usagePeriod(new Date());
-  await withBusiness(db, businessId, async (tx) => {
+  await withBusiness(settlementDb(), businessId, async (tx) => {
     await usageRepo.creditBonus(tx, businessId, period, 'API_REQUEST_UNITS', 1_000);
   });
   await grantCapacityAddOn(urls, businessId, 'API_APPLICATIONS', 20);

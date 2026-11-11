@@ -14,7 +14,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { RETENTION, RETENTION_NOTICE_DAYS, usagePeriod } from '@rekoda/core';
 import {
-  billingRepo,
   createDb,
   identity,
   marginRepo,
@@ -24,6 +23,7 @@ import {
   type Db,
 } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { setPlanForTest, settlementDb } from '@rekoda/db/testing';
 import { SendFailed } from '../channels/sender.js';
 import { StubSender } from '../channels/sender.stub.js';
 import { sweepRetention } from './retention-sweep.js';
@@ -69,7 +69,7 @@ async function abandonedTrial(
     businessType: null,
     ownerUserId: user.id,
   });
-  await billingRepo.setPlan(appDb, {
+  await setPlanForTest(appDb, {
     businessId: business.id,
     plan: 'trial',
     expiresAt: daysAgo(endedDaysAgo),
@@ -162,7 +162,7 @@ describe('the warning', () => {
         periodEnd: daysAgo(370),
       }),
     );
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       subscriptionsRepo.settleCharge(tx, {
         reference: 'RKD-SUB-20260101-AAAAAA',
         status: 'paid',
@@ -257,7 +257,7 @@ describe('the deletion', () => {
         periodEnd: new Date(Date.now() + 30 * 86_400_000),
       }),
     );
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       subscriptionsRepo.settleCharge(tx, {
         reference: 'RKD-SUB-20260601-BBBBBB',
         status: 'paid',

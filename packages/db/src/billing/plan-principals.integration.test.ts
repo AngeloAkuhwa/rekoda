@@ -1,0 +1,304 @@
+/**
+ * OD-37 (migrations 0200, 0202, 0203; owner review of PR #432, 11 Nov 2026): WHO may record a payment, apply a paid
+ * plan or make an operator plan change (the principals); what each writer accepts is pinned in
+ * plan-writer-boundary.integration.test.ts.
+ *
+ *   rekoda_settlement        the only non-owner role that records a payment on a charge, credits
+ *                            pack units, holds an add-on, or runs `subscription_apply_paid_charge`;
+ *   rekoda_billing_operator  the only role that runs `subscription_operator_set_plan`;
+ *   rekoda_app, rekoda_worker neither: a holder of the general credentials cannot forge a paid
+ *                            charge, credit units, or make an operator plan change.
+ *
+ * Every assertion is made on a live connection AS that principal (the CI database authenticates by
+ * trust, so each URL is its own role), never through the owner. The writers enforce Rekoda's real
+ * durations: a monthly plan ends within one calendar month, an annual plan within twelve, a trial
+ * within 14 days of the business's own trial start, `expired` at or before now; the database's copy
+ * of the length rule is pinned to `@rekoda/core` here. The plan-field role boundary itself is pinned
+ * in plan-fields-guard.integration.test.ts.
+ */
+import { describe, expect, it } from 'vitest';
+import { sql } from 'drizzle-orm';
+import { withBusiness } from '../client.js';
+import { bootChecks, subscriptionsRepo, usageRepo } from '../index.js';
+import {
+  appDb,
+  operatorDb,
+  outcome,
+  ownerDb,
+  PRINCIPALS,
+  seedBusiness,
+  seedCharge,
+  settlementDb,
+  usePlanWriterHarness,
+  workerDb,
+  type Principal,
+} from './plan-writer.fixtures.js';
+
+usePlanWriterHarness();
+
+describe('OD-37: who may run which writer, and who may become whom (0202)', () => {
+  it('EXECUTE is exactly one principal per reserved writer; the general writers are gone', async () => {
+    const acl = await ownerDb.execute<{ proname: string; grantee: string }>(sql`
+      SELECT p.proname,
+             CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END AS grantee
+      FROM pg_proc p, aclexplode(p.proacl) a
+      WHERE p.proname IN ('subscription_apply_paid_charge', 'subscription_operator_set_plan',
+                          'subscription_expire_plan')
+        AND a.privilege_type = 'EXECUTE' AND a.grantee <> p.proowner
+      ORDER BY p.proname, 2`);
+    const byName = (name: string) =>
+      [...acl].filter((r) => r.proname === name).map((r) => r.grantee);
+    expect(byName('subscription_apply_paid_charge')).toEqual(['rekoda_settlement']);
+    expect(byName('subscription_operator_set_plan')).toEqual(['rekoda_billing_operator']);
+    expect(byName('subscription_expire_plan')).toEqual(['rekoda_app', 'rekoda_worker']);
+    const [gone] = await ownerDb.execute<{
+      general: string | null;
+      old_operator: string | null;
+    }>(sql`
+      SELECT to_regprocedure('public.subscription_write_plan(uuid,text,timestamptz)')::text AS general,
+             to_regprocedure('public.subscription_operator_set_plan(uuid,text,timestamptz,text)')::text
+               AS old_operator`);
+    expect(gone).toEqual({ general: null, old_operator: null });
+  });
+
+  it.each([
+    ['app', false, false],
+    ['worker', false, false],
+    ['settlement', true, false],
+    ['operator', false, true],
+  ] as const)(
+    '%s, on its own live connection: provider writer %s, operator writer %s',
+    async (who: Principal, provider, operator) => {
+      const [facts] = await PRINCIPALS[who]().execute<{ provider: boolean; operator: boolean }>(sql`
+        SELECT has_function_privilege('public.subscription_apply_paid_charge(uuid,text,timestamptz)', 'EXECUTE') AS provider,
+               has_function_privilege('public.subscription_operator_set_plan(uuid,text,timestamptz,text,text)', 'EXECUTE') AS operator`);
+      expect(facts).toEqual({ provider, operator });
+    },
+  );
+
+  it('no principal can become another, the worker or the plan writer; both new ones act with the application rights only', async () => {
+    const [m] = await ownerDb.execute<Record<string, boolean>>(sql`
+      SELECT
+        pg_has_role('rekoda_app', 'rekoda_settlement', 'MEMBER') AS app_settlement,
+        pg_has_role('rekoda_worker', 'rekoda_settlement', 'MEMBER') AS worker_settlement,
+        pg_has_role('rekoda_app', 'rekoda_billing_operator', 'MEMBER') AS app_operator,
+        pg_has_role('rekoda_worker', 'rekoda_billing_operator', 'MEMBER') AS worker_operator,
+        pg_has_role('rekoda_settlement', 'rekoda_billing_operator', 'MEMBER') AS settlement_operator,
+        pg_has_role('rekoda_billing_operator', 'rekoda_settlement', 'MEMBER') AS operator_settlement,
+        pg_has_role('rekoda_settlement', 'rekoda_worker', 'MEMBER') AS settlement_worker,
+        pg_has_role('rekoda_billing_operator', 'rekoda_worker', 'MEMBER') AS operator_worker,
+        pg_has_role('rekoda_settlement', 'rekoda_plan_writer', 'MEMBER') AS settlement_writer,
+        pg_has_role('rekoda_billing_operator', 'rekoda_plan_writer', 'MEMBER') AS operator_writer,
+        pg_has_role('rekoda_settlement', 'rekoda_app', 'USAGE') AS settlement_inherits_app,
+        pg_has_role('rekoda_billing_operator', 'rekoda_app', 'USAGE') AS operator_inherits_app,
+        (SELECT bool_or(rolsuper OR rolbypassrls) FROM pg_roles
+          WHERE rolname IN ('rekoda_settlement', 'rekoda_billing_operator')) AS any_bypass`);
+    expect(m).toEqual({
+      app_settlement: false,
+      worker_settlement: false,
+      app_operator: false,
+      worker_operator: false,
+      settlement_operator: false,
+      operator_settlement: false,
+      settlement_worker: false,
+      operator_worker: false,
+      settlement_writer: false,
+      operator_writer: false,
+      settlement_inherits_app: true,
+      operator_inherits_app: true,
+      any_bypass: false,
+    });
+    // SET ROLE is refused too, whatever a connection asks for.
+    for (const [db, role] of [
+      [appDb, 'rekoda_settlement'],
+      [workerDb, 'rekoda_billing_operator'],
+      [settlementDb, 'rekoda_billing_operator'],
+      [operatorDb, 'rekoda_settlement'],
+      [settlementDb, 'rekoda_app'],
+    ] as const) {
+      expect(
+        await outcome(db.transaction((tx) => tx.execute(sql.raw(`SET LOCAL ROLE ${role}`)))),
+      ).toMatch(/42501|permission denied/);
+    }
+  });
+
+  it('the boot checks pass for the real principals and refuse the general credentials in their place', async () => {
+    await bootChecks.assertDatabasePrincipal(settlementDb, 'settlement', 'rekoda_settlement');
+    await bootChecks.assertDatabasePrincipal(operatorDb, 'operator', 'rekoda_billing_operator');
+    await bootChecks.assertRoleHoldsNoReservedWriter(appDb, 'application');
+    await bootChecks.assertRoleHoldsNoReservedWriter(workerDb, 'worker');
+    // A settlement URL that points at the application role (the silent fallback) refuses to boot.
+    await expect(
+      bootChecks.assertDatabasePrincipal(appDb, 'settlement', 'rekoda_settlement'),
+    ).rejects.toThrow(/logs in as "rekoda_app", not rekoda_settlement/);
+    await expect(
+      bootChecks.assertDatabasePrincipal(settlementDb, 'operator', 'rekoda_billing_operator'),
+    ).rejects.toThrow(/not rekoda_billing_operator/);
+    // The principals themselves would fail the general check (they hold a reserved writer).
+    await expect(
+      bootChecks.assertRoleHoldsNoReservedWriter(settlementDb, 'application'),
+    ).rejects.toThrow(/can run public\.subscription_apply_paid_charge/);
+    // A grant that widens the application role is caught on the next boot.
+    await ownerDb.execute(
+      sql`GRANT EXECUTE ON FUNCTION subscription_apply_paid_charge(uuid,text,timestamptz) TO rekoda_app`,
+    );
+    try {
+      await expect(
+        bootChecks.assertRoleHoldsNoReservedWriter(appDb, 'application'),
+      ).rejects.toThrow(/can run public\.subscription_apply_paid_charge/);
+      // ...and the operator inherits it through rekoda_app, so its own check fails as well.
+      await expect(
+        bootChecks.assertDatabasePrincipal(operatorDb, 'operator', 'rekoda_billing_operator'),
+      ).rejects.toThrow(/can run the other principal's writer/);
+    } finally {
+      await ownerDb.execute(
+        sql`REVOKE EXECUTE ON FUNCTION subscription_apply_paid_charge(uuid,text,timestamptz) FROM rekoda_app`,
+      );
+    }
+  });
+});
+
+describe('OD-37: only settlement records a payment (0202)', () => {
+  it.each(['app', 'worker', 'operator'] as const)(
+    '%s cannot open a charge already paid, settle a pending one, or write payment evidence',
+    async (who) => {
+      const db = PRINCIPALS[who]();
+      const businessId = await seedBusiness();
+      const pending = await seedCharge(businessId, { status: 'pending' });
+      const insertPaid = withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`
+          INSERT INTO subscription_charges
+            (business_id, kind, plan, amount_k, status, reference, period_start, period_end, paid_at)
+          VALUES (${businessId}::uuid, 'first_purchase', 'complete', 1000, 'paid', ${`FORGED-${who}`},
+                  now(), now() + interval '30 days', now())`),
+      );
+      // The worker has no tenant write path at all on a pinned insert beyond RLS; any refusal is a
+      // refusal, but the application roles must be refused by the guard itself.
+      const forged = await outcome(insertPaid);
+      expect(forged).toMatch(/42501/);
+      if (who !== 'worker') expect(forged).toMatch(/only settlement records a payment/);
+      const settled = await outcome(
+        withBusiness(db, businessId, (tx) =>
+          subscriptionsRepo.settleCharge(tx, {
+            reference: pending,
+            status: 'paid',
+            paidAmountK: 1000,
+            when: new Date(),
+          }),
+        ),
+      );
+      expect(settled).toMatch(/42501/);
+      const [row] = await ownerDb.execute<{ status: string; paid_at: string | null }>(
+        sql`SELECT status, paid_at FROM subscription_charges WHERE reference = ${pending}`,
+      );
+      expect(row).toEqual({ status: 'pending', paid_at: null });
+      const [forgedRow] = await ownerDb.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM subscription_charges WHERE reference = ${`FORGED-${who}`}`,
+      );
+      expect(forgedRow!.n).toBe(0);
+    },
+  );
+
+  it('the application cannot relabel a paid charge, move it to another business, or rewrite its evidence', async () => {
+    const businessId = await seedBusiness();
+    const pack = await seedCharge(businessId, { kind: 'add_on', plan: null });
+    for (const change of [
+      sql`kind = 'renewal', plan = 'complete', pack_id = NULL`,
+      sql`amount_k = 1`,
+      sql`paid_at = now() - interval '1 day'`,
+      sql`paid_amount_k = 999999`,
+      sql`units_credited_at = now()`,
+      sql`period_end = now() + interval '10 years'`,
+      sql`billing_interval = 'annual'`,
+    ]) {
+      expect(
+        await outcome(
+          withBusiness(appDb, businessId, (tx) =>
+            tx.execute(sql`UPDATE subscription_charges SET ${change} WHERE reference = ${pack}`),
+          ),
+        ),
+      ).toMatch(
+        /^42501 (what a paid charge bought cannot be changed|only settlement records a payment)/,
+      );
+    }
+  });
+
+  it('settlement records a payment exactly once; the application may still refund and work the lifecycle', async () => {
+    const businessId = await seedBusiness();
+    const reference = await seedCharge(businessId, { status: 'pending' });
+    const settle = () =>
+      withBusiness(settlementDb, businessId, (tx) =>
+        subscriptionsRepo.settleCharge(tx, {
+          reference,
+          status: 'paid',
+          paidAmountK: 1000,
+          when: new Date(),
+        }),
+      );
+    expect((await settle())?.status).toBe('paid');
+    expect(await settle()).toBeNull();
+    // Refunds take entitlement away and stay with the application (the ops refund route).
+    const refunded = await withBusiness(appDb, businessId, (tx) =>
+      subscriptionsRepo.refundCharge(tx, reference, 1000, new Date()),
+    );
+    expect(refunded?.status).toBe('refunded');
+    // ...and a refunded charge cannot be made paid again by it.
+    expect(
+      await outcome(
+        withBusiness(appDb, businessId, (tx) =>
+          tx.execute(
+            sql`UPDATE subscription_charges SET status = 'paid' WHERE reference = ${reference}`,
+          ),
+        ),
+      ),
+    ).toMatch(/^42501 only settlement records a payment/);
+  });
+});
+
+describe('OD-37: only settlement credits pack units or records an add-on holding (0202)', () => {
+  it.each(['app', 'worker', 'operator'] as const)(
+    '%s cannot raise a meter ceiling',
+    async (who) => {
+      const businessId = await seedBusiness();
+      const credit = await outcome(
+        withBusiness(PRINCIPALS[who](), businessId, (tx) =>
+          usageRepo.creditBonus(tx, businessId, '2026-11', 'AI_ACTIONS', 500),
+        ),
+      );
+      expect(credit).toMatch(/42501/);
+      if (who !== 'worker') expect(credit).toMatch(/pack units are credited only by settlement/);
+    },
+  );
+
+  it("consumption stays the application's; settlement credits", async () => {
+    const businessId = await seedBusiness();
+    expect(
+      await withBusiness(appDb, businessId, (tx) =>
+        usageRepo.consumeUnit(tx, businessId, '2026-11', 'AI_ACTIONS', 50),
+      ),
+    ).toBe(true);
+    await withBusiness(settlementDb, businessId, (tx) =>
+      usageRepo.creditBonus(tx, businessId, '2026-11', 'AI_ACTIONS', 7),
+    );
+    const [row] = await ownerDb.execute<{ bonus: number }>(
+      sql`SELECT bonus FROM usage_counters WHERE business_id = ${businessId}::uuid AND unit = 'AI_ACTIONS'`,
+    );
+    expect(row!.bonus).toBe(7);
+  });
+
+  it('the application can no longer insert or change an add-on holding; settlement can', async () => {
+    const [facts] = await ownerDb.execute<Record<string, boolean>>(sql`
+      SELECT has_table_privilege('rekoda_app', 'business_add_ons', 'INSERT') AS app_insert,
+             has_table_privilege('rekoda_app', 'business_add_ons', 'UPDATE') AS app_update,
+             has_table_privilege('rekoda_billing_operator', 'business_add_ons', 'INSERT') AS operator_insert,
+             has_table_privilege('rekoda_settlement', 'business_add_ons', 'INSERT') AS settlement_insert,
+             has_table_privilege('rekoda_settlement', 'business_add_ons', 'UPDATE') AS settlement_update`);
+    expect(facts).toEqual({
+      app_insert: false,
+      app_update: false,
+      operator_insert: false,
+      settlement_insert: true,
+      settlement_update: true,
+    });
+  });
+});

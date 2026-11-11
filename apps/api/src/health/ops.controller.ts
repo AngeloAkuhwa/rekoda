@@ -46,6 +46,7 @@ import {
 import { CONFIG, type ApiConfig } from '../config.js';
 import { SecurityMetrics } from '../channels/security-metrics.service.js';
 import { DB, WORKER_DB } from '../db/db.module.js';
+import { operatorActor } from '../auth/operator-actor.js';
 
 /**
  * What an operator needs to know at 2am (MASTER-PLAN §6.4).
@@ -507,7 +508,7 @@ export class OpsController {
     /* The audit actor is the VERIFIED subject, never a name the caller sent.
      * A body field here meant whoever held the shared secret also chose who
      * the record said they were. */
-    const actor = `operator:${request.operator!.subject}`;
+    const actor = operatorActor(request);
 
     return withBusiness(this.db, businessId, async (tx) => {
       const charge = await subscriptionsRepo.refundCharge(tx, reference, amountK, new Date(), {
@@ -633,7 +634,7 @@ export class OpsController {
         tx,
         reference,
         input.data.resolution,
-        `operator:${request.operator!.subject}`,
+        operatorActor(request),
       ),
     );
     if (!resolved) throw new ConflictException('that charge is not open');
@@ -667,7 +668,7 @@ export class OpsController {
         businessId,
         reference,
         input.data.resolution,
-        `operator:${request.operator!.subject}`,
+        operatorActor(request),
       ),
     );
     if (!resolved) throw new ConflictException('that renewal is not an open blocked renewal');
@@ -710,13 +711,17 @@ export class OpsController {
         'this event belongs to an open dead job; recover or resolve it at /v1/ops/dead-jobs/:jobId',
       );
     }
-    const resolved = await events.resolveEvent(
-      this.workerDb,
-      id,
-      input.data.resolution,
-      `operator:${request.operator!.subject}`,
-      'operator',
-    );
+    /* ADR 0035 Amendment 2 rule 4 (owner review of #432, migration 0204): found on the worker
+     * credential, written on the application credential under the event's own business pin, with an
+     * audit row; the worker credential can no longer write a resolution. */
+    const resolved =
+      (await events.resolveExceptionAsOperator(
+        this.db,
+        this.workerDb,
+        id,
+        input.data.resolution,
+        operatorActor(request),
+      )) === 'resolved';
     if (!resolved) throw new NotFoundException('no open exception with that id');
     return { resolved: true as const };
   }

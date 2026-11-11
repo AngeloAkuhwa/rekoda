@@ -24,6 +24,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { settlementDb } from '@rekoda/db/testing';
 import { RATE_WINDOW_MS } from '@rekoda/core/api-keys';
 
 const SECRET = 'api-keys-secret-at-least-32-characters'; // gitleaks:allow - test fixture, not a credential
@@ -105,7 +106,7 @@ async function onboard(phone: string, name: string) {
  */
 async function creditApiCapacity(businessId: string): Promise<void> {
   const period = usagePeriod(new Date());
-  await withBusiness(db, businessId, async (tx) => {
+  await withBusiness(settlementDb(), businessId, async (tx) => {
     await usageRepo.creditBonus(tx, businessId, period, 'API_REQUEST_UNITS', 1_000);
   });
   await grantCapacityAddOn(urls, businessId, 'API_APPLICATIONS', 20);

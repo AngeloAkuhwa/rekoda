@@ -17,7 +17,6 @@ import {
 } from '@rekoda/db';
 import { usagePeriod } from '@rekoda/core';
 import { buildRunner } from '../jobs/jobs.module.js';
-import { billingRepo } from '@rekoda/db';
 import { encryptFacet } from '@rekoda/core/vault';
 import {
   db,
@@ -29,6 +28,7 @@ import {
   useMetaWebhookHarness,
   workerDb,
 } from './meta-webhook.fixtures.js';
+import { setPlanForTest, requireUrls, settlementDb } from '@rekoda/db/testing';
 
 useMetaWebhookHarness();
 
@@ -46,7 +46,7 @@ describe('the away assistant (spec Appendix D; W4, PR-090)', () => {
       ownerUserId: user.id,
     });
     const businessId = business.id;
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'integrate',
       expiresAt: null,
@@ -73,7 +73,10 @@ describe('the away assistant (spec Appendix D; W4, PR-090)', () => {
         costK: 100_000,
         sourceType: 'chat',
       });
-      await usageRepo.creditBonus(tx, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 5);
+      /* Pack units are credited only by settlement (OD-37). */
+      await withBusiness(settlementDb(), businessId, (s) =>
+        usageRepo.creditBonus(s, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 5),
+      );
       await wabaRepo.setAssistantSettings(tx, businessId, {
         enabled: opts.enabled ?? true,
         dailyReplyLimit: opts.limit ?? 3,
@@ -193,7 +196,7 @@ describe("a customer's own STOP (PR-135)", () => {
       ownerUserId: user.id,
     });
     const businessId = business.id;
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'integrate',
       expiresAt: null,
@@ -220,7 +223,10 @@ describe("a customer's own STOP (PR-135)", () => {
         costK: 100_000,
         sourceType: 'chat',
       });
-      await usageRepo.creditBonus(tx, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 20);
+      /* Pack units are credited only by settlement (OD-37). */
+      await withBusiness(settlementDb(), businessId, (s) =>
+        usageRepo.creditBonus(s, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 20),
+      );
       /* The assistant ON, so "silent afterwards" means the suppression did
        * it and not the absence of anything to say. */
       await wabaRepo.setAssistantSettings(tx, businessId, { enabled: true, dailyReplyLimit: 10 });

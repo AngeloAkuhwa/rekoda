@@ -117,6 +117,9 @@ step 'a throwaway .env and owner secret (placeholders, generated here, nothing r
 OWNER_PW=$(rand)
 APP_PW=$(rand)
 WORKER_PW=$(rand)
+# OD-37 (migration 0202): the settlement and billing-operator principals.
+SETTLEMENT_PW=$(rand)
+OPERATOR_PW=$(rand)
 VAULT=$(rand)
 MATCH=$(rand)
 CONNECTION=$(rand)
@@ -146,6 +149,8 @@ set_env NEXT_PUBLIC_PRIVACY_EMAIL privacy@example.com
 set_env NEXT_PUBLIC_SUPPORT_EMAIL support@example.com
 set_env DATABASE_URL "postgres://rekoda_app:$APP_PW@postgres:5432/rekoda"
 set_env WORKER_DATABASE_URL "postgres://rekoda_worker:$WORKER_PW@postgres:5432/rekoda"
+set_env SETTLEMENT_DATABASE_URL "postgres://rekoda_settlement:$SETTLEMENT_PW@postgres:5432/rekoda"
+set_env OPERATOR_DATABASE_URL "postgres://rekoda_billing_operator:$OPERATOR_PW@postgres:5432/rekoda"
 set_env VAULT_KEY "$VAULT"
 set_env MATCH_KEY "$MATCH"
 set_env CONNECTION_KEY "$CONNECTION"
@@ -157,7 +162,7 @@ set_env OPERATOR_OIDC_ISSUER https://idp.example.com/
 set_env OPERATOR_OIDC_AUDIENCE rekoda-ci
 set_env OPERATOR_OIDC_JWKS_URL https://idp.example.com/.well-known/jwks.json
 set_env REKODA_RATE_LIMIT_MAX 20
-printf '%s\n' "$OWNER_PW" "$APP_PW" "$WORKER_PW" "$VAULT" "$MATCH" "$CONNECTION" \
+printf '%s\n' "$OWNER_PW" "$APP_PW" "$WORKER_PW" "$SETTLEMENT_PW" "$OPERATOR_PW" "$VAULT" "$MATCH" "$CONNECTION" \
   "$API_SECRET" "$PEPPER" "$META_SECRET" "$VERIFY" >"$WORK/secrets.txt"
 umask 022
 
@@ -189,7 +194,7 @@ for image in rekoda-app:ci-a rekoda-web:ci-a; do
   fi
   rm -f "$WORK/image.tar"
   config=$(docker image inspect --format '{{json .Config.Env}}' "$image")
-  if grep -E -q '"(VAULT_KEY|MATCH_KEY|CONNECTION_KEY|OTP_PEPPER|REKODA_API_SECRET|META_APP_SECRET|DATABASE_URL|WORKER_DATABASE_URL)=' <<<"$config"; then
+  if grep -E -q '"(VAULT_KEY|MATCH_KEY|CONNECTION_KEY|OTP_PEPPER|REKODA_API_SECRET|META_APP_SECRET|DATABASE_URL|WORKER_DATABASE_URL|SETTLEMENT_DATABASE_URL|OPERATOR_DATABASE_URL)=' <<<"$config"; then
     fail "$image bakes a secret-shaped variable"
   fi
 done
@@ -227,7 +232,7 @@ echo 'ok'
 step 'migrate: every migration as the owner, then the runtime roles'
 "${COMPOSE[@]}" run --rm -T migrate | tee "$WORK/migrate.log"
 grep -q '^applied: ' "$WORK/migrate.log" || fail 'migrate applied nothing'
-grep -q '^runtime role passwords set: rekoda_app, rekoda_worker$' "$WORK/migrate.log" ||
+grep -q '^runtime role passwords set: rekoda_app, rekoda_worker, rekoda_settlement, rekoda_billing_operator$' "$WORK/migrate.log" ||
   fail 'the runtime roles were not provisioned'
 MIGRATIONS=$(jq '.entries | length' packages/db/migrations/meta/_journal.json)
 [ "$(psql_owner 'SELECT count(*) FROM rekoda_migrations')" = "$MIGRATIONS" ] ||

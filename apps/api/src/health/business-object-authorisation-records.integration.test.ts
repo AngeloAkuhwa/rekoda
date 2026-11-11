@@ -15,7 +15,7 @@ import {
   withBusiness,
 } from '@rekoda/db';
 import { usagePeriod } from '@rekoda/core';
-import { grantCapacityAddOn } from '@rekoda/db/testing';
+import { grantCapacityAddOn, requireUrls, settlementDb } from '@rekoda/db/testing';
 import {
   REASON,
   appDb,
@@ -93,7 +93,7 @@ async function apiShop() {
       grantedBy: 'operator:idor-suite',
     }),
   );
-  await withBusiness(appDb, b.id, (tx) =>
+  await withBusiness(settlementDb(), b.id, (tx) =>
     usageRepo.creditBonus(tx, b.id, usagePeriod(new Date()), 'API_REQUEST_UNITS', 1_000),
   );
   await grantCapacityAddOn(urls, b.id, 'API_APPLICATIONS', 5);

@@ -162,6 +162,26 @@ An event with no `business_id` belongs to nobody yet, so letting the ingress
 store and dedupe one is not letting it read another tenant's event. The moment
 the attribution pump sets `business_id`, the row leaves that view for good.
 
+**Corrected 11 Nov 2026 (migration 0204, OWN-89, ADR 0035 Amendment 3).** The
+`worker_reads_the_estate` policy above had no `FOR` clause, so despite its name
+it let the worker credential write every business's events (INSERT, UPDATE and
+DELETE on every column, no pin), and the generic operator resolve used that.
+Since 0204 the worker's policies on this table are:
+
+```sql
+CREATE POLICY worker_reads_the_estate ON external_events
+  FOR SELECT TO rekoda_worker USING (true);
+CREATE POLICY worker_marks_unattributed_ingress ON external_events
+  FOR UPDATE TO rekoda_worker USING (business_id IS NULL);
+-- grants: SELECT, UPDATE (processed_at, error); no INSERT, no DELETE.
+-- attribution only through attribute_external_event(event, business):
+--   worker-only SECURITY DEFINER, write-once from NULL to an existing business.
+```
+
+The generic resolve runs on the application credential under the event's own
+business pin and writes an `exception_resolved` audit row
+(`external-events-worker-write.integration.test.ts`).
+
 ### The question this register asked, answered
 
 > **which credential do the operator exception-queue reads actually run on?**

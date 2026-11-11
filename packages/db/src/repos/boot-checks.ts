@@ -64,6 +64,111 @@ export async function assertRoleCannotAssumePlanWriter(db: Db, label: string): P
   }
 }
 
+/** The writers OD-37 reserves to one principal each (migrations 0202, 0203). */
+export const SETTLEMENT_WRITER = 'public.subscription_apply_paid_charge(uuid,text,timestamptz)';
+export const OPERATOR_WRITER =
+  'public.subscription_operator_set_plan(uuid,text,timestamptz,text,text)';
+export type DatabasePrincipal = 'rekoda_settlement' | 'rekoda_billing_operator';
+
+interface PrincipalFacts {
+  rolname: string;
+  super: boolean;
+  bypass: boolean;
+  settlement_writer: boolean | null;
+  operator_writer: boolean | null;
+  in_settlement: boolean | null;
+  in_operator: boolean | null;
+  in_worker: boolean | null;
+  in_app: boolean | null;
+  in_plan_writer: boolean | null;
+}
+
+/* Each fact is NULL when the role or function it names does not exist (migrations not applied):
+ * every check below treats NULL as a failure for what must hold. */
+async function principalFacts(db: Db): Promise<PrincipalFacts> {
+  const rows = await db.execute<PrincipalFacts & Record<string, unknown>>(sql`
+    SELECT r.rolname::text AS rolname, r.rolsuper AS super, r.rolbypassrls AS bypass,
+      CASE WHEN to_regprocedure(${SETTLEMENT_WRITER}) IS NULL THEN NULL
+           ELSE has_function_privilege(current_user, to_regprocedure(${SETTLEMENT_WRITER}), 'EXECUTE') END
+        AS settlement_writer,
+      CASE WHEN to_regprocedure(${OPERATOR_WRITER}) IS NULL THEN NULL
+           ELSE has_function_privilege(current_user, to_regprocedure(${OPERATOR_WRITER}), 'EXECUTE') END
+        AS operator_writer,
+      CASE WHEN to_regrole('rekoda_settlement') IS NULL THEN NULL
+           ELSE pg_has_role(current_user, 'rekoda_settlement', 'MEMBER') END AS in_settlement,
+      CASE WHEN to_regrole('rekoda_billing_operator') IS NULL THEN NULL
+           ELSE pg_has_role(current_user, 'rekoda_billing_operator', 'MEMBER') END AS in_operator,
+      CASE WHEN to_regrole('rekoda_worker') IS NULL THEN NULL
+           ELSE pg_has_role(current_user, 'rekoda_worker', 'MEMBER') END AS in_worker,
+      CASE WHEN to_regrole('rekoda_app') IS NULL THEN NULL
+           ELSE pg_has_role(current_user, 'rekoda_app', 'USAGE') END AS in_app,
+      CASE WHEN to_regrole('rekoda_plan_writer') IS NULL THEN NULL
+           ELSE pg_has_role(current_user, 'rekoda_plan_writer', 'MEMBER') END AS in_plan_writer
+    FROM pg_roles r WHERE r.rolname = current_user
+  `);
+  const facts = [...rows][0];
+  if (!facts) throw new Error('principal boot check: could not read pg_roles for this connection');
+  return facts;
+}
+
+/**
+ * OD-37 (0202): the general application and worker credentials hold neither reserved writer and
+ * cannot become either reserved principal. Checked live on every boot, so a later GRANT is caught
+ * before the process serves anything. A database without the principals yet (migrations not
+ * applied) fails: this release needs them.
+ */
+export async function assertRoleHoldsNoReservedWriter(db: Db, label: string): Promise<void> {
+  const f = await principalFacts(db);
+  const problems: string[] = [];
+  if (f.settlement_writer !== false) problems.push(`can run ${SETTLEMENT_WRITER}`);
+  if (f.operator_writer !== false) problems.push(`can run ${OPERATOR_WRITER}`);
+  if (f.in_settlement !== false) problems.push('can become rekoda_settlement');
+  if (f.in_operator !== false) problems.push('can become rekoda_billing_operator');
+  if (problems.length > 0) {
+    throw new Error(
+      `the ${label} database role "${f.rolname}" ${problems.join(', ')}: settlement and operator ` +
+        'plan changes must stay with their own principals (OD-37). Apply migrations 0202 and 0203 ' +
+        'and revoke any extra grant or membership.',
+    );
+  }
+}
+
+/**
+ * OD-37 (0202): a settlement or operator connection is exactly its principal. It must log in as
+ * that role (never the application role, never an owner), hold its own writer and not the other,
+ * act with the application's ordinary rights (it inherits `rekoda_app`) and nothing more: not the
+ * worker, not the other principal, not the plan writer, no RLS bypass.
+ */
+export async function assertDatabasePrincipal(
+  db: Db,
+  label: string,
+  expected: DatabasePrincipal,
+): Promise<void> {
+  const f = await principalFacts(db);
+  if (f.rolname !== expected) {
+    throw new Error(
+      `the ${label} connection logs in as "${f.rolname}", not ${expected}: point it at its own ` +
+        'credential (OD-37); it never falls back to the application or owner role.',
+    );
+  }
+  const mine = expected === 'rekoda_settlement' ? f.settlement_writer : f.operator_writer;
+  const other = expected === 'rekoda_settlement' ? f.operator_writer : f.settlement_writer;
+  const otherMember = expected === 'rekoda_settlement' ? f.in_operator : f.in_settlement;
+  const problems: string[] = [];
+  if (f.super || f.bypass) problems.push(f.super ? 'is SUPERUSER' : 'is BYPASSRLS');
+  if (mine !== true) problems.push('cannot run its own writer');
+  if (other !== false) problems.push("can run the other principal's writer");
+  if (otherMember !== false) problems.push('can become the other principal');
+  if (f.in_worker !== false) problems.push('can become rekoda_worker');
+  if (f.in_plan_writer !== false) problems.push('can become rekoda_plan_writer');
+  if (f.in_app !== true) problems.push("does not act with rekoda_app's rights");
+  if (problems.length > 0) {
+    throw new Error(
+      `the ${label} database role ${expected} ${problems.join(', ')} (OD-37, migration 0202).`,
+    );
+  }
+}
+
 /**
  * A NON-SECRET fingerprint of a key (remediation A6).
  *

@@ -15,12 +15,14 @@ import {
   Post,
   Req,
   UnauthorizedException,
+  ServiceUnavailableException,
   UseGuards,
 } from '@nestjs/common';
 import { usageRepo, billingRepo, identity, withBusiness, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { OperatorGuard, OperatorScopes, type OperatorRequest } from './operator.guard.js';
-import { DB } from '../db/db.module.js';
+import { DB, OPERATOR_DB } from '../db/db.module.js';
+import { operatorActor } from './operator-actor.js';
 import { InvalidPhoneError, normalisePhone } from '@rekoda/core/identity';
 import {
   createBusinessRequest,
@@ -143,6 +145,11 @@ export class BusinessController {
     @Inject(AuthService) private readonly auth: AuthService,
     @Inject(CONFIG) private readonly config: ApiConfig,
     @Inject(DB) private readonly db: Db,
+    /**
+     * `rekoda_billing_operator` (OD-37, migration 0202), or null in a worker process: the only
+     * connection that may run the operator plan writer. Never the application pool.
+     */
+    @Inject(OPERATOR_DB) private readonly operatorDb: Db | null,
   ) {}
 
   /**
@@ -376,33 +383,56 @@ export class BusinessController {
   async setPlan(@Req() request: OperatorRequest, @Body() body: unknown): Promise<{ plan: string }> {
     const parsed = setPlanRequest.safeParse(body);
     if (!parsed.success) {
-      throw new BadRequestException('businessId, plan and expiresAt are required');
+      throw new BadRequestException(
+        'businessId, plan and expiresAt are required; billingInterval is monthly or annual',
+      );
+    }
+    /* The subject is checked before anything is written (a 400, not a 500 from the writer). */
+    const actor = operatorActor(request);
+    const operatorDb = this.operatorDb;
+    if (!operatorDb) {
+      throw new ServiceUnavailableException(
+        'operator plan changes are not served by this process (no operator database credential)',
+      );
     }
 
-    const { businessId, plan, expiresAt } = parsed.data;
-    /* A paid plan that is already past its date would raise a renewal at the
-     * next sweep and carry a cycle start after its own expiry, so a later
-     * self-service upgrade would prorate to nothing (G-114). Refused rather
-     * than clamped: the operator asked for a date that cannot be true. Marking
-     * a plan lapsed is `expired`, which takes any date. */
-    if (expiresAt && !UNPAID_PLANS.has(plan) && new Date(expiresAt).getTime() <= Date.now()) {
-      throw new BadRequestException('a paid plan needs an expiry in the future');
+    const { businessId, plan, expiresAt, billingInterval } = parsed.data;
+    /* Rekoda's plan durations (owner review of #432, migration 0203): a monthly plan ends in the
+     * future and within one month, an annual plan within twelve months, a trial within 14 days of
+     * the business's own trial start, and `expired` at or before now. No open-ended paid plan. With
+     * no `expiresAt` the rule's own date is used (one period, the trial end, now). A date outside
+     * the rule is refused, never clamped: the operator asked for something that is not a Rekoda
+     * plan. The database writer enforces the same rule. */
+    let changed: boolean;
+    try {
+      changed = await billingRepo.setPlan(operatorDb, {
+        businessId,
+        plan,
+        expiresAt: expiresAt ? new Date(expiresAt) : null,
+        ...(billingInterval ? { billingInterval } : {}),
+        actor,
+      });
+    } catch (error) {
+      if (error instanceof billingRepo.PlanDateRefused)
+        throw new BadRequestException(error.message);
+      /* The writer's own input refusal (the same rule, enforced in the database) is the caller's
+       * input too; anything else is not, and stays a 500. */
+      const cause = (error as { cause?: { code?: string; message?: string } }).cause;
+      if (
+        cause?.code === '22023' &&
+        typeof cause.message === 'string' &&
+        cause.message.startsWith('subscription_operator_set_plan:')
+      ) {
+        throw new BadRequestException(
+          cause.message.replace('subscription_operator_set_plan: ', ''),
+        );
+      }
+      throw error;
     }
-    const changed = await billingRepo.setPlan(this.db, {
-      businessId,
-      plan,
-      expiresAt: expiresAt ? new Date(expiresAt) : null,
-      /* The verified subject. This route can change any business's plan in
-       * the estate, and until now it also let the caller name themselves. */
-      actor: `operator:${request.operator!.subject}`,
-    });
     if (!changed) throw new NotFoundException('no business with that id');
     return { plan };
   }
 }
-
-/** The plans nobody paid for; every other plan carries a paid cycle (G-114). */
-const UNPAID_PLANS = new Set(['trial', 'expired']);
 
 /** A member as the wire sees one. Phone included: it is the only handle an
  * owner has for a person they invited, and it is their own team. */

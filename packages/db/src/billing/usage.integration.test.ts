@@ -14,6 +14,7 @@ import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { billingRepo, events, identity, usageRepo } from '../index.js';
 import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '../testing.js';
+import { setPlanForTest, settlementDb, operatorDb } from '../testing.js';
 import { USAGE_UNITS, allowanceFor } from '@rekoda/core';
 
 let urls: Urls;
@@ -87,8 +88,8 @@ describe('the atomic gate', () => {
     expect(await consume(businessId, 2)).toBe(true);
     expect(await consume(businessId, 2)).toBe(false); // exhausted at plan allowance
 
-    // What the M4 billing event will do after a VERIFIED top-up payment.
-    await withBusiness(db, businessId, (tx) =>
+    // What the M4 billing event will do after a VERIFIED top-up payment (settlement only, OD-37).
+    await withBusiness(settlementDb(), businessId, (tx) =>
       tx.execute(sql`
         UPDATE usage_counters SET bonus = 3
         WHERE business_id = ${businessId}::uuid AND period = ${PERIOD} AND unit = 'AI_ACTIONS'
@@ -195,10 +196,12 @@ describe('plan changes and upgrade requests', () => {
     const businessId = await seedBusiness();
     const expiresAt = new Date(Date.now() + 365 * 86_400_000);
 
-    const changed = await billingRepo.setPlan(db, {
+    // The real operator path: the billing-operator principal and an annual plan (OD-37, 0203).
+    const changed = await billingRepo.setPlan(operatorDb(), {
       businessId,
       plan: 'chat',
       expiresAt,
+      billingInterval: 'annual',
       actor: 'operator:angelo',
     });
     expect(changed).toBe(true);
@@ -219,7 +222,7 @@ describe('plan changes and upgrade requests', () => {
   });
 
   it('answers false for a business that does not exist, changing nothing', async () => {
-    const changed = await billingRepo.setPlan(db, {
+    const changed = await billingRepo.setPlan(operatorDb(), {
       businessId: '2b0f9b6a-0000-4000-8000-000000000000',
       plan: 'complete',
       expiresAt: null,

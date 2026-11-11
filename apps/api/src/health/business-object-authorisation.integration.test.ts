@@ -6,8 +6,8 @@
  * and nothing may be written in either business.
  */
 import { describe, expect, it } from 'vitest';
-import { billingRepo, sql } from '@rekoda/db';
-import { grantCapacityAddOn } from '@rekoda/db/testing';
+import { sql } from '@rekoda/db';
+import { grantCapacityAddOn, setPlanForTest } from '@rekoda/db/testing';
 import { appDb, business, call, ownerDb, signIn, urls, useHarness } from './ops-idor-harness.js';
 
 useHarness();
@@ -18,7 +18,7 @@ const unknownUuid = '00000000-0000-4000-8000-000000000bad';
 /** Business with a complete plan and API capacity, so every owner route is open to it. */
 async function shop() {
   const b = await business();
-  await billingRepo.setPlan(appDb, {
+  await setPlanForTest(appDb, {
     businessId: b.id,
     plan: 'complete',
     expiresAt: new Date(Date.now() + 30 * 86_400_000),

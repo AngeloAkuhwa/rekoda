@@ -4,7 +4,7 @@ Base: `main` at `58e6834` (PR A, #431, merged). **Status (8 Nov 2026): ALL SIX I
 
 As built, against this plan:
 
-- Migrations are 0193 to 0200, four more than the recorded range: 0197 holds the item 6 staging tables and writer (the brief allowed numbers to be confirmed when PR B started); 0198 (review of #432) ordered the blocked-renewal close pass by a per-row failure stamp; 0199 (owner direction 11 Nov 2026, OWN-88) replaces that with a durable keyset cursor; 0200 (OWN-88) makes the plan writers enforce the business rules (below and §5).
+- Migrations are 0193 to 0204 (0201 to 0204 added by the owner review, OWN-89, §5a), eight more than the recorded range: 0197 holds the item 6 staging tables and writer (the brief allowed numbers to be confirmed when PR B started); 0198 (review of #432) ordered the blocked-renewal close pass by a per-row failure stamp; 0199 (owner direction 11 Nov 2026, OWN-88) replaces that with a durable keyset cursor; 0200 (OWN-88) makes the plan writers enforce the business rules (below and §5).
 - Item 1: `provider_settled_at` has no writer, because Rekoda has no Paystack settlement feed for its own account; no row is backfilled, because the evidence is sealed or was never kept.
 - Items 2 and 3 share one table (`dead_job_exceptions`). A dead job behind an event is that event's flagged row, carrying `jobId`, and a job without one is a `deadJobs` item. The pump now puts Rekoda's own reference in the job payload so the operator item names it; recovery still verifies the reference read from the signed event.
 - Item 4: the renewal row and grace clock are unchanged, and the renewal is stamped blocked, listed and alerted on (`billing.renewals_blocked`). OD-44 stays open.
@@ -64,6 +64,27 @@ Existing (PR #418): `chargeGate` in `apps/api/src/billing/paystack-key.ts` refus
 The triggers decide on `current_user` (the executing role), never a setting; tests set arbitrary session settings and repoint the pin and the guard still holds. The application and worker cannot become the writer role (0196 refuses to migrate and the API refuses to boot otherwise), cannot create functions on the writers' path, and cannot execute the operator writer from the worker. Migrations and an administrator's repair keep the table-owner exemption; the staging date tool (0197) keeps its own gated writer. Test databases get one extra writer, `test_fixture_set_plan`, installed by the test harness only (never a migration); the staging deploy's pre-start smoke refuses to start a release if it, or the removed general writer, exists. Tests: `plan-fields-guard.integration.test.ts`.
 
 **Remaining limit (requires an owner decision, not closable in the database alone).** The application and worker credentials can insert and update `subscription_charges` (0020), so a party holding one of those credentials and able to run arbitrary SQL could forge a `paid` charge row and then apply it. The database cannot distinguish legitimate application code from a stolen application credential. Closing this needs settlement to run under a separate principal: for example a dedicated `rekoda_settlement` database role used only by the Paystack verification path, the only role allowed to move a charge to `paid` (enforced by a trigger on `subscription_charges.status`), with the application credential limited to creating `pending` charges. The operator path has the same shape: `rekoda_app` holds EXECUTE on `subscription_operator_set_plan` (the operator-plane identity, ADR 0034, is verified in the API), so a stolen application credential could set any known plan for any business it pins, including an open-ended paid plan (an existing operator product path). Since OWN-88 the writer refuses any actor that is not `operator:<subject>` and writes the `plan_changed` audit row itself, so such a call is always recorded, but it is not prevented. Closing it needs a separate operator database credential (for example `rekoda_operator`, used only by the `ops:billing` routes) holding EXECUTE on the operator writer, revoked from `rekoda_app`, and an owner ruling on whether open-ended paid operator plans stay allowed. Both are architecture changes (new credentials, their provisioning, and moving the verify and operator paths onto them) and are recorded as OPEN in `docs/REKODA_LAUNCH_READINESS.md` (OD-37). What 0200 does enforce, and the staging smoke checks: no general writer; the provider writer takes the plan from one paid, unapplied plan charge and claims it, and an applied period cannot be cleared (one charge, one cycle); validated, audited operator writes; every new business starts on a future trial of at most 15 days; pinned search_path and explicit EXECUTE (no PUBLIC; the worker cannot call the operator writer). This is an integrity boundary, not an authorisation boundary against a stolen application credential.
+
+### 5a. Owner review round (OWN-89, 11 Nov 2026): principals and plan durations, as built
+
+- **Principals (0202).** `rekoda_settlement` and `rekoda_billing_operator`, LOGIN, inheriting
+  `rekoda_app` (INHERIT TRUE, SET FALSE), no RLS bypass. Reserved to settlement: a charge's move into
+  `paid` and its payment evidence (trigger `subscription_charges_settlement_guard`), raising
+  `usage_counters.bonus` (`usage_counters_bonus_guard`), INSERT/UPDATE on `business_add_ons`, EXECUTE
+  on `subscription_apply_paid_charge`. Reserved to the billing operator: EXECUTE on
+  `subscription_operator_set_plan`. Every settlement path found: the `billing.process` job (Paystack
+  webhook via the pump, the stranded lane, and operator dead-job recovery, which reruns the job) runs
+  its transaction on the settlement pool (`JobRunner.register(kind, handler, db)`); the owner's
+  `POST /v1/billing/plan` runs on it because a zero-priced upgrade settles in the same transaction.
+  No other code writes `paid`, `paid_at`, `paid_amount_k`, `provider_paid_at` or `bonus`.
+- **Durations (0203).** As in `REKODA_LAUNCH_READINESS.md` OD-37. Dependent flows checked: the
+  operator route (now takes `billingInterval`; no date means one period, the trial end or now), the
+  provider settlement and renewal (dates come from `addInterval`, inside the new window), the expiry
+  sweeps (a lapse clamps a future end to now), signup (database clock), the staging date tool
+  (unchanged: designated test businesses only, its own +/-90-day window), and the test fixtures (the
+  harness-only `setPlanForTest`, never in a deployed database). Rows already outside the rules are
+  not rewritten (OD-49).
+- **Event privilege (0204).** ADR 0035 Amendment 3.
 
 ## 6. G-119 / OWN-77: staging tools (Route A)
 

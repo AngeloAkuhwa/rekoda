@@ -15,7 +15,21 @@ export const WORKER_DB = Symbol('WorkerDb');
  * `withAdvisoryLock`). Null without a worker credential.
  */
 export const WORKER_LOCK = Symbol('WorkerLock');
+/**
+ * The `rekoda_settlement` pool (OD-37, migration 0202): the only connection that may record a
+ * payment on a Rekoda charge, credit pack units or run the provider plan writer. Used for the
+ * `billing.process` job's transaction and the owner's plan change (which can settle a zero-priced
+ * upgrade). Never the application pool.
+ */
+export const SETTLEMENT_DB = Symbol('SettlementDb');
+/**
+ * The `rekoda_billing_operator` pool (0202), or null in a worker process: the only connection that
+ * may run the operator plan writer (`POST /v1/businesses/plan`).
+ */
+export const OPERATOR_DB = Symbol('OperatorDb');
 const DB_HANDLE = Symbol('DbHandle');
+const SETTLEMENT_DB_HANDLE = Symbol('SettlementDbHandle');
+const OPERATOR_DB_HANDLE = Symbol('OperatorDbHandle');
 const WORKER_DB_HANDLE = Symbol('WorkerDbHandle');
 const WORKER_LOCK_HANDLE = Symbol('WorkerLockHandle');
 
@@ -36,10 +50,14 @@ class DbLifecycle implements OnApplicationShutdown {
     @Inject(DB_HANDLE) private readonly handle: DbHandle,
     @Inject(WORKER_DB_HANDLE) private readonly worker: DbHandle | null,
     @Inject(WORKER_LOCK_HANDLE) private readonly lock: LockHandle | null,
+    @Inject(SETTLEMENT_DB_HANDLE) private readonly settlement: DbHandle,
+    @Inject(OPERATOR_DB_HANDLE) private readonly operator: DbHandle | null,
   ) {}
 
   async onApplicationShutdown(): Promise<void> {
     await this.handle.close();
+    await this.settlement.close();
+    await this.operator?.close();
     await this.worker?.close();
     await this.lock?.close();
   }
@@ -109,8 +127,32 @@ class DbLifecycle implements OnApplicationShutdown {
       inject: [WORKER_LOCK_HANDLE],
       useFactory: (handle: LockHandle | null): LockClient | null => handle?.client ?? null,
     },
+    /* Small pools: a settlement is one short transaction per verified payment or zero-priced
+     * upgrade, and an operator plan change is a rare manual act. */
+    {
+      provide: SETTLEMENT_DB_HANDLE,
+      inject: [CONFIG],
+      useFactory: (config: ApiConfig): DbHandle =>
+        createDb(config.settlementDatabaseUrl, { max: 4 }),
+    },
+    {
+      provide: SETTLEMENT_DB,
+      inject: [SETTLEMENT_DB_HANDLE],
+      useFactory: (handle: DbHandle): Db => handle.db,
+    },
+    {
+      provide: OPERATOR_DB_HANDLE,
+      inject: [CONFIG],
+      useFactory: (config: ApiConfig): DbHandle | null =>
+        config.operatorDatabaseUrl ? createDb(config.operatorDatabaseUrl, { max: 2 }) : null,
+    },
+    {
+      provide: OPERATOR_DB,
+      inject: [OPERATOR_DB_HANDLE],
+      useFactory: (handle: DbHandle | null): Db | null => handle?.db ?? null,
+    },
     DbLifecycle,
   ],
-  exports: [CONFIG, DB, WORKER_DB, WORKER_LOCK],
+  exports: [CONFIG, DB, WORKER_DB, WORKER_LOCK, SETTLEMENT_DB, OPERATOR_DB],
 })
 export class DbModule {}

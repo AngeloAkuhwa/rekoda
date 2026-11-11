@@ -172,3 +172,41 @@ table grants and `ops_read_businesses`, and the generic event-resolve write abov
 Narrowing them remains the least-privilege follow-up. The functions read tables under
 `FORCE ROW LEVEL SECURITY` and so, like the discovery functions of Amendment 1, depend on their owner
 bypassing RLS (the migrating role); a change to that owner must be reviewed against this paragraph.
+
+## Amendment 3 (11 Nov 2026, owner review of PR #432, OWN-89): the event estate is a read; the generic resolve follows rule 4
+
+Status: accepted with PR #432 (not merged at the time of writing). Amendment 2 recorded the generic
+`external_events` exception resolve as the one exception to its rule 4. The owner asked for that
+privilege to be assessed as a security issue in its own right. Findings, on the code at `a11e786`:
+
+- `worker_reads_the_estate` (0130) was described as a read but created with no `FOR` clause and no
+  `WITH CHECK`, so with 0004's table grants the worker credential could INSERT, UPDATE and DELETE
+  any business's `external_events` rows on every column with no pin (re-point an event to another
+  business, rewrite its payload or reservations, stamp it resolved).
+- `POST /v1/ops/exceptions/:id/resolve` (`ops:payment`) used that write: no pin, no check that the
+  row was an exception, no audit row.
+
+That is broader than the approved model (discovery is cross-tenant and read-only; mutation is
+tenant-scoped, validated and audited) and is a tenant-isolation and unauthorised-mutation risk for a
+compromised worker credential, so it was treated as a merge blocker and closed (migration 0204):
+
+1. `worker_reads_the_estate` is `FOR SELECT` only. The worker keeps UPDATE of `processed_at` and
+   `error` on rows that are still unattributed (`worker_marks_unattributed_ingress`, USING and
+   WITH CHECK both `business_id IS NULL`), attributes an event only through
+   `attribute_external_event(event, business)` (worker-only `SECURITY DEFINER`, pinned search_path,
+   write-once from NULL to an existing business), and has no INSERT, DELETE or other column UPDATE.
+2. The generic resolve now follows rule 4 with no exception: the target is read on the worker
+   credential and must be an open exception (flagged, or never processed); the write runs on the
+   application credential under `withBusiness()` for the event's own business (re-checked by RLS),
+   and an `exception_resolved` audit event is written there in the same transaction. An unattributed
+   event belongs to no business: it is resolved on the application credential, which reaches only
+   unattributed rows without a pin (0130's `app_records_unattributed_ingress`), and the event's own
+   `resolved_by`, `resolved_at` and `resolution` are its record (there is no tenant to own an audit
+   row).
+
+Residual (recorded, unchanged by this amendment): `app.business_id` is an ordinary setting, so the
+worker credential can still pin a business and write that business's `processed_at`/`error` through
+the tenant policy; the older SELECT-only `worker_resolve` reads on `subscription_charges` and
+`payment_intents`; and 0004's blanket grants on other tables (the OD-33-F1 follow-up). Tests:
+`packages/db/src/ops/external-events-worker-write.integration.test.ts`; the staging pre-start smoke
+checks the policy command and the column grants.

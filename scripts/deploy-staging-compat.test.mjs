@@ -301,55 +301,63 @@ test('OWN-86: a release carrying 0196 runs the pre-start database smoke after mi
   // The smoke checks the database objects, not only the ledger row.
   assert.match(sql, /rekoda_migrations/);
   assert.match(sql, /businesses_plan_fields_guard/);
-  // Each writer at its exact signature, still SECURITY DEFINER (a count across both names could
-  // pass with one writer missing).
+  // OD-37 / owner review of #432 (item 4.3): the writer role owns EXACTLY the expected functions, each
+  // by schema, name and argument types, each with EXACTLY its EXECUTE grantees; no count.
+  assert.doesNotMatch(sql, /proowner = 'rekoda_plan_writer'::regrole\) = \d/);
+  assert.match(sql, /aclexplode\(p\.proacl\)/);
+  for (const entry of [
+    'public.staging_move_date\\(uuid, text, timestamp with time zone, timestamp with time zone, text, text, uuid\\) => rekoda_app',
+    'public.subscription_apply_paid_charge\\(uuid, text, timestamp with time zone\\) => rekoda_settlement',
+    'public.subscription_expire_plan\\(uuid, text, text\\) => rekoda_app,rekoda_worker',
+    'public.subscription_operator_set_plan\\(uuid, text, timestamp with time zone, text, text\\) => rekoda_billing_operator',
+  ]) {
+    assert.match(sql, new RegExp(entry));
+  }
+  // Every writer is SECURITY DEFINER with the pinned search_path.
   assert.match(
     sql,
-    /oid = to_regprocedure\('public\.subscription_apply_paid_charge\(uuid,text,timestamptz\)'\)/,
+    /NOT prosecdef OR proconfig IS DISTINCT FROM ARRAY\['search_path=pg_catalog, public, pg_temp'\]/,
   );
-  assert.match(
-    sql,
-    /oid = to_regprocedure\('public\.subscription_operator_set_plan\(uuid,text,timestamptz,text\)'\)/,
-  );
-  assert.match(
-    sql,
-    /oid = to_regprocedure\('public\.subscription_expire_plan\(uuid,text,text\)'\)/,
-  );
-  // OD-37 (0200): the general writer was removed and the test-only fixture writer must not exist.
+  // The removed general writer, the old operator signature and the test-only fixture writer are absent.
   assert.match(
     sql,
     /to_regprocedure\('public\.subscription_write_plan\(uuid,text,timestamptz\)'\) IS NULL/,
   );
   assert.match(
     sql,
-    /to_regprocedure\('public\.test_fixture_set_plan\(uuid,text,timestamptz\)'\) IS NULL/,
+    /to_regprocedure\('public\.subscription_operator_set_plan\(uuid,text,timestamptz,text\)'\) IS NULL/,
   );
-  assert.match(sql, /businesses_plan_fields_insert_guard/);
-  assert.match(sql, /'0200_plan_writer_boundary'/);
-  assert.match(sql, /prosecdef/);
-  assert.match(sql, /rekoda_plan_writer/);
-  assert.match(sql, /pg_has_role\('rekoda_app'/);
-  assert.match(sql, /pg_has_role\('rekoda_worker'/);
-  // OWN-88: the writers' pinned search_path, no PUBLIC execute, no worker execute of the operator
-  // writer, and the applied-once trigger.
-  assert.match(sql, /proconfig = ARRAY\['search_path=pg_catalog, public, pg_temp'\]/);
-  for (const sig of [
-    'subscription_apply_paid_charge\\(uuid,text,timestamptz\\)',
-    'subscription_operator_set_plan\\(uuid,text,timestamptz,text\\)',
-    'subscription_expire_plan\\(uuid,text,text\\)',
-  ]) {
-    assert.match(
-      sql,
-      new RegExp(`NOT has_function_privilege\\('public', 'public\\.${sig}', 'EXECUTE'\\)`),
-    );
-  }
   assert.match(
     sql,
-    /NOT has_function_privilege\('rekoda_worker', 'public\.subscription_operator_set_plan\(uuid,text,timestamptz,text\)', 'EXECUTE'\)/,
+    /to_regprocedure\('public\.test_fixture_set_plan\(uuid,text,timestamptz\)'\) IS NULL/,
   );
-  assert.match(sql, /subscription_charges_applied_once_guard/);
-  // The writer role owns exactly the three writers and 0197's staging_move_date, nothing else.
-  assert.match(sql, /WHERE proowner = 'rekoda_plan_writer'::regrole\) = 4/);
+  for (const tag of [
+    '0200_plan_writer_boundary',
+    '0202_settlement_and_operator_principals',
+    '0203_plan_duration_rules',
+    '0204_external_events_worker_least_privilege',
+  ]) {
+    assert.match(sql, new RegExp(`'${tag}'`));
+  }
+  for (const trigger of [
+    'businesses_plan_fields_insert_guard',
+    'subscription_charges_applied_once_guard',
+    'subscription_charges_settlement_guard',
+    'usage_counters_bonus_guard',
+  ]) {
+    assert.match(sql, new RegExp(trigger));
+  }
+  // The principals exist, cannot bypass RLS, and no runtime role can become another.
+  assert.match(sql, /rolcanlogin AND NOT rolsuper AND NOT rolbypassrls/);
+  assert.match(sql, /\('rekoda_app', 'rekoda_settlement'\)/);
+  assert.match(sql, /\('rekoda_worker', 'rekoda_billing_operator'\)/);
+  assert.match(sql, /pg_has_role\(m\.member, m\.target, 'MEMBER'\)/);
+  // The worker reads, but cannot write, other businesses' events (0204).
+  assert.match(sql, /polname = 'worker_reads_the_estate'/);
+  assert.match(
+    sql,
+    /NOT has_table_privilege\('rekoda_worker', 'public\.external_events', 'UPDATE'\)/,
+  );
 });
 
 test('OWN-86: a failed pre-start smoke never starts the new release and states fix-forward', () => {
@@ -358,7 +366,7 @@ test('OWN-86: a failed pre-start smoke never starts the new release and states f
   const r = h.run();
   assert.notEqual(r.status, 0);
   assert.equal(h.at(' up '), -1, 'the new release must not start after a failed smoke');
-  assert.match(r.stderr, /pre-start database smoke for 0196\/0200 failed/);
+  assert.match(r.stderr, /pre-start database smoke for 0196\/0200\/0202-0204 failed/);
   assert.match(r.stderr, /APPLIED, so the previous release .* is NOT safe to restart/);
   assert.match(r.stderr, /Fix forward/);
   assert.doesNotMatch(r.stderr, /git checkout [0-9a-f]{40}/);
@@ -381,7 +389,7 @@ test('OWN-86: a smoke that cannot run is a failure, not a pass', () => {
   const r = h.run();
   assert.notEqual(r.status, 0);
   assert.equal(h.at(' up '), -1, 'the new release must not start when the smoke could not run');
-  assert.match(r.stderr, /pre-start database smoke for 0196\/0200 could not run/);
+  assert.match(r.stderr, /pre-start database smoke for 0196\/0200\/0202-0204 could not run/);
 });
 
 test('OD-37 (0200): a release bringing in 0200 is compatibility-breaking and runs the smoke too', () => {
@@ -394,6 +402,20 @@ test('OD-37 (0200): a release bringing in 0200 is compatibility-breaking and run
   const up = h.at(' up ');
   assert.ok(stop >= 0 && stop < migrate, 'api and worker are stopped before migrating 0200');
   assert.ok(migrate < smoke && smoke < up, h.calls().join('\n'));
+});
+
+test('OD-37 (0202, 0203): a release bringing in the principals or the duration rules is compatibility-breaking and runs the smoke', () => {
+  for (const tag of ['0202_settlement_and_operator_principals', '0203_plan_duration_rules']) {
+    const h = host([tag]);
+    const r = h.run();
+    assert.equal(r.status, 0, r.stderr + r.stdout);
+    const stop = h.at('stop api worker');
+    const migrate = h.at('run --rm -T migrate');
+    const smoke = h.at('exec -T postgres psql');
+    const up = h.at(' up ');
+    assert.ok(stop >= 0 && stop < migrate, `api and worker are stopped before migrating ${tag}`);
+    assert.ok(migrate < smoke && smoke < up, h.calls().join('\n'));
+  }
 });
 
 test('a release without 0196 does not run the 0196 smoke', () => {

@@ -25,7 +25,57 @@ const FUNCTIONS = [
   'renewal_block_close_finish',
   'renewal_block_close_release',
   'renewal_block_close_status',
+  // Owner review of #432 (0201): the close pass's lease heartbeat.
+  'renewal_block_close_heartbeat',
+  // Owner review of #432 (0204): write-once event attribution, the worker's only business_id write.
+  'attribute_external_event',
 ];
+
+/**
+ * Every table a function body names without a schema: in FROM, JOIN, USING, UPDATE, INSERT INTO,
+ * DELETE FROM and MERGE INTO, case-insensitive and across any whitespace or line breaks, quoted or
+ * not. A name followed by `.` is a schema, so `public.x` is qualified. Not table references, and so
+ * skipped: `EXTRACT(EPOCH FROM x)`, `IS [NOT] DISTINCT FROM x`, `FOR [NO KEY] UPDATE`,
+ * `DO UPDATE SET`, PL/pgSQL `SELECT ... INTO var` and `RAISE ... USING ERRCODE`, and a function
+ * call (`FROM unnest(...)`).
+ * Owner review of #432 (item 4.2): the earlier check matched FROM and JOIN only, so an unqualified
+ * `UPDATE t` or `INSERT INTO t` passed unseen.
+ */
+export function unqualifiedTables(src: string): string[] {
+  const found: string[] = [];
+  const re =
+    /\b(?<kw>from|join|using|update|(?:insert|merge)\s+into)\s+(?:only\s+)?(?<q>"?)(?<name>[a-z_][a-z0-9_$]*)\k<q>(?<after>\s*[.(]?)/gi;
+  for (const m of src.matchAll(re)) {
+    const kw = m.groups!['kw']!.toLowerCase();
+    const name = m.groups!['name']!.toLowerCase();
+    const after = m.groups!['after']!.trim();
+    const before = src.slice(Math.max(0, m.index - 24), m.index).toLowerCase();
+    if (after === '.') continue; // schema-qualified
+    // A function call (`FROM unnest(...)`); after INSERT INTO or MERGE INTO a `(` is the column list.
+    if (after === '(' && !kw.includes('into')) continue;
+    // PL/pgSQL `RAISE ... USING ERRCODE = ...` names an option, not a table.
+    if (
+      kw === 'using' &&
+      [
+        'errcode',
+        'message',
+        'detail',
+        'hint',
+        'column',
+        'constraint',
+        'schema',
+        'table',
+        'datatype',
+      ].includes(name)
+    )
+      continue;
+    if (kw === 'from' && (/\bepoch\s*$/.test(before) || /\bdistinct\s*$/.test(before))) continue;
+    if (kw === 'update' && (/\b(for|key|do)\s*$/.test(before) || name === 'set')) continue;
+    if (['select', 'lateral', 'values', 'set'].includes(name)) continue;
+    found.push(name);
+  }
+  return found;
+}
 const CREDENTIALS = ['rekoda_app', 'rekoda_worker'];
 
 let urls: Urls;
@@ -64,6 +114,38 @@ async function sqlState(run: Promise<unknown>): Promise<string | undefined> {
   }
   return undefined;
 }
+
+describe('the unqualified-table check itself (item 4.2)', () => {
+  it.each([
+    ['UPDATE renewal_block_close_cursor SET x = 1', ['renewal_block_close_cursor']],
+    ['update\n    renewal_block_close_cursor\n  set x = 1', ['renewal_block_close_cursor']],
+    ['INSERT INTO dead_job_exceptions (a) VALUES (1)', ['dead_job_exceptions']],
+    ['insert\n\tinto   "dead_job_exceptions" (a) values (1)', ['dead_job_exceptions']],
+    ['DELETE FROM jobs WHERE id = 1', ['jobs']],
+    ['MERGE INTO subscription_charges c USING x ON true', ['subscription_charges', 'x']],
+    ['UPDATE ONLY businesses SET plan = 1', ['businesses']],
+    ['SELECT 1 FROM jobs j JOIN businesses b ON true', ['jobs', 'businesses']],
+  ])('finds the table in %j', (src, expected) => {
+    expect(unqualifiedTables(src)).toEqual(expected);
+  });
+
+  it.each([
+    'UPDATE public.renewal_block_close_cursor SET x = 1',
+    'INSERT INTO public.dead_job_exceptions (a) VALUES (1)',
+    'insert into  "public"."dead_job_exceptions" (a) values (1)',
+    'DELETE FROM public.jobs',
+    'SELECT EXTRACT(EPOCH FROM c.blocked_at) FROM public.subscription_charges c',
+    'SELECT 1 FROM public.jobs WHERE a IS DISTINCT FROM b AND c IS NOT DISTINCT FROM d',
+    'SELECT 1 FROM public.jobs FOR UPDATE',
+    'SELECT 1 FROM public.jobs FOR NO KEY UPDATE SKIP LOCKED',
+    'INSERT INTO public.t (a) VALUES (1) ON CONFLICT (a) DO UPDATE SET a = 2',
+    'SELECT x INTO v FROM public.t',
+    'SELECT * FROM unnest(ARRAY[1]) AS u',
+    "RAISE EXCEPTION 'no' USING ERRCODE = '22023'",
+  ])('passes the qualified or non-table form %j', (src) => {
+    expect(unqualifiedTables(src)).toEqual([]);
+  });
+});
 
 describe('the operator work-list and close-cursor functions', () => {
   const list = sql.raw(FUNCTIONS.map((f) => `'${f}'`).join(','));
@@ -119,11 +201,7 @@ describe('the operator work-list and close-cursor functions', () => {
       expect(f, f.proname).toMatchObject({ secdef: true, app: false, worker: true, pub: false });
       expect(f.cfg, f.proname).toEqual(['search_path=pg_catalog, pg_temp']);
       expect(f.src, f.proname).not.toMatch(/\bexecute\b/i);
-      // `EXTRACT(EPOCH FROM x)` is not a table reference (0199 reads the cursor key exactly with it).
-      const unqualified = [
-        ...f.src.matchAll(/\b(?<!epoch\s)(?:from|join)\s+(?!public\.)([a-z_]+)/gi),
-      ].map((m) => m[1]);
-      expect(unqualified, `${f.proname} names a table without schema`).toEqual([]);
+      expect(unqualifiedTables(f.src), `${f.proname} names a table without schema`).toEqual([]);
     }
   });
 

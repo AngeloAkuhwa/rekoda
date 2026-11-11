@@ -5,7 +5,7 @@ import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { AppModule } from './app.module.js';
-import { DB, WORKER_DB } from './db/db.module.js';
+import { DB, OPERATOR_DB, SETTLEMENT_DB, WORKER_DB } from './db/db.module.js';
 import { bootChecks, isEntrypoint, type Db } from '@rekoda/db';
 import { assertStagingMarkerNotLive } from './health/staging-boot-check.js';
 import { MAX_IMAGE_BYTES } from '@rekoda/core';
@@ -96,6 +96,19 @@ export async function createApp(): Promise<NestFastifyApplication> {
   if (workerDb) await bootChecks.assertRoleCannotBypassRls(workerDb, 'worker');
   await bootChecks.assertRoleCannotAssumePlanWriter(db, 'application');
   if (workerDb) await bootChecks.assertRoleCannotAssumePlanWriter(workerDb, 'worker');
+  /* OD-37 (0202): the payment and operator plan writers belong to their own principals. The
+   * general credentials must hold neither; each reserved connection must be exactly its role. */
+  await bootChecks.assertRoleHoldsNoReservedWriter(db, 'application');
+  if (workerDb) await bootChecks.assertRoleHoldsNoReservedWriter(workerDb, 'worker');
+  await bootChecks.assertDatabasePrincipal(
+    app.get<Db>(SETTLEMENT_DB),
+    'settlement',
+    'rekoda_settlement',
+  );
+  const operatorDb = app.get<Db | null>(OPERATOR_DB);
+  if (operatorDb) {
+    await bootChecks.assertDatabasePrincipal(operatorDb, 'operator', 'rekoda_billing_operator');
+  }
   await bootChecks.assertKeyUnchanged(db, 'VAULT_KEY', config.vaultKey);
   await bootChecks.assertKeyUnchanged(db, 'MATCH_KEY', config.matchKey);
   await assertStagingMarkerNotLive(db, config.paystackSecretKey);

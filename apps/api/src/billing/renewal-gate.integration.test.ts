@@ -29,6 +29,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { settlementDb } from '@rekoda/db/testing';
 import { sweepRenewals } from './renewal-sweep.js';
 import { applySettledCharge } from './billing.service.js';
 import { collectOpsSnapshot } from '../health/ops-alerts.js';
@@ -214,7 +215,7 @@ describe('OWN-70: what happens to a blocked renewal afterwards', () => {
     await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
     const [charge] = await chargesOf(businessId);
     const settle = () =>
-      withBusiness(db, businessId, (tx) =>
+      withBusiness(settlementDb(), businessId, (tx) =>
         applySettledCharge(tx, {
           businessId,
           reference: charge!.reference,
@@ -298,7 +299,7 @@ describe('OWN-70: what happens to a blocked renewal afterwards', () => {
     const businessId = await dueBusiness();
     await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
     const [charge] = await chargesOf(businessId);
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: charge!.reference,

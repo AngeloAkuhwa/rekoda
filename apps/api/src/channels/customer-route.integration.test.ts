@@ -8,8 +8,8 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { billingRepo, createDb, identity, wabaRepo, withBusiness, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { createDb, identity, wabaRepo, withBusiness, type Db } from '@rekoda/db';
+import { migrate, requireUrls, truncateAll, type Urls, setPlanForTest } from '@rekoda/db/testing';
 import { encryptFacet } from '@rekoda/core/vault';
 import { loadConfig, type ApiConfig } from '../config.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
@@ -61,7 +61,7 @@ async function seedMerchant(plan: 'integrate' | 'chat', waba: boolean) {
     businessType: null,
     ownerUserId: user.id,
   });
-  await billingRepo.setPlan(db, {
+  await setPlanForTest(db, {
     businessId: business.id,
     plan,
     expiresAt: null,

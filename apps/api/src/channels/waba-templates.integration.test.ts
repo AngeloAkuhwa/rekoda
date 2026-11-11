@@ -11,7 +11,6 @@ import { randomBytes } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  billingRepo,
   usageRepo,
   conversationsRepo,
   createDb,
@@ -23,6 +22,7 @@ import {
   type Db,
 } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { setPlanForTest, settlementDb } from '@rekoda/db/testing';
 import { usagePeriod } from '@rekoda/core';
 import {
   encryptFacet,
@@ -80,7 +80,7 @@ async function seedMerchant(plan: 'integrate' | 'complete' | 'chat' = 'integrate
     businessType: null,
     ownerUserId: user.id,
   });
-  await billingRepo.setPlan(db, {
+  await setPlanForTest(db, {
     businessId: business.id,
     plan,
     expiresAt: null,
@@ -312,7 +312,7 @@ describe('the window selects the send (§24; PR-061)', () => {
      * other half of the ceiling: a top-up adds to the plan rather than
      * replacing it. */
     const period = usagePeriod(new Date());
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       usageRepo.creditBonus(tx, businessId, period, 'SERVICE_MESSAGE', 5),
     );
 
@@ -511,7 +511,7 @@ describe('no transaction is held open while Meta is called (REM-02)', () => {
     );
     /* A committed counter row, so the reservation below is an UPDATE of a row another request
      * can contend for (a fresh row inserted by the send would be invisible, not locked). */
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       usageRepo.creditBonus(tx, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 5),
     );
   }

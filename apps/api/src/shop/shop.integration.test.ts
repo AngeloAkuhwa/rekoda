@@ -21,7 +21,6 @@ import {
 } from '@rekoda/contracts';
 import { usagePeriod } from '@rekoda/core';
 import {
-  billingRepo,
   createDb,
   issueRepo,
   schema,
@@ -32,7 +31,7 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { migrate, requireUrls, truncateAll, type Urls, setPlanForTest } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 
 let urls: Urls;
@@ -204,7 +203,7 @@ describe('the settings a merchant sees first', () => {
   it('lets a granted Chat business publish, because the grant is real', async () => {
     const { businessId, auth } = await onboard('+2348177400020');
     await seedCatalogue(businessId, auth);
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'chat',
       expiresAt: null,
@@ -232,7 +231,7 @@ describe('the settings a merchant sees first', () => {
     await seedCatalogue(businessId, auth);
     /* The pricing page sells the shop link under Integrate; a Chat merchant
      * publishing anyway made the card and the door disagree. */
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'chat',
       expiresAt: null,
@@ -252,7 +251,7 @@ describe('the settings a merchant sees first', () => {
       ).json(),
     ).toMatchObject({ outcome: 'saved', published: false });
 
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'integrate',
       expiresAt: null,
@@ -818,7 +817,7 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
     /* Chat has no automatic order capture; the trial does. The shop stayed
      * published from the trial, and the honest answer at the counter is a
      * sentence, not an error. */
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'chat',
       expiresAt: null,
@@ -1223,7 +1222,7 @@ describe('the storefront cannot be farmed (fix-plan 7, H7b)', () => {
     expect(await customersOf(businessId)).toHaveLength(0);
 
     /* A plan with no order capture: closed, and still no vault rows. */
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'chat',
       expiresAt: null,
@@ -1245,7 +1244,7 @@ describe('the storefront cannot be farmed (fix-plan 7, H7b)', () => {
 
     /* A real order books and records ONE customer; resubmitting its ref with
      * a fresh identity is answered duplicate without a second vault row. */
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan: 'integrate',
       expiresAt: null,

@@ -8,15 +8,8 @@
  * inside the same transaction as the work.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import {
-  billingRepo,
-  createDb,
-  identity,
-  idempotencyRepo,
-  withBusiness,
-  type Db,
-} from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { createDb, identity, idempotencyRepo, withBusiness, type Db } from '@rekoda/db';
+import { migrate, requireUrls, truncateAll, type Urls, setPlanForTest } from '@rekoda/db/testing';
 import { CommandBus, requestHash } from './command-bus.service.js';
 import { RiskPolicyService } from '../risk/risk-policy.service.js';
 
@@ -49,7 +42,7 @@ async function seedOn(plan: string): Promise<string> {
     businessType: null,
     ownerUserId: user.id,
   });
-  await billingRepo.setPlan(db, {
+  await setPlanForTest(db, {
     businessId: business.id,
     plan: plan as 'chat' | 'integrate' | 'complete',
     expiresAt: null,

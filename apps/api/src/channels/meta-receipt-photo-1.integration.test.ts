@@ -8,7 +8,6 @@
 import { describe, expect, it } from 'vitest';
 import { conversationsRepo, identity, usageRepo, withBusiness, sql } from '@rekoda/db';
 import { allowanceFor, replies, usagePeriod } from '@rekoda/core';
-import { billingRepo } from '@rekoda/db';
 import { TextExtractionUnavailable } from '../ai/ocr.js';
 import {
   db,
@@ -29,6 +28,7 @@ import {
   readsUsed,
   drainWithDailyLimit,
 } from './meta-receipt-photo.fixtures.js';
+import { setPlanForTest } from '@rekoda/db/testing';
 
 useMetaWebhookHarness();
 
@@ -47,7 +47,7 @@ describe('a receipt photo', () => {
     businessId: string,
     plan: 'chat' | 'integrate' | 'complete',
   ) {
-    await billingRepo.setPlan(db, {
+    await setPlanForTest(db, {
       businessId,
       plan,
       expiresAt: null,

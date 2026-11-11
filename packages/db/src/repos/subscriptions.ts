@@ -175,11 +175,15 @@ export async function writeCycle(
 /**
  * Who may move a business's plan fields (OD-37, migration 0200), each mapped to its own database
  * writer: a paid charge (`subscription_apply_paid_charge`, the plan comes from the charge), an
- * operator (`subscription_operator_set_plan`: validated plan, date and `operator:` actor, audited by the writer, API credential only), or a
+ * operator (`subscription_operator_set_plan`: validated plan, interval, date and `operator:` actor, audited by the writer, billing-operator credential only, 0202/0203), or a
  * test fixture (a function only the test harness installs).
  */
 export type PlanWriteAuthority =
-  { kind: 'charge'; reference: string } | { kind: 'operator'; actor: string } | { kind: 'fixture' };
+  | { kind: 'charge'; reference: string }
+  /* The interval a paid operator plan is sold on (null for trial and expired): the writer checks
+   * the end against it (migration 0203). */
+  | { kind: 'operator'; actor: string; billingInterval: BillingInterval | null }
+  | { kind: 'fixture' };
 
 /** What a business's subscription columns say, written as one fact. */
 export interface SubscriptionState {
@@ -267,7 +271,8 @@ export async function writeSubscriptionState(
     }
   } else if (a.kind === 'operator') {
     await tx.execute(sql`
-      SELECT subscription_operator_set_plan(${businessId}::uuid, ${state.plan}, ${expires}, ${a.actor})
+      SELECT subscription_operator_set_plan(${businessId}::uuid, ${state.plan}, ${expires},
+        ${a.billingInterval}, ${a.actor})
     `);
   } else {
     await tx.execute(sql`

@@ -13,15 +13,7 @@
 // The stale charge suite. Split by concern; the rest of this suite is in stale-
 // charge.integration.test.ts.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import {
-  billingRepo,
-  createDb,
-  identity,
-  sql,
-  subscriptionsRepo,
-  withBusiness,
-  type Db,
-} from '@rekoda/db';
+import { createDb, identity, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import {
   applyFixtureCycle,
   migrate,
@@ -29,6 +21,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { setPlanForTest, settlementDb } from '@rekoda/db/testing';
 import { applySettledCharge, BillingService } from './billing.service.js';
 import { sweepRenewals } from './renewal-sweep.js';
 
@@ -79,7 +72,7 @@ async function seedBusiness(): Promise<string> {
 }
 
 const operator = (businessId: string, plan: string, expiresAt: Date | null = renewsAt) =>
-  billingRepo.setPlan(appDb, { businessId, plan, expiresAt, actor: 'operator:test-g104' });
+  setPlanForTest(appDb, { businessId, plan, expiresAt, actor: 'operator:test-g104' });
 
 /** A standard monthly cycle ending at `renewsAt` (OWN-33: other spans are never prorated). */
 const standardCycle = (businessId: string, plan: string) =>
@@ -110,7 +103,7 @@ const open = (
   );
 
 const settle = (businessId: string, reference: string) =>
-  withBusiness(appDb, businessId, (tx) =>
+  withBusiness(settlementDb(), businessId, (tx) =>
     applySettledCharge(tx, {
       businessId,
       reference,
@@ -206,6 +199,7 @@ describe('a paid but unapplied charge is an operator exception (OD-30)', () => {
         paystackPlatformConfirmed: true,
       } as never,
       appDb,
+      settlementDb(),
     ).overview(businessId);
     expect(overview.charges.find((c) => c.reference === 'RKD-SUB-OPS-1')).toMatchObject({
       status: 'paid',
@@ -377,7 +371,7 @@ describe('a grace business whose renewal went stale is given a payable one (G-10
     await operator(businessId, 'complete', new Date(Date.now() - 3_600_000));
     expect((await sweep()).raised).toBe(1);
     // The provider reports the attempt dead: the charge is closed `failed`, and it still holds the cycle.
-    await withBusiness(appDb, businessId, async (tx) => {
+    await withBusiness(settlementDb(), businessId, async (tx) => {
       const rows = await tx.execute<{ reference: string }>(sql`
         SELECT reference FROM subscription_charges
         WHERE business_id = ${businessId}::uuid AND kind = 'renewal'`);

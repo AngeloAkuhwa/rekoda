@@ -87,14 +87,17 @@ export type CreateBusinessRequest = z.infer<typeof createBusinessRequest>;
 /**
  * An operator moving a business onto a plan (docs/pricing-model.md).
  *
- * `expiresAt` is explicit rather than derived: a month, a year and a
- * never-expires arrangement are all real, and guessing which one an
- * operator meant is how a paying merchant gets cut off.
+ * Rekoda's plan durations are enforced (owner review of PR #432, migration 0203): a paid plan is
+ * monthly (ends within one calendar month) or annual (within twelve), never open-ended; a trial
+ * ends within 14 days of the business's own trial start; `expired` ends at or before now. With
+ * `expiresAt` null the rule's own date is used (exactly one period from now, the business's trial
+ * end, or now). `billingInterval` applies to a paid plan only (monthly when absent).
  */
 export const setPlanRequest = z.object({
   businessId: z.string().uuid(),
   plan: z.enum(['trial', 'expired', 'chat', 'integrate', 'complete']),
   expiresAt: z.iso.datetime().nullable(),
+  billingInterval: z.enum(['monthly', 'annual']).optional(),
   /* No `actor`. The operator plane verifies an identity and audits its
    * subject; a caller cannot name themselves (ADR 0034). */
 });

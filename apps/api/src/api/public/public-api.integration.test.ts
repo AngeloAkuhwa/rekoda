@@ -27,6 +27,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { settlementDb } from '@rekoda/db/testing';
 
 const SECRET = 'public-api-secret-at-least-32-characters';
 
@@ -269,7 +270,7 @@ describe('the version edge', () => {
  */
 async function creditApiCapacity(businessId: string): Promise<void> {
   const period = usagePeriod(new Date());
-  await withBusiness(db, businessId, async (tx) => {
+  await withBusiness(settlementDb(), businessId, async (tx) => {
     await usageRepo.creditBonus(tx, businessId, period, 'API_REQUEST_UNITS', 1_000);
   });
   await grantCapacityAddOn(urls, businessId, 'API_APPLICATIONS', 20);

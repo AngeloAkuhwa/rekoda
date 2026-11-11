@@ -11,7 +11,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { addOnsRepo, entitlementsRepo, identity } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { migrate, requireUrls, truncateAll, type Urls, settlementDb } from '../testing.js';
 
 let urls: Urls;
 let db: Db;
@@ -111,7 +111,7 @@ describe('what a holding grants', () => {
     const businessId = await seedBusiness('+2348197000002', 'Holding Co');
     await seedAddOn('test_apps', 1, [{ kind: 'CAPACITY', unit: 'API_APPLICATIONS', quantity: 2 }]);
 
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       addOnsRepo.hold(tx, { businessId, addOnId: 'test_apps', version: 1 }),
     );
     expect(
@@ -123,7 +123,7 @@ describe('what a holding grants', () => {
     /* Ended in the future: the merchant keeps what they paid for until the
      * period closes, which is what a mid-month cancellation should do. */
     const nextMonth = new Date(Date.now() + 30 * 86_400_000);
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       addOnsRepo.endHolding(tx, businessId, 'test_apps', nextMonth),
     );
     expect(
@@ -148,7 +148,7 @@ describe('what a holding grants', () => {
       { kind: 'CAPACITY', unit: 'API_APPLICATIONS', quantity: 3 },
     ]);
 
-    await withBusiness(db, businessId, async (tx) => {
+    await withBusiness(settlementDb(), businessId, async (tx) => {
       await addOnsRepo.hold(tx, { businessId, addOnId: 'test_apps', version: 1 });
       await addOnsRepo.hold(tx, { businessId, addOnId: 'test_apps_more', version: 1 });
     });
@@ -165,7 +165,7 @@ describe('what a holding grants', () => {
     await seedAddOn('test_requests', 1, [
       { kind: 'MONTHLY_UNITS', unit: 'API_REQUEST_UNITS', quantity: 25_000 },
     ]);
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       addOnsRepo.hold(tx, { businessId, addOnId: 'test_requests', version: 1 }),
     );
 
@@ -202,7 +202,7 @@ describe('entitlements a holding grants', () => {
     );
     expect(before).not.toContain('REKODA_API');
 
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       addOnsRepo.hold(tx, { businessId, addOnId: 'test_api', version: 1 }),
     );
     const during = await withBusiness(db, businessId, (tx) =>
@@ -217,7 +217,7 @@ describe('entitlements a holding grants', () => {
     await asOwner(
       `UPDATE business_add_ons SET started_at = '${yesterday.toISOString()}' WHERE business_id = '${businessId}'`,
     );
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       addOnsRepo.endHolding(tx, businessId, 'test_api', new Date(Date.now() - 1_000)),
     );
     const after = await withBusiness(db, businessId, (tx) =>

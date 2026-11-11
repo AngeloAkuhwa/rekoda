@@ -14,6 +14,7 @@ import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { events, identity, usageRepo } from '../index.js';
 import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '../testing.js';
+import { settlementDb } from '../testing.js';
 
 let urls: Urls;
 let db: Db;
@@ -402,7 +403,7 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
 
     it('a pack for a base unit lands on the trial row; one for an API unit never does', async () => {
       const businessId = await seedBusiness();
-      await withBusiness(db, businessId, async (tx) => {
+      await withBusiness(settlementDb(), businessId, async (tx) => {
         await usageRepo.creditBonus(tx, businessId, '2026-08', 'AI_ACTIONS', 7);
         await usageRepo.creditBonus(tx, businessId, '2026-08', API, 9);
       });

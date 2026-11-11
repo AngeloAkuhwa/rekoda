@@ -126,6 +126,20 @@ export interface ApiConfig {
    * worker.
    */
   workerDatabaseUrl: string | null;
+  /**
+   * `rekoda_settlement` credentials (OD-37, migration 0202): the only role that may record a
+   * payment on a Rekoda charge, credit pack units or run the provider plan writer. Required in
+   * every process: the worker settles `billing.process` jobs and the API settles a zero-priced
+   * upgrade. Never falls back to DATABASE_URL.
+   */
+  settlementDatabaseUrl: string;
+  /**
+   * `rekoda_billing_operator` credentials (0202): the only role that may run the operator plan
+   * writer (`POST /v1/businesses/plan`). Required in an API process; a worker process
+   * (REKODA_WORKER=1) needs none, and the production worker service is not given one. Without it
+   * the route answers 503 rather than falling back to the application credential.
+   */
+  operatorDatabaseUrl: string | null;
   /** Whether this process polls the queue as well as serving requests. */
   workerEnabled: boolean;
   /** Concurrent job lanes per worker process. SKIP LOCKED makes N lanes safe. */
@@ -1385,6 +1399,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   if (workerEnabled && !env['WORKER_DATABASE_URL']) {
     throw new ConfigError('REKODA_WORKER=1 requires WORKER_DATABASE_URL (the rekoda_worker role)');
   }
+  /* OD-37 (0202): settlement and operator plan changes run under their own principals. Absent
+   * means refuse to start, never "use DATABASE_URL": a fallback would hand the payment and plan
+   * writers back to the general application credential, which is the hole these close. */
+  const settlementDatabaseUrl = env['SETTLEMENT_DATABASE_URL'];
+  if (!settlementDatabaseUrl) {
+    throw new ConfigError(
+      'SETTLEMENT_DATABASE_URL (the rekoda_settlement role) is required: Rekoda charges are settled only under it',
+    );
+  }
+  if (!workerEnabled && !env['OPERATOR_DATABASE_URL']) {
+    throw new ConfigError(
+      'OPERATOR_DATABASE_URL (the rekoda_billing_operator role) is required in an API process: operator plan changes run only under it',
+    );
+  }
+  for (const key of ['SETTLEMENT_DATABASE_URL', 'OPERATOR_DATABASE_URL'] as const) {
+    const value = env[key];
+    if (value && (value === env['DATABASE_URL'] || value === env['WORKER_DATABASE_URL'])) {
+      throw new ConfigError(
+        `${key} must be its own credential, not DATABASE_URL or WORKER_DATABASE_URL`,
+      );
+    }
+  }
 
   return {
     port: boundedInteger(env, 'PORT', 3001, 1, 65535),
@@ -1444,6 +1480,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      * the runner BYPASSRLS. Absent means absent.
      */
     workerDatabaseUrl: env['WORKER_DATABASE_URL'] ?? null,
+    settlementDatabaseUrl,
+    /* Empty reads as absent: the production worker service blanks it (docker-compose.prod.yml),
+     * because a process that never serves the operator route should not hold the credential. */
+    operatorDatabaseUrl: env['OPERATOR_DATABASE_URL'] || null,
     workerEnabled,
     /**
      * Four lanes by default: enough that one slow model call does not stall

@@ -36,6 +36,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { settlementDb } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRenewals } from './renewal-sweep.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
@@ -131,6 +132,7 @@ function confirmedBilling(): BillingService {
   return new BillingService(
     { ...config, paystackSecretKey: 'sk_test_x', paystackPlatformConfirmed: true },
     db,
+    settlementDb(),
   );
 }
 
@@ -251,8 +253,12 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
     /* The cutover's validation: with the catalogue unversioned, the flag
      * must not be observable. Every figure the overview quotes agrees. */
     const { businessId } = await onboard('+2348177100062');
-    const onData = new BillingService({ ...config, planCatalogueReads: true }, db);
-    const onConstants = new BillingService({ ...config, planCatalogueReads: false }, db);
+    const onData = new BillingService({ ...config, planCatalogueReads: true }, db, settlementDb());
+    const onConstants = new BillingService(
+      { ...config, planCatalogueReads: false },
+      db,
+      settlementDb(),
+    );
     const data = await onData.overview(businessId);
     const constants = await onConstants.overview(businessId);
     expect(data.priceK).toBe(constants.priceK);
@@ -286,7 +292,7 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
       effectiveFrom: new Date(),
     });
 
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: answer.reference,
@@ -332,7 +338,7 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
     );
     const answer = await confirmedBilling().buyPack(businessId, 'messages_100');
     if (answer.state !== 'payment_required') throw new Error('expected a payable pack');
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,
         reference: answer.reference,

@@ -25,6 +25,7 @@ import {
   type Db,
 } from '@rekoda/db';
 import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '@rekoda/db/testing';
+import { settlementDb } from '@rekoda/db/testing';
 import { buildRunner, type RunnerDeps } from '../jobs/jobs.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
@@ -80,6 +81,7 @@ beforeAll(async () => {
   provider = new StubPaymentProvider();
   const stubSender = new StubSender();
   deps = {
+    settlementDb: settlementDb(),
     gateway: new PrivacyGateway(appDb, config),
     interpreter: new Interpreter(appDb, config, StubTransport.answering({ intent: 'Unclear' })),
     replySender: new ReplySender(config, stubSender),
@@ -216,7 +218,7 @@ async function payPack(businessId: string, reference: string, amountK = PACK_K):
 }
 
 const recovery = () => new DeadJobRecoveryService(config, appDb, workerDb, provider);
-const billing = () => new BillingService(config, appDb);
+const billing = () => new BillingService(config, appDb, settlementDb());
 const OPERATOR = 'operator:alice@rekoda.app';
 
 /** Pay a charge's webhook into a billing job that dies: Paystack is down on its only attempt. */
@@ -367,8 +369,8 @@ describe('OWN-76: an operator recovers a dead billing job', () => {
       'paystack',
       'x',
     );
-    await workerDb.execute(
-      sql`UPDATE external_events SET payload = ${JSON.stringify(foreign)}::jsonb WHERE business_id = ${businessId}::uuid`,
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(sql`UPDATE external_events SET payload = ${JSON.stringify(foreign)}::jsonb`),
     );
     await withBusiness(appDb, businessId, (tx) =>
       tx.execute(sql`UPDATE jobs SET max_attempts = 1 WHERE business_id = ${businessId}::uuid`),

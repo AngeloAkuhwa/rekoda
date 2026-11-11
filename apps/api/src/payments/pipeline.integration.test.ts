@@ -8,8 +8,7 @@
  *
  * The claim underneath every scenario: the webhook body is a HINT. The
  * authoritative amount, currency and status come from the scripted verify
- * call, and one test makes the webhook LIE precisely to prove which one the
- * books believe.
+ * call, and one test makes the webhook LIE precisely to prove which one the books believe.
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -30,6 +29,7 @@ import {
   type Db,
 } from '@rekoda/db';
 import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '@rekoda/db/testing';
+import { settlementDb } from '@rekoda/db/testing';
 import { buildRunner, type RunnerDeps } from '../jobs/jobs.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
@@ -84,6 +84,7 @@ beforeAll(async () => {
   stubStt = new StubSpeechToText();
   stubOcr = new StubTextExtraction();
   deps = {
+    settlementDb: settlementDb(),
     gateway: new PrivacyGateway(appDb, config),
     interpreter: new Interpreter(appDb, config, StubTransport.answering({ intent: 'Unclear' })),
     replySender: new ReplySender(config, stubSender),
@@ -300,10 +301,9 @@ describe('the full payment (§37: "full payment")', () => {
   });
 
   /**
-   * G-67, the staging J3 case: the provider webhook arrives more than 24 hours
-   * after the owner last wrote to the number. Money is booked and the receipt
-   * exists; Meta would refuse the free-form PDF, so the owner gets the
-   * approved template instead and "resend" delivers the PDF.
+   * G-67, the staging J3 case: the provider webhook arrives more than 24 hours after the owner last
+   * wrote to the number. Money is booked and the receipt exists; Meta would refuse the free-form
+   * PDF, so the owner gets the approved template instead and "resend" delivers the PDF.
    */
   it('books a payment that arrives past the 24-hour window and tells the owner by template', async () => {
     const businessId = await seedBusiness();

@@ -300,6 +300,11 @@ jobs:
       # running both roles through one connection string would make that
       # assertion pass for the wrong reason (ADR 0022).
       WORKER_DATABASE_URL: postgres://rekoda_worker@127.0.0.1:5432/rekoda
+      # OD-37 (migration 0202): the settlement and billing-operator principals, each its own
+      # connection string, so a test that settles or changes a plan through the general credential
+      # fails for the right reason.
+      SETTLEMENT_DATABASE_URL: postgres://rekoda_settlement@127.0.0.1:5432/rekoda
+      OPERATOR_DATABASE_URL: postgres://rekoda_billing_operator@127.0.0.1:5432/rekoda
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7

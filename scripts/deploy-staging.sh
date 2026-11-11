@@ -58,10 +58,12 @@ EDGE_NETWORK=rekoda-prod_edge
 EDGE_EXPECTED='172.30.10.1 false'
 
 dc() { docker compose -f docker-compose.prod.yml "$@"; }
-# Whether this release brings in the plan-field boundary (0196 and/or 0200), so the OWN-86 pre-start
-# smoke applies.
+# Whether this release brings in the plan and payment boundary (0196, 0200, 0202 or 0203), so the
+# OWN-86 pre-start smoke applies.
 carries_plan_boundary() {
-  [[ " $BREAKING " == *' 0196_plan_fields_guard '* || " $BREAKING " == *' 0200_plan_writer_boundary '* ]]
+  [[ " $BREAKING " == *' 0196_plan_fields_guard '* || " $BREAKING " == *' 0200_plan_writer_boundary '* ||
+     " $BREAKING " == *' 0202_settlement_and_operator_principals '* ||
+     " $BREAKING " == *' 0203_plan_duration_rules '* ]]
 }
 # The OWN-86 pre-start smoke query, printed for an operator fixing forward by hand.
 print_smoke_0196() {
@@ -83,7 +85,7 @@ fail() {
 PHASE=checks
 # Migrations the previous release cannot run against (OD-48): the api and worker are stopped before
 # any of them is applied, and the old release is never restarted against a database that has one.
-COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary'
+COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -91,44 +93,73 @@ BREAKING_APPLIED=false
 MIGRATE_ENTERED=false
 # Set just before `up`: a failure after migrate but before it (the 0196 smoke) has started nothing.
 UP_ENTERED=false
-# The OWN-86 pre-start database smoke for the plan-field boundary (0196 and 0200), run as the owner
-# between migrate and `up`. It prints `t` only when: both ledger rows are present; the update and
-# insert guard triggers exist and fire (enabled in origin or always mode); each writer
-# (subscription_apply_paid_charge, subscription_operator_set_plan, subscription_expire_plan) exists at
-# its exact signature, SECURITY DEFINER and owned by rekoda_plan_writer; the removed general writer
-# and the test-only fixture writer are ABSENT; neither runtime role can become the writer role; each
-# writer's search_path is the pinned one; PUBLIC cannot execute any writer and the worker cannot
-# execute the operator writer; the writer role owns exactly those three writers and 0197's
-# staging_move_date, nothing else; and the applied-once trigger on subscription_charges fires.
+# The OWN-86 pre-start database smoke for the plan and payment boundary (0196, 0200, and OD-37's
+# 0202 to 0204), run as the owner between migrate and `up`. It prints `t` only when the DATABASE (not
+# only the ledger) holds exactly the boundary this release expects:
+#   * the ledger rows of 0196, 0200, 0202, 0203 and 0204;
+#   * every guard trigger exists and fires (enabled in origin or always mode): the plan-field update
+#     and insert guards, the applied-once guard, the settlement guard on subscription_charges and the
+#     pack-credit guard on usage_counters;
+#   * rekoda_plan_writer owns EXACTLY the expected functions, each named by schema, name and argument
+#     types, each with EXACTLY its expected EXECUTE grantees (PUBLIC would show as "-", so a PUBLIC
+#     grant fails), no more and no fewer: a missing writer, an extra one, a renamed signature, a
+#     wrong owner or a widened grant all fail; every one of them is SECURITY DEFINER with the pinned
+#     search_path;
+#   * the removed general writer, the old four-argument operator writer and the test-only fixture
+#     writer are absent;
+#   * the settlement and billing-operator roles exist, can log in, cannot bypass RLS and act with
+#     rekoda_app's rights; no runtime role can become another principal, the worker or the writer;
+#   * the worker reads but cannot write other businesses' events (its estate policy is SELECT only,
+#     no table-level INSERT, UPDATE or DELETE), and the application cannot record an add-on holding.
+# The expected list is the contract; a new writer is a deliberate edit of this list in its PR.
 SMOKE_0196_SQL="SELECT
   (SELECT count(*) FROM rekoda_migrations
-    WHERE tag IN ('0196_plan_fields_guard', '0200_plan_writer_boundary')) = 2
-  AND (SELECT count(*) FROM pg_trigger WHERE tgname = 'businesses_plan_fields_guard'
-        AND tgrelid = 'public.businesses'::regclass AND tgenabled IN ('O', 'A')) = 1
-  AND (SELECT count(*) FROM pg_trigger WHERE tgname = 'businesses_plan_fields_insert_guard'
-        AND tgrelid = 'public.businesses'::regclass AND tgenabled IN ('O', 'A')) = 1
-  AND (SELECT count(*) FROM pg_proc WHERE prosecdef AND proowner = 'rekoda_plan_writer'::regrole
-        AND oid = to_regprocedure('public.subscription_apply_paid_charge(uuid,text,timestamptz)')) = 1
-  AND (SELECT count(*) FROM pg_proc WHERE prosecdef AND proowner = 'rekoda_plan_writer'::regrole
-        AND oid = to_regprocedure('public.subscription_operator_set_plan(uuid,text,timestamptz,text)')) = 1
-  AND (SELECT count(*) FROM pg_proc WHERE prosecdef AND proowner = 'rekoda_plan_writer'::regrole
-        AND oid = to_regprocedure('public.subscription_expire_plan(uuid,text,text)')) = 1
+    WHERE tag IN ('0196_plan_fields_guard', '0200_plan_writer_boundary',
+                  '0202_settlement_and_operator_principals', '0203_plan_duration_rules',
+                  '0204_external_events_worker_least_privilege')) = 5
+  AND (SELECT count(*) FROM pg_trigger t WHERE t.tgenabled IN ('O', 'A') AND (t.tgname, t.tgrelid) IN (
+        ('businesses_plan_fields_guard', 'public.businesses'::regclass),
+        ('businesses_plan_fields_insert_guard', 'public.businesses'::regclass),
+        ('subscription_charges_applied_once_guard', 'public.subscription_charges'::regclass),
+        ('subscription_charges_settlement_guard', 'public.subscription_charges'::regclass),
+        ('usage_counters_bonus_guard', 'public.usage_counters'::regclass))) = 5
+  AND (SELECT string_agg(sig || ' => ' || grantees, ' ; ' ORDER BY sig) FROM (
+        SELECT n.nspname || '.' || p.proname || '(' || oidvectortypes(p.proargtypes) || ')' AS sig,
+               coalesce((SELECT string_agg(a.grantee::regrole::text, ',' ORDER BY a.grantee::regrole::text)
+                         FROM aclexplode(p.proacl) a
+                         WHERE a.privilege_type = 'EXECUTE' AND a.grantee <> p.proowner), '') AS grantees
+        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE p.proowner = 'rekoda_plan_writer'::regrole) w)
+      = 'public.staging_move_date(uuid, text, timestamp with time zone, timestamp with time zone, text, text, uuid) => rekoda_app'
+        || ' ; public.subscription_apply_paid_charge(uuid, text, timestamp with time zone) => rekoda_settlement'
+        || ' ; public.subscription_expire_plan(uuid, text, text) => rekoda_app,rekoda_worker'
+        || ' ; public.subscription_operator_set_plan(uuid, text, timestamp with time zone, text, text) => rekoda_billing_operator'
+  AND NOT EXISTS (SELECT 1 FROM pg_proc WHERE proowner = 'rekoda_plan_writer'::regrole
+        AND (NOT prosecdef OR proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, public, pg_temp']))
   AND to_regprocedure('public.subscription_write_plan(uuid,text,timestamptz)') IS NULL
+  AND to_regprocedure('public.subscription_operator_set_plan(uuid,text,timestamptz,text)') IS NULL
   AND to_regprocedure('public.test_fixture_set_plan(uuid,text,timestamptz)') IS NULL
-  AND NOT pg_has_role('rekoda_app', 'rekoda_plan_writer', 'MEMBER')
-  AND NOT pg_has_role('rekoda_worker', 'rekoda_plan_writer', 'MEMBER')
-  AND (SELECT count(*) FROM pg_proc WHERE proconfig = ARRAY['search_path=pg_catalog, public, pg_temp']
-        AND oid IN (to_regprocedure('public.subscription_apply_paid_charge(uuid,text,timestamptz)'),
-                    to_regprocedure('public.subscription_operator_set_plan(uuid,text,timestamptz,text)'),
-                    to_regprocedure('public.subscription_expire_plan(uuid,text,text)'))) = 3
-  AND NOT has_function_privilege('public', 'public.subscription_apply_paid_charge(uuid,text,timestamptz)', 'EXECUTE')
-  AND NOT has_function_privilege('public', 'public.subscription_operator_set_plan(uuid,text,timestamptz,text)', 'EXECUTE')
-  AND NOT has_function_privilege('public', 'public.subscription_expire_plan(uuid,text,text)', 'EXECUTE')
-  AND NOT has_function_privilege('rekoda_worker', 'public.subscription_operator_set_plan(uuid,text,timestamptz,text)', 'EXECUTE')
-  AND (SELECT count(*) FROM pg_proc WHERE proowner = 'rekoda_plan_writer'::regrole) = 4
-  AND (SELECT count(*) FROM pg_proc WHERE proowner = 'rekoda_plan_writer'::regrole AND proname = 'staging_move_date') = 1
-  AND (SELECT count(*) FROM pg_trigger WHERE tgname = 'subscription_charges_applied_once_guard'
-        AND tgrelid = 'public.subscription_charges'::regclass AND tgenabled IN ('O', 'A')) = 1"
+  AND (SELECT count(*) FROM pg_roles WHERE rolname IN ('rekoda_settlement', 'rekoda_billing_operator')
+        AND rolcanlogin AND NOT rolsuper AND NOT rolbypassrls) = 2
+  AND pg_has_role('rekoda_settlement', 'rekoda_app', 'USAGE')
+  AND pg_has_role('rekoda_billing_operator', 'rekoda_app', 'USAGE')
+  AND NOT EXISTS (SELECT 1 FROM (VALUES
+        ('rekoda_app', 'rekoda_plan_writer'), ('rekoda_worker', 'rekoda_plan_writer'),
+        ('rekoda_settlement', 'rekoda_plan_writer'), ('rekoda_billing_operator', 'rekoda_plan_writer'),
+        ('rekoda_app', 'rekoda_settlement'), ('rekoda_worker', 'rekoda_settlement'),
+        ('rekoda_app', 'rekoda_billing_operator'), ('rekoda_worker', 'rekoda_billing_operator'),
+        ('rekoda_settlement', 'rekoda_billing_operator'), ('rekoda_billing_operator', 'rekoda_settlement'),
+        ('rekoda_settlement', 'rekoda_worker'), ('rekoda_billing_operator', 'rekoda_worker')) AS m(member, target)
+        WHERE pg_has_role(m.member, m.target, 'MEMBER'))
+  AND (SELECT polcmd FROM pg_policy WHERE polname = 'worker_reads_the_estate'
+        AND polrelid = 'public.external_events'::regclass) = 'r'
+  AND NOT has_table_privilege('rekoda_worker', 'public.external_events', 'INSERT')
+  AND NOT has_table_privilege('rekoda_worker', 'public.external_events', 'UPDATE')
+  AND NOT has_table_privilege('rekoda_worker', 'public.external_events', 'DELETE')
+  AND NOT has_column_privilege('rekoda_worker', 'public.external_events', 'business_id', 'UPDATE')
+  AND has_function_privilege('rekoda_worker', 'public.attribute_external_event(uuid,uuid)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_app', 'public.attribute_external_event(uuid,uuid)', 'EXECUTE')
+  AND NOT has_table_privilege('rekoda_app', 'public.business_add_ons', 'INSERT')"
 PREV_SHA=
 PREV_RELEASE=
 # The exit status meaning "skipped, nothing changed"; no failure may use it.
@@ -668,11 +699,11 @@ dc run --rm -T migrate
 # Any miss stops the deploy with the api and worker still stopped; the exit handler then prints the
 # fix-forward steps (0196/0200 are applied, so the previous release must not be restarted).
 if carries_plan_boundary; then
-  step 'pre-start database smoke for the plan-field boundary, 0196/0200 (OWN-86): ledger, guard triggers, plan writers, role boundary'
+  step 'pre-start database smoke for the plan and payment boundary, 0196/0200/0202-0204 (OWN-86, OD-37): ledger, guard triggers, exact writer set and grants, principals'
   smoke_0196=$(dc exec -T postgres psql -U rekoda_owner -d rekoda -v ON_ERROR_STOP=1 -tA -c "$SMOKE_0196_SQL") ||
-    fail 'migrations are APPLIED, but the pre-start database smoke for 0196/0200 could not run, so the new release is not started; the api and worker stay stopped'
+    fail 'migrations are APPLIED, but the pre-start database smoke for 0196/0200/0202-0204 could not run, so the new release is not started; the api and worker stay stopped'
   [ "$smoke_0196" = t ] ||
-    fail "migrations are APPLIED, but the pre-start database smoke for 0196/0200 failed (got '$smoke_0196'): the 0196 and 0200 ledger rows, the enabled update and insert guard triggers, the three plan writers (exact signature, SECURITY DEFINER, owned by rekoda_plan_writer, pinned search_path, no PUBLIC execute, no worker execute of the operator writer), the applied-once trigger, the absence of the removed general writer and of the test-only fixture writer, or the runtime roles' separation from the writer role is missing; the new release is not started and the api and worker stay stopped"
+    fail "migrations are APPLIED, but the pre-start database smoke for 0196/0200/0202-0204 failed (got '$smoke_0196'): a ledger row, an enabled guard trigger (plan fields, insert, applied-once, settlement, pack credit), the exact set of rekoda_plan_writer functions with their exact EXECUTE grantees, SECURITY DEFINER and pinned search_path, the absence of the removed and test-only writers, the settlement and billing-operator roles and their separation, or the worker's read-only estate policy is not as this release requires; the new release is not started and the api and worker stay stopped"
 fi
 
 step 'start the new release'

@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { type Db, type LockClient, jobsRepo } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
-import { DB, WORKER_DB, WORKER_LOCK } from '../db/db.module.js';
+import { DB, SETTLEMENT_DB, WORKER_DB, WORKER_LOCK } from '../db/db.module.js';
 import { AiModule } from '../ai/ai.module.js';
 import { RepliesModule } from '../replies/replies.module.js';
 import { ReplySender } from '../replies/reply.service.js';
@@ -96,6 +96,11 @@ export interface RunnerDeps extends Omit<
    * is configured: "my email is X" is then answered honestly as unavailable.
    */
   email?: EmailSender;
+  /**
+   * The `rekoda_settlement` pool (OD-37, 0202): the `billing.process` job settles Rekoda charges,
+   * which only that principal may do.
+   */
+  settlementDb: Db;
 }
 
 export function buildRunner(
@@ -155,6 +160,7 @@ export function buildRunner(
   runner.register(
     JobKind.ProcessBillingCharge,
     processBillingChargeHandler({ provider: deps.paymentProvider, config: deps.config }),
+    deps.settlementDb,
   );
   runner.register(
     JobKind.PaymentLink,
@@ -276,6 +282,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     @Inject(CONFIG) private readonly config: ApiConfig,
     @Inject(DB) private readonly appDb: Db,
     @Inject(WORKER_DB) private readonly workerDb: Db | null,
+    @Inject(SETTLEMENT_DB) private readonly settlementDb: Db,
     @Inject(WORKER_LOCK) private readonly workerLock: LockClient | null,
     @Inject(PrivacyGateway) private readonly gateway: PrivacyGateway,
     @Inject(Interpreter) private readonly interpreter: Interpreter,
@@ -316,6 +323,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         audioProbe: this.audioProbe,
         commandBus: this.commandBus,
         email: this.email,
+        settlementDb: this.settlementDb,
       },
       { concurrency: this.config.workerConcurrency },
     );
