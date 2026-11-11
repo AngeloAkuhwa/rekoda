@@ -139,6 +139,14 @@ export const ALLOWED: Readonly<Record<string, Entry>> = {
     role: 'migration',
     why: 'OD-37/OWN-87: replaces the general subscription_write_plan with subscription_apply_paid_charge (plan from a paid, unapplied charge) and subscription_operator_set_plan (validated operator input), revalidates subscription_expire_plan, and guards the INSERT; all owned by rekoda_plan_writer.',
   },
+  'packages/db/migrations/0203_plan_duration_rules.sql': {
+    role: 'migration',
+    why: 'OWN-89: re-creates subscription_operator_set_plan (with the interval and Rekoda durations), subscription_apply_paid_charge (one billing interval) and subscription_expire_plan (clamps a future end), all owned by rekoda_plan_writer, and the exact 14-day insert guard.',
+  },
+  'packages/db/src/billing/plan-writer.fixtures.ts': {
+    role: 'reader',
+    why: 'OD-37 boundary suites: reads plan and plan_expires_at back as the owner to assert what the writers did; writes neither.',
+  },
   'packages/db/migrations/0181_sweep_trial_candidates.sql': {
     role: 'migration',
     why: 'trial-notice candidate function reads the date (applied; immutable).',

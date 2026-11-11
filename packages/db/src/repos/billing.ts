@@ -140,6 +140,8 @@ interface PlanChangeBefore {
   cycleStartedAt: Date | null;
   anchorDay: number | null;
   trialStartedAt: Date;
+  pendingPlan: string | null;
+  paymentFailedAt: Date | null;
 }
 
 async function lockForPlanChange(
@@ -153,6 +155,8 @@ async function lockForPlanChange(
       cycleStartedAt: businesses.cycleStartedAt,
       anchorDay: businesses.renewalAnchorDay,
       trialStartedAt: businesses.trialStartedAt,
+      pendingPlan: businesses.pendingPlan,
+      paymentFailedAt: businesses.paymentFailedAt,
     })
     .from(businesses)
     .where(eq(businesses.id, businessId))
@@ -220,6 +224,24 @@ export async function setPlanAsFixture(db: Db, change: PlanChange): Promise<bool
     if (!previous) return false;
     await writePlanChange(tx, previous, change, change.billingInterval ?? null, {
       kind: 'fixture',
+    });
+    /* The same `plan_changed` row the operator writer records (0200, 0203), so a fixture move is the
+     * evidence an operator move is (the 0167 origin backfill and the audit trail read it). */
+    const iso = (d: Date | null) => (d ? d.toISOString() : null);
+    await tx.insert(auditEvents).values({
+      businessId: change.businessId,
+      actor: change.actor,
+      entity: 'business',
+      entityId: change.businessId,
+      action: 'plan_changed',
+      oldValue: {
+        plan: previous.plan,
+        expiresAt: iso(previous.expiresAt),
+        pendingPlan: previous.pendingPlan,
+        paymentFailedAt: iso(previous.paymentFailedAt),
+      },
+      newValue: { plan: change.plan, expiresAt: iso(change.expiresAt) },
+      sourceType: 'operator',
     });
     return true;
   });

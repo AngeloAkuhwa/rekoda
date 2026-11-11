@@ -93,6 +93,12 @@ export const PINS: Readonly<Record<string, Pin>> = {
     businessInserts: 0,
     why: 'OD-37/OWN-87: subscription_apply_paid_charge (plan from the charge, and the date) and subscription_operator_set_plan (validated plan and date), plus subscription_expire_plan revalidated (plan only).',
   },
+  'packages/db/migrations/0203_plan_duration_rules.sql': {
+    plan: 3,
+    expiry: 3,
+    businessInserts: 0,
+    why: 'OWN-89: the three writers re-created with the duration rules (operator writer: plan and date; provider writer: plan from the charge and the date; expiry writer: plan, and a future end clamped to now). All owned by rekoda_plan_writer.',
+  },
   'packages/db/migrations/0196_plan_fields_guard.sql': {
     plan: 2,
     expiry: 1,
