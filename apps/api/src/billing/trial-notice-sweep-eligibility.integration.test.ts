@@ -151,8 +151,9 @@ describe('trial reminders', () => {
 
       let result!: Awaited<ReturnType<typeof sweep>>;
       await afterClaim(
-        /* Through the sanctioned writer, as a real purchase is (OD-37). */
-        "IF NEW.plan = 'trial' THEN PERFORM subscription_write_plan(NEW.id, 'chat', NEW.plan_expires_at); END IF;",
+        /* Through a plan writer (OD-37); the test harness's fixture writer stands in for a
+         * settled purchase, which would need a paid charge staged first. */
+        "IF NEW.plan = 'trial' THEN PERFORM test_fixture_set_plan(NEW.id, 'chat', NEW.plan_expires_at); END IF;",
         async () => {
           result = await sweep(sender, at(12));
         },

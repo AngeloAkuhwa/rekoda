@@ -8,7 +8,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { billingPaymentRecord } from '@rekoda/contracts';
 import { createDb, identity, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+} from '@rekoda/db/testing';
 import { applySettledCharge, BillingService } from './billing.service.js';
 
 let urls: Urls;
@@ -290,7 +296,7 @@ describe('payment record', () => {
     const cycleStart = new Date('2026-11-01T00:00:00Z');
     const renewsAt = new Date('2026-12-01T00:00:00Z');
     await withBusiness(appDb, b, (tx) =>
-      subscriptionsRepo.applyCycle(tx, b, {
+      applyFixtureCycle(tx, b, {
         plan: 'chat',
         cycleStartedAt: cycleStart,
         renewsAt,

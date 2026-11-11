@@ -132,12 +132,13 @@ isolation, and this amendment is not permission for any later feature to read ac
 
 **Approved operator work lists, and nothing else:**
 
-| Workflow                      | Function (migration)                                   | Returns (fixed columns)                                                                                                                                                                                              |
-| ----------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Dead payment and billing jobs | `dead_job_ops_queue`, `dead_job_find_for_ops` (0194)   | job id, business id, kind, event id, Rekoda reference, status, failure category, fixed summary, attempts, death count, timestamps, recovery state; the queue also the current charge or intent status and plan state |
-| The job behind an event       | `dead_job_open_for_event` (0194)                       | a job id                                                                                                                                                                                                             |
-| The worker's own passes       | `dead_job_is_recovering`, `dead_job_has_record` (0194) | a boolean                                                                                                                                                                                                            |
-| Blocked renewals              | `blocked_renewals_ops` (0195)                          | Rekoda reference, business id, plan, amount, block reason and time, the business's current plan and paid-to date                                                                                                     |
+| Workflow                                             | Function (migration)                                                                                                                               | Returns (fixed columns)                                                                                                                                                                                              |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dead payment and billing jobs                        | `dead_job_ops_queue`, `dead_job_find_for_ops` (0194)                                                                                               | job id, business id, kind, event id, Rekoda reference, status, failure category, fixed summary, attempts, death count, timestamps, recovery state; the queue also the current charge or intent status and plan state |
+| The job behind an event                              | `dead_job_open_for_event` (0194)                                                                                                                   | a job id                                                                                                                                                                                                             |
+| The worker's own passes                              | `dead_job_is_recovering`, `dead_job_has_record` (0194)                                                                                             | a boolean                                                                                                                                                                                                            |
+| Blocked renewals                                     | `blocked_renewals_ops` (0195)                                                                                                                      | Rekoda reference, business id, plan, amount, block reason and time, the business's current plan and paid-to date                                                                                                     |
+| Blocked renewals, close pass (worker only, no route) | `blocked_renewals_close_batch` (0199), and the close cursor's `renewal_block_close_claim` / `_advance` / `_finish` / `_release` / `_status` (0199) | the same columns as `blocked_renewals_ops` plus the exact block time in microseconds; the cursor functions read and write only the single cursor row (a position, counts, a lease) and return booleans or counts     |
 
 **Rules for every work list:**
 
@@ -158,6 +159,8 @@ isolation, and this amendment is not permission for any later feature to read ac
    the operator, target, action, reason and outcome.
 5. Business-facing endpoints stay tenant-scoped. A new cross-tenant read needs its own review and
    its own line here.
+
+The close-pass functions (0199, added 11 Nov 2026 under owner direction OWN-88) follow the same rules: worker-only, pinned path, bounded, read-only for tenant data; the cursor table they write holds no tenant data, has forced RLS with no policy and no grant to any application role.
 
 Tests (`packages/db/src/ops/operator-work-lists.integration.test.ts`) pin the grants, the
 `SECURITY DEFINER` and `search_path` settings, the exact column sets, the bound, that the table

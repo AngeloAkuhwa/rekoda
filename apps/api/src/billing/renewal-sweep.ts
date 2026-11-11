@@ -26,7 +26,7 @@
  * and nothing in this file changes.
  */
 import { Logger } from '@nestjs/common';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { addInterval, subscriptionReference } from '@rekoda/core';
 import { redactForLog } from '@rekoda/core/privacy';
 import { subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
@@ -231,12 +231,13 @@ export async function sweepRenewals(
    * stamped blocked can be paid like any other, so its block is closed here, audited, and the
    * alert clears without an operator closing each one by hand. It runs AFTER the due renewals have
    * been raised: housekeeping, however long a pass of failing blocks takes, never delays a renewal.
-   * A failing listing is logged and retried by the next pass. */
+   * A pass that stops on an error is logged and resumed by the next pass from the durable cursor. */
   if (chargeGate(deps.config).ok) {
     try {
       await closeBlocksTheGateNoLongerHolds(deps, deps.blockPageSize, deps.maxBlockPages);
     } catch (error) {
-      log.warn(`blocked renewals could not be listed for closing: ${redactForLog(String(error))}`);
+      /* The cursor keeps its last durable position; the next pass resumes from it. */
+      log.error(`blocked-renewal close pass stopped: ${redactForLog(String(error))}`);
     }
   }
 
@@ -246,84 +247,124 @@ export async function sweepRenewals(
 /** Blocks listed per page, and pages per pass, when closing them after the gate opens. */
 const BLOCK_PAGE = 200;
 const BLOCK_PAGES = 20;
+/** How long a pass holds the cursor lease without advancing before another runner may take it. */
+const BLOCK_LEASE_SECONDS = 900;
 
-/* Where the fallback skip (blocks whose close AND stamp both failed) stopped when the last pass ran
- * out of pages. The next pass starts there instead of at the same failing head, and it wraps to 0
- * once the list is exhausted, so a full pass of blocks that cannot be stamped does not by itself
- * starve the blocks behind them. It assumes the first rows of the next pass are the same unstampable
- * blocks; if the head changes (an operator closes one, a new block is raised) a few healthy blocks
- * may be skipped until the offset wraps, which needs the rest of the list to fit in a pass (PR B
- * plan, post-MVP).
- *
- * Held in memory, so a restart begins again at 0. Known limit (PR B plan, post-MVP): if more than a
- * whole pass of blocks refuse both writes AND the process restarts after every pass, each pass
- * starts over at 0 and the blocks behind them wait; closing that needs the offset persisted outside
- * those rows. */
-let carriedUnstamped = 0;
-
-/** Test-only: forget the carried fallback offset between test cases. */
-export function resetBlockCloseCarryForTests(): void {
-  carriedUnstamped = 0;
+/** What one close pass did; returned for the caller and the tests. */
+export interface BlockClosePassResult {
+  /** False when another runner held the cursor lease, so this pass did nothing. */
+  ran: boolean;
+  closed: number;
+  /** Blocks that could not be closed this pass (each logged with its reference). */
+  failed: number;
+  /** The pass reached the end of the list and moved the cursor back to the start. */
+  wrapped: boolean;
 }
 
 /**
- * Close the blocks the open gate no longer holds, bounded per pass.
+ * Close the blocks the open gate no longer holds, bounded per pass, from a DURABLE cursor
+ * (migration 0199).
  *
- * The cursor is persisted on each block (migration 0198, `blocked_close_failed_at`): candidates come
- * least-recently-attempted first and only those not attempted since this pass began. A block whose
- * close fails is stamped, drops behind every block not yet tried, and is not retried in this pass,
- * so a block that fails persistently cannot keep later blocks waiting: the next pass reaches them
- * first, however many fail. A restart loses nothing (the order is data); two sweeps at once may try
- * the same block, and the close is conditional on the block still being open.
+ * The pass walks open blocks in keyset order (blocked_at, reference): `blocked_at` never changes
+ * once set and `reference` is unique, so the order is total and stable whatever is closed, added
+ * or removed meanwhile. The position lives in the database, not in this process:
+ *
+ *  - The pass first claims the cursor lease; if another runner holds it, this pass does nothing.
+ *  - Each batch is processed, THEN the cursor is advanced to the batch's last key (a
+ *    compare-and-set on the lease). A crash before the advance replays that batch next time,
+ *    which is safe: a close is conditional on the block still being open, and the failure stamp
+ *    is a plain timestamp. A failed advance (lease lost, database error) stops the pass; the batch
+ *    is not reported as durably processed.
+ *  - A block whose close fails is logged and passed over, whether or not its failure stamp could
+ *    be written, so a block that fails both cannot hold the pass at its place; a restart resumes
+ *    after it, not at the start.
+ *  - Reaching the end of the list wraps the cursor to the start: blocks that failed are retried and
+ *    blocks with an earlier key are reached on the next pass.
+ *  - On an unexpected error the lease is released and the position kept; it is never reset here.
  */
-async function closeBlocksTheGateNoLongerHolds(
+export async function closeBlocksTheGateNoLongerHolds(
   deps: RenewalSweepDeps,
   pageSize = BLOCK_PAGE,
   maxPages = BLOCK_PAGES,
-): Promise<void> {
-  const passStart = await subscriptionsRepo.databaseNow(deps.workerDb);
-  /* A block whose close failed and whose stamp also failed stays eligible, at its place in the
-   * order. Candidates are taken strictly in that order, so every row that is still listed ahead of
-   * the first untried one is exactly such a block: skipping that many rows moves past them and
-   * only them (a concurrent sweep removing rows can make the skip land a few rows late, and the
-   * next pass picks those up). The stamp is the normal way past a failure; this is its fallback. */
-  let unstamped = carriedUnstamped;
-  carriedUnstamped = 0;
-  for (let page = 0; page < maxPages; page += 1) {
-    const open = await subscriptionsRepo.blockedRenewals(
-      deps.workerDb,
-      pageSize,
-      unstamped,
-      passStart,
-    );
-    if (open.length === 0) return;
-    for (const blocked of open) {
-      try {
-        await withBusiness(deps.appDb, blocked.businessId, (tx) =>
-          subscriptionsRepo.resolveBlockedRenewal(
-            tx,
-            blocked.businessId,
-            blocked.reference,
-            'the payment gate is open: the renewal can now be paid',
-            'system:gate_open',
-            'system',
-          ),
-        );
-      } catch (error) {
-        log.warn(
-          `business ${blocked.businessId}: blocked renewal not closed: ${redactForLog(String(error))}`,
-        );
+  leaseSeconds = BLOCK_LEASE_SECONDS,
+): Promise<BlockClosePassResult> {
+  const owner = randomUUID();
+  const result: BlockClosePassResult = { ran: false, closed: 0, failed: 0, wrapped: false };
+  if (!(await subscriptionsRepo.claimBlockCloseCursor(deps.workerDb, owner, leaseSeconds))) {
+    log.log('blocked-renewal close pass skipped: another runner holds the close cursor');
+    return result;
+  }
+  result.ran = true;
+  try {
+    for (let page = 0; page < maxPages; page += 1) {
+      const batch = await subscriptionsRepo.blockedRenewalsCloseBatch(deps.workerDb, pageSize);
+      if (batch.length === 0) {
+        result.wrapped = true;
+        break;
+      }
+      let closed = 0;
+      let failed = 0;
+      for (const blocked of batch) {
         try {
           await withBusiness(deps.appDb, blocked.businessId, (tx) =>
-            subscriptionsRepo.noteBlockCloseFailed(tx, blocked.businessId, blocked.reference),
+            subscriptionsRepo.resolveBlockedRenewal(
+              tx,
+              blocked.businessId,
+              blocked.reference,
+              'the payment gate is open: the renewal can now be paid',
+              'system:gate_open',
+              'system',
+            ),
           );
-        } catch {
-          unstamped += 1;
+          closed += 1;
+        } catch (error) {
+          failed += 1;
+          let stamped = false;
+          try {
+            stamped = await withBusiness(deps.appDb, blocked.businessId, (tx) =>
+              subscriptionsRepo.noteBlockCloseFailed(tx, blocked.businessId, blocked.reference),
+            );
+          } catch {
+            stamped = false;
+          }
+          /* Safe identifiers only: the charge reference, the business id and the block reason. */
+          log.warn(
+            `renewal_block_close_failed business=${blocked.businessId} reference=${blocked.reference} ` +
+              `reason=${blocked.reason} stamped=${stamped} error=${redactForLog(String(error))}`,
+          );
         }
       }
+      const last = batch[batch.length - 1]!;
+      const advanced = await subscriptionsRepo.advanceBlockCloseCursor(
+        deps.workerDb,
+        owner,
+        { blockedAtUs: last.blockedAtUs, reference: last.reference },
+        { closed, failed },
+        leaseSeconds,
+      );
+      if (!advanced) {
+        throw new Error('the close cursor lease was lost; this batch is not recorded as processed');
+      }
+      result.closed += closed;
+      result.failed += failed;
+      if (batch.length < pageSize) {
+        result.wrapped = true;
+        break;
+      }
     }
-    if (open.length < pageSize) return;
+    if (!(await subscriptionsRepo.finishBlockClosePass(deps.workerDb, owner, result.wrapped))) {
+      throw new Error('the close cursor lease was lost before the pass could be finished');
+    }
+  } catch (error) {
+    await subscriptionsRepo.releaseBlockCloseCursor(deps.workerDb, owner).catch(() => false);
+    throw error;
   }
-  // Out of pages before the list ran out: the next pass resumes past the unstampable blocks.
-  carriedUnstamped = unstamped;
+  if (result.failed > 0) {
+    /* Every affected pass says so, whatever the alerting cadence: the ops alert
+     * (billing.renewal_block_close_failing) reads the same count from the cursor. */
+    log.error(
+      `ALERT renewal_block_close_pass failed=${result.failed} closed=${result.closed} wrapped=${result.wrapped}`,
+    );
+  }
+  return result;
 }

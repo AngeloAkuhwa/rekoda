@@ -31,7 +31,14 @@ import {
   subscriptionsRepo,
   usageRepo,
 } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '../testing.js';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+  setPlanAsOwner,
+} from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -136,12 +143,13 @@ describe('who is due', () => {
       await billingRepo.setPlan(appDb, {
         businessId,
         plan: 'complete',
-        expiresAt: daysAgo(380),
+        // An operator sets a paid plan with a future date (G-114, enforced by the writer, 0200).
+        expiresAt: new Date(Date.now() + 30 * 86_400_000),
         actor: 'operator:test',
       }),
     ).toBe(true);
-    // The paid plan then lapsed (renewal unpaid, grace run out).
-    await setPlanAsOwner(urls, businessId, { plan: 'expired' });
+    // The paid plan then lapsed long ago (renewal unpaid, grace run out): time moved on.
+    await setPlanAsOwner(urls, businessId, { plan: 'expired', planExpiresAt: daysAgo(380) });
 
     expect(await retentionRepo.dueForNotice(workerDb, daysAgo(60))).toEqual([]);
     await warn(businessId, daysAgo(200));
@@ -236,13 +244,15 @@ describe('who is due', () => {
     const change = (plan: string, expiresAt: Date) =>
       billingRepo.setPlan(appDb, { businessId, plan, expiresAt, actor: 'operator:test' });
 
-    await change('complete', daysAgo(380));
+    // A paid plan needs a future date (G-114, enforced by the operator writer, 0200).
+    const ahead = new Date(Date.now() + 30 * 86_400_000);
+    await change('complete', ahead);
     const first = await everPaidAt();
     expect(first).not.toBeNull();
 
     await change('trial', daysAgo(380));
     expect(await everPaidAt()).toEqual(first);
-    await change('chat', daysAgo(380));
+    await change('chat', ahead);
     expect(await everPaidAt()).toEqual(first); // the first date stands
     await change('expired', daysAgo(380));
     expect(await everPaidAt()).toEqual(first);
@@ -273,7 +283,7 @@ describe('who is due', () => {
     const payment = inTenant(businessId, async (tx) => {
       /* The real writer (OD-37): plan, expiry and ever_paid_at in one transaction. */
       const renewsAt = new Date(Date.now() + 30 * 86_400_000);
-      await subscriptionsRepo.applyCycle(tx, businessId, {
+      await applyFixtureCycle(tx, businessId, {
         plan: 'chat',
         cycleStartedAt: new Date(),
         renewsAt,

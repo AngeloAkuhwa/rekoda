@@ -216,6 +216,12 @@ describe('only the worker credential may call the lists', () => {
     sql`SELECT dead_job_has_record(${uuid(1)}::uuid)`,
     sql`SELECT * FROM dead_job_find_for_ops(${uuid(1)}::uuid)`,
     sql`SELECT * FROM blocked_renewals_ops(10, 0)`,
+    sql`SELECT * FROM blocked_renewals_close_batch(10)`,
+    sql`SELECT renewal_block_close_claim(${uuid(1)}::uuid, 60)`,
+    sql`SELECT renewal_block_close_advance(${uuid(1)}::uuid, 1::bigint, 'RKD-X', 0, 0, 60)`,
+    sql`SELECT renewal_block_close_finish(${uuid(1)}::uuid, true)`,
+    sql`SELECT renewal_block_close_release(${uuid(1)}::uuid)`,
+    sql`SELECT * FROM renewal_block_close_status()`,
   ];
 
   it.each(calls.map((c, i) => [i, c] as const))(
@@ -240,12 +246,70 @@ describe('only the worker credential may call the lists', () => {
              coalesce((SELECT bool_or(a.grantee = 0) FROM aclexplode(p.proacl) a), false) AS pub
       FROM pg_proc p
       WHERE p.proname IN ('dead_job_ops_queue', 'dead_job_open_for_event', 'dead_job_is_recovering',
-                          'dead_job_has_record', 'dead_job_find_for_ops', 'blocked_renewals_ops')`);
+                          'dead_job_has_record', 'dead_job_find_for_ops', 'blocked_renewals_ops',
+                          'blocked_renewals_close_batch', 'renewal_block_close_claim',
+                          'renewal_block_close_advance', 'renewal_block_close_finish',
+                          'renewal_block_close_release', 'renewal_block_close_status')`);
     const found = [...rows];
-    expect(found).toHaveLength(6);
+    expect(found).toHaveLength(12);
     for (const f of found) {
       expect(f).toMatchObject({ secdef: true, app: false, worker: true, pub: false });
       expect(f.cfg?.join(',')).toContain('search_path=pg_catalog, pg_temp');
+    }
+  });
+});
+
+describe('the blocked-renewal close cursor (0199) is reachable only through its functions', () => {
+  it('the cursor table has forced RLS, no policy and no grant to any application role', async () => {
+    const [t] = await ownerDb.execute<{
+      rls: boolean;
+      forced: boolean;
+      policies: number;
+      app: boolean;
+      worker: boolean;
+    }>(sql`
+      SELECT c.relrowsecurity AS rls, c.relforcerowsecurity AS forced,
+             (SELECT count(*)::int FROM pg_policy p WHERE p.polrelid = c.oid) AS policies,
+             has_table_privilege('rekoda_app', c.oid, 'SELECT,INSERT,UPDATE,DELETE') AS app,
+             has_table_privilege('rekoda_worker', c.oid, 'SELECT,INSERT,UPDATE,DELETE') AS worker
+      FROM pg_class c WHERE c.relname = 'renewal_block_close_cursor'`);
+    expect(t).toEqual({ rls: true, forced: true, policies: 0, app: false, worker: false });
+    expect(await sqlState(workerDb.execute(sql`SELECT * FROM renewal_block_close_cursor`))).toBe(
+      '42501',
+    );
+    expect(
+      await sqlState(
+        workerDb.execute(sql`UPDATE renewal_block_close_cursor SET after_reference = 'x'`),
+      ),
+    ).toBe('42501');
+  });
+
+  it('lists the approved columns only, bounded, and validates every cursor input', async () => {
+    const a = await business();
+    await blockedCharge(a, 'RKD-SUB-20261108-CCCCCC');
+    const raw = await workerDb.execute<Record<string, unknown>>(
+      sql`SELECT * FROM blocked_renewals_close_batch(100000)`,
+    );
+    expect(Object.keys([...raw][0]!).sort()).toEqual(
+      [
+        'amount_k',
+        'blocked_at',
+        'blocked_at_us',
+        'blocked_reason',
+        'business_id',
+        'current_plan',
+        'current_renews_at',
+        'plan',
+        'reference',
+      ].sort(),
+    );
+    for (const bad of [
+      sql`SELECT renewal_block_close_claim(NULL, 60)`,
+      sql`SELECT renewal_block_close_claim(${uuid(2)}::uuid, 5)`,
+      sql`SELECT renewal_block_close_advance(${uuid(2)}::uuid, 1::bigint, ${'x'.repeat(65)}, 0, 0, 60)`,
+      sql`SELECT renewal_block_close_advance(${uuid(2)}::uuid, 1::bigint, 'RKD-X', -1, 0, 60)`,
+    ]) {
+      expect(await sqlState(workerDb.execute(bad))).toBe('22023');
     }
   });
 });

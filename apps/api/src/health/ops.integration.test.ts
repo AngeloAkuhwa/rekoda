@@ -26,6 +26,7 @@ import {
   type Db,
 } from '@rekoda/db';
 import {
+  applyFixtureCycle,
   migrate,
   requireUrls,
   resetPlanCatalogue,
@@ -424,7 +425,7 @@ describe('the margin report', () => {
     const pinned = await merchant('Launch Cohort', '+2348030000210', 'trial');
     /* Sold Chat through the real cycle path, which pins version 1. */
     await withBusiness(db, pinned, (tx) =>
-      subscriptionsRepo.applyCycle(tx, pinned, {
+      applyFixtureCycle(tx, pinned, {
         plan: 'chat',
         cycleStartedAt: new Date(),
         renewsAt: new Date(Date.now() + 30 * 86_400_000),

@@ -766,6 +766,7 @@ export async function applySettledCharge(
     const chosen =
       subscription?.pendingBillingInterval ?? subscription?.billingInterval ?? 'monthly';
     await subscriptionsRepo.applyCycle(tx, input.businessId, {
+      chargeReference: input.reference,
       plan: charge.plan,
       cycleStartedAt,
       renewsAt,

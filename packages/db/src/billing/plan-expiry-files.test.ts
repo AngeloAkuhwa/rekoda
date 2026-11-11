@@ -73,13 +73,13 @@ export const PINS: Readonly<Record<string, Pin>> = {
     plan: 0,
     expiry: 0,
     businessInserts: 0,
-    why: 'OD-37: no direct assignment any more; writeSubscriptionState and expireSubscription call the 0196 database writers.',
+    why: 'OD-37: no direct assignment any more; writeSubscriptionState and expireSubscription call the 0200 database writers.',
   },
   'packages/db/src/testing.ts': {
-    plan: 1,
-    expiry: 1,
+    plan: 2,
+    expiry: 2,
     businessInserts: 0,
-    why: 'OD-37: setPlanAsOwner, one owner-role UPDATE for test fixtures; refused for the application and worker roles by the 0196 trigger.',
+    why: 'OD-37: setPlanAsOwner (one owner-role UPDATE) and test_fixture_set_plan (installed by the test harness only, owned by rekoda_plan_writer); both refused for the application roles in production databases, where the fixture writer does not exist.',
   },
   'packages/db/migrations/0197_staging_test_business_tools.sql': {
     plan: 0,
@@ -87,11 +87,17 @@ export const PINS: Readonly<Record<string, Pin>> = {
     businessInserts: 0,
     why: 'OWN-77: staging_move_date, the one staging-only path, through rekoda_plan_writer (OD-37).',
   },
+  'packages/db/migrations/0200_plan_writer_boundary.sql': {
+    plan: 3,
+    expiry: 2,
+    businessInserts: 0,
+    why: 'OD-37/OWN-87: subscription_apply_paid_charge (plan from the charge, and the date) and subscription_operator_set_plan (validated plan and date), plus subscription_expire_plan revalidated (plan only).',
+  },
   'packages/db/migrations/0196_plan_fields_guard.sql': {
     plan: 2,
     expiry: 1,
     businessInserts: 0,
-    why: 'OD-37: subscription_write_plan (plan and date together) and subscription_expire_plan (plan only, guarded on the previous plan), the only writers the trigger accepts.',
+    why: 'OD-37: subscription_write_plan (plan and date together; dropped by 0200) and subscription_expire_plan (plan only, guarded on the previous plan; replaced by 0200). Applied history.',
   },
   'packages/db/migrations/0017_trial_expiry.sql': {
     plan: 0,

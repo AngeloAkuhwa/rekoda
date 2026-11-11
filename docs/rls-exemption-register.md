@@ -214,4 +214,12 @@ and OWN-70 (blocked renewals listed for an operator) require these rows.
 | `jobs` + `external_events` via `jobsRepo.enrolUnrecordedDeaths` (cutover enrolment)                                                                                                                                                                                                                          | `rekoda_worker`                  | reads dead `payment.process` / `billing.process` jobs' payload event id across tenants, then writes each record under that job's own pinned tenant; never returned to a caller | worker reclaim pass (no route)                                                                                     |
 | `dead_job_exceptions` via `deadJobsRepo.findForOps` / `openJobForEvent`, and the checks in `jobsRepo.reclaimStalled` and `enrolUnrecordedDeaths` (`dead_job_find_for_ops`, `dead_job_open_for_event`, `dead_job_is_recovering`, `dead_job_has_record`, 0194)                                                 | `rekoda_worker` EXECUTE          | one record looked up by job or event id; the reclaim reads only whether a recovery is in flight                                                                                | `POST /v1/ops/dead-jobs/:jobId/recover`, `…/resolve` and the generic event resolve (`ops:payment`); worker reclaim |
 
+| `subscription_charges` via `subscriptionsRepo.blockedRenewalsCloseBatch` (`blocked_renewals_close_batch`, definer function, 0199; keyset order after the durable cursor, same fixed columns as `blocked_renewals_ops` plus `blocked_at_us`, 200-row limit) | `rekoda_worker` EXECUTE | reference, business id, plan, amount, block reason and time, current plan and renewal date | renewal sweep's close pass (no route) |
+
+`renewal_block_close_cursor` (0199) is not an exemption either: it has no `business_id` (it holds one
+row: a keyset position, i.e. a block time and a charge reference, pass counters and a lease), RLS is
+enabled and forced with **no** policy, and neither application role holds any grant on it. It is
+read and written only by the worker-only definer functions `renewal_block_close_claim`, `_advance`,
+`_finish`, `_release` and `_status`, which validate their inputs and change nothing but that row.
+
 No payload, error text, name or phone number is returned. Writes stay tenant-pinned.

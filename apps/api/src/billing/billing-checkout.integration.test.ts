@@ -21,7 +21,14 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '@rekoda/db/testing';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+  setPlanAsOwner,
+} from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../config.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
@@ -412,7 +419,7 @@ describe('what may be paid', () => {
       actor: 'operator:test-g102',
     });
     await withBusiness(appDb, businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'chat',
         cycleStartedAt: new Date(Date.now() - 10 * 86_400_000),
         renewsAt: new Date(Date.now() + 20 * 86_400_000),
@@ -443,7 +450,7 @@ describe('what may be paid', () => {
       actor: 'operator:test-g102',
     });
     await withBusiness(appDb, businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'chat',
         cycleStartedAt: new Date(Date.now() - 10 * 86_400_000),
         renewsAt: new Date(Date.now() + 20 * 86_400_000),

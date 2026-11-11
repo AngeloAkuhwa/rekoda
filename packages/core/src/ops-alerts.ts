@@ -32,7 +32,14 @@ export interface OpsSnapshot {
    * Rekoda's own billing: open renewals raised while their payment could not be taken (OWN-70).
    * Absent or null when the process cannot see it.
    */
-  billing?: { blockedRenewals: number } | null;
+  billing?: {
+    blockedRenewals: number;
+    /**
+     * Blocks the last blocked-renewal close pass could not close (migration 0199 cursor). Absent
+     * when unknown.
+     */
+    blockCloseFailed?: number;
+  } | null;
 }
 
 export interface EventCounts {
@@ -128,6 +135,16 @@ export function evaluateOpsAlerts(
       key: 'billing.renewals_blocked',
       severity: 'critical',
       summary: `${snapshot.billing.blockedRenewals} renewal(s) were raised while Rekoda cannot take the payment (live key unconfirmed or not configured); see the operator exception queue`,
+    });
+  }
+
+  /* The close pass after the gate opened is failing on some blocks: they stay open and their
+   * merchants cannot pay. Active while the latest pass reported any failure (OWN-70, 0199). */
+  if (snapshot.billing && (snapshot.billing.blockCloseFailed ?? 0) > 0) {
+    alerts.push({
+      key: 'billing.renewal_block_close_failing',
+      severity: 'critical',
+      summary: `${snapshot.billing.blockCloseFailed} blocked renewal(s) could not be closed by the last close pass; see the worker log (renewal_block_close_failed)`,
     });
   }
 

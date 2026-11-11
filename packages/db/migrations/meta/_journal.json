@@ -1394,6 +1394,20 @@
       "when": 1794744000000,
       "tag": "0198_blocked_renewal_close_order",
       "breakpoints": true
+    },
+    {
+      "idx": 199,
+      "version": "7",
+      "when": 1794830400000,
+      "tag": "0199_blocked_renewal_close_cursor",
+      "breakpoints": true
+    },
+    {
+      "idx": 200,
+      "version": "7",
+      "when": 1794916800000,
+      "tag": "0200_plan_writer_boundary",
+      "breakpoints": true
     }
   ]
 }

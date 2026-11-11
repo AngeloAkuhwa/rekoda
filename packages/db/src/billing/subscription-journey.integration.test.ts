@@ -21,7 +21,7 @@ import { sql } from 'drizzle-orm';
 import { allowanceFor, addMonth, usagePeriod } from '@rekoda/core';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { identity, subscriptionsRepo, usageRepo } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { applyFixtureCycle, migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
 
 let urls: Urls;
 let db: Db;
@@ -74,7 +74,7 @@ async function generate(businessId: string, now: Date): Promise<boolean> {
 /** What settling a paid plan charge writes (a first purchase or a renewal). */
 async function payCycle(businessId: string, plan: string, start: Date, anchorDay: number) {
   await inTenant(businessId, (tx) =>
-    subscriptionsRepo.applyCycle(tx, businessId, {
+    applyFixtureCycle(tx, businessId, {
       plan,
       cycleStartedAt: start,
       renewsAt: addMonth(start, anchorDay),
@@ -120,7 +120,7 @@ describe('one merchant, trial to reactivation', () => {
 
     // Mid-cycle upgrade to Complete: the new plan's allowance, the SAME renewal date.
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'complete',
         cycleStartedAt: start,
         renewsAt: addMonth(start, anchor),

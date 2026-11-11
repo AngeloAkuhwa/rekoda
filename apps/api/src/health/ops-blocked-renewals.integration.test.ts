@@ -8,7 +8,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { opsExceptionsResponse } from '@rekoda/contracts';
 import { createDb, identity, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+} from '@rekoda/db/testing';
 import { sweepRenewals } from '../billing/renewal-sweep.js';
 
 const OPERATOR_SECRET = `operator-${randomBytes(24).toString('hex')}`;
@@ -62,7 +68,7 @@ async function blockedRenewal(): Promise<{ businessId: string; reference: string
   });
   const renewsAt = new Date(Date.now() - DAY);
   await withBusiness(db, business.id, (tx) =>
-    subscriptionsRepo.applyCycle(tx, business.id, {
+    applyFixtureCycle(tx, business.id, {
       plan: 'chat',
       cycleStartedAt: new Date(renewsAt.getTime() - 30 * DAY),
       renewsAt,

@@ -58,9 +58,14 @@ EDGE_NETWORK=rekoda-prod_edge
 EDGE_EXPECTED='172.30.10.1 false'
 
 dc() { docker compose -f docker-compose.prod.yml "$@"; }
+# Whether this release brings in the plan-field boundary (0196 and/or 0200), so the OWN-86 pre-start
+# smoke applies.
+carries_plan_boundary() {
+  [[ " $BREAKING " == *' 0196_plan_fields_guard '* || " $BREAKING " == *' 0200_plan_writer_boundary '* ]]
+}
 # The OWN-86 pre-start smoke query, printed for an operator fixing forward by hand.
 print_smoke_0196() {
-  if [[ " $BREAKING " == *' 0196_plan_fields_guard '* ]]; then
+  if carries_plan_boundary; then
     printf 'Pre-start database smoke (OWN-86): dc exec -T postgres psql -U rekoda_owner -d rekoda -v ON_ERROR_STOP=1 -tA -c "%s"\n' "$SMOKE_0196_SQL" >&2
   fi
 }
@@ -78,7 +83,7 @@ fail() {
 PHASE=checks
 # Migrations the previous release cannot run against (OD-48): the api and worker are stopped before
 # any of them is applied, and the old release is never restarted against a database that has one.
-COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard'
+COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -86,18 +91,27 @@ BREAKING_APPLIED=false
 MIGRATE_ENTERED=false
 # Set just before `up`: a failure after migrate but before it (the 0196 smoke) has started nothing.
 UP_ENTERED=false
-# The OWN-86 pre-start database smoke for 0196, run as the owner between migrate and `up`. It prints
-# `t` only when the ledger row, the guard trigger (enabled in origin or always mode, so it fires), each
-# plan function at its exact signature, SECURITY DEFINER and owned by rekoda_plan_writer, and the
-# runtime roles' separation from it all hold.
+# The OWN-86 pre-start database smoke for the plan-field boundary (0196 and 0200), run as the owner
+# between migrate and `up`. It prints `t` only when: both ledger rows are present; the update and
+# insert guard triggers exist and fire (enabled in origin or always mode); each writer
+# (subscription_apply_paid_charge, subscription_operator_set_plan, subscription_expire_plan) exists at
+# its exact signature, SECURITY DEFINER and owned by rekoda_plan_writer; the removed general writer
+# and the test-only fixture writer are ABSENT; and neither runtime role can become the writer role.
 SMOKE_0196_SQL="SELECT
-  (SELECT count(*) FROM rekoda_migrations WHERE tag = '0196_plan_fields_guard') = 1
+  (SELECT count(*) FROM rekoda_migrations
+    WHERE tag IN ('0196_plan_fields_guard', '0200_plan_writer_boundary')) = 2
   AND (SELECT count(*) FROM pg_trigger WHERE tgname = 'businesses_plan_fields_guard'
         AND tgrelid = 'public.businesses'::regclass AND tgenabled IN ('O', 'A')) = 1
+  AND (SELECT count(*) FROM pg_trigger WHERE tgname = 'businesses_plan_fields_insert_guard'
+        AND tgrelid = 'public.businesses'::regclass AND tgenabled IN ('O', 'A')) = 1
   AND (SELECT count(*) FROM pg_proc WHERE prosecdef AND proowner = 'rekoda_plan_writer'::regrole
-        AND oid = to_regprocedure('public.subscription_write_plan(uuid,text,timestamptz)')) = 1
+        AND oid = to_regprocedure('public.subscription_apply_paid_charge(uuid,text,timestamptz)')) = 1
+  AND (SELECT count(*) FROM pg_proc WHERE prosecdef AND proowner = 'rekoda_plan_writer'::regrole
+        AND oid = to_regprocedure('public.subscription_operator_set_plan(uuid,text,timestamptz,text)')) = 1
   AND (SELECT count(*) FROM pg_proc WHERE prosecdef AND proowner = 'rekoda_plan_writer'::regrole
         AND oid = to_regprocedure('public.subscription_expire_plan(uuid,text,text)')) = 1
+  AND to_regprocedure('public.subscription_write_plan(uuid,text,timestamptz)') IS NULL
+  AND to_regprocedure('public.test_fixture_set_plan(uuid,text,timestamptz)') IS NULL
   AND NOT pg_has_role('rekoda_app', 'rekoda_plan_writer', 'MEMBER')
   AND NOT pg_has_role('rekoda_worker', 'rekoda_plan_writer', 'MEMBER')"
 PREV_SHA=
@@ -638,12 +652,12 @@ dc run --rm -T migrate
 # neither runtime role able to become it.
 # Any miss stops the deploy with the api and worker still stopped; the exit handler then prints the
 # fix-forward steps (0196 is applied, so the previous release must not be restarted).
-if [[ " $BREAKING " == *' 0196_plan_fields_guard '* ]]; then
-  step 'pre-start database smoke for 0196 (OWN-86): ledger, guard trigger, plan functions, role boundary'
+if carries_plan_boundary; then
+  step 'pre-start database smoke for the plan-field boundary, 0196/0200 (OWN-86): ledger, guard triggers, plan writers, role boundary'
   smoke_0196=$(dc exec -T postgres psql -U rekoda_owner -d rekoda -v ON_ERROR_STOP=1 -tA -c "$SMOKE_0196_SQL") ||
     fail 'migrations are APPLIED, but the pre-start database smoke for 0196 could not run, so the new release is not started; the api and worker stay stopped'
   [ "$smoke_0196" = t ] ||
-    fail "migrations are APPLIED, but the pre-start database smoke for 0196 failed (got '$smoke_0196'): the ledger row, the enabled businesses_plan_fields_guard trigger, both plan writers (exact signature, SECURITY DEFINER, owned by rekoda_plan_writer), or the runtime roles' separation from it is missing; the new release is not started and the api and worker stay stopped"
+    fail "migrations are APPLIED, but the pre-start database smoke for 0196 failed (got '$smoke_0196'): the 0196 and 0200 ledger rows, the enabled update and insert guard triggers, the three plan writers (exact signature, SECURITY DEFINER, owned by rekoda_plan_writer), the absence of the removed general writer and of the test-only fixture writer, or the runtime roles' separation from the writer role is missing; the new release is not started and the api and worker stay stopped"
 fi
 
 step 'start the new release'

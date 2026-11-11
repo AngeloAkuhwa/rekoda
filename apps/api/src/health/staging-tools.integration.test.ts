@@ -18,7 +18,13 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+} from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../config.js';
 import { StagingRefused, StagingToolsService } from './staging-tools.service.js';
 import { assertStagingMarkerNotLive } from './staging-boot-check.js';
@@ -256,7 +262,7 @@ describe('OWN-77: with the tools on', () => {
     const businessId = await seedBusiness();
     const failedAt = new Date(Date.now() - 3_600_000);
     await withBusiness(db, businessId, async (tx) => {
-      await subscriptionsRepo.applyCycle(tx, businessId, {
+      await applyFixtureCycle(tx, businessId, {
         plan: 'chat',
         cycleStartedAt: new Date(failedAt.getTime() - 30 * DAY),
         renewsAt: failedAt,

@@ -65,11 +65,12 @@ export class WebhookAlertSink implements AlertSink {
  */
 export async function collectOpsSnapshot(workerDb: Db | null): Promise<OpsSnapshot> {
   if (!workerDb) return { queue: null, meta: null, paystack: null };
-  const [queue, meta, paystack, blockedRenewals] = await Promise.all([
+  const [queue, meta, paystack, blockedRenewals, closeCursor] = await Promise.all([
     jobsRepo.queueHealth(workerDb),
     events.eventHealth(workerDb, 'meta'),
     events.eventHealth(workerDb, 'paystack'),
     subscriptionsRepo.blockedRenewalCount(workerDb),
+    subscriptionsRepo.blockCloseCursorStatus(workerDb),
   ]);
   return {
     queue: {
@@ -82,7 +83,7 @@ export async function collectOpsSnapshot(workerDb: Db | null): Promise<OpsSnapsh
     },
     meta,
     paystack,
-    billing: { blockedRenewals },
+    billing: { blockedRenewals, blockCloseFailed: closeCursor?.lastPassFailed ?? 0 },
   };
 }
 

@@ -22,7 +22,13 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+} from '@rekoda/db/testing';
 import { sweepRenewals } from './renewal-sweep.js';
 import { applySettledCharge } from './billing.service.js';
 import { collectOpsSnapshot } from '../health/ops-alerts.js';
@@ -74,7 +80,7 @@ async function dueBusiness(): Promise<string> {
   });
   const renewsAt = new Date(Date.now() - DAY);
   await withBusiness(db, business.id, (tx) =>
-    subscriptionsRepo.applyCycle(tx, business.id, {
+    applyFixtureCycle(tx, business.id, {
       plan: 'chat',
       cycleStartedAt: new Date(renewsAt.getTime() - 30 * DAY),
       renewsAt,

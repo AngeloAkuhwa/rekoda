@@ -18,7 +18,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db, type TenantDb } from '../client.js';
 import { identity, subscriptionsRepo, usageRepo } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '../testing.js';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+  setPlanAsOwner,
+} from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -90,7 +97,7 @@ describe('the cycle on a business row', () => {
   it('writes plan, dates and anchor as one fact', async () => {
     const businessId = await seedBusiness();
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'chat',
         cycleStartedAt: CYCLE_START,
         renewsAt: RENEWS_AT,
@@ -111,7 +118,7 @@ describe('the cycle on a business row', () => {
   it('clears the grace clock when a cycle is paid for', async () => {
     const businessId = await seedBusiness();
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'chat',
         cycleStartedAt: CYCLE_START,
         renewsAt: RENEWS_AT,
@@ -127,7 +134,7 @@ describe('the cycle on a business row', () => {
     ).not.toBeNull();
 
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'chat',
         cycleStartedAt: RENEWS_AT,
         renewsAt: new Date('2026-10-01T00:00:00Z'),
@@ -160,7 +167,7 @@ describe('the cycle on a business row', () => {
   it('parks a downgrade until the next renewal without moving anything else', async () => {
     const businessId = await seedBusiness();
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'complete',
         cycleStartedAt: CYCLE_START,
         renewsAt: RENEWS_AT,

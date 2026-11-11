@@ -8,7 +8,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { billingRepo, identity, subscriptionsRepo } from '../index.js';
-import { migrate, requireUrls, resetPlanCatalogue, truncateAll, type Urls } from '../testing.js';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  resetPlanCatalogue,
+  truncateAll,
+  type Urls,
+} from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -57,12 +64,14 @@ const originOf = async (businessId: string) => {
   return subscription.origin;
 };
 
-const START = new Date('2026-08-01T00:00:00Z');
-const RENEWS = new Date('2026-09-01T00:00:00Z');
+/* A paid plan set by an operator must renew in the future (G-114, enforced by the operator writer,
+ * migration 0200), so the fixture cycle renews well after any day these tests run. */
+const START = new Date('2027-08-01T00:00:00Z');
+const RENEWS = new Date('2027-09-01T00:00:00Z');
 
 const providerCycle = (businessId: string) =>
   withBusiness(appDb, businessId, (tx) =>
-    subscriptionsRepo.applyCycle(tx, businessId, {
+    applyFixtureCycle(tx, businessId, {
       plan: 'chat',
       cycleStartedAt: START,
       renewsAt: RENEWS,
@@ -83,7 +92,7 @@ describe('the state writer records who created the cycle', () => {
     await billingRepo.setPlan(appDb, {
       businessId: id,
       plan: 'complete',
-      expiresAt: new Date('2026-09-15T00:00:00Z'),
+      expiresAt: new Date('2027-09-15T00:00:00Z'),
       actor: 'operator:test',
     });
     expect(await originOf(id)).toBe('operator');

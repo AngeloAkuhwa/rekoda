@@ -305,9 +305,27 @@ test('OWN-86: a release carrying 0196 runs the pre-start database smoke after mi
   // pass with one writer missing).
   assert.match(
     sql,
-    /to_regprocedure\('public\.subscription_write_plan\(uuid,text,timestamptz\)'\)/,
+    /oid = to_regprocedure\('public\.subscription_apply_paid_charge\(uuid,text,timestamptz\)'\)/,
   );
-  assert.match(sql, /to_regprocedure\('public\.subscription_expire_plan\(uuid,text,text\)'\)/);
+  assert.match(
+    sql,
+    /oid = to_regprocedure\('public\.subscription_operator_set_plan\(uuid,text,timestamptz,text\)'\)/,
+  );
+  assert.match(
+    sql,
+    /oid = to_regprocedure\('public\.subscription_expire_plan\(uuid,text,text\)'\)/,
+  );
+  // OD-37 (0200): the general writer was removed and the test-only fixture writer must not exist.
+  assert.match(
+    sql,
+    /to_regprocedure\('public\.subscription_write_plan\(uuid,text,timestamptz\)'\) IS NULL/,
+  );
+  assert.match(
+    sql,
+    /to_regprocedure\('public\.test_fixture_set_plan\(uuid,text,timestamptz\)'\) IS NULL/,
+  );
+  assert.match(sql, /businesses_plan_fields_insert_guard/);
+  assert.match(sql, /'0200_plan_writer_boundary'/);
   assert.match(sql, /prosecdef/);
   assert.match(sql, /rekoda_plan_writer/);
   assert.match(sql, /pg_has_role\('rekoda_app'/);
@@ -344,6 +362,18 @@ test('OWN-86: a smoke that cannot run is a failure, not a pass', () => {
   assert.notEqual(r.status, 0);
   assert.equal(h.at(' up '), -1, 'the new release must not start when the smoke could not run');
   assert.match(r.stderr, /pre-start database smoke for 0196 could not run/);
+});
+
+test('OD-37 (0200): a release bringing in 0200 is compatibility-breaking and runs the smoke too', () => {
+  const h = host(['0200_plan_writer_boundary']);
+  const r = h.run();
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const stop = h.at('stop api worker');
+  const migrate = h.at('run --rm -T migrate');
+  const smoke = h.at('exec -T postgres psql');
+  const up = h.at(' up ');
+  assert.ok(stop >= 0 && stop < migrate, 'api and worker are stopped before migrating 0200');
+  assert.ok(migrate < smoke && smoke < up, h.calls().join('\n'));
 });
 
 test('a release without 0196 does not run the 0196 smoke', () => {

@@ -19,7 +19,12 @@ import { sql as drizzleSql } from 'drizzle-orm';
 import { applyMigrations } from './migrate.js';
 import { withBusiness, type Db } from './client.js';
 import { setPlan } from './repos/billing.js';
-import { setBillingEmailSealed } from './repos/subscriptions.js';
+import {
+  setBillingEmailSealed,
+  writeCycle,
+  type CycleInput,
+} from './repos/subscriptions.js';
+import type { TenantDb } from './client.js';
 
 export interface Urls {
   /** Owner — DDL and fixture teardown. */
@@ -59,6 +64,47 @@ export function requireUrls(): Urls {
 
 export async function migrate(urls: Urls): Promise<void> {
   await applyMigrations(urls.owner);
+  await installTestFixtureWriter(urls.owner);
+}
+
+/**
+ * A plan writer for TEST FIXTURES ONLY (OD-37, migration 0200).
+ *
+ * Production plan changes go through `subscription_apply_paid_charge` (a paid charge) or
+ * `subscription_operator_set_plan` (validated operator input). Dozens of suites need a business on a
+ * paid cycle without staging a charge for it, often with dates in the past to drive a sweep, which
+ * those writers rightly refuse. This function is created by the test harness, never by a migration:
+ * a production database does not have it (the staging deploy's pre-start smoke checks that), so
+ * nothing outside a test can call it.
+ */
+async function installTestFixtureWriter(ownerUrl: string): Promise<void> {
+  const client = postgres(ownerUrl, { max: 1, onnotice: () => {} });
+  try {
+    await client.unsafe(`
+      CREATE OR REPLACE FUNCTION public.test_fixture_set_plan(
+        p_business uuid, p_plan text, p_expires timestamptz
+      ) RETURNS void
+      LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+      BEGIN
+        UPDATE public.businesses SET plan = p_plan, plan_expires_at = p_expires WHERE id = p_business;
+      END $$;
+      ALTER FUNCTION public.test_fixture_set_plan(uuid, text, timestamptz) OWNER TO rekoda_plan_writer;
+      REVOKE ALL ON FUNCTION public.test_fixture_set_plan(uuid, text, timestamptz) FROM PUBLIC;
+      GRANT EXECUTE ON FUNCTION public.test_fixture_set_plan(uuid, text, timestamptz)
+        TO rekoda_app, rekoda_worker;
+    `);
+  } finally {
+    await client.end();
+  }
+}
+
+/** Put a business on a paid cycle for a test, without a charge (see `installTestFixtureWriter`). */
+export async function applyFixtureCycle(
+  tx: TenantDb,
+  businessId: string,
+  cycle: CycleInput,
+): Promise<void> {
+  await writeCycle(tx, businessId, cycle, { kind: 'fixture' });
 }
 
 /**

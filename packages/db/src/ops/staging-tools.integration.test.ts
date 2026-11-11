@@ -10,7 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { identity, stagingToolsRepo, subscriptionsRepo } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { applyFixtureCycle, migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -204,7 +204,7 @@ describe('OWN-77: on a staging database', () => {
     const businessId = await seedBusiness();
     const renewsAt = new Date(Date.now() + 20 * DAY);
     await withBusiness(appDb, businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'chat',
         cycleStartedAt: new Date(Date.now() - 10 * DAY),
         renewsAt,

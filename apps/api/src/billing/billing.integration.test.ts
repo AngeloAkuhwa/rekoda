@@ -25,7 +25,13 @@ import {
   billingQuoteResponse,
 } from '@rekoda/contracts';
 import { createDb, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+} from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRenewals } from './renewal-sweep.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
@@ -106,7 +112,7 @@ async function onboard(phone: string) {
 /** Put a business on a paid cycle, as a settled first purchase would. */
 async function putOnPlan(businessId: string, plan: string, cycleStart: Date, renewsAt: Date) {
   await withBusiness(db, businessId, (tx) =>
-    subscriptionsRepo.applyCycle(tx, businessId, {
+    applyFixtureCycle(tx, businessId, {
       plan,
       cycleStartedAt: cycleStart,
       renewsAt,

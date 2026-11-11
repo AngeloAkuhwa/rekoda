@@ -29,6 +29,7 @@ import {
   type Db,
 } from '@rekoda/db';
 import {
+  applyFixtureCycle,
   migrate,
   requireUrls,
   resetPlanCatalogue,
@@ -115,7 +116,7 @@ async function onboard(phone: string) {
 /** Put a business on a paid cycle, as a settled first purchase would. */
 async function putOnPlan(businessId: string, plan: string, cycleStart: Date, renewsAt: Date) {
   await withBusiness(db, businessId, (tx) =>
-    subscriptionsRepo.applyCycle(tx, businessId, {
+    applyFixtureCycle(tx, businessId, {
       plan,
       cycleStartedAt: cycleStart,
       renewsAt,

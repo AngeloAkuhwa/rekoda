@@ -18,7 +18,13 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+} from '@rekoda/db/testing';
 import { applySettledCharge, BillingService } from './billing.service.js';
 
 let urls: Urls;
@@ -76,7 +82,7 @@ async function onPlan(businessId: string, plan: string, msLeft: number): Promise
    * a short expiry would be a custom span that is never prorated automatically. */
   const renewsAt = new Date(Date.now() + msLeft);
   await withBusiness(appDb, businessId, (tx) =>
-    subscriptionsRepo.applyCycle(tx, businessId, {
+    applyFixtureCycle(tx, businessId, {
       plan,
       cycleStartedAt: new Date(renewsAt.getTime() - 30 * DAY),
       renewsAt,

@@ -19,6 +19,7 @@ import { addInterval, annualPriceK, PLAN_PRICES_K } from '@rekoda/core';
 import { billingOverviewResponse } from '@rekoda/contracts';
 import { createDb, issueRepo, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import {
+  applyFixtureCycle,
   migrate,
   requireUrls,
   resetPlanCatalogue,
@@ -152,7 +153,7 @@ async function putOnPlan(
 ) {
   const anchor = new Date(start.getTime() + 3_600_000).getUTCDate();
   await withBusiness(db, businessId, async (tx) => {
-    await subscriptionsRepo.applyCycle(tx, businessId, {
+    await applyFixtureCycle(tx, businessId, {
       plan,
       cycleStartedAt: start,
       renewsAt: addInterval(start, interval, anchor),

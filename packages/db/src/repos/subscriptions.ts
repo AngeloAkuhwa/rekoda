@@ -115,25 +115,50 @@ export async function subscriptionFor(
 export async function applyCycle(
   tx: TenantDb,
   businessId: string,
-  cycle: {
-    plan: string;
-    cycleStartedAt: Date;
-    renewsAt: Date;
-    anchorDay: number;
-    /** The plan the NEXT renewal moves to. Null clears a scheduled downgrade. */
-    pendingPlan?: string | null;
-    /** The interval this cycle was bought on; absent keeps monthly. A switch waiting for renewal is cleared. */
-    billingInterval?: BillingInterval;
+  cycle: CycleInput & {
     /**
-     * An upgrade keeps the cycle it lands in, so an interval switch already scheduled for the
-     * NEXT renewal must survive it. A renewal or a first purchase starts a new cycle and clears it.
+     * The paid charge this cycle is bought with (OD-37, migration 0200). The database takes the
+     * plan from that charge and refuses a charge that is not paid, not a plan charge, or already
+     * applied, so `plan` here must be the charge's plan.
      */
-    keepPendingInterval?: boolean;
-    /** Leaves this interval waiting for the next renewal (a cycle bought on another interval than the one chosen). */
-    nextInterval?: BillingInterval | null;
+    chargeReference: string;
   },
 ): Promise<void> {
+  await writeCycle(tx, businessId, cycle, { kind: 'charge', reference: cycle.chargeReference });
+}
+
+/** A paid cycle, as `applyCycle` and the test fixture writer describe it. */
+export interface CycleInput {
+  plan: string;
+  cycleStartedAt: Date;
+  renewsAt: Date;
+  anchorDay: number;
+  /** The plan the NEXT renewal moves to. Null clears a scheduled downgrade. */
+  pendingPlan?: string | null;
+  /** The interval this cycle was bought on; absent keeps monthly. A switch waiting for renewal is cleared. */
+  billingInterval?: BillingInterval;
+  /**
+   * An upgrade keeps the cycle it lands in, so an interval switch already scheduled for the
+   * NEXT renewal must survive it. A renewal or a first purchase starts a new cycle and clears it.
+   */
+  keepPendingInterval?: boolean;
+  /** Leaves this interval waiting for the next renewal (a cycle bought on another interval than the one chosen). */
+  nextInterval?: BillingInterval | null;
+}
+
+/**
+ * Write a paid cycle under the given authority. Production code calls `applyCycle` (a paid
+ * charge); the `fixture` authority exists only for test databases (`@rekoda/db/testing`), whose
+ * harness installs the function it needs; a production database has no such function.
+ */
+export async function writeCycle(
+  tx: TenantDb,
+  businessId: string,
+  cycle: CycleInput,
+  authority: PlanWriteAuthority,
+): Promise<void> {
   await writeSubscriptionState(tx, businessId, {
+    authority,
     billingInterval: cycle.billingInterval ?? 'monthly',
     keepPendingInterval: cycle.keepPendingInterval ?? false,
     ...(cycle.nextInterval !== undefined ? { nextInterval: cycle.nextInterval } : {}),
@@ -147,8 +172,18 @@ export async function applyCycle(
   });
 }
 
+/**
+ * Who may move a business's plan fields (OD-37, migration 0200), each mapped to its own database
+ * writer: a paid charge (`subscription_apply_paid_charge`, the plan comes from the charge), an
+ * operator (`subscription_operator_set_plan`, validated plan and date, API credential only), or a
+ * test fixture (a function only the test harness installs).
+ */
+export type PlanWriteAuthority =
+  { kind: 'charge'; reference: string } | { kind: 'operator'; actor: string } | { kind: 'fixture' };
+
 /** What a business's subscription columns say, written as one fact. */
 export interface SubscriptionState {
+  authority: PlanWriteAuthority;
   plan: string;
   /**
    * A paid plan (a cycle or an operator arrangement) or not (trial, expired).
@@ -217,12 +252,28 @@ export async function writeSubscriptionState(
            LIMIT 1))
       END`
     : sql`plan_version_id`;
-  /* OD-37 (migration 0196): `plan` and `plan_expires_at` are written by the database function
-   * owned by `rekoda_plan_writer`; the trigger refuses them from anywhere else. The rest of the
-   * cycle is written beside it, in this same transaction, so the state still lands as one fact. */
-  await tx.execute(sql`
-    SELECT subscription_write_plan(${businessId}::uuid, ${state.plan}, ${expires})
-  `);
+  /* OD-37 (migrations 0196, 0200): `plan` and `plan_expires_at` are written only by a database
+   * function owned by `rekoda_plan_writer`, chosen by the authority; the trigger refuses them from
+   * anywhere else. The rest of the cycle is written beside it, in this same transaction, so the
+   * state still lands as one fact. */
+  const a = state.authority;
+  if (a.kind === 'charge') {
+    /* The plan comes from the charge in the database; one that disagrees is a caller bug. */
+    const rows = await tx.execute<{ plan: string }>(sql`
+      SELECT subscription_apply_paid_charge(${businessId}::uuid, ${a.reference}, ${expires}) AS plan
+    `);
+    if ([...rows][0]?.plan !== state.plan) {
+      throw new Error(`charge ${a.reference} buys a different plan than the cycle being applied`);
+    }
+  } else if (a.kind === 'operator') {
+    await tx.execute(sql`
+      SELECT subscription_operator_set_plan(${businessId}::uuid, ${state.plan}, ${expires}, ${a.actor})
+    `);
+  } else {
+    await tx.execute(sql`
+      SELECT test_fixture_set_plan(${businessId}::uuid, ${state.plan}, ${expires})
+    `);
+  }
   await tx.execute(sql`
     UPDATE businesses SET
       plan_version_id = ${pin},
@@ -2410,6 +2461,135 @@ export async function blockedRenewalCount(db: Db): Promise<number> {
     SELECT count(*)::int AS n FROM subscription_charges c WHERE ${OPEN_BLOCKED}
   `);
   return [...rows][0]?.n ?? 0;
+}
+
+/** One open block in close order, with its exact keyset position (migration 0199). */
+export interface BlockedRenewalCloseRow extends BlockedRenewalRow {
+  /** `blocked_at` in microseconds since the epoch, exact (a JS Date would drop the microseconds). */
+  blockedAtUs: string;
+}
+
+/**
+ * The next batch of open blocks after the durable close cursor (migration 0199): keyset order
+ * (blocked_at, reference). The position is read from the cursor row by the database; the caller
+ * supplies only the batch size. Worker credential only.
+ */
+export async function blockedRenewalsCloseBatch(
+  db: Db,
+  limit: number,
+): Promise<BlockedRenewalCloseRow[]> {
+  const rows = await db.execute<{
+    reference: string;
+    business_id: string;
+    plan: string | null;
+    amount_k: string | number;
+    blocked_reason: RenewalBlockReason;
+    blocked_at: string;
+    blocked_at_us: string | number;
+    current_plan: string;
+    current_renews_at: string | null;
+  }>(sql`SELECT * FROM blocked_renewals_close_batch(${limit})`);
+  return [...rows].map((r) => ({
+    reference: r.reference,
+    businessId: r.business_id,
+    plan: r.plan,
+    amountK: Number(r.amount_k),
+    reason: r.blocked_reason,
+    blockedAt: new Date(r.blocked_at),
+    blockedAtUs: String(r.blocked_at_us),
+    currentPlan: r.current_plan,
+    currentRenewsAt: at(r.current_renews_at),
+  }));
+}
+
+/** Claim the close cursor's lease (migration 0199). True when `owner` now holds it. */
+export async function claimBlockCloseCursor(
+  db: Db,
+  owner: string,
+  leaseSeconds: number,
+): Promise<boolean> {
+  const rows = await db.execute<{ ok: boolean }>(
+    sql`SELECT renewal_block_close_claim(${owner}::uuid, ${leaseSeconds}) AS ok`,
+  );
+  return [...rows][0]?.ok === true;
+}
+
+/**
+ * Durably record a processed batch: the cursor moves to the batch's last key and the lease is
+ * extended. False (nothing written) when `owner` no longer holds the lease.
+ */
+export async function advanceBlockCloseCursor(
+  db: Db,
+  owner: string,
+  after: { blockedAtUs: string; reference: string },
+  counts: { closed: number; failed: number },
+  leaseSeconds: number,
+): Promise<boolean> {
+  const rows = await db.execute<{ ok: boolean }>(sql`
+    SELECT renewal_block_close_advance(${owner}::uuid, ${after.blockedAtUs}::bigint,
+      ${after.reference}, ${counts.closed}, ${counts.failed}, ${leaseSeconds}) AS ok
+  `);
+  return [...rows][0]?.ok === true;
+}
+
+/** End a pass; `wrapped` (the list was exhausted) moves the cursor back to the start. */
+export async function finishBlockClosePass(
+  db: Db,
+  owner: string,
+  wrapped: boolean,
+): Promise<boolean> {
+  const rows = await db.execute<{ ok: boolean }>(
+    sql`SELECT renewal_block_close_finish(${owner}::uuid, ${wrapped}) AS ok`,
+  );
+  return [...rows][0]?.ok === true;
+}
+
+/** Give the lease back without moving the cursor (a pass that stopped on an error). */
+export async function releaseBlockCloseCursor(db: Db, owner: string): Promise<boolean> {
+  const rows = await db.execute<{ ok: boolean }>(
+    sql`SELECT renewal_block_close_release(${owner}::uuid) AS ok`,
+  );
+  return [...rows][0]?.ok === true;
+}
+
+/** The close cursor's state: counts and times only, for the ops snapshot (migration 0199). */
+export interface BlockCloseCursorStatus {
+  positioned: boolean;
+  leased: boolean;
+  passesCompleted: number;
+  passClosed: number;
+  passFailed: number;
+  lastPassClosed: number | null;
+  lastPassFailed: number | null;
+  lastPassFinishedAt: Date | null;
+  lastAdvancedAt: Date | null;
+}
+
+export async function blockCloseCursorStatus(db: Db): Promise<BlockCloseCursorStatus | null> {
+  const rows = await db.execute<{
+    positioned: boolean;
+    leased: boolean;
+    passes_completed: string | number;
+    pass_closed: number;
+    pass_failed: number;
+    last_pass_closed: number | null;
+    last_pass_failed: number | null;
+    last_pass_finished_at: string | null;
+    last_advanced_at: string | null;
+  }>(sql`SELECT * FROM renewal_block_close_status()`);
+  const r = [...rows][0];
+  if (!r) return null;
+  return {
+    positioned: r.positioned,
+    leased: r.leased,
+    passesCompleted: Number(r.passes_completed),
+    passClosed: r.pass_closed,
+    passFailed: r.pass_failed,
+    lastPassClosed: r.last_pass_closed,
+    lastPassFailed: r.last_pass_failed,
+    lastPassFinishedAt: at(r.last_pass_finished_at),
+    lastAdvancedAt: at(r.last_advanced_at),
+  };
 }
 
 /** An operator closes a blocked renewal with a written resolution. True when this call closed it. */

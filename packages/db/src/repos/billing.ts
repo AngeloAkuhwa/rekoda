@@ -75,6 +75,7 @@ export async function setPlan(db: Db, change: PlanChange): Promise<boolean> {
       change.expiresAt !== null &&
       previous.expiresAt.getTime() === change.expiresAt.getTime();
     await subscriptionsRepo.writeSubscriptionState(tx, change.businessId, {
+      authority: { kind: 'operator', actor: change.actor },
       plan: change.plan,
       paid,
       cycleStartedAt:

@@ -16,7 +16,15 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db, type TenantDb } from '../client.js';
 import { billingRepo, identity, planCatalogueRepo, subscriptionsRepo } from '../index.js';
-import { migrate, requireUrls, resetPlanCatalogue, truncateAll, type Urls } from '../testing.js';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  resetPlanCatalogue,
+  setPlanAsOwner,
+  truncateAll,
+  type Urls,
+} from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -63,6 +71,7 @@ const inTenant = <T>(businessId: string, fn: (tx: TenantDb) => Promise<T>): Prom
 
 const CYCLE_START = new Date('2026-08-01T00:00:00Z');
 const RENEWS_AT = new Date('2026-09-01T00:00:00Z');
+const FUTURE_RENEWS_AT = new Date('2027-09-01T00:00:00Z');
 
 type Row = {
   plan: string;
@@ -94,7 +103,7 @@ async function row(businessId: string): Promise<Row> {
 async function troubledComplete(): Promise<string> {
   const businessId = await seedBusiness();
   await inTenant(businessId, async (tx) => {
-    await subscriptionsRepo.applyCycle(tx, businessId, {
+    await applyFixtureCycle(tx, businessId, {
       plan: 'complete',
       cycleStartedAt: CYCLE_START,
       renewsAt: RENEWS_AT,
@@ -192,8 +201,11 @@ describe('an operator move to a paid plan (G-62)', () => {
 
   it('re-posting the same plan and expiry keeps the cycle start', async () => {
     const businessId = await troubledComplete();
+    // An operator re-post needs a future date (G-114, enforced by the writer, 0200), so the cycle
+    // already running is moved to renew in the future first, as it would after a renewal.
+    await setPlanAsOwner(urls, businessId, { planExpiresAt: FUTURE_RENEWS_AT });
     // Same plan, same renewal date as the cycle already running.
-    await operator(businessId, 'complete', RENEWS_AT);
+    await operator(businessId, 'complete', FUTURE_RENEWS_AT);
     const after = await row(businessId);
     expect(new Date(after.cycle_started_at!).toISOString()).toBe(CYCLE_START.toISOString());
     // The stale bookkeeping is still cleared.
@@ -219,7 +231,7 @@ describe('an operator move to a paid plan (G-62)', () => {
     // Anchored to the 31st, so the January cycle renews on 28 February.
     const renews = new Date('2027-02-28T00:00:00Z');
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'complete',
         cycleStartedAt: new Date('2027-01-31T00:00:00Z'),
         renewsAt: renews,

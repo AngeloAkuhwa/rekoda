@@ -365,15 +365,20 @@ runs against the newer schema. A migration that must itself be reverted is a
 restore from backup, and **there is no backup mechanism yet** (G-02 in
 `docs/REKODA_LAUNCH_READINESS.md`; `backup-restore.md` describes the plan).
 
-**PR B (0193 to 0198).** 0193 (charge provider times), 0194 (`dead_job_exceptions` and its
-worker-only list functions), 0195 (blocked renewals), 0197 (staging tools) and 0198 (the blocked-renewal
-close cursor: one column and a third, optional argument on `blocked_renewals_ops`) are additive; a normal
-roll back keeps them and the older code ignores them. Their rows are payment evidence and operator
+**PR B (0193 to 0200).** 0193 (charge provider times), 0194 (`dead_job_exceptions` and its
+worker-only list functions), 0195 (blocked renewals), 0197 (staging tools), 0198 (one column and a third,
+optional argument on `blocked_renewals_ops`) and 0199 (the durable blocked-renewal close cursor: the
+`renewal_block_close_cursor` table and its worker-only functions) are additive; a normal
+roll back keeps them and the older code ignores them. 0200 (the plan writers, OD-37) is not additive:
+it is treated exactly like 0196 below. Their rows are payment evidence and operator
 records: never drop them by hand. Dead payment and billing jobs from before 0194 (or from an old
 worker) are enrolled by the worker's reclaim pass (`jobsRepo.enrolUnrecordedDeaths`), so none is
 left without its merchant notice and operator item.
 
 **0196 is a deliberate compatibility break (owner ruling OD-48, OWN-86): do not roll back past it.**
+0200 (same release, OD-37/OWN-88) replaces the general plan writer `subscription_write_plan` with
+`subscription_apply_paid_charge` and `subscription_operator_set_plan`; a release that still calls the
+removed writer cannot run against it, so everything said here of 0196 applies to 0200 as well.
 Its trigger refuses a direct write of `businesses.plan` / `plan_expires_at`, and every older release
 writes those columns directly, so an older api or worker started against a database that holds 0196
 would have plan changes, renewals and lapses refused (`42501`). Therefore:
@@ -413,12 +418,13 @@ would have plan changes, renewals and lapses refused (`42501`). Therefore:
 
 Production and any host not deployed by `scripts/deploy-staging.sh` follow this sequence by hand;
 `deploy-staging.sh` does steps 3 to 9 and 11's `/health` check itself, in this order, and cannot be
-told to skip any of them: whenever the commit carries 0196 and the running commit does not, it stops
+told to skip any of them: whenever the commit carries 0196 or 0200 and the running commit does not, it stops
 the api and worker, checks with `docker compose ps` that neither is running (and refuses to migrate
 otherwise), migrates, then runs the **pre-start database smoke** of steps 6 and 8 as the owner
-(`dc exec -T postgres psql`): the `0196_plan_fields_guard` ledger row, the enabled
-`businesses_plan_fields_guard` trigger on `businesses`, both plan writers (exact signature, `SECURITY DEFINER`) owned by
-`rekoda_plan_writer`, and neither `rekoda_app` nor `rekoda_worker` a member of it. If that query
+(`dc exec -T postgres psql`): the 0196 and 0200 ledger rows, the enabled update and insert guard
+triggers on `businesses`, the three plan writers (exact signature, `SECURITY DEFINER`, owned by
+`rekoda_plan_writer`), the absence of the removed general writer and of the test-only fixture writer,
+and neither `rekoda_app` nor `rekoda_worker` a member of the writer role. If that query
 fails or cannot run, the script stops **before** `dc up`, with the api and worker still stopped, and
 prints the fix-forward steps; only when it passes does it start the new release and require `/health`
 to name it. Step 10 (a real plan change) and the page and worker-log checks of step 11 need the
@@ -430,20 +436,24 @@ after the script finishes. Step 2 is the operator's before starting the workflow
    production; on staging, say so and accept the risk before continuing).
 3. `dc stop api worker`, so the previous release can no longer write plan fields.
 4. Confirm both have stopped: `dc ps --status running --services` lists neither `api` nor `worker`.
-5. `dc run --rm -T migrate` (applies 0193 to 0198 in order, as the owner).
+5. `dc run --rm -T migrate` (applies 0193 to 0200 in order, as the owner).
 6. Verify it succeeded: the command exits 0 and `rekoda_migrations` (or the migrate output) lists
-   `0196_plan_fields_guard`.
+   `0196_plan_fields_guard` and `0200_plan_writer_boundary`.
 7. The new release's images are already built (build before anything live changes).
 8. Smoke the database before anything starts, as the owner, with the **one query** the script uses:
    `SMOKE_0196_SQL` in `scripts/deploy-staging.sh` (a failed deploy also prints it, ready to paste
    as `dc exec -T postgres psql -U rekoda_owner -d rekoda -v ON_ERROR_STOP=1 -tA -c "..."`). It
    prints a single value: **`t` passes; anything else (`f`, an error, no output) fails.** It is `t`
-   only when all of these hold: the `0196_plan_fields_guard` row is in `rekoda_migrations`; the
-   trigger `businesses_plan_fields_guard` exists on `businesses` and is enabled (`tgenabled` `O` or
-   `A`); `public.subscription_write_plan(uuid,text,timestamptz)` and
+   only when all of these hold: the `0196_plan_fields_guard` and `0200_plan_writer_boundary` rows
+   are in `rekoda_migrations`; the triggers `businesses_plan_fields_guard` and
+   `businesses_plan_fields_insert_guard` exist on `businesses` and are enabled (`tgenabled` `O` or
+   `A`); `public.subscription_apply_paid_charge(uuid,text,timestamptz)`,
+   `public.subscription_operator_set_plan(uuid,text,timestamptz,text)` and
    `public.subscription_expire_plan(uuid,text,text)` each exist at that exact signature, are
-   `SECURITY DEFINER` and are owned by `rekoda_plan_writer`; and neither `rekoda_app` nor
-   `rekoda_worker` is a member of `rekoda_plan_writer`. If it does not print `t`, do not run step 9:
+   `SECURITY DEFINER` and are owned by `rekoda_plan_writer`;
+   `public.subscription_write_plan(uuid,text,timestamptz)` (removed by 0200) and
+   `public.test_fixture_set_plan(uuid,text,timestamptz)` (a test-harness-only writer) do **not**
+   exist; and neither `rekoda_app` nor `rekoda_worker` is a member of `rekoda_plan_writer`. If it does not print `t`, do not run step 9:
    fix forward or escalate (above). On staging the script runs this same query itself.
 9. `dc up -d --wait` recreates api, worker and web on the new images (the worker and api start here).
 10. Confirm the new application can change a plan through the sanctioned functions: on staging, the
@@ -764,8 +774,8 @@ image and then the web image (`dc build ... api`, `dc build ... web`, never
 both at once, and refused below `MIN_MEM_KB` of available memory, 1 GiB by
 default, raised with `REKODA_DEPLOY_MIN_MEM_KB`), `dc run --rm -T migrate` (preceded by `dc stop api worker`, a check that both stopped, and
 the refusal to migrate while either runs, whenever the commit carries a compatibility-breaking migration,
-today 0196; OWN-86), for 0196 the pre-start database smoke (ledger row, guard trigger, plan-function
-owner, role boundary; a failure stops before `up`), `dc up -d --wait --wait-timeout 300`, reload the
+today 0196 and 0200; OWN-86), for those the pre-start database smoke (ledger rows, guard triggers,
+plan writers, absent general and fixture writers, role boundary; a failure stops before `up`), `dc up -d --wait --wait-timeout 300`, reload the
 Caddyfile, confirm the edge network, and require
 `https://staging-api.myrekoda.com/health` to answer `status` ok, `database`
 up, and this release and commit. It ends with `dc ps`, then removes

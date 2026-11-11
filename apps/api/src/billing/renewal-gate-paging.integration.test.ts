@@ -5,7 +5,13 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDb, identity, sql, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+} from '@rekoda/db/testing';
 import { sweepRenewals } from './renewal-sweep.js';
 
 const DAY = 86_400_000;
@@ -55,7 +61,7 @@ async function dueBusiness(): Promise<string> {
   });
   const renewsAt = new Date(Date.now() - DAY);
   await withBusiness(db, business.id, (tx) =>
-    subscriptionsRepo.applyCycle(tx, business.id, {
+    applyFixtureCycle(tx, business.id, {
       plan: 'chat',
       cycleStartedAt: new Date(renewsAt.getTime() - 30 * DAY),
       renewsAt,

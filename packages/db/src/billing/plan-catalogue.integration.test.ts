@@ -22,7 +22,14 @@ import {
   withBusiness,
   type Db,
 } from '../index.js';
-import { migrate, requireUrls, resetPlanCatalogue, truncateAll, type Urls } from '../testing.js';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  resetPlanCatalogue,
+  truncateAll,
+  type Urls,
+} from '../testing.js';
 
 let urls: Urls;
 let db: Db;
@@ -251,7 +258,7 @@ describe('the cutover resolution rule (BL2, PR-100)', () => {
       anchorDay: 15,
     };
     await withBusiness(db, businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, { plan: 'chat', ...cycle }),
+      applyFixtureCycle(tx, businessId, { plan: 'chat', ...cycle }),
     );
     const afterPurchase = await withBusiness(db, businessId, (tx) =>
       planCatalogueRepo.pinnedPlanVersion(tx, businessId),
@@ -270,7 +277,7 @@ describe('the cutover resolution rule (BL2, PR-100)', () => {
       prices: [{ currency: 'NGN', billingInterval: 'monthly', amountMinor: 1_490_000 }],
     });
     await withBusiness(db, businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, { plan: 'chat', ...cycle }),
+      applyFixtureCycle(tx, businessId, { plan: 'chat', ...cycle }),
     );
     const afterRenewal = await withBusiness(db, businessId, (tx) =>
       planCatalogueRepo.pinnedPlanVersion(tx, businessId),
@@ -280,7 +287,7 @@ describe('the cutover resolution rule (BL2, PR-100)', () => {
     /* An upgrade is a new sale: pinned to the new plan's current version. */
     const completeV1 = await planCatalogueRepo.planVersionAt(db, 'complete', new Date());
     await withBusiness(db, businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, { plan: 'complete', ...cycle }),
+      applyFixtureCycle(tx, businessId, { plan: 'complete', ...cycle }),
     );
     const afterUpgrade = await withBusiness(db, businessId, (tx) =>
       planCatalogueRepo.pinnedPlanVersion(tx, businessId),
@@ -296,7 +303,7 @@ describe('the cutover resolution rule (BL2, PR-100)', () => {
       anchorDay: 15,
     };
     await withBusiness(db, grandfathered, (tx) =>
-      subscriptionsRepo.applyCycle(tx, grandfathered, { plan: 'chat', ...cycle }),
+      applyFixtureCycle(tx, grandfathered, { plan: 'chat', ...cycle }),
     );
 
     await planCatalogueRepo.publishPlanVersion(ownerDb, {
@@ -320,7 +327,7 @@ describe('the cutover resolution rule (BL2, PR-100)', () => {
      * force when the cycle was sold, which is the version being bought. */
     const fresh = await seedBusiness('trial');
     await withBusiness(db, fresh, (tx) =>
-      subscriptionsRepo.applyCycle(tx, fresh, {
+      applyFixtureCycle(tx, fresh, {
         plan: 'chat',
         ...cycle,
         cycleStartedAt: new Date(),
@@ -335,7 +342,7 @@ describe('the cutover resolution rule (BL2, PR-100)', () => {
   it('a stale pin does not answer: an expired business meters as expired', async () => {
     const businessId = await seedBusiness('trial');
     await withBusiness(db, businessId, (tx) =>
-      subscriptionsRepo.applyCycle(tx, businessId, {
+      applyFixtureCycle(tx, businessId, {
         plan: 'complete',
         cycleStartedAt: new Date(),
         renewsAt: new Date(Date.now() + 30 * 86_400_000),
