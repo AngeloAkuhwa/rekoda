@@ -29,6 +29,21 @@ test.afterAll(async () => {
 
 /** Distinct from the other specs' ranges so runs never collide. */
 const RUN = String(Math.floor(Math.random() * 900) + 100);
+
+/**
+ * Open settings and wait until React has hydrated the bank-details form. Its inputs are controlled:
+ * text typed before hydration is reset to the component's state when React attaches, so a test that
+ * fills them straight after navigation sometimes saved an empty bank name (seen on CI at
+ * reminders.spec.ts:428 and reproduced locally, 1 in 8 desktop runs). React marks a hydrated
+ * element with its `__react` props; the form is ready once the input carries them.
+ */
+async function openSettings(page: Page): Promise<void> {
+  await page.goto('/app/settings');
+  await page.waitForFunction(() => {
+    const input = document.querySelector('input[name="bankName"]');
+    return input !== null && Object.keys(input).some((key) => key.startsWith('__reactProps'));
+  });
+}
 let seq = 0;
 /* The desktop project draws from its own half of the range, so the two viewports never share a phone. */
 const freshPhone = () =>
@@ -111,7 +126,7 @@ async function confirmBusinessEmail(businessId: string, address: string) {
 }
 
 async function savePhone(page: Page) {
-  await page.goto('/app/settings');
+  await openSettings(page);
   await page.getByLabel('Business phone for customers').fill('0803 123 4567');
   await page.getByRole('button', { name: 'Save phone' }).click();
   await expect(
@@ -151,7 +166,7 @@ test('the owner sets the business phone and bank details, and a bad account numb
   page,
 }, info) => {
   await onboard(page);
-  await page.goto('/app/settings');
+  await openSettings(page);
   await expect(page.getByRole('heading', { name: 'Payment reminders' })).toBeVisible();
   /* With no bank details and no business phone, the page must say a reminder cannot be sent yet. */
   await expect(
@@ -419,7 +434,7 @@ test('an accountant reads reminders but is offered no action and is refused one;
   await giveCustomerEmail(businessId, invoice, 'ngozi@customer.example.ng');
   await confirmBusinessEmail(businessId, 'accounts@ngozi-shop.example.ng');
   await savePhone(page);
-  await page.goto('/app/settings');
+  await openSettings(page);
   await page.getByLabel('Bank', { exact: true }).fill('Access Bank');
   await page.getByLabel('Account name').fill('Ada Fabrics Ltd');
   await page.getByLabel('Account number').fill('0987654321');
