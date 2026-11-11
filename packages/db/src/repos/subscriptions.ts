@@ -2515,6 +2515,23 @@ export async function claimBlockCloseCursor(
 }
 
 /**
+ * Renew the close cursor's lease while a pass is working (migration 0201): a compare-and-set on the
+ * owner, called before every block the pass closes, so the lease outlives a slow but healthy batch
+ * and expires only when the runner stops. False when `owner` no longer holds the lease: the pass
+ * must stop at once.
+ */
+export async function heartbeatBlockCloseCursor(
+  db: Db,
+  owner: string,
+  leaseSeconds: number,
+): Promise<boolean> {
+  const rows = await db.execute<{ ok: boolean }>(
+    sql`SELECT renewal_block_close_heartbeat(${owner}::uuid, ${leaseSeconds}) AS ok`,
+  );
+  return [...rows][0]?.ok === true;
+}
+
+/**
  * Durably record a processed batch: the cursor moves to the batch's last key and the lease is
  * extended. False (nothing written) when `owner` no longer holds the lease.
  */

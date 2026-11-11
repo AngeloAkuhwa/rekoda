@@ -47,12 +47,15 @@ beforeAll(async () => {
   closers.push(owner.close);
 });
 afterAll(async () => {
+  await ownerDb?.execute(sql`DROP TABLE IF EXISTS lease_takeovers`);
+  await ownerDb?.execute(sql`DROP FUNCTION IF EXISTS slow_block_close() CASCADE`);
   await ownerDb?.execute(sql`DROP FUNCTION IF EXISTS refuse_block_close() CASCADE`);
   await ownerDb?.execute(sql`DROP FUNCTION IF EXISTS refuse_cursor_advance() CASCADE`);
   await ownerDb?.execute(sql`DROP SEQUENCE IF EXISTS refuse_attempts`);
   for (const c of closers) await c();
 });
 beforeEach(async () => {
+  await ownerDb.execute(sql`DROP FUNCTION IF EXISTS slow_block_close() CASCADE`);
   await ownerDb.execute(sql`DROP FUNCTION IF EXISTS refuse_block_close() CASCADE`);
   await ownerDb.execute(sql`DROP FUNCTION IF EXISTS refuse_cursor_advance() CASCADE`);
   await truncateAll(urls);
@@ -576,4 +579,184 @@ describe('the blocked-renewal close cursor is durable', () => {
     expect(result).toEqual({ raised: 0, skipped: 0 });
     expect(await openCount()).toBe(10);
   }, 120_000);
+});
+
+/**
+ * Owner review of #432 (11 Nov 2026): the lease must hold for as long as a runner is legitimately
+ * working, expire only when the runner stops, and a runner that lost it must stop at once. Time is
+ * simulated in the database: a trigger on each close moves the lease expiry back by 20 seconds,
+ * as if that close had taken 20 seconds, against a 30-second lease, and then lets a second runner
+ * try to claim the cursor while the first is still mid-batch.
+ */
+describe('the close cursor lease follows the runner that holds it', () => {
+  const B = '00000000-0000-4000-8000-0000000000b2';
+
+  async function slowCloses(takeover: 'claim' | 'force-on-second'): Promise<void> {
+    await ownerDb.execute(sql`DROP TABLE IF EXISTS lease_takeovers`);
+    await ownerDb.execute(sql`CREATE TABLE lease_takeovers (n serial PRIMARY KEY, ok boolean)`);
+    if (takeover === 'claim') {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION slow_block_close() RETURNS trigger LANGUAGE plpgsql
+        SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $f$
+        BEGIN
+          -- This close "took" 20 seconds of a 30-second lease...
+          UPDATE renewal_block_close_cursor SET lease_expires_at = lease_expires_at - interval '20 seconds';
+          -- ...and a second runner tries to take the cursor while the first is still working.
+          INSERT INTO lease_takeovers (ok)
+            SELECT renewal_block_close_claim('00000000-0000-4000-8000-0000000000b2'::uuid, 30);
+          RETURN NEW;
+        END $f$`);
+    } else {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION slow_block_close() RETURNS trigger LANGUAGE plpgsql
+        SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $f$
+        BEGIN
+          -- The first runner stalled past its lease during its second close and the second runner
+          -- took the cursor over meanwhile.
+          IF (SELECT count(*) FROM subscription_charges WHERE blocked_resolved_at IS NOT NULL) = 2 THEN
+            UPDATE renewal_block_close_cursor
+            SET lease_owner = '00000000-0000-4000-8000-0000000000b2'::uuid, lease_expires_at = clock_timestamp() + interval '10 minutes';
+            INSERT INTO lease_takeovers (ok) VALUES (true);
+          END IF;
+          RETURN NEW;
+        END $f$`);
+    }
+    await ownerDb.execute(sql`
+      CREATE TRIGGER slow_block_close AFTER UPDATE ON subscription_charges
+      FOR EACH ROW WHEN (OLD.blocked_resolved_at IS NULL AND NEW.blocked_resolved_at IS NOT NULL)
+      EXECUTE FUNCTION slow_block_close()`);
+  }
+
+  async function takeovers(): Promise<boolean[]> {
+    const rows = await ownerDb.execute<{ ok: boolean }>(
+      sql`SELECT ok FROM lease_takeovers ORDER BY n`,
+    );
+    return [...rows].map((r) => r.ok);
+  }
+
+  async function cursorCounts(): Promise<{
+    completed: string;
+    abandoned: string;
+    owner: string | null;
+  }> {
+    const [row] = await ownerDb.execute<{
+      completed: string;
+      abandoned: string;
+      owner: string | null;
+    }>(sql`
+      SELECT passes_completed::text AS completed, passes_abandoned::text AS abandoned,
+             lease_owner::text AS owner
+      FROM renewal_block_close_cursor`);
+    return row!;
+  }
+
+  it('a slow but healthy batch keeps its lease: no second runner can take over while it is still closing', async () => {
+    await seedBlocked(6, 0);
+    await slowCloses('claim');
+    const a = await restartedWorker();
+    // One batch of six closes, each "20 seconds" long, under a 30-second lease: two closes outlast
+    // the lease unless the runner renews it as it works.
+    const result = await a.closePass(
+      { workerDb: a.worker, appDb: a.app, config: OPEN_GATE },
+      6,
+      2,
+      30,
+    );
+    expect(await takeovers()).toEqual([false, false, false, false, false, false]);
+    expect(result).toEqual({ ran: true, closed: 6, failed: 0, wrapped: true });
+    expect(await openCount()).toBe(0);
+    expect(await cursorCounts()).toEqual({ completed: '1', abandoned: '0', owner: null });
+  }, 120_000);
+
+  it('a runner that lost its lease mid-batch stops at once: it closes nothing more and saves nothing', async () => {
+    await seedBlocked(6, 0);
+    await slowCloses('force-on-second');
+    const a = await restartedWorker();
+    await expect(
+      a.closePass({ workerDb: a.worker, appDb: a.app, config: OPEN_GATE }, 6, 2, 30),
+    ).rejects.toThrow(/lease/);
+    expect(await takeovers()).toEqual([true]);
+    // Only the two closes made before the takeover: the stale runner did not carry on.
+    expect(await openCount()).toBe(4);
+    // It saved nothing, and its release did not hand back the new holder's lease.
+    const row = await cursorRow();
+    expect(row.after_reference).toBeNull();
+    expect(row.lease_owner).toBe(B);
+  }, 120_000);
+
+  it('a runner that genuinely stopped is taken over once its lease expires, and on its return cannot renew, save or finish', async () => {
+    await seedBlocked(6, 0);
+    const dead = '00000000-0000-4000-8000-0000000000d1';
+    expect(await subscriptionsRepo.claimBlockCloseCursor(workerDb, dead, 30)).toBe(true);
+    // While its lease is live, nobody else may take it, and its own heartbeat keeps it.
+    const early = await restartedWorker();
+    expect(
+      (
+        await early.closePass(
+          { workerDb: early.worker, appDb: early.app, config: OPEN_GATE },
+          2,
+          1,
+          30,
+        )
+      ).ran,
+    ).toBe(false);
+    expect(await subscriptionsRepo.heartbeatBlockCloseCursor(workerDb, dead, 30)).toBe(true);
+    // It stops heartbeating; its lease runs out.
+    await ownerDb.execute(
+      sql`UPDATE renewal_block_close_cursor SET lease_expires_at = clock_timestamp() - interval '1 second'`,
+    );
+    const b = await restartedWorker();
+    const taken = await b.closePass(
+      { workerDb: b.worker, appDb: b.app, config: OPEN_GATE },
+      2,
+      1,
+      30,
+    );
+    expect(taken).toEqual({ ran: true, closed: 2, failed: 0, wrapped: false });
+    expect((await cursorRow()).after_reference).toBe(ref(2));
+    expect((await cursorCounts()).abandoned).toBe('1');
+
+    // The stale runner comes back: every write is a compare-and-set on the owner, so it can do
+    // nothing to the newer position.
+    expect(await subscriptionsRepo.heartbeatBlockCloseCursor(workerDb, dead, 30)).toBe(false);
+    expect(
+      await subscriptionsRepo.advanceBlockCloseCursor(
+        workerDb,
+        dead,
+        { blockedAtUs: '9999999999999999', reference: ref(6) },
+        { closed: 4, failed: 0 },
+        30,
+      ),
+    ).toBe(false);
+    expect(await subscriptionsRepo.finishBlockClosePass(workerDb, dead, true)).toBe(false);
+    expect(await subscriptionsRepo.releaseBlockCloseCursor(workerDb, dead, 0)).toBe(false);
+    expect((await cursorRow()).after_reference).toBe(ref(2));
+    expect((await cursorRow()).passes_completed).toBe('0');
+
+    // The next pass resumes from the newer position and finishes the list; nothing is closed twice.
+    await b.closePass({ workerDb: b.worker, appDb: b.app, config: OPEN_GATE }, 10, 1, 30);
+    expect(await openCount()).toBe(0);
+    const [audited] = await ownerDb.execute<{ n: number; distinct: number }>(sql`
+      SELECT count(*)::int AS n, count(DISTINCT entity_id)::int AS distinct
+      FROM audit_events WHERE action = 'renewal_block_resolved'`);
+    expect(audited).toEqual({ n: 6, distinct: 6 });
+  }, 120_000);
+
+  it('the heartbeat is worker-only and validates its input', async () => {
+    const owner = '00000000-0000-4000-8000-0000000000e1';
+    const code = (run: Promise<unknown>) =>
+      run.then(
+        () => 'ok',
+        (e: { cause?: { code?: string } }) => e.cause?.code,
+      );
+    // 42501: insufficient privilege (the application credential cannot run it).
+    expect(await code(subscriptionsRepo.heartbeatBlockCloseCursor(appDb, owner, 30))).toBe('42501');
+    // 22023: an out-of-range lease is refused.
+    expect(await code(subscriptionsRepo.heartbeatBlockCloseCursor(workerDb, owner, 5))).toBe(
+      '22023',
+    );
+    // Nobody holds the lease: a heartbeat claims nothing.
+    expect(await subscriptionsRepo.heartbeatBlockCloseCursor(workerDb, owner, 30)).toBe(false);
+    expect((await cursorRow()).lease_owner).toBeNull();
+  });
 });

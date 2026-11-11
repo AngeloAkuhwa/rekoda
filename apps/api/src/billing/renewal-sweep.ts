@@ -308,6 +308,20 @@ export async function closeBlocksTheGateNoLongerHolds(
       let closed = 0;
       let failed = 0;
       for (const blocked of batch) {
+        /* Heartbeat (0201): renew the lease before each close, so a slow but healthy batch keeps
+         * it and no second runner takes over while this one is still working. A runner that lost
+         * the lease (it stalled past it and another took over) stops here: it closes nothing more
+         * and saves nothing. Progress drives the renewal, not a timer, so a hung runner still lets
+         * its lease expire. */
+        if (
+          !(await subscriptionsRepo.heartbeatBlockCloseCursor(deps.workerDb, owner, leaseSeconds))
+        ) {
+          unrecordedFailed = failed;
+          result.closed += closed;
+          throw new Error(
+            'the close cursor lease was lost mid-batch; this runner stops without saving',
+          );
+        }
         try {
           const closedNow = await withBusiness(deps.appDb, blocked.businessId, (tx) =>
             subscriptionsRepo.resolveBlockedRenewal(

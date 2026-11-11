@@ -1408,6 +1408,13 @@
       "when": 1794916800000,
       "tag": "0200_plan_writer_boundary",
       "breakpoints": true
+    },
+    {
+      "idx": 201,
+      "version": "7",
+      "when": 1795003200000,
+      "tag": "0201_blocked_renewal_close_heartbeat",
+      "breakpoints": true
     }
   ]
 }
