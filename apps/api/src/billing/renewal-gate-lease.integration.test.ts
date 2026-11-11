@@ -342,6 +342,51 @@ describe('the close cursor lease follows the runner that holds it', () => {
     expect(audited).toEqual({ n: 6, distinct: 6 });
   }, 120_000);
 
+  it('a heartbeat that errors mid-batch still reports the closes that batch already failed', async () => {
+    // Qodo review of #432 (5772e92): a heartbeat that THROWS (a database error, not a lost lease)
+    // reached the pass's error path with the batch's failures uncounted, so the stopped-pass alert
+    // and the cursor's recorded failures left them out.
+    await seedBlocked(4, 2, true);
+    await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS heartbeat_calls`);
+    await ownerDb.execute(sql`CREATE SEQUENCE heartbeat_calls`);
+    await ownerDb.execute(sql`
+      CREATE OR REPLACE FUNCTION refuse_cursor_advance() RETURNS trigger LANGUAGE plpgsql
+      SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $f$
+      BEGIN
+        -- The first two heartbeats renew; the third (before the third close) fails.
+        IF nextval('public.heartbeat_calls') > 2 THEN RAISE EXCEPTION 'database lost mid-batch'; END IF;
+        RETURN NEW;
+      END $f$`);
+    await ownerDb.execute(sql`
+      CREATE TRIGGER refuse_cursor_advance BEFORE UPDATE ON renewal_block_close_cursor
+      FOR EACH ROW WHEN (OLD.lease_owner IS NOT NULL AND NEW.lease_owner = OLD.lease_owner
+        AND NEW.after_reference IS NOT DISTINCT FROM OLD.after_reference
+        AND NEW.pass_failed = OLD.pass_failed AND NEW.passes_completed = OLD.passes_completed)
+      EXECUTE FUNCTION refuse_cursor_advance()`);
+    const a = await restartedWorker();
+    const { Logger } = await import('@nestjs/common');
+    const error = vi.spyOn(Logger.prototype, 'error');
+    try {
+      await expect(
+        a.closePass({ workerDb: a.worker, appDb: a.app, config: OPEN_GATE }, 10, 1, 30),
+      ).rejects.toThrow(/renewal_block_close_heartbeat/);
+      expect(
+        error.mock.calls.filter(([m]) =>
+          /^ALERT renewal_block_close_pass failed=2 .*stopped=true/.test(String(m)),
+        ),
+      ).toHaveLength(1);
+    } finally {
+      error.mockRestore();
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS heartbeat_calls CASCADE`);
+    }
+    // The release recorded the two failures the batch saw, and gave the lease back.
+    const status = await subscriptionsRepo.blockCloseCursorStatus(workerDb);
+    expect(status).toMatchObject({ lastPassFailed: 2, leased: false });
+    expect(evaluateOpsAlerts(await collectOpsSnapshot(workerDb)).map((k) => k.key)).toContain(
+      'billing.renewal_block_close_failing',
+    );
+  }, 120_000);
+
   it('the heartbeat is worker-only and validates its input', async () => {
     const owner = '00000000-0000-4000-8000-0000000000e1';
     const code = (run: Promise<unknown>) =>

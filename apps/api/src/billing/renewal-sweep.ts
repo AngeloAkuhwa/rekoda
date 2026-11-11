@@ -317,10 +317,21 @@ export async function closeBlocksTheGateNoLongerHolds(
          * the lease (it stalled past it and another took over) stops here: it closes nothing more
          * and saves nothing. Progress drives the renewal, not a timer, so a hung runner still lets
          * its lease expire. */
-        if (
-          !(await subscriptionsRepo.heartbeatBlockCloseCursor(deps.workerDb, owner, leaseSeconds))
-        ) {
-          unrecordedFailed = failed;
+        /* The batch's counts are kept current before the call, so a heartbeat that throws (a
+         * database error, not a lost lease) still reports the failures this batch already saw. */
+        unrecordedFailed = failed;
+        let renewed: boolean;
+        try {
+          renewed = await subscriptionsRepo.heartbeatBlockCloseCursor(
+            deps.workerDb,
+            owner,
+            leaseSeconds,
+          );
+        } catch (error) {
+          result.closed += closed;
+          throw error;
+        }
+        if (!renewed) {
           result.closed += closed;
           throw new Error(
             'the close cursor lease was lost mid-batch; this runner stops without saving',
