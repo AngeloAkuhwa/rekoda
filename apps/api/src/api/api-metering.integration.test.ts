@@ -96,13 +96,16 @@ async function entitled(
   ).json() as { sessionToken: string; businessId: string };
 
   const period = usagePeriod(new Date());
-  await withBusiness(settlementDb(), created.businessId, async (tx) => {
-    await entitlementsRepo.grant(tx, {
+  /* The entitlement is an application write; the pack credit is settlement's alone (0209, 0211). */
+  await withBusiness(db, created.businessId, (tx) =>
+    entitlementsRepo.grant(tx, {
       businessId: created.businessId,
       entitlementKey: 'REKODA_API',
       source: 'MANUAL_GRANT',
       grantedBy: 'operator:metering-suite',
-    });
+    }),
+  );
+  await withBusiness(settlementDb(), created.businessId, async (tx) => {
     if (capacity.requests !== undefined) {
       await usageRepo.creditBonus(
         tx,

@@ -85,8 +85,12 @@ async function warnedTrialWithPendingCharge(
   const businessId = business.id;
   /* OD-37: a plan date is set by the owner in a fixture, never by the application role. */
   await setPlanAsOwner(urls, businessId, { planExpiresAt: daysAgo(400) });
+  /* The retention notice is the sweep's write, not settlement's (0211: settlement holds only
+   * what billing touches). */
+  await withBusiness(appDb, businessId, (tx) =>
+    retentionRepo.claimRetentionNotice(tx, businessId, daysAgo(200)),
+  );
   await withBusiness(settlementDb(), businessId, async (tx) => {
-    await retentionRepo.claimRetentionNotice(tx, businessId, daysAgo(200));
     await subscriptionsRepo.openCharge(tx, {
       businessId,
       kind,

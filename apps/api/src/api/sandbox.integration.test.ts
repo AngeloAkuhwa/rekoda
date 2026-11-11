@@ -96,13 +96,16 @@ async function developer(phone: string, name: string): Promise<Developer> {
   const auth = { authorization: `Bearer ${created.sessionToken}` };
 
   const period = usagePeriod(new Date());
-  await withBusiness(settlementDb(), created.businessId, async (tx) => {
-    await entitlementsRepo.grant(tx, {
+  /* The entitlement is an application write; the pack credit is settlement's alone (0209, 0211). */
+  await withBusiness(db, created.businessId, (tx) =>
+    entitlementsRepo.grant(tx, {
       businessId: created.businessId,
       entitlementKey: 'REKODA_API',
       source: 'MANUAL_GRANT',
       grantedBy: 'operator:sandbox-suite',
-    });
+    }),
+  );
+  await withBusiness(settlementDb(), created.businessId, async (tx) => {
     await usageRepo.creditBonus(tx, created.businessId, period, 'API_REQUEST_UNITS', 20);
   });
   /* Applications are held, not spent (PR-116): capacity comes from an

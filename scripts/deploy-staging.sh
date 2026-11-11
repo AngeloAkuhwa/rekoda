@@ -69,7 +69,8 @@ carries_plan_boundary() {
      " $BREAKING " == *' 0206_paid_charge_bound_to_its_cycle '* ||
      " $BREAKING " == *' 0207_operator_plan_periods_exact '* ||
      " $BREAKING " == *' 0209_meter_refund_schedule_writers '* ||
-     " $BREAKING " == *' 0210_charge_price_from_the_catalogue '* ]]
+     " $BREAKING " == *' 0210_charge_price_from_the_catalogue '* ||
+     " $BREAKING " == *' 0211_principals_explicit_grants '* ]]
 }
 # The OWN-86 pre-start smoke query, printed for an operator fixing forward by hand.
 print_smoke_0196() {
@@ -91,7 +92,7 @@ fail() {
 PHASE=checks
 # Migrations the previous release cannot run against (OD-48): the api and worker are stopped before
 # any of them is applied, and the old release is never restarted against a database that has one.
-COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_plan_periods_exact 0209_meter_refund_schedule_writers 0210_charge_price_from_the_catalogue'
+COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_plan_periods_exact 0209_meter_refund_schedule_writers 0210_charge_price_from_the_catalogue 0211_principals_explicit_grants'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -116,7 +117,8 @@ UP_ENTERED=false
 #     writer are absent, and no runtime role can create a function in public (the cycle-input
 #     guard's test exemption keys on that writer existing);
 #   * the settlement and billing-operator roles exist, can log in, cannot bypass RLS and act with
-#     rekoda_app's rights; no runtime role can become another principal, the worker or the writer;
+#     only their exact grants (0211: no membership, not rekoda_app's rights); no runtime role can
+#     become another principal, the worker or the writer;
 #   * the worker reads but cannot write other businesses' events (its estate policy is SELECT only,
 #     no table-level INSERT, UPDATE or DELETE), and the application cannot record an add-on holding.
 # The expected list is the contract; a new writer is a deliberate edit of this list in its PR.
@@ -128,7 +130,7 @@ SMOKE_0196_SQL="SELECT
                   '0205_charge_terms_belong_to_settlement',
                   '0206_paid_charge_bound_to_its_cycle', '0207_operator_plan_periods_exact',
                   '0208_subscription_conformance', '0209_meter_refund_schedule_writers',
-                  '0210_charge_price_from_the_catalogue')) = 11
+                  '0210_charge_price_from_the_catalogue', '0211_principals_explicit_grants')) = 12
   AND (SELECT count(*) FROM pg_trigger t WHERE t.tgenabled IN ('O', 'A') AND (t.tgname, t.tgrelid) IN (
         ('businesses_plan_fields_guard', 'public.businesses'::regclass),
         ('businesses_plan_fields_insert_guard', 'public.businesses'::regclass),
@@ -153,7 +155,7 @@ SMOKE_0196_SQL="SELECT
       = 'public.operator_record_refusal(uuid, text, text, text) => rekoda_billing_operator'
         || ' ; public.staging_move_date(uuid, text, timestamp with time zone, timestamp with time zone, text, text, uuid) => rekoda_app'
         || ' ; public.subscription_apply_paid_charge(uuid, text, timestamp with time zone) => rekoda_settlement'
-        || ' ; public.subscription_expire_plan(uuid, text, text) => rekoda_app,rekoda_worker'
+        || ' ; public.subscription_expire_plan(uuid, text, text) => rekoda_app,rekoda_settlement,rekoda_worker'
         || ' ; public.subscription_operator_period_end(uuid, text, text) => rekoda_billing_operator'
         || ' ; public.subscription_operator_set_plan(uuid, text, text, text, text) => rekoda_billing_operator'
         || ' ; public.subscription_record_refund(uuid, text, bigint, text, text) => rekoda_billing_operator'
@@ -188,8 +190,10 @@ SMOKE_0196_SQL="SELECT
         'rekoda_billing_operator']) AS r(role) WHERE has_schema_privilege(r.role, 'public', 'CREATE'))
   AND (SELECT count(*) FROM pg_roles WHERE rolname IN ('rekoda_settlement', 'rekoda_billing_operator')
         AND rolcanlogin AND NOT rolsuper AND NOT rolbypassrls) = 2
-  AND pg_has_role('rekoda_settlement', 'rekoda_app', 'USAGE')
-  AND pg_has_role('rekoda_billing_operator', 'rekoda_app', 'USAGE')
+  AND NOT pg_has_role('rekoda_settlement', 'rekoda_app', 'USAGE')
+  AND NOT pg_has_role('rekoda_billing_operator', 'rekoda_app', 'USAGE')
+  AND NOT EXISTS (SELECT 1 FROM pg_auth_members WHERE member IN
+        ('rekoda_settlement'::regrole, 'rekoda_billing_operator'::regrole))
   AND NOT EXISTS (SELECT 1 FROM (VALUES
         ('rekoda_app', 'rekoda_plan_writer'), ('rekoda_worker', 'rekoda_plan_writer'),
         ('rekoda_settlement', 'rekoda_plan_writer'), ('rekoda_billing_operator', 'rekoda_plan_writer'),

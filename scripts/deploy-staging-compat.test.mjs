@@ -314,7 +314,7 @@ test('OWN-86: a release carrying 0196 runs the pre-start database smoke after mi
   for (const entry of [
     'public.staging_move_date\\(uuid, text, timestamp with time zone, timestamp with time zone, text, text, uuid\\) => rekoda_app',
     'public.subscription_apply_paid_charge\\(uuid, text, timestamp with time zone\\) => rekoda_settlement',
-    'public.subscription_expire_plan\\(uuid, text, text\\) => rekoda_app,rekoda_worker',
+    'public.subscription_expire_plan\\(uuid, text, text\\) => rekoda_app,rekoda_settlement,rekoda_worker',
     'public.subscription_operator_set_plan\\(uuid, text, text, text, text\\) => rekoda_billing_operator',
     'public.subscription_operator_period_end\\(uuid, text, text\\) => rekoda_billing_operator',
     'public.operator_record_refusal\\(uuid, text, text, text\\) => rekoda_billing_operator',

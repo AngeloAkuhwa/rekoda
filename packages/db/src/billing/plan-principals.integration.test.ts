@@ -52,7 +52,12 @@ describe('OD-37: who may run which writer, and who may become whom (0202)', () =
       [...acl].filter((r) => r.proname === name).map((r) => r.grantee);
     expect(byName('subscription_apply_paid_charge')).toEqual(['rekoda_settlement']);
     expect(byName('subscription_operator_set_plan')).toEqual(['rekoda_billing_operator']);
-    expect(byName('subscription_expire_plan')).toEqual(['rekoda_app', 'rekoda_worker']);
+    // Settlement holds it explicitly since 0211: the renewal sweep applies a cancellation on it.
+    expect(byName('subscription_expire_plan')).toEqual([
+      'rekoda_app',
+      'rekoda_settlement',
+      'rekoda_worker',
+    ]);
     const [gone] = await ownerDb.execute<{
       general: string | null;
       old_operator: string | null;
@@ -82,7 +87,7 @@ describe('OD-37: who may run which writer, and who may become whom (0202)', () =
     },
   );
 
-  it('no principal can become another, the worker or the plan writer; both new ones act with the application rights only', async () => {
+  it('no principal can become another, the worker or the plan writer; neither new one inherits the application rights (0211)', async () => {
     const [m] = await ownerDb.execute<Record<string, boolean>>(sql`
       SELECT
         pg_has_role('rekoda_app', 'rekoda_settlement', 'MEMBER') AS app_settlement,
@@ -110,8 +115,8 @@ describe('OD-37: who may run which writer, and who may become whom (0202)', () =
       operator_worker: false,
       settlement_writer: false,
       operator_writer: false,
-      settlement_inherits_app: true,
-      operator_inherits_app: true,
+      settlement_inherits_app: false,
+      operator_inherits_app: false,
       any_bypass: false,
     });
     // SET ROLE is refused too, whatever a connection asks for.
@@ -200,10 +205,9 @@ describe('OD-37: who may run which writer, and who may become whom (0202)', () =
       await expect(
         bootChecks.assertRoleHoldsNoReservedWriter(appDb, 'application'),
       ).rejects.toThrow(/can run public\.subscription_apply_paid_charge/);
-      // ...and the operator inherits it through rekoda_app, so its own check fails as well.
-      await expect(
-        bootChecks.assertDatabasePrincipal(operatorDb, 'operator', 'rekoda_billing_operator'),
-      ).rejects.toThrow(/can run the other principal's writer/);
+      // ...and since 0211 (G-127) the operator inherits nothing from rekoda_app, so a grant that
+      // widens the application does not reach it: its own check still passes.
+      await bootChecks.assertDatabasePrincipal(operatorDb, 'operator', 'rekoda_billing_operator');
     } finally {
       await ownerDb.execute(
         sql`REVOKE EXECUTE ON FUNCTION subscription_apply_paid_charge(uuid,text,timestamptz) FROM rekoda_app`,

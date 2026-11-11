@@ -611,7 +611,7 @@ describe('the deletion function', () => {
 
 /** A month of real trading, so the deletion has something to miss. */
 async function seedTradingHistory(businessId: string): Promise<void> {
-  await withBusiness(settlementDb(), businessId, async (tx) => {
+  await withBusiness(appDb, businessId, async (tx) => {
     const sale = await issueRepo.issueSale(tx, {
       businessId,
       customerId: null,
@@ -629,7 +629,6 @@ async function seedTradingHistory(businessId: string): Promise<void> {
       sourceId: 'draft-1',
       actor: 'system',
     });
-
     const intent = await paymentsHub.createIntent(tx, {
       businessId,
       reference: paymentReference(new Date(), (n) => randomBytes(n)),
@@ -677,6 +676,8 @@ async function seedTradingHistory(businessId: string): Promise<void> {
     });
 
     await usageRepo.consumeUnit(tx, businessId, '2026-08', 'AI_ACTIONS', 50);
-    await usageRepo.creditBonus(tx, businessId, '2026-08', 'AI_ACTIONS', 10);
   });
+  await withBusiness(settlementDb(), businessId, (tx) =>
+    usageRepo.creditBonus(tx, businessId, '2026-08', 'AI_ACTIONS', 10),
+  );
 }

@@ -552,7 +552,7 @@ things come first, because without them the new release refuses to start (no fal
 Rotating either password: as in "Rotate a database password", with the variable added to step 1 and
 `dc up -d --wait --force-recreate api worker`.
 
-### Deploy a release carrying 0207 to 0210 (OWN-90: operator periods, conformance, guarded billing writers, catalogue prices)
+### Deploy a release carrying 0207 to 0211 (OWN-90: operator periods, conformance, guarded billing writers, catalogue prices, explicit grants)
 
 Compatibility-breaking like 0202 to 0206: `scripts/deploy-staging.sh` lists 0207, 0209 and 0210 in
 `COMPAT_BREAKING_MIGRATIONS`, so the api and worker are stopped before the migration and the
@@ -570,6 +570,11 @@ pre-start smoke must print `t` before `up`. No new secret is needed. What change
 - **0210.** Every subscription charge opened is checked against the price catalogue (new NOLOGIN
   role `rekoda_price_reader`). With `REKODA_PLAN_CATALOGUE_READS=0` the api prices from its
   constants, and a charge whose constant differs from the catalogue is refused, never opened.
+
+- **0211 (G-127).** `rekoda_settlement` and `rekoda_billing_operator` stop inheriting `rekoda_app`
+  and get exact grants. If a membership was granted by hand under another grantor, the migration
+  refuses; revoke it as that grantor and re-run. The boot check now refuses a principal that
+  inherits `rekoda_app`.
 
 The restore drill (`scripts/restore-drill.sh`) creates the two new roles.
 

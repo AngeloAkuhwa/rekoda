@@ -1,6 +1,6 @@
 # ADR 0037: Authenticated tenant context and isolated privileged processes
 
-**Status:** Proposed (11 Nov 2026). Required by owner ruling OWN-90 (the PR #432 final remediation
+**Status:** Proposed (11 Nov 2026). Step 1 (D4) is implemented in migration 0211; steps 2 to 7 are not. Required by owner ruling OWN-90 (the PR #432 final remediation
 brief, §5.1, §5.2, §5.5, §6 and §8). Not implemented yet. The gaps it closes are G-125 to G-129 in
 `docs/REKODA_LAUNCH_READINESS.md`, and they block launch. This ADR supersedes nothing until it is
 Accepted. When it is, it amends ADR 0035, whose Amendments 1 to 3 describe the worker's current

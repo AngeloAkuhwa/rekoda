@@ -132,6 +132,11 @@ describe('the pre-start database smoke, executed', () => {
     ],
     ['the application as the meter writer', 'GRANT rekoda_meter_writer TO rekoda_app'],
     ['the worker as the price reader', 'GRANT rekoda_price_reader TO rekoda_worker'],
+    ['settlement inheriting the application again', 'GRANT rekoda_app TO rekoda_settlement'],
+    [
+      'the operator inheriting the application again',
+      'GRANT rekoda_app TO rekoda_billing_operator',
+    ],
   ])('prints f for %s', async (_label, tamper) => {
     expect(await smokeAfter(tamper)).toBe('f');
   });

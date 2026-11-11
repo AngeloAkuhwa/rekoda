@@ -325,8 +325,11 @@ describe('the chat surface enforces roles', () => {
     await memberOf(businessId, '+2348140010048', 'accountant');
     const allowance = allowanceFor('trial', 'AI_ACTIONS');
     const bought = 100;
-    await withBusiness(settlementDb(), businessId, async (tx) => {
-      await usageRepo.creditBonus(tx, businessId, usagePeriod(new Date()), 'AI_ACTIONS', bought);
+    // The pack is settlement's credit; spending it is the application's (0209, 0211).
+    await withBusiness(settlementDb(), businessId, (tx) =>
+      usageRepo.creditBonus(tx, businessId, usagePeriod(new Date()), 'AI_ACTIONS', bought),
+    );
+    await withBusiness(appDb, businessId, async (tx) => {
       await usageRepo.consumeUnit(
         tx,
         businessId,

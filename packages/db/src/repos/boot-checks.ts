@@ -222,7 +222,8 @@ export async function assertDatabasePrincipal(
   if (otherMember !== false) problems.push('can become the other principal');
   if (f.in_worker !== false) problems.push('can become rekoda_worker');
   if (f.in_plan_writer !== false) problems.push('can become rekoda_plan_writer');
-  if (f.in_app !== true) problems.push("does not act with rekoda_app's rights");
+  /* G-127 (0211): exact grants, never the general application's rights. */
+  if (f.in_app !== false) problems.push("inherits rekoda_app's rights");
   if (f.in_table_owner !== false) problems.push('can act as the owner of the guarded tables');
   if (f.in_meter_writer !== false) problems.push('can become rekoda_meter_writer');
   if (f.in_price_reader !== false) problems.push('can become rekoda_price_reader');
