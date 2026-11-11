@@ -40,7 +40,13 @@ export function PaymentInstructionForm({
   const [edited, setEdited] = useState(false);
   /* Only the action that answered last may speak: a save and a removal make opposite statements
    * about where customers pay, and both must never show at once. */
-  const [last, setLast] = useState<'save' | 'clear' | null>(null);
+  /* Seeded from the actions' first state: a save submitted before the page hydrated (or with no
+   * script at all) posts the form natively, and the page that comes back starts from that answer.
+   * The effects below skip their first run, so without this the saved account's confirmation was
+   * never shown although the save had gone through. */
+  const [last, setLast] = useState<'save' | 'clear' | null>(() =>
+    state.done ? 'save' : clearState.done ? 'clear' : null,
+  );
   const firstSave = useRef(true);
   const firstClear = useRef(true);
   useEffect(() => {
