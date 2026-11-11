@@ -534,7 +534,8 @@ things come first, because without them the new release refuses to start (no fal
    The pre-start smoke now also checks, in the database: the 0202 to 0206 ledger rows; that only
    `rekoda_settlement` may insert a charge; the
    settlement, pack-credit and cycle-input guard triggers; that the provider writer is 0206's (it
-   binds an upgrade or a renewal to the charge's frozen period); that `rekoda_plan_writer` owns exactly the four
+   binds an upgrade or a renewal to the charge's frozen period); that no runtime role can create in
+   schema `public`; that `rekoda_plan_writer` owns exactly the four
    expected writer functions, by signature, each with exactly its EXECUTE grantees (provider writer:
    `rekoda_settlement`; operator writer: `rekoda_billing_operator`; expiry writer: `rekoda_app`,
    `rekoda_worker`; staging date move: `rekoda_app`); the principals' roles and that no runtime role

@@ -110,7 +110,8 @@ UP_ENTERED=false
 #     wrong owner or a widened grant all fail; every one of them is SECURITY DEFINER with the pinned
 #     search_path;
 #   * the removed general writer, the old four-argument operator writer and the test-only fixture
-#     writer are absent;
+#     writer are absent, and no runtime role can create a function in public (the cycle-input
+#     guard's test exemption keys on that writer existing);
 #   * the settlement and billing-operator roles exist, can log in, cannot bypass RLS and act with
 #     rekoda_app's rights; no runtime role can become another principal, the worker or the writer;
 #   * the worker reads but cannot write other businesses' events (its estate policy is SELECT only,
@@ -149,6 +150,8 @@ SMOKE_0196_SQL="SELECT
   AND to_regprocedure('public.subscription_write_plan(uuid,text,timestamptz)') IS NULL
   AND to_regprocedure('public.subscription_operator_set_plan(uuid,text,timestamptz,text)') IS NULL
   AND to_regprocedure('public.test_fixture_set_plan(uuid,text,timestamptz)') IS NULL
+  AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker', 'rekoda_settlement',
+        'rekoda_billing_operator']) AS r(role) WHERE has_schema_privilege(r.role, 'public', 'CREATE'))
   AND (SELECT count(*) FROM pg_roles WHERE rolname IN ('rekoda_settlement', 'rekoda_billing_operator')
         AND rolcanlogin AND NOT rolsuper AND NOT rolbypassrls) = 2
   AND pg_has_role('rekoda_settlement', 'rekoda_app', 'USAGE')

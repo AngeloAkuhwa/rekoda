@@ -19,8 +19,11 @@
 --      it. A stale charge is refused (42501), so a stolen application credential can no longer turn
 --      a cheap payment into a longer or different cycle. Settlement checks the same thing first and
 --      sends the payment to the operator queue as before (`subscription_decided_after_charge`).
---   2. The cycle and pricing inputs above change only as settlement, the billing operator, the plan
---      writer or the table owner. The test harness's fixture writer (never in a deployed database;
+--   2. The cycle and pricing inputs above, and the grace clock (`payment_failed_at`: cleared, it
+--      stops the grace sweep and keeps a paid plan running unpaid), change only as settlement, the
+--      billing operator, the plan writer or the table owner; and a business inserted by any other
+--      role starts with none of them set (the insert guard of 0203, extended): a pin to an older,
+--      cheaper plan version written at INSERT would otherwise price every purchase and renewal. The test harness's fixture writer (never in a deployed database;
 --      the pre-start smoke and the boot check refuse a database that has it) is the only other
 --      exemption, so the integration suites can keep building cycles directly.
 --
@@ -146,12 +149,49 @@ REVOKE ALL ON FUNCTION rekoda_private.businesses_cycle_fields_guard() FROM PUBLI
 DROP TRIGGER IF EXISTS businesses_cycle_fields_guard ON businesses;
 CREATE TRIGGER businesses_cycle_fields_guard
   BEFORE UPDATE OF billing_interval, cycle_started_at, subscription_origin, renewal_anchor_day,
-    plan_version_id, ever_paid_at ON businesses
+    plan_version_id, ever_paid_at, payment_failed_at ON businesses
   FOR EACH ROW
   WHEN (OLD.billing_interval IS DISTINCT FROM NEW.billing_interval
         OR OLD.cycle_started_at IS DISTINCT FROM NEW.cycle_started_at
         OR OLD.subscription_origin IS DISTINCT FROM NEW.subscription_origin
         OR OLD.renewal_anchor_day IS DISTINCT FROM NEW.renewal_anchor_day
         OR OLD.plan_version_id IS DISTINCT FROM NEW.plan_version_id
-        OR OLD.ever_paid_at IS DISTINCT FROM NEW.ever_paid_at)
+        OR OLD.ever_paid_at IS DISTINCT FROM NEW.ever_paid_at
+        OR OLD.payment_failed_at IS DISTINCT FROM NEW.payment_failed_at)
   EXECUTE FUNCTION rekoda_private.businesses_cycle_fields_guard();
+
+-- A business inserted by the application (signup) starts on its trial with no cycle, pin, origin,
+-- paid history or grace clock: those are written later, only by the roles above. Replaces the 0203
+-- function; the trigger of 0200 is unchanged.
+CREATE OR REPLACE FUNCTION rekoda_private.businesses_plan_fields_insert_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $$
+BEGIN
+  IF current_user = 'rekoda_plan_writer' THEN
+    RETURN NEW;
+  END IF;
+  IF pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'USAGE') THEN
+    RETURN NEW;
+  END IF;
+  IF NEW.plan IS DISTINCT FROM 'trial' OR NEW.plan_expires_at IS NULL
+     OR NEW.trial_started_at IS DISTINCT FROM now()
+     OR NEW.plan_expires_at <= now()
+     OR NEW.plan_expires_at > now() + interval '336 hours' THEN
+    RAISE EXCEPTION
+      'a new business starts on its 14-day trial; plan and plan_expires_at change only through the subscription writers (OD-37)'
+      USING ERRCODE = '42501';
+  END IF;
+  IF NEW.billing_interval IS DISTINCT FROM 'monthly'
+     OR NEW.cycle_started_at IS NOT NULL OR NEW.subscription_origin IS NOT NULL
+     OR NEW.renewal_anchor_day IS NOT NULL OR NEW.plan_version_id IS NOT NULL
+     OR NEW.ever_paid_at IS NOT NULL OR NEW.payment_failed_at IS NOT NULL THEN
+    RAISE EXCEPTION
+      'a new business starts with no cycle, plan version, origin, paid history or grace clock (OD-37)'
+      USING ERRCODE = '42501';
+  END IF;
+  RETURN NEW;
+END $$;
+
+REVOKE ALL ON FUNCTION rekoda_private.businesses_plan_fields_insert_guard() FROM PUBLIC;

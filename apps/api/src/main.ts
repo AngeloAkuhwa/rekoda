@@ -113,8 +113,10 @@ export async function createApp(): Promise<NestFastifyApplication> {
   await bootChecks.assertKeyUnchanged(db, 'MATCH_KEY', config.matchKey);
   await assertStagingMarkerNotLive(db, config.paystackSecretKey);
   /* OD-37 (0206): the test harness's fixture plan writer is also the cycle-input guard's test-only
-   * exemption, so a served database must not have it. Production hardening (fail-closed: any
-   * NODE_ENV but development or test); the integration suites boot against test databases. */
+   * exemption, so a served database must not have it. Checked under production hardening (any
+   * NODE_ENV set to something other than development or test; unset counts as development, and the
+   * deployed images set production); the integration suites boot against test databases. The
+   * pre-start smoke refuses the writer on every staging deploy whatever NODE_ENV says. */
   if (isProductionEnv(process.env)) await bootChecks.assertNoTestFixtureWriter(db);
 
   /**

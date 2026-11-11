@@ -14,6 +14,7 @@
 import { describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { withBusiness } from '../client.js';
+import { identity } from '../index.js';
 import { applyFixtureCycle } from '../testing.js';
 import {
   appDb,
@@ -166,10 +167,12 @@ describe('B3: the cycle and pricing inputs belong to settlement and the operator
     ['renewal_anchor_day', 'renewal_anchor_day = 1'],
     ['plan_version_id', 'plan_version_id = NULL'],
     ['ever_paid_at', 'ever_paid_at = now()'],
+    // Cleared, the grace clock stops the grace sweep and a paid plan runs on unpaid.
+    ['payment_failed_at', 'payment_failed_at = NULL'],
   ])('the application cannot write %s; settlement and the operator can', async (_c, set) => {
     const businessId = await onPaidCycle(new Date(Date.now() + 10 * DAY));
     await ownerDb.execute(
-      sql`UPDATE businesses SET plan_version_id = (SELECT id FROM plan_versions WHERE plan = 'chat' ORDER BY version LIMIT 1), renewal_anchor_day = 15, ever_paid_at = NULL WHERE id = ${businessId}::uuid`,
+      sql`UPDATE businesses SET plan_version_id = (SELECT id FROM plan_versions WHERE plan_id = 'chat' ORDER BY version LIMIT 1), renewal_anchor_day = 15, ever_paid_at = NULL, payment_failed_at = now() WHERE id = ${businessId}::uuid`,
     );
     const statement = `UPDATE businesses SET ${set} WHERE id = $B`;
     for (const role of ['rekoda_app', 'rekoda_worker']) {
@@ -195,5 +198,29 @@ describe('B3: the cycle and pricing inputs belong to settlement and the operator
       SELECT tgenabled::text AS enabled FROM pg_trigger
       WHERE tgname = 'businesses_cycle_fields_guard' AND tgrelid = 'public.businesses'::regclass`);
     expect(row?.enabled).toBe('O');
+  });
+
+  it.each([
+    [
+      'a plan version pin',
+      "plan_version_id = (SELECT id FROM plan_versions WHERE plan_id = 'complete' ORDER BY version LIMIT 1)",
+    ],
+    ['a cycle start', 'cycle_started_at = now()'],
+    ['an annual interval', "billing_interval = 'annual'"],
+    ['an origin', "subscription_origin = 'provider'"],
+    ['an anchor day', 'renewal_anchor_day = 1'],
+    ['a paid history', 'ever_paid_at = now()'],
+    ['a grace clock', 'payment_failed_at = now()'],
+  ])('a business the application inserts cannot start with %s', async (_label, column) => {
+    const [name, value] = column.split(/ = (.*)/s) as [string, string];
+    const id = '7a1d0c4e-0000-4000-8000-000000000206';
+    const owner = await identity.upsertUserByPhone(appDb, '+2348069990206');
+    const insert = (extra: string) =>
+      `INSERT INTO businesses (id, name, owner_user_id, plan, plan_expires_at${extra ? `, ${name}` : ''})
+       VALUES ($B, 'Ada', '${owner.id}'::uuid, 'trial', now() + interval '336 hours'${extra ? `, ${value}` : ''})`;
+    expect(await asRoleWithoutFixture(id, 'rekoda_app', insert(column))).toMatch(
+      /^42501 .*starts with no cycle/,
+    );
+    expect(await asRoleWithoutFixture(id, 'rekoda_app', insert(''))).toBe('OK ');
   });
 });

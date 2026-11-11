@@ -89,6 +89,7 @@ describe('the pre-start database smoke, executed', () => {
       'a disabled settlement guard',
       'ALTER TABLE subscription_charges DISABLE TRIGGER subscription_charges_settlement_guard',
     ],
+    ['a runtime role able to create in public', 'GRANT CREATE ON SCHEMA public TO rekoda_app'],
     [
       'a disabled cycle-input guard',
       'ALTER TABLE businesses DISABLE TRIGGER businesses_cycle_fields_guard',

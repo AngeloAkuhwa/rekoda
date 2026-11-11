@@ -157,6 +157,15 @@ describe('OD-37: who may run which writer, and who may become whom (0202)', () =
     await expect(
       bootChecks.assertRoleHoldsNoReservedWriter(ownerDb, 'application'),
     ).rejects.toThrow(/can act as the owner of the guarded tables/);
+    // A runtime role that could create a function in public could switch the cycle guard off (0206).
+    await ownerDb.execute(sql`GRANT CREATE ON SCHEMA public TO rekoda_app`);
+    try {
+      await expect(
+        bootChecks.assertRoleHoldsNoReservedWriter(appDb, 'application'),
+      ).rejects.toThrow(/can create objects in schema public/);
+    } finally {
+      await ownerDb.execute(sql`REVOKE CREATE ON SCHEMA public FROM rekoda_app`);
+    }
     // This harness installs the fixture writer, as every test database does; a served one never has it.
     await expect(bootChecks.assertNoTestFixtureWriter(appDb)).rejects.toThrow(/test-only fixture/);
   });

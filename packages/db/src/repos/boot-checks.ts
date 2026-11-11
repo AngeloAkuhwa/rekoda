@@ -83,6 +83,7 @@ interface PrincipalFacts {
   in_plan_writer: boolean | null;
   /** Can act as the owner of the guarded tables, which every OD-37 guard exempts. */
   in_table_owner: boolean | null;
+  creates_in_public: boolean;
   /** The OD-37 guard triggers present and enabled (plan fields, settlement, pack credit). */
   guards_enabled: number;
 }
@@ -108,6 +109,9 @@ async function principalFacts(db: Db): Promise<PrincipalFacts> {
            ELSE pg_has_role(current_user, 'rekoda_app', 'USAGE') END AS in_app,
       CASE WHEN to_regrole('rekoda_plan_writer') IS NULL THEN NULL
            ELSE pg_has_role(current_user, 'rekoda_plan_writer', 'MEMBER') END AS in_plan_writer,
+      -- The cycle-input guard's test exemption keys on a function in public existing (0206), so no
+      -- runtime role may create one there (PostgreSQL 15+ grants PUBLIC no CREATE on it).
+      has_schema_privilege(current_user, 'public', 'CREATE') AS creates_in_public,
       -- to_regclass, never a ::regclass literal: an unmigrated database reads NULL here (and fails
       -- the check by name) instead of raising "relation does not exist".
       CASE WHEN to_regclass('public.subscription_charges') IS NULL THEN NULL
@@ -163,6 +167,7 @@ export async function assertRoleHoldsNoReservedWriter(db: Db, label: string): Pr
   if (f.in_settlement !== false) problems.push('can become rekoda_settlement');
   if (f.in_operator !== false) problems.push('can become rekoda_billing_operator');
   if (f.in_table_owner !== false) problems.push('can act as the owner of the guarded tables');
+  if (f.creates_in_public !== false) problems.push('can create objects in schema public');
   if (f.guards_enabled !== GUARD_TRIGGERS) {
     problems.push('runs against a database whose OD-37 guard triggers are missing or disabled');
   }
@@ -205,6 +210,7 @@ export async function assertDatabasePrincipal(
   if (f.in_plan_writer !== false) problems.push('can become rekoda_plan_writer');
   if (f.in_app !== true) problems.push("does not act with rekoda_app's rights");
   if (f.in_table_owner !== false) problems.push('can act as the owner of the guarded tables');
+  if (f.creates_in_public !== false) problems.push('can create objects in schema public');
   if (f.guards_enabled !== GUARD_TRIGGERS) {
     problems.push('runs against a database whose OD-37 guard triggers are missing or disabled');
   }
