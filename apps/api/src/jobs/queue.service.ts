@@ -52,6 +52,13 @@ export const JobKind = {
    * conversation lock before it looks.
    */
   DeliveryStatus: 'delivery.status',
+  /**
+   * OD-44: a renewal that was blocked before it could be paid (OWN-70) needs a fresh payment
+   * started once the gate has opened. Enqueued in the transaction that closes the block, one per
+   * charge (singleton key); it starts the payment through the ordinary checkout path and never
+   * settles or extends anything itself.
+   */
+  InitiateBlockedRenewal: 'billing.renewal_initiate',
 } as const;
 
 export type JobKindName = (typeof JobKind)[keyof typeof JobKind];

@@ -2664,3 +2664,83 @@ export async function resolveBlockedRenewal(
   `);
   return true;
 }
+
+/**
+ * OD-44: what a renewal that was blocked before it could be paid looks like now, for the job that
+ * starts a fresh payment for it once the gate has opened. Read under the tenant pin; never locks
+ * (the checkout service takes its own locks when it opens an attempt).
+ */
+export interface BlockedRenewalInitiationState {
+  chargeId: string;
+  kind: string;
+  status: string;
+  supersededAt: Date | null;
+  periodStart: Date | null;
+  blockedAt: Date | null;
+  blockedResolvedAt: Date | null;
+  blockedResolvedBy: string | null;
+}
+
+export async function blockedRenewalInitiationState(
+  tx: TenantDb,
+  businessId: string,
+  reference: string,
+): Promise<BlockedRenewalInitiationState | null> {
+  const rows = await tx.execute<{
+    id: string;
+    kind: string;
+    status: string;
+    superseded_at: string | null;
+    period_start: string | null;
+    blocked_at: string | null;
+    blocked_resolved_at: string | null;
+    blocked_resolved_by: string | null;
+  }>(sql`
+    SELECT id, kind, status, superseded_at, period_start, blocked_at, blocked_resolved_at,
+           blocked_resolved_by
+    FROM subscription_charges
+    WHERE business_id = ${businessId}::uuid AND reference = ${reference}
+  `);
+  const row = [...rows][0];
+  if (!row) return null;
+  return {
+    chargeId: row.id,
+    kind: row.kind,
+    status: row.status,
+    supersededAt: at(row.superseded_at),
+    periodStart: at(row.period_start),
+    blockedAt: at(row.blocked_at),
+    blockedResolvedAt: at(row.blocked_resolved_at),
+    blockedResolvedBy: row.blocked_resolved_by,
+  };
+}
+
+/** The outcomes the OD-44 initiation job records. Fixed codes, never provider or error text. */
+export type RenewalInitiationOutcome =
+  | 'initiated'
+  | 'existing_payment_link'
+  | 'gate_closed'
+  | 'not_eligible'
+  | 'requires_billing_email'
+  | 'requires_billing_email_verification'
+  | 'unavailable'
+  | 'provider_unreachable';
+
+/**
+ * Audit one run of the OD-44 initiation job. The detail carries fixed codes and Rekoda's own
+ * references only: never the checkout link, the billing email or a provider message.
+ */
+export async function recordRenewalInitiation(
+  tx: TenantDb,
+  businessId: string,
+  reference: string,
+  outcome: RenewalInitiationOutcome,
+  detail: { reason?: string; providerReference?: string } = {},
+): Promise<void> {
+  await tx.execute(sql`
+    INSERT INTO audit_events (business_id, actor, entity, entity_id, action, new_value, source_type)
+    VALUES (${businessId}::uuid, 'system:renewal_initiate', 'subscription_charge', ${reference},
+            'renewal_payment_initiation', ${JSON.stringify({ outcome, ...detail })}::jsonb,
+            'system')
+  `);
+}

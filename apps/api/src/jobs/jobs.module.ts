@@ -28,6 +28,7 @@ import { paymentLinkHandler } from './payment-link.handler.js';
 import { graduationNudgeHandler } from './graduation-nudge.handler.js';
 import { deliveryStatusHandler } from './delivery-status.handler.js';
 import { processPaymentEventHandler } from './process-payment-event.handler.js';
+import { initiateBlockedRenewalHandler } from './initiate-blocked-renewal.handler.js';
 import { processBillingChargeHandler } from './process-billing-charge.handler.js';
 import { PaymentsModule } from '../payments/payments.module.js';
 import { PaymentIntentsService } from '../payments/payment-intents.service.js';
@@ -178,6 +179,14 @@ export function buildRunner(
     graduationNudgeHandler({ replySender: deps.replySender, db: appDb }),
   );
   runner.register(JobKind.DeliveryStatus, deliveryStatusHandler());
+  runner.register(
+    JobKind.InitiateBlockedRenewal,
+    initiateBlockedRenewalHandler({
+      config: deps.config,
+      appDb,
+      provider: deps.paymentProvider,
+    }),
+  );
   return runner;
 }
 

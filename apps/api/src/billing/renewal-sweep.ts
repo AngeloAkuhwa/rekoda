@@ -29,7 +29,8 @@ import { Logger } from '@nestjs/common';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { addInterval, subscriptionReference } from '@rekoda/core';
 import { redactForLog } from '@rekoda/core/privacy';
-import { subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
+import { jobsRepo, subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
+import { JobKind } from '../jobs/queue.service.js';
 import { planPriceKFor, type PlanTermsConfig } from './plan-terms.js';
 import { chargeGate } from './paystack-key.js';
 
@@ -339,16 +340,29 @@ export async function closeBlocksTheGateNoLongerHolds(
           );
         }
         try {
-          const closedNow = await withBusiness(deps.appDb, blocked.businessId, (tx) =>
-            subscriptionsRepo.resolveBlockedRenewal(
+          const closedNow = await withBusiness(deps.appDb, blocked.businessId, async (tx) => {
+            const closedHere = await subscriptionsRepo.resolveBlockedRenewal(
               tx,
               blocked.businessId,
               blocked.reference,
               'the payment gate is open: the renewal can now be paid',
               'system:gate_open',
               'system',
-            ),
-          );
+            );
+            /* OD-44: the block was raised before any payment existed, so there is nothing to
+             * resume. A fresh payment is started for it by its own job, enqueued in the same
+             * transaction as the close (one per charge), so a close that commits always has its
+             * initiation queued and a close that rolls back has none. */
+            if (closedHere) {
+              await jobsRepo.enqueue(tx, {
+                businessId: blocked.businessId,
+                kind: JobKind.InitiateBlockedRenewal,
+                payload: { reference: blocked.reference },
+                singletonKey: `renewal-initiate:${blocked.reference}`,
+              });
+            }
+            return closedHere;
+          });
           // False when a concurrent runner (or an operator) already closed it: not ours to count.
           if (closedNow) closed += 1;
         } catch (error) {
