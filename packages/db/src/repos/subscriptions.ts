@@ -915,8 +915,12 @@ export async function refundCharge(
       `),
     );
   } catch (error) {
-    const cause = (error as { cause?: { code?: string } }).cause;
-    if (cause?.code === '22023') return null;
+    /* Only the bound ("more than was paid", or not a paid charge of this business) is the caller's
+     * honest miss; any other refusal (an invalid actor or reason) is an error, not a quiet null. */
+    const cause = (error as { cause?: { code?: string; message?: string } }).cause;
+    if (cause?.code === '22023' && cause.message?.includes('cannot be refunded by that amount')) {
+      return null;
+    }
     throw error;
   }
   const rows = await tx.execute<RawCharge>(sql`

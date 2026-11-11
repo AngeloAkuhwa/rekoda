@@ -92,12 +92,18 @@ const open = (
   withBusiness(settlementDb(), businessId, async (tx) => {
     /* The period production records on opening (0206 binds settlement to it): a renewal buys the
      * cycle that starts at the current paid-to date, an upgrade the rest of the cycle ending there. */
-    const paidTo = (await subscriptionsRepo.subscriptionFor(tx, businessId))?.planExpiresAt;
+    const current = await subscriptionsRepo.subscriptionFor(tx, businessId);
+    const paidTo = current?.planExpiresAt;
+    /* 0212: an upgrade is opened for the business's own current cycle. */
+    const cycleFrom = current?.cycleStartedAt ?? null;
     const period =
       paidTo && kind === 'renewal'
         ? { periodStart: paidTo, periodEnd: new Date(paidTo.getTime() + 30 * 86_400_000) }
         : paidTo && kind === 'upgrade'
-          ? { periodStart: new Date(paidTo.getTime() - 30 * 86_400_000), periodEnd: paidTo }
+          ? {
+              periodStart: cycleFrom ?? new Date(paidTo.getTime() - 30 * 86_400_000),
+              periodEnd: paidTo,
+            }
           : {};
     const packId = kind === 'add_on' ? 'messages_100' : null; // 0210: the catalogue's price
     const amountK = await catalogueChargeK(urls, businessId, { kind, plan, packId, ...period });

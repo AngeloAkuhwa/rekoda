@@ -99,6 +99,12 @@ export const PINS: Readonly<Record<string, Pin>> = {
     businessInserts: 0,
     why: 'OWN-89: the three writers re-created with the duration rules (operator writer: plan and date; provider writer: plan from the charge and the date; expiry writer: plan, and a future end clamped to now). All owned by rekoda_plan_writer.',
   },
+  'packages/db/migrations/0212_review_fixes_terms_cycle_release_pin.sql': {
+    plan: 0,
+    expiry: 2,
+    businessInserts: 0,
+    why: 'Review fixes: staging_move_date re-created (paid_to and trial_end each move the date together with its start; staging test businesses only). Owned by rekoda_plan_writer.',
+  },
   'packages/db/migrations/0207_operator_plan_periods_exact.sql': {
     plan: 1,
     expiry: 1,

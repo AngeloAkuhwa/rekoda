@@ -70,7 +70,8 @@ carries_plan_boundary() {
      " $BREAKING " == *' 0207_operator_plan_periods_exact '* ||
      " $BREAKING " == *' 0209_meter_refund_schedule_writers '* ||
      " $BREAKING " == *' 0210_charge_price_from_the_catalogue '* ||
-     " $BREAKING " == *' 0211_principals_explicit_grants '* ]]
+     " $BREAKING " == *' 0211_principals_explicit_grants '* ||
+     " $BREAKING " == *' 0212_review_fixes_terms_cycle_release_pin '* ]]
 }
 # The OWN-86 pre-start smoke query, printed for an operator fixing forward by hand.
 print_smoke_0196() {
@@ -92,7 +93,7 @@ fail() {
 PHASE=checks
 # Migrations the previous release cannot run against (OD-48): the api and worker are stopped before
 # any of them is applied, and the old release is never restarted against a database that has one.
-COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_plan_periods_exact 0209_meter_refund_schedule_writers 0210_charge_price_from_the_catalogue 0211_principals_explicit_grants'
+COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_plan_periods_exact 0209_meter_refund_schedule_writers 0210_charge_price_from_the_catalogue 0211_principals_explicit_grants 0212_review_fixes_terms_cycle_release_pin'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -130,7 +131,8 @@ SMOKE_0196_SQL="SELECT
                   '0205_charge_terms_belong_to_settlement',
                   '0206_paid_charge_bound_to_its_cycle', '0207_operator_plan_periods_exact',
                   '0208_subscription_conformance', '0209_meter_refund_schedule_writers',
-                  '0210_charge_price_from_the_catalogue', '0211_principals_explicit_grants')) = 12
+                  '0210_charge_price_from_the_catalogue', '0211_principals_explicit_grants',
+                  '0212_review_fixes_terms_cycle_release_pin')) = 13
   AND (SELECT count(*) FROM pg_trigger t WHERE t.tgenabled IN ('O', 'A') AND (t.tgname, t.tgrelid) IN (
         ('businesses_plan_fields_guard', 'public.businesses'::regclass),
         ('businesses_plan_fields_insert_guard', 'public.businesses'::regclass),
@@ -141,7 +143,21 @@ SMOKE_0196_SQL="SELECT
         ('businesses_trial_start_guard', 'public.businesses'::regclass),
         ('businesses_schedule_fields_guard', 'public.businesses'::regclass),
         ('subscription_charges_refund_guard', 'public.subscription_charges'::regclass),
-        ('subscription_charges_price_check', 'public.subscription_charges'::regclass))) = 10
+        ('subscription_charges_price_check', 'public.subscription_charges'::regclass),
+        ('subscription_charges_terms_frozen', 'public.subscription_charges'::regclass),
+        ('businesses_plan_version_guard', 'public.businesses'::regclass))) = 12
+  AND (SELECT string_agg(p.oid::regprocedure::text, ' ; ' ORDER BY p.oid::regprocedure::text)
+        FROM pg_proc p WHERE p.proowner = 'rekoda_price_reader'::regrole
+          AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                          WHERE a.grantee <> p.proowner))
+      = 'rekoda_private.businesses_plan_version_guard() ; rekoda_private.plan_price_minor(text,uuid,text) ; rekoda_private.subscription_charges_price_check()'
+  AND (SELECT string_agg(g, ',' ORDER BY g) FROM (
+        SELECT r.role || ':' || c.relname || ':' || a.privilege_type AS g
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'
+        CROSS JOIN LATERAL aclexplode(c.relacl) a
+        JOIN (VALUES ('rekoda_settlement'), ('rekoda_billing_operator')) r(role)
+          ON a.grantee = r.role::regrole) x)
+      = 'rekoda_billing_operator:add_on_grants:SELECT,rekoda_billing_operator:add_ons:SELECT,rekoda_billing_operator:allowance_versions:SELECT,rekoda_billing_operator:audit_events:SELECT,rekoda_billing_operator:businesses:SELECT,rekoda_billing_operator:entitlements:SELECT,rekoda_billing_operator:plan_prices:SELECT,rekoda_billing_operator:plan_version_entitlements:SELECT,rekoda_billing_operator:plan_versions:SELECT,rekoda_billing_operator:subscription_charges:SELECT,rekoda_billing_operator:usage_packs:SELECT,rekoda_settlement:add_on_grants:SELECT,rekoda_settlement:add_ons:SELECT,rekoda_settlement:allowance_versions:SELECT,rekoda_settlement:audit_events:INSERT,rekoda_settlement:audit_events:SELECT,rekoda_settlement:business_add_ons:INSERT,rekoda_settlement:business_add_ons:SELECT,rekoda_settlement:business_add_ons:UPDATE,rekoda_settlement:business_entitlements:SELECT,rekoda_settlement:businesses:SELECT,rekoda_settlement:dead_job_exceptions:SELECT,rekoda_settlement:entitlements:SELECT,rekoda_settlement:external_events:SELECT,rekoda_settlement:jobs:SELECT,rekoda_settlement:plan_prices:SELECT,rekoda_settlement:plan_version_entitlements:SELECT,rekoda_settlement:plan_versions:SELECT,rekoda_settlement:subscription_charge_attempts:INSERT,rekoda_settlement:subscription_charge_attempts:SELECT,rekoda_settlement:subscription_charge_attempts:UPDATE,rekoda_settlement:subscription_charges:INSERT,rekoda_settlement:subscription_charges:SELECT,rekoda_settlement:subscription_charges:UPDATE,rekoda_settlement:usage_counters:SELECT,rekoda_settlement:usage_packs:SELECT'
   AND (SELECT prosrc FROM pg_proc
         WHERE oid = to_regprocedure('public.subscription_apply_paid_charge(uuid,text,timestamptz)'))
         LIKE '%the upgrade was priced for another cycle%the renewal was priced for another cycle%'

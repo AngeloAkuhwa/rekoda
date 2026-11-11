@@ -169,12 +169,9 @@ describe('who is due', () => {
           periodStart: daysAgo(ageDays),
           periodEnd: daysAgo(ageDays - 30),
         });
-        await tx.execute(sql`
-          UPDATE subscription_charges
-          SET created_at = ${daysAgo(ageDays).toISOString()}::timestamptz
-          WHERE reference = ${reference}
-        `);
       });
+      await ownerDb.execute(sql`UPDATE subscription_charges
+        SET created_at = ${daysAgo(ageDays).toISOString()}::timestamptz WHERE reference = ${reference}`);
     };
 
     it('is neither warned nor deleted while a recent charge is still pending', async () => {

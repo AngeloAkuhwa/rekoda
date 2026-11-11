@@ -18,9 +18,12 @@
   - 0209: journalled metering, refunds by the billing operator only, validated scheduling.
   - 0210: charges priced from the catalogue.
   - 0211 (G-127): explicit grants for settlement and the operator; no inherited `rekoda_app`.
+  - 0212: fixes from the independent review (frozen charge terms, upgrade bound to the current cycle,
+    per-role meter release across reservations, the plan-version pin guard, the staging date tool).
   - Deploy smoke, compatibility list, restore drill and boot checks extended.
 - **Open and launch-blocking:** G-125 (unforgeable tenant context), G-126 (settlement and operator
-  services), G-128 (worker least privilege), G-129 (per-service secrets).
+  services), G-128 (worker least privilege), G-129 (per-service secrets), G-131 (allowance enforced in the
+  database).
   Design and sequence: ADR 0037 (Proposed).
 - **Owner decision still open:** OD-44 (a renewal blocked before initiation).
 - **Not run:** the OD-49 report against staging and production (no access). It runs in the deploy

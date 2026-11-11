@@ -104,11 +104,10 @@ async function warnedTrialWithPendingCharge(
     // A checkout opened in the last 14 days defers deletion (migration 0161),
     // which would end the race before it began. This one was abandoned weeks
     // ago, so the business is genuinely due.
-    await tx.execute(sql`
-      UPDATE subscription_charges SET created_at = ${daysAgo(30).toISOString()}::timestamptz
-      WHERE reference = ${REFERENCE}
-    `);
   });
+  // As the owner: what a charge buys, its creation time included, is fixed once opened (0212).
+  await ownerDb.execute(sql`UPDATE subscription_charges
+    SET created_at = ${daysAgo(30).toISOString()}::timestamptz WHERE reference = ${REFERENCE}`);
   return businessId;
 }
 

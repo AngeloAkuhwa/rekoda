@@ -338,7 +338,7 @@ called from `apps/api/src/commands/`.
 ### 5.27 Subscriptions, billing, renewals, grace — PARTIAL; revenue collection BLOCKED EXTERNALLY
 
 > **11 Nov 2026, PR #432 remediation (OWN-90; branch `angelo/magical-bell-v7abci`, migrations 0207
-> to 0210; CODE COMPLETE, not merged, not deployed, STAGING ACCEPTANCE PENDING).**
+> to 0212; CODE COMPLETE, not merged, not deployed, STAGING ACCEPTANCE PENDING).**
 >
 > - Operator plan changes assign only the standard periods. `expired` is the audited early end, and
 >   refusals are recorded (0207, OD-50).
@@ -347,7 +347,9 @@ called from `apps/api/src/commands/`.
 > - Metering is journalled reserve/release through definer functions. Refunds go only through the
 >   billing operator's bounded writer, and the merchant's scheduled change only through validated
 >   functions (0209).
-> - Every charge opened is recomputed from the price catalogue (0210).
+> - Every charge opened is recomputed from the price catalogue (0210). What it buys is then frozen,
+>   and an upgrade is priced only for the current cycle (0212).
+> - Settlement and the billing operator hold exact grants (0211).
 >
 > Tests: `packages/db/src/billing/{operator-plan-periods,subscription-conformance,meter-refund-schedule,charge-price-check}.integration.test.ts`.
 

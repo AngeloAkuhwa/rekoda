@@ -135,7 +135,9 @@ async function principalFacts(db: Db): Promise<PrincipalFacts> {
           ('businesses_trial_start_guard', to_regclass('public.businesses')),
           ('businesses_schedule_fields_guard', to_regclass('public.businesses')),
           ('subscription_charges_refund_guard', to_regclass('public.subscription_charges')),
-          ('subscription_charges_price_check', to_regclass('public.subscription_charges'))))
+          ('subscription_charges_price_check', to_regclass('public.subscription_charges')),
+          ('subscription_charges_terms_frozen', to_regclass('public.subscription_charges')),
+          ('businesses_plan_version_guard', to_regclass('public.businesses'))))
         AS guards_enabled
     FROM pg_roles r WHERE r.rolname = current_user
   `);
@@ -145,8 +147,8 @@ async function principalFacts(db: Db): Promise<PrincipalFacts> {
 }
 
 /** The guard triggers a running database must have, all enabled (0196, 0200, 0202, 0206, and the
- * PR #432 remediation's 0207, 0209 and 0210). */
-const GUARD_TRIGGERS = 10;
+ * PR #432 remediation's 0207, 0209, 0210 and 0212). */
+const GUARD_TRIGGERS = 12;
 
 /**
  * OD-37 (0206): the integration harness's fixture plan writer is never in a database a process

@@ -238,6 +238,8 @@ describe('charges', () => {
 
   it('allows more than one UPGRADE inside a cycle', async () => {
     const businessId = await seedBusiness();
+    // On Chat for the cycle the upgrades are opened for (0212 binds an upgrade to it).
+    await setPlanAsOwner(urls, businessId, { plan: 'chat', planExpiresAt: RENEWS_AT });
     // Chat to Integrate on day 3, Integrate to Complete on day 9. Both real.
     // The cycle here has ended, so 0210's price check prorates each upgrade to nothing.
     expect(

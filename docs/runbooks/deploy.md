@@ -552,9 +552,9 @@ things come first, because without them the new release refuses to start (no fal
 Rotating either password: as in "Rotate a database password", with the variable added to step 1 and
 `dc up -d --wait --force-recreate api worker`.
 
-### Deploy a release carrying 0207 to 0211 (OWN-90: operator periods, conformance, guarded billing writers, catalogue prices, explicit grants)
+### Deploy a release carrying 0207 to 0212 (OWN-90: operator periods, conformance, guarded billing writers, catalogue prices, explicit grants)
 
-Compatibility-breaking like 0202 to 0206: `scripts/deploy-staging.sh` lists 0207, 0209 and 0210 in
+Compatibility-breaking like 0202 to 0206: `scripts/deploy-staging.sh` lists 0207, 0209, 0210, 0211 and 0212 in
 `COMPAT_BREAKING_MIGRATIONS`, so the api and worker are stopped before the migration and the
 pre-start smoke must print `t` before `up`. No new secret is needed. What changes:
 
@@ -571,6 +571,10 @@ pre-start smoke must print `t` before `up`. No new secret is needed. What change
   role `rekoda_price_reader`). With `REKODA_PLAN_CATALOGUE_READS=0` the api prices from its
   constants, and a charge whose constant differs from the catalogue is refused, never opened.
 
+- **0212 (independent review fixes).** What a charge buys is frozen for settlement too; an
+  upgrade is priced only for the business's current cycle; a meter release gives back the caller's
+  own recorded consumption across reservations; a plan-version pin is kept or set to the current
+  version; the staging date tool moves a cycle or trial start with the date it moves.
 - **0211 (G-127).** `rekoda_settlement` and `rekoda_billing_operator` stop inheriting `rekoda_app`
   and get exact grants. If a membership was granted by hand under another grantor, the migration
   refuses; revoke it as that grantor and re-run. The boot check now refuses a principal that
@@ -606,28 +610,44 @@ new release's api is not running when it fires. There are two paths:
    this query; it is the 0208 rule written out:
 
    ```sql
-   SELECT id, plan,
-     CASE
-       WHEN plan IN ('chat','integrate','complete') AND plan_expires_at IS NULL THEN 'open_ended_paid_plan'
-       WHEN plan IN ('chat','integrate','complete') AND cycle_started_at IS NULL THEN 'paid_plan_without_cycle_start'
-       WHEN plan IN ('chat','integrate','complete') AND plan_expires_at > ((cycle_started_at AT TIME ZONE 'Africa/Lagos')
-            + CASE billing_interval WHEN 'annual' THEN interval '12 months' ELSE interval '1 month' END)
-            AT TIME ZONE 'Africa/Lagos' + interval '3 days' THEN 'paid_plan_longer_than_its_interval'
-       WHEN plan = 'trial' AND (plan_expires_at IS NULL
-            OR plan_expires_at > trial_started_at + interval '336 hours' + interval '1 minute')
-            AND coalesce(plan_expires_at, 'infinity') > now() THEN 'trial_longer_than_14_days'
-       WHEN plan = 'expired' AND plan_expires_at > now() THEN 'expired_plan_with_future_end'
-     END AS reason
-   FROM businesses
-   WHERE plan IN ('chat','integrate','complete','trial','expired');
+   SELECT id, plan, reason FROM (
+     SELECT id, plan, plan_expires_at,
+       CASE
+         WHEN plan IN ('chat','integrate','complete') THEN CASE
+           WHEN plan_expires_at IS NULL THEN 'open_ended_paid_plan'
+           WHEN cycle_started_at IS NULL THEN 'paid_plan_without_cycle_start'
+           WHEN billing_interval IS NULL OR billing_interval NOT IN ('monthly','annual') THEN 'paid_plan_unknown_interval'
+           WHEN plan_expires_at <= cycle_started_at THEN 'paid_plan_ends_before_it_starts'
+           WHEN plan_expires_at > ((cycle_started_at AT TIME ZONE 'Africa/Lagos')
+                + CASE billing_interval WHEN 'annual' THEN interval '12 months' ELSE interval '1 month' END)
+                AT TIME ZONE 'Africa/Lagos' + interval '3 days' THEN 'paid_plan_longer_than_its_interval'
+         END
+         WHEN plan = 'trial' THEN CASE
+           WHEN trial_started_at IS NULL THEN 'trial_without_start'
+           WHEN plan_expires_at IS NULL THEN 'open_ended_trial'
+           WHEN plan_expires_at > trial_started_at + interval '336 hours' + interval '1 minute'
+             THEN 'trial_longer_than_14_days'
+         END
+         WHEN plan = 'expired' THEN CASE WHEN plan_expires_at > now() THEN 'expired_plan_with_future_end' END
+         ELSE 'unknown_plan'
+       END AS reason
+     FROM businesses) r
+   WHERE reason IS NOT NULL
+     -- active: what the preflight blocks on
+     AND (plan IN ('chat','integrate','complete')
+          OR (plan = 'trial' AND (plan_expires_at IS NULL OR plan_expires_at > now()))
+          OR plan_expires_at > now());
    ```
 
-   Rows with a non-null reason are the ones to decide. With the owner's decision, move each one
+   It is the 0208 rule written out in full (`subscription_nonconformity`), filtered to the ACTIVE rows
+   the preflight blocks on. Rows it lists are the ones to decide. With the owner's decision, move each one
    through the running release's operator route (`POST /v1/businesses/plan`, which audits the move),
    then deploy.
 
-2. **Found by the preflight after the migration.** The api and worker are stopped. As the owner, in
-   one transaction per business, use the audited operator writer itself. It records the operator
+2. **Found by the preflight after the migration.** The api and worker are stopped. As the owner
+   (`rekoda_owner`, the image's superuser: EXECUTE on the operator writer is otherwise granted to
+   `rekoda_billing_operator` only), in one transaction per business, use the audited operator
+   writer itself. It records the operator
    actor, the previous state and the reason in `audit_events`. For a paid plan, also write the cycle
    the writer's period implies:
 
@@ -640,7 +660,11 @@ new release's api is not running when it fires. There are two paths:
    -- paid plans only (the standard period the writer just assigned started now):
    UPDATE businesses SET cycle_started_at = now(), billing_interval = '<interval>',
      subscription_origin = 'operator', pending_plan = NULL, pending_billing_interval = NULL,
-     payment_failed_at = NULL, plan_decided_at = clock_timestamp()
+     payment_failed_at = NULL, plan_decided_at = clock_timestamp(),
+     renewal_anchor_day = extract(day FROM (plan_expires_at AT TIME ZONE 'Africa/Lagos'))::int,
+     plan_version_id = (SELECT id FROM plan_versions WHERE plan_id = '<plan>'
+       AND effective_from <= now() AND (effective_to IS NULL OR effective_to > now())
+       ORDER BY version DESC LIMIT 1)
    WHERE id = '<business id>';
    COMMIT;
    ```

@@ -82,33 +82,34 @@ describe('metering: consumption only goes down by releasing what was recorded (0
     },
   );
 
-  it('a release gives back only a recorded consumption, once, for at most what it took', async () => {
+  it('a release gives back only recorded consumption, at most what is still open (0212: across reservations)', async () => {
     const businessId = await paidBusiness();
     expect((await reserve(appDb, businessId, 3)).granted).toBe(true);
-    expect((await reserve(workerDb, businessId, 2)).granted).toBe(true);
+    expect((await reserve(appDb, businessId, 2)).granted).toBe(true);
     expect(await counter(businessId)).toEqual({ used: 5, bonus: 0 });
 
-    // More than any one reservation took: refused, nothing changes.
-    expect(await release(appDb, businessId, 4)).toBe(false);
+    // More than is open: refused, nothing changes.
+    expect(await release(appDb, businessId, 6)).toBe(false);
     expect(await counter(businessId)).toEqual({ used: 5, bonus: 0 });
-    // The two recorded consumptions, each once.
-    expect(await release(appDb, businessId, 2)).toBe(true);
-    expect(await release(workerDb, businessId, 3)).toBe(true);
+    // Spread across the recorded reservations, newest first.
+    expect(await release(appDb, businessId, 4)).toBe(true);
+    expect(await counter(businessId)).toEqual({ used: 1, bonus: 0 });
+    expect(await release(appDb, businessId, 1)).toBe(true);
     expect(await counter(businessId)).toEqual({ used: 0, bonus: 0 });
-    // Replaying either release finds nothing left to give back.
-    expect(await release(appDb, businessId, 2)).toBe(false);
+    // Nothing is left to give back: a replay changes nothing.
     expect(await release(appDb, businessId, 1)).toBe(false);
     expect(await counter(businessId)).toEqual({ used: 0, bonus: 0 });
   });
 
-  it('a release is journalled with who asked, and a reservation older than 35 days cannot be released', async () => {
+  it('a release is journalled with who asked; only the role that reserved, within 35 days', async () => {
     const businessId = await paidBusiness();
     await reserve(appDb, businessId, 2);
     await ownerDb.execute(sql`UPDATE usage_reservations SET reserved_at = now() - interval '36 days'
       WHERE business_id = ${businessId}::uuid`);
     expect(await release(appDb, businessId, 2)).toBe(false);
     await reserve(appDb, businessId, 1);
-    expect(await release(workerDb, businessId, 1)).toBe(true);
+    expect(await release(workerDb, businessId, 1)).toBe(false);
+    expect(await release(appDb, businessId, 1)).toBe(true);
     const journal = [
       ...(await ownerDb.execute<{
         n: number;
@@ -122,7 +123,7 @@ describe('metering: consumption only goes down by releasing what was recorded (0
     ];
     expect(journal).toEqual([
       { n: 2, released_n: 0, reserved_by: 'rekoda_app', released_by: null },
-      { n: 1, released_n: 1, reserved_by: 'rekoda_app', released_by: 'rekoda_worker' },
+      { n: 1, released_n: 1, reserved_by: 'rekoda_app', released_by: 'rekoda_app' },
     ]);
   });
 
@@ -205,8 +206,8 @@ describe('refunds: only the billing operator records one, bounded and audited (0
     expect((await refund(590_000))?.status).toBe('refunded');
     expect(await refund(1)).toBeNull();
     // A refund with no verified operator actor or no reason is refused (and not audited).
-    expect(await refund(1, { actor: 'system', reason: 'x' })).toBeNull();
-    expect(await refund(1, { actor: BY.actor, reason: '  ' })).toBeNull();
+    await expect(refund(1, { actor: 'system', reason: 'x' })).rejects.toThrow();
+    await expect(refund(1, { actor: BY.actor, reason: '  ' })).rejects.toThrow();
     const trail = [
       ...(await ownerDb.execute<{ actor: string; reason: string }>(sql`
         SELECT actor, reason FROM audit_events WHERE business_id = ${businessId}::uuid

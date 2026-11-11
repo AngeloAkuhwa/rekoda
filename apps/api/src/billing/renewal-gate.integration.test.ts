@@ -421,6 +421,6 @@ describe('OWN-70: what happens to a blocked renewal afterwards', () => {
                         WHERE reference = ${charge!.reference}`,
         settlementDb(),
       ),
-    ).toMatch(/blocked_shape_ck/); // changing kind is settlement's alone (0205), so asked as it
+    ).toMatch(/fixed when it is opened/); // since 0212 nobody, settlement included, changes the kind
   });
 });

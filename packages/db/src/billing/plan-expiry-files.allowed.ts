@@ -155,6 +155,10 @@ export const ALLOWED: Readonly<Record<string, Entry>> = {
     role: 'migration',
     why: 'OD-49: subscription_nonconformity (a pure rule over the plan fields it is given) and the owner-only conformance report, which READS plan_expires_at; writes no plan field.',
   },
+  'packages/db/migrations/0212_review_fixes_terms_cycle_release_pin.sql': {
+    role: 'migration',
+    why: 'Review of the PR #432 remediation: re-creates staging_move_date (owned by rekoda_plan_writer, staging-only, designated test businesses only) so a moved paid-to date or trial end moves its cycle or trial start with it; the price check reads plan_expires_at to bind an upgrade to the current cycle.',
+  },
   'packages/db/src/billing/plan-writer.fixtures.ts': {
     role: 'reader',
     why: 'OD-37 boundary suites: reads plan and plan_expires_at back as the owner to assert what the writers did; writes neither.',

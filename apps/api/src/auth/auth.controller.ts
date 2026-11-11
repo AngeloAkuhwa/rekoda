@@ -384,13 +384,6 @@ export class BusinessController {
   @OperatorScopes('ops:billing')
   @HttpCode(200)
   async setPlan(@Req() request: OperatorRequest, @Body() body: unknown): Promise<{ plan: string }> {
-    const parsed = setPlanRequest.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(
-        'businessId and plan are required; billingInterval is monthly or annual; an operator ' +
-          'cannot choose plan dates (Rekoda assigns the standard period); a reason is at most 500 characters',
-      );
-    }
     /* The subject is checked before anything is written (a 400, not a 500 from the writer). */
     const actor = operatorActor(request);
     const operatorDb = this.operatorDb;
@@ -398,6 +391,30 @@ export class BusinessController {
       throw new ServiceUnavailableException(
         'operator plan changes are not served by this process (no operator database credential)',
       );
+    }
+    const parsed = setPlanRequest.safeParse(body);
+    if (!parsed.success) {
+      /* A malformed request is a refused privileged mutation too (review M3): a chosen date is
+       * exactly the withdrawn custom-period move. Recorded without the body. */
+      const raw = (body ?? {}) as { businessId?: unknown };
+      const businessId =
+        typeof raw.businessId === 'string' && isUuid(raw.businessId) ? raw.businessId : null;
+      const message =
+        'businessId and plan are required; billingInterval is monthly or annual; an operator ' +
+        'cannot choose plan dates (Rekoda assigns the standard period); a reason is at most 500 characters';
+      try {
+        await billingRepo.recordOperatorRefusal(operatorDb, {
+          businessId,
+          actor,
+          action: 'plan_change',
+          refusal: message,
+        });
+      } catch (error) {
+        this.logger.error(
+          `could not record a refused operator plan change: ${(error as Error).name}`,
+        );
+      }
+      throw new BadRequestException(message);
     }
 
     const { businessId, plan, billingInterval, reason } = parsed.data;
