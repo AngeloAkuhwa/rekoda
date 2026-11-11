@@ -359,6 +359,11 @@ describe('OD-51: the application opens only a pristine pending charge (0209)', (
     ['applied_period_start', 'now()'],
     ['unapplied_reason', "'x'"],
     ['blocked_at', 'now()'],
+    // 0212: nor any review text a resolved charge would carry.
+    ['unapplied_resolution', "'x'"],
+    ['unapplied_resolved_by', "'x'"],
+    ['blocked_resolution', "'x'"],
+    ['blocked_resolved_by', "'x'"],
   ])('refuses an insert with %s = %s', async (column, value) => {
     const businessId = await seedBusiness();
     expect(await attempt(businessId, column, value)).toMatch(
@@ -546,9 +551,10 @@ describe('OD-51: a planted charge is never offered for payment', () => {
       periodStart: new Date(Math.floor((Date.now() + 3_600_000) / DAY) * DAY - 3_600_000),
     });
     const answer = await billing().changePlan(businessId, 'chat');
-    if (answer.state === 'payment_required') {
-      expect(answer.reference).not.toBe(planted);
-      expect(answer.amountK).not.toBe(1);
-    }
+    /* The planted charge is retired and the merchant is asked for today's price instead. */
+    expect(answer.state).toBe('payment_required');
+    if (answer.state !== 'payment_required') return;
+    expect(answer.reference).not.toBe(planted);
+    expect(answer.amountK).not.toBe(1);
   });
 });

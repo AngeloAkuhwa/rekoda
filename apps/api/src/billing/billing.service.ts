@@ -488,17 +488,19 @@ export class BillingService {
         });
       }
       const reference = subscriptionReference(now, randomBytes);
-      const opened = await subscriptionsRepo.openCharge(tx, {
-        businessId,
-        kind: charge.kind === 'first_purchase' ? 'first_purchase' : 'upgrade',
-        plan: to,
-        amountK: charge.amountK,
-        reference,
-        periodStart,
-        periodEnd: charge.renewsAt,
-        billingInterval: interval,
-        pricedAt: now,
-      });
+      const open = () =>
+        subscriptionsRepo.openCharge(tx, {
+          businessId,
+          kind: charge.kind === 'first_purchase' ? 'first_purchase' : 'upgrade',
+          plan: to,
+          amountK: charge.amountK,
+          reference,
+          periodStart,
+          periodEnd: charge.renewsAt,
+          billingInterval: interval,
+          pricedAt: now,
+        });
+      let opened = await open();
       if (!opened) {
         const pending = await subscriptionsRepo.pendingCharge(
           tx,
@@ -507,8 +509,9 @@ export class BillingService {
             ? { kind: 'first_purchase', periodStart, plan: to, billingInterval: interval }
             : { kind: 'upgrade', plan: to },
         );
-        /* Handed back only at the price just computed: a pending charge at another price was not
-         * opened by this code (OD-51) and is never shown as what the merchant owes. */
+        /* Handed back only at the price just computed. One at another price (an upgrade prorated
+         * on an earlier day, or one this code never opened, OD-51) is never shown as what the
+         * merchant owes: it is retired and today's charge opened in its place. */
         if (pending && pending.amountK === charge.amountK) {
           return {
             state: 'payment_required' as const,
@@ -517,7 +520,13 @@ export class BillingService {
             plan: to,
           };
         }
-        return { state: 'unavailable' as const, reason: 'no_cycle' as const };
+        if (
+          pending &&
+          (await subscriptionsRepo.retirePendingCharge(tx, businessId, pending.reference))
+        ) {
+          opened = await open();
+        }
+        if (!opened) return { state: 'unavailable' as const, reason: 'no_cycle' as const };
       }
       return {
         state: 'payment_required' as const,
@@ -624,17 +633,20 @@ export class BillingService {
       if (!gate.ok) return { state: 'unavailable' as const, reason: gate.reason };
 
       const reference = addOnReference(now, randomBytes);
-      const opened = await subscriptionsRepo.openCharge(tx, {
-        businessId,
-        kind: 'add_on',
-        packId: pack.id,
-        amountK: pack.priceK,
-        reference,
-        pricedAt: now,
-      });
+      const open = () =>
+        subscriptionsRepo.openCharge(tx, {
+          businessId,
+          kind: 'add_on',
+          packId: pack.id,
+          amountK: pack.priceK,
+          reference,
+          pricedAt: now,
+        });
+      let opened = await open();
       if (!opened) {
-        /* A pending charge for this very pack already exists; hand back its
-         * link rather than minting a second payable. */
+        /* A pending charge for this very pack already exists; hand back its link rather than
+         * minting a second payable, but only at today's price. One at another price (the
+         * catalogue repriced, or OD-51) is retired and today's charge opened in its place. */
         const pending = await subscriptionsRepo.pendingCharge(tx, businessId, {
           kind: 'add_on',
           packId: pack.id,
@@ -646,7 +658,13 @@ export class BillingService {
             amountK: pending.amountK,
           };
         }
-        return { state: 'unavailable' as const, reason: 'pack' };
+        if (
+          pending &&
+          (await subscriptionsRepo.retirePendingCharge(tx, businessId, pending.reference))
+        ) {
+          opened = await open();
+        }
+        if (!opened) return { state: 'unavailable' as const, reason: 'pack' };
       }
       return { state: 'payment_required' as const, reference, amountK: pack.priceK };
     });

@@ -847,6 +847,27 @@ export async function retireAbandonedPending(
 }
 
 /**
+ * Retire one pending charge that is no longer what this business would be asked to pay (OD-51): an
+ * upgrade prorated on an earlier day, or a pack the catalogue has since repriced. Marked abandoned,
+ * exactly as `retireAbandonedPending`, so a payment already in flight is still recorded and
+ * re-priced at settlement. Returns whether a charge was retired. Call with the business row locked.
+ */
+export async function retirePendingCharge(
+  tx: TenantDb,
+  businessId: string,
+  reference: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ reference: string }>(sql`
+    UPDATE subscription_charges
+    SET superseded_at = clock_timestamp(), abandoned_at = clock_timestamp(), updated_at = now()
+    WHERE business_id = ${businessId}::uuid AND reference = ${reference}
+      AND status = 'pending' AND superseded_at IS NULL
+    RETURNING reference
+  `);
+  return rows.length > 0;
+}
+
+/**
  * Flag every still-pending plan charge opened before the latest decision as
  * stale (G-104), so it can no longer be handed out as a payment link and does
  * not occupy the one-pending-upgrade slot. A late payment of one is still

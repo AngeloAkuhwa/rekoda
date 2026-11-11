@@ -615,6 +615,10 @@ the order. 0208 only adds owner-only functions.
 
    A row with no cycle start (`paid_no_cycle_start`), or one whose start is in the future, cannot
    be corrected this way. Move it with the operator route: `expired`, then a standard period.
+   For `trial_starts_in_future` post `expired` only: the record becomes inactive and passes, and a
+   new trial would again run from the future start (only the owner may change `trial_started_at`,
+   and only on the owner's written decision). `paid_cycle_starts_in_future` clears with `expired`
+   followed by the paid plan, which the writer starts now.
 
 5. **Operator plan changes (OD-50, 0207).** `POST /v1/businesses/plan` takes `expiresAt: null` for
    a paid plan or a trial: the database writer sets exactly one standard period (one Lagos calendar

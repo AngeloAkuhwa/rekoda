@@ -9,6 +9,11 @@
 --      endpoint of that same business. With INSERT and UPDATE on every column the worker could
 --      queue a forged, correctly signed webhook (an "invoice.paid" that never happened) to any
 --      merchant's endpoint. Its direct writes are now the delivery's progress columns only.
+--      Residual (OD-51 limitation): the worker container also holds the settlement credential,
+--      which inherits rekoda_app and so INSERT on outbox_events; fan-out delivers an outbox fact
+--      planted that way. This closes the worker credential's own path, not that one. The function
+--      also does not re-check the endpoint's event_types (fan-out does), and progress columns
+--      still allow a real, same-tenant delivery to be retried.
 --   3. The release preflight (0208) also flags a trial or paid cycle whose start is in the future
 --      (the second-trial pattern 0207 closed) and treats an unknown plan as active, and the paid
 --      bound is the standard end itself: one interval after the cycle start, or, when the start was
@@ -18,6 +23,8 @@
 --   4. The retention deletion locks the business before it reads the notice, so a notice cleared
 --      and re-stamped meanwhile cannot slip through on the 30-day test.
 --   5. An application-opened charge must also have no unapplied or blocked review text.
+--   6. A pending pack charge, once retired, no longer holds the pack's one pending slot (as the
+--      upgrade slot already did since 0162), so a pack repriced since can be opened at today's price.
 --
 -- Rollback: none past 0196 (OWN-86); applied with the api and worker stopped. Re-running is safe.
 
@@ -268,3 +275,11 @@ BEGIN
 END $$;
 
 REVOKE ALL ON FUNCTION rekoda_private.subscription_charges_settlement_guard() FROM PUBLIC;
+
+-- A pending pack charge at a price no longer offered is retired (superseded) so today's price can be
+-- opened in its place, exactly as an upgrade's slot (0162) already frees on retirement. The pack
+-- slot predates supersession and still counted a retired charge.
+DROP INDEX IF EXISTS subscription_charges_pending_pack_ux;
+CREATE UNIQUE INDEX subscription_charges_pending_pack_ux
+  ON subscription_charges (business_id, pack_id)
+  WHERE kind = 'add_on' AND status = 'pending' AND superseded_at IS NULL;
