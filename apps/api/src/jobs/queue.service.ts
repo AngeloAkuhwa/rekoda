@@ -59,6 +59,12 @@ export const JobKind = {
    * settles or extends anything itself.
    */
   InitiateBlockedRenewal: 'billing.renewal_initiate',
+  /**
+   * OD-51: an upgrade priced at nothing (G-105) is applied by the worker, the only process holding
+   * the settlement credential, after it re-prices the charge to zero itself. The API opens the
+   * charge and enqueues this, one per charge.
+   */
+  ApplyNoChargeUpgrade: 'billing.apply_no_charge',
 } as const;
 
 export type JobKindName = (typeof JobKind)[keyof typeof JobKind];

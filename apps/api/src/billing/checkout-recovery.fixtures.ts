@@ -111,7 +111,7 @@ export function useCheckoutRecoveryHarness(): void {
   });
 }
 
-export const plans = () => new BillingService(config, appDb, settlementDb());
+export const plans = () => new BillingService(config, appDb);
 export const checkouts = () => new BillingCheckoutService(config, appDb, provider);
 
 let seq = 0;

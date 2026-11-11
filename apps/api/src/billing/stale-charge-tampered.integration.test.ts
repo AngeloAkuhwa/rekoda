@@ -1,3 +1,4 @@
+import { openPricedCharge } from './priced-charge.fixtures.js';
 /**
  * OD-37, security re-review of PR #432 at 5772e92, finding B3 (migration 0206): settlement decides
  * whether a paid upgrade or renewal still buys anything from the charge's frozen period, not only
@@ -57,11 +58,11 @@ async function open(
   reference: string,
 ): Promise<string> {
   await withBusiness(settlementDb(), businessId, (tx) =>
-    subscriptionsRepo.openCharge(tx, {
+    openPricedCharge(tx, config, {
       businessId,
       kind,
       plan,
-      amountK: kind === 'upgrade' ? 50_000 : 500_000,
+      /* At the honest price: settlement re-prices every charge (OD-51, 0209). */
       reference,
       periodStart,
       periodEnd,

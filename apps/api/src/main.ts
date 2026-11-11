@@ -100,11 +100,11 @@ export async function createApp(): Promise<NestFastifyApplication> {
    * general credentials must hold neither; each reserved connection must be exactly its role. */
   await bootChecks.assertRoleHoldsNoReservedWriter(db, 'application');
   if (workerDb) await bootChecks.assertRoleHoldsNoReservedWriter(workerDb, 'worker');
-  await bootChecks.assertDatabasePrincipal(
-    app.get<Db>(SETTLEMENT_DB),
-    'settlement',
-    'rekoda_settlement',
-  );
+  /* OD-51: only a worker process holds the settlement credential. */
+  const settlementDb = app.get<Db | null>(SETTLEMENT_DB);
+  if (settlementDb) {
+    await bootChecks.assertDatabasePrincipal(settlementDb, 'settlement', 'rekoda_settlement');
+  }
   const operatorDb = app.get<Db | null>(OPERATOR_DB);
   if (operatorDb) {
     await bootChecks.assertDatabasePrincipal(operatorDb, 'operator', 'rekoda_billing_operator');

@@ -1,3 +1,4 @@
+import { ownerDb as entitlementOwnerDb } from '@rekoda/db/testing';
 /**
  * The Merchant API over a real application and a real database (PR-111).
  *
@@ -105,7 +106,7 @@ async function merchant(phone: string, name: string): Promise<Merchant> {
   ).json() as { sessionToken: string; businessId: string };
   const session = { authorization: `Bearer ${created.sessionToken}` };
 
-  await withBusiness(db, created.businessId, (tx) =>
+  await withBusiness(entitlementOwnerDb(), created.businessId, (tx) =>
     entitlementsRepo.grant(tx, {
       businessId: created.businessId,
       entitlementKey: 'REKODA_API',

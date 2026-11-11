@@ -175,11 +175,13 @@ describe('B3: the cycle and pricing inputs belong to settlement and the operator
       sql`UPDATE businesses SET plan_version_id = (SELECT id FROM plan_versions WHERE plan_id = 'chat' ORDER BY version LIMIT 1), renewal_anchor_day = 15, ever_paid_at = NULL, payment_failed_at = now() WHERE id = ${businessId}::uuid`,
     );
     const statement = `UPDATE businesses SET ${set} WHERE id = $B`;
-    for (const role of ['rekoda_app', 'rekoda_worker']) {
-      expect(await asRoleWithoutFixture(businessId, role, statement)).toMatch(
-        /^42501 .*cycle and pricing inputs/,
-      );
-    }
+    expect(await asRoleWithoutFixture(businessId, 'rekoda_app', statement)).toMatch(
+      /^42501 .*cycle and pricing inputs/,
+    );
+    // The worker writes no business row at all since 0210: refused before the guard is reached.
+    expect(await asRoleWithoutFixture(businessId, 'rekoda_worker', statement)).toMatch(
+      /^42501 .*permission denied for table businesses/,
+    );
     for (const role of ['rekoda_settlement', 'rekoda_billing_operator']) {
       expect(await asRoleWithoutFixture(businessId, role, statement)).toBe('OK ');
     }

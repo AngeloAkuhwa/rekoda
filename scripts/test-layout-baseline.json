@@ -33,7 +33,6 @@
     "packages/db/src/ledger/reports.integration.test.ts": 1962,
     "packages/db/src/payments/settle.integration.test.ts": 1164,
     "packages/db/src/payments/settlements.integration.test.ts": 968,
-    "packages/db/src/privacy/retention.integration.test.ts": 683,
     "packages/db/src/stock/stock.integration.test.ts": 723,
     "scripts/check-deploy.test.mjs": 637,
     "scripts/check-staging-deploy.test.mjs": 788,

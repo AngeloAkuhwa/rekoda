@@ -77,7 +77,7 @@ const principalPools = new Map<string, { db: Db; close: () => Promise<void> }>()
  * writer). Cached per URL for the test file and closed by `closePrincipalPools`, which each
  * integration config's setup file calls after every file.
  */
-export function principalDb(urls: Urls, which: 'settlement' | 'operator'): Db {
+export function principalDb(urls: Urls, which: 'settlement' | 'operator' | 'owner'): Db {
   const url = urls[which];
   let pool = principalPools.get(url);
   if (!pool) {
@@ -91,6 +91,17 @@ export function principalDb(urls: Urls, which: 'settlement' | 'operator'): Db {
 export const settlementDb = (): Db => principalDb(requireUrls(), 'settlement');
 /** `principalDb(requireUrls(), 'operator')`: the billing-operator pool for a fixture. */
 export const operatorDb = (): Db => principalDb(requireUrls(), 'operator');
+/**
+ * The table owner's pool, for fixtures that stage what only the owner may write: an explicit
+ * entitlement grant (no runtime role writes `business_entitlements`, migration 0210).
+ */
+export const ownerDb = (): Db =>
+  principalDb({ ...requireUrls(), owner: OWNER_URL_AT_LOAD ?? requireUrls().owner }, 'owner');
+
+/* Captured when this module loads (the integration setup imports it before any test runs): several
+ * API suites point DATABASE_URL at the application role before booting the app, and the owner pool
+ * must stay the owner. */
+const OWNER_URL_AT_LOAD = process.env['DATABASE_URL'];
 
 export async function closePrincipalPools(): Promise<void> {
   const pools = [...principalPools.values()];

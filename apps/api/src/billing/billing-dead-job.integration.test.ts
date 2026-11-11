@@ -224,7 +224,7 @@ async function payPack(businessId: string, reference: string, amountK = PACK_K):
 }
 
 const recovery = () => new DeadJobRecoveryService(config, appDb, workerDb, provider);
-const billing = () => new BillingService(config, appDb, settlementDb());
+const billing = () => new BillingService(config, appDb);
 const OPERATOR = 'operator:alice@rekoda.app';
 
 /** Pay a charge's webhook into a billing job that dies: Paystack is down on its only attempt. */

@@ -50,13 +50,13 @@ class DbLifecycle implements OnApplicationShutdown {
     @Inject(DB_HANDLE) private readonly handle: DbHandle,
     @Inject(WORKER_DB_HANDLE) private readonly worker: DbHandle | null,
     @Inject(WORKER_LOCK_HANDLE) private readonly lock: LockHandle | null,
-    @Inject(SETTLEMENT_DB_HANDLE) private readonly settlement: DbHandle,
+    @Inject(SETTLEMENT_DB_HANDLE) private readonly settlement: DbHandle | null,
     @Inject(OPERATOR_DB_HANDLE) private readonly operator: DbHandle | null,
   ) {}
 
   async onApplicationShutdown(): Promise<void> {
     await this.handle.close();
-    await this.settlement.close();
+    await this.settlement?.close();
     await this.operator?.close();
     await this.worker?.close();
     await this.lock?.close();
@@ -127,20 +127,22 @@ class DbLifecycle implements OnApplicationShutdown {
       inject: [WORKER_LOCK_HANDLE],
       useFactory: (handle: LockHandle | null): LockClient | null => handle?.client ?? null,
     },
-    /* Settlement opens every plan and pack charge (the owner's plan change, the pack purchase, the
-     * renewal sweep) and settles every verified payment, holding its connection across the
-     * provider's verify call; sized one above the worker's job concurrency so a full set of slow
-     * verifies cannot starve the sweep or a checkout. An operator plan change is a rare manual act. */
+    /* Settlement, in the worker only (OD-51): it settles every verified payment, holding its
+     * connection across the provider's verify call, applies zero-priced upgrades and opens
+     * renewals; sized one above the job concurrency so a full set of slow verifies cannot starve the
+     * sweep. An API process has none (null). An operator plan change is a rare manual act. */
     {
       provide: SETTLEMENT_DB_HANDLE,
       inject: [CONFIG],
-      useFactory: (config: ApiConfig): DbHandle =>
-        createDb(config.settlementDatabaseUrl, { max: config.workerConcurrency + 1 }),
+      useFactory: (config: ApiConfig): DbHandle | null =>
+        config.settlementDatabaseUrl
+          ? createDb(config.settlementDatabaseUrl, { max: config.workerConcurrency + 1 })
+          : null,
     },
     {
       provide: SETTLEMENT_DB,
       inject: [SETTLEMENT_DB_HANDLE],
-      useFactory: (handle: DbHandle): Db => handle.db,
+      useFactory: (handle: DbHandle | null): Db | null => handle?.db ?? null,
     },
     {
       provide: OPERATOR_DB_HANDLE,

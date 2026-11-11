@@ -132,7 +132,6 @@ function confirmedBilling(): BillingService {
   return new BillingService(
     { ...config, paystackSecretKey: 'sk_test_x', paystackPlatformConfirmed: true },
     db,
-    settlementDb(),
   );
 }
 
@@ -258,12 +257,8 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
     /* The cutover's validation: with the catalogue unversioned, the flag
      * must not be observable. Every figure the overview quotes agrees. */
     const { businessId } = await onboard('+2348177100062');
-    const onData = new BillingService({ ...config, planCatalogueReads: true }, db, settlementDb());
-    const onConstants = new BillingService(
-      { ...config, planCatalogueReads: false },
-      db,
-      settlementDb(),
-    );
+    const onData = new BillingService({ ...config, planCatalogueReads: true }, db);
+    const onConstants = new BillingService({ ...config, planCatalogueReads: false }, db);
     const data = await onData.overview(businessId);
     const constants = await onConstants.overview(businessId);
     expect(data.priceK).toBe(constants.priceK);

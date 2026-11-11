@@ -128,11 +128,12 @@ export interface ApiConfig {
   workerDatabaseUrl: string | null;
   /**
    * `rekoda_settlement` credentials (OD-37, migration 0202): the only role that may record a
-   * payment on a Rekoda charge, credit pack units or run the provider plan writer. Required in
-   * every process: the worker settles `billing.process` jobs and the API settles a zero-priced
-   * upgrade. Never falls back to DATABASE_URL.
+   * payment on a Rekoda charge, credit pack units or run the provider plan writer. Held by the
+   * WORKER alone (OD-51, migration 0209): it settles `billing.process` jobs, applies zero-priced
+   * upgrades and opens renewals. An API process (REKODA_WORKER not 1) holds none; a production API
+   * given one refuses to start. Never falls back to DATABASE_URL.
    */
-  settlementDatabaseUrl: string;
+  settlementDatabaseUrl: string | null;
   /**
    * `rekoda_billing_operator` credentials (0202): the only role that may run the operator plan
    * writer (`POST /v1/businesses/plan`). Required in an API process; a worker process
@@ -1402,12 +1403,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   /* OD-37 (0202): settlement and operator plan changes run under their own principals. Absent
    * means refuse to start, never "use DATABASE_URL": a fallback would hand the payment and plan
    * writers back to the general application credential, which is the hole these close. */
-  const settlementDatabaseUrl = env['SETTLEMENT_DATABASE_URL'];
-  if (!settlementDatabaseUrl) {
+  const givenSettlementUrl = env['SETTLEMENT_DATABASE_URL'] || null;
+  if (workerEnabled && !givenSettlementUrl) {
     throw new ConfigError(
-      'SETTLEMENT_DATABASE_URL (the rekoda_settlement role) is required: Rekoda charges are settled only under it',
+      'SETTLEMENT_DATABASE_URL (the rekoda_settlement role) is required in a worker process: Rekoda charges are settled only under it',
     );
   }
+  /* OD-51 (0209): the settlement credential lives in the worker alone. An API process that holds
+   * it would put the payment writer back within reach of anything that compromises the API, so a
+   * production API given one refuses to start; elsewhere it is simply not used. */
+  if (!workerEnabled && givenSettlementUrl && isProductionEnv(env)) {
+    throw new ConfigError(
+      'SETTLEMENT_DATABASE_URL must not be set for an API process (REKODA_WORKER is not 1): only the worker holds the settlement credential (OD-51)',
+    );
+  }
+  const settlementDatabaseUrl = workerEnabled ? givenSettlementUrl : null;
   if (!workerEnabled && !env['OPERATOR_DATABASE_URL']) {
     throw new ConfigError(
       'OPERATOR_DATABASE_URL (the rekoda_billing_operator role) is required in an API process: operator plan changes run only under it',

@@ -395,6 +395,11 @@ export const billingPlanChangeResponse = z.discriminatedUnion('state', [
   z.object({ state: z.literal('scheduled'), plan: z.string(), effectiveAt: isoDate }),
   /** An upgrade that costs nothing today (under a day left) is switched at once. */
   z.object({ state: z.literal('applied'), plan: z.string() }),
+  /**
+   * An upgrade that costs nothing today, accepted and being switched on now (OD-51): the switch is
+   * made by Rekoda's settlement worker and normally lands within seconds. Nothing is charged.
+   */
+  z.object({ state: z.literal('processing'), plan: z.string() }),
   z.object({
     state: z.literal('payment_required'),
     reference: z.string(),

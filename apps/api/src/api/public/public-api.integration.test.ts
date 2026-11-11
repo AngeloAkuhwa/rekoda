@@ -1,3 +1,4 @@
+import { ownerDb as entitlementOwnerDb } from '@rekoda/db/testing';
 /**
  * The versioned public surface, over a real application (PR-110, spec §27).
  *
@@ -92,7 +93,7 @@ async function entitledKey(
   ).json() as { sessionToken: string; businessId: string };
   const auth = { authorization: `Bearer ${created.sessionToken}` };
 
-  await withBusiness(db, created.businessId, (tx) =>
+  await withBusiness(entitlementOwnerDb(), created.businessId, (tx) =>
     entitlementsRepo.grant(tx, {
       businessId: created.businessId,
       entitlementKey: 'REKODA_API',

@@ -46,6 +46,7 @@ import type {
 import {
   addOnsRepo,
   deadJobsRepo,
+  jobsRepo,
   subscriptionsRepo,
   usageRepo,
   withBusiness,
@@ -54,7 +55,8 @@ import {
 } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { chargeGate } from './paystack-key.js';
-import { DB, SETTLEMENT_DB } from '../db/db.module.js';
+import { DB } from '../db/db.module.js';
+import { JobKind } from '../jobs/queue.service.js';
 
 /** Midnight of the Lagos day (UTC+1, no DST) holding this moment. */
 function startOfLagosDay(when: Date): Date {
@@ -69,13 +71,19 @@ const SELLABLE_PLANS = ['chat', 'integrate', 'complete'] as const;
 export class BillingService {
   constructor(
     @Inject(CONFIG) private readonly config: ApiConfig,
-    @Inject(DB) private readonly db: Db,
     /**
-     * `rekoda_settlement` (OD-37, migration 0202). A plan change can settle a zero-priced upgrade
-     * in the same transaction that decides it, and only this principal may record a payment.
+     * `rekoda_app`. Since OD-51 (migration 0209) the API holds no settlement credential: it prices
+     * and opens charges as the application, and settlement (the worker's `billing.process`)
+     * verifies each price before it applies anything.
      */
-    @Inject(SETTLEMENT_DB) private readonly settlementDb: Db,
+    @Inject(DB) private readonly db: Db,
   ) {}
+
+  /**
+   * How long a zero-priced upgrade waits for the worker to apply it before answering `processing`
+   * (OD-51): the upgrade is settled by the worker, which holds the settlement credential.
+   */
+  zeroChargeWaitMs = 4_000;
 
   /**
    * Annual billing cannot be NEWLY chosen until it is switched on (`annualBillingSales`), and
@@ -108,11 +116,7 @@ export class BillingService {
     now: Date,
     interval: BillingInterval = 'monthly',
   ): Promise<{ from: number; to: number } | undefined> {
-    if (!this.config.planCatalogueReads) return undefined;
-    return {
-      from: await planPriceKFor(this.config, tx, businessId, from, now),
-      to: await planPriceKFor(this.config, tx, businessId, to, now, interval),
-    };
+    return changePricesKFor(this.config, tx, businessId, from, to, now, interval);
   }
 
   /**
@@ -364,10 +368,10 @@ export class BillingService {
     now = new Date(),
     requested: BillingInterval = 'monthly',
   ): Promise<BillingPlanChangeResponse> {
-    /* On the settlement principal (OD-37): the zero-priced upgrade below is settled in this same
-     * transaction, atomically with the business lock and the price it was decided on. Every other
-     * write here is an ordinary application write, which that principal inherits. */
-    return withBusiness(this.settlementDb, businessId, async (tx) => {
+    /* As the application (OD-51): a charge is opened pending with the instant it was priced, and
+     * settlement re-prices it before applying anything. A zero-priced upgrade is queued to the
+     * worker, which alone holds the settlement credential. */
+    const decided = await withBusiness(this.db, businessId, async (tx) => {
       /* G-104: lock the business row BEFORE reading the plan this charge is
        * priced against, so a concurrent operator move either finished (and is
        * read) or waits until this charge exists (and is then newer). */
@@ -438,17 +442,18 @@ export class BillingService {
           reference,
           periodStart: subscription.cycleStartedAt ?? now,
           periodEnd: charge.renewsAt,
+          pricedAt: now,
         });
         if (!free) return { state: 'unavailable' as const, reason: 'no_cycle' as const };
-        await applySettledCharge(tx, {
+        /* Settled by the worker (OD-51), in its own transaction, through the same settlement every
+         * paid charge uses, after it has re-priced the charge to zero itself. One job per charge. */
+        await jobsRepo.enqueue(tx, {
           businessId,
-          reference,
-          /* Unique per charge: (provider, provider_reference) is globally unique. */
-          providerReference: `no_charge:${reference}`,
-          when: now,
-          config: this.config,
+          kind: JobKind.ApplyNoChargeUpgrade,
+          payload: { reference },
+          singletonKey: `no-charge:${reference}`,
         });
-        return { state: 'applied' as const, plan: to };
+        return { state: 'queued' as const, plan: to, reference };
       }
 
       /* §47, by key kind (paystack-key.ts): a live key waits for the written
@@ -492,6 +497,7 @@ export class BillingService {
         periodStart,
         periodEnd: charge.renewsAt,
         billingInterval: interval,
+        pricedAt: now,
       });
       if (!opened) {
         const pending = await subscriptionsRepo.pendingCharge(
@@ -518,6 +524,23 @@ export class BillingService {
         plan: to,
       };
     });
+    if (decided.state !== 'queued') return decided;
+    return (await this.awaitNoCharge(businessId, decided.reference))
+      ? { state: 'applied' as const, plan: decided.plan }
+      : { state: 'processing' as const, plan: decided.plan };
+  }
+
+  /** Whether the worker applied a zero-priced upgrade within the wait (OD-51). */
+  private async awaitNoCharge(businessId: string, reference: string): Promise<boolean> {
+    const deadline = Date.now() + this.zeroChargeWaitMs;
+    for (;;) {
+      const charge = await withBusiness(this.db, businessId, (tx) =>
+        subscriptionsRepo.chargeByReference(tx, businessId, reference),
+      );
+      if (charge && charge.status !== 'pending') return charge.unappliedAt === null;
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
   }
 
   /**
@@ -584,9 +607,9 @@ export class BillingService {
     | { state: 'payment_required'; reference: string; amountK: number }
     | { state: 'unavailable'; reason: string }
   > {
-    /* On the settlement principal: only settlement opens a charge, so the price it is opened at is
-     * one this code computed (OD-37, migration 0205). */
-    return withBusiness(this.settlementDb, businessId, async (tx) => {
+    /* As the application (OD-51, migration 0209): the pack's price is re-checked by settlement
+     * before any unit is credited. */
+    return withBusiness(this.db, businessId, async (tx) => {
       const pack = await packOffer(this.config, tx, packId, now);
       if (!pack) return { state: 'unavailable' as const, reason: 'unknown_pack' };
       const plan = await usageRepo.planFor(tx, businessId, now);
@@ -605,6 +628,7 @@ export class BillingService {
         packId: pack.id,
         amountK: pack.priceK,
         reference,
+        pricedAt: now,
       });
       if (!opened) {
         /* A pending charge for this very pack already exists; hand back its
@@ -674,6 +698,12 @@ export async function applySettledCharge(
   if (!charge) return 'already_settled';
 
   if (charge.kind === 'add_on' && charge.packId) {
+    /* OD-51: the price is checked before anything is credited (see verifiedPriceRefusal). */
+    const refused = await verifiedPriceRefusal(tx, input.config, input.businessId, charge, null);
+    if (refused) {
+      await subscriptionsRepo.markUnapplied(tx, input.reference, refused, input.when);
+      return 'superseded';
+    }
     /* The version in force when the charge was OPENED, not when the webhook
      * arrived: a pack repriced or resized between purchase and settlement
      * still credits exactly what was bought and paid for. */
@@ -753,6 +783,22 @@ export async function applySettledCharge(
       return 'superseded';
     }
 
+    /* OD-51: settlement does not take the opener's word for what the charge costs. The kind and
+     * the amount are recomputed here, from the database's own truth, with the same pricing the
+     * opener uses; a charge that disagrees is recorded as paid and set aside for an operator,
+     * never applied. */
+    const refused = await verifiedPriceRefusal(
+      tx,
+      input.config,
+      input.businessId,
+      charge,
+      subscription,
+    );
+    if (refused) {
+      await subscriptionsRepo.markUnapplied(tx, input.reference, refused, input.when);
+      return 'superseded';
+    }
+
     /**
      * A first purchase resets the anchor to the day it was bought, and MUST.
      *
@@ -826,6 +872,105 @@ export async function applySettledCharge(
     );
   }
   return 'applied';
+}
+
+/**
+ * The two plans' prices a plan change compares (BL2): `from` at the merchant's pinned version, `to`
+ * at the version on sale at `now`, at the given interval. Undefined on the constant path, where
+ * `planChangeCharge` uses the pre-BL2 table. Shared by the opener (`changePlan`) and settlement
+ * (`verifiedPriceRefusal`) so both price a charge with one function.
+ */
+export async function changePricesKFor(
+  config: PlanTermsConfig,
+  tx: TenantDb,
+  businessId: string,
+  from: string,
+  to: string,
+  now: Date,
+  interval: BillingInterval = 'monthly',
+): Promise<{ from: number; to: number } | undefined> {
+  if (!config.planCatalogueReads) return undefined;
+  return {
+    from: await planPriceKFor(config, tx, businessId, from, now),
+    to: await planPriceKFor(config, tx, businessId, to, now, interval),
+  };
+}
+
+/**
+ * What this charge should cost, recomputed from the database's own truth at the instant it was
+ * priced (OD-51, migration 0209): the plan catalogue (or the constant table), the merchant's pinned
+ * version, the subscription's cycle (guarded columns, 0206) and the charge's own frozen terms. The
+ * same functions the openers use (the renewal sweep, `changePlan`, `buyPack`), on the same inputs,
+ * so an honest charge always agrees. Null when the charge cannot be priced at all.
+ */
+export async function expectedChargeTerms(
+  tx: TenantDb,
+  config: PlanTermsConfig,
+  businessId: string,
+  charge: subscriptionsRepo.ChargeRow,
+  subscription: subscriptionsRepo.Subscription | null,
+): Promise<{ kind: string; amountK: number } | null> {
+  const pricedAt = charge.pricedAt ?? charge.createdAt;
+  if (charge.kind === 'add_on') {
+    if (!charge.packId) return null;
+    const pack = await packOffer(config, tx, charge.packId, pricedAt);
+    if (!pack) return null;
+    return { kind: 'add_on', amountK: pack.priceK * charge.quantity };
+  }
+  if (!charge.plan) return null;
+  if (charge.kind === 'renewal') {
+    return {
+      kind: 'renewal',
+      amountK: await planPriceKFor(
+        config,
+        tx,
+        businessId,
+        charge.plan,
+        pricedAt,
+        charge.billingInterval,
+      ),
+    };
+  }
+  if (charge.kind !== 'first_purchase' && charge.kind !== 'upgrade') return null;
+  const from = await usageRepo.planFor(tx, businessId, pricedAt);
+  const interval = intervalFor(from, subscription, charge.billingInterval);
+  const priced = planChangeCharge({
+    interval,
+    from,
+    to: charge.plan,
+    cycleStart: subscription?.cycleStartedAt ?? pricedAt,
+    renewsAt: subscription?.planExpiresAt ?? addMonth(pricedAt),
+    now: pricedAt,
+    pricesK: await changePricesKFor(
+      config,
+      tx,
+      businessId,
+      from,
+      charge.plan,
+      pricedAt,
+      pricingIntervalFor(from, interval),
+    ),
+  });
+  return { kind: priced.kind, amountK: priced.amountK };
+}
+
+/**
+ * Why settlement will not apply this charge as priced, or null when its kind and amount are what
+ * Rekoda's own pricing says (OD-51). A first purchase must also buy the interval it was priced on.
+ */
+async function verifiedPriceRefusal(
+  tx: TenantDb,
+  config: PlanTermsConfig,
+  businessId: string,
+  charge: subscriptionsRepo.ChargeRow,
+  subscription: subscriptionsRepo.Subscription | null,
+): Promise<'price_not_verified' | null> {
+  const expected = await expectedChargeTerms(tx, config, businessId, charge, subscription);
+  if (!expected) return 'price_not_verified';
+  if (expected.kind !== charge.kind || expected.amountK !== charge.amountK) {
+    return 'price_not_verified';
+  }
+  return null;
 }
 
 /** The merchant-safe family of an internal reason a paid charge was not applied (OD-30). */

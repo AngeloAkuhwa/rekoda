@@ -66,7 +66,11 @@ carries_plan_boundary() {
      " $BREAKING " == *' 0203_plan_duration_rules '* ||
      " $BREAKING " == *' 0204_external_events_worker_least_privilege '* ||
      " $BREAKING " == *' 0205_charge_terms_belong_to_settlement '* ||
-     " $BREAKING " == *' 0206_paid_charge_bound_to_its_cycle '* ]]
+     " $BREAKING " == *' 0206_paid_charge_bound_to_its_cycle '* ||
+     " $BREAKING " == *' 0207_operator_standard_periods '* ||
+     " $BREAKING " == *' 0209_settlement_verifies_the_price '* ||
+     " $BREAKING " == *' 0210_worker_least_privilege '* ||
+     " $BREAKING " == *' 0211_operator_principal_least_privilege '* ]]
 }
 # The OWN-86 pre-start smoke query, printed for an operator fixing forward by hand.
 print_smoke_0196() {
@@ -88,7 +92,7 @@ fail() {
 PHASE=checks
 # Migrations the previous release cannot run against (OD-48): the api and worker are stopped before
 # any of them is applied, and the old release is never restarted against a database that has one.
-COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle'
+COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_standard_periods 0209_settlement_verifies_the_price 0210_worker_least_privilege 0211_operator_principal_least_privilege'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -97,9 +101,17 @@ MIGRATE_ENTERED=false
 # Set just before `up`: a failure after migrate but before it (the 0196 smoke) has started nothing.
 UP_ENTERED=false
 # The OWN-86 pre-start database smoke for the plan and payment boundary (0196, 0200, and OD-37's
-# 0202 to 0206), run as the owner between migrate and `up`. It prints `t` only when the DATABASE (not
-# only the ledger) holds exactly the boundary this release expects:
-#   * the ledger rows of 0196, 0200 and 0202 to 0206;
+# 0202 to 0206; OD-50's 0207; OD-51's 0209 to 0211), run as the owner between migrate and `up`. It
+# prints `t` only when the DATABASE (not only the ledger) holds exactly the boundary this release
+# expects:
+#   * the ledger rows of 0196, 0200, 0202 to 0207 and 0209 to 0211;
+#   * the trial-start, retention-notice and worker event guards are present and enabled (0207, 0210);
+#   * the application may open only a pristine pending charge, priced within five minutes of opening
+#     (0209), and the worker none;
+#   * the worker holds exactly the table writes its jobs make (0210); no runtime role writes the
+#     migration ledger or explicit entitlements; the unchecked retention deletion runs for no runtime
+#     role;
+#   * the billing operator does not act with rekoda_app's rights and cannot open a charge (0211);
 #   * every guard trigger exists and fires (enabled in origin or always mode): the plan-field update
 #     and insert guards, the cycle-input guard on businesses, the applied-once guard, the settlement
 #     guard on subscription_charges and the pack-credit guard on usage_counters;
@@ -112,8 +124,9 @@ UP_ENTERED=false
 #   * the removed general writer, the old four-argument operator writer and the test-only fixture
 #     writer are absent, and no runtime role can create a function in public (the cycle-input
 #     guard's test exemption keys on that writer existing);
-#   * the settlement and billing-operator roles exist, can log in, cannot bypass RLS and act with
-#     rekoda_app's rights; no runtime role can become another principal, the worker or the writer;
+#   * the settlement and billing-operator roles exist, can log in and cannot bypass RLS; settlement
+#     acts with rekoda_app's rights and the operator does not; no runtime role can become another
+#     principal, the worker or the writer;
 #   * the worker reads but cannot write other businesses' events (its estate policy is SELECT only,
 #     no table-level INSERT, UPDATE or DELETE), and the application cannot record an add-on holding.
 # The expected list is the contract; a new writer is a deliberate edit of this list in its PR.
@@ -123,14 +136,19 @@ SMOKE_0196_SQL="SELECT
                   '0202_settlement_and_operator_principals', '0203_plan_duration_rules',
                   '0204_external_events_worker_least_privilege',
                   '0205_charge_terms_belong_to_settlement',
-                  '0206_paid_charge_bound_to_its_cycle')) = 7
+                  '0206_paid_charge_bound_to_its_cycle', '0207_operator_standard_periods',
+                  '0209_settlement_verifies_the_price', '0210_worker_least_privilege',
+                  '0211_operator_principal_least_privilege')) = 11
   AND (SELECT count(*) FROM pg_trigger t WHERE t.tgenabled IN ('O', 'A') AND (t.tgname, t.tgrelid) IN (
         ('businesses_plan_fields_guard', 'public.businesses'::regclass),
         ('businesses_plan_fields_insert_guard', 'public.businesses'::regclass),
         ('businesses_cycle_fields_guard', 'public.businesses'::regclass),
         ('subscription_charges_applied_once_guard', 'public.subscription_charges'::regclass),
         ('subscription_charges_settlement_guard', 'public.subscription_charges'::regclass),
-        ('usage_counters_bonus_guard', 'public.usage_counters'::regclass))) = 6
+        ('usage_counters_bonus_guard', 'public.usage_counters'::regclass),
+        ('businesses_trial_start_guard', 'public.businesses'::regclass),
+        ('businesses_retention_notice_guard', 'public.businesses'::regclass),
+        ('external_events_worker_guard', 'public.external_events'::regclass))) = 9
   AND (SELECT prosrc FROM pg_proc
         WHERE oid = to_regprocedure('public.subscription_apply_paid_charge(uuid,text,timestamptz)'))
         LIKE '%the upgrade was priced for another cycle%the renewal was priced for another cycle%'
@@ -155,7 +173,7 @@ SMOKE_0196_SQL="SELECT
   AND (SELECT count(*) FROM pg_roles WHERE rolname IN ('rekoda_settlement', 'rekoda_billing_operator')
         AND rolcanlogin AND NOT rolsuper AND NOT rolbypassrls) = 2
   AND pg_has_role('rekoda_settlement', 'rekoda_app', 'USAGE')
-  AND pg_has_role('rekoda_billing_operator', 'rekoda_app', 'USAGE')
+  AND NOT pg_has_role('rekoda_billing_operator', 'rekoda_app', 'USAGE')
   AND NOT EXISTS (SELECT 1 FROM (VALUES
         ('rekoda_app', 'rekoda_plan_writer'), ('rekoda_worker', 'rekoda_plan_writer'),
         ('rekoda_settlement', 'rekoda_plan_writer'), ('rekoda_billing_operator', 'rekoda_plan_writer'),
@@ -173,9 +191,27 @@ SMOKE_0196_SQL="SELECT
   AND has_function_privilege('rekoda_worker', 'public.attribute_external_event(uuid,uuid)', 'EXECUTE')
   AND NOT has_function_privilege('rekoda_app', 'public.attribute_external_event(uuid,uuid)', 'EXECUTE')
   AND NOT has_table_privilege('rekoda_app', 'public.business_add_ons', 'INSERT')
-  AND NOT has_table_privilege('rekoda_app', 'public.subscription_charges', 'INSERT')
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.subscription_charges_settlement_guard()'))
+        LIKE '%priced at most five minutes%the application opens only a new pending charge%'
+  AND (SELECT count(*) FROM pg_attribute WHERE attrelid = 'public.subscription_charges'::regclass
+        AND attname = 'priced_at' AND NOT attisdropped) = 1
   AND NOT has_table_privilege('rekoda_worker', 'public.subscription_charges', 'INSERT')
-  AND has_table_privilege('rekoda_settlement', 'public.subscription_charges', 'INSERT')"
+  AND has_table_privilege('rekoda_settlement', 'public.subscription_charges', 'INSERT')
+  AND (SELECT string_agg(table_name || ':' || privilege_type, ',' ORDER BY table_name, privilege_type)
+        FROM information_schema.role_table_grants WHERE grantee = 'rekoda_worker'
+        AND table_schema = 'public' AND privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE'))
+      = 'audit_events:INSERT,dead_job_exceptions:INSERT,jobs:UPDATE,outbox_events:UPDATE,'
+        || 'pending_object_deletions:DELETE,pending_object_deletions:UPDATE,reconciliations:INSERT,'
+        || 'stranger_contacts:INSERT,stranger_contacts:UPDATE,usage_counters:INSERT,usage_counters:UPDATE,'
+        || 'webhook_deliveries:INSERT,webhook_deliveries:UPDATE'
+  AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker']) AS r(role)
+        CROSS JOIN unnest(ARRAY['public.rekoda_migrations', 'public.business_entitlements']) AS t(tab)
+        WHERE has_table_privilege(r.role, t.tab, 'INSERT') OR has_table_privilege(r.role, t.tab, 'UPDATE')
+           OR has_table_privilege(r.role, t.tab, 'DELETE'))
+  AND NOT has_function_privilege('rekoda_worker', 'public.retention_delete_business_unchecked(uuid,timestamptz)', 'EXECUTE')
+  AND NOT has_function_privilege('rekoda_app', 'public.retention_delete_business_unchecked(uuid,timestamptz)', 'EXECUTE')
+  AND NOT has_table_privilege('rekoda_billing_operator', 'public.subscription_charges', 'INSERT')"
 PREV_SHA=
 PREV_RELEASE=
 # The exit status meaning "skipped, nothing changed"; no failure may use it.

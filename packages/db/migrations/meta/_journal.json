@@ -1464,6 +1464,27 @@
       "when": 1795608000000,
       "tag": "0208_subscription_period_preflight",
       "breakpoints": true
+    },
+    {
+      "idx": 209,
+      "version": "7",
+      "when": 1795694400000,
+      "tag": "0209_settlement_verifies_the_price",
+      "breakpoints": true
+    },
+    {
+      "idx": 210,
+      "version": "7",
+      "when": 1795780800000,
+      "tag": "0210_worker_least_privilege",
+      "breakpoints": true
+    },
+    {
+      "idx": 211,
+      "version": "7",
+      "when": 1795867200000,
+      "tag": "0211_operator_principal_least_privilege",
+      "breakpoints": true
     }
   ]
 }

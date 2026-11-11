@@ -85,8 +85,11 @@ async function warnedTrialWithPendingCharge(
   const businessId = business.id;
   /* OD-37: a plan date is set by the owner in a fixture, never by the application role. */
   await setPlanAsOwner(urls, businessId, { planExpiresAt: daysAgo(400) });
+  /* A notice sent long ago is history the owner stages: no runtime role may backdate one (0210). */
+  await withBusiness(ownerDb, businessId, (tx) =>
+    retentionRepo.claimRetentionNotice(tx, businessId, daysAgo(200)),
+  );
   await withBusiness(settlementDb(), businessId, async (tx) => {
-    await retentionRepo.claimRetentionNotice(tx, businessId, daysAgo(200));
     await subscriptionsRepo.openCharge(tx, {
       businessId,
       kind,

@@ -151,7 +151,8 @@ describe('group F3: the keys are declared as ruling 1 asked', () => {
      * test in front of them. */
     expect([...rows]).toEqual([
       { grantee: 'rekoda_app', privs: 'INSERT,SELECT' },
-      { grantee: 'rekoda_worker', privs: 'INSERT,SELECT' },
+      // 0210: the worker writes no merchant books at all.
+      { grantee: 'rekoda_worker', privs: 'SELECT' },
     ]);
   });
 });

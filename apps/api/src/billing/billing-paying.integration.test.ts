@@ -119,7 +119,6 @@ function confirmedBilling(): BillingService {
   return new BillingService(
     { ...config, paystackSecretKey: 'sk_test_x', paystackPlatformConfirmed: true },
     db,
-    settlementDb(),
   );
 }
 

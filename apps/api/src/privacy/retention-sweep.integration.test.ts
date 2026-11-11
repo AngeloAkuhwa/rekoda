@@ -37,17 +37,21 @@ let appDb: Db;
 let workerDb: Db;
 let closeApp: () => Promise<void>;
 let closeWorker: () => Promise<void>;
+let ownerDb: Db;
+let closeOwner: () => Promise<void>;
 
 beforeAll(async () => {
   urls = requireUrls();
   await migrate(urls);
   ({ db: appDb, close: closeApp } = createDb(urls.app, { max: 4 }));
   ({ db: workerDb, close: closeWorker } = createDb(urls.worker, { max: 4 }));
+  ({ db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 2 }));
 });
 
 afterAll(async () => {
   await closeApp?.();
   await closeWorker?.();
+  await closeOwner?.();
 });
 
 beforeEach(async () => {
@@ -221,14 +225,21 @@ describe('the deletion', () => {
     expect(warned).toMatchObject({ warned: 1, deleted: 0 });
     expect(await exists(businessId)).toBe(true);
 
+    /* The notice period is counted by the deletion function on the database's own clock (0210), so
+     * time is moved by staging the notice in the past as the owner, never by the sweep's clock. */
+    const noticeAgo = (days: number) =>
+      ownerDb.execute(
+        sql`UPDATE businesses SET retention_notified_at = now() - make_interval(days => ${days}) WHERE id = ${businessId}::uuid`,
+      );
+
     // The day before the notice period is up: still nothing.
-    const almost = new Date(Date.now() + (RETENTION.noticeDays - 1) * 86_400_000);
-    expect((await sweepRetention(deps(sender), almost)).deleted).toBe(0);
+    await noticeAgo(RETENTION.noticeDays - 1);
+    expect((await sweepRetention(deps(sender), new Date())).deleted).toBe(0);
     expect(await exists(businessId)).toBe(true);
 
     // And on the day it is up.
-    const due = new Date(Date.now() + (RETENTION.noticeDays + 1) * 86_400_000);
-    const swept = await sweepRetention(deps(sender), due);
+    await noticeAgo(RETENTION.noticeDays + 1);
+    const swept = await sweepRetention(deps(sender), new Date());
     expect(swept.deleted).toBe(1);
     expect(swept.rowsRemoved).toBeGreaterThan(0);
     expect(await exists(businessId)).toBe(false);

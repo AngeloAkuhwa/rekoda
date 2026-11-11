@@ -1,3 +1,4 @@
+import { openPricedCharge } from './priced-charge.fixtures.js';
 /**
  * The payment record page's data (billing Slice A): one payment in full, from the charge's own row.
  *
@@ -41,7 +42,7 @@ beforeEach(async () => {
 });
 
 const config = { planCatalogueReads: false };
-const service = () => new BillingService(config as never, appDb, settlementDb());
+const service = () => new BillingService(config as never, appDb);
 
 let seq = 0;
 async function seedBusiness(): Promise<string> {
@@ -57,11 +58,11 @@ async function seedBusiness(): Promise<string> {
 
 const open = (businessId: string, reference: string, over: { pack?: boolean } = {}) =>
   withBusiness(settlementDb(), businessId, (tx) =>
-    subscriptionsRepo.openCharge(tx, {
+    openPricedCharge(tx, config, {
       businessId,
       kind: over.pack ? 'add_on' : 'first_purchase',
       ...(over.pack ? { packId: 'messages_100' } : { plan: 'chat' }),
-      amountK: 990_000,
+      /* At the honest price: settlement re-prices every charge (OD-51, 0209). */
       reference,
       ...(over.pack
         ? {}
@@ -90,7 +91,7 @@ describe('payment record', () => {
       paidAt: null,
       paidAmountK: null,
       applied: false,
-      amountK: 990_000,
+      /* At the honest price: settlement re-prices every charge (OD-51, 0209). */
       currency: 'NGN',
       plan: 'chat',
     });
@@ -240,7 +241,7 @@ describe('payment record', () => {
     );
 
     expect(await service().paymentRecord(b, 'RKD-SUB-20261101-MMMMMM')).toMatchObject({
-      amountK: 990_000,
+      /* At the honest price: settlement re-prices every charge (OD-51, 0209). */
       paidAmountK: 1_000_000,
     });
   });
@@ -305,11 +306,11 @@ describe('payment record', () => {
       }),
     );
     await withBusiness(settlementDb(), b, (tx) =>
-      subscriptionsRepo.openCharge(tx, {
+      openPricedCharge(tx, config, {
         businessId: b,
         kind: 'upgrade',
         plan: 'integrate',
-        amountK: 100_000,
+        /* At the honest price: settlement re-prices every charge (OD-51, 0209). */
         reference: 'RKD-SUB-20261128-QQQQQQ',
         periodStart: cycleStart,
         periodEnd: renewsAt,

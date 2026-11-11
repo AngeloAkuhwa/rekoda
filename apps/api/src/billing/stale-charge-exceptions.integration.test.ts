@@ -1,3 +1,4 @@
+import { openPricedCharge } from './priced-charge.fixtures.js';
 /**
  * A payment for an OLD subscription decision never overwrites a NEWER one
  * (G-104, G-112).
@@ -102,12 +103,12 @@ const open = (
         : paidTo && kind === 'upgrade'
           ? { periodStart: new Date(paidTo.getTime() - 30 * 86_400_000), periodEnd: paidTo }
           : {};
-    return subscriptionsRepo.openCharge(tx, {
+    return openPricedCharge(tx, config, {
       businessId,
       kind,
       ...(plan ? { plan } : {}),
       ...(kind === 'add_on' ? { packId: 'messages_100' } : {}),
-      amountK: 990_000,
+      /* At the honest price: settlement re-prices every charge (OD-51, 0209). */
       reference,
       ...period,
     });
@@ -210,7 +211,6 @@ describe('a paid but unapplied charge is an operator exception (OD-30)', () => {
         paystackPlatformConfirmed: true,
       } as never,
       appDb,
-      settlementDb(),
     ).overview(businessId);
     expect(overview.charges.find((c) => c.reference === 'RKD-SUB-OPS-1')).toMatchObject({
       status: 'paid',
@@ -224,7 +224,7 @@ describe('a paid but unapplied charge is an operator exception (OD-30)', () => {
       businessId,
       kind: 'renewal',
       plan: 'complete',
-      amountK: 990_000,
+      /* At the honest price: settlement re-prices every charge (OD-51, 0209). */
       reason: 'subscription_decided_after_charge',
       currentPlan: 'chat',
     });

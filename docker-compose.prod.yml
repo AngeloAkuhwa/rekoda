@@ -116,6 +116,10 @@ services:
       NODE_ENV: production
       PORT: '3001'
       REKODA_WORKER: '0'
+      # OD-51 (migration 0209): the API never holds the settlement credential the shared .env
+      # carries for the worker and the migrate job. Settlement verifies every price itself, so the
+      # API opens charges as rekoda_app; a production API given this URL refuses to start.
+      SETTLEMENT_DATABASE_URL: ''
       # The same value that tags the image, so /health names what is running
       # even when the shell exports a different one than .env.
       REKODA_RELEASE: ${REKODA_RELEASE:?set REKODA_RELEASE in .env}
@@ -169,7 +173,7 @@ services:
       REKODA_RELEASE: ${REKODA_RELEASE:?set REKODA_RELEASE in .env}
       # OD-37 (migration 0202): the worker never serves the operator plan route, so it does not hold
       # the billing-operator credential the shared .env carries. It keeps SETTLEMENT_DATABASE_URL:
-      # its billing job settles Rekoda charges.
+      # it is the only process that settles Rekoda charges (OD-51, 0209).
       OPERATOR_DATABASE_URL: ''
       REKODA_TRUSTED_PROXIES: 172.30.10.10
       REKODA_TRUSTED_WEB: 172.30.10.11

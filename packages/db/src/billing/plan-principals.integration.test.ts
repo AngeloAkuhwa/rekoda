@@ -76,7 +76,7 @@ describe('OD-37: who may run which writer, and who may become whom (0202)', () =
     },
   );
 
-  it('no principal can become another, the worker or the plan writer; both new ones act with the application rights only', async () => {
+  it('no principal can become another, the worker or the plan writer; settlement acts with the application rights, the operator with none (0211)', async () => {
     const [m] = await ownerDb.execute<Record<string, boolean>>(sql`
       SELECT
         pg_has_role('rekoda_app', 'rekoda_settlement', 'MEMBER') AS app_settlement,
@@ -105,7 +105,7 @@ describe('OD-37: who may run which writer, and who may become whom (0202)', () =
       settlement_writer: false,
       operator_writer: false,
       settlement_inherits_app: true,
-      operator_inherits_app: true,
+      operator_inherits_app: false,
       any_bypass: false,
     });
     // SET ROLE is refused too, whatever a connection asks for.
@@ -194,14 +194,26 @@ describe('OD-37: who may run which writer, and who may become whom (0202)', () =
       await expect(
         bootChecks.assertRoleHoldsNoReservedWriter(appDb, 'application'),
       ).rejects.toThrow(/can run public\.subscription_apply_paid_charge/);
-      // ...and the operator inherits it through rekoda_app, so its own check fails as well.
+      // ...and settlement inherits rekoda_app, which a grant to it widens too; the operator does
+      // not inherit it since 0211, so the same grant does not reach the operator.
       await expect(
         bootChecks.assertDatabasePrincipal(operatorDb, 'operator', 'rekoda_billing_operator'),
-      ).rejects.toThrow(/can run the other principal's writer/);
+      ).resolves.toBeUndefined();
     } finally {
       await ownerDb.execute(
         sql`REVOKE EXECUTE ON FUNCTION subscription_apply_paid_charge(uuid,text,timestamptz) FROM rekoda_app`,
       );
+    }
+  });
+
+  it('the boot check refuses an operator given the application rights back (0211)', async () => {
+    await ownerDb.execute(sql`GRANT rekoda_app TO rekoda_billing_operator`);
+    try {
+      await expect(
+        bootChecks.assertDatabasePrincipal(operatorDb, 'operator', 'rekoda_billing_operator'),
+      ).rejects.toThrow(/acts with rekoda_app's rights/);
+    } finally {
+      await ownerDb.execute(sql`REVOKE rekoda_app FROM rekoda_billing_operator`);
     }
   });
 });
@@ -224,8 +236,13 @@ describe('OD-37: only settlement records a payment (0202)', () => {
       // refusal, but the application roles must be refused by the guard itself.
       const forged = await outcome(insertPaid);
       expect(forged).toMatch(/42501/);
-      // Since 0205 no role but settlement may insert a charge at all.
-      expect(forged).toMatch(/permission denied for table subscription_charges/);
+      // Since 0209 the application roles may open only a pristine pending charge (settlement
+      // re-prices it); the worker (0210) and the operator (0211) may not insert one at all.
+      expect(forged).toMatch(
+        who !== 'app'
+          ? /permission denied for table subscription_charges/
+          : /the application opens only a new pending charge/,
+      );
       const settled = await outcome(
         withBusiness(db, businessId, (tx) =>
           subscriptionsRepo.settleCharge(tx, {
@@ -267,7 +284,7 @@ describe('OD-37: only settlement records a payment (0202)', () => {
           ),
         ),
       ).toMatch(
-        /^42501 (what a charge buys is set when settlement opens it|only settlement records a payment)/,
+        /^42501 (what a charge buys is set when it is opened|only settlement records a payment)/,
       );
     }
   });
@@ -304,26 +321,36 @@ describe('OD-37: only settlement records a payment (0202)', () => {
   });
 });
 
-describe("OD-37: what a charge buys is settlement's alone, from its opening to its end (0205)", () => {
+describe('OD-37: what a charge buys is frozen from its opening to its end (0205, 0209)', () => {
   it.each(['app', 'worker', 'operator'] as const)(
-    '%s cannot open a charge at all, so it cannot set the terms a payment will be checked against',
+    '%s opens at most a pristine pending charge, whose price settlement checks before applying it (0209)',
     async (who) => {
       const businessId = await seedBusiness();
-      expect(
-        await outcome(
-          withBusiness(PRINCIPALS[who](), businessId, (tx) =>
-            subscriptionsRepo.openCharge(tx, {
-              businessId,
-              kind: 'first_purchase',
-              plan: 'complete',
-              amountK: 100,
-              reference: `CHEAP-${who}`,
-              periodStart: new Date(),
-              periodEnd: new Date(Date.now() + 365 * 86_400_000),
-            }),
-          ),
+      const opened = await outcome(
+        withBusiness(PRINCIPALS[who](), businessId, (tx) =>
+          subscriptionsRepo.openCharge(tx, {
+            businessId,
+            kind: 'first_purchase',
+            plan: 'complete',
+            amountK: 100,
+            reference: `CHEAP-${who}`,
+            periodStart: new Date(),
+            periodEnd: new Date(Date.now() + 365 * 86_400_000),
+          }),
         ),
-      ).toMatch(/^42501/);
+      );
+      // The worker (0210) and the operator (0211) hold no write on charges at all.
+      if (who !== 'app') {
+        expect(opened).toMatch(/^42501 .*permission denied for table subscription_charges/);
+        return;
+      }
+      // Opened, but only as an unpaid charge; that 100 kobo does not buy a year of Complete is
+      // settlement's check (apps/api settlement-verifies-price.integration.test.ts).
+      expect(opened).toBe('allowed');
+      const [row] = await ownerDb.execute<{ status: string; paid: boolean }>(
+        sql`SELECT status, paid_at IS NOT NULL AS paid FROM subscription_charges WHERE reference = ${`CHEAP-${who}`}`,
+      );
+      expect(row).toEqual({ status: 'pending', paid: false });
     },
   );
 
@@ -347,7 +374,7 @@ describe("OD-37: what a charge buys is settlement's alone, from its opening to i
           ),
         ),
         String(change.queryChunks[0]),
-      ).toMatch(/^42501 what a charge buys is set when settlement opens it/);
+      ).toMatch(/^42501 what a charge buys is set when it is opened/);
     }
   });
 
@@ -443,7 +470,7 @@ describe('OD-37: only settlement credits pack units or records an add-on holding
         ),
       );
       expect(credit).toMatch(/42501/);
-      if (who !== 'worker') expect(credit).toMatch(/pack units are credited only by settlement/);
+      if (who === 'app') expect(credit).toMatch(/pack units are credited only by settlement/);
     },
   );
 

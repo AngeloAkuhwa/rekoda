@@ -141,7 +141,6 @@ const billing = () =>
       annualBillingSales: true,
     },
     db,
-    settlementDb(),
   );
 
 const overviewOf = async (auth: Record<string, string>) =>
@@ -348,7 +347,7 @@ describe('a yearly renewal nobody pays', () => {
 describe('money returned on a yearly charge', () => {
   async function paidYear() {
     const { businessId } = await onboard();
-    const now = new Date('2026-11-02T09:00:00Z');
+    const now = new Date(); // priced now: the database bounds a charge's pricing time to its opening (0209)
     const answer = await billing().changePlan(businessId, 'chat', now, 'annual');
     if (answer.state !== 'payment_required') throw new Error(`got ${answer.state}`);
     await pay(businessId, answer.reference, now);

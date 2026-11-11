@@ -1,3 +1,4 @@
+import { ownerDb as entitlementOwnerDb } from '@rekoda/db/testing';
 /**
  * Object-level authorisation (IDOR) over the money-and-records endpoint families: the public
  * merchant API, party statements, payment lists and exceptions, invoice void and credit
@@ -85,7 +86,7 @@ async function customerFor(businessId: string): Promise<string> {
 /** A business with a live API key (mode live), the API entitlement and request capacity. */
 async function apiShop() {
   const b = await business();
-  await withBusiness(appDb, b.id, (tx) =>
+  await withBusiness(entitlementOwnerDb(), b.id, (tx) =>
     entitlementsRepo.grant(tx, {
       businessId: b.id,
       entitlementKey: 'REKODA_API',

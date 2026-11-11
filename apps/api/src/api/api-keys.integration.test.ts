@@ -1,3 +1,4 @@
+import { ownerDb as entitlementOwnerDb } from '@rekoda/db/testing';
 /**
  * The public API's front door, over a real application and a real database
  * (PR-109, canonical spec §27).
@@ -113,7 +114,7 @@ async function creditApiCapacity(businessId: string): Promise<void> {
 }
 
 async function grantApi(businessId: string): Promise<void> {
-  await withBusiness(db, businessId, (tx) =>
+  await withBusiness(entitlementOwnerDb(), businessId, (tx) =>
     entitlementsRepo.grant(tx, {
       businessId,
       entitlementKey: 'REKODA_API',

@@ -518,6 +518,11 @@ export interface NewCharge {
   periodEnd?: Date | null;
   /** The interval this charge buys (G-110); absent is monthly. */
   billingInterval?: BillingInterval;
+  /**
+   * The moment the opener priced it (OD-51, migration 0209): settlement recomputes the price at
+   * this same instant. The database bounds it to the insert time; absent is the insert time.
+   */
+  pricedAt?: Date;
 }
 
 /**
@@ -533,14 +538,16 @@ export async function openCharge(tx: TenantDb, charge: NewCharge): Promise<strin
   const rows = await tx.execute<{ id: string }>(sql`
     INSERT INTO subscription_charges
       (business_id, kind, plan, pack_id, quantity, amount_k, provider,
-       reference, period_start, period_end, billing_interval, created_at)
+       reference, period_start, period_end, billing_interval, created_at, priced_at)
     VALUES (
       ${charge.businessId}::uuid, ${charge.kind}, ${charge.plan ?? null},
       ${charge.packId ?? null}, ${charge.quantity ?? 1}, ${charge.amountK},
       ${charge.provider ?? 'paystack'}, ${charge.reference},
       ${charge.periodStart ? charge.periodStart.toISOString() : null}::timestamptz,
       ${charge.periodEnd ? charge.periodEnd.toISOString() : null}::timestamptz,
-      ${charge.billingInterval ?? 'monthly'}, clock_timestamp())
+      ${charge.billingInterval ?? 'monthly'}, clock_timestamp(),
+      COALESCE(${charge.pricedAt ? charge.pricedAt.toISOString() : null}::timestamptz,
+               clock_timestamp()))
     ON CONFLICT DO NOTHING
     RETURNING id
   `);
@@ -560,6 +567,8 @@ export interface ChargeRow extends Record<string, unknown> {
   periodStart: Date | null;
   periodEnd: Date | null;
   createdAt: Date;
+  /** When the opener priced it (OD-51, 0209); settlement recomputes at this instant. Null before 0209. */
+  pricedAt: Date | null;
   /** Paid (or pending) but its plan change was refused as stale (G-104): an operator reconciles it. */
   supersededAt: Date | null;
   /** Paid but its plan change was refused (OD-30): money received, nothing applied. Null otherwise. */
@@ -593,6 +602,7 @@ interface RawCharge extends Record<string, unknown> {
   period_start: string | null;
   period_end: string | null;
   created_at: string;
+  priced_at?: string | null;
   superseded_at: string | null;
   unapplied_at: string | null;
   paid_amount_k: string | number | null;
@@ -617,6 +627,7 @@ const shape = (row: RawCharge): ChargeRow => ({
   periodStart: at(row.period_start),
   periodEnd: at(row.period_end),
   createdAt: new Date(row.created_at),
+  pricedAt: at(row.priced_at ?? null),
   supersededAt: at(row.superseded_at),
   unappliedAt: at(row.unapplied_at),
   paidAmountK: row.paid_amount_k === null ? null : Number(row.paid_amount_k),

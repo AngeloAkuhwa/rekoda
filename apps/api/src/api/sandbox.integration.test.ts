@@ -1,3 +1,4 @@
+import { ownerDb as entitlementOwnerDb } from '@rekoda/db/testing';
 /**
  * The sandbox (PR-114, API-D closes).
  *
@@ -96,7 +97,8 @@ async function developer(phone: string, name: string): Promise<Developer> {
   const auth = { authorization: `Bearer ${created.sessionToken}` };
 
   const period = usagePeriod(new Date());
-  await withBusiness(settlementDb(), created.businessId, async (tx) => {
+  // Grants are an owner act (0210); the owner may also credit the units.
+  await withBusiness(entitlementOwnerDb(), created.businessId, async (tx) => {
     await entitlementsRepo.grant(tx, {
       businessId: created.businessId,
       entitlementKey: 'REKODA_API',

@@ -120,7 +120,6 @@ const billing = () =>
       annualBillingSales: true,
     },
     db,
-    settlementDb(),
   );
 
 const overviewOf = async (auth: Record<string, string>) =>
@@ -179,7 +178,6 @@ describe('annual billing is off until it is switched on', () => {
         annualBillingSales: false,
       },
       db,
-      settlementDb(),
     );
 
   it('refuses a yearly quote, purchase and switch, opens nothing, and still allows monthly', async () => {
@@ -211,7 +209,6 @@ describe('the annual switch and the catalogue', () => {
         annualBillingSales: false,
       },
       db,
-      settlementDb(),
     );
     // The subscriber keeps their own interval; asking for annual again is not a new sale.
     expect((await off.quote(businessId, 'chat', new Date(), 'annual')).supportReview).not.toBe(
@@ -235,7 +232,6 @@ describe('the annual switch and the catalogue', () => {
         planCatalogueReads: false,
       },
       db,
-      settlementDb(),
     );
     await expect(noCatalogue.changePlan(trial, 'chat', new Date(), 'annual')).rejects.toThrow(
       /annual/,
@@ -246,7 +242,7 @@ describe('the annual switch and the catalogue', () => {
 describe('buying a year', () => {
   it('quotes a first annual purchase at ten months and a year of service', async () => {
     const { businessId } = await onboard();
-    const now = new Date('2026-11-02T09:00:00Z');
+    const now = new Date(); // priced now: the database bounds a charge's pricing time to its opening (0209)
 
     const monthly = await billing().quote(businessId, 'chat', now, 'monthly');
     const annual = await billing().quote(businessId, 'chat', now, 'annual');
@@ -261,7 +257,7 @@ describe('buying a year', () => {
 
   it('opens an annual charge, and paying it gives twelve months, once', async () => {
     const { businessId, auth } = await onboard();
-    const now = new Date('2026-11-02T09:00:00Z');
+    const now = new Date(); // priced now: the database bounds a charge's pricing time to its opening (0209)
 
     const answer = await billing().changePlan(businessId, 'chat', now, 'annual');
     if (answer.state !== 'payment_required') throw new Error(`got ${answer.state}`);
@@ -303,7 +299,7 @@ describe('buying a year', () => {
 
   it('the overview marks a plan charge a newer subscription decision has made stale, before any sweep stamps it', async () => {
     const { businessId, auth } = await onboard();
-    const now = new Date('2026-11-02T09:00:00Z');
+    const now = new Date(); // priced now: the database bounds a charge's pricing time to its opening (0209)
     const waiting = await billing().changePlan(businessId, 'chat', now, 'monthly');
     if (waiting.state !== 'payment_required') throw new Error('expected a payment link');
 
@@ -329,7 +325,7 @@ describe('buying a year', () => {
 
   it('a merchant who changes their mind the same day gets the charge for the interval they chose', async () => {
     const { businessId, auth } = await onboard();
-    const now = new Date('2026-11-02T09:00:00Z');
+    const now = new Date(); // priced now: the database bounds a charge's pricing time to its opening (0209)
 
     const annual = await billing().changePlan(businessId, 'chat', now, 'annual');
     const monthly = await billing().changePlan(businessId, 'chat', now, 'monthly');
@@ -356,7 +352,7 @@ describe('buying a year', () => {
 
   it('writes nothing into the merchant books: a year of Rekoda is Rekoda revenue', async () => {
     const { businessId } = await onboard();
-    const now = new Date('2026-11-02T09:00:00Z');
+    const now = new Date(); // priced now: the database bounds a charge's pricing time to its opening (0209)
     const answer = await billing().changePlan(businessId, 'chat', now, 'annual');
     if (answer.state !== 'payment_required') throw new Error('expected a payment link');
     await pay(businessId, answer.reference, now);

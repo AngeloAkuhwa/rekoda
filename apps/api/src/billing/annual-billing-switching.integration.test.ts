@@ -133,7 +133,6 @@ const billing = () =>
       annualBillingSales: true,
     },
     db,
-    settlementDb(),
   );
 
 const subOf = (businessId: string) =>

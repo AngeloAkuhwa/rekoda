@@ -536,10 +536,7 @@ describe('OD-40: the payment record shows the three times separately', () => {
     provider.willVerify(reference, { amountK: PACK_K, paidAtIso: paystackPaidAt.toISOString() });
     await deliver(reference, PACK_K);
 
-    const record = await new BillingService(config, appDb, settlementDb()).paymentRecord(
-      businessId,
-      reference,
-    );
+    const record = await new BillingService(config, appDb).paymentRecord(businessId, reference);
     const t = await timesOf(businessId, reference);
     expect(record?.providerPaidAt).toBe(paystackPaidAt.toISOString());
     expect(record?.paidAt).toBe(t.paid_at!.toISOString());

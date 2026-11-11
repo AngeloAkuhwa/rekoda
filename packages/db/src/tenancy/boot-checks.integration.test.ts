@@ -17,6 +17,7 @@ import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
 
 let urls: Urls;
 let app: Db;
+let app2: Db;
 let worker: Db;
 let owner: Db;
 const closers: Array<() => Promise<void>> = [];
@@ -26,6 +27,7 @@ beforeAll(async () => {
   await migrate(urls);
   for (const [key, assign] of [
     [urls.app, (db: Db) => (app = db)],
+    [urls.app, (db: Db) => (app2 = db)],
     [urls.worker, (db: Db) => (worker = db)],
     [urls.owner, (db: Db) => (owner = db)],
   ] as const) {
@@ -114,7 +116,8 @@ describe('assertKeyUnchanged (A6)', () => {
     await expect(
       Promise.all([
         bootChecks.assertKeyUnchanged(app, 'VAULT_KEY', KEY),
-        bootChecks.assertKeyUnchanged(worker, 'VAULT_KEY', KEY),
+        // Every process enrols on its application pool (main.ts); the worker role writes no key.
+        bootChecks.assertKeyUnchanged(app2, 'VAULT_KEY', KEY),
       ]),
     ).resolves.toBeDefined();
   });

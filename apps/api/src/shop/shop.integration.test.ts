@@ -1,3 +1,4 @@
+import { ownerDb as entitlementOwnerDb } from '@rekoda/db/testing';
 /**
  * The hosted shop, end to end: a slug in a URL, no session anywhere.
  *
@@ -213,7 +214,7 @@ describe('the settings a merchant sees first', () => {
       outcome: 'needs_integrate',
     });
 
-    await withBusiness(db, businessId, (tx) =>
+    await withBusiness(entitlementOwnerDb(), businessId, (tx) =>
       entitlementsRepo.grant(tx, {
         businessId,
         entitlementKey: 'REKODA_INTEGRATE',

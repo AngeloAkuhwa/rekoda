@@ -20,6 +20,7 @@ import {
 } from '@rekoda/db/testing';
 import { setPlanForTest } from '@rekoda/db/testing';
 import { applySettledCharge, BillingService } from './billing.service.js';
+import { applyNoChargeUpgradeHandler } from '../jobs/apply-no-charge-upgrade.handler.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -48,7 +49,42 @@ const config = {
   paystackSecretKey: 'sk_test_x',
   paystackPlatformConfirmed: true,
 };
-const billing = () => new BillingService(config as never, appDb, settlementDb());
+/**
+ * The API service with a stand-in worker beside it (OD-51): a zero-priced upgrade is applied by the
+ * worker's `billing.apply_no_charge` job, which holds the settlement credential; the API answers
+ * `applied` once that job has run. Here the job is run by the test, as the worker would.
+ */
+const billing = () => {
+  const service = new BillingService(config as never, appDb);
+  service.zeroChargeWaitMs = 3_000;
+  const changePlan = service.changePlan.bind(service);
+  service.changePlan = async (...args: Parameters<BillingService['changePlan']>) => {
+    const answer = changePlan(...args);
+    let done = false;
+    void answer.finally(() => (done = true));
+    while (!done) {
+      const due = await ownerDb.execute<{ id: string; business_id: string; reference: string }>(sql`
+        SELECT id, business_id, payload->>'reference' AS reference FROM jobs
+        WHERE kind = 'billing.apply_no_charge' AND state = 'pending'`);
+      for (const job of due) {
+        await withBusiness(settlementDb(), job.business_id, (tx) =>
+          applyNoChargeUpgradeHandler({ config: config as never })({
+            tx,
+            jobId: job.id,
+            businessId: job.business_id,
+            payload: { reference: job.reference },
+            attempt: 1,
+            maxAttempts: 5,
+          }),
+        );
+        await ownerDb.execute(sql`UPDATE jobs SET state = 'done' WHERE id = ${job.id}::uuid`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return answer;
+  };
+  return service;
+};
 
 let seq = 0;
 async function seedBusiness(): Promise<string> {

@@ -65,7 +65,7 @@ beforeEach(async () => {
 });
 
 const plans = (overrides: Partial<ApiConfig> = {}) =>
-  new BillingService({ ...config, ...overrides }, appDb, settlementDb());
+  new BillingService({ ...config, ...overrides }, appDb);
 const checkouts = (overrides: Partial<ApiConfig> = {}) =>
   new BillingCheckoutService({ ...config, ...overrides }, appDb, provider);
 

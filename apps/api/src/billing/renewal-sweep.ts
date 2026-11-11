@@ -165,6 +165,8 @@ export async function sweepRenewals(
             periodStart: fresh.renewsAt,
             periodEnd: addInterval(fresh.renewsAt, fresh.nextInterval, anchorDay),
             billingInterval: fresh.nextInterval,
+            /* The instant settlement re-prices it at (OD-51). */
+            pricedAt: now,
           });
           if (!id) return false;
 

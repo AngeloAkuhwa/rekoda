@@ -232,6 +232,13 @@ export default async function BillingPage({
         </div>
       ) : null}
 
+      {params.done === 'processing' ? (
+        <div className="rk-attention-strip" role="status">
+          We are switching your plan on now. Nothing was charged and your renewal date stays the
+          same. Refresh this page in a moment to see your new plan.
+        </div>
+      ) : null}
+
       {overview.processingIssue ? (
         <div className="rk-attention-strip" role="status" data-billing-processing>
           {billingProcessingCopy(overview.processingIssue, owner)}

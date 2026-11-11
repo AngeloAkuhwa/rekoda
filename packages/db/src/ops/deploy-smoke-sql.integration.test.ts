@@ -104,7 +104,38 @@ describe('the pre-start database smoke, executed', () => {
     ],
     ['the worker able to become settlement', 'GRANT rekoda_settlement TO rekoda_worker'],
     ['the worker writing events again', 'GRANT UPDATE ON external_events TO rekoda_worker'],
-    ['the application opening charges again', 'GRANT INSERT ON subscription_charges TO rekoda_app'],
+    // 0209: the application may open a pending charge, but only through the guard that keeps it
+    // pristine; a guard replaced by a permissive one is caught.
+    [
+      'the charge guard replaced so the application could open a paid charge',
+      "CREATE OR REPLACE FUNCTION rekoda_private.subscription_charges_settlement_guard() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END'",
+    ],
+    ['the worker able to open charges', 'GRANT INSERT ON subscription_charges TO rekoda_worker'],
+    // 0210: the worker's writes, the ledger, the grants and the retention policy.
+    ['the worker writing sessions again', 'GRANT INSERT ON sessions TO rekoda_worker'],
+    ['the worker writing the books again', 'GRANT INSERT ON ledger_entries TO rekoda_worker'],
+    [
+      'the application writing the migration ledger',
+      'GRANT INSERT ON rekoda_migrations TO rekoda_app',
+    ],
+    [
+      'the application writing entitlement grants',
+      'GRANT INSERT ON business_entitlements TO rekoda_app',
+    ],
+    [
+      'the unchecked retention deletion open to the worker',
+      'GRANT EXECUTE ON FUNCTION retention_delete_business_unchecked(uuid, timestamptz) TO rekoda_worker',
+    ],
+    [
+      'the trial-start guard disabled',
+      'ALTER TABLE businesses DISABLE TRIGGER businesses_trial_start_guard',
+    ],
+    [
+      "the worker's event guard disabled",
+      'ALTER TABLE external_events DISABLE TRIGGER external_events_worker_guard',
+    ],
+    // 0211: the operator holds only what a plan change needs.
+    ['the operator acting as the application again', 'GRANT rekoda_app TO rekoda_billing_operator'],
     [
       'the test-only fixture writer present',
       "CREATE FUNCTION public.test_fixture_set_plan(p uuid, q text, r timestamptz) RETURNS void LANGUAGE sql AS ''",

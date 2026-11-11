@@ -207,7 +207,6 @@ describe('the §47 charge gate, by Paystack key kind', () => {
     new BillingService(
       { ...app.get<ApiConfig>(CONFIG), paystackSecretKey, paystackPlatformConfirmed },
       db,
-      settlementDb(),
     );
   const chargesOf = (businessId: string) =>
     withBusiness(db, businessId, (tx) => subscriptionsRepo.chargesFor(tx, businessId));

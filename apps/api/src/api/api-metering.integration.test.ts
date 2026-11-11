@@ -1,3 +1,4 @@
+import { ownerDb as entitlementOwnerDb } from '@rekoda/db/testing';
 /**
  * The API's three meters (PR-113, canonical spec §27, §4.2).
  *
@@ -96,7 +97,8 @@ async function entitled(
   ).json() as { sessionToken: string; businessId: string };
 
   const period = usagePeriod(new Date());
-  await withBusiness(settlementDb(), created.businessId, async (tx) => {
+  // Grants are an owner act (0210); the owner may also credit the units.
+  await withBusiness(entitlementOwnerDb(), created.businessId, async (tx) => {
     await entitlementsRepo.grant(tx, {
       businessId: created.businessId,
       entitlementKey: 'REKODA_API',

@@ -272,8 +272,8 @@ describe('sweeping unknown senders', () => {
   });
 
   it('leaves an attributed event alone: that one belongs to a merchant', async () => {
-    const user = await identity.upsertUserByPhone(workerDb, '+2348030000009');
-    const business = await identity.createBusinessWithOwner(workerDb, {
+    const user = await identity.upsertUserByPhone(appDb, '+2348030000009');
+    const business = await identity.createBusinessWithOwner(appDb, {
       name: 'Ada Stores',
       businessType: null,
       ownerUserId: user.id,

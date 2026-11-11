@@ -28,6 +28,7 @@ import { paymentLinkHandler } from './payment-link.handler.js';
 import { graduationNudgeHandler } from './graduation-nudge.handler.js';
 import { deliveryStatusHandler } from './delivery-status.handler.js';
 import { processPaymentEventHandler } from './process-payment-event.handler.js';
+import { applyNoChargeUpgradeHandler } from './apply-no-charge-upgrade.handler.js';
 import { initiateBlockedRenewalHandler } from './initiate-blocked-renewal.handler.js';
 import { processBillingChargeHandler } from './process-billing-charge.handler.js';
 import { PaymentsModule } from '../payments/payments.module.js';
@@ -180,6 +181,11 @@ export function buildRunner(
   );
   runner.register(JobKind.DeliveryStatus, deliveryStatusHandler());
   runner.register(
+    JobKind.ApplyNoChargeUpgrade,
+    applyNoChargeUpgradeHandler({ config: deps.config }),
+    deps.settlementDb,
+  );
+  runner.register(
     JobKind.InitiateBlockedRenewal,
     initiateBlockedRenewalHandler({
       config: deps.config,
@@ -291,7 +297,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     @Inject(CONFIG) private readonly config: ApiConfig,
     @Inject(DB) private readonly appDb: Db,
     @Inject(WORKER_DB) private readonly workerDb: Db | null,
-    @Inject(SETTLEMENT_DB) private readonly settlementDb: Db,
+    @Inject(SETTLEMENT_DB) private readonly settlementDb: Db | null,
     @Inject(WORKER_LOCK) private readonly workerLock: LockClient | null,
     @Inject(PrivacyGateway) private readonly gateway: PrivacyGateway,
     @Inject(Interpreter) private readonly interpreter: Interpreter,
@@ -315,6 +321,9 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
       return;
     }
     const workerDb = this.workerDb;
+    /* Config refuses a worker without it (OD-51), so this is a wiring fault, not a mode. */
+    if (!this.settlementDb) throw new Error('a worker process needs the settlement pool');
+    const settlementDb = this.settlementDb;
     this.runner = buildRunner(
       workerDb,
       this.appDb,
@@ -332,7 +341,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         audioProbe: this.audioProbe,
         commandBus: this.commandBus,
         email: this.email,
-        settlementDb: this.settlementDb,
+        settlementDb,
       },
       { concurrency: this.config.workerConcurrency },
     );
@@ -619,7 +628,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
             sweepRenewals({
               workerDb,
               appDb: this.appDb,
-              settlementDb: this.settlementDb,
+              settlementDb,
               config: this.config,
             }),
           )
