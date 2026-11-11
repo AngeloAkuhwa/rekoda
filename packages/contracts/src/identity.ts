@@ -91,7 +91,9 @@ export type CreateBusinessRequest = z.infer<typeof createBusinessRequest>;
  * monthly (ends within one calendar month) or annual (within twelve), never open-ended; a trial
  * ends within 14 days of the business's own trial start; `expired` ends at or before now. With
  * `expiresAt` null the rule's own date is used (exactly one period from now, the business's trial
- * end, or now). `billingInterval` applies to a paid plan only (monthly when absent).
+ * end, or now). `billingInterval` applies to a paid plan only (monthly when absent). It is the
+ * interval the business is on afterwards: re-posting an annual subscriber without it moves them
+ * to monthly, and any interval change starts a new operator-defined cycle (no automatic proration).
  */
 export const setPlanRequest = z.object({
   businessId: z.string().uuid(),
