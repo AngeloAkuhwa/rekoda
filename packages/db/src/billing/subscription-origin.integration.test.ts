@@ -217,10 +217,13 @@ describe('the 0167 backfill uses persisted evidence only', () => {
     await ownerDb.execute(
       sql`UPDATE businesses SET cycle_started_at = NULL WHERE id = ${id}::uuid`,
     );
+    // Annual: RENEWS is months away, and only an annual cycle may end that far out (OD-49), so the
+    // re-posted cycle starts now, as the operator move restarted it.
     await setPlanForTest(appDb, {
       businessId: id,
       plan: 'chat',
       expiresAt: RENEWS,
+      billingInterval: 'annual',
       actor: 'operator:test',
     });
     await clear();

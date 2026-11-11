@@ -240,7 +240,14 @@ export async function setPlanAsFixture(db: Db, change: PlanChange): Promise<bool
     const interval: BillingInterval = change.billingInterval ?? 'monthly';
     const now = new Date();
     const expiresAt = paid ? (change.expiresAt ?? addInterval(now, interval)) : change.expiresAt;
-    const startedAt = paid && change.expiresAt ? periodBefore(change.expiresAt, interval) : now;
+    /* Now, as before, whenever that is a conforming cycle for the date given; otherwise (a date in
+     * the past, or further than one period ahead) the period that ends on it. */
+    const conformsFromNow =
+      !change.expiresAt ||
+      (change.expiresAt.getTime() > now.getTime() &&
+        change.expiresAt.getTime() <= addInterval(now, interval).getTime() + 3 * 86_400_000);
+    const startedAt =
+      paid && change.expiresAt && !conformsFromNow ? periodBefore(change.expiresAt, interval) : now;
     await writePlanChange(
       tx,
       previous,
