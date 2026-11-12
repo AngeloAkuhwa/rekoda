@@ -23,19 +23,21 @@ alias dc='docker compose -f docker-compose.prod.yml'
 | `web`        | `rekoda-web:<release>` | `next start`, with the site's public values baked in at build                                                                                |
 | `api`        | `rekoda-app:<release>` | The API, `REKODA_WORKER=0`                                                                                                                   |
 | `worker`     | `rekoda-app:<release>` | The same image, `REKODA_WORKER=1`: the job runner and the sweeps                                                                             |
+| `operator`   | `rekoda-app:<release>` | `node dist/operator-main.js` (OD-51): the operator plan routes, and the only holder of the billing-operator credential                       |
+| `settlement` | `rekoda-app:<release>` | `node dist/settlement-main.js` (OD-51): the two settlement job kinds, and the only holder of the settlement credential                       |
 | `postgres`   | `postgres:16-alpine`   | The database, on the `pgdata` volume, on a network with no route in or out and no published port                                             |
 | `migrate`    | `rekoda-app:<release>` | A one-off, never started by `up`: `dc run --rm -T migrate` (migrations, then the runtime passwords)                                          |
 | `edge-check` | `rekoda-app:<release>` | A one-shot `up` runs before Caddy (`node dist/edge-check.js`): exits 0 when `REKODA_EDGE_PROXIES` is safe, 1 when it refuses it (G-74, G-75) |
 
-| Credential                                     | Lives in                            | Reaches                                                                                                                                                                                                                                                                                                                                                                                       |
-| ---------------------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| PostgreSQL owner (superuser, migrations)       | `secrets/postgres_owner_password`   | `postgres` and the `migrate` job. Never `api`, `worker` or `web`                                                                                                                                                                                                                                                                                                                              |
-| `rekoda_app` (RLS-bound)                       | `DATABASE_URL` in `.env`            | `api`, `worker`; `migrate`, which loads all of `.env` to set the role's password from it                                                                                                                                                                                                                                                                                                      |
-| `rekoda_worker` (claims jobs across tenants)   | `WORKER_DATABASE_URL` in `.env`     | `worker`, and `api` (it routes a message on a merchant's own WhatsApp number to its tenant); `migrate` as above                                                                                                                                                                                                                                                                               |
-| `rekoda_settlement` (OD-37, 0202)              | `SETTLEMENT_DATABASE_URL` in `.env` | `worker` only (its `billing.process` job records Rekoda payments, a zero-priced upgrade is applied by `billing.apply_no_charge`, the renewal sweep opens renewals; OD-51, 0209: compose blanks it for `api`, and a production api given it refuses to start); `migrate` as above. The only non-owner role that may mark a charge paid, credit pack units, hold an add-on or apply a paid plan |
-| `rekoda_billing_operator` (OD-37, 0202)        | `OPERATOR_DATABASE_URL` in `.env`   | `api` only (`POST /v1/businesses/plan`); the compose file blanks it for `worker`; `migrate` as above. The only role that may run the operator plan writer; since 0211 it holds nothing else (reads `businesses` and `plan_versions`, writes the subscription columns)                                                                                                                         |
-| Application secrets (`VAULT_KEY` and the rest) | `.env`                              | `api`, `worker`, and the `migrate` job (the same image, run on demand)                                                                                                                                                                                                                                                                                                                        |
-| Anything at all                                | nowhere else                        | `web` receives only `NODE_ENV`, `REKODA_API_URL` and `REKODA_WEB_URL`                                                                                                                                                                                                                                                                                                                         |
+| Credential                                     | Lives in                            | Reaches                                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------------------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PostgreSQL owner (superuser, migrations)       | `secrets/postgres_owner_password`   | `postgres` and the `migrate` job. Never `api`, `worker` or `web`                                                                                                                                                                                                                                                                                                                        |
+| `rekoda_app` (RLS-bound)                       | `DATABASE_URL` in `.env`            | `api`, `worker`; `migrate`, which loads all of `.env` to set the role's password from it                                                                                                                                                                                                                                                                                                |
+| `rekoda_worker` (claims jobs across tenants)   | `WORKER_DATABASE_URL` in `.env`     | `worker`, and `api` (it routes a message on a merchant's own WhatsApp number to its tenant); `migrate` as above                                                                                                                                                                                                                                                                         |
+| `rekoda_settlement` (OD-37, 0202; OD-51, 0217) | `SETTLEMENT_DATABASE_URL` in `.env` | `settlement` only: compose passes it to that service by name and blanks it for `api` and `worker`, and a production api or worker given it refuses to start; `migrate` as above. The only non-owner role that may mark a charge paid, credit pack units, hold an add-on or apply a paid plan. Since 0217 it no longer acts as `rekoda_app`: it holds exactly the grants settlement uses |
+| `rekoda_billing_operator` (OD-37, 0202; OD-51) | `OPERATOR_DATABASE_URL` in `.env`   | `operator` only: compose passes it to that service by name and blanks it for `api` and `worker`, and a production api or worker given it refuses to start; `migrate` as above. The only role that may run the operator plan writers; since 0211 it holds nothing else (reads `businesses` and `plan_versions`, writes the subscription columns)                                         |
+| Application secrets (`VAULT_KEY` and the rest) | `.env`                              | `api`, `worker`, and the `migrate` job (the same image, run on demand). `settlement` receives `VAULT_KEY` and `PAYSTACK_SECRET_KEY` only; `operator` receives none of them                                                                                                                                                                                                              |
+| Anything at all                                | nowhere else                        | `web` receives only `NODE_ENV`, `REKODA_API_URL` and `REKODA_WEB_URL`                                                                                                                                                                                                                                                                                                                   |
 
 The compose file sets some values itself, whatever `.env` says:
 `NODE_ENV=production` everywhere, `PORT`, `REKODA_WORKER`, the API's
@@ -562,6 +564,10 @@ operator end dates that 0207 refuses, and opens charges and holds credentials in
 change. Deploy with the api and worker stopped. `scripts/deploy-staging.sh` lists them and enforces
 the order. 0208 only adds owner-only functions.
 
+Superseded in part by the section after this one: since 0217 the settlement credential belongs
+to the `settlement` service and the operator credential to the `operator` service, not to the
+worker or the api. Step 1 below describes the release that carried 0209.
+
 1. **The settlement credential moves to the worker only (OD-51, 0209).** `.env` keeps
    `SETTLEMENT_DATABASE_URL`: the worker and the migrate job need it. `docker-compose.prod.yml`
    blanks it for the `api` service, and a production api process given it refuses to start
@@ -627,34 +633,94 @@ the order. 0208 only adds owner-only functions.
 
 Rollback past these migrations is a backup restore (G-02), as for 0196 to 0206 (OWN-86).
 
-### Deploy a release carrying 0213 to 0216 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary)
+### Deploy a release carrying 0213 to 0219 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure)
 
-0216 is a compatibility break: the previous release writes `usage_counters` directly, which no
-runtime role may do afterwards. Deploy with the api and worker stopped; `scripts/deploy-staging.sh`
-lists it and enforces the order. 0213 to 0215 are additive and ship in the same stopped release.
-No new secret and no new connection string. Rollback past 0216 is a backup restore (G-02).
+0216, 0217 and 0218 are compatibility breaks: the previous release writes `usage_counters`
+directly, which no runtime role may do afterwards, and settles charges in the worker on a role
+0217 narrows. Deploy with every writing process stopped; `scripts/deploy-staging.sh` lists them,
+stops `api`, `worker`, `operator` and `settlement`, and enforces the order. 0213 to 0215 and 0219
+are additive and ship in the same stopped release. Rollback past 0216 is a backup restore (G-02).
 
-1. `dc run --rm -T migrate`, then the pre-start smoke. The smoke now also checks that:
+This release starts two more services. Before deploying:
+
+1. **Give the operator process its own token audience (OD-51).** Add to `.env`:
+
+   ```sh
+   OPERATOR_BILLING_OIDC_AUDIENCE=<an audience your identity provider issues for plan changes only>
+   ```
+
+   It must differ from `OPERATOR_OIDC_AUDIENCE`: a token the API accepts must not change a plan.
+   `OPERATOR_OIDC_ISSUER` and `OPERATOR_OIDC_JWKS_URL` are shared with the API. The compose file
+   requires all three, `VAULT_KEY`, `SETTLEMENT_DATABASE_URL` and `OPERATOR_DATABASE_URL`, and
+   refuses every command while one is missing; the staging deploy checks them first, before
+   anything is changed. Operators who change plans need a token for the new audience carrying
+   `ops:billing`.
+
+2. **No new connection string, and nothing else moves in `.env`.** It still holds
+   `SETTLEMENT_DATABASE_URL` and `OPERATOR_DATABASE_URL` (the `migrate` job sets those roles'
+   passwords from them). The compose file hands each to its own service by name and blanks both
+   for `api` and `worker`. The `operator` and `settlement` services never load `.env`: each
+   receives a short named list (`scripts/check-deploy.mjs`, `PRIVILEGED`). A value exported in the
+   deploy shell would override `.env` for those two services, so run compose from a clean shell.
+
+3. `dc run --rm -T migrate`, then the pre-start smoke. The smoke now also checks that:
    - the support-review resolution (0213) runs for the billing operator only, and the request for
      the application only;
    - no runtime role writes a usage counter or the reservation ledger;
-   - `rekoda_usage_writer` is NOLOGIN, has no members and owns exactly the three usage functions;
+   - `rekoda_usage_writer` is NOLOGIN, has no members and owns exactly the usage functions;
    - a pack's credit time is written by `usage_credit_pack` alone;
-   - the ledger carries the tags 0213 to 0216.
-2. 0216 creates the role `rekoda_usage_writer` (NOLOGIN). A restore into an empty cluster needs it
+   - the settlement role is not a member of `rekoda_app` and holds exactly its listed grants
+     (0217);
+   - the queue is split by job kind between the worker and settlement (three policies on `jobs`);
+   - a finished job closes its event's usage reservations (the trigger of 0218 is present and
+     enabled, and the refund function refuses a closed reservation);
+   - the support-review resolution refuses after a later merchant schedule (0219);
+   - the ledger carries the tags 0213 to 0219.
+
+4. 0216 creates the role `rekoda_usage_writer` (NOLOGIN). A restore into an empty cluster needs it
    first; `scripts/restore-drill.sh` creates it.
-3. 0215 seeds the pricing source as `catalogue`. If this deployment runs
-   `REKODA_PLAN_CATALOGUE_READS=0`, the api and worker refuse to start until the source is switched
-   (next section). Staging runs the default and needs nothing.
-4. A mid-cycle upgrade sent to support review (OWN-33, OWN-34) is resolved with
-   `POST /v1/businesses/plan/support-review`. It moves the plan and keeps the paid-through date.
-   It takes no date; a date or any other extra field is refused with 400.
+
+5. 0215 seeds the pricing source as `catalogue`. If this deployment runs
+   `REKODA_PLAN_CATALOGUE_READS=0`, the api, worker and settlement processes refuse to start until
+   the source is switched (next section). Staging runs the default and needs nothing.
+
+6. `dc up -d --wait --wait-timeout 300` starts `operator` and `settlement` with the rest. Check:
+   - `dc logs settlement` says `[settlement] job runner started`;
+   - `dc logs operator` says `identity: verified tokens`;
+   - `POST https://<api host>/v1/businesses/plan` with no token answers 401 (the operator process
+     answered; Caddy routes `/v1/businesses/plan` and `/v1/businesses/plan/*` there, and the API
+     itself answers 404 for both).
+
+7. **A support-reviewed upgrade (OD-50, 0213, 0219).** A mid-cycle upgrade sent to support review
+   (OWN-33, OWN-34) is resolved by an operator with a token for the billing audience:
+
+   ```sh
+   curl -sS -X POST https://<api host>/v1/businesses/plan/support-review \
+     -H "authorization: Bearer <operator token>" -H 'content-type: application/json' \
+     -d '{"businessId":"<business id>","plan":"<the plan the merchant asked for>","reason":"<why>"}'
+   ```
+
+   The plan moves and the paid-through date stays exactly as it is. It takes no date; a date or
+   any other extra field is refused with 400. It is refused for a trial, an expired plan, a period
+   that has ended, a plan other than the one the merchant requested, a subscription that changed
+   after the request, and when the merchant scheduled a cancellation or a downgrade after asking
+   (their later decision stands). A repeat returns the first result. `POST /v1/businesses/plan`
+   keeps its standard periods (0207) for every other operator change.
+
+**If settlement is down,** paid charges wait as `billing.process` jobs and nothing is lost: the
+worker cannot claim them (the database refuses it), and they run when `settlement` is back.
+**If the operator process is down,** plan changes answer 502 from Caddy; nothing else is affected.
+
+**The database administrator is trusted (OD-51.5).** The PostgreSQL owner, anyone holding
+`secrets/postgres_owner_password`, anyone who can read `.env`, and anyone with a shell on the host
+can read and change everything: no role separation above constrains them. The controls there are
+the host's access list, the file permissions, off-box backups and the record of who deployed.
 
 ### Pricing source
 
 Where prices come from (the plan catalogue, or the figures compiled into the release) is one row in
-the database (`billing_pricing_source`, 0215), not each process's own setting. Every api and worker
-process compares `REKODA_PLAN_CATALOGUE_READS` with that row at start (1 is `catalogue`, 0 is
+the database (`billing_pricing_source`, 0215), not each process's own setting. Every api, worker
+and settlement process compares `REKODA_PLAN_CATALOGUE_READS` with that row at start (1 is `catalogue`, 0 is
 `constants`) and refuses to start on a difference. A running process that differs can open no
 charge. Each charge records the source it was priced from, and settlement re-prices it from that
 source.
@@ -668,8 +734,8 @@ dc run --rm -T migrate sh /repo/deploy/migrate.sh pricing-source show
 Switch it, for example to the compiled figures while a catalogue migration is repaired. The order
 matters:
 
-1. Stop the api and the worker. Switching while they run makes every new plan, pack and renewal
-   charge fail until they restart.
+1. Stop the api, the worker and settlement (`dc stop api worker settlement`). Switching while
+   they run makes every new plan, pack and renewal charge fail until they restart.
 2. Switch the row, as the owner, with who and why (both are kept in
    `billing_pricing_source_history`):
 
@@ -678,11 +744,11 @@ matters:
    ```
 
 3. Set `REKODA_PLAN_CATALOGUE_READS` in `.env` to match (0 for `constants`, 1 for `catalogue`).
-4. Start the api and the worker. Both must run the release that ran step 2: for `constants` the
+4. Start the three (`dc up -d --wait --wait-timeout 300`). All must run the release that ran step 2: for `constants` the
    row records that release's compiled figures, and a process carrying different figures refuses
    to start.
 
-Changing `.env` alone, without step 2, stops both processes at boot. Switch back the same way with
+Changing `.env` alone, without step 2, stops all three at boot. Switch back the same way with
 `set catalogue`.
 
 Known limit: a charge opened on `constants` and still unpaid when a release with different compiled
@@ -1072,6 +1138,19 @@ only says a dependency failed, and the line is in `dc logs edge-check`:
   three plus `R2_BUCKET` (G-40);
   `REKODA_RELEASE` and `REKODA_COMMIT` must be short tokens;
   each `REKODA_COMMAND_*` must be unset, `1` or `0` (OD-4).
+- **Operator and settlement (OD-51):** each requires its own database
+  credential and must connect as its own role (`rekoda_billing_operator`,
+  `rekoda_settlement`), which must not be SUPERUSER, BYPASSRLS or a member
+  of another runtime role; each refuses, by name, any credential or key that
+  belongs to another process (`DATABASE_URL`, `WORKER_DATABASE_URL`, the
+  other privileged URL, the OTP pepper, provider keys and the rest); the
+  operator needs `OPERATOR_OIDC_ISSUER`, `OPERATOR_OIDC_JWKS_URL` and an
+  `OPERATOR_BILLING_OIDC_AUDIENCE` different from the API's; settlement
+  needs `VAULT_KEY`, refuses `PAYSTACK_BASE_URL`, and checks its
+  `REKODA_PLAN_CATALOGUE_READS` against the pricing source in force.
+  The api and the worker refuse `SETTLEMENT_DATABASE_URL` and
+  `OPERATOR_DATABASE_URL`. Lines are in `dc logs operator` and
+  `dc logs settlement`.
 - **The edge** (`edge-check`, before caddy starts): `REKODA_EDGE_PROXIES`
   must not trust effectively the whole internet (G-74), nor name
   `private_ranges` or any range holding the edge network's gateway,

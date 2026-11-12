@@ -269,3 +269,38 @@ Tests:
 - `packages/db/src/tenancy/worker-least-privilege.integration.test.ts`;
 - the pre-start smoke (`scripts/deploy-staging.sh`, `deploy-smoke-sql.integration.test.ts`), which
   checks the worker's exact write set and has a tampering case for each rule.
+
+## Amendment 5 (12 Nov 2026, owner instruction for PR #432, OWN-91): settlement and operator plan changes are separate processes; the meter is written through functions; the administrator boundary is stated
+
+Status: accepted with PR #432 (not merged at the time of writing). It records the trust boundaries
+after migrations 0213 to 0219. Nothing here widens a cross-tenant read: the three classes of
+Amendment 1 and the rules of Amendments 2 to 4 are unchanged.
+
+1. **Two more principals run in their own processes.** `rekoda_settlement` is held only by the
+   settlement process and `rekoda_billing_operator` only by the operator process. A production API
+   or worker refuses to start if handed either credential, and each privileged process refuses any
+   credential or key that belongs to another. Neither role is a member of `rekoda_app` or of the
+   other (0211, 0217), and each holds an exact, tested grant list with no default privilege.
+2. **The queue is split by job kind, by policy.** `rekoda_settlement` reads and writes only
+   `billing.process` and `billing.apply_no_charge` jobs, whichever tenant it pins. `rekoda_worker`
+   keeps its cross-tenant claim (class 2 of Amendment 1) for every other kind, and for those two
+   may only requeue a dead job or record its death. The settlement claim is the same class of
+   access as the worker's: coordination columns of jobs, never tenant records.
+3. **The operator process verifies identity itself.** It accepts only tokens for its own audience
+   (`OPERATOR_BILLING_OIDC_AUDIENCE`), which must differ from the API's, so the API is not an
+   authority for plan changes and no secret is shared between them (ADR 0034 is otherwise
+   unchanged: identities, scopes, the audited subject).
+4. **Usage counters are written only by `rekoda_usage_writer`'s functions** (0216, 0218): reserve,
+   refund of a held reservation whose job has not finished (a finished job closes its event's
+   reservations, by trigger), and the credit of one paid pack charge. Amendment 4's grant of
+   `usage_counters` to the worker is withdrawn; the worker calls the same functions.
+5. **The database administrator is outside these controls.** The table owner, the PostgreSQL
+   superuser, and anyone who can read the host's `.env` or `secrets/` can do anything the roles
+   above cannot. That is an administrative trust boundary, a different class from an application
+   role, and it is controlled operationally (host access, secret file permissions, off-box backups,
+   the deploy record), not by anything in this ADR. The integration harness's fixture functions
+   are the only other exemption; the boot checks and the pre-start smoke refuse a deployed
+   database that carries one.
+6. **What an application credential can still do** is recorded in the OD-51 row of
+   `docs/REKODA_LAUNCH_READINESS.md`: decide what is metered going forward, and withhold or remove
+   a queued job under a tenant pin (a denial, never a settlement).
