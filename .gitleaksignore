@@ -37,3 +37,8 @@ aaf444e10fdf4f21fd498a507cb6760233ff6086:apps/web/src/lib/billing-pay-copy.test.
 # never trusts the host's Paystack key when the running api cannot be asked. Never issued, not a
 # credential. The live line now builds the string at run time, so no such literal remains.
 9d8e15154abcac38ad06d49493299b40ae91c02f:scripts/staging-readonly-check.services.test.mjs:stripe-access-token:409
+
+# Synthetic fixture (commit cb719a8, PR #432): the settlement configuration test's stand-in for the
+# platform Paystack key (the literal word "placeholder" after the live-key prefix). Never issued,
+# not a credential. The live line now builds the string at run time, so no such literal remains.
+cb719a8a548e0d772708553bfcfe50fc44a2d5ab:apps/api/src/settlement/config.test.ts:stripe-access-token:16

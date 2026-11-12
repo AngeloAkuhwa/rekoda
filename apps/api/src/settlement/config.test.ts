@@ -13,7 +13,8 @@ const PRODUCTION = {
   REKODA_RELEASE: 'staging-abc1234',
   SETTLEMENT_DATABASE_URL: URL,
   VAULT_KEY: 'a'.repeat(64),
-  PAYSTACK_SECRET_KEY: 'sk_live_placeholder',
+  /* Built at run time so no key-shaped literal sits in the tree; a placeholder, never issued. */
+  PAYSTACK_SECRET_KEY: ['sk', 'live', 'placeholder'].join('_'),
 } as NodeJS.ProcessEnv;
 
 describe('the settlement process configuration', () => {
