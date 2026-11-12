@@ -130,16 +130,17 @@ case "$code" in
   *) flag "web status" "$code" ;;
 esac
 
-# Every long-running service must be running. postgres, api, worker and web have a healthcheck in
-# docker-compose.prod.yml, so they must read healthy (an empty health result is not a pass); caddy
-# has none. The one-off jobs (migrate, edge-check) must have exited 0 or be absent; any other state
+# Every long-running service must be running. postgres, api, worker, web, settlement and operator
+# have a healthcheck in docker-compose.prod.yml, so they must read healthy (an empty health result
+# is not a pass); caddy has none. settlement and operator (OD-51) are the only processes that apply
+# a paid charge and serve a plan change, so a stopped one must never read as a healthy staging. The one-off jobs (migrate, edge-check) must have exited 0 or be absent; any other state
 # needs attention.
 echo "== services"
 SERVICES="$(dc ps -a --format '{{.Service}}|{{.State}}|{{.Health}}|{{.ExitCode}}' 2>/dev/null)"
 if [ -z "$SERVICES" ]; then
   flag "services" "unknown (compose ps failed)"
 else
-  for svc in postgres api worker web caddy; do
+  for svc in postgres api worker web settlement operator caddy; do
     line="$(printf '%s\n' "$SERVICES" | grep "^$svc|" | head -1)"
     IFS='|' read -r _ state health _ <<<"$line"
     if [ -z "$line" ]; then flag "service $svc" "MISSING"

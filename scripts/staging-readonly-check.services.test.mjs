@@ -24,6 +24,8 @@ test('a broken web tier, an unhealthy or missing service, or a failed job can ne
       'api|running|healthy|0',
       'worker|running|healthy|0',
       'web|running|healthy|0',
+      'settlement|running|healthy|0',
+      'operator|running|healthy|0',
       'caddy|running||0',
       'migrate|exited||0',
       'edge-check|exited||0',
@@ -53,6 +55,16 @@ test('a broken web tier, an unhealthy or missing service, or a failed job can ne
       /service worker\s+running, unhealthy\n/,
     ],
     [{ services: svc({ caddy: 'gone' }) }, /service caddy\s+MISSING\n/],
+    /* OD-51: paid charges are applied only by settlement and plan changes served only by operator. */
+    [{ services: svc({ settlement: 'gone' }) }, /service settlement\s+MISSING\n/],
+    [
+      { services: svc({ settlement: 'settlement|restarting||1' }) },
+      /service settlement\s+restarting\n/,
+    ],
+    [
+      { services: svc({ operator: 'operator|running|unhealthy|0' }) },
+      /service operator\s+running, unhealthy\n/,
+    ],
     [
       { services: svc({ worker: 'worker|running||0' }) },
       /service worker\s+running, no health result\n/,
@@ -106,7 +118,7 @@ test('the healthy services and jobs read as expected and are not flagged', () =>
   const h = healthy();
   try {
     const out = h.go(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
-    for (const s of ['postgres', 'api', 'worker', 'web'])
+    for (const s of ['postgres', 'api', 'worker', 'web', 'settlement', 'operator'])
       assert.match(out, new RegExp(`service ${s}\\s+running, healthy\\n`));
     assert.match(out, /service caddy\s+running\n/);
     assert.match(out, /job migrate\s+exited \(0\)\n/);

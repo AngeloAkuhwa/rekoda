@@ -249,6 +249,8 @@ export const healthy = (over = {}) =>
       'api|running|healthy|0',
       'worker|running|healthy|0',
       'web|running|healthy|0',
+      'settlement|running|healthy|0',
+      'operator|running|healthy|0',
       'caddy|running||0',
       'migrate|exited||0',
       'edge-check|exited||0',
