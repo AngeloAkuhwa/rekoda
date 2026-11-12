@@ -19,9 +19,10 @@
 
 **PR B, 12 Nov 2026, independent reviews of `208c919` (three fresh read-only contexts: database boundary; financial and runtime; process, deployment and documentation): 0 BLOCKING, 3 IMPORTANT, all fixed; still OPEN as #432, not merged, not deployed.**
 
+- **A delta review of `6a432ca` found two BLOCKING regressions from 0221, both fixed before this note:** an existing suite still expected the operator to write the cycle columns (now reversed), and 0221 had widened a reservation policy to `USING (true)`, which the RLS invariant refuses; the trigger now pins the job's own business for its one statement instead, so no policy is widened.
 - **IMPORTANT, fixed:** the billing operator could write twelve cycle columns directly (0221: the writer records the cycle itself, the operator holds only `updated_at`); a token naming both audiences was accepted by the operator process (now refused); Caddy waited for the operator to be healthy, so an operator that would not boot kept the whole public edge down on a deploy (Caddy no longer waits; `check-deploy` pins it).
-- **Minors fixed:** the reservation trigger no longer depends on the session pin; the worker can no longer requeue a dead settlement job; the 0220 smoke check could not fail; settlement's shutdown is bounded at every step; several documentation statements corrected (the 51.5 wording, the Caddy route, test counts, what a dead job's unit does).
-- **Minors recorded, not fixed:** the end of the OD-51 row, items (viii) to (xv).
+- **Minors fixed:** the reservation trigger no longer depends on the session pin; the worker can no longer requeue a dead settlement job; the 0220 smoke check could not fail; settlement's shutdown is bounded at every step (runner, health server, pool); several documentation statements corrected (the 51.5 wording, the Caddy route, test counts, what a dead job's unit does).
+- **Minors recorded, not fixed:** the end of the OD-51 row, items (vii) to (xiv).
 
 **PR B, 12 Nov 2026, engineering session after the autopilot run: OD-52 CLOSED in code by migration 0220; still OPEN as #432, not merged, not deployed; STAGING ACCEPTANCE PENDING; the merge is the owner's.**
 

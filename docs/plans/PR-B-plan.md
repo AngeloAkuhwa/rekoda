@@ -108,6 +108,8 @@ Nine migrations and two new processes, one gap at a time:
 | OD-51.5 | (none)    | documented: runbook, ADR 0035 Amendment 5                                                                                                                                                             |
 | OD-51.4 | 0218      | a reservation is bound to its event (`usage_bind_event`) and closed when that event's job is done; a closed reservation gives nothing back (this was OD-52, from the independent review of `2b602b0`) |
 | OD-50   | 0219      | the resolution refuses when the merchant scheduled a cancellation or downgrade after asking (review follow-up)                                                                                        |
+| OD-52   | 0220      | the job row the closure keys on: the trigger casts the event id; the application may only finish a job or requeue a dead one; the grace clock refuses a cycle that has not ended                      |
+| OD-51.1 | 0221      | the operator writes only through its functions (the writer records the cycle); the trigger closes by the job's business; the worker cannot requeue a dead settlement job                              |
 
 Decisions taken while building, each the narrowest that closes the gap:
 
