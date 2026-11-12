@@ -168,7 +168,9 @@ END $$;
 -- Only so the operator path can lock the business row before the writer runs.
 GRANT UPDATE (updated_at) ON businesses TO rekoda_billing_operator;
 
--- An earlier draft of this migration widened a policy for this; it is gone wherever it was applied.
+-- An earlier draft of this migration (da1a3cb, never on main) created this policy. The drop is a
+-- no-op safety net for a fresh or never-drafted database; one that applied the draft does not re-run
+-- 0221 and keeps the policy, which the pre-start smoke refuses. Reset such a database.
 DROP POLICY IF EXISTS usage_writer_sees_reservations ON usage_reservations;
 
 -- The closing trigger closes by the job's business, whatever the session pinned. Otherwise the
