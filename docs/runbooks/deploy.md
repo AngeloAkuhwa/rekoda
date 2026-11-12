@@ -633,9 +633,9 @@ worker or the api. Step 1 below describes the release that carried 0209.
 
 Rollback past these migrations is a backup restore (G-02), as for 0196 to 0206 (OWN-86).
 
-### Deploy a release carrying 0213 to 0219 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure)
+### Deploy a release carrying 0213 to 0220 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure)
 
-0216, 0217 and 0218 are compatibility breaks: the previous release writes `usage_counters`
+0216, 0217, 0218 and 0220 are compatibility breaks: the previous release writes `usage_counters`
 directly, which no runtime role may do afterwards, and settles charges in the worker on a role
 0217 narrows. Deploy with every writing process stopped; `scripts/deploy-staging.sh` lists them,
 stops `api`, `worker`, `operator` and `settlement`, and enforces the order. 0213 to 0215 and 0219
@@ -675,7 +675,9 @@ This release starts two more services. Before deploying:
    - a finished job closes its event's usage reservations (the trigger of 0218 is present and
      enabled, and the refund function refuses a closed reservation);
    - the support-review resolution refuses after a later merchant schedule (0219);
-   - the ledger carries the tags 0213 to 0219.
+   - the application cannot delete a job or rewrite its payload, kind or business, its job state
+     moves are guarded, and the grace clock starts only after the cycle ended (0220);
+   - the ledger carries the tags 0213 to 0220.
 
 4. 0216 creates the role `rekoda_usage_writer` (NOLOGIN). A restore into an empty cluster needs it
    first; `scripts/restore-drill.sh` creates it.

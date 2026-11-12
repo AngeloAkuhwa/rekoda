@@ -273,7 +273,7 @@ Tests:
 ## Amendment 5 (12 Nov 2026, owner instruction for PR #432, OWN-91): settlement and operator plan changes are separate processes; the meter is written through functions; the administrator boundary is stated
 
 Status: accepted with PR #432 (not merged at the time of writing). It records the trust boundaries
-after migrations 0213 to 0219. Nothing here widens a cross-tenant read: the three classes of
+after migrations 0213 to 0220. Nothing here widens a cross-tenant read: the three classes of
 Amendment 1 and the rules of Amendments 2 to 4 are unchanged.
 
 1. **Two more principals run in their own processes.** `rekoda_settlement` is held only by the
@@ -292,7 +292,8 @@ Amendment 1 and the rules of Amendments 2 to 4 are unchanged.
    unchanged: identities, scopes, the audited subject).
 4. **Usage counters are written only by `rekoda_usage_writer`'s functions** (0216, 0218): reserve,
    refund of a held reservation whose job has not finished (a finished job closes its event's
-   reservations, by trigger), and the credit of one paid pack charge. Amendment 4's grant of
+   reservations, by trigger, and since 0220 the application cannot rewrite, delete or park that
+   job row), and the credit of one paid pack charge. Amendment 4's grant of
    `usage_counters` to the worker is withdrawn; the worker calls the same functions.
 5. **The database administrator is outside these controls.** The table owner, the PostgreSQL
    superuser, and anyone who can read the host's `.env` or `secrets/` can do anything the roles

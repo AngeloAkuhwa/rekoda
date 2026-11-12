@@ -4,7 +4,7 @@ Base: `main` at `58e6834` (PR A, #431, merged). **Status (8 Nov 2026; closeout r
 
 As built, against this plan:
 
-- Migrations 0213 to 0219 were added on 12 Nov 2026 under the owner's instruction OWN-91 (section 5b): 0213 and 0219 the support-review upgrade (OD-50); 0214 pack purchase identity; 0215 pricing source authority; 0216 and 0218 the usage meter boundary and reservation closure; 0217 settlement isolation (OD-51). Their state and the review findings are in `docs/REKODA_LAUNCH_READINESS.md` (rows OD-50 to OD-52) and `docs/HANDOFF.md`.
+- Migrations 0213 to 0220 were added on 12 Nov 2026 under the owner's instruction OWN-91 (section 5b): 0213 and 0219 the support-review upgrade (OD-50); 0214 pack purchase identity; 0215 pricing source authority; 0216 and 0218 the usage meter boundary and reservation closure; 0217 settlement isolation (OD-51); 0220 the job-row guard that completes the reservation closure (OD-52) and the grace-clock end check. Their state and the review findings are in `docs/REKODA_LAUNCH_READINESS.md` (rows OD-50 to OD-52) and `docs/HANDOFF.md`.
 - Migrations are 0193 to 0212: 0201 to 0206 were added by the owner review and its independent review (OWN-89, §5a), and 0207 to 0212 by the owner's closeout instruction (OWN-90: 0207 OD-50 standard operator periods and the fixed trial start; 0208 OD-49 release preflight and audited correction; 0209 OD-51 settlement re-prices every charge, so the API holds no settlement credential; 0210 worker least privilege, external-event writes, the retention policy in its function, and a read-only migration ledger and entitlement grants; 0211 the billing-operator principal narrowed; 0212 the fixes from the independent review of `fe9c3c5`). Of the original range, nine more than recorded: 0197 holds the item 6 staging tables and writer (the brief allowed numbers to be confirmed when PR B started); 0198 (review of #432) ordered the blocked-renewal close pass by a per-row failure stamp; 0199 (owner direction 11 Nov 2026, OWN-88) replaces that with a durable keyset cursor; 0200 (OWN-88) makes the plan writers enforce the business rules (below and §5).
 - Item 1: `provider_settled_at` has no writer, because Rekoda has no Paystack settlement feed for its own account; no row is backfilled, because the evidence is sealed or was never kept.
 - Items 2 and 3 share one table (`dead_job_exceptions`). A dead job behind an event is that event's flagged row, carrying `jobId`, and a job without one is a `deadJobs` item. The pump now puts Rekoda's own reference in the job payload so the operator item names it; recovery still verifies the reference read from the signed event.
@@ -94,7 +94,7 @@ The triggers decide on `current_user` (the executing role), never a setting; tes
 ### 5b. OD-50 and OD-51 closed (OWN-91, 12 Nov 2026), as built
 
 The owner did not accept the OD-50 consequence or the seven OD-51 limits recorded at `edf747d`.
-Seven additive migrations and two new processes, one gap at a time:
+Eight migrations and two new processes, one gap at a time:
 
 | Gap     | Migration | What changed                                                                                                                                                                                          |
 | ------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -126,7 +126,7 @@ Decisions taken while building, each the narrowest that closes the gap:
 
 What remains is listed at the end of the OD-51 row in `docs/REKODA_LAUNCH_READINESS.md`. The
 deploy needs one new value from the owner, `OPERATOR_BILLING_OIDC_AUDIENCE`
-(`docs/runbooks/deploy.md`, "Deploy a release carrying 0213 to 0219").
+(`docs/runbooks/deploy.md`, "Deploy a release carrying 0213 to 0220").
 
 ## 6. G-119 / OWN-77: staging tools (Route A)
 
