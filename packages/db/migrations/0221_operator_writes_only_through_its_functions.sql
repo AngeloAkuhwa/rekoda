@@ -20,10 +20,10 @@
 -- Two minors from the same review, in the same release:
 --   * the reservation-closing trigger (0218, 0220) runs as `rekoda_usage_writer` and saw only the
 --     reservations visible under the session's tenant pin, so a job marked done with no pin, or
---     under another business's pin, closed nothing and raised nothing. The role now sees every
---     reservation (a policy for it alone); each of its functions still checks the pin against its
---     business argument and filters by business itself, and the trigger closes by the job's own
---     business;
+--     under another business's pin, closed nothing and raised nothing. The trigger now pins the
+--     job's own business for its one statement and restores the session's pin afterwards, so it
+--     closes by the job's business whatever the caller pinned. No policy is widened: the role
+--     still sees only the pinned tenant's reservations, and the pin it sets is the row's own;
 --   * the worker could still requeue a DEAD settlement job (0217 allowed dead to pending). Nothing
 --     legitimate needs that (an operator's recovery runs on the application credential), so the
 --     worker may now only leave a dead settlement job dead.
@@ -168,11 +168,35 @@ END $$;
 -- Only so the operator path can lock the business row before the writer runs.
 GRANT UPDATE (updated_at) ON businesses TO rekoda_billing_operator;
 
--- The closing trigger closes by the job's business, whatever the session pinned.
-DO $$ BEGIN
-  CREATE POLICY usage_writer_sees_reservations ON usage_reservations
-    FOR ALL TO rekoda_usage_writer USING (true) WITH CHECK (true);
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- The closing trigger closes by the job's business, whatever the session pinned. Otherwise the
+-- function of 0220.
+CREATE OR REPLACE FUNCTION rekoda_private.jobs_close_event_reservations()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+DECLARE
+  v_event uuid;
+  v_pin text := current_setting('app.business_id', true);
+BEGIN
+  BEGIN
+    v_event := (NEW.payload ->> 'eventId')::uuid;
+  EXCEPTION WHEN invalid_text_representation THEN
+    RETURN NEW; -- not an event id: a job that is not about an event holds no reservation
+  END;
+  IF v_event IS NULL THEN
+    RETURN NEW;
+  END IF;
+  -- The job's own business, for this one statement, then whatever the caller had pinned.
+  PERFORM set_config('app.business_id', NEW.business_id::text, true);
+  UPDATE public.usage_reservations
+  SET closed_at = now()
+  WHERE business_id = NEW.business_id AND event_id = v_event AND closed_at IS NULL;
+  PERFORM set_config('app.business_id', coalesce(v_pin, ''), true);
+  RETURN NEW;
+END $$;
+-- CREATE OR REPLACE keeps the owner (rekoda_usage_writer) and the revoked EXECUTE of 0218.
 
 -- The worker never requeues a settlement job; it may only leave a dead one dead.
 DROP POLICY IF EXISTS worker_leaves_settlement_jobs ON jobs;

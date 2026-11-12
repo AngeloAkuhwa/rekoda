@@ -203,18 +203,10 @@ describe('row-level security, across the whole schema', () => {
      * here either omits WITH CHECK — in which case PostgreSQL applies USING —
      * or repeats it exactly. A deliberate divergence would need its own
      * reasoning, and would fail here until somebody wrote it. */
-    /* One deliberate divergence, with its reasoning (migration 0217, OD-51.2): the RESTRICTIVE
-     * `jobs.worker_leaves_settlement_jobs` lets the worker TOUCH a settlement job only when it is
-     * already dead (USING) and LEAVE it only dead or pending (WITH CHECK). The two sides differ
-     * on purpose: an operator's recovery requeues a dead job (dead to pending), which a policy
-     * with one predicate for both sides could not express without also letting the worker claim
-     * or complete a live one. It is restrictive, so it can only narrow what the worker reaches,
-     * never widen it, and it says nothing about tenants. */
-    const DELIBERATE = new Set(['jobs.worker_leaves_settlement_jobs']);
     expect(
-      [...rows]
-        .filter((r) => !DELIBERATE.has(`${r.relname}.${r.polname}`))
-        .map((r) => `${r.relname}.${r.polname}: ${r.check}`),
+      /* 0217 had one deliberate divergence (the worker could leave a dead settlement job pending);
+       * 0221 removed it, so none remains. */
+      [...rows].map((r) => `${r.relname}.${r.polname}: ${r.check}`),
     ).toEqual([]);
   });
 });

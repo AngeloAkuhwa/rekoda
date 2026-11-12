@@ -247,7 +247,8 @@ describe('the worker leaves settlement jobs alone (0217, 0221)', () => {
     }).catch((error: { message?: string; cause?: { message?: string } }) =>
       String(error.cause?.message ?? error.message),
     );
-    expect(moved === 0 || /row-level security|policy/.test(String(moved))).toBe(true);
+    /* USING admits a dead row, so the only right answer is the policy's refusal. */
+    expect(String(moved)).toMatch(/row-level security policy "worker_leaves_settlement_jobs"/);
     const state = await owner`SELECT state FROM jobs WHERE id = ${jobId}`;
     expect(state[0]!['state']).toBe('dead');
   });

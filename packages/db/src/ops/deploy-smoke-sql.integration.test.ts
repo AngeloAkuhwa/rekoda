@@ -241,8 +241,12 @@ describe('the pre-start database smoke, executed', () => {
       "DROP POLICY worker_leaves_settlement_jobs ON jobs; CREATE POLICY worker_leaves_settlement_jobs ON jobs AS RESTRICTIVE FOR UPDATE TO rekoda_worker USING (kind NOT IN ('billing.process', 'billing.apply_no_charge') OR state = 'dead') WITH CHECK (kind NOT IN ('billing.process', 'billing.apply_no_charge') OR state IN ('dead', 'pending'))",
     ],
     [
-      'the closing trigger blind outside the session pin',
-      'DROP POLICY usage_writer_sees_reservations ON usage_reservations',
+      'the 0220 closing trigger, blind outside the session pin, put back',
+      "CREATE OR REPLACE FUNCTION rekoda_private.jobs_close_event_reservations() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $f$ DECLARE v_event uuid; BEGIN BEGIN v_event := (NEW.payload ->> 'eventId')::uuid; EXCEPTION WHEN invalid_text_representation THEN RETURN NEW; END; IF v_event IS NULL THEN RETURN NEW; END IF; UPDATE public.usage_reservations SET closed_at = now() WHERE business_id = NEW.business_id AND event_id = v_event AND closed_at IS NULL; RETURN NEW; END $f$",
+    ],
+    [
+      'reservations readable by a role across tenants',
+      'CREATE POLICY widened ON usage_reservations FOR ALL TO rekoda_usage_writer USING (true)',
     ],
     [
       'the 0218 pattern-matching closing trigger put back',

@@ -155,7 +155,7 @@ async function asRoleWithoutFixture(businessId: string, role: string, statement:
   );
 }
 
-describe('B3: the cycle and pricing inputs belong to settlement and the operator (0206)', () => {
+describe('B3: the cycle and pricing inputs belong to settlement and the writers (0206, 0221)', () => {
   it.each([
     ['billing_interval', "billing_interval = 'annual'"],
     ['cycle_started_at', "cycle_started_at = now() - interval '1 hour'"],
@@ -168,7 +168,7 @@ describe('B3: the cycle and pricing inputs belong to settlement and the operator
     ['ever_paid_at', 'ever_paid_at = now()'],
     // Cleared, the grace clock stops the grace sweep and a paid plan runs on unpaid.
     ['payment_failed_at', 'payment_failed_at = NULL'],
-  ])('the application cannot write %s; settlement and the operator can', async (_c, set) => {
+  ])('the application and the operator cannot write %s; settlement can', async (_c, set) => {
     const businessId = await onPaidCycle(new Date(Date.now() + 10 * DAY));
     await ownerDb.execute(
       sql`UPDATE businesses SET plan_version_id = (SELECT id FROM plan_versions WHERE plan_id = 'chat' ORDER BY version LIMIT 1), renewal_anchor_day = 15, ever_paid_at = NULL, payment_failed_at = now() WHERE id = ${businessId}::uuid`,
@@ -181,9 +181,11 @@ describe('B3: the cycle and pricing inputs belong to settlement and the operator
     expect(await asRoleWithoutFixture(businessId, 'rekoda_worker', statement)).toMatch(
       /^42501 .*permission denied for table businesses/,
     );
-    for (const role of ['rekoda_settlement', 'rekoda_billing_operator']) {
-      expect(await asRoleWithoutFixture(businessId, role, statement)).toBe('OK ');
-    }
+    expect(await asRoleWithoutFixture(businessId, 'rekoda_settlement', statement)).toBe('OK ');
+    // Since 0221 the operator writes the cycle only through subscription_operator_set_plan.
+    expect(await asRoleWithoutFixture(businessId, 'rekoda_billing_operator', statement)).toMatch(
+      /^42501 .*permission denied for table businesses/,
+    );
     // Columns the merchant's own scheduling writes stay with the application.
     expect(
       await asRoleWithoutFixture(

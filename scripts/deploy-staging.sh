@@ -170,8 +170,11 @@ SMOKE_0196_SQL="SELECT
   AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure(
         'public.subscription_operator_set_plan(uuid,text,timestamp with time zone,text,text)'))
         LIKE '%subscription_origin%'
-  AND EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'usage_writer_sees_reservations'
-        AND polrelid = 'public.usage_reservations'::regclass)
+  AND (SELECT prosrc FROM pg_proc WHERE oid
+        = to_regprocedure('rekoda_private.jobs_close_event_reservations()'))
+        LIKE '%set_config(''app.business_id'', NEW.business_id::text, true)%'
+  AND NOT EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'public.usage_reservations'::regclass
+        AND pg_get_expr(polqual, polrelid) = 'true')
   AND (SELECT pg_get_expr(polwithcheck, polrelid) FROM pg_policy
         WHERE polname = 'worker_leaves_settlement_jobs' AND polrelid = 'public.jobs'::regclass)
         NOT LIKE '%pending%'

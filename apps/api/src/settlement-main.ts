@@ -115,7 +115,7 @@ export async function startSettlementProcess(
       const within = (ms: number, work: Promise<unknown>) =>
         Promise.race([work, new Promise<void>((resolve) => setTimeout(resolve, ms).unref())]);
       await within(30_000, runner.stop());
-      await new Promise<void>((resolve) => health.close(() => resolve()));
+      await within(5_000, new Promise<void>((resolve) => health.close(() => resolve())));
       await within(5_000, closeDb());
     },
   };
