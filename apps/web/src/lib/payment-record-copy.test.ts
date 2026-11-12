@@ -93,6 +93,38 @@ describe('payment record copy', () => {
     expect(why('period_ended')).not.toMatch(/newer (plan )?choice|changed/i);
   });
 
+  it('a reviewed payment never also says it is still being reviewed', () => {
+    for (const reason of ['paid_twice', 'under_review'] as const) {
+      const record = {
+        ...base,
+        state: 'paid_not_applied' as const,
+        applied: false,
+        notAppliedReason: reason,
+      };
+      expect(paymentRecordView(record).summary).toMatch(/review/);
+      const reviewed = paymentRecordView({ ...record, reconciled: true }).summary;
+      expect(reviewed).toMatch(/has since reviewed it/);
+      expect(reviewed).not.toMatch(/is reviewing|being reviewed/);
+      /* A part refund of it after the review: the same rule. */
+      const refunded = paymentRecordView({
+        ...record,
+        state: 'part_refunded',
+        reconciled: true,
+      }).summary;
+      expect(refunded).not.toMatch(/is reviewing|being reviewed/);
+    }
+    /* What was true before the review stays: nothing extra was added for the second payment. */
+    expect(
+      paymentRecordView({
+        ...base,
+        state: 'paid_not_applied',
+        applied: false,
+        notAppliedReason: 'paid_twice',
+        reconciled: true,
+      }).summary,
+    ).toMatch(/already been paid for\. No extra units were added\./);
+  });
+
   it('a no-charge upgrade claims no payment and no provider confirmation', () => {
     const view = paymentRecordView({ ...base, noCharge: true, amountK: 0, paidAmountK: null });
     expect(view.confirmed).toBe(false);

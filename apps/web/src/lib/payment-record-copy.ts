@@ -62,13 +62,27 @@ const VIEWS: Record<State, PaymentRecordView> = {
   },
 };
 
-/** Why a confirmed payment was not applied, in words that invent no event the merchant did not cause. */
-const NOT_APPLIED_WHY: Record<NonNullable<BillingPaymentRecord['notAppliedReason']>, string> = {
+/**
+ * Why a confirmed payment was not applied, in words that invent no event the merchant did not cause.
+ * A reason that mentions a review has a second wording for after the review, so a reviewed record
+ * never also says the review is still going on.
+ */
+const NOT_APPLIED_WHY: Record<
+  NonNullable<BillingPaymentRecord['notAppliedReason']>,
+  string | { pending: string; reviewed: string }
+> = {
   plan_changed: 'It was not applied because your plan changed after this payment was started.',
   period_ended: 'It was not applied because your billing period had already ended when it arrived.',
-  paid_twice:
-    'It was not applied because this top-up had already been paid for. No extra units were added, and our team is reviewing this second payment.',
-  under_review: 'It was not applied and is being reviewed.',
+  paid_twice: {
+    pending:
+      'It was not applied because this top-up had already been paid for. No extra units were added, and our team is reviewing this second payment.',
+    reviewed:
+      'It was not applied because this top-up had already been paid for. No extra units were added.',
+  },
+  under_review: {
+    pending: 'It was not applied and is being reviewed.',
+    reviewed: 'It was not applied.',
+  },
 };
 
 type ViewInput = Pick<
@@ -88,7 +102,13 @@ export function paymentRecordView(record: ViewInput): PaymentRecordView {
   }
   const view = VIEWS[record.state];
   let summary = view.summary;
-  const why = record.notAppliedReason ? NOT_APPLIED_WHY[record.notAppliedReason] : null;
+  const reason = record.notAppliedReason ? NOT_APPLIED_WHY[record.notAppliedReason] : null;
+  const why =
+    reason === null || typeof reason === 'string'
+      ? reason
+      : record.reconciled
+        ? reason.reviewed
+        : reason.pending;
   if (record.state === 'paid_not_applied') {
     if (why) summary = summary.replace('but it was not applied to your plan.', `but ${lower(why)}`);
     if (record.reconciled)
