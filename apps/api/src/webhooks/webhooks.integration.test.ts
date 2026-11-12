@@ -8,143 +8,31 @@
  * and `deliverWebhooks` — with a recording sender in place of the network,
  * because what is worth proving is the state machine and the signature, not
  * that `fetch` works.
+ *
+ * Shared setup is in webhooks.fixtures.ts; the delivery meter is in
+ * webhook-delivery-meter.integration.test.ts.
  */
-import { randomBytes } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+import { describe, expect, it } from 'vitest';
 import { publicApi, type WebhookSecretResponse } from '@rekoda/contracts';
 import { verifyRekodaSignature, WEBHOOK_SIGNATURE_HEADER } from '@rekoda/core/webhooks';
-import { createDb, sql, usageRepo, webhooksRepo, withBusiness, type Db } from '@rekoda/db';
-import { usagePeriod } from '@rekoda/core';
+import { sql, webhooksRepo, withBusiness } from '@rekoda/db';
 import { MAX_WEBHOOK_ENDPOINTS_PER_BUSINESS } from '@rekoda/core/webhooks';
-import {
-  migrate,
-  requireUrls,
-  truncateAll,
-  type Urls,
-  settlementDb,
-  creditBonusForTest,
-} from '@rekoda/db/testing';
-import { buildOutboxDispatcher } from '../jobs/jobs.module.js';
-import { webhookFanOut } from './fan-out.js';
 import { deliverWebhooks } from './delivery.sweep.js';
-import { WebhookSendFailed, type WebhookSender } from './sender.js';
+import { WebhookSendFailed } from './sender.js';
+import {
+  RecordingSender,
+  VAULT_KEY,
+  db,
+  emit,
+  fanOutOnce,
+  get,
+  onboard,
+  post,
+  useWebhooksHarness,
+  workerDb,
+} from './webhooks.fixtures.js';
 
-const SECRET = 'webhooks-secret-at-least-32-characters';
-const VAULT_KEY = randomBytes(32).toString('hex');
-
-let urls: Urls;
-let app: NestFastifyApplication;
-let db: Db;
-let workerDb: Db;
-let closeDb: () => Promise<void>;
-let closeWorker: () => Promise<void>;
-
-beforeAll(async () => {
-  urls = requireUrls();
-  await migrate(urls);
-  ({ db, close: closeDb } = createDb(urls.app, { max: 4 }));
-  ({ db: workerDb, close: closeWorker } = createDb(urls.worker, { max: 2 }));
-
-  process.env['DATABASE_URL'] = urls.app;
-  process.env['OTP_PEPPER'] = 'webhooks-pepper-at-least-32-characters';
-  process.env['VAULT_KEY'] = VAULT_KEY;
-  process.env['MATCH_KEY'] = randomBytes(32).toString('hex');
-  process.env['REKODA_API_SECRET'] = SECRET;
-  process.env['REKODA_OPERATOR_SECRET'] = `operator-${SECRET}`;
-  process.env['REKODA_REVEAL_OTP'] = '1';
-  process.env['REKODA_RATE_LIMIT_MAX'] = '100000';
-  delete process.env['NODE_ENV'];
-
-  const { createApp } = await import('../main.js');
-  app = await createApp();
-  await app.init();
-  await app.getHttpAdapter().getInstance().ready();
-});
-
-afterAll(async () => {
-  await app?.close();
-  await closeDb?.();
-  await closeWorker?.();
-});
-
-beforeEach(async () => {
-  await truncateAll(urls);
-});
-
-function post(url: string, payload: unknown, headers: Record<string, string> = {}) {
-  return app.inject({ method: 'POST', url, payload: payload as object, headers });
-}
-
-function get(url: string, headers: Record<string, string> = {}) {
-  return app.inject({ method: 'GET', url, headers });
-}
-
-/** The same instant one month on, for the periods a backoff can reach. */
-function nextMonth(at: Date): Date {
-  return new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth() + 1, 1, 12));
-}
-
-/** A business with an owner session. */
-async function onboard(phone: string, name: string) {
-  const requested = (await post('/v1/auth/otp/request', { phone })).json() as { devCode: string };
-  const verified = (
-    await post('/v1/auth/otp/verify', { phone, code: requested.devCode })
-  ).json() as { setupToken: string };
-  const created = (
-    await post(
-      '/v1/businesses',
-      { name, businessType: null },
-      { 'x-rekoda-setup-token': verified.setupToken },
-    )
-  ).json() as { sessionToken: string; businessId: string };
-  const now = new Date();
-  /* Deliveries are metered (spec §27's WEBHOOK_DELIVERIES) and no plan
-   * sells them, so the capacity a merchant buys with the API product is
-   * credited here as bonus. A business without it is refused at the meter,
-   * which is its own test below.
-   *
-   * Credited for THIS month and the next, because the retry backoff spans
-   * more than half a day: a delivery that first fails late on the last day
-   * of a month makes its last attempts in the following billing period, and
-   * a merchant whose subscription renews has capacity there too. Crediting
-   * only the current period made the retry test pass on the 1st and fail on
-   * the 31st, which is a property of the calendar rather than of the code
-   * under test. */
-  for (const period of [usagePeriod(now), usagePeriod(nextMonth(now))]) {
-    await withBusiness(settlementDb(), created.businessId, (tx) =>
-      creditBonusForTest(tx, created.businessId, period, 'WEBHOOK_DELIVERIES', 100),
-    );
-  }
-
-  return {
-    businessId: created.businessId,
-    auth: { authorization: `Bearer ${created.sessionToken}` },
-  };
-}
-
-/** A sender that records what it was handed, and answers however it is told. */
-class RecordingSender implements WebhookSender {
-  readonly sent: Array<{ url: string; body: string; headers: Record<string, string> }> = [];
-  constructor(private readonly answer: () => number | Error = () => 200) {}
-
-  async send(input: { url: string; body: string; headers: Record<string, string> }) {
-    this.sent.push(input);
-    const answer = this.answer();
-    if (answer instanceof Error) throw answer;
-    return { status: answer };
-  }
-}
-
-/** Commit a fact the way a command does: an outbox event inside a transaction. */
-async function emit(businessId: string, type: string, payload: Record<string, unknown>) {
-  const { outboxRepo } = await import('@rekoda/db');
-  return withBusiness(db, businessId, (tx) => outboxRepo.append(tx, { businessId, type, payload }));
-}
-
-async function fanOutOnce(): Promise<void> {
-  await buildOutboxDispatcher(webhookFanOut(workerDb)).runOnce(workerDb);
-}
+useWebhooksHarness();
 
 describe('registering an endpoint', () => {
   it('mints a signing secret, shows it once, and never lists it again', async () => {
@@ -513,97 +401,5 @@ describe('delivery', () => {
 
     expect(verifyRekodaSignature(attempt.body, header, rotated.signingSecret, now)).toBe(true);
     expect(verifyRekodaSignature(attempt.body, header, created.signingSecret, now)).toBe(false);
-  });
-});
-
-describe('the delivery meter', () => {
-  /** Spend the endpoint's whole month, leaving nothing for the next fact. */
-  async function drain(businessId: string): Promise<void> {
-    await withBusiness(db, businessId, (tx) =>
-      usageRepo.consumeUnit(
-        tx,
-        businessId,
-        usagePeriod(new Date()),
-        'WEBHOOK_DELIVERIES',
-        100,
-        100,
-      ),
-    );
-  }
-
-  it('counts a delivery that arrived (spec §27)', async () => {
-    const shop = await onboard('+2348193000030', 'Counted Co');
-    await post('/v1/webhooks', { url: 'https://metered.test/hook' }, shop.auth);
-    await emit(shop.businessId, 'sale.recorded', {});
-    await fanOutOnce();
-
-    await deliverWebhooks({
-      worker: workerDb,
-      vaultKey: VAULT_KEY,
-      sender: new RecordingSender(),
-      planCatalogueReads: true,
-    });
-
-    const rows = await withBusiness(db, shop.businessId, (tx) =>
-      usageRepo.usageFor(tx, shop.businessId, usagePeriod(new Date())),
-    );
-    expect(rows.find((row) => row.unit === 'WEBHOOK_DELIVERIES')?.used).toBe(1);
-  });
-
-  it('gives the unit back when the endpoint refused, so an outage is not billed', async () => {
-    const shop = await onboard('+2348193000031', 'Refunded Co');
-    await post('/v1/webhooks', { url: 'https://refunded.test/hook' }, shop.auth);
-    await emit(shop.businessId, 'sale.recorded', {});
-    await fanOutOnce();
-
-    await deliverWebhooks({
-      worker: workerDb,
-      vaultKey: VAULT_KEY,
-      planCatalogueReads: true,
-      sender: new RecordingSender(() => new WebhookSendFailed('endpoint answered 500', 500)),
-    });
-
-    const rows = await withBusiness(db, shop.businessId, (tx) =>
-      usageRepo.usageFor(tx, shop.businessId, usagePeriod(new Date())),
-    );
-    expect(rows.find((row) => row.unit === 'WEBHOOK_DELIVERIES')?.used).toBe(0);
-  });
-
-  it('holds the fact rather than dropping it when the month is spent', async () => {
-    const shop = await onboard('+2348193000032', 'Spent Co');
-    await post('/v1/webhooks', { url: 'https://spent.test/hook' }, shop.auth);
-    await emit(shop.businessId, 'sale.recorded', {});
-    await fanOutOnce();
-    await drain(shop.businessId);
-
-    const sender = new RecordingSender();
-    const refused = await deliverWebhooks({
-      worker: workerDb,
-      vaultKey: VAULT_KEY,
-      sender,
-      planCatalogueReads: true,
-    });
-    expect(refused).toEqual({ sent: 0, failed: 1, dead: 0 });
-    expect(sender.sent).toHaveLength(0);
-
-    const log = await withBusiness(db, shop.businessId, (tx) =>
-      webhooksRepo.deliveriesFor(tx, shop.businessId),
-    );
-    /* Still pending, with the reason readable: the merchant who buys
-     * capacity inside the backoff still receives the fact. */
-    expect(log[0]).toMatchObject({ status: 'pending', attempts: 1 });
-    expect(log[0]!.lastError).toContain('capacity');
-
-    await withBusiness(settlementDb(), shop.businessId, (tx) =>
-      creditBonusForTest(tx, shop.businessId, usagePeriod(new Date()), 'WEBHOOK_DELIVERIES', 10),
-    );
-    const after = await deliverWebhooks({
-      worker: workerDb,
-      vaultKey: VAULT_KEY,
-      sender,
-      planCatalogueReads: true,
-      now: new Date(log[0]!.nextAttemptAt.getTime() + 1_000),
-    });
-    expect(after.sent).toBe(1);
   });
 });

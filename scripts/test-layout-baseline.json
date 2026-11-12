@@ -16,7 +16,6 @@
     "apps/api/src/reminders/reminder-batch.integration.test.ts": 930,
     "apps/api/src/reminders/reminder.integration.test.ts": 1226,
     "apps/api/src/shop/shop.integration.test.ts": 1327,
-    "apps/api/src/webhooks/webhooks.integration.test.ts": 602,
     "packages/core/src/gates.test.ts": 681,
     "packages/core/src/ledger.test.ts": 910,
     "packages/core/src/purchase-identity.test.ts": 728,
