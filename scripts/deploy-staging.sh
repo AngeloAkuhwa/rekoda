@@ -172,7 +172,7 @@ SMOKE_0196_SQL="SELECT
         LIKE '%subscription_origin%'
   AND (SELECT prosrc FROM pg_proc WHERE oid
         = to_regprocedure('rekoda_private.jobs_close_event_reservations()'))
-        LIKE '%set_config(''app.business_id'', NEW.business_id::text, true)%'
+        LIKE '%set_config(''app.business_id'', NEW.business_id::text, true)%coalesce(v_pin, '''')%'
   AND NOT EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'public.usage_reservations'::regclass
         AND pg_get_expr(polqual, polrelid) = 'true')
   AND (SELECT pg_get_expr(polwithcheck, polrelid) FROM pg_policy

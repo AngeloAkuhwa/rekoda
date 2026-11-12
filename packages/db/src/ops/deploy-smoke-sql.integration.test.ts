@@ -245,6 +245,10 @@ describe('the pre-start database smoke, executed', () => {
       "CREATE OR REPLACE FUNCTION rekoda_private.jobs_close_event_reservations() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $f$ DECLARE v_event uuid; BEGIN BEGIN v_event := (NEW.payload ->> 'eventId')::uuid; EXCEPTION WHEN invalid_text_representation THEN RETURN NEW; END; IF v_event IS NULL THEN RETURN NEW; END IF; UPDATE public.usage_reservations SET closed_at = now() WHERE business_id = NEW.business_id AND event_id = v_event AND closed_at IS NULL; RETURN NEW; END $f$",
     ],
     [
+      'a closing trigger that pins the job’s business and never restores the caller’s pin',
+      "CREATE OR REPLACE FUNCTION rekoda_private.jobs_close_event_reservations() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $f$ DECLARE v_event uuid; BEGIN BEGIN v_event := (NEW.payload ->> 'eventId')::uuid; EXCEPTION WHEN invalid_text_representation THEN RETURN NEW; END; IF v_event IS NULL THEN RETURN NEW; END IF; PERFORM set_config('app.business_id', NEW.business_id::text, true); UPDATE public.usage_reservations SET closed_at = now() WHERE business_id = NEW.business_id AND event_id = v_event AND closed_at IS NULL; RETURN NEW; END $f$",
+    ],
+    [
       'reservations readable by a role across tenants',
       'CREATE POLICY widened ON usage_reservations FOR ALL TO rekoda_usage_writer USING (true)',
     ],

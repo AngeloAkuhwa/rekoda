@@ -168,6 +168,9 @@ END $$;
 -- Only so the operator path can lock the business row before the writer runs.
 GRANT UPDATE (updated_at) ON businesses TO rekoda_billing_operator;
 
+-- An earlier draft of this migration widened a policy for this; it is gone wherever it was applied.
+DROP POLICY IF EXISTS usage_writer_sees_reservations ON usage_reservations;
+
 -- The closing trigger closes by the job's business, whatever the session pinned. Otherwise the
 -- function of 0220.
 CREATE OR REPLACE FUNCTION rekoda_private.jobs_close_event_reservations()
