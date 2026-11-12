@@ -181,6 +181,7 @@ dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) api   # build B
 dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) web   # one image at a time: never both at once
 # First PRODUCTION deploy carrying migrations 0175-0178 (G-109): run `dc stop api worker` here first
 # Every deploy carrying 0196 or 0200 (PR B, plan-field boundary, OD-48): run `dc stop api worker` here first, and see "Deploy a release carrying 0196"
+# Every deploy carrying 0216, 0217, 0218, 0220 or 0221 (OD-51): run `dc stop api worker operator settlement` here first, and see "Deploy a release carrying 0213 to 0221"
 # ...and after migrate, run the step-8 pre-start database smoke (SMOKE_0196_SQL) as the owner: do not `dc up` unless it prints t
 dc run --rm -T migrate                                             # expand-only migrations, as the owner
 dc up -d --wait                                                    # recreates api, worker and web on the new images
@@ -633,9 +634,9 @@ worker or the api. Step 1 below describes the release that carried 0209.
 
 Rollback past these migrations is a backup restore (G-02), as for 0196 to 0206 (OWN-86).
 
-### Deploy a release carrying 0213 to 0220 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure)
+### Deploy a release carrying 0213 to 0221 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure)
 
-0216, 0217, 0218 and 0220 are compatibility breaks: the previous release writes `usage_counters`
+0216, 0217, 0218, 0220 and 0221 are compatibility breaks: the previous release writes `usage_counters`
 directly, which no runtime role may do afterwards, and settles charges in the worker on a role
 0217 narrows. Deploy with every writing process stopped; `scripts/deploy-staging.sh` lists them,
 stops `api`, `worker`, `operator` and `settlement`, and enforces the order. 0213 to 0215 and 0219
@@ -677,7 +678,9 @@ This release starts two more services. Before deploying:
    - the support-review resolution refuses after a later merchant schedule (0219);
    - the application cannot delete a job or rewrite its payload, kind or business, its job state
      moves are guarded, and the grace clock starts only after the cycle ended (0220);
-   - the ledger carries the tags 0213 to 0220.
+   - the operator holds no UPDATE on `businesses` but `updated_at`, and its writer records the
+     whole cycle (0221);
+   - the ledger carries the tags 0213 to 0221.
 
 4. 0216 creates the role `rekoda_usage_writer` (NOLOGIN). A restore into an empty cluster needs it
    first; `scripts/restore-drill.sh` creates it.
@@ -711,7 +714,11 @@ This release starts two more services. Before deploying:
 
 **If settlement is down,** paid charges wait as `billing.process` jobs and nothing is lost: the
 worker cannot claim them (the database refuses it), and they run when `settlement` is back.
-**If the operator process is down,** plan changes answer 502 from Caddy; nothing else is affected.
+**If the operator process is down,** plan changes answer 502 from Caddy; nothing else is affected. Caddy does not wait for it, so a deploy whose operator will not start (a wrong role, an audience equal to the API's) reports the deploy failed (`up --wait` fails) while the site, the API and the webhooks keep serving: fix the operator's configuration and run `up` again.
+
+**Before checking out this release,** add the new `.env` values first: compose refuses every command (`dc ps` and `dc logs` included) while a name the file requires is missing.
+
+**To roll back past this release,** stop the two new services first (`dc stop operator settlement`): the previous compose file does not know them, so `up` alone leaves them running.
 
 **The database administrator is trusted (OD-51.5).** The PostgreSQL owner, anyone holding
 `secrets/postgres_owner_password`, anyone who can read `.env`, and anyone with a shell on the host

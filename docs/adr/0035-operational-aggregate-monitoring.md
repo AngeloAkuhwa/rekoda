@@ -273,7 +273,7 @@ Tests:
 ## Amendment 5 (12 Nov 2026, owner instruction for PR #432, OWN-91): settlement and operator plan changes are separate processes; the meter is written through functions; the administrator boundary is stated
 
 Status: accepted with PR #432 (not merged at the time of writing). It records the trust boundaries
-after migrations 0213 to 0220. Nothing here widens a cross-tenant read: the three classes of
+after migrations 0213 to 0221. Nothing here widens a cross-tenant read: the three classes of
 Amendment 1 and the rules of Amendments 2 to 4 are unchanged.
 
 1. **Two more principals run in their own processes.** `rekoda_settlement` is held only by the
@@ -287,7 +287,7 @@ Amendment 1 and the rules of Amendments 2 to 4 are unchanged.
    may only requeue a dead job or record its death. The settlement claim is the same class of
    access as the worker's: coordination columns of jobs, never tenant records.
 3. **The operator process verifies identity itself.** It accepts only tokens for its own audience
-   (`OPERATOR_BILLING_OIDC_AUDIENCE`), which must differ from the API's, so the API is not an
+   alone (`OPERATOR_BILLING_OIDC_AUDIENCE`, never alongside another), which must differ from the API's, so the API is not an
    authority for plan changes and no secret is shared between them (ADR 0034 is otherwise
    unchanged: identities, scopes, the audited subject).
 4. **Usage counters are written only by `rekoda_usage_writer`'s functions** (0216, 0218): reserve,
