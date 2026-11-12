@@ -9,11 +9,17 @@
 #
 # The rules this file keeps, each checked in CI by scripts/check-deploy.mjs:
 #   - only caddy publishes a port; PostgreSQL is reachable from nothing but
-#     the api, the worker and the migrate job, on a network with no egress;
+#     the api, the worker, the operator and settlement processes and the
+#     migrate job, on a network with no egress;
 #   - the owner (migration) credential is mounted into postgres and the
 #     migrate job only. The api and worker hold the rekoda_app and
 #     rekoda_worker URLs from .env and can never start as the owner (their
 #     boot doctor refuses a role that can bypass RLS as well);
+#   - the billing-operator credential reaches the operator service only and
+#     the settlement credential reaches the settlement service only (OD-51).
+#     Those two services are given a named list of variables, never the
+#     shared .env; the api and the worker have both URLs blanked, and each
+#     of the four refuses to start holding a credential that is not its own;
 #   - the api and the worker run the SAME image; the worker is the one with
 #     REKODA_WORKER=1;
 #   - web receives exactly the runtime names its code reads, and no secret;
@@ -116,10 +122,12 @@ services:
       NODE_ENV: production
       PORT: '3001'
       REKODA_WORKER: '0'
-      # OD-51 (migration 0209): the API never holds the settlement credential the shared .env
-      # carries for the worker and the migrate job. Settlement verifies every price itself, so the
-      # API opens charges as rekoda_app; a production API given this URL refuses to start.
+      # OD-51: the API holds neither privileged credential the shared .env carries for the
+      # operator and settlement services and the migrate job. It opens charges as rekoda_app and
+      # serves no plan route (Caddy sends those to the operator service); a production API given
+      # either URL refuses to start.
       SETTLEMENT_DATABASE_URL: ''
+      OPERATOR_DATABASE_URL: ''
       # The same value that tags the image, so /health names what is running
       # even when the shell exports a different one than .env.
       REKODA_RELEASE: ${REKODA_RELEASE:?set REKODA_RELEASE in .env}
@@ -171,10 +179,12 @@ services:
       PORT: '3001'
       REKODA_WORKER: '1'
       REKODA_RELEASE: ${REKODA_RELEASE:?set REKODA_RELEASE in .env}
-      # OD-37 (migration 0202): the worker never serves the operator plan route, so it does not hold
-      # the billing-operator credential the shared .env carries. It keeps SETTLEMENT_DATABASE_URL:
-      # it is the only process that settles Rekoda charges (OD-51, 0209).
+      # OD-51 (migration 0217): the worker holds neither privileged credential. It serves no
+      # operator route and it no longer settles Rekoda charges: the settlement service does, and
+      # the database refuses the worker those jobs. A production worker given either URL refuses
+      # to start.
       OPERATOR_DATABASE_URL: ''
+      SETTLEMENT_DATABASE_URL: ''
       REKODA_TRUSTED_PROXIES: 172.30.10.10
       REKODA_TRUSTED_WEB: 172.30.10.11
     networks:
@@ -189,6 +199,99 @@ services:
         - node
         - -e
         - "fetch('http://127.0.0.1:3001/health').then((r) => r.json()).then((b) => process.exit(b.status === 'ok' ? 0 : 1), () => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
+
+  # The operator plane (OD-51.1): the only process holding the billing-operator credential, and
+  # so the only one that can change a business's plan. It verifies the operator's token itself,
+  # against its own audience, and shares no secret with the API. Its environment is the named
+  # list below and nothing else: it never receives the shared .env.
+  operator:
+    image: rekoda-app:${REKODA_RELEASE:?set REKODA_RELEASE in .env}
+    pull_policy: never
+    command: ['node', 'dist/operator-main.js']
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      NODE_ENV: production
+      PORT: '3002'
+      REKODA_RELEASE: ${REKODA_RELEASE:?set REKODA_RELEASE in .env}
+      OPERATOR_DATABASE_URL: ${OPERATOR_DATABASE_URL:?set OPERATOR_DATABASE_URL in .env}
+      OPERATOR_OIDC_ISSUER: ${OPERATOR_OIDC_ISSUER:?set OPERATOR_OIDC_ISSUER in .env}
+      OPERATOR_OIDC_JWKS_URL: ${OPERATOR_OIDC_JWKS_URL:?set OPERATOR_OIDC_JWKS_URL in .env}
+      OPERATOR_BILLING_OIDC_AUDIENCE: ${OPERATOR_BILLING_OIDC_AUDIENCE:?set OPERATOR_BILLING_OIDC_AUDIENCE in .env}
+      # Only so the process can refuse an audience equal to the API's; it accepts no such token.
+      OPERATOR_OIDC_AUDIENCE: ${OPERATOR_OIDC_AUDIENCE:-}
+      OPERATOR_OIDC_SCOPE_CLAIM: ${OPERATOR_OIDC_SCOPE_CLAIM:-}
+    networks:
+      # edge: Caddy reaches it, and it reaches the identity provider's key set.
+      - edge
+      - db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3002/health').then((r) => r.json()).then((b) => process.exit(b.status === 'ok' && b.process === 'operator' ? 0 : 1), () => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
+
+  # Settlement (OD-51.2): the only process holding the settlement credential, and so the only one
+  # that can record a Rekoda payment, apply a paid plan or credit a pack. It runs two job kinds,
+  # verifies every payment with Paystack itself and serves nothing but a loopback health check.
+  # Its environment is the named list below and nothing else: it never receives the shared .env.
+  settlement:
+    image: rekoda-app:${REKODA_RELEASE:?set REKODA_RELEASE in .env}
+    pull_policy: never
+    command: ['node', 'dist/settlement-main.js']
+    restart: unless-stopped
+    # A settlement in flight (one provider verify, one transaction) finishes before the stop.
+    stop_grace_period: 60s
+    environment:
+      NODE_ENV: production
+      PORT: '3003'
+      REKODA_RELEASE: ${REKODA_RELEASE:?set REKODA_RELEASE in .env}
+      SETTLEMENT_DATABASE_URL: ${SETTLEMENT_DATABASE_URL:?set SETTLEMENT_DATABASE_URL in .env}
+      # Opens the stored webhook event a settlement job names; verifies the payment it reports.
+      VAULT_KEY: ${VAULT_KEY:?set VAULT_KEY in .env}
+      PAYSTACK_SECRET_KEY: ${PAYSTACK_SECRET_KEY:-}
+      REKODA_PLAN_CATALOGUE_READS: ${REKODA_PLAN_CATALOGUE_READS:-}
+      REKODA_SETTLEMENT_CONCURRENCY: ${REKODA_SETTLEMENT_CONCURRENCY:-}
+    networks:
+      - db
+      - settlement-egress
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3003/health').then((r) => r.json()).then((b) => process.exit(b.status === 'ok' && b.process === 'settlement' ? 0 : 1), () => process.exit(1))"
       interval: 10s
       timeout: 5s
       retries: 6
@@ -307,6 +410,8 @@ services:
         condition: service_healthy
       api:
         condition: service_healthy
+      operator:
+        condition: service_healthy
       # Never serve with an edge trust list a browser could exploit (G-74).
       edge-check:
         condition: service_completed_successfully
@@ -335,9 +440,12 @@ networks:
           # Dynamic addresses come from the upper half only, so a recreated
           # container can never take Caddy's fixed .10 or web's fixed .11.
           ip_range: 172.30.10.128/25
-  # PostgreSQL and the three processes that may reach it. No egress at all.
+  # PostgreSQL and the processes that may reach it (api, worker, operator,
+  # settlement, migrate). No egress at all.
   db:
     internal: true
+  # Settlement's route out to Paystack, shared with nothing else.
+  settlement-egress: {}
   # The worker's route out (Meta, the model providers, Paystack), without
   # joining the network web and Caddy share.
   worker-egress: {}

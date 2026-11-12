@@ -89,7 +89,7 @@ jobs:
       # images run as non-root and are built from no secret (G-01).
       - name: Deployment files keep their shape
         if: steps.ws.outputs.present == 'true'
-        run: node --test scripts/check-deploy.test.mjs && node scripts/check-deploy.mjs
+        run: node --test scripts/check-deploy.test.mjs scripts/check-deploy-privileged.test.mjs && node scripts/check-deploy.mjs
       # The vendored design skills (.claude/skills, SOURCES.md) stay what was
       # reviewed: each folder hashes to its recorded value and no ignore rule
       # drops part of one, as `data/` once did to Impeccable's font index.

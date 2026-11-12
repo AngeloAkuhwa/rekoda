@@ -161,6 +161,8 @@ set_env META_VERIFY_TOKEN "$VERIFY"
 set_env OPERATOR_OIDC_ISSUER https://idp.example.com/
 set_env OPERATOR_OIDC_AUDIENCE rekoda-ci
 set_env OPERATOR_OIDC_JWKS_URL https://idp.example.com/.well-known/jwks.json
+# OD-51: the operator process accepts its own audience only, never the API's.
+set_env OPERATOR_BILLING_OIDC_AUDIENCE rekoda-ci-billing
 set_env REKODA_RATE_LIMIT_MAX 20
 printf '%s\n' "$OWNER_PW" "$APP_PW" "$WORKER_PW" "$SETTLEMENT_PW" "$OPERATOR_PW" "$VAULT" "$MATCH" "$CONNECTION" \
   "$API_SECRET" "$PEPPER" "$META_SECRET" "$VERIFY" >"$WORK/secrets.txt"
@@ -249,6 +251,32 @@ if timeout 120 "${COMPOSE[@]}" run --rm -T --no-deps -e "WORKER_DATABASE_URL=$OW
 fi
 grep -q 'SUPERUSER' "$WORK/owner-worker.log" || { cat "$WORK/owner-worker.log"; fail 'the worker did not name the bypass role'; }
 echo 'ok: both refused'
+
+step 'each privileged credential is refused everywhere but its own process (OD-51)'
+SETTLEMENT_URL="postgres://rekoda_settlement:$SETTLEMENT_PW@postgres:5432/rekoda"
+OPERATOR_URL="postgres://rekoda_billing_operator:$OPERATOR_PW@postgres:5432/rekoda"
+privileged_refused() {
+  # $1: service; $2: NAME=value it must not start with; $3: what the refusal must say.
+  if timeout 120 "${COMPOSE[@]}" run --rm -T --no-deps -e "$2" "$1" >"$WORK/privileged.log" 2>&1; then
+    fail "$1 started holding ${2%%=*}"
+  fi
+  grep -q -F -e "$3" "$WORK/privileged.log" || {
+    cat "$WORK/privileged.log"
+    fail "$1 refused ${2%%=*} without saying: $3"
+  }
+}
+privileged_refused api "SETTLEMENT_DATABASE_URL=$SETTLEMENT_URL" 'SETTLEMENT_DATABASE_URL must not be set for'
+privileged_refused api "OPERATOR_DATABASE_URL=$OPERATOR_URL" 'OPERATOR_DATABASE_URL must not be set for'
+privileged_refused worker "SETTLEMENT_DATABASE_URL=$SETTLEMENT_URL" 'SETTLEMENT_DATABASE_URL must not be set for'
+privileged_refused worker "OPERATOR_DATABASE_URL=$OPERATOR_URL" 'OPERATOR_DATABASE_URL must not be set for'
+privileged_refused operator "SETTLEMENT_DATABASE_URL=$SETTLEMENT_URL" 'the operator process must not be given SETTLEMENT_DATABASE_URL'
+privileged_refused operator "VAULT_KEY=$VAULT" 'the operator process must not be given VAULT_KEY'
+privileged_refused settlement "OPERATOR_DATABASE_URL=$OPERATOR_URL" 'the settlement process must not be given OPERATOR_DATABASE_URL'
+privileged_refused settlement "WORKER_DATABASE_URL=postgres://rekoda_worker:$WORKER_PW@postgres:5432/rekoda" 'the settlement process must not be given WORKER_DATABASE_URL'
+# The right process on the wrong role: each names the role it must connect as.
+privileged_refused operator "OPERATOR_DATABASE_URL=$SETTLEMENT_URL" 'rekoda_billing_operator'
+privileged_refused settlement "SETTLEMENT_DATABASE_URL=postgres://rekoda_app:$APP_PW@postgres:5432/rekoda" 'rekoda_settlement'
+echo 'ok: every one refused, naming the variable or the role'
 
 step 'production refuses non-production infrastructure and unsafe trust (G-72)'
 # Each value is one a development or test setup uses legitimately, one copied
@@ -367,7 +395,7 @@ echo 'ok: refused before Caddy served, the empty value accepted, and Caddy trust
 
 step 'the stack comes up healthy'
 "${COMPOSE[@]}" up -d --wait --wait-timeout 300
-for service in api worker web; do
+for service in api worker operator settlement web; do
   for container in $("${COMPOSE[@]}" ps -q "$service"); do
     seen=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}{{range .Mounts}}{{println .Destination}}{{end}}' "$container")
     if grep -q -F -e "$OWNER_PW" -e /run/secrets <<<"$seen"; then
@@ -376,6 +404,37 @@ for service in api worker web; do
   done
 done
 echo 'ok: no serving process holds the owner credential'
+
+step 'the privileged credentials are held by their own process and no other (OD-51)'
+# Read from the running containers, not from the compose file: what a process was actually given.
+holds() {
+  # $1: service; $2: a secret value. True when any container of the service carries it.
+  local container
+  for container in $("${COMPOSE[@]}" ps -q "$1"); do
+    if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container" | grep -q -F -e "$2"; then
+      return 0
+    fi
+  done
+  return 1
+}
+for service in api worker web caddy; do
+  if holds "$service" "$SETTLEMENT_PW"; then fail "$service holds the settlement credential"; fi
+  if holds "$service" "$OPERATOR_PW"; then fail "$service holds the billing-operator credential"; fi
+done
+holds settlement "$SETTLEMENT_PW" || fail 'the settlement process does not hold its credential'
+holds operator "$OPERATOR_PW" || fail 'the operator process does not hold its credential'
+for secret in "$OPERATOR_PW" "$APP_PW" "$WORKER_PW" "$MATCH" "$CONNECTION" "$API_SECRET" "$PEPPER" "$META_SECRET" "$VERIFY"; do
+  if holds settlement "$secret"; then fail 'the settlement process holds a secret that is not its own'; fi
+done
+for secret in "$SETTLEMENT_PW" "$APP_PW" "$WORKER_PW" "$VAULT" "$MATCH" "$CONNECTION" "$API_SECRET" "$PEPPER" "$META_SECRET" "$VERIFY"; do
+  if holds operator "$secret"; then fail 'the operator process holds a secret that is not its own'; fi
+done
+"${COMPOSE[@]}" logs --no-color settlement >"$WORK/settlement.log"
+grep -q '\[settlement\] job runner started' "$WORK/settlement.log" || fail 'the settlement process did not start its runner'
+"${COMPOSE[@]}" logs --no-color operator >"$WORK/operator.log"
+grep -q '\[operator\] listening on .*identity: verified tokens' "$WORK/operator.log" ||
+  fail 'the operator process is not verifying operator tokens'
+echo 'ok: one credential each, and nothing else that belongs to another process'
 
 step "Caddy's local CA (the .localhost hostnames get an internal certificate)"
 for _ in $(seq 1 30); do
@@ -417,6 +476,16 @@ grep -qi '^x-content-type-options: nosniff' "$WORK/api-headers.txt" || fail 'the
 if grep -qi '^server:' "$WORK/api-headers.txt"; then fail 'the API names its server'; fi
 [ "$(api "https://$API/webhooks/meta?hub.mode=subscribe&hub.verify_token=$VERIFY&hub.challenge=4815162342")" = 4815162342 ] ||
   fail "Meta's handshake does not reach the API"
+# OD-51: a plan change is answered by the operator process, which refuses a caller with no token
+# before it reads a body. The API itself does not serve the path at all.
+plan_status=$(api -o "$WORK/plan.json" -w '%{http_code}' -X POST -H 'content-type: application/json' \
+  -d '{}' "https://$API/v1/businesses/plan")
+[ "$plan_status" = 401 ] || fail "a plan change with no operator token answered $plan_status, not 401"
+review_status=$(api -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
+  -H "authorization: Bearer $API_SECRET" -d '{}' "https://$API/v1/businesses/plan/support-review")
+[ "$review_status" = 401 ] || fail "a plan review with the API's own secret answered $review_status, not 401"
+direct_status=$("${COMPOSE[@]}" exec -T api node -e "fetch('http://127.0.0.1:3001/v1/businesses/plan',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}).then((r)=>console.log(r.status))")
+[ "$direct_status" = 404 ] || fail "the API itself answered a plan change with $direct_status; it must not serve the route (404)"
 BODY='{"object":"whatsapp_business_account","entry":[]}'
 SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$META_SECRET" | sed 's/^.* //')
 [ "$(api -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
@@ -461,7 +530,7 @@ grep -q 'no handler registered for job kind "deploy.smoke.probe"' <<<"$reason" |
 echo 'ok'
 
 step 'restarts lose nothing'
-"${COMPOSE[@]}" restart api worker web
+"${COMPOSE[@]}" restart api worker operator settlement web
 "${COMPOSE[@]}" up -d --wait --wait-timeout 300
 "${COMPOSE[@]}" down
 "${COMPOSE[@]}" up -d --wait --wait-timeout 300
@@ -610,7 +679,7 @@ done
 echo "ok: the host was limited at view $hostile as the gateway, and visitor $C kept their own bucket"
 
 step 'nothing tried to write where the images keep code read-only'
-"${COMPOSE[@]}" logs --no-color api worker web >"$WORK/all.log"
+"${COMPOSE[@]}" logs --no-color api worker operator settlement web >"$WORK/all.log"
 if grep -E -q 'EACCES|EROFS|read-only file system' "$WORK/all.log"; then
   grep -E -m 20 'EACCES|EROFS|read-only file system' "$WORK/all.log" || true
   fail 'a service tried to write to a read-only path'
