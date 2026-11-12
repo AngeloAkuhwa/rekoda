@@ -28,7 +28,7 @@ import {
   useMetaWebhookHarness,
   workerDb,
 } from './meta-webhook.fixtures.js';
-import { setPlanForTest, requireUrls, settlementDb } from '@rekoda/db/testing';
+import { setPlanForTest, requireUrls, settlementDb, creditBonusForTest } from '@rekoda/db/testing';
 
 useMetaWebhookHarness();
 
@@ -171,7 +171,7 @@ describe('send payment details across products (spec §5.3 X1; PR-093)', () => {
       });
       /* Pack units are credited only by settlement (OD-37). */
       await withBusiness(settlementDb(), businessId, (s) =>
-        usageRepo.creditBonus(s, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 5),
+        creditBonusForTest(s, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 5),
       );
     });
 

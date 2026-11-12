@@ -87,7 +87,9 @@ describe('0210: the worker cannot write tenant or identity data', () => {
     }
   });
 
-  it('keeps exactly the writes its jobs make, at table and column level (0210, 0212)', async () => {
+  it('keeps exactly the writes its jobs make, at table and column level (0210, 0212, 0216)', async () => {
+    /* Webhook-delivery metering goes through usage_reserve and usage_refund since 0216 (OD-51.4):
+     * the worker no longer writes usage_counters at all. */
     const rows = await ownerDb.execute<{ grant: string }>(sql`
       SELECT c.relname || ':' || p.priv AS grant
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -109,8 +111,6 @@ describe('0210: the worker cannot write tenant or identity data', () => {
       'reconciliations:INSERT',
       'stranger_contacts:INSERT',
       'stranger_contacts:UPDATE',
-      'usage_counters:INSERT',
-      'usage_counters:UPDATE',
       'webhook_deliveries:UPDATE',
       'webhook_endpoints:UPDATE',
     ]);

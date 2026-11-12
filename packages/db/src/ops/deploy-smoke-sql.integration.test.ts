@@ -37,6 +37,11 @@ async function smokeAfter(tamper: string): Promise<string> {
       await tx.execute(
         sql.raw('DROP FUNCTION IF EXISTS public.test_fixture_set_plan(uuid, text, timestamptz)'),
       );
+      await tx.execute(
+        sql.raw(
+          'DROP FUNCTION IF EXISTS public.test_fixture_credit_bonus(uuid, text, text, integer)',
+        ),
+      );
       if (tamper) await tx.execute(sql.raw(tamper));
       const [row] = await tx.execute<{ ok: boolean }>(
         sql.raw(`SELECT (${SMOKE!.replace(/^SELECT/, '')}) AS ok`),
@@ -190,6 +195,39 @@ describe('the pre-start database smoke, executed', () => {
       'ALTER TABLE subscription_charges DISABLE TRIGGER subscription_charges_pricing_source_guard',
     ],
     ['no pricing source row', 'DELETE FROM billing_pricing_source'],
+    // 0216 (OD-51.4): the usage meter is written only through its functions.
+    ['the application writing a counter directly', 'GRANT UPDATE ON usage_counters TO rekoda_app'],
+    ['the worker writing a counter directly', 'GRANT INSERT ON usage_counters TO rekoda_worker'],
+    [
+      'one counter column writable by settlement',
+      'GRANT UPDATE (bonus) ON usage_counters TO rekoda_settlement',
+    ],
+    [
+      'the reservation ledger writable by the application',
+      'GRANT UPDATE ON usage_reservations TO rekoda_app',
+    ],
+    [
+      'the pack-credit function granted to the application',
+      'GRANT EXECUTE ON FUNCTION usage_credit_pack(uuid,text,text,text,integer) TO rekoda_app',
+    ],
+    [
+      'the refund function granted to settlement',
+      'GRANT EXECUTE ON FUNCTION usage_refund(uuid,uuid,text,integer) TO rekoda_settlement',
+    ],
+    [
+      'a usage function with the wrong owner',
+      'ALTER FUNCTION usage_reserve(uuid,text,text,integer,integer,boolean) OWNER TO CURRENT_USER',
+    ],
+    [
+      'an extra function owned by the usage writer',
+      "CREATE FUNCTION public.usage_reset(p uuid) RETURNS void LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS ''; ALTER FUNCTION public.usage_reset(uuid) OWNER TO rekoda_usage_writer",
+    ],
+    ['the application able to become the usage writer', 'GRANT rekoda_usage_writer TO rekoda_app'],
+    ['the usage writer able to log in', 'ALTER ROLE rekoda_usage_writer LOGIN'],
+    [
+      'the test-only pack-credit writer present',
+      "CREATE FUNCTION public.test_fixture_credit_bonus(a uuid, b text, c text, d integer) RETURNS void LANGUAGE sql AS ''",
+    ],
     [
       'the test-only fixture writer present',
       "CREATE FUNCTION public.test_fixture_set_plan(p uuid, q text, r timestamptz) RETURNS void LANGUAGE sql AS ''",

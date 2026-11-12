@@ -1513,6 +1513,13 @@
       "when": 1796212800000,
       "tag": "0215_pricing_source_authority",
       "breakpoints": true
+    },
+    {
+      "idx": 216,
+      "version": "7",
+      "when": 1796299200000,
+      "tag": "0216_usage_meter_boundary",
+      "breakpoints": true
     }
   ]
 }

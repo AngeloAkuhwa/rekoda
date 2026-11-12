@@ -7,6 +7,7 @@
  * category and destination at send time, and the one consumption that
  * precedes dispatch comes back on the path that does not deliver.
  */
+import { usageRowIsFree } from './usage-row-probe.fixtures.js';
 import { randomBytes } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -21,7 +22,13 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+  creditBonusForTest,
+} from '@rekoda/db/testing';
 import { setPlanForTest, settlementDb } from '@rekoda/db/testing';
 import { usagePeriod } from '@rekoda/core';
 import {
@@ -313,7 +320,7 @@ describe('the window selects the send (§24; PR-061)', () => {
      * replacing it. */
     const period = usagePeriod(new Date());
     await withBusiness(settlementDb(), businessId, (tx) =>
-      usageRepo.creditBonus(tx, businessId, period, 'SERVICE_MESSAGE', 5),
+      creditBonusForTest(tx, businessId, period, 'SERVICE_MESSAGE', 5),
     );
 
     const outcome = await service.sendCustomerText(businessId, {
@@ -512,7 +519,7 @@ describe('no transaction is held open while Meta is called (REM-02)', () => {
     /* A committed counter row, so the reservation below is an UPDATE of a row another request
      * can contend for (a fresh row inserted by the send would be invisible, not locked). */
     await withBusiness(settlementDb(), businessId, (tx) =>
-      usageRepo.creditBonus(tx, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 5),
+      creditBonusForTest(tx, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 5),
     );
   }
 
@@ -536,19 +543,7 @@ describe('no transaction is held open while Meta is called (REM-02)', () => {
     }
     override async sendOnConnection(message: Parameters<StubSender['sendOnConnection']>[0]) {
       const businessId = this.businessId;
-      let usageRowUpdated = false;
-      try {
-        await withBusiness(db, businessId, async (tx) => {
-          await tx.execute(sql`SET LOCAL lock_timeout = '1500ms'`);
-          await tx.execute(
-            sql`UPDATE usage_counters SET updated_at = now()
-                 WHERE business_id = ${businessId}::uuid AND unit = 'SERVICE_MESSAGE'`,
-          );
-        });
-        usageRowUpdated = true;
-      } catch {
-        usageRowUpdated = false;
-      }
+      const usageRowUpdated = await usageRowIsFree(urls, businessId, 'SERVICE_MESSAGE');
       const [outbound] = [
         ...(await withBusiness(db, businessId, (tx) =>
           tx.execute<{ n: number }>(

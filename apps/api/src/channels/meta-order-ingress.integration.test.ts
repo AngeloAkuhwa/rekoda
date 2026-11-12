@@ -34,7 +34,7 @@ import {
   useMetaWebhookHarness,
   workerDb,
 } from './meta-webhook.fixtures.js';
-import { setPlanForTest, requireUrls, settlementDb } from '@rekoda/db/testing';
+import { setPlanForTest, requireUrls, settlementDb, creditBonusForTest } from '@rekoda/db/testing';
 
 useMetaWebhookHarness();
 
@@ -267,7 +267,7 @@ describe('the W3 completion gate: catalogue to receipt (spec §3.2; PR-089)', ()
       } else {
         /* Pack units are credited only by settlement (OD-37). */
         await withBusiness(settlementDb(), businessId, (s) =>
-          usageRepo.creditBonus(s, businessId, period, 'SERVICE_MESSAGE', 5),
+          creditBonusForTest(s, businessId, period, 'SERVICE_MESSAGE', 5),
         );
       }
       return wig.id;

@@ -1,4 +1,4 @@
-import { ownerDb as entitlementOwnerDb } from '@rekoda/db/testing';
+import { ownerDb as entitlementOwnerDb, creditBonusForTest } from '@rekoda/db/testing';
 /**
  * The sandbox (PR-114, API-D closes).
  *
@@ -105,7 +105,7 @@ async function developer(phone: string, name: string): Promise<Developer> {
       source: 'MANUAL_GRANT',
       grantedBy: 'operator:sandbox-suite',
     });
-    await usageRepo.creditBonus(tx, created.businessId, period, 'API_REQUEST_UNITS', 20);
+    await creditBonusForTest(tx, created.businessId, period, 'API_REQUEST_UNITS', 20);
   });
   /* Applications are held, not spent (PR-116): capacity comes from an
    * add-on holding rather than a credit against the month. */

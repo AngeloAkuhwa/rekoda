@@ -71,7 +71,8 @@ carries_plan_boundary() {
      " $BREAKING " == *' 0209_settlement_verifies_the_price '* ||
      " $BREAKING " == *' 0210_worker_least_privilege '* ||
      " $BREAKING " == *' 0211_operator_principal_least_privilege '* ||
-     " $BREAKING " == *' 0212_closeout_review_fixes '* ]]
+     " $BREAKING " == *' 0212_closeout_review_fixes '* ||
+     " $BREAKING " == *' 0216_usage_meter_boundary '* ]]
 }
 # The OWN-86 pre-start smoke query, printed for an operator fixing forward by hand.
 print_smoke_0196() {
@@ -93,7 +94,7 @@ fail() {
 PHASE=checks
 # Migrations the previous release cannot run against (OD-48): the api and worker are stopped before
 # any of them is applied, and the old release is never restarted against a database that has one.
-COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_standard_periods 0209_settlement_verifies_the_price 0210_worker_least_privilege 0211_operator_principal_least_privilege 0212_closeout_review_fixes'
+COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_standard_periods 0209_settlement_verifies_the_price 0210_worker_least_privilege 0211_operator_principal_least_privilege 0212_closeout_review_fixes 0216_usage_meter_boundary'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -132,6 +133,9 @@ UP_ENTERED=false
 #     application only, and no runtime role writes plan_change_reviews directly;
 #   * a pack purchase is credited once: the purchase guard is enabled and the unique index on a
 #     credited (business, purchase) exists (0214);
+#   * no runtime role writes a usage counter or the reservation ledger; rekoda_usage_writer (NOLOGIN,
+#     no members) owns exactly the three usage functions with exactly their grantees; a pack's
+#     credit time is written by usage_credit_pack alone (0216);
 #   * the pricing source in force is one row no runtime role can write or switch, and a charge's
 #     recorded source is guarded (0215);
 #   * the worker reads but cannot write other businesses' events (its estate policy is SELECT only,
@@ -147,7 +151,7 @@ SMOKE_0196_SQL="SELECT
                   '0209_settlement_verifies_the_price', '0210_worker_least_privilege',
                   '0211_operator_principal_least_privilege', '0212_closeout_review_fixes',
                   '0213_support_review_plan_change', '0214_pack_purchase_identity',
-                  '0215_pricing_source_authority')) = 15
+                  '0215_pricing_source_authority', '0216_usage_meter_boundary')) = 16
   AND (SELECT count(*) FROM pg_trigger t WHERE t.tgenabled IN ('O', 'A') AND (t.tgname, t.tgrelid) IN (
         ('businesses_plan_fields_guard', 'public.businesses'::regclass),
         ('businesses_plan_fields_insert_guard', 'public.businesses'::regclass),
@@ -181,6 +185,7 @@ SMOKE_0196_SQL="SELECT
   AND to_regprocedure('public.subscription_write_plan(uuid,text,timestamptz)') IS NULL
   AND to_regprocedure('public.subscription_operator_set_plan(uuid,text,timestamptz,text)') IS NULL
   AND to_regprocedure('public.test_fixture_set_plan(uuid,text,timestamptz)') IS NULL
+  AND to_regprocedure('public.test_fixture_credit_bonus(uuid,text,text,integer)') IS NULL
   AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker', 'rekoda_settlement',
         'rekoda_billing_operator']) AS r(role) WHERE has_schema_privilege(r.role, 'public', 'CREATE'))
   AND (SELECT count(*) FROM pg_roles WHERE rolname IN ('rekoda_settlement', 'rekoda_billing_operator')
@@ -221,7 +226,7 @@ SMOKE_0196_SQL="SELECT
       = 'audit_events:INSERT,dead_job_exceptions:INSERT,dead_job_exceptions:UPDATE,'
         || 'external_events:UPDATE,jobs:UPDATE,outbox_events:UPDATE,'
         || 'pending_object_deletions:DELETE,pending_object_deletions:UPDATE,reconciliations:INSERT,'
-        || 'stranger_contacts:INSERT,stranger_contacts:UPDATE,usage_counters:INSERT,usage_counters:UPDATE,'
+        || 'stranger_contacts:INSERT,stranger_contacts:UPDATE,'
         || 'webhook_deliveries:UPDATE,webhook_endpoints:UPDATE'
   AND NOT has_column_privilege('rekoda_worker', 'public.jobs', 'kind', 'UPDATE')
   AND NOT has_column_privilege('rekoda_worker', 'public.jobs', 'payload', 'UPDATE')
@@ -247,6 +252,36 @@ SMOKE_0196_SQL="SELECT
   AND (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public'
         AND indexname = 'subscription_charges_one_credit_per_purchase_ux'
         AND indexdef LIKE '%UNIQUE%(business_id, purchase_id)%units_credited_at IS NOT NULL%') = 1
+  AND (SELECT string_agg(sig || ' => ' || grantees, ' ; ' ORDER BY sig) FROM (
+        SELECT n.nspname || '.' || p.proname || '(' || oidvectortypes(p.proargtypes) || ')' AS sig,
+               coalesce((SELECT string_agg(a.grantee::regrole::text, ',' ORDER BY a.grantee::regrole::text)
+                         FROM aclexplode(p.proacl) a
+                         WHERE a.privilege_type = 'EXECUTE' AND a.grantee <> p.proowner), '') AS grantees
+        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE p.proowner = 'rekoda_usage_writer'::regrole) w)
+      = 'public.usage_credit_pack(uuid, text, text, text, integer) => rekoda_settlement'
+        || ' ; public.usage_refund(uuid, uuid, text, integer) => rekoda_app,rekoda_worker'
+        || ' ; public.usage_reserve(uuid, text, text, integer, integer, boolean) => rekoda_app,rekoda_worker'
+  AND NOT EXISTS (SELECT 1 FROM pg_proc WHERE proowner = 'rekoda_usage_writer'::regrole
+        AND (NOT prosecdef OR proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, public, pg_temp']))
+  AND (SELECT count(*) FROM pg_roles WHERE rolname = 'rekoda_usage_writer'
+        AND NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls) = 1
+  AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker', 'rekoda_settlement',
+        'rekoda_billing_operator', 'rekoda_plan_writer']) AS r(role)
+        WHERE pg_has_role(r.role, 'rekoda_usage_writer', 'MEMBER'))
+  AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker', 'rekoda_settlement',
+        'rekoda_billing_operator']) AS r(role)
+        CROSS JOIN unnest(ARRAY['public.usage_counters', 'public.usage_reservations']) AS t(tab)
+        WHERE has_any_column_privilege(r.role, t.tab, 'INSERT')
+           OR has_any_column_privilege(r.role, t.tab, 'UPDATE')
+           OR has_table_privilege(r.role, t.tab, 'DELETE')
+           OR has_table_privilege(r.role, t.tab, 'TRUNCATE'))
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.usage_counters_bonus_guard()'))
+        LIKE '%rekoda_usage_writer%credited only through usage_credit_pack%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.subscription_charges_settlement_guard()'))
+        LIKE '%the usage writer records only the credit time%a pack is credited only through usage_credit_pack%'
   AND (SELECT count(*) FROM billing_pricing_source WHERE mode IN ('catalogue', 'constants')) = 1
   AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker', 'rekoda_settlement',
         'rekoda_billing_operator']) AS r(role)

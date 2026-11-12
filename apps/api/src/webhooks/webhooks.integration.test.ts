@@ -17,7 +17,14 @@ import { verifyRekodaSignature, WEBHOOK_SIGNATURE_HEADER } from '@rekoda/core/we
 import { createDb, sql, usageRepo, webhooksRepo, withBusiness, type Db } from '@rekoda/db';
 import { usagePeriod } from '@rekoda/core';
 import { MAX_WEBHOOK_ENDPOINTS_PER_BUSINESS } from '@rekoda/core/webhooks';
-import { migrate, requireUrls, truncateAll, type Urls, settlementDb } from '@rekoda/db/testing';
+import {
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+  settlementDb,
+  creditBonusForTest,
+} from '@rekoda/db/testing';
 import { buildOutboxDispatcher } from '../jobs/jobs.module.js';
 import { webhookFanOut } from './fan-out.js';
 import { deliverWebhooks } from './delivery.sweep.js';
@@ -106,7 +113,7 @@ async function onboard(phone: string, name: string) {
    * under test. */
   for (const period of [usagePeriod(now), usagePeriod(nextMonth(now))]) {
     await withBusiness(settlementDb(), created.businessId, (tx) =>
-      usageRepo.creditBonus(tx, created.businessId, period, 'WEBHOOK_DELIVERIES', 100),
+      creditBonusForTest(tx, created.businessId, period, 'WEBHOOK_DELIVERIES', 100),
     );
   }
 
@@ -588,7 +595,7 @@ describe('the delivery meter', () => {
     expect(log[0]!.lastError).toContain('capacity');
 
     await withBusiness(settlementDb(), shop.businessId, (tx) =>
-      usageRepo.creditBonus(tx, shop.businessId, usagePeriod(new Date()), 'WEBHOOK_DELIVERIES', 10),
+      creditBonusForTest(tx, shop.businessId, usagePeriod(new Date()), 'WEBHOOK_DELIVERIES', 10),
     );
     const after = await deliverWebhooks({
       worker: workerDb,

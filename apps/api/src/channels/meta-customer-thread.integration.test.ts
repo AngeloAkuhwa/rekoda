@@ -28,7 +28,7 @@ import {
   useMetaWebhookHarness,
   workerDb,
 } from './meta-webhook.fixtures.js';
-import { setPlanForTest, requireUrls, settlementDb } from '@rekoda/db/testing';
+import { setPlanForTest, requireUrls, settlementDb, creditBonusForTest } from '@rekoda/db/testing';
 
 useMetaWebhookHarness();
 
@@ -75,7 +75,7 @@ describe('the away assistant (spec Appendix D; W4, PR-090)', () => {
       });
       /* Pack units are credited only by settlement (OD-37). */
       await withBusiness(settlementDb(), businessId, (s) =>
-        usageRepo.creditBonus(s, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 5),
+        creditBonusForTest(s, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 5),
       );
       await wabaRepo.setAssistantSettings(tx, businessId, {
         enabled: opts.enabled ?? true,
@@ -225,7 +225,7 @@ describe("a customer's own STOP (PR-135)", () => {
       });
       /* Pack units are credited only by settlement (OD-37). */
       await withBusiness(settlementDb(), businessId, (s) =>
-        usageRepo.creditBonus(s, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 20),
+        creditBonusForTest(s, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 20),
       );
       /* The assistant ON, so "silent afterwards" means the suppression did
        * it and not the absence of anything to say. */

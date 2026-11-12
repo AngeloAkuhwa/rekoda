@@ -14,7 +14,7 @@ import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { billingRepo, events, identity, usageRepo } from '../index.js';
 import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '../testing.js';
-import { setPlanForTest, settlementDb, operatorDb } from '../testing.js';
+import { creditBonusForTest, setPlanForTest, settlementDb, operatorDb } from '../testing.js';
 import { USAGE_UNITS, allowanceFor } from '@rekoda/core';
 
 let urls: Urls;
@@ -90,10 +90,7 @@ describe('the atomic gate', () => {
 
     // What the M4 billing event will do after a VERIFIED top-up payment (settlement only, OD-37).
     await withBusiness(settlementDb(), businessId, (tx) =>
-      tx.execute(sql`
-        UPDATE usage_counters SET bonus = 3
-        WHERE business_id = ${businessId}::uuid AND period = ${PERIOD} AND unit = 'AI_ACTIONS'
-      `),
+      creditBonusForTest(tx, businessId, PERIOD, 'AI_ACTIONS', 3),
     );
 
     expect(await consume(businessId, 2)).toBe(true); // doorway reopened
@@ -105,21 +102,30 @@ describe('the atomic gate', () => {
   it('refunds floor at zero and give back exactly what was taken', async () => {
     const businessId = await seedBusiness();
     await setPlanOnRow(businessId, 'chat');
-    await consume(businessId, 5);
-    await consume(businessId, 5);
+    const reserve = () =>
+      withBusiness(db, businessId, (tx) =>
+        usageRepo.reserveUnit(tx, businessId, PERIOD, 'AI_ACTIONS', 5),
+      );
+    const refund = (meter: usageRepo.MeterRow, n?: number) =>
+      withBusiness(db, businessId, (tx) =>
+        usageRepo.refundUnit(tx, businessId, meter, 'AI_ACTIONS', n),
+      );
+    const first = await reserve();
+    const second = await reserve();
 
-    await withBusiness(db, businessId, (tx) =>
-      usageRepo.refundUnit(tx, businessId, usageRepo.monthMeter(PERIOD), 'AI_ACTIONS'),
-    );
+    expect(await refund(first.meter)).toBe(1);
     const [row] = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, PERIOD),
     );
     expect(row?.used).toBe(1);
 
-    // Refunding more than was ever taken cannot mint credit.
-    await withBusiness(db, businessId, (tx) =>
-      usageRepo.refundUnit(tx, businessId, usageRepo.monthMeter(PERIOD), 'AI_ACTIONS', 99),
-    );
+    // Refunding more than was ever taken cannot mint credit: a reservation already returned gives
+    // nothing more, and the other gives back the one unit it spent however many are asked for
+    // (OD-51.4, migration 0216). A row name with no reservation returns nothing at all.
+    expect(await refund(first.meter, 99)).toBe(0);
+    expect(await refund(usageRepo.monthMeter(PERIOD), 99)).toBe(0);
+    expect(await refund(second.meter, 99)).toBe(1);
+    expect(await refund(second.meter, 99)).toBe(0);
     const [floored] = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, PERIOD),
     );
@@ -329,13 +335,25 @@ describe('the metered vocabulary (spec 4.2)', () => {
     businessId = await seedBusiness();
   });
 
+  /* Through `usage_reserve`, the only way a runtime role writes a counter since migration 0216
+   * (OD-51.4): the function inserts the unit name it is given, so the CHECK is what refuses a
+   * name outside the vocabulary. The table owner's direct write meets the same CHECK. */
   const write = (unit: string) =>
     withBusiness(db, businessId, (tx) =>
       tx.execute(sql`
-        INSERT INTO usage_counters (business_id, period, unit, used)
-        VALUES (${businessId}::uuid, ${PERIOD}, ${unit}, 1)
+        SELECT * FROM usage_reserve(${businessId}::uuid, ${PERIOD}, ${unit}, 5, 1, false)
       `),
     );
+  const writeAsOwner = async (unit: string) => {
+    const owner = createDb(urls.owner, { max: 1 });
+    try {
+      await owner.db.execute(sql`
+        INSERT INTO usage_counters (business_id, period, unit, used)
+        VALUES (${businessId}::uuid, ${PERIOD}, ${unit}, 1)`);
+    } finally {
+      await owner.close();
+    }
+  };
 
   it('holds every one of the canonical seventeen', async () => {
     expect(USAGE_UNITS).toHaveLength(17);
@@ -353,12 +371,14 @@ describe('the metered vocabulary (spec 4.2)', () => {
   it.each(['messages', 'voice_seconds', 'documents', 'documents_understood', 'orders'])(
     'refuses the retired name %s',
     async (retired) => {
-      await expect(write(retired)).rejects.toThrow();
+      await expect(write(retired)).rejects.toMatchObject({ cause: { code: '23514' } });
+      await expect(writeAsOwner(retired)).rejects.toMatchObject({ cause: { code: '23514' } });
     },
   );
 
   it('refuses a name nobody has ever metered', async () => {
-    await expect(write('TOKENS')).rejects.toThrow();
+    await expect(write('TOKENS')).rejects.toMatchObject({ cause: { code: '23514' } });
+    await expect(writeAsOwner('TOKENS')).rejects.toMatchObject({ cause: { code: '23514' } });
   });
 
   /**

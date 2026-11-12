@@ -1,4 +1,4 @@
-import { ownerDb as entitlementOwnerDb } from '@rekoda/db/testing';
+import { ownerDb as entitlementOwnerDb, creditBonusForTest } from '@rekoda/db/testing';
 /**
  * The API's three meters (PR-113, canonical spec §27, §4.2).
  *
@@ -106,7 +106,7 @@ async function entitled(
       grantedBy: 'operator:metering-suite',
     });
     if (capacity.requests !== undefined) {
-      await usageRepo.creditBonus(
+      await creditBonusForTest(
         tx,
         created.businessId,
         period,

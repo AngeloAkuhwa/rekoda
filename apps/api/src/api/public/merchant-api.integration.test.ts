@@ -37,6 +37,7 @@ import {
   settlementDb,
   truncateAll,
   type Urls,
+  creditBonusForTest,
 } from '@rekoda/db/testing';
 
 const SECRET = 'merchant-api-secret-at-least-32-chars';
@@ -929,7 +930,7 @@ describe('reading', () => {
 async function creditApiCapacity(businessId: string): Promise<void> {
   const period = usagePeriod(new Date());
   await withBusiness(settlementDb(), businessId, (tx) =>
-    usageRepo.creditBonus(tx, businessId, period, 'API_REQUEST_UNITS', 1_000),
+    creditBonusForTest(tx, businessId, period, 'API_REQUEST_UNITS', 1_000),
   );
   await grantCapacityAddOn(urls, businessId, 'API_APPLICATIONS', 20);
 }

@@ -15,7 +15,12 @@
 import { describe, expect, it } from 'vitest';
 import { createDb, sql, usageRepo, withBusiness } from '@rekoda/db';
 import { allowanceFor, replies, usagePeriod } from '@rekoda/core';
-import { storedEventId, setPlanForTest, settlementDb } from '@rekoda/db/testing';
+import {
+  storedEventId,
+  setPlanForTest,
+  settlementDb,
+  creditBonusForTest,
+} from '@rekoda/db/testing';
 import { buildRunner } from './jobs.module.js';
 import { sealPayload } from '../privacy/payload-vault.js';
 import {
@@ -326,7 +331,7 @@ describe('the chat surface enforces roles', () => {
     const allowance = allowanceFor('trial', 'AI_ACTIONS');
     const bought = 100;
     await withBusiness(settlementDb(), businessId, async (tx) => {
-      await usageRepo.creditBonus(tx, businessId, usagePeriod(new Date()), 'AI_ACTIONS', bought);
+      await creditBonusForTest(tx, businessId, usagePeriod(new Date()), 'AI_ACTIONS', bought);
       await usageRepo.consumeUnit(
         tx,
         businessId,

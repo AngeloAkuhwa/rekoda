@@ -763,16 +763,18 @@ export async function applySettledCharge(
      * still credits exactly what was bought and paid for. */
     const pack = await packOffer(terms, tx, charge.packId, charge.pricedAt ?? charge.createdAt);
     if (pack) {
-      await usageRepo.creditBonus(
+      /* One database call credits the units and stamps the charge's credit time (OD-40, OD-51.4):
+       * the pack-credit function accepts a paid, not-set-aside pack charge once, so the ceiling
+       * cannot be raised without the charge, or twice for it. A pack that could not be resolved
+       * credited nothing and so records no credit time. */
+      await usageRepo.creditPack(
         tx,
         input.businessId,
+        input.reference,
         usagePeriod(input.when),
         pack.unit,
         pack.quantity * charge.quantity,
       );
-      /* OD-40: the credit's own time, in the transaction that made it. A pack that could
-       * not be resolved credited nothing and so records no credit time. */
-      await subscriptionsRepo.markUnitsCredited(tx, input.businessId, input.reference);
       /* The purchase is complete: its other links are no longer offered as payable. */
       await subscriptionsRepo.retirePurchaseSiblings(
         tx,

@@ -460,30 +460,35 @@ describe('OD-37: what a charge buys is frozen from its opening to its end (0205,
 });
 
 describe('OD-37: only settlement credits pack units or records an add-on holding (0202)', () => {
+  /* Since 0216 (OD-51.4) a ceiling is raised only by usage_credit_pack, for one paid pack charge;
+   * the whole boundary is pinned in usage-meter-boundary.integration.test.ts. */
   it.each(['app', 'worker', 'operator'] as const)(
     '%s cannot raise a meter ceiling',
     async (who) => {
       const businessId = await seedBusiness();
+      const reference = await seedCharge(businessId, { kind: 'add_on', plan: null });
       const credit = await outcome(
         withBusiness(PRINCIPALS[who](), businessId, (tx) =>
-          usageRepo.creditBonus(tx, businessId, '2026-11', 'AI_ACTIONS', 500),
+          usageRepo.creditPack(tx, businessId, reference, '2026-11', 'AI_ACTIONS', 500),
         ),
       );
-      expect(credit).toMatch(/42501/);
-      if (who === 'app') expect(credit).toMatch(/pack units are credited only by settlement/);
+      expect(credit).toMatch(/^42501 permission denied for function usage_credit_pack/);
     },
   );
 
-  it("consumption stays the application's; settlement credits", async () => {
+  it("consumption stays the application's; settlement credits a paid pack charge", async () => {
     const businessId = await seedBusiness();
     expect(
       await withBusiness(appDb, businessId, (tx) =>
         usageRepo.consumeUnit(tx, businessId, '2026-11', 'AI_ACTIONS', 50),
       ),
     ).toBe(true);
-    await withBusiness(settlementDb, businessId, (tx) =>
-      usageRepo.creditBonus(tx, businessId, '2026-11', 'AI_ACTIONS', 7),
-    );
+    const reference = await seedCharge(businessId, { kind: 'add_on', plan: null });
+    expect(
+      await withBusiness(settlementDb, businessId, (tx) =>
+        usageRepo.creditPack(tx, businessId, reference, '2026-11', 'AI_ACTIONS', 7),
+      ),
+    ).toBe(true);
     const [row] = await ownerDb.execute<{ bonus: number }>(
       sql`SELECT bonus FROM usage_counters WHERE business_id = ${businessId}::uuid AND unit = 'AI_ACTIONS'`,
     );

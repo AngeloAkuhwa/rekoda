@@ -1,4 +1,4 @@
-import { ownerDb as entitlementOwnerDb } from '@rekoda/db/testing';
+import { ownerDb as entitlementOwnerDb, creditBonusForTest } from '@rekoda/db/testing';
 /**
  * Object-level authorisation (IDOR) over the money-and-records endpoint families: the public
  * merchant API, party statements, payment lists and exceptions, invoice void and credit
@@ -95,7 +95,7 @@ async function apiShop() {
     }),
   );
   await withBusiness(settlementDb(), b.id, (tx) =>
-    usageRepo.creditBonus(tx, b.id, usagePeriod(new Date()), 'API_REQUEST_UNITS', 1_000),
+    creditBonusForTest(tx, b.id, usagePeriod(new Date()), 'API_REQUEST_UNITS', 1_000),
   );
   await grantCapacityAddOn(urls, b.id, 'API_APPLICATIONS', 5);
   const app = (

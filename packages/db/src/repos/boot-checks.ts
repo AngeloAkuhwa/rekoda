@@ -149,13 +149,22 @@ const GUARD_TRIGGERS = 11;
  * has it would let the application credential write a subscription's pricing inputs.
  */
 export async function assertNoTestFixtureWriter(db: Db): Promise<void> {
-  const rows = await db.execute<{ present: boolean }>(sql`
+  const rows = await db.execute<{ plan_writer: boolean; bonus_writer: boolean }>(sql`
     SELECT to_regprocedure('public.test_fixture_set_plan(uuid,text,timestamptz)') IS NOT NULL
-      AS present`);
-  if ([...rows][0]?.present !== false) {
+             AS plan_writer,
+           to_regprocedure('public.test_fixture_credit_bonus(uuid,text,text,integer)') IS NOT NULL
+             AS bonus_writer`);
+  const found = [...rows][0];
+  if (found?.plan_writer !== false) {
     throw new Error(
       'the database holds the test-only fixture plan writer (test_fixture_set_plan): this is a test ' +
         'database, or one tampered with; refusing to serve from it (OD-37, migration 0206).',
+    );
+  }
+  if (found.bonus_writer !== false) {
+    throw new Error(
+      'the database holds the test-only pack-credit writer (test_fixture_credit_bonus): this is a ' +
+        'test database, or one tampered with; refusing to serve from it (OD-51, migration 0216).',
     );
   }
 }

@@ -32,7 +32,14 @@ import {
   subscriptionsRepo,
   usageRepo,
 } from '../index.js';
-import { applyFixtureCycle, migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+  creditBonusForTest,
+} from '../testing.js';
 import { setPlanAsOwner, setPlanForTest, settlementDb } from '../testing.js';
 
 let urls: Urls;
@@ -447,6 +454,6 @@ async function seedTradingHistory(businessId: string): Promise<void> {
     });
 
     await usageRepo.consumeUnit(tx, businessId, '2026-08', 'AI_ACTIONS', 50);
-    await usageRepo.creditBonus(tx, businessId, '2026-08', 'AI_ACTIONS', 10);
+    await creditBonusForTest(tx, businessId, '2026-08', 'AI_ACTIONS', 10);
   });
 }

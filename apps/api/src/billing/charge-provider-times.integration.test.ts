@@ -495,7 +495,16 @@ describe('OD-40: replays, redeliveries and late events never move a recorded tim
         when: new Date(),
       });
       expect(settled?.providerPaidAt?.toISOString()).toBe(first.toISOString());
-      expect(await subscriptionsRepo.markUnitsCredited(tx, businessId, reference)).toBe(true);
+      expect(
+        await usageRepo.creditPack(
+          tx,
+          businessId,
+          reference,
+          usagePeriod(new Date()),
+          'AI_ACTIONS',
+          100,
+        ),
+      ).toBe(true);
     });
     const once = await timesOf(businessId, reference);
 
@@ -510,7 +519,17 @@ describe('OD-40: replays, redeliveries and late events never move a recorded tim
           when: new Date(),
         }),
       ).toBeNull();
-      expect(await subscriptionsRepo.markUnitsCredited(tx, businessId, reference)).toBe(false);
+      /* The pack-credit function credits a charge once (OD-51.4): the retry changes nothing. */
+      expect(
+        await usageRepo.creditPack(
+          tx,
+          businessId,
+          reference,
+          usagePeriod(new Date()),
+          'AI_ACTIONS',
+          100,
+        ),
+      ).toBe(false);
     });
 
     expect(await timesOf(businessId, reference)).toEqual(once);
@@ -519,11 +538,16 @@ describe('OD-40: replays, redeliveries and late events never move a recorded tim
   it('a units-credited mark cannot land on an unpaid charge', async () => {
     const businessId = await seedBusiness();
     const reference = await openPack(businessId);
-    expect(
-      await withBusiness(appDb, businessId, (tx) =>
-        subscriptionsRepo.markUnitsCredited(tx, businessId, reference),
-      ),
-    ).toBe(false);
+    /* Settlement itself is refused for a charge that is not paid, and the application cannot run
+     * the pack-credit function at all (OD-51.4, migration 0216). */
+    const credit = (pool: Db) =>
+      withBusiness(pool, businessId, (tx) =>
+        usageRepo.creditPack(tx, businessId, reference, usagePeriod(new Date()), 'AI_ACTIONS', 100),
+      );
+    await expect(credit(settlementDb())).rejects.toMatchObject({
+      cause: { code: '42501', message: expect.stringMatching(/not a paid pack charge/) },
+    });
+    await expect(credit(appDb)).rejects.toMatchObject({ cause: { code: '42501' } });
     expect((await timesOf(businessId, reference)).units_credited_at).toBeNull();
   });
 });

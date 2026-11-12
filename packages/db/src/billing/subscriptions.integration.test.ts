@@ -25,6 +25,7 @@ import {
   truncateAll,
   type Urls,
   setPlanAsOwner,
+  creditBonusForTest,
 } from '../testing.js';
 import { settlementDb } from '../testing.js';
 
@@ -357,7 +358,7 @@ describe('an add-on pack', () => {
     expect(await consume(1)).toBe(false);
 
     await inSettlement(businessId, (tx) =>
-      usageRepo.creditBonus(tx, businessId, PERIOD, 'AI_ACTIONS', 2),
+      creditBonusForTest(tx, businessId, PERIOD, 'AI_ACTIONS', 2),
     );
     expect(await consume(1)).toBe(true);
     expect(await consume(1)).toBe(true);
@@ -365,7 +366,7 @@ describe('an add-on pack', () => {
 
     // A second pack adds to the first rather than replacing it.
     await inSettlement(businessId, (tx) =>
-      usageRepo.creditBonus(tx, businessId, PERIOD, 'AI_ACTIONS', 2),
+      creditBonusForTest(tx, businessId, PERIOD, 'AI_ACTIONS', 2),
     );
     const [row] = await inTenant(businessId, (tx) => usageRepo.usageFor(tx, businessId, PERIOD));
     expect(row?.bonus).toBe(4);
@@ -377,7 +378,7 @@ describe('an add-on pack', () => {
     // A paid plan meters by calendar month; a trial meters one row for its 14 days.
     await setPlanAsOwner(urls, businessId, { plan: 'chat' });
     await inSettlement(businessId, (tx) =>
-      usageRepo.creditBonus(tx, businessId, PERIOD, 'AI_ACTIONS', 5),
+      creditBonusForTest(tx, businessId, PERIOD, 'AI_ACTIONS', 5),
     );
 
     // September is a fresh meter with a fresh ceiling: the pack was bought for

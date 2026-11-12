@@ -845,28 +845,6 @@ export async function settleCharge(
 }
 
 /**
- * OD-40: record that a paid pack's units were credited, in the transaction that credited them.
- *
- * The time is the database clock when this statement runs (`clock_timestamp()`), right after the
- * credit in the same transaction: Rekoda's own time for the credit, never a provider time, and not
- * the transaction's start (which precedes the provider verification the job waited on). Written once: a charge that already carries it,
- * or one that is not paid, is left alone and the call answers false.
- */
-export async function markUnitsCredited(
-  tx: TenantDb,
-  businessId: string,
-  reference: string,
-): Promise<boolean> {
-  const rows = await tx.execute<{ id: string }>(sql`
-    UPDATE subscription_charges SET units_credited_at = clock_timestamp(), updated_at = now()
-    WHERE business_id = ${businessId}::uuid AND reference = ${reference}
-      AND status = 'paid' AND units_credited_at IS NULL
-    RETURNING id
-  `);
-  return [...rows].length === 1;
-}
-
-/**
  * Has this intended pack purchase already been credited by ANOTHER charge (OD-51.7, 0214)? A
  * replacement charge shares its purchase with the retired charge it replaced, and both links can be
  * paid: the first verified settlement grants the units, a later one must not. Call with the

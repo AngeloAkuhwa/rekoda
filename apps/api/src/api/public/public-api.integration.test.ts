@@ -1,4 +1,4 @@
-import { ownerDb as entitlementOwnerDb } from '@rekoda/db/testing';
+import { ownerDb as entitlementOwnerDb, creditBonusForTest } from '@rekoda/db/testing';
 /**
  * The versioned public surface, over a real application (PR-110, spec §27).
  *
@@ -272,7 +272,7 @@ describe('the version edge', () => {
 async function creditApiCapacity(businessId: string): Promise<void> {
   const period = usagePeriod(new Date());
   await withBusiness(settlementDb(), businessId, async (tx) => {
-    await usageRepo.creditBonus(tx, businessId, period, 'API_REQUEST_UNITS', 1_000);
+    await creditBonusForTest(tx, businessId, period, 'API_REQUEST_UNITS', 1_000);
   });
   await grantCapacityAddOn(urls, businessId, 'API_APPLICATIONS', 20);
 }

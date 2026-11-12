@@ -22,6 +22,7 @@ import { createDb, withBusiness, type Db } from './client.js';
 import { setPlanAsFixture, type PlanChange } from './repos/billing.js';
 import { setBillingEmailSealed, writeCycle, type CycleInput } from './repos/subscriptions.js';
 import type { TenantDb } from './client.js';
+import { meterRowFor, type UsageUnit } from './repos/usage.js';
 
 export interface Urls {
   /** Owner — DDL and fixture teardown. */
@@ -148,10 +149,50 @@ async function installTestFixtureWriter(ownerUrl: string): Promise<void> {
       REVOKE ALL ON FUNCTION public.test_fixture_set_plan(uuid, text, timestamptz) FROM PUBLIC;
       GRANT EXECUTE ON FUNCTION public.test_fixture_set_plan(uuid, text, timestamptz)
         TO rekoda_app, rekoda_worker;
+
+      -- A pack-credit writer for TEST FIXTURES ONLY (OD-51.4, migration 0216). Production raises a
+      -- ceiling only through usage_credit_pack, for a paid pack charge. Suites that need a business
+      -- with bought capacity, without staging a charge and its payment, use this; it is owned by
+      -- the usage writer (the role the pack-credit guard accepts) and, like the fixture plan
+      -- writer, never exists in a deployed database (the boot check and the staging smoke refuse
+      -- one that has it).
+      CREATE OR REPLACE FUNCTION public.test_fixture_credit_bonus(
+        p_business uuid, p_period text, p_unit text, p_n integer
+      ) RETURNS void
+      LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+      BEGIN
+        INSERT INTO public.usage_counters AS u (business_id, period, unit, bonus)
+        VALUES (p_business, p_period::char(7), p_unit, p_n)
+        ON CONFLICT (business_id, period, unit) DO UPDATE
+          SET bonus = u.bonus + p_n, updated_at = now();
+      END $$;
+      ALTER FUNCTION public.test_fixture_credit_bonus(uuid, text, text, integer)
+        OWNER TO rekoda_usage_writer;
+      REVOKE ALL ON FUNCTION public.test_fixture_credit_bonus(uuid, text, text, integer) FROM PUBLIC;
+      GRANT EXECUTE ON FUNCTION public.test_fixture_credit_bonus(uuid, text, text, integer)
+        TO rekoda_app, rekoda_worker, rekoda_settlement;
     `);
   } finally {
     await client.end();
   }
+}
+
+/**
+ * Give a business bought capacity for a test, without a pack charge (see
+ * `installTestFixtureWriter`): `n` units of `unit` on the meter row the business spends that unit
+ * on now. `tx` is any tenant-pinned transaction of a runtime pool.
+ */
+export async function creditBonusForTest(
+  tx: TenantDb,
+  businessId: string,
+  period: string,
+  unit: UsageUnit,
+  n: number,
+): Promise<void> {
+  const row = await meterRowFor(tx, businessId, period, unit);
+  await tx.execute(drizzleSql`
+    SELECT test_fixture_credit_bonus(${businessId}::uuid, ${row}::text, ${unit}::text, ${n}::int)
+  `);
 }
 
 /**

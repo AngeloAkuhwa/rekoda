@@ -14,6 +14,7 @@
 import { describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { withBusiness, type Db } from '../client.js';
+import { usageRepo } from '../index.js';
 import {
   appDb,
   outcome,
@@ -63,15 +64,13 @@ const retire = (reference: string) =>
     sql`UPDATE subscription_charges SET superseded_at = now(), abandoned_at = now() WHERE reference = ${reference}`,
   );
 
-/** Settlement's own writes: paid, then credited. */
+/** Settlement's own writes: paid, then credited through the pack-credit function (0216). */
 const credit = (businessId: string, reference: string) =>
   withBusiness(settlementDb, businessId, async (tx) => {
     await tx.execute(
       sql`UPDATE subscription_charges SET status = 'paid', paid_at = now(), paid_amount_k = amount_k WHERE reference = ${reference}`,
     );
-    await tx.execute(
-      sql`UPDATE subscription_charges SET units_credited_at = clock_timestamp() WHERE reference = ${reference}`,
-    );
+    await usageRepo.creditPack(tx, businessId, reference, '2026-11', 'DOCUMENT_GENERATION', 50);
   });
 
 describe('OD-51.7: a pack charge carries the identity of its purchase (0214)', () => {
