@@ -109,7 +109,8 @@ export function buildOperatorServer(deps: OperatorServerDeps): Server {
       });
       return;
     }
-    const route = OPERATOR_ROUTES[path];
+    /* Own properties only: a path is never resolved through the object's prototype. */
+    const route = Object.hasOwn(OPERATOR_ROUTES, path) ? OPERATOR_ROUTES[path] : undefined;
     if (!route) throw new HttpRefusal(404, 'not found');
     if (req.method !== 'POST') throw new HttpRefusal(405, 'method not allowed');
 

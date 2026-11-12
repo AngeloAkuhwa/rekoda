@@ -80,6 +80,9 @@ export function operatorVerifier(config: OperatorAuthConfig): {
         ({ payload } = await jwtVerify(token, keys, {
           issuer: config.issuer,
           audience: config.audience,
+          /* jose enforces `exp` only when the token carries one. A token with no expiry is a
+           * credential that never dies, which an operator plane must not accept. */
+          requiredClaims: ['exp'],
         }));
       } catch {
         /* One refusal for every cause. A caller learning WHICH check failed

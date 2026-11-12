@@ -231,6 +231,19 @@ describe('the pre-start database smoke, executed', () => {
       'the test-only pack-credit writer present',
       "CREATE FUNCTION public.test_fixture_credit_bonus(a uuid, b text, c text, d integer) RETURNS void LANGUAGE sql AS ''",
     ],
+    // 0220 (OD-52 and review minors): the job row the closure keys on is the application's to
+    // finish, never to rewrite, delete or park; the grace clock starts only after the cycle ended.
+    ['the application able to delete a job', 'GRANT DELETE ON jobs TO rekoda_app'],
+    ['the application able to rewrite a payload', 'GRANT UPDATE (payload) ON jobs TO rekoda_app'],
+    ['the transition guard dropped', 'DROP TRIGGER jobs_application_transition_guard ON jobs'],
+    [
+      'the transition guard disabled',
+      'ALTER TABLE jobs DISABLE TRIGGER jobs_application_transition_guard',
+    ],
+    [
+      'the grace clock startable before the cycle ends',
+      "CREATE OR REPLACE FUNCTION public.subscription_start_grace(p_business uuid, p_failed_at timestamptz) RETURNS boolean LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS 'SELECT true'",
+    ],
     // 0219 (OD-50): the resolution refuses after a later merchant schedule.
     [
       'the support-review resolution without the later-schedule refusal',

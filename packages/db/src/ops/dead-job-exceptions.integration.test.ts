@@ -24,6 +24,7 @@ import {
   storedEventId,
   truncateAll,
   type Urls,
+  ownerDb,
 } from '../testing.js';
 
 let urls: Urls;
@@ -321,7 +322,8 @@ describe('what a dead job leaves, by kind and by payload', () => {
     const eventId = await attributedEvent(businessId);
     await enqueue(businessId, 'payment.process', { eventId });
     // As the old code left it: dead, with no record.
-    await withBusiness(appDb, businessId, (tx) =>
+    /* Staged as the owner: the application may only finish a job or requeue a dead one (0220). */
+    await withBusiness(ownerDb(), businessId, (tx) =>
       tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
     );
     expect(await recordsOf(businessId)).toHaveLength(0);
@@ -346,7 +348,8 @@ describe('what a dead job leaves, by kind and by payload', () => {
     const eventId = await attributedEvent(businessId);
     await enqueue(businessId, 'payment.process', { eventId });
     await enqueue(businessId, 'billing.process', {});
-    await withBusiness(appDb, businessId, (tx) =>
+    /* Staged as the owner: the application may only finish a job or requeue a dead one (0220). */
+    await withBusiness(ownerDb(), businessId, (tx) =>
       tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
     );
     expect(await operatorResolve(eventId, 'settled by hand', 'operator:bob')).toBe(true);
@@ -360,7 +363,8 @@ describe('what a dead job leaves, by kind and by payload', () => {
     const foreign = await attributedEvent(await seedBusiness());
     expect(await operatorResolve(foreign, 'theirs', 'operator:bob')).toBe(true);
     await enqueue(businessId, 'payment.process', { eventId: foreign });
-    await withBusiness(appDb, businessId, (tx) =>
+    /* Staged as the owner: the application may only finish a job or requeue a dead one (0220). */
+    await withBusiness(ownerDb(), businessId, (tx) =>
       tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
     );
     expect(await jobsRepo.enrolUnrecordedDeaths(workerDb)).toBe(1);

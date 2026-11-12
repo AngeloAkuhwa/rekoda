@@ -23,7 +23,7 @@ import { sql } from 'drizzle-orm';
 import { withBusiness, type Db } from '../client.js';
 import { events, jobsRepo, usageRepo } from '../index.js';
 import { MIGRATIONS_DIR } from '../migrate.js';
-import { requireUrls } from '../testing.js';
+import { requireUrls, rerunMigrationsFrom } from '../testing.js';
 import {
   appDb,
   operatorDb,
@@ -298,16 +298,8 @@ describe('binding and closing are the database’s, not a runtime role’s (0218
 });
 
 describe('existing reservations are bound and closed by the migration (0218)', () => {
-  async function rerunMigration(): Promise<void> {
-    const owner = postgres(requireUrls().owner, { max: 1, onnotice: () => {} });
-    try {
-      await owner
-        .unsafe(await readFile(join(MIGRATIONS_DIR, '0218_usage_reservation_closure.sql'), 'utf8'))
-        .simple();
-    } finally {
-      await owner.end();
-    }
-  }
+  /* 0218 and every migration after it, in ledger order (0220 re-creates the trigger). */
+  const rerunMigration = () => rerunMigrationsFrom(requireUrls(), '0218_usage_reservation_closure');
   /** A reservation as 0216 left it: its handle on the event, not bound, not closed. */
   async function asLeftBy0216(
     businessId: string,

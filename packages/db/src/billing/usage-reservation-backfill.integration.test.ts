@@ -15,7 +15,14 @@ import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { events, identity, usageRepo } from '../index.js';
 import { MIGRATIONS_DIR } from '../migrate.js';
-import { migrate, requireUrls, setPlanAsOwner, truncateAll, type Urls } from '../testing.js';
+import {
+  migrate,
+  requireUrls,
+  rerunMigrationsFrom,
+  setPlanAsOwner,
+  truncateAll,
+  type Urls,
+} from '../testing.js';
 
 let urls: Urls;
 let db: Db;
@@ -43,19 +50,9 @@ beforeEach(async () => {
   await truncateAll(urls);
 });
 
-/* 0216 again, then 0218, in ledger order: 0218 re-creates `usage_refund` with the closed-reservation
- * rule, so 0216 on its own would put the older function back. The migration runner never applies
- * one out of order; a hand re-run must not either. */
-async function rerunMigration(): Promise<void> {
-  const owner = postgres(urls.owner, { max: 1, onnotice: () => {} });
-  try {
-    for (const tag of ['0216_usage_meter_boundary', '0218_usage_reservation_closure']) {
-      await owner.unsafe(await readFile(join(MIGRATIONS_DIR, `${tag}.sql`), 'utf8')).simple();
-    }
-  } finally {
-    await owner.end();
-  }
-}
+/* 0216 and every migration after it, in ledger order: later ones re-create functions 0216 also
+ * defines (0218 `usage_refund`, 0220 the closing trigger), so 0216 alone would put older rules back. */
+const rerunMigration = () => rerunMigrationsFrom(urls, '0216_usage_meter_boundary');
 
 async function paidBusiness(): Promise<string> {
   const user = await identity.upsertUserByPhone(db, '+2348140000077');

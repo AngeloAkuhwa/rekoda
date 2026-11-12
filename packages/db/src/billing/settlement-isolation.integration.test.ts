@@ -163,6 +163,18 @@ describe('subscription_start_grace: the grace clock without the settlement crede
     for (const id of [trial, expired, current.businessId]) expect(await failedAt(id)).toBeNull();
   });
 
+  it('refuses a paid cycle that has not ended yet, even with its renewal already open (0220)', async () => {
+    /* A paying business two days before its renewal date, whose renewal row is open early. */
+    const { businessId, endedAt: renewsAt } = await lapsedBusiness(-2 * DAY);
+    for (const at of [renewsAt, new Date()]) {
+      expect(
+        await refusal(() => startGrace(applicationDb(), businessId, businessId, at)),
+        at.toISOString(),
+      ).toMatch(/the cycle has not ended/);
+    }
+    expect(await failedAt(businessId)).toBeNull();
+  });
+
   it('refuses a time before the cycle ended or in the future', async () => {
     const { businessId, endedAt } = await lapsedBusiness(DAY);
     for (const at of [

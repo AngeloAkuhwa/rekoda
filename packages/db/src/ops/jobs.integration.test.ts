@@ -322,7 +322,12 @@ describe('the queue is inside the tenancy perimeter, not beside it', () => {
      * and every other test in this file is describing a system we no longer
      * have.
      */
-    expect(await jobsRepo.claimNext(appDb, 'the-api')).toBeNull();
+    /* Since 0220 the claim's own write is refused outright (the application may not set
+     * `attempts`); before, the policy left it nothing to see. Either way: no job. */
+    const claimed = await jobsRepo
+      .claimNext(appDb, 'the-api')
+      .catch((error: { cause?: { message?: string } }) => String(error.cause?.message));
+    expect(claimed === null || /permission denied/.test(String(claimed))).toBe(true);
 
     // …and the worker, holding the right credential, gets it immediately.
     expect(await jobsRepo.claimNext(workerDb, 'the-worker')).not.toBeNull();
@@ -482,6 +487,8 @@ describe('queue order is a promise, not a hope (H7a)', () => {
     const failure = await enqueue(businessId, { kind: 'delivery.status' });
     const yes = await enqueue(businessId);
     if (!failure || !yes) throw new Error('both jobs should have enqueued');
+    /* The receipt is claimed, as a worker would: the application finishes only a running job. */
+    expect((await jobsRepo.claimNext(workerDb, 'lane-a'))?.id).toBe(failure.id);
 
     await withBusiness(appDb, businessId, async (tx) => {
       // Default: same kind only, as before.

@@ -23,7 +23,7 @@ import {
   withBusiness,
   type Db,
 } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { migrate, ownerDb, requireUrls, truncateAll, type Urls } from '../testing.js';
 
 let urls: Urls;
 let app: Db;
@@ -343,6 +343,7 @@ describe('a receipt job that died still unsees its preview (G-20)', () => {
         RETURNING id`),
     );
     const eventId = [...event][0]!.id;
+    let jobId = '';
     await withBusiness(app, businessId, async (tx) => {
       const job = await jobsRepo.enqueue(tx, {
         businessId,
@@ -351,10 +352,12 @@ describe('a receipt job that died still unsees its preview (G-20)', () => {
         singletonKey: eventId,
         maxAttempts: 12,
       });
-      await tx.execute(
-        sql`UPDATE jobs SET state = 'dead', attempts = 12 WHERE id = ${job!.id}::uuid`,
-      );
+      jobId = job!.id;
     });
+    /* Staged as the owner: the application may only finish a job or requeue a dead one (0220). */
+    await withBusiness(ownerDb(), businessId, (tx) =>
+      tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 12 WHERE id = ${jobId}::uuid`),
+    );
 
     const first = await withBusiness(app, businessId, (tx) =>
       conversationsRepo.reconcileDeadReceipts(tx, businessId),
@@ -395,6 +398,7 @@ describe('a receipt job that died still unsees its preview (G-20)', () => {
         RETURNING id`),
     );
     const eventId = [...event][0]!.id;
+    let jobId = '';
     await withBusiness(app, businessId, async (tx) => {
       const job = await jobsRepo.enqueue(tx, {
         businessId,
@@ -403,10 +407,12 @@ describe('a receipt job that died still unsees its preview (G-20)', () => {
         singletonKey: eventId,
         maxAttempts: 12,
       });
-      await tx.execute(
-        sql`UPDATE jobs SET state = 'dead', attempts = 12 WHERE id = ${job!.id}::uuid`,
-      );
+      jobId = job!.id;
     });
+    /* Staged as the owner: the application may only finish a job or requeue a dead one (0220). */
+    await withBusiness(ownerDb(), businessId, (tx) =>
+      tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 12 WHERE id = ${jobId}::uuid`),
+    );
 
     expect(await state()).toBe('sent');
     const applied = await withBusiness(app, businessId, (tx) =>

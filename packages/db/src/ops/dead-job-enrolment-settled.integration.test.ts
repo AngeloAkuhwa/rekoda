@@ -5,7 +5,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { deadJobsRepo, events, identity, jobsRepo, settleRepo } from '../index.js';
-import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '../testing.js';
+import {
+  migrate,
+  ownerDb,
+  requireUrls,
+  storedEventId,
+  truncateAll,
+  type Urls,
+} from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -101,7 +108,8 @@ describe('enrolment skips a settled payment', () => {
     const businessId = await seedBusiness();
     const eventId = await attributedEvent(businessId);
     await enqueue(businessId, 'payment.process', { eventId });
-    await withBusiness(appDb, businessId, (tx) =>
+    /* Staged as the owner: the application may only finish a job or requeue a dead one (0220). */
+    await withBusiness(ownerDb(), businessId, (tx) =>
       tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
     );
     // Settled another way (a verify or intent sweep booked it) after the job's last attempt.
@@ -119,7 +127,8 @@ describe('enrolment skips a settled payment', () => {
     const businessId = await seedBusiness();
     const eventId = await attributedEvent(businessId);
     await enqueue(businessId, 'payment.process', { eventId });
-    await withBusiness(appDb, businessId, (tx) =>
+    /* Staged as the owner: the application may only finish a job or requeue a dead one (0220). */
+    await withBusiness(ownerDb(), businessId, (tx) =>
       tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
     );
     const [job] = [
@@ -153,7 +162,8 @@ describe('enrolment skips a settled payment', () => {
     const businessId = await seedBusiness();
     const eventId = await attributedEvent(businessId);
     await enqueue(businessId, 'payment.process', { eventId });
-    await withBusiness(appDb, businessId, (tx) =>
+    /* Staged as the owner: the application may only finish a job or requeue a dead one (0220). */
+    await withBusiness(ownerDb(), businessId, (tx) =>
       tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
     );
     const [job] = [
@@ -186,7 +196,8 @@ describe('enrolment skips a settled payment', () => {
     await enqueue(businessId, 'payment.process', { eventId: eventId.toUpperCase() });
     // A malformed id on a second dead job: nothing matches, nothing is cast, the pass completes.
     await enqueue(businessId, 'payment.process', { eventId: 'not-a-uuid' });
-    await withBusiness(appDb, businessId, (tx) =>
+    /* Staged as the owner: the application may only finish a job or requeue a dead one (0220). */
+    await withBusiness(ownerDb(), businessId, (tx) =>
       tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
     );
     // Settled under the business's pin, as every booking path does (the worker may write only

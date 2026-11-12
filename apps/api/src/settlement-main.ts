@@ -15,7 +15,7 @@
  */
 import { createServer } from 'node:http';
 import { pricingConstantsFingerprint } from '@rekoda/core';
-import { bootChecks, createDb, isEntrypoint } from '@rekoda/db';
+import { bootChecks, createDb, isEntrypoint, sql } from '@rekoda/db';
 import { PaystackProvider } from './payments/paystack.provider.js';
 import type { PaymentProviderPort } from './payments/provider.port.js';
 import { loadSettlementConfig } from './settlement/config.js';
@@ -57,19 +57,43 @@ export async function startSettlementProcess(
 
   /* Loopback only: the compose health check runs inside this container, and nothing on any
    * network can reach this process. */
+  /* Healthy means able to settle: the database answers on this process's own credential. A
+   * process that lost its database (a revoked login, a network split) reports 503, so compose
+   * restarts it and the staging check sees it, instead of a runner failing every job quietly. */
+  const databaseAnswers = async (): Promise<boolean> => {
+    try {
+      await Promise.race([
+        db.execute(sql`SELECT 1`),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3_000).unref()),
+      ]);
+      return true;
+    } catch {
+      return false;
+    }
+  };
   const health = createServer((req, res) => {
-    const ok = req.method === 'GET' && (req.url ?? '').split('?')[0] === '/health';
-    const body = JSON.stringify(
-      ok
-        ? { status: 'ok', process: 'settlement', release: config.release, commit: config.commit }
-        : { statusCode: 404, message: 'not found' },
+    const send = (status: number, payload: unknown): void => {
+      const body = JSON.stringify(payload);
+      res.writeHead(status, {
+        'content-type': 'application/json; charset=utf-8',
+        'content-length': Buffer.byteLength(body),
+        'cache-control': 'no-store',
+      });
+      res.end(body);
+    };
+    if (req.method !== 'GET' || (req.url ?? '').split('?')[0] !== '/health') {
+      send(404, { statusCode: 404, message: 'not found' });
+      return;
+    }
+    void databaseAnswers().then((up) =>
+      send(up ? 200 : 503, {
+        status: up ? 'ok' : 'error',
+        process: 'settlement',
+        database: up ? 'ok' : 'unreachable',
+        release: config.release,
+        commit: config.commit,
+      }),
     );
-    res.writeHead(ok ? 200 : 404, {
-      'content-type': 'application/json; charset=utf-8',
-      'content-length': Buffer.byteLength(body),
-      'cache-control': 'no-store',
-    });
-    res.end(body);
   });
   await new Promise<void>((resolve, reject) => {
     health.once('error', reject);
@@ -86,7 +110,12 @@ export async function startSettlementProcess(
     close: async () => {
       await runner.stop();
       await new Promise<void>((resolve) => health.close(() => resolve()));
-      await closeDb();
+      /* Bounded: after a database outage a query stranded on a dead connection would otherwise
+       * keep the pool, and so the process, open until compose kills it. */
+      await Promise.race([
+        closeDb(),
+        new Promise<void>((resolve) => setTimeout(resolve, 5_000).unref()),
+      ]);
     },
   };
 }

@@ -13,6 +13,8 @@
  *   - the settlement role can do what settling needs and nothing else.
  */
 import { createHash, randomBytes } from 'node:crypto';
+import net from 'node:net';
+import type { AddressInfo } from 'node:net';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -266,6 +268,74 @@ describe('the settlement process (OD-51.2)', () => {
     expect(health.status).toBe(200);
     expect(await health.json()).toMatchObject({ status: 'ok', process: 'settlement' });
     expect((await fetch(`http://127.0.0.1:${started.port}/v1/businesses/plan`)).status).toBe(404);
+  });
+
+  it('reports 503 when its database stops answering, and 200 again once it does', async () => {
+    /* The process reaches PostgreSQL through a relay this test can stall and release, so only
+     * this process loses its database; nothing about the cluster or its roles changes. The relay
+     * stalls rather than cuts: a socket torn down mid-write can crash the postgres client itself
+     * (postgres 3.4.9), which would test the library rather than this process. */
+    const target = new URL(urls.settlement);
+    const pairs: Array<[net.Socket, net.Socket]> = [];
+    let stalled = false;
+    const relay = net.createServer((client) => {
+      const upstream = net.connect(Number(target.port || 5432), target.hostname);
+      for (const socket of [client, upstream]) socket.on('error', () => socket.destroy());
+      pairs.push([client, upstream]);
+      if (stalled) {
+        client.pause();
+      } else {
+        client.pipe(upstream).pipe(client);
+      }
+    });
+    await new Promise<void>((resolve) => relay.listen(0, '127.0.0.1', resolve));
+    const viaRelay = new URL(urls.settlement);
+    viaRelay.hostname = '127.0.0.1';
+    viaRelay.port = String((relay.address() as AddressInfo).port);
+    const stall = () => {
+      stalled = true;
+      for (const [client, upstream] of pairs) {
+        client.unpipe(upstream);
+        upstream.unpipe(client);
+        client.pause();
+        upstream.pause();
+      }
+    };
+    const release = () => {
+      stalled = false;
+      for (const [client, upstream] of pairs) {
+        client.pipe(upstream).pipe(client);
+        client.resume();
+        upstream.resume();
+      }
+    };
+
+    const started = await startSettlementProcess(
+      settlementEnv({ SETTLEMENT_DATABASE_URL: viaRelay.toString() }),
+      provider,
+    );
+    running = started;
+    const health = () => fetch(`http://127.0.0.1:${started.port}/health`);
+    try {
+      expect((await health()).status).toBe(200);
+
+      stall();
+      const down = await health();
+      expect(down.status).toBe(503);
+      expect(await down.json()).toMatchObject({ status: 'error', database: 'unreachable' });
+
+      release();
+      await until(async () => (await health()).status === 200, 'health to recover');
+    } finally {
+      release();
+      await running.close();
+      running = null;
+      for (const [client, upstream] of pairs) {
+        client.destroy();
+        upstream.destroy();
+      }
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
   });
 
   it('refuses to start on any role but rekoda_settlement, or against a different pricing source', async () => {

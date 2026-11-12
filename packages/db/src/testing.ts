@@ -116,6 +116,32 @@ export async function closePrincipalPools(): Promise<void> {
   await Promise.all(pools.map((p) => p.close()));
 }
 
+/**
+ * Re-run, by hand, migration `fromTag` and EVERY migration after it, in ledger order, as the
+ * owner. For a test that proves a migration's backfill: re-running one file alone would put back
+ * a function a later migration re-created, and every later test in the run would see the older
+ * rule. The migration runner never does that; neither may a test.
+ */
+export async function rerunMigrationsFrom(urls: Urls, fromTag: string): Promise<void> {
+  const { readFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { MIGRATIONS_DIR } = await import('./migrate.js');
+  const journal = JSON.parse(
+    await readFile(join(MIGRATIONS_DIR, 'meta', '_journal.json'), 'utf8'),
+  ) as { entries: Array<{ idx: number; tag: string }> };
+  const ordered = [...journal.entries].sort((a, b) => a.idx - b.idx);
+  const start = ordered.findIndex((entry) => entry.tag === fromTag);
+  if (start < 0) throw new Error(`rerunMigrationsFrom: no migration ${fromTag}`);
+  const owner = postgres(urls.owner, { max: 1, onnotice: () => {} });
+  try {
+    for (const entry of ordered.slice(start)) {
+      await owner.unsafe(await readFile(join(MIGRATIONS_DIR, `${entry.tag}.sql`), 'utf8')).simple();
+    }
+  } finally {
+    await owner.end();
+  }
+}
+
 export async function migrate(urls: Urls): Promise<void> {
   await applyMigrations(urls.owner);
   await installTestFixtureWriter(urls.owner);

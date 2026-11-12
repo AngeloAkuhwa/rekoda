@@ -27,11 +27,14 @@ interface Signing {
 
 /** A second key pair nothing trusts, for the forged-signature case. */
 let strangerKey: CryptoKey;
+/** The trusted key, for a token built by hand (one with no expiry at all). */
+let trustedKey: CryptoKey;
 
 beforeAll(async () => {
   const { publicKey, privateKey } = await generateKeyPair('RS256', { extractable: true });
   const stranger = await generateKeyPair('RS256', { extractable: true });
   strangerKey = stranger.privateKey;
+  trustedKey = privateKey;
 
   const jwk: JWK = { ...(await exportJWK(publicKey)), kid: 'operator-test', alg: 'RS256' };
   server = createServer((_req, res) => {
@@ -113,6 +116,17 @@ describe('the operator identity verifier', () => {
     const token = await sign({ sub: 'ada', scope: 'ops:read' }, { expiresIn: '-1s' });
 
     await expect(verifier().verify(token)).rejects.toBeInstanceOf(OperatorAuthRefused);
+  });
+
+  it('refuses a token that never expires: an operator token must carry exp (review of 5654ee2)', async () => {
+    const forever = await new SignJWT({ sub: 'ada', scope: 'ops:billing' })
+      .setProtectedHeader({ alg: 'RS256', kid: 'operator-test' })
+      .setIssuer(ISSUER)
+      .setAudience(AUDIENCE)
+      .setIssuedAt()
+      .sign(trustedKey);
+
+    await expect(verifier().verify(forever)).rejects.toBeInstanceOf(OperatorAuthRefused);
   });
 
   it('refuses a token signed by a key the JWKS does not publish', async () => {
