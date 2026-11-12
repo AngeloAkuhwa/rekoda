@@ -21,6 +21,7 @@ import {
 import { usageRepo, billingRepo, identity, withBusiness, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { OperatorGuard, OperatorScopes, type OperatorRequest } from './operator.guard.js';
+import { OperatorPlaneServedHere } from './operator-plane-served.guard.js';
 import { DB, OPERATOR_DB } from '../db/db.module.js';
 import { operatorActor } from './operator-actor.js';
 import {
@@ -382,7 +383,7 @@ export class BusinessController {
    * the audit row.
    */
   @Post('plan')
-  @UseGuards(OperatorGuard)
+  @UseGuards(OperatorPlaneServedHere, OperatorGuard)
   @OperatorScopes('ops:billing')
   @HttpCode(200)
   async setPlan(
@@ -402,7 +403,7 @@ export class BusinessController {
    * period that has ended are refused. Same identity, scope and audit rules as the route above.
    */
   @Post('plan/support-review')
-  @UseGuards(OperatorGuard)
+  @UseGuards(OperatorPlaneServedHere, OperatorGuard)
   @OperatorScopes('ops:billing')
   @HttpCode(200)
   async resolvePlanReview(

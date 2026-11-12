@@ -3,6 +3,7 @@ import { AuthController, BusinessController } from './auth/auth.controller.js';
 import { AuthService } from './auth/auth.service.js';
 import { SessionGuard } from './auth/session.guard.js';
 import { OperatorGuard } from './auth/operator.guard.js';
+import { OperatorPlaneServedHere } from './auth/operator-plane-served.guard.js';
 import { RolesGuard } from './auth/roles.guard.js';
 import { DbModule } from './db/db.module.js';
 import { HealthController } from './health/health.controller.js';
@@ -64,6 +65,7 @@ import { WebhooksModule } from './webhooks/webhooks.module.js';
     SessionGuard,
     RolesGuard,
     OperatorGuard,
+    OperatorPlaneServedHere,
     EmailErasureService,
     DeadJobRecoveryService,
     StagingToolsService,
