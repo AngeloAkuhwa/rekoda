@@ -568,10 +568,9 @@ the order. 0208 only adds owner-only functions.
    ("SETTLEMENT_DATABASE_URL must not be set for an API process"). Do not add it back to the api.
    The production worker listens on loopback only.
 
-   Keep `REKODA_PLAN_CATALOGUE_READS` the same for the api and the worker. Settlement re-prices
-   every charge with the worker's setting, so a mismatch, or a change while charges are pending,
-   sets honest payments aside as `price_not_verified` (an operator then reconciles each one).
-   Change it only with no pending plan or pack charge.
+   Keep `REKODA_PLAN_CATALOGUE_READS` the same for the api and the worker. From 0215 this is
+   enforced: a process whose setting differs from the pricing source in force refuses to start.
+   Never change the variable on its own; follow "Pricing source" below.
 
 2. `dc run --rm -T migrate`, as before, then the pre-start smoke. The smoke now also checks:
    - the trial-start, retention-notice and worker-event guards;
@@ -627,6 +626,68 @@ the order. 0208 only adds owner-only functions.
    interval already in force changes nothing.
 
 Rollback past these migrations is a backup restore (G-02), as for 0196 to 0206 (OWN-86).
+
+### Deploy a release carrying 0213 to 0216 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary)
+
+0216 is a compatibility break: the previous release writes `usage_counters` directly, which no
+runtime role may do afterwards. Deploy with the api and worker stopped; `scripts/deploy-staging.sh`
+lists it and enforces the order. 0213 to 0215 are additive and ship in the same stopped release.
+No new secret and no new connection string. Rollback past 0216 is a backup restore (G-02).
+
+1. `dc run --rm -T migrate`, then the pre-start smoke. The smoke now also checks that:
+   - the support-review resolution (0213) runs for the billing operator only, and the request for
+     the application only;
+   - no runtime role writes a usage counter or the reservation ledger;
+   - `rekoda_usage_writer` is NOLOGIN, has no members and owns exactly the three usage functions;
+   - a pack's credit time is written by `usage_credit_pack` alone;
+   - the ledger carries the tags 0213 to 0216.
+2. 0216 creates the role `rekoda_usage_writer` (NOLOGIN). A restore into an empty cluster needs it
+   first; `scripts/restore-drill.sh` creates it.
+3. 0215 seeds the pricing source as `catalogue`. If this deployment runs
+   `REKODA_PLAN_CATALOGUE_READS=0`, the api and worker refuse to start until the source is switched
+   (next section). Staging runs the default and needs nothing.
+4. A mid-cycle upgrade sent to support review (OWN-33, OWN-34) is resolved with
+   `POST /v1/businesses/plan/support-review`. It moves the plan and keeps the paid-through date.
+   It takes no date; a date or any other extra field is refused with 400.
+
+### Pricing source
+
+Where prices come from (the plan catalogue, or the figures compiled into the release) is one row in
+the database (`billing_pricing_source`, 0215), not each process's own setting. Every api and worker
+process compares `REKODA_PLAN_CATALOGUE_READS` with that row at start (1 is `catalogue`, 0 is
+`constants`) and refuses to start on a difference. A running process that differs can open no
+charge. Each charge records the source it was priced from, and settlement re-prices it from that
+source.
+
+Show the source in force (changes nothing):
+
+```sh
+dc run --rm -T migrate sh /repo/deploy/migrate.sh pricing-source show
+```
+
+Switch it, for example to the compiled figures while a catalogue migration is repaired. The order
+matters:
+
+1. Stop the api and the worker. Switching while they run makes every new plan, pack and renewal
+   charge fail until they restart.
+2. Switch the row, as the owner, with who and why (both are kept in
+   `billing_pricing_source_history`):
+
+   ```sh
+   dc run --rm -T migrate sh /repo/deploy/migrate.sh pricing-source set constants "<who>" "<why>"
+   ```
+
+3. Set `REKODA_PLAN_CATALOGUE_READS` in `.env` to match (0 for `constants`, 1 for `catalogue`).
+4. Start the api and the worker. Both must run the release that ran step 2: for `constants` the
+   row records that release's compiled figures, and a process carrying different figures refuses
+   to start.
+
+Changing `.env` alone, without step 2, stops both processes at boot. Switch back the same way with
+`set catalogue`.
+
+Known limit: a charge opened on `constants` and still unpaid when a release with different compiled
+figures is deployed is set aside at settlement as `price_not_verified` (an operator reconciles it).
+Deploy such a release with no pending plan or pack charge.
 
 ## Disk space and image retention (staging)
 

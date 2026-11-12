@@ -243,3 +243,8 @@ read and written only by the worker-only definer functions `renewal_block_close_
 `_finish`, `_release` and `_status`, which validate their inputs and change nothing but that row.
 
 No payload, error text, name or phone number is returned. Writes stay tenant-pinned.
+
+`billing_pricing_source` and `billing_pricing_source_history` (0215) are not exemptions either: they
+are platform configuration with no `business_id` (the one pricing source in force, and its previous
+values). The runtime roles can only read `billing_pricing_source` and hold no grant on the history;
+only the table owner writes either, through `rekoda_private.set_pricing_source`.
