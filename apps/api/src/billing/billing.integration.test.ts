@@ -32,6 +32,8 @@ import {
   truncateAll,
   type Urls,
   settlementDb,
+  startGraceForTest,
+  applicationDb,
 } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRenewals } from './renewal-sweep.js';
@@ -283,7 +285,7 @@ describe('a charge the provider confirmed', () => {
     const { businessId, auth } = await onboard('+2348177100008');
     const now = new Date('2026-08-15T10:00:00Z');
 
-    await withBusiness(settlementDb(), businessId, (tx) =>
+    await withBusiness(applicationDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'first_purchase',
@@ -330,7 +332,7 @@ describe('a charge the provider confirmed', () => {
     const now = new Date();
     await putOnPlan(businessId, 'chat', now, new Date(now.getTime() + 30 * 86_400_000));
 
-    await withBusiness(settlementDb(), businessId, (tx) =>
+    await withBusiness(applicationDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'add_on',
@@ -366,7 +368,7 @@ describe('the cycle a payment starts', () => {
     reference: string,
     when: Date,
   ) {
-    await withBusiness(settlementDb(), businessId, async (tx) => {
+    await withBusiness(applicationDb(), businessId, async (tx) => {
       /* As the sweep opens it: a renewal's period starts at the current paid-to date (0206). */
       const start =
         kind === 'renewal'
@@ -399,7 +401,7 @@ describe('the cycle a payment starts', () => {
       new Date('2026-07-03T09:00:00Z'),
     );
     await withBusiness(db, businessId, async (tx) => {
-      await subscriptionsRepo.markRenewalFailed(tx, businessId, new Date('2026-07-03T09:00:00Z'));
+      await startGraceForTest(tx, businessId, new Date('2026-07-03T09:00:00Z'));
       await subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep', 'grace');
     });
 
@@ -475,12 +477,7 @@ describe('cancelling the subscription', () => {
     expect(await cancel(auth)).toEqual({ state: 'scheduled', endsAt: renewsAt.toISOString() });
 
     /* The sweep applies the cancellation instead of raising a renewal. */
-    expect(
-      await sweepRenewals(
-        { settlementDb: settlementDb(), workerDb, appDb: db, config },
-        new Date(),
-      ),
-    ).toEqual({
+    expect(await sweepRenewals({ workerDb, appDb: db, config }, new Date())).toEqual({
       raised: 0,
       skipped: 1,
     });

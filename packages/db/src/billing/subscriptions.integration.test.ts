@@ -26,6 +26,7 @@ import {
   type Urls,
   setPlanAsOwner,
   creditBonusForTest,
+  startGraceForTest,
 } from '../testing.js';
 import { settlementDb } from '../testing.js';
 
@@ -131,7 +132,7 @@ describe('the cycle on a business row', () => {
       }),
     );
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.markRenewalFailed(tx, businessId, new Date('2026-09-01T02:00:00Z')),
+      startGraceForTest(tx, businessId, new Date('2026-09-01T02:00:00Z')),
     );
     expect(
       (await inTenant(businessId, (tx) => subscriptionsRepo.subscriptionFor(tx, businessId)))
@@ -157,10 +158,10 @@ describe('the cycle on a business row', () => {
   it('runs the grace clock from the FIRST failure, not the latest retry', async () => {
     const businessId = await seedBusiness();
     const first = new Date('2026-09-01T02:00:00Z');
-    await inTenant(businessId, (tx) => subscriptionsRepo.markRenewalFailed(tx, businessId, first));
+    await inTenant(businessId, (tx) => startGraceForTest(tx, businessId, first));
     // A card retried daily must not push the deadline forward a day at a time.
     await inTenant(businessId, (tx) =>
-      subscriptionsRepo.markRenewalFailed(tx, businessId, new Date('2026-09-04T02:00:00Z')),
+      startGraceForTest(tx, businessId, new Date('2026-09-04T02:00:00Z')),
     );
 
     const sub = await inTenant(businessId, (tx) =>
@@ -194,7 +195,7 @@ describe('the cycle on a business row', () => {
 
 describe('charges', () => {
   const charge = (businessId: string, reference: string, overrides = {}) =>
-    inSettlement(businessId, (tx) =>
+    inTenant(businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'renewal',
@@ -392,7 +393,7 @@ describe('an add-on pack', () => {
 
 describe('recording a refund', () => {
   async function paidCharge(businessId: string, reference: string): Promise<void> {
-    await inSettlement(businessId, (tx) =>
+    await inTenant(businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'first_purchase',

@@ -63,6 +63,11 @@ export interface RunnerOptions {
    * connection AND a pinned handler transaction.
    */
   concurrency?: number;
+  /**
+   * Which kinds this runner claims (OD-51.2). The general worker claims everything BUT the
+   * settlement kinds; the settlement runner claims ONLY those. Absent means any kind.
+   */
+  claim?: jobsRepo.ClaimFilter;
 }
 
 /**
@@ -82,8 +87,6 @@ export class UnknownJobKind extends Error {
 export class JobRunner {
   private readonly log = new Logger(JobRunner.name);
   private readonly handlers = new Map<string, JobHandler>();
-  /** A kind whose transaction runs on another principal than the application pool (OD-37). */
-  private readonly handlerDbs = new Map<string, Db>();
   private readonly idleMs: number;
   private readonly stalledAfterMs: number;
   private readonly workerId: string;
@@ -92,11 +95,14 @@ export class JobRunner {
   private running = false;
   private reclaimInFlight: Promise<void> | null = null;
   private loops: Promise<void>[] = [];
+  private readonly claim: jobsRepo.ClaimFilter;
+  /** A second runner driven with this one (development and tests only): see `attach`. */
+  private companion: JobRunner | null = null;
 
   constructor(
-    /** `rekoda_worker` — the claim connection. */
+    /** The claim connection: `rekoda_worker`, or `rekoda_settlement` for the settlement runner. */
     private readonly workerDb: Db,
-    /** `rekoda_app` — where handlers actually run, pinned. */
+    /** Where handlers run, pinned: `rekoda_app`, or `rekoda_settlement` for the settlement runner. */
     private readonly appDb: Db,
     options: RunnerOptions = {},
   ) {
@@ -104,18 +110,26 @@ export class JobRunner {
     this.stalledAfterMs = options.stalledAfterMs ?? 300_000;
     this.workerId = options.workerId ?? `worker-${process.pid}`;
     this.concurrency = Math.max(1, options.concurrency ?? 1);
+    this.claim = options.claim ?? {};
   }
 
   /**
-   * `db`, when given, is the pool this kind's handler transaction (and its fenced completion) runs
-   * on instead of the application pool: `billing.process` runs on `rekoda_settlement`, the only
-   * role that may record a payment on a Rekoda charge (OD-37, migration 0202). That principal
-   * inherits the application's rights, so the completion fence works unchanged.
+   * Drive another runner beside this one: it is started and stopped with it, and `runOnce` falls
+   * through to it when this runner's own queue is empty.
+   *
+   * For development and the integration suites, where one process plays the worker AND the
+   * settlement process. Production never attaches one: the worker holds no settlement credential
+   * there (the configuration refuses it), and settlement runs in its own process
+   * (`settlement-main.ts`), so the two never share memory.
    */
-  register(kind: string, handler: JobHandler, db?: Db): this {
+  attach(companion: JobRunner): this {
+    this.companion = companion;
+    return this;
+  }
+
+  register(kind: string, handler: JobHandler): this {
     if (this.handlers.has(kind)) throw new Error(`job kind "${kind}" is already registered`);
     this.handlers.set(kind, handler);
-    if (db) this.handlerDbs.set(kind, db);
     return this;
   }
 
@@ -130,8 +144,8 @@ export class JobRunner {
      * reclaimed job claimed again must be told apart from the attempt that
      * lost it (G-10). The lease heartbeat and the completion both name it. */
     const claimedBy = `${this.workerId}:${randomUUID()}`;
-    const job = await jobsRepo.claimNext(this.workerDb, claimedBy);
-    if (!job) return false;
+    const job = await jobsRepo.claimNext(this.workerDb, claimedBy, this.claim);
+    if (!job) return this.companion ? this.companion.runOnce() : false;
 
     const handler = this.handlers.get(job.kind);
     if (!handler) {
@@ -167,21 +181,17 @@ export class JobRunner {
          * second set of ledger entries. Committing them together makes "did this
          * job run?" a question the database answers.
          */
-        await withBusiness(
-          this.handlerDbs.get(job.kind) ?? this.appDb,
-          job.businessId,
-          async (tx) => {
-            await handler({
-              tx,
-              jobId: job.id,
-              businessId: job.businessId,
-              payload: job.payload,
-              attempt: job.attempts,
-              maxAttempts: job.maxAttempts,
-            });
-            await jobsRepo.markDone(tx, job.id, claimedBy);
-          },
-        );
+        await withBusiness(this.appDb, job.businessId, async (tx) => {
+          await handler({
+            tx,
+            jobId: job.id,
+            businessId: job.businessId,
+            payload: job.payload,
+            attempt: job.attempts,
+            maxAttempts: job.maxAttempts,
+          });
+          await jobsRepo.markDone(tx, job.id, claimedBy);
+        });
       } catch (error) {
         if (error instanceof jobsRepo.JobLeaseLost) {
           /* Another claim owns the job and this attempt's transaction already
@@ -248,7 +258,9 @@ export class JobRunner {
     /* Deaths with no record (from before 0194, or an old worker mid-rollout) get one here. */
     const enrolled = await jobsRepo.enrolUnrecordedDeaths(this.workerDb);
     if (enrolled > 0) this.log.warn(`enrolled ${enrolled} dead payment or billing job(s)`);
-    return n;
+    /* Each runner reclaims what its own credential may touch: the database hides the settlement
+     * kinds' running jobs from the worker and every other kind from settlement (0217). */
+    return n + (this.companion ? await this.companion.reclaim() : 0);
   }
 
   start(): void {
@@ -276,10 +288,19 @@ export class JobRunner {
     reclaimPass();
     this.reclaimTimer = setInterval(reclaimPass, this.stalledAfterMs);
     this.reclaimTimer.unref();
+    this.companion?.startLanes();
     this.log.log(
       `job runner started as ${this.workerId}` +
         (this.concurrency > 1 ? ` with ${this.concurrency} lanes` : ''),
     );
+  }
+
+  /** The claim loops only, with no reclaim timer: the runner this one is attached to reclaims
+   * for both (its `reclaim` calls this runner's). */
+  private startLanes(): void {
+    if (this.running) return;
+    this.running = true;
+    this.loops = Array.from({ length: this.concurrency }, () => this.poll());
   }
 
   async stop(): Promise<void> {
@@ -289,6 +310,7 @@ export class JobRunner {
     await Promise.all(this.loops);
     this.loops = [];
     await this.reclaimInFlight;
+    await this.companion?.stop();
   }
 
   private async poll(): Promise<void> {

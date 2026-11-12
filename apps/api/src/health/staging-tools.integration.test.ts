@@ -24,6 +24,7 @@ import {
   requireUrls,
   truncateAll,
   type Urls,
+  startGraceForTest,
 } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../config.js';
 import { StagingRefused, StagingToolsService } from './staging-tools.service.js';
@@ -268,7 +269,7 @@ describe('OWN-77: with the tools on', () => {
         renewsAt: failedAt,
         anchorDay: failedAt.getUTCDate(),
       });
-      await subscriptionsRepo.markRenewalFailed(tx, businessId, failedAt);
+      await startGraceForTest(tx, businessId, failedAt);
     });
     await tools().designate(businessId, OPERATOR, 'walkthrough 19');
     return { businessId, failedAt };

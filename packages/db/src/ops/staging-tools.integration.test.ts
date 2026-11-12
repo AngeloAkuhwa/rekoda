@@ -10,7 +10,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { identity, stagingToolsRepo, subscriptionsRepo } from '../index.js';
-import { applyFixtureCycle, migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import {
+  applyFixtureCycle,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+  startGraceForTest,
+} from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -216,9 +223,7 @@ describe('OWN-77: on a staging database', () => {
     await move(businessId, { field: 'paid_to', expected: renewsAt, to });
     expect((await current(businessId, 'paid_to'))?.value?.toISOString()).toBe(to.toISOString());
 
-    await withBusiness(appDb, businessId, (tx) =>
-      subscriptionsRepo.markRenewalFailed(tx, businessId, to),
-    );
+    await withBusiness(appDb, businessId, (tx) => startGraceForTest(tx, businessId, to));
     const graceTo = new Date(Date.now() - 8 * DAY);
     await move(businessId, { field: 'grace_clock', expected: to, to: graceTo });
     expect((await current(businessId, 'grace_clock'))?.value?.toISOString()).toBe(

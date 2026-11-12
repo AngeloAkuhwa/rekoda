@@ -42,6 +42,9 @@ async function smokeAfter(tamper: string): Promise<string> {
           'DROP FUNCTION IF EXISTS public.test_fixture_credit_bonus(uuid, text, text, integer)',
         ),
       );
+      await tx.execute(
+        sql.raw('DROP FUNCTION IF EXISTS public.test_fixture_start_grace(uuid, timestamptz)'),
+      );
       if (tamper) await tx.execute(sql.raw(tamper));
       const [row] = await tx.execute<{ ok: boolean }>(
         sql.raw(`SELECT (${SMOKE!.replace(/^SELECT/, '')}) AS ok`),
@@ -227,6 +230,38 @@ describe('the pre-start database smoke, executed', () => {
     [
       'the test-only pack-credit writer present',
       "CREATE FUNCTION public.test_fixture_credit_bonus(a uuid, b text, c text, d integer) RETURNS void LANGUAGE sql AS ''",
+    ],
+    // 0217 (OD-51.2, OD-51.3): settlement is its own principal with exact grants.
+    ['settlement acting as the application again', 'GRANT rekoda_app TO rekoda_settlement'],
+    ['settlement opening a charge', 'GRANT INSERT ON subscription_charges TO rekoda_settlement'],
+    [
+      'settlement writing a column it does not need',
+      'GRANT UPDATE (amount_k) ON subscription_charges TO rekoda_settlement',
+    ],
+    [
+      'settlement writing the plan directly',
+      'GRANT UPDATE (plan) ON businesses TO rekoda_settlement',
+    ],
+    ['settlement reading tenant data', 'GRANT SELECT ON invoices TO rekoda_settlement'],
+    ['settlement writing the outbox', 'GRANT INSERT ON outbox_events TO rekoda_settlement'],
+    ['settlement rewriting a job', 'GRANT UPDATE (payload) ON jobs TO rekoda_settlement'],
+    [
+      'settlement given the next table by default',
+      'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO rekoda_settlement',
+    ],
+    ['the settlement queue restriction dropped', 'DROP POLICY settlement_only_its_kinds ON jobs'],
+    ['the worker free to run settlement jobs', 'DROP POLICY worker_leaves_settlement_jobs ON jobs'],
+    [
+      'the worker restriction made permissive',
+      'DROP POLICY worker_leaves_settlement_jobs ON jobs; CREATE POLICY worker_leaves_settlement_jobs ON jobs FOR UPDATE TO rekoda_worker USING (true)',
+    ],
+    [
+      'the grace-clock function granted to settlement',
+      'GRANT EXECUTE ON FUNCTION subscription_start_grace(uuid,timestamptz) TO rekoda_settlement',
+    ],
+    [
+      'the test-only grace-clock writer present',
+      "CREATE FUNCTION public.test_fixture_start_grace(a uuid, b timestamptz) RETURNS void LANGUAGE sql AS ''",
     ],
     [
       'the test-only fixture writer present',

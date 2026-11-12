@@ -21,6 +21,7 @@ import {
   type Urls,
   setPlanAsOwner,
   settlementDb,
+  applicationDb,
 } from '@rekoda/db/testing';
 import { setPlanForTest } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../config.js';
@@ -478,7 +479,7 @@ describe('what may be paid', () => {
       expiresAt: new Date(Date.now() + 20 * 86_400_000),
       actor: 'operator:test-g102',
     });
-    await withBusiness(settlementDb(), businessId, (tx) =>
+    await withBusiness(applicationDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'upgrade',
@@ -512,7 +513,7 @@ describe('what may be paid', () => {
 
   it('refuses a charge of nothing', async () => {
     const businessId = await seedBusiness();
-    await withBusiness(settlementDb(), businessId, (tx) =>
+    await withBusiness(applicationDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'upgrade',

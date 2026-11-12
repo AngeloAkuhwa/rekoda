@@ -99,17 +99,16 @@ export interface ChargeSpec {
 }
 
 let chargeSeq = 0;
-/** A subscription charge, written as its real writer would: pending by the application, anything
- * carrying a payment by settlement (the only non-owner role allowed to, 0202). */
+/** A subscription charge in any state, written as the table owner: a fixture. No runtime role
+ * inserts a charge that already carries a payment (the application opens pending ones, and
+ * settlement settles them but opens none, 0217). */
 export async function seedCharge(businessId: string, spec: ChargeSpec = {}): Promise<string> {
   chargeSeq += 1;
   const reference = `RKD-SUB-OD37-${String(chargeSeq).padStart(6, '0')}`;
   const kind = spec.kind ?? 'first_purchase';
   const plan = spec.plan === undefined ? 'chat' : spec.plan;
   const status = spec.status ?? 'paid';
-  const writer = settlementDb; // only settlement opens a charge (0205)
-  await withBusiness(writer, businessId, (tx) =>
-    tx.execute(sql`
+  await ownerDb.execute(sql`
       INSERT INTO subscription_charges
         (business_id, kind, plan, pack_id, amount_k, status, reference, period_start, period_end,
          paid_at, applied_period_start, applied_period_end, unapplied_at, unapplied_reason,
@@ -120,8 +119,7 @@ export async function seedCharge(businessId: string, spec: ChargeSpec = {}): Pro
         ${status === 'paid' ? sql`now()` : sql`NULL`},
         ${spec.applied ? sql`now()` : sql`NULL`}, ${spec.applied ? sql`now() + interval '30 days'` : sql`NULL`},
         ${spec.unapplied ? sql`now()` : sql`NULL`}, ${spec.unapplied ? 'cycle_ended' : null},
-        ${spec.superseded ? sql`now()` : sql`NULL`}, ${spec.interval ?? 'monthly'})`),
-  );
+        ${spec.superseded ? sql`now()` : sql`NULL`}, ${spec.interval ?? 'monthly'})`);
   return reference;
 }
 

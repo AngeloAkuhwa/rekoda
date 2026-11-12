@@ -17,6 +17,7 @@ import {
   type Urls,
   settlementDb,
   setPricingSource,
+  applicationDb,
 } from '@rekoda/db/testing';
 import { applySettledCharge, BillingService } from './billing.service.js';
 
@@ -60,7 +61,7 @@ async function seedBusiness(): Promise<string> {
 }
 
 const open = (businessId: string, reference: string, over: { pack?: boolean } = {}) =>
-  withBusiness(settlementDb(), businessId, (tx) =>
+  withBusiness(applicationDb(), businessId, (tx) =>
     openPricedCharge(tx, config, {
       businessId,
       kind: over.pack ? 'add_on' : 'first_purchase',
@@ -308,7 +309,7 @@ describe('payment record', () => {
         anchorDay: 1,
       }),
     );
-    await withBusiness(settlementDb(), b, (tx) =>
+    await withBusiness(applicationDb(), b, (tx) =>
       openPricedCharge(tx, config, {
         businessId: b,
         kind: 'upgrade',

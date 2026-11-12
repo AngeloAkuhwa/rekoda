@@ -16,6 +16,7 @@ import {
   truncateAll,
   type Urls,
   setPricingSource,
+  applicationDb,
 } from '@rekoda/db/testing';
 import { applySettledCharge } from './billing.service.js';
 
@@ -60,7 +61,7 @@ async function open(
   periodEnd: Date,
   reference: string,
 ): Promise<string> {
-  await withBusiness(settlementDb(), businessId, (tx) =>
+  await withBusiness(applicationDb(), businessId, (tx) =>
     openPricedCharge(tx, config, {
       businessId,
       kind,

@@ -1400,29 +1400,32 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   if (workerEnabled && !env['WORKER_DATABASE_URL']) {
     throw new ConfigError('REKODA_WORKER=1 requires WORKER_DATABASE_URL (the rekoda_worker role)');
   }
-  /* OD-37 (0202): settlement and operator plan changes run under their own principals. Absent
-   * means refuse to start, never "use DATABASE_URL": a fallback would hand the payment and plan
-   * writers back to the general application credential, which is the hole these close. */
+  /* OD-51 (migrations 0202, 0217): settlement and operator plan changes run under their own
+   * database principals, each in its OWN process (`settlement-main.ts`, `operator-main.ts`). The
+   * API and the worker hold neither credential in production: a process that reads provider data
+   * or serves the public must not be able to record a payment or give a business a plan, so a
+   * production API or worker handed either one refuses to start (the name is given, never the
+   * value). Outside production a single process may be given them and then plays those parts too
+   * (`pnpm dev`, the integration suites, the end-to-end stack). */
   const givenSettlementUrl = env['SETTLEMENT_DATABASE_URL'] || null;
-  if (workerEnabled && !givenSettlementUrl) {
-    throw new ConfigError(
-      'SETTLEMENT_DATABASE_URL (the rekoda_settlement role) is required in a worker process: Rekoda charges are settled only under it',
-    );
+  const givenOperatorUrl = env['OPERATOR_DATABASE_URL'] || null;
+  if (isProductionEnv(env)) {
+    const role = workerEnabled ? 'a worker process' : 'an API process';
+    if (givenSettlementUrl) {
+      throw new ConfigError(
+        `SETTLEMENT_DATABASE_URL must not be set for ${role}: only the dedicated settlement process holds the settlement credential (OD-51)`,
+      );
+    }
+    if (givenOperatorUrl) {
+      throw new ConfigError(
+        `OPERATOR_DATABASE_URL must not be set for ${role}: only the dedicated operator process holds the billing-operator credential (OD-51)`,
+      );
+    }
   }
-  /* OD-51 (0209): the settlement credential lives in the worker alone. An API process that holds
-   * it would put the payment writer back within reach of anything that compromises the API, so a
-   * production API given one refuses to start; elsewhere it is simply not used. */
-  if (!workerEnabled && givenSettlementUrl && isProductionEnv(env)) {
-    throw new ConfigError(
-      'SETTLEMENT_DATABASE_URL must not be set for an API process (REKODA_WORKER is not 1): only the worker holds the settlement credential (OD-51)',
-    );
-  }
+  /* Outside production: a process that runs jobs may run the settlement jobs too, and a process
+   * given the operator credential serves the operator plan routes itself. An API-only process has
+   * no job runner, so it never opens the settlement credential. */
   const settlementDatabaseUrl = workerEnabled ? givenSettlementUrl : null;
-  if (!workerEnabled && !env['OPERATOR_DATABASE_URL']) {
-    throw new ConfigError(
-      'OPERATOR_DATABASE_URL (the rekoda_billing_operator role) is required in an API process: operator plan changes run only under it',
-    );
-  }
   for (const key of ['SETTLEMENT_DATABASE_URL', 'OPERATOR_DATABASE_URL'] as const) {
     const value = env[key];
     if (value && (value === env['DATABASE_URL'] || value === env['WORKER_DATABASE_URL'])) {
@@ -1493,7 +1496,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     settlementDatabaseUrl,
     /* Empty reads as absent: the production worker service blanks it (docker-compose.prod.yml),
      * because a process that never serves the operator route should not hold the credential. */
-    operatorDatabaseUrl: env['OPERATOR_DATABASE_URL'] || null,
+    operatorDatabaseUrl: givenOperatorUrl,
     workerEnabled,
     /**
      * Four lanes by default: enough that one slow model call does not stall

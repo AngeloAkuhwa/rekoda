@@ -81,6 +81,8 @@ interface PrincipalFacts {
   in_worker: boolean | null;
   in_app: boolean | null;
   in_plan_writer: boolean | null;
+  /** Can become the role the usage-meter functions run as (0216). */
+  in_usage_writer: boolean | null;
   /** Can act as the owner of the guarded tables, which every OD-37 guard exempts. */
   in_table_owner: boolean | null;
   creates_in_public: boolean;
@@ -109,6 +111,8 @@ async function principalFacts(db: Db): Promise<PrincipalFacts> {
            ELSE pg_has_role(current_user, 'rekoda_app', 'USAGE') END AS in_app,
       CASE WHEN to_regrole('rekoda_plan_writer') IS NULL THEN NULL
            ELSE pg_has_role(current_user, 'rekoda_plan_writer', 'MEMBER') END AS in_plan_writer,
+      CASE WHEN to_regrole('rekoda_usage_writer') IS NULL THEN NULL
+           ELSE pg_has_role(current_user, 'rekoda_usage_writer', 'MEMBER') END AS in_usage_writer,
       -- The cycle-input guard's test exemption keys on a function in public existing (0206), so no
       -- runtime role may create one there (PostgreSQL 15+ grants PUBLIC no CREATE on it).
       has_schema_privilege(current_user, 'public', 'CREATE') AS creates_in_public,
@@ -149,11 +153,17 @@ const GUARD_TRIGGERS = 11;
  * has it would let the application credential write a subscription's pricing inputs.
  */
 export async function assertNoTestFixtureWriter(db: Db): Promise<void> {
-  const rows = await db.execute<{ plan_writer: boolean; bonus_writer: boolean }>(sql`
+  const rows = await db.execute<{
+    plan_writer: boolean;
+    bonus_writer: boolean;
+    grace_writer: boolean;
+  }>(sql`
     SELECT to_regprocedure('public.test_fixture_set_plan(uuid,text,timestamptz)') IS NOT NULL
              AS plan_writer,
            to_regprocedure('public.test_fixture_credit_bonus(uuid,text,text,integer)') IS NOT NULL
-             AS bonus_writer`);
+             AS bonus_writer,
+           to_regprocedure('public.test_fixture_start_grace(uuid,timestamptz)') IS NOT NULL
+             AS grace_writer`);
   const found = [...rows][0];
   if (found?.plan_writer !== false) {
     throw new Error(
@@ -165,6 +175,12 @@ export async function assertNoTestFixtureWriter(db: Db): Promise<void> {
     throw new Error(
       'the database holds the test-only pack-credit writer (test_fixture_credit_bonus): this is a ' +
         'test database, or one tampered with; refusing to serve from it (OD-51, migration 0216).',
+    );
+  }
+  if (found.grace_writer !== false) {
+    throw new Error(
+      'the database holds the test-only grace-clock writer (test_fixture_start_grace): this is a ' +
+        'test database, or one tampered with; refusing to serve from it (OD-51, migration 0217).',
     );
   }
 }
@@ -182,6 +198,7 @@ export async function assertRoleHoldsNoReservedWriter(db: Db, label: string): Pr
   if (f.operator_writer !== false) problems.push(`can run ${OPERATOR_WRITER}`);
   if (f.in_settlement !== false) problems.push('can become rekoda_settlement');
   if (f.in_operator !== false) problems.push('can become rekoda_billing_operator');
+  if (f.in_usage_writer !== false) problems.push('can become rekoda_usage_writer');
   if (f.in_table_owner !== false) problems.push('can act as the owner of the guarded tables');
   if (f.creates_in_public !== false) problems.push('can create objects in schema public');
   if (f.guards_enabled !== GUARD_TRIGGERS) {
@@ -225,12 +242,16 @@ export async function assertDatabasePrincipal(
   if (otherMember !== false) problems.push('can become the other principal');
   if (f.in_worker !== false) problems.push('can become rekoda_worker');
   if (f.in_plan_writer !== false) problems.push('can become rekoda_plan_writer');
-  if (expected === 'rekoda_settlement' && f.in_app !== true) {
-    problems.push("does not act with rekoda_app's rights");
+  /* Neither reserved principal acts with the application's rights: each holds exactly what its
+   * own work needs (the operator since 0211, settlement since 0217). */
+  if (f.in_app !== false) {
+    problems.push(
+      expected === 'rekoda_settlement'
+        ? "acts with rekoda_app's rights; it holds only what settling a charge needs (OD-51)"
+        : "acts with rekoda_app's rights; it holds only what a plan change needs (OD-51)",
+    );
   }
-  if (expected === 'rekoda_billing_operator' && f.in_app !== false) {
-    problems.push("acts with rekoda_app's rights; it holds only what a plan change needs (OD-51)");
-  }
+  if (f.in_usage_writer !== false) problems.push('can become rekoda_usage_writer');
   if (f.in_table_owner !== false) problems.push('can act as the owner of the guarded tables');
   if (f.creates_in_public !== false) problems.push('can create objects in schema public');
   if (f.guards_enabled !== GUARD_TRIGGERS) {

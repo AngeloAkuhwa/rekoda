@@ -172,12 +172,7 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
 
     /* ...and the renewal is raised at the pinned price, not the new one.
      * This is pricing-model.md commercial rule 5 running as code. */
-    expect(
-      await sweepRenewals(
-        { settlementDb: settlementDb(), workerDb, appDb: db, config },
-        new Date(),
-      ),
-    ).toEqual({
+    expect(await sweepRenewals({ workerDb, appDb: db, config }, new Date())).toEqual({
       raised: 1,
       skipped: 0,
     });

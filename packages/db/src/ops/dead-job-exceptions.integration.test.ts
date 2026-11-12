@@ -17,7 +17,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { deadJobsRepo, events, identity, jobsRepo, settleRepo } from '../index.js';
-import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '../testing.js';
+import {
+  migrate,
+  requireUrls,
+  settlementDb,
+  storedEventId,
+  truncateAll,
+  type Urls,
+} from '../testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -90,14 +97,22 @@ async function enqueue(
   );
 }
 
-/** Fail every attempt through the handler path until the job is dead. */
+/** Fail every attempt through the handler path until the job is dead. A settlement job
+ * (`billing.process`) is claimed and failed on the settlement credential, the only one the
+ * database lets run it (migration 0217); every other kind on the worker's. */
 async function killByHandler(times: number, error = 'boom'): Promise<string> {
   let id = '';
   for (let i = 0; i < times; i++) {
-    const job = await jobsRepo.claimNext(workerDb, `w-${i}`);
+    const general = await jobsRepo.claimNext(workerDb, `w-${i}`, {
+      except: jobsRepo.SETTLEMENT_JOB_KINDS,
+    });
+    const queue = general ? workerDb : settlementDb();
+    const job =
+      general ??
+      (await jobsRepo.claimNext(queue, `s-${i}`, { only: jobsRepo.SETTLEMENT_JOB_KINDS }));
     expect(job).not.toBeNull();
     id = job!.id;
-    await jobsRepo.markFailed(workerDb, job!, error, 0);
+    await jobsRepo.markFailed(queue, job!, error, 0);
   }
   return id;
 }

@@ -387,7 +387,6 @@ describe('renewing a year', () => {
     const renewsAt = addInterval(start, 'annual', anchor);
 
     const raised = await sweepRenewals({
-      settlementDb: settlementDb(),
       workerDb,
       appDb: db,
       config,

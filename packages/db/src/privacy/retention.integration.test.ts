@@ -109,7 +109,7 @@ describe('who is due', () => {
 
   it('NEVER touches a business that has ever paid us', async () => {
     const businessId = await abandonedTrial(400);
-    await inSettlement(businessId, (tx) =>
+    await inTenant(businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'first_purchase',
@@ -166,7 +166,7 @@ describe('who is due', () => {
    * opened and left for weeks protects nobody: the exemption is bounded. */
   describe('a checkout in flight', () => {
     const pendingCharge = async (businessId: string, reference: string, ageDays: number) => {
-      await inSettlement(businessId, async (tx) => {
+      await inTenant(businessId, async (tx) => {
         await subscriptionsRepo.openCharge(tx, {
           businessId,
           kind: 'first_purchase',
@@ -176,12 +176,13 @@ describe('who is due', () => {
           periodStart: daysAgo(ageDays),
           periodEnd: daysAgo(ageDays - 30),
         });
-        await tx.execute(sql`
-          UPDATE subscription_charges
-          SET created_at = ${daysAgo(ageDays).toISOString()}::timestamptz
-          WHERE reference = ${reference}
-        `);
       });
+      /* Backdated as the table owner: a charge's opening time is frozen for every runtime role. */
+      await ownerDb.execute(sql`
+        UPDATE subscription_charges
+        SET created_at = ${daysAgo(ageDays).toISOString()}::timestamptz
+        WHERE reference = ${reference}
+      `);
     };
 
     it('is neither warned nor deleted while a recent charge is still pending', async () => {

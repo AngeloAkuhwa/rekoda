@@ -72,7 +72,8 @@ carries_plan_boundary() {
      " $BREAKING " == *' 0210_worker_least_privilege '* ||
      " $BREAKING " == *' 0211_operator_principal_least_privilege '* ||
      " $BREAKING " == *' 0212_closeout_review_fixes '* ||
-     " $BREAKING " == *' 0216_usage_meter_boundary '* ]]
+     " $BREAKING " == *' 0216_usage_meter_boundary '* ||
+     " $BREAKING " == *' 0217_settlement_isolation '* ]]
 }
 # The OWN-86 pre-start smoke query, printed for an operator fixing forward by hand.
 print_smoke_0196() {
@@ -94,7 +95,7 @@ fail() {
 PHASE=checks
 # Migrations the previous release cannot run against (OD-48): the api and worker are stopped before
 # any of them is applied, and the old release is never restarted against a database that has one.
-COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_standard_periods 0209_settlement_verifies_the_price 0210_worker_least_privilege 0211_operator_principal_least_privilege 0212_closeout_review_fixes 0216_usage_meter_boundary'
+COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_standard_periods 0209_settlement_verifies_the_price 0210_worker_least_privilege 0211_operator_principal_least_privilege 0212_closeout_review_fixes 0216_usage_meter_boundary 0217_settlement_isolation'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -126,9 +127,9 @@ UP_ENTERED=false
 #   * the removed general writer, the old four-argument operator writer and the test-only fixture
 #     writer are absent, and no runtime role can create a function in public (the cycle-input
 #     guard's test exemption keys on that writer existing);
-#   * the settlement and billing-operator roles exist, can log in and cannot bypass RLS; settlement
-#     acts with rekoda_app's rights and the operator does not; no runtime role can become another
-#     principal, the worker or the writer;
+#   * the settlement and billing-operator roles exist, can log in and cannot bypass RLS; neither
+#     acts with rekoda_app's rights; no runtime role can become another principal, the worker or a
+#     writer;
 #   * the support-review resolution (0213) runs for the billing operator only, the request for the
 #     application only, and no runtime role writes plan_change_reviews directly;
 #   * a pack purchase is credited once: the purchase guard is enabled and the unique index on a
@@ -136,6 +137,9 @@ UP_ENTERED=false
 #   * no runtime role writes a usage counter or the reservation ledger; rekoda_usage_writer (NOLOGIN,
 #     no members) owns exactly the three usage functions with exactly their grantees; a pack's
 #     credit time is written by usage_credit_pack alone (0216);
+#   * settlement does not act with rekoda_app's rights: it holds exactly the reads and the column
+#     writes listed (never a charge insert, a plan, a price, a credit time or a job's kind or
+#     payload), no default privilege, and the queue is split by kind between it and the worker (0217);
 #   * the pricing source in force is one row no runtime role can write or switch, and a charge's
 #     recorded source is guarded (0215);
 #   * the worker reads but cannot write other businesses' events (its estate policy is SELECT only,
@@ -151,7 +155,8 @@ SMOKE_0196_SQL="SELECT
                   '0209_settlement_verifies_the_price', '0210_worker_least_privilege',
                   '0211_operator_principal_least_privilege', '0212_closeout_review_fixes',
                   '0213_support_review_plan_change', '0214_pack_purchase_identity',
-                  '0215_pricing_source_authority', '0216_usage_meter_boundary')) = 16
+                  '0215_pricing_source_authority', '0216_usage_meter_boundary',
+                  '0217_settlement_isolation')) = 17
   AND (SELECT count(*) FROM pg_trigger t WHERE t.tgenabled IN ('O', 'A') AND (t.tgname, t.tgrelid) IN (
         ('businesses_plan_fields_guard', 'public.businesses'::regclass),
         ('businesses_plan_fields_insert_guard', 'public.businesses'::regclass),
@@ -180,17 +185,19 @@ SMOKE_0196_SQL="SELECT
         || ' ; public.subscription_operator_resolve_review(uuid, text, text, text) => rekoda_billing_operator'
         || ' ; public.subscription_operator_set_plan(uuid, text, timestamp with time zone, text, text) => rekoda_billing_operator'
         || ' ; public.subscription_request_plan_review(uuid, text) => rekoda_app'
+        || ' ; public.subscription_start_grace(uuid, timestamp with time zone) => rekoda_app,rekoda_worker'
   AND NOT EXISTS (SELECT 1 FROM pg_proc WHERE proowner = 'rekoda_plan_writer'::regrole
         AND (NOT prosecdef OR proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, public, pg_temp']))
   AND to_regprocedure('public.subscription_write_plan(uuid,text,timestamptz)') IS NULL
   AND to_regprocedure('public.subscription_operator_set_plan(uuid,text,timestamptz,text)') IS NULL
   AND to_regprocedure('public.test_fixture_set_plan(uuid,text,timestamptz)') IS NULL
   AND to_regprocedure('public.test_fixture_credit_bonus(uuid,text,text,integer)') IS NULL
+  AND to_regprocedure('public.test_fixture_start_grace(uuid,timestamptz)') IS NULL
   AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker', 'rekoda_settlement',
         'rekoda_billing_operator']) AS r(role) WHERE has_schema_privilege(r.role, 'public', 'CREATE'))
   AND (SELECT count(*) FROM pg_roles WHERE rolname IN ('rekoda_settlement', 'rekoda_billing_operator')
         AND rolcanlogin AND NOT rolsuper AND NOT rolbypassrls) = 2
-  AND pg_has_role('rekoda_settlement', 'rekoda_app', 'USAGE')
+  AND NOT pg_has_role('rekoda_settlement', 'rekoda_app', 'USAGE')
   AND NOT pg_has_role('rekoda_billing_operator', 'rekoda_app', 'USAGE')
   AND NOT EXISTS (SELECT 1 FROM (VALUES
         ('rekoda_app', 'rekoda_plan_writer'), ('rekoda_worker', 'rekoda_plan_writer'),
@@ -198,7 +205,9 @@ SMOKE_0196_SQL="SELECT
         ('rekoda_app', 'rekoda_settlement'), ('rekoda_worker', 'rekoda_settlement'),
         ('rekoda_app', 'rekoda_billing_operator'), ('rekoda_worker', 'rekoda_billing_operator'),
         ('rekoda_settlement', 'rekoda_billing_operator'), ('rekoda_billing_operator', 'rekoda_settlement'),
-        ('rekoda_settlement', 'rekoda_worker'), ('rekoda_billing_operator', 'rekoda_worker')) AS m(member, target)
+        ('rekoda_settlement', 'rekoda_worker'), ('rekoda_billing_operator', 'rekoda_worker'),
+        ('rekoda_settlement', 'rekoda_app'), ('rekoda_billing_operator', 'rekoda_app'),
+        ('rekoda_settlement', 'rekoda_usage_writer')) AS m(member, target)
         WHERE pg_has_role(m.member, m.target, 'MEMBER'))
   AND (SELECT polcmd FROM pg_policy WHERE polname = 'worker_reads_the_estate'
         AND polrelid = 'public.external_events'::regclass) = 'r'
@@ -215,7 +224,39 @@ SMOKE_0196_SQL="SELECT
   AND (SELECT count(*) FROM pg_attribute WHERE attrelid = 'public.subscription_charges'::regclass
         AND attname = 'priced_at' AND NOT attisdropped) = 1
   AND NOT has_table_privilege('rekoda_worker', 'public.subscription_charges', 'INSERT')
-  AND has_table_privilege('rekoda_settlement', 'public.subscription_charges', 'INSERT')
+  AND (SELECT string_agg(c.relname || ':' || p.priv, ',' ORDER BY c.relname, p.priv)
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        CROSS JOIN unnest(ARRAY['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE']) AS p(priv)
+        WHERE n.nspname IN ('public', 'rekoda_private') AND c.relkind IN ('r', 'p')
+          AND CASE WHEN p.priv IN ('INSERT', 'UPDATE')
+                   THEN has_any_column_privilege('rekoda_settlement', c.oid, p.priv)
+                   ELSE has_table_privilege('rekoda_settlement', c.oid, p.priv) END)
+      = 'audit_events:INSERT,business_add_ons:INSERT,business_add_ons:UPDATE,businesses:UPDATE,'
+        || 'dead_job_exceptions:INSERT,dead_job_exceptions:UPDATE,external_events:UPDATE,jobs:UPDATE,'
+        || 'subscription_charge_attempts:UPDATE,subscription_charges:UPDATE'
+  AND (SELECT string_agg(c.relname, ',' ORDER BY c.relname)
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm')
+          AND has_table_privilege('rekoda_settlement', c.oid, 'SELECT'))
+      = 'add_on_grants,add_ons,billing_pricing_source,business_add_ons,businesses,dead_job_exceptions,'
+        || 'external_events,jobs,plan_prices,plan_versions,subscription_charge_attempts,'
+        || 'subscription_charges,usage_packs'
+  AND NOT has_column_privilege('rekoda_settlement', 'public.businesses', 'plan', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_settlement', 'public.businesses', 'plan_expires_at', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_settlement', 'public.businesses', 'trial_started_at', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_settlement', 'public.subscription_charges', 'amount_k', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_settlement', 'public.subscription_charges', 'units_credited_at', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_settlement', 'public.jobs', 'kind', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_settlement', 'public.jobs', 'payload', 'UPDATE')
+  AND NOT has_column_privilege('rekoda_settlement', 'public.jobs', 'business_id', 'UPDATE')
+  AND NOT EXISTS (SELECT 1 FROM pg_default_acl d CROSS JOIN aclexplode(d.defaclacl) a
+        WHERE a.grantee = 'rekoda_settlement'::regrole)
+  AND (SELECT string_agg(p.polname::text || ':' || p.polcmd::text || ':' || p.polpermissive::text, ','
+                         ORDER BY p.polname)
+        FROM pg_policy p WHERE p.polrelid = 'public.jobs'::regclass
+          AND p.polname IN ('settlement_claim', 'settlement_only_its_kinds',
+                            'worker_leaves_settlement_jobs'))
+      = 'settlement_claim:*:true,settlement_only_its_kinds:*:false,worker_leaves_settlement_jobs:w:false'
   AND (SELECT string_agg(c.relname || ':' || p.priv, ',' ORDER BY c.relname, p.priv)
         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
         CROSS JOIN unnest(ARRAY['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE']) AS p(priv)
@@ -796,6 +837,19 @@ if [[ " $BREAKING " == *' 0202_settlement_and_operator_principals '* ]]; then
   done
 fi
 
+# OD-51 (0217): this release starts two more processes. The operator process verifies operator
+# tokens against its OWN audience, and compose refuses every command while a name it requires is
+# missing, so check .env HERE, with nothing live changed. Names only; a value is never printed.
+if [[ " $BREAKING " == *' 0217_settlement_isolation '* ]]; then
+  for var in OPERATOR_OIDC_ISSUER OPERATOR_OIDC_JWKS_URL OPERATOR_BILLING_OIDC_AUDIENCE VAULT_KEY \
+    SETTLEMENT_DATABASE_URL OPERATOR_DATABASE_URL; do
+    [ -n "$(sed -n "s/^${var}=//p" .env | tail -1)" ] ||
+      fail "this release carries 0217 (OD-51) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0213 to 0217\"); nothing has been changed"
+  done
+  [ "$(sed -n 's/^OPERATOR_BILLING_OIDC_AUDIENCE=//p' .env | tail -1)" != "$(sed -n 's/^OPERATOR_OIDC_AUDIENCE=//p' .env | tail -1)" ] ||
+    fail 'OPERATOR_BILLING_OIDC_AUDIENCE must differ from OPERATOR_OIDC_AUDIENCE: a token the API accepts must not change a plan (OD-51); nothing has been changed'
+fi
+
 SHORT=$(git rev-parse --short=7 "$SHA")
 RELEASE="staging-${SHORT}"
 # Compose interpolates the image tags from the shell before .env, so pin the
@@ -832,11 +886,13 @@ if [ -n "$BREAKING" ]; then
   # would be refused mid-migration, or run against a schema they do not know. Stop them first and
   # prove it, so the old release cannot keep writing while the new schema goes in.
   step "stop the api and worker: this release carries a migration the running release cannot work against ($BREAKING)"
-  dc stop api worker
+  # The operator and settlement processes too (OD-51): they write under the same guarded schema. On
+  # the release that first brings them in there is nothing of theirs to stop, which is not an error.
+  dc stop api worker operator settlement
   # A failing `ps` is not "nothing running": it is "could not tell", and migrate must not go ahead.
   running_services=$(dc ps --status running --services) ||
     fail "could not list the running services, so it cannot be proved that the api and worker stopped; not migrating $BREAKING"
-  still_up=$(grep -Ex 'api|worker' <<<"$running_services" || true)
+  still_up=$(grep -Ex 'api|worker|operator|settlement' <<<"$running_services" || true)
   [ -z "$still_up" ] || fail "the api and worker must be stopped before migrating $BREAKING, but still running: $still_up"
 fi
 step 'migrate (expand-only, as the owner)'

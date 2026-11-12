@@ -37,6 +37,7 @@ import {
   requireUrls,
   truncateAll,
   type Urls,
+  startGraceForTest,
 } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepGracePeriods } from './grace-sweep.js';
@@ -140,9 +141,7 @@ describe('the grace period', () => {
   async function failedMerchant(phone: string) {
     const { businessId, auth } = await onboard(phone);
     await putOnPlan(businessId, 'chat', new Date(FAILED_AT.getTime() - 30 * 86_400_000), FAILED_AT);
-    await withBusiness(db, businessId, (tx) =>
-      subscriptionsRepo.markRenewalFailed(tx, businessId, FAILED_AT),
-    );
+    await withBusiness(db, businessId, (tx) => startGraceForTest(tx, businessId, FAILED_AT));
     return { businessId, auth };
   }
 

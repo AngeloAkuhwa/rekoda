@@ -25,6 +25,7 @@ import {
   truncateAll,
   type Urls,
   setPlanAsOwner,
+  startGraceForTest,
 } from '../testing.js';
 import { settlementDb } from '../testing.js';
 
@@ -120,7 +121,7 @@ describe('the sweeps', () => {
     // keeps the business out of the due set; re-selection of a grace business
     // whose renewals went stale (and the failed-renewal no-spin case) is covered
     // in stale-charge-exceptions.integration.test.ts (G-104).
-    await inSettlement(businessId, async (tx) => {
+    await inTenant(businessId, async (tx) => {
       await subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'renewal',
@@ -130,7 +131,7 @@ describe('the sweeps', () => {
         periodStart: new Date('2026-09-01T00:00:00Z'),
         periodEnd: new Date('2026-10-01T00:00:00Z'),
       });
-      await subscriptionsRepo.markRenewalFailed(tx, businessId, NOW);
+      await startGraceForTest(tx, businessId, NOW);
     });
 
     // Otherwise every pass would open another charge against a card that is
@@ -151,7 +152,7 @@ describe('the sweeps', () => {
 
   it('resolves a reference to its tenant for the worker only', async () => {
     const businessId = await seedBusiness();
-    await inSettlement(businessId, (tx) =>
+    await inTenant(businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'first_purchase',
@@ -179,9 +180,7 @@ describe('stopping a lapsed subscription', () => {
         anchorDay: 1,
       }),
     );
-    await inTenant(businessId, (tx) =>
-      subscriptionsRepo.markRenewalFailed(tx, businessId, RENEWS_AT),
-    );
+    await inTenant(businessId, (tx) => startGraceForTest(tx, businessId, RENEWS_AT));
 
     const previous = await inTenant(businessId, (tx) =>
       subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep', 'grace'),
@@ -218,7 +217,7 @@ describe('stopping a lapsed subscription', () => {
         renewsAt: RENEWS_AT,
         anchorDay: 1,
       });
-      await subscriptionsRepo.markRenewalFailed(tx, businessId, RENEWS_AT);
+      await startGraceForTest(tx, businessId, RENEWS_AT);
     });
     // The sweep has read this business as out of grace. Now the renewal pays.
     await inTenant(businessId, (tx) =>
@@ -285,9 +284,7 @@ describe('stopping a lapsed subscription', () => {
         anchorDay: 1,
       }),
     );
-    await inTenant(businessId, (tx) =>
-      subscriptionsRepo.markRenewalFailed(tx, businessId, RENEWS_AT),
-    );
+    await inTenant(businessId, (tx) => startGraceForTest(tx, businessId, RENEWS_AT));
     await inTenant(businessId, (tx) =>
       subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep', 'grace'),
     );

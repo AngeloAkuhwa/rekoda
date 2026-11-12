@@ -184,7 +184,6 @@ describe('OD-51: honest charges opened by the application settle as before', () 
     const businessId = await seedBusiness();
     await onPlan(businessId, 'chat', -DAY);
     await sweepRenewals({
-      settlementDb: settlementDb(),
       workerDb,
       appDb,
       config: config as never,

@@ -18,6 +18,7 @@ import {
   type Urls,
   settlementDb,
   setPricingSource,
+  applicationDb,
 } from '@rekoda/db/testing';
 import { setPlanForTest } from '@rekoda/db/testing';
 import { applySettledCharge, BillingService } from './billing.service.js';
@@ -323,7 +324,7 @@ describe('a failed renewal does not hold its cycle', () => {
     await onPlan(businessId, 'chat', -1 * DAY);
     const periodStart = (await subscription(businessId))?.planExpiresAt ?? new Date();
     const open = (reference: string) =>
-      withBusiness(settlementDb(), businessId, (tx) =>
+      withBusiness(applicationDb(), businessId, (tx) =>
         subscriptionsRepo.openCharge(tx, {
           businessId,
           kind: 'renewal',

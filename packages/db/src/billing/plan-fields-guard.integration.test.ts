@@ -95,9 +95,8 @@ async function seedCharge(businessId: string, spec: ChargeSpec = {}): Promise<st
   const kind = spec.kind ?? 'first_purchase';
   const plan = spec.plan === undefined ? 'chat' : spec.plan;
   const status = spec.status ?? 'paid';
-  const writer = settlementDb(); // only settlement opens a charge (0205)
-  await withBusiness(writer, businessId, (tx) =>
-    tx.execute(sql`
+  /* As the table owner: a fixture. No runtime role inserts a charge that carries a payment. */
+  await ownerDb.execute(sql`
       INSERT INTO subscription_charges
         (business_id, kind, plan, pack_id, amount_k, status, reference, period_start, period_end,
          paid_at, applied_period_start, applied_period_end, unapplied_at, unapplied_reason,
@@ -108,8 +107,7 @@ async function seedCharge(businessId: string, spec: ChargeSpec = {}): Promise<st
         ${status === 'paid' ? sql`now()` : sql`NULL`},
         ${spec.applied ? sql`now()` : sql`NULL`}, ${spec.applied ? sql`now() + interval '30 days'` : sql`NULL`},
         ${spec.unapplied ? sql`now()` : sql`NULL`}, ${spec.unapplied ? 'cycle_ended' : null},
-        ${spec.superseded ? sql`now()` : sql`NULL`})`),
-  );
+        ${spec.superseded ? sql`now()` : sql`NULL`})`);
   return reference;
 }
 

@@ -329,6 +329,21 @@ export async function hasJobForSingleton(
 }
 
 /**
+ * The job kinds that settle a Rekoda charge (OD-51.2, migration 0217): a provider-verified payment
+ * (`billing.process`) and a zero-priced upgrade (`billing.apply_no_charge`). They are claimed and
+ * run only by the dedicated settlement process, on the `rekoda_settlement` credential; the general
+ * worker's claim excludes them, and the database refuses its credential any claim or completion of
+ * one. The same two names are in the queue policies of migration 0217.
+ */
+export const SETTLEMENT_JOB_KINDS = ['billing.process', 'billing.apply_no_charge'] as const;
+
+/** Which kinds a claim may take: only these, or anything but these. Absent means any kind. */
+export interface ClaimFilter {
+  only?: readonly string[];
+  except?: readonly string[];
+}
+
+/**
  * Take the next due job, exactly once across every worker.
  *
  * `FOR UPDATE SKIP LOCKED` inside the sub-select is the whole concurrency
@@ -342,7 +357,22 @@ export async function hasJobForSingleton(
  * and an unpinned transaction matches no rows. That is the intended failure:
  * silent and empty rather than cross-tenant.
  */
-export async function claimNext(db: Db, workerId: string): Promise<ClaimedJob | null> {
+export async function claimNext(
+  db: Db,
+  workerId: string,
+  filter: ClaimFilter = {},
+): Promise<ClaimedJob | null> {
+  const kinds = (list: readonly string[]) =>
+    sql.join(
+      list.map((kind) => sql`${kind}`),
+      sql`, `,
+    );
+  const onlyThese =
+    filter.only && filter.only.length > 0 ? sql`AND kind IN (${kinds(filter.only)})` : sql``;
+  const notThese =
+    filter.except && filter.except.length > 0
+      ? sql`AND kind NOT IN (${kinds(filter.except)})`
+      : sql``;
   const rows = await db.execute<{
     id: string;
     business_id: string;
@@ -360,6 +390,8 @@ export async function claimNext(db: Db, workerId: string): Promise<ClaimedJob | 
     WHERE id = (
       SELECT id FROM jobs
       WHERE state = 'pending' AND run_at <= now()
+        ${onlyThese}
+        ${notThese}
       ORDER BY run_at, created_at
       LIMIT 1
       FOR UPDATE SKIP LOCKED

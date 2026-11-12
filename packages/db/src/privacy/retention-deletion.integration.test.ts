@@ -388,7 +388,7 @@ describe('the deletion function', () => {
 
 /** A month of real trading, so the deletion has something to miss. */
 async function seedTradingHistory(businessId: string): Promise<void> {
-  await withBusiness(settlementDb(), businessId, async (tx) => {
+  await withBusiness(appDb, businessId, async (tx) => {
     const sale = await issueRepo.issueSale(tx, {
       businessId,
       customerId: null,

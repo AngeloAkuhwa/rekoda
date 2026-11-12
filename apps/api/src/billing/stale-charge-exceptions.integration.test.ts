@@ -23,6 +23,7 @@ import {
   type Urls,
   settlementDb,
   setPricingSource,
+  applicationDb,
 } from '@rekoda/db/testing';
 import { setPlanForTest } from '@rekoda/db/testing';
 import { applySettledCharge, BillingService } from './billing.service.js';
@@ -96,7 +97,7 @@ const open = (
   reference: string,
   plan: string | null,
 ) =>
-  withBusiness(settlementDb(), businessId, async (tx) => {
+  withBusiness(applicationDb(), businessId, async (tx) => {
     /* The period production records on opening (0206 binds settlement to it): a renewal buys the
      * cycle that starts at the current paid-to date, an upgrade the rest of the cycle ending there. */
     const paidTo = (await subscriptionsRepo.subscriptionFor(tx, businessId))?.planExpiresAt;
@@ -320,11 +321,7 @@ describe('an upgrade paid after its cycle has ended never leaves the plan expiry
  * a grace business that has no payable one, and never touches the clock.
  */
 describe('a grace business whose renewal went stale is given a payable one (G-104)', () => {
-  const sweep = () =>
-    sweepRenewals(
-      { settlementDb: settlementDb(), workerDb: realWorkerDb, appDb, config },
-      new Date(),
-    );
+  const sweep = () => sweepRenewals({ workerDb: realWorkerDb, appDb, config }, new Date());
   const openRenewals = (businessId: string) =>
     withBusiness(appDb, businessId, async (tx) => {
       const rows = await tx.execute<{ plan: string; amount_k: string }>(sql`

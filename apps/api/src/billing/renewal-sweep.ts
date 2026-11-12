@@ -37,11 +37,12 @@ import { chargeGate } from './paystack-key.js';
 export interface RenewalSweepDeps {
   /** `rekoda_worker` - "whose cycle ended" names no tenant, which is the point. */
   workerDb: Db;
-  /** `rekoda_app` - closing a renewal block the gate no longer holds, and a cancelled cycle's
-   * lapse, under a tenant pin. The renewal itself (its charge, clock and block) runs on settlement. */
+  /** `rekoda_app` - everything a renewal writes, under a tenant pin: the pending renewal charge
+   * (opened pristine, priced again by settlement before anything is applied, 0209), the grace
+   * clock (through `subscription_start_grace`, which checks the cycle and the charge itself,
+   * 0217), a block, and a cancelled cycle's lapse. No settlement credential is involved: the
+   * worker that runs this sweep holds none (OD-51.2). */
   appDb: Db;
-  /** `rekoda_settlement` - the only role that opens a charge, so it prices the renewal (OD-37). */
-  settlementDb: Db;
   /** The catalogue flag: a renewal is priced by the merchant's PINNED version. The Paystack key
    * and the §47 confirmation decide whether the renewal can be paid at all (OWN-70). */
   config: PlanTermsConfig & { paystackSecretKey: string; paystackPlatformConfirmed: boolean };
@@ -110,9 +111,9 @@ export async function sweepRenewals(
       }
 
       try {
-        /* On the settlement principal, the worker's own (OD-37, 0209): the renewal sweep opens a
-         * renewal and starts its grace clock in one transaction. */
-        const opened = await withBusiness(deps.settlementDb, business.businessId, async (tx) => {
+        /* As the application (OD-51.2, 0217): the renewal sweep opens a pending renewal and
+         * starts its grace clock in one transaction. Opening a charge settles nothing. */
+        const opened = await withBusiness(deps.appDb, business.businessId, async (tx) => {
           /* G-104: lock first, so an operator move cannot slip between pricing
            * this renewal and opening its charge. */
           await subscriptionsRepo.lockBusiness(tx, business.businessId);

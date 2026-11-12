@@ -127,11 +127,13 @@ describe('OD-51.6: the pricing source in force is one row in the database (0215)
   it('a charge may name only the source in force, whoever opens it', async () => {
     const businessId = await seedBusiness();
     expect((await open(businessId, 'catalogue')).answer).toBe('allowed');
-    for (const principal of ['app', 'settlement'] as const) {
-      expect((await open(businessId, 'constants', PRINCIPALS[principal]())).answer).toMatch(
-        /^42501 .*priced from the pricing source in force \(catalogue\), not constants/,
-      );
-    }
+    expect((await open(businessId, 'constants')).answer).toMatch(
+      /^42501 .*priced from the pricing source in force \(catalogue\), not constants/,
+    );
+    /* Settlement opens no charge at all (migration 0217). */
+    expect((await open(businessId, 'catalogue', PRINCIPALS.settlement())).answer).toMatch(
+      /^42501 permission denied for table subscription_charges/,
+    );
     /* A charge that names none is priced from the source in force at settlement. */
     expect((await open(businessId, null)).answer).toMatch(/^(allowed|23505 )/);
 

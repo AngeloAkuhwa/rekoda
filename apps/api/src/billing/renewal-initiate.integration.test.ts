@@ -129,8 +129,8 @@ async function withBillingEmail(businessId: string): Promise<void> {
 /** A renewal raised while the live key was unconfirmed, then the gate opened (a test key). */
 async function blockedThenOpened(): Promise<{ businessId: string; reference: string }> {
   const businessId = await dueBusiness();
-  await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(LIVE) });
-  await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(TEST) });
+  await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
+  await sweepRenewals({ workerDb, appDb: db, config: gated(TEST) });
   const [charge] = await chargesOf(businessId);
   return { businessId, reference: charge!.reference };
 }
@@ -204,8 +204,8 @@ const runJob = (
 describe('OD-44: closing a block queues one fresh initiation', () => {
   it('nothing is queued while the restriction is still active', async () => {
     const businessId = await dueBusiness();
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(LIVE) });
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(LIVE) });
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
 
     const [charge] = await chargesOf(businessId);
     expect(charge).toMatchObject({ status: 'pending', blocked_resolved_at: null });
@@ -214,7 +214,7 @@ describe('OD-44: closing a block queues one fresh initiation', () => {
 
   it('the pass that closes the block queues exactly one initiation, and later passes add none', async () => {
     const { businessId, reference } = await blockedThenOpened();
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(TEST) });
+    await sweepRenewals({ workerDb, appDb: db, config: gated(TEST) });
 
     const [charge] = await chargesOf(businessId);
     expect(charge?.blocked_resolved_at).not.toBeNull();
@@ -377,7 +377,7 @@ describe('OD-44: the initiation job', () => {
 
   it('starts nothing for a block that is still open', async () => {
     const businessId = await dueBusiness();
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(LIVE) });
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
     const [charge] = await chargesOf(businessId);
     await withBillingEmail(businessId);
 

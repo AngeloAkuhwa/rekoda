@@ -80,7 +80,6 @@ async function blockedRenewal(): Promise<{ businessId: string; reference: string
     }),
   );
   await sweepRenewals({
-    settlementDb: settlementDb(),
     workerDb,
     appDb: db,
     config: {

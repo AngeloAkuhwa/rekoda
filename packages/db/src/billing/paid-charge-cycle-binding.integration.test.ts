@@ -45,7 +45,8 @@ async function onPaidCycle(end: Date): Promise<string> {
   return businessId;
 }
 
-/** A paid, unapplied plan charge opened by settlement for the period given. */
+/** A paid, unapplied plan charge for the period given, written as the table owner (a fixture: no
+ * runtime role inserts a charge that already carries a payment). */
 async function paidCharge(
   businessId: string,
   kind: 'upgrade' | 'renewal',
@@ -55,15 +56,13 @@ async function paidCharge(
 ): Promise<string> {
   seq += 1;
   const reference = `RKD-SUB-B3-${String(seq).padStart(6, '0')}`;
-  await withBusiness(settlementDb, businessId, (tx) =>
-    tx.execute(sql`
+  await ownerDb.execute(sql`
       INSERT INTO subscription_charges
         (business_id, kind, plan, amount_k, status, reference, period_start, period_end, paid_at,
          billing_interval)
       VALUES (${businessId}::uuid, ${kind}, ${plan}, 1000, 'paid', ${reference},
         ${periodStart.toISOString()}::timestamptz, ${periodEnd.toISOString()}::timestamptz, now(),
-        'monthly')`),
-  );
+        'monthly')`);
   return reference;
 }
 

@@ -79,7 +79,7 @@ describe('closing blocked renewals after the gate opens', () => {
   it('closes the later blocks when the oldest ones persistently fail to close', async () => {
     for (let i = 0; i < 4; i++) await dueBusiness();
     // The live key without the §47 confirmation: four renewals raised and blocked.
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gate(false) });
+    await sweepRenewals({ workerDb, appDb: db, config: gate(false) });
     const blocked = await subscriptionsRepo.blockedRenewals(workerDb, 50);
     expect(blocked).toHaveLength(4);
 
@@ -97,7 +97,6 @@ describe('closing blocked renewals after the gate opens', () => {
 
     // The gate opens; the page holds one row at a time, so the two stuck rows fill the first pages.
     await sweepRenewals({
-      settlementDb: settlementDb(),
       workerDb,
       appDb: db,
       config: gate(true),

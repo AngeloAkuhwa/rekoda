@@ -123,7 +123,6 @@ const closeOnce: typeof SweepModule.closeBlocksTheGateNoLongerHolds = async (...
 const sweep = async (extra: Record<string, unknown> = {}) => {
   const { sweepRenewals } = await import('./renewal-sweep.js');
   return sweepRenewals({
-    settlementDb: settlementDb(),
     workerDb,
     appDb,
     config: OPEN_GATE,
@@ -144,7 +143,6 @@ async function restartedWorker(): Promise<{
   return {
     sweep: (extra = {}) =>
       mod.sweepRenewals({
-        settlementDb: settlementDb(),
         workerDb: worker,
         appDb: app,
         config: OPEN_GATE,

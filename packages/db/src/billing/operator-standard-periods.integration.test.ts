@@ -171,10 +171,10 @@ describe("OD-50: the operator writer assigns Rekoda's standard periods (0207)", 
           ),
         ),
       );
-      // The worker (0210) and the operator (0211) hold no write on the column at all; the others meet
-      // the guard.
+      // The worker (0210), the operator (0211) and settlement (0217) hold no write on the column at
+      // all; the application meets the guard.
       expect(moved).toMatch(
-        who === 'worker' || who === 'operator'
+        who !== 'app'
           ? /42501.*permission denied for table businesses/
           : /42501.*trial start is fixed at signup/,
       );

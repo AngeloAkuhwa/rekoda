@@ -28,9 +28,8 @@ import { paymentLinkHandler } from './payment-link.handler.js';
 import { graduationNudgeHandler } from './graduation-nudge.handler.js';
 import { deliveryStatusHandler } from './delivery-status.handler.js';
 import { processPaymentEventHandler } from './process-payment-event.handler.js';
-import { applyNoChargeUpgradeHandler } from './apply-no-charge-upgrade.handler.js';
 import { initiateBlockedRenewalHandler } from './initiate-blocked-renewal.handler.js';
-import { processBillingChargeHandler } from './process-billing-charge.handler.js';
+import { buildSettlementRunner } from '../settlement/runner.js';
 import { PaymentsModule } from '../payments/payments.module.js';
 import { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { PAYMENT_PROVIDER, type PaymentProviderPort } from '../payments/provider.port.js';
@@ -99,10 +98,12 @@ export interface RunnerDeps extends Omit<
    */
   email?: EmailSender;
   /**
-   * The `rekoda_settlement` pool (OD-37, 0202): the `billing.process` job settles Rekoda charges,
-   * which only that principal may do.
+   * The `rekoda_settlement` pool, in development and the integration suites ONLY: with it, this
+   * runner also drives the settlement runner (`settlement/runner.ts`), so one process plays the
+   * worker and the settlement process. A production worker has none (the configuration refuses
+   * the credential, OD-51.2): Rekoda charges are settled by the dedicated settlement process.
    */
-  settlementDb: Db;
+  settlementDb?: Db | null;
 }
 
 export function buildRunner(
@@ -111,7 +112,12 @@ export function buildRunner(
   deps: RunnerDeps,
   options?: { idleMs?: number; concurrency?: number },
 ): JobRunner {
-  const runner = new JobRunner(workerDb, appDb, options);
+  /* The general worker never claims a settlement job (OD-51.2): it has no handler and no
+   * credential for one, and the database refuses its credential the claim (migration 0217). */
+  const runner = new JobRunner(workerDb, appDb, {
+    ...options,
+    claim: { except: jobsRepo.SETTLEMENT_JOB_KINDS },
+  });
   /* Constructed here rather than injected: buildRunner already holds every
    * dependency the service needs, and threading it through RunnerDeps would
    * make each test re-declare what this line derives. */
@@ -160,11 +166,6 @@ export function buildRunner(
     }),
   );
   runner.register(
-    JobKind.ProcessBillingCharge,
-    processBillingChargeHandler({ provider: deps.paymentProvider, config: deps.config }),
-    deps.settlementDb,
-  );
-  runner.register(
     JobKind.PaymentLink,
     paymentLinkHandler({
       paymentIntents: deps.paymentIntents,
@@ -181,11 +182,6 @@ export function buildRunner(
   );
   runner.register(JobKind.DeliveryStatus, deliveryStatusHandler());
   runner.register(
-    JobKind.ApplyNoChargeUpgrade,
-    applyNoChargeUpgradeHandler({ config: deps.config }),
-    deps.settlementDb,
-  );
-  runner.register(
     JobKind.InitiateBlockedRenewal,
     initiateBlockedRenewalHandler({
       config: deps.config,
@@ -193,6 +189,15 @@ export function buildRunner(
       provider: deps.paymentProvider,
     }),
   );
+  if (deps.settlementDb) {
+    runner.attach(
+      buildSettlementRunner(
+        deps.settlementDb,
+        { provider: deps.paymentProvider, config: deps.config },
+        options,
+      ),
+    );
+  }
   return runner;
 }
 
@@ -321,9 +326,14 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
       return;
     }
     const workerDb = this.workerDb;
-    /* Config refuses a worker without it (OD-51), so this is a wiring fault, not a mode. */
-    if (!this.settlementDb) throw new Error('a worker process needs the settlement pool');
+    /* Null in production (OD-51.2): the dedicated settlement process settles Rekoda charges.
+     * Outside production a worker given the credential also runs the settlement jobs. */
     const settlementDb = this.settlementDb;
+    if (settlementDb) {
+      this.log.warn(
+        'this worker also runs the settlement jobs (a development arrangement; production settles in the dedicated settlement process)',
+      );
+    }
     this.runner = buildRunner(
       workerDb,
       this.appDb,
@@ -628,7 +638,6 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
             sweepRenewals({
               workerDb,
               appDb: this.appDb,
-              settlementDb,
               config: this.config,
             }),
           )

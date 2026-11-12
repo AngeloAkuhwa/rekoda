@@ -1520,6 +1520,13 @@
       "when": 1796299200000,
       "tag": "0216_usage_meter_boundary",
       "breakpoints": true
+    },
+    {
+      "idx": 217,
+      "version": "7",
+      "when": 1796385600000,
+      "tag": "0217_settlement_isolation",
+      "breakpoints": true
     }
   ]
 }

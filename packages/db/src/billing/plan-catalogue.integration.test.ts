@@ -30,6 +30,7 @@ import {
   truncateAll,
   type Urls,
   settlementDb,
+  applicationDb,
 } from '../testing.js';
 
 let urls: Urls;
@@ -126,7 +127,7 @@ describe('the plan catalogue (BL2, PR-099)', () => {
     expect(soldPrice).toBe(990_000);
 
     /* The charge the merchant actually paid, at the price then in force. */
-    await withBusiness(settlementDb(), businessId, (tx) =>
+    await withBusiness(applicationDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'renewal',

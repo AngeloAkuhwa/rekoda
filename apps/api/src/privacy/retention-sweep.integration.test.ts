@@ -30,6 +30,7 @@ import {
   settlementDb,
   truncateAll,
   type Urls,
+  applicationDb,
 } from '@rekoda/db/testing';
 import { SendFailed } from '../channels/sender.js';
 import { StubSender } from '../channels/sender.stub.js';
@@ -158,7 +159,7 @@ describe('the warning', () => {
 
   it('does not warn, or claim, a merchant who has ever paid us', async () => {
     const { businessId } = await abandonedTrial(400);
-    await withBusiness(settlementDb(), businessId, (tx) =>
+    await withBusiness(applicationDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'first_purchase',
@@ -259,7 +260,7 @@ describe('the deletion', () => {
     await sweepRetention(deps(sender), new Date());
 
     // They came back and subscribed. The books are theirs again.
-    await withBusiness(settlementDb(), businessId, (tx) =>
+    await withBusiness(applicationDb(), businessId, (tx) =>
       subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'first_purchase',

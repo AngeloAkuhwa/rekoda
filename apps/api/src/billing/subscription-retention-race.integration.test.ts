@@ -32,6 +32,7 @@ import {
   type Urls,
   setPlanAsOwner,
   settlementDb,
+  applicationDb,
   setPricingSource,
 } from '@rekoda/db/testing';
 import { applySettledCharge } from './billing.service.js';
@@ -92,7 +93,7 @@ async function warnedTrialWithPendingCharge(
   await withBusiness(ownerDb, businessId, (tx) =>
     retentionRepo.claimRetentionNotice(tx, businessId, daysAgo(200)),
   );
-  await withBusiness(settlementDb(), businessId, async (tx) => {
+  await withBusiness(applicationDb(), businessId, async (tx) => {
     await subscriptionsRepo.openCharge(tx, {
       businessId,
       kind,
@@ -102,6 +103,9 @@ async function warnedTrialWithPendingCharge(
       periodStart: daysAgo(1),
       periodEnd: new Date(Date.now() + 29 * 86_400_000),
     });
+  });
+  /* Backdating a charge is a fixture's act, so the owner does it: no runtime role may. */
+  await withBusiness(ownerDb, businessId, async (tx) => {
     // A checkout opened in the last 14 days defers deletion (migration 0161),
     // which would end the race before it began. This one was abandoned weeks
     // ago, so the business is genuinely due.

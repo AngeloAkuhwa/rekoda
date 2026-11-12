@@ -16,15 +16,18 @@ export const WORKER_DB = Symbol('WorkerDb');
  */
 export const WORKER_LOCK = Symbol('WorkerLock');
 /**
- * The `rekoda_settlement` pool (OD-37, migration 0202): the only connection that may record a
- * payment on a Rekoda charge, credit pack units or run the provider plan writer. Used for the
- * `billing.process` job's transaction and the owner's plan change (which can settle a zero-priced
- * upgrade). Never the application pool.
+ * The `rekoda_settlement` pool (migrations 0202, 0217): the only connection that may record a
+ * payment on a Rekoda charge, credit pack units or run the provider plan writer. Null in every
+ * production API and worker process: the dedicated settlement process (`settlement-main.ts`) is
+ * the only holder there (OD-51.2). Outside production a process that runs jobs and is given the
+ * credential drives the settlement runner with it.
  */
 export const SETTLEMENT_DB = Symbol('SettlementDb');
 /**
- * The `rekoda_billing_operator` pool (0202), or null in a worker process: the only connection that
- * may run the operator plan writer (`POST /v1/businesses/plan`).
+ * The `rekoda_billing_operator` pool (migrations 0202, 0211): the only connection that may run
+ * the operator plan writers. Null in every production API and worker process: the dedicated
+ * operator process (`operator-main.ts`) is the only holder there (OD-51.1). Outside production a
+ * process given the credential serves the operator plan routes itself.
  */
 export const OPERATOR_DB = Symbol('OperatorDb');
 const DB_HANDLE = Symbol('DbHandle');
@@ -127,10 +130,10 @@ class DbLifecycle implements OnApplicationShutdown {
       inject: [WORKER_LOCK_HANDLE],
       useFactory: (handle: LockHandle | null): LockClient | null => handle?.client ?? null,
     },
-    /* Settlement, in the worker only (OD-51): it settles every verified payment, holding its
-     * connection across the provider's verify call, applies zero-priced upgrades and opens
-     * renewals; sized one above the job concurrency so a full set of slow verifies cannot starve the
-     * sweep. An API process has none (null). An operator plan change is a rare manual act. */
+    /* Settlement: never in production (OD-51.2, the dedicated settlement process holds it). In
+     * development it settles verified payments here, holding its connection across the
+     * provider's verify call; sized one above the job concurrency so slow verifies cannot starve
+     * the runner. An operator plan change is a rare manual act. */
     {
       provide: SETTLEMENT_DB_HANDLE,
       inject: [CONFIG],

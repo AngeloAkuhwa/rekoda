@@ -539,20 +539,27 @@ export async function scheduleIntervalChange(
 /**
  * Start the grace clock, once.
  *
- * `IS NULL` in the WHERE is what makes a second failed attempt harmless: the
- * seven days run from the FIRST failure, so a card retried daily cannot push
- * the deadline forward one day at a time and keep a merchant in grace
- * forever.
+ * Through `subscription_start_grace` (migration 0217): `payment_failed_at` is one of the guarded
+ * cycle columns (0206), because CLEARING it keeps a paid plan running unpaid, so no runtime role
+ * writes it directly. The function only ever sets it, from empty, for a paid business whose ended
+ * cycle has a renewal open, to a time no earlier than that cycle's end and not in the future. It
+ * is what lets the renewal sweep run on the application credential instead of settlement's
+ * (OD-51.2).
+ *
+ * Already running is what makes a second failed attempt harmless: the seven days run from the
+ * FIRST failure, so a card retried daily cannot push the deadline forward one day at a time and
+ * keep a merchant in grace forever. Answers whether this call started it.
  */
 export async function markRenewalFailed(
   tx: TenantDb,
   businessId: string,
   when: Date,
-): Promise<void> {
-  await tx.execute(sql`
-    UPDATE businesses SET payment_failed_at = ${when.toISOString()}::timestamptz, updated_at = now()
-    WHERE id = ${businessId}::uuid AND payment_failed_at IS NULL
+): Promise<boolean> {
+  const rows = await tx.execute<{ started: boolean }>(sql`
+    SELECT subscription_start_grace(${businessId}::uuid, ${when.toISOString()}::timestamptz)
+      AS started
   `);
+  return [...rows][0]?.started === true;
 }
 
 /* ── charges ──────────────────────────────────────────────────────────────── */

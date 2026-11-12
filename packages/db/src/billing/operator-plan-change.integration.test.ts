@@ -23,6 +23,7 @@ import {
   resetPlanCatalogue,
   truncateAll,
   type Urls,
+  startGraceForTest,
 } from '../testing.js';
 import { operatorDb } from '../testing.js';
 
@@ -140,7 +141,7 @@ async function troubledComplete(): Promise<string> {
       anchorDay: 1,
     });
     await subscriptionsRepo.schedulePlanChange(tx, businessId, 'chat');
-    await subscriptionsRepo.markRenewalFailed(tx, businessId, new Date('2026-09-01T02:00:00Z'));
+    await startGraceForTest(tx, businessId, new Date('2026-09-01T02:00:00Z'));
     await subscriptionsRepo.claimGraceReminder(tx, businessId, 1);
   });
   const before = await row(businessId);

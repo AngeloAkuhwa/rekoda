@@ -203,7 +203,7 @@ async function unpaidYear() {
   const { businessId, auth } = await onboard();
   const start = justEndedYear();
   await putOnPlan(businessId, 'chat', 'annual', start);
-  await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config });
+  await sweepRenewals({ workerDb, appDb: db, config });
   const [charge] = await chargesOf(businessId);
   return { businessId, auth, charge: charge! };
 }

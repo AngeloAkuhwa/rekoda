@@ -33,6 +33,7 @@ import {
   truncateAll,
   type Urls,
   settlementDb,
+  applicationDb,
 } from '@rekoda/db/testing';
 import { setPlanForTest } from '@rekoda/db/testing';
 import { buildRunner, type RunnerDeps } from '../jobs/jobs.module.js';
@@ -139,7 +140,7 @@ async function openSubscriptionCharge(
 ): Promise<string> {
   const reference = subscriptionReference(new Date(), (n) => randomBytes(n));
   const now = new Date();
-  await withBusiness(settlementDb(), businessId, (tx) =>
+  await withBusiness(applicationDb(), businessId, (tx) =>
     subscriptionsRepo.openCharge(tx, {
       businessId,
       kind: opts.kind ?? 'first_purchase',

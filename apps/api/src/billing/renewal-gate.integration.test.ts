@@ -29,6 +29,7 @@ import {
   truncateAll,
   type Urls,
   setPricingSource,
+  startGraceForTest,
 } from '@rekoda/db/testing';
 import { settlementDb } from '@rekoda/db/testing';
 import { sweepRenewals } from './renewal-sweep.js';
@@ -124,7 +125,6 @@ describe('OWN-70: the renewal sweep applies the charge gate', () => {
     const businessId = await dueBusiness();
     expect(
       await sweepRenewals({
-        settlementDb: settlementDb(),
         workerDb,
         appDb: db,
         config: gated(LIVE),
@@ -164,14 +164,13 @@ describe('OWN-70: the renewal sweep applies the charge gate', () => {
 
   it('no usable key: recorded as payments_not_configured', async () => {
     const businessId = await dueBusiness();
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated('') });
+    await sweepRenewals({ workerDb, appDb: db, config: gated('') });
     expect((await chargesOf(businessId))[0]?.blocked_reason).toBe('payments_not_configured');
   });
 
   it('a confirmed live key and a test key are unaffected: nothing is recorded, no alert', async () => {
     const live = await dueBusiness();
     await sweepRenewals({
-      settlementDb: settlementDb(),
       workerDb,
       appDb: db,
       config: gated(LIVE, true),
@@ -179,7 +178,7 @@ describe('OWN-70: the renewal sweep applies the charge gate', () => {
     expect((await chargesOf(live))[0]).toMatchObject({ status: 'pending', blocked_at: null });
 
     const test = await dueBusiness();
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(TEST) });
+    await sweepRenewals({ workerDb, appDb: db, config: gated(TEST) });
     expect((await chargesOf(test))[0]).toMatchObject({ status: 'pending', blocked_at: null });
 
     expect(await subscriptionsRepo.blockedRenewals(workerDb)).toEqual([]);
@@ -188,8 +187,8 @@ describe('OWN-70: the renewal sweep applies the charge gate', () => {
 
   it('a repeated sweep raises and records ONE renewal for the cycle', async () => {
     const businessId = await dueBusiness();
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(LIVE) });
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(LIVE) });
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
     expect(await chargesOf(businessId)).toHaveLength(1);
     expect(await subscriptionsRepo.blockedRenewalCount(workerDb)).toBe(1);
   });
@@ -199,7 +198,7 @@ describe('OWN-70: the renewal sweep applies the charge gate', () => {
     await withBusiness(db, businessId, (tx) =>
       subscriptionsRepo.schedulePlanChange(tx, businessId, 'expired'),
     );
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(LIVE) });
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
     expect(await chargesOf(businessId)).toHaveLength(0);
     expect(await subscriptionsRepo.blockedRenewalCount(workerDb)).toBe(0);
   });
@@ -207,19 +206,19 @@ describe('OWN-70: the renewal sweep applies the charge gate', () => {
   it('an expired subscription raises nothing, so nothing is blocked', async () => {
     const businessId = await dueBusiness();
     await withBusiness(db, businessId, async (tx) => {
-      await subscriptionsRepo.markRenewalFailed(tx, businessId, new Date(Date.now() - 10 * DAY));
+      await startGraceForTest(tx, businessId, new Date(Date.now() - 10 * DAY));
       expect(
         await subscriptionsRepo.expireSubscription(tx, businessId, 'system:test', 'grace'),
       ).toBe('chat');
     });
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(LIVE) });
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
     expect(await chargesOf(businessId)).toHaveLength(0);
     expect(await subscriptionsRepo.blockedRenewalCount(workerDb)).toBe(0);
   });
 
   it('a blocked renewal is never a dead job: there is nothing for the recovery path to verify', async () => {
     await dueBusiness();
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(LIVE) });
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
     expect(await deadJobsRepo.opsQueue(workerDb)).toEqual([]);
   });
 });
@@ -227,7 +226,7 @@ describe('OWN-70: the renewal sweep applies the charge gate', () => {
 describe('OWN-70: what happens to a blocked renewal afterwards', () => {
   it('paid once the gate opens (through the ordinary settled path), it leaves the list and extends once', async () => {
     const businessId = await dueBusiness();
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(LIVE) });
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
     const [charge] = await chargesOf(businessId);
     const settle = () =>
       withBusiness(settlementDb(), businessId, (tx) =>
@@ -250,12 +249,11 @@ describe('OWN-70: what happens to a blocked renewal afterwards', () => {
 
   it('the next sweep after the gate opens closes the block itself, audited, and the alert clears', async () => {
     const businessId = await dueBusiness();
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(LIVE) });
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
     expect(await blockedAlert()).toBeDefined();
     const [charge] = await chargesOf(businessId);
 
     await sweepRenewals({
-      settlementDb: settlementDb(),
       workerDb,
       appDb: db,
       config: gated(LIVE, true),
@@ -277,7 +275,7 @@ describe('OWN-70: what happens to a blocked renewal afterwards', () => {
 
   it('a failing block cleanup never stops the sweep raising the renewals that are due', async () => {
     const blocked = await dueBusiness();
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(LIVE) });
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
     expect(await subscriptionsRepo.blockedRenewals(workerDb)).toHaveLength(1);
     const due = await dueBusiness();
     // The cleanup's own first read on the worker credential (its clock read or the block listing)
@@ -305,7 +303,6 @@ describe('OWN-70: what happens to a blocked renewal afterwards', () => {
 
     await expect(
       sweepRenewals({
-        settlementDb: settlementDb(),
         workerDb: flaky,
         appDb: db,
         config: gated(LIVE, true),
@@ -316,7 +313,6 @@ describe('OWN-70: what happens to a blocked renewal afterwards', () => {
     expect((await chargesOf(due)).filter((c) => c.kind === 'renewal')).toHaveLength(1);
     // Cleanup is retried by the next pass.
     await sweepRenewals({
-      settlementDb: settlementDb(),
       workerDb,
       appDb: db,
       config: gated(LIVE, true),
@@ -327,7 +323,7 @@ describe('OWN-70: what happens to a blocked renewal afterwards', () => {
 
   it('a renewal that was paid meanwhile cannot be given a block resolution', async () => {
     const businessId = await dueBusiness();
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(LIVE) });
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
     const [charge] = await chargesOf(businessId);
     await withBusiness(settlementDb(), businessId, (tx) =>
       applySettledCharge(tx, {
@@ -353,7 +349,7 @@ describe('OWN-70: what happens to a blocked renewal afterwards', () => {
 
   it('a renewal superseded meanwhile cannot be given a block resolution', async () => {
     const businessId = await dueBusiness();
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(LIVE) });
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
     const [charge] = await chargesOf(businessId);
     const owner = createDb(urls.owner, { max: 1 });
     await owner.db.execute(
@@ -368,7 +364,7 @@ describe('OWN-70: what happens to a blocked renewal afterwards', () => {
 
   it('an operator closes it with a resolution, once; the charge and the grace clock are untouched', async () => {
     const businessId = await dueBusiness();
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(LIVE) });
+    await sweepRenewals({ workerDb, appDb: db, config: gated(LIVE) });
     const [charge] = await chargesOf(businessId);
     const before = await subOf(businessId);
     const close = () =>
@@ -394,7 +390,7 @@ describe('OWN-70: what happens to a blocked renewal afterwards', () => {
   it('another business cannot mark or close this business’s renewal', async () => {
     const a = await dueBusiness();
     const b = await dueBusiness();
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(TEST) });
+    await sweepRenewals({ workerDb, appDb: db, config: gated(TEST) });
     const [charge] = await chargesOf(a);
     expect(
       await withBusiness(db, b, (tx) =>
@@ -406,7 +402,7 @@ describe('OWN-70: what happens to a blocked renewal afterwards', () => {
 
   it('the database refuses a block reason it does not know, or a block on a non-renewal', async () => {
     const businessId = await dueBusiness();
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config: gated(TEST) });
+    await sweepRenewals({ workerDb, appDb: db, config: gated(TEST) });
     const [charge] = await chargesOf(businessId);
     const refused = (statement: ReturnType<typeof sql>, as = db) =>
       withBusiness(as, businessId, (tx) => tx.execute(statement)).then(
@@ -417,13 +413,26 @@ describe('OWN-70: what happens to a blocked renewal afterwards', () => {
       await refused(sql`UPDATE subscription_charges SET blocked_at = now(), blocked_reason = 'whim'
                         WHERE reference = ${charge!.reference}`),
     ).toMatch(/blocked_reason_ck/);
-    expect(
-      await refused(
-        sql`UPDATE subscription_charges SET blocked_at = now(),
-                          blocked_reason = 'payments_not_configured', kind = 'upgrade'
-                        WHERE reference = ${charge!.reference}`,
-        settlementDb(),
-      ),
-    ).toMatch(/blocked_shape_ck/); // changing kind is settlement's alone (0205), so asked as it
+    /* No runtime role may change a charge's kind (0205, 0217), so the shape rule is shown to the
+     * owner: the constraint binds whoever writes. */
+    const owner = createDb(urls.owner, { max: 1 });
+    try {
+      expect(
+        await refused(
+          sql`UPDATE subscription_charges SET blocked_at = now(),
+                            blocked_reason = 'payments_not_configured', kind = 'upgrade'
+                          WHERE reference = ${charge!.reference}`,
+          owner.db,
+        ),
+      ).toMatch(/blocked_shape_ck/);
+      expect(
+        await refused(
+          sql`UPDATE subscription_charges SET kind = 'upgrade' WHERE reference = ${charge!.reference}`,
+          settlementDb(),
+        ),
+      ).toMatch(/permission denied/);
+    } finally {
+      await owner.close();
+    }
   });
 });

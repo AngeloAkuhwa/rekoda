@@ -449,3 +449,47 @@ test('a release without 0196 does not run the 0196 smoke', () => {
   assert.equal(r.status, 0, r.stderr + r.stdout);
   assert.equal(h.at('exec -T postgres psql'), -1);
 });
+
+/* What a host holds once the OD-51 runbook step is done: the operator process's own audience. */
+const PRIVILEGED_ENV =
+  PRINCIPAL_ENV +
+  `VAULT_KEY=${'a'.repeat(64)}\n` +
+  'OPERATOR_OIDC_ISSUER=https://idp.example.com/\n' +
+  'OPERATOR_OIDC_JWKS_URL=https://idp.example.com/jwks.json\n' +
+  'OPERATOR_OIDC_AUDIENCE=rekoda-api\n';
+
+test('OD-51 (0217): a release bringing in the operator and settlement processes stops all four writers, then migrates, smokes and starts', () => {
+  const h = host(
+    ['0217_settlement_isolation'],
+    PRIVILEGED_ENV + 'OPERATOR_BILLING_OIDC_AUDIENCE=rekoda-billing\n',
+  );
+  const r = h.run();
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const stop = h.at('stop api worker operator settlement');
+  const migrate = h.at('run --rm -T migrate');
+  const smoke = h.at('exec -T postgres psql');
+  const up = h.at(' up ');
+  assert.ok(stop >= 0 && stop < migrate, 'every writing process is stopped before migrating 0217');
+  assert.ok(migrate < smoke && smoke < up, h.calls().join('\n'));
+});
+
+test('OD-51 (0217): an operator process with no audience of its own, or the API’s, refuses the deploy before anything is stopped', () => {
+  for (const env of [
+    PRIVILEGED_ENV,
+    PRIVILEGED_ENV + 'OPERATOR_BILLING_OIDC_AUDIENCE=\n',
+    PRIVILEGED_ENV + 'OPERATOR_BILLING_OIDC_AUDIENCE=rekoda-api\n',
+    PRINCIPAL_ENV + 'OPERATOR_BILLING_OIDC_AUDIENCE=rekoda-billing\n',
+  ]) {
+    const h = host(['0217_settlement_isolation'], env);
+    const r = h.run();
+    assert.notEqual(r.status, 0);
+    assert.match(
+      r.stderr,
+      /STAGING DEPLOY REFUSED: .*(has no (OPERATOR_BILLING_OIDC_AUDIENCE|OPERATOR_OIDC_ISSUER|VAULT_KEY)|must differ from OPERATOR_OIDC_AUDIENCE)/,
+    );
+    assert.match(r.stderr, /nothing has been changed/);
+    assert.equal(h.at('stop api worker'), -1, 'nothing may be stopped');
+    assert.equal(h.at('run --rm -T migrate'), -1, 'nothing may be migrated');
+    assert.doesNotMatch(r.stderr + r.stdout, /placeholder|aaaaaaaa/, 'a value is never printed');
+  }
+});

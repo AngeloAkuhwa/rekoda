@@ -272,7 +272,7 @@ describe('OD-51.4: no runtime role rewrites a counter or the reservation ledger'
       outcome(withBusiness(db, businessId, (tx) => tx.execute(statement)));
     const reserveSql = sql`SELECT * FROM usage_reserve(${businessId}::uuid, '2026-11', 'AI_ACTIONS', 10, 1, true)`;
     const refundSql = sql`SELECT usage_refund(${businessId}::uuid, gen_random_uuid(), 'AI_ACTIONS', 1)`;
-    for (const who of ['operator'] as const) {
+    for (const who of ['settlement', 'operator'] as const) {
       expect(await call(PRINCIPALS[who](), reserveSql)).toMatch(
         /^42501 permission denied for function usage_reserve/,
       );
@@ -380,7 +380,7 @@ describe('OD-51.4: a ceiling is raised once, for one paid pack charge', () => {
           ),
         ),
       ),
-    ).toMatch(/^42501 .*credited only through usage_credit_pack/);
+    ).toMatch(/^42501 permission denied for table subscription_charges/);
     expect(await creditedAt(reference)).toBeNull();
   });
 });

@@ -159,7 +159,19 @@ describe('row-level security, across the whole schema', () => {
      * Keyed by policy because a table-level excuse is too coarse: every one
      * of these tables ALSO carries an ordinary tenant policy, and excusing
      * the table would stop checking that one too. */
+    /* And three on the job queue (migration 0217, OD-51.2), which split it by KIND between the
+     * worker and the settlement process rather than by tenant:
+     *
+     *   jobs.settlement_claim                the settlement process reaches its own two job
+     *                                        kinds across tenants, as the worker's claim does
+     *   jobs.settlement_only_its_kinds       RESTRICTIVE: whatever tenant settlement pins, no
+     *                                        job of another kind
+     *   jobs.worker_leaves_settlement_jobs   RESTRICTIVE, UPDATE only: the worker cannot claim,
+     *                                        complete or fail a live settlement job */
     const KNOWN_EXCEPTIONS = new Set([
+      'jobs.settlement_claim',
+      'jobs.settlement_only_its_kinds',
+      'jobs.worker_leaves_settlement_jobs',
       'businesses.tenant_self',
       'memberships.membership_self',
       'shops.shop_public_read',
@@ -191,6 +203,18 @@ describe('row-level security, across the whole schema', () => {
      * here either omits WITH CHECK — in which case PostgreSQL applies USING —
      * or repeats it exactly. A deliberate divergence would need its own
      * reasoning, and would fail here until somebody wrote it. */
-    expect([...rows].map((r) => `${r.relname}.${r.polname}: ${r.check}`)).toEqual([]);
+    /* One deliberate divergence, with its reasoning (migration 0217, OD-51.2): the RESTRICTIVE
+     * `jobs.worker_leaves_settlement_jobs` lets the worker TOUCH a settlement job only when it is
+     * already dead (USING) and LEAVE it only dead or pending (WITH CHECK). The two sides differ
+     * on purpose: an operator's recovery requeues a dead job (dead to pending), which a policy
+     * with one predicate for both sides could not express without also letting the worker claim
+     * or complete a live one. It is restrictive, so it can only narrow what the worker reaches,
+     * never widen it, and it says nothing about tenants. */
+    const DELIBERATE = new Set(['jobs.worker_leaves_settlement_jobs']);
+    expect(
+      [...rows]
+        .filter((r) => !DELIBERATE.has(`${r.relname}.${r.polname}`))
+        .map((r) => `${r.relname}.${r.polname}: ${r.check}`),
+    ).toEqual([]);
   });
 });

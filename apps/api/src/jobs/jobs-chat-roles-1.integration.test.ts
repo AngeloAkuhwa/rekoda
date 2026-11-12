@@ -20,6 +20,7 @@ import {
   setPlanForTest,
   settlementDb,
   creditBonusForTest,
+  applicationDb,
 } from '@rekoda/db/testing';
 import { buildRunner } from './jobs.module.js';
 import { sealPayload } from '../privacy/payload-vault.js';
@@ -330,8 +331,11 @@ describe('the chat surface enforces roles', () => {
     await memberOf(businessId, '+2348140010048', 'accountant');
     const allowance = allowanceFor('trial', 'AI_ACTIONS');
     const bought = 100;
-    await withBusiness(settlementDb(), businessId, async (tx) => {
-      await creditBonusForTest(tx, businessId, usagePeriod(new Date()), 'AI_ACTIONS', bought);
+    await withBusiness(settlementDb(), businessId, (tx) =>
+      creditBonusForTest(tx, businessId, usagePeriod(new Date()), 'AI_ACTIONS', bought),
+    );
+    /* Consumption is the application's (0216): settlement credits packs and reserves nothing. */
+    await withBusiness(applicationDb(), businessId, async (tx) => {
       await usageRepo.consumeUnit(
         tx,
         businessId,

@@ -272,7 +272,7 @@ describe('OD-50: a support-reviewed upgrade keeps the paid-through date (0213)',
       ).toMatch(/^42501 permission denied for table plan_change_reviews/);
     }
     /* A review is asked for by the application only (the merchant's own request). */
-    for (const principal of ['worker', 'operator'] as const) {
+    for (const principal of ['worker', 'settlement', 'operator'] as const) {
       expect(await outcome(request(PRINCIPALS[principal](), businessId, 'complete'))).toMatch(
         /^42501 permission denied for function subscription_request_plan_review/,
       );

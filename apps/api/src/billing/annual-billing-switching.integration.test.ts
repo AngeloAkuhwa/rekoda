@@ -199,7 +199,7 @@ describe('switching between monthly and annual', () => {
     expect(parked?.pendingBillingInterval).toBe('monthly');
     expect(parked?.planExpiresAt?.toISOString()).toBe(renewsAt.toISOString());
 
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config });
+    await sweepRenewals({ workerDb, appDb: db, config });
     const [charge] = await chargesOf(businessId);
     expect(charge).toMatchObject({ kind: 'renewal', amountK: CHAT_MONTHLY });
     expect(charge?.billingInterval).toBe('monthly');
@@ -231,7 +231,7 @@ describe('switching between monthly and annual', () => {
     expect(answer.state).toBe('scheduled');
     expect((await subOf(businessId))?.billingInterval).toBe('monthly');
 
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config });
+    await sweepRenewals({ workerDb, appDb: db, config });
     const [charge] = await chargesOf(businessId);
     expect(charge).toMatchObject({ kind: 'renewal', amountK: CHAT_ANNUAL });
     expect(charge?.billingInterval).toBe('annual');
@@ -266,12 +266,12 @@ describe('switching between monthly and annual', () => {
     const start = justEndedMonth();
     await putOnPlan(businessId, 'chat', 'monthly', start);
 
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config });
+    await sweepRenewals({ workerDb, appDb: db, config });
     const [first] = await chargesOf(businessId);
     expect(first?.amountK).toBe(CHAT_MONTHLY);
 
     await billing().switchInterval(businessId, 'annual');
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config });
+    await sweepRenewals({ workerDb, appDb: db, config });
 
     const rows = await chargesOf(businessId);
     const live = rows.filter((c) => c.status === 'pending' && c.supersededAt === null);
@@ -300,7 +300,7 @@ describe('switching between monthly and annual', () => {
   it('a renewal link sent before a switch stops being payable the moment the switch is saved', async () => {
     const { businessId } = await onboard();
     await putOnPlan(businessId, 'chat', 'monthly', new Date(Date.now() - 35 * DAY));
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config });
+    await sweepRenewals({ workerDb, appDb: db, config });
     const [monthly] = await chargesOf(businessId);
     expect(monthly?.supersededAt).toBeNull();
 
@@ -313,7 +313,7 @@ describe('switching between monthly and annual', () => {
   it('undoing a downgrade does not revive a renewal that an interval switch made stale', async () => {
     const { businessId } = await onboard();
     await putOnPlan(businessId, 'complete', 'monthly', new Date(Date.now() - 35 * DAY));
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config });
+    await sweepRenewals({ workerDb, appDb: db, config });
     const [first] = await chargesOf(businessId);
 
     await billing().changePlan(businessId, 'chat'); // schedule a downgrade
@@ -389,7 +389,7 @@ describe('changing plan inside an annual cycle', () => {
     });
     expect((await subOf(businessId))?.plan).toBe('complete');
 
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config });
+    await sweepRenewals({ workerDb, appDb: db, config });
     const [charge] = await chargesOf(businessId);
     expect(charge).toMatchObject({ kind: 'renewal', plan: 'chat', amountK: CHAT_ANNUAL });
     expect(charge?.billingInterval).toBe('annual');
@@ -464,7 +464,7 @@ describe('review of #340: three ways a year could be mispriced or misapplied', (
     const other = await onboard();
     await putOnPlan(other.businessId, 'chat', 'monthly', new Date(Date.now() - 35 * DAY));
     await billing().switchInterval(other.businessId, 'annual');
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config });
+    await sweepRenewals({ workerDb, appDb: db, config });
     const [renewal] = await chargesOf(other.businessId);
     expect(renewal).toMatchObject({ kind: 'renewal', amountK: 14_900_000 });
     expect(renewal?.billingInterval).toBe('annual');
@@ -475,7 +475,7 @@ describe('review of #340: three ways a year could be mispriced or misapplied', (
     await putOnPlan(businessId, 'chat', 'monthly', new Date(Date.now() - 35 * DAY));
 
     /* A monthly renewal is raised for the cycle that just ended... */
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config });
+    await sweepRenewals({ workerDb, appDb: db, config });
     const [monthly] = await chargesOf(businessId);
     expect(monthly).toMatchObject({ kind: 'renewal', amountK: CHAT_MONTHLY });
 
@@ -491,7 +491,7 @@ describe('review of #340: three ways a year could be mispriced or misapplied', (
     expect(after.find((c) => c.reference === monthly!.reference)?.supersededAt).not.toBeNull();
 
     /* The sweep raises the yearly renewal in its place. */
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config });
+    await sweepRenewals({ workerDb, appDb: db, config });
     const live = (await chargesOf(businessId)).filter(
       (c) => c.status === 'pending' && c.supersededAt === null && c.kind === 'renewal',
     );
@@ -503,18 +503,18 @@ describe('review of #340: three ways a year could be mispriced or misapplied', (
   it('undoing a downgrade after the sweep replaced the renewal and a switch to yearly keeps the monthly link retired', async () => {
     const { businessId } = await onboard();
     await putOnPlan(businessId, 'complete', 'monthly', new Date(Date.now() - 35 * DAY));
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config });
+    await sweepRenewals({ workerDb, appDb: db, config });
     const [first] = await chargesOf(businessId);
 
     await billing().changePlan(businessId, 'chat'); // schedule a downgrade
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config }); // replaces the first renewal
+    await sweepRenewals({ workerDb, appDb: db, config }); // replaces the first renewal
     await billing().switchInterval(businessId, 'annual');
     await billing().changePlan(businessId, 'complete'); // undo the downgrade
 
     const rows = await chargesOf(businessId);
     expect(rows.find((c) => c.reference === first!.reference)?.supersededAt).not.toBeNull();
     expect((await subOf(businessId))?.pendingBillingInterval).toBe('annual');
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config });
+    await sweepRenewals({ workerDb, appDb: db, config });
     const live = (await chargesOf(businessId)).filter(
       (c) => c.status === 'pending' && c.supersededAt === null && c.kind === 'renewal',
     );
@@ -526,7 +526,7 @@ describe('review of #340: three ways a year could be mispriced or misapplied', (
     const { businessId } = await onboard();
     await putOnPlan(businessId, 'chat', 'monthly', new Date(Date.now() - 35 * DAY));
     await billing().switchInterval(businessId, 'annual');
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config });
+    await sweepRenewals({ workerDb, appDb: db, config });
     const [yearly] = await chargesOf(businessId);
     expect(yearly?.billingInterval).toBe('annual');
 
@@ -558,7 +558,7 @@ describe('review of #340: three ways a year could be mispriced or misapplied', (
   it('paying a renewal link that a switch withdrew still buys what it was priced for, and ends grace', async () => {
     const { businessId } = await onboard();
     await putOnPlan(businessId, 'chat', 'monthly', new Date(Date.now() - 35 * DAY));
-    await sweepRenewals({ settlementDb: settlementDb(), workerDb, appDb: db, config });
+    await sweepRenewals({ workerDb, appDb: db, config });
     const [monthly] = await chargesOf(businessId);
     expect((await subOf(businessId))?.paymentFailedAt).not.toBeNull();
 

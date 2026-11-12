@@ -104,7 +104,7 @@ describe('OD-37: who may run which writer, and who may become whom (0202)', () =
       operator_worker: false,
       settlement_writer: false,
       operator_writer: false,
-      settlement_inherits_app: true,
+      settlement_inherits_app: false, // since 0217 (OD-51.3): its own exact grants
       operator_inherits_app: false,
       any_bypass: false,
     });

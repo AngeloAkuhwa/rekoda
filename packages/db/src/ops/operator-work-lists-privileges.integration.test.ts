@@ -213,9 +213,15 @@ describe('the operator work-list and close-cursor functions', () => {
           FROM pg_proc p, aclexplode(p.proacl) a
           WHERE p.proname IN (${list}) AND a.privilege_type = 'EXECUTE'`,
     );
+    /* The two yes/no helpers a queue pass asks about ONE job id are also run by the settlement
+     * process for its own two job kinds (migration 0217): its reclaim and enrolment record a dead
+     * `billing.process` job exactly as the worker's do for a payment job. No list function is. */
+    const ALSO_SETTLEMENT = new Set(['dead_job_has_record', 'dead_job_is_recovering']);
     for (const g of grantees) {
       // The owner (whatever role migrated this database) and the worker, nobody else.
-      expect(['rekoda_worker', g.owner], `${g.proname} -> ${g.grantee}`).toContain(g.grantee);
+      const allowed = ['rekoda_worker', g.owner];
+      if (ALSO_SETTLEMENT.has(g.proname)) allowed.push('rekoda_settlement');
+      expect(allowed, `${g.proname} -> ${g.grantee}`).toContain(g.grantee);
     }
     expect(new Set(grantees.map((g) => g.proname)).size).toBe(FUNCTIONS.length);
   });

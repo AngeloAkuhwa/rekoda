@@ -79,7 +79,7 @@ const principalPools = new Map<string, { db: Db; close: () => Promise<void> }>()
  * writer). Cached per URL for the test file and closed by `closePrincipalPools`, which each
  * integration config's setup file calls after every file.
  */
-export function principalDb(urls: Urls, which: 'settlement' | 'operator' | 'owner'): Db {
+export function principalDb(urls: Urls, which: 'settlement' | 'operator' | 'owner' | 'app'): Db {
   const url = urls[which];
   let pool = principalPools.get(url);
   if (!pool) {
@@ -91,6 +91,11 @@ export function principalDb(urls: Urls, which: 'settlement' | 'operator' | 'owne
 
 /** `principalDb(requireUrls(), 'settlement')`: the settlement pool for a fixture. */
 export const settlementDb = (): Db => principalDb(requireUrls(), 'settlement');
+/**
+ * The application pool for a fixture that opens a pending charge: the application opens charges
+ * (0209), and settlement, which only settles them, opens none (0217).
+ */
+export const applicationDb = (): Db => principalDb(requireUrls(), 'app');
 /** `principalDb(requireUrls(), 'operator')`: the billing-operator pool for a fixture. */
 export const operatorDb = (): Db => principalDb(requireUrls(), 'operator');
 /**
@@ -150,6 +155,23 @@ async function installTestFixtureWriter(ownerUrl: string): Promise<void> {
       GRANT EXECUTE ON FUNCTION public.test_fixture_set_plan(uuid, text, timestamptz)
         TO rekoda_app, rekoda_worker;
 
+      -- A grace-clock writer for TEST FIXTURES ONLY (OD-51.2, migration 0217). Production starts
+      -- the clock through subscription_start_grace, which needs an ended paid cycle with a renewal
+      -- open and a time from that cycle's end to now. Suites that drive the grace sweep need a
+      -- clock at a chosen time without staging the renewal; this sets it, once, like the real one.
+      CREATE OR REPLACE FUNCTION public.test_fixture_start_grace(
+        p_business uuid, p_failed_at timestamptz
+      ) RETURNS void
+      LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+      BEGIN
+        UPDATE public.businesses SET payment_failed_at = p_failed_at, updated_at = now()
+        WHERE id = p_business AND payment_failed_at IS NULL;
+      END $$;
+      ALTER FUNCTION public.test_fixture_start_grace(uuid, timestamptz) OWNER TO rekoda_plan_writer;
+      REVOKE ALL ON FUNCTION public.test_fixture_start_grace(uuid, timestamptz) FROM PUBLIC;
+      GRANT EXECUTE ON FUNCTION public.test_fixture_start_grace(uuid, timestamptz)
+        TO rekoda_app, rekoda_worker, rekoda_settlement;
+
       -- A pack-credit writer for TEST FIXTURES ONLY (OD-51.4, migration 0216). Production raises a
       -- ceiling only through usage_credit_pack, for a paid pack charge. Suites that need a business
       -- with bought capacity, without staging a charge and its payment, use this; it is owned by
@@ -175,6 +197,20 @@ async function installTestFixtureWriter(ownerUrl: string): Promise<void> {
   } finally {
     await client.end();
   }
+}
+
+/**
+ * Start a business's grace clock at a chosen time for a test (see `installTestFixtureWriter`),
+ * once, as the production function does. `tx` is any tenant-pinned transaction of a runtime pool.
+ */
+export async function startGraceForTest(
+  tx: TenantDb,
+  businessId: string,
+  when: Date,
+): Promise<void> {
+  await tx.execute(drizzleSql`
+    SELECT test_fixture_start_grace(${businessId}::uuid, ${when.toISOString()}::timestamptz)
+  `);
 }
 
 /**
