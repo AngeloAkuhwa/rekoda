@@ -75,7 +75,8 @@ carries_plan_boundary() {
      " $BREAKING " == *' 0216_usage_meter_boundary '* ||
      " $BREAKING " == *' 0217_settlement_isolation '* ||
      " $BREAKING " == *' 0218_usage_reservation_closure '* ||
-     " $BREAKING " == *' 0220_job_row_and_grace_review_fixes '* ]]
+     " $BREAKING " == *' 0220_job_row_and_grace_review_fixes '* ||
+     " $BREAKING " == *' 0221_operator_writes_only_through_its_functions '* ]]
 }
 # The OWN-86 pre-start smoke query, printed for an operator fixing forward by hand.
 print_smoke_0196() {
@@ -97,7 +98,7 @@ fail() {
 PHASE=checks
 # Migrations the previous release cannot run against (OD-48): the api and worker are stopped before
 # any of them is applied, and the old release is never restarted against a database that has one.
-COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_standard_periods 0209_settlement_verifies_the_price 0210_worker_least_privilege 0211_operator_principal_least_privilege 0212_closeout_review_fixes 0216_usage_meter_boundary 0217_settlement_isolation 0218_usage_reservation_closure 0220_job_row_and_grace_review_fixes'
+COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_standard_periods 0209_settlement_verifies_the_price 0210_worker_least_privilege 0211_operator_principal_least_privilege 0212_closeout_review_fixes 0216_usage_meter_boundary 0217_settlement_isolation 0218_usage_reservation_closure 0220_job_row_and_grace_review_fixes 0221_operator_writes_only_through_its_functions'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -160,13 +161,26 @@ SMOKE_0196_SQL="SELECT
                   '0215_pricing_source_authority', '0216_usage_meter_boundary',
                   '0217_settlement_isolation', '0218_usage_reservation_closure',
                   '0219_support_review_respects_later_schedule',
-                  '0220_job_row_and_grace_review_fixes')) = 20
+                  '0220_job_row_and_grace_review_fixes',
+                  '0221_operator_writes_only_through_its_functions')) = 21
+  AND (SELECT string_agg(column_name, ',' ORDER BY column_name)
+         FROM information_schema.column_privileges
+        WHERE grantee = 'rekoda_billing_operator' AND table_schema = 'public'
+          AND table_name = 'businesses' AND privilege_type = 'UPDATE') = 'updated_at'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure(
+        'public.subscription_operator_set_plan(uuid,text,timestamp with time zone,text,text)'))
+        LIKE '%subscription_origin%'
+  AND EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'usage_writer_sees_reservations'
+        AND polrelid = 'public.usage_reservations'::regclass)
+  AND (SELECT pg_get_expr(polwithcheck, polrelid) FROM pg_policy
+        WHERE polname = 'worker_leaves_settlement_jobs' AND polrelid = 'public.jobs'::regclass)
+        NOT LIKE '%pending%'
   AND (SELECT prosrc FROM pg_proc WHERE oid
         = to_regprocedure('public.subscription_start_grace(uuid,timestamp with time zone)'))
         LIKE '%the cycle has not ended%'
   AND (SELECT prosrc FROM pg_proc WHERE oid
         = to_regprocedure('rekoda_private.jobs_close_event_reservations()'))
-        LIKE '%::uuid%'
+        LIKE '%invalid_text_representation%'
   AND NOT has_table_privilege('rekoda_app', 'public.jobs', 'DELETE')
   AND NOT has_column_privilege('rekoda_app', 'public.jobs', 'payload', 'UPDATE')
   AND NOT has_column_privilege('rekoda_app', 'public.jobs', 'kind', 'UPDATE')
@@ -867,7 +881,7 @@ if [[ " $BREAKING " == *' 0217_settlement_isolation '* ]]; then
   for var in OPERATOR_OIDC_ISSUER OPERATOR_OIDC_JWKS_URL OPERATOR_BILLING_OIDC_AUDIENCE VAULT_KEY \
     SETTLEMENT_DATABASE_URL OPERATOR_DATABASE_URL; do
     [ -n "$(sed -n "s/^${var}=//p" .env | tail -1)" ] ||
-      fail "this release carries 0217 (OD-51) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0213 to 0220\"); nothing has been changed"
+      fail "this release carries 0217 (OD-51) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0213 to 0221\"); nothing has been changed"
   done
   [ "$(sed -n 's/^OPERATOR_BILLING_OIDC_AUDIENCE=//p' .env | tail -1)" != "$(sed -n 's/^OPERATOR_OIDC_AUDIENCE=//p' .env | tail -1)" ] ||
     fail 'OPERATOR_BILLING_OIDC_AUDIENCE must differ from OPERATOR_OIDC_AUDIENCE: a token the API accepts must not change a plan (OD-51); nothing has been changed'

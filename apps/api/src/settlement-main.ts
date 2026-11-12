@@ -59,7 +59,8 @@ export async function startSettlementProcess(
    * network can reach this process. */
   /* Healthy means able to settle: the database answers on this process's own credential. A
    * process that lost its database (a revoked login, a network split) reports 503, so compose
-   * restarts it and the staging check sees it, instead of a runner failing every job quietly. */
+   * marks it unhealthy and the staging check reports it, instead of a runner failing every job
+   * quietly. Docker does not restart an unhealthy container by itself. */
   const databaseAnswers = async (): Promise<boolean> => {
     try {
       await Promise.race([
@@ -108,14 +109,14 @@ export async function startSettlementProcess(
   return {
     port,
     close: async () => {
-      await runner.stop();
+      /* Bounded, every step: after a database outage a lane stuck on a hung statement, or a query
+       * stranded on a dead connection, would otherwise hold the process open until compose kills
+       * it. An unfinished handler's transaction rolls back and its job is reclaimed. */
+      const within = (ms: number, work: Promise<unknown>) =>
+        Promise.race([work, new Promise<void>((resolve) => setTimeout(resolve, ms).unref())]);
+      await within(30_000, runner.stop());
       await new Promise<void>((resolve) => health.close(() => resolve()));
-      /* Bounded: after a database outage a query stranded on a dead connection would otherwise
-       * keep the pool, and so the process, open until compose kills it. */
-      await Promise.race([
-        closeDb(),
-        new Promise<void>((resolve) => setTimeout(resolve, 5_000).unref()),
-      ]);
+      await within(5_000, closeDb());
     },
   };
 }

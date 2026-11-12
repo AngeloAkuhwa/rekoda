@@ -137,6 +137,10 @@ test('plan changes routed anywhere but the operator process, or more routed to i
     '\thandle /v1/ops/* {\n\t\treverse_proxy operator:3002 {\n\t\t\timport client_address\n\t\t\theader_up -X-Rekoda-Client-IP\n\t\t}\n\t}\n\treverse_proxy api:3001 {',
   );
   expectProblem(problems(second), /must route exactly .* to operator:3002/);
-  const unwaited = edited('compose', '      operator:\n        condition: service_healthy\n', '');
-  expectProblem(problems(unwaited), /caddy must wait for operator to be healthy/);
+  const waiting = edited(
+    'compose',
+    '      # Never serve with an edge trust list',
+    '      operator:\n        condition: service_healthy\n      # Never serve with an edge trust list',
+  );
+  expectProblem(problems(waiting), /caddy must not wait for operator/);
 });

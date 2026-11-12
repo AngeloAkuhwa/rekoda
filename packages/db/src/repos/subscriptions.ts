@@ -232,7 +232,7 @@ export async function writeSubscriptionState(
   businessId: string,
   given: SubscriptionState,
 ): Promise<'written' | 'unchanged'> {
-  let state = given;
+  const state = given;
   /* OD-50 (0207): the operator writer computes a paid plan's or a trial's end itself (Rekoda's
    * standard period from the database clock) and returns it with the cycle start it used, so the
    * rest of the cycle is recorded from the database's own values. Re-posting the plan and interval
@@ -253,14 +253,9 @@ export async function writeSubscriptionState(
     const row = [...rows][0];
     if (!row) throw new Error('subscription_operator_set_plan returned nothing');
     if (!row.changed) return 'unchanged';
-    const end = row.expires_at ? new Date(row.expires_at) : null;
-    const start = given.paid && row.cycle_start ? new Date(row.cycle_start) : null;
-    state = {
-      ...given,
-      cycleStartedAt: start,
-      planExpiresAt: end,
-      anchorDay: given.paid && end ? new Date(end.getTime() + 3_600_000).getUTCDate() : null,
-    };
+    /* Since 0221 the writer records the whole cycle itself, from its own values, and the operator
+     * credential holds no column it could write here. */
+    return 'written';
   }
   const startStamp = (state.cycleStartedAt ?? new Date()).toISOString();
   const cycleStarted = state.cycleStartedAt ? sql`${startStamp}::timestamptz` : sql`NULL`;
@@ -299,8 +294,6 @@ export async function writeSubscriptionState(
     if ([...rows][0]?.plan !== state.plan) {
       throw new Error(`charge ${a.reference} buys a different plan than the cycle being applied`);
     }
-  } else if (a.kind === 'operator') {
-    /* Already written above, by the operator writer. */
   } else {
     await tx.execute(sql`
       SELECT test_fixture_set_plan(${businessId}::uuid, ${state.plan}, ${expires})

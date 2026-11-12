@@ -33,6 +33,7 @@ describe('the operator process configuration', () => {
       audience: 'rekoda-operator-billing',
       jwksUrl: 'https://idp.rekoda.app/.well-known/jwks.json',
       scopeClaim: 'scope',
+      exclusiveAudience: true,
     });
   });
 

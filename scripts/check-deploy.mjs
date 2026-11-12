@@ -413,8 +413,12 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
       problems.push(`the ${network} network must hold settlement alone`);
     }
   }
-  if (conditionOf(svc('caddy'), 'operator') !== 'service_healthy') {
-    problems.push('caddy must wait for operator to be healthy; it routes plan changes there');
+  /* An operator that will not boot (a wrong role, an audience equal to the API's) must fail plan
+   * changes alone, never keep the site, the API and the webhooks offline: Caddy does not wait. */
+  if (conditionOf(svc('caddy'), 'operator') !== null) {
+    problems.push(
+      'caddy must not wait for operator: an operator that will not start would keep the public edge down',
+    );
   }
 
   // PostgreSQL's network: internal, and joined by exactly its clients.

@@ -410,8 +410,8 @@ services:
         condition: service_healthy
       api:
         condition: service_healthy
-      operator:
-        condition: service_healthy
+      # Not the operator (OD-51): Caddy resolves its upstreams per request, so an operator that
+      # will not start fails plan changes alone (502) and never keeps the public edge down.
       # Never serve with an edge trust list a browser could exploit (G-74).
       edge-check:
         condition: service_completed_successfully

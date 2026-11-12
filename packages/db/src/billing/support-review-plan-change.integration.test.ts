@@ -55,11 +55,7 @@ async function onPaidPlan(plan = 'chat', interval = 'monthly'): Promise<string> 
     await tx.execute(
       sql`SELECT subscription_operator_set_plan(${businessId}::uuid, ${plan}, NULL, ${interval}, 'operator:alice')`,
     );
-    await tx.execute(sql`
-      UPDATE businesses SET cycle_started_at = now(), subscription_origin = 'operator',
-        billing_interval = ${interval},
-        plan_version_id = (SELECT id FROM plan_versions WHERE plan_id = ${plan} ORDER BY version LIMIT 1)
-      WHERE id = ${businessId}::uuid`);
+    /* The writer records the cycle itself (0221): start, origin, interval and pin. */
   });
   return businessId;
 }

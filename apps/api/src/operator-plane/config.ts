@@ -159,6 +159,8 @@ export function loadOperatorConfig(env: NodeJS.ProcessEnv = process.env): Operat
       jwksUrl: jwksUrl!,
       /* Blank is how the compose file passes a name .env does not set: it means the default. */
       scopeClaim: env['OPERATOR_OIDC_SCOPE_CLAIM'] || 'scope',
+      /* A token that also names the API's audience could be replayed by the API (OD-51.1). */
+      exclusiveAudience: true,
     };
   }
 

@@ -1548,6 +1548,13 @@
       "when": 1796644800000,
       "tag": "0220_job_row_and_grace_review_fixes",
       "breakpoints": true
+    },
+    {
+      "idx": 221,
+      "version": "7",
+      "when": 1796731200000,
+      "tag": "0221_operator_writes_only_through_its_functions",
+      "breakpoints": true
     }
   ]
 }

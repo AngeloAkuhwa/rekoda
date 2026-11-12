@@ -167,6 +167,10 @@ export const ALLOWED: Readonly<Record<string, Entry>> = {
     role: 'migration',
     why: 'OD-50 review follow-up: re-creates subscription_operator_resolve_review (owned by rekoda_plan_writer, billing operator only) with one more refusal, when the merchant scheduled a plan change after asking for the review. As in 0213 it assigns the plan once and compares plan_expires_at without ever assigning it.',
   },
+  'packages/db/migrations/0221_operator_writes_only_through_its_functions.sql': {
+    role: 'migration',
+    why: 'OD-51 review fix: re-creates subscription_operator_set_plan (owned by rekoda_plan_writer, billing operator only) with the rest of the cycle written in SQL; plan and plan_expires_at are assigned exactly as in 0207, once each.',
+  },
   'packages/db/migrations/0220_job_row_and_grace_review_fixes.sql': {
     role: 'migration',
     why: 'OD-52 review fixes: re-creates subscription_start_grace (owned by rekoda_plan_writer) so it refuses a cycle whose plan_expires_at has not passed; it reads the date and assigns payment_failed_at only.',

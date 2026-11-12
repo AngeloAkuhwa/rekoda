@@ -27,7 +27,8 @@
 --     up. The renewal sweep calls it only after the end has passed.
 --
 -- What remains is stated in the OD-52 row of `docs/REKODA_LAUNCH_READINESS.md`: the worker
--- credential decides that a job died (and a dead job's unit goes back), as it must.
+-- credential decides that a job died, as it must; a dead job's reservation stays refundable for an
+-- operator's recovery retry (nothing refunds it automatically, as before this migration).
 --
 -- Compatibility: BREAKING for a release older than this one only where it wrote `jobs` as the
 -- application in other ways; it ships in the same stopped release as 0216 to 0218. Rollback: none

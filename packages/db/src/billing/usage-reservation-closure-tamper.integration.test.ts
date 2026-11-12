@@ -18,6 +18,7 @@ import { withBusiness, type Db } from '../client.js';
 import { events, jobsRepo, usageRepo } from '../index.js';
 import {
   appDb,
+  workerDb,
   outcome,
   ownerDb,
   seedBusiness,
@@ -174,5 +175,22 @@ describe('vectors 2 and 3: the application cannot rewrite, remove or park a job 
       ),
     ).toBe('allowed');
     expect(await jobFor(businessId, eventId)).toMatch(/^[0-9a-f-]{36}$/);
+  });
+});
+
+describe('the closure does not depend on the session pin (0221)', () => {
+  it('a job marked done with no tenant pinned still closes its event’s reservations', async () => {
+    const businessId = await seedBusiness();
+    const eventId = await storedEvent(businessId);
+    const jobId = await jobFor(businessId, eventId);
+    const meter = await spendFor(businessId, eventId);
+
+    /* The worker, with nothing pinned, finishes the job (as a future worker-side path might). */
+    await workerDb.transaction((tx) =>
+      tx.execute(sql`UPDATE jobs SET state = 'done' WHERE id = ${jobId}::uuid`),
+    );
+
+    expect(await closed(meter)).toBe(true);
+    expect(await refund(businessId, meter)).toBe(0);
   });
 });

@@ -232,6 +232,27 @@ describe('subscription_start_grace: the grace clock without the settlement crede
   });
 });
 
+describe('the worker leaves settlement jobs alone (0217, 0221)', () => {
+  it('cannot requeue a dead settlement job; only an operator’s recovery, on the application credential, can', async () => {
+    const businessId = await seedBusiness();
+    const rows = await owner`
+      INSERT INTO jobs (business_id, kind, payload, state, attempts)
+      VALUES (${businessId}, 'billing.process', '{}'::jsonb, 'dead', 5) RETURNING id`;
+    const jobId = String(rows[0]!['id']);
+    const moved = await withBusiness(workerDb, businessId, async (tx) => {
+      const rows = await tx.execute<{ id: string }>(
+        sql`UPDATE jobs SET state = 'pending', attempts = 0 WHERE id = ${jobId}::uuid RETURNING id`,
+      );
+      return [...rows].length;
+    }).catch((error: { message?: string; cause?: { message?: string } }) =>
+      String(error.cause?.message ?? error.message),
+    );
+    expect(moved === 0 || /row-level security|policy/.test(String(moved))).toBe(true);
+    const state = await owner`SELECT state FROM jobs WHERE id = ${jobId}`;
+    expect(state[0]!['state']).toBe('dead');
+  });
+});
+
 describe('the settlement role, exactly (0217)', () => {
   it('is a member of no other role, and no other runtime role is a member of it', async () => {
     const rows = await owner`

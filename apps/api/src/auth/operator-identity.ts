@@ -51,6 +51,12 @@ export interface OperatorAuthConfig {
   jwksUrl: string;
   /** Where the scopes live. Providers disagree; the claim name is theirs. */
   scopeClaim: string;
+  /**
+   * Accept only a token minted for this audience ALONE (the operator process, OD-51.1). A token
+   * whose `aud` also names another application, the API's operator audience above all, is
+   * refused: it is a token that application can see and replay.
+   */
+  exclusiveAudience?: boolean;
 }
 
 /** A caller the verifier could not turn into an identity. */
@@ -84,6 +90,9 @@ export function operatorVerifier(config: OperatorAuthConfig): {
            * credential that never dies, which an operator plane must not accept. */
           requiredClaims: ['exp'],
         }));
+        if (config.exclusiveAudience && Array.isArray(payload.aud) && payload.aud.length !== 1) {
+          throw new Error('more than one audience');
+        }
       } catch {
         /* One refusal for every cause. A caller learning WHICH check failed
          * learns whether they have the right issuer, the right audience or

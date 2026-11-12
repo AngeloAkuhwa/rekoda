@@ -38,6 +38,7 @@ interface Minting {
 }
 let sign: (claims: Record<string, unknown>, over?: Minting) => Promise<string>;
 let strangerSign: (claims: Record<string, unknown>) => Promise<string>;
+let trustedKey: CryptoKey;
 
 beforeAll(async () => {
   urls = requireUrls();
@@ -65,13 +66,21 @@ beforeAll(async () => {
         .setExpirationTime(over.expiresIn ?? '5m')
         .sign(key);
   sign = mint(privateKey);
+  trustedKey = privateKey;
   strangerSign = mint(stranger.privateKey);
 
   /* The server exactly as `operator-main.ts` builds it, on the operator credential alone. */
   server = buildOperatorServer({
     operatorDb,
     auth: {
-      operatorAuth: { issuer: ISSUER, audience: BILLING_AUDIENCE, jwksUrl, scopeClaim: 'scope' },
+      operatorAuth: {
+        issuer: ISSUER,
+        audience: BILLING_AUDIENCE,
+        jwksUrl,
+        scopeClaim: 'scope',
+        /* As `loadOperatorConfig` sets it (pinned in config.test.ts). */
+        exclusiveAudience: true,
+      },
       operatorSecret: null,
     },
     release: 'test',
@@ -164,6 +173,49 @@ describe('the operator process verifies the operator itself (OD-51.1)', () => {
     expect(res.status).toBe(401);
     expect((await subscription(businessId)).plan).toBe('trial');
     expect(await planAudits(businessId)).toEqual([]);
+  });
+
+  it('refuses a token that names the API audience as well as its own (review of 208c919)', async () => {
+    /* An identity provider that issues ONE token for both audiences would let whoever holds an
+     * API-audience token, the API process included, replay it as a plan change. */
+    const businessId = await seedBusiness();
+    for (const audience of [
+      [API_AUDIENCE, BILLING_AUDIENCE],
+      [BILLING_AUDIENCE, API_AUDIENCE],
+      [BILLING_AUDIENCE, 'some-other-app'],
+    ]) {
+      const token = await new SignJWT({ sub: 'ada@rekoda.app', scope: 'ops:billing' })
+        .setProtectedHeader({ alg: 'RS256', kid: 'operator-test' })
+        .setIssuer(ISSUER)
+        .setAudience(audience)
+        .setIssuedAt()
+        .setExpirationTime('5m')
+        .sign(trustedKey);
+      const res = await post(
+        '/v1/businesses/plan',
+        { businessId, plan: 'complete', expiresAt: null },
+        bearer(token),
+      );
+      expect(res.status, audience.join(',')).toBe(401);
+    }
+    /* Its own audience alone, as a one-element array, is still its own audience. */
+    const single = await new SignJWT({ sub: 'ada@rekoda.app', scope: 'ops:billing' })
+      .setProtectedHeader({ alg: 'RS256', kid: 'operator-test' })
+      .setIssuer(ISSUER)
+      .setAudience([BILLING_AUDIENCE])
+      .setIssuedAt()
+      .setExpirationTime('5m')
+      .sign(trustedKey);
+    expect(
+      (
+        await post(
+          '/v1/businesses/plan',
+          { businessId, plan: 'chat', expiresAt: null },
+          bearer(single),
+        )
+      ).status,
+    ).toBe(200);
+    expect((await subscription(businessId)).plan).toBe('chat');
   });
 
   it('refuses no token, a shared secret, a forged signature, another issuer and an expired token', async () => {

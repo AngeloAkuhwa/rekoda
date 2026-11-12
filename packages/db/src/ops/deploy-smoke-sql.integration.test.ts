@@ -231,6 +231,23 @@ describe('the pre-start database smoke, executed', () => {
       'the test-only pack-credit writer present',
       "CREATE FUNCTION public.test_fixture_credit_bonus(a uuid, b text, c text, d integer) RETURNS void LANGUAGE sql AS ''",
     ],
+    // 0221 (OD-51): the operator writes only through its functions.
+    [
+      'the operator able to write a cycle column directly',
+      'GRANT UPDATE (payment_failed_at) ON businesses TO rekoda_billing_operator',
+    ],
+    [
+      'the worker able to requeue a dead settlement job',
+      "DROP POLICY worker_leaves_settlement_jobs ON jobs; CREATE POLICY worker_leaves_settlement_jobs ON jobs AS RESTRICTIVE FOR UPDATE TO rekoda_worker USING (kind NOT IN ('billing.process', 'billing.apply_no_charge') OR state = 'dead') WITH CHECK (kind NOT IN ('billing.process', 'billing.apply_no_charge') OR state IN ('dead', 'pending'))",
+    ],
+    [
+      'the closing trigger blind outside the session pin',
+      'DROP POLICY usage_writer_sees_reservations ON usage_reservations',
+    ],
+    [
+      'the 0218 pattern-matching closing trigger put back',
+      "CREATE OR REPLACE FUNCTION rekoda_private.jobs_close_event_reservations() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $f$ DECLARE v_event text := NEW.payload ->> 'eventId'; BEGIN IF v_event IS NULL OR v_event !~ '^[0-9a-fA-F-]{36}$' THEN RETURN NEW; END IF; UPDATE public.usage_reservations SET closed_at = now() WHERE business_id = NEW.business_id AND event_id = v_event::uuid AND closed_at IS NULL; RETURN NEW; END $f$",
+    ],
     // 0220 (OD-52 and review minors): the job row the closure keys on is the application's to
     // finish, never to rewrite, delete or park; the grace clock starts only after the cycle ended.
     ['the application able to delete a job', 'GRANT DELETE ON jobs TO rekoda_app'],
