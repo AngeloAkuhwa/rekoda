@@ -27,6 +27,11 @@ import {
   ownerDb,
 } from '../testing.js';
 
+/** Every job of the business, dead: as the owner (0220: the application may not kill a job). */
+const stageDeadJobs = (businessId: string) =>
+  withBusiness(ownerDb(), businessId, (tx) =>
+    tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
+  );
 let urls: Urls;
 let appDb: Db;
 let workerDb: Db;
@@ -322,10 +327,7 @@ describe('what a dead job leaves, by kind and by payload', () => {
     const eventId = await attributedEvent(businessId);
     await enqueue(businessId, 'payment.process', { eventId });
     // As the old code left it: dead, with no record.
-    /* Staged as the owner: the application may only finish a job or requeue a dead one (0220). */
-    await withBusiness(ownerDb(), businessId, (tx) =>
-      tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
-    );
+    await stageDeadJobs(businessId);
     expect(await recordsOf(businessId)).toHaveLength(0);
     expect(await jobsRepo.enrolUnrecordedDeaths(workerDb)).toBe(1);
     expect(await jobsRepo.enrolUnrecordedDeaths(workerDb)).toBe(0);
@@ -348,10 +350,7 @@ describe('what a dead job leaves, by kind and by payload', () => {
     const eventId = await attributedEvent(businessId);
     await enqueue(businessId, 'payment.process', { eventId });
     await enqueue(businessId, 'billing.process', {});
-    /* Staged as the owner: the application may only finish a job or requeue a dead one (0220). */
-    await withBusiness(ownerDb(), businessId, (tx) =>
-      tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
-    );
+    await stageDeadJobs(businessId);
     expect(await operatorResolve(eventId, 'settled by hand', 'operator:bob')).toBe(true);
     expect(await jobsRepo.enrolUnrecordedDeaths(workerDb)).toBe(1);
     expect((await recordsOf(businessId)).map((r) => r['event_id'])).toEqual([null]);
@@ -363,10 +362,7 @@ describe('what a dead job leaves, by kind and by payload', () => {
     const foreign = await attributedEvent(await seedBusiness());
     expect(await operatorResolve(foreign, 'theirs', 'operator:bob')).toBe(true);
     await enqueue(businessId, 'payment.process', { eventId: foreign });
-    /* Staged as the owner: the application may only finish a job or requeue a dead one (0220). */
-    await withBusiness(ownerDb(), businessId, (tx) =>
-      tx.execute(sql`UPDATE jobs SET state = 'dead', attempts = 2`),
-    );
+    await stageDeadJobs(businessId);
     expect(await jobsRepo.enrolUnrecordedDeaths(workerDb)).toBe(1);
     expect((await recordsOf(businessId))[0]).toMatchObject({ event_id: null, status: 'open' });
   });
