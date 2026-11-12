@@ -163,6 +163,10 @@ export const ALLOWED: Readonly<Record<string, Entry>> = {
     role: 'migration',
     why: 'OD-50: subscription_request_plan_review reads plan_expires_at to freeze the paid-through date a review is asked against, and subscription_operator_resolve_review (owned by rekoda_plan_writer, billing operator only) moves the plan of a support-reviewed upgrade while leaving plan_expires_at unwritten; it compares the date and never assigns it.',
   },
+  'packages/db/migrations/0219_support_review_respects_later_schedule.sql': {
+    role: 'migration',
+    why: 'OD-50 review follow-up: re-creates subscription_operator_resolve_review (owned by rekoda_plan_writer, billing operator only) with one more refusal, when the merchant scheduled a plan change after asking for the review. As in 0213 it assigns the plan once and compares plan_expires_at without ever assigning it.',
+  },
   'packages/db/migrations/0217_settlement_isolation.sql': {
     role: 'migration',
     why: 'OD-51: subscription_start_grace reads plan_expires_at to check the grace clock is started for a paid cycle that has ended and has its renewal open; it assigns payment_failed_at only, once, and never the plan or the paid-through date.',

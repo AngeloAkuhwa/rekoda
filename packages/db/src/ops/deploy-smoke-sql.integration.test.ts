@@ -231,6 +231,29 @@ describe('the pre-start database smoke, executed', () => {
       'the test-only pack-credit writer present',
       "CREATE FUNCTION public.test_fixture_credit_bonus(a uuid, b text, c text, d integer) RETURNS void LANGUAGE sql AS ''",
     ],
+    // 0219 (OD-50): the resolution refuses after a later merchant schedule.
+    [
+      'the support-review resolution without the later-schedule refusal',
+      "CREATE OR REPLACE FUNCTION public.subscription_operator_resolve_review(p_business uuid, p_plan text, p_actor text, p_reason text) RETURNS TABLE (review_id uuid, previous_plan text, expires_at timestamptz, changed boolean) LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS 'SELECT NULL::uuid, NULL::text, NULL::timestamptz, false'",
+    ],
+    // 0218 (OD-51.4): a finished job closes its event's usage reservations.
+    ['the closing trigger dropped', 'DROP TRIGGER jobs_close_event_reservations ON jobs'],
+    [
+      'the closing trigger disabled',
+      'ALTER TABLE jobs DISABLE TRIGGER jobs_close_event_reservations',
+    ],
+    [
+      'a refund that ignores a closed reservation',
+      "CREATE OR REPLACE FUNCTION public.usage_refund(p_business uuid, p_reservation uuid, p_unit text, p_n integer) RETURNS integer LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS 'SELECT 1'",
+    ],
+    [
+      'the bind function granted to settlement',
+      'GRANT EXECUTE ON FUNCTION usage_bind_event(uuid,uuid,uuid) TO rekoda_settlement',
+    ],
+    [
+      'the closing function callable by the application',
+      'GRANT EXECUTE ON FUNCTION rekoda_private.jobs_close_event_reservations() TO rekoda_app',
+    ],
     // 0217 (OD-51.2, OD-51.3): settlement is its own principal with exact grants.
     ['settlement acting as the application again', 'GRANT rekoda_app TO rekoda_settlement'],
     ['settlement opening a charge', 'GRANT INSERT ON subscription_charges TO rekoda_settlement'],

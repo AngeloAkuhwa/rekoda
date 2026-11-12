@@ -117,6 +117,12 @@ export const PINS: Readonly<Record<string, Pin>> = {
     businessInserts: 0,
     why: 'OD-49: correct_subscription_period, owner-only, sets the corrected end of one active business breaking the rules on an explicit call with an actor and a reason, audited; never the plan.',
   },
+  'packages/db/migrations/0219_support_review_respects_later_schedule.sql': {
+    plan: 1,
+    expiry: 0,
+    businessInserts: 0,
+    why: 'OD-50 review follow-up: the 0213 resolution re-created with one more refusal; it still assigns the reviewed plan once and never the paid-through date.',
+  },
   'packages/db/migrations/0213_support_review_plan_change.sql': {
     plan: 1,
     expiry: 0,

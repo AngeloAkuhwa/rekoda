@@ -24,7 +24,7 @@
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
 import { withBusiness } from '../client.js';
-import type { MeterRow } from './usage.js';
+import { reservationOf, type MeterRow } from './usage.js';
 import { auditEvents, externalEvents } from '../schema/ops.js';
 
 export type Queryable = Db | TenantDb;
@@ -154,6 +154,14 @@ export async function noteReservedUnit(
        SET reserved_units = array_append(reserved_units, ${unit}),
            reserved_meters = reserved_meters || jsonb_build_object(${unitOf(unit)}::text, ${meter}::text)
      WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid`);
+  /* The reservation now belongs to this event (migration 0218): the database closes it when the
+   * event's job is done, after which it gives nothing back. Until then every exit that hands the
+   * unit back still can. A handle with no reservation (recorded before 0216) has nothing to bind. */
+  const reservation = reservationOf(meter);
+  if (reservation) {
+    await tx.execute(sql`
+      SELECT usage_bind_event(${businessId}::uuid, ${reservation}::uuid, ${eventId}::uuid)`);
+  }
 }
 
 /** "VOICE_MINUTES:5" is the unit VOICE_MINUTES with its quantity. */

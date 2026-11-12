@@ -73,7 +73,8 @@ carries_plan_boundary() {
      " $BREAKING " == *' 0211_operator_principal_least_privilege '* ||
      " $BREAKING " == *' 0212_closeout_review_fixes '* ||
      " $BREAKING " == *' 0216_usage_meter_boundary '* ||
-     " $BREAKING " == *' 0217_settlement_isolation '* ]]
+     " $BREAKING " == *' 0217_settlement_isolation '* ||
+     " $BREAKING " == *' 0218_usage_reservation_closure '* ]]
 }
 # The OWN-86 pre-start smoke query, printed for an operator fixing forward by hand.
 print_smoke_0196() {
@@ -95,7 +96,7 @@ fail() {
 PHASE=checks
 # Migrations the previous release cannot run against (OD-48): the api and worker are stopped before
 # any of them is applied, and the old release is never restarted against a database that has one.
-COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_standard_periods 0209_settlement_verifies_the_price 0210_worker_least_privilege 0211_operator_principal_least_privilege 0212_closeout_review_fixes 0216_usage_meter_boundary 0217_settlement_isolation'
+COMPAT_BREAKING_MIGRATIONS='0196_plan_fields_guard 0200_plan_writer_boundary 0202_settlement_and_operator_principals 0203_plan_duration_rules 0204_external_events_worker_least_privilege 0205_charge_terms_belong_to_settlement 0206_paid_charge_bound_to_its_cycle 0207_operator_standard_periods 0209_settlement_verifies_the_price 0210_worker_least_privilege 0211_operator_principal_least_privilege 0212_closeout_review_fixes 0216_usage_meter_boundary 0217_settlement_isolation 0218_usage_reservation_closure'
 BREAKING=
 BREAKING_APPLIED=false
 # Set once migrate has been entered for a release carrying a breaking migration. migrate applies each
@@ -156,7 +157,11 @@ SMOKE_0196_SQL="SELECT
                   '0211_operator_principal_least_privilege', '0212_closeout_review_fixes',
                   '0213_support_review_plan_change', '0214_pack_purchase_identity',
                   '0215_pricing_source_authority', '0216_usage_meter_boundary',
-                  '0217_settlement_isolation')) = 17
+                  '0217_settlement_isolation', '0218_usage_reservation_closure',
+                  '0219_support_review_respects_later_schedule')) = 19
+  AND (SELECT prosrc FROM pg_proc WHERE oid
+        = to_regprocedure('public.subscription_operator_resolve_review(uuid,text,text,text)'))
+        LIKE '%the merchant scheduled a plan change after asking for this review%'
   AND (SELECT count(*) FROM pg_trigger t WHERE t.tgenabled IN ('O', 'A') AND (t.tgname, t.tgrelid) IN (
         ('businesses_plan_fields_guard', 'public.businesses'::regclass),
         ('businesses_plan_fields_insert_guard', 'public.businesses'::regclass),
@@ -168,7 +173,8 @@ SMOKE_0196_SQL="SELECT
         ('businesses_retention_notice_guard', 'public.businesses'::regclass),
         ('external_events_worker_guard', 'public.external_events'::regclass),
         ('subscription_charges_purchase_guard', 'public.subscription_charges'::regclass),
-        ('subscription_charges_pricing_source_guard', 'public.subscription_charges'::regclass))) = 11
+        ('subscription_charges_pricing_source_guard', 'public.subscription_charges'::regclass),
+        ('jobs_close_event_reservations', 'public.jobs'::regclass))) = 12
   AND (SELECT prosrc FROM pg_proc
         WHERE oid = to_regprocedure('public.subscription_apply_paid_charge(uuid,text,timestamptz)'))
         LIKE '%the upgrade was priced for another cycle%the renewal was priced for another cycle%'
@@ -300,9 +306,13 @@ SMOKE_0196_SQL="SELECT
                          WHERE a.privilege_type = 'EXECUTE' AND a.grantee <> p.proowner), '') AS grantees
         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE p.proowner = 'rekoda_usage_writer'::regrole) w)
-      = 'public.usage_credit_pack(uuid, text, text, text, integer) => rekoda_settlement'
+      = 'public.usage_bind_event(uuid, uuid, uuid) => rekoda_app,rekoda_worker'
+        || ' ; public.usage_credit_pack(uuid, text, text, text, integer) => rekoda_settlement'
         || ' ; public.usage_refund(uuid, uuid, text, integer) => rekoda_app,rekoda_worker'
         || ' ; public.usage_reserve(uuid, text, text, integer, integer, boolean) => rekoda_app,rekoda_worker'
+        || ' ; rekoda_private.jobs_close_event_reservations() => '
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.usage_refund(uuid,uuid,text,integer)'))
+        LIKE '%closed_at IS NOT NULL%'
   AND NOT EXISTS (SELECT 1 FROM pg_proc WHERE proowner = 'rekoda_usage_writer'::regrole
         AND (NOT prosecdef OR proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, public, pg_temp']))
   AND (SELECT count(*) FROM pg_roles WHERE rolname = 'rekoda_usage_writer'
@@ -844,7 +854,7 @@ if [[ " $BREAKING " == *' 0217_settlement_isolation '* ]]; then
   for var in OPERATOR_OIDC_ISSUER OPERATOR_OIDC_JWKS_URL OPERATOR_BILLING_OIDC_AUDIENCE VAULT_KEY \
     SETTLEMENT_DATABASE_URL OPERATOR_DATABASE_URL; do
     [ -n "$(sed -n "s/^${var}=//p" .env | tail -1)" ] ||
-      fail "this release carries 0217 (OD-51) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0213 to 0217\"); nothing has been changed"
+      fail "this release carries 0217 (OD-51) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0213 to 0219\"); nothing has been changed"
   done
   [ "$(sed -n 's/^OPERATOR_BILLING_OIDC_AUDIENCE=//p' .env | tail -1)" != "$(sed -n 's/^OPERATOR_OIDC_AUDIENCE=//p' .env | tail -1)" ] ||
     fail 'OPERATOR_BILLING_OIDC_AUDIENCE must differ from OPERATOR_OIDC_AUDIENCE: a token the API accepts must not change a plan (OD-51); nothing has been changed'

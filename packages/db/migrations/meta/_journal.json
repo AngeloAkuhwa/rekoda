@@ -1527,6 +1527,20 @@
       "when": 1796385600000,
       "tag": "0217_settlement_isolation",
       "breakpoints": true
+    },
+    {
+      "idx": 218,
+      "version": "7",
+      "when": 1796472000000,
+      "tag": "0218_usage_reservation_closure",
+      "breakpoints": true
+    },
+    {
+      "idx": 219,
+      "version": "7",
+      "when": 1796558400000,
+      "tag": "0219_support_review_respects_later_schedule",
+      "breakpoints": true
     }
   ]
 }

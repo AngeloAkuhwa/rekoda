@@ -43,12 +43,15 @@ beforeEach(async () => {
   await truncateAll(urls);
 });
 
+/* 0216 again, then 0218, in ledger order: 0218 re-creates `usage_refund` with the closed-reservation
+ * rule, so 0216 on its own would put the older function back. The migration runner never applies
+ * one out of order; a hand re-run must not either. */
 async function rerunMigration(): Promise<void> {
   const owner = postgres(urls.owner, { max: 1, onnotice: () => {} });
   try {
-    await owner
-      .unsafe(await readFile(join(MIGRATIONS_DIR, '0216_usage_meter_boundary.sql'), 'utf8'))
-      .simple();
+    for (const tag of ['0216_usage_meter_boundary', '0218_usage_reservation_closure']) {
+      await owner.unsafe(await readFile(join(MIGRATIONS_DIR, `${tag}.sql`), 'utf8')).simple();
+    }
   } finally {
     await owner.end();
   }
@@ -86,6 +89,14 @@ async function oldReleaseEvent(
        SET reserved_units = ${`{${units.join(',')}}`}::text[], reserved_meters = ${JSON.stringify(meters)}::jsonb,
            created_at = '2026-11-03T09:00:00Z'
      WHERE id = ${recorded.id}::uuid`);
+  /* A message of the previous release that may still be retried has its job waiting in the
+   * queue, as the webhook ingress left it. That is what tells 0218 the work is not finished. */
+  await withBusiness(db, businessId, (tx) =>
+    tx.execute(sql`
+      INSERT INTO jobs (business_id, kind, payload)
+      VALUES (${businessId}::uuid, 'message.inbound',
+              jsonb_build_object('eventId', ${recorded.id}::text))`),
+  );
   return recorded.id;
 }
 
