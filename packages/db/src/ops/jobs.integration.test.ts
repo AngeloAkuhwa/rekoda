@@ -16,7 +16,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, createLockClient, withBusiness, type Db, type LockClient } from '../client.js';
 import { identity, jobsRepo } from '../index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
+import { migrate, ownerDb, requireUrls, truncateAll, type Urls } from '../testing.js';
+
+/* A stalled lease is staged as the owner: since 0220 the application may change a job's lease
+ * only as it finishes or requeues the job. */
 
 let urls: Urls;
 let appDb: Db;
@@ -215,7 +218,7 @@ describe('a worker that dies mid-job', () => {
     expect(await jobsRepo.claimNext(workerDb, 'worker-2')).toBeNull();
 
     // Age the lock rather than waiting five minutes for it.
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(ownerDb(), businessId, (tx) =>
       tx.execute(
         sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
       ),
@@ -244,7 +247,7 @@ describe('a worker that dies mid-job', () => {
     ] as const) {
       const job = await jobsRepo.claimNext(workerDb, worker);
       expect(job?.attempts).toBe(attempt);
-      await withBusiness(appDb, businessId, (tx) =>
+      await withBusiness(ownerDb(), businessId, (tx) =>
         tx.execute(
           sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
         ),
@@ -277,7 +280,7 @@ describe('a worker that dies mid-job', () => {
     expect(failed?.failureCategory).toBe('handler_error');
     for (const worker of ['worker-2', 'worker-3']) {
       const job = await jobsRepo.claimNext(workerDb, worker);
-      await withBusiness(appDb, businessId, (tx) =>
+      await withBusiness(ownerDb(), businessId, (tx) =>
         tx.execute(
           sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
         ),

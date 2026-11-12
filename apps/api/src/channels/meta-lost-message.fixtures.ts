@@ -5,6 +5,7 @@
  */
 import { expect } from 'vitest';
 import { jobsRepo, withBusiness, sql } from '@rekoda/db';
+import { ownerDb } from '@rekoda/db/testing';
 import { db, messagePayload, post, workerDb } from './meta-webhook.fixtures.js';
 
 export type Death = 'markFailed' | 'reclaimStalled';
@@ -41,9 +42,11 @@ export async function killInboundJob(businessId: string, death: Death) {
     if (death === 'markFailed') {
       expect((await jobsRepo.markFailed(workerDb, job!, 'handler failed', 0)).state).toBe('dead');
     } else {
-      await asTenant(
-        businessId,
-        sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
+      /* As the owner: the application may not age a running job's lease (0220). */
+      await withBusiness(ownerDb(), businessId, (tx) =>
+        tx.execute(
+          sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${job!.id}::uuid`,
+        ),
       );
       expect(await jobsRepo.reclaimStalled(workerDb, 300_000)).toBe(1);
     }

@@ -20,6 +20,9 @@
 --   * a guard lets the application move a job's state only from running to done (the handler's last
 --     step, which closes the reservations) or from dead to pending (the recovery requeue). It cannot
 --     park a running job as pending or dead, and cannot reopen a finished one.
+--     Nor can it change a job's lease (locked_by, locked_at) except as part of one of those two
+--     moves: taken on its own that write makes the handler's fenced completion match no row, or
+--     hands the job to the reclaim, with the same result.
 --
 -- Two minors from the same review:
 --   * `subscription_start_grace` (0217) refuses a cycle that has not ended: a renewal row can be
@@ -86,7 +89,19 @@ LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
-  IF current_user <> 'rekoda_app' OR OLD.state IS NOT DISTINCT FROM NEW.state THEN
+  IF current_user <> 'rekoda_app' THEN
+    RETURN NEW;
+  END IF;
+  IF OLD.state IS NOT DISTINCT FROM NEW.state THEN
+    -- The lease decides whether the handler's fenced completion still matches its row, and when
+    -- the worker's reclaim takes the job back. Changed on its own it parks a running job as surely
+    -- as a state change would (review of `208c919`), so the application changes it only as part
+    -- of the two transitions below. The heartbeat is the worker's.
+    IF NEW.locked_by IS DISTINCT FROM OLD.locked_by
+       OR NEW.locked_at IS DISTINCT FROM OLD.locked_at THEN
+      RAISE EXCEPTION 'a job''s lease changes only as it moves from running to done, or from dead to pending, for the application (OD-52)'
+        USING ERRCODE = '42501';
+    END IF;
     RETURN NEW;
   END IF;
   IF (OLD.state = 'running' AND NEW.state = 'done')
@@ -101,7 +116,7 @@ REVOKE ALL ON FUNCTION rekoda_private.jobs_application_transition_guard() FROM P
 
 DROP TRIGGER IF EXISTS jobs_application_transition_guard ON jobs;
 CREATE TRIGGER jobs_application_transition_guard
-  BEFORE UPDATE OF state ON jobs
+  BEFORE UPDATE ON jobs
   FOR EACH ROW
   EXECUTE FUNCTION rekoda_private.jobs_application_transition_guard();
 

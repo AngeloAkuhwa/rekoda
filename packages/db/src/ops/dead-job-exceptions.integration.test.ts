@@ -130,7 +130,7 @@ async function killByCrash(businessId: string, runs: number): Promise<string> {
     const job = await jobsRepo.claimNext(workerDb, `crash-${i}`);
     expect(job).not.toBeNull();
     id = job!.id;
-    await withBusiness(appDb, businessId, (tx) =>
+    await withBusiness(ownerDb(), businessId, (tx) =>
       tx.execute(
         sql`UPDATE jobs SET locked_at = now() - interval '10 minutes' WHERE id = ${id}::uuid`,
       ),

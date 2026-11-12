@@ -157,6 +157,27 @@ describe('vectors 2 and 3: the application cannot rewrite, remove or park a job 
     ).toMatch(/a job's state moves only/);
   });
 
+  it('cannot take a running job’s lease away, so the handler still finishes it and closes the reservation', async () => {
+    const businessId = await seedBusiness();
+    const eventId = await storedEvent(businessId);
+    const jobId = await jobFor(businessId, eventId);
+    const meter = await spendFor(businessId, eventId);
+    /* Each of these leaves `state` alone. Before the guard covered them, the first two made the
+     * handler's fenced completion match no row (the reply already sent, the unit still refundable),
+     * and the third handed the job to the worker's reclaim to run again or bury. */
+    for (const tamper of [
+      sql`UPDATE jobs SET locked_by = 'someone-else' WHERE id = ${jobId}::uuid`,
+      sql`UPDATE jobs SET locked_by = NULL, locked_at = NULL WHERE id = ${jobId}::uuid`,
+      sql`UPDATE jobs SET locked_at = now() - interval '1 day' WHERE id = ${jobId}::uuid`,
+    ]) {
+      expect(await asApp(appDb, businessId, tamper)).toMatch(/a job's lease changes only/);
+    }
+
+    await withBusiness(appDb, businessId, (tx) => jobsRepo.markDone(tx, jobId, 'w:1'));
+    expect(await closed(meter)).toBe(true);
+    expect(await refund(businessId, meter)).toBe(0);
+  });
+
   it('still requeues a dead job for an operator’s recovery, and enqueues new work', async () => {
     const businessId = await seedBusiness();
     const eventId = await storedEvent(businessId);
