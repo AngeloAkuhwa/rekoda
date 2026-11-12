@@ -233,6 +233,9 @@ test('the drill creates every role the migrations grant to, and its container ne
   roles.delete('rekoda_private');
   assert.ok(roles.size >= 4, `expected the migrations to name roles, got ${[...roles]}`);
   for (const r of roles) assert.ok(drill.includes(`'${r}'`), `restore-drill.sh does not create role ${r}`);
+  /* The by-hand restore in the runbook is the same step typed by a person; it must create the same roles. */
+  const runbook = readFileSync(join(ROOT, 'docs/runbooks/backup-restore.md'), 'utf8');
+  for (const r of roles) assert.ok(runbook.includes(`'${r}'`), `backup-restore.md "Restore by hand" does not create role ${r}`);
   assert.match(drill, /docker rm -fv /, 'removing the container must remove its anonymous data volume');
 });
 
