@@ -289,6 +289,14 @@ export class ReportsController {
         429,
       );
     }
+    if (!granted && plan === 'trial') {
+      /* A trial's allowance is one budget for its 14 days (G-109), never "this month". */
+      throw new HttpException(
+        'You have used the downloads included in your free trial. Your books are still here to ' +
+          'read, and Settings has a full data export that never counts against this.',
+        429,
+      );
+    }
     if (!granted) {
       throw new HttpException(
         "You have used this month's downloads. Your books are still here to read, " +

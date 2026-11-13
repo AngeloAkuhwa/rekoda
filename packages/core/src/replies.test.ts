@@ -95,6 +95,8 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   allowanceExhausted: [
     replies.allowanceExhausted(50),
     replies.allowanceExhausted(3, 'DOCUMENT_GENERATION'),
+    replies.allowanceExhausted(50, 'AI_ACTIONS', 'trial'),
+    replies.allowanceExhausted(10, 'DOCUMENTS_UNDERSTOOD', 'trial'),
   ],
   dailyDocumentLimit: [replies.dailyDocumentLimit(25), replies.dailyDocumentLimit(5)],
   dailyVoiceLimit: [replies.dailyVoiceLimit()],
@@ -1196,4 +1198,22 @@ describe('no reply tells the merchant to type a phrase the router reads as anoth
       });
     },
   );
+});
+
+describe('allowanceExhausted names the period the allowance covers', () => {
+  it('says "this month" for a plan and "your free trial", never a month, for a trial (G-109)', () => {
+    expect(replies.allowanceExhausted(400).text).toContain('this month');
+    for (const unit of [
+      'AI_ACTIONS',
+      'VOICE_MINUTES',
+      'DOCUMENT_GENERATION',
+      'DOCUMENTS_UNDERSTOOD',
+      'CATALOGUE_ORDERS',
+    ] as const) {
+      const text = replies.allowanceExhausted(10, unit, 'trial').text;
+      expect(text).not.toMatch(/month/);
+      expect(text).toContain('free trial');
+      expect(text).toContain('Nothing is lost');
+    }
+  });
 });

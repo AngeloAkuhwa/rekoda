@@ -430,11 +430,30 @@ export function nothingToConfirmWithoutChat(): Reply {
   return reply('There is nothing waiting for a yes. Type *help* to see what works on your plan.');
 }
 
-export function allowanceExhausted(allowance: number, unit: UsageUnit = 'AI_ACTIONS'): Reply {
+/**
+ * The window an allowance covers: a paid plan's month, or the trial's one budget for its 14 days
+ * (G-109). A trial told "this month" is told something untrue about when the allowance returns.
+ */
+export type AllowanceWindow = 'month' | 'trial';
+
+export function allowanceExhausted(
+  allowance: number,
+  unit: UsageUnit = 'AI_ACTIONS',
+  window: AllowanceWindow = 'month',
+): Reply {
+  const kept =
+    'Nothing is lost. Your records are safe, and *who owes me*, *payment details* and ' +
+    'your dashboard still work.\n\n';
+  if (window === 'trial') {
+    return reply(
+      `You have used all ${allowance} ${UNIT_WORDS[unit]} included in your free trial. ` +
+        kept +
+        'Reply *upgrade* to choose a plan and keep going.',
+    );
+  }
   return reply(
     `You have used all ${allowance} ${UNIT_WORDS[unit]} in your plan this month. ` +
-      'Nothing is lost. Your records are safe, and *who owes me*, *payment details* and ' +
-      'your dashboard still work.\n\n' +
+      kept +
       'Reply *upgrade* and we will move you to a bigger plan.',
   );
 }

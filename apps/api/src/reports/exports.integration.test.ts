@@ -169,6 +169,21 @@ describe('a generated file costs a unit', () => {
     expect(await used(shop.businessId)).toBe(allowance);
   });
 
+  it('refuses a trial past its downloads in words about the trial, never "this month"', async () => {
+    const shop = await signUp('+2348194000004', 'Trial Spent Co');
+    const allowance = await spendDownTo(shop.businessId, 'trial', 0);
+    expect(allowance).toBeGreaterThan(0);
+
+    const refused = await get('/v1/reports/invoices.csv', shop.auth);
+    expect(refused.statusCode).toBe(429);
+    /* A trial's allowance is one budget for its 14 days (G-109), not a month's. */
+    const said = (refused.json() as { message: string }).message;
+    expect(said).not.toContain('month');
+    expect(said).toContain('free trial');
+    expect(said).toContain('never counts against this');
+    expect(await used(shop.businessId)).toBe(allowance);
+  });
+
   it('refuses an expired business every generated file, because expired sells zero', async () => {
     const shop = await signUp('+2348194000003', 'Lapsed Co');
     await onPlan(shop.businessId, 'expired');

@@ -349,7 +349,7 @@ describe('the chat surface enforces roles', () => {
 
     expect(
       await saysOverChat(businessId, '+2348140010048', 'how much did we sell this month?'),
-    ).toBe(replies.allowanceExhausted(allowance + bought).text);
+    ).toBe(replies.allowanceExhausted(allowance + bought, 'AI_ACTIONS', 'trial').text);
     expect(stubTransport.requests).toHaveLength(0);
   });
 
@@ -371,9 +371,16 @@ describe('the chat surface enforces roles', () => {
     );
     stubTransport.replyWith(A_SALES_QUESTION);
 
-    expect(
-      await saysOverChat(businessId, '+2348140010038', 'how much did we sell this month?'),
-    ).toBe(replies.allowanceExhausted(allowance).text);
+    /* A trial's allowance is one budget for its 14 days (G-109): the refusal says so, never
+     * "this month". */
+    const said = await saysOverChat(
+      businessId,
+      '+2348140010038',
+      'how much did we sell this month?',
+    );
+    expect(said).toBe(replies.allowanceExhausted(allowance, 'AI_ACTIONS', 'trial').text);
+    expect(said).not.toMatch(/month/);
+    expect(said).toMatch(/free trial/);
     expect(stubTransport.requests).toHaveLength(0);
     expect((await footprint(businessId)).ai_actions).toBe(allowance);
   });
