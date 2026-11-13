@@ -516,6 +516,14 @@ test('OD-51 (0217): an operator process with no audience of its own, or the APIâ
   }
 });
 
+/** A host fully set up for the 0217 release, with the given Paystack lines in its .env. */
+const od51Host = (paystackEnv = PAYSTACK_ENV) =>
+  host(
+    ['0217_settlement_isolation'],
+    PRIVILEGED_ENV + 'OPERATOR_BILLING_OIDC_AUDIENCE=rekoda-billing\n',
+    paystackEnv,
+  );
+
 test('OWN-70: a host whose Paystack key is missing, empty, live or malformed, or that sets the Â§47 flag, is refused before anything is built or stopped', () => {
   for (const paystackEnv of [
     '',
@@ -526,16 +534,15 @@ test('OWN-70: a host whose Paystack key is missing, empty, live or malformed, or
     'PAYSTACK_SECRET_KEY=sk_test_\n',
     `PAYSTACK_SECRET_KEY=${TEST_KEY}\nPAYSTACK_SECRET_KEY=${LIVE_KEY}\n`,
     PAYSTACK_ENV + 'REKODA_PAYSTACK_PLATFORM_CONFIRMED=1\n',
-    /* Spellings compose also reads, which the plain-line check would not see. */
+    /* Spellings compose also reads: export, indents, spaces, YAML style, a statement after a
+     * closing quote, a no-break space. */
     PAYSTACK_ENV + `export PAYSTACK_SECRET_KEY=${LIVE_KEY}\n`,
     PAYSTACK_ENV + `  PAYSTACK_SECRET_KEY=${LIVE_KEY}\n`,
     PAYSTACK_ENV + `PAYSTACK_SECRET_KEY = ${LIVE_KEY}\n`,
     PAYSTACK_ENV + 'export REKODA_PAYSTACK_PLATFORM_CONFIRMED=1\n',
-    /* compose's .env parser also takes YAML-style declarations. */
     PAYSTACK_ENV + `PAYSTACK_SECRET_KEY: ${LIVE_KEY}\n`,
     PAYSTACK_ENV + `PAYSTACK_SECRET_KEY : ${LIVE_KEY}\n`,
     PAYSTACK_ENV + 'REKODA_PAYSTACK_PLATFORM_CONFIRMED: 1\n',
-    /* compose reads on after a closing quote, and treats a no-break space as a space. */
     PAYSTACK_ENV + `OTHER="v"PAYSTACK_SECRET_KEY=${LIVE_KEY}\n`,
     `PAYSTACK_SECRET_KEY="${TEST_KEY}"PAYSTACK_SECRET_KEY="${LIVE_KEY}"\n`,
     PAYSTACK_ENV + `PAYSTACK_SECRET_KEY\u00a0=${LIVE_KEY}\n`,
@@ -543,11 +550,7 @@ test('OWN-70: a host whose Paystack key is missing, empty, live or malformed, or
     PAYSTACK_ENV + 'REKODA_PAYSTACK_PLATFORM_CONFIRMED="0"REKODA_PAYSTACK_PLATFORM_CONFIRMED=1\n',
     PAYSTACK_ENV + 'REKODA_PAYSTACK_PLATFORM_CONFIRMED=true\n',
   ]) {
-    const h = host(
-      ['0217_settlement_isolation'],
-      PRIVILEGED_ENV + 'OPERATOR_BILLING_OIDC_AUDIENCE=rekoda-billing\n',
-      paystackEnv,
-    );
+    const h = od51Host(paystackEnv);
     const r = h.run();
     assert.notEqual(r.status, 0, paystackEnv);
     assert.match(
@@ -569,11 +572,7 @@ test('OWN-70: a TEST key, quoted or not, lets the deploy through', () => {
     `# PAYSTACK_SECRET_KEY rotated in November\n${PAYSTACK_ENV}REKODA_PAYSTACK_PLATFORM_CONFIRMED=0\n`,
     `${PAYSTACK_ENV}REKODA_PAYSTACK_PLATFORM_CONFIRMED=\n`,
   ]) {
-    const h = host(
-      ['0217_settlement_isolation'],
-      PRIVILEGED_ENV + 'OPERATOR_BILLING_OIDC_AUDIENCE=rekoda-billing\n',
-      paystackEnv,
-    );
+    const h = od51Host(paystackEnv);
     const r = h.run();
     assert.equal(r.status, 0, r.stderr + r.stdout);
     assert.doesNotMatch(r.stderr + r.stdout, /placeholderkey/, 'the key is never printed');
@@ -583,10 +582,7 @@ test('OWN-70: a TEST key, quoted or not, lets the deploy through', () => {
 test('OWN-70: a Paystack key or vault key exported in the deploy shell never reaches compose; .env is the only source', () => {
   /* Built at run time so no key-shaped literal sits in the source (secret scan). */
   const live = ['sk', 'live', 'exportedkey'].join('_');
-  const h = host(
-    ['0217_settlement_isolation'],
-    PRIVILEGED_ENV + 'OPERATOR_BILLING_OIDC_AUDIENCE=rekoda-billing\n',
-  );
+  const h = od51Host();
   /* ONLY_IN_TARGET is interpolated only by the commit being deployed: the clear after the checkout
    * is what removes it. */
   const r = h.run({
