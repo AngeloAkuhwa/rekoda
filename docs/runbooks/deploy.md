@@ -904,6 +904,9 @@ base images by hand.
 
 ## An interrupted staging deploy
 
+Run the commands below from a clean login shell, never one where a key or URL was exported: compose reads `${NAME}`
+from the shell before `.env`, and only `scripts/deploy-staging.sh` clears those names itself.
+
 `scripts/deploy-staging.sh` changes the checkout and the `REKODA_RELEASE` line
 of `.env` **before** it builds, so a run stopped there leaves them naming a
 release that is not running. The next run refuses with `STAGING DEPLOY REFUSED:
@@ -1134,8 +1137,8 @@ refuse a host whose `.env` does not name `https://staging-api.myrekoda.com` as
 `REKODA_API_PUBLIC_URL`, refuse a host whose `.env` `PAYSTACK_SECRET_KEY` is not a Paystack TEST key
 (`sk_test_...`; missing, empty, live or malformed are refused, the key is never printed) or that sets
 `REKODA_PAYSTACK_PLATFORM_CONFIRMED=1` (OWN-70; the settlement process would otherwise start healthy with no
-key), refuse an `export`, indented or spaced spelling of either Paystack name (compose would read it,
-the check would not), clear from its own shell every name the compose file interpolates (except
+key), refuse any spelling of either Paystack name other than one plain `NAME=` line (`export`, an indent,
+spaces before the separator or a YAML-style `NAME: value`, which compose would read and the check would not), clear from its own shell every name the compose file interpolates (except
 `REKODA_RELEASE`, which it pins) so `.env` is the only source, refuse unless `/health` answers `status` ok,
 `database` up, the `REKODA_RELEASE` in `.env`, and a commit of at least
 seven characters that the checked-out commit starts with (the running
