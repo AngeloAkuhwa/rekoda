@@ -18,8 +18,9 @@ payments for one logical purchase:
 - **`duplicate_payment`**: the same charge is paid again under a different Paystack session (a lost
   link was replaced and both sessions were paid). The charge stays paid once. The second payment is
   NOT recorded as a charge: settlement marks the Paystack event processed with reason
-  `duplicate_payment`, moves the checkout attempt to `duplicate_paid`, and logs a warning naming the
-  charge reference and the business. It does not appear in the unapplied-charge queue.
+  `duplicate_payment`, moves the checkout attempt to `duplicate_paid` when there is one (a payment
+  made through the charge's own reference has no attempt row), and logs a warning naming the charge
+  reference and the business. It does not appear in the unapplied-charge queue.
 
 In both cases no units, plan or entitlement are granted twice. What remains is money the merchant
 paid Rekoda that Rekoda did not deliver anything for.
@@ -39,6 +40,15 @@ paid Rekoda that Rekoda did not deliver anything for.
     JOIN subscription_charges c ON c.id = a.charge_id
    WHERE a.status = 'duplicate_paid'
    ORDER BY a.updated_at DESC;
+  ```
+
+  A second payment with no attempt row is marked on its event only; list those too:
+
+  ```sql
+  SELECT business_id, external_id AS paystack_event, processed_at
+    FROM external_events
+   WHERE provider = 'paystack' AND error = 'duplicate_payment'
+   ORDER BY processed_at DESC;
   ```
 
 ## 2. Establish the original purchase (`duplicate_purchase`; for `duplicate_payment` the original is the one paid charge)
@@ -87,7 +97,7 @@ the owner.
    the original, delivered one, and the call would record that charge as refunded while the merchant
    keeps the plan. Record the Paystack refund id in the incident note and on the business's support
    record instead; Rekoda has no record-only entry for a second payment of the same charge yet
-   (OD-53 (5)). Skip to step 6.
+   (OD-53 (5)). Skip to section 6.
 3. `duplicate_purchase`: record it in Rekoda: `POST /v1/ops/refund` with `businessId`, `reference` (the set-aside
    reference), `amountK` (the kobo refunded) and `reason`. This writes the refunded amount, moves the
    charge to `refunded` when the whole amount is back, and writes an audit row naming the verified
@@ -100,9 +110,11 @@ in the body.
 
 ## 6. Tell the merchant
 
-The billing page shows the charge as paid twice until it is refunded, then as refunded. Tell the
-merchant directly, through the billing email on file: what was paid twice, that the pack was
-delivered once, the amount refunded, and that Paystack refunds take the bank's usual time to arrive.
+For `duplicate_purchase`, the billing page shows the charge as paid twice until it is refunded, then
+as refunded. For `duplicate_payment`, the billing page shows nothing of the second payment (no charge
+records it), so the message below is the merchant's only record of it. Tell the merchant directly,
+through the billing email on file: what was paid twice, that the plan or pack was delivered once,
+the amount refunded, and that Paystack refunds take the bank's usual time to arrive.
 The wording of that message is an **OPEN OWNER DECISION** (no approved template exists yet). Never
 send it on WhatsApp outside a 24-hour window as free text (Meta's rules).
 

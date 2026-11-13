@@ -672,8 +672,9 @@ export class BillingCheckoutService {
     if (charge.amountK <= 0) return 'nothing_to_pay';
 
     /* A renewal buys the cycle that starts at the paid-to date it was raised against, and settlement
-     * applies it only then (0206). Once that date has moved (an operator's period correction, a
-     * later payment), a payment would be taken and set aside, so no link is handed out. Checked
+     * applies it only then (0206). Once that date has moved without a plan decision (today only the
+     * staging date tool can do that; every other writer records a decision, which `decidedSince`
+     * already catches), a payment would be taken and set aside, so no link is handed out. Checked
      * here, in the transaction that hands the link out, so the blocked-renewal job's earlier check
      * cannot race it and the merchant's own checkout is held to it too. */
     if (charge.kind === 'renewal') {
