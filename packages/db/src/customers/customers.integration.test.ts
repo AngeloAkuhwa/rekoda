@@ -17,11 +17,10 @@ import { createDb, withBusiness, type Db } from '../client.js';
 import { customersRepo, identity, issueRepo } from '../index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from '../testing.js';
 import { decryptFacet, encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
-import { generateCustomerToken } from '@rekoda/core/privacy';
+import { createCustomer } from './customer-tokens.fixtures.js';
 
 const VAULT_KEY = 'a'.repeat(64);
 const MATCH_KEY = 'c'.repeat(64);
-const random = (n: number) => Uint8Array.from({ length: n }, () => Math.floor(Math.random() * 256));
 
 let urls: Urls;
 let db: Db;
@@ -58,15 +57,10 @@ async function rememberCustomer(businessId: string, phone: string, displayName: 
   const existing = await customersRepo.findCustomerByMatchKey(db, businessId, 'phone', matchKey);
   if (existing) return { ...existing, isNew: false };
 
-  const created = await customersRepo.createCustomerWithIdentities(
-    db,
-    businessId,
-    generateCustomerToken(random),
-    [
-      { facet: 'phone', ciphertext: encryptFacet(phone, VAULT_KEY), matchKey },
-      { facet: 'name', ciphertext: encryptFacet(displayName, VAULT_KEY), matchKey: null },
-    ],
-  );
+  const created = await createCustomer(db, businessId, [
+    { facet: 'phone', ciphertext: encryptFacet(phone, VAULT_KEY), matchKey },
+    { facet: 'name', ciphertext: encryptFacet(displayName, VAULT_KEY), matchKey: null },
+  ]);
   return { ...created, isNew: true };
 }
 
@@ -91,6 +85,15 @@ describe('recognising a customer', () => {
     const business = await seedBusiness('Ada Fashion', '+2348030000102');
     const customer = await rememberCustomer(business.id, '08031111111', 'Ada Obi');
     expect(customer.token).toMatch(/^CUSTOMER_[0-9A-HJKMNP-TV-Z]{3}$/);
+  });
+
+  it('mints a second customer when its first candidate token is already taken', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000103');
+    const first = await createCustomer(db, business.id, [], () => 'CUSTOMER_7CJ');
+    const candidates = ['CUSTOMER_7CJ', 'CUSTOMER_8DK'];
+    const second = await createCustomer(db, business.id, [], () => candidates.shift() ?? '');
+    expect(first.token).toBe('CUSTOMER_7CJ');
+    expect(second.token).toBe('CUSTOMER_8DK');
   });
 });
 
@@ -180,18 +183,13 @@ describe('erasure', () => {
 describe('linking two customers', () => {
   /** A bare customer holding one facet, as the gateway mints one. */
   async function mintCustomer(businessId: string, facet: 'phone' | 'email', value: string) {
-    return customersRepo.createCustomerWithIdentities(
-      db,
-      businessId,
-      generateCustomerToken(random),
-      [
-        {
-          facet,
-          ciphertext: encryptFacet(value, VAULT_KEY),
-          matchKey: matchKeyFor(businessId, facet, normaliseFacet(facet, value), MATCH_KEY),
-        },
-      ],
-    );
+    return createCustomer(db, businessId, [
+      {
+        facet,
+        ciphertext: encryptFacet(value, VAULT_KEY),
+        matchKey: matchKeyFor(businessId, facet, normaliseFacet(facet, value), MATCH_KEY),
+      },
+    ]);
   }
 
   const link = (businessId: string, survivorId: string, orphanId: string) =>
@@ -510,35 +508,25 @@ describe('a link and a storefront name attach at once', () => {
   it('leaves one name, the trusted one, when the link commits first', async () => {
     const business = await seedBusiness('Ada Fashion', '+2348030000301');
     const phone = '08035551234';
-    const survivor = await customersRepo.createCustomerWithIdentities(
-      db,
-      business.id,
-      generateCustomerToken(random),
-      [
-        {
-          facet: 'phone',
-          ciphertext: encryptFacet(phone, VAULT_KEY),
-          matchKey: matchKeyFor(business.id, 'phone', normaliseFacet('phone', phone), MATCH_KEY),
-        },
-      ],
-    );
-    const orphan = await customersRepo.createCustomerWithIdentities(
-      db,
-      business.id,
-      generateCustomerToken(random),
-      [
-        {
-          facet: 'name',
-          ciphertext: encryptFacet('Chidi Okafor', VAULT_KEY),
-          matchKey: matchKeyFor(
-            business.id,
-            'name',
-            normaliseFacet('name', 'Chidi Okafor'),
-            MATCH_KEY,
-          ),
-        },
-      ],
-    );
+    const survivor = await createCustomer(db, business.id, [
+      {
+        facet: 'phone',
+        ciphertext: encryptFacet(phone, VAULT_KEY),
+        matchKey: matchKeyFor(business.id, 'phone', normaliseFacet('phone', phone), MATCH_KEY),
+      },
+    ]);
+    const orphan = await createCustomer(db, business.id, [
+      {
+        facet: 'name',
+        ciphertext: encryptFacet('Chidi Okafor', VAULT_KEY),
+        matchKey: matchKeyFor(
+          business.id,
+          'name',
+          normaliseFacet('name', 'Chidi Okafor'),
+          MATCH_KEY,
+        ),
+      },
+    ]);
 
     const { db: watcher, close: closeWatcher } = createDb(urls.owner, { max: 1 });
     let release!: () => void;
@@ -611,10 +599,7 @@ describe('a link and a checkout on the orphan, and opposite links', () => {
   const mint = (
     businessId: string,
     facet: ReturnType<typeof nameOf> | ReturnType<typeof phoneOf>,
-  ) =>
-    customersRepo.createCustomerWithIdentities(db, businessId, generateCustomerToken(random), [
-      facet,
-    ]);
+  ) => createCustomer(db, businessId, [facet]);
 
   /** Hold a link's transaction open until released; resolves its result. */
   function holdLink(businessId: string, survivorId: string, orphanId: string) {
@@ -695,15 +680,10 @@ describe('a link and a checkout on the orphan, and opposite links', () => {
   it('discards the orphan untrusted name and keeps the survivor trusted one', async () => {
     const business = await seedBusiness('Ada Fashion', '+2348030000403');
     const survivor = await mint(business.id, nameOf(business.id, 'Chidi Okafor'));
-    const orphan = await customersRepo.createCustomerWithIdentities(
-      db,
-      business.id,
-      generateCustomerToken(random),
-      [
-        phoneOf(business.id, '08035551234'),
-        { facet: 'name', ciphertext: encryptFacet('Chidi O.', VAULT_KEY), matchKey: null },
-      ],
-    );
+    const orphan = await createCustomer(db, business.id, [
+      phoneOf(business.id, '08035551234'),
+      { facet: 'name', ciphertext: encryptFacet('Chidi O.', VAULT_KEY), matchKey: null },
+    ]);
 
     expect(
       await withBusiness(db, business.id, (tx) =>
