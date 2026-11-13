@@ -53,8 +53,26 @@ ADR 0010 is NOT implemented; this is the nightly logical half only, RPO up to 24
   long, mode 0600, custody recorded off the host), optionally `BACKUP_S3_ENDPOINT` and the
   `AWS_*` credentials for an `s3://` destination, `BACKUP_RETAIN_DAYS` (directory destinations only,
   default 30), `BACKUP_DUMP_CMD` (default: `pg_dump` inside the production compose postgres; a pipeline
-  here runs with `pipefail`). For R2 or B2 also set `AWS_REQUEST_CHECKSUM_CALCULATION=when_required`,
-  which newer aws CLI versions otherwise reject.
+  here runs with `pipefail`). For R2 or B2 also set `AWS_REQUEST_CHECKSUM_CALCULATION=when_required`
+  and `AWS_RESPONSE_CHECKSUM_VALIDATION=when_required` (aws CLI 2.23 and later add checksum headers R2
+  only partly supports), and `AWS_DEFAULT_REGION=auto`. R2 endpoint:
+  `BACKUP_S3_ENDPOINT=https://<account id>.r2.cloudflarestorage.com`.
+- **Cloudflare R2 specifics** (owner choice for the staging destination, 13 Nov 2026; tested against an
+  S3-compatible server with aws CLI 2.40, not yet against R2 itself; the full procedure is
+  `staging-pr432-config-checklist.md` §1):
+  - R2 has **no** S3 versioning and **no** S3 Object Lock API. Its immutability feature is the **bucket
+    lock rule** (by prefix; age, date or indefinite), which blocks deletes and overwrites, and overrides
+    lifecycle deletion. Use a lock rule (for example 30 days on the backup prefix) plus a lifecycle
+    expiry well beyond it.
+  - R2 tokens cannot be limited by key prefix or suffix. _Object Read & Write_ scoped to the one backup
+    bucket is the narrowest token, and it can delete anything in that bucket. The lock rule is what stops
+    a stolen token from deleting recent backups.
+  - Under a lock rule the script's cleanup of its `<name>.pending` staging copy is refused (HTTP 409
+    `ObjectLockedByBucketPolicy`, one line in the journal each run). The script tolerates it, the backup
+    still succeeds, and the `.pending` copy stays until the lock and lifecycle expire it. Listing and the
+    drill never select `.pending` objects.
+  - Use a separate bucket and token from the application's documents (`R2_*` in `.env`). Backup
+    credentials live only in `/etc/rekoda/backup.env`.
 - **Drill variables:** `DRILL_DATABASE_URL` (a superuser URL of a scratch server whose database name
   contains `drill` or `scratch`; unset uses a throwaway `postgres:16-alpine` container, removed with its
   data volume) and `DRILL_OBJECT` (a specific object instead of the newest). In URL mode the host's
@@ -83,7 +101,9 @@ format, scope the credentials to what each script calls: the nightly backup need
 reads back what it staged) and DeleteObject only for its own `.pending` staging objects, or leave those
 to a lifecycle rule; the restore drill additionally needs ListBucket, since it finds the newest object
 by listing, turn on bucket versioning or object lock so an overwrite or delete keeps a prior
-version, and compare the newest object's date with today's. This is an open hardening item for G-02, not
+version, and compare the newest object's date with today's. On Cloudflare R2 neither the per-key
+delete scope nor versioning or object lock exists: use an R2 bucket lock rule instead (see "Cloudflare
+R2 specifics" above). This is an open hardening item for G-02, not
 closed by this change.
 
 ### Restore by hand (no scripts)

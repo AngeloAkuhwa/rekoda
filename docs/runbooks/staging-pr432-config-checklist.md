@@ -1,412 +1,547 @@
-# Staging configuration, deployment and acceptance plan for PR #432 (PR B)
+# Staging preparation for PR #432 (PR B): configuration, backups, deployment and acceptance
 
-Prepared 13 Nov 2026 from the PR #432 head `06035e6` (code, compose file, deploy script, runbooks). **Nothing
-here has been applied to any host.** No secret value appears in this document. Production is out of scope.
+Revision 2, 13 Nov 2026. Prepared from PR #432 head `06035e6`. **Nothing here has been applied to any host.**
+No secret value appears in this document. Production is out of scope. Staging only, Paystack TEST mode only.
 
 ## 0. Evidence and limits
 
-| Fact | Evidence |
-| --- | --- |
-| PR #432 head is `06035e6`, open, not merged, not draft, mergeable `clean` | GitHub API, 13 Nov 2026 |
-| All required checks green on `06035e6` (CI run 43426914017: typecheck/lint/test/build, db 1/2 + 2/2, api 1/2 + 2/2, Integration, Playwright, Docker, foreign-owner migrations, gitleaks, GitGuardian). CodeRabbit **skipped** (330 files > 100 limit), not a review | `get_check_runs` on the PR |
-| 42 review threads, 0 unresolved | `get_review_comments` |
-| Codex: usage limit on every request; **not an approval** | PR comments 06:38, 13:55, 18:38 UTC |
-| PR description: "Merge: the owner's. Not to be merged or deployed without explicit owner approval" | PR body |
-| Staging currently runs `main` `58e6834` (PR A), migrations to 0192 | Deploy staging run #184 (8 Nov 2026), success |
-| **Staging's `.env` was NOT inspected.** This session cannot reach the host or even `https://staging-api.myrekoda.com/health` (network policy) | — |
+| Fact                                                                                                                                                                                                    | Evidence                                      |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| PR #432: head `06035e6`, open, not merged, mergeable; all required checks green (CI run 43426914017); 42 threads, 0 unresolved; CodeRabbit skipped (too many files); Codex quota-limited (not approval) | GitHub, 13 Nov 2026                           |
+| Staging runs `main` `58e6834`, 193 migrations (0000 to 0192)                                                                                                                                            | Deploy staging run #184, 8 Nov 2026 (job log) |
+| Staging's `.env`, Cloudflare zone, Hetzner project and GitHub environment settings were **not** inspected                                                                                               | The session cannot reach the host             |
+| The backup and restore scripts were exercised end to end against an S3-compatible server (not R2 itself), with AWS CLI v2.40.3 and a database migrated through 0223                                     | §1.3 below                                    |
+| Settlement and operator memory, boot refusals and the 401 were measured by starting the real processes in production mode                                                                               | §3 and §4 below                               |
 
-So **no row below is "Already configured and verified"**. Where the currently running release could not boot
-without a value (it runs `NODE_ENV=production`, which refuses to start without it), the row says
-**"Exists but needs verification"**. That is a strong inference, not a check. Everything new in PR #432 is
-**"Missing and must be added"** until someone looks.
+## 1. Cloudflare R2 for off-box PostgreSQL backups
 
-## 1. How the four processes get their configuration
+### 1.1 Verdict
 
-| Process | Entry point | Gets `.env` how | Holds | Must NOT be given (refuses to start in production) |
-| --- | --- | --- | --- | --- |
-| `api` | `dist/main.js`, `REKODA_WORKER=0`, port 3001 | `env_file: .env` (the whole file) | `DATABASE_URL`, `WORKER_DATABASE_URL`, all app secrets | `SETTLEMENT_DATABASE_URL`, `OPERATOR_DATABASE_URL` (compose blanks both) |
-| `worker` | same image, `REKODA_WORKER=1`, loopback 3001 | `env_file: .env` | same as api | same as api |
-| `settlement` | `dist/settlement-main.js`, loopback health 3003 | **does not read `.env`**. Compose passes only `SETTLEMENT_DATABASE_URL`, `VAULT_KEY`, `PAYSTACK_SECRET_KEY`, `REKODA_PLAN_CATALOGUE_READS`, `REKODA_SETTLEMENT_CONCURRENCY` (interpolated from `.env`) | settlement role, vault key, platform Paystack key | `DATABASE_URL`, `WORKER_DATABASE_URL`, `OPERATOR_DATABASE_URL`, `MATCH_KEY`, `CONNECTION_KEY`, `OTP_PEPPER`, `REKODA_API_SECRET`, `REKODA_OPERATOR_SECRET`, `MONO_SECRET_KEY`, `META_*` secrets, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `RESEND_*` |
-| `operator` | `dist/operator-main.js`, port 3002 (Caddy routes `/v1/businesses/plan*` to it) | **does not read `.env`**. Compose passes only `OPERATOR_DATABASE_URL`, `OPERATOR_OIDC_ISSUER`, `OPERATOR_OIDC_JWKS_URL`, `OPERATOR_BILLING_OIDC_AUDIENCE`, `OPERATOR_OIDC_AUDIENCE`, `OPERATOR_OIDC_SCOPE_CLAIM` | billing-operator role | all of the above plus `VAULT_KEY`, `PAYSTACK_SECRET_KEY`, `SETTLEMENT_DATABASE_URL` |
-| `web` | `next start`, port 3000 | build args (`NEXT_PUBLIC_*`, baked in) + runtime `REKODA_API_URL` (compose: `http://api:3001`), `REKODA_WEB_URL` | nothing secret | — |
-| `migrate` (one-off) | `deploy/migrate.sh` | `env_file: .env` + owner password secret file | owner credential; sets the 4 runtime role passwords from the 4 URLs | — |
+**The existing scripts work with R2 unchanged. No code change is needed.** They use only `aws s3 cp`, `aws s3 ls`
+and `aws s3 rm` against `--endpoint-url`. Backup object names are unique (`rekoda-<UTC stamp>-<pid>.dump.enc`), so
+nothing is ever overwritten. Two R2 facts change the runbook, not the code:
 
-Consequences:
+1. **R2 has no S3 versioning and no S3 Object Lock API.** Cloudflare's S3 compatibility table lists
+   `PutBucketVersioning` and `PutObjectLockConfiguration` as unsupported. R2's own feature is **bucket locks**:
+   rules by prefix that block delete **and** overwrite for an age, until a date, or indefinitely. Lifecycle rules
+   are supported, and a lock overrides a lifecycle deletion.
+2. **R2 API tokens cannot be limited to a key prefix or suffix.** Permissions are Admin Read & Write, Admin Read
+   only, Object Read & Write, and Object Read only. The two Object permissions can be scoped to chosen buckets,
+   nothing finer. **The ".pending-only delete" restriction in the old runbook cannot be expressed on R2.** Object
+   Read & Write includes delete for the whole bucket.
 
-- **All values go into the one host `.env`** (`/opt/rekoda/.env`, mode 600). The per-service split is done by
-  `docker-compose.prod.yml`; never edit the compose file to add a value.
-- Because `settlement` and `operator` take values by interpolation, **a variable exported in the shell you run
-  `docker compose` from overrides `.env`** for those two. Run compose from a clean login shell.
-- **No value may contain `$`** (compose interpolates). Generate every secret with `openssl rand -hex 32`.
-- `NEXT_PUBLIC_*` are baked into the web image: changing one needs a web rebuild, not a restart.
+### 1.2 Protection strategy (replaces "versioning or object lock")
 
-## 2. Database users, permissions and connection strings
+- **A dedicated bucket**, e.g. `rekoda-staging-backups`. Never the documents bucket (`R2_BUCKET`).
+- **A dedicated token:** _Object Read & Write_, scoped to that one bucket only. It is an Account API token, so it
+  survives a user leaving. Use it only in `/etc/rekoda/backup.env`. **Never reuse the application's `R2_*` token**,
+  and never put backup credentials in `/opt/rekoda/.env`, which reaches the api and worker.
+- **A bucket lock rule** as the deletion guard. Dashboard: R2 → bucket → Settings → Bucket lock rules → Add rule:
+  name `retain-30d`, prefix `staging/`, retention **Age 30 days**. For 30 days nobody can delete or overwrite a
+  backup: not the host, not a stolen backup token, not a lifecycle rule.
+- **A lifecycle rule** for cost and tidiness. R2 → bucket → Settings → Object lifecycle rules: prefix `staging/`,
+  delete objects after **90 days**; abort incomplete multipart uploads after 1 day. The lock wins until day 30.
+  (The runbook's warning still applies: expiry keeps running if backups stop. The weekly check in §1.6 is the
+  control.)
+- **Expected side effect of the lock:** the script stages `<name>.pending`, reads it back, publishes, then deletes
+  the `.pending` copy. Under the lock that delete is refused (HTTP 409 `ObjectLockedByBucketPolicy`). The script
+  tolerates it (`|| true`), the run still succeeds, and the journal shows one 409 line each night. The `.pending`
+  copy stays until the lock and lifecycle expire it, roughly doubling storage (a small staging dump costs pennies).
+  Listing and the drill never select `.pending` objects. Proven in §1.3, case 3.
+- **The admin token** that edits lock and lifecycle rules stays in your Cloudflare login. It never goes on the host.
+- **Location:** create the bucket without a jurisdiction, so the endpoint is the default one below. A location hint
+  of Western Europe sits near the Hetzner server. (For production, decide with counsel whether merchant data may sit
+  in an EU/US bucket under the NDPA; staging holds test data only.)
 
-You do **not** create database users by hand. Migration 0202 creates `rekoda_settlement` and
-`rekoda_billing_operator`; `rekoda_app` and `rekoda_worker` already exist. `migrate.sh` then runs
-`provision.js`, which sets each role's password from its URL in `.env` and refuses:
+### 1.3 What was actually tested (13 Nov 2026, this session)
 
-- a URL whose user is not exactly the expected role;
-- a URL pointing at a different host/port/database from the owner's;
-- a password shorter than 24 printable ASCII characters;
-- **any two of the four passwords being the same**;
-- any of the four URLs missing (migrate.sh exits before touching anything).
+Test bed: PostgreSQL 16 (`postgres:16-alpine`) migrated with the real migrations **0000 to 0223**, then the real
+`provision.js` setting all four runtime passwords from four distinct URLs. It was seeded through the application's
+own sale and payment code: 3 businesses, 12 ledger entries, 3 invoices. AWS CLI **v2.40.3**. An S3-compatible server
+stood in for R2. The unmodified `scripts/backup-db.sh` and `scripts/restore-drill.sh` from `06035e6` were run with
+the exact `backup.env` shape in §1.4.
 
-Required shape (host `postgres`, port 5432, database `rekoda`):
+| #   | Case                                                                                              | Result                                                                                           |
+| --- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| 1   | Backup: dump, encrypt, upload `.pending`, read back, compare SHA-256, publish, delete `.pending`  | `backup: ok … 819984 bytes`, exit 0; only `.dump.enc` and `.sha256` remain                       |
+| 2   | Restore drill: newest object, checksum, decrypt, restore into a throwaway container, ledger check | `businesses=3 ledger_entries=12 invoices=3 unbalanced_businesses=0`, `PASS`, container removed   |
+| 3   | Every delete refused as an R2 bucket lock refuses it (409 `ObjectLockedByBucketPolicy`)           | Backup still `ok`, exit 0; `.pending` left beside the published object; a later drill unaffected |
+| 4   | 25 MB object (the CLI switches to a multipart upload above 8 MB)                                  | Uploaded multipart, read back, checksum equal, `ok`                                              |
+| 5   | Tampered object                                                                                   | Drill refuses: `checksum mismatch`, exit 1                                                       |
+| 6   | Wrong passphrase                                                                                  | Drill refuses: `decryption failed`                                                               |
+| 7   | Drill of a named object (`DRILL_OBJECT`)                                                          | `PASS`                                                                                           |
+
+**Not proven here:** the behaviour of Cloudflare's own endpoint (the session cannot reach R2), and the systemd timer.
+§1.5 is therefore the real proof, and it must pass on the host before the deploy.
+
+**Checksums.** Since AWS CLI 2.23 the CLI adds its own checksum headers by default. R2 supports CRC64NVME only as a
+whole-object checksum, and CRC32/CRC32C/SHA only as per-part (composite) checksums on multipart uploads. Setting both
+`AWS_REQUEST_CHECKSUM_CALCULATION=when_required` and `AWS_RESPONSE_CHECKSUM_VALIDATION=when_required` removes that
+variable. The script's own SHA-256 read-back is the integrity check that matters, and case 4 shows it works on
+multipart. Use a current AWS CLI v2. Some third-party reports say 2.23.0 to 2.23.4 ignored the setting for `s3 cp`,
+so avoid those versions.
+
+### 1.4 Files on the host (root-owned)
+
+```bash
+sudo install -d -m 700 -o root -g root /etc/rekoda
+sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/rekoda/backup.pass'   # 64 hex chars on one line
+sudo chmod 600 /etc/rekoda/backup.pass
+```
+
+Put a copy of `backup.pass` in your password manager **now**. Without it no backup can be restored, ever.
+
+`/etc/rekoda/backup.env` (mode **0600**, owner root). systemd `EnvironmentFile` syntax: one `NAME=value` per line,
+no `export`, no quotes needed, no `$`:
 
 ```
-DATABASE_URL=postgres://rekoda_app:<pw1>@postgres:5432/rekoda
-WORKER_DATABASE_URL=postgres://rekoda_worker:<pw2>@postgres:5432/rekoda
-SETTLEMENT_DATABASE_URL=postgres://rekoda_settlement:<pw3>@postgres:5432/rekoda   # NEW
-OPERATOR_DATABASE_URL=postgres://rekoda_billing_operator:<pw4>@postgres:5432/rekoda # NEW
+BACKUP_DEST=s3://rekoda-staging-backups/staging
+BACKUP_S3_ENDPOINT=https://<CLOUDFLARE_ACCOUNT_ID>.r2.cloudflarestorage.com
+BACKUP_PASSPHRASE_FILE=/etc/rekoda/backup.pass
+AWS_ACCESS_KEY_ID=<backup token Access Key ID>
+AWS_SECRET_ACCESS_KEY=<backup token Secret Access Key>
+AWS_DEFAULT_REGION=auto
+AWS_REQUEST_CHECKSUM_CALCULATION=when_required
+AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
 ```
 
-`<pw3>` and `<pw4>`: run `openssl rand -hex 32` once each. They must differ from each other and from `<pw1>`/`<pw2>`.
-The owner password stays in `secrets/postgres_owner_password` (directory 700, file 644, hex only, 24+ chars), never in `.env`.
+Leave `BACKUP_DUMP_CMD` unset (the default dumps the compose `postgres` as `rekoda_owner`). `BACKUP_RETAIN_DAYS`
+does not apply to `s3://`. Tools on the host: AWS CLI v2 (`aws --version`), `openssl`, `sha256sum`, docker.
 
-At boot each process also proves its own identity: settlement must log in as exactly `rekoda_settlement`,
-operator as exactly `rekoda_billing_operator`, neither may bypass RLS, and in production none may see the
-test-only fixture writer. A wrong URL fails loudly rather than running with the wrong rights.
+### 1.5 First backup and drill (must pass before the deploy)
 
-## 3. Consolidated staging checklist
+```bash
+sudo cp /opt/rekoda/deploy/systemd/rekoda-backup.service /opt/rekoda/deploy/systemd/rekoda-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl start rekoda-backup.service           # one run now; blocks until it finishes
+sudo systemctl status rekoda-backup.service --no-pager   # must show: status=0/SUCCESS
+sudo journalctl -u rekoda-backup.service -n 20 --no-pager   # must end: backup: ok rekoda-<stamp>-<pid>.dump.enc <bytes> bytes
+```
 
-Statuses: **V** = already configured and verified · **E** = exists but needs verification · **M** = missing and
-must be added · **O** = optional · **N/A** = not applicable to staging. (No row is V: see §0.)
+Restore drill, as root, with the same variables (it starts a throwaway `postgres:16-alpine` and removes it):
 
-Service key: A = api, W = worker, S = settlement, Op = operator, Wb = web, C = caddy, Mg = migrate, Cmp = compose itself.
+```bash
+sudo bash -c 'set -a; . /etc/rekoda/backup.env; set +a; cd /opt/rekoda && bash scripts/restore-drill.sh'
+# must end:  restore-drill: object=<the object above> ... unbalanced_businesses=0
+#            restore-drill: PASS
+```
 
-### 3.1 Deployment and edge
+Then confirm in the R2 dashboard that the object, its `.sha256` and (with the lock on) its `.pending` exist under
+`staging/`. Record the date, object name, size, `restore_seconds`, counts and PASS in `docs/runbooks/backup-restore.md`
+(drill log), and replace that runbook's honesty note with the bucket name and first-upload date.
 
-| Variable / setting | Service | Purpose | Required? | Secret? | Status | Action required |
-| --- | --- | --- | --- | --- | --- | --- |
-| `REKODA_RELEASE` | Cmp, all | Image tag; `/health` release | Yes (blank refuses every compose command) | No | E | Leave; the deploy script rewrites this one line |
-| `REKODA_API_PUBLIC_URL` | C, deploy script | API hostname; webhook host | Yes; must equal `https://staging-api.myrekoda.com` or the staging deploy refuses | No (URL) | E | Verify exact value |
-| `NEXT_PUBLIC_SITE_URL` | Wb (build), C | Site hostname, canonicals | Yes (web build and compose refuse without it) | No (URL) | E | Verify `https://staging.myrekoda.com` |
-| `REKODA_ACME_EMAIL` | C | Let's Encrypt notices | Yes (compose `:?`) | No | E | Verify a mailbox you read |
-| `REKODA_EDGE_PROXIES` | C, edge-check | Cloudflare ranges when proxied | Only if Cloudflare proxies (orange cloud) | No | E/O | If proxied: Cloudflare's published IPv4 ranges, space-separated. If DNS-only: empty |
-| `REKODA_TRUSTED_PROXIES`, `REKODA_TRUSTED_WEB` | A, W | Client-address trust | Set by compose (`172.30.10.10`, `.11`) | No | N/A in `.env` | Do not set in `.env` |
-| `NODE_ENV`, `PORT`, `REKODA_WORKER` | all | Mode, ports | Set by compose | No | N/A in `.env` | Do not set |
-| `REKODA_COMMIT` | all | Build commit | Set by the image build | No | N/A | Do not set |
-| `REKODA_DEPLOY_MIN_MEM_KB`, `REKODA_DEPLOY_MIN_FREE_KB` | deploy script | Memory/disk floors | O (1 GiB / disk floor defaults) | No | O | Leave unset |
+Notes:
 
-### 3.2 Database
+- The drill refuses a database with no ledger entries. Staging must hold at least one recorded sale.
+- On a 4 GB host the drill's extra Postgres competes for memory. Run it when no build is running.
 
-| Variable / setting | Service | Purpose | Required? | Secret? | Status | Action required |
-| --- | --- | --- | --- | --- | --- | --- |
-| `secrets/postgres_owner_password` (file) | postgres, Mg | Owner/superuser | Yes | **Secret** | E | Verify present, 644 in a 700 dir |
-| `DATABASE_URL` | A, W, Mg | `rekoda_app` | Yes at boot | **Secret** (contains password) | E | Verify role name `rekoda_app` |
-| `WORKER_DATABASE_URL` | A, W, Mg | `rekoda_worker` | Yes (worker refuses without it) | **Secret** | E | Verify |
-| `SETTLEMENT_DATABASE_URL` | S, Mg (blanked for A, W) | `rekoda_settlement` | **Yes**: settlement, migrate.sh and the deploy script all refuse without it | **Secret** | **M** | Add with a new, distinct password (§2) |
-| `OPERATOR_DATABASE_URL` | Op, Mg (blanked for A, W) | `rekoda_billing_operator` | **Yes**: same | **Secret** | **M** | Add with a new, distinct password (§2) |
-| `REKODA_PLAN_CATALOGUE_READS` | A, W, S | Pricing source | O (default catalogue; 0215 enforces agreement) | No | O | **Leave unset everywhere** |
-| `REKODA_WORKER_CONCURRENCY` / `REKODA_SETTLEMENT_CONCURRENCY` | W / S | Job lanes (4 / 2) | O | No | O | Leave unset on the 4 GB host |
+### 1.6 Enable and verify the nightly timer
 
-### 3.3 Application secrets and identity
+```bash
+sudo systemctl enable --now rekoda-backup.timer
+systemctl list-timers rekoda-backup.timer --no-pager   # NEXT shows the coming 01:00 UTC (02:00 WAT)
+```
 
-| Variable / setting | Service | Purpose | Required? | Secret? | Status | Action required |
-| --- | --- | --- | --- | --- | --- | --- |
-| `VAULT_KEY` | A, W, **S** | Customer-identity vault; sealed webhook payloads | Yes (64 hex; fingerprint-enrolled, a different key refuses boot) | **Secret** | E | Verify present. **Never change it.** Compose now also passes it to settlement (`:?`) |
-| `MATCH_KEY` | A, W | Identity matching HMAC | Yes (64 hex, enrolled) | **Secret** | E | Verify |
-| `CONNECTION_KEY` | A, W | Encrypts merchant settlement account numbers | O at boot; needed for merchant payment connection | **Secret** | E/O | Verify; set it if staging tests merchant Paystack connections |
-| `REKODA_API_SECRET` | A, W | Signs setup grants | Yes (≥32) | **Secret** | E | Verify |
-| `OTP_PEPPER` | A, W | OTP hashing | Yes (≥32) | **Secret** | E | Verify |
-| `OPERATOR_OIDC_ISSUER` | A, W, Op | Operator token issuer | Yes in production (all three or none; public https) | No (URL) | E | Verify. **Now also needed by the operator process** |
-| `OPERATOR_OIDC_JWKS_URL` | A, W, Op | Token signing keys | Yes | No (URL) | E | Verify |
-| `OPERATOR_OIDC_AUDIENCE` | A, W (Op reads it only to compare) | API operator audience | Yes | No (identifier) | E | Verify |
-| `OPERATOR_BILLING_OIDC_AUDIENCE` | **Op** | Audience for plan changes only | **Yes**: operator, compose and the deploy script refuse without it, or if it equals `OPERATOR_OIDC_AUDIENCE` | No (identifier) | **M** | Add. Your identity provider must issue tokens for this second audience, from the **same issuer**, carrying **only** this audience (the operator enforces an exclusive audience) and scope `ops:billing` |
-| `OPERATOR_OIDC_SCOPE_CLAIM` | A, W, Op | Claim holding scopes | O (default `scope`) | No | O | Set only if your IdP puts scopes elsewhere |
-| `REKODA_OPERATOR_SECRET`, `REKODA_OPERATOR_HOST` | — | Dev stand-in / bind host | Refused in production | Secret | N/A | **Must be unset** |
-| `REKODA_WEB_URL` | A, W, Wb | Dashboard origin; billing link in grace and trial templates; email links | Yes for staging billing and templates (must be https) | No (URL) | E | Verify `https://staging.myrekoda.com` (no path) |
-| `REKODA_CORS_ORIGINS` | A | Allowed browser origins | **Defaults to `http://localhost:3000`** | No | E | Verify it names `https://staging.myrekoda.com` |
-| `REKODA_ALERT_WEBHOOK_URL` | W | Operational alerts | O (https, public host) | Treat as **secret** | O, recommended | Set to a chat incoming-webhook URL (see §5.6) |
-| `REKODA_RATE_LIMIT_MAX`, `REKODA_SHOP_ORDERS_PER_HOUR`, `REKODA_TRANSFER_VERIFY_MIN_SECONDS` | A | Limits | O | No | O | Leave default |
-| `REKODA_COMMAND_*` (14 flags) | A, W | Emergency rollback per command | O | No | O | **Leave all unset** (OD-4, OWN-22) |
-| `REKODA_ANNUAL_BILLING` | A, W | Allows choosing yearly | O (0/1) | No | E/O | Set `1` for the yearly acceptance steps |
-| `REKODA_STAGING_TOOLS` | A, W | OWN-77 test-business date and fault tools | O, but **required for walkthrough 17-19, 22 and journeys 2, 3, 9, 10** | No | **M** | Add `REKODA_STAGING_TOOLS=1` **after** the first deploy is healthy (staging `.env` only, never compose); needs a test Paystack key |
-| `REKODA_CUSTOMER_REMINDERS` | A, W | Customer payment reminders | O (0/1). When 1, `REKODA_WEB_URL` must be a bare https origin | No | E (should be `0`/unset now) | Keep OFF until the billing walkthrough is done, then set `1` |
-| `REKODA_SUPPORT_EMAIL` | A, W | Support contact (not the reminder Reply-To) | O (one bare address) | No | O | Optional |
-| `REKODA_REVEAL_OTP`, `REKODA_LOCAL_STORAGE`, `PAYSTACK_BASE_URL`, `MONO_BASE_URL`, `REKODA_E2E_*` | — | Test hooks | Refused or forbidden in deployments | — | N/A | **Must be unset** |
+The next morning: `systemctl status rekoda-backup.service` shows a successful run at about 01:00 UTC, and R2 shows a
+new object. Weekly, until an alert exists: the same two checks. Drill monthly and before any migration that touches
+financial tables.
 
-### 3.4 Paystack (Rekoda's own subscription billing, TEST mode)
+## 2. Hetzner and Cloudflare networking
 
-| Variable / setting | Service | Purpose | Required? | Secret? | Status | Action required |
-| --- | --- | --- | --- | --- | --- | --- |
-| `PAYSTACK_SECRET_KEY` | A, W, **S** | Checkout, server-side verify, **and** the Paystack webhook signature (HMAC-SHA512) | Not enforced at boot. **Without it, every webhook is rejected and every settlement job fails verify until it goes to the dead-job queue, while `/health` stays ok** | **Secret** | E (no recorded check result found in the repository; the read-only check expects `SET (TEST-KEY)`) | Must start `sk_test_`. Verify in **both** api and settlement containers (§6, step P3) |
-| Paystack **public** key (`pk_test_…`) | — | — | **Not used.** No code reads a Paystack public key: checkout is server-initialised and redirects to Paystack's hosted page | — | N/A | Nothing to add |
-| `REKODA_PAYSTACK_PLATFORM_CONFIRMED` | A, W | §47 live-key confirmation | Must stay unset (`REKODA_STAGING_TOOLS=1` refuses to boot with it) | No | must be unset | Verify unset |
-| Paystack dashboard (TEST mode) → Settings → API Keys & Webhooks → Test Webhook URL | Paystack | Delivers `charge.success` etc. | Yes | — | E (needs verification) | `https://staging-api.myrekoda.com/webhooks/paystack` (the only Paystack ingress) |
-| Paystack dashboard → Test Callback URL | Paystack | Not needed | — | — | N/A | Rekoda sends its own return URL `<REKODA_WEB_URL>/app/billing/return` |
+### 2.1 Proxied or DNS-only
 
-**Merchant Paystack connections:** staging runs production mode, so `POST /v1/payments/merchant-key` **refuses a
-merchant's TEST key** (`rejected_test_key`, `connections.service.ts:215`). Merchant-side card payments cannot be
-accepted on staging; those journeys record a payment by hand. `docs/REKODA_LAUNCH_READINESS.md` §11.2 step 9
-("connect a TEST key from `/app/payments`") contradicts this and should be corrected.
+Both work with the code; they need different settings. **Change one thing at a time:** keep staging in its current
+mode for the PR #432 deploy, and make the Cloudflare change as its own step (before or after), never inside the
+deploy window. Check the current mode first: Cloudflare → DNS → the `staging` and `staging-api` records (orange
+cloud = proxied), and on the host `grep -c '^REKODA_EDGE_PROXIES=.' /opt/rekoda/.env` (1 means a value is set).
 
-### 3.5 WhatsApp / Meta
+|                        | DNS-only (grey)                               | Proxied (orange), recommended target                                                                                     |
+| ---------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `REKODA_EDGE_PROXIES`  | empty                                         | Cloudflare's IPv4 list (§2.2)                                                                                            |
+| SSL/TLS mode           | n/a                                           | **Full (strict)**                                                                                                        |
+| "Always Use HTTPS"     | n/a                                           | **Off** (Caddy redirects itself; ACME challenges arrive over plain HTTP)                                                 |
+| Hetzner inbound 80/443 | any source                                    | Cloudflare ranges only (§2.3)                                                                                            |
+| Certificates           | Let's Encrypt connects to the server directly | Let's Encrypt's HTTP-01 request reaches Cloudflare, which forwards it to the server on port 80 from a Cloudflare address |
 
-The code reads **no** Meta App ID and **no** WABA ID. It needs only the following.
+**Why it matters for acceptance:** if the records are proxied but `REKODA_EDGE_PROXIES` is empty, Caddy sees every
+visitor as a Cloudflare address. All testers then share a handful of rate-limit buckets (60 requests a minute per
+address by default) and hit 429s.
 
-| Variable / setting | Service | Purpose | Required? | Secret? | Status | Action required |
-| --- | --- | --- | --- | --- | --- | --- |
-| `META_APP_SECRET` | A, W | Verifies `X-Hub-Signature-256` on webhooks | **Yes in production** (≥16) | **Secret** | E | Verify (App Dashboard → Settings → Basic → App secret) |
-| `META_VERIFY_TOKEN` | A, W | GET handshake | **Yes in production** (≥16) | **Secret** | E | Verify; must equal what is typed in the Meta webhook config |
-| `META_ACCESS_TOKEN` | A, W | Sending | O at boot (empty = replies recorded, not delivered); in production, set without `META_OTP_TEMPLATE` refuses boot | **Secret** | E | Verify a **system-user permanent token** with `whatsapp_business_messaging` + `whatsapp_business_management`. A 24-hour temporary token will silently stop sends next day |
-| `META_PHONE_NUMBER_ID` | A, W | Sending number | Yes for sending | No (identifier) | E | Verify (WhatsApp → API Setup → Phone number ID) |
-| `META_GRAPH_VERSION` | A, W | Graph version | O (default `v21.0`) | No | O | Leave |
-| `META_OTP_TEMPLATE` / `_LOCALE` | A, W | Sign-in code, AUTHENTICATION, 1 body param + copy-code URL button | Yes | No | E | `rekoda_login_otp`; locale exactly as WhatsApp Manager shows (`en` if unset) |
-| `META_BILLING_TEMPLATE` / `_LOCALE` | A, W | Grace reminder, UTILITY, 3 params (days left, end date, billing link) | Yes for grace steps | No | **E/M**: new slot from PR A | `rekoda_billing_grace_notice`; set only once **Approved** |
-| `META_DOCUMENT_TEMPLATE` / `_LOCALE` | A, W | Document ready outside 24 h, UTILITY, 2 params (label, reference) | Yes | No | E/M | `rekoda_document_ready` |
-| `META_TRIAL_TEMPLATE` / `META_TRIAL_TEMPLATE_LOCALE` | A, W | Trial ending 7/2/1 days, UTILITY, 3 params (days left, end date, billing link) | Yes for trial journeys | No | E/M | `rekoda_trial_ending`, locale **`en`** (confirmed against `template-slots.ts` and OWN-80) |
-| `META_RETENTION_TEMPLATE` / `_LOCALE` | A, W | Deletion notice, UTILITY, 2 params | O (unset = retention sweep warns nobody and deletes nothing) | No | O | `rekoda_retention_notice` if approved |
-| `META_SERVICE_REPLY_COST_MICROS`, `META_WABA_REGISTERED_IN_NIGERIA` | A, W | Cost telemetry | O | No | O | Leave defaults |
-| Meta webhook callback | Meta | Inbound messages and delivery statuses | Yes | — | E | Callback `https://staging-api.myrekoda.com/webhooks/meta`, verify token = `META_VERIFY_TOKEN`, subscribe field **`messages`** (carries statuses too) |
-| Test recipients | Meta | Who a test number may message | Yes | — | Needs verification | Add every tester phone (up to Meta's test-recipient limit) to the allowed list. A reminder customer must have messaged the connected number within 24 h |
+Proxied also needs these Cloudflare settings:
 
-Boot rejects a malformed template name (`^[a-z0-9_]{1,512}$`) or locale (`^[a-z]{2,3}(_[A-Z]{2})?$`). It does
-**not** know whether Meta approved it. A name that is set but not approved fails every send with Meta error 132000. Approval is a manual check in WhatsApp Manager (`docs/runbooks/meta-whatsapp-templates.md`).
+- **Bot Fight Mode off** for this zone, and no WAF or "Under Attack" challenge on `staging-api`. A challenge answered
+  to Meta, Paystack or Resend silently breaks webhooks.
+- No AAAA records (A only, as the runbook says).
+- No caching rules on `staging-api` (Cloudflare does not cache JSON by default; do not add any).
 
-### 3.6 Resend (email)
+### 2.2 `REKODA_EDGE_PROXIES`
 
-| Variable / setting | Service | Purpose | Required? | Secret? | Status | Action required |
-| --- | --- | --- | --- | --- | --- | --- |
-| `REKODA_EMAIL_PROVIDER` | A, W | `none` / `resend` (`mock` refused in production) | Yes for billing-email steps (must be `resend`) | No | E (the 7 Nov check expected `resend`) | Verify `resend` |
-| `RESEND_API_KEY` | A, W | Sending | Yes with `resend` (boot refuses) | **Secret** | E | Verify; a sending-only key |
-| `REKODA_EMAIL_FROM` | A, W | From address | Yes with `resend` | No | E | e.g. `Rekoda <billing@<verified domain>>`, on the verified domain |
-| `RESEND_WEBHOOK_SECRET` | A, W | Svix signature on bounce/complaint webhooks | Yes with `resend` (boot refuses) | **Secret** | E | `whsec_…` from the Resend webhook |
-| Resend domain | Resend + Cloudflare DNS | SPF, DKIM (records Resend gives), `_dmarc` TXT `p=none` | Yes | — | Needs verification | Domain shows **Verified** in Resend |
-| Resend webhook | Resend | Bounces and complaints | Yes | — | Needs verification | `https://staging-api.myrekoda.com/webhooks/resend`, events `email.bounced`, `email.complained` |
+When proxied, set the IPv4 list on one line, space-separated (Cloudflare's published list on 13 Nov 2026):
 
-### 3.7 AI, media, storage, bank (needed only for those features)
+```
+REKODA_EDGE_PROXIES=173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22
+```
 
-| Variable / setting | Service | Purpose | Required? | Secret? | Status | Action required |
-| --- | --- | --- | --- | --- | --- | --- |
-| `ANTHROPIC_API_KEY` | A, W | Message interpretation; vision | O at boot (empty = AI behaves as down); required if `AI_PROVIDER=anthropic` or `IMAGE_AI_ENABLED=1` | **Secret** | E | Verify. Spend is capped by `AI_DAILY_*` |
-| `AI_PROVIDER`, `AI_MODEL_*`, `AI_MODEL_PRICES`, `AI_BASE_URL` | A, W | Model choice and prices | O (defaults: Sonnet 5 default, Haiku 4.5 classifier, Opus 5 escalation) | No | O | Leave defaults unless deliberately changing |
-| `OPENAI_API_KEY`, `VOICE_TRANSCRIPTION_ENABLED`, `AI_TRANSCRIPTION_PRICES` | A, W | Voice notes | Only if voice is enabled (boot refuses `1` without key and prices) | **Secret** (key) | O | Enable only if voice acceptance is in scope |
-| `IMAGE_AI_ENABLED` | A, W | Photo reading | O | No | O | `1` only with `ANTHROPIC_API_KEY` |
-| `AI_DAILY_CALLS_*`, `AI_DOC_EXTRACTIONS_*`, `VOICE_SECONDS_*`, `VOICE_NOTE_MAX_DURATION_SECONDS`, `AI_DUAL_EXTRACT_THRESHOLD_K`, `PLANNING_FX_NGN_PER_USD`, `FX_MODE` | A, W | Ceilings and cost | O | No | O | Defaults; `FX_MODE` stays `off` |
-| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | A, W | PDF/document storage | All four or none (partial refuses boot). None = documents rendered but not stored | Secret (keys) | E/O | Needed for "document ready" re-download; verify all four or none |
-| `MONO_SECRET_KEY`, `NEXT_PUBLIC_MONO_PUBLIC_KEY` | A, W, Wb | Bank feeds | O (commercially closed) | Secret (secret key) | N/A | Leave unset |
+- Checked in this session with the release's own `dist/edge-check.js`: accepted (exit 0), with or without the IPv6
+  list appended. `0.0.0.0/0` and `private_ranges` are refused.
+- IPv6 ranges are not needed: with A records only, Cloudflare reaches the server over IPv4.
+- **Apply:** edit `.env`, then `dc up -d --wait caddy`. That recreates Caddy with the new value and re-runs
+  edge-check; certificates live in the `caddy_data` volume and survive.
+- Re-check Cloudflare's list (cloudflare.com/ips-v4) monthly; a new range is a silent rate-limit problem.
 
-### 3.8 Web build-time values (baked in)
+### 2.3 Firewall (Hetzner Cloud Firewall, plus `ufw` on the host)
 
-| Variable | Required? | Status | Action |
-| --- | --- | --- | --- |
-| `NEXT_PUBLIC_LEGAL_ENTITY`, `NEXT_PUBLIC_LEGAL_RC_NUMBER`, `NEXT_PUBLIC_LEGAL_ADDRESS`, `NEXT_PUBLIC_PRIVACY_EMAIL`, `NEXT_PUBLIC_SUPPORT_EMAIL` | **Yes**: the Docker web build and `next start` refuse without all five | E | Verify (staging builds today, so they are set) |
-| `NEXT_PUBLIC_REKODA_WHATSAPP` | O (setup-complete page shows no Chat number without it) | E/O | Set to the staging sign-in number |
-| `NEXT_PUBLIC_NDPR_AUDITOR` | O | O | — |
+| Direction | Port            | Source                                                | Why                                                                                                                                                                                                               |
+| --------- | --------------- | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| In        | TCP 22          | **Any** (key-only SSH)                                | The GitHub Actions deploy connects over SSH from GitHub's changing runner addresses. Restricting 22 to your own IP **breaks the automatic deploy**. Keep `PasswordAuthentication no`; optionally fail2ban         |
+| In        | TCP 80          | Any (DNS-only), or the Cloudflare IPv4 list (proxied) | HTTP→HTTPS redirect **and certificate renewal**. Never close 80                                                                                                                                                   |
+| In        | TCP 443         | as 80                                                 | HTTPS                                                                                                                                                                                                             |
+| In        | UDP 443         | as 80                                                 | HTTP/3, direct visitors only (harmless to keep)                                                                                                                                                                   |
+| In        | everything else | none                                                  | Postgres 5432 and the app ports 3000 to 3003 are never published; compose keeps them on internal Docker networks                                                                                                  |
+| Out       | all             | —                                                     | **Add no outbound rules.** On a Hetzner Cloud Firewall, adding any outbound rule blocks every other destination. The stack needs Paystack, Meta, Resend, Anthropic, R2, Let's Encrypt, Docker Hub, npm and GitHub |
 
-### 3.9 Outside `.env`
+**Certificate safety:**
 
-| Setting | Where | Required? | Status | Action |
-| --- | --- | --- | --- | --- |
-| `STAGING_HOST`, `STAGING_USER`, `STAGING_SSH_PRIVATE_KEY`, `STAGING_KNOWN_HOSTS` | GitHub → Settings → Environments → `staging` → secrets | Yes for automatic deploys | E (run #184 succeeded) | None |
-| **Required reviewer on the `staging` environment** | GitHub → Environments → `staging` → Deployment protection rules | Recommended for this one release | M | Add yourself (see §6) |
-| `staging_environment` marker row | database, written as owner | Yes for staging tools | M | After deploy (§6 step D7) |
-| Operator tokens with `ops:read`, `ops:payment`, `ops:staging` (API audience) and `ops:billing` (billing audience) | your OIDC identity provider | Yes for operator steps | Needs verification | Confirm the IdP can mint both audiences |
-| `/etc/rekoda/backup.env`: `BACKUP_DEST`, `BACKUP_PASSPHRASE_FILE`, `BACKUP_S3_ENDPOINT`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REQUEST_CHECKSUM_CALCULATION`, `BACKUP_RETAIN_DAYS` | host, root-only 0600 | **Yes for a verified off-box backup** | **M** (G-02: "NOT enabled, no off-box destination") | §5.5 |
+- Restricting 80/443 to Cloudflare does **not** break issuance or renewal _while the records are proxied_. Caddy
+  tries TLS-ALPN-01 (fails through a proxy) and HTTP-01 (works through Cloudflare on port 80).
+- It **does** break renewal if someone later switches the records back to DNS-only. Let's Encrypt would then
+  connect directly and be blocked. If you ever go back to DNS-only, reopen 80/443 to Any first.
+- Order of changes, each verified before the next:
+  1. Confirm the site loads with valid certificates.
+  2. Set `REKODA_EDGE_PROXIES` and recreate Caddy.
+  3. Proxy the two records, SSL Full (strict), Always Use HTTPS off.
+  4. Test the site, the API `/health` and a Meta, Paystack and Resend test webhook.
+  5. Only then restrict the firewall's 80/443 to Cloudflare.
+  6. Run `curl -sI http://staging.myrekoda.com/.well-known/acme-challenge/test`: it should reach Caddy (a 404 from
+     the origin, not a Cloudflare error).
 
-## 4. Configuration gaps that adding `.env` values does not fix
+Docker publishes ports through its own iptables rules, which bypass `ufw`. The Hetzner Cloud Firewall sits outside
+the server and is therefore the control that actually holds for 80/443.
 
-1. **No off-box backup exists (G-02).** The scripts and systemd units are merged but have never been enabled, and
-   no destination is chosen. The runbook's "fresh off-box backup" step cannot be done until a destination exists.
-   **Owner decision: the off-box provider** (§5.5).
-2. **The automatic staging deploy does not do the manual pre-checks.** Merging #432 triggers CI, then Deploy
-   staging. That stops all four processes, migrates, smokes and starts. It does **not** check the Paystack key,
-   list pending charges, take a backup or run `preflight-subscriptions`. Fix: a required reviewer on the GitHub
-   `staging` environment before merging (§6).
-3. **`preflight-subscriptions` needs migration 0208,** which only exists after `migrate`. The automatic script
-   goes from migrate straight to `up`, so on staging the preflight can only run after the deploy. Staging holds
-   only test businesses, so I recommend accepting that order: run it immediately after the deploy and fix any
-   FAIL with `correct_subscription_period`. The alternative, a hand-driven deploy, is in `deploy.md`.
-4. **Nothing enforces the settlement Paystack key.** The settlement process starts and reports healthy without
-   one. `deploy-staging.sh` does not check it, and `staging-readonly-check.sh` classifies the key only inside the
-   **api** container. It checks neither OIDC values nor the settlement/operator URLs. Until code covers it, the
-   manual check is step P3 below. A small follow-up PR should add it to both scripts.
-5. **Memory on the 4 GB host.** This release adds two more Node processes (operator, settlement) beside api,
-   worker, web, Postgres and Caddy. Builds already need at least 1 GiB free. Add a 2 GiB swap file now. Better,
-   resize to 8 GB (ADR 0006 planned CPX31) before acceptance (§5.1).
-6. **Identity provider.** The operator process needs a second audience from the same issuer, issued exclusively.
-   Whether the current staging IdP tenant can do that is not visible from the repository.
-7. **Meta template approval** is external. Setting a name does not prove approval.
-8. **Monitoring.** There is no error-reporting service (no Sentry), no alert on OTP failures (G-12) or on dead
-   outbox events (G-18), no backup-failure alert and no external uptime check. `REKODA_ALERT_WEBHOOK_URL` covers
-   dead jobs, overdue/backlogged jobs, unprocessed or flagged webhooks, blocked renewals and WhatsApp delivery
-   failures only.
-9. **Merchant Paystack test keys are refused on staging** (production mode), so customer card payments to a
-   merchant cannot be accepted end to end on staging (§3.4).
+## 3. Server resources: 8 GB is required in practice, not just preferred
 
-## 5. Hetzner and host configuration guide
+| Measurement                                                | Value                                                | Source                                  |
+| ---------------------------------------------------------- | ---------------------------------------------------- | --------------------------------------- |
+| Memory available after each image build, old stack running | 1,093,452 KiB (api build), 1,101,384 KiB (web build) | Deploy staging run #184 log, 8 Nov 2026 |
+| The deploy's floor before the web build                    | 1,048,576 KiB (1 GiB), read from `MemAvailable`      | `scripts/deploy-staging.sh`             |
+| New `settlement` process                                   | 165 MB resident, 175 MB peak                         | measured here, production mode          |
+| New `operator` process                                     | 162 MB resident, 163 MB peak                         | measured here, production mode          |
 
-### 5.1 Hetzner Cloud console
+- **This** deploy fits: the two new processes do not exist yet while it builds.
+- **Every later deploy** builds with them running. About 330 MB less leaves roughly 0.75 GiB at the floor check, so
+  the deploy script refuses to build ("only … KiB of memory available").
+- **Swap does not help.** The floor reads `MemAvailable`, which does not count swap, and the floor can only be
+  raised, never lowered.
+- Staying on 4 GB would mean stopping services by hand before every deploy. The restore drill's extra Postgres and
+  the web build's 1.5 GB Node heap make it worse.
 
-1. **Server size.** Servers → the staging server → *Rescale*. Recommended: 8 GB RAM (CPX31 class). Rescaling
-   CPU/RAM only, without the disk, keeps the option to scale back down. It needs a short power-off: do it
-   before the deploy window. If you keep 4 GB, add swap (step 5.2.3).
-2. **Snapshot before the deploy.** Servers → staging → *Snapshots* → *Take snapshot*, named
-   `pre-pr432-<date>`. This is a whole-disk fallback held by Hetzner. **It does not replace** the off-box,
-   restore-drilled dump the runbook requires (same provider, not verified by restore).
-3. **Cloud Firewall** (Firewalls → Create → apply to the staging server), as well as `ufw`:
-   - inbound TCP 22: **your own IP(s) only**, plus GitHub Actions if the deploy workflow connects directly.
-     GitHub runner IPs vary, so in practice keep 22 open and keep SSH key-only.
-   - inbound TCP 80, TCP 443, UDP 443: any. If Cloudflare proxies, Cloudflare's ranges only.
-   - nothing else. Postgres (5432) and the app ports (3000 to 3003) are **never** published. The compose file
-     keeps the database on an internal network with no route out.
-4. **Backups (Hetzner's 7-day server backups)** are optional extra protection. Same caveat as snapshots.
-5. **Volumes.** Not required. The database lives in the Docker volume `pgdata` on the server disk. Keep at least
-   8 GiB free on `/opt/rekoda` and `/var/lib/docker`.
+**Recommendation:** rescale to an 8 GB type (ADR 0006 planned CPX31: 4 vCPU / 8 GB), **before** the deploy window.
+Hetzner → Server → Rescale. The server must be powered off, so expect a few minutes of downtime. Choose "CPU and RAM
+only" to keep the disk size, so you can scale back down. **Take the snapshot first.** Then add a 2 GiB swap file
+anyway, as the runbook's safety net against an out-of-memory kill:
 
-### 5.2 On the server (SSH as the deploy user)
+```bash
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
 
-1. Ubuntu LTS, non-root deploy user, `PasswordAuthentication no`, `ufw allow 22,80,443/tcp` and `443/udp`,
-   Docker Engine and the Compose v2 plugin (already in place if staging deploys today; verify `docker compose version`).
-2. Checkout at `/opt/rekoda`; `.env` mode 600; `secrets/` mode 700.
-3. Swap if staying at 4 GB: `fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile`, plus an `/etc/fstab` line.
-4. Edit `.env` with a text editor over SSH. **Do not paste secrets into the Hetzner web console's VNC
-   keyboard** (it mangles characters and is not a secure channel). Never `cat` the file onto a shared screen.
+If you must stay on 4 GB for now: 2 GiB swap is the minimum. Expect slow builds and possible stalls under memory
+pressure, and stop `operator` and `settlement` before each later deploy's build (the deploy script does not).
 
-### 5.3 Containers, ports, networks, health, startup order
+## 4. Final environment list
 
-| Container | Port (internal) | Networks | Health check | Starts after |
-| --- | --- | --- | --- | --- |
-| `postgres` | 5432, not published | `db` (internal) | `pg_isready` | — |
-| `api` | 3001 | `edge`, `db` | `GET /health` status ok | postgres healthy |
-| `worker` | loopback | `db`, `worker-egress` | `/health` ok | postgres healthy |
-| `settlement` | loopback 3003 | `db`, `settlement-egress` | `/health` ok and `process=settlement` | postgres healthy |
-| `operator` | 3002 | `edge`, `db` | `/health` ok and `process=operator` | postgres healthy |
-| `web` | 3000 (172.30.10.11) | `edge` | `GET /terms` 200 | api healthy |
-| `edge-check` | none (`network_mode: none`) | — | one-shot, exit 0 | — |
-| `caddy` | **80, 443, 443/udp published** (172.30.10.10) | `edge` | — | web and api healthy, edge-check succeeded |
+All values go in `/opt/rekoda/.env` (mode 600) unless stated otherwise. **Compose decides what each process
+receives:**
 
-Caddy terminates HTTPS for both hostnames (automatic Let's Encrypt). It routes `/v1/businesses/plan` and
-`/v1/businesses/plan/*` to `operator:3002` and everything else on the API host to `api:3001`. DNS: A records
-only (no AAAA). Under Cloudflare: SSL "Full (strict)", "Always Use HTTPS" off, `REKODA_EDGE_PROXIES` set.
+- `api`, `worker` and `migrate` load the whole `.env`.
+- **`settlement` and `operator` never load `.env`.** They receive only the names listed for them in
+  `docker-compose.prod.yml`, so a forbidden secret in `.env` cannot reach them.
 
-### 5.4 Logging
+The only ways to break that are editing the compose file, or exporting one of _their_ listed names in the shell
+that runs compose. Run compose from a clean login shell.
 
-All services use the Docker `json-file` driver, 10 MB × 5 files each. Read with `dc logs <service>`
-(`dc` = `docker compose -f docker-compose.prod.yml`). Nothing ships logs off the host.
+Verified in this session: settlement given `META_APP_SECRET` refuses to start ("must not be given META_APP_SECRET");
+operator with equal audiences refuses to start.
 
-### 5.5 Off-box backup (G-02), the one real infrastructure task
+### 4.1 Must be added (new in PR #432)
 
-**Owner decision needed: the destination.** Options the scripts support:
+| Variable                         | Receives it                                                | Value / format                                                                                               | Secret |
+| -------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------ |
+| `SETTLEMENT_DATABASE_URL`        | settlement, migrate (compose blanks it for api and worker) | `postgres://rekoda_settlement:<new hex password>@postgres:5432/rekoda`                                       | yes    |
+| `OPERATOR_DATABASE_URL`          | operator, migrate (blanked for api and worker)             | `postgres://rekoda_billing_operator:<new hex password>@postgres:5432/rekoda`                                 | yes    |
+| `OPERATOR_BILLING_OIDC_AUDIENCE` | operator                                                   | an audience your identity provider issues **only** for plan changes; different from `OPERATOR_OIDC_AUDIENCE` | no     |
 
-- **A. S3-compatible bucket at another provider** (Backblaze B2, as ADR 0006 planned, or Cloudflare R2).
-  Benefit: a different failure domain from Hetzner. Risk: one more account and credential.
-- **B. Hetzner Object Storage or a Storage Box.** Benefit: same console. Risk: the same provider holds both
-  copies, so it is weaker as "off-box".
+The two passwords: `openssl rand -hex 32` each, and different from each other and from the `rekoda_app` and
+`rekoda_worker` passwords. `provision.js` refuses a shared password, a wrong role name or a different host. This was
+rehearsed here: "runtime role passwords set: rekoda_app, rekoda_worker, rekoda_settlement, rekoda_billing_operator".
 
-**Recommendation: A (B2 or R2)**, with versioning or object lock on, and a key limited to Put/Get/List plus
-Delete only on `.pending` objects.
+### 4.2 Must exist already, now also feeding the new processes (verify)
 
-Setup:
+| Variable                                                                                                      | Receives it                                    | Check                                                                                                                                                                             |
+| ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VAULT_KEY`                                                                                                   | api, worker, **settlement**                    | present, 64 hex; **never change it** (fingerprint-enrolled; settlement opens sealed Paystack events with it)                                                                      |
+| `OPERATOR_OIDC_ISSUER`                                                                                        | api, worker, **operator**                      | public https                                                                                                                                                                      |
+| `OPERATOR_OIDC_JWKS_URL`                                                                                      | api, worker, **operator**                      | public https                                                                                                                                                                      |
+| `OPERATOR_OIDC_AUDIENCE`                                                                                      | api, worker; operator only compares it         | present; differs from the billing audience                                                                                                                                        |
+| `PAYSTACK_SECRET_KEY`                                                                                         | api, worker, **settlement** (never operator)   | `sk_test_…`. The api signs webhooks with it and settlement verifies payments with it. Settlement boots and reports healthy without it, so check it explicitly (§7 P5, §8 D4)      |
+| `DATABASE_URL`, `WORKER_DATABASE_URL`                                                                         | api, worker, migrate                           | roles `rekoda_app`, `rekoda_worker`                                                                                                                                               |
+| `MATCH_KEY`, `OTP_PEPPER`, `REKODA_API_SECRET`, `CONNECTION_KEY`                                              | api, worker only                               | present (`CONNECTION_KEY` optional)                                                                                                                                               |
+| `REKODA_API_PUBLIC_URL`, `NEXT_PUBLIC_SITE_URL`, `REKODA_WEB_URL`, `REKODA_ACME_EMAIL`, `REKODA_CORS_ORIGINS` | caddy, web, api, worker as compose routes them | `https://staging-api.myrekoda.com`, `https://staging.myrekoda.com` (twice), your mailbox, and a CORS list that includes `https://staging.myrekoda.com` (the default is localhost) |
 
-1. Create the bucket and key.
-2. As root, create `/etc/rekoda/backup.env` (mode 0600) with `BACKUP_DEST=s3://<bucket>/staging`,
-   `BACKUP_S3_ENDPOINT=<provider endpoint>`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
-   `AWS_REQUEST_CHECKSUM_CALCULATION=when_required` and `BACKUP_PASSPHRASE_FILE=/etc/rekoda/backup.pass`.
-3. Generate the passphrase with `openssl rand -hex 32 > /etc/rekoda/backup.pass; chmod 600`. Store a copy in
-   your password manager: without it a backup cannot be restored.
-4. Install the aws CLI and openssl.
-5. Install the units: `cp deploy/systemd/rekoda-backup.* /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now rekoda-backup.timer`.
+### 4.3 Meta / WhatsApp (api and worker only; settlement and operator refuse them)
 
-**Verified** means both of these:
+| Variable                                             | Value                                                                                                                               |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `META_APP_SECRET`                                    | App Dashboard → Settings → Basic → App secret (≥16 chars)                                                                           |
+| `META_VERIFY_TOKEN`                                  | a string you generate (≥16), typed identically into the webhook config                                                              |
+| `META_ACCESS_TOKEN`                                  | a **System User permanent token** with `whatsapp_business_messaging` and `whatsapp_business_management`, not the 24-hour test token |
+| `META_PHONE_NUMBER_ID`                               | WhatsApp → API Setup → Phone number ID                                                                                              |
+| `META_OTP_TEMPLATE` / `META_OTP_TEMPLATE_LOCALE`     | `rekoda_login_otp` / as WhatsApp Manager shows it                                                                                   |
+| `META_BILLING_TEMPLATE` / `_LOCALE`                  | `rekoda_billing_grace_notice`                                                                                                       |
+| `META_DOCUMENT_TEMPLATE` / `_LOCALE`                 | `rekoda_document_ready`                                                                                                             |
+| `META_TRIAL_TEMPLATE` / `META_TRIAL_TEMPLATE_LOCALE` | `rekoda_trial_ending` / `en`                                                                                                        |
+| `META_RETENTION_TEMPLATE` / `_LOCALE`                | `rekoda_retention_notice` (optional; needed for the retention test in §9)                                                           |
 
-- a run of `systemctl start rekoda-backup` prints `backup: ok <name> <bytes>` (it reads the upload back and
-  compares checksums);
-- `scripts/restore-drill.sh` restores that object into a throwaway Postgres and exits 0 (every business's ledger balances).
+- The code reads **no** App ID and **no** WABA ID.
+- Set a template name only once it shows **Approved** in WhatsApp Manager.
+- Meta dashboard: Webhooks → callback `https://staging-api.myrekoda.com/webhooks/meta`, verify token =
+  `META_VERIFY_TOKEN`, subscribe field **messages** (it carries delivery statuses too).
+- Add every tester phone to the test number's allowed recipients.
 
-Record the date, object name and drill result in `docs/runbooks/backup-restore.md`.
+### 4.4 Resend (api and worker only)
 
-### 5.6 Monitoring to add (small, recommended before acceptance)
+| Variable                | Value                                |
+| ----------------------- | ------------------------------------ |
+| `REKODA_EMAIL_PROVIDER` | `resend`                             |
+| `RESEND_API_KEY`        | a sending-only key                   |
+| `REKODA_EMAIL_FROM`     | `Rekoda <billing@<verified domain>>` |
+| `RESEND_WEBHOOK_SECRET` | `whsec_…` of the webhook below       |
 
-- `REKODA_ALERT_WEBHOOK_URL`: a Slack, Discord or Google Chat incoming webhook (https).
-- An external uptime check (any free monitor) on `https://staging-api.myrekoda.com/health`, expecting
-  `"status":"ok"`, and on `https://staging.myrekoda.com/terms`.
-- Weekly: `systemctl status rekoda-backup` and the newest backup object's date (no backup alert exists yet).
+Resend dashboard:
 
-## 6. Deployment sequence (staging only)
+- Domain shows **Verified**: SPF and DKIM records from Resend added in Cloudflare DNS (DNS-only, never proxied),
+  plus `_dmarc` TXT `v=DMARC1; p=none`.
+- Webhook `https://staging-api.myrekoda.com/webhooks/resend`, events `email.bounced` and `email.complained`.
 
-**Before the merge (nothing live changes):**
+### 4.5 Paystack TEST dashboard
 
-| Step | Action | Evidence to keep |
-| --- | --- | --- |
-| P1 | GitHub → Settings → Environments → `staging` → add yourself as **required reviewer**. Merging then queues the deploy until you approve it | Screenshot of the rule |
-| P2 | Hetzner: rescale or add swap (§5.1/§5.2); take snapshot `pre-pr432-<date>` | Snapshot name and time |
-| P3 | Check the Paystack key type in the running api without printing it: `dc exec -T api node -e 'const k=process.env.PAYSTACK_SECRET_KEY||"";console.log(k.startsWith("sk_test_")?"TEST":k.startsWith("sk_live_")?"LIVE":k?"OTHER":"UNSET")'`. Must print `TEST`. Also `grep -c '^PAYSTACK_SECRET_KEY=sk_test_' .env` must print `1`, because settlement takes the same `.env` value. `grep -c '^REKODA_PAYSTACK_PLATFORM_CONFIRMED=' .env` must print `0` | The printed words |
-| P4 | List pending Rekoda charges, read-only, as owner: `dc exec -T postgres psql -U rekoda_owner -d rekoda -c "SELECT reference, kind, created_at FROM subscription_charges WHERE status='pending'"` | The list (references only) |
-| P5 | Fresh off-box backup **and** restore drill (§5.5) | `backup: ok …` line; drill exit 0 |
-| P6 | Add to `.env`: `SETTLEMENT_DATABASE_URL`, `OPERATOR_DATABASE_URL` (new distinct passwords) and `OPERATOR_BILLING_OIDC_AUDIENCE` (different from `OPERATOR_OIDC_AUDIENCE`). Check the names, not values: `grep -cE '^(SETTLEMENT_DATABASE_URL=postgres://rekoda_settlement:\|OPERATOR_DATABASE_URL=postgres://rekoda_billing_operator:\|OPERATOR_BILLING_OIDC_AUDIENCE=.)' .env` must print `3` | Count printed |
-| P7 | Confirm `VAULT_KEY`, `OPERATOR_OIDC_ISSUER` and `OPERATOR_OIDC_JWKS_URL` are present (the compose file now requires them for new services): `grep -cE '^(VAULT_KEY\|OPERATOR_OIDC_ISSUER\|OPERATOR_OIDC_JWKS_URL\|OPERATOR_OIDC_AUDIENCE)=.' .env` must print `4` | Count |
-| P8 | Confirm the identity provider can mint a billing-audience token with `ops:billing` (needed after the deploy) | Token minted (do not paste it anywhere) |
-| P9 | **Explicit owner approval to merge #432** (the PR says the merge is yours) | Your approval |
+- Settings → API Keys & Webhooks → **Test** Webhook URL: `https://staging-api.myrekoda.com/webhooks/paystack`.
+- No Paystack public key is used anywhere in the code (checkout redirects to Paystack's hosted page).
+- `REKODA_PAYSTACK_PLATFORM_CONFIRMED` must be **absent**.
 
-**The deploy:**
+### 4.6 Flags and settings
 
-| Step | Action | Evidence |
-| --- | --- | --- |
-| D1 | Squash-merge #432 (explicit squash message, no trailers). CI runs on `main` | Merge SHA, CI run green on it |
-| D2 | Approve the queued Deploy staging run. `deploy-staging.sh`: refuses if any P6/P7 value is missing; builds api, then web; **stops `api worker operator settlement`**; checks they are stopped; `migrate` (0193 to 0223, then the four role passwords); pre-start smoke must print `t`; `up -d --wait`; `/health` names the release | The whole run log; the line `runtime role passwords set: rekoda_app, rekoda_worker, rekoda_settlement, rekoda_billing_operator` |
-| D3 | Immediately, release preflight: `dc run --rm -T migrate sh /repo/deploy/migrate.sh preflight-subscriptions`. Exit 0 = PASS. On 1, correct each listed test business (`deploy.md`, "Correcting an active row"). On 2, stop and investigate | JSON report and exit code |
-| D4 | `dc logs settlement` shows `job runner started … Paystack key set`. `dc logs operator` shows `identity: verified tokens`. Settlement key type: `dc exec -T settlement node -e '…same one-liner as P3…'` prints `TEST` | Log lines |
-| D5 | `curl -sS -o /dev/null -w '%{http_code}' -X POST https://staging-api.myrekoda.com/v1/businesses/plan` → `401` (the operator answered) | Code |
-| D6 | Read-only check: `ssh … 'EXPECT_SHA=<merge sha> EXPECT_WEB_URL=https://staging.myrekoda.com bash -s' < scripts/staging-readonly-check.sh` → `RESULT: OK`, 224 migrations applied, all six services healthy | Full output |
-| D7 | Staging tools: add `REKODA_STAGING_TOOLS=1` to `.env`; `dc up -d --wait --force-recreate api worker`; as owner `INSERT INTO staging_environment (marked_by, note) VALUES ('owner:<name>', 'staging acceptance, OWN-77');` | Health ok after recreate |
+| Variable                                                                                                                    | Receives it       | Value                                                                                       |
+| --------------------------------------------------------------------------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------- |
+| `REKODA_STAGING_TOOLS`                                                                                                      | api, worker       | add `1` **after** the deploy is healthy (§8 D7); never in compose                           |
+| `REKODA_ANNUAL_BILLING`                                                                                                     | api, worker       | `1` for the yearly steps                                                                    |
+| `REKODA_CUSTOMER_REMINDERS`                                                                                                 | api, worker       | absent or `0` until the billing walkthrough is done, then `1`                               |
+| `REKODA_ALERT_WEBHOOK_URL`                                                                                                  | worker            | recommended: an https chat incoming-webhook                                                 |
+| `REKODA_EDGE_PROXIES`                                                                                                       | caddy, edge-check | §2.2 (only when proxied)                                                                    |
+| `REKODA_PLAN_CATALOGUE_READS`, every `REKODA_COMMAND_*`                                                                     | —                 | **absent**                                                                                  |
+| `REKODA_OPERATOR_SECRET`, `REKODA_REVEAL_OTP`, `REKODA_LOCAL_STORAGE`, `PAYSTACK_BASE_URL`, `MONO_BASE_URL`, `REKODA_E2E_*` | —                 | **absent** (refused or forbidden)                                                           |
+| `ANTHROPIC_API_KEY`                                                                                                         | api, worker       | needed for WhatsApp interpretation tests                                                    |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`                                                    | api, worker       | all four or none; documents bucket and token, **separate from the backup bucket and token** |
 
-**Rollback:** never a down migration. Past 0196 the only database rollback is restoring the P5 backup (or, as a
-last resort, the Hetzner snapshot). Stop `operator` and `settlement` first. Prefer fixing forward.
+### 4.7 Outside `.env`
 
-## 7. Acceptance walkthrough
+| Setting                                                                                                                                          | Where                                        |
+| ------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- |
+| `/etc/rekoda/backup.env`, `/etc/rekoda/backup.pass`                                                                                              | host, root, 0600 (§1.4)                      |
+| GitHub environment `staging`: required reviewer                                                                                                  | §5                                           |
+| Identity provider: tokens for the **billing** audience with `ops:billing`, and API-audience tokens with `ops:read`, `ops:payment`, `ops:staging` | your IdP                                     |
+| `staging_environment` marker row                                                                                                                 | database, as owner, after the deploy (§8 D7) |
 
-Run with test phones, test inboxes and Paystack TEST cards only. Desktop **and** phone width for every screen.
-Per step, record: date, tester, commit, expected, actual, safe reference, desktop/mobile, PASS/FAIL/BLOCKED.
-Full step text: `docs/runbooks/billing-staging-walkthrough.md` (SUB-ACC), `docs/runbooks/staging-acceptance-handoff.md`
-(ACCEPT-01), `docs/runbooks/staging-test-business-tools.md` (OWN-77). All rows are STAGING/TEST-MODE unless marked.
+## 5. GitHub: making the staging deploy wait for your approval
 
-| # | Area | Test | Expected | Evidence |
-| --- | --- | --- | --- | --- |
-| 1 | Registration | `/start`, phone, WhatsApp OTP, business name | Code arrives by `rekoda_login_otp`; setup-complete page | Screenshot; Meta message log entry |
-| 2 | Trial | `/app/billing` on a fresh business | "Free trial", 14 days in words, empty history | Screenshots |
-| 3 | Prices | Monthly, then yearly | ₦9,900 / ₦19,900 / ₦29,900; yearly 10× | Screenshots |
-| 4 | Checkout | Chat → Confirm and pay → billing email → Pay with Paystack | Quote matches; hosted TEST page; nothing charged by looking | Reference |
-| 5 | Payment verification | TEST card, return | "Confirming…" then "Payment received / active until <date>" only after server verify; Paystack test dashboard shows the same reference | Both screenshots |
-| 6 | Webhook replay | Resend the event from the Paystack dashboard | Still one payment, one period | History screenshot |
-| 7 | Upgrade, downgrade, interval | Integrate (prorated), back to Chat at renewal, yearly at renewal | As quoted; undo works | Screenshots |
-| 8 | Pack | Buy a pack | Units appear once this month; pack Paid | Usage before and after |
-| 9 | Usage limits | Dashboard meter vs "This month" | Same ceiling. **No exhaustion test is defined in the docs**: add one (spend to 0, then expect a refusal in plain words and an upgrade/pack CTA) | Screenshots |
-| 10 | Cancel | Cancel | Plan runs to the named date; undo | Screenshot |
-| 11 | Renewal paid | Staging tool: `paid_to` +1h, pay renewal | Extended from the old renewal date; no grace | Action log; reference |
-| 12 | Grace and expiry | `paid_to` −1h, grace day 1/5/7 | Renewal charge; reminders on day 1 and 5 by `rekoda_billing_grace_notice` with a working billing link; day 7 read-only, exportable, nothing deleted | Messages with times; action log |
-| 13 | Reactivation | Pay after expiry | Fresh cycle from payment day; no second trial | Screenshot |
-| 14 | Reminder failure | Staging fault `send_timeout` / `sender_refused` | Timeout: day-1 reminder not resent; refused: exactly one on next pass | Action log |
-| 15 | Trial reminders | `trial_end` +7d, +2d, +1d, sweep each | One `rekoda_trial_ending` per stage, none twice; none after paying (separate business) | Messages with times |
-| 16 | Trial expiry | `trial_end` −1h | "Your free trial ended on …"; records readable; no deletion wording; upgrade reachable | Screenshots |
-| 17 | Email | Billing-email confirm; two businesses, same address within 60 s; six businesses | One link per rule; second use of a link refused; sixth refused for an hour; bounce test address suppressed | Inbox screenshots |
-| 18 | Duplicate payment (pack paid on two links) | Open two pack links, pay both | Units once; second payment paid with `duplicate_purchase`, on `GET /v1/ops/exceptions`; merchant sees "paid twice". Refund in the Paystack TEST dashboard, `POST /v1/ops/refund`, resolve. **Same-charge duplicate: do not call `/v1/ops/refund`** (runbook). Refund authority and wording are still open (OD-53 (1), (2)) | Exception row; references |
-| 19 | Operator billing | Billing-audience token: `POST /v1/businesses/plan` with `expiresAt: null`; `/plan/support-review` on a support-reviewed upgrade; an API-audience token on the same route | Standard period set; support review keeps paid-through; API token refused | Responses (no tokens) |
-| 20 | Failed-job recovery (OWN-73/76) | `GET /v1/ops/exceptions`; `POST /v1/ops/dead-jobs/:id/recover` and `/resolve` (`ops:payment`) | Dead `billing.process` job recovered once; merchant exception and ops item both present | **BLOCKED**: no documented way to create a dead job on staging (ACCEPT-01 17(b)). Needs an owner-approved procedure |
-| 21 | WhatsApp chat | Text a sale, an expense; `who owes me`; a photo/voice note if enabled | Draft → confirm → numbered record; figures computed, not AI-produced | Screenshots |
-| 22 | Documents | Ask for an invoice outside 24 h | `rekoda_document_ready` delivered; PDF opens (needs R2) | Message log |
-| 23 | Customer reminders | After SUB-ACC: `REKODA_CUSTOMER_REMINDERS=1`, recreate api/worker; journeys 11 to 16 of ACCEPT-01 (single, before-dispatch payment, STOP per channel per merchant, queued vs opt-out, payment instructions, scheduled/bulk) | As `staging-acceptance-handoff.md` §5 | Per journey |
-| 24 | Retention | Retention sweep | **Not runnable on staging** as documented (the tools cannot move a trial past 90 days). Check that `rekoda_retention_notice` delivers once if approved | — |
+The repository is **public**, so environment required reviewers are available on any plan. The deploy job declares
+`environment: staging` at job level, so **no step runs and nothing touches the host until the job is approved**.
 
-LIVE-PROVIDER REQUIRED (not for this phase): real Paystack live charge and refund (G-05/G-06), merchant
-card payments, production Meta number and templates (G-03), live AI evaluation (G-07).
+Configure (Settings → Environments → `staging`):
 
-## 8. What must be decided or supplied by the owner
+1. **Required reviewers:** tick it and add `AngeloAkuhwa`.
+2. **Prevent self-review: leave unticked.** You will be the person whose merge starts the run. With this ticked you
+   could not approve your own deployment.
+3. **Allow administrators to bypass configured protection rules: untick.** No "bypass" button on the run page.
+4. Deployment branches and tags: _Selected branches_ → `main` (optional hardening).
+5. Leave the environment's existing secrets (`STAGING_HOST`, `STAGING_USER`, `STAGING_SSH_PRIVATE_KEY`,
+   `STAGING_KNOWN_HOSTS`) unchanged.
 
-1. Approval to merge #432 (step P9).
-2. The off-box backup provider (§5.5; recommendation: B2 or R2).
-3. The identity provider's second audience for billing (P8).
-4. Meta template approvals for the four required slots (and retention if wanted).
-5. Server resize to 8 GB, or accept 4 GB with swap.
-6. A procedure for creating a dead job on staging (row 20), or accept it as blocked.
-7. OD-53 (1), (2), (4), (5) before paid launch, not before staging.
+**Prove the gate before merging** without touching the host:
 
-## 9. Recommended small follow-ups (code, after #432)
+1. Actions → Deploy staging → Run workflow (branch `main`, SHA blank).
+2. The run must show **"Waiting for review"**.
+3. Choose **Review deployments → Reject**.
 
-- `deploy-staging.sh`: refuse a release carrying 0217 when `.env`'s `PAYSTACK_SECRET_KEY` is not `sk_test_…`.
-- `staging-readonly-check.sh`: classify the key inside the **settlement** container; report the OIDC names and
-  the settlement/operator URL roles as SET/UNSET.
-- `docs/REKODA_LAUNCH_READINESS.md`: §11.2 step 9 (merchant TEST key), §11.1 "Email/SMS: none used", and "four
-  templates" are stale.
+Nothing reaches the host.
+
+**After the merge:**
+
+- CI runs on `main` (about 10 minutes). Then a Deploy staging run appears in "Waiting".
+- Do the §7 checks, then **Approve and deploy**.
+- Do not merge anything else to `main` while it waits: a newer run in the same concurrency group replaces the
+  waiting one.
+- A waiting job does not wait forever (GitHub's limit is 30 days), so approve the same day.
+- Keep the reviewer rule afterwards if you want every staging deploy approved. Remove it to return to automatic
+  deploys.
+
+## 6. Acceptance-test gaps: procedures and limits
+
+### 6.1 Dead-job recovery (OWN-73 / OWN-76): a safe, repeatable procedure
+
+**Mechanism:** a settlement payment job whose Paystack verify cannot reach Paystack throws and is retried. Retries
+back off at about 2, 4, 8, 16 and 32 seconds, with at least 5 attempts. Then the job is marked dead and its
+dead-job record is written in the same transaction. This simulates a real provider outage for the settlement
+process only, by removing its route to the internet. **No SQL, no code, no data edited.** The api, worker, database,
+webhooks and other users are unaffected; only settlement's outbound calls fail during the window.
+
+**Owner ruling needed before use:** OWN-77 forbids raw SQL and improvised host changes. This is a host-level network
+change, reversible in one command and recorded in the evidence. Until you approve it in writing (OWN entry), the
+test stays **BLOCKED**.
+
+Procedure (one fresh test business; nobody else paying on staging during the window):
+
+1. Record `dc ps settlement` and `GET /v1/ops/exceptions` (token with `ops:read`), both before.
+2. `docker network disconnect rekoda-prod_settlement-egress rekoda-prod-settlement-1` (the database stays reachable).
+3. The merchant buys a pack with a Paystack TEST card. The webhook arrives; the api records it; settlement claims
+   the job, fails to verify, and retries.
+4. Within about 2 minutes, `dc logs settlement` shows the failures, and `GET /v1/ops/exceptions` lists the dead
+   `billing.process` job. Record what the merchant's billing page shows (no units granted).
+5. `docker network connect rekoda-prod_settlement-egress rekoda-prod-settlement-1`. `dc ps settlement` shows it
+   healthy.
+6. Recover:
+   `POST https://staging-api.myrekoda.com/v1/ops/dead-jobs/<jobId>/recover`, body
+   `{"reason":"staging acceptance OWN-76 recovery"}`, token with `ops:payment`.
+   Expect `recovering`. The api first verifies the reference with Paystack server-side.
+7. **Expected:** the units are credited exactly once, the charge is paid once, and the exception closes.
+8. A second `recover` on the same job is refused. A recover with an invented job id gives `not_found`.
+9. **Rollback** if step 5 is forgotten: `dc up -d settlement` restores the networks.
+
+**Evidence:** the timestamps of steps 2 and 5, the job id, the exception before and after, the usage before and
+after, the reference, and both recover responses.
+
+**Still BLOCKED:** the `payment.process` (merchant customer payment) variant, because merchant Paystack TEST keys are
+refused on staging (§6.3). The `resolve` path for a dead job without a reference has no safe way to be created.
+
+### 6.2 Retention: what staging can and cannot prove
+
+Rules (code): a trial that ended **60 days** ago and was never paid, with no checkout in flight, gets the
+`rekoda_retention_notice` template. It is deleted at **90 days**, and only if notified at least **30 days** earlier.
+The sweep runs every **6 hours**. The OWN-77 date tool can move a test trial's end to at most 90 days in the past.
+
+| Can prove on staging                                                     | How                                                                                                                                                                                                |
+| ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The notice is sent once, via the approved template, to the owner's phone | Move a fresh test business's `trial_end` to −61 days; after the next sweep (≤ 6 h) the notice arrives once; a later sweep sends none                                                               |
+| A business that ever paid is never noticed                               | Do the same move on a business that paid in the walkthrough; no notice                                                                                                                             |
+| A business with a checkout in flight is not noticed                      | Open a checkout, do not pay, move `trial_end`; no notice                                                                                                                                           |
+| No template, no deletion                                                 | Run with `META_RETENTION_TEMPLATE` unset first: the sweep warns nobody and deletes nothing                                                                                                         |
+| Deletion itself, with its receipt                                        | **Only by waiting 30 real days** after the notice (the notice time cannot be moved). Optional long-running check: after 30 days the business is deleted and a `retention_deletions` receipt exists |
+| **Cannot** prove                                                         | Deletion within the acceptance window; R2 object deletion of real documents beyond what that business held                                                                                         |
+
+### 6.3 Merchant card payments
+
+Staging runs production mode, which refuses a merchant's Paystack **TEST** key by design (`rejected_test_key`).
+That guard stays.
+
+- **On staging:** test everything around the payment, not the card charge. Record a payment by hand (cash or
+  transfer) and check the booking, receipt, invoice status, ledger and the reminder suppression (ACCEPT-01
+  journeys 11 and 12).
+- **Supporting evidence, not acceptance:** the payments integration suites and the Playwright journeys run against
+  a fake Paystack in CI.
+- **The real proof** is the G-05 controlled live drill: after Paystack's written §47 confirmation, with your own live
+  merchant key, a small amount, and explicit `LIVE_MODE_ALLOWED = YES`.
+- **Report it as `LIVE-PROVIDER REQUIRED`, never PASS.**
+
+### 6.4 Usage exhaustion (missing test, now defined)
+
+Use fresh trial businesses. Read the actual allowance on the billing page first; the database's catalogue is the
+authority, and trial defaults are 10 report downloads and 50 AI actions.
+
+| #   | Steps                                                                                                                          | Expected                                                                                                                                                                           | Evidence            |
+| --- | ------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| E1  | Download a report (any CSV/PDF from Reports) until the trial allowance is used                                                 | Each download counts once ("This month" increases by exactly 1)                                                                                                                    | Usage after each    |
+| E2  | One more download                                                                                                              | Refused: "You have used this month's downloads. Your books are still here to read, and Settings has a full data export that never counts against this." No file; counter unchanged | Screenshot; counter |
+| E3  | Settings → full data export                                                                                                    | Works and does not count                                                                                                                                                           | Screenshot          |
+| E4  | On WhatsApp, send recordable messages until AI actions are used up (≈50 short messages)                                        | Each confirmed action counts once                                                                                                                                                  | Counter             |
+| E5  | One more recordable message                                                                                                    | "You have used all N Rekoda actions in your plan this month. Nothing is lost…" plus the upgrade line; no draft created                                                             | Screenshot          |
+| E6  | `who owes me`, `payment details`, `help`                                                                                       | Still answered (free commands)                                                                                                                                                     | Screenshots         |
+| E7  | Upgrade to Chat with a TEST card                                                                                               | Allowance rises; the next message works                                                                                                                                            | Screenshots         |
+| E8  | Lapsed business (`paid_to` −8 days with the staging tool, then the next renewal/grace sweep marks it expired) tries a download | "Downloads are paused while your subscription is stopped…" (not the used-up wording)                                                                                               | Screenshot          |
+
+Finding: E5's wording says "this month" on a 14-day trial, whose budget is one allowance for the whole trial
+(G-109). This is a MINOR copy inaccuracy to fix after #432 and does not block.
+
+### 6.5 Tests that must stay BLOCKED or LIVE-PROVIDER REQUIRED
+
+| Test                                                                                               | Status                                                                                            | Why                                            |
+| -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| Dead-job recovery (§6.1)                                                                           | BLOCKED until you rule on the procedure                                                           | OWN-77 scope                                   |
+| `payment.process` dead-job recovery; merchant card payment end to end                              | LIVE-PROVIDER REQUIRED                                                                            | merchant TEST keys refused by design           |
+| ACCEPT-01 17(b) worker-job retry exactly once                                                      | BLOCKED                                                                                           | no procedure; §6.1 covers only settlement jobs |
+| Retention deletion                                                                                 | PENDING 30 real days                                                                              | the notice time cannot be moved                |
+| Template steps (trial, grace, document, retention)                                                 | BLOCKED per template until Meta shows Approved                                                    | external                                       |
+| Live Paystack, live refunds (G-05, G-06), production Meta number (G-03), live AI evaluation (G-07) | LIVE-PROVIDER REQUIRED                                                                            | not authorised                                 |
+| Same-charge duplicate payment refund                                                               | Only partly testable: the refund is by hand in the TEST dashboard; OD-53 (1), (2), (5) still open | owner decisions                                |
+
+## 7. Pre-merge checklist (nothing live changes)
+
+| #   | Action                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Pass when                                                     |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| P1  | Hetzner snapshot `pre-pr432-<date>`                                                                                                                                                                                                                                                                                                                                                                                                                                                      | snapshot listed                                               |
+| P2  | Rescale to 8 GB (§3), add 2 GiB swap                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `free -h` shows about 7.7 GiB and swap; staging healthy again |
+| P3  | GitHub environment rule (§5), then prove it with a manual run and **reject**                                                                                                                                                                                                                                                                                                                                                                                                             | run showed "Waiting for review"                               |
+| P4  | R2 bucket, token, lock and lifecycle (§1.2); `/etc/rekoda/backup.env` and `backup.pass` (§1.4)                                                                                                                                                                                                                                                                                                                                                                                           | files 0600 root; passphrase copy in the password manager      |
+| P5  | Paystack key type, without printing it: `cd /opt/rekoda && grep -c '^PAYSTACK_SECRET_KEY=sk_test_' .env` → `1`; `grep -c '^REKODA_PAYSTACK_PLATFORM_CONFIRMED=' .env` → `0`; `dc exec -T api node -e 'const k=process.env.PAYSTACK_SECRET_KEY\|\|"";console.log(k.startsWith("sk_test_")?"TEST":k?"NOT-TEST":"UNSET")'` → `TEST`                                                                                                                                                         | all three                                                     |
+| P6  | Pending Rekoda charges (read-only): `dc exec -T postgres psql -U rekoda_owner -d rekoda -c "SELECT reference, kind, created_at FROM subscription_charges WHERE status='pending'"`                                                                                                                                                                                                                                                                                                        | list saved                                                    |
+| P7  | **Backup and restore drill** (§1.5)                                                                                                                                                                                                                                                                                                                                                                                                                                                      | `backup: ok …` and `restore-drill: PASS` recorded             |
+| P8  | Add §4.1 values; verify §4.2 to §4.5 by name: `grep -cE '^(SETTLEMENT_DATABASE_URL=postgres://rekoda_settlement:\|OPERATOR_DATABASE_URL=postgres://rekoda_billing_operator:\|OPERATOR_BILLING_OIDC_AUDIENCE=.\|VAULT_KEY=.\|OPERATOR_OIDC_ISSUER=.\|OPERATOR_OIDC_JWKS_URL=.\|OPERATOR_OIDC_AUDIENCE=.)' .env` → `7`; and the two audiences differ: `[ "$(sed -n 's/^OPERATOR_BILLING_OIDC_AUDIENCE=//p' .env)" != "$(sed -n 's/^OPERATOR_OIDC_AUDIENCE=//p' .env)" ] && echo DIFFERENT` | `7`, `DIFFERENT`                                              |
+| P9  | Identity provider: a test token for the billing audience with `ops:billing` can be minted (do not paste it anywhere)                                                                                                                                                                                                                                                                                                                                                                     | yes                                                           |
+| P10 | Your explicit approval to merge #432                                                                                                                                                                                                                                                                                                                                                                                                                                                     | given                                                         |
+
+## 8. Deployment sequence after merging
+
+| #   | Action                                                                                                                                                                                                                                | Pass when                                                                                                                                       |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | Squash-merge #432 (explicit message, no trailers); CI on `main`                                                                                                                                                                       | CI green on the merge SHA                                                                                                                       |
+| D2  | Deploy staging run shows "Waiting"; re-run P5 and P8 if more than an hour has passed; **Approve**                                                                                                                                     | —                                                                                                                                               |
+| D3  | The script: refuses on missing values; builds api, then web; **stops api, worker, operator, settlement**; migrates 0193 to 0223 and sets 4 role passwords; pre-start smoke prints `t`; starts everything; `/health` names the release | run green; log shows `runtime role passwords set: rekoda_app, rekoda_worker, rekoda_settlement, rekoda_billing_operator` and `"migrations":224` |
+| D4  | `dc logs settlement \| grep 'job runner started'` shows `Paystack key set`; `dc exec -T settlement node -e '…same one-liner as P5…'` → `TEST`; `dc logs operator` shows `identity: verified tokens`                                   | all three                                                                                                                                       |
+| D5  | `curl -s -o /dev/null -w '%{http_code}' -X POST https://staging-api.myrekoda.com/v1/businesses/plan` → `401`                                                                                                                          | 401                                                                                                                                             |
+| D6  | Release preflight: `dc run --rm -T migrate sh /repo/deploy/migrate.sh preflight-subscriptions`                                                                                                                                        | exit 0 (on 1: correct each listed test business per deploy.md; on 2: stop)                                                                      |
+| D7  | Staging tools: `REKODA_STAGING_TOOLS=1` in `.env`; `dc up -d --wait --force-recreate api worker`; as owner `INSERT INTO staging_environment (marked_by, note) VALUES ('owner:<name>', 'staging acceptance, OWN-77');`                 | healthy                                                                                                                                         |
+| D8  | Read-only check: `ssh <user>@<host> 'EXPECT_SHA=<merge sha> EXPECT_WEB_URL=https://staging.myrekoda.com bash -s' < scripts/staging-readonly-check.sh`                                                                                 | `RESULT: OK`                                                                                                                                    |
+| D9  | Post-deploy backup: `sudo systemctl start rekoda-backup.service`, then the drill again                                                                                                                                                | both pass on the 0223 schema                                                                                                                    |
+| D10 | Enable the timer (§1.6)                                                                                                                                                                                                               | next run listed                                                                                                                                 |
+
+**Rollback:** never a down migration. Restore the P7 backup into a stopped stack (backup-restore.md "Restore by hand"),
+with `operator` and `settlement` stopped first. The Hetzner snapshot is the last resort. Prefer fixing forward.
+
+## 9. Acceptance tests
+
+Run in this order. Rows marked † need staging tools (D7).
+
+**Ready to run:**
+
+- SUB-ACC walkthrough steps 1 to 23 (17 to 19 and 22 †), on desktop and phone width.
+- ACCEPT-01 journeys 1 to 16 (2, 3, 9, 10 †; 11 to 16 after `REKODA_CUSTOMER_REMINDERS=1`).
+- Usage exhaustion E1 to E8 (§6.4).
+- Operator billing: plan change with a billing-audience token; support review; an API-audience token is refused.
+- Retention notice (§6.2) †.
+- Duplicate pack purchase (two pack links paid; `docs/runbooks/billing-duplicate-payments.md`).
+- Backup and restore (§1.5).
+
+**Blocked or limited:** see §6.5.
+
+Evidence for every row: date, tester, commit, expected, actual, safe reference, desktop/mobile,
+PASS / FAIL / BLOCKED / LIVE-PROVIDER REQUIRED. A green CI run is never a PASS.
+
+## 10. Remaining changes (none blocks the deploy)
+
+| Change                                                                                                                                                                                                                                       | Kind        | Why                                           |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | --------------------------------------------- |
+| `docs/runbooks/backup-restore.md`: R2 specifics (no versioning or object lock; bucket lock and lifecycle; no prefix-scoped tokens; the expected 409 and `.pending` leftovers; `AWS_RESPONSE_CHECKSUM_VALIDATION`, `AWS_DEFAULT_REGION=auto`) | docs        | done in this revision                         |
+| `deploy-staging.sh`: refuse a release carrying 0217 when `.env`'s `PAYSTACK_SECRET_KEY` is not `sk_test_…`                                                                                                                                   | code, small | settlement boots healthy without a key        |
+| `staging-readonly-check.sh`: classify the key inside settlement; report OIDC names and the settlement/operator URL roles                                                                                                                     | code, small | the check covers only the api today           |
+| Trial exhaustion copy says "this month"                                                                                                                                                                                                      | code, copy  | the trial budget is one allowance for 14 days |
+| `REKODA_LAUNCH_READINESS.md` §11.2 step 9 (merchant TEST key), §11.1 "Email/SMS: none used", "four templates"                                                                                                                                | docs        | stale                                         |
+| OWN ruling on the §6.1 dead-job procedure                                                                                                                                                                                                    | owner       | OWN-77 scope                                  |
