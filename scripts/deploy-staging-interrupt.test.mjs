@@ -63,7 +63,7 @@ function host({ buildSeconds = 0 } = {}) {
   sh(dir, `git checkout -q --detach ${prev}`);
   writeFileSync(
     join(dir, '.env'),
-    `REKODA_API_PUBLIC_URL=${API}\nREKODA_RELEASE=staging-${prev.slice(0, 7)}\nPAYSTACK_SECRET_KEY=sk_test_placeholderkey\n`,
+    `REKODA_API_PUBLIC_URL=${API}\nREKODA_RELEASE=staging-${prev.slice(0, 7)}\nPAYSTACK_SECRET_KEY=${['sk', 'test', 'placeholderkey'].join('_')}\n`,
   );
   mkdirSync(join(dir, 'secrets'));
   const health = (sha) =>

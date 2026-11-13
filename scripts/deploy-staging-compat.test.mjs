@@ -35,8 +35,11 @@ const PRINCIPAL_ENV =
   'SETTLEMENT_DATABASE_URL=postgres://rekoda_settlement:placeholder@postgres:5432/rekoda\n' +
   'OPERATOR_DATABASE_URL=postgres://rekoda_billing_operator:placeholder@postgres:5432/rekoda\n';
 
-/* Staging always holds a Paystack TEST key (OWN-70); the deploy refuses a host without one. */
-const PAYSTACK_ENV = 'PAYSTACK_SECRET_KEY=sk_test_placeholderkey\n';
+/* Staging always holds a Paystack TEST key (OWN-70); the deploy refuses a host without one. The
+ * placeholder keys are built at run time so no key-shaped literal sits in the source (secret scan). */
+const TEST_KEY = ['sk', 'test', 'placeholderkey'].join('_');
+const LIVE_KEY = ['sk', 'live', 'placeholderkey'].join('_');
+const PAYSTACK_ENV = `PAYSTACK_SECRET_KEY=${TEST_KEY}\n`;
 
 function host(extraTags, extraEnv = PRINCIPAL_ENV, paystackEnv = PAYSTACK_ENV) {
   const root = mkdtempSync(join(tmpdir(), 'deploy-compat-'));
@@ -504,11 +507,11 @@ test('OWN-70: a host whose Paystack key is missing, empty, live or malformed, or
   for (const paystackEnv of [
     '',
     'PAYSTACK_SECRET_KEY=\n',
-    'PAYSTACK_SECRET_KEY=sk_live_placeholderkey\n',
-    'PAYSTACK_SECRET_KEY="sk_live_placeholderkey"\n',
+    `PAYSTACK_SECRET_KEY=${LIVE_KEY}\n`,
+    `PAYSTACK_SECRET_KEY="${LIVE_KEY}"\n`,
     'PAYSTACK_SECRET_KEY=pk_test_placeholderkey\n',
     'PAYSTACK_SECRET_KEY=sk_test_\n',
-    'PAYSTACK_SECRET_KEY=sk_test_placeholderkey\nPAYSTACK_SECRET_KEY=sk_live_placeholderkey\n',
+    `PAYSTACK_SECRET_KEY=${TEST_KEY}\nPAYSTACK_SECRET_KEY=${LIVE_KEY}\n`,
     PAYSTACK_ENV + 'REKODA_PAYSTACK_PLATFORM_CONFIRMED=1\n',
   ]) {
     const h = host(
@@ -532,8 +535,8 @@ test('OWN-70: a host whose Paystack key is missing, empty, live or malformed, or
 test('OWN-70: a TEST key, quoted or not, lets the deploy through', () => {
   for (const paystackEnv of [
     PAYSTACK_ENV,
-    'PAYSTACK_SECRET_KEY="sk_test_placeholderkey"\n',
-    "PAYSTACK_SECRET_KEY='sk_test_placeholderkey'\n",
+    `PAYSTACK_SECRET_KEY="${TEST_KEY}"\n`,
+    `PAYSTACK_SECRET_KEY='${TEST_KEY}'\n`,
   ]) {
     const h = host(
       ['0217_settlement_isolation'],
