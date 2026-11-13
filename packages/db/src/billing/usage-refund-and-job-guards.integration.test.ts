@@ -365,4 +365,36 @@ describe('0222: the application cannot withhold a settlement job', () => {
       ),
     ).toBe('allowed');
   });
+
+  it('ATTACK: requeueing a dead settlement job far in the future, or with no attempt left, is refused', async () => {
+    /* Independent review of `10ef5c9`: the dead->pending arm was unbounded, so a holder of the
+     * application credential could park a verified payment's dead job out of the operator's reach
+     * (it leaves `dead`, so dead-job enrolment and `startRecovery` no longer see it). The only honest
+     * requeue is `deadJobs.startRecovery`: due now, exactly one more attempt. */
+    const businessId = await seedBusiness();
+    const dead = await settlementJob(businessId, 'dead');
+    const requeue = (runAt: ReturnType<typeof sql>, maxAttempts: ReturnType<typeof sql>) =>
+      asApp(
+        businessId,
+        sql`UPDATE jobs SET state = 'pending', run_at = ${runAt}, max_attempts = ${maxAttempts},
+                            locked_by = NULL, locked_at = NULL
+            WHERE id = ${dead}::uuid`,
+      );
+    for (const [runAt, maxAttempts] of [
+      [sql`now() + interval '50 years'`, sql`attempts + 1`],
+      [sql`now() + interval '2 minutes'`, sql`attempts + 1`],
+      [sql`now()`, sql`0`],
+      [sql`now()`, sql`attempts`],
+      [sql`now()`, sql`attempts + 50`],
+    ] as const) {
+      expect(await requeue(runAt, maxAttempts)).toMatch(/^42501 .*settlement job/);
+    }
+    const [row] = [
+      ...(await ownerDb.execute<{ state: string }>(
+        sql`SELECT state FROM jobs WHERE id = ${dead}::uuid`,
+      )),
+    ];
+    expect(row!.state).toBe('dead');
+    expect(await requeue(sql`now()`, sql`attempts + 1`)).toBe('allowed');
+  });
 });
