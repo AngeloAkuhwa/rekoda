@@ -26,7 +26,7 @@
 --   2. A RESTRICTIVE policy: settlement reads and writes only `billing.process` dead-job records.
 --   3. The job guard: a settlement job is enqueued with at least the default five attempts, and an
 --      application requeue of ANY dead job is due now with exactly one more attempt (the one honest
---      requeue, `deadJobs.startRecovery`, already writes exactly that).
+--      requeue, `deadJobsRepo.beginRecovery`, already writes exactly that).
 --
 -- Grants are unchanged (the deploy smoke's exact grant lists still hold). Nothing is rewritten.
 -- Not a compatibility break: it only narrows the settlement process, which this release introduces,
@@ -37,7 +37,8 @@
 -- ---------------------------------------------------------------------------------------------
 -- 1. Settlement's events: only the ones its jobs name.
 -- ---------------------------------------------------------------------------------------------
--- The policy's lookup: a business's settlement jobs by the event they name.
+-- For the policy's lookup: a business's settlement jobs (the eventId is checked as a filter, since
+-- `->>` is not leakproof under the jobs table's row-level security).
 CREATE INDEX IF NOT EXISTS jobs_billing_event_ix
   ON jobs (business_id, (payload ->> 'eventId')) WHERE kind = 'billing.process';
 
@@ -116,7 +117,7 @@ BEGIN
     END IF;
     RETURN NEW;
   END IF;
-  -- The one honest requeue is `deadJobs.startRecovery`: due now, with exactly one more attempt.
+  -- The one honest requeue is `deadJobsRepo.beginRecovery`: due now, with exactly one more attempt.
   -- An unbounded run time or attempt budget would let the application park a verified payment's
   -- dead job out of the operator's reach (it leaves `dead`, so neither dead-job enrolment nor
   -- recovery sees it again): independent review of `10ef5c9`.
@@ -140,7 +141,7 @@ BEGIN
   IF OLD.state = 'running' AND NEW.state = 'done' THEN
     RETURN NEW;
   END IF;
-  -- A recovered dead job goes back to the queue with no lease, as `deadJobs.startRecovery` writes
+  -- A recovered dead job goes back to the queue with no lease, as `deadJobsRepo.beginRecovery` writes
   -- it; the worker's claim takes it from there (residual 10). For EVERY kind, not only settlement's
   -- (0223): due now, with exactly one more attempt. Unbounded, the application could park a dead
   -- customer-payment job out of the operator's reach (it leaves `dead`, its record stays open, and

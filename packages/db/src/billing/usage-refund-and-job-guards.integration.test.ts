@@ -216,7 +216,7 @@ describe('0222: the guards hold for a login that only inherits the restricted ro
         ),
       ),
     ).toMatch(/^42501 .*due now, with one more attempt/);
-    /* The shape `deadJobs.startRecovery` writes: no lease, due now, exactly one more attempt (0223). */
+    /* The shape `deadJobsRepo.beginRecovery` writes: no lease, due now, exactly one more attempt (0223). */
     expect(
       await outcome(
         withBusiness(appDb, businessId, (tx) =>
@@ -430,8 +430,8 @@ describe('0222: the application cannot withhold a settlement job', () => {
   it('ATTACK: requeueing a dead settlement job far in the future, or with no attempt left, is refused', async () => {
     /* Independent review of `10ef5c9`: the dead->pending arm was unbounded, so a holder of the
      * application credential could park a verified payment's dead job out of the operator's reach
-     * (it leaves `dead`, so dead-job enrolment and `startRecovery` no longer see it). The only honest
-     * requeue is `deadJobs.startRecovery`: due now, exactly one more attempt. */
+     * (it leaves `dead`, so dead-job enrolment and `beginRecovery` no longer see it). The only honest
+     * requeue is `deadJobsRepo.beginRecovery`: due now, exactly one more attempt. */
     const businessId = await seedBusiness();
     const dead = await settlementJob(businessId, 'dead');
     const requeue = (runAt: ReturnType<typeof sql>, maxAttempts: ReturnType<typeof sql>) =>
