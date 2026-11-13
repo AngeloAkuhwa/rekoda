@@ -16,6 +16,7 @@ import { withBusiness, type Db } from '../client.js';
 import { usageRepo } from '../index.js';
 import {
   appDb,
+  holdApiStarter,
   outcome,
   ownerDb,
   PRINCIPALS,
@@ -117,6 +118,7 @@ describe('OD-51.4: legitimate metering still works through the functions (0216)'
 
   it('the worker meters and returns a webhook delivery the same way', async () => {
     const businessId = await seedBusiness();
+    await holdApiStarter(businessId); // what sells webhook deliveries (0222 counts it)
     const spent = await reserve(workerDb, businessId, 5, 1, 'WEBHOOK_DELIVERIES');
     expect(spent.granted).toBe(true);
     expect(await used(businessId, 'WEBHOOK_DELIVERIES')).toBe(1);

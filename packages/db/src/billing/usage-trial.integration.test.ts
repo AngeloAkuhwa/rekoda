@@ -11,6 +11,7 @@
 // usage.integration.test.ts, usage-trial-migrations.integration.test.ts.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
+import { usagePeriod } from '@rekoda/core';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { events, identity, usageRepo } from '../index.js';
 import {
@@ -56,6 +57,10 @@ async function setPlanOnRow(businessId: string, plan: string) {
   await setPlanAsOwner(urls, businessId, { plan });
 }
 
+/* The month in use now: since 0222 the database meters a paid unit on the current Lagos month (or
+ * the one before in a month's first week), never on an arbitrary label. */
+const M = usagePeriod(new Date());
+
 describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
   const { TRIAL_METER, monthMeter } = usageRepo;
   /* A handle is `<row>` or `<row>#<reservation>` (OD-51.4, 0216); these tests ask which row. */
@@ -99,70 +104,70 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
 
   it('a trial that crosses a month boundary does not get a second allowance', async () => {
     const businessId = await seedBusiness();
-    const first = await reserve(businessId, '2026-08', 1);
+    const first = await reserve(businessId, M, 1);
     expect(first.granted).toBe(true);
     expect(rowOf(first.meter)).toBe(TRIAL_METER);
     // The calendar month rolled over mid-trial: the unit is still spent.
     expect(await spend(businessId, '2026-09', 1)).toBe(false);
     expect(await readUsed(businessId, '2026-09')).toBe(1);
-    expect(await readUsed(businessId, '2026-08')).toBe(1);
+    expect(await readUsed(businessId, M)).toBe(1);
   });
 
   it('a first paid plan starts a fresh meter: trial usage does not carry into the paid month', async () => {
     const businessId = await seedBusiness();
-    expect(await spend(businessId, '2026-08', 3)).toBe(true);
-    expect(await spend(businessId, '2026-08', 1)).toBe(false); // trial budget gone
+    expect(await spend(businessId, M, 3)).toBe(true);
+    expect(await spend(businessId, M, 1)).toBe(false); // trial budget gone
 
     await setPlanOnRow(businessId, 'chat');
     // Bought in the same month the trial used its budget in.
-    expect(await readUsed(businessId, '2026-08')).toBe(0);
-    const paid = await reserve(businessId, '2026-08', 1);
+    expect(await readUsed(businessId, M)).toBe(0);
+    const paid = await reserve(businessId, M, 1);
     expect(paid.granted).toBe(true);
-    expect(rowOf(paid.meter)).toBe(monthMeter('2026-08'));
+    expect(rowOf(paid.meter)).toBe(monthMeter(M));
   });
 
   describe('a delayed refund goes to the exact row the unit was spent on', () => {
     it('after an upgrade, a trial unit goes back to the trial row, not to paid usage', async () => {
       const businessId = await seedBusiness();
-      const trial = await reserve(businessId, '2026-08', 5);
+      const trial = await reserve(businessId, M, 5);
       expect(rowOf(trial.meter)).toBe(TRIAL_METER);
 
       await setPlanOnRow(businessId, 'chat');
-      const paid = await reserve(businessId, '2026-08', 5);
-      expect(rowOf(paid.meter)).toBe(monthMeter('2026-08'));
-      expect(await rowUsed(businessId, '2026-08')).toBe(1);
+      const paid = await reserve(businessId, M, 5);
+      expect(rowOf(paid.meter)).toBe(monthMeter(M));
+      expect(await rowUsed(businessId, M)).toBe(1);
 
       // The trial reservation is released late, with the row it recorded.
       await refund(businessId, trial.meter);
       expect(await rowUsed(businessId, usageRepo.TRIAL_PERIOD)).toBe(0);
-      expect(await rowUsed(businessId, '2026-08')).toBe(1); // paid usage untouched
+      expect(await rowUsed(businessId, M)).toBe(1); // paid usage untouched
     });
 
     it('a paid unit refunded after the upgrade leaves the trial row alone', async () => {
       const businessId = await seedBusiness();
-      await reserve(businessId, '2026-08', 5); // trial: 1 used
+      await reserve(businessId, M, 5); // trial: 1 used
       await setPlanOnRow(businessId, 'chat');
-      const paid = await reserve(businessId, '2026-08', 5);
+      const paid = await reserve(businessId, M, 5);
 
       await refund(businessId, paid.meter);
-      expect(await rowUsed(businessId, '2026-08')).toBe(0);
+      expect(await rowUsed(businessId, M)).toBe(0);
       expect(await rowUsed(businessId, usageRepo.TRIAL_PERIOD)).toBe(1);
     });
 
     it('a quantity goes back in full to its own row and never drains another', async () => {
       const businessId = await seedBusiness();
-      const trial = await reserve(businessId, '2026-08', 600, 5, 'VOICE_MINUTES');
+      const trial = await reserve(businessId, M, 600, 5, 'VOICE_MINUTES');
       await setPlanOnRow(businessId, 'chat');
-      await reserve(businessId, '2026-08', 600, 2, 'VOICE_MINUTES'); // paid has only 2 to give
+      await reserve(businessId, M, 600, 2, 'VOICE_MINUTES'); // paid has only 2 to give
 
       await refund(businessId, trial.meter, 5, 'VOICE_MINUTES');
       expect(await rowUsed(businessId, usageRepo.TRIAL_PERIOD, 'VOICE_MINUTES')).toBe(0);
-      expect(await rowUsed(businessId, '2026-08', 'VOICE_MINUTES')).toBe(2);
+      expect(await rowUsed(businessId, M, 'VOICE_MINUTES')).toBe(2);
     });
 
     it('a partial refund, then the rest, comes to exactly what was spent, and no more', async () => {
       const businessId = await seedBusiness();
-      const spent = await reserve(businessId, '2026-08', 600, 5, 'VOICE_MINUTES');
+      const spent = await reserve(businessId, M, 600, 5, 'VOICE_MINUTES');
       await refund(businessId, spent.meter, 2, 'VOICE_MINUTES');
       expect(await rowUsed(businessId, usageRepo.TRIAL_PERIOD, 'VOICE_MINUTES')).toBe(3);
       await refund(businessId, spent.meter, 3, 'VOICE_MINUTES');
@@ -172,9 +177,7 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
 
     it('concurrent consumes grant exactly the allowance and all name the trial row', async () => {
       const businessId = await seedBusiness();
-      const results = await Promise.all(
-        Array.from({ length: 8 }, () => reserve(businessId, '2026-08', 5)),
-      );
+      const results = await Promise.all(Array.from({ length: 8 }, () => reserve(businessId, M, 5)));
       expect(results.filter((r) => r.granted)).toHaveLength(5);
       expect(new Set(results.map((r) => rowOf(r.meter)))).toEqual(new Set([TRIAL_METER]));
       /* Each granted spend is its own reservation: five handles, all different. */
@@ -196,10 +199,10 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
     it('a refund names its row and never moves another, whatever the plan or the balances', async () => {
       const businessId = await seedBusiness();
       await setPlanOnRow(businessId, 'chat');
-      await reserve(businessId, '2026-08', 5);
+      await reserve(businessId, M, 5);
       // Nothing was spent on the trial row, so a refund naming it changes nothing.
       await refund(businessId, TRIAL_METER);
-      expect(await rowUsed(businessId, '2026-08')).toBe(1);
+      expect(await rowUsed(businessId, M)).toBe(1);
       expect(await rowUsed(businessId, usageRepo.TRIAL_PERIOD)).toBe(0);
     });
   });
@@ -224,14 +227,14 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
       const eventId = await seedEvent(businessId);
       await withBusiness(db, businessId, (tx) =>
         events.reserveUnitForEvent(tx, businessId, eventId, 'AI_ACTIONS', () =>
-          usageRepo.reserveUnit(tx, businessId, '2026-08', 'AI_ACTIONS', 5),
+          usageRepo.reserveUnit(tx, businessId, M, 'AI_ACTIONS', 5),
         ),
       );
       // Another message spent a second trial unit, so a double refund would show
       // as 0 left rather than being hidden by the floor at zero.
-      await reserve(businessId, '2026-08', 5);
+      await reserve(businessId, M, 5);
       await setPlanOnRow(businessId, 'chat');
-      await reserve(businessId, '2026-08', 5); // a paid unit spent meanwhile
+      await reserve(businessId, M, 5); // a paid unit spent meanwhile
 
       const giveBack = () =>
         withBusiness(db, businessId, async (tx) => {
@@ -240,7 +243,7 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
             await usageRepo.refundUnit(
               tx,
               businessId,
-              usageRepo.storedMeter(taken.meter, '2026-08'),
+              usageRepo.storedMeter(taken.meter, M),
               'AI_ACTIONS',
             );
           }
@@ -248,24 +251,17 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
       // Two concurrent releases (a retry racing a reclaim): one refund.
       await Promise.all([giveBack(), giveBack()]);
       expect(await rowUsed(businessId, usageRepo.TRIAL_PERIOD)).toBe(1);
-      expect(await rowUsed(businessId, '2026-08')).toBe(1);
+      expect(await rowUsed(businessId, M)).toBe(1);
     });
 
     it('two overlapping releases of a quantity reservation return its seconds once', async () => {
       const businessId = await seedBusiness();
       const eventId = await seedEvent(businessId);
       await withBusiness(db, businessId, async (tx) => {
-        const spent = await usageRepo.reserveUnit(
-          tx,
-          businessId,
-          '2026-08',
-          'VOICE_MINUTES',
-          600,
-          7,
-        );
+        const spent = await usageRepo.reserveUnit(tx, businessId, M, 'VOICE_MINUTES', 600, 7);
         await events.noteReservedUnit(tx, businessId, eventId, 'VOICE_MINUTES:7', spent.meter);
       });
-      await reserve(businessId, '2026-08', 600, 20, 'VOICE_MINUTES'); // other voice notes: 20 more
+      await reserve(businessId, M, 600, 20, 'VOICE_MINUTES'); // other voice notes: 20 more
 
       const giveBack = async (beforeCommit?: () => Promise<void>) =>
         withBusiness(db, businessId, async (tx) => {
@@ -275,7 +271,7 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
             await usageRepo.refundUnit(
               tx,
               businessId,
-              usageRepo.storedMeter(taken.meter, '2026-08'),
+              usageRepo.storedMeter(taken.meter, M),
               'VOICE_MINUTES',
               Number(taken.held.split(':')[1]),
             );
@@ -304,14 +300,7 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
       const businessId = await seedBusiness();
       const eventId = await seedEvent(businessId);
       await withBusiness(db, businessId, async (tx) => {
-        const spent = await usageRepo.reserveUnit(
-          tx,
-          businessId,
-          '2026-08',
-          'VOICE_MINUTES',
-          600,
-          7,
-        );
+        const spent = await usageRepo.reserveUnit(tx, businessId, M, 'VOICE_MINUTES', 600, 7);
         await events.noteReservedUnit(tx, businessId, eventId, 'VOICE_MINUTES:7', spent.meter);
       });
       await setPlanOnRow(businessId, 'chat');
@@ -320,8 +309,8 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
       );
       expect(taken?.held).toBe('VOICE_MINUTES:7');
       /* The stored handle names the trial row and carries the reservation that spent the seconds. */
-      expect(rowOf(usageRepo.storedMeter(taken!.meter, '2026-08'))).toBe(TRIAL_METER);
-      expect(usageRepo.reservationOf(usageRepo.storedMeter(taken!.meter, '2026-08'))).toMatch(
+      expect(rowOf(usageRepo.storedMeter(taken!.meter, M))).toBe(TRIAL_METER);
+      expect(usageRepo.reservationOf(usageRepo.storedMeter(taken!.meter, M))).toMatch(
         /^[0-9a-f-]{36}$/,
       );
     });
@@ -339,7 +328,7 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
         events.takeReservedUnit(tx, businessId, eventId, 'AI_ACTIONS'),
       );
       expect(taken).toEqual({ meter: null });
-      expect(usageRepo.storedMeter(taken!.meter, '2026-08')).toBe(monthMeter('2026-08'));
+      expect(usageRepo.storedMeter(taken!.meter, M)).toBe(monthMeter(M));
     });
 
     it('a quantity-suffixed unit is taken with the row recorded under its kind', async () => {
@@ -363,27 +352,21 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
       const businessId = await seedBusiness();
       const eventId = await seedEvent(businessId);
       await withBusiness(db, businessId, async (tx) => {
-        const doc = await usageRepo.reserveUnit(
-          tx,
-          businessId,
-          '2026-08',
-          'DOCUMENT_GENERATION',
-          5,
-        );
+        const doc = await usageRepo.reserveUnit(tx, businessId, M, 'DOCUMENT_GENERATION', 5);
         await events.noteReservedUnit(tx, businessId, eventId, 'DOCUMENT_GENERATION', doc.meter);
-        const order = await usageRepo.reserveUnit(tx, businessId, '2026-08', 'CATALOGUE_ORDERS', 5);
+        const order = await usageRepo.reserveUnit(tx, businessId, M, 'CATALOGUE_ORDERS', 5);
         await events.noteReservedUnit(tx, businessId, eventId, 'CATALOGUE_ORDERS', order.meter);
       });
       const taken = await withBusiness(db, businessId, (tx) =>
         events.takeReservedUnitsOf(tx, businessId, eventId, ['DOCUMENT_GENERATION']),
       );
-      expect(taken.map((t) => [t.unit, rowOf(usageRepo.storedMeter(t.meter, '2026-08'))])).toEqual([
+      expect(taken.map((t) => [t.unit, rowOf(usageRepo.storedMeter(t.meter, M))])).toEqual([
         ['DOCUMENT_GENERATION', TRIAL_METER],
       ]);
       const rest = await withBusiness(db, businessId, (tx) =>
         events.takeReservedUnits(tx, businessId, eventId),
       );
-      expect(rest.map((t) => [t.unit, rowOf(usageRepo.storedMeter(t.meter, '2026-08'))])).toEqual([
+      expect(rest.map((t) => [t.unit, rowOf(usageRepo.storedMeter(t.meter, M))])).toEqual([
         ['CATALOGUE_ORDERS', TRIAL_METER],
       ]);
     });
@@ -391,46 +374,62 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
 
   describe('separately purchased API units keep their own monthly cycle (Finding 2)', () => {
     const API = 'API_REQUEST_UNITS';
+    /** The Developer API Starter, which is what sells these units; the database counts it (0222). */
+    const holdApiStarter = async (businessId: string) => {
+      const owner = createDb(urls.owner, { max: 1 });
+      try {
+        await owner.db.execute(sql`INSERT INTO business_add_ons
+            (business_id, add_on_id, version, started_at)
+          VALUES (${businessId}::uuid, 'developer_api_starter', 1, now() - interval '1 day')`);
+      } finally {
+        await owner.close();
+      }
+    };
 
     it('meters the API product by calendar month while the base plan is trial', async () => {
       const businessId = await seedBusiness();
-      const august = await reserve(businessId, '2026-08', 2, 1, API);
+      await holdApiStarter(businessId);
+      const august = await reserve(businessId, M, 2, 1, API);
       expect(august.granted).toBe(true);
-      expect(rowOf(august.meter)).toBe(monthMeter('2026-08'));
-      expect((await reserve(businessId, '2026-08', 2, 1, API)).granted).toBe(true);
-      expect((await reserve(businessId, '2026-08', 2, 1, API)).granted).toBe(false); // August spent
+      expect(rowOf(august.meter)).toBe(monthMeter(M));
+      expect((await reserve(businessId, M, 2, 1, API)).granted).toBe(true);
+      expect((await reserve(businessId, M, 2, 1, API)).granted).toBe(false); // August spent
 
-      // September is a fresh month for the holding, with the trial still running.
-      expect((await reserve(businessId, '2026-09', 2, 1, API)).granted).toBe(true);
-      expect(await rowUsed(businessId, '2026-09', API)).toBe(1);
+      // Another month's label is not a fresh month (0222): it is metered on this month, spent.
+      expect((await reserve(businessId, '2099-09', 2, 1, API)).granted).toBe(false);
+      expect(await rowUsed(businessId, '2099-09', API)).toBe(0);
+      expect(await rowUsed(businessId, M, API)).toBe(2);
       expect(await rowUsed(businessId, usageRepo.TRIAL_PERIOD, API)).toBe(0);
     });
 
     it('webhook deliveries follow the month too, and a refund returns to that month', async () => {
       const businessId = await seedBusiness();
-      const sent = await reserve(businessId, '2026-08', 3, 1, 'WEBHOOK_DELIVERIES');
-      expect(rowOf(sent.meter)).toBe(monthMeter('2026-08'));
+      await holdApiStarter(businessId);
+      const sent = await reserve(businessId, M, 3, 1, 'WEBHOOK_DELIVERIES');
+      expect(sent.granted).toBe(true);
+      expect(rowOf(sent.meter)).toBe(monthMeter(M));
+      expect(await rowUsed(businessId, M, 'WEBHOOK_DELIVERIES')).toBe(1);
       await refund(businessId, sent.meter, 1, 'WEBHOOK_DELIVERIES');
-      expect(await rowUsed(businessId, '2026-08', 'WEBHOOK_DELIVERIES')).toBe(0);
+      expect(await rowUsed(businessId, M, 'WEBHOOK_DELIVERIES')).toBe(0);
     });
 
     it('a trial business holds both: base units on the trial row, API units by month', async () => {
       const businessId = await seedBusiness();
-      await reserve(businessId, '2026-08', 5); // base-plan unit: the trial row
-      await reserve(businessId, '2026-08', 5, 1, API); // API unit: the month
-      await reserve(businessId, '2026-09', 5, 1, API);
+      await holdApiStarter(businessId);
+      await reserve(businessId, M, 5); // base-plan unit: the trial row
+      await reserve(businessId, M, 5, 1, API); // API unit: the month
+      await reserve(businessId, '2099-09', 5, 1, API); // another label: still this month (0222)
 
-      expect(await readUsed(businessId, '2026-09')).toBe(1); // the trial budget, in any month
-      expect(await readUsed(businessId, '2026-09', API)).toBe(1); // September's API units only
-      expect(await readUsed(businessId, '2026-08', API)).toBe(1); // August's
-      expect(await readUsed(businessId, '2026-10', API)).toBe(0);
+      expect(await readUsed(businessId, '2099-09')).toBe(1); // the trial budget, in any month
+      expect(await readUsed(businessId, M, API)).toBe(2); // this month's API units
+      expect(await readUsed(businessId, '2099-09', API)).toBe(0); // no fresh month was opened
     });
 
     it('a pack for a base unit lands on the trial row; one for an API unit never does', async () => {
       const businessId = await seedBusiness();
       await withBusiness(settlementDb(), businessId, async (tx) => {
-        await creditBonusForTest(tx, businessId, '2026-08', 'AI_ACTIONS', 7);
-        await creditBonusForTest(tx, businessId, '2026-08', API, 9);
+        await creditBonusForTest(tx, businessId, M, 'AI_ACTIONS', 7);
+        await creditBonusForTest(tx, businessId, M, API, 9);
       });
       const bonus = async (meter: string, unit: string) => {
         const rows = await withBusiness(db, businessId, (tx) =>
@@ -441,17 +440,16 @@ describe('one budget per trial (G-109, OWN-27, OD-26)', () => {
         return [...rows][0]?.bonus ?? 0;
       };
       expect(await bonus(usageRepo.TRIAL_PERIOD, 'AI_ACTIONS')).toBe(7);
-      expect(await bonus('2026-08', API)).toBe(9);
+      expect(await bonus(M, API)).toBe(9);
       expect(await bonus(usageRepo.TRIAL_PERIOD, API)).toBe(0);
     });
 
     it('a paid business meters every unit by month, API units included', async () => {
       const businessId = await seedBusiness();
       await setPlanOnRow(businessId, 'complete');
-      expect(rowOf((await reserve(businessId, '2026-08', 5, 1, API)).meter)).toBe(
-        monthMeter('2026-08'),
-      );
-      expect(rowOf((await reserve(businessId, '2026-08', 5)).meter)).toBe(monthMeter('2026-08'));
+      await holdApiStarter(businessId);
+      expect(rowOf((await reserve(businessId, M, 5, 1, API)).meter)).toBe(monthMeter(M));
+      expect(rowOf((await reserve(businessId, M, 5)).meter)).toBe(monthMeter(M));
     });
   });
 });

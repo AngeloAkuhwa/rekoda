@@ -8,9 +8,11 @@
  * zero rows back. There is no path that increments without checking and no
  * path that checks without incrementing.
  *
- * The allowance arrives as an argument (from `@rekoda/core`'s plan table)
- * rather than living here, so the decision stays in core and this file stays
- * SQL. `bonus` raises the ceiling and is written by exactly one function,
+ * The allowance arrives as an argument (from `@rekoda/core`'s plan table or
+ * the catalogue), but it is no longer authoritative (migration 0222): the
+ * database computes the business's own ceiling (`usage_entitlement`) and the
+ * argument can only lower it, so a caller cannot spend more than the plan
+ * sells by passing a larger number. `bonus` raises the ceiling and is written by exactly one function,
  * `creditBonus`, whose only caller is a subscription charge the provider has
  * confirmed.
  */
@@ -18,7 +20,12 @@ import { sql } from 'drizzle-orm';
 import type { TenantDb } from '../client.js';
 
 export type { UsageUnit } from '@rekoda/core';
-import { INDEPENDENTLY_METERED_UNITS, type UsageUnit } from '@rekoda/core';
+import {
+  INDEPENDENTLY_METERED_UNITS,
+  periodBefore,
+  usagePeriod,
+  type UsageUnit,
+} from '@rekoda/core';
 
 /**
  * The meter row a unit is spent on (G-109, OWN-27, OD-26), and the reservation that spent it.
@@ -67,10 +74,28 @@ async function planOf(tx: TenantDb, businessId: string): Promise<string | undefi
   return [...rows][0]?.plan;
 }
 
-/** The row `unit` is spent on now, for a business on `plan`. */
-function meterOn(plan: string | undefined, period: string, unit: string): MeterRow {
+/**
+ * The row `unit` is spent on now, for a business on `plan`: the same rule the database applies in
+ * `rekoda_private.usage_meter_row` (migration 0222), which is the one that decides. A trial's
+ * base-plan units go on the trial row. Otherwise the asked month is kept when it is the current
+ * Africa/Lagos month, or the month before during a month's first seven days (a message that arrived
+ * on the 31st and is processed after midnight is metered on the month it arrived in); any other
+ * label is metered on the current month, so no label can open a fresh allowance. The handle's row
+ * is a label: a refund returns a reservation to the row the database recorded on it.
+ */
+function meterOn(
+  plan: string | undefined,
+  period: string,
+  unit: string,
+  now: Date = new Date(),
+): MeterRow {
   const trial = !plan || plan === 'trial';
-  return trial && !independent.has(unit) ? TRIAL_METER : monthMeter(period);
+  if (trial && !independent.has(unit)) return TRIAL_METER;
+  const current = usagePeriod(now);
+  if (period === current) return monthMeter(current);
+  const lagosDay = new Date(now.getTime() + 3_600_000).getUTCDate();
+  if (period === periodBefore(current) && lagosDay <= 7) return monthMeter(period);
+  return monthMeter(current);
 }
 
 /**
@@ -207,14 +232,21 @@ export async function creditPack(
   return [...rows][0]?.credited === true;
 }
 
-/** The meter row `unit` is spent on now for this business (for the test harness's bonus fixture). */
+/**
+ * The row a unit of `period` belongs on for this business (for the test harness's bonus fixture):
+ * the trial row for a trial's base units, otherwise the month named. Not clamped to the current
+ * month the way a spend is (0222): a fixture may stage a pack on next month's row, as a renewal
+ * that crosses a month end would find it.
+ */
 export async function meterRowFor(
   tx: TenantDb,
   businessId: string,
   period: string,
   unit: string,
 ): Promise<string> {
-  return meterOn(await planOf(tx, businessId), period, unit);
+  const plan = await planOf(tx, businessId);
+  const trial = !plan || plan === 'trial';
+  return trial && !independent.has(unit) ? TRIAL_METER : monthMeter(period);
 }
 
 export interface UsageRow extends Record<string, unknown> {

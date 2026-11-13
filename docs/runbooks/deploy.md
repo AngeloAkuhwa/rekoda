@@ -181,7 +181,7 @@ dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) api   # build B
 dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD) web   # one image at a time: never both at once
 # First PRODUCTION deploy carrying migrations 0175-0178 (G-109): run `dc stop api worker` here first
 # Every deploy carrying 0196 or 0200 (PR B, plan-field boundary, OD-48): run `dc stop api worker` here first, and see "Deploy a release carrying 0196"
-# Every deploy carrying 0216, 0217, 0218, 0220 or 0221 (OD-51): run `dc stop api worker operator settlement` here first, and see "Deploy a release carrying 0213 to 0221"
+# Every deploy carrying 0216, 0217, 0218, 0220, 0221 or 0222 (OD-51): run `dc stop api worker operator settlement` here first, and see "Deploy a release carrying 0213 to 0222"
 # ...and after migrate, run the step-8 pre-start database smoke (SMOKE_0196_SQL) as the owner: do not `dc up` unless it prints t
 dc run --rm -T migrate                                             # expand-only migrations, as the owner
 dc up -d --wait                                                    # recreates api, worker and web on the new images
@@ -634,7 +634,7 @@ worker or the api. Step 1 below describes the release that carried 0209.
 
 Rollback past these migrations is a backup restore (G-02), as for 0196 to 0206 (OWN-86).
 
-### Deploy a release carrying 0213 to 0221 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure)
+### Deploy a release carrying 0213 to 0222 (support-review upgrade, pack purchase identity, pricing source, usage meter boundary, settlement and operator processes, reservation closure)
 
 0216, 0217, 0218, 0220 and 0221 are compatibility breaks: the previous release writes `usage_counters`
 directly, which no runtime role may do afterwards, and settles charges in the worker on a role
@@ -680,23 +680,35 @@ This release starts two more services. Before deploying:
      moves are guarded, and the grace clock starts only after the cycle ended (0220);
    - the operator holds no UPDATE on `businesses` but `updated_at`, and its writer records the
      whole cycle (0221);
-   - the ledger carries the tags 0213 to 0221.
+   - `usage_reserve` spends against the database's own ceiling (`usage_entitlement`) on the meter
+     row the database chooses, `usage_refund` refuses an unbound reservation older than fifteen
+     minutes, and the job and event guards apply to any role inheriting `rekoda_app` or
+     `rekoda_worker` (0222);
+   - the ledger carries the tags 0213 to 0222.
 
-4. 0216 creates the role `rekoda_usage_writer` (NOLOGIN). A restore into an empty cluster needs it
+4. 0222 is not a compatibility break on its own (the previous PR B release reads `usage_reserve`'s
+   results by name and is metered by the stricter ceiling), but it ships with 0216 to 0221 and is
+   applied in the same stopped window. After it, the meter ceiling is ALWAYS the plan catalogue's
+   (the version a business is pinned to, or the one in force), whatever `REKODA_PLAN_CATALOGUE_READS`
+   says: the constants rollback (next section) governs prices, and a catalogue that sells less than
+   the compiled table meters at the catalogue's figure. Check `allowance_versions` before switching
+   to `constants`.
+
+5. 0216 creates the role `rekoda_usage_writer` (NOLOGIN). A restore into an empty cluster needs it
    first; `scripts/restore-drill.sh` creates it.
 
-5. 0215 seeds the pricing source as `catalogue`. If this deployment runs
+6. 0215 seeds the pricing source as `catalogue`. If this deployment runs
    `REKODA_PLAN_CATALOGUE_READS=0`, the api, worker and settlement processes refuse to start until
    the source is switched (next section). Staging runs the default and needs nothing.
 
-6. `dc up -d --wait --wait-timeout 300` starts `operator` and `settlement` with the rest. Check:
+7. `dc up -d --wait --wait-timeout 300` starts `operator` and `settlement` with the rest. Check:
    - `dc logs settlement` says `[settlement] job runner started`;
    - `dc logs operator` says `identity: verified tokens`;
    - `POST https://<api host>/v1/businesses/plan` with no token answers 401 (the operator process
      answered; Caddy routes `/v1/businesses/plan` and `/v1/businesses/plan/*` there, and the API
      itself answers 404 for both).
 
-7. **A support-reviewed upgrade (OD-50, 0213, 0219).** A mid-cycle upgrade sent to support review
+8. **A support-reviewed upgrade (OD-50, 0213, 0219).** A mid-cycle upgrade sent to support review
    (OWN-33, OWN-34) is resolved by an operator with a token for the billing audience:
 
    ```sh

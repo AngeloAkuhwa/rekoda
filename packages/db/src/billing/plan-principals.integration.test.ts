@@ -276,6 +276,10 @@ describe('OD-37: only settlement records a payment (0202)', () => {
       sql`units_credited_at = now()`,
       sql`period_end = now() + interval '10 years'`,
       sql`billing_interval = 'annual'`,
+      /* MVP readiness review (0222): the Paystack transaction id is payment evidence; a forged
+       * `no_charge:` prefix would show the merchant a paid charge as free. */
+      sql`provider_reference = 'no_charge:forged'`,
+      sql`provider_reference = 'T_forged_transaction'`,
     ]) {
       expect(
         await outcome(

@@ -1,5 +1,5 @@
 /**
- * Migration safety for 0213 to 0221 (OD-50, OD-51): an UPGRADE of a database the previous release
+ * Migration safety for 0213 to 0222 (OD-50, OD-51): an UPGRADE of a database the previous release
  * left behind, not only a fresh build.
  *
  * A scratch database is migrated to 0212 (what `main` runs), seeded as that release would have
@@ -172,7 +172,7 @@ afterAll(async () => {
   }
 });
 
-describe('upgrading a database from 0212 through 0221', () => {
+describe('upgrading a database from 0212 through 0222', () => {
   it('starts from the boundary the previous release had', async () => {
     expect(before.charges).toHaveLength(3);
     expect(await facts()).toEqual({
@@ -184,7 +184,7 @@ describe('upgrading a database from 0212 through 0221', () => {
     });
   });
 
-  it('applies 0213 to 0221 and rewrites no history', async () => {
+  it('applies 0213 to 0222 and rewrites no history', async () => {
     const applied = await applyMigrations(scratchUrl(urls.owner));
     expect(applied).toEqual([
       '0213_support_review_plan_change',
@@ -196,6 +196,7 @@ describe('upgrading a database from 0212 through 0221', () => {
       '0219_support_review_respects_later_schedule',
       '0220_job_row_and_grace_review_fixes',
       '0221_operator_writes_only_through_its_functions',
+      '0222_usage_entitlement_in_the_database',
     ]);
 
     const after = await snapshot();
@@ -277,6 +278,7 @@ describe('upgrading a database from 0212 through 0221', () => {
       '0219_support_review_respects_later_schedule',
       '0220_job_row_and_grace_review_fixes',
       '0221_operator_writes_only_through_its_functions',
+      '0222_usage_entitlement_in_the_database',
     ]) {
       await owner.unsafe(readFileSync(join(MIGRATIONS_DIR, `${tag}.sql`), 'utf8')).simple();
     }

@@ -16,6 +16,7 @@
 // subscriptions-sweeps.integration.test.ts.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
+import { usagePeriod } from '@rekoda/core';
 import { createDb, withBusiness, type Db, type TenantDb } from '../client.js';
 import { identity, subscriptionsRepo, usageRepo } from '../index.js';
 import {
@@ -378,16 +379,22 @@ describe('an add-on pack', () => {
     const businessId = await seedBusiness();
     // A paid plan meters by calendar month; a trial meters one row for its 14 days.
     await setPlanAsOwner(urls, businessId, { plan: 'chat' });
-    await inSettlement(businessId, (tx) =>
-      creditBonusForTest(tx, businessId, PERIOD, 'AI_ACTIONS', 5),
-    );
+    // A pack credited to an earlier month stays on that month's row (ADR 0024). Since 0222 the
+    // database meters a paid unit on the current month whatever label is asked, so the earlier
+    // month's pack is written as the owner, as it stands once that month has ended.
+    const owner = createDb(urls.owner, { max: 1 });
+    try {
+      await owner.db.execute(sql`INSERT INTO usage_counters (business_id, period, unit, bonus)
+                                 VALUES (${businessId}::uuid, '2020-01', 'AI_ACTIONS', 5)`);
+    } finally {
+      await owner.close();
+    }
 
-    // September is a fresh meter with a fresh ceiling: the pack was bought for
-    // August and August is where it stays (ADR 0024).
-    const september = await inTenant(businessId, (tx) =>
-      usageRepo.consumeUnit(tx, businessId, '2026-09', 'AI_ACTIONS', 0),
+    // This month is a fresh meter with a fresh ceiling: the earlier pack does not carry over.
+    const thisMonth = await inTenant(businessId, (tx) =>
+      usageRepo.consumeUnit(tx, businessId, usagePeriod(new Date()), 'AI_ACTIONS', 0),
     );
-    expect(september).toBe(false);
+    expect(thisMonth).toBe(false);
   });
 });
 

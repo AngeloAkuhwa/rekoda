@@ -328,6 +328,35 @@ describe('the pre-start database smoke, executed', () => {
       'the test-only fixture writer present',
       "CREATE FUNCTION public.test_fixture_set_plan(p uuid, q text, r timestamptz) RETURNS void LANGUAGE sql AS ''",
     ],
+    // 0222: the database decides the ceiling and the meter row; the guards follow inheritance.
+    [
+      'a reserve that trusts the caller’s allowance again',
+      "CREATE OR REPLACE FUNCTION public.usage_reserve(p_business uuid, p_period text, p_unit text, p_allowance integer, p_n integer, p_refundable boolean) RETURNS TABLE (granted boolean, reservation uuid) LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS 'SELECT true, NULL::uuid'",
+    ],
+    [
+      'a refund with no window for an unbound reservation',
+      'CREATE OR REPLACE FUNCTION public.usage_refund(p_business uuid, p_reservation uuid, p_unit text, p_n integer) RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $f$ BEGIN IF false AND closed_at IS NOT NULL THEN RETURN 0; END IF; RETURN 1; END $f$',
+    ],
+    [
+      'the entitlement readable by settlement',
+      'GRANT EXECUTE ON FUNCTION usage_entitlement(uuid,text) TO rekoda_settlement',
+    ],
+    [
+      'the job guard matching the role name again',
+      "CREATE OR REPLACE FUNCTION rekoda_private.jobs_application_transition_guard() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $f$ BEGIN IF current_user <> 'rekoda_app' THEN RETURN NEW; END IF; IF NEW.locked_by IS DISTINCT FROM OLD.locked_by THEN RAISE EXCEPTION 'x'; END IF; IF OLD.state = 'dead' AND NEW.state = 'pending' THEN RETURN NEW; END IF; RETURN NEW; END $f$",
+    ],
+    [
+      'the job guard blind to the application’s inserts',
+      'DROP TRIGGER jobs_application_transition_guard ON jobs; CREATE TRIGGER jobs_application_transition_guard BEFORE UPDATE ON jobs FOR EACH ROW EXECUTE FUNCTION rekoda_private.jobs_application_transition_guard()',
+    ],
+    [
+      'the application free to rewrite a charge’s provider reference',
+      'CREATE OR REPLACE FUNCTION rekoda_private.subscription_charges_settlement_guard() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $f$ BEGIN RETURN NEW; END $f$',
+    ],
+    [
+      'the event guard matching the role name again',
+      "CREATE OR REPLACE FUNCTION rekoda_private.external_events_worker_guard() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $f$ BEGIN IF current_user <> 'rekoda_worker' THEN RETURN NEW; END IF; RETURN NEW; END $f$",
+    ],
   ])('prints f for %s', async (_label, tamper) => {
     expect(await smokeAfter(tamper)).toBe('f');
   });

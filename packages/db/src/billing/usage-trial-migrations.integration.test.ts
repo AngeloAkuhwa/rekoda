@@ -14,6 +14,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import postgres from 'postgres';
 import { sql } from 'drizzle-orm';
+import { usagePeriod } from '@rekoda/core';
 import { createDb, withBusiness, type Db } from '../client.js';
 import { events, identity, usageRepo } from '../index.js';
 import { MIGRATIONS_DIR } from '../migrate.js';
@@ -298,6 +299,8 @@ describe('a business leaving the trial leaves no trial usage on a month row (mig
 
   it('names the trial row on a reservation the previous release recorded, so its refund cannot debit a paid counter', async () => {
     const businessId = await seedBusiness();
+    /* The paid month in use now: since 0222 the database meters a paid unit on the current month. */
+    const month = usagePeriod(new Date());
     const recorded = await withBusiness(db, businessId, (tx) =>
       events.recordEvent(tx, {
         provider: 'meta',
@@ -316,7 +319,7 @@ describe('a business leaving the trial leaves no trial usage on a month row (mig
     await setPlanOnRow(businessId, 'chat');
     // Paid usage in the month the old reservation names.
     await withBusiness(db, businessId, (tx) =>
-      usageRepo.reserveUnit(tx, businessId, '2026-10', 'AI_ACTIONS', 5),
+      usageRepo.reserveUnit(tx, businessId, month, 'AI_ACTIONS', 5),
     );
 
     const taken = await withBusiness(db, businessId, (tx) =>
@@ -327,12 +330,12 @@ describe('a business leaving the trial leaves no trial usage on a month row (mig
       usageRepo.refundUnit(
         tx,
         businessId,
-        usageRepo.storedMeter(taken!.meter, '2026-10'),
+        usageRepo.storedMeter(taken!.meter, month),
         'AI_ACTIONS',
       ),
     );
     const paid = await withBusiness(db, businessId, (tx) =>
-      usageRepo.usageFor(tx, businessId, '2026-10'),
+      usageRepo.usageFor(tx, businessId, month),
     );
     expect(paid.find((r) => r.unit === 'AI_ACTIONS')?.used).toBe(1); // the paid unit is untouched
     // The API unit keeps its own monthly cycle, so it names no trial row.

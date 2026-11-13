@@ -180,6 +180,20 @@ async function storeChargeSuccess(reference: string, amountK = CHAT_K): Promise<
   return storedEventId(recorded);
 }
 
+/** Arranged as the table owner: since 0222 the application credential cannot reschedule or
+ * re-budget a settlement job (only settlement runs it), so a test that wants the job to die on its
+ * first failure sets that up directly. */
+async function lastAttempt(businessId: string): Promise<void> {
+  const owner = createDb(urls.owner, { max: 1 });
+  try {
+    await owner.db.execute(
+      sql`UPDATE jobs SET max_attempts = 1 WHERE business_id = ${businessId}::uuid`,
+    );
+  } finally {
+    await owner.close();
+  }
+}
+
 const pump = () => pumpPaystackEvents({ workerDb, appDb, vaultKey: config.vaultKey });
 
 async function drainJobs(): Promise<number> {
@@ -233,9 +247,7 @@ async function deadBillingJob(businessId: string, reference: string, amountK: nu
   provider.willVerify(reference, { amountK });
   await storeChargeSuccess(reference, amountK);
   expect(await pump()).toBe(1);
-  await withBusiness(appDb, businessId, (tx) =>
-    tx.execute(sql`UPDATE jobs SET max_attempts = 1 WHERE business_id = ${businessId}::uuid`),
-  );
+  await lastAttempt(businessId);
   provider.failNextVerifyWith(new Error('Paystack is down'));
   expect(await drainJobs()).toBe(1);
   const [job] = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
@@ -379,9 +391,7 @@ describe('OWN-76: an operator recovers a dead billing job', () => {
     await withBusiness(appDb, businessId, (tx) =>
       tx.execute(sql`UPDATE external_events SET payload = ${JSON.stringify(foreign)}::jsonb`),
     );
-    await withBusiness(appDb, businessId, (tx) =>
-      tx.execute(sql`UPDATE jobs SET max_attempts = 1 WHERE business_id = ${businessId}::uuid`),
-    );
+    await lastAttempt(businessId);
     await drainJobs();
     const [job] = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
     expect(job?.state).toBe('dead');

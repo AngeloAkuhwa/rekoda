@@ -15,7 +15,7 @@ import { createDb, withBusiness, type Db } from '../client.js';
 import { billingRepo, events, identity, usageRepo } from '../index.js';
 import { migrate, requireUrls, truncateAll, type Urls, setPlanAsOwner } from '../testing.js';
 import { creditBonusForTest, setPlanForTest, settlementDb, operatorDb } from '../testing.js';
-import { USAGE_UNITS, allowanceFor } from '@rekoda/core';
+import { USAGE_UNITS, allowanceFor, usagePeriod } from '@rekoda/core';
 
 let urls: Urls;
 let db: Db;
@@ -45,7 +45,8 @@ async function seedBusiness(): Promise<string> {
   return business.id;
 }
 
-const PERIOD = '2026-08';
+/* The month in use now: since 0222 the database meters a paid unit on the current Lagos month. */
+const PERIOD = usagePeriod(new Date());
 
 /** Put a business on a plan directly, as a settled charge would. */
 async function setPlanOnRow(businessId: string, plan: string) {
@@ -132,16 +133,29 @@ describe('the atomic gate', () => {
     expect(floored?.used).toBe(0);
   });
 
-  it('keeps months separate — a new period is a fresh meter', async () => {
+  it('keeps months separate, and no label opens a fresh meter early (0222)', async () => {
     const businessId = await seedBusiness();
     await setPlanOnRow(businessId, 'chat');
     expect(await consume(businessId, 1)).toBe(true);
     expect(await consume(businessId, 1)).toBe(false);
 
-    const nextMonth = await withBusiness(db, businessId, (tx) =>
-      usageRepo.consumeUnit(tx, businessId, '2026-09', 'AI_ACTIONS', 1),
+    /* A month that has not started is not a fresh allowance: the database meters the spend on
+     * the current month, which is spent. (Before 0222 any label was a new counter row.) */
+    const laterLabel = await withBusiness(db, businessId, (tx) =>
+      usageRepo.consumeUnit(tx, businessId, '2099-09', 'AI_ACTIONS', 1),
     );
-    expect(nextMonth).toBe(true);
+    expect(laterLabel).toBe(false);
+    /* Months are separate rows: usage on an earlier month's row does not count against this one. */
+    const other = await seedBusiness();
+    await setPlanOnRow(other, 'chat');
+    const owner = createDb(urls.owner, { max: 1 });
+    try {
+      await owner.db.execute(sql`INSERT INTO usage_counters (business_id, period, unit, used)
+                                 VALUES (${other}::uuid, '2020-01', 'AI_ACTIONS', 400)`);
+    } finally {
+      await owner.close();
+    }
+    expect(await consume(other, 1)).toBe(true);
   });
 });
 
@@ -273,6 +287,9 @@ describe('spending an amount, not a tally', () => {
 
   beforeEach(async () => {
     businessId = await seedBusiness();
+    /* Complete sells 120 minutes (7,200 seconds): room for every allowance below, which since 0222
+     * can only lower the database's own ceiling. */
+    await setPlanOnRow(businessId, 'complete');
   });
 
   const spend = (allowance: number, n: number) =>
@@ -344,6 +361,15 @@ describe('the metered vocabulary (spec 4.2)', () => {
         SELECT * FROM usage_reserve(${businessId}::uuid, ${PERIOD}, ${unit}, 5, 1, false)
       `),
     );
+  const truncateUnit = async (unit: string) => {
+    const owner = createDb(urls.owner, { max: 1 });
+    try {
+      await owner.db.execute(sql`DELETE FROM usage_counters
+                                 WHERE business_id = ${businessId}::uuid AND unit = ${unit}`);
+    } finally {
+      await owner.close();
+    }
+  };
   const writeAsOwner = async (unit: string) => {
     const owner = createDb(urls.owner, { max: 1 });
     try {
@@ -357,9 +383,17 @@ describe('the metered vocabulary (spec 4.2)', () => {
 
   it('holds every one of the canonical seventeen', async () => {
     expect(USAGE_UNITS).toHaveLength(17);
+    /* Every canonical name is accepted by the function (granted or refused by the business's own
+     * ceiling since 0222, never an error), and the column holds every one of them. */
     for (const unit of USAGE_UNITS) {
-      await expect(write(unit), `${unit} is writable`).resolves.toBeDefined();
+      await expect(write(unit), `${unit} is accepted`).resolves.toBeDefined();
     }
+    await Promise.all(
+      [...USAGE_UNITS].map(async (unit) => {
+        await truncateUnit(unit);
+        await writeAsOwner(unit);
+      }),
+    );
     const rows = await withBusiness(db, businessId, (tx) =>
       tx.execute<{ n: number }>(
         sql`SELECT count(*)::int AS n FROM usage_counters WHERE business_id = ${businessId}::uuid`,

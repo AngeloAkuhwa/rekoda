@@ -162,7 +162,8 @@ SMOKE_0196_SQL="SELECT
                   '0217_settlement_isolation', '0218_usage_reservation_closure',
                   '0219_support_review_respects_later_schedule',
                   '0220_job_row_and_grace_review_fixes',
-                  '0221_operator_writes_only_through_its_functions')) = 21
+                  '0221_operator_writes_only_through_its_functions',
+                  '0222_usage_entitlement_in_the_database')) = 22
   AND (SELECT string_agg(column_name, ',' ORDER BY column_name)
          FROM information_schema.column_privileges
         WHERE grantee = 'rekoda_billing_operator' AND table_schema = 'public'
@@ -338,11 +339,25 @@ SMOKE_0196_SQL="SELECT
         WHERE p.proowner = 'rekoda_usage_writer'::regrole) w)
       = 'public.usage_bind_event(uuid, uuid, uuid) => rekoda_app,rekoda_worker'
         || ' ; public.usage_credit_pack(uuid, text, text, text, integer) => rekoda_settlement'
+        || ' ; public.usage_entitlement(uuid, text) => rekoda_app,rekoda_worker'
         || ' ; public.usage_refund(uuid, uuid, text, integer) => rekoda_app,rekoda_worker'
         || ' ; public.usage_reserve(uuid, text, text, integer, integer, boolean) => rekoda_app,rekoda_worker'
         || ' ; rekoda_private.jobs_close_event_reservations() => '
+        || ' ; rekoda_private.usage_meter_row(uuid, text, text) => '
   AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.usage_refund(uuid,uuid,text,integer)'))
-        LIKE '%closed_at IS NOT NULL%'
+        LIKE '%closed_at IS NOT NULL%event_id IS NULL AND r.created_at < now() - interval ''15 minutes''%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('public.usage_reserve(uuid,text,text,integer,integer,boolean)'))
+        LIKE '%v_row := rekoda_private.usage_meter_row(%v_ceiling := least(p_allowance, public.usage_entitlement(%c.used + p_n <= v_ceiling + c.bonus%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.jobs_application_transition_guard()'))
+        LIKE '%NOT pg_has_role(current_user, ''rekoda_app'', ''USAGE'')%only settlement runs, completes or reschedules a settlement job%locked_by IS DISTINCT FROM OLD.locked_by%OLD.state = ''dead'' AND NEW.state = ''pending''%NEW.locked_by IS NULL AND NEW.locked_at IS NULL%'
+  AND (SELECT count(*) FROM pg_trigger WHERE tgname = 'jobs_application_transition_guard'
+        AND tgrelid = 'public.jobs'::regclass AND tgenabled IN ('O', 'A')
+        AND pg_get_triggerdef(oid) LIKE '%BEFORE INSERT OR UPDATE ON public.jobs%') = 1
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.external_events_worker_guard()'))
+        LIKE '%NOT pg_has_role(current_user, ''rekoda_worker'', ''USAGE'')%'
   AND NOT EXISTS (SELECT 1 FROM pg_proc WHERE proowner = 'rekoda_usage_writer'::regrole
         AND (NOT prosecdef OR proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, public, pg_temp']))
   AND (SELECT count(*) FROM pg_roles WHERE rolname = 'rekoda_usage_writer'
@@ -362,7 +377,7 @@ SMOKE_0196_SQL="SELECT
         LIKE '%rekoda_usage_writer%credited only through usage_credit_pack%'
   AND (SELECT prosrc FROM pg_proc
         WHERE oid = to_regprocedure('rekoda_private.subscription_charges_settlement_guard()'))
-        LIKE '%the usage writer records only the credit time%a pack is credited only through usage_credit_pack%'
+        LIKE '%the usage writer records only the credit time%a pack is credited only through usage_credit_pack%OR NEW.provider_reference IS DISTINCT FROM OLD.provider_reference THEN%'
   AND (SELECT count(*) FROM billing_pricing_source WHERE mode IN ('catalogue', 'constants')) = 1
   AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['rekoda_app', 'rekoda_worker', 'rekoda_settlement',
         'rekoda_billing_operator']) AS r(role)
@@ -884,7 +899,7 @@ if [[ " $BREAKING " == *' 0217_settlement_isolation '* ]]; then
   for var in OPERATOR_OIDC_ISSUER OPERATOR_OIDC_JWKS_URL OPERATOR_BILLING_OIDC_AUDIENCE VAULT_KEY \
     SETTLEMENT_DATABASE_URL OPERATOR_DATABASE_URL; do
     [ -n "$(sed -n "s/^${var}=//p" .env | tail -1)" ] ||
-      fail "this release carries 0217 (OD-51) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0213 to 0221\"); nothing has been changed"
+      fail "this release carries 0217 (OD-51) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0213 to 0222\"); nothing has been changed"
   done
   [ "$(sed -n 's/^OPERATOR_BILLING_OIDC_AUDIENCE=//p' .env | tail -1)" != "$(sed -n 's/^OPERATOR_OIDC_AUDIENCE=//p' .env | tail -1)" ] ||
     fail 'OPERATOR_BILLING_OIDC_AUDIENCE must differ from OPERATOR_OIDC_AUDIENCE: a token the API accepts must not change a plan (OD-51); nothing has been changed'

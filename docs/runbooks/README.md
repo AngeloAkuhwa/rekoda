@@ -20,6 +20,7 @@ Planned (populated as the systems they describe land):
 | `staging-acceptance-handoff.md` — post-deploy check, prerequisites and order for SUB-ACC and ACCEPT-01                                     | MVP (4 Nov 2026)                                             |
 | `staging-test-business-tools.md` — staging-only date moves and one-shot send faults (G-119, OWN-77), with the owner's acceptance scenarios | PR B (#432, 8 Nov 2026); usable once merged and deployed     |
 | `meta-whatsapp-templates.md` — the five template slots, manual Meta and staging verification                                               | PR A (OD-41(b), 7 Nov 2026)                                  |
+| `billing-duplicate-payments.md` — a merchant paid Rekoda twice for one pack or charge: find, evidence, refund, record, tell                | PR B (#432, 13 Nov 2026); two steps await owner decisions    |
 
 Rule: a backup that has not been restore-drilled does not count as a backup.
 

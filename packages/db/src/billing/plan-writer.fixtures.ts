@@ -60,6 +60,15 @@ export async function seedBusiness(): Promise<string> {
   return business.id;
 }
 
+/** The Developer API Starter, held from yesterday (written as the owner; settlement writes it in
+ * production). It is what sells API requests and webhook deliveries (25,000 a month each), which
+ * the database's own ceiling counts since migration 0222. */
+export async function holdApiStarter(businessId: string): Promise<void> {
+  await ownerDb.execute(sql`INSERT INTO business_add_ons (business_id, add_on_id, version, started_at)
+                            VALUES (${businessId}::uuid, 'developer_api_starter', 1,
+                                    now() - interval '1 day')`);
+}
+
 /** The Postgres error behind drizzle's wrapper, or 'allowed'. */
 export const outcome = (run: Promise<unknown>) =>
   run.then(
