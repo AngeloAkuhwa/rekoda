@@ -535,6 +535,13 @@ test('OWN-70: a host whose Paystack key is missing, empty, live or malformed, or
     PAYSTACK_ENV + `PAYSTACK_SECRET_KEY: ${LIVE_KEY}\n`,
     PAYSTACK_ENV + `PAYSTACK_SECRET_KEY : ${LIVE_KEY}\n`,
     PAYSTACK_ENV + 'REKODA_PAYSTACK_PLATFORM_CONFIRMED: 1\n',
+    /* compose reads on after a closing quote, and treats a no-break space as a space. */
+    PAYSTACK_ENV + `OTHER="v"PAYSTACK_SECRET_KEY=${LIVE_KEY}\n`,
+    `PAYSTACK_SECRET_KEY="${TEST_KEY}"PAYSTACK_SECRET_KEY="${LIVE_KEY}"\n`,
+    PAYSTACK_ENV + `PAYSTACK_SECRET_KEY\u00a0=${LIVE_KEY}\n`,
+    PAYSTACK_ENV + `\u00a0PAYSTACK_SECRET_KEY=${LIVE_KEY}\n`,
+    PAYSTACK_ENV + 'REKODA_PAYSTACK_PLATFORM_CONFIRMED="0"REKODA_PAYSTACK_PLATFORM_CONFIRMED=1\n',
+    PAYSTACK_ENV + 'REKODA_PAYSTACK_PLATFORM_CONFIRMED=true\n',
   ]) {
     const h = host(
       ['0217_settlement_isolation'],
@@ -545,7 +552,7 @@ test('OWN-70: a host whose Paystack key is missing, empty, live or malformed, or
     assert.notEqual(r.status, 0, paystackEnv);
     assert.match(
       r.stderr,
-      /STAGING DEPLOY REFUSED: .*(Paystack TEST key|REKODA_PAYSTACK_PLATFORM_CONFIRMED=1|one plain line).*nothing has been changed/,
+      /STAGING DEPLOY REFUSED: .*(Paystack TEST key|REKODA_PAYSTACK_PLATFORM_CONFIRMED must be|one plain line).*nothing has been changed/,
     );
     assert.equal(h.at(' build '), -1, 'nothing may be built');
     assert.equal(h.at('stop api worker'), -1, 'nothing may be stopped');
@@ -559,6 +566,8 @@ test('OWN-70: a TEST key, quoted or not, lets the deploy through', () => {
     PAYSTACK_ENV,
     `PAYSTACK_SECRET_KEY="${TEST_KEY}"\n`,
     `PAYSTACK_SECRET_KEY='${TEST_KEY}'\n`,
+    `# PAYSTACK_SECRET_KEY rotated in November\n${PAYSTACK_ENV}REKODA_PAYSTACK_PLATFORM_CONFIRMED=0\n`,
+    `${PAYSTACK_ENV}REKODA_PAYSTACK_PLATFORM_CONFIRMED=\n`,
   ]) {
     const h = host(
       ['0217_settlement_isolation'],

@@ -770,24 +770,30 @@ PREV_RELEASE=$(sed -n 's/^REKODA_RELEASE=//p' .env)
 # dies, so a missing, empty or live key is refused here, before anything is built or stopped.
 # Only the key's prefix is examined (the last line wins, as compose reads it); the value is never
 # printed. Staging application settings live in this host's .env alone, never in GitHub.
-# Compose's .env parser also reads `export NAME=`, an indented name, spaces before the separator
-# and the YAML-style `NAME: value`, none of which the plain-line reads below see. So every line
-# compose could read as one of these two names must be the plain `NAME=` form: anything else is
-# refused outright.
+# Compose's .env parser reads more than plain lines: `export NAME=`, indents, spaces or a no-break
+# space before the separator, YAML-style `NAME: value`, and a new statement straight after a closing
+# quote. Rather than mirror that parser, every non-comment line that mentions either name at all
+# (byte match, so a no-break space counts) must be the plain `NAME=` line; anything else is
+# refused outright, and the values below are read from those plain lines only.
 for name in PAYSTACK_SECRET_KEY REKODA_PAYSTACK_PLATFORM_CONFIRMED; do
-  [ "$(grep -cE "^[[:space:]]*(export[[:space:]]+)?${name}[[:space:]]*[:=]" .env)" = "$(grep -c "^${name}=" .env)" ] ||
-    fail 'write PAYSTACK_SECRET_KEY and REKODA_PAYSTACK_PLATFORM_CONFIRMED in .env as one plain line each (NAME=value: no export, no indent, no colon, no spaces before =); nothing has been changed'
+  mentions=$(LC_ALL=C grep -v '^[[:space:]]*#' .env | LC_ALL=C grep -cE "${name}([^A-Za-z0-9_]|\$)" || true)
+  [ "$mentions" = "$(LC_ALL=C grep -c "^${name}=" .env || true)" ] ||
+    fail 'write PAYSTACK_SECRET_KEY and REKODA_PAYSTACK_PLATFORM_CONFIRMED in .env as one plain line each (NAME=value, nothing else on the line; no export, indent, colon or space before =); nothing has been changed'
 done
+unset mentions
 paystack_key=$(sed -n 's/^PAYSTACK_SECRET_KEY=//p' .env | tail -1)
 case "$paystack_key" in
   \"*\") paystack_key=${paystack_key#\"} paystack_key=${paystack_key%\"} ;;
   \'*\') paystack_key=${paystack_key#\'} paystack_key=${paystack_key%\'} ;;
 esac
-[[ "$paystack_key" =~ ^sk_test_[^[:space:]]+$ ]] ||
+# A Paystack secret key is the prefix and letters and digits; nothing else may follow it.
+[[ "$paystack_key" =~ ^sk_test_[A-Za-z0-9]+$ ]] ||
   fail 'PAYSTACK_SECRET_KEY in .env must be a Paystack TEST key (sk_test_...): staging never runs a live key or none (OWN-70); nothing has been changed'
 unset paystack_key
-[ "$(sed -n 's/^REKODA_PAYSTACK_PLATFORM_CONFIRMED=//p' .env | tail -1)" != 1 ] ||
-  fail 'REKODA_PAYSTACK_PLATFORM_CONFIRMED=1 must not be set on staging (OWN-70); nothing has been changed'
+case "$(sed -n 's/^REKODA_PAYSTACK_PLATFORM_CONFIRMED=//p' .env | tail -1)" in
+  '' | 0) ;;
+  *) fail 'REKODA_PAYSTACK_PLATFORM_CONFIRMED must be absent, empty or 0 on staging (OWN-70); nothing has been changed' ;;
+esac
 clear_compose_overrides
 
 
