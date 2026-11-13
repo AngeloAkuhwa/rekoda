@@ -1137,8 +1137,9 @@ refuse a host whose `.env` does not name `https://staging-api.myrekoda.com` as
 `REKODA_API_PUBLIC_URL`, refuse a host whose `.env` `PAYSTACK_SECRET_KEY` is not a Paystack TEST key
 (`sk_test_...`; missing, empty, live or malformed are refused, the key is never printed) or that sets
 `REKODA_PAYSTACK_PLATFORM_CONFIRMED=1` (OWN-70; the settlement process would otherwise start healthy with no
-key), refuse any spelling of either Paystack name other than one plain `NAME=` line (`export`, an indent,
-spaces before the separator or a YAML-style `NAME: value`, which compose would read and the check would not), clear from its own shell every name the compose file interpolates (except
+key), refuse any non-comment line mentioning either Paystack name other than one plain `NAME=` line (compose
+also reads `export`, indents, a YAML-style `NAME: value` and a statement right after a closing quote), require
+the key to be `sk_test_` and letters and digits only and the §47 flag to be absent, empty or `0`, clear from its own shell every name the compose file interpolates (except
 `REKODA_RELEASE`, which it pins) so `.env` is the only source, refuse unless `/health` answers `status` ok,
 `database` up, the `REKODA_RELEASE` in `.env`, and a commit of at least
 seven characters that the checked-out commit starts with (the running
