@@ -98,14 +98,14 @@ async function enqueue(
   payload: Record<string, unknown>,
   maxAttempts = 2,
 ): Promise<void> {
-  await withBusiness(appDb, businessId, (tx) =>
+  const db = kind === 'billing.process' ? ownerDb() : appDb; // arbitrary payloads: 0222
+  await withBusiness(db, businessId, (tx) =>
     jobsRepo.enqueue(tx, { businessId, kind, payload, maxAttempts }),
   );
 }
 
-/** Fail every attempt through the handler path until the job is dead. A settlement job
- * (`billing.process`) is claimed and failed on the settlement credential, the only one the
- * database lets run it (migration 0217); every other kind on the worker's. */
+/** Fail every attempt until the job is dead: a settlement job on the settlement credential (0217),
+ * every other kind on the worker's. Settlement jobs are enqueued as the owner (see `enqueue`). */
 async function killByHandler(times: number, error = 'boom'): Promise<string> {
   let id = '';
   for (let i = 0; i < times; i++) {

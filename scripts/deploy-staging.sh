@@ -344,11 +344,26 @@ SMOKE_0196_SQL="SELECT
         || ' ; public.usage_reserve(uuid, text, text, integer, integer, boolean) => rekoda_app,rekoda_worker'
         || ' ; rekoda_private.jobs_close_event_reservations() => '
         || ' ; rekoda_private.usage_meter_row(uuid, text, text) => '
+        || ' ; rekoda_private.usage_meter_row_at(uuid, text, text, timestamp with time zone) => '
   AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.usage_refund(uuid,uuid,text,integer)'))
         LIKE '%closed_at IS NOT NULL%event_id IS NULL AND r.created_at < now() - interval ''15 minutes''%'
   AND (SELECT prosrc FROM pg_proc
         WHERE oid = to_regprocedure('public.usage_reserve(uuid,text,text,integer,integer,boolean)'))
         LIKE '%v_row := rekoda_private.usage_meter_row(%v_ceiling := least(p_allowance, public.usage_entitlement(%c.used + p_n <= v_ceiling + c.bonus%'
+  AND (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('public.usage_entitlement(uuid,text)'))
+        LIKE '%b.plan = ''trial'' AND b.plan_expires_at IS NOT NULL%av.plan_version_id = COALESCE(%g.grant_kind = ''MONTHLY_UNITS''%RETURN (coalesce(v_sold, 0) + v_granted) * v_scale%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.usage_meter_row_at(uuid,text,text,timestamptz)'))
+        LIKE '%RETURN ''TRIAL00''%extract(day FROM v_lagos) <= 7%EXISTS (SELECT 1 FROM public.usage_counters c%RETURN v_month;%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.usage_meter_row(uuid,text,text)'))
+        LIKE '%usage_meter_row_at(p_business, p_period, p_unit, now())%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.businesses_plan_fields_guard()'))
+        LIKE '%IF current_user = ''rekoda_plan_writer'' THEN%relowner%change only through the subscription writers%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.jobs_application_transition_guard()'))
+        LIKE '%a settlement job names the Paystack event of its singleton key%a settlement job names the charge of its singleton key%'
   AND (SELECT prosrc FROM pg_proc
         WHERE oid = to_regprocedure('rekoda_private.jobs_application_transition_guard()'))
         LIKE '%NOT pg_has_role(current_user, ''rekoda_app'', ''USAGE'')%only settlement runs, completes or reschedules a settlement job%locked_by IS DISTINCT FROM OLD.locked_by%OLD.state = ''dead'' AND NEW.state = ''pending''%NEW.locked_by IS NULL AND NEW.locked_at IS NULL%'

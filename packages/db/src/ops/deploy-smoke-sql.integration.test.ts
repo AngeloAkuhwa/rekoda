@@ -354,6 +354,18 @@ describe('the pre-start database smoke, executed', () => {
       'CREATE OR REPLACE FUNCTION rekoda_private.subscription_charges_settlement_guard() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $f$ BEGIN RETURN NEW; END $f$',
     ],
     [
+      'an entitlement that answers a constant',
+      "CREATE OR REPLACE FUNCTION public.usage_entitlement(p_business uuid, p_unit text) RETURNS integer LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS 'SELECT 100000000'",
+    ],
+    [
+      'a meter row that takes the caller’s period',
+      "CREATE OR REPLACE FUNCTION rekoda_private.usage_meter_row_at(p_business uuid, p_period text, p_unit text, p_at timestamptz) RETURNS char(7) LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS 'SELECT p_period::char(7)'",
+    ],
+    [
+      'the plan guard emptied',
+      'CREATE OR REPLACE FUNCTION rekoda_private.businesses_plan_fields_guard() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $f$ BEGIN RETURN NEW; END $f$',
+    ],
+    [
       'the event guard matching the role name again',
       "CREATE OR REPLACE FUNCTION rekoda_private.external_events_worker_guard() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $f$ BEGIN IF current_user <> 'rekoda_worker' THEN RETURN NEW; END IF; RETURN NEW; END $f$",
     ],

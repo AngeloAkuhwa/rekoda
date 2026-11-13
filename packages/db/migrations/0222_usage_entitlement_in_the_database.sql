@@ -44,7 +44,8 @@
 --   6. (residual 10) The application's dead->pending move must clear the lease, which the only honest
 --      caller (`deadJobs.startRecovery`) already does.
 --   9. (found by the same review) Settlement's jobs: the application may enqueue one only as pending
---      work due now, and may requeue a dead one for an operator's recovery, but may no longer mark a
+--      work due now, for the Paystack event or charge its singleton key names (which must exist for
+--      that business), and may requeue a dead one for an operator's recovery, but may no longer mark a
 --      running one done, reschedule it, or enqueue one already finished. Settlement completes its
 --      own jobs on its own credential.
 --   8. (found by the same review) `rekoda_app` holds column UPDATE on `subscription_charges` for the
@@ -143,10 +144,12 @@ END $$;
 -- ---------------------------------------------------------------------------------------------
 -- 2. The meter row, chosen by the database.
 -- ---------------------------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION rekoda_private.usage_meter_row(
+-- The rule, at an explicit instant (so it can be tested on any day of the month).
+CREATE OR REPLACE FUNCTION rekoda_private.usage_meter_row_at(
   p_business uuid,
   p_period text,
-  p_unit text
+  p_unit text,
+  p_at timestamptz
 ) RETURNS char(7)
 LANGUAGE plpgsql
 STABLE
@@ -154,9 +157,9 @@ SET search_path = pg_catalog, public, pg_temp
 AS $$
 DECLARE
   v_plan text;
-  v_lagos timestamp := now() AT TIME ZONE 'Africa/Lagos';
-  v_month text := to_char(now() AT TIME ZONE 'Africa/Lagos', 'YYYY-MM');
-  v_previous text := to_char((date_trunc('month', now() AT TIME ZONE 'Africa/Lagos')
+  v_lagos timestamp := p_at AT TIME ZONE 'Africa/Lagos';
+  v_month text := to_char(p_at AT TIME ZONE 'Africa/Lagos', 'YYYY-MM');
+  v_previous text := to_char((date_trunc('month', p_at AT TIME ZONE 'Africa/Lagos')
                               - interval '1 month'), 'YYYY-MM');
 BEGIN
   SELECT plan INTO v_plan FROM public.businesses WHERE id = p_business;
@@ -169,11 +172,27 @@ BEGIN
   IF p_period = v_month THEN
     RETURN v_month;
   END IF;
-  IF p_period = v_previous AND extract(day FROM v_lagos) <= 7 THEN
+  -- Last month, in the first seven days of this one, and only on a row that month already
+  -- opened: a late message is metered where its month's budget is, but no new row (a fresh
+  -- allowance, for a business that was on the trial or lapsed last month) can be opened there.
+  IF p_period = v_previous AND extract(day FROM v_lagos) <= 7
+     AND EXISTS (SELECT 1 FROM public.usage_counters c
+                 WHERE c.business_id = p_business AND c.period = v_previous AND c.unit = p_unit) THEN
     RETURN v_previous;
   END IF;
   RETURN v_month;
 END $$;
+
+CREATE OR REPLACE FUNCTION rekoda_private.usage_meter_row(
+  p_business uuid,
+  p_period text,
+  p_unit text
+) RETURNS char(7)
+LANGUAGE sql
+STABLE
+SET search_path = pg_catalog, public, pg_temp
+AS $$ SELECT rekoda_private.usage_meter_row_at(p_business, p_period, p_unit, now()) $$;
+REVOKE ALL ON FUNCTION rekoda_private.usage_meter_row_at(uuid, text, text, timestamptz) FROM PUBLIC;
 REVOKE ALL ON FUNCTION rekoda_private.usage_meter_row(uuid, text, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rekoda_private.usage_meter_row(uuid, text, text) TO rekoda_usage_writer;
 
@@ -304,12 +323,13 @@ BEGIN
 END $$;
 
 ALTER FUNCTION public.usage_entitlement(uuid, text) OWNER TO rekoda_usage_writer;
+ALTER FUNCTION rekoda_private.usage_meter_row_at(uuid, text, text, timestamptz)
+  OWNER TO rekoda_usage_writer;
 ALTER FUNCTION rekoda_private.usage_meter_row(uuid, text, text) OWNER TO rekoda_usage_writer;
 ALTER FUNCTION public.usage_reserve(uuid, text, text, integer, integer, boolean)
   OWNER TO rekoda_usage_writer;
 ALTER FUNCTION public.usage_refund(uuid, uuid, text, integer) OWNER TO rekoda_usage_writer;
 REVOKE ALL ON FUNCTION public.usage_entitlement(uuid, text) FROM PUBLIC;
-REVOKE ALL ON FUNCTION rekoda_private.usage_meter_row(uuid, text, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.usage_reserve(uuid, text, text, integer, integer, boolean) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.usage_refund(uuid, uuid, text, integer) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.usage_entitlement(uuid, text) TO rekoda_app, rekoda_worker;
@@ -318,9 +338,10 @@ GRANT EXECUTE ON FUNCTION public.usage_reserve(uuid, text, text, integer, intege
 GRANT EXECUTE ON FUNCTION public.usage_refund(uuid, uuid, text, integer)
   TO rekoda_app, rekoda_worker;
 
--- `usage_meter_row` is not SECURITY DEFINER (it runs inside `usage_reserve`, as the writer), so the
--- smoke's rule that every writer-owned function is SECURITY DEFINER with a pinned search_path is
--- kept by making it one too: it reads only the business's plan, under the caller's pin.
+-- The two row functions run inside `usage_reserve`, as the writer; they are SECURITY DEFINER too so
+-- the smoke's rule (every writer-owned function is SECURITY DEFINER with a pinned search_path)
+-- holds. They read only the business's plan and its own counter rows, under the caller's pin.
+ALTER FUNCTION rekoda_private.usage_meter_row_at(uuid, text, text, timestamptz) SECURITY DEFINER;
 ALTER FUNCTION rekoda_private.usage_meter_row(uuid, text, text) SECURITY DEFINER;
 
 -- ---------------------------------------------------------------------------------------------
@@ -349,6 +370,25 @@ BEGIN
             OR NEW.locked_at IS NOT NULL OR NEW.attempts <> 0
             OR NEW.run_at > now() + interval '1 minute') THEN
       RAISE EXCEPTION 'the application enqueues a settlement job only as pending work due now (0222)'
+        USING ERRCODE = '42501';
+    END IF;
+    -- And only for the thing its singleton key names, which must exist for this business: a job
+    -- squatting an event's key with a payload naming something else would make the pump treat the
+    -- verified payment as queued while settlement settles nothing (review of `10ef5c9`).
+    IF NEW.kind = 'billing.process'
+       AND (NEW.singleton_key IS DISTINCT FROM 'billevent:' || (NEW.payload ->> 'eventId')
+            OR NOT EXISTS (SELECT 1 FROM public.external_events e
+                           WHERE e.id::text = NEW.payload ->> 'eventId'
+                             AND e.business_id = NEW.business_id AND e.provider = 'paystack')) THEN
+      RAISE EXCEPTION 'a settlement job names the Paystack event of its singleton key, for its business (0222)'
+        USING ERRCODE = '42501';
+    END IF;
+    IF NEW.kind = 'billing.apply_no_charge'
+       AND (NEW.singleton_key IS DISTINCT FROM 'no-charge:' || (NEW.payload ->> 'reference')
+            OR NOT EXISTS (SELECT 1 FROM public.subscription_charges c
+                           WHERE c.reference = NEW.payload ->> 'reference'
+                             AND c.business_id = NEW.business_id)) THEN
+      RAISE EXCEPTION 'a settlement job names the charge of its singleton key, for its business (0222)'
         USING ERRCODE = '42501';
     END IF;
     RETURN NEW;

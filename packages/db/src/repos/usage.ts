@@ -79,9 +79,10 @@ async function planOf(tx: TenantDb, businessId: string): Promise<string | undefi
  * `rekoda_private.usage_meter_row` (migration 0222), which is the one that decides. A trial's
  * base-plan units go on the trial row. Otherwise the asked month is kept when it is the current
  * Africa/Lagos month, or the month before during a month's first seven days (a message that arrived
- * on the 31st and is processed after midnight is metered on the month it arrived in); any other
- * label is metered on the current month, so no label can open a fresh allowance. The handle's row
- * is a label: a refund returns a reservation to the row the database recorded on it.
+ * on the 31st and is processed after midnight is metered on the month it arrived in; the database
+ * honours that only on a row last month already opened, and otherwise uses the current month); any
+ * other label is metered on the current month, so no label can open a fresh allowance. The handle's
+ * row is a label: a refund returns a reservation to the row the database recorded on it.
  */
 function meterOn(
   plan: string | undefined,
