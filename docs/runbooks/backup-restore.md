@@ -59,7 +59,7 @@ ADR 0010 is NOT implemented; this is the nightly logical half only, RPO up to 24
   `BACKUP_S3_ENDPOINT=https://<account id>.r2.cloudflarestorage.com`.
 - **Cloudflare R2 specifics** (owner choice for the staging destination, 13 Nov 2026; tested against an
   S3-compatible server with aws CLI 2.40, not yet against R2 itself; the full procedure is
-  `staging-pr432-config-checklist.md` §1):
+  `staging-first-deploy-pr-b.md` §1):
   - R2 has **no** S3 versioning and **no** S3 Object Lock API. Its immutability feature is the **bucket
     lock rule** (by prefix; age, date or indefinite), which blocks deletes and overwrites, and overrides
     lifecycle deletion. Use a lock rule (for example 30 days on the backup prefix) plus a lifecycle

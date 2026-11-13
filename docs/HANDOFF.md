@@ -21,7 +21,10 @@
 #432: `deploy-staging.sh` refuses, on every staging deploy and before anything is built or stopped, a `.env` whose
 `PAYSTACK_SECRET_KEY` is not an `sk_test_` key or that sets `REKODA_PAYSTACK_PLATFORM_CONFIRMED=1`; the read-only
 check asks the settlement container for its own key; a trial's exhaustion messages (chat and report downloads) name
-the free trial instead of "this month". Each RED first. Owner decision recorded: staging application values are
+the free trial instead of "this month" (and converting a quote, whose API outcome now carries the allowance window). After
+the independent review and Qodo: the deploy clears compose-interpolated names from its own shell, so `.env` is the only
+source, and refuses `export`, indented or spaced spellings of the Paystack names. Each RED first. Follow-up: the dashboard
+and billing meters are still headed "this month" for a trial (UI change, own design pass). Owner decision recorded: staging application values are
 entered by hand on the Hetzner host and never stored in GitHub; the automatic deploy stays. New runbook
 `docs/runbooks/staging-first-deploy-pr-b.md` (R2 backups, networking, 8 GB sizing, environment per process, who checks
 what, pre-merge P1 to P12, post-merge D1 to D13, acceptance gaps); `deploy.md` gains "Docker cleanup by hand

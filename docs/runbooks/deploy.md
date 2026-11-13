@@ -1134,7 +1134,9 @@ refuse a host whose `.env` does not name `https://staging-api.myrekoda.com` as
 `REKODA_API_PUBLIC_URL`, refuse a host whose `.env` `PAYSTACK_SECRET_KEY` is not a Paystack TEST key
 (`sk_test_...`; missing, empty, live or malformed are refused, the key is never printed) or that sets
 `REKODA_PAYSTACK_PLATFORM_CONFIRMED=1` (OWN-70; the settlement process would otherwise start healthy with no
-key), refuse unless `/health` answers `status` ok,
+key), refuse an `export`, indented or spaced spelling of either Paystack name (compose would read it,
+the check would not), clear from its own shell every name the compose file interpolates (except
+`REKODA_RELEASE`, which it pins) so `.env` is the only source, refuse unless `/health` answers `status` ok,
 `database` up, the `REKODA_RELEASE` in `.env`, and a commit of at least
 seven characters that the checked-out commit starts with (the running
 release is the one a failure's rollback would name, not merely what the
