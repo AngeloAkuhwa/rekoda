@@ -61,6 +61,17 @@ EDGE_NETWORK=rekoda-prod_edge
 EDGE_EXPECTED='172.30.10.1 false'
 
 dc() { docker compose -f docker-compose.prod.yml "$@"; }
+# Compose fills ${NAME} from the shell before .env. Staging's settings live in .env alone (the
+# owner's decision, 14 Nov 2026; never in GitHub or a deploy shell), and the checks above read
+# .env, so every name the compose file interpolates is cleared from this shell, except
+# REKODA_RELEASE, which this script pins on purpose. Otherwise a key exported in the deploy
+# session (a live Paystack key, another VAULT_KEY) would reach settlement or operator past them.
+clear_compose_overrides() {
+  local name
+  for name in $(grep -oE '\$\{[A-Z_][A-Z0-9_]*' docker-compose.prod.yml 2>/dev/null | cut -c3- | sort -u); do
+    [ "$name" = REKODA_RELEASE ] || unset "$name"
+  done
+}
 # Whether this release brings in the plan and payment boundary (0196, 0200, 0202 to 0206), so the
 # OWN-86 pre-start smoke applies.
 carries_plan_boundary() {
@@ -759,6 +770,10 @@ PREV_RELEASE=$(sed -n 's/^REKODA_RELEASE=//p' .env)
 # dies, so a missing, empty or live key is refused here, before anything is built or stopped.
 # Only the key's prefix is examined (the last line wins, as compose reads it); the value is never
 # printed. Staging application settings live in this host's .env alone, never in GitHub.
+# Compose also reads `export NAME=`, an indented line and spaces around `=`, which the plain-line
+# reads below would not see, so any such spelling of these two names is refused outright.
+! grep -Eq '^[[:space:]]*export[[:space:]]+(PAYSTACK_SECRET_KEY|REKODA_PAYSTACK_PLATFORM_CONFIRMED)\b|^[[:space:]]+(PAYSTACK_SECRET_KEY|REKODA_PAYSTACK_PLATFORM_CONFIRMED)\b|^(PAYSTACK_SECRET_KEY|REKODA_PAYSTACK_PLATFORM_CONFIRMED)[[:space:]]+=' .env ||
+  fail 'write PAYSTACK_SECRET_KEY and REKODA_PAYSTACK_PLATFORM_CONFIRMED in .env as one plain line each (NAME=value, no export, no indent, no spaces around =); nothing has been changed'
 paystack_key=$(sed -n 's/^PAYSTACK_SECRET_KEY=//p' .env | tail -1)
 case "$paystack_key" in
   \"*\") paystack_key=${paystack_key#\"} paystack_key=${paystack_key%\"} ;;
@@ -769,6 +784,7 @@ esac
 unset paystack_key
 [ "$(sed -n 's/^REKODA_PAYSTACK_PLATFORM_CONFIRMED=//p' .env | tail -1)" != 1 ] ||
   fail 'REKODA_PAYSTACK_PLATFORM_CONFIRMED=1 must not be set on staging (OWN-70); nothing has been changed'
+clear_compose_overrides
 
 
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
@@ -974,6 +990,8 @@ git -c advice.detachedHead=false checkout -q --detach "$SHA"
 verify_checkout "$SHA" || fail 'the checkout holds tracked files that differ from the commit (empty or cut short: a full disk?)'
 sed -i "s/^REKODA_RELEASE=.*/REKODA_RELEASE=${RELEASE}/" .env
 [ "$(sed -n 's/^REKODA_RELEASE=//p' .env)" = "$RELEASE" ] || fail 'REKODA_RELEASE was not updated in .env'
+# The commit's compose file may interpolate names the previous one did not.
+clear_compose_overrides
 
 # One image at a time, never both at once: concurrent builds are what overloaded
 # the host. The api image is the one api, worker, migrate and edge-check run.

@@ -51,7 +51,12 @@ function host(extraTags, extraEnv = PRINCIPAL_ENV, paystackEnv = PAYSTACK_ENV) {
   sh(root, `git init -q --bare -b main ${origin} && git init -q -b main ${work}`);
   const commit = (n, tags) => {
     mkdirSync(join(work, 'packages/db/migrations/meta'), { recursive: true });
-    writeFileSync(join(work, 'docker-compose.prod.yml'), `# ${n}\n`);
+    // Names the real compose file interpolates from the shell or .env: the script must leave .env
+    // the only source for them.
+    writeFileSync(
+      join(work, 'docker-compose.prod.yml'),
+      `# ${n}\nx-interpolated: ['\${PAYSTACK_SECRET_KEY:-}', '\${VAULT_KEY:?}', '\${REKODA_RELEASE:?}']\n`,
+    );
     writeFileSync(
       join(work, 'packages/db/migrations/meta/_journal.json'),
       JSON.stringify({ entries: tags.map((tag) => ({ tag })) }),
@@ -96,6 +101,7 @@ function host(extraTags, extraEnv = PRINCIPAL_ENV, paystackEnv = PAYSTACK_ENV) {
   bin(
     'docker',
     `echo "$*" >> "${fake}/docker.log"
+case "$*" in *"-f docker-compose.prod.yml"*) echo "PAYSTACK_SECRET_KEY=\${PAYSTACK_SECRET_KEY-unset} VAULT_KEY=\${VAULT_KEY-unset}" >> "${fake}/shell-env.log" ;; esac
 case "$*" in
   *"stop api worker"*) [ -e "${fake}/stop-fails" ] && exit 1; [ -e "${fake}/hang-stop" ] && sleep 60 ;;
   *"ps --status running --services"*) [ -e "${fake}/ps-fails" ] && exit 1; cat "${fake}/running" 2>/dev/null ;;
@@ -114,12 +120,17 @@ exit 0`,
       .replaceAll('https://staging-api.myrekoda.com', API)
       .replaceAll('/proc/meminfo', join(fake, 'meminfo')),
   );
-  const run = () =>
+  const run = (shellEnv = {}) =>
     spawnSync('bash', [script, next], {
       cwd: dir,
       encoding: 'utf8',
-      env: { ...process.env, PATH: `${fake}:${process.env.PATH}` },
+      env: { ...process.env, PATH: `${fake}:${process.env.PATH}`, ...shellEnv },
     });
+  /** What compose would have read from the deploy's own shell, one line per call that reads the compose file. */
+  const shellEnvSeen = () =>
+    existsSync(join(fake, 'shell-env.log'))
+      ? readFileSync(join(fake, 'shell-env.log'), 'utf8').trim().split('\n')
+      : [];
   /** The script as a process GROUP that a test can terminate part-way, as a cancelled workflow or a
    * dropped ssh session does: the signal reaches the script and whatever it is waiting on. */
   const runInterrupted = async (waitFor, signal = 'SIGTERM') => {
@@ -147,7 +158,7 @@ exit 0`,
       ? readFileSync(join(fake, 'docker.log'), 'utf8').split('\n').filter(Boolean)
       : [];
   const at = (needle) => calls().findIndex((c) => c.includes(needle));
-  return { fake, run, runInterrupted, calls, at };
+  return { fake, run, runInterrupted, calls, at, shellEnvSeen };
 }
 
 test('a release carrying 0196 stops the api and worker, proves it, then migrates, then starts', () => {
@@ -513,6 +524,11 @@ test('OWN-70: a host whose Paystack key is missing, empty, live or malformed, or
     'PAYSTACK_SECRET_KEY=sk_test_\n',
     `PAYSTACK_SECRET_KEY=${TEST_KEY}\nPAYSTACK_SECRET_KEY=${LIVE_KEY}\n`,
     PAYSTACK_ENV + 'REKODA_PAYSTACK_PLATFORM_CONFIRMED=1\n',
+    /* Spellings compose also reads, which the plain-line check would not see. */
+    PAYSTACK_ENV + `export PAYSTACK_SECRET_KEY=${LIVE_KEY}\n`,
+    PAYSTACK_ENV + `  PAYSTACK_SECRET_KEY=${LIVE_KEY}\n`,
+    PAYSTACK_ENV + `PAYSTACK_SECRET_KEY = ${LIVE_KEY}\n`,
+    PAYSTACK_ENV + 'export REKODA_PAYSTACK_PLATFORM_CONFIRMED=1\n',
   ]) {
     const h = host(
       ['0217_settlement_isolation'],
@@ -523,7 +539,7 @@ test('OWN-70: a host whose Paystack key is missing, empty, live or malformed, or
     assert.notEqual(r.status, 0, paystackEnv);
     assert.match(
       r.stderr,
-      /STAGING DEPLOY REFUSED: .*(Paystack TEST key|REKODA_PAYSTACK_PLATFORM_CONFIRMED=1).*nothing has been changed/,
+      /STAGING DEPLOY REFUSED: .*(Paystack TEST key|REKODA_PAYSTACK_PLATFORM_CONFIRMED=1|one plain line).*nothing has been changed/,
     );
     assert.equal(h.at(' build '), -1, 'nothing may be built');
     assert.equal(h.at('stop api worker'), -1, 'nothing may be stopped');
@@ -547,4 +563,19 @@ test('OWN-70: a TEST key, quoted or not, lets the deploy through', () => {
     assert.equal(r.status, 0, r.stderr + r.stdout);
     assert.doesNotMatch(r.stderr + r.stdout, /placeholderkey/, 'the key is never printed');
   }
+});
+
+test('OWN-70: a Paystack key or vault key exported in the deploy shell never reaches compose; .env is the only source', () => {
+  /* Built at run time so no key-shaped literal sits in the source (secret scan). */
+  const live = ['sk', 'live', 'exportedkey'].join('_');
+  const h = host(
+    ['0217_settlement_isolation'],
+    PRIVILEGED_ENV + 'OPERATOR_BILLING_OIDC_AUDIENCE=rekoda-billing\n',
+  );
+  const r = h.run({ PAYSTACK_SECRET_KEY: live, VAULT_KEY: 'b'.repeat(64) });
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const seen = h.shellEnvSeen();
+  assert.ok(seen.length > 0, 'compose was called');
+  for (const line of seen) assert.equal(line, 'PAYSTACK_SECRET_KEY=unset VAULT_KEY=unset');
+  assert.doesNotMatch(r.stderr + r.stdout, /exportedkey|bbbbbbbb/, 'a value is never printed');
 });
