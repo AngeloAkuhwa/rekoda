@@ -671,6 +671,22 @@ export class BillingCheckoutService {
     }
     if (charge.amountK <= 0) return 'nothing_to_pay';
 
+    /* A renewal buys the cycle that starts at the paid-to date it was raised against, and settlement
+     * applies it only then (0206). Once that date has moved (an operator's period correction, a
+     * later payment), a payment would be taken and set aside, so no link is handed out. Checked
+     * here, in the transaction that hands the link out, so the blocked-renewal job's earlier check
+     * cannot race it and the merchant's own checkout is held to it too. */
+    if (charge.kind === 'renewal') {
+      const subscription = await subscriptionsRepo.subscriptionFor(tx, businessId);
+      if (
+        !charge.periodStart ||
+        !subscription?.planExpiresAt ||
+        subscription.planExpiresAt.getTime() !== charge.periodStart.getTime()
+      ) {
+        return 'superseded';
+      }
+    }
+
     /* An upgrade is priced against the rest of the cycle it was opened in, and
      * settlement refuses to apply it once that cycle has ended or when the
      * cycle is not a provider-bought standard month (OWN-29, OWN-33): the money

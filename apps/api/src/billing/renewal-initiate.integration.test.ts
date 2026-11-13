@@ -36,6 +36,7 @@ import { loadConfig, type ApiConfig } from '../config.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
 import { initiateBlockedRenewalHandler } from '../jobs/initiate-blocked-renewal.handler.js';
 import { applySettledCharge } from './billing.service.js';
+import { BillingCheckoutService } from './billing-checkout.service.js';
 import { sweepRenewals } from './renewal-sweep.js';
 
 const DAY = 86_400_000;
@@ -442,6 +443,33 @@ describe('OD-44: the initiation job', () => {
 
     expect(provider.initialized).toEqual([]);
     expect((await outcomes(businessId)).map((o) => o.reason)).toContain('cycle_moved');
+  });
+
+  it('the checkout itself refuses a renewal whose paid-to date moved, so no race can hand out a link', async () => {
+    /* The job checks the cycle, then checks out in a separate transaction; the merchant's own
+     * checkout does not pass through the job at all. Settlement binds a renewal to the cycle that
+     * starts at the paid-to date it was raised against (0206), so a link for a moved cycle would
+     * take money that is then set aside. The checkout's own refusal must catch it. */
+    const { businessId, reference } = await blockedThenOpened();
+    await withBillingEmail(businessId);
+    /* Only the paid-to date moves (an operator's period correction, the staging date tool): no
+     * plan decision is recorded, so nothing else marks the renewal as retired. */
+    const owner = createDb(urls.owner, { max: 1 });
+    try {
+      await owner.db.execute(sql`UPDATE businesses
+          SET plan_expires_at = plan_expires_at + interval '3 days' WHERE id = ${businessId}::uuid`);
+    } finally {
+      await owner.close();
+    }
+
+    const answer = await new BillingCheckoutService(config, db, provider).checkout(
+      businessId,
+      reference,
+      undefined,
+    );
+
+    expect(answer).toMatchObject({ state: 'unavailable', reason: 'superseded' });
+    expect(provider.initialized).toEqual([]);
   });
 
   it('without a billing email it starts nothing and says so; the merchant supplies one on the billing page', async () => {
