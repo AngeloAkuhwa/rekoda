@@ -508,8 +508,14 @@ export const convertQuoteResponse = z.discriminatedUnion('outcome', [
   z.object({ outcome: z.literal('cancelled') }),
   /** Past its own validUntil: honour it or issue a fresh quote. */
   z.object({ outcome: z.literal('expired'), validUntil: z.string() }),
-  /** The month's document allowance is spent; nothing was issued. */
-  z.object({ outcome: z.literal('exhausted'), allowance: z.number().int().nonnegative() }),
+  /** The document allowance is spent; nothing was issued. `window` says which allowance: a paid
+   * plan's month, or the trial's one budget for its 14 days (G-109). Absent from an older API,
+   * which a caller reads as `month`. */
+  z.object({
+    outcome: z.literal('exhausted'),
+    allowance: z.number().int().nonnegative(),
+    window: z.enum(['month', 'trial']).optional(),
+  }),
 ]);
 
 export const cancelQuoteRequest = z.object({

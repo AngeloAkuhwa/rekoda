@@ -1043,7 +1043,9 @@ export class ReportsController {
     const spent = await withBusiness(this.db, businessId, (own) =>
       usageRepo.reserveUnit(own, businessId, period, 'DOCUMENT_GENERATION', allowance),
     );
-    if (!spent.granted) return { outcome: 'exhausted', allowance };
+    if (!spent.granted) {
+      return { outcome: 'exhausted', allowance, window: plan === 'trial' ? 'trial' : 'month' };
+    }
 
     try {
       return await withBusiness(this.db, businessId, async (tx) => {

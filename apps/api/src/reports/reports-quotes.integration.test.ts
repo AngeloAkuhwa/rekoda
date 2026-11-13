@@ -26,6 +26,8 @@ import {
   stockRepo,
   withBusiness,
 } from '@rekoda/db';
+import { setPlanForTest } from '@rekoda/db/testing';
+import { meterAllowance } from '../billing/plan-terms.js';
 import { app, db, onboard, post, useReportsHarness } from './reports.fixtures.js';
 
 useReportsHarness();
@@ -141,6 +143,48 @@ describe('quotes, and what converting one does', () => {
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
     expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
+  });
+
+  it('a used-up document allowance refuses the convert, issues nothing, and says which window it was (G-109)', async () => {
+    for (const [phone, plan, window] of [
+      ['+2348177000231', 'trial', 'trial'],
+      ['+2348177000232', 'chat', 'month'],
+    ] as const) {
+      const { auth, businessId } = await onboard(phone);
+      if (plan !== 'trial') {
+        await setPlanForTest(db, { businessId, plan, expiresAt: null, actor: 'operator:test' });
+      }
+      await seedPricedProduct(businessId);
+      const created = createQuoteResponse.parse(
+        (await post('/v1/reports/quotes', { ...QUOTE, clientRef: randomUUID() }, auth)).json(),
+      );
+      if (created.outcome !== 'created') throw new Error('quote not created');
+      const allowance = await withBusiness(db, businessId, (tx) =>
+        meterAllowance({ planCatalogueReads: true }, tx, businessId, plan, 'DOCUMENT_GENERATION'),
+      );
+      await withBusiness(db, businessId, (tx) =>
+        usageRepo.consumeUnit(
+          tx,
+          businessId,
+          usagePeriod(new Date()),
+          'DOCUMENT_GENERATION',
+          allowance,
+          allowance,
+        ),
+      );
+
+      const refused = convertQuoteResponse.parse(
+        (
+          await post('/v1/reports/quotes/convert', { quoteNumber: created.quoteNumber }, auth)
+        ).json(),
+      );
+      /* A trial's allowance is one budget for its 14 days, never "this month". */
+      expect(refused).toEqual({ outcome: 'exhausted', allowance, window });
+      const quote = await withBusiness(db, businessId, (tx) =>
+        ordersRepo.quoteByNumber(tx, businessId, created.quoteNumber),
+      );
+      expect(quote?.status).toBe('quoted');
+    }
   });
 
   it('a second convert is handed the first one`s invoice, and pays nothing', async () => {
