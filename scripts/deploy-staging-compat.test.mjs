@@ -290,6 +290,9 @@ test('SIGTERM while the services are being stopped: migrate is never entered and
   assert.match(stderr, /stopped state .*unverified/i);
   assert.match(stderr, /Migrate was never entered/);
   assert.doesNotMatch(stderr, /MAY already be applied/);
+  // From 0217 the release also runs the operator and settlement processes: the restart advice
+  // must name them, or following it leaves subscription payments unsettled.
+  assert.match(stderr, /dc start api worker operator settlement/);
 });
 
 test('OWN-86: a release carrying 0196 runs the pre-start database smoke after migrate and before up', () => {

@@ -145,6 +145,9 @@ UP_ENTERED=false
 #     payload), no default privilege, and the queue is split by kind between it and the worker (0217);
 #   * the pricing source in force is one row no runtime role can write or switch, and a charge's
 #     recorded source is guarded (0215);
+#   * settlement sees and settles only the Paystack events its own billing.process jobs name, and
+#     touches only billing.process dead-job records; every application requeue of a dead job is due
+#     now with one more attempt, and a settlement job is enqueued with its full retry budget (0223);
 #   * the worker reads but cannot write other businesses' events (its estate policy is SELECT only,
 #     no table-level INSERT, UPDATE or DELETE), and the application cannot record an add-on holding.
 # The expected list is the contract; a new writer is a deliberate edit of this list in its PR.
@@ -163,7 +166,8 @@ SMOKE_0196_SQL="SELECT
                   '0219_support_review_respects_later_schedule',
                   '0220_job_row_and_grace_review_fixes',
                   '0221_operator_writes_only_through_its_functions',
-                  '0222_usage_entitlement_in_the_database')) = 22
+                  '0222_usage_entitlement_in_the_database',
+                  '0223_settlement_scope_and_dead_job_requeue')) = 23
   AND (SELECT string_agg(column_name, ',' ORDER BY column_name)
          FROM information_schema.column_privileges
         WHERE grantee = 'rekoda_billing_operator' AND table_schema = 'public'
@@ -367,6 +371,22 @@ SMOKE_0196_SQL="SELECT
   AND (SELECT prosrc FROM pg_proc
         WHERE oid = to_regprocedure('rekoda_private.jobs_application_transition_guard()'))
         LIKE '%NOT pg_has_role(current_user, ''rekoda_app'', ''USAGE'')%NEW.run_at <= now() + interval ''1 minute''%NEW.max_attempts = OLD.attempts + 1%only settlement runs, completes or reschedules a settlement job%locked_by IS DISTINCT FROM OLD.locked_by%OLD.state = ''dead'' AND NEW.state = ''pending''%NEW.locked_by IS NULL AND NEW.locked_at IS NULL%'
+  AND (SELECT prosrc FROM pg_proc
+        WHERE oid = to_regprocedure('rekoda_private.jobs_application_transition_guard()'))
+        LIKE '%NEW.max_attempts < 5%OLD.state = ''dead'' AND NEW.state = ''pending''%NEW.locked_by IS NULL AND NEW.locked_at IS NULL%NEW.run_at <= now() + interval ''1 minute''%NEW.max_attempts = OLD.attempts + 1 THEN%'
+  AND (SELECT count(*) FROM pg_policy
+        WHERE polname = 'settlement_only_its_events' AND polrelid = 'public.external_events'::regclass
+          AND NOT polpermissive AND polcmd = '*'
+          AND polroles = ARRAY['rekoda_settlement'::regrole::oid]
+          AND pg_get_expr(polqual, polrelid) LIKE '%paystack%billing.process%eventId%'
+          AND pg_get_expr(polwithcheck, polrelid) LIKE '%paystack%billing.process%eventId%') = 1
+  AND (SELECT count(*) FROM pg_policy
+        WHERE polname = 'settlement_only_its_dead_jobs'
+          AND polrelid = 'public.dead_job_exceptions'::regclass
+          AND NOT polpermissive AND polcmd = '*'
+          AND polroles = ARRAY['rekoda_settlement'::regrole::oid]
+          AND pg_get_expr(polqual, polrelid) LIKE '%billing.process%'
+          AND pg_get_expr(polwithcheck, polrelid) LIKE '%billing.process%') = 1
   AND (SELECT count(*) FROM pg_trigger WHERE tgname = 'jobs_application_transition_guard'
         AND tgrelid = 'public.jobs'::regclass AND tgenabled IN ('O', 'A')
         AND pg_get_triggerdef(oid) LIKE '%BEFORE INSERT OR UPDATE ON public.jobs%') = 1
@@ -675,7 +695,7 @@ on_exit() {
         print_smoke_0196
       else
         if [ -n "$BREAKING" ]; then
-          printf 'Migrate was never entered, so %s is not applied by this run. Check with `dc ps` whether the api and worker are running before anything else: the previous release is still compatible with this database, so `dc start api worker` is safe if they are down. Confirm in the database itself, before restarting it, that the guard trigger `businesses_plan_fields_guard` is absent (0196) and that `subscription_write_plan(uuid,text,timestamptz)` still exists (0200 not applied).\n' "$BREAKING" >&2
+          printf 'Migrate was never entered, so %s is not applied by this run. Check with `dc ps` whether the api and worker are running before anything else: the previous release is still compatible with this database, so `dc start api worker operator settlement` is safe if they are down (a running release older than 0217 has no operator or settlement service: there, `dc start api worker`). Confirm in the database itself, before restarting it, that the guard trigger `businesses_plan_fields_guard` is absent (0196) and that `subscription_write_plan(uuid,text,timestamptz)` still exists (0200 not applied).\n' "$BREAKING" >&2
         fi
         printf 'Inspect with `dc ps -a` and `dc logs <service>` on the host. To roll back, from %s:\n' "$REKODA_DIR" >&2
         printf '  git checkout %s\n' "$PREV_SHA" >&2
@@ -914,7 +934,7 @@ if [[ " $BREAKING " == *' 0217_settlement_isolation '* ]]; then
   for var in OPERATOR_OIDC_ISSUER OPERATOR_OIDC_JWKS_URL OPERATOR_BILLING_OIDC_AUDIENCE VAULT_KEY \
     SETTLEMENT_DATABASE_URL OPERATOR_DATABASE_URL; do
     [ -n "$(sed -n "s/^${var}=//p" .env | tail -1)" ] ||
-      fail "this release carries 0217 (OD-51) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0213 to 0222\"); nothing has been changed"
+      fail "this release carries 0217 (OD-51) and .env has no ${var}: add it (docs/runbooks/deploy.md, \"Deploy a release carrying 0213 to 0223\"); nothing has been changed"
   done
   [ "$(sed -n 's/^OPERATOR_BILLING_OIDC_AUDIENCE=//p' .env | tail -1)" != "$(sed -n 's/^OPERATOR_OIDC_AUDIENCE=//p' .env | tail -1)" ] ||
     fail 'OPERATOR_BILLING_OIDC_AUDIENCE must differ from OPERATOR_OIDC_AUDIENCE: a token the API accepts must not change a plan (OD-51); nothing has been changed'
@@ -955,7 +975,7 @@ if [ -n "$BREAKING" ]; then
   # The previous release's api and worker write columns these migrations guard; left running they
   # would be refused mid-migration, or run against a schema they do not know. Stop them first and
   # prove it, so the old release cannot keep writing while the new schema goes in.
-  step "stop the api and worker: this release carries a migration the running release cannot work against ($BREAKING)"
+  step "stop the api, worker, operator and settlement: this release carries a migration the running release cannot work against ($BREAKING)"
   # The operator and settlement processes too (OD-51): they write under the same guarded schema. On
   # the release that first brings them in there is nothing of theirs to stop, which is not an error.
   dc stop api worker operator settlement

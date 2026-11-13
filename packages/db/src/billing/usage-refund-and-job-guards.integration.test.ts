@@ -13,7 +13,7 @@
  * `usage-entitlement-authority.integration.test.ts`.
  */
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { usagePeriod, type UsageUnit } from '@rekoda/core';
 import { createDb, withBusiness, type Db } from '../client.js';
@@ -183,7 +183,7 @@ describe('0222: the guards hold for a login that only inherits the restricted ro
     ]) {
       expect(
         await outcome(withBusiness(inheritsApp, businessId, (tx) => tx.execute(statement))),
-      ).toMatch(/^42501 /);
+      ).toMatch(/^42501 .*a job's (state|lease) (moves|changes) only/);
     }
     /* The honest completion still works for it. */
     expect(
@@ -212,6 +212,16 @@ describe('0222: the guards hold for a login that only inherits the restricted ro
       await outcome(
         withBusiness(appDb, businessId, (tx) =>
           tx.execute(sql`UPDATE jobs SET state = 'pending', locked_by = NULL, locked_at = NULL
+                         WHERE id = ${jobId}::uuid`),
+        ),
+      ),
+    ).toMatch(/^42501 .*due now, with one more attempt/);
+    /* The shape `deadJobs.startRecovery` writes: no lease, due now, exactly one more attempt (0223). */
+    expect(
+      await outcome(
+        withBusiness(appDb, businessId, (tx) =>
+          tx.execute(sql`UPDATE jobs SET state = 'pending', locked_by = NULL, locked_at = NULL,
+                                         run_at = now(), max_attempts = attempts + 1
                          WHERE id = ${jobId}::uuid`),
         ),
       ),
@@ -284,6 +294,27 @@ describe('0222: the application cannot withhold a settlement job', () => {
     if (!recorded.isNew) throw new Error('the event was not stored');
     return recorded.id;
   }
+
+  it('an API host clock ahead of the database still enqueues a settlement job due now', async () => {
+    /* The guard compares run_at with the database clock; an enqueue due now must use that clock,
+       or a host a few minutes fast would have every Paystack payment refused at the pump. */
+    const businessId = await seedBusiness();
+    const eventId = await paystackEvent(businessId);
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 5 * 60_000 });
+    try {
+      const queued = await withBusiness(appDb, businessId, (tx) =>
+        jobsRepo.enqueue(tx, {
+          businessId,
+          kind: 'billing.process',
+          payload: { eventId },
+          singletonKey: `billevent:${eventId}`,
+        }),
+      );
+      expect(queued?.id).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it('ATTACK: squatting a payment’s settlement key with a job naming something else is refused', async () => {
     const businessId = await seedBusiness();
@@ -371,7 +402,7 @@ describe('0222: the application cannot withhold a settlement job', () => {
     const pending = await settlementJob(businessId, 'pending');
     expect(
       await asApp(businessId, sql`UPDATE jobs SET run_at = 'infinity' WHERE id = ${pending}::uuid`),
-    ).toMatch(/^42501 /);
+    ).toMatch(/^42501 .*only settlement runs, completes or reschedules/);
   });
 
   it('an operator may still requeue a dead settlement job, and settlement completes its own', async () => {

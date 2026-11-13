@@ -168,7 +168,14 @@ describe('row-level security, across the whole schema', () => {
      *                                        job of another kind
      *   jobs.worker_leaves_settlement_jobs   RESTRICTIVE, UPDATE only: the worker cannot claim,
      *                                        complete or fail a live settlement job */
+    /* And two RESTRICTIVE ones (migration 0223) that narrow settlement within the tenant it pins:
+     *
+     *   external_events.settlement_only_its_events     only the Paystack events its own
+     *                                                  billing.process jobs name
+     *   dead_job_exceptions.settlement_only_its_dead_jobs  only billing.process records */
     const KNOWN_EXCEPTIONS = new Set([
+      'external_events.settlement_only_its_events',
+      'dead_job_exceptions.settlement_only_its_dead_jobs',
       'jobs.settlement_claim',
       'jobs.settlement_only_its_kinds',
       'jobs.worker_leaves_settlement_jobs',

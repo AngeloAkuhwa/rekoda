@@ -369,6 +369,28 @@ describe('the pre-start database smoke, executed', () => {
       'the event guard matching the role name again',
       "CREATE OR REPLACE FUNCTION rekoda_private.external_events_worker_guard() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $f$ BEGIN IF current_user <> 'rekoda_worker' THEN RETURN NEW; END IF; RETURN NEW; END $f$",
     ],
+    // 0223: settlement reaches only what its jobs name; every dead requeue is bounded.
+    [
+      'settlement free to read every event',
+      'DROP POLICY settlement_only_its_events ON external_events',
+    ],
+    [
+      'the settlement event restriction made permissive',
+      'DROP POLICY settlement_only_its_events ON external_events; CREATE POLICY settlement_only_its_events ON external_events FOR ALL TO rekoda_settlement USING (true)',
+    ],
+    [
+      'settlement free to close any dead-job record',
+      'DROP POLICY settlement_only_its_dead_jobs ON dead_job_exceptions',
+    ],
+    [
+      'the job guard back at 0222 (any dead requeue, any retry budget)',
+      readFileSync(
+        new URL('../../migrations/0222_usage_entitlement_in_the_database.sql', import.meta.url),
+        'utf8',
+      ).match(
+        /CREATE OR REPLACE FUNCTION rekoda_private\.jobs_application_transition_guard\(\)[\s\S]*?END \$\$;/,
+      )![0],
+    ],
   ])('prints f for %s', async (_label, tamper) => {
     expect(await smokeAfter(tamper)).toBe('f');
   });

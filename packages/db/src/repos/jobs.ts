@@ -54,7 +54,14 @@ export interface ClaimedJob {
  * unique violation elsewhere still surfaces as an error.
  */
 export async function enqueue(q: Queryable, input: EnqueueInput): Promise<{ id: string } | null> {
-  const runAt = new Date(Date.now() + (input.delayMs ?? 0));
+  /*
+   * Work due now takes the DATABASE's clock, not the host's: claims compare run_at with the
+   * database's now(), and the 0222 guard refuses a settlement job the application enqueues more
+   * than a minute into the future, so an API host running a few minutes fast would otherwise have
+   * every Paystack payment refused at the pump. A deliberate delay is still measured from the host.
+   */
+  const delayMs = input.delayMs ?? 0;
+  const runAt = delayMs > 0 ? new Date(Date.now() + delayMs) : (sql`now()` as unknown as Date);
   const rows = await q
     .insert(jobs)
     .values({

@@ -295,15 +295,34 @@ describe('the application and worker credentials', () => {
 });
 
 describe('row-level security on the dead-job table', () => {
-  it('has exactly one policy, tenant-scoped, and no policy naming the worker or any other role', async () => {
-    const policies = await rows<{ polname: string; roles: number[]; qual: string }>(
+  it('has exactly one permissive policy, tenant-scoped; the only other one narrows settlement (0223)', async () => {
+    const policies = await rows<{
+      polname: string;
+      permissive: boolean;
+      roles: string[];
+      qual: string;
+    }>(
       ownerDb,
-      sql`SELECT polname, polroles::int[] AS roles, pg_get_expr(polqual, polrelid) AS qual
-          FROM pg_policy WHERE polrelid = 'dead_job_exceptions'::regclass`,
+      sql`SELECT polname, polpermissive AS permissive,
+                 ARRAY(SELECT CASE WHEN r = 0 THEN 'PUBLIC' ELSE r::regrole::text END
+                       FROM unnest(polroles) AS r) AS roles,
+                 pg_get_expr(polqual, polrelid) AS qual
+          FROM pg_policy WHERE polrelid = 'dead_job_exceptions'::regclass ORDER BY polname`,
     );
-    expect(policies.map((p) => p.polname)).toEqual(['tenant_isolation']);
-    expect(policies[0]?.roles).toEqual([0]); // PUBLIC: every role is held to the tenant pin
-    expect(policies[0]?.qual).toContain("current_setting('app.business_id'");
+    /* Nothing widens access: the one permissive policy holds every role to the tenant pin. */
+    const permissive = policies.filter((p) => p.permissive);
+    expect(permissive.map((p) => p.polname)).toEqual(['tenant_isolation']);
+    expect(permissive[0]?.roles).toEqual(['PUBLIC']);
+    expect(permissive[0]?.qual).toContain("current_setting('app.business_id'");
+    /* A restrictive policy can only narrow: settlement sees its own kind's records alone. */
+    expect(policies.filter((p) => !p.permissive)).toEqual([
+      {
+        polname: 'settlement_only_its_dead_jobs',
+        permissive: false,
+        roles: ['rekoda_settlement'],
+        qual: "(kind = 'billing.process'::text)",
+      },
+    ]);
     const [flags] = await rows<{ rls: boolean; forced: boolean }>(
       ownerDb,
       sql`SELECT relrowsecurity AS rls, relforcerowsecurity AS forced FROM pg_class
