@@ -15,20 +15,33 @@ payments for one logical purchase:
   `subscription_charges_one_credit_per_purchase_ux` allows only one credited charge per business and
   purchase. The second verified payment is recorded as `paid` and set aside with
   `unapplied_reason = 'duplicate_purchase'`. The merchant's billing page shows it as **paid twice**.
-- **`duplicate_payment`**: the same charge is paid again under a different Paystack session. The
-  charge stays paid once; the extra payment is flagged for a person.
+- **`duplicate_payment`**: the same charge is paid again under a different Paystack session (a lost
+  link was replaced and both sessions were paid). The charge stays paid once. The second payment is
+  NOT recorded as a charge: settlement marks the Paystack event processed with reason
+  `duplicate_payment`, moves the checkout attempt to `duplicate_paid`, and logs a warning naming the
+  charge reference and the business. It does not appear in the unapplied-charge queue.
 
 In both cases no units, plan or entitlement are granted twice. What remains is money the merchant
 paid Rekoda that Rekoda did not deliver anything for.
 
 ## 1. Find it
 
-`GET /v1/ops/exceptions` (operator token, scope `ops:payment`) lists `unappliedCharges`. Each row
-has the charge reference, the business, the reason, `resolveBy` and `overdue`. A
-`duplicate_purchase` or `duplicate_payment` row is this runbook's case. The dead-job and stranded
-event lanes of the same endpoint are not.
+- **`duplicate_purchase`:** `GET /v1/ops/exceptions` (operator token, scope `ops:payment`) lists
+  `unappliedCharges`. Each row has the charge reference, the business, the reason, `resolveBy` and
+  `overdue`. A row with reason `duplicate_purchase` is this runbook's case.
+- **`duplicate_payment`:** no operator endpoint lists it yet (a gap, recorded as OD-53 (5) in
+  `docs/REKODA_LAUNCH_READINESS.md`). Find it from the settlement process's warning ("was paid twice
+  ... refund the duplicate"), or as the database owner:
 
-## 2. Establish the original purchase
+  ```sql
+  SELECT a.business_id, c.reference AS charge, a.provider_reference AS second_payment, a.updated_at
+    FROM subscription_charge_attempts a
+    JOIN subscription_charges c ON c.id = a.charge_id
+   WHERE a.status = 'duplicate_paid'
+   ORDER BY a.updated_at DESC;
+  ```
+
+## 2. Establish the original purchase (`duplicate_purchase`; for `duplicate_payment` the original is the one paid charge)
 
 For the set-aside reference, as the database owner on the host (read only):
 
@@ -70,11 +83,16 @@ the owner.
 
 1. Refund the second transaction in the Paystack dashboard (full amount). This is the only step that
    moves money.
-2. Record it in Rekoda: `POST /v1/ops/refund` with `businessId`, `reference` (the set-aside
+2. **`duplicate_payment` only: do NOT call `POST /v1/ops/refund`.** The only charge it can name is
+   the original, delivered one, and the call would record that charge as refunded while the merchant
+   keeps the plan. Record the Paystack refund id in the incident note and on the business's support
+   record instead; Rekoda has no record-only entry for a second payment of the same charge yet
+   (OD-53 (5)). Skip to step 6.
+3. `duplicate_purchase`: record it in Rekoda: `POST /v1/ops/refund` with `businessId`, `reference` (the set-aside
    reference), `amountK` (the kobo refunded) and `reason`. This writes the refunded amount, moves the
    charge to `refunded` when the whole amount is back, and writes an audit row naming the verified
    operator. It does not move money and does not touch the plan.
-3. Close the exception: `POST /v1/ops/exceptions/charges/<reference>/resolve` with a resolution that
+4. Close the exception: `POST /v1/ops/exceptions/charges/<reference>/resolve` with a resolution that
    names the Paystack refund id.
 
 Both calls are audited with the operator's verified identity (`operator:<sub>`), never a name sent
