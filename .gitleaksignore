@@ -42,3 +42,15 @@ aaf444e10fdf4f21fd498a507cb6760233ff6086:apps/web/src/lib/billing-pay-copy.test.
 # platform Paystack key (the literal word "placeholder" after the live-key prefix). Never issued,
 # not a credential. The live line now builds the string at run time, so no such literal remains.
 cb719a8a548e0d772708553bfcfe50fc44a2d5ab:apps/api/src/settlement/config.test.ts:stripe-access-token:16
+
+# Synthetic fixtures (commit c79ea00, PR #432): made-up host .env values ("placeholderkey" after the
+# Paystack key prefix) proving the staging deploy refuses a .env without a TEST key and never prints
+# the key. Never issued, not credentials. The live lines now build the string at run time
+# (`FAKE_KEY`), so no such literal remains in the tree.
+c79ea000c423af2478ec160bd5cd9ae894b78751:scripts/deploy-staging-interrupt.test.mjs:stripe-access-token:66
+c79ea000c423af2478ec160bd5cd9ae894b78751:scripts/deploy-staging-compat.test.mjs:stripe-access-token:39
+c79ea000c423af2478ec160bd5cd9ae894b78751:scripts/deploy-staging-compat.test.mjs:stripe-access-token:507
+c79ea000c423af2478ec160bd5cd9ae894b78751:scripts/deploy-staging-compat.test.mjs:stripe-access-token:508
+c79ea000c423af2478ec160bd5cd9ae894b78751:scripts/deploy-staging-compat.test.mjs:stripe-access-token:511
+c79ea000c423af2478ec160bd5cd9ae894b78751:scripts/deploy-staging-compat.test.mjs:stripe-access-token:535
+c79ea000c423af2478ec160bd5cd9ae894b78751:scripts/deploy-staging-compat.test.mjs:stripe-access-token:536

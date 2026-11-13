@@ -23,6 +23,9 @@ import { test } from 'node:test';
 
 const SCRIPT = readFileSync(new URL('./deploy-staging.sh', import.meta.url), 'utf8');
 const API = 'https://staging-api.test.invalid';
+// A made-up stand-in for a Paystack key, joined at run time so no key-shaped
+// literal is in the source (gitleaks). Never issued; not a credential.
+const FAKE_KEY = 'placeholderkey';
 
 const sh = (cwd, cmd, env = {}) => {
   const r = spawnSync('bash', ['-c', cmd], {
@@ -63,7 +66,7 @@ function host({ buildSeconds = 0 } = {}) {
   sh(dir, `git checkout -q --detach ${prev}`);
   writeFileSync(
     join(dir, '.env'),
-    `REKODA_API_PUBLIC_URL=${API}\nREKODA_RELEASE=staging-${prev.slice(0, 7)}\nPAYSTACK_SECRET_KEY=sk_test_placeholderkey\n`,
+    `REKODA_API_PUBLIC_URL=${API}\nREKODA_RELEASE=staging-${prev.slice(0, 7)}\nPAYSTACK_SECRET_KEY=sk_test_${FAKE_KEY}\n`,
   );
   mkdirSync(join(dir, 'secrets'));
   const health = (sha) =>
