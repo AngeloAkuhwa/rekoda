@@ -281,6 +281,10 @@ describe('0222: the meter row is the database’s, so no period label resets the
     expect(await rowAt(paid, '2027-02', DAY_3)).toBe('2027-02');
     /* Day 8: the window has closed. */
     expect(await rowAt(paid, '2027-02', DAY_8)).toBe('2027-03');
+    /* The day is Lagos's: 23:30 UTC on 7 March is already 8 March in Lagos, the window closed;
+     * 22:30 UTC on 7 March is still 7 March in Lagos. */
+    expect(await rowAt(paid, '2027-02', '2027-03-07T23:30:00Z')).toBe('2027-03');
+    expect(await rowAt(paid, '2027-02', '2027-03-07T22:30:00Z')).toBe('2027-02');
     /* The current month, a future month, an older month and the trial row. */
     expect(await rowAt(paid, '2027-03', DAY_8)).toBe('2027-03');
     expect(await rowAt(paid, '2099-12', DAY_3)).toBe('2027-03');
@@ -292,6 +296,8 @@ describe('0222: the meter row is the database’s, so no period label resets the
     expect(await rowAt(trial, '2027-02', DAY_3, 'API_REQUEST_UNITS')).toBe('2027-03');
   });
 
+  /* Supplementary: proves the rule only when it runs in a month's first seven days; the fixed-instant
+   * test above proves it on any day. */
   it('ATTACK: a business that was on the trial last month cannot open last month for a fresh allowance', async () => {
     /* Converted to paid this month; its trial units went to TRIAL00, so last month has no row. */
     const businessId = await seedBusiness();

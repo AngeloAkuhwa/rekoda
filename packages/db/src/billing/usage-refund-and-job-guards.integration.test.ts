@@ -234,13 +234,18 @@ describe('0222: the guards hold for a login that only inherits the restricted ro
 });
 
 describe('0222: the application cannot withhold a settlement job', () => {
-  const enqueueAsApp = (businessId: string, values: ReturnType<typeof sql>) =>
-    outcome(
+  /* A real Paystack event with its own key, so only the state / lease / run-at rule can refuse. */
+  const enqueueAsApp = async (businessId: string, values: ReturnType<typeof sql>) => {
+    const eventId = await paystackEvent(businessId);
+    return outcome(
       withBusiness(appDb, businessId, (tx) =>
-        tx.execute(sql`INSERT INTO jobs (business_id, kind, payload, state, run_at)
-                       VALUES (${businessId}::uuid, 'billing.process', '{}'::jsonb, ${values})`),
+        tx.execute(sql`INSERT INTO jobs (business_id, kind, payload, singleton_key, state, run_at)
+                       VALUES (${businessId}::uuid, 'billing.process',
+                               jsonb_build_object('eventId', ${eventId}::text),
+                               ${`billevent:${eventId}`}, ${values})`),
       ),
     );
+  };
   async function settlementJob(businessId: string, state: string): Promise<string> {
     const eventId = await paystackEvent(businessId);
     const queued = await withBusiness(appDb, businessId, (tx) =>
@@ -308,8 +313,31 @@ describe('0222: the application cannot withhold a settlement job', () => {
                     '{"reference":"RKD-SUB-NOPE"}'::jsonb, 'no-charge:RKD-SUB-NOPE')`,
       ),
     ).toMatch(/^42501 .*names the charge of its singleton key/);
-    /* The honest one: the event's own key and payload. */
+    /* No key at all, and a Meta event under a payment key. */
+    expect(
+      await asApp(
+        businessId,
+        sql`INSERT INTO jobs (business_id, kind, payload)
+            VALUES (${businessId}::uuid, 'billing.process', jsonb_build_object('eventId', ${real}::text))`,
+      ),
+    ).toMatch(/^42501 .*names the Paystack event/);
+    const meta = await storedEvent(businessId);
+    expect(await enqueue(meta, `billevent:${meta}`)).toMatch(/^42501 .*names the Paystack event/);
+    /* The honest ones: the event's own key and payload, and a no-charge job for its own charge. */
     expect(await enqueue(real, `billevent:${real}`)).toBe('allowed');
+    const reference = 'RKD-SUB-NOCHARGE-0222';
+    await ownerDb.execute(sql`INSERT INTO subscription_charges
+        (business_id, kind, plan, amount_k, status, reference, period_start, period_end, billing_interval)
+      VALUES (${businessId}::uuid, 'upgrade', 'complete', 0, 'pending', ${reference},
+              now(), now() + interval '30 days', 'monthly')`);
+    expect(
+      await asApp(
+        businessId,
+        sql`INSERT INTO jobs (business_id, kind, payload, singleton_key)
+            VALUES (${businessId}::uuid, 'billing.apply_no_charge',
+                    jsonb_build_object('reference', ${reference}::text), ${`no-charge:${reference}`})`,
+      ),
+    ).toBe('allowed');
   });
 
   it('the honest enqueue (pending, due now) still works', async () => {
@@ -322,9 +350,11 @@ describe('0222: the application cannot withhold a settlement job', () => {
     expect(await enqueueAsApp(businessId, sql`'done', now()`)).toMatch(
       /^42501 .*pending work due now/,
     );
-    expect(await enqueueAsApp(businessId, sql`'running', now()`)).toMatch(/^42501 /);
+    expect(await enqueueAsApp(businessId, sql`'running', now()`)).toMatch(
+      /^42501 .*pending work due now/,
+    );
     expect(await enqueueAsApp(businessId, sql`'pending', 'infinity'::timestamptz`)).toMatch(
-      /^42501 /,
+      /^42501 .*pending work due now/,
     );
   });
 
