@@ -24,6 +24,9 @@
 #     out of every image (the build context is the checkout);
 #   - a host whose .env is not staging's (REKODA_API_PUBLIC_URL must be the
 #     staging API), so a mis-set STAGING_HOST can never deploy production;
+#   - a host whose .env does not hold a Paystack TEST key (sk_test_...), or sets
+#     REKODA_PAYSTACK_PLATFORM_CONFIRMED=1 (OWN-70): staging never runs a live key,
+#     and the settlement process would start healthy with none;
 #   - a running staging that is not healthy, or is not the release and commit
 #     the checkout and .env name (the rollback this run would print);
 #   - a commit whose code does not know the schema staging already has: one
@@ -743,13 +746,29 @@ cd "$REKODA_DIR"
 exec 9>.git/rekoda-deploy-staging.lock
 flock -n 9 || fail 'another staging deployment is running on this host'
 
-# This must be staging. Read only the one non-secret line; nothing else in
-# .env is read or printed.
+# This must be staging. Read the one non-secret line; of the rest of .env only
+# names, roles and the Paystack key's prefix are read below, and nothing is printed.
 api_public=$(sed -n 's/^REKODA_API_PUBLIC_URL=//p' .env)
 [ "$api_public" = "$API_URL" ] ||
   fail "this host's REKODA_API_PUBLIC_URL is not $API_URL; this script deploys staging only"
 [ "$(grep -c '^REKODA_RELEASE=' .env)" = 1 ] || fail '.env must hold exactly one REKODA_RELEASE= line'
 PREV_RELEASE=$(sed -n 's/^REKODA_RELEASE=//p' .env)
+
+# Staging runs Paystack in TEST mode only (OWN-70, OWN-77). The settlement process starts and
+# reports healthy without a key, and every subscription payment job then fails verify until it
+# dies, so a missing, empty or live key is refused here, before anything is built or stopped.
+# Only the key's prefix is examined (the last line wins, as compose reads it); the value is never
+# printed. Staging application settings live in this host's .env alone, never in GitHub.
+paystack_key=$(sed -n 's/^PAYSTACK_SECRET_KEY=//p' .env | tail -1)
+case "$paystack_key" in
+  \"*\") paystack_key=${paystack_key#\"} paystack_key=${paystack_key%\"} ;;
+  \'*\') paystack_key=${paystack_key#\'} paystack_key=${paystack_key%\'} ;;
+esac
+[[ "$paystack_key" =~ ^sk_test_[^[:space:]]+$ ]] ||
+  fail 'PAYSTACK_SECRET_KEY in .env must be a Paystack TEST key (sk_test_...): staging never runs a live key or none (OWN-70); nothing has been changed'
+unset paystack_key
+[ "$(sed -n 's/^REKODA_PAYSTACK_PLATFORM_CONFIRMED=//p' .env | tail -1)" != 1 ] ||
+  fail 'REKODA_PAYSTACK_PLATFORM_CONFIRMED=1 must not be set on staging (OWN-70); nothing has been changed'
 
 
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then

@@ -471,3 +471,55 @@ test('REKODA_SUPPORT_EMAIL is reported per container and never flagged: it is no
     h.done();
   }
 });
+
+test('the settlement process is asked for its own Paystack key: a missing, live or unreadable one needs attention, and the key is never printed', () => {
+  /* Built at run time so no key-shaped literal sits in the source (secret scan). */
+  const testKey = ['sk', 'test', 'q'.repeat(16)].join('_');
+  const liveKey = ['sk', 'live', 'z'.repeat(16)].join('_');
+  const apiEnv = { ...SLOTS, PAYSTACK_SECRET_KEY: testKey, REKODA_EMAIL_PROVIDER: 'resend' };
+  const cases = [
+    [
+      { settlementEnv: {} },
+      /PAYSTACK_SECRET_KEY \(settlement\)\s+UNSET \(the settlement process starts without a key and every subscription payment then fails verify\)\n/,
+    ],
+    [
+      { settlementEnv: { PAYSTACK_SECRET_KEY: liveKey } },
+      /PAYSTACK_SECRET_KEY \(settlement\)\s+SET \(NOT-A-TEST-KEY: a live key; staging must run an sk_test_ key\)\n/,
+    ],
+    [
+      { settlementQueryFails: true },
+      /PAYSTACK_SECRET_KEY \(settlement\)\s+unknown \(cannot exec into the settlement container\)\n/,
+    ],
+  ];
+  for (const [over, line] of cases) {
+    const h = healthy({
+      env: apiEnv,
+      workerEnv: { ...SLOTS, REKODA_EMAIL_PROVIDER: 'resend' },
+      ...over,
+    });
+    try {
+      const r = h.run2(undefined, { EXPECT_SHA: h.sha.slice(0, 7) });
+      assert.match(r.stdout, line);
+      assert.match(attention(r.stdout), /PAYSTACK_SECRET_KEY \(settlement\)/);
+      assert.match(
+        r.stdout,
+        /PAYSTACK_SECRET_KEY\s+SET \(TEST-KEY\)\n/,
+        'the api line is unchanged',
+      );
+      assert.equal(r.status, 1, r.stdout);
+      assert.doesNotMatch(r.stdout + r.stderr, /qqqqqqqq|zzzzzzzz/, 'a key is never printed');
+    } finally {
+      h.done();
+    }
+  }
+  const ok = healthy({ env: apiEnv, workerEnv: { ...SLOTS, REKODA_EMAIL_PROVIDER: 'resend' } });
+  try {
+    const r = ok.run2(undefined, { EXPECT_SHA: ok.sha.slice(0, 7) });
+    assert.match(r.stdout, /PAYSTACK_SECRET_KEY \(settlement\)\s+SET \(TEST-KEY\)\n/);
+    assert.doesNotMatch(attention(r.stdout), /PAYSTACK_SECRET_KEY \(settlement\)/);
+    assert.equal(r.status, 0, r.stdout);
+    assert.doesNotMatch(r.stdout + r.stderr, /qqqqqqqq/);
+  } finally {
+    ok.done();
+  }
+});

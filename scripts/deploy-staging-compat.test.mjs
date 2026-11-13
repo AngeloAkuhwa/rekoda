@@ -35,7 +35,10 @@ const PRINCIPAL_ENV =
   'SETTLEMENT_DATABASE_URL=postgres://rekoda_settlement:placeholder@postgres:5432/rekoda\n' +
   'OPERATOR_DATABASE_URL=postgres://rekoda_billing_operator:placeholder@postgres:5432/rekoda\n';
 
-function host(extraTags, extraEnv = PRINCIPAL_ENV) {
+/* Staging always holds a Paystack TEST key (OWN-70); the deploy refuses a host without one. */
+const PAYSTACK_ENV = 'PAYSTACK_SECRET_KEY=sk_test_placeholderkey\n';
+
+function host(extraTags, extraEnv = PRINCIPAL_ENV, paystackEnv = PAYSTACK_ENV) {
   const root = mkdtempSync(join(tmpdir(), 'deploy-compat-'));
   const origin = join(root, 'origin.git');
   const work = join(root, 'work');
@@ -62,7 +65,7 @@ function host(extraTags, extraEnv = PRINCIPAL_ENV) {
   sh(dir, `git checkout -q --detach ${prev}`);
   writeFileSync(
     join(dir, '.env'),
-    `REKODA_API_PUBLIC_URL=${API}\nREKODA_RELEASE=staging-${prev.slice(0, 7)}\n${extraEnv}`,
+    `REKODA_API_PUBLIC_URL=${API}\nREKODA_RELEASE=staging-${prev.slice(0, 7)}\n${paystackEnv}${extraEnv}`,
   );
   mkdirSync(join(dir, 'secrets'));
   const health = (sha, migrations) =>
@@ -494,5 +497,51 @@ test('OD-51 (0217): an operator process with no audience of its own, or the APIâ
     assert.equal(h.at('stop api worker'), -1, 'nothing may be stopped');
     assert.equal(h.at('run --rm -T migrate'), -1, 'nothing may be migrated');
     assert.doesNotMatch(r.stderr + r.stdout, /placeholder|aaaaaaaa/, 'a value is never printed');
+  }
+});
+
+test('OWN-70: a host whose Paystack key is missing, empty, live or malformed, or that sets the Â§47 flag, is refused before anything is built or stopped', () => {
+  for (const paystackEnv of [
+    '',
+    'PAYSTACK_SECRET_KEY=\n',
+    'PAYSTACK_SECRET_KEY=sk_live_placeholderkey\n',
+    'PAYSTACK_SECRET_KEY="sk_live_placeholderkey"\n',
+    'PAYSTACK_SECRET_KEY=pk_test_placeholderkey\n',
+    'PAYSTACK_SECRET_KEY=sk_test_\n',
+    'PAYSTACK_SECRET_KEY=sk_test_placeholderkey\nPAYSTACK_SECRET_KEY=sk_live_placeholderkey\n',
+    PAYSTACK_ENV + 'REKODA_PAYSTACK_PLATFORM_CONFIRMED=1\n',
+  ]) {
+    const h = host(
+      ['0217_settlement_isolation'],
+      PRIVILEGED_ENV + 'OPERATOR_BILLING_OIDC_AUDIENCE=rekoda-billing\n',
+      paystackEnv,
+    );
+    const r = h.run();
+    assert.notEqual(r.status, 0, paystackEnv);
+    assert.match(
+      r.stderr,
+      /STAGING DEPLOY REFUSED: .*(Paystack TEST key|REKODA_PAYSTACK_PLATFORM_CONFIRMED=1).*nothing has been changed/,
+    );
+    assert.equal(h.at(' build '), -1, 'nothing may be built');
+    assert.equal(h.at('stop api worker'), -1, 'nothing may be stopped');
+    assert.equal(h.at('run --rm -T migrate'), -1, 'nothing may be migrated');
+    assert.doesNotMatch(r.stderr + r.stdout, /placeholderkey/, 'the key is never printed');
+  }
+});
+
+test('OWN-70: a TEST key, quoted or not, lets the deploy through', () => {
+  for (const paystackEnv of [
+    PAYSTACK_ENV,
+    'PAYSTACK_SECRET_KEY="sk_test_placeholderkey"\n',
+    "PAYSTACK_SECRET_KEY='sk_test_placeholderkey'\n",
+  ]) {
+    const h = host(
+      ['0217_settlement_isolation'],
+      PRIVILEGED_ENV + 'OPERATOR_BILLING_OIDC_AUDIENCE=rekoda-billing\n',
+      paystackEnv,
+    );
+    const r = h.run();
+    assert.equal(r.status, 0, r.stderr + r.stdout);
+    assert.doesNotMatch(r.stderr + r.stdout, /placeholderkey/, 'the key is never printed');
   }
 });

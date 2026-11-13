@@ -341,6 +341,19 @@ case "$r" in
   *) flag "REKODA_PAYSTACK_PLATFORM_CONFIRMED" "unknown (cannot exec into the api container)" ;;
 esac
 
+# The settlement process (OD-51) verifies every Rekoda payment with its own copy of the key, which
+# compose hands it by name. It starts and reports healthy without one, so its own value is asked
+# for here, classified inside the container, never printed.
+echo "== Paystack key in the running settlement process (classification only)"
+r="$(dc exec -T -e K=PAYSTACK_SECRET_KEY settlement sh -c 'eval "v=\${$K:-}"; case "$v" in "") echo UNSET ;; sk_test_?*) echo TEST ;; sk_live_?*) echo LIVE ;; *) echo OTHER ;; esac' 2>/dev/null)"
+case "$r" in
+  TEST) say "PAYSTACK_SECRET_KEY (settlement)" "SET (TEST-KEY)" ;;
+  UNSET) flag "PAYSTACK_SECRET_KEY (settlement)" "UNSET (the settlement process starts without a key and every subscription payment then fails verify)" ;;
+  LIVE) flag "PAYSTACK_SECRET_KEY (settlement)" "SET (NOT-A-TEST-KEY: a live key; staging must run an sk_test_ key)" ;;
+  OTHER) flag "PAYSTACK_SECRET_KEY (settlement)" "SET (NOT-A-TEST-KEY: unrecognised, so payments fail closed)" ;;
+  *) flag "PAYSTACK_SECRET_KEY (settlement)" "unknown (cannot exec into the settlement container)" ;;
+esac
+
 # The five WhatsApp template slots (OD-41(b)). The authority is
 # apps/api/src/channels/template-slots.ts; staging-readonly-check.test.mjs fails if this list and
 # that file disagree. Each line: variable, required|optional, the agreed Meta template name, and

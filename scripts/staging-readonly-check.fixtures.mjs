@@ -22,6 +22,11 @@ export function host({
   failIn = '',
   env = { META_TRIAL_TEMPLATE: 'rekoda_trial_ending' },
   workerEnv = {},
+  // The settlement container's own environment (compose hands it a short list of its own). Null
+  // means "the same as the api's", which is what a correctly configured host gives it.
+  settlementEnv = null,
+  // The settlement container refuses a container-side query, as a stopped one does.
+  settlementQueryFails = false,
   migrations = 'applied',
   dotenv = 'REKODA_RELEASE=staging-test\n',
   images = {},
@@ -130,6 +135,9 @@ ${Object.keys(images)
       while [ "$1" = -e ]; do extra+=("$2"); shift 2; done
       svc="$1"; shift 3
       if [ "$svc" = worker ]; then env -i ${envLine(workerEnv)} "\${extra[@]}" sh -c "$1"
+      elif [ "$svc" = settlement ]; then
+        ${settlementQueryFails ? 'exit 1' : ':'}
+        env -i ${envLine(settlementEnv ?? env)} "\${extra[@]}" sh -c "$1"
       else env -i ${envLine(env)} "\${extra[@]}" sh -c "$1"; fi
       exit $? ;;
   esac
