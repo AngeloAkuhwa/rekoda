@@ -696,7 +696,10 @@ This release starts two more services. Before deploying:
    Two checks before the window, both read-only:
    - `PAYSTACK_SECRET_KEY` is set in `.env` (a test key on staging). The settlement process boots
      without it, reports `/health` ok, and every subscription payment job then fails verify until it
-     dies into the dead-job queue (independent review of `75a8002`, recorded MINOR).
+     dies into the dead-job queue (independent review of `75a8002`, recorded MINOR). On staging,
+     `deploy-staging.sh` now refuses a key that is not `sk_test_...` before building anything, and
+     `scripts/staging-readonly-check.sh` asks the running settlement container for its own key;
+     production has no such script, so check it by hand there.
    - List Rekoda charges still `pending` (`SELECT reference, kind, created_at FROM
 subscription_charges WHERE status = 'pending'`). A charge opened before 0209 has no `priced_at`
      and is re-priced at its `created_at`; one whose opening fell either side of Lagos midnight or a
@@ -832,6 +835,72 @@ stopped a checkout part-way and left tracked files empty.
   empty tracked files is refused and the files are named. Reconcile by hand
   (`git checkout -- <files>` once space is free and the evidence is kept), then
   follow "An interrupted staging deploy" for the marker.
+
+### Docker cleanup by hand (staging)
+
+For a staging host short of disk outside a deploy (the deploy cleans its own release images; see above). Run as the
+deploy user in `/opt/rekoda`, with `dc` as elsewhere in this runbook. Never during a deploy: check first that
+`.git/rekoda-deploy-staging.state` does not exist and no Deploy staging run is in progress.
+
+**Never, in routine cleanup:** `docker volume rm` or `docker volume prune` (the database is the `pgdata` volume, the
+certificates `caddy_data`), `docker system prune` (with or without `-a` or `--volumes`), `dc down -v`, and
+`docker image prune` (plain dangling images may be a retagged rollback). Never remove `postgres`, `caddy` or `node`
+base images by hand.
+
+1. **Inspect (record the output):**
+
+   ```bash
+   df -h /opt/rekoda /var/lib/docker
+   docker system df
+   docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}} {{.CreatedSince}} {{.Size}}' | sort
+   docker ps -a --format '{{.Names}} {{.Image}} {{.Status}}'
+   docker builder du | tail -n 3
+   ```
+
+2. **What must stay:** the running release (`sed -n 's/^REKODA_RELEASE=//p' .env`), the rollback release
+   (`cat .git/rekoda-deploy-staging.rollback`), and every image any container uses, running or stopped:
+
+   ```bash
+   CURRENT=$(sed -n 's/^REKODA_RELEASE=//p' .env)
+   ROLLBACK=$(cat .git/rekoda-deploy-staging.rollback 2>/dev/null || true)
+   IN_USE=$(docker ps -a --format '{{.Image}}' | sort -u)
+   echo "keep: $CURRENT $ROLLBACK"; echo "$IN_USE"
+   ```
+
+3. **Build cache** (safe; the next build is slower): `docker builder prune -f --filter until=168h` (older than a week).
+   If still short: `docker builder prune -f`.
+
+4. **Superseded staging release tags only** (prints each before removing; skips the kept and in-use ones):
+
+   ```bash
+   [ -n "$CURRENT" ] && [ -n "$ROLLBACK" ] || { echo 'release or rollback unknown: remove no release image'; false; } &&
+   for img in $(docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E '^rekoda-(app|web):staging-[0-9a-f]{7,40}$'); do
+     tag=${img#*:}
+     [ "$tag" = "$CURRENT" ] || [ "$tag" = "$ROLLBACK" ] && continue
+     printf '%s\n' "$IN_USE" | grep -qxF "$img" && continue
+     echo "remove $img"; docker image rm "$img"
+   done
+   ```
+
+   If `.git/rekoda-deploy-staging.rollback` is missing or empty, this step removes nothing: without a recorded
+   rollback the previous release cannot be told apart, so keep every release and free space with step 3 only.
+   `docker image rm` refuses an image a container still uses; that refusal is correct, leave it.
+
+5. **Stopped containers that are not part of the stack** (left by a manual `docker run`): list with
+   `docker ps -a --filter status=exited --format '{{.Names}} {{.Image}} {{.Label "com.docker.compose.project"}}'` and
+   remove only those whose project label is not `rekoda-prod`, by name: `docker rm <name>`. Never remove the exited
+   `edge-check` or a `migrate` container of `rekoda-prod` by hand.
+
+6. **Verify (record the output):**
+
+   ```bash
+   df -h /opt/rekoda /var/lib/docker          # at least 8 GiB free on each before a deploy
+   docker system df
+   docker image ls 'rekoda-*'                  # the running and rollback releases are still listed
+   docker volume ls                            # rekoda-prod_pgdata, rekoda-prod_caddy_data, rekoda-prod_caddy_config unchanged
+   dc ps                                       # every service as before
+   curl -fsS https://staging-api.myrekoda.com/health
+   ```
 
 ## An interrupted staging deploy
 
@@ -1021,6 +1090,13 @@ production anyway.
 
 ### Staging deploys itself; production never does
 
+**Where staging's settings live (owner decision, 14 Nov 2026).** Every staging application setting (database
+URLs, keys, Paystack, Meta, Resend, OIDC, flags) is entered by hand on the host, in `/opt/rekoda/.env` (and the
+backup settings in `/etc/rekoda/backup.env`). None of it is stored in GitHub. The GitHub `staging` environment
+holds only what the workflow needs to reach the host (`STAGING_HOST`, `STAGING_USER`, `STAGING_SSH_PRIVATE_KEY`,
+`STAGING_KNOWN_HOSTS`); `scripts/check-staging-deploy.mjs` fails CI if the workflow reads any other secret. The
+first staging deploy of PR B follows `docs/runbooks/staging-first-deploy-pr-b.md`.
+
 Staging follows `main`. When the CI workflow succeeds on a push to `main`,
 `.github/workflows/deploy-staging.yml` connects to the staging host over SSH
 and runs `scripts/deploy-staging.sh <sha>` there, for the exact commit CI
@@ -1055,7 +1131,10 @@ the host-local ones `.dockerignore` keeps out of every image (`.env` and
 `backups/`, a top-level `*.log`), because the build context is the checkout
 and anything else would be built into staging without CI having seen it,
 refuse a host whose `.env` does not name `https://staging-api.myrekoda.com` as
-`REKODA_API_PUBLIC_URL`, refuse unless `/health` answers `status` ok,
+`REKODA_API_PUBLIC_URL`, refuse a host whose `.env` `PAYSTACK_SECRET_KEY` is not a Paystack TEST key
+(`sk_test_...`; missing, empty, live or malformed are refused, the key is never printed) or that sets
+`REKODA_PAYSTACK_PLATFORM_CONFIRMED=1` (OWN-70; the settlement process would otherwise start healthy with no
+key), refuse unless `/health` answers `status` ok,
 `database` up, the `REKODA_RELEASE` in `.env`, and a commit of at least
 seven characters that the checked-out commit starts with (the running
 release is the one a failure's rollback would name, not merely what the
