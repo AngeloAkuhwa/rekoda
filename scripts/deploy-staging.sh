@@ -366,7 +366,7 @@ SMOKE_0196_SQL="SELECT
         LIKE '%a settlement job names the Paystack event of its singleton key%a settlement job names the charge of its singleton key%'
   AND (SELECT prosrc FROM pg_proc
         WHERE oid = to_regprocedure('rekoda_private.jobs_application_transition_guard()'))
-        LIKE '%NOT pg_has_role(current_user, ''rekoda_app'', ''USAGE'')%only settlement runs, completes or reschedules a settlement job%locked_by IS DISTINCT FROM OLD.locked_by%OLD.state = ''dead'' AND NEW.state = ''pending''%NEW.locked_by IS NULL AND NEW.locked_at IS NULL%'
+        LIKE '%NOT pg_has_role(current_user, ''rekoda_app'', ''USAGE'')%NEW.run_at <= now() + interval ''1 minute''%NEW.max_attempts = OLD.attempts + 1%only settlement runs, completes or reschedules a settlement job%locked_by IS DISTINCT FROM OLD.locked_by%OLD.state = ''dead'' AND NEW.state = ''pending''%NEW.locked_by IS NULL AND NEW.locked_at IS NULL%'
   AND (SELECT count(*) FROM pg_trigger WHERE tgname = 'jobs_application_transition_guard'
         AND tgrelid = 'public.jobs'::regclass AND tgenabled IN ('O', 'A')
         AND pg_get_triggerdef(oid) LIKE '%BEFORE INSERT OR UPDATE ON public.jobs%') = 1

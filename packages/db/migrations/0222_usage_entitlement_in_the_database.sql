@@ -45,7 +45,8 @@
 --      caller (`deadJobs.startRecovery`) already does.
 --   9. (found by the same review) Settlement's jobs: the application may enqueue one only as pending
 --      work due now, for the Paystack event or charge its singleton key names (which must exist for
---      that business), and may requeue a dead one for an operator's recovery, but may no longer mark a
+--      that business), and may requeue a dead one for an operator's recovery (due now, with exactly one more
+--      attempt, as `deadJobs.startRecovery` writes it), but may no longer mark a
 --      running one done, reschedule it, or enqueue one already finished. Settlement completes its
 --      own jobs on its own credential.
 --   8. (found by the same review) `rekoda_app` holds column UPDATE on `subscription_charges` for the
@@ -393,9 +394,15 @@ BEGIN
     END IF;
     RETURN NEW;
   END IF;
+  -- The one honest requeue is `deadJobs.startRecovery`: due now, with exactly one more attempt.
+  -- An unbounded run time or attempt budget would let the application park a verified payment's
+  -- dead job out of the operator's reach (it leaves `dead`, so neither dead-job enrolment nor
+  -- recovery sees it again): independent review of `10ef5c9`.
   IF OLD.kind IN ('billing.process', 'billing.apply_no_charge')
-     AND NOT (OLD.state = 'dead' AND NEW.state = 'pending') THEN
-    RAISE EXCEPTION 'only settlement runs, completes or reschedules a settlement job; the application may requeue a dead one (0222)'
+     AND NOT (OLD.state = 'dead' AND NEW.state = 'pending'
+              AND NEW.run_at <= now() + interval '1 minute'
+              AND NEW.max_attempts = OLD.attempts + 1) THEN
+    RAISE EXCEPTION 'only settlement runs, completes or reschedules a settlement job; the application may requeue a dead one, due now, with one more attempt (0222)'
       USING ERRCODE = '42501';
   END IF;
   IF OLD.state IS NOT DISTINCT FROM NEW.state THEN
