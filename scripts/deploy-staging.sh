@@ -770,10 +770,14 @@ PREV_RELEASE=$(sed -n 's/^REKODA_RELEASE=//p' .env)
 # dies, so a missing, empty or live key is refused here, before anything is built or stopped.
 # Only the key's prefix is examined (the last line wins, as compose reads it); the value is never
 # printed. Staging application settings live in this host's .env alone, never in GitHub.
-# Compose also reads `export NAME=`, an indented line and spaces around `=`, which the plain-line
-# reads below would not see, so any such spelling of these two names is refused outright.
-! grep -Eq '^[[:space:]]*export[[:space:]]+(PAYSTACK_SECRET_KEY|REKODA_PAYSTACK_PLATFORM_CONFIRMED)\b|^[[:space:]]+(PAYSTACK_SECRET_KEY|REKODA_PAYSTACK_PLATFORM_CONFIRMED)\b|^(PAYSTACK_SECRET_KEY|REKODA_PAYSTACK_PLATFORM_CONFIRMED)[[:space:]]+=' .env ||
-  fail 'write PAYSTACK_SECRET_KEY and REKODA_PAYSTACK_PLATFORM_CONFIRMED in .env as one plain line each (NAME=value, no export, no indent, no spaces around =); nothing has been changed'
+# Compose's .env parser also reads `export NAME=`, an indented name, spaces before the separator
+# and the YAML-style `NAME: value`, none of which the plain-line reads below see. So every line
+# compose could read as one of these two names must be the plain `NAME=` form: anything else is
+# refused outright.
+for name in PAYSTACK_SECRET_KEY REKODA_PAYSTACK_PLATFORM_CONFIRMED; do
+  [ "$(grep -cE "^[[:space:]]*(export[[:space:]]+)?${name}[[:space:]]*[:=]" .env)" = "$(grep -c "^${name}=" .env)" ] ||
+    fail 'write PAYSTACK_SECRET_KEY and REKODA_PAYSTACK_PLATFORM_CONFIRMED in .env as one plain line each (NAME=value: no export, no indent, no colon, no spaces before =); nothing has been changed'
+done
 paystack_key=$(sed -n 's/^PAYSTACK_SECRET_KEY=//p' .env | tail -1)
 case "$paystack_key" in
   \"*\") paystack_key=${paystack_key#\"} paystack_key=${paystack_key%\"} ;;

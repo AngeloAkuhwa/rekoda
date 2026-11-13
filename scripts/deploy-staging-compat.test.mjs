@@ -55,7 +55,9 @@ function host(extraTags, extraEnv = PRINCIPAL_ENV, paystackEnv = PAYSTACK_ENV) {
     // the only source for them.
     writeFileSync(
       join(work, 'docker-compose.prod.yml'),
-      `# ${n}\nx-interpolated: ['\${PAYSTACK_SECRET_KEY:-}', '\${VAULT_KEY:?}', '\${REKODA_RELEASE:?}']\n`,
+      `# ${n}\nx-interpolated: ['\${PAYSTACK_SECRET_KEY:-}', '\${VAULT_KEY:?}', '\${REKODA_RELEASE:?}'${
+        n === 2 ? ", '\${ONLY_IN_TARGET:-}'" : ''
+      }]\n`,
     );
     writeFileSync(
       join(work, 'packages/db/migrations/meta/_journal.json'),
@@ -101,7 +103,7 @@ function host(extraTags, extraEnv = PRINCIPAL_ENV, paystackEnv = PAYSTACK_ENV) {
   bin(
     'docker',
     `echo "$*" >> "${fake}/docker.log"
-case "$*" in *"-f docker-compose.prod.yml"*) echo "PAYSTACK_SECRET_KEY=\${PAYSTACK_SECRET_KEY-unset} VAULT_KEY=\${VAULT_KEY-unset}" >> "${fake}/shell-env.log" ;; esac
+case "$*" in *"-f docker-compose.prod.yml"*) echo "PAYSTACK_SECRET_KEY=\${PAYSTACK_SECRET_KEY-unset} VAULT_KEY=\${VAULT_KEY-unset} ONLY_IN_TARGET=\${ONLY_IN_TARGET-unset}" >> "${fake}/shell-env.log" ;; esac
 case "$*" in
   *"stop api worker"*) [ -e "${fake}/stop-fails" ] && exit 1; [ -e "${fake}/hang-stop" ] && sleep 60 ;;
   *"ps --status running --services"*) [ -e "${fake}/ps-fails" ] && exit 1; cat "${fake}/running" 2>/dev/null ;;
@@ -529,6 +531,10 @@ test('OWN-70: a host whose Paystack key is missing, empty, live or malformed, or
     PAYSTACK_ENV + `  PAYSTACK_SECRET_KEY=${LIVE_KEY}\n`,
     PAYSTACK_ENV + `PAYSTACK_SECRET_KEY = ${LIVE_KEY}\n`,
     PAYSTACK_ENV + 'export REKODA_PAYSTACK_PLATFORM_CONFIRMED=1\n',
+    /* compose's .env parser also takes YAML-style declarations. */
+    PAYSTACK_ENV + `PAYSTACK_SECRET_KEY: ${LIVE_KEY}\n`,
+    PAYSTACK_ENV + `PAYSTACK_SECRET_KEY : ${LIVE_KEY}\n`,
+    PAYSTACK_ENV + 'REKODA_PAYSTACK_PLATFORM_CONFIRMED: 1\n',
   ]) {
     const h = host(
       ['0217_settlement_isolation'],
@@ -572,10 +578,18 @@ test('OWN-70: a Paystack key or vault key exported in the deploy shell never rea
     ['0217_settlement_isolation'],
     PRIVILEGED_ENV + 'OPERATOR_BILLING_OIDC_AUDIENCE=rekoda-billing\n',
   );
-  const r = h.run({ PAYSTACK_SECRET_KEY: live, VAULT_KEY: 'b'.repeat(64) });
+  /* ONLY_IN_TARGET is interpolated only by the commit being deployed: the clear after the checkout
+   * is what removes it. */
+  const r = h.run({
+    PAYSTACK_SECRET_KEY: live,
+    VAULT_KEY: 'b'.repeat(64),
+    ONLY_IN_TARGET: 'from-the-deploy-shell',
+  });
   assert.equal(r.status, 0, r.stderr + r.stdout);
   const seen = h.shellEnvSeen();
   assert.ok(seen.length > 0, 'compose was called');
-  for (const line of seen) assert.equal(line, 'PAYSTACK_SECRET_KEY=unset VAULT_KEY=unset');
+  for (const line of seen) {
+    assert.equal(line, 'PAYSTACK_SECRET_KEY=unset VAULT_KEY=unset ONLY_IN_TARGET=unset');
+  }
   assert.doesNotMatch(r.stderr + r.stdout, /exportedkey|bbbbbbbb/, 'a value is never printed');
 });
