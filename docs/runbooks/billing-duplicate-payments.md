@@ -86,7 +86,7 @@ upgrade or a credit toward a later purchase unless the merchant asks for that in
 
 **Who authorises:** the owner (Angelo) authorises each refund of Rekoda's own billing. Whether a
 delegated operator may authorise one, and up to what amount, is an **OPEN OWNER DECISION**
-(`docs/REKODA_LAUNCH_READINESS.md`, OD-51 readiness review). Until it is ruled, every refund goes to
+(`docs/REKODA_LAUNCH_READINESS.md`, OD-53 (1)). Until it is ruled, every refund goes to
 the owner.
 
 ## 5. Refund and record
@@ -113,9 +113,11 @@ in the body.
 For `duplicate_purchase`, the billing page shows the charge as paid twice until it is refunded, then
 as refunded. For `duplicate_payment`, the billing page shows nothing of the second payment (no charge
 records it), so the message below is the merchant's only record of it. Tell the merchant directly,
-through the billing email on file: what was paid twice, that the plan or pack was delivered once,
+through the billing email on file **only if it is verified** (`billing_email_verified_at` is set; an
+unverified address is never a destination, OWN-83), otherwise on WhatsApp inside the merchant's
+24-hour window or with an approved template: what was paid twice, that the plan or pack was delivered once,
 the amount refunded, and that Paystack refunds take the bank's usual time to arrive.
-The wording of that message is an **OPEN OWNER DECISION** (no approved template exists yet). Never
+The wording of that message is an **OPEN OWNER DECISION** (OD-53 (2); no approved template exists yet). Never
 send it on WhatsApp outside a 24-hour window as free text (Meta's rules).
 
 ## What this runbook does not cover
