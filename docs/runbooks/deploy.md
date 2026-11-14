@@ -700,7 +700,7 @@ This release starts two more services. Before deploying:
    - a pack charge credits exactly the unit, quantity and meter row it bought, derived in the
      database, for an amount that is its price; settlement moves a status only out of pending and
      cannot put a set-aside paid charge back (0224);
-   - the ledger carries the tags 0213 to 0224.
+   - the ledger carries the tags 0213 to 0225.
 
 4. 0223 is not a compatibility break either: it narrows only the settlement process this release
    introduces, and an application write no release makes. It ships in the same stopped window.
